@@ -1,0 +1,32 @@
+version: "1.0"
+defaults:
+  window: { pre_s: 2.0, post_s: 1.0, align: trigger }
+  debounce_s: 0.25
+
+events:
+  - id: rear_deep_compression
+    label: "Rear: deep compression (>0.9)"
+    sensor: rear_shock
+    inputs:
+      disp: "rear_shock [mm]"
+      vel:  "rear_shock [mm]_vel"
+      acc:  "rear_shock [mm]_acc"
+    trigger:
+      type: local_extrema
+      on: disp
+      kind: max
+      prominence: 1.0
+      distance_s: 1
+      edge_ignore_s: 1
+    preconditions: 
+      - within_s: [-0.1, 0.1]
+        any_of:
+        - { type: peak, on: disp, kind: max, op: ">=", value: 135 }
+    debounce_s: 0.3
+    window: { pre_s: 0.5, post_s: 0.8, align: trigger }
+    metrics:
+      - { type: peak, on: disp, kind: max, return_time: true }
+      - { type: peak, on: vel,  kind: max, return_time: true }
+      - { type: integral, on: acc, abs: true }
+    tags: [basic, kinematics]
+

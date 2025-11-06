@@ -1,0 +1,774 @@
+#include "Routes_Config.h"
+#include <Arduino.h>
+#include <ArduinoJson.h>
+
+#include "HtmlUtil.h"
+#include "ConfigManager.h"
+#include "SensorManager.h"
+#include "SensorRegistry.h"
+#include "OutputTransform.h"
+#include "WiFiManager.h"
+#include "WebServerManager.h"  // for canStart()
+
+using namespace HtmlUtil;
+
+void registerConfigRoutes(WebServer& srv) {
+  WebServer* S = &srv;
+
+  // -------------------- GET /config --------------------
+  S->on("/config", HTTP_GET, [S](){
+    auto& srv = *S;
+    WiFiManager::noteUserActivity();
+
+    // Read the active config for display
+    const LoggerConfig& cfg = ConfigManager::get();
+
+    const bool locked = !WebServerManager::canStart();   // disable edits while logging
+    const String dis  = locked ? F(" disabled") : F("");
+
+    String html = htmlHeader(F("Config"));
+
+    if (srv.hasArg("ok")) {
+      html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
+    }
+    if (locked) {
+      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
+                "Logging is active (or not allowed). Editing is disabled. Stop logging to make changes."
+                "</p>");
+    }
+
+    // ---------- GLOBALS ----------
+    html += F("<h2>Configuration</h2><form method='POST' action='/config'>");
+
+    html += F("<fieldset><legend>Sampling & Time</legend>");
+    html += F("<label>Sample rate (Hz): </label><input type='number' name='sample_rate_hz' min='1' max='2000' value='");
+    html += String(cfg.sampleRateHz);
+    html += F("'"); html += dis; html += F("><br>");
+
+    html += F("<label>Timestamp mode: </label><select name='timestamp_mode'");
+    html += dis; html += F("><option value='human'");
+    if (cfg.timestampHuman) html += F(" selected");
+    html += F(">human</option><option value='fast'");
+    if (!cfg.timestampHuman) html += F(" selected");
+    html += F(">fast</option></select><br>");
+
+    html += F("<label>Timezone (tz rule): </label><input type='text' name='tz' value='");
+    html += htmlEscape(String(cfg.tz));
+    html += F("'"); html += dis; html += F("></fieldset>");
+
+    // ---------- Wi-Fi (multi-network) ----------
+    html += F("<fieldset><legend>Network & NTP</legend>");
+    html += F("<h4>Wi-Fi (multi-network)</h4>");
+
+    // toggles
+    html += F("<div class='row'><label>Enable Wi-Fi by default</label>");
+    html += F("<input type='hidden' name='wifi_enabled_default' value='false'>");
+    html += F("<input type='checkbox' name='wifi_enabled_default' value='true'");
+    if (cfg.wifiEnabledDefault) html += F(" checked");
+    if (locked) html += F(" disabled");
+    html += F("></div>");
+
+    html += F("<div class='row'><label>Auto-enable for NTP if RTC invalid</label>");
+    html += F("<input type='hidden' name='wifi_auto_time_on_rtc_invalid' value='false'>");
+    html += F("<input type='checkbox' name='wifi_auto_time_on_rtc_invalid' value='true'");
+    if (cfg.wifiAutoTimeOnRtcInvalid) html += F(" checked");
+    if (locked) html += F(" disabled");
+    html += F("></div>");
+
+    // advisory count (display only)
+    html += F("<div class='row'><label>Configured networks</label>");
+    html += "<input type='text' value='"; html += String(cfg.wifiNetworkCount);
+    html += F("' disabled></div>");
+
+    // five editable slots; order = priority
+    for (int i = 0; i < 5; ++i) {
+      const auto& w = cfg.wifi[i];
+      html += F("<fieldset><legend>Wi-Fi ");
+      html += String(i);
+      html += F(" (priority "); html += String(i+1); html += F(")</legend>");
+
+      // SSID
+      html += F("<div class='row'><label>SSID</label><input type='text' name='wifi");
+      html += String(i);
+      html += F(".ssid' value='");
+      html += htmlEscape(String(w.ssid));
+      html += F("'"); if (locked) html += F(" disabled"); html += F("></div>");
+
+      // Password (write-only feel; still show current to match legacy)
+      html += F("<div class='row'><label>Password</label><input type='password' name='wifi");
+      html += String(i);
+      html += F(".password' value='");
+      html += htmlEscape(String(w.password));
+      html += F("' placeholder='(unchanged)'");
+      if (locked) html += F(" disabled");
+      html += F("></div>");
+
+      // min_rssi
+      html += F("<div class='row'><label>Min RSSI (dBm)</label>"
+                "<input type='number' step='1' min='-100' max='0' name='wifi");
+      html += String(i);
+      html += F(".min_rssi' value='");
+      if (w.minRssi >= -100 && w.minRssi <= -10) html += String((int)w.minRssi);
+      html += F("' oninput=\"this.setCustomValidity('');"
+                "if(this.value!=='' && this.value!=='0' && Number(this.value)>-10)"
+                " this.setCustomValidity('Value must be ≤ -10 (or 0/blank to ignore)');\"");
+      if (locked) html += F(" disabled");
+      html += F(" placeholder='0 or blank = ignore'>"
+                "<small>≤ -10, or 0/blank to ignore</small></div>");
+
+      // BSSID
+      String bssidStr;
+      if (w.bssidSet) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 w.bssid[0],w.bssid[1],w.bssid[2],w.bssid[3],w.bssid[4],w.bssid[5]);
+        bssidStr = buf;
+      }
+      html += F("<div class='row'><label>BSSID (optional)</label><input type='text' pattern='^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$' name='wifi");
+      html += String(i);
+      html += F(".bssid' value='");
+      html += htmlEscape(bssidStr);
+      html += F("'"); if (locked) html += F(" disabled"); html += F("><small>AA:BB:CC:DD:EE:FF</small></div>");
+
+      // Hidden
+      html += F("<div class='row'><label>Hidden SSID</label>"
+                "<input type='hidden' name='wifi");
+      html += String(i);
+      html += F(".hidden' value='false'>"
+                "<input type='checkbox' name='wifi");
+      html += String(i);
+      html += F(".hidden' value='true'");
+      if (w.hidden) html += F(" checked");
+      if (locked)   html += F(" disabled");
+      html += F("></div>");
+
+      html += F("</fieldset>");
+    }
+
+    // NTP + time check
+    html += F("<label>NTP servers (CSV): </label><input type='text' name='ntp_servers' value='");
+    html += htmlEscape(String(cfg.ntpServers));
+    html += F("'"); html += dis; html += F("><br>");
+
+    html += F("<label>HTTP time check URL: </label><input type='text' name='time_check_url' value='");
+    html += htmlEscape(String(cfg.timeCheckUrl));
+    html += F("'"); html += dis; html += F("></fieldset>");
+
+    // ---------- Buttons & options ----------
+    html += F("<fieldset><legend>Buttons & Options</legend>");
+    auto num = [&](const char* label, const char* name, int v){
+      html += "<label>"; html += label; html += ": </label><input type='number' name='";
+      html += name; html += "' min='0' max='39' value='"; html += String(v); html += "'"; html += dis; html += "><br>";
+    };
+    num("Web button pin",  "web_button_pin",  cfg.webBtnPin);
+    num("Log button pin",  "log_button_pin",  cfg.logBtnPin);
+    num("Mark button pin", "mark_button_pin", cfg.markBtnPin);
+    num("Nav Up pin",      "nav_up_pin",      cfg.navUpPin);
+    num("Nav Down pin",    "nav_down_pin",    cfg.navDownPin);
+    num("Nav Left pin",    "nav_left_pin",    cfg.navLeftPin);
+    num("Nav Right pin",   "nav_right_pin",   cfg.navRightPin);
+    num("Nav Enter pin",   "nav_enter_pin",   cfg.navEnterPin);
+
+    html += F("<label>Debounce (ms): </label><input type='number' name='debounce_ms' min='0' max='1000' value='");
+    html += String(cfg.debounceMs);
+    html += F("'"); html += dis; html += F("><br>");
+    html += F("<label><input type='checkbox' name='use_external_rtc' value='1'");
+    if (cfg.useExternalRTC) html += F(" checked");
+    if (locked) html += F(" disabled");
+    html += F("> Use external RTC </label>");
+    html += F("</fieldset>");
+
+    html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
+    html += F("</form>");
+
+    // ---------- SENSORS ----------
+    html += F("<h2>Sensors</h2>");
+
+    const uint8_t n = cfg.sensorCount();
+    if (n == 0) {
+      html += F("<p><em>No sensors configured.</em></p>");
+    } else {
+      html += F("<form method='POST' action='/config'>");
+
+      for (uint8_t i = 0; i < n; ++i) {
+        SensorSpec sp; 
+        if (!cfg.getSensorSpec(i, sp)) continue;
+        const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
+
+        // Type label
+        const char* typeLbl = SensorRegistry::typeLabel(sp.type);
+        const String typeLabelStr = htmlEscape(String(typeLbl ? typeLbl : "Unknown Sensor"));
+
+        // ParamDefs lookup helper
+        size_t defCount = 0;
+        const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
+        auto findDef = [&](const char* key)->const ParamDef* {
+          if (!defs) return nullptr;
+          for (size_t d = 0; d < defCount; ++d) {
+            if (strcasecmp(defs[d].key, key) == 0) return &defs[d];
+          }
+          return nullptr;
+        };
+        auto currentValAsString = [&](const ParamDef* pd)->String {
+          String val;
+          if (!pd) return val;
+          if      (pd->type == ParamType::Bool)  { bool b=false;  sp.params.getBool(pd->key, b);  val = b ? "true" : "false"; }
+          else if (pd->type == ParamType::Int)   { long v=0;      sp.params.getInt(pd->key, v);   val = String(v); }
+          else if (pd->type == ParamType::Float) { double f=0.0;  sp.params.getFloat(pd->key, f); val = String(f, 6); }
+          else { String s; sp.params.get(pd->key, s); val = s; }
+          return val;
+        };
+        auto emitParamRow = [&](const char* key, const char* labelOverride = nullptr) {
+          const ParamDef* pd = findDef(key);
+          if (!pd) return; // only render if defined by this sensor type
+          String label = labelOverride ? String(labelOverride) : String(pd->key);
+          html += "<div class='row'><label>";
+          html += htmlEscape(label);
+          html += "</label>";
+          String field = String("s") + i + "." + key;
+
+          if (pd->type == ParamType::Bool) {
+            String val = currentValAsString(pd);
+            html += "<input type='hidden' name='" + field + "' value='false'>";
+            html += "<input type='checkbox' name='" + field + "' value='true' ";
+            if (val == "true") html += "checked";
+            if (locked) html += " disabled";
+            html += ">";
+          } else if (pd->type == ParamType::Enum && pd->choices) {
+            String val = currentValAsString(pd);
+            html += "<select name='" + field + "'";
+            if (locked) html += " disabled";
+            html += ">";
+            emitEnumOptions(html, pd->choices, val);
+            html += "</select>";
+          } else {
+            String val = currentValAsString(pd);
+            html += "<input type='text' name='" + field + "' value='";
+            html += htmlEscape(val);
+            html += "'";
+            if (locked) html += " disabled";
+            html += ">";
+          }
+          if (pd->help) { html += "<small>"; html += pd->help; html += "</small>"; }
+          html += "</div>";
+        };
+
+        // --- Fieldset / legend
+        html += F("<fieldset><legend>");
+        const char* dispName = (sp.name && sp.name[0]) ? sp.name : "sensor";
+        html += htmlEscape(String(dispName));
+        html += F(" — ");
+        html += typeLabelStr;
+        html += F("</legend>");
+
+        // ---- Basic ----
+        html += F("<h4>Basic</h4>");
+        html += F("<div class='row'><label>Name</label>");
+        html += "<input type='text' name='s"; html += String(i); html += ".name' value='";
+        html += htmlEscape(String(sp.name)); html += "'"; html += dis; html += "></div>";
+
+        html += "<div class='row'><label>Type</label><input type='text' value='";
+        html += typeLabelStr;
+        html += "'"; if (locked) html += " disabled"; html += "></div>";
+
+        emitParamRow("pin", "Pin");
+
+        // Muted by default
+        {
+          String field = String("s") + i + ".muted";
+          html += "<div class='row'><label>Muted by default</label>";
+          html += "<input type='hidden' name='" + field + "' value='false'>";
+          html += "<input type='checkbox' name='" + field + "' value='true' ";
+          if (sp.mutedDefault) html += "checked";
+          if (locked) html += " disabled";
+          html += "></div>";
+        }
+
+        // ---- Output ----
+        html += F("<h4>Output</h4>");
+
+        // Output mode (RAW/LINEAR/POLY/LUT)
+        {
+          const ParamDef* pdOM = findDef("output_mode");
+          if (pdOM) {
+            int om = (int)OutputMode::RAW;
+            long vi;
+            if (sp.params.getInt("output_mode", vi)) om = (int)vi;
+
+            const String field = String("s") + i + ".output_mode";
+
+            html += "<div class='row'><label>Output mode</label><select name='";
+            html += field;
+            html += "' onchange=\"window.__xf_onModeChange('";
+            html += sp.name;
+            html += "', this.value)\"";
+            if (locked) html += " disabled";
+            html += ">";
+
+            auto addOpt = [&](OutputMode val, const char* label) {
+              html += "<option value='"; html += String((int)val); html += "'";
+              if (om == (int)val) html += " selected";
+              html += ">"; html += label; html += "</option>";
+            };
+            addOpt(OutputMode::RAW,    "RAW");
+            addOpt(OutputMode::LINEAR, "LINEAR");
+            addOpt(OutputMode::POLY,   "POLY");
+            addOpt(OutputMode::LUT,    "LUT");
+
+            html += "</select></div>";
+          }
+        }
+
+        emitParamRow("include_raw", "Include raw column");
+        emitParamRow("sensor_full_travel_mm", "Sensor full travel (mm)");
+        emitParamRow("units_label", "Units label");
+
+        // Transform picker (per sensor)
+        {
+          // use live sensor to preselect
+          const uint8_t liveN = SensorManager::count();
+          String currentId;
+          for (uint8_t j = 0; j < liveN; ++j) {
+            Sensor* ss = SensorManager::get(j);
+            if (ss && String(ss->name()) == String(dispName)) { currentId = ss->selectedTransformId(); break; }
+          }
+
+          html += F("<div class='row tr-block' data-sensor='");
+          html += htmlEscape(String(dispName));
+          html += F("' data-current='");
+          html += htmlEscape(currentId);
+          html += F("'>");
+          html += F("<label>Output transform</label>");
+          html += F("<select name='s"); html += i; html += F(".output_id'>");
+          html += F("</select> ");
+          html += F("<button class='apply'");  if (locked) html += F(" disabled"); html += F(">Apply</button> ");
+          html += F("<button class='reload'"); if (locked) html += F(" disabled"); html += F(">Reload</button> ");
+          html += F("<span class='status' style='margin-left:8px;color:#060'></span></div>");
+        }
+
+        // ---- Calibration ----
+        html += F("<h4>Calibration</h4>");
+        {
+          String field = String("s") + i + ".cal_allowed";
+          html += "<div class='row'><label>Calibration methods</label>";
+          html += "<input type='text' name='" + field + "' placeholder='ZERO,RANGE' value='";
+          CalModeMask allowMask2 = ConfigManager::calAllowedMaskByIndex(i);
+          String calCsv;
+          if (allowMask2 != 0xFF) {
+            if (allowMask2 & CAL_ZERO)  { if (calCsv.length()) calCsv += ","; calCsv += "ZERO"; }
+            if (allowMask2 & CAL_RANGE) { if (calCsv.length()) calCsv += ","; calCsv += "RANGE"; }
+            if (!calCsv.length()) calCsv = "NONE";
+          }
+          html += htmlEscape(calCsv);
+          html += "'";
+          if (locked) html += " disabled";
+          html += ">";
+          html += "<small>Leave blank to inherit type-supported methods.</small>";
+          html += "</div>";
+        }
+        emitParamRow("sensor_zero_count", "Sensor zero count");
+        emitParamRow("sensor_full_count", "Sensor full count");
+        emitParamRow("invert", "Invert direction");
+
+        // ---- Smoothing ----
+        html += F("<h4>Smoothing</h4>");
+        emitParamRow("ema_alpha", "EMA alpha");
+        emitParamRow("deadband",  "Deadband");
+
+        // (Optional) render remaining params under "Other"
+        const char* shown[] = {
+          "pin","muted",
+          "output_mode","include_raw","sensor_full_travel_mm","units_label",
+          "cal_allowed","sensor_zero_count","sensor_full_count","invert",
+          "ema_alpha","deadband"
+        };
+        auto isShown = [&](const char* key)->bool{
+          for (size_t k=0;k<sizeof(shown)/sizeof(shown[0]);++k){
+            if (strcasecmp(shown[k], key)==0) return true;
+          }
+          return false;
+        };
+        bool printedOther = false;
+        size_t defCount2 = 0;
+        const ParamDef* defs2 = ti ? ti->paramDefs(defCount2) : nullptr;
+        for (size_t d = 0; d < defCount2; ++d) {
+          const ParamDef& pd = defs2[d];
+          if (isShown(pd.key)) continue;
+          if (strcasecmp(pd.key, "name")==0 || strcasecmp(pd.key,"type")==0) continue;
+          if (!printedOther) { html += F("<h4>Other</h4>"); printedOther = true; }
+
+          // inline emit for this key
+          {
+            const ParamDef* pd2 = findDef(pd.key);
+            if (pd2) {
+              String label = String(pd2->key);
+              html += "<div class='row'><label>";
+              html += htmlEscape(label);
+              html += "</label>";
+              String field = String("s") + i + "." + pd.key;
+              if (pd2->type == ParamType::Bool) {
+                String val = currentValAsString(pd2);
+                html += "<input type='hidden' name='" + field + "' value='false'>";
+                html += "<input type='checkbox' name='" + field + "' value='true' ";
+                if (val == "true") html += "checked";
+                if (locked) html += " disabled";
+                html += ">";
+              } else if (pd2->type == ParamType::Enum && pd2->choices) {
+                String val = currentValAsString(pd2);
+                html += "<select name='" + field + "'";
+                if (locked) html += " disabled";
+                html += ">";
+                emitEnumOptions(html, pd2->choices, val);
+                html += "</select>";
+              } else {
+                String val = currentValAsString(pd2);
+                html += "<input type='text' name='" + field + "' value='";
+                html += htmlEscape(val);
+                html += "'";
+                if (locked) html += " disabled";
+                html += ">";
+              }
+              if (pd2->help) { html += "<small>"; html += pd2->help; html += "</small>"; }
+              html += "</div>";
+            }
+          }
+          delay(0);
+        }
+
+        html += F("</fieldset>");
+        delay(0);
+      }
+
+      html += "<p><button type='submit'"; html += dis; html += ">Save Sensors</button></p>";
+      html += F("</form>");
+    }
+
+    // --- per-sensor transform UI script (unchanged) ---
+    html += F(
+      "<script>\n"
+      "document.addEventListener('DOMContentLoaded',function(){\n"
+      "  function pickListShape(j){ var a=j.transforms||j.items||j.options||j.results||j.choices||j; if(Array.isArray(a)) return a; return []; }\n"
+      "  function populate(block, forcedMode){\n"
+      "    var sensor = block.getAttribute('data-sensor')||'';\n"
+      "    var current= block.getAttribute('data-current')||'';\n"
+      "    var sel    = block.querySelector('select'); if(!sel) return;\n"
+      "    var url = '/api/transforms/list?sensor='+encodeURIComponent(sensor)+'&_t='+Date.now();\n"
+      "    if(forcedMode!=null && forcedMode!=='') url += '&mode='+encodeURIComponent(forcedMode);\n"
+      "    fetch(url,{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){\n"
+      "      sel.innerHTML=''; pickListShape(j).forEach(function(t){\n"
+      "        var id=t.id||t.value||''; var label=(t.label||t.name||t.text||id||'?');\n"
+      "        if(t.type){ label+=' ('+t.type+(t.out_units?(', '+t.out_units):'')+')'; }\n"
+      "        var o=document.createElement('option'); o.value=id; o.textContent=label; if(current===id) o.selected=true; sel.appendChild(o);\n"
+      "      });\n"
+      "    }).catch(function(e){ console.error('load list',e); });\n"
+      "  }\n"
+      "  window.__xf_onModeChange=function(sensor,mode){\n"
+      "    var block=[].find.call(document.querySelectorAll('.tr-block'),function(el){return el.dataset&&el.dataset.sensor===sensor;});\n"
+      "    if(!block) return; block.dataset.current='identity'; populate(block, mode);\n"
+      "  };\n"
+      "  function getCurrentModeForSensor(sensor){\n"
+      "    var inputs = document.querySelectorAll('input[name$=\".name\"]');\n"
+      "    for (var i=0;i<inputs.length;i++){\n"
+      "      if ((inputs[i].value||'')===sensor){ var name = inputs[i].getAttribute('name'); var m = name && name.match(/^s(\\d+)\\.name$/);\n"
+      "        if (!m) break; var idx = m[1]; var sel = document.querySelector('select[name=\"s'+idx+'.output_mode\"]'); if (sel) return sel.value;\n"
+      "        var radios = document.querySelectorAll('input[type=radio][name=\"s'+idx+'.output_mode\"]');\n"
+      "        for (var r=0;r<radios.length;r++){ if (radios[r].checked) return radios[r].value; }\n"
+      "        var txt = document.querySelector('input[name=\"s'+idx+'.output_mode\"]'); if (txt) return txt.value; break; }\n"
+      "    }\n"
+      "    return '';\n"
+      "  }\n"
+      "  document.querySelectorAll('.reload').forEach(function(btn){\n"
+      "    btn.addEventListener('click', function(){\n"
+      "      var block = btn.closest('.tr-block'); var sensor = block && block.dataset ? block.dataset.sensor : '';\n"
+      "      var status = block ? block.querySelector('.status') : null;\n"
+      "      fetch('/api/transforms/reload',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'sensor='+encodeURIComponent(sensor)})\n"
+      "        .then(function(r){return r.json();}).then(function(j){ if(j && j.ok){ var mode = getCurrentModeForSensor(sensor); block.dataset.current='identity'; populate(block, mode); if(status){ status.style.color='#060'; status.textContent='Reloaded ✔'; } setTimeout(function(){ if(status) status.textContent=''; },1200); } else { if(status){ status.style.color='#900'; status.textContent='Error'; } } })\n"
+      "        .catch(function(){ if(status){ status.style.color='#900'; status.textContent='Error'; } });\n"
+      "    });\n"
+      "  });\n"
+      "  Array.prototype.forEach.call(document.querySelectorAll('.tr-block'), function(b){ populate(b); });\n"
+      "  document.addEventListener('change',function(ev){ var n=(ev.target&&ev.target.name)||''; var m=n.match(/^s(\\d+)\\.output_mode$/); if(!m) return; var idx=m[1]; var newMode=ev.target.value; var nameEl=document.querySelector('input[name=\"s'+idx+'.name\"]'); if(!nameEl) return; var sensor=nameEl.value||''; var block=Array.prototype.find.call(document.querySelectorAll('.tr-block'),function(el){return el.dataset&&el.dataset.sensor===sensor;}); if(block){ block.dataset.current='identity'; populate(block, newMode); } });\n"
+      "});\n"
+      "</script>\n"
+    );
+
+    html += F("<p><a href='/'>Home</a> &nbsp; <a href='/files'>Files</a></p>");
+    html += htmlFooter();
+    srv.send(200, F("text/html"), html);
+  });
+
+  // -------------------- POST /config --------------------
+  S->on("/config", HTTP_POST, [S](){
+    auto& srv = *S;
+    WiFiManager::noteUserActivity();
+
+    if (!WebServerManager::canStart()) {
+      srv.send(423, F("text/plain"), F("Locked while logging"));
+      return;
+    }
+
+    // Working copy we will persist at the end
+    LoggerConfig tmp = ConfigManager::get();
+
+    // ---------- GLOBALS ----------
+    if (srv.hasArg("sample_rate_hz")) {
+      uint16_t hz = (uint16_t)srv.arg("sample_rate_hz").toInt();
+      tmp.sampleRateHz = hz;
+    }
+
+    if (srv.hasArg("timestamp_mode")) {
+      const String tsm = srv.arg("timestamp_mode");
+      if      (tsm == "human") tmp.timestampHuman = true;
+      else if (tsm == "fast")  tmp.timestampHuman = false;
+    }
+
+    if (srv.hasArg("tz")) {
+      String tz = srv.arg("tz"); tz.trim();
+      if (tz.length() < (int)sizeof(tmp.tz)) tz.toCharArray(tmp.tz, sizeof(tmp.tz));
+    }
+
+    // ---- Wi-Fi globals + 5 slots ----
+    {
+      auto getArgLast = [&](const char* key, String& out) -> bool {
+        bool found = false; const int ac = srv.args();
+        for (int ai = 0; ai < ac; ++ai) { if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; } }
+        return found;
+      };
+      auto parseBool = [&](const String& s)->bool{
+        String v = s; v.trim(); v.toLowerCase();
+        return (v=="true"||v=="1"||v=="on"||v=="yes");
+      };
+      auto setBoolIfPresent = [&](const char* key, bool& field){
+        String v; if (!getArgLast(key, v)) return; field = parseBool(v);
+      };
+
+      setBoolIfPresent("wifi_enabled_default",          tmp.wifiEnabledDefault);
+      setBoolIfPresent("wifi_auto_time_on_rtc_invalid", tmp.wifiAutoTimeOnRtcInvalid);
+
+      auto parseMacInline = [](const String& s, uint8_t out[6])->bool{
+        int b[6];
+        if (sscanf(s.c_str(), "%x:%x:%x:%x:%x:%x", &b[0],&b[1],&b[2],&b[3],&b[4],&b[5]) != 6) return false;
+        for (int i=0;i<6;++i){ if (b[i] < 0 || b[i] > 255) return false; out[i] = (uint8_t)b[i]; }
+        return true;
+      };
+      auto validRssiInline = [](int v)->bool{ return v >= -100 && v <= -10; };
+
+      uint8_t newCount = 0;
+      for (int i = 0; i < 5; ++i) {
+        // SSID
+        { String key = String("wifi")+i+".ssid"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); v.toCharArray(tmp.wifi[i].ssid, sizeof(tmp.wifi[i].ssid)); } }
+        // Password
+        { String key = String("wifi")+i+".password"; if (srv.hasArg(key)) { String v = srv.arg(key); v.toCharArray(tmp.wifi[i].password, sizeof(tmp.wifi[i].password)); } }
+        // min_rssi
+        { String key = String("wifi")+i+".min_rssi"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); if (!v.length()) tmp.wifi[i].minRssi = -127; else { int vi=v.toInt(); tmp.wifi[i].minRssi = validRssiInline(vi)?(int16_t)vi:(int16_t)-127; } } }
+        // bssid
+        { String key = String("wifi")+i+".bssid"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); if (v.length()) { uint8_t mac[6]; if (parseMacInline(v, mac)) { memcpy(tmp.wifi[i].bssid, mac, 6); tmp.wifi[i].bssidSet = true; } else { memset(tmp.wifi[i].bssid,0,6); tmp.wifi[i].bssidSet=false; } } else { memset(tmp.wifi[i].bssid,0,6); tmp.wifi[i].bssidSet=false; } } }
+        // hidden
+        { String key = String("wifi")+i+".hidden"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); v.toLowerCase(); tmp.wifi[i].hidden = (v=="true" || v=="1" || v=="on"); } }
+
+        if (tmp.wifi[i].ssid[0]) ++newCount;
+      }
+      tmp.wifiNetworkCount = newCount;
+
+      // Buttons / debounce / external RTC
+      auto setU8  = [&](const char* name, uint8_t&  field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>255) v=255; field=(uint8_t)v; };
+      auto setU16 = [&](const char* name, uint16_t& field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>65535) v=65535; field=(uint16_t)v; };
+      auto setBool= [&](const char* name, bool& field){ if (!srv.hasArg(name)) return; String s=srv.arg(name); s.trim(); s.toLowerCase(); field=(s=="1"||s=="true"||s=="on"||s=="yes"); };
+
+      setU8("web_button_pin",  tmp.webBtnPin);
+      setU8("log_button_pin",  tmp.logBtnPin);
+      setU8("mark_button_pin", tmp.markBtnPin);
+      setU8("nav_up_pin",      tmp.navUpPin);
+      setU8("nav_down_pin",    tmp.navDownPin);
+      setU8("nav_left_pin",    tmp.navLeftPin);
+      setU8("nav_right_pin",   tmp.navRightPin);
+      setU8("nav_enter_pin",   tmp.navEnterPin);
+
+      setU16("debounce_ms",    tmp.debounceMs);
+      setBool("use_external_rtc", tmp.useExternalRTC);
+    }
+
+    // ---------- SENSORS ----------
+    // enumerate current specs, mutate copies, and persist via ConfigManager helpers
+    const LoggerConfig current = ConfigManager::get();  // read-only view for enumeration
+    const uint8_t count = current.sensorCount();
+
+    for (uint8_t idx = 0; idx < count; ++idx) {
+      SensorSpec sp;
+      if (!current.getSensorSpec(idx, sp)) continue;
+
+      const String pfx = String("s") + idx + ".";
+
+      auto getArgLast = [&](const char* key, String& out) -> bool {
+        const String full = pfx + key;
+        bool found = false; const int ac = srv.args();
+        for (int ai = 0; ai < ac; ++ai) {
+          if (srv.argName(ai) == full) { out = srv.arg(ai); found = true; }
+        }
+        return found;
+      };
+      auto getBoolLast = [&](const char* key, bool& out)->bool{
+        String v; if (!getArgLast(key, v)) return false; v.trim(); v.toLowerCase();
+        out = (v=="true"||v=="1"||v=="on"); return true;
+      };
+
+      // Basic
+      {
+        String v;
+        if (getArgLast("name", v)) { v.trim(); if (v.length()) v.toCharArray(sp.name, sizeof(sp.name)); }
+        bool mb=false; if (getBoolLast("muted", mb)) sp.mutedDefault = mb;
+      }
+
+      // Output
+      {
+        String v;
+
+        long oldOm = 0; sp.params.getInt("output_mode", oldOm);
+        long newOm = oldOm; bool omChanged = false;
+
+        if (getArgLast("output_mode", v)) {
+          v.trim(); v.toUpperCase();
+          long vi = v.toInt();
+          if      (v=="RAW"||vi==0) newOm=0;
+          else if (v=="LINEAR"||vi==1) newOm=1;
+          else if (v=="POLY"||vi==2) newOm=2;
+          else if (v=="LUT"||vi==3) newOm=3;
+          if (newOm != oldOm) omChanged = true;
+          sp.params.setInt("output_mode", newOm);
+        }
+
+        { bool inc=false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
+        if (getArgLast("units_label", v))           sp.params.set("units_label", v);
+        if (getArgLast("sensor_full_travel_mm", v)) sp.params.set("sensor_full_travel_mm", v);
+
+        // Persist selected transform id if posted
+        if (getArgLast("output_id", v)) {
+          v.trim();
+          sp.params.set("output_id", v);
+          ConfigManager::saveSensorParamByIndex(idx, "output_id", v);
+        }
+        sp.params.setBool("__om_changed", omChanged);
+      }
+
+      // Calibration
+      {
+        String v;
+        if (getArgLast("cal_allowed", v)) {
+          CalModeMask m = 0xFF; v.trim();
+          if (v.length()) {
+            m = 0; int start=0;
+            while (start < v.length()) {
+              int comma = v.indexOf(',', start);
+              String tok = (comma < 0) ? v.substring(start) : v.substring(start, comma);
+              tok.trim(); tok.toUpperCase();
+              if      (tok == "ZERO")  m |= CAL_ZERO;
+              else if (tok == "RANGE") m |= CAL_RANGE;
+              start = (comma < 0) ? v.length() : comma + 1;
+            }
+          }
+          ConfigManager::setCalAllowedByIndex(idx, m);
+        }
+        if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
+        if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
+        { bool inv=false; if (getBoolLast("invert", inv)) sp.params.setBool("invert", inv); }
+      }
+
+      // Smoothing
+      {
+        String v;
+        if (getArgLast("ema_alpha", v)) { double f = v.toFloat(); sp.params.setFloat("ema_alpha", (float)f); }
+        if (getArgLast("deadband", v))  { long   i = v.toInt();  sp.params.setInt("deadband", (long)i); }
+      }
+
+      // Generic ParamDefs pass (remaining keys defined by the sensor)
+      int ac = srv.args();
+      for (int ai = 0; ai < ac; ++ai) {
+        const String argName = srv.argName(ai);
+        if (!argName.startsWith(pfx)) continue;
+        const String pkey = argName.substring(pfx.length());
+        const String val  = srv.arg(ai);
+
+        if (pkey.equalsIgnoreCase("name") || pkey.equalsIgnoreCase("muted") ||
+            pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
+            pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
+            pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
+            pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("invert") ||
+            pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
+            pkey.equalsIgnoreCase("pin")) {
+          continue;
+        }
+
+        const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
+        if (!ti) continue;
+        size_t defCount = 0;
+        const ParamDef* defs = ti->paramDefs(defCount);
+
+        const ParamDef* def = nullptr;
+        for (size_t d = 0; d < defCount; ++d) {
+          if (pkey.equalsIgnoreCase(defs[d].key)) { def = &defs[d]; break; }
+        }
+        if (!def) continue;
+
+        bool ok = true;
+        switch (def->type) {
+          case ParamType::Bool:  ok = sp.params.setBool (pkey.c_str(), (val=="true"||val=="on"||val=="1")); break;
+          case ParamType::Int:   ok = sp.params.setInt  (pkey.c_str(), val.toInt());                         break;
+          case ParamType::Float: ok = sp.params.setFloat(pkey.c_str(), (float)val.toFloat());               break;
+          default:               ok = sp.params.set     (pkey.c_str(), val);                                break;
+        }
+        if (!ok) Serial.printf("[WEB] set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
+      }
+
+      // Persist header/spec
+      ConfigManager::setSensorHeaderByIndex(idx, sp);
+
+      // Push changes into the live sensor (so they take effect immediately)
+      Sensor* live = nullptr;
+      for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+        Sensor* s = SensorManager::get(j);
+        if (s && String(s->name()) == String(sp.name)) { live = s; break; }
+      }
+      if (live) {
+        // muted
+        live->setMuted(sp.mutedDefault);
+
+        // output mode / include_raw
+        long om = 0; sp.params.getInt("output_mode", om);
+        live->setOutputMode((OutputMode)om);
+
+        bool inc = false; sp.params.getBool("include_raw", inc);
+        live->setIncludeRaw(inc);
+
+        // units label for the primary column
+        String u; sp.params.get("units_label", u);
+        if ((OutputMode)om == OutputMode::RAW) u = "counts";
+        live->setOutputUnitsLabel(u.c_str());
+
+        // If output_mode changed, re-attach transform + units label policy
+        bool omChanged = false;
+        sp.params.getBool("__om_changed", omChanged);
+        if (omChanged) {
+          // NOTE: Transform reload and selection are handled in the Transforms routes.
+          // Here we just refresh units label according to current selection stored in params.
+          String selId; sp.params.get("output_id", selId); selId.trim();
+          if ((OutputMode)om == OutputMode::RAW) {
+            live->setOutputUnitsLabel("counts");
+          } else if ((OutputMode)om == OutputMode::LINEAR) {
+            String explicitLabel; sp.params.get("units_label", explicitLabel);
+            live->setOutputUnitsLabel(explicitLabel.c_str());
+          } else {
+            // POLY/LUT: leave label to transform’s metadata (set via Transforms route)
+          }
+        }
+      }
+    }
+
+    // ---------- Persist full config ----------
+    ConfigManager::save(tmp);           // writes file and updates active config
+    ConfigManager::debugDumpConfigFile();
+
+    // Redirect back to GET with ok=1
+    srv.sendHeader("Location", "/config?ok=1");
+    srv.send(303, F("text/plain"), F("Saved"));
+  });
+}

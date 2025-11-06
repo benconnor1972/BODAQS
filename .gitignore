@@ -1,0 +1,40 @@
+﻿.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Arduino/ESP32
+build*/
+.pio/
+*.elf
+*.bin
+*.map
+
+# Python/Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+.env.*
+
+# Data/outputs (keep dirs with .gitkeep if you need them visible)
+analysis/**/data/
+analysis/**/outputs/
+logs/*
+*.parquet
+*.feather
+*.h5
+*.npz
+
+# KiCad caches/backups
+*.bak
+*.kicad_prl
+*~
+_autosave-*
+**/sym-lib-table-bak
+**/fp-lib-table-bak
+*.cache
+*/-backups/

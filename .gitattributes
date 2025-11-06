@@ -1,0 +1,7 @@
+﻿* text=auto
+*.bin binary
+*.stl binary
+*.step binary
+*.iges binary
+*.zip  binary
+*.pdf  binary

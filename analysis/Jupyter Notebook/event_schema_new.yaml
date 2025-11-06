@@ -1,0 +1,133 @@
+version: "2.0"
+
+# Global naming: columns are resolved as  <sensor_name><suffix>
+naming:
+  suffixes:
+    disp: " [mm]"
+    vel:  " [mm]_vel"
+    acc:  " [mm]_acc" 
+    disp_norm:  " [mm]_norm"
+
+defaults:
+  window: { pre_s: 2.0, post_s: 1.0, align: trigger }
+  debounce_s: 0.25
+  rebound_metrics:
+    max_rebound_s: 1.0
+    min_delay_s: 0.02
+    smooth_ms: 0
+    zero_band: 3.0
+    neg_band: 2.0
+    pos_band: 2.0
+    pre_neg_samples: 2
+    dwell_pos_samples: 2
+    cross_samples: 2
+    polarity: "auto"  # 'neg_to_pos', 'pos_to_neg', or 'auto'
+    fit_tau: true
+# top-level additions (keep your existing version/naming/defaults/events)
+series:
+  # system trigger / mark channel (boolean or 0/1)
+  - id: "mark"
+    kind: "trigger"
+    source: "system:mark"
+    column: "mark"
+    edge: "rising"   # optional: rising|falling|both
+
+events:
+  - id: deep_compression
+    label: "deep compression (>135)"
+    # Can be one or many; resolution uses naming.suffixes for each listed sensor
+    sensors: [rear_shock, front_shock]
+
+    # (Optional) You can omit 'inputs' entirely when using global suffixes.
+    # Keeping this key makes the intent explicit and future-proof.
+    inputs:
+      mode: "suffixes"   # tells the resolver to use naming.suffixes
+
+    trigger:
+      type: local_extrema
+      signal: disp
+      kind: max
+      prominence: 1.0
+      distance_s: 1
+      edge_ignore_s: 1
+
+    preconditions:
+      - within_s: [-0.1, 0.1]
+        any_of:
+        - { type: peak, signal: disp, kind: max, op: ">=", value: 135 }
+
+    debounce_s: 0.3
+    window: { pre_s: 0.5, post_s: 0.8, align: trigger }
+
+    metrics:
+      - { type: peak, signal: disp, kind: max, return_time: true }
+      - { type: peak, signal: vel,  kind: max, return_time: true }
+      - { type: integral, signal: acc, abs: true }
+
+    tags: [basic, kinematics]
+ 
+  - id: deep_compression_norm
+    label: "deep compression (>0.8)"
+    # Can be one or many; resolution uses naming.suffixes for each listed sensor
+    sensors: [rear_shock, front_shock]
+
+    # (Optional) You can omit 'inputs' entirely when using global suffixes.
+    # Keeping this key makes the intent explicit and future-proof.
+    inputs:
+      mode: "suffixes"   # tells the resolver to use naming.suffixes
+
+    trigger:
+      type: local_extrema
+      signal: disp
+      kind: max
+      prominence: 1.0
+      distance_s: 1
+      edge_ignore_s: 1
+
+    preconditions:
+      - within_s: [-0.1, 0.1]
+        any_of:
+        - { type: peak, signal: disp_norm, kind: max, op: ">=", value: 0.8 }
+
+    debounce_s: 0.3
+    window: { pre_s: 0.5, post_s: 0.8, align: trigger }
+
+    metrics:
+      - { type: peak, signal: disp, kind: max, return_time: true }
+      - { type: peak, signal: vel,  kind: max, return_time: true }
+      - { type: integral, signal: acc, abs: true }
+
+    tags: [basic, kinematics]
+ 
+  - id: rebounds
+    label: "all rebound events >0.4"
+    # Can be one or many; resolution uses naming.suffixes for each listed sensor
+    sensors: [rear_shock, front_shock]
+
+    # (Optional) You can omit 'inputs' entirely when using global suffixes.
+    # Keeping this key makes the intent explicit and future-proof.
+    inputs:
+      mode: "suffixes"   # tells the resolver to use naming.suffixes
+
+    trigger:
+      type: local_extrema
+      signal: disp
+      kind: max
+      prominence: 1.0
+      distance_s: 1
+      edge_ignore_s: 1
+
+    preconditions:
+      - within_s: [-0.1, 0.1]
+        any_of:
+        - { type: peak, signal: disp_norm, kind: max, op: ">=", value: 0.4 }
+
+    debounce_s: 0.3
+    window: { pre_s: 0.2, post_s: 0.8, align: trigger }
+
+    metrics:
+        - type: rebound_metrics
+        # (optional) per-metric overrides:
+        polarity: "neg_to_pos"
+
+    tags: [kinematics, rebound]
