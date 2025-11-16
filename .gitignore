@@ -21,8 +21,8 @@ venv/
 .env.*
 
 # Data/outputs (keep dirs with .gitkeep if you need them visible)
-analysis/**/data/
-analysis/**/outputs/
+analysis/**/__*
+
 logs/*
 *.parquet
 *.feather
