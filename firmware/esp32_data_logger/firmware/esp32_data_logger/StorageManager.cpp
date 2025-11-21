@@ -40,7 +40,7 @@ void StorageManager_begin(uint8_t csPin) {
 
   // If anything else may share the bus (display, etc.), use SHARED.
   // Also start conservative at 10 MHz; drop to 4 MHz if needed.
-  SdSpiConfig cfg(csPin, SHARED_SPI, SD_SCK_MHZ(10));
+  SdSpiConfig cfg(csPin, DEDICATED_SPI, SD_SCK_MHZ(25));
 
   if (!sd.begin(cfg)) {
     Serial.printf("[Storage] sd.begin failed, err=0x%02X data=0x%02X\n",
@@ -94,6 +94,26 @@ static String make83Name(const String &dtString) {
     return name;
 }
 
+// Reserve e.g. 64 MiB as a single contiguous extent
+// (tune via config; must be multiple of 32 KiB for FAT32 cluster alignment)
+static bool preallocate(FsFile& f, uint32_t mib) {
+  uint64_t bytes = (uint64_t)mib * 1024ULL * 1024ULL;
+  // Round up to 32 KiB multiple (common FAT32 cluster)
+  const uint32_t cluster = 32 * 1024;
+  bytes = ((bytes + cluster - 1) / cluster) * cluster;
+
+  if (!f.preAllocate(bytes)) {
+    Serial.println("[Storage] preAllocate failed; continuing without it.");
+    return false;
+  }
+  // Start logical length at 0 but keep space reserved
+  if (!f.truncate(0)) {
+    Serial.println("[Storage] truncate(0) after preAllocate failed.");
+    return false;
+  }
+  Serial.printf("[Storage] Pre-allocated %lu MiB contiguous.\n", (unsigned long)mib);
+  return true;
+}
 
 // Start new log file
 static void startLog() {
@@ -143,7 +163,9 @@ static void startLog() {
       Serial.print("[Storage] Using 8.3: ");
       Serial.println(shortName);
     }
-  }
+  } 
+
+  preallocate(logFile, /*mib=*/64);   // or from config (32–256 MiB typical)
 
   loggingActive = true;
 
@@ -216,13 +238,26 @@ void StorageManager_logRecordWithTs(uint64_t epochMs,
     }
 
     size_t len = strlen(line);
-    if (buffer && (bufferIndex + len < bufferSize)) {
-        memcpy(&buffer[bufferIndex], line, len);
-        bufferIndex += len;
-    } else {
-        if (bufferIndex > 0) { logFile.write(buffer, bufferIndex); bufferIndex = 0; }
-        logFile.write(line, len);
+
+    // If the line will not fit in the remaining staging buffer space,
+    // flush the buffer first, then re-stage the entire line.
+    if (buffer && (bufferIndex + len > bufferSize)) {
+        if (bufferIndex) {
+            logFile.write(buffer, bufferIndex);
+            bufferIndex = 0;
+        }
     }
+
+    // If the line is larger than the staging buffer, write it directly (rare)
+    if (!buffer || len > bufferSize) {
+        logFile.write(line, len);
+        return;
+    }
+
+    // Copy the whole line into the staging buffer; periodic flush is handled
+    // in StorageManager_loop().
+    memcpy(&buffer[bufferIndex], line, len);
+    bufferIndex += len;
 }
 
 
@@ -252,15 +287,27 @@ void StorageManager_logRecord(float pot1, float pot2, float strain,
             mark ? 1 : 0);
     }
 
-    // (buffer write as you have it)
     size_t len = strlen(line);
-    if (buffer && (bufferIndex + len < bufferSize)) {
-        memcpy(&buffer[bufferIndex], line, len);
-        bufferIndex += len;
-    } else {
-        if (bufferIndex > 0) { logFile.write(buffer, bufferIndex); bufferIndex = 0; }
-        logFile.write(line, len);
+
+    // If the line will not fit in the remaining staging buffer space,
+    // flush the buffer first, then re-stage the entire line.
+    if (buffer && (bufferIndex + len > bufferSize)) {
+        if (bufferIndex) {
+            logFile.write(buffer, bufferIndex);
+            bufferIndex = 0;
+        }
     }
+
+    // If the line is larger than the staging buffer, write it directly (rare)
+    if (!buffer || len > bufferSize) {
+        logFile.write(line, len);
+        return;
+    }
+
+    // Copy the whole line into the staging buffer; periodic flush is handled
+    // in StorageManager_loop().
+    memcpy(&buffer[bufferIndex], line, len);
+    bufferIndex += len;
 }
 
 void StorageManager_setCustomHeader(const char* csv) {
