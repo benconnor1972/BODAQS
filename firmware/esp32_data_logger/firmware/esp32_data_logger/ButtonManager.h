@@ -7,7 +7,9 @@ enum ButtonEvent {
     BUTTON_NONE,
     BUTTON_PRESSED,
     BUTTON_RELEASED,
-    BUTTON_HELD
+    BUTTON_HELD,        // existing long-press one-shot
+    BUTTON_CLICK,       // future: short press+release
+    BUTTON_DOUBLE_CLICK // future: double-click
 };
 
 enum ButtonMode {

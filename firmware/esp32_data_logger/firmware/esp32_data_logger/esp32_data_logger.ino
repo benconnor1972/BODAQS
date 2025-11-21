@@ -11,6 +11,7 @@
 #include "UI.h"
 #include "LoggingManager.h"
 #include "ButtonActions.h"
+#include "ButtonBindingTable.h"
 #include "Sensor.h"
 #include "SensorManager.h"
 #include "AnalogPotSensor.h"
@@ -112,7 +113,7 @@ void setup() {
   Log_setLevel(LOG_DEBUG);
 
   StorageManager_setSampleRate(100);   // 100 Hz logging
-  StorageManager_setBufferSize(4096);  // 1 KB buffer
+  StorageManager_setBufferSize(32768);  // 1 KB buffer
 
   // UI / OLED defaults (fallbacks)
   g_cfg.uiTarget       = 1;     // serial
@@ -133,6 +134,7 @@ void setup() {
       g_cfg.webBtnPin, g_cfg.logBtnPin, g_cfg.markBtnPin);
   }
 
+  ButtonBindingTable::initFromConfig(ConfigManager::get());
 
 
   // 1) Sensor framework

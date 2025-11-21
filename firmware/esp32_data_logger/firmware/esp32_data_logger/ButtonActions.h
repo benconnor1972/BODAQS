@@ -55,5 +55,24 @@ namespace ButtonActions {
 
   // Returns true iff there is at least one active Mark override.
   bool hasActiveMarkOverride();
+  // High-level button actions (targets for config bindings)
+  
+  enum ActionId : uint8_t {
+    ACT_NONE = 0,
+
+    ACT_LOGGING_TOGGLE,
+    ACT_MARK_EVENT,
+    ACT_WEB_TOGGLE,
+
+    ACT_MENU_NAV_UP,
+    ACT_MENU_NAV_DOWN,
+    ACT_MENU_NAV_LEFT,
+    ACT_MENU_NAV_RIGHT,
+    ACT_MENU_NAV_ENTER,
+  };
+
+  // Central dispatcher used by the binding table
+  void invoke(ActionId action, ButtonEvent ev);
+
 
 } // namespace ButtonActions

@@ -32,6 +32,21 @@ namespace {
     return out;
   }
 
+  // --- Buttons / bindings parsed from file (scratch until load() completes) ---
+
+  ButtonDef        g_buttonDefs[MAX_BUTTONS];
+  uint8_t          g_buttonDefCount        = 0;
+
+  ButtonBindingDef g_bindingDefs[MAX_BUTTON_BINDINGS];
+  uint8_t          g_bindingDefCount       = 0;
+
+  // Small helper: bounded string copy for button fields
+  static void copyStrBoundedButton_(const char* src, char* dst, size_t cap) {
+    if (!dst || cap == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    strncpy(dst, src, cap - 1);
+    dst[cap - 1] = '\0';
+  }
 
 
   // small helpers
@@ -214,6 +229,15 @@ void ConfigManager::begin(SdFat* sdRef, const char* filename) {
     g_specs[i].params.bind(&g_stores[i]);
     g_cals[i] = Calibration{};             // NEW: reset cal cache
     g_calAllowed[i] = 0xFF;           // inherit by default
+  }
+  g_buttonDefCount   = 0;
+  g_bindingDefCount  = 0;
+  // Optionally clear contents (not strictly required if fully overwritten):
+  for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
+    g_buttonDefs[i] = ButtonDef{};
+  }
+  for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+    g_bindingDefs[i] = ButtonBindingDef{};
   }
 }
 
@@ -480,6 +504,82 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "oled_brightness")){ long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>255) v=255; cfg.oledBrightness=(uint8_t)v; return true; }
   if (keyEquals(key, "oled_idle_dim_ms")){long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>65535) v=65535; cfg.oledIdleDimMs=(uint16_t)v; return true; }
 
+  // --- buttonN.* : logical button definitions ---
+  if (!strncasecmp(key, "button", 6) && isdigit((unsigned char)key[6])) {
+    const char* p   = key + 6;
+    char*       end = nullptr;
+    long        idx = strtol(p, &end, 10);
+    if (idx < 0 || idx >= MAX_BUTTONS || !end || *end != '.') {
+      return true; // ignore malformed, but don't treat as fatal
+    }
+
+    const char* sub = end + 1;
+    ButtonDef&  b   = g_buttonDefs[(uint8_t)idx];
+
+    if ((uint8_t)(idx + 1) > g_buttonDefCount) {
+      g_buttonDefCount = (uint8_t)(idx + 1);
+    }
+
+    if (!strcasecmp(sub, "id")) {
+      copyStrBoundedButton_(val, b.id, sizeof(b.id));
+      return true;
+    }
+    if (!strcasecmp(sub, "pin")) {
+      long v = strtol(val, nullptr, 10);
+      if (v >= 0 && v <= 39) b.pin = (uint8_t)v;
+      return true;
+    }
+    if (!strcasecmp(sub, "active_low")) {
+      // You probably already have parseBoolC_ somewhere; reuse it if so.
+      b.activeLow = parseBoolC_(val);
+      return true;
+    }
+    if (!strcasecmp(sub, "mode")) {
+      // interpret "poll" specifically; everything else = interrupt
+      String s = String(val);
+      s.trim();
+      s.toLowerCase();
+      if (s == "poll") b.mode = 1;
+      else             b.mode = 0;
+      return true;
+    }
+
+    // Unknown sub-key under buttonN.*, ignore.
+    return true;
+  }
+
+  // --- bindingN.* : button-event → action mappings ---
+  if (!strncasecmp(key, "binding", 7) && isdigit((unsigned char)key[7])) {
+    const char* p   = key + 7;
+    char*       end = nullptr;
+    long        idx = strtol(p, &end, 10);
+    if (idx < 0 || idx >= MAX_BUTTON_BINDINGS || !end || *end != '.') {
+      return true;
+    }
+
+    const char*      sub = end + 1;
+    ButtonBindingDef &bd = g_bindingDefs[(uint8_t)idx];
+
+    if ((uint8_t)(idx + 1) > g_bindingDefCount) {
+      g_bindingDefCount = (uint8_t)(idx + 1);
+    }
+
+    if (!strcasecmp(sub, "button")) {
+      copyStrBoundedButton_(val, bd.buttonId, sizeof(bd.buttonId));
+      return true;
+    }
+    if (!strcasecmp(sub, "event")) {
+      copyStrBoundedButton_(val, bd.event, sizeof(bd.event));
+      return true;
+    }
+    if (!strcasecmp(sub, "action")) {
+      copyStrBoundedButton_(val, bd.action, sizeof(bd.action));
+      return true;
+    }
+
+    return true;
+  }
+
   //
 
   return true;
@@ -590,10 +690,25 @@ bool ConfigManager::load(LoggerConfig& cfg) {
     cfg.wifiNetworkCount = 1;
   }
 
-  // Make this the active global config (preserves existing callers of ConfigManager::get()).
-  s_cfg = cfg;
+  // --- copy parsed buttons into cfg ---
+  cfg.buttonCount = (g_buttonDefCount <= MAX_BUTTONS)
+                      ? g_buttonDefCount
+                      : MAX_BUTTONS;
+  for (uint8_t i = 0; i < cfg.buttonCount; ++i) {
+    cfg.buttons[i] = g_buttonDefs[i];
+  }
 
+  cfg.buttonBindingCount = (g_bindingDefCount <= MAX_BUTTON_BINDINGS)
+                             ? g_bindingDefCount
+                             : MAX_BUTTON_BINDINGS;
+  for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
+    cfg.buttonBindings[i] = g_bindingDefs[i];
+  }
+
+  // Now commit cfg as usual:
+  s_cfg = cfg;
   return true;
+
 }
 
 

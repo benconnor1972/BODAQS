@@ -6,7 +6,8 @@
 #include "UI.h"
 #include "WiFi.h"
 #include "MenuSystem.h"
-
+#include "ButtonBindingTable.h"
+#include "ConfigManager.h"
 #ifndef BTN_DEBUG
 #define BTN_DEBUG 1
 #endif
@@ -18,11 +19,13 @@
 
 static const char* evName(ButtonEvent e) {
   switch (e) {
-    case BUTTON_NONE:     return "NONE";
-    case BUTTON_PRESSED:  return "PRESSED";
-    case BUTTON_RELEASED: return "RELEASED";
-    case BUTTON_HELD:     return "HELD";
-    default: return "?";
+    case BUTTON_NONE:        return "NONE";
+    case BUTTON_PRESSED:     return "PRESSED";
+    case BUTTON_RELEASED:    return "RELEASED";
+    case BUTTON_HELD:        return "HELD";
+    case BUTTON_CLICK:       return "CLICK";
+    case BUTTON_DOUBLE_CLICK:return "DOUBLE_CLICK";
+    default:                 return "?";
   }
 }
 
@@ -41,19 +44,127 @@ namespace {
     if (s_overrides.empty()) return nullptr;
     return &s_overrides.back();
   }
+
+    // === Runtime binding table: (button index, event) -> ActionId ===
+
+  struct RuntimeBinding {
+    uint8_t     buttonIndex;   // index into cfg.buttons[]
+    ButtonEvent event;
+    ButtonActions::ActionId action;
+  };
+
+  static RuntimeBinding s_bindings[MAX_BUTTON_BINDINGS];
+  static uint8_t        s_bindingCount = 0;
+
+  // Map config string -> ButtonEvent
+  ButtonEvent parseEvent_(const char* s) {
+    if (!s || !*s) return BUTTON_NONE;
+    String t = String(s);
+    t.trim();
+    t.toLowerCase();
+    if (t == "pressed")       return BUTTON_PRESSED;
+    if (t == "released")      return BUTTON_RELEASED;
+    if (t == "click")         return BUTTON_CLICK;
+    if (t == "double_click")  return BUTTON_DOUBLE_CLICK;
+    if (t == "held" || t == "long" || t == "long_press") return BUTTON_HELD;
+    return BUTTON_NONE;
+  }
+
+  // Map config string -> ActionId
+  ButtonActions::ActionId parseAction_(const char* s) {
+    using namespace ButtonActions;
+    if (!s || !*s) return ACT_NONE;
+    String t = String(s);
+    t.trim();
+    t.toLowerCase();
+
+    if (t == "logging_toggle")  return ACT_LOGGING_TOGGLE;
+    if (t == "mark_event")      return ACT_MARK_EVENT;
+    if (t == "web_toggle")      return ACT_WEB_TOGGLE;
+
+    if (t == "menu_nav_up")     return ACT_MENU_NAV_UP;
+    if (t == "menu_nav_down")   return ACT_MENU_NAV_DOWN;
+    if (t == "menu_nav_left")   return ACT_MENU_NAV_LEFT;
+    if (t == "menu_nav_right")  return ACT_MENU_NAV_RIGHT;
+    if (t == "menu_nav_enter")  return ACT_MENU_NAV_ENTER;
+
+    return ACT_NONE;
+  }
+
+  void initBindingsFromConfig_(const LoggerConfig& cfg) {
+    s_bindingCount = 0;
+
+    auto findButtonIndex = [&](const char* id) -> int {
+      if (!id || !*id) return -1;
+      for (uint8_t i = 0; i < cfg.buttonCount; ++i) {
+        if (!strcasecmp(cfg.buttons[i].id, id)) return (int)i;
+      }
+      return -1;
+    };
+
+    for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
+      const auto& bd = cfg.buttonBindings[i];
+      if (!bd.buttonId[0] || !bd.event[0] || !bd.action[0]) continue;
+
+      int        bIdx = findButtonIndex(bd.buttonId);
+      ButtonEvent ev  = parseEvent_(bd.event);
+      auto       act  = parseAction_(bd.action);
+
+      if (bIdx < 0 || ev == BUTTON_NONE || act == ButtonActions::ACT_NONE) continue;
+      if (s_bindingCount >= MAX_BUTTON_BINDINGS) break;
+
+      auto& r      = s_bindings[s_bindingCount++];
+      r.buttonIndex = (uint8_t)bIdx;
+      r.event       = ev;
+      r.action      = act;
+    }
+
+    Serial.printf("[BTN] Loaded %u button bindings from config\n", (unsigned)s_bindingCount);
+  }
+
+  // Dispatch from (buttonIndex, event) -> one or more actions
+  void handleButtonBinding_(uint8_t buttonIndex, ButtonEvent ev) {
+    for (uint8_t i = 0; i < s_bindingCount; ++i) {
+      const auto& r = s_bindings[i];
+      if (r.buttonIndex == buttonIndex && r.event == ev) {
+        ButtonActions::invoke(r.action, ev);
+      }
+    }
+  }
+
+  // ======== Per-button callbacks for ButtonManager ========
+  // We encode the button index in which static function we register.
+
+  void btnCb0(ButtonEvent ev) { handleButtonBinding_(0, ev); }
+  void btnCb1(ButtonEvent ev) { handleButtonBinding_(1, ev); }
+  void btnCb2(ButtonEvent ev) { handleButtonBinding_(2, ev); }
+  void btnCb3(ButtonEvent ev) { handleButtonBinding_(3, ev); }
+  void btnCb4(ButtonEvent ev) { handleButtonBinding_(4, ev); }
+  void btnCb5(ButtonEvent ev) { handleButtonBinding_(5, ev); }
+  void btnCb6(ButtonEvent ev) { handleButtonBinding_(6, ev); }
+  void btnCb7(ButtonEvent ev) { handleButtonBinding_(7, ev); }
+  void btnCb8(ButtonEvent ev) { handleButtonBinding_(8, ev); }
+  void btnCb9(ButtonEvent ev) { handleButtonBinding_(9, ev); }
+
+  static ButtonCallback s_buttonCallbacks[MAX_BUTTONS] = {
+    btnCb0, btnCb1, btnCb2, btnCb3, btnCb4,
+    btnCb5, btnCb6, btnCb7, btnCb8, btnCb9
+  };
 }
 
 void ButtonActions::begin() {
   const LoggerConfig& cfg = ConfigManager::get();
 
-  Serial.println("[BTN] Initializing buttons with config:");
-  Serial.printf("  web=%u log=%u mark=%u\n",   cfg.webBtnPin,  cfg.logBtnPin,  cfg.markBtnPin);
-  Serial.printf("  navUp=%u navDown=%u navLeft=%u navRight=%u navEnter=%u\n",
-                cfg.navUpPin, cfg.navDownPin, cfg.navLeftPin, cfg.navRightPin, cfg.navEnterPin);
+  Serial.println("[BTN] Initializing buttons from config:");
+  Serial.printf("  buttonCount=%u bindingCount=%u debounce=%u ms\n",
+                (unsigned)cfg.buttonCount,
+                (unsigned)cfg.buttonBindingCount,
+                (unsigned)cfg.debounceMs);
 
-  // Register them now
+  initBindingsFromConfig_(cfg);
   ButtonActions::registerButtons();
 }
+
 
 static void touchMenuActivity_() {
   if (MenuSystem::isActive()) {
@@ -64,35 +175,73 @@ static void touchMenuActivity_() {
 }
 
 void ButtonActions::registerButtons() {
-  const LoggerConfig& cfg = ConfigManager::get();  // fetch live config
+  const LoggerConfig& cfg = ConfigManager::get();
 
-  auto safeRegister = [&](uint8_t pin, ButtonMode mode,
-                          ButtonCallback cb, const char* name) {
-    if (pin == 0 || pin == 0xFF) {
-      Serial.printf("[BTN] Skipping %-8s (pin=%u)\n", name, pin);
-      return;
+  for (uint8_t i = 0; i < cfg.buttonCount && i < MAX_BUTTONS; ++i) {
+    const ButtonDef& b = cfg.buttons[i];
+
+    if (b.pin == 0 || b.pin == 0xFF) {
+      Serial.printf("[BTN] Skipping '%s' (pin=%u)\n",
+                    b.id, (unsigned)b.pin);
+      continue;
     }
-    Serial.printf("[BTN] Register  %-8s pin=%u  mode=%s  debounce=%u ms\n",
-                  name, pin, (mode == BUTTON_INTERRUPT ? "INT" : "POLL"),
+
+    ButtonMode mode = (b.mode == 1) ? BUTTON_POLL : BUTTON_INTERRUPT;
+    ButtonCallback cb = s_buttonCallbacks[i];
+
+    Serial.printf("[BTN] Register %-12s idx=%u pin=%u mode=%s debounce=%u ms\n",
+                  b.id,
+                  (unsigned)i,
+                  (unsigned)b.pin,
+                  (mode == BUTTON_INTERRUPT ? "INT" : "POLL"),
                   (unsigned)cfg.debounceMs);
-    ButtonManager_register(pin, mode, cfg.debounceMs, cb);
-  };
 
-  // Interrupt-driven buttons
- // safeRegister(cfg.webBtnPin,  BUTTON_INTERRUPT, ButtonActions::onWebServerToggle, "web");
- // safeRegister(cfg.logBtnPin,  BUTTON_INTERRUPT, ButtonActions::onToggleLogging,   "log");
-  safeRegister(cfg.markBtnPin, BUTTON_INTERRUPT, ButtonActions::onMarkEvent,       "mark");
-  safeRegister(cfg.navEnterPin,BUTTON_INTERRUPT, ButtonActions::onNavEnter,        "enter");
+    ButtonManager_register(b.pin, mode, cfg.debounceMs, cb);
+  }
+}
 
-  // Polled nav buttons
-  safeRegister(cfg.navUpPin,    BUTTON_POLL, ButtonActions::onNavUp,    "navUp");
-  safeRegister(cfg.navDownPin,  BUTTON_POLL, ButtonActions::onNavDown,  "navDown");
-  safeRegister(cfg.navLeftPin,  BUTTON_POLL, ButtonActions::onNavLeft,  "navLeft");
-  safeRegister(cfg.navRightPin, BUTTON_POLL, ButtonActions::onNavRight, "navRight");
+
+void ButtonActions::invoke(ActionId action, ButtonEvent ev) {
+  switch (action) {
+    case ACT_LOGGING_TOGGLE:
+      onToggleLogging(ev);
+      return;
+
+    case ACT_MARK_EVENT:
+      onMarkEvent(ev);
+      return;
+
+    case ACT_WEB_TOGGLE:
+      onWebServerToggle(ev);
+      return;
+
+    case ACT_MENU_NAV_UP:
+      onNavUp(ev);
+      return;
+
+    case ACT_MENU_NAV_DOWN:
+      onNavDown(ev);
+      return;
+
+    case ACT_MENU_NAV_LEFT:
+      onNavLeft(ev);
+      return;
+
+    case ACT_MENU_NAV_RIGHT:
+      onNavRight(ev);
+      return;
+
+    case ACT_MENU_NAV_ENTER:
+      onNavEnter(ev);
+      return;
+
+    case ACT_NONE:
+    default:
+      return;
+  }
 }
 
 void ButtonActions::onToggleLogging(ButtonEvent event) {
-  if (event != BUTTON_PRESSED) return;
 
   if (!LoggingManager::isRunning()) {
     // Block if web server is running
@@ -146,7 +295,7 @@ void ButtonActions::onMarkEvent(ButtonEvent event) {
 
 
 void ButtonActions::onWebServerToggle(ButtonEvent event) {
-  if (event != BUTTON_PRESSED) return;
+  //if (event != BUTTON_PRESSED) return;
 
   if (WebServerManager::isRunning()) {
     WebServerManager::stop();

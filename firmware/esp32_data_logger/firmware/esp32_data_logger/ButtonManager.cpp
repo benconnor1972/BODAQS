@@ -24,8 +24,50 @@ void ButtonManager_setPollIntervalMs(uint32_t ms)  { s_pollIntervalMs = ms ? ms 
 static unsigned long s_pressStartMs[MAX_BUTTONS] = {0};
 static bool          s_heldPosted [MAX_BUTTONS] = {0};
 
+// --- Double-click configuration ---
+static const unsigned long DOUBLE_CLICK_WINDOW_MS = 350;  // tweak to taste
+
+// Per-button double-click tracking
+static unsigned long s_lastReleaseMs     [MAX_BUTTONS] = {0};
+static uint8_t       s_clickCount        [MAX_BUTTONS] = {0};
+static bool          s_singleClickPending[MAX_BUTTONS] = {0};
+
 // Forward ISR declaration
 void IRAM_ATTR handleButtonInterrupt(void* arg);
+
+// Handle a debounced RELEASE edge in non-ISR context
+static void handleReleaseGesture_(int idx, Button &b, unsigned long now) {
+  // If a hold was already posted, treat this as "long press end":
+  // do NOT generate click/double-click.
+  if (s_heldPosted[idx]) {
+    s_heldPosted[idx]         = false;
+    s_clickCount[idx]         = 0;
+    s_singleClickPending[idx] = false;
+    s_lastReleaseMs[idx]      = 0;
+    return;
+  }
+
+  // Short press: candidate for single or double click
+  if (now - s_lastReleaseMs[idx] <= DOUBLE_CLICK_WINDOW_MS) {
+    // second click within window
+    s_clickCount[idx]++;
+  } else {
+    // too late -> start new sequence
+    s_clickCount[idx] = 1;
+  }
+
+  s_lastReleaseMs[idx] = now;
+
+  if (s_clickCount[idx] >= 2) {
+    // Double-click detected
+    s_clickCount[idx]         = 0;
+    s_singleClickPending[idx] = false;
+    if (b.callback) b.callback(BUTTON_DOUBLE_CLICK);
+  } else {
+    // Maybe-single-click; we’ll confirm later if no second click arrives
+    s_singleClickPending[idx] = true;
+  }
+}
 
 // Utility: post an event (ISR-safe if called with *_ISR variants)
 static inline void postEvent_(Button& b, ButtonEvent ev) {
@@ -64,6 +106,11 @@ void ButtonManager_register(uint8_t pin, ButtonMode mode, unsigned long debounce
   // init hold tracking for this slot
   s_pressStartMs[buttonCount] = 0;
   s_heldPosted   [buttonCount] = false;
+    // init double-click tracking for this slot
+  s_lastReleaseMs     [buttonCount] = 0;
+  s_clickCount        [buttonCount] = 0;
+  s_singleClickPending[buttonCount] = false;
+
 
   if (mode == BUTTON_INTERRUPT) {
     attachInterruptArg(digitalPinToInterrupt(pin), handleButtonInterrupt, &buttons[buttonCount], CHANGE);
@@ -126,8 +173,18 @@ void ButtonManager_loop() {
     }
     portEXIT_CRITICAL(&buttonMux);
 
-    if (hasEvent && b.callback) {
-      b.callback(ev);
+    if (hasEvent) {
+      unsigned long now = millis();
+
+      // Feed RELEASE edges into gesture logic (click/double-click)
+      if (ev == BUTTON_RELEASED) {
+        handleReleaseGesture_(i, b, now);
+      }
+
+      if (b.callback) {
+        // still deliver raw PRESSED/RELEASED for configs bound to them
+        b.callback(ev);
+      }
     }
 
     // Long-press detection for interrupt-mode:
@@ -140,11 +197,9 @@ void ButtonManager_loop() {
           if (b.callback) b.callback(BUTTON_HELD);
         }
       }
-    } else {
-      // Released -> reset hold tracking
-      s_pressStartMs[i] = 0;
-      s_heldPosted[i]   = false;
     }
+    // Note: release cleanup for holds and clicks happens in handleReleaseGesture_()
+
   }
 
   // 2) Poll buttons registered in BUTTON_POLL mode
@@ -169,6 +224,9 @@ void ButtonManager_loop() {
               s_heldPosted[i]   = false;
               if (b.callback) b.callback(BUTTON_PRESSED);
             } else {
+              // RELEASE edge: handle click/double-click and reset hold
+              handleReleaseGesture_(i, b, nowEdge);
+
               s_pressStartMs[i] = 0;
               s_heldPosted[i]   = false;
               if (b.callback) b.callback(BUTTON_RELEASED);
@@ -185,7 +243,21 @@ void ButtonManager_loop() {
       } // for
     }   // interval gate
   }     // s_pollingEnabled
+  // 3) Finalize pending single-clicks for all buttons
+  unsigned long nowFinal = millis();
+  for (int i = 0; i < buttonCount; ++i) {
+    if (s_singleClickPending[i] &&
+        (nowFinal - s_lastReleaseMs[i] > DOUBLE_CLICK_WINDOW_MS)) {
 
+      s_singleClickPending[i] = false;
+      s_clickCount[i]         = 0;
+
+      Button &b = buttons[i];
+      if (b.callback) {
+        b.callback(BUTTON_CLICK);
+      }
+    }
+  }
 }
 
 void IRAM_ATTR handleButtonInterrupt(void* arg) {
@@ -208,19 +280,18 @@ void IRAM_ATTR handleButtonInterrupt(void* arg) {
       s_heldPosted[idx]   = false;
 
       portENTER_CRITICAL_ISR(&buttonMux);
-      btn->event = BUTTON_PRESSED;
+      btn->event     = BUTTON_PRESSED;
       btn->eventFlag = true;
       portEXIT_CRITICAL_ISR(&buttonMux);
     } else {
       // RELEASE — post it too
       portENTER_CRITICAL_ISR(&buttonMux);
-      btn->event = BUTTON_RELEASED;
+      btn->event     = BUTTON_RELEASED;
       btn->eventFlag = true;
       portEXIT_CRITICAL_ISR(&buttonMux);
 
-      // now clear hold tracking
+      // Clear timing; keep s_heldPosted as-is so gesture logic can see it
       s_pressStartMs[idx] = 0;
-      s_heldPosted[idx]   = false;
     }
   }
 }

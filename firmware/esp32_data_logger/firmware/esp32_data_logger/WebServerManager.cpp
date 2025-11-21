@@ -176,13 +176,13 @@ void WebServerManager::loop() {
   uint32_t now = millis();
   if (now - g_ws_last_beat_ms > 2000) {
     g_ws_last_beat_ms = now;
-    Serial.printf("[WS] hb: ticks=%lu total=%lu inflight=%lu 2xx=%lu 4xx=%lu 5xx=%lu\n",
-                  (unsigned long)g_ws_loop_ticks,
-                  (unsigned long)g_ws_req_total,
-                  (unsigned long)g_ws_inflight,
-                  (unsigned long)g_ws_req_2xx,
-                  (unsigned long)g_ws_req_4xx,
-                  (unsigned long)g_ws_req_5xx);
+    //Serial.printf("[WS] hb: ticks=%lu total=%lu inflight=%lu 2xx=%lu 4xx=%lu 5xx=%lu\n",
+    //              (unsigned long)g_ws_loop_ticks,
+    //              (unsigned long)g_ws_req_total,
+    //              (unsigned long)g_ws_inflight,
+    //              (unsigned long)g_ws_req_2xx,
+    //              (unsigned long)g_ws_req_4xx,
+    //              (unsigned long)g_ws_req_5xx);
   }
 
   // keep Wi-Fi happy
