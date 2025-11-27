@@ -129,9 +129,7 @@ void setup() {
   if (!ConfigManager::load(g_cfg)) {
     Serial.println("[CFG] Load failed — using defaults");
   } else {
-    Serial.printf("[CFG] Loaded: sampleRate=%u Hz, enter=%u up=%u down=%u left=%u right=%u web=%u log=%u mark=%u\n",
-      g_cfg.sampleRateHz, g_cfg.navEnterPin, g_cfg.navUpPin, g_cfg.navDownPin, g_cfg.navLeftPin, g_cfg.navRightPin,
-      g_cfg.webBtnPin, g_cfg.logBtnPin, g_cfg.markBtnPin);
+    Serial.printf("[CFG] Loaded");
   }
 
   ButtonBindingTable::initFromConfig(ConfigManager::get());

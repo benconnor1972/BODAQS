@@ -46,14 +46,7 @@ struct LoggerConfig {
 
   // buttons / debounce
   uint16_t debounceMs = 50;
-  uint8_t  webBtnPin  = 0;
-  uint8_t  logBtnPin  = 0;
-  uint8_t  markBtnPin = 0;
-  uint8_t navUpPin     = 0;
-  uint8_t navDownPin   = 0;
-  uint8_t navLeftPin   = 0;
-  uint8_t navRightPin  = 0;
-  uint8_t navEnterPin  = 0;
+
   // RTC choice
   bool     useExternalRTC = false;
 

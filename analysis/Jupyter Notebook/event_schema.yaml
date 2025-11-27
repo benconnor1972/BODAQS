@@ -87,6 +87,7 @@ events:
         search:
           min_delay_s: 0.05            # start search this long after base_trigger
           max_delay_s: 0.8             # give up after this long
+          direction: forward            # or backward / auto
           #smooth_ms: 0                # optional smoothing window
         dir: rising
         debounce:

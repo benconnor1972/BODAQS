@@ -16,6 +16,11 @@ void StorageManager_loop();
 void StorageManager_setCustomHeader(const char* csv);
 void StorageManager_logCsvDynamic(uint64_t ts_ms, const float* values, uint16_t n, bool mark);
 
+// Debug: SD write tracking flag (set when any SD write occurred since last sample)
+// and a toggle to enable/disable tracking.
+extern volatile bool g_sdWriteSinceLastSample;
+extern bool g_sdTrackEnabled;
+
 
 // Give other modules access to the already-initialized SdFat instance
 SdFat* StorageManager_getSd();

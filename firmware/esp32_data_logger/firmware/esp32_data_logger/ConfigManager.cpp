@@ -429,16 +429,6 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
-  if (keyEquals(key, "web_button_pin")) { long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.webBtnPin=(uint8_t)v; return true; }
-  if (keyEquals(key, "log_button_pin")) { long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.logBtnPin=(uint8_t)v; return true; }
-  if (keyEquals(key, "mark_button_pin")){ long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.markBtnPin=(uint8_t)v; return true; }
-
-  if (keyEquals(key, "nav_up_pin"))     { long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.navUpPin=(uint8_t)v; return true; }
-  if (keyEquals(key, "nav_down_pin"))   { long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.navDownPin=(uint8_t)v; return true; }
-  if (keyEquals(key, "nav_left_pin"))   { long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.navLeftPin=(uint8_t)v; return true; }
-  if (keyEquals(key, "nav_right_pin"))  { long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.navRightPin=(uint8_t)v; return true; }
-  if (keyEquals(key, "nav_enter_pin"))  { long v=strtol(val,nullptr,10); if (v>=0 && v<=39) cfg.navEnterPin=(uint8_t)v; return true; }
-
 
   if (keyEquals(key, "use_external_rtc")){ bool b; if (parseBool(String(val), b)) cfg.useExternalRTC=b; return true; }
   if (keyEquals(key, "wifi_ssid"))      { copyStrBounded(val, cfg.wifiSSID, sizeof(cfg.wifiSSID)); return true; }
@@ -724,15 +714,6 @@ bool ConfigManager::save(const LoggerConfig& cfg) {
   f.printf("timestamp_mode=%s\n", cfg.timestampHuman ? "human" : "fast");
   f.printf("tz=%s\n", cfg.tz);
   f.printf("debounce_ms=%u\n", (unsigned)cfg.debounceMs);
-  f.printf("web_button_pin=%u\n", (unsigned)cfg.webBtnPin);
-  f.printf("log_button_pin=%u\n", (unsigned)cfg.logBtnPin);
-  f.printf("mark_button_pin=%u\n", (unsigned)cfg.markBtnPin);
-
-  f.printf("nav_up_pin=%u\n",   (unsigned)cfg.navUpPin);
-  f.printf("nav_down_pin=%u\n", (unsigned)cfg.navDownPin);
-  f.printf("nav_left_pin=%u\n", (unsigned)cfg.navLeftPin);
-  f.printf("nav_right_pin=%u\n",(unsigned)cfg.navRightPin);
-  f.printf("nav_enter_pin=%u\n",(unsigned)cfg.navEnterPin);
 
   f.printf("use_external_rtc=%s\n", cfg.useExternalRTC ? "true" : "false");
   f.printf("\n");
@@ -772,6 +753,41 @@ bool ConfigManager::save(const LoggerConfig& cfg) {
   f.printf("oled_idle_dim_ms=%u\n", (unsigned)cfg.oledIdleDimMs);
   f.printf("\n");
 
+  // --- Buttons (hardware) ---
+  f.printf("# --- Buttons (hardware) ---\n");
+  for (uint8_t i = 0; i < cfg.buttonCount; ++i) {
+    const ButtonDef& b = cfg.buttons[i];
+
+    // Skip completely empty entries (no id and pin 0)
+    if (!b.id[0] && b.pin == 0) continue;
+
+    f.printf("button%u.id=%s\n",        i, b.id);
+    f.printf("button%u.pin=%u\n",       i, (unsigned)b.pin);
+    f.printf("button%u.active_low=%u\n",i, b.activeLow ? 1u : 0u);
+    f.printf("button%u.mode=%s\n",      i, (b.mode == 1) ? "poll" : "interrupt");
+    f.printf("\n");
+  }
+  f.printf("button_count=%u\n\n", (unsigned)cfg.buttonCount);
+
+  // --- Button bindings (logical actions) ---
+  f.printf("# --- Button bindings (logical actions) ---\n");
+  for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
+    const ButtonBindingDef& bd = cfg.buttonBindings[i];
+
+    // Skip completely empty rows
+    if (!bd.buttonId[0] && !bd.event[0] && !bd.action[0]) continue;
+
+    f.printf("binding%u.button=%s\n", i, bd.buttonId);
+    f.printf("binding%u.event=%s\n",  i, bd.event);
+    f.printf("binding%u.action=%s\n", i, bd.action);
+    f.printf("\n");
+  }
+
+  // ---- sensors ----
+  f.printf("# sensors\n");
+  // ... existing sensor output stays as-is ...
+
+
   // ---- sensors ----
   f.printf("# sensors\n");
   f.printf("sensor_count=%u\n\n", (unsigned)cfg.sensorCount());
@@ -806,15 +822,6 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   Serial.print(F("timestampHuman=")); Serial.println(cfg.timestampHuman ? "true":"false");
   Serial.print(F("tz="));             Serial.println(cfg.tz);
   Serial.print(F("debounceMs="));     Serial.println(cfg.debounceMs);
-  Serial.print(F("webBtnPin="));      Serial.println(cfg.webBtnPin);
-  Serial.print(F("logBtnPin="));      Serial.println(cfg.logBtnPin);
-  Serial.print(F("markBtnPin="));     Serial.println(cfg.markBtnPin);
-
-  Serial.print(F("navUpPin="));       Serial.println(cfg.navUpPin);
-  Serial.print(F("navDownPin="));     Serial.println(cfg.navDownPin);
-  Serial.print(F("navLeftPin="));     Serial.println(cfg.navLeftPin);
-  Serial.print(F("navRightPin="));    Serial.println(cfg.navRightPin);
-  Serial.print(F("navEnterPin="));    Serial.println(cfg.navEnterPin);
 
   Serial.print(F("useExternalRTC=")); Serial.println(cfg.useExternalRTC ? "true":"false");
   

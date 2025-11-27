@@ -24,6 +24,10 @@ static bool loggingActive = false;
 
 static char s_customHeader[160] = {0};
 
+//Debug
+volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
+bool g_sdTrackEnabled = true;                    // can be toggled off if desired
+
 
 // Begin SD
 void StorageManager_begin(uint8_t csPin) {
@@ -174,6 +178,14 @@ static void startLog() {
 
   char header[256];
   SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
+
+  // Debug
+  // Append SD tracking column header, if space allows
+  const char* extra = ",sd_busy";
+  if (strlen(header) + strlen(extra) < sizeof(header)) {
+      strcat(header, extra);
+  }
+
   Serial.print("[Storage] Header: ");
   Serial.println(header);
 
@@ -353,11 +365,23 @@ void StorageManager_logCsvDynamic(uint64_t ts_ms, const float* values, uint16_t 
   }
 
   // Mark and newline
+  //{
+  //  int n = snprintf(line + off, sizeof(line) - (size_t)off, ",%d\n", mark ? 1 : 0);
+  //  if (n <= 0 || off + n >= (int)sizeof(line)) return;
+  //  off += n;
+  //}
+
+  // Mark, sd_busy and newline
   {
-    int n = snprintf(line + off, sizeof(line) - (size_t)off, ",%d\n", mark ? 1 : 0);
+    int sdFlag = (g_sdTrackEnabled && g_sdWriteSinceLastSample) ? 1 : 0;
+    g_sdWriteSinceLastSample = false;  // consume the flag for this row
+
+    int n = snprintf(line + off, sizeof(line) - (size_t)off,
+                     ",%d,%d\n", mark ? 1 : 0, sdFlag);
     if (n <= 0 || off + n >= (int)sizeof(line)) return;
     off += n;
   }
+
 
   // 2) Stage the FULL line atomically into the RAM buffer.
   const size_t len = (size_t)off;
@@ -392,12 +416,27 @@ void StorageManager_loop() {
     unsigned long now = millis();
 
     // Flush only if a second has passed, or if buffer is almost full
+    //if (loggingActive && bufferIndex > 0) {
+    //    if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
+    //        logFile.write(buffer, bufferIndex);
+    //        bufferIndex = 0;
+    //        lastFlush = now;
+    //        Serial.println("Buffer flushed to SD");
+    //    }
+    //}
+
     if (loggingActive && bufferIndex > 0) {
-        if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
-            logFile.write(buffer, bufferIndex);
-            bufferIndex = 0;
-            lastFlush = now;
-            Serial.println("Buffer flushed to SD");
-        }
-    }
+      if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
+
+          // Mark that an SD write occurred since the last sample row
+          if (g_sdTrackEnabled) {
+              g_sdWriteSinceLastSample = true;
+          }
+
+          logFile.write(buffer, bufferIndex);
+          bufferIndex = 0;
+          lastFlush = now;
+          Serial.println("Buffer flushed to SD");
+      }
+  }
 }

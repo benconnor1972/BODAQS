@@ -160,14 +160,6 @@ void registerConfigRoutes(WebServer& srv) {
       html += "<label>"; html += label; html += ": </label><input type='number' name='";
       html += name; html += "' min='0' max='39' value='"; html += String(v); html += "'"; html += dis; html += "><br>";
     };
-    num("Web button pin",  "web_button_pin",  cfg.webBtnPin);
-    num("Log button pin",  "log_button_pin",  cfg.logBtnPin);
-    num("Mark button pin", "mark_button_pin", cfg.markBtnPin);
-    num("Nav Up pin",      "nav_up_pin",      cfg.navUpPin);
-    num("Nav Down pin",    "nav_down_pin",    cfg.navDownPin);
-    num("Nav Left pin",    "nav_left_pin",    cfg.navLeftPin);
-    num("Nav Right pin",   "nav_right_pin",   cfg.navRightPin);
-    num("Nav Enter pin",   "nav_enter_pin",   cfg.navEnterPin);
 
     html += F("<label>Debounce (ms): </label><input type='number' name='debounce_ms' min='0' max='1000' value='");
     html += String(cfg.debounceMs);
@@ -177,6 +169,116 @@ void registerConfigRoutes(WebServer& srv) {
     if (locked) html += F(" disabled");
     html += F("> Use external RTC </label>");
     html += F("</fieldset>");
+
+    // ---------- Logical buttons (new) ----------
+    html += F("<fieldset><legend>Logical buttons (new)</legend>");
+    html += F("<p><small>These define named buttons (ID + pin + mode). "
+              "ID is referenced by bindings below.</small></p>");
+
+    for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
+      const ButtonDef& b = (i < cfg.buttonCount) ? cfg.buttons[i] : ButtonDef{};
+
+      html += F("<fieldset><legend>Button ");
+      html += String(i);
+      html += F("</legend>");
+
+      // ID
+      html += F("<div class='row'><label>ID</label>");
+      html += F("<input type='text' name='button");
+      html += String(i);
+      html += F(".id' value='");
+      html += htmlEscape(String(b.id));
+      html += F("'");
+      html += dis;
+      html += F("></div>");
+
+      // Pin
+      html += F("<div class='row'><label>Pin</label>");
+      html += F("<input type='number' min='0' max='39' name='button");
+      html += String(i);
+      html += F(".pin' value='");
+      html += String((int)b.pin);
+      html += F("'");
+      html += dis;
+      html += F("></div>");
+
+      // Active low
+      html += F("<div class='row'><label>Active low</label>");
+      // hidden default = false
+      html += F("<input type='hidden' name='button");
+      html += String(i);
+      html += F(".active_low' value='0'>");
+      html += F("<input type='checkbox' name='button");
+      html += String(i);
+      html += F(".active_low' value='1'");
+      if (b.activeLow) html += F(" checked");
+      if (locked)      html += F(" disabled");
+      html += F("></div>");
+
+      // Mode
+      html += F("<div class='row'><label>Mode</label>");
+      html += F("<select name='button");
+      html += String(i);
+      html += F(".mode'");
+      if (locked) html += F(" disabled");
+      html += F(">");
+      html += F("<option value='interrupt'");
+      if (b.mode == 0) html += F(" selected");
+      html += F(">interrupt</option>");
+      html += F("<option value='poll'");
+      if (b.mode == 1) html += F(" selected");
+      html += F(">poll</option>");
+      html += F("</select></div>");
+
+      html += F("</fieldset>");
+    }
+    html += F("</fieldset>");
+
+    // ---------- Button bindings (new) ----------
+    html += F("<fieldset><legend>Button bindings (new)</legend>");
+    html += F("<p><small>Each row maps a (button ID, event) pair to an action. "
+              "Events: pressed, released, click, double_click, held. "
+              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter.</small></p>");
+
+    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+      const ButtonBindingDef& bd = (i < cfg.buttonBindingCount) ? cfg.buttonBindings[i] : ButtonBindingDef{};
+
+      html += F("<div class='row'>");
+      html += F("<label>Binding ");
+      html += String(i);
+      html += F("</label>");
+
+      // buttonId
+      html += F("<input type='text' size='10' placeholder='button id' name='binding");
+      html += String(i);
+      html += F(".button' value='");
+      html += htmlEscape(String(bd.buttonId));
+      html += F("'");
+      html += dis;
+      html += F("> ");
+
+      // event
+      html += F("<input type='text' size='10' placeholder='event' name='binding");
+      html += String(i);
+      html += F(".event' value='");
+      html += htmlEscape(String(bd.event));
+      html += F("'");
+      html += dis;
+      html += F("> ");
+
+      // action
+      html += F("<input type='text' size='20' placeholder='action' name='binding");
+      html += String(i);
+      html += F(".action' value='");
+      html += htmlEscape(String(bd.action));
+      html += F("'");
+      html += dis;
+      html += F(">");
+
+      html += F("</div>");
+    }
+    html += F("</fieldset>");
+
 
     html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
     html += F("</form>");
@@ -575,18 +677,127 @@ void registerConfigRoutes(WebServer& srv) {
       auto setU16 = [&](const char* name, uint16_t& field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>65535) v=65535; field=(uint16_t)v; };
       auto setBool= [&](const char* name, bool& field){ if (!srv.hasArg(name)) return; String s=srv.arg(name); s.trim(); s.toLowerCase(); field=(s=="1"||s=="true"||s=="on"||s=="yes"); };
 
-      setU8("web_button_pin",  tmp.webBtnPin);
-      setU8("log_button_pin",  tmp.logBtnPin);
-      setU8("mark_button_pin", tmp.markBtnPin);
-      setU8("nav_up_pin",      tmp.navUpPin);
-      setU8("nav_down_pin",    tmp.navDownPin);
-      setU8("nav_left_pin",    tmp.navLeftPin);
-      setU8("nav_right_pin",   tmp.navRightPin);
-      setU8("nav_enter_pin",   tmp.navEnterPin);
-
       setU16("debounce_ms",    tmp.debounceMs);
       setBool("use_external_rtc", tmp.useExternalRTC);
+      // --- New-style logical buttons ---
+      {
+        ButtonDef newButtons[MAX_BUTTONS];
+        uint8_t newButtonCount = 0;
+
+        for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
+          String base   = String("button") + i + ".";
+          String keyId  = base + "id";
+          String keyPin = base + "pin";
+          String keyAct = base + "active_low";
+          String keyMode= base + "mode";
+
+          // If this row isn't in the POST at all (e.g. sensors form), skip it.
+          if (!srv.hasArg(keyId) && !srv.hasArg(keyPin) &&
+              !srv.hasArg(keyAct) && !srv.hasArg(keyMode)) {
+            continue;
+          }
+
+          String id  = srv.hasArg(keyId)  ? srv.arg(keyId)  : String("");
+          String pin = srv.hasArg(keyPin) ? srv.arg(keyPin) : String("");
+          id.trim();
+          pin.trim();
+
+          // Completely blank row -> skip
+          if (!id.length() && !pin.length()) {
+            continue;
+          }
+
+          ButtonDef b{};
+          // ID
+          if (id.length() >= (int)sizeof(b.id)) {
+            id = id.substring(0, sizeof(b.id) - 1);
+          }
+          id.toCharArray(b.id, sizeof(b.id));
+
+          // Pin
+          long pv = pin.length() ? pin.toInt() : 0;
+          if (pv < 0) pv = 0;
+          if (pv > 255) pv = 255;
+          b.pin = (uint8_t)pv;
+
+          // active_low
+          bool activeLow = true;
+          if (srv.hasArg(keyAct)) {
+            String v = srv.arg(keyAct); v.trim(); v.toLowerCase();
+            activeLow = (v == "1" || v == "true" || v == "on" || v == "yes");
+          }
+          b.activeLow = activeLow;
+
+          // mode
+          String mode = srv.hasArg(keyMode) ? srv.arg(keyMode) : String("");
+          mode.trim(); mode.toLowerCase();
+          if (mode == "poll") b.mode = 1;
+          else                b.mode = 0;
+
+          if (newButtonCount < MAX_BUTTONS) {
+            newButtons[newButtonCount++] = b;
+          }
+        }
+
+        // Commit into tmp
+        tmp.buttonCount = newButtonCount;
+        for (uint8_t i = 0; i < newButtonCount; ++i) {
+          tmp.buttons[i] = newButtons[i];
+        }
+      }
+
+      // --- New-style button bindings ---
+      {
+        ButtonBindingDef newBindings[MAX_BUTTON_BINDINGS];
+        uint8_t newBindingCount = 0;
+
+        for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+          String base   = String("binding") + i + ".";
+          String keyBtn = base + "button";
+          String keyEvt = base + "event";
+          String keyAct = base + "action";
+
+          if (!srv.hasArg(keyBtn) && !srv.hasArg(keyEvt) && !srv.hasArg(keyAct)) {
+            continue;
+          }
+
+          String button = srv.hasArg(keyBtn) ? srv.arg(keyBtn) : String("");
+          String ev     = srv.hasArg(keyEvt) ? srv.arg(keyEvt) : String("");
+          String act    = srv.hasArg(keyAct) ? srv.arg(keyAct) : String("");
+
+          button.trim(); ev.trim(); act.trim();
+
+          // Completely blank row -> skip
+          if (!button.length() && !ev.length() && !act.length()) {
+            continue;
+          }
+
+          ButtonBindingDef bd{};
+
+          if (button.length() >= (int)sizeof(bd.buttonId))
+            button = button.substring(0, sizeof(bd.buttonId) - 1);
+          button.toCharArray(bd.buttonId, sizeof(bd.buttonId));
+
+          if (ev.length() >= (int)sizeof(bd.event))
+            ev = ev.substring(0, sizeof(bd.event) - 1);
+          ev.toCharArray(bd.event, sizeof(bd.event));
+
+          if (act.length() >= (int)sizeof(bd.action))
+            act = act.substring(0, sizeof(bd.action) - 1);
+          act.toCharArray(bd.action, sizeof(bd.action));
+
+          if (newBindingCount < MAX_BUTTON_BINDINGS) {
+            newBindings[newBindingCount++] = bd;
+          }
+        }
+
+        tmp.buttonBindingCount = newBindingCount;
+        for (uint8_t i = 0; i < newBindingCount; ++i) {
+          tmp.buttonBindings[i] = newBindings[i];
+        }
+      }
     }
+
 
     // ---------- SENSORS ----------
     // enumerate current specs, mutate copies, and persist via ConfigManager helpers
