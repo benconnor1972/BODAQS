@@ -70,6 +70,8 @@ private:
   static bool loggingGuard_();      // true if logging is active
   static bool configuredNetworksExist_();
   static void clearIntent_();
+  static void shutdownRadio_();     // 
+
 
   static WiFiMgrState s_state;
   static bool         s_enabled;

@@ -82,9 +82,16 @@ void WiFiManager::begin(IsLoggingActiveFn isLoggingFn) {
 void WiFiManager::loop() {
   // Hard guard: never do Wi-Fi work while logging
   if (loggingGuard_()) {
-    if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
-    enterOff_();
-    return;
+    // Only do the teardown once, when we transition into "logging"
+    if (s_state != WiFiMgrState::OFF) {
+      if (s_state == WiFiMgrState::ONLINE && s_onOffline) {
+        s_onOffline();
+      }
+      shutdownRadio_();     // <-- actually power down radio/BT
+      enterOff_();          // logical state = OFF
+      notifyUi_();          // let the UI know Wi-Fi is now off
+    }
+    return;                 // while logging, WiFiManager is inert
   }
 
   // If WiFi link is already up, ensure our state reflects that.
@@ -252,6 +259,14 @@ void WiFiManager::disconnect() {
   notifyUi_();
 }
 
+void WiFiManager::shutdownRadio_() {
+  // Hard power-down of Wi-Fi + BT
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_OFF);
+  btStop();
+}
+
+
 void WiFiManager::maybeConnectForRTC() {
   const auto& cfg = ConfigManager::get();
   if (!cfg.wifiAutoTimeOnRtcInvalid) return;        // feature off in config
@@ -406,6 +421,13 @@ void WiFiManager::selectAndConnect_() {
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
 
+//Hacked in - make configurable later
+IPAddress local_IP(192,168,1,131);
+IPAddress gateway(192,168,1,1);
+IPAddress subnet(255,255,255,0);
+IPAddress dns(8,8,8,8);
+
+WiFi.config(local_IP, gateway, subnet, dns);
 
   // Begin connect (password may be empty for open). Use the 5-arg overload to pin BSSID/channel.
   const char* pwd = nets[chosenIndex].password;

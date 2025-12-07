@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <SdFat.h>
+#include "SD_MMC.h"   // for SD_MMC backend
 
 #include "HtmlUtil.h"
 #include "WebServerManager.h"
@@ -32,6 +33,15 @@ static const __FlashStringHelper* typeForSuffix_(const char* name) {
   return F("custom");
 }
 
+// Get the last path segment (strip leading directories)
+static String baseName_(const String& path) {
+  int slash = path.lastIndexOf('/');
+  if (slash >= 0 && slash + 1 < (int)path.length()) {
+    return path.substring(slash + 1);
+  }
+  return path;
+}
+
 static void addTransformsFromDir_(SdFat* sd, const char* dirPath, JsonArray outArr) {
   if (!sd) return;
   SdFile dir;
@@ -59,6 +69,48 @@ static void addTransformsFromDir_(SdFat* sd, const char* dirPath, JsonArray outA
   dir.close();
 }
 
+// SD_MMC backend: same logic as addTransformsFromDir_ but using SD_MMC FS
+static void addTransformsFromDirMMC_(const char* dirPath, JsonArray outArr) {
+  File dir = SD_MMC.open(dirPath);
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return;
+  }
+
+  File entry = dir.openNextFile();
+  while (entry) {
+    if (entry.isDirectory()) {
+      entry.close();
+      entry = dir.openNextFile();
+      continue;
+    }
+
+    String fullName = entry.name();
+    String base = baseName_(fullName);  // re-use same helper pattern as in Routes_Files, or inline
+
+    String lower = base;
+    lower.toLowerCase();
+    if (!(lower.endsWith(".lut") || lower.endsWith(".csv") || lower.endsWith(".poly")
+          || lower.endsWith(".cfg") || lower.endsWith(".json"))) {
+      entry.close();
+      entry = dir.openNextFile();
+      continue;
+    }
+
+    JsonObject o = outArr.createNestedObject();
+    o["id"]    = stemOf_(base.c_str());
+    o["label"] = stemOf_(base.c_str());
+    o["type"]  = typeForSuffix_(base.c_str());
+
+    entry.close();
+    delay(0);
+    entry = dir.openNextFile();
+  }
+
+  dir.close();
+}
+
+
 void registerTransformRoutes(WebServer& srv) {
   WebServer* S = &srv;
 
@@ -76,12 +128,13 @@ void registerTransformRoutes(WebServer& srv) {
     const String sensor = srv.arg("sensor");
     String mode = srv.hasArg("mode") ? srv.arg("mode") : "";
 
-    SdFat* sd = nullptr;
-    if (!ensureSd_(sd)) { srv.send(500, F("application/json"), F("{\"error\":\"sd unavailable\"}")); return; }
+    SdFat* sd = WebServerManager::sd();
+    const bool useSpi = (sd != nullptr);
 
     // Build result
     StaticJsonDocument<4096> doc;
     JsonArray items = doc.to<JsonArray>();
+
 
     // Always include identity
     {
@@ -96,11 +149,20 @@ void registerTransformRoutes(WebServer& srv) {
       String dir = F("/cal/");
       dir += sensor;
       dir += '/';
-      addTransformsFromDir_(sd, dir.c_str(), items);
+      if (useSpi) {
+        addTransformsFromDir_(sd, dir.c_str(), items);
+      } else {
+        addTransformsFromDirMMC_(dir.c_str(), items);
+      }
     }
 
     // Generic directory: /cal/
-    addTransformsFromDir_(sd, "/cal/", items);
+    if (useSpi) {
+      addTransformsFromDir_(sd, "/cal/", items);
+    } else {
+      addTransformsFromDirMMC_("/cal/", items);
+    }
+
 
     // Optional: filter by mode if provided (only hides non-matching)
     if (mode.length()) {

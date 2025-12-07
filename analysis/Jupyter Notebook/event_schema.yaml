@@ -52,6 +52,10 @@ events:
     window: { pre_s: 0.2, post_s: 0.8, align: trigger }
 
     metrics:
+     - type: peak
+       signal: disp
+       kind: max
+
 
     tags: [basic, kinematics]
  

@@ -86,10 +86,13 @@ void WebServerManager::setStaConfig(const String& ssid, const String& password) 
 } //no-op. legacy
 
 bool WebServerManager::canStart() {
-  if (g_isLogging && g_isLogging()) return false;
-  if (!ensureSd()) return false;
+  // Only block while logging; do NOT require SdFat here.
+  if (g_isLogging && g_isLogging()) {
+    return false;
+  }
   return true;
 }
+
 
 bool WebServerManager::start() {
   if (g_running) {
@@ -98,7 +101,7 @@ bool WebServerManager::start() {
   }
 
   if (!canStart()) {
-    Serial.println(F("[WS] start: canStart() = false (either logging active or SD not ready)"));
+    Serial.println(F("[WS] start: canStart() = false (probably logging active)"));
     return false;
   }
 
