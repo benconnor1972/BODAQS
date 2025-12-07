@@ -7,6 +7,7 @@
 #include "AnalogPotSensor.h"
 #include "SensorManager.h"
 #include "Rates.h"
+#include "PowerManager.h"
 
 namespace {
   // Live config (not owned)
@@ -68,6 +69,8 @@ bool LoggingManager::start() {
     return false;
   }
 
+  //PowerManager::setCpuFreqForLogging();
+
   SensorManager::debugDump("before-header");
 
   // sampling cadence
@@ -85,12 +88,9 @@ bool LoggingManager::start() {
   s_sampleCount = 0;
 
   // Open/create log file (your function returns void)
-  //StorageManager_startLog();
+  StorageManager_startLog();
 
   s_running = true;
-
-  char header[256] = {0};
-  SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
 
   UI::println("Logging started.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 1200);
   unsigned hz = s_intervalMs ? (1000UL / s_intervalMs) : 0;
@@ -118,6 +118,7 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
 void LoggingManager::stop() {
   s_running = false;
   StorageManager_stopLog();
+  PowerManager::restoreCpuFreqAfterLogging();
 }
 
 bool LoggingManager::isRunning() {

@@ -132,13 +132,27 @@ void setup() {
     Serial.printf("[CFG] Loaded");
   }
 
+  Serial.println("SETUP: A ButtonBindingTable::initFromConfig");
   ButtonBindingTable::initFromConfig(ConfigManager::get());
+  Serial.println("SETUP: A done");
 
 
   // 1) Sensor framework
+  Serial.println("SETUP: B Sensormanager::begin");
+
   SensorManager::begin(&g_cfg);
+    Serial.println("SETUP: B done");
+
+  Serial.println("SETUP: C buildsensorsfromFromConfig");
+
   SensorManager::buildSensorsFromConfig(g_cfg);
+  Serial.println("SETUP: C done");
+
+  Serial.println("SETUP: D finalize begin");
+
   SensorManager::finalizeBegin();
+    Serial.println("SETUP: D done");
+
   //PROBE("[SENS] debugDump");
   //SensorManager::debugDump("after-register");
   UI::status("Sensors ready");
@@ -150,8 +164,14 @@ void setup() {
   //Serial.println("[BOOT] after ConfigManager::print");
   //Serial.flush();
 
+  Serial.println("SETUP: E webservermanager::attachconfig");
   WebServerManager::attachConfig(&g_cfg);
+      Serial.println("SETUP: E done");
+
+  Serial.println("SETUP: F storagemanager_getSD");
+
   WebServerManager::begin(StorageManager_getSd(), isLoggingPredicate);
+    Serial.println("SETUP: F done");
 
   const auto& cfg = ConfigManager::get();
 
@@ -171,35 +191,69 @@ void setup() {
   splitCsv3(g_cfg.ntpServers, n1, n2, n3);
   configTzTime(g_cfg.tz, n1.length()? n1.c_str(): nullptr, n2.length()? n2.c_str(): nullptr, n3.length()? n3.c_str(): nullptr);
   
+    Serial.println("SETUP: G wifimanager::begin");
+
   WiFiManager::begin();
+
+  Serial.println("SETUP: G Done");
+
+    Serial.println("SETUP: H maybeconnectforRTC");
+
   WiFiManager::maybeConnectForRTC();   
+  Serial.println("SETUP: H Done");
+
 
   // 3) Init logging *after* sensors exist
   LoggingManager::begin(&g_cfg);
 
+  Serial.println("SETUP: I Done");
+
   // Start OLED if present
   DisplayManager::begin(g_cfg);
 
+  Serial.println("SETUP: J Done");
+
   // Configure routing (Serial/OLED/Both + levels)
   UI::begin(g_cfg);
+    Serial.println("SETUP: K Done");
+
 
   // Show initial status
   UI::status("Ready");
   UI::println("Device ready.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 1200);
 
   ButtonActions::begin();
+    Serial.println("SETUP: L Done");
 
-  ConfigManager::printAllCalibrations();
+
+  //ConfigManager::printAllCalibrations();
 
   // Start the menu system
   MenuSystem::begin(&g_cfg);
+    Serial.println("SETUP: M Done");
+
   MenuSystem::setIdleCloseMs(120000);
+  Serial.println("SETUP: N Done");
+
+    Serial.println("SETUP: ALL DONE");
+
 }
 
 void loop() {
+
+    static unsigned long lastPrint = 0;
+  if (millis() - lastPrint > 1000) {
+    lastPrint = millis();
+    Serial.println("[MAIN] loop alive");
+  }
+
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
+
+  // Just log something tiny every 500ms so we see writes
+  static uint64_t t0 = millis();  // or millis() if easier
+  uint64_t now = millis();
   StorageManager_loop();
   WebServerManager::loop();
   UI::loop();

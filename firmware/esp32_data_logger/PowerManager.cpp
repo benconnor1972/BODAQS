@@ -1,11 +1,14 @@
 #include "PowerManager.h"
 #include <Arduino.h>
 #include <esp_sleep.h>
+#include "esp_system.h"
 #include <driver/rtc_io.h>     // rtc_gpio_* APIs
 #include "LoggingManager.h"
 #include "WebServerManager.h"
 #include "DisplayManager.h"
 #include "StorageManager.h"    // if you have a flush/close; otherwise remove
+
+static uint32_t g_prevCpuFreqMhz = 240;    // default / compile-time expectation
 
 static void preSleep_() {
   // Stop high-level activities cleanly
@@ -47,4 +50,16 @@ void PowerManager::sleepOnEnterEXT0() {
 
   // Enter deep sleep (CPU restarts at boot on wake)
   esp_deep_sleep_start();
+}
+
+void PowerManager::setCpuFreqForLogging() {
+  // Remember the current CPU frequency so we can restore it
+  g_prevCpuFreqMhz = getCpuFrequencyMhz();   // Arduino helper
+
+  // Try a lower frequency; 80 or 160 MHz are usually valid.
+  setCpuFrequencyMhz(80);
+}
+
+void PowerManager::restoreCpuFreqAfterLogging() {
+  setCpuFrequencyMhz(g_prevCpuFreqMhz);
 }

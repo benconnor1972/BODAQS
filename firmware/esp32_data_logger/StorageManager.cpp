@@ -6,12 +6,22 @@
 
 extern LoggerConfig g_cfg;   // declared in your .ino
 
-static SdFat sd;
-SdFat* StorageManager_getSd() {
-  return &sd;
-}
+// For now: hard-coded. Later: move into ConfigManager.
+enum class StorageBackendType {
+    SPI_SDFAT,   // external SD over SPI (your current setup)
+    SDIO_SDMMC   // onboard SD slot using SD_MMC
+};
 
+// TEMP: manual selection
+//constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SDIO_SDMMC;
+constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SPI_SDFAT;
+
+
+
+
+static SdFat sd;
 static FsFile logFile;
+static File logFileMMC;
 
 static char* buffer = nullptr;
 static size_t bufferSize = 0;
@@ -28,41 +38,192 @@ static char s_customHeader[160] = {0};
 volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
 bool g_sdTrackEnabled = true;                    // can be toggled off if desired
 
+static bool isSpiBackend()  { return STORAGE_BACKEND == StorageBackendType::SPI_SDFAT; }
+static bool isSdioBackend() { return STORAGE_BACKEND == StorageBackendType::SDIO_SDMMC; }
 
-// Begin SD
-void StorageManager_begin(uint8_t csPin) {
-  Serial.println("[Storage] begin: starting SPI");
-
-  // Make CS sane and release any old SPI state
-  pinMode(csPin, OUTPUT);
-  digitalWrite(csPin, HIGH);
-  SPI.end();
-  delay(1);
-
-  // VSPI default pins on ESP32: SCK=18, MISO=19, MOSI=23
-  SPI.begin(18, 19, 23, csPin);
-
-  // If anything else may share the bus (display, etc.), use SHARED.
-  // Also start conservative at 10 MHz; drop to 4 MHz if needed.
-  SdSpiConfig cfg(csPin, DEDICATED_SPI, SD_SCK_MHZ(25));
-
-  if (!sd.begin(cfg)) {
-    Serial.printf("[Storage] sd.begin failed, err=0x%02X data=0x%02X\n",
-                  sd.sdErrorCode(), sd.sdErrorData());
-
-    // Try a second attempt slower (sometimes helps marginal cards/wiring)
-    SdSpiConfig slowCfg(csPin, SHARED_SPI, SD_SCK_MHZ(4));
-    if (!sd.begin(slowCfg)) {
-      Serial.printf("[Storage] retry slow failed, err=0x%02X data=0x%02X\n",
-                    sd.sdErrorCode(), sd.sdErrorData());
-      return;
-    }
-  }
-
-  Serial.println("[Storage] SD init OK.");
+SdFat* StorageManager_getSd() {
+    return isSpiBackend() ? &sd : nullptr;
 }
 
 
+static bool logIsOpen() {
+    if (isSpiBackend()) {
+        return (bool)logFile;
+    } else {
+        return (bool)logFileMMC;
+    }
+}
+
+static void logCloseInternal() {
+    if (isSpiBackend()) {
+        logFile.close();
+    } else {
+        logFileMMC.close();
+    }
+}
+
+static size_t logWriteInternal(const void* data, size_t len) {
+    if (isSpiBackend()) {
+        return logFile.write(data, len);
+    } else {
+        return logFileMMC.write((const uint8_t*)data, len);
+    }
+}
+
+static void logPrintlnInternal(const char* s) {
+    if (isSpiBackend()) {
+        logFile.println(s);
+    } else {
+        logFileMMC.println(s);
+    }
+}
+
+static void logFlushInternal() {
+    if (isSpiBackend()) {
+        logFile.flush();
+    } else {
+        logFileMMC.flush();
+    }
+}
+
+bool StorageManager_loadTextFile(const char* path, String& out) {
+    out = "";
+
+    if (isSpiBackend()) {
+        // SPI / SdFat backend
+        FsFile f = sd.open(path, O_RDONLY);
+        if (!f) {
+            Serial.print("[Storage] loadTextFile: SPI open failed for ");
+            Serial.println(path);
+            return false;
+        }
+
+        while (f.available()) {
+            int c = f.read();
+            if (c < 0) break;
+            out += (char)c;
+        }
+        f.close();
+        Serial.print("[Storage] loadTextFile: SPI read OK, bytes=");
+        Serial.println(out.length());
+        return true;
+
+    } else {
+        // SDIO / SD_MMC backend
+        File f = SD_MMC.open(path, FILE_READ);
+        if (!f) {
+            Serial.print("[Storage] loadTextFile: SD_MMC open failed for ");
+            Serial.println(path);
+            return false;
+        }
+
+        while (f.available()) {
+            int c = f.read();
+            if (c < 0) break;
+            out += (char)c;
+        }
+        f.close();
+        Serial.print("[Storage] loadTextFile: SD_MMC read OK, bytes=");
+        Serial.println(out.length());
+        return true;
+    }
+}
+
+bool StorageManager_saveTextFile(const char* path, const String& data) {
+    const char* cstr = data.c_str();
+    size_t len = data.length();
+
+    if (isSpiBackend()) {
+        // SPI / SdFat backend
+        FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
+        if (!f) {
+            Serial.print("[Storage] saveTextFile: SPI open failed for ");
+            Serial.println(path);
+            return false;
+        }
+        size_t written = f.write((const uint8_t*)cstr, len);
+        f.close();
+        Serial.print("[Storage] saveTextFile: SPI wrote bytes=");
+        Serial.println(written);
+        return (written == len);
+
+    } else {
+        // SDIO / SD_MMC backend
+        File f = SD_MMC.open(path, FILE_WRITE);  // FILE_WRITE = create/truncate
+        if (!f) {
+            Serial.print("[Storage] saveTextFile: SD_MMC open failed for ");
+            Serial.println(path);
+            return false;
+        }
+        size_t written = f.write((const uint8_t*)cstr, len);
+        f.close();
+        Serial.print("[Storage] saveTextFile: SD_MMC wrote bytes=");
+        Serial.println(written);
+        return (written == len);
+    }
+}
+
+void StorageManager_begin(uint8_t csPin) {
+  if (isSpiBackend()) {
+    Serial.println("[Storage] begin: starting SPI (SdFat)");
+
+    pinMode(csPin, OUTPUT);
+    digitalWrite(csPin, HIGH);
+    SPI.end();
+    delay(1);
+
+    // VSPI default pins on ESP32: SCK=18, MISO=19, MOSI=23
+    SPI.begin(18, 19, 23, csPin);
+
+    SdSpiConfig cfg(csPin, DEDICATED_SPI, SD_SCK_MHZ(25));
+
+    if (!sd.begin(cfg)) {
+      Serial.printf("[Storage] sd.begin failed, err=0x%02X data=0x%02X\n",
+                    sd.sdErrorCode(), sd.sdErrorData());
+
+      SdSpiConfig slowCfg(csPin, SHARED_SPI, SD_SCK_MHZ(4));
+      if (!sd.begin(slowCfg)) {
+        Serial.printf("[Storage] retry slow failed, err=0x%02X data=0x%02X\n",
+                      sd.sdErrorCode(), sd.sdErrorData());
+        return;
+      }
+    }
+
+    Serial.println("[Storage] SD init OK (SPI_SDFAT).");
+  } else {
+    Serial.println("[Storage] begin(): backend = SDIO_SDMMC (onboard S3 slot)");
+    Serial.println("[Storage] begin (SDIO_SDMMC): starting SD_MMC");
+
+    // SparkFun Thing Plus S3 SDIO pins
+    SD_MMC.setPins(38, 34, 39);   // CLK, CMD, D0
+    bool ok = SD_MMC.begin("/sdcard", true);  // 1-bit mode
+
+    Serial.print("[Storage] SD_MMC.begin result: ");
+    Serial.println(ok ? "OK (true)" : "FAILED (false)");
+
+    if (!ok) {
+      Serial.println("[Storage] SD_MMC.begin FAILED, returning");
+      return;
+    }
+
+    uint8_t cardType = SD_MMC.cardType();
+    if (cardType == CARD_NONE) {
+      Serial.println("[Storage] No SD card attached (cardType=CARD_NONE)");
+      SD_MMC.end();
+      return;
+    }
+
+    Serial.print("[Storage] SD_MMC cardType = ");
+    Serial.println(cardType);
+
+    uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
+    Serial.print("[Storage] SD card size: ");
+    Serial.print(sizeMB);
+    Serial.println(" MB");
+
+    Serial.println("[Storage] SD_MMC.begin OK.");
+  }
+}
 
 // Set sample rate
 void StorageManager_setSampleRate(unsigned int hz) {
@@ -119,6 +280,95 @@ static bool preallocate(FsFile& f, uint32_t mib) {
   return true;
 }
 
+static bool openNewLogFile_SPI(const String& longName) {
+  logFile.close();
+
+  // 1) Long name
+  logFile = sd.open(longName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
+  if (!logFile) {
+    Serial.println("[Storage] SPI: long name failed, trying 8.3...");
+
+    // 2) 8.3 short name
+    String shortName = make83Name(longName);
+    Serial.print("[Storage] SPI: 8.3 candidate: ");
+    Serial.println(shortName);
+
+    logFile = sd.open(shortName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
+    if (!logFile) {
+      Serial.println("[Storage] SPI: 8.3 failed, trying LOGnnnn.CSV...");
+
+      char fallback[20];
+      for (int i = 1; i < 10000; i++) {
+        snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
+        if (!sd.exists(fallback)) {
+          logFile = sd.open(fallback, O_WRONLY | O_CREAT | O_EXCL);
+          if (logFile) {
+            Serial.print("[Storage] SPI: Using fallback: ");
+            Serial.println(fallback);
+            break;
+          }
+        }
+      }
+      if (!logFile) {
+        Serial.println("[Storage] SPI: No available filename; giving up.");
+        return false;
+      }
+    } else {
+      Serial.print("[Storage] SPI: Using 8.3: ");
+      Serial.println(shortName);
+    }
+  }
+
+  // Preallocate only on SdFat backend
+  preallocate(logFile, /*mib=*/64);
+  return true;
+}
+
+static bool openNewLogFile_SDMMC(const String& longName) {
+  logFileMMC.close();
+
+  // Helper lambda for "exclusive" create style.
+  auto tryCreate = [](const String& name, File& out) -> bool {
+    if (SD_MMC.exists(name)) return false;
+    out = SD_MMC.open(name, FILE_WRITE);  // creates new, truncates if existed
+    return (bool)out;
+  };
+
+  // 1) Long name
+  if (tryCreate(longName, logFileMMC)) {
+    Serial.print("[Storage] SD_MMC: Using long filename: ");
+    Serial.println(longName);
+    return true;
+  }
+
+  // 2) 8.3 short name
+  Serial.println("[Storage] SD_MMC: long name failed, trying 8.3...");
+  String shortName = make83Name(longName);
+  Serial.print("[Storage] SD_MMC: 8.3 candidate: ");
+  Serial.println(shortName);
+
+  if (tryCreate(shortName, logFileMMC)) {
+    Serial.print("[Storage] SD_MMC: Using 8.3: ");
+    Serial.println(shortName);
+    return true;
+  }
+
+  // 3) Fallback numbered files
+  Serial.println("[Storage] SD_MMC: 8.3 failed, trying LOGnnnn.CSV...");
+  char fallback[20];
+  for (int i = 1; i < 10000; i++) {
+    snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
+    if (tryCreate(String(fallback), logFileMMC)) {
+      Serial.print("[Storage] SD_MMC: Using fallback: ");
+      Serial.println(fallback);
+      return true;
+    }
+  }
+
+  Serial.println("[Storage] SD_MMC: No available filename; giving up.");
+  return false;
+}
+
 // Start new log file
 static void startLog() {
   if (loggingActive) return;
@@ -128,71 +378,106 @@ static void startLog() {
   filename.replace(" ", "_");
   filename += ".CSV";
 
-  Serial.print("[Storage] Trying to open (long): ");
+  Serial.print("[Storage] Trying to open log: ");
   Serial.println(filename);
 
-  // 1) Long name
-  logFile.close();  // harmless if not open
-  logFile = sd.open(filename.c_str(), O_WRONLY | O_CREAT | O_EXCL);
-  if (!logFile) {
-    Serial.println("[Storage] long name failed, trying 8.3...");
+  if (isSpiBackend()) {
+    // -------- SPI + SdFat path (existing behaviour) --------
+    logFile.close();  // harmless if not open
 
-    // 2) 8.3 short name
-    String shortName = make83Name(filename);
-    Serial.print("[Storage] 8.3 candidate: ");
-    Serial.println(shortName);
-
-    logFile = sd.open(shortName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
+    // 1) Long name
+    logFile = sd.open(filename.c_str(), O_WRONLY | O_CREAT | O_EXCL);
     if (!logFile) {
-      Serial.println("[Storage] 8.3 failed, trying LOGnnnn.CSV...");
+      Serial.println("[Storage] long name failed, trying 8.3...");
+      String shortName = make83Name(filename);
+      Serial.print("[Storage] 8.3 candidate: ");
+      Serial.println(shortName);
 
-      // 3) Fallback numbered files
-      char fallback[20];
-      for (int i = 1; i < 10000; i++) {
-        snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
-        if (!sd.exists(fallback)) {
-          logFile = sd.open(fallback, O_WRONLY | O_CREAT | O_EXCL);
-          if (logFile) {
-            Serial.print("[Storage] Using fallback: ");
-            Serial.println(fallback);
-            break;
+      logFile = sd.open(shortName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
+      if (!logFile) {
+        Serial.println("[Storage] 8.3 failed, trying LOGnnnn.CSV...");
+        char fallback[20];
+        for (int i = 1; i < 10000; i++) {
+          snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
+          if (!sd.exists(fallback)) {
+            logFile = sd.open(fallback, O_WRONLY | O_CREAT | O_EXCL);
+            if (logFile) {
+              Serial.print("[Storage] Using fallback: ");
+              Serial.println(fallback);
+              break;
+            }
           }
         }
+        if (!logFile) {
+          Serial.println("[Storage] No available filename; giving up.");
+          return;
+        }
+      } else {
+        Serial.print("[Storage] Using 8.3: ");
+        Serial.println(shortName);
       }
-      if (!logFile) {
-        Serial.println("[Storage] No available filename; giving up.");
-        return;
-      }
-    } else {
-      Serial.print("[Storage] Using 8.3: ");
-      Serial.println(shortName);
     }
-  } 
 
-  preallocate(logFile, /*mib=*/64);   // or from config (32–256 MiB typical)
+    preallocate(logFile, /*mib=*/64);   // optional; SPI only
+  } else {
+    // -------- SDIO + SD_MMC path (Thing Plus S3 onboard slot) --------
+    // StorageManager_begin() already did SD_MMC.begin(), so we *shouldn't*
+    // need to call it again. If you really want a safety check, you can
+    // leave this block in, but it's usually not necessary.
+    /*
+    if (!SD_MMC.begin("/sdcard", true)) {
+      Serial.println("[Storage] startLog: SD_MMC.begin failed (unexpected)");
+      return;
+    }
+    */
+
+    // Build an ABSOLUTE path: "/YYYY-MM-DD_HH-MM-SS.CSV"
+    String path = "/";
+    path += filename;   // filename is e.g. "2025-11-30_13-40-54.CSV"
+
+    Serial.print("[Storage] SD_MMC path = ");
+    Serial.println(path);
+
+    logFileMMC = SD_MMC.open(path.c_str(), FILE_WRITE);
+    if (!logFileMMC) {
+      Serial.println("[Storage] startLog: SD_MMC.open failed");
+      return;
+    }
+
+    // Ensure we start from an empty file
+    logFileMMC.seek(0);
+  }
+
+
 
   loggingActive = true;
 
-  // (extra visibility)
+  // --- Build header (shared for both backends) ---
   SensorManager::debugDump("startLog-beforeHeader");
 
   char header[256];
   SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
 
-  // Debug
-  // Append SD tracking column header, if space allows
+  // Append sd_busy tracking column if space
   const char* extra = ",sd_busy";
   if (strlen(header) + strlen(extra) < sizeof(header)) {
-      strcat(header, extra);
+    strcat(header, extra);
   }
 
   Serial.print("[Storage] Header: ");
   Serial.println(header);
 
-  logFile.println(header);
-  logFile.flush();
+  if (isSpiBackend()) {
+    logFile.println(header);
+    logFile.flush();
+  } else {
+    logFileMMC.println(header);
+    logFileMMC.flush();
+  }
+
   Serial.println("[Storage] Log file opened successfully.");
 }
+
 
 void StorageManager_startLog() {
   startLog();
@@ -201,16 +486,28 @@ void StorageManager_startLog() {
 
 // Stop log
 void StorageManager_stopLog() {
-    if (!loggingActive) return;
+  if (!loggingActive) return;
 
-    if (bufferIndex > 0) {
-        logFile.write(buffer, bufferIndex);
-        bufferIndex = 0;
+  if (bufferIndex > 0) {
+    if (isSpiBackend()) {
+      logFile.write(buffer, bufferIndex);
+    } else {
+      logFileMMC.write((const uint8_t*)buffer, bufferIndex);
     }
+    bufferIndex = 0;
+  }
+
+  if (isSpiBackend()) {
     logFile.close();
-    loggingActive = false;
-    Serial.println("Log file closed.");
+  } else {
+    logFileMMC.close();
+  }
+
+  loggingActive = false;
+  Serial.println("Log file closed.");
 }
+
+
 
 // helper to format human-readable from epochMs when needed
 static void formatEpochMs(char* out, size_t outlen, uint64_t epochMs) {
@@ -223,105 +520,6 @@ static void formatEpochMs(char* out, size_t outlen, uint64_t epochMs) {
              tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
 }
 
-void StorageManager_logRecordWithTs(uint64_t epochMs,
-    float pot1, float pot2,
-    float strain, float accelX, float accelY, float accelZ, float accelTemp,
-    bool mark)
-{
-    if (!loggingActive) startLog();
-;
-
-    char line[160];
-
-    if (RTCManager_isHumanReadable()) {
-        char ts[40];
-        formatEpochMs(ts, sizeof(ts), epochMs);
-        snprintf(line, sizeof(line),
-            "%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
-            ts, pot1, pot2, strain, accelX, accelY, accelZ, accelTemp,
-            mark ? 1 : 0);
-    } else {
-        // raw epoch ms, safe 64-bit print
-        snprintf(line, sizeof(line),
-            "%llu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
-            (unsigned long long)epochMs,
-            pot1, pot2, strain, accelX, accelY, accelZ, accelTemp,
-            mark ? 1 : 0);
-    }
-
-    size_t len = strlen(line);
-
-    // If the line will not fit in the remaining staging buffer space,
-    // flush the buffer first, then re-stage the entire line.
-    if (buffer && (bufferIndex + len > bufferSize)) {
-        if (bufferIndex) {
-            logFile.write(buffer, bufferIndex);
-            bufferIndex = 0;
-        }
-    }
-
-    // If the line is larger than the staging buffer, write it directly (rare)
-    if (!buffer || len > bufferSize) {
-        logFile.write(line, len);
-        return;
-    }
-
-    // Copy the whole line into the staging buffer; periodic flush is handled
-    // in StorageManager_loop().
-    memcpy(&buffer[bufferIndex], line, len);
-    bufferIndex += len;
-}
-
-
-// Add record //**I think this is now redundant
-void StorageManager_logRecord(float pot1, float pot2, float strain,
-                              float accelX, float accelY, float accelZ,
-                              float accelTemp, bool mark) {
-    if (!loggingActive) startLog();
-
-    char line[160];
-
-    if (RTCManager_isHumanReadable()) {
-        // human-readable with milliseconds
-        String ts = RTCManager_getFastTimestamp(); // your formatted string
-        snprintf(line, sizeof(line),
-            "%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
-            ts.c_str(),
-            pot1, pot2, strain, accelX, accelY, accelZ, accelTemp,
-            mark ? 1 : 0);
-    } else {
-        // raw epoch ms, printed safely as 64-bit
-        uint64_t ms = RTCManager_getEpochMs();
-        snprintf(line, sizeof(line),
-            "%llu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
-            (unsigned long long)ms,
-            pot1, pot2, strain, accelX, accelY, accelZ, accelTemp,
-            mark ? 1 : 0);
-    }
-
-    size_t len = strlen(line);
-
-    // If the line will not fit in the remaining staging buffer space,
-    // flush the buffer first, then re-stage the entire line.
-    if (buffer && (bufferIndex + len > bufferSize)) {
-        if (bufferIndex) {
-            logFile.write(buffer, bufferIndex);
-            bufferIndex = 0;
-        }
-    }
-
-    // If the line is larger than the staging buffer, write it directly (rare)
-    if (!buffer || len > bufferSize) {
-        logFile.write(line, len);
-        return;
-    }
-
-    // Copy the whole line into the staging buffer; periodic flush is handled
-    // in StorageManager_loop().
-    memcpy(&buffer[bufferIndex], line, len);
-    bufferIndex += len;
-}
-
 void StorageManager_setCustomHeader(const char* csv) {
     if (!csv || !csv[0]) {
         s_customHeader[0] = '\0';
@@ -331,112 +529,118 @@ void StorageManager_setCustomHeader(const char* csv) {
     s_customHeader[sizeof(s_customHeader) - 1] = '\0';
 }
 
-void StorageManager_logCsvDynamic(uint64_t ts_ms, const float* values, uint16_t nValues, bool mark) {
-  // Ensure the log is started/open (creates file + header)
-  if (!loggingActive) startLog();
-  if (!logFile) {
-    Serial.println("[Storage] logCsvDynamic: file not open");
-    return;
-  }
+// Dynamic CSV logging: one FULL row per call, matching header
+// Columns: [timestamp, sensor values..., mark, sd_busy]
+void StorageManager_logCsvDynamic(uint64_t ts_ms,
+                                  const float* values,
+                                  uint16_t nValues,
+                                  bool mark)
+{
 
-  // 1) Format ONE complete CSV line into a local stack buffer.
-  //    Size generously: timestamp + commas + up to ~32 floats + mark + \n
-  char line[512];
-  int off = 0;
-
-  // Timestamp (human: HH:MM:SS.mmm ; else raw epoch ms)
-  if (RTCManager_isHumanReadable()) {
-    unsigned long long ms  = ts_ms;
-    unsigned hh      = (unsigned)((ms / 3600000ULL) % 24ULL);
-    unsigned mm      = (unsigned)((ms / 60000ULL)   % 60ULL);
-    unsigned ss      = (unsigned)((ms / 1000ULL)    % 60ULL);
-    unsigned msecs   = (unsigned)(ms % 1000ULL);
-    off = snprintf(line, sizeof(line), "%02u:%02u:%02u.%03u", hh, mm, ss, msecs);
-  } else {
-    off = snprintf(line, sizeof(line), "%llu", (unsigned long long)ts_ms);
-  }
-  if (off <= 0 || off >= (int)sizeof(line)) return; // format error/overflow
-
-  // Values (comma-separated, fixed precision)
-  for (uint16_t i = 0; i < nValues; ++i) {
-    int n = snprintf(line + off, sizeof(line) - (size_t)off, ",%.6f", (double)values[i]);
-    if (n <= 0 || off + n >= (int)sizeof(line)) return; // overflow guard
-    off += n;
-  }
-
-  // Mark and newline
-  //{
-  //  int n = snprintf(line + off, sizeof(line) - (size_t)off, ",%d\n", mark ? 1 : 0);
-  //  if (n <= 0 || off + n >= (int)sizeof(line)) return;
-  //  off += n;
-  //}
-
-  // Mark, sd_busy and newline
-  {
-    int sdFlag = (g_sdTrackEnabled && g_sdWriteSinceLastSample) ? 1 : 0;
-    g_sdWriteSinceLastSample = false;  // consume the flag for this row
-
-    int n = snprintf(line + off, sizeof(line) - (size_t)off,
-                     ",%d,%d\n", mark ? 1 : 0, sdFlag);
-    if (n <= 0 || off + n >= (int)sizeof(line)) return;
-    off += n;
-  }
-
-
-  // 2) Stage the FULL line atomically into the RAM buffer.
-  const size_t len = (size_t)off;
-
-  // If the line won't fit, flush the staging buffer first (write between lines)
-  if (buffer && (bufferIndex + len > bufferSize)) {
-    if (bufferIndex > 0) {
-      logFile.write(buffer, bufferIndex);   // writes only whole, previously staged lines
-      bufferIndex = 0;
+    if (!logIsOpen()) {
+        Serial.println("[Storage] logCsvDynamic: file not open");
+        return;
     }
-  }
+    if (nValues == 0 || !values) return;
 
-  // If the line is larger than the staging buffer, write it directly (rare)
-  if (!buffer || len > bufferSize) {
-    logFile.write(line, len);
-    return;
-  }
+    // 1) Format ONE complete CSV line into a local stack buffer.
+    //    Size generously: timestamp + commas + up to ~32 floats + mark + sd_busy + \n
+    char line[512];
+    int off = 0;
 
-  // 3) Copy the whole line into the staging buffer
-  memcpy(&buffer[bufferIndex], line, len);
-  bufferIndex += len;
+    // Timestamp (human: HH:MM:SS.mmm ; else raw epoch ms)
+    if (RTCManager_isHumanReadable()) {
+        unsigned long long ms = ts_ms;
+        unsigned hh    = (unsigned)((ms / 3600000ULL) % 24ULL);
+        unsigned mm    = (unsigned)((ms / 60000ULL)   % 60ULL);
+        unsigned ss    = (unsigned)((ms / 1000ULL)    % 60ULL);
+        unsigned msecs = (unsigned)(ms % 1000ULL);
+        off = snprintf(line, sizeof(line),
+                       "%02u:%02u:%02u.%03u",
+                       hh, mm, ss, msecs);
+    } else {
+        off = snprintf(line, sizeof(line),
+                       "%llu",
+                       (unsigned long long)ts_ms);
+    }
+    if (off <= 0 || off >= (int)sizeof(line)) {
+        return; // format error / overflow
+    }
 
-  // 4) (No per-line flush; periodic flush handled in StorageManager_loop)
+    // Sensor values (comma-separated, fixed precision)
+    for (uint16_t i = 0; i < nValues; ++i) {
+        int n = snprintf(line + off,
+                         sizeof(line) - (size_t)off,
+                         ",%.6f",
+                         (double)values[i]);
+        if (n <= 0 || off + n >= (int)sizeof(line)) {
+            return; // overflow guard
+        }
+        off += n;
+    }
+
+    // Mark and sd_busy flag, then newline
+    {
+        int sdFlag = (g_sdTrackEnabled && g_sdWriteSinceLastSample) ? 1 : 0;
+        g_sdWriteSinceLastSample = false;  // consume the flag for this row
+
+        int n = snprintf(line + off,
+                         sizeof(line) - (size_t)off,
+                         ",%d,%d\n",
+                         mark ? 1 : 0,
+                         sdFlag);
+        if (n <= 0 || off + n >= (int)sizeof(line)) {
+            return; // overflow guard
+        }
+        off += n;
+    }
+
+    const size_t len = (size_t)off;
+
+    // 2) Stage the FULL line atomically into the RAM buffer.
+
+    // If the line won't fit in remaining space, flush the staging buffer first
+    // (we only ever flush BETWEEN lines, never mid-row).
+    if (buffer && (bufferIndex + len > bufferSize)) {
+        if (bufferIndex > 0) {
+            logWriteInternal(buffer, bufferIndex); // SPI or SD_MMC
+            bufferIndex = 0;
+        }
+    }
+
+    // If the line is larger than the staging buffer, write it directly (rare)
+    if (!buffer || len > bufferSize) {
+        logWriteInternal(line, len);
+        return;
+    }
+
+    // 3) Copy the whole line into the staging buffer
+    memcpy(&buffer[bufferIndex], line, len);
+    bufferIndex += len;
+
+    // 4) No per-line flush here; periodic flush handled in StorageManager_loop()
 }
-
-
 
 
 // Background flush
 void StorageManager_loop() {
-    static unsigned long lastFlush = 0;
-    unsigned long now = millis();
-
-    // Flush only if a second has passed, or if buffer is almost full
-    //if (loggingActive && bufferIndex > 0) {
-    //    if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
-    //        logFile.write(buffer, bufferIndex);
-    //        bufferIndex = 0;
-    //        lastFlush = now;
-    //        Serial.println("Buffer flushed to SD");
-    //    }
-    //}
+  static unsigned long lastFlush = 0;
+  unsigned long now = millis();
 
     if (loggingActive && bufferIndex > 0) {
-      if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
+        if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
 
-          // Mark that an SD write occurred since the last sample row
-          if (g_sdTrackEnabled) {
-              g_sdWriteSinceLastSample = true;
-          }
+            if (g_sdTrackEnabled) {
+            g_sdWriteSinceLastSample = true;
+            }
 
-          logFile.write(buffer, bufferIndex);
-          bufferIndex = 0;
-          lastFlush = now;
-          Serial.println("Buffer flushed to SD");
-      }
-  }
+            logWriteInternal(buffer, bufferIndex);
+
+            bufferIndex = 0;
+            lastFlush   = now;
+            //Serial.println("Buffer flushed to SD");
+        }
+    }
 }
+
+

@@ -4,6 +4,7 @@
 #include "Rates.h"
 #include "Calibration.h"
 #include "SensorRegistry.h"
+#include "StorageManager.h"
 #include <ctype.h>
 #include <string.h>
 
@@ -576,12 +577,18 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
 }
 
 bool ConfigManager::load(LoggerConfig& cfg) {
-  if (!g_sd) return false;
+  Serial.println(F("[CFG] Load: starting"));
 
-  FsFile f;
-  if (!f.open(g_cfgName, O_RDONLY)) return false;
+  // ---- Read whole config file into memory via StorageManager ----
+  String content;
+  if (!StorageManager_loadTextFile(g_cfgName, content)) {
+    Serial.print(F("[CFG] Load: failed to open/read '"));
+    Serial.print(g_cfgName);
+    Serial.println(F("', using defaults"));
+    return false;
+  }
 
-  // Reset parser scratch state
+  // ---- Reset parser scratch state ----
   g_specCount     = 0;
   g_expectedCount = 0;
 
@@ -594,13 +601,30 @@ bool ConfigManager::load(LoggerConfig& cfg) {
     g_specs[i].params.bind(&g_stores[i]);
   }
 
-  // Parse the file line-by-line into scratch buffers (names, params, etc.)
+  // ---- Parse the file line-by-line from the String ----
   char line[256];
-  while (readLine(f, line, sizeof(line))) {
+  int  pos = 0;
+  const int lenContent = content.length();
+
+  while (pos < lenContent) {
+    int next = content.indexOf('\n', pos);
+    if (next < 0) next = lenContent;
+    int lineLen = next - pos;
+    if (lineLen >= (int)sizeof(line)) lineLen = sizeof(line) - 1;
+
+    // Copy substring into line buffer
+    content.substring(pos, pos + lineLen).toCharArray(line, sizeof(line));
+    line[lineLen] = '\0';
+
+    // Strip trailing '\r' if present (handles CRLF files)
+    size_t n = strlen(line);
+    if (n && line[n - 1] == '\r') line[n - 1] = '\0';
+
     // parseLine fills g_specs/g_stores, updates g_specCount/g_expectedCount, etc.
     parseLine(line, cfg);
+
+    pos = next + 1;
   }
-  f.close();
 
   // If the file implied more sensors (e.g., late name-only lines), materialize them
   const uint8_t need = (g_expectedCount > g_specCount) ? g_expectedCount : g_specCount;
@@ -616,12 +640,11 @@ bool ConfigManager::load(LoggerConfig& cfg) {
   // ------------------------------
   // Populate the LoggerConfig copy
   // ------------------------------
-  // Cap to MAX_SENSORS to avoid overflow; log if truncated (optional).
   cfg.sensorN = (g_specCount <= MAX_SENSORS) ? g_specCount : MAX_SENSORS;
   for (uint8_t i = 0; i < cfg.sensorN; ++i) {
     cfg.sensors[i] = g_specs[i];
     // NOTE: We do NOT bind cfg.sensors[i].params here.
-    // Accessors should bind on output so returned copies point at the active store:
+    // Accessors bind on output so returned copies point at the active store:
     //   bool LoggerConfig::getSensorSpec(i, out) const {
     //     out = sensors[i];
     //     out.params.bind(&g_stores[i]);
@@ -630,34 +653,33 @@ bool ConfigManager::load(LoggerConfig& cfg) {
   }
 
   // Rebind ParamPacks just to be safe
-  for (uint8_t i=0;i<g_specCount;++i) g_specs[i].params.bind(&g_stores[i]);
-  
+  for (uint8_t i = 0; i < g_specCount; ++i) {
+    g_specs[i].params.bind(&g_stores[i]);
+  }
+
   // ---- Normalize new-style WiFi block ----
-  // Recompute network count and clean invalids
   uint8_t count = 0;
   bool seen[5] = {false,false,false,false,false};
   for (int i = 0; i < 5; ++i) {
     // trim SSID
     if (cfg.wifi[i].ssid[0]) {
-      // collapse whitespace-only SSIDs to empty
       String s = String(cfg.wifi[i].ssid); s.trim();
       if (s.length() == 0) { cfg.wifi[i].ssid[0] = '\0'; }
       else {
-        // write back trimmed
         copyStrBounded(s.c_str(), cfg.wifi[i].ssid, sizeof(cfg.wifi[i].ssid));
       }
     }
 
-    // accept only entries with a non-empty SSID
     if (cfg.wifi[i].ssid[0]) {
-      // minRssi range check
       if (!validRssi(cfg.wifi[i].minRssi)) cfg.wifi[i].minRssi = -127;
-      // bssidSet guard (all-zero means unset)
-      bool allZero = true; for (int b=0;b<6;++b) if (cfg.wifi[i].bssid[b]) { allZero=false; break; }
+
+      bool allZero = true;
+      for (int b = 0; b < 6; ++b) {
+        if (cfg.wifi[i].bssid[b]) { allZero = false; break; }
+      }
       if (allZero) cfg.wifi[i].bssidSet = false;
-      // track duplicates (keep first)
+
       if (!seen[i]) {
-        // naive duplicate collapse by SSID across later slots
         for (int j = 0; j < i; ++j) {
           if (cfg.wifi[j].ssid[0] && !strcasecmp(cfg.wifi[j].ssid, cfg.wifi[i].ssid)) {
             cfg.wifi[i].ssid[0] = '\0'; // drop duplicate
@@ -672,10 +694,11 @@ bool ConfigManager::load(LoggerConfig& cfg) {
 
   // If no new-style networks but legacy SSID present, synthesize one (back-compat)
   if (cfg.wifiNetworkCount == 0 && cfg.wifiSSID[0]) {
-    copyStrBounded(cfg.wifiSSID,   cfg.wifi[0].ssid,     sizeof(cfg.wifi[0].ssid));
+    copyStrBounded(cfg.wifiSSID,     cfg.wifi[0].ssid,     sizeof(cfg.wifi[0].ssid));
     copyStrBounded(cfg.wifiPassword, cfg.wifi[0].password, sizeof(cfg.wifi[0].password));
-    cfg.wifi[0].minRssi = -127;
-    cfg.wifi[0].bssidSet = false; memset(cfg.wifi[0].bssid, 0, 6);
+    cfg.wifi[0].minRssi  = -127;
+    cfg.wifi[0].bssidSet = false;
+    memset(cfg.wifi[0].bssid, 0, 6);
     cfg.wifi[0].hidden = false;
     cfg.wifiNetworkCount = 1;
   }
@@ -697,8 +720,9 @@ bool ConfigManager::load(LoggerConfig& cfg) {
 
   // Now commit cfg as usual:
   s_cfg = cfg;
-  return true;
 
+  Serial.println(F("[CFG] Load OK"));
+  return true;
 }
 
 

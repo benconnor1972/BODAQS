@@ -15,8 +15,12 @@ static constexpr uint8_t  OLED_H = 64;
 static constexpr int8_t   OLED_RST_PIN = -1; // no reset pin
 
 // Hardware defaults for SparkFun ESP32 Thing Plus:
-static constexpr int    OLED_SDA  = 21;
-static constexpr int    OLED_SCL  = 22;
+static constexpr int    OLED_SDA  = 21; // Thing Plus 
+static constexpr int    OLED_SCL  = 22; // Thing Plus
+
+//static constexpr int    OLED_SDA  = 8; // Thing Plus S3
+//static constexpr int    OLED_SCL  = 9; // Thing Plus S3
+
 static constexpr uint8_t OLED_ADDR_PRIMARY   = 0x3C; // most 0.96" SSD1306
 static constexpr uint8_t OLED_ADDR_ALTERNATE = 0x3D; // some boards
 
@@ -132,22 +136,59 @@ static void setContrast(uint8_t c) {
 bool DisplayManager::begin(const LoggerConfig& cfg) {
   s_cfg = &cfg;
 
+  Serial.println(F("[DISP] begin: starting I2C"));
+
   // I2C bring-up
   Wire.begin(OLED_SDA, OLED_SCL);
   Wire.setClock(100000);   // 100k while debugging; you can go 400k later
 
-  // Try primary address, then alternate (but don't call begin twice after success)
-  bool ok = oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR_PRIMARY,
-                       /*reset=*/false, /*periphBegin=*/false);
-  if (!ok) {
-    ok = oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR_ALTERNATE,
-                    /*reset=*/false, /*periphBegin=*/false);
+  // --- Quick bus probe before touching the SSD1306 lib ---
+  // This avoids hanging inside oled.begin() if the bus is wedged.
+  uint8_t addrToUse = 0;
+  {
+    // Try primary address
+    Wire.beginTransmission(OLED_ADDR_PRIMARY);
+    uint8_t err = Wire.endTransmission(true);
+    if (err == 0) {
+      addrToUse = OLED_ADDR_PRIMARY;
+      Serial.println(F("[DISP] I2C: found OLED at primary address"));
+    } else {
+      // Try alternate address
+      Wire.beginTransmission(OLED_ADDR_ALTERNATE);
+      err = Wire.endTransmission(true);
+      if (err == 0) {
+        addrToUse = OLED_ADDR_ALTERNATE;
+        Serial.println(F("[DISP] I2C: found OLED at alternate address"));
+      } else {
+        Serial.print(F("[DISP] I2C: no OLED found, err="));
+        Serial.println(err);
+      }
+    }
   }
-  if (!ok) {
+
+  if (addrToUse == 0) {
+    // No response on either address → fail fast, don't hang.
     s_present = false;
-    // Serial.println("OLED init failed");
+    s_status  = "OLED not detected";
+    Serial.println(F("[DISP] OLED not detected; display disabled."));
     return false;
   }
+
+  // --- Initialise the SSD1306 ---
+  Serial.print(F("[DISP] Initialising SSD1306 at 0x"));
+  Serial.println(addrToUse, HEX);
+
+  bool ok = oled.begin(SSD1306_SWITCHCAPVCC,
+                       addrToUse,
+                       /*reset=*/false,
+                       /*periphBegin=*/false);
+  if (!ok) {
+    Serial.println(F("[DISP] oled.begin() failed; display disabled."));
+    s_present = false;
+    return false;
+  }
+
+  Serial.println(F("[DISP] oled.begin() OK"));
 
   // Brightness & idle dim from cfg
   s_nominal    = (cfg.oledBrightness == 0) ? 200 : cfg.oledBrightness;
@@ -173,7 +214,9 @@ bool DisplayManager::begin(const LoggerConfig& cfg) {
   s_lastRate    = 0;
   s_lastActive  = 255;
 
+  Serial.println(F("[DISP] calling drawAll()"));
   drawAll();
+  Serial.println(F("[DISP] begin: complete"));
   return true;
 }
 

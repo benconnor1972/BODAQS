@@ -37,9 +37,9 @@
         "other_text_thickness": 0.15,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.8,
-          "height": 1.27,
-          "width": 2.54
+          "drill": 3.5,
+          "height": 3.5,
+          "width": 3.5
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -188,7 +188,9 @@
       ],
       "track_widths": [
         0.0,
-        0.4
+        0.4,
+        0.5,
+        1.0
       ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
@@ -465,7 +467,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "Data logger shield v1.kicad_pro",
+    "filename": "BODAQS shield v1.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -503,7 +505,7 @@
       "gencad": "",
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "./",
       "pos_files": "",
       "specctra_dsn": "",
       "step": "",
