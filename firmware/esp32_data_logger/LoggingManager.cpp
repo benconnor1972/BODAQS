@@ -138,7 +138,7 @@ void LoggingManager::loop() {
   s_sampleCount++;
 
   // Collect dynamic values from all sensors (+ legacy zeros)
-  const uint16_t cap = SensorManager::dynamicColumnCount();
+  const uint16_t cap = 1+SensorManager::dynamicColumnCount(); //Append for sensor_ID
   float values[32];                        // plenty for current setup; bump if you add many sensors
   uint16_t maxOut = (cap < 32) ? cap : 32; // avoid overrun
   uint16_t nWritten = 0;

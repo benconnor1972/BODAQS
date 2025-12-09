@@ -104,6 +104,10 @@ static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 void setup() {
   Serial.begin(115200);
 
+  //Buffer debug
+  static uint32_t g_sampleCounter = 0;
+
+
   RTCManager_setHumanReadable(true); // false = fast integer, true = readable
   StorageManager_begin(5);           // CS pin depends on your SD breakout
   gSd = StorageManager_getSd();      // <-- add this line

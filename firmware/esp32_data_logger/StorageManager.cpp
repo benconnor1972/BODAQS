@@ -448,8 +448,6 @@ static void startLog() {
     logFileMMC.seek(0);
   }
 
-
-
   loggingActive = true;
 
   // --- Build header (shared for both backends) ---
@@ -457,6 +455,21 @@ static void startLog() {
 
   char header[256];
   SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
+
+  // ---- NEW: prepend sample_id column ----
+  const char* idPrefix = "sample_id,";
+  const size_t idLen   = strlen(idPrefix);
+  const size_t hLen    = strlen(header);
+
+  if (idLen + hLen + 1 < sizeof(header)) {   // +1 for terminating '\0'
+    // Move existing header forward to make room for "sample_id,"
+    memmove(header + idLen, header, hLen + 1);  // include '\0'
+    // Copy the prefix at the start
+    memcpy(header, idPrefix, idLen);
+  } else {
+    // If this ever happens, we ran out of header buffer space
+    Serial.println("[Storage] Warning: header buffer too small for sample_id prefix");
+  }
 
   // Append sd_busy tracking column if space
   const char* extra = ",sd_busy";

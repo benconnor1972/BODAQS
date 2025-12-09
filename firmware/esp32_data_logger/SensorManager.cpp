@@ -385,25 +385,38 @@ void buildHeader(char* out, size_t n, bool humanTs) {
 }
 
 void sampleValues(float* out, uint16_t cap, uint16_t& written) {
-  written = 0;
-  if (!out || cap == 0) return;
+    written = 0;
+    if (!out || cap == 0) return;
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+    //
+    // 1. Write sample_id as the first column
+    //
+    if (written < cap) {
+        out[written++] = (float)s_sampleCounter++;   // Or g_sampleCounter++
+    } else {
+        return;
+    }
 
-    const uint8_t need = s->columnCount();
-    if (!need) continue;
+    //
+    // 2. Write all sensor columns as before
+    //
+    for (auto* s : s_list) {
+        if (!s || s->muted()) continue;
 
-    const uint16_t room = (written < cap) ? (cap - written) : 0;
-    if (!room) break;
+        const uint8_t need = s->columnCount();
+        if (!need) continue;
 
-    const uint8_t toWrite = (need <= room) ? need : (uint8_t)room;
-    s->sampleValues(out + written, toWrite);
-    written += toWrite;
+        const uint16_t room = (written < cap) ? (cap - written) : 0;
+        if (!room) break;
 
-    if (toWrite < need) break;
-  }
+        const uint8_t toWrite = (need <= room) ? need : (uint8_t)room;
+        s->sampleValues(out + written, toWrite);
+        written += toWrite;
+
+        if (toWrite < need) break;
+    }
 }
+
 
 void debugDump(const char* tag) {
   const uint8_t kSlots = MAX_SENSORS;
