@@ -244,25 +244,17 @@ void setup() {
 }
 
 void loop() {
-
-    static unsigned long lastPrint = 0;
-  if (millis() - lastPrint > 1000) {
-    lastPrint = millis();
-    Serial.println("[MAIN] loop alive");
-  }
-
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
 
-  // Just log something tiny every 500ms so we see writes
-  static uint64_t t0 = millis();  // or millis() if easier
-  uint64_t now = millis();
-  StorageManager_loop();
+  // Produce samples first, then let storage + UI catch up
+  LoggingManager::loop();      // producer: fills StorageManager's sample queue
+  StorageManager_loop();       // consumer: formats & flushes to SD
+
   WebServerManager::loop();
   UI::loop();
   MenuSystem::loop();
-  LoggingManager::loop();
 }
 
 

@@ -126,7 +126,6 @@ bool LoggingManager::isRunning() {
 }
 
 void LoggingManager::loop() {
-  
   if (!s_running) return;
 
   unsigned long now = millis();
@@ -137,9 +136,9 @@ void LoggingManager::loop() {
   uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * s_intervalMs;
   s_sampleCount++;
 
-  // Collect dynamic values from all sensors (+ legacy zeros)
-  const uint16_t cap = 1+SensorManager::dynamicColumnCount(); //Append for sensor_ID
-  float values[32];                        // plenty for current setup; bump if you add many sensors
+  // Collect dynamic values from all sensors (+ sample_id first)
+  const uint16_t cap = 1 + SensorManager::dynamicColumnCount();
+  float values[32];                        // plenty for current setup; bump if needed
   uint16_t maxOut = (cap < 32) ? cap : 32; // avoid overrun
   uint16_t nWritten = 0;
   SensorManager::sampleValues(values, maxOut, nWritten);
@@ -148,9 +147,14 @@ void LoggingManager::loop() {
   uint64_t _markTime = 0;
   bool _markNow = dequeue(&_markTime);
 
-  // Dynamic CSV writer (currently bridges to your fixed writer)
-  StorageManager_logCsvDynamic(ts_ms, values, nWritten, _markNow);
+  // NEW: enqueue into StorageManager's sample queue; SD writes happen in background.
+  bool ok = StorageManager_enqueueSample(ts_ms, values, nWritten, _markNow);
+  if (!ok) {
+    // Optional: count or occasionally log dropped samples
+    // (left silent in hot path for now).
+  }
 }
+
 
 
 void LoggingManager::mark() {

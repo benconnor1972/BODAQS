@@ -9,6 +9,9 @@
 #include "UI.h"
 #include <cstring>
 
+//Debug
+static uint32_t s_sampleID = 0;
+
 namespace {
   //constexpr uint8_t MAX_SENSORS = 16;
   Sensor*             s_list[MAX_SENSORS] = { nullptr };
@@ -392,7 +395,7 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     // 1. Write sample_id as the first column
     //
     if (written < cap) {
-        out[written++] = (float)s_sampleCounter++;   // Or g_sampleCounter++
+        out[written++] = (float)s_sampleID++;   // Or g_sampleCounter++
     } else {
         return;
     }

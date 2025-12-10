@@ -13,8 +13,8 @@ enum class StorageBackendType {
 };
 
 // TEMP: manual selection
-//constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SDIO_SDMMC;
-constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SPI_SDFAT;
+constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SDIO_SDMMC;
+//constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SPI_SDFAT;
 
 
 
@@ -33,6 +33,35 @@ static unsigned long sampleIntervalMs = 1000;
 static bool loggingActive = false;
 
 static char s_customHeader[160] = {0};
+
+// --- Sample row queue for non-blocking sampling ---
+// Must match LoggingManager's float values[32] size.
+constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
+constexpr uint16_t SM_SAMPLE_QUEUE_DEPTH = 256;
+
+struct SampleRow {
+    uint64_t ts_ms;
+    uint16_t nValues;
+    bool     mark;
+    float    values[SM_MAX_DYNAMIC_COLS];
+};
+
+static SampleRow s_rows[SM_SAMPLE_QUEUE_DEPTH];
+static uint16_t  s_qHead  = 0;
+static uint16_t  s_qTail  = 0;
+static uint16_t  s_qCount = 0;
+static uint32_t  s_samplesDropped = 0;
+
+static inline bool queueEmpty() { return s_qCount == 0; }
+static inline bool queueFull()  { return s_qCount >= SM_SAMPLE_QUEUE_DEPTH; }
+
+static bool dequeueSample(SampleRow &out) {
+    if (queueEmpty()) return false;
+    out = s_rows[s_qTail];
+    s_qTail = (s_qTail + 1) % SM_SAMPLE_QUEUE_DEPTH;
+    --s_qCount;
+    return true;
+}
 
 //Debug
 volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
@@ -85,6 +114,31 @@ static void logFlushInternal() {
         logFileMMC.flush();
     }
 }
+
+bool StorageManager_enqueueSample(uint64_t ts_ms, const float* values, uint16_t nValues, bool mark) {
+    if (!values || nValues == 0) return false;
+
+    if (nValues > SM_MAX_DYNAMIC_COLS) {
+        nValues = SM_MAX_DYNAMIC_COLS;
+    }
+
+    if (queueFull()) {
+        // Drop newest; you can change policy later if needed
+        ++s_samplesDropped;
+        return false;
+    }
+
+    SampleRow &row = s_rows[s_qHead];
+    row.ts_ms   = ts_ms;
+    row.nValues = nValues;
+    row.mark    = mark;
+    memcpy(row.values, values, nValues * sizeof(float));
+
+    s_qHead = (s_qHead + 1) % SM_SAMPLE_QUEUE_DEPTH;
+    ++s_qCount;
+    return true;
+}
+
 
 bool StorageManager_loadTextFile(const char* path, String& out) {
     out = "";
@@ -373,6 +427,10 @@ static bool openNewLogFile_SDMMC(const String& longName) {
 static void startLog() {
   if (loggingActive) return;
 
+  // Reset non-blocking sample queue
+  s_qHead = s_qTail = s_qCount = 0;
+  s_samplesDropped = 0;
+
   String filename = RTCManager_getDateTimeString();
   filename.replace(":", "-");
   filename.replace(" ", "_");
@@ -518,6 +576,9 @@ void StorageManager_stopLog() {
 
   loggingActive = false;
   Serial.println("Log file closed.");
+  
+  // Clear any leftover queued samples (we're no longer logging)
+  s_qHead = s_qTail = s_qCount = 0;
 }
 
 
@@ -637,14 +698,30 @@ void StorageManager_logCsvDynamic(uint64_t ts_ms,
 
 // Background flush
 void StorageManager_loop() {
-  static unsigned long lastFlush = 0;
-  unsigned long now = millis();
+    static unsigned long lastFlush = 0;
+    unsigned long now = millis();
 
+    // 1) Drain some queued samples into the CSV staging buffer
+    if (loggingActive) {
+        const uint8_t MAX_ROWS_PER_LOOP = 8;   // tune as needed
+        SampleRow row;
+        uint8_t processed = 0;
+
+        while (processed < MAX_ROWS_PER_LOOP && dequeueSample(row)) {
+            StorageManager_logCsvDynamic(row.ts_ms,
+                                         row.values,
+                                         row.nValues,
+                                         row.mark);
+            ++processed;
+        }
+    }
+
+    // 2) Periodic / threshold-based flush of the staging buffer to SD
     if (loggingActive && bufferIndex > 0) {
         if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
 
             if (g_sdTrackEnabled) {
-            g_sdWriteSinceLastSample = true;
+                g_sdWriteSinceLastSample = true;
             }
 
             logWriteInternal(buffer, bufferIndex);
@@ -655,5 +732,6 @@ void StorageManager_loop() {
         }
     }
 }
+
 
 
