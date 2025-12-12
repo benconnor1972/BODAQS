@@ -117,7 +117,7 @@ void setup() {
   Log_setLevel(LOG_DEBUG);
 
   StorageManager_setSampleRate(100);   // 100 Hz logging
-  StorageManager_setBufferSize(32768);  // 1 KB buffer
+  StorageManager_setBufferSize(65536);  // 1 KB buffer
 
   // UI / OLED defaults (fallbacks)
   g_cfg.uiTarget       = 1;     // serial
@@ -248,8 +248,7 @@ void loop() {
   RTCManager_loop();
   ButtonManager_loop();
 
-  // Produce samples first, then let storage + UI catch up
-  LoggingManager::loop();      // producer: fills StorageManager's sample queue
+  //LoggingManager::loop();      // producer: fills StorageManager's sample queue
   StorageManager_loop();       // consumer: formats & flushes to SD
 
   WebServerManager::loop();
