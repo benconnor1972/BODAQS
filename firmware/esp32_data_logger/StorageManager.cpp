@@ -34,10 +34,16 @@ static bool loggingActive = false;
 
 static char s_customHeader[160] = {0};
 
+static uint32_t s_flushCount    = 0;
+static uint32_t s_flushMaxMs    = 0;
+static uint64_t s_flushTotalMs  = 0;
+static uint16_t s_qMax = 0;
+
+
 // --- Sample row queue for non-blocking sampling ---
 // Must match LoggingManager's float values[32] size.
 constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
-constexpr uint16_t SM_SAMPLE_QUEUE_DEPTH = 256;
+constexpr uint16_t SM_SAMPLE_QUEUE_DEPTH = 1024;
 
 struct SampleRow {
     uint64_t ts_ms;
@@ -50,6 +56,7 @@ static SampleRow s_rows[SM_SAMPLE_QUEUE_DEPTH];
 static uint16_t  s_qHead  = 0;
 static uint16_t  s_qTail  = 0;
 static uint16_t  s_qCount = 0;
+static uint16_t  s_qMax   = 0;
 static uint32_t  s_samplesDropped = 0;
 
 static inline bool queueEmpty() { return s_qCount == 0; }
@@ -136,6 +143,12 @@ bool StorageManager_enqueueSample(uint64_t ts_ms, const float* values, uint16_t 
 
     s_qHead = (s_qHead + 1) % SM_SAMPLE_QUEUE_DEPTH;
     ++s_qCount;
+
+    // --- track maximum queue depth ---
+    if (s_qCount > s_qMax) {
+        s_qMax = s_qCount;
+    }
+
     return true;
 }
 
@@ -430,6 +443,9 @@ static void startLog() {
   // Reset non-blocking sample queue
   s_qHead = s_qTail = s_qCount = 0;
   s_samplesDropped = 0;
+  s_flushCount = 0;
+  s_flushMaxMs = 0;
+  s_flushTotalMs = 0;
 
   String filename = RTCManager_getDateTimeString();
   filename.replace(":", "-");
@@ -559,6 +575,15 @@ void StorageManager_startLog() {
 void StorageManager_stopLog() {
   if (!loggingActive) return;
 
+  // Drain any remaining queued samples into the staging buffer
+  SampleRow row;
+  while (dequeueSample(row)) {
+      StorageManager_logCsvDynamic(row.ts_ms,
+                                   row.values,
+                                   row.nValues,
+                                   row.mark);
+  }
+
   if (bufferIndex > 0) {
     if (isSpiBackend()) {
       logFile.write(buffer, bufferIndex);
@@ -568,6 +593,57 @@ void StorageManager_stopLog() {
     bufferIndex = 0;
   }
 
+
+  // --- append footer line with samplesDropped ---
+  // --- NEW: append run stats footer (backend-safe) ---
+  if (logIsOpen()) {
+      char line[160];
+
+      // Ensure any staged data is on disk before the footer
+      logFlushInternal();
+
+      int n;
+
+      n = snprintf(line, sizeof(line), "# run_stats_begin\n");
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# samples_dropped=%lu\n",
+                   (unsigned long)s_samplesDropped);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# queue_max=%u\n", (unsigned)s_qMax);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# queue_depth=%u\n", (unsigned)SM_SAMPLE_QUEUE_DEPTH);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# flush_count=%lu\n",
+                   (unsigned long)s_flushCount);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# flush_max_ms=%lu\n",
+                   (unsigned long)s_flushMaxMs);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      double avgFlush = s_flushCount ? (double)s_flushTotalMs / (double)s_flushCount : 0.0;
+      n = snprintf(line, sizeof(line), "# flush_avg_ms=%.2f\n", avgFlush);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# flush_total_ms=%llu\n",
+                   (unsigned long long)s_flushTotalMs);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# buffer_size=%u\n", (unsigned)bufferSize);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# run_stats_end\n");
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      logFlushInternal();
+  }
+
+
+    
   if (isSpiBackend()) {
     logFile.close();
   } else {
@@ -575,6 +651,10 @@ void StorageManager_stopLog() {
   }
 
   loggingActive = false;
+  Serial.printf("[Storage] samplesDropped=%lu\n", (unsigned long)s_samplesDropped);
+  Serial.printf("[Storage] flushCount=%lu maxFlushMs=%lu avgFlushMs=%.2f\n", (unsigned long)s_flushCount, (unsigned long)s_flushMaxMs, s_flushCount ? (double)s_flushTotalMs / s_flushCount : 0.0);
+  Serial.printf("[Storage] qMax=%u/%u\n", s_qMax, SM_SAMPLE_QUEUE_DEPTH);
+
   Serial.println("Log file closed.");
   
   // Clear any leftover queued samples (we're no longer logging)
@@ -698,39 +778,46 @@ void StorageManager_logCsvDynamic(uint64_t ts_ms,
 
 // Background flush
 void StorageManager_loop() {
-    static unsigned long lastFlush = 0;
-    unsigned long now = millis();
+  static unsigned long lastFlush = 0;
+  unsigned long now = millis();
 
-    // 1) Drain some queued samples into the CSV staging buffer
-    if (loggingActive) {
-        const uint8_t MAX_ROWS_PER_LOOP = 8;   // tune as needed
-        SampleRow row;
-        uint8_t processed = 0;
+  // 1) Drain some queued samples into the CSV staging buffer
+  if (loggingActive) {
+      const uint8_t MAX_ROWS_PER_LOOP = 8;   // tune as needed
+      SampleRow row;
+      uint8_t processed = 0;
 
-        while (processed < MAX_ROWS_PER_LOOP && dequeueSample(row)) {
-            StorageManager_logCsvDynamic(row.ts_ms,
-                                         row.values,
-                                         row.nValues,
-                                         row.mark);
-            ++processed;
-        }
-    }
+      while (processed < MAX_ROWS_PER_LOOP && dequeueSample(row)) {
+          StorageManager_logCsvDynamic(row.ts_ms,
+                                        row.values,
+                                        row.nValues,
+                                        row.mark);
+          ++processed;
+      }
+  }
 
-    // 2) Periodic / threshold-based flush of the staging buffer to SD
-    if (loggingActive && bufferIndex > 0) {
-        if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
+  // 2) Periodic / threshold-based flush of the staging buffer to SD
+  if (loggingActive && bufferIndex > 0) {
+      if ((now - lastFlush >= 5000) || (bufferIndex > bufferSize * 9 / 10)) {
 
-            if (g_sdTrackEnabled) {
-                g_sdWriteSinceLastSample = true;
-            }
+          uint32_t t0 = millis();
 
-            logWriteInternal(buffer, bufferIndex);
+          if (g_sdTrackEnabled) {
+              g_sdWriteSinceLastSample = true;
+          }
 
-            bufferIndex = 0;
-            lastFlush   = now;
-            //Serial.println("Buffer flushed to SD");
-        }
-    }
+          logWriteInternal(buffer, bufferIndex);
+
+          uint32_t dt = millis() - t0;
+          ++s_flushCount;
+          s_flushTotalMs += dt;
+          if (dt > s_flushMaxMs) s_flushMaxMs = dt;
+
+          bufferIndex = 0;
+          lastFlush   = now;
+      }
+  }
+
 }
 
 
