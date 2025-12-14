@@ -34,6 +34,41 @@ static bool loggingActive = false;
 
 static char s_customHeader[160] = {0};
 
+static uint32_t s_flushCount    = 0;
+static uint32_t s_flushMaxMs    = 0;
+static uint64_t s_flushTotalMs  = 0;
+
+
+// --- Sample row queue for non-blocking sampling ---
+// Must match LoggingManager's float values[32] size.
+constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
+constexpr uint16_t SM_SAMPLE_QUEUE_DEPTH = 256;
+
+struct SampleRow {
+    uint64_t ts_ms;
+    uint16_t nValues;
+    bool     mark;
+    float    values[SM_MAX_DYNAMIC_COLS];
+};
+
+static SampleRow s_rows[SM_SAMPLE_QUEUE_DEPTH];
+static uint16_t  s_qHead  = 0;
+static uint16_t  s_qTail  = 0;
+static uint16_t  s_qCount = 0;
+static uint16_t  s_qMax   = 0;
+static uint32_t  s_samplesDropped = 0;
+
+static inline bool queueEmpty() { return s_qCount == 0; }
+static inline bool queueFull()  { return s_qCount >= SM_SAMPLE_QUEUE_DEPTH; }
+
+static bool dequeueSample(SampleRow &out) {
+    if (queueEmpty()) return false;
+    out = s_rows[s_qTail];
+    s_qTail = (s_qTail + 1) % SM_SAMPLE_QUEUE_DEPTH;
+    --s_qCount;
+    return true;
+}
+
 //Debug
 volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
 bool g_sdTrackEnabled = true;                    // can be toggled off if desired
@@ -86,6 +121,37 @@ static void logFlushInternal() {
     }
 }
 
+bool StorageManager_enqueueSample(uint64_t ts_ms, const float* values, uint16_t nValues, bool mark) {
+    if (!values || nValues == 0) return false;
+
+    if (nValues > SM_MAX_DYNAMIC_COLS) {
+        nValues = SM_MAX_DYNAMIC_COLS;
+    }
+
+    if (queueFull()) {
+        // Drop newest; you can change policy later if needed
+        ++s_samplesDropped;
+        return false;
+    }
+
+    SampleRow &row = s_rows[s_qHead];
+    row.ts_ms   = ts_ms;
+    row.nValues = nValues;
+    row.mark    = mark;
+    memcpy(row.values, values, nValues * sizeof(float));
+
+    s_qHead = (s_qHead + 1) % SM_SAMPLE_QUEUE_DEPTH;
+    ++s_qCount;
+
+    // --- track maximum queue depth ---
+    if (s_qCount > s_qMax) {
+        s_qMax = s_qCount;
+    }
+
+    return true;
+}
+
+
 bool StorageManager_loadTextFile(const char* path, String& out) {
     out = "";
 
@@ -110,7 +176,8 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
 
     } else {
         // SDIO / SD_MMC backend
-        File f = SD_MMC.open(path, FILE_READ);
+        String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
+        File f = SD_MMC.open(absPath.c_str(), FILE_READ);
         if (!f) {
             Serial.print("[Storage] loadTextFile: SD_MMC open failed for ");
             Serial.println(path);
@@ -130,38 +197,70 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
 }
 
 bool StorageManager_saveTextFile(const char* path, const String& data) {
-    const char* cstr = data.c_str();
-    size_t len = data.length();
+  if (!path || !*path) return false;
 
-    if (isSpiBackend()) {
-        // SPI / SdFat backend
-        FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
-        if (!f) {
-            Serial.print("[Storage] saveTextFile: SPI open failed for ");
-            Serial.println(path);
-            return false;
-        }
-        size_t written = f.write((const uint8_t*)cstr, len);
-        f.close();
-        Serial.print("[Storage] saveTextFile: SPI wrote bytes=");
-        Serial.println(written);
-        return (written == len);
+  const char* cstr = data.c_str();
+  const size_t len = data.length();
 
-    } else {
-        // SDIO / SD_MMC backend
-        File f = SD_MMC.open(path, FILE_WRITE);  // FILE_WRITE = create/truncate
-        if (!f) {
-            Serial.print("[Storage] saveTextFile: SD_MMC open failed for ");
-            Serial.println(path);
-            return false;
-        }
-        size_t written = f.write((const uint8_t*)cstr, len);
-        f.close();
-        Serial.print("[Storage] saveTextFile: SD_MMC wrote bytes=");
-        Serial.println(written);
-        return (written == len);
+  if (isSpiBackend()) {
+    // -------- SPI / SdFat backend --------
+    FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (!f) {
+      Serial.print("[Storage] saveTextFile: SPI open failed for ");
+      Serial.println(path);
+      return false;
     }
+
+    size_t written = f.write((const uint8_t*)cstr, len);
+    f.flush();
+    f.close();
+
+    if (written != len) {
+      Serial.printf("[Storage] saveTextFile: SPI short write (%u/%u)\n",
+                    (unsigned)written, (unsigned)len);
+      return false;
+    }
+    return true;
+  }
+
+  // -------- SDMMC backend (SD_MMC / FS) --------
+  // Normalize to absolute path (SD_MMC expects paths like "/config.txt")
+  String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
+
+  // StorageManager_begin() already did SD_MMC.begin() on this backend.
+  // But we still guard against "no card".
+  if (SD_MMC.cardType() == CARD_NONE) {
+    Serial.println("[Storage] saveTextFile: SD_MMC not mounted / no card");
+    return false;
+  }
+
+  // Best-effort remove to simulate truncate (FILE_WRITE appends on ESP32)
+  // Only attempt remove if it exists, to avoid edge-case FS bugs.
+  if (SD_MMC.exists(absPath.c_str())) {
+    SD_MMC.remove(absPath.c_str());
+  }
+
+  File f = SD_MMC.open(absPath.c_str(), FILE_WRITE);
+  if (!f) {
+    Serial.print("[Storage] saveTextFile: SD_MMC open failed for ");
+    Serial.println(absPath);
+    return false;
+  }
+
+  size_t written = f.write((const uint8_t*)cstr, len);
+  f.flush();
+  f.close();
+
+  if (written != len) {
+    Serial.printf("[Storage] saveTextFile: SD_MMC short write (%u/%u)\n",
+                  (unsigned)written, (unsigned)len);
+    return false;
+  }
+
+  return true;
 }
+
+
 
 void StorageManager_begin(uint8_t csPin) {
   if (isSpiBackend()) {
@@ -373,6 +472,13 @@ static bool openNewLogFile_SDMMC(const String& longName) {
 static void startLog() {
   if (loggingActive) return;
 
+  // Reset non-blocking sample queue
+  s_qHead = s_qTail = s_qCount = 0;
+  s_samplesDropped = 0;
+  s_flushCount = 0;
+  s_flushMaxMs = 0;
+  s_flushTotalMs = 0;
+
   String filename = RTCManager_getDateTimeString();
   filename.replace(":", "-");
   filename.replace(" ", "_");
@@ -448,8 +554,6 @@ static void startLog() {
     logFileMMC.seek(0);
   }
 
-
-
   loggingActive = true;
 
   // --- Build header (shared for both backends) ---
@@ -457,6 +561,21 @@ static void startLog() {
 
   char header[256];
   SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
+
+  // ---- NEW: prepend sample_id column ----
+  const char* idPrefix = "sample_id,";
+  const size_t idLen   = strlen(idPrefix);
+  const size_t hLen    = strlen(header);
+
+  if (idLen + hLen + 1 < sizeof(header)) {   // +1 for terminating '\0'
+    // Move existing header forward to make room for "sample_id,"
+    memmove(header + idLen, header, hLen + 1);  // include '\0'
+    // Copy the prefix at the start
+    memcpy(header, idPrefix, idLen);
+  } else {
+    // If this ever happens, we ran out of header buffer space
+    Serial.println("[Storage] Warning: header buffer too small for sample_id prefix");
+  }
 
   // Append sd_busy tracking column if space
   const char* extra = ",sd_busy";
@@ -488,6 +607,15 @@ void StorageManager_startLog() {
 void StorageManager_stopLog() {
   if (!loggingActive) return;
 
+  // Drain any remaining queued samples into the staging buffer
+  SampleRow row;
+  while (dequeueSample(row)) {
+      StorageManager_logCsvDynamic(row.ts_ms,
+                                   row.values,
+                                   row.nValues,
+                                   row.mark);
+  }
+
   if (bufferIndex > 0) {
     if (isSpiBackend()) {
       logFile.write(buffer, bufferIndex);
@@ -497,6 +625,57 @@ void StorageManager_stopLog() {
     bufferIndex = 0;
   }
 
+
+  // --- append footer line with samplesDropped ---
+  // --- NEW: append run stats footer (backend-safe) ---
+  if (logIsOpen()) {
+      char line[160];
+
+      // Ensure any staged data is on disk before the footer
+      logFlushInternal();
+
+      int n;
+
+      n = snprintf(line, sizeof(line), "# run_stats_begin\n");
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# samples_dropped=%lu\n",
+                   (unsigned long)s_samplesDropped);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# queue_max=%u\n", (unsigned)s_qMax);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# queue_depth=%u\n", (unsigned)SM_SAMPLE_QUEUE_DEPTH);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# flush_count=%lu\n",
+                   (unsigned long)s_flushCount);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# flush_max_ms=%lu\n",
+                   (unsigned long)s_flushMaxMs);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      double avgFlush = s_flushCount ? (double)s_flushTotalMs / (double)s_flushCount : 0.0;
+      n = snprintf(line, sizeof(line), "# flush_avg_ms=%.2f\n", avgFlush);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# flush_total_ms=%llu\n",
+                   (unsigned long long)s_flushTotalMs);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# buffer_size=%u\n", (unsigned)bufferSize);
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      n = snprintf(line, sizeof(line), "# run_stats_end\n");
+      if (n > 0) { logWriteInternal(line, (size_t)n); }
+
+      logFlushInternal();
+  }
+
+
+    
   if (isSpiBackend()) {
     logFile.close();
   } else {
@@ -504,7 +683,14 @@ void StorageManager_stopLog() {
   }
 
   loggingActive = false;
+  Serial.printf("[Storage] samplesDropped=%lu\n", (unsigned long)s_samplesDropped);
+  Serial.printf("[Storage] flushCount=%lu maxFlushMs=%lu avgFlushMs=%.2f\n", (unsigned long)s_flushCount, (unsigned long)s_flushMaxMs, s_flushCount ? (double)s_flushTotalMs / s_flushCount : 0.0);
+  Serial.printf("[Storage] qMax=%u/%u\n", s_qMax, SM_SAMPLE_QUEUE_DEPTH);
+
   Serial.println("Log file closed.");
+  
+  // Clear any leftover queued samples (we're no longer logging)
+  s_qHead = s_qTail = s_qCount = 0;
 }
 
 
@@ -627,20 +813,44 @@ void StorageManager_loop() {
   static unsigned long lastFlush = 0;
   unsigned long now = millis();
 
-    if (loggingActive && bufferIndex > 0) {
-        if ((now - lastFlush >= 1000) || (bufferIndex > bufferSize * 3 / 4)) {
+  // 1) Drain some queued samples into the CSV staging buffer
+  if (loggingActive) {
+      const uint8_t MAX_ROWS_PER_LOOP = 8;   // tune as needed
+      SampleRow row;
+      uint8_t processed = 0;
 
-            if (g_sdTrackEnabled) {
-            g_sdWriteSinceLastSample = true;
-            }
+      while (processed < MAX_ROWS_PER_LOOP && dequeueSample(row)) {
+          StorageManager_logCsvDynamic(row.ts_ms,
+                                        row.values,
+                                        row.nValues,
+                                        row.mark);
+          ++processed;
+      }
+  }
 
-            logWriteInternal(buffer, bufferIndex);
+  // 2) Periodic / threshold-based flush of the staging buffer to SD
+  if (loggingActive && bufferIndex > 0) {
+      if ((now - lastFlush >= 5000) || (bufferIndex > bufferSize * 9 / 10)) {
 
-            bufferIndex = 0;
-            lastFlush   = now;
-            //Serial.println("Buffer flushed to SD");
-        }
-    }
+          uint32_t t0 = millis();
+
+          if (g_sdTrackEnabled) {
+              g_sdWriteSinceLastSample = true;
+          }
+
+          logWriteInternal(buffer, bufferIndex);
+
+          uint32_t dt = millis() - t0;
+          ++s_flushCount;
+          s_flushTotalMs += dt;
+          if (dt > s_flushMaxMs) s_flushMaxMs = dt;
+
+          bufferIndex = 0;
+          lastFlush   = now;
+      }
+  }
+
 }
+
 
 

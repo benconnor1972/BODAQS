@@ -104,6 +104,10 @@ static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 void setup() {
   Serial.begin(115200);
 
+  //Buffer debug
+  static uint32_t g_sampleCounter = 0;
+
+
   RTCManager_setHumanReadable(true); // false = fast integer, true = readable
   StorageManager_begin(5);           // CS pin depends on your SD breakout
   gSd = StorageManager_getSd();      // <-- add this line
@@ -113,7 +117,7 @@ void setup() {
   Log_setLevel(LOG_DEBUG);
 
   StorageManager_setSampleRate(100);   // 100 Hz logging
-  StorageManager_setBufferSize(32768);  // 1 KB buffer
+  StorageManager_setBufferSize(65536);  // 1 KB buffer
 
   // UI / OLED defaults (fallbacks)
   g_cfg.uiTarget       = 1;     // serial
@@ -240,25 +244,16 @@ void setup() {
 }
 
 void loop() {
-
-    static unsigned long lastPrint = 0;
-  if (millis() - lastPrint > 1000) {
-    lastPrint = millis();
-    Serial.println("[MAIN] loop alive");
-  }
-
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
 
-  // Just log something tiny every 500ms so we see writes
-  static uint64_t t0 = millis();  // or millis() if easier
-  uint64_t now = millis();
-  StorageManager_loop();
+  //LoggingManager::loop();      // producer: fills StorageManager's sample queue
+  StorageManager_loop();       // consumer: formats & flushes to SD
+
   WebServerManager::loop();
   UI::loop();
   MenuSystem::loop();
-  LoggingManager::loop();
 }
 
 

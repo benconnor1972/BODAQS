@@ -14,6 +14,7 @@ void StorageManager_stopLog();
 void StorageManager_loop();
 void StorageManager_setCustomHeader(const char* csv);
 void StorageManager_logCsvDynamic(uint64_t ts_ms, const float* values, uint16_t n, bool mark);
+bool StorageManager_enqueueSample(uint64_t ts_ms, const float* values, uint16_t n, bool mark);
 
 bool StorageManager_loadTextFile(const char* path, String& out);
 bool StorageManager_saveTextFile(const char* path, const String& data);

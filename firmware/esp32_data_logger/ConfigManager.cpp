@@ -78,17 +78,17 @@ namespace {
   }
 
   // simple line reader for SdFat
-  static bool readLine(FsFile& f, char* buf, size_t cap) {
-    size_t n = 0; int c;
-    while (n < cap - 1 && (c = f.read()) >= 0) {
-      if (c == '\r') continue;
-      if (c == '\n') break;
-      buf[n++] = (char)c;
-    }
-    if (n == 0 && c < 0) return false;
-    buf[n] = '\0';
-    return true;
-  }
+//  static bool readLine(FsFile& f, char* buf, size_t cap) {
+//    size_t n = 0; int c;
+//    while (n < cap - 1 && (c = f.read()) >= 0) {
+//      if (c == '\r') continue;
+//      if (c == '\n') break;
+//      buf[n++] = (char)c;
+//    }
+//    if (n == 0 && c < 0) return false;
+//    buf[n] = '\0';
+//    return true;
+//  }
 
   // Convert a SensorType to a config-safe key like "analog_pot"
   static String typeKeyForSave(SensorType t) {
@@ -221,26 +221,28 @@ static void copyStrBoundedC_(const char* src, char* dst, size_t dstsz) {
 }
 
 void ConfigManager::begin(SdFat* sdRef, const char* filename) {
-  g_sd = sdRef;
+  // IMPORTANT: ConfigManager must not retain a SdFat pointer in SDMMC mode.
+  // StorageManager_getSd() returns nullptr when SDIO_SDMMC is active.
+  g_sd = nullptr;
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
+
   g_specCount = 0;
   g_expectedCount = 0;
+
   for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
     g_stores[i].clear();
     g_specs[i].params.bind(&g_stores[i]);
-    g_cals[i] = Calibration{};             // NEW: reset cal cache
-    g_calAllowed[i] = 0xFF;           // inherit by default
+    g_cals[i] = Calibration{};
+    g_calAllowed[i] = 0xFF;
   }
+
   g_buttonDefCount   = 0;
   g_bindingDefCount  = 0;
-  // Optionally clear contents (not strictly required if fully overwritten):
-  for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
-    g_buttonDefs[i] = ButtonDef{};
-  }
-  for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-    g_bindingDefs[i] = ButtonBindingDef{};
-  }
+
+  for (uint8_t i = 0; i < MAX_BUTTONS; ++i) g_buttonDefs[i] = ButtonDef{};
+  for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) g_bindingDefs[i] = ButtonBindingDef{};
 }
+
 
 void ConfigManager::trimInPlace(char* s) {
   if (!s) return;
@@ -725,120 +727,205 @@ bool ConfigManager::load(LoggerConfig& cfg) {
   return true;
 }
 
-
 bool ConfigManager::save(const LoggerConfig& cfg) {
-  if (!g_sd) return false;
+  Serial.println("[CFG] save: starting");
 
-  FsFile f;
-  if (!f.open(g_cfgName, O_WRONLY | O_CREAT | O_TRUNC)) return false;
+  String out;
+  out.reserve(4096);
 
-  // ---- globals ----
-  f.printf("# global\n");
-  f.printf("sample_rate_hz=%u\n", (unsigned)cfg.sampleRateHz);
-  f.printf("timestamp_mode=%s\n", cfg.timestampHuman ? "human" : "fast");
-  f.printf("tz=%s\n", cfg.tz);
-  f.printf("debounce_ms=%u\n", (unsigned)cfg.debounceMs);
+  auto NZ = [](const char* s) -> const char* { return s ? s : ""; };
 
-  f.printf("use_external_rtc=%s\n", cfg.useExternalRTC ? "true" : "false");
-  f.printf("\n");
-  
-  // new-style WiFi (multi-network)
-  f.printf("wifi_enabled_default=%s\n", cfg.wifiEnabledDefault ? "true" : "false");
-  f.printf("wifi_auto_time_on_rtc_invalid=%s\n", cfg.wifiAutoTimeOnRtcInvalid ? "true" : "false");
-  f.printf("wifi_network_count=%u\n", (unsigned)cfg.wifiNetworkCount);
+  auto line = [&](const char* s) {
+    out += s;
+    out += '\n';
+  };
 
-  for (uint8_t i = 0; i < 5; ++i) {
-    const auto& w = cfg.wifi[i];
-    f.printf("wifi%u.ssid=%s\n", i, w.ssid);
-    f.printf("wifi%u.password=%s\n", i, w.password);
-    if (w.minRssi != -127) f.printf("wifi%u.min_rssi=%d\n", i, (int)w.minRssi);
-    if (w.bssidSet) {
-      f.printf("wifi%u.bssid=%02X:%02X:%02X:%02X:%02X:%02X\n", i,
-               w.bssid[0], w.bssid[1], w.bssid[2], w.bssid[3], w.bssid[4], w.bssid[5]);
-    }
-    f.printf("wifi%u.hidden=%s\n", i, w.hidden ? "true" : "false");
-  }
-  f.printf("\n");
+  auto kv = [&](const char* key, const char* val) {
+    out += key;
+    out += '=';
+    out += NZ(val);
+    out += '\n';
+  };
 
-  
-  //f.printf("wifi_ssid=%s\n", cfg.wifiSSID);
-  //f.printf("wifi_password=%s\n", cfg.wifiPassword);
-  f.printf("ntp_servers=%s\n", cfg.ntpServers);
-  f.printf("time_check_url=%s\n", cfg.timeCheckUrl);
-  f.printf("wifi_ssid=%s\n",     cfg.wifiSSID);
-  f.printf("wifi_password=%s\n", cfg.wifiPassword);
-  f.printf("ntp_servers=%s\n",   cfg.ntpServers);
-  f.printf("time_check_url=%s\n",cfg.timeCheckUrl);
-  f.printf("\n");
-  f.printf("ui_target=%u\n",        (unsigned)cfg.uiTarget);
-  f.printf("ui_serial_level=%u\n",  (unsigned)cfg.uiSerialLevel);
-  f.printf("ui_oled_level=%u\n",    (unsigned)cfg.uiOledLevel);
-  f.printf("oled_brightness=%u\n",  (unsigned)cfg.oledBrightness);
-  f.printf("oled_idle_dim_ms=%u\n", (unsigned)cfg.oledIdleDimMs);
-  f.printf("\n");
+  auto kv_bool = [&](const char* key, bool v) {
+    out += key;
+    out += '=';
+    out += (v ? "true" : "false");
+    out += '\n';
+  };
 
-  // --- Buttons (hardware) ---
-  f.printf("# --- Buttons (hardware) ---\n");
-  for (uint8_t i = 0; i < cfg.buttonCount; ++i) {
+  auto kv_u = [&](const char* key, unsigned v) {
+    out += key;
+    out += '=';
+    out += String(v);
+    out += '\n';
+  };
+
+  auto kv_i = [&](const char* key, int v) {
+    out += key;
+    out += '=';
+    out += String(v);
+    out += '\n';
+  };
+
+  // Helper for "wifiN.xxx" / "sensorN.xxx"
+  auto kv_indexed = [&](const char* prefix, unsigned idx, const char* key, const char* val) {
+    out += prefix;
+    out += String(idx);
+    out += '.';
+    out += key;
+    out += '=';
+    out += NZ(val);
+    out += '\n';
+  };
+
+  auto kv_indexed_bool = [&](const char* prefix, unsigned idx, const char* key, bool v) {
+    out += prefix;
+    out += String(idx);
+    out += '.';
+    out += key;
+    out += '=';
+    out += (v ? "true" : "false");
+    out += '\n';
+  };
+
+auto kv_indexed_u = [&](const char* prefix, unsigned idx, const char* key, unsigned v) {
+  out += prefix;
+  out += String(idx);
+  out += '.';
+  out += key;
+  out += '=';
+  out += String(v);
+  out += '\n';
+};
+
+auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v) {
+  out += prefix;
+  out += String(idx);
+  out += '.';
+  out += key;
+  out += '=';
+  out += String(v);
+  out += '\n';
+};
+
+  // ---------------- Global ----------------
+  line("# global");
+  kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
+  kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
+  kv("tz", cfg.tz);
+  kv_u("debounce_ms", (unsigned)cfg.debounceMs);
+  kv_bool("use_external_rtc", cfg.useExternalRTC);
+  line("");
+
+  Serial.println("[CFG] save: globals ok");
+
+  // ---------------- Buttons ----------------
+  line("# buttons");
+  kv_u("button_count", (unsigned)cfg.buttonCount);
+
+  for (uint8_t i = 0; i < cfg.buttonCount && i < MAX_BUTTONS; ++i) {
     const ButtonDef& b = cfg.buttons[i];
+    kv_indexed("button", i, "id",         NZ(b.id));
 
-    // Skip completely empty entries (no id and pin 0)
-    if (!b.id[0] && b.pin == 0) continue;
-
-    f.printf("button%u.id=%s\n",        i, b.id);
-    f.printf("button%u.pin=%u\n",       i, (unsigned)b.pin);
-    f.printf("button%u.active_low=%u\n",i, b.activeLow ? 1u : 0u);
-    f.printf("button%u.mode=%s\n",      i, (b.mode == 1) ? "poll" : "interrupt");
-    f.printf("\n");
+    // numeric helpers:
+    out += "button"; out += String(i); out += ".pin=";        out += String((unsigned)b.pin); out += "\n";
+    out += "button"; out += String(i); out += ".active_low="; out += (b.activeLow ? "true" : "false"); out += "\n";
+    out += "button"; out += String(i); out += ".mode=";       out += String((unsigned)b.mode); out += "\n";
   }
-  f.printf("button_count=%u\n\n", (unsigned)cfg.buttonCount);
+  line("");
 
-  // --- Button bindings (logical actions) ---
-  f.printf("# --- Button bindings (logical actions) ---\n");
-  for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
+  // ---------------- Button bindings ----------------
+  line("# bindings");
+  kv_u("binding_count", (unsigned)cfg.buttonBindingCount);
+
+  for (uint8_t i = 0; i < cfg.buttonBindingCount && i < MAX_BUTTON_BINDINGS; ++i) {
     const ButtonBindingDef& bd = cfg.buttonBindings[i];
+    kv_indexed("binding", i, "button", NZ(bd.buttonId));
+    kv_indexed("binding", i, "event",  NZ(bd.event));
+    kv_indexed("binding", i, "action", NZ(bd.action));
+  }
+  line("");
 
-    // Skip completely empty rows
-    if (!bd.buttonId[0] && !bd.event[0] && !bd.action[0]) continue;
 
-    f.printf("binding%u.button=%s\n", i, bd.buttonId);
-    f.printf("binding%u.event=%s\n",  i, bd.event);
-    f.printf("binding%u.action=%s\n", i, bd.action);
-    f.printf("\n");
+  // ---------------- WiFi ----------------
+  kv_bool("wifi_enabled_default", cfg.wifiEnabledDefault);
+  kv_bool("wifi_auto_time_on_rtc_invalid", cfg.wifiAutoTimeOnRtcInvalid);
+  kv_u("wifi_network_count", (unsigned)cfg.wifiNetworkCount);
+
+  for (uint8_t i = 0; i < cfg.wifiNetworkCount; i++) {
+    const auto& w = cfg.wifi[i];
+
+    kv_indexed("wifi", i, "ssid",     w.ssid);
+    kv_indexed("wifi", i, "password", w.password);
+    kv_indexed_i("wifi", i, "min_rssi", (int)w.minRssi);
+    kv_indexed_bool("wifi", i, "hidden", w.hidden);
+
+    if (w.bssidSet) {
+      char bssidStr[18];
+      snprintf(bssidStr, sizeof(bssidStr),
+              "%02X:%02X:%02X:%02X:%02X:%02X",
+              w.bssid[0], w.bssid[1], w.bssid[2], w.bssid[3], w.bssid[4], w.bssid[5]);
+      kv_indexed("wifi", i, "bssid", bssidStr);
+    } else {
+      kv_indexed("wifi", i, "bssid", "");
+    }
   }
 
-  // ---- sensors ----
-  f.printf("# sensors\n");
-  // ... existing sensor output stays as-is ...
+
+  line("");
+
+  Serial.println("[CFG] save: wifi ok");
+
+  // ---------------- UI ----------------
+  kv_u("ui_target", (unsigned)cfg.uiTarget);
+  kv_u("ui_serial_level", (unsigned)cfg.uiSerialLevel);
+  kv_u("ui_oled_level", (unsigned)cfg.uiOledLevel);
+  kv_u("oled_brightness", (unsigned)cfg.oledBrightness);
+  kv_u("oled_idle_dim_ms", (unsigned)cfg.oledIdleDimMs);
+  line("");
 
 
-  // ---- sensors ----
-  f.printf("# sensors\n");
-  f.printf("sensor_count=%u\n\n", (unsigned)cfg.sensorCount());
+  // ---------------- Sensors ----------------
+  line("# sensors");
+  kv_u("sensor_count", (unsigned)cfg.sensorCount());
+  line("");
 
   const uint8_t n = cfg.sensorCount();
   for (uint8_t i = 0; i < n; ++i) {
-    const SensorSpec& sp = cfg.sensors[i];               // configured spec (POD copy)
-    String typeKey = typeKeyForSave(sp.type);
-    f.printf("sensor%u.type=%s\n", i, typeKey.c_str());
-    f.printf("sensor%u.name=%s\n",  i, sp.name);
-    f.printf("sensor%u.muted=%s\n", i, sp.mutedDefault ? "true" : "false");
+    const SensorSpec& sp = cfg.sensors[i];
 
-    // Params: enumerate from the active ParamStore slot i
-    const ParamStore* st = &g_stores[i];
-    const uint8_t cnt = st->size();
-    for (uint8_t k = 0; k < cnt; ++k) {
-      f.printf("sensor%u.%s=%s\n", i, st->keys[k], st->vals[k]);
+    String typeKey = typeKeyForSave(sp.type);
+    kv_indexed("sensor", i, "type", typeKey.c_str());
+    kv_indexed("sensor", i, "name",  NZ(sp.name));
+    kv_indexed_bool("sensor", i, "muted", sp.mutedDefault);
+
+    const ParamStore& st = g_stores[i];
+    for (uint8_t k = 0; k < st.size(); ++k) {
+      // Keys/vals are char*; make them null-safe
+      out += "sensor"; out += String(i); out += ".";
+      out += NZ(st.keys[k]);
+      out += "=";
+      out += NZ(st.vals[k]);
+      out += "\n";
     }
-    f.printf("\n");
+    line("");
   }
 
-  f.close();
+  Serial.println("[CFG] save: sensors ok");
 
-  // Keep the in-memory active copy synced
+  // ---------------- Persist ----------------
+  const bool ok = StorageManager_saveTextFile(g_cfgName, out);
+  if (!ok) {
+    Serial.println("[CFG] save: StorageManager_saveTextFile failed");
+    return false;
+  }
+
   s_cfg = cfg;
   return true;
 }
+
+
 
 void ConfigManager::print(const LoggerConfig& cfg) {
   Serial.println(F("[CFG] --- current config ---"));
@@ -984,36 +1071,33 @@ static void upsertKVLineFlat(String& content, const String& key, const String& v
 }
 
 bool ConfigManager::saveSensorParamByName(const char* sensorName, const char* key, const String& value) {
-  if (!g_sd || !sensorName || !*sensorName || !key || !*key) return false;
+  if (!sensorName || !*sensorName || !key || !*key) return false;
   int8_t idx = ConfigManager::findSensorByName(sensorName);
   if (idx < 0) return false;
   return ConfigManager::saveSensorParamByIndex((uint8_t)idx, key, value);
 }
 
+
 bool ConfigManager::saveSensorParamByIndex(uint8_t index, const char* key, const String& value) {
-  if (!g_sd || !key || !*key) return false;
+  if (!key || !*key) return false;
   if (index >= g_specCount) return false;
 
   // Build "sensorN.key"
   const String prefix  = String("sensor") + String((int)index) + ".";
   const String fullKey = prefix + key;
 
-  // Load entire file
-  FsFile f;
+  // Load entire file (backend-agnostic)
   String content;
-  if (f.open(g_cfgName, O_RDONLY)) {
-    char line[256];
-    while (readLine(f, line, sizeof(line))) { content += line; content += '\n'; }
-    f.close();
-  }
+  (void)StorageManager_loadTextFile(g_cfgName, content); // if missing, content stays empty
 
-  // Upsert the line (same helper used by saveCalibration)
+  // Ensure newline termination so upsert behaves nicely
+  if (content.length() && content[content.length() - 1] != '\n') content += '\n';
+
+  // Upsert the line (flat style)
   upsertKVLineFlat(content, fullKey, value);
 
-  // Write back atomically (truncate)
-  if (!f.open(g_cfgName, O_WRONLY | O_CREAT | O_TRUNC)) return false;
-  f.print(content);
-  f.close();
+  // Persist back (backend-agnostic)
+  if (!StorageManager_saveTextFile(g_cfgName, content)) return false;
 
   // Keep in-memory ParamStore in sync
   storeKV(index, key, value.c_str());
@@ -1021,41 +1105,44 @@ bool ConfigManager::saveSensorParamByIndex(uint8_t index, const char* key, const
 }
 
 
+
 bool ConfigManager::saveCalibration(const char* sensorName, const Calibration& cal) {
-  if (!g_sd || !sensorName || !*sensorName) return false;
+  if (!sensorName || !*sensorName) return false;
 
   // Locate index by name so we can write keys as "sensorN.xxx"
   int8_t idx = ConfigManager::findSensorByName(sensorName);
   if (idx < 0) return false;
+
   const String prefix = String("sensor") + String((int)idx) + ".";
 
-  // Load entire file
-  FsFile f;
+  // Load entire file (backend-agnostic)
   String content;
-  if (f.open(g_cfgName, O_RDONLY)) {
-    char line[256];
-    while (readLine(f, line, sizeof(line))) { content += line; content += '\n'; }
-    f.close();
-  }
+  (void)StorageManager_loadTextFile(g_cfgName, content);
+
+  if (content.length() && content[content.length() - 1] != '\n') content += '\n';
 
   // Upsert all calibration keys in flat style
   upsertKVLineFlat(content, prefix + "cal_enabled",    cal.enabled ? "1" : "0");
-  upsertKVLineFlat(content, prefix + "cal_mode",       String((int)(cal.mode == CalMode::RANGE ? 2 : (cal.mode == CalMode::ZERO ? 1 : 0))));
+
+  int modeInt = 0;
+  if (cal.mode == CalMode::ZERO)  modeInt = 1;
+  if (cal.mode == CalMode::RANGE) modeInt = 2;
+  upsertKVLineFlat(content, prefix + "cal_mode",       String(modeInt));
+
   upsertKVLineFlat(content, prefix + "r0_raw",         String(cal.r0_raw, 6));
   upsertKVLineFlat(content, prefix + "r1_raw",         String(cal.r1_raw, 6));
   upsertKVLineFlat(content, prefix + "capture_avg_ms", String(cal.capture_avg_ms));
   upsertKVLineFlat(content, prefix + "capture_n",      String(cal.capture_n));
   upsertKVLineFlat(content, prefix + "ts_epoch_ms",    String((unsigned long long)cal.ts_epoch_ms));
 
-  // Write back atomically (truncate)
-  if (!f.open(g_cfgName, O_WRONLY | O_CREAT | O_TRUNC)) return false;
-  f.print(content);
-  f.close();
+  // Persist back (backend-agnostic)
+  if (!StorageManager_saveTextFile(g_cfgName, content)) return false;
 
   // Update in-memory cache
   g_cals[(uint8_t)idx] = cal;
   return true;
 }
+
 
 bool ConfigManager::recomputeCalibrationFromUnits(const char* sensorName,
                                                   float u0_units, float u1_units) {
@@ -1188,25 +1275,28 @@ const LoggerConfig::WiFiEntry* ConfigManager::wifiNetworks(size_t& count) {
 
 
 void ConfigManager::debugDumpConfigFile() {
-  if (!g_sd) { Serial.println(F("[CFG] No SD mounted")); return; }
-  FsFile f;
-  Serial.print(F("[CFG] Opening file: ")); Serial.println(g_cfgName);
-  if (!f.open(g_cfgName, O_RDONLY)) { Serial.println(F("[CFG] open FAIL")); return; }
-  Serial.println(F("[CFG] --- file contents ---"));
-  char line[256];
-  while (true) {
-    size_t n = 0; int c;
-    while (n < sizeof(line)-1 && (c = f.read()) >= 0) {
-      if (c == '\r') continue;
-      if (c == '\n') break;
-      line[n++] = (char)c;
-    }
-    if (n == 0 && c < 0) break;
-    line[n] = '\0';
-    Serial.println(line);
-    if (c < 0) break;
+  String content;
+  Serial.print(F("[CFG] Opening file: "));
+  Serial.println(g_cfgName);
+
+  if (!StorageManager_loadTextFile(g_cfgName, content)) {
+    Serial.println(F("[CFG] open FAIL"));
+    return;
   }
-  f.close();
+
+  Serial.println(F("[CFG] --- file contents ---"));
+
+  // Print line-by-line to avoid one huge Serial.println() and match old behaviour
+  int start = 0;
+  while (start < (int)content.length()) {
+    int end = content.indexOf('\n', start);
+    if (end < 0) end = content.length();
+    String line = content.substring(start, end);
+    if (line.endsWith("\r")) line.remove(line.length() - 1);
+    Serial.println(line);
+    start = end + 1;
+  }
+
   Serial.println(F("[CFG] --- end file ---"));
 }
 
