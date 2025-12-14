@@ -13,8 +13,8 @@ enum class StorageBackendType {
 };
 
 // TEMP: manual selection
-//constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SDIO_SDMMC;
-constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SPI_SDFAT;
+constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SDIO_SDMMC;
+//constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SPI_SDFAT;
 
 
 
@@ -42,7 +42,7 @@ static uint64_t s_flushTotalMs  = 0;
 // --- Sample row queue for non-blocking sampling ---
 // Must match LoggingManager's float values[32] size.
 constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
-constexpr uint16_t SM_SAMPLE_QUEUE_DEPTH = 256;
+constexpr uint16_t SM_SAMPLE_QUEUE_DEPTH = 1024;
 
 struct SampleRow {
     uint64_t ts_ms;

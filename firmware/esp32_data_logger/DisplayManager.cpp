@@ -15,11 +15,11 @@ static constexpr uint8_t  OLED_H = 64;
 static constexpr int8_t   OLED_RST_PIN = -1; // no reset pin
 
 // Hardware defaults for SparkFun ESP32 Thing Plus:
-static constexpr int    OLED_SDA  = 21; // Thing Plus 
-static constexpr int    OLED_SCL  = 22; // Thing Plus
+//static constexpr int    OLED_SDA  = 21; // Thing Plus 
+//static constexpr int    OLED_SCL  = 22; // Thing Plus
 
-//static constexpr int    OLED_SDA  = 8; // Thing Plus S3
-//static constexpr int    OLED_SCL  = 9; // Thing Plus S3
+static constexpr int    OLED_SDA  = 8; // Thing Plus S3
+static constexpr int    OLED_SCL  = 9; // Thing Plus S3
 
 static constexpr uint8_t OLED_ADDR_PRIMARY   = 0x3C; // most 0.96" SSD1306
 static constexpr uint8_t OLED_ADDR_ALTERNATE = 0x3D; // some boards
