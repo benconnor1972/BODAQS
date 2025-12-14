@@ -681,37 +681,59 @@ void registerConfigRoutes(WebServer& srv) {
       setBool("use_external_rtc", tmp.useExternalRTC);
       // --- New-style logical buttons ---
       {
-        ButtonDef newButtons[MAX_BUTTONS];
+        // Clear existing (optional but helps avoid stale entries)
+        tmp.buttonCount = 0;
+        for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
+          tmp.buttons[i].id[0] = '\0';
+          tmp.buttons[i].pin = 0;
+          tmp.buttons[i].activeLow = true;
+          tmp.buttons[i].mode = 0;
+        }
+
+        auto getArgLast = [&](const char* key, String& out) -> bool {
+          bool found = false;
+          const int ac = srv.args();
+          for (int ai = 0; ai < ac; ++ai) {
+            if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; }
+          }
+          return found;
+        };
+
+        auto parseBool = [&](const String& s)->bool{
+          String v = s; v.trim(); v.toLowerCase();
+          return (v=="true"||v=="1"||v=="on"||v=="yes");
+        };
+
         uint8_t newButtonCount = 0;
 
         for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
-          String base   = String("button") + i + ".";
-          String keyId  = base + "id";
-          String keyPin = base + "pin";
-          String keyAct = base + "active_low";
-          String keyMode= base + "mode";
+          char keyId[24], keyPin[24], keyAct[32], keyMode[24];
+          snprintf(keyId,  sizeof(keyId),  "button%u.id",         (unsigned)i);
+          snprintf(keyPin, sizeof(keyPin), "button%u.pin",        (unsigned)i);
+          snprintf(keyAct, sizeof(keyAct), "button%u.active_low", (unsigned)i);
+          snprintf(keyMode,sizeof(keyMode),"button%u.mode",       (unsigned)i);
 
-          // If this row isn't in the POST at all (e.g. sensors form), skip it.
-          if (!srv.hasArg(keyId) && !srv.hasArg(keyPin) &&
-              !srv.hasArg(keyAct) && !srv.hasArg(keyMode)) {
-            continue;
-          }
+          String id, pin, act, mode;
 
-          String id  = srv.hasArg(keyId)  ? srv.arg(keyId)  : String("");
-          String pin = srv.hasArg(keyPin) ? srv.arg(keyPin) : String("");
+          const bool hasAny =
+            getArgLast(keyId, id)   |
+            getArgLast(keyPin, pin) |
+            getArgLast(keyAct, act) |
+            getArgLast(keyMode, mode);
+
+          if (!hasAny) continue;
+
           id.trim();
           pin.trim();
+          mode.trim(); mode.toLowerCase();
+          act.trim();
 
           // Completely blank row -> skip
-          if (!id.length() && !pin.length()) {
-            continue;
-          }
+          if (!id.length() && !pin.length()) continue;
 
           ButtonDef b{};
           // ID
-          if (id.length() >= (int)sizeof(b.id)) {
-            id = id.substring(0, sizeof(b.id) - 1);
-          }
+          if (id.length() >= (int)sizeof(b.id)) id = id.substring(0, sizeof(b.id) - 1);
           id.toCharArray(b.id, sizeof(b.id));
 
           // Pin
@@ -720,88 +742,85 @@ void registerConfigRoutes(WebServer& srv) {
           if (pv > 255) pv = 255;
           b.pin = (uint8_t)pv;
 
-          // active_low
-          bool activeLow = true;
-          if (srv.hasArg(keyAct)) {
-            String v = srv.arg(keyAct); v.trim(); v.toLowerCase();
-            activeLow = (v == "1" || v == "true" || v == "on" || v == "yes");
-          }
-          b.activeLow = activeLow;
+          // active_low (default true if absent)
+          b.activeLow = act.length() ? parseBool(act) : true;
 
           // mode
-          String mode = srv.hasArg(keyMode) ? srv.arg(keyMode) : String("");
-          mode.trim(); mode.toLowerCase();
-          if (mode == "poll") b.mode = 1;
-          else                b.mode = 0;
+          b.mode = (mode == "poll") ? 1 : 0;
 
           if (newButtonCount < MAX_BUTTONS) {
-            newButtons[newButtonCount++] = b;
+            tmp.buttons[newButtonCount++] = b;
           }
         }
 
-        // Commit into tmp
         tmp.buttonCount = newButtonCount;
-        for (uint8_t i = 0; i < newButtonCount; ++i) {
-          tmp.buttons[i] = newButtons[i];
-        }
-      }
-
-      // --- New-style button bindings ---
-      {
-        ButtonBindingDef newBindings[MAX_BUTTON_BINDINGS];
-        uint8_t newBindingCount = 0;
-
-        for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-          String base   = String("binding") + i + ".";
-          String keyBtn = base + "button";
-          String keyEvt = base + "event";
-          String keyAct = base + "action";
-
-          if (!srv.hasArg(keyBtn) && !srv.hasArg(keyEvt) && !srv.hasArg(keyAct)) {
-            continue;
-          }
-
-          String button = srv.hasArg(keyBtn) ? srv.arg(keyBtn) : String("");
-          String ev     = srv.hasArg(keyEvt) ? srv.arg(keyEvt) : String("");
-          String act    = srv.hasArg(keyAct) ? srv.arg(keyAct) : String("");
-
-          button.trim(); ev.trim(); act.trim();
-
-          // Completely blank row -> skip
-          if (!button.length() && !ev.length() && !act.length()) {
-            continue;
-          }
-
-          ButtonBindingDef bd{};
-
-          if (button.length() >= (int)sizeof(bd.buttonId))
-            button = button.substring(0, sizeof(bd.buttonId) - 1);
-          button.toCharArray(bd.buttonId, sizeof(bd.buttonId));
-
-          if (ev.length() >= (int)sizeof(bd.event))
-            ev = ev.substring(0, sizeof(bd.event) - 1);
-          ev.toCharArray(bd.event, sizeof(bd.event));
-
-          if (act.length() >= (int)sizeof(bd.action))
-            act = act.substring(0, sizeof(bd.action) - 1);
-          act.toCharArray(bd.action, sizeof(bd.action));
-
-          if (newBindingCount < MAX_BUTTON_BINDINGS) {
-            newBindings[newBindingCount++] = bd;
-          }
-        }
-
-        tmp.buttonBindingCount = newBindingCount;
-        for (uint8_t i = 0; i < newBindingCount; ++i) {
-          tmp.buttonBindings[i] = newBindings[i];
-        }
       }
     }
+    // --- New-style button bindings ---
+    {
+      // Clear existing (optional but helps avoid stale entries)
+      tmp.buttonBindingCount = 0;
+      for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+        tmp.buttonBindings[i].buttonId[0] = '\0';
+        tmp.buttonBindings[i].event[0] = '\0';
+        tmp.buttonBindings[i].action[0] = '\0';
+      }
 
+      auto getArgLast = [&](const char* key, String& out) -> bool {
+        bool found = false;
+        const int ac = srv.args();
+        for (int ai = 0; ai < ac; ++ai) {
+          if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; }
+        }
+        return found;
+      };
 
+      uint8_t newBindingCount = 0;
+
+      for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+        char keyBtn[28], keyEvt[28], keyAct[28];
+        snprintf(keyBtn, sizeof(keyBtn), "binding%u.button", (unsigned)i);
+        snprintf(keyEvt, sizeof(keyEvt), "binding%u.event",  (unsigned)i);
+        snprintf(keyAct, sizeof(keyAct), "binding%u.action", (unsigned)i);
+
+        String button, ev, act;
+
+        const bool hasAny =
+          getArgLast(keyBtn, button) |
+          getArgLast(keyEvt, ev)     |
+          getArgLast(keyAct, act);
+
+        if (!hasAny) continue;
+
+        button.trim(); ev.trim(); act.trim();
+
+        // Completely blank row -> skip
+        if (!button.length() && !ev.length() && !act.length()) continue;
+
+        ButtonBindingDef bd{};
+
+        if (button.length() >= (int)sizeof(bd.buttonId))
+          button = button.substring(0, sizeof(bd.buttonId) - 1);
+        button.toCharArray(bd.buttonId, sizeof(bd.buttonId));
+
+        if (ev.length() >= (int)sizeof(bd.event))
+          ev = ev.substring(0, sizeof(bd.event) - 1);
+        ev.toCharArray(bd.event, sizeof(bd.event));
+
+        if (act.length() >= (int)sizeof(bd.action))
+          act = act.substring(0, sizeof(bd.action) - 1);
+        act.toCharArray(bd.action, sizeof(bd.action));
+
+        if (newBindingCount < MAX_BUTTON_BINDINGS) {
+          tmp.buttonBindings[newBindingCount++] = bd;
+        }
+      }
+
+      tmp.buttonBindingCount = newBindingCount;
+    }
     // ---------- SENSORS ----------
     // enumerate current specs, mutate copies, and persist via ConfigManager helpers
-    const LoggerConfig current = ConfigManager::get();  // read-only view for enumeration
+    const LoggerConfig& current = ConfigManager::get();  // read-only view for enumeration
     const uint8_t count = current.sensorCount();
 
     for (uint8_t idx = 0; idx < count; ++idx) {
@@ -975,8 +994,13 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     // ---------- Persist full config ----------
+
+    Serial.printf("[WEB] saving tmp: buttons=%u bindings=%u\n",
+              (unsigned)tmp.buttonCount,
+              (unsigned)tmp.buttonBindingCount);
+              
     ConfigManager::save(tmp);           // writes file and updates active config
-    ConfigManager::debugDumpConfigFile();
+    //ConfigManager::debugDumpConfigFile();
 
     // Redirect back to GET with ok=1
     srv.sendHeader("Location", "/config?ok=1");

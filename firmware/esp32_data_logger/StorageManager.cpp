@@ -37,7 +37,6 @@ static char s_customHeader[160] = {0};
 static uint32_t s_flushCount    = 0;
 static uint32_t s_flushMaxMs    = 0;
 static uint64_t s_flushTotalMs  = 0;
-static uint16_t s_qMax = 0;
 
 
 // --- Sample row queue for non-blocking sampling ---
@@ -177,7 +176,8 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
 
     } else {
         // SDIO / SD_MMC backend
-        File f = SD_MMC.open(path, FILE_READ);
+        String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
+        File f = SD_MMC.open(absPath.c_str(), FILE_READ);
         if (!f) {
             Serial.print("[Storage] loadTextFile: SD_MMC open failed for ");
             Serial.println(path);
@@ -197,38 +197,70 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
 }
 
 bool StorageManager_saveTextFile(const char* path, const String& data) {
-    const char* cstr = data.c_str();
-    size_t len = data.length();
+  if (!path || !*path) return false;
 
-    if (isSpiBackend()) {
-        // SPI / SdFat backend
-        FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
-        if (!f) {
-            Serial.print("[Storage] saveTextFile: SPI open failed for ");
-            Serial.println(path);
-            return false;
-        }
-        size_t written = f.write((const uint8_t*)cstr, len);
-        f.close();
-        Serial.print("[Storage] saveTextFile: SPI wrote bytes=");
-        Serial.println(written);
-        return (written == len);
+  const char* cstr = data.c_str();
+  const size_t len = data.length();
 
-    } else {
-        // SDIO / SD_MMC backend
-        File f = SD_MMC.open(path, FILE_WRITE);  // FILE_WRITE = create/truncate
-        if (!f) {
-            Serial.print("[Storage] saveTextFile: SD_MMC open failed for ");
-            Serial.println(path);
-            return false;
-        }
-        size_t written = f.write((const uint8_t*)cstr, len);
-        f.close();
-        Serial.print("[Storage] saveTextFile: SD_MMC wrote bytes=");
-        Serial.println(written);
-        return (written == len);
+  if (isSpiBackend()) {
+    // -------- SPI / SdFat backend --------
+    FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (!f) {
+      Serial.print("[Storage] saveTextFile: SPI open failed for ");
+      Serial.println(path);
+      return false;
     }
+
+    size_t written = f.write((const uint8_t*)cstr, len);
+    f.flush();
+    f.close();
+
+    if (written != len) {
+      Serial.printf("[Storage] saveTextFile: SPI short write (%u/%u)\n",
+                    (unsigned)written, (unsigned)len);
+      return false;
+    }
+    return true;
+  }
+
+  // -------- SDMMC backend (SD_MMC / FS) --------
+  // Normalize to absolute path (SD_MMC expects paths like "/config.txt")
+  String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
+
+  // StorageManager_begin() already did SD_MMC.begin() on this backend.
+  // But we still guard against "no card".
+  if (SD_MMC.cardType() == CARD_NONE) {
+    Serial.println("[Storage] saveTextFile: SD_MMC not mounted / no card");
+    return false;
+  }
+
+  // Best-effort remove to simulate truncate (FILE_WRITE appends on ESP32)
+  // Only attempt remove if it exists, to avoid edge-case FS bugs.
+  if (SD_MMC.exists(absPath.c_str())) {
+    SD_MMC.remove(absPath.c_str());
+  }
+
+  File f = SD_MMC.open(absPath.c_str(), FILE_WRITE);
+  if (!f) {
+    Serial.print("[Storage] saveTextFile: SD_MMC open failed for ");
+    Serial.println(absPath);
+    return false;
+  }
+
+  size_t written = f.write((const uint8_t*)cstr, len);
+  f.flush();
+  f.close();
+
+  if (written != len) {
+    Serial.printf("[Storage] saveTextFile: SD_MMC short write (%u/%u)\n",
+                  (unsigned)written, (unsigned)len);
+    return false;
+  }
+
+  return true;
 }
+
+
 
 void StorageManager_begin(uint8_t csPin) {
   if (isSpiBackend()) {
