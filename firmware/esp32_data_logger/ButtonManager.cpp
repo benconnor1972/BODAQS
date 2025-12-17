@@ -2,9 +2,9 @@
 #include <Arduino.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "BoardProfile.h"
 
-#define MAX_BUTTONS 10
-static Button buttons[MAX_BUTTONS];
+static Button buttons[board::BOARD_MAX_BUTTONS];
 static int buttonCount = 0;
 static bool s_pollingEnabled = true;
 static uint32_t s_pollIntervalMs = 8;  // throttle so we don’t scan every loop() tick
@@ -21,16 +21,16 @@ void ButtonManager_setPollIntervalMs(uint32_t ms)  { s_pollIntervalMs = ms ? ms 
 
 
 // Per-button hold tracking (kept here to avoid changing the header)
-static unsigned long s_pressStartMs[MAX_BUTTONS] = {0};
-static bool          s_heldPosted [MAX_BUTTONS] = {0};
+static unsigned long s_pressStartMs[board::BOARD_MAX_BUTTONS] = {0};
+static bool          s_heldPosted [board::BOARD_MAX_BUTTONS] = {0};
 
 // --- Double-click configuration ---
 static const unsigned long DOUBLE_CLICK_WINDOW_MS = 350;  // tweak to taste
 
 // Per-button double-click tracking
-static unsigned long s_lastReleaseMs     [MAX_BUTTONS] = {0};
-static uint8_t       s_clickCount        [MAX_BUTTONS] = {0};
-static bool          s_singleClickPending[MAX_BUTTONS] = {0};
+static unsigned long s_lastReleaseMs     [board::BOARD_MAX_BUTTONS] = {0};
+static uint8_t       s_clickCount        [board::BOARD_MAX_BUTTONS] = {0};
+static bool          s_singleClickPending[board::BOARD_MAX_BUTTONS] = {0};
 
 // Forward ISR declaration
 void IRAM_ATTR handleButtonInterrupt(void* arg);
@@ -84,7 +84,7 @@ static inline int indexOf_(const Button* ptr) {
 }
 
 void ButtonManager_register(uint8_t pin, ButtonMode mode, unsigned long debounceDelay, ButtonCallback cb) {
-  if (buttonCount >= MAX_BUTTONS) return;
+  if (buttonCount >= board::BOARD_MAX_BUTTONS) return;
 
   // Active-LOW wiring assumed: use pull-up
   pinMode(pin, INPUT_PULLUP);

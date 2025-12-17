@@ -154,8 +154,8 @@ void registerConfigRoutes(WebServer& srv) {
     html += htmlEscape(String(cfg.timeCheckUrl));
     html += F("'"); html += dis; html += F("></fieldset>");
 
-    // ---------- Buttons & options ----------
-    html += F("<fieldset><legend>Buttons & Options</legend>");
+    // ---------- Options ----------
+    html += F("<fieldset><legend>Options</legend>");
     auto num = [&](const char* label, const char* name, int v){
       html += "<label>"; html += label; html += ": </label><input type='number' name='";
       html += name; html += "' min='0' max='39' value='"; html += String(v); html += "'"; html += dis; html += "><br>";
@@ -168,70 +168,6 @@ void registerConfigRoutes(WebServer& srv) {
     if (cfg.useExternalRTC) html += F(" checked");
     if (locked) html += F(" disabled");
     html += F("> Use external RTC </label>");
-    html += F("</fieldset>");
-
-    // ---------- Logical buttons (new) ----------
-    html += F("<fieldset><legend>Logical buttons (new)</legend>");
-    html += F("<p><small>These define named buttons (ID + pin + mode). "
-              "ID is referenced by bindings below.</small></p>");
-
-    for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
-      const ButtonDef& b = (i < cfg.buttonCount) ? cfg.buttons[i] : ButtonDef{};
-
-      html += F("<fieldset><legend>Button ");
-      html += String(i);
-      html += F("</legend>");
-
-      // ID
-      html += F("<div class='row'><label>ID</label>");
-      html += F("<input type='text' name='button");
-      html += String(i);
-      html += F(".id' value='");
-      html += htmlEscape(String(b.id));
-      html += F("'");
-      html += dis;
-      html += F("></div>");
-
-      // Pin
-      html += F("<div class='row'><label>Pin</label>");
-      html += F("<input type='number' min='0' max='39' name='button");
-      html += String(i);
-      html += F(".pin' value='");
-      html += String((int)b.pin);
-      html += F("'");
-      html += dis;
-      html += F("></div>");
-
-      // Active low
-      html += F("<div class='row'><label>Active low</label>");
-      // hidden default = false
-      html += F("<input type='hidden' name='button");
-      html += String(i);
-      html += F(".active_low' value='0'>");
-      html += F("<input type='checkbox' name='button");
-      html += String(i);
-      html += F(".active_low' value='1'");
-      if (b.activeLow) html += F(" checked");
-      if (locked)      html += F(" disabled");
-      html += F("></div>");
-
-      // Mode
-      html += F("<div class='row'><label>Mode</label>");
-      html += F("<select name='button");
-      html += String(i);
-      html += F(".mode'");
-      if (locked) html += F(" disabled");
-      html += F(">");
-      html += F("<option value='interrupt'");
-      if (b.mode == 0) html += F(" selected");
-      html += F(">interrupt</option>");
-      html += F("<option value='poll'");
-      if (b.mode == 1) html += F(" selected");
-      html += F(">poll</option>");
-      html += F("</select></div>");
-
-      html += F("</fieldset>");
-    }
     html += F("</fieldset>");
 
     // ---------- Button bindings (new) ----------
@@ -679,82 +615,6 @@ void registerConfigRoutes(WebServer& srv) {
 
       setU16("debounce_ms",    tmp.debounceMs);
       setBool("use_external_rtc", tmp.useExternalRTC);
-      // --- New-style logical buttons ---
-      {
-        // Clear existing (optional but helps avoid stale entries)
-        tmp.buttonCount = 0;
-        for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
-          tmp.buttons[i].id[0] = '\0';
-          tmp.buttons[i].pin = 0;
-          tmp.buttons[i].activeLow = true;
-          tmp.buttons[i].mode = 0;
-        }
-
-        auto getArgLast = [&](const char* key, String& out) -> bool {
-          bool found = false;
-          const int ac = srv.args();
-          for (int ai = 0; ai < ac; ++ai) {
-            if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; }
-          }
-          return found;
-        };
-
-        auto parseBool = [&](const String& s)->bool{
-          String v = s; v.trim(); v.toLowerCase();
-          return (v=="true"||v=="1"||v=="on"||v=="yes");
-        };
-
-        uint8_t newButtonCount = 0;
-
-        for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
-          char keyId[24], keyPin[24], keyAct[32], keyMode[24];
-          snprintf(keyId,  sizeof(keyId),  "button%u.id",         (unsigned)i);
-          snprintf(keyPin, sizeof(keyPin), "button%u.pin",        (unsigned)i);
-          snprintf(keyAct, sizeof(keyAct), "button%u.active_low", (unsigned)i);
-          snprintf(keyMode,sizeof(keyMode),"button%u.mode",       (unsigned)i);
-
-          String id, pin, act, mode;
-
-          const bool hasAny =
-            getArgLast(keyId, id)   |
-            getArgLast(keyPin, pin) |
-            getArgLast(keyAct, act) |
-            getArgLast(keyMode, mode);
-
-          if (!hasAny) continue;
-
-          id.trim();
-          pin.trim();
-          mode.trim(); mode.toLowerCase();
-          act.trim();
-
-          // Completely blank row -> skip
-          if (!id.length() && !pin.length()) continue;
-
-          ButtonDef b{};
-          // ID
-          if (id.length() >= (int)sizeof(b.id)) id = id.substring(0, sizeof(b.id) - 1);
-          id.toCharArray(b.id, sizeof(b.id));
-
-          // Pin
-          long pv = pin.length() ? pin.toInt() : 0;
-          if (pv < 0) pv = 0;
-          if (pv > 255) pv = 255;
-          b.pin = (uint8_t)pv;
-
-          // active_low (default true if absent)
-          b.activeLow = act.length() ? parseBool(act) : true;
-
-          // mode
-          b.mode = (mode == "poll") ? 1 : 0;
-
-          if (newButtonCount < MAX_BUTTONS) {
-            tmp.buttons[newButtonCount++] = b;
-          }
-        }
-
-        tmp.buttonCount = newButtonCount;
-      }
     }
     // --- New-style button bindings ---
     {
@@ -995,8 +855,7 @@ void registerConfigRoutes(WebServer& srv) {
 
     // ---------- Persist full config ----------
 
-    Serial.printf("[WEB] saving tmp: buttons=%u bindings=%u\n",
-              (unsigned)tmp.buttonCount,
+    Serial.printf("[WEB] saving tmp: bindings=%u\n",
               (unsigned)tmp.buttonBindingCount);
               
     ConfigManager::save(tmp);           // writes file and updates active config

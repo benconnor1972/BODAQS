@@ -3,12 +3,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
-namespace bodaqs {
+namespace board {
+
+static constexpr uint8_t BOARD_MAX_BUTTONS = 6;
 
 // ---------- IDs / Types ----------
 enum class BoardID : uint8_t {
-  ThingPlusS3_Base = 0,
-  ThingPlusS3_CloneA,
+  ThingPlusS3_BODAQS_4_D = 0,
+  ThingPlus_A,
   // Add more here...
 };
 
@@ -16,6 +18,7 @@ enum class StorageType : uint8_t { None, SPI_SdFat, SDMMC };
 enum class DisplayType : uint8_t { None, OLED_SSD1306 };
 enum class FuelGaugeType : uint8_t { None, MAX17048, Other };
 enum class ButtonID : uint8_t { BTN0=0, BTN1, BTN2, BTN3, BTN4, BTN5, Count };
+enum class ButtonMode : uint8_t {Interrupt = 0, Poll = 1 };
 
 // ---------- Sub-profiles ----------
 
@@ -30,11 +33,19 @@ struct StorageProfile {
 
   // SDMMC configuration
   bool sdmmc_1bit = true;          // if you use SD_MMC 1-bit mode
+  int8_t sdmmc_clk = -1;
+  int8_t sdmmc_cmd = -1;
+  int8_t sdmmc_d0  = -1;
+  int8_t sdmmc_d1  = -1;   // optional (4-bit)
+  int8_t sdmmc_d2  = -1;   // optional (4-bit)
+  int8_t sdmmc_d3  = -1;   // optional (4-bit)
 };
 
 struct ButtonHW {
+  char id[16];
   bool present = false;
   int8_t pin = -1;
+  uint8_t mode = 0; // 0 = interrupt, 1 = poll 
   bool active_low = true;
   bool use_internal_pullup = true;
 };
@@ -48,9 +59,6 @@ struct DisplayProfile {
   DisplayType type = DisplayType::None;
 
   // If using I2C OLED
-  int8_t sda = -1, scl = -1;
-  uint32_t i2c_hz = 400000;
-
   uint8_t addr_primary = 0x3C;
   uint8_t addr_alt     = 0x3D;
 
@@ -125,4 +133,4 @@ struct BoardProfile {
 const BoardProfile& GetBoardProfile(BoardID id);
 const BoardProfile& GetBoardProfileByName(const char* name); // exact match (case-sensitive)
 
-} // namespace bodaqs
+} // namespace board

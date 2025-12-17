@@ -2,7 +2,7 @@
 #include "BoardProfile.h"
 #include <string.h> // strcmp
 
-namespace bodaqs {
+namespace board {
 
 // Helper for defining CS list
 static SPIProfile MakeSPI(bool present, int8_t sck, int8_t miso, int8_t mosi,
@@ -27,28 +27,71 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .storage = {
     // Choose one. If you’re using microSD over SPI breakout / socket on carrier:
     .type = StorageType::SDMMC,
-
-    // PLACEHOLDERS — set to your actual wiring / pins.
-    .spi_host = 2,         // VSPI
-    .sck = -1, .miso = -1, .mosi = -1,
-    .cs = -1,
-    .spi_hz = 20000000,
-
-    // If you later use SDMMC (SD_MMC), flip type and set sdmmc_1bit accordingly.
-    .sdmmc_1bit = true
+    .sdmmc_1bit = true,
+    .sdmmc_clk = 38,
+    .sdmmc_cmd = 34,
+    .sdmmc_d0  = 39,
   },
 
   .display = {
     .type = DisplayType::OLED_SSD1306,
 
-    // PLACEHOLDERS — set to the Thing Plus S3 I2C pins you’re actually using.
-    .sda = -1,
-    .scl = -1,
-    .i2c_hz = 400000,
-
     .addr_primary = 0x3C,
     .addr_alt     = 0x3D,
     .rst = -1
+  },
+
+  .buttons = {
+    .btn = {
+      // button0.id=nav_up,   pin=6, mode=poll
+      { .id="nav_up",
+        .present=true,
+        .pin=6,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button1.id=nav_down, pin=7, mode=poll
+      { .id="nav_down",
+        .present=true,
+        .pin=7,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button2.id=nav_left, pin=4, mode=poll
+      { .id="nav_left",
+        .present=true,
+        .pin=4,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button3.id=nav_right, pin=5, mode=poll
+      { .id="nav_right",
+        .present=true,
+        .pin=5,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button4.id=nav_enter, pin=21, mode=interrupt
+      { .id="nav_enter",
+        .present=true,
+        .pin=21,
+        .mode=0,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button5.id=mark, pin=2, mode=interrupt
+      { .id="mark",
+        .present=true,
+        .pin=2,
+        .mode=0,
+        .active_low=true,
+        .use_internal_pullup=true },
+    },
+    .count = 6,
   },
 
   .fuel = {
@@ -70,8 +113,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .i2c = {
     // If you have I2C available, set present=true and pins above.
     .present = true,
-    .sda = -1,
-    .scl = -1,
+    .sda = 8,
+    .scl = 9,
     .hz  = 400000
   },
 
@@ -87,7 +130,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
   .indicators = {
     // PLACEHOLDERS
-    .has_led = true,
+    .has_led = false,
     .led_pin = -1,
     .led_active_high = true,
 
@@ -98,25 +141,24 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
   .perf = {
     // Reasonable defaults; tweak per board / PSRAM availability / SD speed.
-    .queue_depth = 128,
-    .ring_buffer_bytes = 16384
+    .queue_depth = 1024,
+    .ring_buffer_bytes = 65536
   }
 };
 
 // -----------------------------------------------------------------------------
-// Board: SparkFun ESP32 Thing Plus S3 (Clone A)
-// (Use this as your “logger carrier / new PCB” profile and tweak freely.)
+// Board: SparkFun ESP32 Thing Plus 
 // -----------------------------------------------------------------------------
-static const BoardProfile THING_PLUS_S3_CLONE_A = {
-  .name = "SparkFun ESP32 Thing Plus S3 (Clone A)",
+static const BoardProfile THING_PLUS_A = {
+  .name = "SparkFun ESP32 Thing Plus (Stripboard proto A)",
 
   .storage = {
     .type = StorageType::SPI_SdFat,
     .spi_host = 2,
 
     // Example placeholders — replace with your carrier's microSD SPI wiring.
-    .sck = -1, .miso = -1, .mosi = -1,
-    .cs  = -1,
+    .sck = 18, .miso = 19, .mosi = -23,
+    .cs  = 5,
     .spi_hz = 25000000,
 
     .sdmmc_1bit = true
@@ -126,13 +168,62 @@ static const BoardProfile THING_PLUS_S3_CLONE_A = {
     // Maybe you omit the OLED on this variant:
     .type = DisplayType::None,
 
-    // Still keep pins in case you later enable an OLED.
-    .sda = -1, .scl = -1,
-    .i2c_hz = 400000,
-
     .addr_primary = 0x3C,
     .addr_alt     = 0x3D,
     .rst = -1
+  },
+
+  .buttons = {
+    .btn = {
+      // button0.id=nav_up,   pin=32, mode=poll
+      { .id="nav_up",
+        .present=true,
+        .pin=32,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button1.id=nav_down, pin=15, mode=poll
+      { .id="nav_down",
+        .present=true,
+        .pin=15,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button2.id=nav_left, pin=12, mode=poll
+      { .id="nav_left",
+        .present=true,
+        .pin=12,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button3.id=nav_right, pin=33, mode=poll
+      { .id="nav_right",
+        .present=true,
+        .pin=33,
+        .mode=1,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button4.id=nav_enter, pin=13, mode=interrupt
+      { .id="nav_enter",
+        .present=true,
+        .pin=13,
+        .mode=0,
+        .active_low=true,
+        .use_internal_pullup=true },
+
+      // button5.id=mark, pin=14, mode=interrupt
+      { .id="mark",
+        .present=true,
+        .pin=14,
+        .mode=0,
+        .active_low=true,
+        .use_internal_pullup=true },
+    },
+    .count = 6,
   },
 
   .fuel = {
@@ -153,8 +244,8 @@ static const BoardProfile THING_PLUS_S3_CLONE_A = {
 
   .i2c = {
     .present = true,
-    .sda = -1,
-    .scl = -1,
+    .sda = 21,
+    .scl = 22,
     .hz  = 400000
   },
 
@@ -180,8 +271,8 @@ static const BoardProfile THING_PLUS_S3_CLONE_A = {
 
   .perf = {
     // Slightly larger for “better” storage / PSRAM builds
-    .queue_depth = 192,
-    .ring_buffer_bytes = 32768
+    .queue_depth = 256,
+    .ring_buffer_bytes = 65536
   }
 };
 
@@ -190,19 +281,19 @@ static const BoardProfile THING_PLUS_S3_CLONE_A = {
 // -----------------------------------------------------------------------------
 const BoardProfile& GetBoardProfile(BoardID id) {
   switch (id) {
-    case BoardID::ThingPlusS3_Base:   return THING_PLUS_S3_BASE;
-    case BoardID::ThingPlusS3_CloneA: return THING_PLUS_S3_CLONE_A;
-    default:                          return THING_PLUS_S3_BASE;
+    case BoardID::ThingPlusS3_BODAQS_4_D:   return THING_PLUS_S3_BODAQS_4_D;
+    case BoardID::ThingPlus_A: return THING_PLUS_A;
+    default:                          return THING_PLUS_S3_BODAQS_4_D;
   }
 }
 
 const BoardProfile& GetBoardProfileByName(const char* name) {
-  if (!name) return THING_PLUS_S3_BASE;
+  if (!name) return THING_PLUS_S3_BODAQS_4_D;
 
-  if (strcmp(name, THING_PLUS_S3_BASE.name) == 0)   return THING_PLUS_S3_BASE;
-  if (strcmp(name, THING_PLUS_S3_CLONE_A.name) == 0) return THING_PLUS_S3_CLONE_A;
+  if (strcmp(name, THING_PLUS_S3_BODAQS_4_D.name) == 0)   return THING_PLUS_S3_BODAQS_4_D;
+  if (strcmp(name, THING_PLUS_A.name) == 0) return THING_PLUS_A;
 
-  return THING_PLUS_S3_BASE;
+  return THING_PLUS_S3_BODAQS_4_D;
 }
 
-} // namespace bodaqs
+} // namespace board
