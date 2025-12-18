@@ -9,6 +9,7 @@
 #include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "WebServerManager.h"  // for canStart()
+#include "BoardSelect.h" 
 
 using namespace HtmlUtil;
 
@@ -37,8 +38,37 @@ void registerConfigRoutes(WebServer& srv) {
                 "</p>");
     }
 
+    // Status banner
+    if (srv.hasArg("ok")) {
+      html += "<p class='ok'>Configuration saved</p>";
+    }
+
+    // ---- ERROR banner (board-aware validation) ----
+    if (srv.hasArg("err")) {
+      String err = srv.arg("err");
+      String s   = srv.hasArg("sensor") ? srv.arg("sensor") : "";
+      String ain = srv.hasArg("ain")    ? srv.arg("ain")    : "";
+
+      html += "<p style='background:#ffe7e7;border:1px solid #e57373;";
+      html += "padding:8px;border-radius:6px'>";
+      html += "Error: " + htmlEscape(err);
+
+      if (s.length()) {
+        html += " (sensor ";
+        html += htmlEscape(s);
+        html += ")";
+      }
+      if (ain.length()) {
+        html += ", ain=";
+        html += htmlEscape(ain);
+      }
+      html += "</p>";
+    }
+
+
     // ---------- GLOBALS ----------
     html += F("<h2>Configuration</h2><form method='POST' action='/config'>");
+    html += F("<input type='hidden' name='submit' value='globals'>"); //Hidden input
 
     html += F("<fieldset><legend>Sampling & Time</legend>");
     html += F("<label>Sample rate (Hz): </label><input type='number' name='sample_rate_hz' min='1' max='2000' value='");
@@ -227,6 +257,7 @@ void registerConfigRoutes(WebServer& srv) {
       html += F("<p><em>No sensors configured.</em></p>");
     } else {
       html += F("<form method='POST' action='/config'>");
+      html += F("<input type='hidden' name='submit' value='sensors'>");
 
       for (uint8_t i = 0; i < n; ++i) {
         SensorSpec sp; 
@@ -309,7 +340,52 @@ void registerConfigRoutes(WebServer& srv) {
         html += typeLabelStr;
         html += "'"; if (locked) html += " disabled"; html += "></div>";
 
-        emitParamRow("pin", "Pin");
+        // Board-aware Analog Input selector (AIN ordinal)
+        {
+          const ParamDef* pd = findDef("ain");
+          if (pd) {
+            String field = String("s") + i + ".ain";
+            long curAin = -1;
+            sp.params.getInt("ain", curAin);
+
+            html += "<div class='row'><label>Analog input</label>";
+
+            if (!board::gBoard) {
+              html += "<em>No active board profile</em>";
+            } else {
+              const auto& bp = *board::gBoard;
+              if (bp.analog.count == 0) {
+                html += "<em>No analog inputs on this board</em>";
+              } else {
+                html += "<select name='" + field + "'";
+                if (locked) html += " disabled";
+                html += ">";
+
+                // Optional: allow “unset” (forces validation failure on save if required)
+                html += "<option value='-1'";
+                if (curAin < 0) html += " selected";
+                html += ">-- select --</option>";
+
+                for (uint8_t ai = 0; ai < bp.analog.count; ++ai) {
+                  const int pin = bp.analog.pins[ai];
+                  // Only show valid entries
+                  if (pin < 0) continue;
+
+                  html += "<option value='"; html += String((int)ai); html += "'";
+                  if ((long)ai == curAin) html += " selected";
+                  html += ">";
+                  html += "AIN"; html += String((int)ai);
+                  html += " (GPIO"; html += String(pin); html += ")";
+                  html += "</option>";
+                }
+
+                html += "</select>";
+              }
+            }
+
+            html += "</div>";
+          }
+        }
 
         // Muted by default
         {
@@ -415,7 +491,7 @@ void registerConfigRoutes(WebServer& srv) {
 
         // (Optional) render remaining params under "Other"
         const char* shown[] = {
-          "pin","muted",
+          "ain","muted",
           "output_mode","include_raw","sensor_full_travel_mm","units_label",
           "cal_allowed","sensor_zero_count","sensor_full_count","invert",
           "ema_alpha","deadband"
@@ -545,6 +621,14 @@ void registerConfigRoutes(WebServer& srv) {
       return;
     }
 
+    String submit = srv.hasArg("submit") ? srv.arg("submit") : "";
+    submit.toLowerCase();
+
+    if (submit != "globals" && submit != "sensors") {
+      srv.send(400, F("text/plain"), F("Unknown submit section"));
+      return;
+    }
+
     // Working copy we will persist at the end
     LoggerConfig tmp = ConfigManager::get();
 
@@ -618,13 +702,14 @@ void registerConfigRoutes(WebServer& srv) {
     }
     // --- New-style button bindings ---
     {
-      // Clear existing (optional but helps avoid stale entries)
+    if (submit == "globals") {
       tmp.buttonBindingCount = 0;
       for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
         tmp.buttonBindings[i].buttonId[0] = '\0';
-        tmp.buttonBindings[i].event[0] = '\0';
-        tmp.buttonBindings[i].action[0] = '\0';
+        tmp.buttonBindings[i].event[0]    = '\0';
+        tmp.buttonBindings[i].action[0]   = '\0';
       }
+  
 
       auto getArgLast = [&](const char* key, String& out) -> bool {
         bool found = false;
@@ -683,186 +768,216 @@ void registerConfigRoutes(WebServer& srv) {
     const LoggerConfig& current = ConfigManager::get();  // read-only view for enumeration
     const uint8_t count = current.sensorCount();
 
-    for (uint8_t idx = 0; idx < count; ++idx) {
-      SensorSpec sp;
-      if (!current.getSensorSpec(idx, sp)) continue;
+    if (submit == "sensors") {
 
-      const String pfx = String("s") + idx + ".";
+      for (uint8_t idx = 0; idx < count; ++idx) {
+        SensorSpec sp;
+        if (!current.getSensorSpec(idx, sp)) continue;
 
-      auto getArgLast = [&](const char* key, String& out) -> bool {
-        const String full = pfx + key;
-        bool found = false; const int ac = srv.args();
-        for (int ai = 0; ai < ac; ++ai) {
-          if (srv.argName(ai) == full) { out = srv.arg(ai); found = true; }
-        }
-        return found;
-      };
-      auto getBoolLast = [&](const char* key, bool& out)->bool{
-        String v; if (!getArgLast(key, v)) return false; v.trim(); v.toLowerCase();
-        out = (v=="true"||v=="1"||v=="on"); return true;
-      };
+        const String pfx = String("s") + idx + ".";
 
-      // Basic
-      {
-        String v;
-        if (getArgLast("name", v)) { v.trim(); if (v.length()) v.toCharArray(sp.name, sizeof(sp.name)); }
-        bool mb=false; if (getBoolLast("muted", mb)) sp.mutedDefault = mb;
-      }
-
-      // Output
-      {
-        String v;
-
-        long oldOm = 0; sp.params.getInt("output_mode", oldOm);
-        long newOm = oldOm; bool omChanged = false;
-
-        if (getArgLast("output_mode", v)) {
-          v.trim(); v.toUpperCase();
-          long vi = v.toInt();
-          if      (v=="RAW"||vi==0) newOm=0;
-          else if (v=="LINEAR"||vi==1) newOm=1;
-          else if (v=="POLY"||vi==2) newOm=2;
-          else if (v=="LUT"||vi==3) newOm=3;
-          if (newOm != oldOm) omChanged = true;
-          sp.params.setInt("output_mode", newOm);
-        }
-
-        { bool inc=false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
-        if (getArgLast("units_label", v))           sp.params.set("units_label", v);
-        if (getArgLast("sensor_full_travel_mm", v)) sp.params.set("sensor_full_travel_mm", v);
-
-        // Persist selected transform id if posted
-        if (getArgLast("output_id", v)) {
-          v.trim();
-          sp.params.set("output_id", v);
-          ConfigManager::saveSensorParamByIndex(idx, "output_id", v);
-        }
-        sp.params.setBool("__om_changed", omChanged);
-      }
-
-      // Calibration
-      {
-        String v;
-        if (getArgLast("cal_allowed", v)) {
-          CalModeMask m = 0xFF; v.trim();
-          if (v.length()) {
-            m = 0; int start=0;
-            while (start < v.length()) {
-              int comma = v.indexOf(',', start);
-              String tok = (comma < 0) ? v.substring(start) : v.substring(start, comma);
-              tok.trim(); tok.toUpperCase();
-              if      (tok == "ZERO")  m |= CAL_ZERO;
-              else if (tok == "RANGE") m |= CAL_RANGE;
-              start = (comma < 0) ? v.length() : comma + 1;
-            }
+        auto getArgLast = [&](const char* key, String& out) -> bool {
+          const String full = pfx + key;
+          bool found = false; const int ac = srv.args();
+          for (int ai = 0; ai < ac; ++ai) {
+            if (srv.argName(ai) == full) { out = srv.arg(ai); found = true; }
           }
-          ConfigManager::setCalAllowedByIndex(idx, m);
-        }
-        if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
-        if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
-        { bool inv=false; if (getBoolLast("invert", inv)) sp.params.setBool("invert", inv); }
-      }
+          return found;
+        };
+        auto getBoolLast = [&](const char* key, bool& out)->bool{
+          String v; if (!getArgLast(key, v)) return false; v.trim(); v.toLowerCase();
+          out = (v=="true"||v=="1"||v=="on"); return true;
+        };
 
-      // Smoothing
-      {
-        String v;
-        if (getArgLast("ema_alpha", v)) { double f = v.toFloat(); sp.params.setFloat("ema_alpha", (float)f); }
-        if (getArgLast("deadband", v))  { long   i = v.toInt();  sp.params.setInt("deadband", (long)i); }
-      }
-
-      // Generic ParamDefs pass (remaining keys defined by the sensor)
-      int ac = srv.args();
-      for (int ai = 0; ai < ac; ++ai) {
-        const String argName = srv.argName(ai);
-        if (!argName.startsWith(pfx)) continue;
-        const String pkey = argName.substring(pfx.length());
-        const String val  = srv.arg(ai);
-
-        if (pkey.equalsIgnoreCase("name") || pkey.equalsIgnoreCase("muted") ||
-            pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
-            pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
-            pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
-            pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("invert") ||
-            pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
-            pkey.equalsIgnoreCase("pin")) {
-          continue;
+        // Basic
+        {
+          String v;
+          if (getArgLast("name", v)) { v.trim(); if (v.length()) v.toCharArray(sp.name, sizeof(sp.name)); }
+          bool mb=false; if (getBoolLast("muted", mb)) sp.mutedDefault = mb;
         }
 
-        const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
-        if (!ti) continue;
-        size_t defCount = 0;
-        const ParamDef* defs = ti->paramDefs(defCount);
+        // ---- Board-aware analog input binding (AIN ordinal) ----
+        {
+          String v;
+          if (getArgLast("ain", v)) {
+            v.trim();
+            long ain = v.toInt();
 
-        const ParamDef* def = nullptr;
-        for (size_t d = 0; d < defCount; ++d) {
-          if (pkey.equalsIgnoreCase(defs[d].key)) { def = &defs[d]; break; }
+            // Validate against active board
+            bool ok = true;
+            if (!board::gBoard) ok = false;
+            else {
+              const auto& bp = *board::gBoard;
+              if (ain < 0 || ain >= (long)bp.analog.count) ok = false;
+              else if (bp.analog.pins[(uint8_t)ain] < 0) ok = false;
+            }
+
+            if (!ok) {
+              // Redirect back with error details
+              srv.sendHeader("Location",
+                "/config?err=invalid_ain&sensor=" + String((int)idx) + "&ain=" + String((int)ain));
+              srv.send(303, F("text/plain"), F("Invalid analog input"));
+              return;
+            }
+
+            sp.params.setInt("ain", ain);
+            ConfigManager::saveSensorParamByIndex(idx, "ain", String((int)ain));
+          }
         }
-        if (!def) continue;
 
-        bool ok = true;
-        switch (def->type) {
-          case ParamType::Bool:  ok = sp.params.setBool (pkey.c_str(), (val=="true"||val=="on"||val=="1")); break;
-          case ParamType::Int:   ok = sp.params.setInt  (pkey.c_str(), val.toInt());                         break;
-          case ParamType::Float: ok = sp.params.setFloat(pkey.c_str(), (float)val.toFloat());               break;
-          default:               ok = sp.params.set     (pkey.c_str(), val);                                break;
+        // Output
+        {
+          String v;
+
+          long oldOm = 0; sp.params.getInt("output_mode", oldOm);
+          long newOm = oldOm; bool omChanged = false;
+
+          if (getArgLast("output_mode", v)) {
+            v.trim(); v.toUpperCase();
+            long vi = v.toInt();
+            if      (v=="RAW"||vi==0) newOm=0;
+            else if (v=="LINEAR"||vi==1) newOm=1;
+            else if (v=="POLY"||vi==2) newOm=2;
+            else if (v=="LUT"||vi==3) newOm=3;
+            if (newOm != oldOm) omChanged = true;
+            sp.params.setInt("output_mode", newOm);
+          }
+
+          { bool inc=false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
+          if (getArgLast("units_label", v))           sp.params.set("units_label", v);
+          if (getArgLast("sensor_full_travel_mm", v)) sp.params.set("sensor_full_travel_mm", v);
+
+          // Persist selected transform id if posted
+          if (getArgLast("output_id", v)) {
+            v.trim();
+            sp.params.set("output_id", v);
+            ConfigManager::saveSensorParamByIndex(idx, "output_id", v);
+          }
+          sp.params.setBool("__om_changed", omChanged);
         }
-        if (!ok) Serial.printf("[WEB] set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
-      }
 
-      // Persist header/spec
-      ConfigManager::setSensorHeaderByIndex(idx, sp);
+        // Calibration
+        {
+          String v;
+          if (getArgLast("cal_allowed", v)) {
+            CalModeMask m = 0xFF; v.trim();
+            if (v.length()) {
+              m = 0; int start=0;
+              while (start < v.length()) {
+                int comma = v.indexOf(',', start);
+                String tok = (comma < 0) ? v.substring(start) : v.substring(start, comma);
+                tok.trim(); tok.toUpperCase();
+                if      (tok == "ZERO")  m |= CAL_ZERO;
+                else if (tok == "RANGE") m |= CAL_RANGE;
+                start = (comma < 0) ? v.length() : comma + 1;
+              }
+            }
+            ConfigManager::setCalAllowedByIndex(idx, m);
+          }
+          if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
+          if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
+          { bool inv=false; if (getBoolLast("invert", inv)) sp.params.setBool("invert", inv); }
+        }
 
-      // Push changes into the live sensor (so they take effect immediately)
-      Sensor* live = nullptr;
-      for (uint8_t j = 0; j < SensorManager::count(); ++j) {
-        Sensor* s = SensorManager::get(j);
-        if (s && String(s->name()) == String(sp.name)) { live = s; break; }
-      }
-      if (live) {
-        // muted
-        live->setMuted(sp.mutedDefault);
+        // Smoothing
+        {
+          String v;
+          if (getArgLast("ema_alpha", v)) { double f = v.toFloat(); sp.params.setFloat("ema_alpha", (float)f); }
+          if (getArgLast("deadband", v))  { long   i = v.toInt();  sp.params.setInt("deadband", (long)i); }
+        }
 
-        // output mode / include_raw
-        long om = 0; sp.params.getInt("output_mode", om);
-        live->setOutputMode((OutputMode)om);
+        // Generic ParamDefs pass (remaining keys defined by the sensor)
+        int ac = srv.args();
+        for (int ai = 0; ai < ac; ++ai) {
+          const String argName = srv.argName(ai);
+          if (!argName.startsWith(pfx)) continue;
+          const String pkey = argName.substring(pfx.length());
+          const String val  = srv.arg(ai);
 
-        bool inc = false; sp.params.getBool("include_raw", inc);
-        live->setIncludeRaw(inc);
+          if (pkey.equalsIgnoreCase("name") || pkey.equalsIgnoreCase("muted") ||
+              pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
+              pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
+              pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
+              pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("invert") ||
+              pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
+              pkey.equalsIgnoreCase("ain")) {
+            continue;
+          }
 
-        // units label for the primary column
-        String u; sp.params.get("units_label", u);
-        if ((OutputMode)om == OutputMode::RAW) u = "counts";
-        live->setOutputUnitsLabel(u.c_str());
+          const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
+          if (!ti) continue;
+          size_t defCount = 0;
+          const ParamDef* defs = ti->paramDefs(defCount);
 
-        // If output_mode changed, re-attach transform + units label policy
-        bool omChanged = false;
-        sp.params.getBool("__om_changed", omChanged);
-        if (omChanged) {
-          // NOTE: Transform reload and selection are handled in the Transforms routes.
-          // Here we just refresh units label according to current selection stored in params.
-          String selId; sp.params.get("output_id", selId); selId.trim();
-          if ((OutputMode)om == OutputMode::RAW) {
-            live->setOutputUnitsLabel("counts");
-          } else if ((OutputMode)om == OutputMode::LINEAR) {
-            String explicitLabel; sp.params.get("units_label", explicitLabel);
-            live->setOutputUnitsLabel(explicitLabel.c_str());
-          } else {
-            // POLY/LUT: leave label to transform’s metadata (set via Transforms route)
+          const ParamDef* def = nullptr;
+          for (size_t d = 0; d < defCount; ++d) {
+            if (pkey.equalsIgnoreCase(defs[d].key)) { def = &defs[d]; break; }
+          }
+          if (!def) continue;
+
+          bool ok = true;
+          switch (def->type) {
+            case ParamType::Bool:  ok = sp.params.setBool (pkey.c_str(), (val=="true"||val=="on"||val=="1")); break;
+            case ParamType::Int:   ok = sp.params.setInt  (pkey.c_str(), val.toInt());                         break;
+            case ParamType::Float: ok = sp.params.setFloat(pkey.c_str(), (float)val.toFloat());               break;
+            default:               ok = sp.params.set     (pkey.c_str(), val);                                break;
+          }
+          if (!ok) Serial.printf("[WEB] set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
+        }
+
+        // Persist header/spec
+        ConfigManager::setSensorHeaderByIndex(idx, sp);
+
+        // Push changes into the live sensor (so they take effect immediately)
+        Sensor* live = nullptr;
+        for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+          Sensor* s = SensorManager::get(j);
+          if (s && String(s->name()) == String(sp.name)) { live = s; break; }
+        }
+        if (live) {
+          // muted
+          live->setMuted(sp.mutedDefault);
+
+          // output mode / include_raw
+          long om = 0; sp.params.getInt("output_mode", om);
+          live->setOutputMode((OutputMode)om);
+
+          bool inc = false; sp.params.getBool("include_raw", inc);
+          live->setIncludeRaw(inc);
+
+          // units label for the primary column
+          String u; sp.params.get("units_label", u);
+          if ((OutputMode)om == OutputMode::RAW) u = "counts";
+          live->setOutputUnitsLabel(u.c_str());
+
+          // If output_mode changed, re-attach transform + units label policy
+          bool omChanged = false;
+          sp.params.getBool("__om_changed", omChanged);
+          if (omChanged) {
+            // NOTE: Transform reload and selection are handled in the Transforms routes.
+            // Here we just refresh units label according to current selection stored in params.
+            String selId; sp.params.get("output_id", selId); selId.trim();
+            if ((OutputMode)om == OutputMode::RAW) {
+              live->setOutputUnitsLabel("counts");
+            } else if ((OutputMode)om == OutputMode::LINEAR) {
+              String explicitLabel; sp.params.get("units_label", explicitLabel);
+              live->setOutputUnitsLabel(explicitLabel.c_str());
+            } else {
+              // POLY/LUT: leave label to transform’s metadata (set via Transforms route)
+            }
           }
         }
       }
     }
-
     // ---------- Persist full config ----------
-
-    Serial.printf("[WEB] saving tmp: bindings=%u\n",
-              (unsigned)tmp.buttonBindingCount);
+    Serial.printf("[WEB] saving tmp: bindings=%u\n", (unsigned)tmp.buttonBindingCount);
               
     ConfigManager::save(tmp);           // writes file and updates active config
     //ConfigManager::debugDumpConfigFile();
 
     // Redirect back to GET with ok=1
-    srv.sendHeader("Location", "/config?ok=1");
+    srv.sendHeader("Location", "/config?ok=1&tab=" + submit);
     srv.send(303, F("text/plain"), F("Saved"));
+    }
   });
 }

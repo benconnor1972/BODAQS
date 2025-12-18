@@ -80,26 +80,8 @@ void ButtonBindingTable::initFromConfig(const LoggerConfig& cfg) {
 
   // Helper: find button index by id (config string)
   auto findButtonIndex = [&](const char* id) -> int {
-    if (!id || !*id) return -1;
-    if (!board::gBoard) return -1;
-
-    const auto& bp = *board::gBoard;
-    const uint8_t n =
-        (bp.buttons.count < board::BOARD_MAX_BUTTONS)
-          ? bp.buttons.count
-          : board::BOARD_MAX_BUTTONS;
-
-    for (uint8_t i = 0; i < n; ++i) {
-      const auto& b = bp.buttons.btn[i];
-      if (!b.present) continue;
-
-      if (equalsIgnoreCase_(b.id, id)) {
-        return (int)i;   // index into board buttons
-      }
-    }
-    return -1;
+    return board::FindButtonIndexById(id);
   };
-
 
   for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
     const ButtonBindingDef& bd = cfg.buttonBindings[i];

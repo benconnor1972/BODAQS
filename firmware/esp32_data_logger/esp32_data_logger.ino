@@ -106,6 +106,7 @@ static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 void setup() {
   
     SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
+    DumpActiveBoardButtons();
 
   // Optional sanity check
   if (!gBoard) {

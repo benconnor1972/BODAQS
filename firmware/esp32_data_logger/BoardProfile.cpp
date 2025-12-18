@@ -62,7 +62,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
       // button2.id=nav_left, pin=4, mode=poll
       { .id="nav_left",
         .present=true,
-        .pin=4,
+        .pin=5,
         .mode=1,
         .active_low=true,
         .use_internal_pullup=true },
@@ -70,7 +70,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
       // button3.id=nav_right, pin=5, mode=poll
       { .id="nav_right",
         .present=true,
-        .pin=5,
+        .pin=4,
         .mode=1,
         .active_low=true,
         .use_internal_pullup=true },
@@ -103,8 +103,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .analog = {
     // PLACEHOLDERS — set to the analog input GPIOs on YOUR design.
     // These are numbered inputs (AIN0..).
-    .pins  = { -1, -1, -1, -1, -1, -1, -1, -1 },
-    .count = 0,
+    .pins  = { 15, 17, 18, 10, -1, -1, -1, -1 },
+    .count = 4,
 
     .adc_max = 4095,
     .vref = 3.3f
@@ -233,10 +233,8 @@ static const BoardProfile THING_PLUS_A = {
   },
 
   .analog = {
-    // Example: 4 analog inputs mapped to AIN0..AIN3
-    // Replace with real GPIOs for your ADC inputs.
-    .pins  = { -1, -1, -1, -1, -1, -1, -1, -1 },
-    .count = 4,
+    .pins  = { 34, 39, -1, -1, -1, -1, -1, -1 },
+    .count = 2,
 
     .adc_max = 4095,
     .vref = 3.3f

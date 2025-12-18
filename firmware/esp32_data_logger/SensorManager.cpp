@@ -7,7 +7,9 @@
 #include "StorageManager.h"
 #include "SensorTypes.h"
 #include "UI.h"
+#include "BoardSelect.h" 
 #include <cstring>
+#include "BoardSelect.h"
 
 //Debug
 static uint32_t s_sampleID = 0;
@@ -116,10 +118,47 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
+    // --- Resolve analog input ordinal (ain) to a physical GPIO pin via BoardProfile ---
+    {
+      long ain = -1;
+      if (sp.params.getInt("ain", ain)) {
+        if (!board::gBoard) {
+          Serial.printf("[SENS] sensor '%s' has ain=%ld but gBoard is null\n", sp.name, ain);
+        } else {
+          const auto& bp = *board::gBoard;
+
+          if (ain < 0 || ain >= (long)bp.analog.count) {
+            Serial.printf("[SENS] sensor '%s': ain=%ld out of range (board analog.count=%u)\n",
+                          sp.name, ain, (unsigned)bp.analog.count);
+          } else {
+            const int pin = bp.analog.pins[(uint8_t)ain];
+            if (pin < 0) {
+              Serial.printf("[SENS] sensor '%s': AIN%ld not available on this board (pin<0)\n",
+                            sp.name, ain);
+            } else {
+              // Inject resolved pin so existing analog sensor implementations keep working.
+              // If your analog sensors expect a different key than "pin", change it here.
+              sp.params.set("pin", String(pin));
+              // Optional: persist normalized mapping (not required)
+              // ConfigManager::saveSensorParamByName(sp.name, "pin", String(pin));
+              Serial.printf("[SENS] sensor '%s': ain=%ld -> pin=%d\n", sp.name, ain, pin);
+            }
+          }
+        }
+      }
+    }
+
     const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
     if (!ti) {
       Serial.printf("[SENS] type %u not registered (sensor '%s')\n",
                     (unsigned)sp.type, sp.name);
+      continue;
+    }
+
+    long pinCheck;
+    if (!sp.params.getInt("pin", pinCheck) || pinCheck < 0) {
+      Serial.printf("[SENS] '%s': no valid analog input assigned (missing or invalid ain)\n",
+                    sp.name);
       continue;
     }
 
@@ -138,8 +177,6 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
 
     // Selected transform (shape) from config; identity if absent
     {
-
-    // Selected transform (shape) from config; identity if absent
     String outId;
     bool haveId = sp.params.get("output_id", outId) && outId.length();
     if (!haveId) {

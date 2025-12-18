@@ -341,7 +341,7 @@ void AnalogPotSensor::sampleValues(float* out, uint8_t max) {
 const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     // Wiring
-    {"pin",            ParamType::Int,   "36",   "0",   "39",   nullptr, "ADC pin"},
+    {"ain",            ParamType::Int,   "-1",   "-1",  "7",   nullptr, "Analog input ordinal (AIN0..). -1=use pin"},
     {"invert",         ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Invert reading"},
 
     // RAW smoothing
@@ -372,7 +372,6 @@ Sensor* AnalogPotSensor::create(const char* instanceName, const ParamPack& param
   long li; bool b; double d; String s;
 
   // Wiring / polarity
-  if (params.getInt("pin", li))          p.pin = (uint8_t)li;
   if (params.getBool("invert", b))       p.invert = b;
 
   // Smoothing
