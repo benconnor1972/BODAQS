@@ -2,6 +2,8 @@
 #include "ButtonActions.h"
 #include <string.h>
 #include <Arduino.h>   // for Serial (optional; remove if you don't want logging)
+#include "BoardProfile.h"
+#include "BoardSelect.h"    // declares board::gBoard
 
 using ButtonActions::ActionId;
 
@@ -78,13 +80,7 @@ void ButtonBindingTable::initFromConfig(const LoggerConfig& cfg) {
 
   // Helper: find button index by id (config string)
   auto findButtonIndex = [&](const char* id) -> int {
-    if (!id || !*id) return -1;
-    for (uint8_t i = 0; i < cfg.buttonCount; ++i) {
-      if (equalsIgnoreCase_(cfg.buttons[i].id, id)) {
-        return (int)i;
-      }
-    }
-    return -1;
+    return board::FindButtonIndexById(id);
   };
 
   for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {

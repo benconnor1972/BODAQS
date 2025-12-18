@@ -33,10 +33,7 @@ namespace {
     return out;
   }
 
-  // --- Buttons / bindings parsed from file (scratch until load() completes) ---
-
-  ButtonDef        g_buttonDefs[MAX_BUTTONS];
-  uint8_t          g_buttonDefCount        = 0;
+  // --- Bindings parsed from file (scratch until load() completes) ---
 
   ButtonBindingDef g_bindingDefs[MAX_BUTTON_BINDINGS];
   uint8_t          g_bindingDefCount       = 0;
@@ -236,10 +233,8 @@ void ConfigManager::begin(SdFat* sdRef, const char* filename) {
     g_calAllowed[i] = 0xFF;
   }
 
-  g_buttonDefCount   = 0;
   g_bindingDefCount  = 0;
 
-  for (uint8_t i = 0; i < MAX_BUTTONS; ++i) g_buttonDefs[i] = ButtonDef{};
   for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) g_bindingDefs[i] = ButtonBindingDef{};
 }
 
@@ -316,61 +311,6 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   trimInPlace(key);
   trimInPlace(val);
 
-  // 1) Global Wi-Fi flags
-  if (!strcasecmp(key, "wifi_enabled_default")) {
-    cfg.wifiEnabledDefault = parseBoolC_(val);
-    return true;
-  }
-  if (!strcasecmp(key, "wifi_auto_time_on_rtc_invalid")) {
-    cfg.wifiAutoTimeOnRtcInvalid = parseBoolC_(val);
-    return true;
-  }
-
-  // 2) wifiN.* (N=0..4)
-  if (strncmp(key, "wifi", 4) == 0 && isdigit((unsigned char)key[4])) {
-    int i = key[4] - '0';
-    if (i >= 0 && i <= 4) {
-      const char* dot = strchr(key + 5, '.');
-      if (!dot) return false;           // malformed; let others try
-      const char* sub = dot + 1;
-
-      if (!strcasecmp(sub, "ssid")) {
-        copyStrBoundedC_(val, cfg.wifi[i].ssid, sizeof(cfg.wifi[i].ssid));
-        return true;
-      }
-      if (!strcasecmp(sub, "password")) {
-        copyStrBoundedC_(val, cfg.wifi[i].password, sizeof(cfg.wifi[i].password));
-        return true;
-      }
-      if (!strcasecmp(sub, "min_rssi")) {
-        // “0/blank” means ignore
-        if (!val || !*val) { cfg.wifi[i].minRssi = -127; return true; }
-        char* endp = nullptr;
-        long vi = strtol(val, &endp, 10);
-        if (endp == val) { cfg.wifi[i].minRssi = -127; return true; } // not a number
-        if (vi == 0)      { cfg.wifi[i].minRssi = -127; return true; }
-        if (vi >= -100 && vi <= -10) cfg.wifi[i].minRssi = (int16_t)vi;
-        else                         cfg.wifi[i].minRssi = -127;
-        return true;
-      }
-      if (!strcasecmp(sub, "bssid")) {
-        uint8_t b[6] = {0};
-        if (val && *val && parseBssidC_(val, b)) {
-          memcpy(cfg.wifi[i].bssid, b, 6);
-          cfg.wifi[i].bssidSet = true;
-        } else {
-          memset(cfg.wifi[i].bssid, 0, 6);
-          cfg.wifi[i].bssidSet = false;
-        }
-        return true;
-      }
-      if (!strcasecmp(sub, "hidden")) {
-        cfg.wifi[i].hidden = parseBoolC_(val);
-        return true;
-      }
-    }
-  }
-
   // sensor_count (hint only)
   if (keyEquals(key, "sensor_count")) {
     long v = strtol(val, nullptr, 10);
@@ -434,8 +374,6 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
 
   if (keyEquals(key, "use_external_rtc")){ bool b; if (parseBool(String(val), b)) cfg.useExternalRTC=b; return true; }
-  if (keyEquals(key, "wifi_ssid"))      { copyStrBounded(val, cfg.wifiSSID, sizeof(cfg.wifiSSID)); return true; }
-  if (keyEquals(key, "wifi_password"))  { copyStrBounded(val, cfg.wifiPassword, sizeof(cfg.wifiPassword)); return true; }
 
     // ---- new-style WiFi globals ----
   if (keyEquals(key, "wifi_enabled_default")) {bool b; if (ConfigManager::parseBool(String(val), b)) cfg.wifiEnabledDefault = b; return true;  }
@@ -497,49 +435,28 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "oled_brightness")){ long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>255) v=255; cfg.oledBrightness=(uint8_t)v; return true; }
   if (keyEquals(key, "oled_idle_dim_ms")){long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>65535) v=65535; cfg.oledIdleDimMs=(uint16_t)v; return true; }
 
-  // --- buttonN.* : logical button definitions ---
+  // --- buttonN.* : DEPRECATED (hardware buttons are defined by BoardProfile) ---
   if (!strncasecmp(key, "button", 6) && isdigit((unsigned char)key[6])) {
-    const char* p   = key + 6;
-    char*       end = nullptr;
-    long        idx = strtol(p, &end, 10);
-    if (idx < 0 || idx >= MAX_BUTTONS || !end || *end != '.') {
-      return true; // ignore malformed, but don't treat as fatal
+    // Ignore old hardware button definitions in config to avoid split source-of-truth.
+    // Optional: print a one-time warning if you want visibility.
+    static bool warned = false;
+    if (!warned) {
+      Serial.println("[CFG] Note: buttonN.* entries are ignored; hardware buttons now come from BoardProfile.");
+      warned = true;
     }
-
-    const char* sub = end + 1;
-    ButtonDef&  b   = g_buttonDefs[(uint8_t)idx];
-
-    if ((uint8_t)(idx + 1) > g_buttonDefCount) {
-      g_buttonDefCount = (uint8_t)(idx + 1);
-    }
-
-    if (!strcasecmp(sub, "id")) {
-      copyStrBoundedButton_(val, b.id, sizeof(b.id));
-      return true;
-    }
-    if (!strcasecmp(sub, "pin")) {
-      long v = strtol(val, nullptr, 10);
-      if (v >= 0 && v <= 39) b.pin = (uint8_t)v;
-      return true;
-    }
-    if (!strcasecmp(sub, "active_low")) {
-      // You probably already have parseBoolC_ somewhere; reuse it if so.
-      b.activeLow = parseBoolC_(val);
-      return true;
-    }
-    if (!strcasecmp(sub, "mode")) {
-      // interpret "poll" specifically; everything else = interrupt
-      String s = String(val);
-      s.trim();
-      s.toLowerCase();
-      if (s == "poll") b.mode = 1;
-      else             b.mode = 0;
-      return true;
-    }
-
-    // Unknown sub-key under buttonN.*, ignore.
     return true;
   }
+
+  // Optional: ignore button_count too (if present in old configs)
+  if (keyEquals(key, "button_count")) {
+    static bool warnedCount = false;
+    if (!warnedCount) {
+      Serial.println("[CFG] Note: button_count is ignored; hardware buttons now come from BoardProfile.");
+      warnedCount = true;
+    }
+    return true;
+  }
+
 
   // --- bindingN.* : button-event → action mappings ---
   if (!strncasecmp(key, "binding", 7) && isdigit((unsigned char)key[7])) {
@@ -705,14 +622,6 @@ bool ConfigManager::load(LoggerConfig& cfg) {
     cfg.wifiNetworkCount = 1;
   }
 
-  // --- copy parsed buttons into cfg ---
-  cfg.buttonCount = (g_buttonDefCount <= MAX_BUTTONS)
-                      ? g_buttonDefCount
-                      : MAX_BUTTONS;
-  for (uint8_t i = 0; i < cfg.buttonCount; ++i) {
-    cfg.buttons[i] = g_buttonDefs[i];
-  }
-
   cfg.buttonBindingCount = (g_bindingDefCount <= MAX_BUTTON_BINDINGS)
                              ? g_bindingDefCount
                              : MAX_BUTTON_BINDINGS;
@@ -819,21 +728,6 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   line("");
 
   Serial.println("[CFG] save: globals ok");
-
-  // ---------------- Buttons ----------------
-  line("# buttons");
-  kv_u("button_count", (unsigned)cfg.buttonCount);
-
-  for (uint8_t i = 0; i < cfg.buttonCount && i < MAX_BUTTONS; ++i) {
-    const ButtonDef& b = cfg.buttons[i];
-    kv_indexed("button", i, "id",         NZ(b.id));
-
-    // numeric helpers:
-    out += "button"; out += String(i); out += ".pin=";        out += String((unsigned)b.pin); out += "\n";
-    out += "button"; out += String(i); out += ".active_low="; out += (b.activeLow ? "true" : "false"); out += "\n";
-    out += "button"; out += String(i); out += ".mode=";       out += String((unsigned)b.mode); out += "\n";
-  }
-  line("");
 
   // ---------------- Button bindings ----------------
   line("# bindings");

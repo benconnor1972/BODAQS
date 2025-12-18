@@ -2,21 +2,29 @@
 #include "RTCManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
+
+#include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
 #include "SPI.h"
+
+// If you use SD_MMC and SdFat, include the right headers here as you already do elsewhere:
+// #include "SD_MMC.h"
+// #include "SdFat.h"
 
 extern LoggerConfig g_cfg;   // declared in your .ino
 
-// For now: hard-coded. Later: move into ConfigManager.
-enum class StorageBackendType {
-    SPI_SDFAT,   // external SD over SPI (your current setup)
-    SDIO_SDMMC   // onboard SD slot using SD_MMC
-};
+// Storage backend selection now comes from the active board profile.
+// No more hard-coded enum/constexpr.
+static const board::StorageProfile* s_storage = nullptr;
+static const board::SPIProfile*     s_spi     = nullptr;
+static const board::LoggerPerfProfile* s_perf = nullptr;
 
-// TEMP: manual selection
-//constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SDIO_SDMMC;
-constexpr StorageBackendType STORAGE_BACKEND = StorageBackendType::SPI_SDFAT;
+static inline bool isSpiBackend() {
+  return s_storage && (s_storage->type == board::StorageType::SPI_SdFat);
+}
 
-
+static inline bool isSdmmcBackend() {
+  return s_storage && (s_storage->type == board::StorageType::SDMMC);
+}
 
 
 static SdFat sd;
@@ -42,7 +50,6 @@ static uint64_t s_flushTotalMs  = 0;
 // --- Sample row queue for non-blocking sampling ---
 // Must match LoggingManager's float values[32] size.
 constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
-constexpr uint16_t SM_SAMPLE_QUEUE_DEPTH = 256;
 
 struct SampleRow {
     uint64_t ts_ms;
@@ -51,20 +58,46 @@ struct SampleRow {
     float    values[SM_MAX_DYNAMIC_COLS];
 };
 
-static SampleRow s_rows[SM_SAMPLE_QUEUE_DEPTH];
 static uint16_t  s_qHead  = 0;
 static uint16_t  s_qTail  = 0;
 static uint16_t  s_qCount = 0;
 static uint16_t  s_qMax   = 0;
 static uint32_t  s_samplesDropped = 0;
 
+static SampleRow* s_rows = nullptr;
+static uint16_t   s_qCap = 0;
+
 static inline bool queueEmpty() { return s_qCount == 0; }
-static inline bool queueFull()  { return s_qCount >= SM_SAMPLE_QUEUE_DEPTH; }
+static inline bool queueFull()  { return (s_qCap != 0) && (s_qCount >= s_qCap); }
+
+static void allocQueue(uint16_t depth) {
+  if (depth < 4) depth = 4;
+  // cap it to something sane for uint16 math
+  if (depth > 4096) depth = 4096;
+
+  delete[] s_rows;
+  s_rows = new SampleRow[depth];
+
+  if (!s_rows) {
+    Serial.println("[Storage] ERROR: allocQueue failed (OOM)");
+    s_qCap = 0;
+    s_qHead = s_qTail = s_qCount = 0;
+    s_qMax = 0;
+    return;
+  }
+
+  s_qCap = s_rows ? depth : 0;
+
+  s_qHead = s_qTail = s_qCount = 0;
+  s_qMax = 0;
+}
+
 
 static bool dequeueSample(SampleRow &out) {
     if (queueEmpty()) return false;
+    if (s_qCap == 0) return false;
     out = s_rows[s_qTail];
-    s_qTail = (s_qTail + 1) % SM_SAMPLE_QUEUE_DEPTH;
+    s_qTail = (s_qTail + 1) % s_qCap;
     --s_qCount;
     return true;
 }
@@ -72,9 +105,6 @@ static bool dequeueSample(SampleRow &out) {
 //Debug
 volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
 bool g_sdTrackEnabled = true;                    // can be toggled off if desired
-
-static bool isSpiBackend()  { return STORAGE_BACKEND == StorageBackendType::SPI_SDFAT; }
-static bool isSdioBackend() { return STORAGE_BACKEND == StorageBackendType::SDIO_SDMMC; }
 
 SdFat* StorageManager_getSd() {
     return isSpiBackend() ? &sd : nullptr;
@@ -134,13 +164,18 @@ bool StorageManager_enqueueSample(uint64_t ts_ms, const float* values, uint16_t 
         return false;
     }
 
+    if (s_qCap == 0) {
+      ++s_samplesDropped;
+      return false;
+    }
+
     SampleRow &row = s_rows[s_qHead];
     row.ts_ms   = ts_ms;
     row.nValues = nValues;
     row.mark    = mark;
     memcpy(row.values, values, nValues * sizeof(float));
 
-    s_qHead = (s_qHead + 1) % SM_SAMPLE_QUEUE_DEPTH;
+    s_qHead = (s_qHead + 1) % s_qCap;
     ++s_qCount;
 
     // --- track maximum queue depth ---
@@ -261,20 +296,41 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
 }
 
 
+void StorageManager_begin(const board::BoardProfile& bp) {
+  s_storage = &bp.storage;
+  s_spi     = &bp.spi;
+  s_perf    = &bp.perf;
 
-void StorageManager_begin(uint8_t csPin) {
+  // 1) Apply perf knobs early
+  if (s_perf) {
+    allocQueue(s_perf->queue_depth);
+    StorageManager_setBufferSize(s_perf->ring_buffer_bytes);
+  }
+
   if (isSpiBackend()) {
     Serial.println("[Storage] begin: starting SPI (SdFat)");
+
+    const int csPin = s_storage->cs;
+    if (csPin < 0) {
+      Serial.println("[Storage] SPI backend selected but storage.cs is not set");
+      return;
+    }
 
     pinMode(csPin, OUTPUT);
     digitalWrite(csPin, HIGH);
     SPI.end();
     delay(1);
 
-    // VSPI default pins on ESP32: SCK=18, MISO=19, MOSI=23
-    SPI.begin(18, 19, 23, csPin);
+    // Use SPIProfile pins if present, else fall back to common defaults
+    const int sck  = (s_spi && s_spi->sck  >= 0) ? s_spi->sck  : 18;
+    const int miso = (s_spi && s_spi->miso >= 0) ? s_spi->miso : 19;
+    const int mosi = (s_spi && s_spi->mosi >= 0) ? s_spi->mosi : 23;
 
-    SdSpiConfig cfg(csPin, DEDICATED_SPI, SD_SCK_MHZ(25));
+    SPI.begin(sck, miso, mosi, csPin);
+
+    // Use storage.spi_hz if set
+    const uint32_t hz = (s_storage->spi_hz != 0) ? s_storage->spi_hz : 20000000;
+    SdSpiConfig cfg(csPin, DEDICATED_SPI, hz);
 
     if (!sd.begin(cfg)) {
       Serial.printf("[Storage] sd.begin failed, err=0x%02X data=0x%02X\n",
@@ -289,14 +345,38 @@ void StorageManager_begin(uint8_t csPin) {
     }
 
     Serial.println("[Storage] SD init OK (SPI_SDFAT).");
-  } else {
-    Serial.println("[Storage] begin(): backend = SDIO_SDMMC (onboard S3 slot)");
-    Serial.println("[Storage] begin (SDIO_SDMMC): starting SD_MMC");
+    return;
+  }
 
-    // SparkFun Thing Plus S3 SDIO pins
-    SD_MMC.setPins(38, 34, 39);   // CLK, CMD, D0
-    bool ok = SD_MMC.begin("/sdcard", true);  // 1-bit mode
+  if (isSdmmcBackend()) {
+    Serial.println("[Storage] begin(): backend = SDMMC (SD_MMC)");
+    Serial.println("[Storage] begin (SDMMC): starting SD_MMC");
 
+    // Pins must come from the board profile now
+    const int clk = s_storage->sdmmc_clk;
+    const int cmd = s_storage->sdmmc_cmd;
+    const int d0  = s_storage->sdmmc_d0;
+
+    if (clk < 0 || cmd < 0 || d0 < 0) {
+      Serial.println("[Storage] SDMMC backend selected but sdmmc_clk/cmd/d0 not set");
+      return;
+    }
+
+    if (s_storage->sdmmc_1bit) {
+      SD_MMC.setPins(clk, cmd, d0);   // CLK, CMD, D0 (1-bit)
+    } else {
+      // 4-bit requires d1..d3
+      const int d1 = s_storage->sdmmc_d1;
+      const int d2 = s_storage->sdmmc_d2;
+      const int d3 = s_storage->sdmmc_d3;
+      if (d1 < 0 || d2 < 0 || d3 < 0) {
+        Serial.println("[Storage] SDMMC 4-bit selected but d1/d2/d3 not set");
+        return;
+      }
+      SD_MMC.setPins(clk, cmd, d0, d1, d2, d3);
+    }
+
+    const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit);
     Serial.print("[Storage] SD_MMC.begin result: ");
     Serial.println(ok ? "OK (true)" : "FAILED (false)");
 
@@ -321,8 +401,12 @@ void StorageManager_begin(uint8_t csPin) {
     Serial.println(" MB");
 
     Serial.println("[Storage] SD_MMC.begin OK.");
+    return;
   }
+
+  Serial.println("[Storage] begin(): storage backend = None");
 }
+
 
 // Set sample rate
 void StorageManager_setSampleRate(unsigned int hz) {
@@ -428,10 +512,20 @@ static bool openNewLogFile_SDMMC(const String& longName) {
 
   // Helper lambda for "exclusive" create style.
   auto tryCreate = [](const String& name, File& out) -> bool {
-    if (SD_MMC.exists(name)) return false;
-    out = SD_MMC.open(name, FILE_WRITE);  // creates new, truncates if existed
-    return (bool)out;
+    String abs = name;
+    if (!abs.startsWith("/")) abs = "/" + abs;
+
+    if (SD_MMC.exists(abs)) return false;
+
+    out = SD_MMC.open(abs, FILE_WRITE);
+    if (!out) return false;
+
+    // Ensure we start from an empty file even if FILE_WRITE appends on this FS
+    out.seek(0);
+
+    return true;
   };
+
 
   // 1) Long name
   if (tryCreate(longName, logFileMMC)) {
@@ -464,7 +558,6 @@ static bool openNewLogFile_SDMMC(const String& longName) {
     }
   }
 
-  Serial.println("[Storage] SD_MMC: No available filename; giving up.");
   return false;
 }
 
@@ -487,74 +580,36 @@ static void startLog() {
   Serial.print("[Storage] Trying to open log: ");
   Serial.println(filename);
 
+  bool ok = false;
+
   if (isSpiBackend()) {
-    // -------- SPI + SdFat path (existing behaviour) --------
+    // -------- SPI + SdFat path --------
     logFile.close();  // harmless if not open
 
-    // 1) Long name
-    logFile = sd.open(filename.c_str(), O_WRONLY | O_CREAT | O_EXCL);
-    if (!logFile) {
-      Serial.println("[Storage] long name failed, trying 8.3...");
-      String shortName = make83Name(filename);
-      Serial.print("[Storage] 8.3 candidate: ");
-      Serial.println(shortName);
-
-      logFile = sd.open(shortName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
-      if (!logFile) {
-        Serial.println("[Storage] 8.3 failed, trying LOGnnnn.CSV...");
-        char fallback[20];
-        for (int i = 1; i < 10000; i++) {
-          snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
-          if (!sd.exists(fallback)) {
-            logFile = sd.open(fallback, O_WRONLY | O_CREAT | O_EXCL);
-            if (logFile) {
-              Serial.print("[Storage] Using fallback: ");
-              Serial.println(fallback);
-              break;
-            }
-          }
-        }
-        if (!logFile) {
-          Serial.println("[Storage] No available filename; giving up.");
-          return;
-        }
-      } else {
-        Serial.print("[Storage] Using 8.3: ");
-        Serial.println(shortName);
-      }
-    }
-
-    preallocate(logFile, /*mib=*/64);   // optional; SPI only
-  } else {
-    // -------- SDIO + SD_MMC path (Thing Plus S3 onboard slot) --------
-    // StorageManager_begin() already did SD_MMC.begin(), so we *shouldn't*
-    // need to call it again. If you really want a safety check, you can
-    // leave this block in, but it's usually not necessary.
-    /*
-    if (!SD_MMC.begin("/sdcard", true)) {
-      Serial.println("[Storage] startLog: SD_MMC.begin failed (unexpected)");
+    ok = openNewLogFile_SPI(filename);  // handles long name, 8.3, fallback
+    if (!ok) {
+      Serial.println("[Storage] No available filename; giving up.");
       return;
     }
-    */
 
-    // Build an ABSOLUTE path: "/YYYY-MM-DD_HH-MM-SS.CSV"
+  } else {
+    // -------- SDMMC (SD_MMC) path --------
+    // openNewLogFile_SDMMC expects an absolute path
     String path = "/";
-    path += filename;   // filename is e.g. "2025-11-30_13-40-54.CSV"
+    path += filename;
 
     Serial.print("[Storage] SD_MMC path = ");
     Serial.println(path);
 
-    logFileMMC = SD_MMC.open(path.c_str(), FILE_WRITE);
-    if (!logFileMMC) {
-      Serial.println("[Storage] startLog: SD_MMC.open failed");
+    ok = openNewLogFile_SDMMC(path);
+    if (!ok) {
+      Serial.println("[Storage] startLog: SD_MMC open failed");
       return;
     }
 
-    // Ensure we start from an empty file
-    logFileMMC.seek(0);
+    // NOTE: openNewLogFile_SDMMC already truncates/creates appropriately.
+    // No need for logFileMMC.seek(0) here unless you specifically want it.
   }
-
-  loggingActive = true;
 
   // --- Build header (shared for both backends) ---
   SensorManager::debugDump("startLog-beforeHeader");
@@ -646,7 +701,7 @@ void StorageManager_stopLog() {
       n = snprintf(line, sizeof(line), "# queue_max=%u\n", (unsigned)s_qMax);
       if (n > 0) { logWriteInternal(line, (size_t)n); }
 
-      n = snprintf(line, sizeof(line), "# queue_depth=%u\n", (unsigned)SM_SAMPLE_QUEUE_DEPTH);
+      n = snprintf(line, sizeof(line), "# queue_depth=%u\n", (unsigned)s_qCap);
       if (n > 0) { logWriteInternal(line, (size_t)n); }
 
       n = snprintf(line, sizeof(line), "# flush_count=%lu\n",
@@ -685,7 +740,7 @@ void StorageManager_stopLog() {
   loggingActive = false;
   Serial.printf("[Storage] samplesDropped=%lu\n", (unsigned long)s_samplesDropped);
   Serial.printf("[Storage] flushCount=%lu maxFlushMs=%lu avgFlushMs=%.2f\n", (unsigned long)s_flushCount, (unsigned long)s_flushMaxMs, s_flushCount ? (double)s_flushTotalMs / s_flushCount : 0.0);
-  Serial.printf("[Storage] qMax=%u/%u\n", s_qMax, SM_SAMPLE_QUEUE_DEPTH);
+  Serial.printf("[Storage] qMax=%u/%u\n", s_qMax, s_qCap);
 
   Serial.println("Log file closed.");
   

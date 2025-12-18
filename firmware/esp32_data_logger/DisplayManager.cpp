@@ -15,14 +15,8 @@ static constexpr uint8_t  OLED_H = 64;
 static constexpr int8_t   OLED_RST_PIN = -1; // no reset pin
 
 // Hardware defaults for SparkFun ESP32 Thing Plus:
-static constexpr int    OLED_SDA  = 21; // Thing Plus 
-static constexpr int    OLED_SCL  = 22; // Thing Plus
-
-//static constexpr int    OLED_SDA  = 8; // Thing Plus S3
-//static constexpr int    OLED_SCL  = 9; // Thing Plus S3
-
-static constexpr uint8_t OLED_ADDR_PRIMARY   = 0x3C; // most 0.96" SSD1306
-static constexpr uint8_t OLED_ADDR_ALTERNATE = 0x3D; // some boards
+//static constexpr int    OLED_SDA  = 21; // Thing Plus 
+//static constexpr int    OLED_SCL  = 22; // Thing Plus
 
 static Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, OLED_RST_PIN);
 
@@ -133,31 +127,47 @@ static void setContrast(uint8_t c) {
   oled.ssd1306_command(c);
 }
 
-bool DisplayManager::begin(const LoggerConfig& cfg) {
+bool DisplayManager::begin(const LoggerConfig& cfg,
+                           const board::DisplayProfile& disp,
+                           const board::I2CProfile& i2c) {
   s_cfg = &cfg;
+
+  // If no display on this board, disable cleanly.
+  if (disp.type == board::DisplayType::None) {
+    s_present = false;
+    s_status  = "";
+    Serial.println(F("[DISP] No display (BoardProfile)."));
+    return false;
+  }
+
+  // Must have an I2C bus + valid pins for OLED.
+  if (!i2c.present || i2c.sda < 0 || i2c.scl < 0) {
+    s_present = false;
+    s_status  = "OLED unavailable";
+    Serial.println(F("[DISP] I2C not present or invalid pins; display disabled."));
+    return false;
+  }
 
   Serial.println(F("[DISP] begin: starting I2C"));
 
-  // I2C bring-up
-  Wire.begin(OLED_SDA, OLED_SCL);
-  Wire.setClock(100000);   // 100k while debugging; you can go 400k later
+  // I2C bring-up (from board profile)
+  Wire.begin(i2c.sda, i2c.scl);
+const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
+  Wire.setClock(hz);
 
   // --- Quick bus probe before touching the SSD1306 lib ---
-  // This avoids hanging inside oled.begin() if the bus is wedged.
   uint8_t addrToUse = 0;
   {
-    // Try primary address
-    Wire.beginTransmission(OLED_ADDR_PRIMARY);
+    Wire.beginTransmission(disp.addr_primary);
     uint8_t err = Wire.endTransmission(true);
     if (err == 0) {
-      addrToUse = OLED_ADDR_PRIMARY;
+      addrToUse = disp.addr_primary;
       Serial.println(F("[DISP] I2C: found OLED at primary address"));
     } else {
-      // Try alternate address
-      Wire.beginTransmission(OLED_ADDR_ALTERNATE);
+      Wire.beginTransmission(disp.addr_alt);
       err = Wire.endTransmission(true);
       if (err == 0) {
-        addrToUse = OLED_ADDR_ALTERNATE;
+        addrToUse = disp.addr_alt;
         Serial.println(F("[DISP] I2C: found OLED at alternate address"));
       } else {
         Serial.print(F("[DISP] I2C: no OLED found, err="));
@@ -167,7 +177,6 @@ bool DisplayManager::begin(const LoggerConfig& cfg) {
   }
 
   if (addrToUse == 0) {
-    // No response on either address → fail fast, don't hang.
     s_present = false;
     s_status  = "OLED not detected";
     Serial.println(F("[DISP] OLED not detected; display disabled."));
@@ -190,19 +199,17 @@ bool DisplayManager::begin(const LoggerConfig& cfg) {
 
   Serial.println(F("[DISP] oled.begin() OK"));
 
-  // Brightness & idle dim from cfg
+  // Brightness & idle dim from cfg (unchanged)
   s_nominal    = (cfg.oledBrightness == 0) ? 200 : cfg.oledBrightness;
   s_brightness = s_nominal;
   s_idleDimMs  = (cfg.oledIdleDimMs == 0) ? 30000 : cfg.oledIdleDimMs;
 
-  // Rotation (0/90/180/270) — adjust once you add cfg.oledRotate
-  uint8_t rotIdx = 0; // 0°
-  oled.setRotation(rotIdx);
+  oled.setRotation(0);
 
   s_present = true;
   setContrast(s_nominal);
 
-  // Reset UI state
+  // Reset UI state (unchanged)
   s_status        = "OLED ready";
   s_toast.clear();
   s_toastUntilMs  = 0;
@@ -214,12 +221,10 @@ bool DisplayManager::begin(const LoggerConfig& cfg) {
   s_lastRate    = 0;
   s_lastActive  = 255;
 
-  Serial.println(F("[DISP] calling drawAll()"));
   drawAll();
   Serial.println(F("[DISP] begin: complete"));
   return true;
 }
-
 
 void DisplayManager::loop() {
   if (UI::isModal() || MenuSystem::isActive()) return;   // <- do nothing while menu owns the OLED

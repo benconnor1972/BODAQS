@@ -21,6 +21,7 @@
 #include "TransformRegistry.h"
 #include "OutputTransform.h"
 #include "WiFiManager.h"
+#include "BoardSelect.h"
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 
@@ -98,10 +99,21 @@ TransformRegistry gTransforms;
 SdFs* gSd = nullptr;   // SdFat typedefs to SdFs
 
 
+using namespace board;
 
 static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 
 void setup() {
+  
+    SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
+    DumpActiveBoardButtons();
+
+  // Optional sanity check
+  if (!gBoard) {
+    Serial.println("FATAL: Board not selected");
+    while (true) delay(1000);
+  }
+  
   Serial.begin(115200);
 
   //Buffer debug
@@ -109,15 +121,14 @@ void setup() {
 
 
   RTCManager_setHumanReadable(true); // false = fast integer, true = readable
-  StorageManager_begin(5);           // CS pin depends on your SD breakout
-  gSd = StorageManager_getSd();      // <-- add this line
+  StorageManager_begin(*gBoard);           
+  gSd = StorageManager_getSd();      
 
   // Debug settings
   Log_setEnabled(true);
   Log_setLevel(LOG_DEBUG);
 
   StorageManager_setSampleRate(100);   // 100 Hz logging
-  StorageManager_setBufferSize(65536);  // 1 KB buffer
 
   // UI / OLED defaults (fallbacks)
   g_cfg.uiTarget       = 1;     // serial
@@ -213,7 +224,7 @@ void setup() {
   Serial.println("SETUP: I Done");
 
   // Start OLED if present
-  DisplayManager::begin(g_cfg);
+  DisplayManager::begin(cfg, gBoard->display, gBoard->i2c);
 
   Serial.println("SETUP: J Done");
 

@@ -18,16 +18,7 @@ struct SensorSpec;
 
 // ----------------- Button + binding config -----------------
 
-static constexpr uint8_t MAX_BUTTONS         = 10;
 static constexpr uint8_t MAX_BUTTON_BINDINGS = 24;
-
-// Logical button definition: describes one physical button.
-struct ButtonDef {
-  char    id[16]    = "";  // e.g. "nav_right", "mark"
-  uint8_t pin       = 0;   // GPIO number
-  bool    activeLow = true;
-  uint8_t mode      = 0;   // 0 = interrupt, 1 = poll (or similar)
-};
 
 // Binding definition: maps a (button, event) pair to a logical action.
 struct ButtonBindingDef {
@@ -50,10 +41,7 @@ struct LoggerConfig {
   // RTC choice
   bool     useExternalRTC = false;
 
-  // --- Buttons and button bindings ---
-
-  ButtonDef        buttons[MAX_BUTTONS];
-  uint8_t          buttonCount        = 0;
+  // --- Button bindings ---
 
   ButtonBindingDef buttonBindings[MAX_BUTTON_BINDINGS];
   uint8_t          buttonBindingCount = 0;
