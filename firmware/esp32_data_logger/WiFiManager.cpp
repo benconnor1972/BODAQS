@@ -421,13 +421,27 @@ void WiFiManager::selectAndConnect_() {
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
 
-//Hacked in - make configurable later
-IPAddress local_IP(192,168,1,131);
-IPAddress gateway(192,168,1,1);
-IPAddress subnet(255,255,255,0);
-IPAddress dns(8,8,8,8);
+    auto ipFrom = [](const uint8_t a[4]) -> IPAddress {
+    return IPAddress(a[0], a[1], a[2], a[3]);
+  };
 
-WiFi.config(local_IP, gateway, subnet, dns);
+  if (nets[chosenIndex].staticIp) {
+    IPAddress ip = ipFrom(nets[chosenIndex].ip);
+    IPAddress gw = ipFrom(nets[chosenIndex].gateway);
+    IPAddress sn = ipFrom(nets[chosenIndex].subnet);
+    IPAddress d1 = ipFrom(nets[chosenIndex].dns1);
+    IPAddress d2 = ipFrom(nets[chosenIndex].dns2);
+
+    // Sensible fallback: if DNS1 unset, use gateway
+    if (d1 == IPAddress(0, 0, 0, 0)) d1 = gw;
+
+    // Use 4-arg if you don't want dns2, or 5-arg if your core supports it
+    WiFi.config(ip, gw, sn, d1, d2);
+  } else {
+    // IMPORTANT: revert to DHCP when switching away from a static network
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+  }
+
 
   // Begin connect (password may be empty for open). Use the 5-arg overload to pin BSSID/channel.
   const char* pwd = nets[chosenIndex].password;

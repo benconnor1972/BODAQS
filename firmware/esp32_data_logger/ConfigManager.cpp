@@ -269,6 +269,28 @@ int8_t ConfigManager::findSensorByName(const char* name) {
   return get().findSensorByName(name);
 }
 
+static bool parseIPv4(const String& s, uint8_t out[4]) {
+  int a,b,c,d;
+  if (sscanf(s.c_str(), "%d.%d.%d.%d", &a,&b,&c,&d) != 4) return false;
+  if ((unsigned)a>255 || (unsigned)b>255 || (unsigned)c>255 || (unsigned)d>255) return false;
+  out[0]=(uint8_t)a; out[1]=(uint8_t)b; out[2]=(uint8_t)c; out[3]=(uint8_t)d;
+  return true;
+}
+
+static void setIPv4OrZero_(const char* val, uint8_t out[4]) {
+  if (!val || !*val) { out[0]=out[1]=out[2]=out[3]=0; return; }
+  uint8_t tmp[4];
+  if (parseIPv4(val, tmp)) memcpy(out, tmp, 4);
+  else { out[0]=out[1]=out[2]=out[3]=0; } // or "ignore"; your call
+}
+
+static String fmtIPv4(const uint8_t ip[4]) {
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+  return String(buf);
+}
+
+
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   // snap to allowed list (or closest)
   int idx = Rates::indexOf(hz);
@@ -373,8 +395,6 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
 
-  if (keyEquals(key, "use_external_rtc")){ bool b; if (parseBool(String(val), b)) cfg.useExternalRTC=b; return true; }
-
     // ---- new-style WiFi globals ----
   if (keyEquals(key, "wifi_enabled_default")) {bool b; if (ConfigManager::parseBool(String(val), b)) cfg.wifiEnabledDefault = b; return true;  }
   if (keyEquals(key, "wifi_auto_time_on_rtc_invalid")) {bool b; if (ConfigManager::parseBool(String(val), b)) cfg.wifiAutoTimeOnRtcInvalid = b; return true;  }
@@ -414,6 +434,17 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
       bool b; if (ConfigManager::parseBool(String(val), b)) w.hidden = b;
       return true;
     }
+
+    if (!strcasecmp(sub, "static_ip")) {
+      bool b;
+      if (ConfigManager::parseBool(String(val), b)) w.staticIp = b;
+      return true;
+    }
+    if (!strcasecmp(sub, "ip"))      { setIPv4OrZero_(val, w.ip);      return true; }
+    if (!strcasecmp(sub, "gateway")) { setIPv4OrZero_(val, w.gateway); return true; }
+    if (!strcasecmp(sub, "subnet"))  { setIPv4OrZero_(val, w.subnet);  return true; }
+    if (!strcasecmp(sub, "dns1"))    { setIPv4OrZero_(val, w.dns1);    return true; }
+    if (!strcasecmp(sub, "dns2"))    { setIPv4OrZero_(val, w.dns2);    return true; }
     return true;
   }
 
@@ -724,7 +755,6 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
   kv_u("debounce_ms", (unsigned)cfg.debounceMs);
-  kv_bool("use_external_rtc", cfg.useExternalRTC);
   line("");
 
   Serial.println("[CFG] save: globals ok");
@@ -755,15 +785,37 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
     kv_indexed_i("wifi", i, "min_rssi", (int)w.minRssi);
     kv_indexed_bool("wifi", i, "hidden", w.hidden);
 
+    // BSSID pinning
     if (w.bssidSet) {
       char bssidStr[18];
       snprintf(bssidStr, sizeof(bssidStr),
               "%02X:%02X:%02X:%02X:%02X:%02X",
-              w.bssid[0], w.bssid[1], w.bssid[2], w.bssid[3], w.bssid[4], w.bssid[5]);
+              w.bssid[0], w.bssid[1], w.bssid[2],
+              w.bssid[3], w.bssid[4], w.bssid[5]);
       kv_indexed("wifi", i, "bssid", bssidStr);
     } else {
       kv_indexed("wifi", i, "bssid", "");
     }
+
+    // ---------- Static IP (per network) ----------
+    kv_indexed_bool("wifi", i, "static_ip", w.staticIp);
+
+    auto fmtIPv4 = [](const uint8_t a[4], char out[16]) {
+      snprintf(out, 16, "%u.%u.%u.%u", a[0], a[1], a[2], a[3]);
+    };
+
+    char ipStr[16], gwStr[16], snStr[16], d1Str[16], d2Str[16];
+    fmtIPv4(w.ip,      ipStr);
+    fmtIPv4(w.gateway, gwStr);
+    fmtIPv4(w.subnet,  snStr);
+    fmtIPv4(w.dns1,    d1Str);
+    fmtIPv4(w.dns2,    d2Str);
+
+    kv_indexed("wifi", i, "ip",      ipStr);
+    kv_indexed("wifi", i, "gateway", gwStr);
+    kv_indexed("wifi", i, "subnet",  snStr);
+    kv_indexed("wifi", i, "dns1",    d1Str);
+    kv_indexed("wifi", i, "dns2",    d2Str);
   }
 
 
@@ -827,27 +879,25 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   Serial.print(F("timestampHuman=")); Serial.println(cfg.timestampHuman ? "true":"false");
   Serial.print(F("tz="));             Serial.println(cfg.tz);
   Serial.print(F("debounceMs="));     Serial.println(cfg.debounceMs);
-
-  Serial.print(F("useExternalRTC=")); Serial.println(cfg.useExternalRTC ? "true":"false");
   
-    Serial.print(F("wifiEnabledDefault="));       Serial.println(cfg.wifiEnabledDefault ? "true":"false");
-    Serial.print(F("wifiAutoTimeOnRtcInvalid=")); Serial.println(cfg.wifiAutoTimeOnRtcInvalid ? "true":"false");
-    Serial.print(F("wifiNetworkCount="));         Serial.println(cfg.wifiNetworkCount);
-    for (uint8_t i = 0; i < 5; ++i) {
-      const auto& w = cfg.wifi[i];
-      if (!w.ssid[0]) continue;
-      Serial.print(F("  wifi")); Serial.print(i); Serial.print(F(": ssid='")); Serial.print(w.ssid);
-      Serial.print(F("' hidden=")); Serial.print(w.hidden ? "1":"0");
-      Serial.print(F(" minRssi=")); Serial.print((int)w.minRssi);
-      Serial.print(F(" bssidSet=")); Serial.print(w.bssidSet ? "1":"0");
-      if (w.bssidSet) {
-        Serial.printf(" (%02X:%02X:%02X:%02X:%02X:%02X)",
-          w.bssid[0],w.bssid[1],w.bssid[2],w.bssid[3],w.bssid[4],w.bssid[5]);
-      }
-      Serial.print(F(" pwd=")); Serial.println("********");
+  Serial.print(F("wifiEnabledDefault="));       Serial.println(cfg.wifiEnabledDefault ? "true":"false");
+  Serial.print(F("wifiAutoTimeOnRtcInvalid=")); Serial.println(cfg.wifiAutoTimeOnRtcInvalid ? "true":"false");
+  Serial.print(F("wifiNetworkCount="));         Serial.println(cfg.wifiNetworkCount);
+  for (uint8_t i = 0; i < 5; ++i) {
+    const auto& w = cfg.wifi[i];
+    if (!w.ssid[0]) continue;
+    Serial.print(F("  wifi")); Serial.print(i); Serial.print(F(": ssid='")); Serial.print(w.ssid);
+    Serial.print(F("' hidden=")); Serial.print(w.hidden ? "1":"0");
+    Serial.print(F(" minRssi=")); Serial.print((int)w.minRssi);
+    Serial.print(F(" bssidSet=")); Serial.print(w.bssidSet ? "1":"0");
+    if (w.bssidSet) {
+      Serial.printf(" (%02X:%02X:%02X:%02X:%02X:%02X)",
+        w.bssid[0],w.bssid[1],w.bssid[2],w.bssid[3],w.bssid[4],w.bssid[5]);
     }
+    Serial.print(F(" pwd=")); Serial.println("********");
+  }
 
-  
+
   Serial.print(F("wifiSSID="));       Serial.println(cfg.wifiSSID);
   Serial.print(F("wifiPassword="));   Serial.println("********");
   Serial.print(F("ntpServers="));     Serial.println(cfg.ntpServers);
