@@ -110,6 +110,14 @@ static void addTransformsFromDirMMC_(const char* dirPath, JsonArray outArr) {
   dir.close();
 }
 
+static void addTransformsFromDirAny_(const char* dirPath, JsonArray outArr) {
+  if (SdFat* sd = WebServerManager::sd()) {
+    addTransformsFromDir_(sd, dirPath, outArr);      // SPI/SdFat
+  } else {
+    addTransformsFromDirMMC_(dirPath, outArr);       // SD_MMC
+  }
+}
+
 
 void registerTransformRoutes(WebServer& srv) {
   WebServer* S = &srv;
@@ -149,19 +157,12 @@ void registerTransformRoutes(WebServer& srv) {
       String dir = F("/cal/");
       dir += sensor;
       dir += '/';
-      if (useSpi) {
-        addTransformsFromDir_(sd, dir.c_str(), items);
-      } else {
-        addTransformsFromDirMMC_(dir.c_str(), items);
-      }
+    addTransformsFromDirAny_(dir.c_str(), items);
+
     }
 
     // Generic directory: /cal/
-    if (useSpi) {
-      addTransformsFromDir_(sd, "/cal/", items);
-    } else {
-      addTransformsFromDirMMC_("/cal/", items);
-    }
+    addTransformsFromDirAny_("/cal/", items);
 
 
     // Optional: filter by mode if provided (only hides non-matching)

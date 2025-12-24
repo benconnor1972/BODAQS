@@ -9,6 +9,16 @@
 #include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "WebServerManager.h"  // for canStart()
+#include "BoardSelect.h" 
+
+// ---- Helpers (file scope) ----
+static String fmtIPv4(const uint8_t a[4]) {
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+           a[0], a[1], a[2], a[3]);
+  return String(buf);
+}
+
 
 using namespace HtmlUtil;
 
@@ -28,6 +38,12 @@ void registerConfigRoutes(WebServer& srv) {
 
     String html = htmlHeader(F("Config"));
 
+    html += F("<p>"
+              "<b>General</b> | "
+              "<a href='/config/sensors'>Sensors</a> | "
+              "<a href='/config/buttons'>Buttons</a>"
+              "</p><hr>");
+
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
     }
@@ -37,10 +53,39 @@ void registerConfigRoutes(WebServer& srv) {
                 "</p>");
     }
 
+    // Status banner
+    if (srv.hasArg("ok")) {
+      html += "<p class='ok'>Configuration saved</p>";
+    }
+
+    // ---- ERROR banner (board-aware validation) ----
+    if (srv.hasArg("err")) {
+      String err = srv.arg("err");
+      String s   = srv.hasArg("sensor") ? srv.arg("sensor") : "";
+      String ain = srv.hasArg("ain")    ? srv.arg("ain")    : "";
+
+      html += "<p style='background:#ffe7e7;border:1px solid #e57373;";
+      html += "padding:8px;border-radius:6px'>";
+      html += "Error: " + htmlEscape(err);
+
+      if (s.length()) {
+        html += " (sensor ";
+        html += htmlEscape(s);
+        html += ")";
+      }
+      if (ain.length()) {
+        html += ", ain=";
+        html += htmlEscape(ain);
+      }
+      html += "</p>";
+    }
+
+
     // ---------- GLOBALS ----------
     html += F("<h2>Configuration</h2><form method='POST' action='/config'>");
+    html += F("<input type='hidden' name='submit' value='globals'>"); //Hidden input
 
-    html += F("<fieldset><legend>Sampling & Time</legend>");
+    html += F("<fieldset><legend>General</legend>");
     html += F("<label>Sample rate (Hz): </label><input type='number' name='sample_rate_hz' min='1' max='2000' value='");
     html += String(cfg.sampleRateHz);
     html += F("'"); html += dis; html += F("><br>");
@@ -54,6 +99,19 @@ void registerConfigRoutes(WebServer& srv) {
 
     html += F("<label>Timezone (tz rule): </label><input type='text' name='tz' value='");
     html += htmlEscape(String(cfg.tz));
+    html += F("'"); html += dis; html += F("><br>");
+    
+    html += F("<label>Debounce (ms): </label><input type='number' name='debounce_ms' min='0' max='1000' value='");
+    html += String(cfg.debounceMs);
+    html += F("'"); html += dis; html += F("><br>");
+
+        // NTP + time check
+    html += F("<label>NTP servers (CSV): </label><input type='text' name='ntp_servers' value='");
+    html += htmlEscape(String(cfg.ntpServers));
+    html += F("'"); html += dis; html += F("><br>");
+
+    html += F("<label>HTTP time check URL: </label><input type='text' name='time_check_url' value='");
+    html += htmlEscape(String(cfg.timeCheckUrl));
     html += F("'"); html += dis; html += F("></fieldset>");
 
     // ---------- Wi-Fi (multi-network) ----------
@@ -142,146 +200,66 @@ void registerConfigRoutes(WebServer& srv) {
       if (locked)   html += F(" disabled");
       html += F("></div>");
 
-      html += F("</fieldset>");
-    }
+      // Static IP enable
+      {
+        String key = String("wifi")+i+".static_ip";
+        html += "<div class='row'><label>Static IP</label>";
+        html += "<input type='hidden' name='" + key + "' value='false'>";
+        html += "<input type='checkbox' name='" + key + "' value='true' ";
+        if (cfg.wifi[i].staticIp) html += "checked";
+        if (locked) html += " disabled";
+        html += "></div>";
+      }
 
-    // NTP + time check
-    html += F("<label>NTP servers (CSV): </label><input type='text' name='ntp_servers' value='");
-    html += htmlEscape(String(cfg.ntpServers));
-    html += F("'"); html += dis; html += F("><br>");
+      // IP fields (always shown is simplest; later you can hide via JS)
+      auto addIpField = [&](const char* suffix, const uint8_t ip[4], const char* label){
+        String key = String("wifi")+i+"."+suffix;
+        html += "<div class='row'><label>";
+        html += label;
+        html += "</label><input type='text' size='16' name='";
+        html += key;
+        html += "' value='";
+        html += htmlEscape(fmtIPv4(ip));
+        html += "'";
+        if (locked) html += " disabled";
+        html += "></div>";
+      };
 
-    html += F("<label>HTTP time check URL: </label><input type='text' name='time_check_url' value='");
-    html += htmlEscape(String(cfg.timeCheckUrl));
-    html += F("'"); html += dis; html += F("></fieldset>");
-
-    // ---------- Buttons & options ----------
-    html += F("<fieldset><legend>Buttons & Options</legend>");
-    auto num = [&](const char* label, const char* name, int v){
-      html += "<label>"; html += label; html += ": </label><input type='number' name='";
-      html += name; html += "' min='0' max='39' value='"; html += String(v); html += "'"; html += dis; html += "><br>";
-    };
-
-    html += F("<label>Debounce (ms): </label><input type='number' name='debounce_ms' min='0' max='1000' value='");
-    html += String(cfg.debounceMs);
-    html += F("'"); html += dis; html += F("><br>");
-    html += F("<label><input type='checkbox' name='use_external_rtc' value='1'");
-    if (cfg.useExternalRTC) html += F(" checked");
-    if (locked) html += F(" disabled");
-    html += F("> Use external RTC </label>");
-    html += F("</fieldset>");
-
-    // ---------- Logical buttons (new) ----------
-    html += F("<fieldset><legend>Logical buttons (new)</legend>");
-    html += F("<p><small>These define named buttons (ID + pin + mode). "
-              "ID is referenced by bindings below.</small></p>");
-
-    for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
-      const ButtonDef& b = (i < cfg.buttonCount) ? cfg.buttons[i] : ButtonDef{};
-
-      html += F("<fieldset><legend>Button ");
-      html += String(i);
-      html += F("</legend>");
-
-      // ID
-      html += F("<div class='row'><label>ID</label>");
-      html += F("<input type='text' name='button");
-      html += String(i);
-      html += F(".id' value='");
-      html += htmlEscape(String(b.id));
-      html += F("'");
-      html += dis;
-      html += F("></div>");
-
-      // Pin
-      html += F("<div class='row'><label>Pin</label>");
-      html += F("<input type='number' min='0' max='39' name='button");
-      html += String(i);
-      html += F(".pin' value='");
-      html += String((int)b.pin);
-      html += F("'");
-      html += dis;
-      html += F("></div>");
-
-      // Active low
-      html += F("<div class='row'><label>Active low</label>");
-      // hidden default = false
-      html += F("<input type='hidden' name='button");
-      html += String(i);
-      html += F(".active_low' value='0'>");
-      html += F("<input type='checkbox' name='button");
-      html += String(i);
-      html += F(".active_low' value='1'");
-      if (b.activeLow) html += F(" checked");
-      if (locked)      html += F(" disabled");
-      html += F("></div>");
-
-      // Mode
-      html += F("<div class='row'><label>Mode</label>");
-      html += F("<select name='button");
-      html += String(i);
-      html += F(".mode'");
-      if (locked) html += F(" disabled");
-      html += F(">");
-      html += F("<option value='interrupt'");
-      if (b.mode == 0) html += F(" selected");
-      html += F(">interrupt</option>");
-      html += F("<option value='poll'");
-      if (b.mode == 1) html += F(" selected");
-      html += F(">poll</option>");
-      html += F("</select></div>");
+      addIpField("ip",      cfg.wifi[i].ip,      "Local IP");
+      addIpField("gateway", cfg.wifi[i].gateway, "Gateway");
+      addIpField("subnet",  cfg.wifi[i].subnet,  "Subnet");
+      addIpField("dns1",    cfg.wifi[i].dns1,    "DNS 1");
+      addIpField("dns2",    cfg.wifi[i].dns2,    "DNS 2");
 
       html += F("</fieldset>");
     }
-    html += F("</fieldset>");
-
-    // ---------- Button bindings (new) ----------
-    html += F("<fieldset><legend>Button bindings (new)</legend>");
-    html += F("<p><small>Each row maps a (button ID, event) pair to an action. "
-              "Events: pressed, released, click, double_click, held. "
-              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter.</small></p>");
-
-    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-      const ButtonBindingDef& bd = (i < cfg.buttonBindingCount) ? cfg.buttonBindings[i] : ButtonBindingDef{};
-
-      html += F("<div class='row'>");
-      html += F("<label>Binding ");
-      html += String(i);
-      html += F("</label>");
-
-      // buttonId
-      html += F("<input type='text' size='10' placeholder='button id' name='binding");
-      html += String(i);
-      html += F(".button' value='");
-      html += htmlEscape(String(bd.buttonId));
-      html += F("'");
-      html += dis;
-      html += F("> ");
-
-      // event
-      html += F("<input type='text' size='10' placeholder='event' name='binding");
-      html += String(i);
-      html += F(".event' value='");
-      html += htmlEscape(String(bd.event));
-      html += F("'");
-      html += dis;
-      html += F("> ");
-
-      // action
-      html += F("<input type='text' size='20' placeholder='action' name='binding");
-      html += String(i);
-      html += F(".action' value='");
-      html += htmlEscape(String(bd.action));
-      html += F("'");
-      html += dis;
-      html += F(">");
-
-      html += F("</div>");
-    }
-    html += F("</fieldset>");
-
 
     html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
     html += F("</form>");
+
+    html += F("<p><a href='/'>Home</a> &nbsp; <a href='/files'>Files</a></p>");
+    html += htmlFooter();
+    srv.send(200, F("text/html"), html);
+  });
+
+  // -------------------- GET /config/sensors --------------------
+  S->on("/config/sensors", HTTP_GET, [S](){
+    auto& srv = *S;
+    WiFiManager::noteUserActivity();
+
+    const LoggerConfig& cfg = ConfigManager::get();
+    const bool locked = !WebServerManager::canStart();
+    const String dis  = locked ? F(" disabled") : F("");
+
+    String html = htmlHeader(F("Sensors"));
+
+    html += F("<p>"
+              "<a href='/config'>General</a> | "
+              "<b>Sensors</b> | "
+              "<a href='/config/buttons'>Buttons</a>"
+              "</p><hr>");
+
+    html += F("<form method='POST' action='/config/sensors'>");
 
     // ---------- SENSORS ----------
     html += F("<h2>Sensors</h2>");
@@ -291,6 +269,7 @@ void registerConfigRoutes(WebServer& srv) {
       html += F("<p><em>No sensors configured.</em></p>");
     } else {
       html += F("<form method='POST' action='/config'>");
+      html += F("<input type='hidden' name='submit' value='sensors'>");
 
       for (uint8_t i = 0; i < n; ++i) {
         SensorSpec sp; 
@@ -373,7 +352,52 @@ void registerConfigRoutes(WebServer& srv) {
         html += typeLabelStr;
         html += "'"; if (locked) html += " disabled"; html += "></div>";
 
-        emitParamRow("pin", "Pin");
+        // Board-aware Analog Input selector (AIN ordinal)
+        {
+          const ParamDef* pd = findDef("ain");
+          if (pd) {
+            String field = String("s") + i + ".ain";
+            long curAin = -1;
+            sp.params.getInt("ain", curAin);
+
+            html += "<div class='row'><label>Analog input</label>";
+
+            if (!board::gBoard) {
+              html += "<em>No active board profile</em>";
+            } else {
+              const auto& bp = *board::gBoard;
+              if (bp.analog.count == 0) {
+                html += "<em>No analog inputs on this board</em>";
+              } else {
+                html += "<select name='" + field + "'";
+                if (locked) html += " disabled";
+                html += ">";
+
+                // Optional: allow “unset” (forces validation failure on save if required)
+                html += "<option value='-1'";
+                if (curAin < 0) html += " selected";
+                html += ">-- select --</option>";
+
+                for (uint8_t ai = 0; ai < bp.analog.count; ++ai) {
+                  const int pin = bp.analog.pins[ai];
+                  // Only show valid entries
+                  if (pin < 0) continue;
+
+                  html += "<option value='"; html += String((int)ai); html += "'";
+                  if ((long)ai == curAin) html += " selected";
+                  html += ">";
+                  html += "AIN"; html += String((int)ai);
+                  html += " (GPIO"; html += String(pin); html += ")";
+                  html += "</option>";
+                }
+
+                html += "</select>";
+              }
+            }
+
+            html += "</div>";
+          }
+        }
 
         // Muted by default
         {
@@ -479,7 +503,7 @@ void registerConfigRoutes(WebServer& srv) {
 
         // (Optional) render remaining params under "Other"
         const char* shown[] = {
-          "pin","muted",
+          "ain","muted",
           "output_mode","include_raw","sensor_full_travel_mm","units_label",
           "cal_allowed","sensor_zero_count","sensor_full_count","invert",
           "ema_alpha","deadband"
@@ -541,8 +565,6 @@ void registerConfigRoutes(WebServer& srv) {
         delay(0);
       }
 
-      html += "<p><button type='submit'"; html += dis; html += ">Save Sensors</button></p>";
-      html += F("</form>");
     }
 
     // --- per-sensor transform UI script (unchanged) ---
@@ -594,13 +616,94 @@ void registerConfigRoutes(WebServer& srv) {
       "</script>\n"
     );
 
+    html += F("<p><button type='submit'");
+    html += dis;
+    html += F(">Save Sensors</button></p>");
+    html += F("</form>");
+
+    html += htmlFooter();
+    srv.send(200, F("text/html"), html);
+
     html += F("<p><a href='/'>Home</a> &nbsp; <a href='/files'>Files</a></p>");
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
   });
 
-  // -------------------- POST /config --------------------
-  S->on("/config", HTTP_POST, [S](){
+  // -------------------- GET /config/buttons --------------------
+  S->on("/config/buttons", HTTP_GET, [S](){
+    auto& srv = *S;
+    WiFiManager::noteUserActivity();
+
+    const LoggerConfig& cfg = ConfigManager::get();
+    const bool locked = !WebServerManager::canStart();
+    const String dis  = locked ? F(" disabled") : F("");
+
+    String html = htmlHeader(F("Buttons"));
+
+    html += F("<p>"
+              "<a href='/config'>General</a> | "
+              "<a href='/config/sensors'>Sensors</a> | "
+              "<b>Buttons</b>"
+              "</p><hr>");
+
+    html += F("<form method='POST' action='/config/buttons'>");
+
+    // ---------- Button bindings (new) ----------
+    html += F("<fieldset><legend>Button bindings (new)</legend>");
+    html += F("<p><small>Each row maps a (button ID, event) pair to an action. "
+              "Events: pressed, released, click, double_click, held. "
+              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter.</small></p>");
+
+    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+      const ButtonBindingDef& bd = (i < cfg.buttonBindingCount) ? cfg.buttonBindings[i] : ButtonBindingDef{};
+
+      html += F("<div class='row'>");
+      html += F("<label>Binding ");
+      html += String(i);
+      html += F("</label>");
+
+      // buttonId
+      html += F("<input type='text' size='10' placeholder='button id' name='binding");
+      html += String(i);
+      html += F(".button' value='");
+      html += htmlEscape(String(bd.buttonId));
+      html += F("'");
+      html += dis;
+      html += F("> ");
+
+      // event
+      html += F("<input type='text' size='10' placeholder='event' name='binding");
+      html += String(i);
+      html += F(".event' value='");
+      html += htmlEscape(String(bd.event));
+      html += F("'");
+      html += dis;
+      html += F("> ");
+
+      // action
+      html += F("<input type='text' size='20' placeholder='action' name='binding");
+      html += String(i);
+      html += F(".action' value='");
+      html += htmlEscape(String(bd.action));
+      html += F("'");
+      html += dis;
+      html += F(">");
+
+      html += F("</div>");
+    }
+    html += F("</fieldset>");
+
+
+    html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
+    html += F("</form>");
+
+    html += htmlFooter();
+    srv.send(200, F("text/html"), html);
+  });
+  
+
+  // -------------------- POST /config/sensors --------------------
+  S->on("/config/sensors", HTTP_POST, [S](){
     auto& srv = *S;
     WiFiManager::noteUserActivity();
 
@@ -609,199 +712,11 @@ void registerConfigRoutes(WebServer& srv) {
       return;
     }
 
-    // Working copy we will persist at the end
     LoggerConfig tmp = ConfigManager::get();
-
-    // ---------- GLOBALS ----------
-    if (srv.hasArg("sample_rate_hz")) {
-      uint16_t hz = (uint16_t)srv.arg("sample_rate_hz").toInt();
-      tmp.sampleRateHz = hz;
-    }
-
-    if (srv.hasArg("timestamp_mode")) {
-      const String tsm = srv.arg("timestamp_mode");
-      if      (tsm == "human") tmp.timestampHuman = true;
-      else if (tsm == "fast")  tmp.timestampHuman = false;
-    }
-
-    if (srv.hasArg("tz")) {
-      String tz = srv.arg("tz"); tz.trim();
-      if (tz.length() < (int)sizeof(tmp.tz)) tz.toCharArray(tmp.tz, sizeof(tmp.tz));
-    }
-
-    // ---- Wi-Fi globals + 5 slots ----
-    {
-      auto getArgLast = [&](const char* key, String& out) -> bool {
-        bool found = false; const int ac = srv.args();
-        for (int ai = 0; ai < ac; ++ai) { if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; } }
-        return found;
-      };
-      auto parseBool = [&](const String& s)->bool{
-        String v = s; v.trim(); v.toLowerCase();
-        return (v=="true"||v=="1"||v=="on"||v=="yes");
-      };
-      auto setBoolIfPresent = [&](const char* key, bool& field){
-        String v; if (!getArgLast(key, v)) return; field = parseBool(v);
-      };
-
-      setBoolIfPresent("wifi_enabled_default",          tmp.wifiEnabledDefault);
-      setBoolIfPresent("wifi_auto_time_on_rtc_invalid", tmp.wifiAutoTimeOnRtcInvalid);
-
-      auto parseMacInline = [](const String& s, uint8_t out[6])->bool{
-        int b[6];
-        if (sscanf(s.c_str(), "%x:%x:%x:%x:%x:%x", &b[0],&b[1],&b[2],&b[3],&b[4],&b[5]) != 6) return false;
-        for (int i=0;i<6;++i){ if (b[i] < 0 || b[i] > 255) return false; out[i] = (uint8_t)b[i]; }
-        return true;
-      };
-      auto validRssiInline = [](int v)->bool{ return v >= -100 && v <= -10; };
-
-      uint8_t newCount = 0;
-      for (int i = 0; i < 5; ++i) {
-        // SSID
-        { String key = String("wifi")+i+".ssid"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); v.toCharArray(tmp.wifi[i].ssid, sizeof(tmp.wifi[i].ssid)); } }
-        // Password
-        { String key = String("wifi")+i+".password"; if (srv.hasArg(key)) { String v = srv.arg(key); v.toCharArray(tmp.wifi[i].password, sizeof(tmp.wifi[i].password)); } }
-        // min_rssi
-        { String key = String("wifi")+i+".min_rssi"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); if (!v.length()) tmp.wifi[i].minRssi = -127; else { int vi=v.toInt(); tmp.wifi[i].minRssi = validRssiInline(vi)?(int16_t)vi:(int16_t)-127; } } }
-        // bssid
-        { String key = String("wifi")+i+".bssid"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); if (v.length()) { uint8_t mac[6]; if (parseMacInline(v, mac)) { memcpy(tmp.wifi[i].bssid, mac, 6); tmp.wifi[i].bssidSet = true; } else { memset(tmp.wifi[i].bssid,0,6); tmp.wifi[i].bssidSet=false; } } else { memset(tmp.wifi[i].bssid,0,6); tmp.wifi[i].bssidSet=false; } } }
-        // hidden
-        { String key = String("wifi")+i+".hidden"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); v.toLowerCase(); tmp.wifi[i].hidden = (v=="true" || v=="1" || v=="on"); } }
-
-        if (tmp.wifi[i].ssid[0]) ++newCount;
-      }
-      tmp.wifiNetworkCount = newCount;
-
-      // Buttons / debounce / external RTC
-      auto setU8  = [&](const char* name, uint8_t&  field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>255) v=255; field=(uint8_t)v; };
-      auto setU16 = [&](const char* name, uint16_t& field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>65535) v=65535; field=(uint16_t)v; };
-      auto setBool= [&](const char* name, bool& field){ if (!srv.hasArg(name)) return; String s=srv.arg(name); s.trim(); s.toLowerCase(); field=(s=="1"||s=="true"||s=="on"||s=="yes"); };
-
-      setU16("debounce_ms",    tmp.debounceMs);
-      setBool("use_external_rtc", tmp.useExternalRTC);
-      // --- New-style logical buttons ---
-      {
-        ButtonDef newButtons[MAX_BUTTONS];
-        uint8_t newButtonCount = 0;
-
-        for (uint8_t i = 0; i < MAX_BUTTONS; ++i) {
-          String base   = String("button") + i + ".";
-          String keyId  = base + "id";
-          String keyPin = base + "pin";
-          String keyAct = base + "active_low";
-          String keyMode= base + "mode";
-
-          // If this row isn't in the POST at all (e.g. sensors form), skip it.
-          if (!srv.hasArg(keyId) && !srv.hasArg(keyPin) &&
-              !srv.hasArg(keyAct) && !srv.hasArg(keyMode)) {
-            continue;
-          }
-
-          String id  = srv.hasArg(keyId)  ? srv.arg(keyId)  : String("");
-          String pin = srv.hasArg(keyPin) ? srv.arg(keyPin) : String("");
-          id.trim();
-          pin.trim();
-
-          // Completely blank row -> skip
-          if (!id.length() && !pin.length()) {
-            continue;
-          }
-
-          ButtonDef b{};
-          // ID
-          if (id.length() >= (int)sizeof(b.id)) {
-            id = id.substring(0, sizeof(b.id) - 1);
-          }
-          id.toCharArray(b.id, sizeof(b.id));
-
-          // Pin
-          long pv = pin.length() ? pin.toInt() : 0;
-          if (pv < 0) pv = 0;
-          if (pv > 255) pv = 255;
-          b.pin = (uint8_t)pv;
-
-          // active_low
-          bool activeLow = true;
-          if (srv.hasArg(keyAct)) {
-            String v = srv.arg(keyAct); v.trim(); v.toLowerCase();
-            activeLow = (v == "1" || v == "true" || v == "on" || v == "yes");
-          }
-          b.activeLow = activeLow;
-
-          // mode
-          String mode = srv.hasArg(keyMode) ? srv.arg(keyMode) : String("");
-          mode.trim(); mode.toLowerCase();
-          if (mode == "poll") b.mode = 1;
-          else                b.mode = 0;
-
-          if (newButtonCount < MAX_BUTTONS) {
-            newButtons[newButtonCount++] = b;
-          }
-        }
-
-        // Commit into tmp
-        tmp.buttonCount = newButtonCount;
-        for (uint8_t i = 0; i < newButtonCount; ++i) {
-          tmp.buttons[i] = newButtons[i];
-        }
-      }
-
-      // --- New-style button bindings ---
-      {
-        ButtonBindingDef newBindings[MAX_BUTTON_BINDINGS];
-        uint8_t newBindingCount = 0;
-
-        for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-          String base   = String("binding") + i + ".";
-          String keyBtn = base + "button";
-          String keyEvt = base + "event";
-          String keyAct = base + "action";
-
-          if (!srv.hasArg(keyBtn) && !srv.hasArg(keyEvt) && !srv.hasArg(keyAct)) {
-            continue;
-          }
-
-          String button = srv.hasArg(keyBtn) ? srv.arg(keyBtn) : String("");
-          String ev     = srv.hasArg(keyEvt) ? srv.arg(keyEvt) : String("");
-          String act    = srv.hasArg(keyAct) ? srv.arg(keyAct) : String("");
-
-          button.trim(); ev.trim(); act.trim();
-
-          // Completely blank row -> skip
-          if (!button.length() && !ev.length() && !act.length()) {
-            continue;
-          }
-
-          ButtonBindingDef bd{};
-
-          if (button.length() >= (int)sizeof(bd.buttonId))
-            button = button.substring(0, sizeof(bd.buttonId) - 1);
-          button.toCharArray(bd.buttonId, sizeof(bd.buttonId));
-
-          if (ev.length() >= (int)sizeof(bd.event))
-            ev = ev.substring(0, sizeof(bd.event) - 1);
-          ev.toCharArray(bd.event, sizeof(bd.event));
-
-          if (act.length() >= (int)sizeof(bd.action))
-            act = act.substring(0, sizeof(bd.action) - 1);
-          act.toCharArray(bd.action, sizeof(bd.action));
-
-          if (newBindingCount < MAX_BUTTON_BINDINGS) {
-            newBindings[newBindingCount++] = bd;
-          }
-        }
-
-        tmp.buttonBindingCount = newBindingCount;
-        for (uint8_t i = 0; i < newBindingCount; ++i) {
-          tmp.buttonBindings[i] = newBindings[i];
-        }
-      }
-    }
-
 
     // ---------- SENSORS ----------
     // enumerate current specs, mutate copies, and persist via ConfigManager helpers
-    const LoggerConfig current = ConfigManager::get();  // read-only view for enumeration
+    const LoggerConfig& current = ConfigManager::get();  // read-only view for enumeration
     const uint8_t count = current.sensorCount();
 
     for (uint8_t idx = 0; idx < count; ++idx) {
@@ -826,8 +741,47 @@ void registerConfigRoutes(WebServer& srv) {
       // Basic
       {
         String v;
-        if (getArgLast("name", v)) { v.trim(); if (v.length()) v.toCharArray(sp.name, sizeof(sp.name)); }
-        bool mb=false; if (getBoolLast("muted", mb)) sp.mutedDefault = mb;
+        if (getArgLast("name", v)) { 
+          v.trim(); 
+          if (v.length()) {
+            v.toCharArray(sp.name, sizeof(sp.name));
+            v.toCharArray(tmp.sensors[idx].name, sizeof(tmp.sensors[idx].name));
+          }  
+        }
+        bool mb=false; 
+        if (getBoolLast("muted", mb)) {
+          sp.mutedDefault = mb;
+          tmp.sensors[idx].mutedDefault = mb;
+        }
+      }
+
+      // ---- Board-aware analog input binding (AIN ordinal) ----
+      {
+        String v;
+        if (getArgLast("ain", v)) {
+          v.trim();
+          long ain = v.toInt();
+
+          // Validate against active board
+          bool ok = true;
+          if (!board::gBoard) ok = false;
+          else {
+            const auto& bp = *board::gBoard;
+            if (ain < 0 || ain >= (long)bp.analog.count) ok = false;
+            else if (bp.analog.pins[(uint8_t)ain] < 0) ok = false;
+          }
+
+          if (!ok) {
+            // Redirect back with error details
+            srv.sendHeader("Location",
+              "/config?err=invalid_ain&sensor=" + String((int)idx) + "&ain=" + String((int)ain));
+            srv.send(303, F("text/plain"), F("Invalid analog input"));
+            return;
+          }
+
+          sp.params.setInt("ain", ain);
+          ConfigManager::saveSensorParamByIndex(idx, "ain", String((int)ain));
+        }
       }
 
       // Output
@@ -905,7 +859,7 @@ void registerConfigRoutes(WebServer& srv) {
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
             pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("invert") ||
             pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
-            pkey.equalsIgnoreCase("pin")) {
+            pkey.equalsIgnoreCase("ain")) {
           continue;
         }
 
@@ -973,13 +927,245 @@ void registerConfigRoutes(WebServer& srv) {
         }
       }
     }
+  
+
+    ConfigManager::save(tmp);
+    srv.sendHeader("Location", "/config/sensors?ok=1");
+    srv.send(303, F("text/plain"), F("Saved"));
+  });
+
+  // -------------------- POST /config/buttons --------------------
+  S->on("/config/buttons", HTTP_POST, [S](){
+    auto& srv = *S;
+    WiFiManager::noteUserActivity();
+
+    if (!WebServerManager::canStart()) {
+      srv.send(423, F("text/plain"), F("Locked while logging"));
+      return;
+    }
+
+    LoggerConfig tmp = ConfigManager::get();
+
+    // Clear existing bindings
+    tmp.buttonBindingCount = 0;
+    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+      tmp.buttonBindings[i].buttonId[0] = '\0';
+      tmp.buttonBindings[i].event[0]    = '\0';
+      tmp.buttonBindings[i].action[0]   = '\0';
+    }
+
+    auto getArgLast = [&](const char* key, String& out) -> bool {
+      bool found = false;
+      const int ac = srv.args();
+      for (int ai = 0; ai < ac; ++ai) {
+        if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; }
+      }
+      return found;
+    };
+
+    uint8_t newBindingCount = 0;
+
+    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+      char keyBtn[28], keyEvt[28], keyAct[28];
+      snprintf(keyBtn, sizeof(keyBtn), "binding%u.button", (unsigned)i);
+      snprintf(keyEvt, sizeof(keyEvt), "binding%u.event",  (unsigned)i);
+      snprintf(keyAct, sizeof(keyAct), "binding%u.action", (unsigned)i);
+
+      String button, ev, act;
+
+      bool hb = getArgLast(keyBtn, button);
+      bool he = getArgLast(keyEvt, ev);
+      bool ha = getArgLast(keyAct, act);
+      if (!(hb || he || ha)) continue;
+
+      button.trim(); ev.trim(); act.trim();
+
+      if (!button.length() && !ev.length() && !act.length()) continue;
+
+      ButtonBindingDef bd{};
+
+      if (button.length() >= (int)sizeof(bd.buttonId))
+        button = button.substring(0, sizeof(bd.buttonId) - 1);
+      button.toCharArray(bd.buttonId, sizeof(bd.buttonId));
+
+      if (ev.length() >= (int)sizeof(bd.event))
+        ev = ev.substring(0, sizeof(bd.event) - 1);
+      ev.toCharArray(bd.event, sizeof(bd.event));
+
+      if (act.length() >= (int)sizeof(bd.action))
+        act = act.substring(0, sizeof(bd.action) - 1);
+      act.toCharArray(bd.action, sizeof(bd.action));
+
+      if (newBindingCount < MAX_BUTTON_BINDINGS) {
+        tmp.buttonBindings[newBindingCount++] = bd;
+      }
+    }
+
+    tmp.buttonBindingCount = newBindingCount;
+
+    ConfigManager::save(tmp);
+    srv.sendHeader("Location", "/config/buttons?ok=1");
+    srv.send(303, F("text/plain"), F("Saved"));
+  });
+
+
+  // -------------------- POST /config --------------------
+  S->on("/config", HTTP_POST, [S](){
+    auto& srv = *S;
+    WiFiManager::noteUserActivity();
+
+    if (!WebServerManager::canStart()) {
+      srv.send(423, F("text/plain"), F("Locked while logging"));
+      return;
+    }
+
+    String submit = srv.hasArg("submit") ? srv.arg("submit") : "";
+    submit.toLowerCase();
+
+    if (submit != "globals" && submit != "sensors") {
+      srv.send(400, F("text/plain"), F("Unknown submit section"));
+      return;
+    }
+
+    // Working copy we will persist at the end
+    LoggerConfig tmp = ConfigManager::get();
+
+    // ---------- GLOBALS ----------
+    if (srv.hasArg("sample_rate_hz")) {
+      uint16_t hz = (uint16_t)srv.arg("sample_rate_hz").toInt();
+      tmp.sampleRateHz = hz;
+    }
+
+    if (srv.hasArg("timestamp_mode")) {
+      const String tsm = srv.arg("timestamp_mode");
+      if      (tsm == "human") tmp.timestampHuman = true;
+      else if (tsm == "fast")  tmp.timestampHuman = false;
+    }
+
+    if (srv.hasArg("tz")) {
+      String tz = srv.arg("tz"); tz.trim();
+      if (tz.length() < (int)sizeof(tmp.tz)) tz.toCharArray(tmp.tz, sizeof(tmp.tz));
+    }
+
+    // ---- Wi-Fi globals + 5 slots ----
+    {
+      auto getArgLast = [&](const char* key, String& out) -> bool {
+        bool found = false; const int ac = srv.args();
+        for (int ai = 0; ai < ac; ++ai) { if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; } }
+        return found;
+      };
+      auto parseBool = [&](const String& s)->bool{
+        String v = s; v.trim(); v.toLowerCase();
+        return (v=="true"||v=="1"||v=="on"||v=="yes");
+      };
+      auto setBoolIfPresent = [&](const char* key, bool& field){
+        String v; if (!getArgLast(key, v)) return; field = parseBool(v);
+      };
+
+      setBoolIfPresent("wifi_enabled_default",          tmp.wifiEnabledDefault);
+      setBoolIfPresent("wifi_auto_time_on_rtc_invalid", tmp.wifiAutoTimeOnRtcInvalid);
+
+      auto parseMacInline = [](const String& s, uint8_t out[6])->bool{
+        int b[6];
+        if (sscanf(s.c_str(), "%x:%x:%x:%x:%x:%x", &b[0],&b[1],&b[2],&b[3],&b[4],&b[5]) != 6) return false;
+        for (int i=0;i<6;++i){ if (b[i] < 0 || b[i] > 255) return false; out[i] = (uint8_t)b[i]; }
+        return true;
+      };
+      auto validRssiInline = [](int v)->bool{ return v >= -100 && v <= -10; };
+
+      uint8_t newCount = 0;
+      for (int i = 0; i < 5; ++i) {
+        // SSID
+        { String key = String("wifi")+i+".ssid"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); v.toCharArray(tmp.wifi[i].ssid, sizeof(tmp.wifi[i].ssid)); } }
+        // Password
+        { String key = String("wifi")+i+".password"; if (srv.hasArg(key)) { String v = srv.arg(key); v.toCharArray(tmp.wifi[i].password, sizeof(tmp.wifi[i].password)); } }
+        // min_rssi
+        { String key = String("wifi")+i+".min_rssi"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); if (!v.length()) tmp.wifi[i].minRssi = -127; else { int vi=v.toInt(); tmp.wifi[i].minRssi = validRssiInline(vi)?(int16_t)vi:(int16_t)-127; } } }
+        // bssid
+        { String key = String("wifi")+i+".bssid"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); if (v.length()) { uint8_t mac[6]; if (parseMacInline(v, mac)) { memcpy(tmp.wifi[i].bssid, mac, 6); tmp.wifi[i].bssidSet = true; } else { memset(tmp.wifi[i].bssid,0,6); tmp.wifi[i].bssidSet=false; } } else { memset(tmp.wifi[i].bssid,0,6); tmp.wifi[i].bssidSet=false; } } }
+        // hidden
+        { String key = String("wifi")+i+".hidden"; if (srv.hasArg(key)) { String v = srv.arg(key); v.trim(); v.toLowerCase(); tmp.wifi[i].hidden = (v=="true" || v=="1" || v=="on"); } }
+
+        // static_ip (must take the LAST value: hidden=false then checkbox=true)
+        {
+          String key = String("wifi")+i+".static_ip";
+          String v;
+          // Get last occurrence so checkbox overrides hidden input
+          bool found = false;
+          const int ac = srv.args();
+          for (int ai = 0; ai < ac; ++ai) {
+            if (srv.argName(ai) == key) { v = srv.arg(ai); found = true; }
+          }
+          if (found) {
+            v.trim(); v.toLowerCase();
+            tmp.wifi[i].staticIp = (v=="true" || v=="1" || v=="on" || v=="yes");
+          }
+        }
+
+        // ip/gateway/subnet/dns1/dns2
+        auto parseIpInline = [](const String& s, uint8_t out[4])->bool{
+          int a,b,c,d;
+          if (sscanf(s.c_str(), "%d.%d.%d.%d", &a,&b,&c,&d) != 4) return false;
+          if ((unsigned)a>255 || (unsigned)b>255 || (unsigned)c>255 || (unsigned)d>255) return false;
+          out[0]=(uint8_t)a; out[1]=(uint8_t)b; out[2]=(uint8_t)c; out[3]=(uint8_t)d;
+          return true;
+        };
+
+        auto setIpIfPresent = [&](const String& key, uint8_t out[4]){
+          if (!srv.hasArg(key)) return;
+          String v = srv.arg(key); v.trim();
+          if (!v.length()) { out[0]=out[1]=out[2]=out[3]=0; return; }
+          uint8_t ip[4];
+          if (parseIpInline(v, ip)) memcpy(out, ip, 4);
+          // else: ignore or clear; your call
+        };
+
+        setIpIfPresent(String("wifi")+i+".ip",      tmp.wifi[i].ip);
+        setIpIfPresent(String("wifi")+i+".gateway", tmp.wifi[i].gateway);
+        setIpIfPresent(String("wifi")+i+".subnet",  tmp.wifi[i].subnet);
+        setIpIfPresent(String("wifi")+i+".dns1",    tmp.wifi[i].dns1);
+        setIpIfPresent(String("wifi")+i+".dns2",    tmp.wifi[i].dns2);
+
+        // ---- static IP validation (only if enabled) ----
+        auto isZero4 = [](const uint8_t a[4])->bool{
+          return a[0]==0 && a[1]==0 && a[2]==0 && a[3]==0;
+        };
+
+        if (tmp.wifi[i].staticIp) {
+          // Require these three at minimum
+          if (isZero4(tmp.wifi[i].ip) || isZero4(tmp.wifi[i].gateway) || isZero4(tmp.wifi[i].subnet)) {
+            srv.sendHeader("Location", "/config?err=wifi_static_ip_incomplete&net=" + String(i));
+            srv.send(303, F("text/plain"), F("Static IP requires ip/gateway/subnet"));
+            return;
+          }
+
+          // DNS1: if not provided, default to gateway (common sensible default)
+          if (isZero4(tmp.wifi[i].dns1)) {
+            memcpy(tmp.wifi[i].dns1, tmp.wifi[i].gateway, 4);
+          }
+        }
+
+        if (tmp.wifi[i].ssid[0]) ++newCount;
+      }
+      tmp.wifiNetworkCount = newCount;
+
+      // Buttons / debounce / external RTC
+      auto setU8  = [&](const char* name, uint8_t&  field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>255) v=255; field=(uint8_t)v; };
+      auto setU16 = [&](const char* name, uint16_t& field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>65535) v=65535; field=(uint16_t)v; };
+      auto setBool= [&](const char* name, bool& field){ if (!srv.hasArg(name)) return; String s=srv.arg(name); s.trim(); s.toLowerCase(); field=(s=="1"||s=="true"||s=="on"||s=="yes"); };
+
+      setU16("debounce_ms",    tmp.debounceMs);
+    }
 
     // ---------- Persist full config ----------
+    Serial.printf("[WEB] saving tmp: bindings=%u\n", (unsigned)tmp.buttonBindingCount);
+              
     ConfigManager::save(tmp);           // writes file and updates active config
-    ConfigManager::debugDumpConfigFile();
+    //ConfigManager::debugDumpConfigFile();
 
     // Redirect back to GET with ok=1
-    srv.sendHeader("Location", "/config?ok=1");
+    srv.sendHeader("Location", "/config?ok=1&tab=" + submit);
     srv.send(303, F("text/plain"), F("Saved"));
+    
   });
 }

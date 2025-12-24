@@ -8,6 +8,8 @@
 #include "MenuSystem.h"
 #include "ButtonBindingTable.h"
 #include "ConfigManager.h"
+#include "BoardSelect.h" 
+
 #ifndef BTN_DEBUG
 #define BTN_DEBUG 1
 #endif
@@ -95,12 +97,9 @@ namespace {
     s_bindingCount = 0;
 
     auto findButtonIndex = [&](const char* id) -> int {
-      if (!id || !*id) return -1;
-      for (uint8_t i = 0; i < cfg.buttonCount; ++i) {
-        if (!strcasecmp(cfg.buttons[i].id, id)) return (int)i;
-      }
-      return -1;
+      return board::FindButtonIndexById(id);
     };
+
 
     for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
       const auto& bd = cfg.buttonBindings[i];
@@ -146,9 +145,9 @@ namespace {
   void btnCb8(ButtonEvent ev) { handleButtonBinding_(8, ev); }
   void btnCb9(ButtonEvent ev) { handleButtonBinding_(9, ev); }
 
-  static ButtonCallback s_buttonCallbacks[MAX_BUTTONS] = {
+  static ButtonCallback s_buttonCallbacks[board::BOARD_MAX_BUTTONS] = {
     btnCb0, btnCb1, btnCb2, btnCb3, btnCb4,
-    btnCb5, btnCb6, btnCb7, btnCb8, btnCb9
+    btnCb5
   };
 }
 
@@ -156,10 +155,12 @@ void ButtonActions::begin() {
   const LoggerConfig& cfg = ConfigManager::get();
 
   Serial.println("[BTN] Initializing buttons from config:");
-  Serial.printf("  buttonCount=%u bindingCount=%u debounce=%u ms\n",
-                (unsigned)cfg.buttonCount,
+  const uint8_t boardCount = (board::gBoard) ? board::gBoard->buttons.count : 0;
+  Serial.printf("  boardButtons=%u bindingCount=%u debounce=%u ms\n",
+                (unsigned)boardCount,
                 (unsigned)cfg.buttonBindingCount,
                 (unsigned)cfg.debounceMs);
+
 
   initBindingsFromConfig_(cfg);
   ButtonActions::registerButtons();
@@ -177,26 +178,36 @@ static void touchMenuActivity_() {
 void ButtonActions::registerButtons() {
   const LoggerConfig& cfg = ConfigManager::get();
 
-  for (uint8_t i = 0; i < cfg.buttonCount && i < MAX_BUTTONS; ++i) {
-    const ButtonDef& b = cfg.buttons[i];
+  if (!board::gBoard) {
+    Serial.println("[BTN] ERROR: no active board profile (gBoard is null)");
+    return;
+  }
 
-    if (b.pin == 0 || b.pin == 0xFF) {
-      Serial.printf("[BTN] Skipping '%s' (pin=%u)\n",
-                    b.id, (unsigned)b.pin);
+  const auto& bp = *board::gBoard;
+  const uint8_t n = (bp.buttons.count < board::BOARD_MAX_BUTTONS) ? bp.buttons.count : board::BOARD_MAX_BUTTONS;
+
+  for (uint8_t i = 0; i < n; ++i) {
+    const auto& b = bp.buttons.btn[i];
+
+    if (!b.present) continue;
+    if (b.pin < 0) {
+      Serial.printf("[BTN] Skipping '%s' (pin=%d)\n", b.id, (int)b.pin);
       continue;
     }
 
-    ButtonMode mode = (b.mode == 1) ? BUTTON_POLL : BUTTON_INTERRUPT;
+    ButtonMode mode = (b.mode == 1) ? BUTTON_POLL : BUTTON_INTERRUPT;  // 1=poll, 0=interrupt
+
+
     ButtonCallback cb = s_buttonCallbacks[i];
 
-    Serial.printf("[BTN] Register %-12s idx=%u pin=%u mode=%s debounce=%u ms\n",
+    Serial.printf("[BTN] Register %-12s idx=%u pin=%d mode=%s debounce=%u ms\n",
                   b.id,
                   (unsigned)i,
-                  (unsigned)b.pin,
+                  (int)b.pin,
                   (mode == BUTTON_INTERRUPT ? "INT" : "POLL"),
                   (unsigned)cfg.debounceMs);
 
-    ButtonManager_register(b.pin, mode, cfg.debounceMs, cb);
+    ButtonManager_register((uint8_t)b.pin, mode, cfg.debounceMs, cb);
   }
 }
 

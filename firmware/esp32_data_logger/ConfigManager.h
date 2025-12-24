@@ -18,16 +18,7 @@ struct SensorSpec;
 
 // ----------------- Button + binding config -----------------
 
-static constexpr uint8_t MAX_BUTTONS         = 10;
 static constexpr uint8_t MAX_BUTTON_BINDINGS = 24;
-
-// Logical button definition: describes one physical button.
-struct ButtonDef {
-  char    id[16]    = "";  // e.g. "nav_right", "mark"
-  uint8_t pin       = 0;   // GPIO number
-  bool    activeLow = true;
-  uint8_t mode      = 0;   // 0 = interrupt, 1 = poll (or similar)
-};
 
 // Binding definition: maps a (button, event) pair to a logical action.
 struct ButtonBindingDef {
@@ -47,14 +38,7 @@ struct LoggerConfig {
   // buttons / debounce
   uint16_t debounceMs = 50;
 
-  // RTC choice
-  bool     useExternalRTC = false;
-
-  // --- Buttons and button bindings ---
-
-  ButtonDef        buttons[MAX_BUTTONS];
-  uint8_t          buttonCount        = 0;
-
+  // --- Button bindings ---
   ButtonBindingDef buttonBindings[MAX_BUTTON_BINDINGS];
   uint8_t          buttonBindingCount = 0;
 
@@ -66,23 +50,29 @@ struct LoggerConfig {
   char     wifiSSID[64]     = "";
   char     wifiPassword[64] = "";
 
-  // ---- Add below existing WiFi / Web fields in LoggerConfig ----
-    // New-style WiFi config (multi-network)
-    bool     wifiEnabledDefault       = false;  // Wi-Fi off by default (your preference)
-    bool     wifiAutoTimeOnRtcInvalid = true;   // allow Wi-Fi to auto-enable only if RTC invalid
+  // New-style WiFi config (multi-network)
+  bool     wifiEnabledDefault       = false;  // Wi-Fi off by default (your preference)
+  bool     wifiAutoTimeOnRtcInvalid = true;   // allow Wi-Fi to auto-enable only if RTC invalid
 
-    struct WiFiEntry {
-      char     ssid[64]     = "";
-      char     password[64] = "";
-      // Optional filters
-      int16_t  minRssi      = -127;   // -127 = unset; else dBm in [-100..-10]
-      uint8_t  bssid[6]     = {0};    // optional BSSID pin
-      bool     bssidSet     = false;
-      bool     hidden       = false;  // future: attempt without scan
-    };
+  struct WiFiEntry {
+    char     ssid[64]     = "";
+    char     password[64] = "";
+    // Optional filters
+    int16_t  minRssi      = -127;   // -127 = unset; else dBm in [-100..-10]
+    uint8_t  bssid[6]     = {0};    // optional BSSID pin
+    bool     bssidSet     = false;
+    bool     hidden       = false;  // future: attempt without scan
 
-    uint8_t   wifiNetworkCount = 0;   // normalized after load()
-    WiFiEntry wifi[5];                // order defines priority
+    bool    staticIp = false;           // true = use static IP; false = DHCP
+    uint8_t ip[4]      = {0,0,0,0};
+    uint8_t gateway[4] = {0,0,0,0};
+    uint8_t subnet[4]  = {0,0,0,0};
+    uint8_t dns1[4]    = {0,0,0,0};
+    uint8_t dns2[4]    = {0,0,0,0};
+  };
+
+  uint8_t   wifiNetworkCount = 0;   // normalized after load()
+  WiFiEntry wifi[5];                // order defines priority
 
   // UI
   uint8_t uiTarget       = 1;   // 1=serial, 2=oled, 3=both

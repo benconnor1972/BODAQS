@@ -269,19 +269,32 @@ void WebServerManager::handleRoot() {
   WiFiManager::noteUserActivity();
   String html = htmlHeader("ESP32 Logger");
 
-  html += F("<h1>ESP32 Data Logger</h1><p>Status: ");
+  html += F("<h1>ESP32 Data Logger</h1>");
+
+  // Status
+  html += F("<p>Status: ");
   if (g_isLogging && g_isLogging())       html += F("<b>LOGGING</b>");
   else if (g_running)                     html += F("<b>SERVER RUNNING</b>");
   else                                    html += F("<b>IDLE</b>");
-  html += F("</p><p>WiFi: ");
+  html += F("</p>");
+
+  // WiFi / IP
+  html += F("<p>WiFi: ");
   html += WiFi.localIP().toString();
-  html += F("<p><a href=\"/files\">Browse SD Card</a> &nbsp; "
-            "<a href=\"/config\">Config</a></p>");
+  html += F("</p>");
+
+  // Quick links
+  html += F("<h2>Links</h2>");
+  html += F("<ul>");
+  html += F("<li><a href=\"/files\">Browse SD Card</a></li>");
+  html += F("<li><a href=\"/config\">Config (General)</a></li>");
+  html += F("<li><a href=\"/config/sensors\">Config (Sensors)</a></li>");
+  html += F("<li><a href=\"/config/buttons\">Config (Buttons)</a></li>");
+  html += F("</ul>");
 
   html += htmlFooter();
   g_server->send(200, "text/html", html);
   ws_diag_on_response(200);
-
 }
 
 void WebServerManager::handleNotFound() {
