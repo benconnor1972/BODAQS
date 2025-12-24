@@ -101,9 +101,9 @@ events:
           prefer_max: false
 
     preconditions:
-      - within_s: [-0.005, 0.005]
+      - within_s: [-0.01, 0.01]
         any_of:
-        - { type: peak, signal: disp_norm, kind: max, op: ">=", value: 0.4 }
+        - { type: peak, signal: disp_norm, kind: max, op: ">=", value: 0.25 }
 
     window: { pre_s: 0.2, post_s: 0.8, align: trigger }
 
