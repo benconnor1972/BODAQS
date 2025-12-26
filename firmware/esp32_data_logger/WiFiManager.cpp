@@ -175,6 +175,7 @@ void WiFiManager::loop() {
       }
 
       if (wl == WL_CONNECTED) {
+        WiFi.setSleep(false);           // simplest test
         // link OK; keep sticky & fresh RSSI
         s_currRssi = WiFi.RSSI();
         s_linkDropDeadlineMs = 0;      // cancel any pending drop
@@ -310,7 +311,7 @@ void WiFiManager::enterIdle_() {
 void WiFiManager::startScan_() {
   // Configure radio for STA scans only; we’ll bring it up briefly
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(true);                  // allow modem-sleep while connected
+  //WiFi.setSleep(true);                  // allow modem-sleep while connected
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);   // IDF-level: modem sleep policy (optional but nice)
   // Reset any target decided earlier
   s_targetSsid = "";
@@ -417,7 +418,7 @@ void WiFiManager::selectAndConnect_() {
 
   WiFi.scanDelete();
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(true);
+  //WiFi.setSleep(true);
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
 
@@ -444,6 +445,7 @@ void WiFiManager::selectAndConnect_() {
 
 
   // Begin connect (password may be empty for open). Use the 5-arg overload to pin BSSID/channel.
+  WiFi.setSleep(false);      // disable modem sleep
   const char* pwd = nets[chosenIndex].password;
   const uint8_t* bssidPtr = s_targetBssidSet ? s_targetBssid : nullptr;
   int channel = chosenChannel > 0 ? chosenChannel : 0; // 0 = auto if unknown

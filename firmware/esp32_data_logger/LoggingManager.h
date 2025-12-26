@@ -3,6 +3,7 @@
 #include "ConfigManager.h"
 
 class AnalogPotSensor; // fwd
+extern volatile bool g_loggingActive;
 
 namespace LoggingManager {
   void begin(const LoggerConfig* cfg);

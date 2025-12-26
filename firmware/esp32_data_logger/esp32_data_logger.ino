@@ -22,11 +22,36 @@
 #include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "BoardSelect.h"
+#include "esp_system.h"
+#include "esp_heap_caps.h"
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 
+static uint32_t lastHeapReport = 0;
 
 // --- Small utils ------------------------------------------------------------
+static const char* resetReasonStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    default:                return "OTHER";
+  }
+}
+
+static void printBootDiag() {
+  esp_reset_reason_t r = esp_reset_reason();
+  Serial.printf("[BOOT] reset_reason=%d (%s)\n", (int)r, resetReasonStr(r));
+  Serial.printf("[BOOT] freeHeap=%u minFreeHeap=%u largest8bit=%u\n",
+                (unsigned)ESP.getFreeHeap(),
+                (unsigned)ESP.getMinFreeHeap(),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
 
 static void splitCsv3(const char* csv, String& s1, String& s2, String& s3) {
   s1 = s2 = s3 = String();
@@ -101,11 +126,13 @@ SdFs* gSd = nullptr;   // SdFat typedefs to SdFs
 
 using namespace board;
 
-static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
-
 void setup() {
   
-    SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
+  Serial.printf("[WS] start of setup: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+    SelectBoard(BoardID::ThingPlus_A);
     DumpActiveBoardButtons();
 
   // Optional sanity check
@@ -121,6 +148,11 @@ void setup() {
 
 
   RTCManager_setHumanReadable(true); // false = fast integer, true = readable
+
+  Serial.printf("[WS] before storage_begin: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
   StorageManager_begin(*gBoard);           
   gSd = StorageManager_getSd();      
 
@@ -138,6 +170,10 @@ void setup() {
   g_cfg.oledIdleDimMs  = 30000; // 30s
   g_cfg.sampleRateHz   = 100;   // fallback
 
+  Serial.printf("[WS] before configmanager::begin: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
   ConfigManager::begin(StorageManager_getSd(), "/config/loggercfg.txt");
   //ConfigManager::debugDumpConfigFile();
 
@@ -151,6 +187,9 @@ void setup() {
   ButtonBindingTable::initFromConfig(ConfigManager::get());
   Serial.println("SETUP: A done");
 
+  Serial.printf("[WS] before sensormanager::begin: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
   // 1) Sensor framework
   Serial.println("SETUP: B Sensormanager::begin");
@@ -168,6 +207,10 @@ void setup() {
   SensorManager::finalizeBegin();
     Serial.println("SETUP: D done");
 
+  Serial.printf("[WS] after sensormanager::finalisebegin: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
   //PROBE("[SENS] debugDump");
   //SensorManager::debugDump("after-register");
   UI::status("Sensors ready");
@@ -183,10 +226,19 @@ void setup() {
   WebServerManager::attachConfig(&g_cfg);
       Serial.println("SETUP: E done");
 
+  Serial.printf("[WS] after webservermanager::attachconfig: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
   Serial.println("SETUP: F storagemanager_getSD");
 
-  WebServerManager::begin(StorageManager_getSd(), isLoggingPredicate);
+  WebServerManager::begin(StorageManager_getSd());
     Serial.println("SETUP: F done");
+
+  Serial.printf("[WS] after storagemanager_getsd: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
 
   const auto& cfg = ConfigManager::get();
 
@@ -206,11 +258,19 @@ void setup() {
   splitCsv3(g_cfg.ntpServers, n1, n2, n3);
   configTzTime(g_cfg.tz, n1.length()? n1.c_str(): nullptr, n2.length()? n2.c_str(): nullptr, n3.length()? n3.c_str(): nullptr);
   
+  Serial.printf("[WS] after RTCmanager: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
     Serial.println("SETUP: G wifimanager::begin");
 
   WiFiManager::begin();
 
   Serial.println("SETUP: G Done");
+
+  Serial.printf("[WS] after WiFimanager::begin: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     Serial.println("SETUP: H maybeconnectforRTC");
 
@@ -223,15 +283,25 @@ void setup() {
 
   Serial.println("SETUP: I Done");
 
+  Serial.printf("[WS] after Loggingmanager: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
   // Start OLED if present
   DisplayManager::begin(cfg, gBoard->display, gBoard->i2c);
 
   Serial.println("SETUP: J Done");
+  Serial.printf("[WS] after Displaymanager: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
   // Configure routing (Serial/OLED/Both + levels)
   UI::begin(g_cfg);
     Serial.println("SETUP: K Done");
 
+  Serial.printf("[WS] after UI::begin: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
   // Show initial status
   UI::status("Ready");
@@ -240,6 +310,9 @@ void setup() {
   ButtonActions::begin();
     Serial.println("SETUP: L Done");
 
+  Serial.printf("[WS] after buttonactions: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
   //ConfigManager::printAllCalibrations();
 
@@ -252,19 +325,28 @@ void setup() {
 
     Serial.println("SETUP: ALL DONE");
 
+  Serial.printf("[WS] after menusystem: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
 }
 
 void loop() {
+  WebServerManager::loop();
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
-
-  //LoggingManager::loop();      // producer: fills StorageManager's sample queue
   StorageManager_loop();       // consumer: formats & flushes to SD
-
-  WebServerManager::loop();
   UI::loop();
   MenuSystem::loop();
+
+  uint32_t dt = millis() - lastHeapReport;
+  /* if (dt > 2000) {
+    Serial.printf("[Main loop]: heap free=%lu largest=%lu\n",
+    (unsigned long)ESP.getFreeHeap(),
+    (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    lastHeapReport = millis();
+  } */
 }
 
 

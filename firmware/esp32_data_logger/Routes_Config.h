@@ -2,7 +2,7 @@
 #include <WebServer.h>
 
 // Registers /config (GET + POST)
-void registerConfigRoutes(WebServer& srv);
+void registerConfigRoutes();
 
 // optional (only if you like splitting later)
 // void registerConfigGeneral(WebServer& srv);

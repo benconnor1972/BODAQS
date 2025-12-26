@@ -14,6 +14,8 @@
 #include "Routes_Files.h"
 #include "Routes_Config.h"
 #include "Routes_Transforms.h"
+#include "esp_heap_caps.h"
+#include "LoggingManager.h"
 #include "HtmlUtil.h"
 using namespace HtmlUtil;
 
@@ -23,19 +25,84 @@ extern TransformRegistry gTransforms;
 static SdFs*g_sd = nullptr;                     // defined in esp32_data_logger.ino: SdFs* gSd = nullptr;
 
 // --- Module state ---
-static WebServer* g_server = nullptr;
-static WebServerManager::IsLoggingFn g_isLogging = nullptr;
+WebServer g_server(80);   
 static bool g_running = false;
-SdFat* WebServerManager::sd() { return g_sd; }
+static bool g_routesSetup = false;
+SdFs* WebServerManager::sd() { return g_sd; }
 
 // Pointer to the live config struct
 static LoggerConfig* g_cfgPtr = nullptr;
 
 // -------------------- fwd decls --------------------
 static bool ensureSd();
+static uint32_t lastHC = 0;
+
+// --- helpers: send small chunks without building big Strings ---
+
+static inline void sendP(const __FlashStringHelper* s) {
+  g_server.sendContent_P(reinterpret_cast<const char*>(s));
+}
+
+static inline void sendC(const char* s) {
+  g_server.sendContent(s);
+}
+
+// Stream HTML-escape of an Arduino String without creating another String.
+static void sendHtmlEscaped(const String& in) {
+  // Small stack buffer to batch sends (reduces overhead).
+  char buf[96];
+  size_t n = 0;
+
+  auto flush = [&]() {
+    if (n) {
+      buf[n] = '\0';
+      g_server.sendContent(buf);
+      n = 0;
+    }
+  };
+
+  for (size_t i = 0; i < in.length(); ++i) {
+    const char c = in[i];
+    const char* repl = nullptr;
+
+    switch (c) {
+      case '&':  repl = "&amp;";  break;
+      case '<':  repl = "&lt;";   break;
+      case '>':  repl = "&gt;";   break;
+      case '"':  repl = "&quot;"; break;
+      case '\'': repl = "&#39;";  break;
+      default:   repl = nullptr;  break;
+    }
+
+    if (repl) {
+      flush();
+      g_server.sendContent(repl);
+    } else {
+      // Copy char into buffer; flush if near full.
+      if (n + 2 >= sizeof(buf)) flush();
+      buf[n++] = c;
+    }
+  }
+
+  flush();
+}
+
+// Minimal header/footer that stream directly.
+// If you already have standard header/footer content, move it here.
+static void sendHtmlHeaderStream(const __FlashStringHelper* title) {
+  sendP(F("<!doctype html><html><head><meta charset='utf-8'>"
+          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+          "<title>"));
+  sendP(title);
+  sendP(F("</title></head><body>"));
+}
+
+static void sendHtmlFooterStream() {
+  sendP(F("</body></html>"));
+}
+
 
 static CalModeMask parseCalAllowedCSV_(const String& csv);
-
 
 // Diagnostics
 // --- Diagnostics ---
@@ -66,33 +133,28 @@ static void ws_diag_on_response(int code) {
 // -------------------- helpers --------------------
 static bool ensureSd() {
   if (!g_sd) {
-    Serial.println(F("[WS] ensureSd: no SdFat* provided (call begin(StorageManager_getSd(), ...) first)"));
+    Serial.println(F("[WS] ensureSd: no SdFs* provided (call begin(StorageManager_getSd(), ...) first)"));
     return false;
   }
   return true; // StorageManager owns begin()
 }
 
 // -------------------- public API --------------------
-void WebServerManager::begin(SdFat* sdRef, IsLoggingFn isLogging) {
+void WebServerManager::begin(SdFs* sdRef) {
   g_sd        = sdRef;
-  g_isLogging = isLogging;
 }
 
 void WebServerManager::attachConfig(LoggerConfig* cfg) {
   g_cfgPtr = cfg;
 }
 
-void WebServerManager::setStaConfig(const String& ssid, const String& password) {
-} //no-op. legacy
-
-bool WebServerManager::canStart() {
-  // Only block while logging; do NOT require SdFat here.
-  if (g_isLogging && g_isLogging()) {
-    return false;
-  }
-  return true;
+static inline bool isLoggingNow_() {
+  return LoggingManager::isRunning();
 }
 
+bool WebServerManager::canStart() {
+  return !isLoggingNow_();
+}
 
 bool WebServerManager::start() {
   if (g_running) {
@@ -106,25 +168,37 @@ bool WebServerManager::start() {
   }
 
   wl_status_t wl = WiFi.status();
-  Serial.printf("[WS] start: WiFi.status()=%d (need %d=WL_CONNECTED)\n", (int)wl, (int)WL_CONNECTED);
+  //Serial.printf("[WS] start: WiFi.status()=%d (need %d=WL_CONNECTED)\n", (int)wl, (int)WL_CONNECTED);
   if (wl != WL_CONNECTED) {
     Serial.println(F("[WS] start: WiFi not connected; will retry from loop()"));
+    Serial.printf("[WS] heap free=%lu largest=%lu\n",
+    (unsigned long)ESP.getFreeHeap(),
+    (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     return false;
   }
 
   IPAddress ip = WiFi.localIP();
-  Serial.printf("[WS] start: starting on http://%s/\n", ip.toString().c_str());
+  //Serial.printf("[WS] start: starting on http://%s/\n", ip.toString().c_str());
 
-  // Allocate server and wire routes if first time
-  if (!g_server) {
-    g_server = new WebServer(80);
+  Serial.printf("[WS] before set up routes: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+   if(!g_routesSetup) {
     setupRoutes();  // registers all handlers
-  }
+    g_routesSetup = true;
+   }
+  
+  Serial.printf("[WS] after set up routes: heap free=%lu largest=%lu\n",
+  (unsigned long)ESP.getFreeHeap(),
+  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
-  g_server->begin();
+//  Serial.printf("[WS] begin() g_server=%p\n", (void*)g_server);
+  g_server.begin();
+  Serial.printf("[WS] begin() done\n");
   g_running = true;
 
-  Serial.printf("[WS] start: listening http://%s/\n", WiFi.localIP().toString().c_str());
+ // Serial.printf("[WS] start: listening http://%s/\n", WiFi.localIP().toString().c_str());
   return true;
 }
 
@@ -132,62 +206,60 @@ bool WebServerManager::start() {
 
 void WebServerManager::stop() {
   if (!g_running) return;
-  if (g_server) { g_server->stop(); delete g_server; g_server = nullptr; }
+  g_server.stop();
   g_running = false;
   Serial.println(F("[WS] stopped"));
 }
 
 bool WebServerManager::isRunning() { return g_running; }
 
-/*
-void WebServerManager::loop() {
-  if (g_isLogging && g_isLogging()) return;
-  if (g_server) g_server->handleClient(); 
-  if (!g_running) {
-    if (canStart() && WiFi.status() == WL_CONNECTED) {
-      // Try to start (safe if called repeatedly)
-      start();
-    }
-  }
-
-  if (g_server) {
-    g_server->handleClient();
-  }
-
-  // Always yield to keep Wi-Fi stack happy
-  delay(0);
-  yield();
-}
-*/
-
 void WebServerManager::loop() {
   ++g_ws_loop_ticks;
 
-  // If you intentionally pause servicing while logging, keep that guard here.
-  // Otherwise, remove this block.
-  if (g_isLogging && g_isLogging()) {
-    // Uncomment next line if you want to *throttle* instead of fully pause.
-    // if ((g_ws_loop_ticks & 0xFF) == 0) Serial.println(F("[WS] loop: paused (logging)"));
-    return;
-  }
+//  if (!g_running) (void)WebServerManager::start();
 
+  static uint32_t lastLoopMs = 0;
+  static uint32_t lastHCEndMs = 0;
+
+  uint32_t loopNow = millis();
+  uint32_t loopDt  = loopNow - lastLoopMs;
+  lastLoopMs = loopNow;
+
+ // if (loopDt > 50) {
+  //  Serial.printf("[WS] loop gap=%lu ms (something blocked loop)\n", (unsigned long)loopDt);
+  //}
+
+/*
   if (g_server) {
-    g_server->handleClient();
-  }
+    uint32_t t0 = millis();
+    g_server.handleClient();
+    //  Serial.printf("[WS] Hitting handleclient\n");
+    uint32_t t1 = millis();
 
-  // Heartbeat every ~2s so we know loop() runs regularly
-  uint32_t now = millis();
-  if (now - g_ws_last_beat_ms > 2000) {
-    g_ws_last_beat_ms = now;
-    //Serial.printf("[WS] hb: ticks=%lu total=%lu inflight=%lu 2xx=%lu 4xx=%lu 5xx=%lu\n",
-    //              (unsigned long)g_ws_loop_ticks,
-    //              (unsigned long)g_ws_req_total,
-    //              (unsigned long)g_ws_inflight,
-    //              (unsigned long)g_ws_req_2xx,
-    //              (unsigned long)g_ws_req_4xx,
-    //              (unsigned long)g_ws_req_5xx);
-  }
+    uint32_t hcDur = t1 - t0;
+    if (hcDur > 50) {
+      Serial.printf("[WS] handleClient duration=%lu ms (handleClient blocked)\n", (unsigned long)hcDur);
+    }
 
+    // If you *also* want time between completed calls:
+    uint32_t sinceLastEnd = t1 - lastHCEndMs;
+    lastHCEndMs = t1;
+    if (sinceLastEnd > 50) {
+      Serial.printf("[WS] time since last handleClient end=%lu ms\n", (unsigned long)sinceLastEnd);
+    }
+  }
+*/
+  
+  uint32_t t0 = millis();
+  g_server.handleClient();
+  uint32_t dt = millis() - t0;
+  /* if (dt > 100) {
+    Serial.printf("[WS] handleClient SLOW dt=%lu free=%lu largest=%lu\n",
+      (unsigned long)dt,
+      (unsigned long)ESP.getFreeHeap(),
+      (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  }
+*/
   // keep Wi-Fi happy
   delay(0);
   yield();
@@ -195,25 +267,44 @@ void WebServerManager::loop() {
 
 
 void WebServerManager::setupRoutes() {
+
+  if (g_routesSetup) return;
+  g_routesSetup = true;
+
   // Root can stay here (or move into a Routes_Status later)
-  g_server->on("/", HTTP_GET, handleRoot);
+  g_server.on("/", HTTP_GET, handleRoot);
 
   // Delegate
-  registerFileRoutes(*g_server);
-  registerConfigRoutes(*g_server);
-  registerTransformRoutes(*g_server);
+  registerFileRoutes();
+  registerConfigRoutes();
+  registerTransformRoutes();
 
 
   // --- debug canary: always available ---
-  g_server->on("/__ping", HTTP_GET, [](){
-    ws_diag_on_request();
-    g_server->send(200, "text/plain", "pong");
-    ws_diag_on_response(200);
-  });
+ /* g_server.on("/ping", HTTP_GET, [](){
+    g_server.sendHeader("Connection", "close");
+    WiFiClient c = g_server.client();
+    g_server.send(200, F("text/plain"), F("OK"));
+    c.stop();
+    Serial.printf("[WS] /ping after send: client=%d\n", (int)g_server.client().connected());
+
+  });*/
+
+  g_server.on("/ping", HTTP_GET, [](){
+  WiFiClient c = g_server.client();
+  c.print(
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/plain\r\n"
+    "Connection: close\r\n"
+    "Content-Length: 2\r\n"
+    "\r\n"
+    "OK"
+  );
+  c.stop();
+});
 
   // --- debug health: JSON snapshot ---
-  g_server->on("/__health", HTTP_GET, [](){
-    ws_diag_on_request();
+  g_server.on("/__health", HTTP_GET, [](){
     String out;
     out.reserve(256);
     out += F("{\"wifi\":");
@@ -235,80 +326,110 @@ void WebServerManager::setupRoutes() {
     out += F(",\"last2xxMsAgo\":"); out += String((uint32_t)(millis() - g_ws_last_2xx_ms));
     out += F(",\"lastErrMsAgo\":"); out += String((uint32_t)(millis() - g_ws_last_err_ms));
     out += F("}");
-    g_server->send(200, "application/json", out);
-    ws_diag_on_response(200);
+    g_server.send(200, "application/json", out);
   });
 
   // --- log *every* unhandled request (method + URI + args) ---
-  g_server->onNotFound([](){
-    ws_diag_on_request();
-    String uri = g_server->uri();
+  g_server.onNotFound([](){
+    String uri = g_server.uri();
     Serial.printf("[WS] 404 %s %s\n",
-                  (g_server->method() == HTTP_GET ? "GET" :
-                  g_server->method() == HTTP_POST ? "POST" :
-                  g_server->method() == HTTP_PUT ? "PUT" :
-                  g_server->method() == HTTP_DELETE ? "DEL" : "?"),
+                  (g_server.method() == HTTP_GET ? "GET" :
+                  g_server.method() == HTTP_POST ? "POST" :
+                  g_server.method() == HTTP_PUT ? "PUT" :
+                  g_server.method() == HTTP_DELETE ? "DEL" : "?"),
                   uri.c_str());
-    const int ac = g_server->args();
+    const int ac = g_server.args();
     for (int i = 0; i < ac; ++i) {
       Serial.printf("      arg[%d] %s = %s\n", i,
-                    g_server->argName(i).c_str(),
-                    g_server->arg(i).c_str());
+                    g_server.argName(i).c_str(),
+                    g_server.arg(i).c_str());
     }
-    g_server->send(404, "text/plain", "Not found");
-    ws_diag_on_response(404);
+    g_server.send(404, "text/plain", "Not found");
   });
 
   // 404
-  //g_server->onNotFound(WebServerManager::handleNotFound);
+  g_server.onNotFound(WebServerManager::handleNotFound);
+
 }
 
 void WebServerManager::handleRoot() {
-  ws_diag_on_request();
-
   WiFiManager::noteUserActivity();
-  String html = htmlHeader("ESP32 Logger");
 
-  html += F("<h1>ESP32 Data Logger</h1>");
+  Serial.printf("[WS] heap free=%lu largest=%lu\n",
+                (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+  // Stream response (chunked)
+  g_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+
+  // Optional but often helps browsers not hold the socket open on embedded servers:
+  g_server.sendHeader(F("Connection"), F("close"));
+
+  g_server.send(200, F("text/html"), "");   // headers only; body follows via sendContent*
+
+  // Header (streamed from PROGMEM via HtmlUtil)
+  HtmlUtil::sendHtmlHeader(g_server, F("ESP32 Logger"));
+
+  g_server.sendContent_P(PSTR("<h1>ESP32 Data Logger</h1>"));
 
   // Status
-  html += F("<p>Status: ");
-  if (g_isLogging && g_isLogging())       html += F("<b>LOGGING</b>");
-  else if (g_running)                     html += F("<b>SERVER RUNNING</b>");
-  else                                    html += F("<b>IDLE</b>");
-  html += F("</p>");
+  g_server.sendContent_P(PSTR("<p>Status: "));
+  if (g_loggingActive)      g_server.sendContent_P(PSTR("<b>LOGGING</b>"));
+  else if (g_running)       g_server.sendContent_P(PSTR("<b>SERVER RUNNING</b>"));
+  else                      g_server.sendContent_P(PSTR("<b>IDLE</b>"));
+  g_server.sendContent_P(PSTR("</p>"));
 
-  // WiFi / IP
-  html += F("<p>WiFi: ");
-  html += WiFi.localIP().toString();
-  html += F("</p>");
+  // WiFi IP (no String allocation)
+  g_server.sendContent_P(PSTR("<p>WiFi: "));
+  {
+    IPAddress ip = WiFi.localIP();
+    char ipbuf[16]; // "255.255.255.255" + '\0'
+    snprintf(ipbuf, sizeof(ipbuf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    g_server.sendContent(ipbuf);
+  }
+  g_server.sendContent_P(PSTR("</p>"));
 
-  // Quick links
-  html += F("<h2>Links</h2>");
-  html += F("<ul>");
-  html += F("<li><a href=\"/files\">Browse SD Card</a></li>");
-  html += F("<li><a href=\"/config\">Config (General)</a></li>");
-  html += F("<li><a href=\"/config/sensors\">Config (Sensors)</a></li>");
-  html += F("<li><a href=\"/config/buttons\">Config (Buttons)</a></li>");
-  html += F("</ul>");
+  // Links
+  g_server.sendContent_P(PSTR("<h2>Links</h2><ul>"));
+  g_server.sendContent_P(PSTR("<li><a href=\"/files\">Browse SD Card</a></li>"));
+  g_server.sendContent_P(PSTR("<li><a href=\"/config\">Config (General)</a></li>"));
+  g_server.sendContent_P(PSTR("<li><a href=\"/config/sensors\">Config (Sensors)</a></li>"));
+  g_server.sendContent_P(PSTR("<li><a href=\"/config/buttons\">Config (Buttons)</a></li>"));
+  g_server.sendContent_P(PSTR("</ul>"));
 
-  html += htmlFooter();
-  g_server->send(200, "text/html", html);
-  ws_diag_on_response(200);
+  // Footer
+  HtmlUtil::sendHtmlFooter(g_server);
+
+  // Final chunk
+  g_server.sendContent("");
+
+  Serial.printf("[WS] heap free=%lu largest=%lu\n",
+                (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
+
+
 
 void WebServerManager::handleNotFound() {
-  if (!g_server) return;
   WiFiManager::noteUserActivity();
-  String html = htmlHeader("404 Not Found");
-  html += F("<h2>Not found</h2><p>The requested URL <code>");
-  html += htmlEscape(g_server->uri());
-  html += F("</code> was not found.</p>");
-  html += F("<p><a href='/'>Home</a> &nbsp; <a href='/config'>Config</a> &nbsp; <a href='/files'>Files</a></p>");
-  html += htmlFooter();
 
-  g_server->send(404, "text/html", html);
+  g_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  g_server.send(404, F("text/html"), "");   // headers only; body via sendContent*
+
+  sendHtmlHeaderStream(F("404 Not Found"));
+
+  sendP(F("<h2>Not found</h2><p>The requested URL <code>"));
+  sendHtmlEscaped(g_server.uri());
+  sendP(F("</code> was not found.</p>"));
+
+  sendP(F("<p><a href='/'>Home</a> &nbsp; <a href='/config'>Config</a> &nbsp; "
+          "<a href='/files'>Files</a></p>"));
+
+  sendHtmlFooterStream();
+
+  g_server.sendContent(""); // some cores like a final chunk
 }
+
 
 static bool strToBool(const String& s) {
   String t = s; t.trim(); t.toLowerCase();

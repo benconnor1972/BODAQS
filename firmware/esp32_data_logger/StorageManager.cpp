@@ -6,7 +6,7 @@
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
 #include "SPI.h"
 
-// If you use SD_MMC and SdFat, include the right headers here as you already do elsewhere:
+// If you use SD_MMC and SdFs, include the right headers here as you already do elsewhere:
 // #include "SD_MMC.h"
 // #include "SdFat.h"
 
@@ -27,7 +27,7 @@ static inline bool isSdmmcBackend() {
 }
 
 
-static SdFat sd;
+static SdFs sd;
 static FsFile logFile;
 static File logFileMMC;
 
@@ -106,7 +106,7 @@ static bool dequeueSample(SampleRow &out) {
 volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
 bool g_sdTrackEnabled = true;                    // can be toggled off if desired
 
-SdFat* StorageManager_getSd() {
+SdFs* StorageManager_getSd() {
     return isSpiBackend() ? &sd : nullptr;
 }
 
@@ -191,7 +191,7 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
     out = "";
 
     if (isSpiBackend()) {
-        // SPI / SdFat backend
+        // SPI / SdFs backend
         FsFile f = sd.open(path, O_RDONLY);
         if (!f) {
             Serial.print("[Storage] loadTextFile: SPI open failed for ");
@@ -238,7 +238,7 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   const size_t len = data.length();
 
   if (isSpiBackend()) {
-    // -------- SPI / SdFat backend --------
+    // -------- SPI / SdFs backend --------
     FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
     if (!f) {
       Serial.print("[Storage] saveTextFile: SPI open failed for ");
@@ -308,7 +308,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
   }
 
   if (isSpiBackend()) {
-    Serial.println("[Storage] begin: starting SPI (SdFat)");
+    Serial.println("[Storage] begin: starting SPI (SdFs)");
 
     const int csPin = s_storage->cs;
     if (csPin < 0) {
@@ -344,7 +344,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
       }
     }
 
-    Serial.println("[Storage] SD init OK (SPI_SDFAT).");
+    Serial.println("[Storage] SD init OK (SPI_SdFs).");
     return;
   }
 
@@ -502,7 +502,7 @@ static bool openNewLogFile_SPI(const String& longName) {
     }
   }
 
-  // Preallocate only on SdFat backend
+  // Preallocate only on SdFs backend
   preallocate(logFile, /*mib=*/64);
   return true;
 }
@@ -583,7 +583,7 @@ static void startLog() {
   bool ok = false;
 
   if (isSpiBackend()) {
-    // -------- SPI + SdFat path --------
+    // -------- SPI + SdFs path --------
     logFile.close();  // harmless if not open
 
     ok = openNewLogFile_SPI(filename);  // handles long name, 8.3, fallback

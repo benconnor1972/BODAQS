@@ -166,7 +166,7 @@ static const BoardProfile THING_PLUS_A = {
 
   .display = {
     // Maybe you omit the OLED on this variant:
-    .type = DisplayType::None,
+    .type = DisplayType::OLED_SSD1306,
 
     .addr_primary = 0x3C,
     .addr_alt     = 0x3D,
@@ -194,7 +194,7 @@ static const BoardProfile THING_PLUS_A = {
       // button2.id=nav_left, pin=12, mode=poll
       { .id="nav_left",
         .present=true,
-        .pin=12,
+        .pin=33,
         .mode=1,
         .active_low=true,
         .use_internal_pullup=true },
@@ -202,7 +202,7 @@ static const BoardProfile THING_PLUS_A = {
       // button3.id=nav_right, pin=33, mode=poll
       { .id="nav_right",
         .present=true,
-        .pin=33,
+        .pin=12,
         .mode=1,
         .active_low=true,
         .use_internal_pullup=true },

@@ -29,8 +29,8 @@ extern volatile bool g_sdWriteSinceLastSample;
 extern bool g_sdTrackEnabled;
 
 
-// Give other modules access to the already-initialized SdFat instance
-// NOTE: Only valid when using the SPI_SDFAT backend; returns nullptr in SDIO_SDMMC mode.
-SdFat* StorageManager_getSd();
-extern SdFat* gSd;
+// Give other modules access to the already-initialized SdFs instance
+// NOTE: Only valid when using the SPI_SdFs backend; returns nullptr in SDIO_SDMMC mode.
+SdFs* StorageManager_getSd();
+extern SdFs* gSd;
 #endif

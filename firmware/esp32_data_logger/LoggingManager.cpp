@@ -15,16 +15,18 @@
   #include "freertos/task.h"
 #endif
 
+volatile bool g_loggingActive = false;
+
 namespace {
   // Live config (not owned)
   const LoggerConfig* s_cfg = nullptr;
 
   // Run-state
-  volatile bool   s_running       = false;
   unsigned long   s_intervalMs    = 1000;
   unsigned long   s_lastSample    = 0;     // only used in legacy loop() mode
   uint64_t        s_t0_ms         = 0;
   uint32_t        s_sampleCount   = 0;
+  
 
   // Mark queue (single-producer, single-consumer)
   constexpr uint8_t MAX_MARKS = 8;
@@ -66,7 +68,7 @@ namespace {
 
   // One sample, no scheduling logic (task provides cadence)
   static inline void sampleOnce_() {
-    if (!s_running) return;
+    if (!g_loggingActive) return;
 
     // Deterministic timestamp for THIS sample (grid-aligned)
     uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * s_intervalMs;
@@ -101,7 +103,7 @@ namespace {
       vTaskDelayUntil(&lastWake, periodTicks);
 
       // If stopped, park lightly rather than burning CPU.
-      if (!s_running) {
+      if (!g_loggingActive) {
         vTaskDelay(pdMS_TO_TICKS(10));
         expectedMs = millis();
         continue;
@@ -158,7 +160,7 @@ bool LoggingManager::start() {
 
   //PowerManager::setCpuFreqForLogging();
 
-  SensorManager::debugDump("before-header");
+ // SensorManager::debugDump("before-header");
 
   // sampling cadence
   s_intervalMs = StorageManager_getSampleIntervalMs();
@@ -181,7 +183,7 @@ bool LoggingManager::start() {
   // Open/create log file
   StorageManager_startLog();
 
-  s_running = true;
+  g_loggingActive = true;
 
 #if defined(ESP32)
   // Start sampler task once (it loops forever; it will idle when not running)
@@ -220,7 +222,7 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
 
 void LoggingManager::stop() {
   // Stop sampling first (prevents enqueues while we close files)
-  s_running = false;
+  g_loggingActive = false;
 
   // Close log (and flush/drain in StorageManager if you implemented it)
   StorageManager_stopLog();
@@ -236,7 +238,7 @@ void LoggingManager::stop() {
 }
 
 bool LoggingManager::isRunning() {
-  return s_running;
+  return g_loggingActive;
 }
 
 // Legacy loop-based sampling (kept, but not used when the task is running)
@@ -246,7 +248,7 @@ void LoggingManager::loop() {
   if (s_sampleTask) return;
 #endif
 
-  if (!s_running) return;
+  if (!g_loggingActive) return;
 
   unsigned long now = millis();
   if (now - s_lastSample < s_intervalMs) return;
