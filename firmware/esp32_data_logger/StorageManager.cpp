@@ -650,6 +650,8 @@ static void startLog() {
   }
 
   Serial.println("[Storage] Log file opened successfully.");
+  loggingActive = true;
+
 }
 
 

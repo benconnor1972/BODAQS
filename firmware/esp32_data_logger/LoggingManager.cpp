@@ -9,6 +9,7 @@
 #include "Rates.h"
 #include "PowerManager.h"
 #include "IndicatorManager.h"
+#include "WiFiManager.h"
 
 // FreeRTOS (ESP32 Arduino)
 #if defined(ESP32)
@@ -145,12 +146,12 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 bool LoggingManager::start() {
   if (!s_cfg) return false;
 
-  // block if web server running (unchanged)
+  // Logging owns the device: take Wi-Fi (and therefore web server) down
   if (WebServerManager::isRunning()) {
-    UI::println("Refusing to start logging while web server is running.",
-                "", UI::TARGET_SERIAL, UI::LVL_WARN);
-    return false;
+    UI::println("Stopping web server for logging…", "", UI::TARGET_SERIAL, UI::LVL_INFO, 600);
   }
+  WiFiManager::suspendForLogging();   // forces Wi-Fi OFF, remembers prior enabled state
+
 
   //PowerManager::setCpuFreqForLogging();
 
@@ -216,15 +217,11 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
 }
 
 void LoggingManager::stop() {
-  // Stop sampling first (prevents enqueues while we close files)
   s_running = false;
-  // turn LED off
   IndicatorManager::ledOff();
-
-  // Close log (and flush/drain in StorageManager if you implemented it)
   StorageManager_stopLog();
-
   PowerManager::restoreCpuFreqAfterLogging();
+  WiFiManager::resumeAfterLogging(ConfigManager::get().wifiEnabledDefault);
 
 #if defined(ESP32)
   // Report task-lateness stats (these replace the old loop()-based lateTicks)
@@ -239,6 +236,8 @@ bool LoggingManager::isRunning() {
 }
 
 // Legacy loop-based sampling (kept, but not used when the task is running)
+
+/*
 void LoggingManager::loop() {
 #if defined(ESP32)
   // If the sampler task exists, sampling is task-driven. Keep loop() light.
@@ -269,7 +268,7 @@ void LoggingManager::loop() {
   // Non-blocking: enqueue for storage to consume
   (void)StorageManager_enqueueSample(ts_ms, values, nWritten, _markNow);
 }
-
+*/
 void LoggingManager::mark() {
   enqueueNow();
 }
