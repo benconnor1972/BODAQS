@@ -23,6 +23,9 @@ uint32_t     WiFiManager::s_stateDeadlineMs = 0;
 String       WiFiManager::s_targetSsid;
 uint8_t      WiFiManager::s_targetBssid[6] = {0};
 bool         WiFiManager::s_targetBssidSet = false;
+bool         WiFiManager::s_loggingSuspended = false;
+bool         WiFiManager::s_restoreEnabledAfterLogging = false;
+
 
 IsLoggingActiveFn WiFiManager::s_isLogging = nullptr;
 WiFiManager::OnOnlineFn  WiFiManager::s_onOnline = nullptr;
@@ -52,11 +55,9 @@ static void tryRtcSyncIfPending_() {
   s_rtcSyncPending = false;
 
   const auto& cfg = ConfigManager::get();
-  if (ok && !cfg.wifiEnabledDefault) {
-    // Public API handles callbacks, state, UI, WIFI_OFF, etc.
-    WiFiManager::disconnect();
+  if (!cfg.wifiEnabledDefault) {
+    WiFiManager::disable();
   } else {
-    // Keep link up (your 15-min idle timer runs); count this as activity
     WiFiManager::noteUserActivity();
   }
 }
@@ -278,6 +279,45 @@ void WiFiManager::maybeConnectForRTC() {
   s_rtcSyncPending = true;          // remember why we’re doing this
 }
 
+void WiFiManager::suspendForLogging() {
+  if (s_loggingSuspended) return;
+  s_loggingSuspended = true;
+
+  // Remember user intent (“enabled”) so we can restore later
+  s_restoreEnabledAfterLogging = s_enabled;
+
+  // Hard down
+  s_enabled = false;
+  s_haveIntentConnect = false;
+  s_rtcSyncPending = false;
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  btStop();
+
+  enterOff_();
+  notifyUi_();
+}
+
+void WiFiManager::resumeAfterLogging(bool wifiEnabledDefault) {
+  if (!s_loggingSuspended) return;
+  s_loggingSuspended = false;
+
+  // Policy:
+  // - If wifiEnabledDefault is true => always re-enable and connect
+  // - else restore prior enabled state; connect only if enabled
+  bool shouldEnable = wifiEnabledDefault ? true : s_restoreEnabledAfterLogging;
+
+  if (shouldEnable) {
+    enable();
+    connectNow();
+  } else {
+    disable(); // remain OFF
+  }
+
+  notifyUi_();
+}
+
 
 WiFiStatus WiFiManager::status() {
   WiFiStatus st;
@@ -448,6 +488,9 @@ void WiFiManager::selectAndConnect_() {
   const uint8_t* bssidPtr = s_targetBssidSet ? s_targetBssid : nullptr;
   int channel = chosenChannel > 0 ? chosenChannel : 0; // 0 = auto if unknown
   WiFi.begin(s_targetSsid.c_str(), (pwd ? pwd : ""), channel, bssidPtr, true /* connect */);
+  s_state = WiFiMgrState::CONNECTING;
+  s_stateDeadlineMs = millis() + CONNECT_TIMEOUT_MS;
+  notifyUi_();
 
 }
 

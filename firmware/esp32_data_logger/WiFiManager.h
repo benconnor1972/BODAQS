@@ -59,6 +59,13 @@ public:
   static void setOfflineCallback(OnOfflineFn cb);
   static void setUiCallback(OnUiFn cb);
   static void noteUserActivity();   // call on each HTTP request or user action
+  // Force Wi-Fi down during logging, but remember whether it was enabled.
+  static void suspendForLogging();
+
+  // Restore Wi-Fi policy after logging.
+  // If wifiEnabledDefault=true, Wi-Fi should come back enabled+connected.
+  // Otherwise restore the prior "enabled" preference (and connect if enabled).
+  static void resumeAfterLogging(bool wifiEnabledDefault);
 
 
 private:
@@ -71,6 +78,8 @@ private:
   static bool configuredNetworksExist_();
   static void clearIntent_();
   static void shutdownRadio_();     // 
+  static bool s_loggingSuspended;
+  static bool s_restoreEnabledAfterLogging; 
 
 
   static WiFiMgrState s_state;

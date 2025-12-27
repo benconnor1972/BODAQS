@@ -12,9 +12,9 @@
 using namespace HtmlUtil;
 
 // --- tiny SD helper ---
-static bool ensureSd_(SdFat*& out) {
+static bool ensureSd_(SdFs*& out) {
   out = WebServerManager::sd();
-  if (!out) { Serial.println(F("[XFORM] SdFat* is null")); return false; }
+  if (!out) { Serial.println(F("[XFORM] SdFs* is null")); return false; }
   return true;
 }
 
@@ -42,7 +42,7 @@ static String baseName_(const String& path) {
   return path;
 }
 
-static void addTransformsFromDir_(SdFat* sd, const char* dirPath, JsonArray outArr) {
+static void addTransformsFromDir_(SdFs* sd, const char* dirPath, JsonArray outArr) {
   if (!sd) return;
   SdFile dir;
   if (!dir.open(dirPath)) return;
@@ -111,7 +111,7 @@ static void addTransformsFromDirMMC_(const char* dirPath, JsonArray outArr) {
 }
 
 static void addTransformsFromDirAny_(const char* dirPath, JsonArray outArr) {
-  if (SdFat* sd = WebServerManager::sd()) {
+  if (SdFs* sd = WebServerManager::sd()) {
     addTransformsFromDir_(sd, dirPath, outArr);      // SPI/SdFat
   } else {
     addTransformsFromDirMMC_(dirPath, outArr);       // SD_MMC
@@ -136,7 +136,7 @@ void registerTransformRoutes(WebServer& srv) {
     const String sensor = srv.arg("sensor");
     String mode = srv.hasArg("mode") ? srv.arg("mode") : "";
 
-    SdFat* sd = WebServerManager::sd();
+    SdFs* sd = WebServerManager::sd();
     const bool useSpi = (sd != nullptr);
 
     // Build result

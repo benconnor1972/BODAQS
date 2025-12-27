@@ -88,7 +88,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
         .present=true,
         .pin=2,
         .mode=0,
-        .active_low=true,
+        .active_low=false,
         .use_internal_pullup=true },
     },
     .count = 6,

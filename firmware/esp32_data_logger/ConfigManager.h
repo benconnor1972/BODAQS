@@ -90,7 +90,7 @@ struct LoggerConfig {
 
 class ConfigManager {
   public:
-    static void begin(SdFat* sdRef, const char* filename);
+    static void begin(SdFs* sdRef, const char* filename);
 
     // Wi-Fi config accessors (read-only)
     static bool hasConfiguredNetworks();
