@@ -9,7 +9,7 @@
 
 using namespace HtmlUtil;
 
-static bool ensureSd_(SdFat*& out) {
+static bool ensureSd_(SdFs*& out) {
   out = WebServerManager::sd();
   if (!out) {
     Serial.println(F("[FILES] SdFat* is null (call WebServerManager::begin first)"));

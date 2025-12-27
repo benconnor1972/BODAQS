@@ -26,7 +26,7 @@ static SdFs*g_sd = nullptr;                     // defined in esp32_data_logger.
 static WebServer* g_server = nullptr;
 static WebServerManager::IsLoggingFn g_isLogging = nullptr;
 static bool g_running = false;
-SdFat* WebServerManager::sd() { return g_sd; }
+SdFs* WebServerManager::sd() { return g_sd; }
 
 // Pointer to the live config struct
 static LoggerConfig* g_cfgPtr = nullptr;
@@ -66,14 +66,14 @@ static void ws_diag_on_response(int code) {
 // -------------------- helpers --------------------
 static bool ensureSd() {
   if (!g_sd) {
-    Serial.println(F("[WS] ensureSd: no SdFat* provided (call begin(StorageManager_getSd(), ...) first)"));
+    Serial.println(F("[WS] ensureSd: no SdFs* provided (call begin(StorageManager_getSd(), ...) first)"));
     return false;
   }
   return true; // StorageManager owns begin()
 }
 
 // -------------------- public API --------------------
-void WebServerManager::begin(SdFat* sdRef, IsLoggingFn isLogging) {
+void WebServerManager::begin(SdFs* sdRef, IsLoggingFn isLogging) {
   g_sd        = sdRef;
   g_isLogging = isLogging;
 }
@@ -86,7 +86,7 @@ void WebServerManager::setStaConfig(const String& ssid, const String& password) 
 } //no-op. legacy
 
 bool WebServerManager::canStart() {
-  // Only block while logging; do NOT require SdFat here.
+  // Only block while logging; do NOT require SdFs here.
   if (g_isLogging && g_isLogging()) {
     return false;
   }

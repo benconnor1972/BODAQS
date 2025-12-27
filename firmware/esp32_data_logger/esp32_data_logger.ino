@@ -87,8 +87,6 @@ static CalMask parseCalMaskCSV(const char* csv) {
 
 static void buildSensorsFromConfig();
 static bool s_rtcConnectIntent = false;
-
-//static void buildSensorsFromConfig();
 void onToggleLogging(ButtonEvent event);
 void onMarkEvent(ButtonEvent event);
 void onWebServerToggle(ButtonEvent event);
@@ -247,7 +245,7 @@ void setup() {
   MenuSystem::begin(&g_cfg);
     Serial.println("SETUP: M Done");
 
-  MenuSystem::setIdleCloseMs(120000);
+  MenuSystem::setIdleCloseMs(300000);
   Serial.println("SETUP: N Done");
 
     Serial.println("SETUP: ALL DONE");
