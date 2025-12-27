@@ -92,9 +92,9 @@ void onMarkEvent(ButtonEvent event);
 void onWebServerToggle(ButtonEvent event);
 
 
-LoggerConfig g_cfg;   // holds everything we load from loggercfg
+LoggerConfig g_cfg;  
 TransformRegistry gTransforms;
-SdFs* gSd = nullptr;   // SdFat typedefs to SdFs
+SdFs* gSd = nullptr; 
 
 
 using namespace board;
@@ -106,7 +106,6 @@ void setup() {
     SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
     DumpActiveBoardButtons();
 
-  // Optional sanity check
   if (!gBoard) {
     Serial.println("FATAL: Board not selected");
     while (true) delay(1000);
@@ -116,7 +115,6 @@ void setup() {
 
   //Buffer debug
   static uint32_t g_sampleCounter = 0;
-
 
   RTCManager_setHumanReadable(true); // false = fast integer, true = readable
   StorageManager_begin(*gBoard);           
@@ -137,7 +135,7 @@ void setup() {
   g_cfg.sampleRateHz   = 100;   // fallback
 
   ConfigManager::begin(StorageManager_getSd(), "/config/loggercfg.txt");
-  //ConfigManager::debugDumpConfigFile();
+
 
   if (!ConfigManager::load(g_cfg)) {
     Serial.println("[CFG] Load failed — using defaults");
@@ -188,33 +186,33 @@ void setup() {
 
   const auto& cfg = ConfigManager::get();
 
+  // Choose RTC
+  RTCManager_begin(RTC_INTERNAL);
+  // RTCManager_begin(RTC_EXTERNAL);
+
+  //Initialise wifi manager
+  Serial.println("SETUP: G wifimanager::begin");
+  WiFiManager::begin(isLoggingPredicate);
+  Serial.println("SETUP: G Done");
+
   // Bring Wi-Fi up on boot only if the user asked for it by default
   if (ConfigManager::hasConfiguredNetworks() && cfg.wifiEnabledDefault) {
     WiFiManager::enable();
     WiFiManager::connectNow();   // one pass: scan → select → connect
+    WiFiManager::maybeConnectForRTC();   
+
+  } else {
+    WiFiManager::disable();  // ensures clean OFF
+    WiFiManager::maybeConnectForRTC();  // if your signature takes cfg; otherwise keep your existing call
   }
 
  
-  // Choose RTC
-  RTCManager_begin(RTC_INTERNAL);
-  // RTCManager_begin(RTC_EXTERNAL);
+
 
   // Timezone + NTP list
   String n1, n2, n3;
   splitCsv3(g_cfg.ntpServers, n1, n2, n3);
   configTzTime(g_cfg.tz, n1.length()? n1.c_str(): nullptr, n2.length()? n2.c_str(): nullptr, n3.length()? n3.c_str(): nullptr);
-  
-    Serial.println("SETUP: G wifimanager::begin");
-
-  WiFiManager::begin();
-
-  Serial.println("SETUP: G Done");
-
-    Serial.println("SETUP: H maybeconnectforRTC");
-
-  WiFiManager::maybeConnectForRTC();   
-  Serial.println("SETUP: H Done");
-
 
   // 3) Init logging *after* sensors exist
   LoggingManager::begin(&g_cfg);

@@ -132,9 +132,11 @@ bool WebServerManager::start() {
 
 void WebServerManager::stop() {
   if (!g_running) return;
-  if (g_server) { g_server->stop(); delete g_server; g_server = nullptr; }
+
+  if (g_server) {
+    g_server->stop();     // if available in your core; safe to call if it exists
+  }
   g_running = false;
-  Serial.println(F("[WS] stopped"));
 }
 
 bool WebServerManager::isRunning() { return g_running; }
@@ -161,36 +163,19 @@ void WebServerManager::loop() {
 */
 
 void WebServerManager::loop() {
-  ++g_ws_loop_ticks;
-
-  // If you intentionally pause servicing while logging, keep that guard here.
-  // Otherwise, remove this block.
   if (g_isLogging && g_isLogging()) {
-    // Uncomment next line if you want to *throttle* instead of fully pause.
-    // if ((g_ws_loop_ticks & 0xFF) == 0) Serial.println(F("[WS] loop: paused (logging)"));
+    if (g_running) stop();
     return;
   }
 
-  if (g_server) {
-    g_server->handleClient();
-  }
+  bool wifiUp = (WiFi.status() == WL_CONNECTED);
 
-  // Heartbeat every ~2s so we know loop() runs regularly
-  uint32_t now = millis();
-  if (now - g_ws_last_beat_ms > 2000) {
-    g_ws_last_beat_ms = now;
-    //Serial.printf("[WS] hb: ticks=%lu total=%lu inflight=%lu 2xx=%lu 4xx=%lu 5xx=%lu\n",
-    //              (unsigned long)g_ws_loop_ticks,
-    //              (unsigned long)g_ws_req_total,
-    //              (unsigned long)g_ws_inflight,
-    //              (unsigned long)g_ws_req_2xx,
-    //              (unsigned long)g_ws_req_4xx,
-    //              (unsigned long)g_ws_req_5xx);
+  if (wifiUp) {
+    if (!g_running) start();  // will call begin(); should be idempotent
+    if (g_server) g_server->handleClient();
+  } else {
+    if (g_running) stop();
   }
-
-  // keep Wi-Fi happy
-  delay(0);
-  yield();
 }
 
 
@@ -206,14 +191,13 @@ void WebServerManager::setupRoutes() {
 
   // --- debug canary: always available ---
   g_server->on("/__ping", HTTP_GET, [](){
-    ws_diag_on_request();
+    WiFiManager::noteUserActivity();
     g_server->send(200, "text/plain", "pong");
-    ws_diag_on_response(200);
   });
 
   // --- debug health: JSON snapshot ---
   g_server->on("/__health", HTTP_GET, [](){
-    ws_diag_on_request();
+    WiFiManager::noteUserActivity();
     String out;
     out.reserve(256);
     out += F("{\"wifi\":");
@@ -236,12 +220,11 @@ void WebServerManager::setupRoutes() {
     out += F(",\"lastErrMsAgo\":"); out += String((uint32_t)(millis() - g_ws_last_err_ms));
     out += F("}");
     g_server->send(200, "application/json", out);
-    ws_diag_on_response(200);
   });
 
   // --- log *every* unhandled request (method + URI + args) ---
   g_server->onNotFound([](){
-    ws_diag_on_request();
+    WiFiManager::noteUserActivity();
     String uri = g_server->uri();
     Serial.printf("[WS] 404 %s %s\n",
                   (g_server->method() == HTTP_GET ? "GET" :
@@ -256,16 +239,10 @@ void WebServerManager::setupRoutes() {
                     g_server->arg(i).c_str());
     }
     g_server->send(404, "text/plain", "Not found");
-    ws_diag_on_response(404);
   });
-
-  // 404
-  //g_server->onNotFound(WebServerManager::handleNotFound);
 }
 
 void WebServerManager::handleRoot() {
-  ws_diag_on_request();
-
   WiFiManager::noteUserActivity();
   String html = htmlHeader("ESP32 Logger");
 
@@ -294,7 +271,6 @@ void WebServerManager::handleRoot() {
 
   html += htmlFooter();
   g_server->send(200, "text/html", html);
-  ws_diag_on_response(200);
 }
 
 void WebServerManager::handleNotFound() {
