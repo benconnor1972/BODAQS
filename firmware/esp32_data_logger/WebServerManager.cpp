@@ -225,9 +225,9 @@ void WebServerManager::loop() {
   uint32_t loopDt  = loopNow - lastLoopMs;
   lastLoopMs = loopNow;
 
- // if (loopDt > 50) {
-  //  Serial.printf("[WS] loop gap=%lu ms (something blocked loop)\n", (unsigned long)loopDt);
-  //}
+  if (loopDt > 50) {
+    Serial.printf("[WS] loop gap=%lu ms (something blocked loop)\n", (unsigned long)loopDt);
+  }
 
 /*
   if (g_server) {
@@ -253,13 +253,13 @@ void WebServerManager::loop() {
   uint32_t t0 = millis();
   g_server.handleClient();
   uint32_t dt = millis() - t0;
-  /* if (dt > 100) {
+   if (dt > 100) {
     Serial.printf("[WS] handleClient SLOW dt=%lu free=%lu largest=%lu\n",
       (unsigned long)dt,
       (unsigned long)ESP.getFreeHeap(),
       (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
   }
-*/
+
   // keep Wi-Fi happy
   delay(0);
   yield();
@@ -277,7 +277,7 @@ void WebServerManager::setupRoutes() {
   // Delegate
   registerFileRoutes();
   registerConfigRoutes();
-  registerTransformRoutes();
+  //registerTransformRoutes();
 
 
   // --- debug canary: always available ---

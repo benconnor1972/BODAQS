@@ -341,12 +341,12 @@ void loop() {
   MenuSystem::loop();
 
   uint32_t dt = millis() - lastHeapReport;
-  /* if (dt > 2000) {
+  if (dt > 2000) {
     Serial.printf("[Main loop]: heap free=%lu largest=%lu\n",
     (unsigned long)ESP.getFreeHeap(),
     (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     lastHeapReport = millis();
-  } */
+  }
 }
 
 
