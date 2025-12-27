@@ -130,8 +130,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
   .indicators = {
     // PLACEHOLDERS
-    .has_led = false,
-    .led_pin = -1,
+    .has_led = true,
+    .led_pin = 1,
     .led_active_high = true,
 
     .has_buzzer = false,

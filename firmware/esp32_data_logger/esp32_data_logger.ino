@@ -22,6 +22,7 @@
 #include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "BoardSelect.h"
+#include "IndicatorManager.h"
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 
@@ -103,6 +104,7 @@ static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 
 void setup() {
   
+    Serial.begin(115200);
     SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
     DumpActiveBoardButtons();
 
@@ -111,8 +113,6 @@ void setup() {
     while (true) delay(1000);
   }
   
-  Serial.begin(115200);
-
   //Buffer debug
   static uint32_t g_sampleCounter = 0;
 
@@ -133,6 +133,8 @@ void setup() {
   g_cfg.oledBrightness = 200;   // nominal contrast
   g_cfg.oledIdleDimMs  = 30000; // 30s
   g_cfg.sampleRateHz   = 100;   // fallback
+
+  IndicatorManager::begin(*board::gBoard);
 
   ConfigManager::begin(StorageManager_getSd(), "/config/loggercfg.txt");
 

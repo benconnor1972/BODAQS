@@ -8,6 +8,7 @@
 #include "SensorManager.h"
 #include "Rates.h"
 #include "PowerManager.h"
+#include "IndicatorManager.h"
 
 // FreeRTOS (ESP32 Arduino)
 #if defined(ESP32)
@@ -128,11 +129,6 @@ namespace {
 
 } // anon
 
-
-void LoggingManager::attachPrimaryPot(AnalogPotSensor* pot) {
-  s_pot1 = pot;
-}
-
 void LoggingManager::begin(const LoggerConfig* cfg) {
   s_cfg = cfg;
   s_intervalMs  = StorageManager_getSampleIntervalMs();
@@ -198,7 +194,8 @@ bool LoggingManager::start() {
     );
   }
 #endif
-
+  // turn LED on
+  IndicatorManager::ledOn();
   UI::println("Logging started.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 1200);
   unsigned hz = s_intervalMs ? (1000UL / s_intervalMs) : 0;
   char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
@@ -221,6 +218,8 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
 void LoggingManager::stop() {
   // Stop sampling first (prevents enqueues while we close files)
   s_running = false;
+  // turn LED off
+  IndicatorManager::ledOff();
 
   // Close log (and flush/drain in StorageManager if you implemented it)
   StorageManager_stopLog();
