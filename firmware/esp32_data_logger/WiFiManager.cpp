@@ -226,6 +226,15 @@ void WiFiManager::loop() {
 // ----- public control -----
 void WiFiManager::enable() {
   if (s_enabled) return;
+  auto dumpAdc = [](const char* tag){
+    Serial.printf("\n[ADC] %s\n", tag);
+    int pins[] = {15,17,18,10};
+    for (int p : pins) {
+      int v = analogRead(p);
+      Serial.printf("  GPIO%02d = %d\n", p, v);
+    }
+  };
+  dumpAdc("after WiFi on");
   s_enabled = true;
   if (s_state == WiFiMgrState::OFF) enterIdle_();
   notifyUi_();

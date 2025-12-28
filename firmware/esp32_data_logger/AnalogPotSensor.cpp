@@ -372,7 +372,9 @@ Sensor* AnalogPotSensor::create(const char* instanceName, const ParamPack& param
   long li; bool b; double d; String s;
 
   // Wiring / polarity
-  if (params.getBool("invert", b))       p.invert = b;
+  if (params.getBool("invert", b))        p.invert = b;
+  if (params.getInt("pin", li))           p.pin = (int8_t)li;
+
 
   // Smoothing
   if (params.getFloat("ema_alpha", d))   p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
