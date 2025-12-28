@@ -256,16 +256,9 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
   (void)event; // if unused
 
   if (!LoggingManager::isRunning()) {
-    // No longer refuse when web server is running; LoggingManager::start()
-    // will suspend Wi-Fi and the web server will stop as a consequence.
-    if (WebServerManager::isRunning()) {
-      UI::println("Stopping web server for logging…", "",
-                  UI::TARGET_BOTH, UI::LVL_INFO, 800);
-    }
-
     if (LoggingManager::start()) {
       ButtonManager_setPollingEnabled(false);   // suspend nav polling
-      UI::println("Logging started with RTC time.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 2000);
+      UI::println("Logging started with RTC time.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
       UI::toast("Log start");
       UI::status("Logging");
     } else {
@@ -276,7 +269,7 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
   } else {
     LoggingManager::stop();
     ButtonManager_setPollingEnabled(true);   // re-enable nav polling
-    UI::println("Logging stopped.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 2000);
+    UI::println("Logging stopped.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
     UI::toast("Log stop");
     UI::status("Ready");
   }

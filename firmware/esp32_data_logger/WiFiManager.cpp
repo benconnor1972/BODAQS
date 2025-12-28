@@ -10,10 +10,11 @@ static const uint32_t SCAN_TIMEOUT_MS     = 6000;   // single active scan budget
 static const uint32_t CONNECT_TIMEOUT_MS  = 12000;  // assoc/auth/IP wait
 static const int      RSSI_FLOOR_DBM      = -90;    // ignore weaker than this
 static uint32_t s_linkDropDeadlineMs = 0;
-// Auto-off after inactivity
 static const uint32_t IDLE_OFF_MS = 15UL * 60UL * 1000UL;  // 15 minutes
 static uint32_t s_idleOffDeadlineMs = 0;
 static bool s_rtcSyncPending = false;   // we connected solely to set time
+static bool s_prevEnabledBeforeLogging = false;
+static bool s_suspendedForLogging = false;
 
 WiFiMgrState WiFiManager::s_state = WiFiMgrState::OFF;
 bool         WiFiManager::s_enabled = false;
@@ -210,16 +211,6 @@ void WiFiManager::loop() {
       break;
     }
   }
-
-  // Throttled debug print (1 Hz)
-  //static uint32_t nextDbgMs = 0;
-  //if ((int32_t)(millis() - nextDbgMs) >= 0) {
-  //  nextDbgMs = millis() + 1000;
-  //  auto st = WiFiManager::status();
-  //  Serial.printf("[WiFiHUD] state=%d wl=%d ssid='%s' ip=%s rssi=%d\n",
-  //                (int)st.state, (int)st.wl, st.ssid.c_str(),
-  //                WiFi.localIP().toString().c_str(), st.rssi);
-  //}
 }
 
 
@@ -242,13 +233,23 @@ void WiFiManager::enable() {
 
 void WiFiManager::disable() {
   s_enabled = false;
+
+  // Tell app we're going offline (only if we were actually online)
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
-  WiFi.disconnect(true);
+
+  // FAST OFF: do not wait for graceful disconnect; just kill the radio.
+  // WiFi.disconnect(...) can block for seconds when connected / sockets active.
   WiFi.mode(WIFI_OFF);
   btStop();
+
+  // Optional best-effort cleanup AFTER the radio is already off.
+  // Keep it non-blocking-ish: no erase, no long waits.
+  WiFi.disconnect(false);
+
   enterOff_();
   notifyUi_();
 }
+
 
 bool WiFiManager::isEnabled() { return s_enabled; }
 
@@ -270,11 +271,14 @@ void WiFiManager::disconnect() {
 }
 
 void WiFiManager::shutdownRadio_() {
-  // Hard power-down of Wi-Fi + BT
-  WiFi.disconnect(true, true);
+  // FAST OFF: kill Wi-Fi + BT immediately.
   WiFi.mode(WIFI_OFF);
   btStop();
+
+  // Best-effort cleanup after OFF (avoid erase=true / wifioff waits)
+  WiFi.disconnect(false);
 }
+
 
 
 void WiFiManager::maybeConnectForRTC() {
@@ -289,43 +293,24 @@ void WiFiManager::maybeConnectForRTC() {
 }
 
 void WiFiManager::suspendForLogging() {
-  if (s_loggingSuspended) return;
-  s_loggingSuspended = true;
-
-  // Remember user intent (“enabled”) so we can restore later
-  s_restoreEnabledAfterLogging = s_enabled;
-
-  // Hard down
-  s_enabled = false;
-  s_haveIntentConnect = false;
-  s_rtcSyncPending = false;
-
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  btStop();
-
-  enterOff_();
-  notifyUi_();
+  if (s_suspendedForLogging) return;
+  s_prevEnabledBeforeLogging = s_enabled;
+  s_suspendedForLogging = true;
+  disable();  
 }
 
-void WiFiManager::resumeAfterLogging(bool wifiEnabledDefault) {
-  if (!s_loggingSuspended) return;
-  s_loggingSuspended = false;
-
-  // Policy:
-  // - If wifiEnabledDefault is true => always re-enable and connect
-  // - else restore prior enabled state; connect only if enabled
-  bool shouldEnable = wifiEnabledDefault ? true : s_restoreEnabledAfterLogging;
-
-  if (shouldEnable) {
+void WiFiManager::resumeAfterLogging() {
+  if (!s_suspendedForLogging) return;
+  s_suspendedForLogging = false;
+  if (s_prevEnabledBeforeLogging) {
     enable();
     connectNow();
+    noteUserActivity();
   } else {
-    disable(); // remain OFF
+    disable(); // stay OFF
   }
-
-  notifyUi_();
 }
+
 
 
 WiFiStatus WiFiManager::status() {
