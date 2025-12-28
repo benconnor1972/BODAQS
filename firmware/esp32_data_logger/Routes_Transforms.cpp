@@ -8,6 +8,7 @@
 #include "WebServerManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
+#include "TransformRegistry.h"
 
 using namespace HtmlUtil;
 
@@ -199,43 +200,48 @@ void registerTransformRoutes(WebServer& srv) {
       srv.send(400, F("application/json"), F("{\"error\":\"sensor and id required\"}"));
       return;
     }
-    const String sensor = srv.arg("sensor");
-    String id = srv.arg("id"); id.trim();
 
-    // Persist to config (by index)
-    LoggerConfig cfg = ConfigManager::get();   // snapshot
+    const String sensor = srv.arg("sensor");
+    String id = srv.arg("id");
+    id.trim();
+
+    // --- Find sensor index in config (match your existing convention) ---
+    LoggerConfig cfg = ConfigManager::get();     // snapshot ok for lookup
     const uint8_t n  = cfg.sensorCount();
-    bool saved = false;
+    int foundIdx = -1;
+
     for (uint8_t i = 0; i < n; ++i) {
       SensorSpec sp;
       if (!cfg.getSensorSpec(i, sp)) continue;
-      if (String(sp.name) == sensor) {
-        // Update config param and persist just this param
-        ConfigManager::saveSensorParamByIndex(i, "output_id", id);
-        saved = true;
+      if (String(sp.name) == sensor) {  // or sp.id if you have one
+        foundIdx = (int)i;
         break;
       }
     }
 
-    // Best-effort: update the live sensor immediately (if present)
-    Sensor* live = nullptr;
-    for (uint8_t j = 0; j < SensorManager::count(); ++j) {
-      Sensor* s = SensorManager::get(j);
-      if (s && String(s->name()) == sensor) { live = s; break; }
-    }
-    if (live) {
-      // Hook here if you expose a runtime apply method, e.g.:
-      // live->selectTransformById(id.c_str());
-    }
-
-    if (!saved) {
+    if (foundIdx < 0) {
       srv.send(404, F("application/json"), F("{\"error\":\"sensor not found\"}"));
       return;
+    }
+
+    // --- Persist to config file (this is the one that actually sticks) ---
+    ConfigManager::saveSensorParamByIndex((uint8_t)foundIdx, "output_id", id);
+
+    // --- Best-effort: update live sensor immediately (and APPLY) ---
+    for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+      Sensor* s = SensorManager::get(j);
+      if (!s) continue;
+      if (String(s->name()) == sensor) {
+        s->setSelectedTransformId(id);   // updates selectedTransformId()
+        s->attachTransform(gTransforms); // updates m_transform (and usually units)
+        break;
+      }
     }
 
     srv.sendHeader("Cache-Control", "no-store");
     srv.send(200, F("application/json"), F("{\"ok\":true}"));
   });
+
 
   // -------- POST /api/transforms/reload (sensor=...)
   S->on("/api/transforms/reload", HTTP_POST, [S](){
