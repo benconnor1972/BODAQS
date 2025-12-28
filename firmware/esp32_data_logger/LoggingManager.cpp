@@ -72,6 +72,7 @@ namespace {
 
     // Deterministic timestamp for THIS sample (grid-aligned)
     uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * s_intervalMs;
+    const uint32_t sample_id = (uint32_t)s_sampleCount;
     s_sampleCount++;
 
     // Collect dynamic values from all sensors (+ sample_id first, per your SensorManager)
@@ -86,7 +87,7 @@ namespace {
     bool _markNow = dequeue(&_markTime);
 
     // Non-blocking: enqueue row for StorageManager_loop() to consume/flush
-    (void)StorageManager_enqueueSample(ts_ms, values, nWritten, _markNow);
+    (void)StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, _markNow);
   }
 
   static void sampleTaskFn_(void* arg) {

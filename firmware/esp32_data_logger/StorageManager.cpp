@@ -52,9 +52,10 @@ static uint64_t s_flushTotalMs  = 0;
 constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
 
 struct SampleRow {
-    uint64_t ts_ms;
-    uint16_t nValues;
-    bool     mark;
+    uint32_t sample_id = 0;
+    uint64_t ts_ms = 0;
+    uint16_t nValues = 0;
+    bool     mark = false;
     float    values[SM_MAX_DYNAMIC_COLS];
 };
 
@@ -151,11 +152,17 @@ static void logFlushInternal() {
     }
 }
 
-bool StorageManager_enqueueSample(uint64_t ts_ms, const float* values, uint16_t nValues, bool mark) {
+bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t nValues, bool mark) {
+    if (!loggingActive) return false;
     if (!values || nValues == 0) return false;
 
     if (nValues > SM_MAX_DYNAMIC_COLS) {
         nValues = SM_MAX_DYNAMIC_COLS;
+    }
+
+    if (s_qCap == 0) {
+      ++s_samplesDropped;
+      return false;
     }
 
     if (queueFull()) {
@@ -164,12 +171,8 @@ bool StorageManager_enqueueSample(uint64_t ts_ms, const float* values, uint16_t 
         return false;
     }
 
-    if (s_qCap == 0) {
-      ++s_samplesDropped;
-      return false;
-    }
-
     SampleRow &row = s_rows[s_qHead];
+    row.sample_id = sample_id;
     row.ts_ms   = ts_ms;
     row.nValues = nValues;
     row.mark    = mark;
@@ -612,7 +615,7 @@ static void startLog() {
   }
 
   // --- Build header (shared for both backends) ---
-  SensorManager::debugDump("startLog-beforeHeader");
+  //SensorManager::debugDump("startLog-beforeHeader");
 
   char header[256];
   SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
@@ -630,12 +633,6 @@ static void startLog() {
   } else {
     // If this ever happens, we ran out of header buffer space
     Serial.println("[Storage] Warning: header buffer too small for sample_id prefix");
-  }
-
-  // Append sd_busy tracking column if space
-  const char* extra = ",sd_busy";
-  if (strlen(header) + strlen(extra) < sizeof(header)) {
-    strcat(header, extra);
   }
 
   Serial.print("[Storage] Header: ");
@@ -667,10 +664,7 @@ void StorageManager_stopLog() {
   // Drain any remaining queued samples into the staging buffer
   SampleRow row;
   while (dequeueSample(row)) {
-      StorageManager_logCsvDynamic(row.ts_ms,
-                                   row.values,
-                                   row.nValues,
-                                   row.mark);
+      StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
   }
 
   if (bufferIndex > 0) {
@@ -773,11 +767,8 @@ void StorageManager_setCustomHeader(const char* csv) {
 }
 
 // Dynamic CSV logging: one FULL row per call, matching header
-// Columns: [timestamp, sensor values..., mark, sd_busy]
-void StorageManager_logCsvDynamic(uint64_t ts_ms,
-                                  const float* values,
-                                  uint16_t nValues,
-                                  bool mark)
+// Columns: [timestamp, sensor values..., mark]
+void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t nValues, bool mark)
 {
 
     if (!logIsOpen()) {
@@ -791,23 +782,29 @@ void StorageManager_logCsvDynamic(uint64_t ts_ms,
     char line[512];
     int off = 0;
 
-    // Timestamp (human: HH:MM:SS.mmm ; else raw epoch ms)
+    // sample_id first
+    off = snprintf(line, sizeof(line), "%lu", (unsigned long)sample_id);
+    if (off <= 0 || off >= (int)sizeof(line)) return;
+
+    // then timestamp (human: HH:MM:SS.mmm ; else raw epoch ms)
     if (RTCManager_isHumanReadable()) {
         unsigned long long ms = ts_ms;
         unsigned hh    = (unsigned)((ms / 3600000ULL) % 24ULL);
         unsigned mm    = (unsigned)((ms / 60000ULL)   % 60ULL);
         unsigned ss    = (unsigned)((ms / 1000ULL)    % 60ULL);
         unsigned msecs = (unsigned)(ms % 1000ULL);
-        off = snprintf(line, sizeof(line),
-                       "%02u:%02u:%02u.%03u",
-                       hh, mm, ss, msecs);
+
+        int n = snprintf(line + off, sizeof(line) - (size_t)off,
+                         ",%02u:%02u:%02u.%03u",
+                         hh, mm, ss, msecs);
+        if (n <= 0 || off + n >= (int)sizeof(line)) return;
+        off += n;
     } else {
-        off = snprintf(line, sizeof(line),
-                       "%llu",
-                       (unsigned long long)ts_ms);
-    }
-    if (off <= 0 || off >= (int)sizeof(line)) {
-        return; // format error / overflow
+        int n = snprintf(line + off, sizeof(line) - (size_t)off,
+                         ",%llu",
+                         (unsigned long long)ts_ms);
+        if (n <= 0 || off + n >= (int)sizeof(line)) return;
+        off += n;
     }
 
     // Sensor values (comma-separated, fixed precision)
@@ -822,16 +819,12 @@ void StorageManager_logCsvDynamic(uint64_t ts_ms,
         off += n;
     }
 
-    // Mark and sd_busy flag, then newline
+    // Mark, then newline
     {
-        int sdFlag = (g_sdTrackEnabled && g_sdWriteSinceLastSample) ? 1 : 0;
-        g_sdWriteSinceLastSample = false;  // consume the flag for this row
-
         int n = snprintf(line + off,
                          sizeof(line) - (size_t)off,
-                         ",%d,%d\n",
-                         mark ? 1 : 0,
-                         sdFlag);
+                         ",%d\n",
+                         mark ? 1 : 0);
         if (n <= 0 || off + n >= (int)sizeof(line)) {
             return; // overflow guard
         }
@@ -877,10 +870,7 @@ void StorageManager_loop() {
       uint8_t processed = 0;
 
       while (processed < MAX_ROWS_PER_LOOP && dequeueSample(row)) {
-          StorageManager_logCsvDynamic(row.ts_ms,
-                                        row.values,
-                                        row.nValues,
-                                        row.mark);
+          StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
           ++processed;
       }
   }
