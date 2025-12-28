@@ -9,6 +9,7 @@
 #include "Rates.h"
 #include "PowerManager.h"
 #include "IndicatorManager.h"
+#include "WiFiManager.h"
 
 // FreeRTOS (ESP32 Arduino)
 #if defined(ESP32)
@@ -71,6 +72,7 @@ namespace {
 
     // Deterministic timestamp for THIS sample (grid-aligned)
     uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * s_intervalMs;
+    const uint32_t sample_id = (uint32_t)s_sampleCount;
     s_sampleCount++;
 
     // Collect dynamic values from all sensors (+ sample_id first, per your SensorManager)
@@ -85,7 +87,7 @@ namespace {
     bool _markNow = dequeue(&_markTime);
 
     // Non-blocking: enqueue row for StorageManager_loop() to consume/flush
-    (void)StorageManager_enqueueSample(ts_ms, values, nWritten, _markNow);
+    (void)StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, _markNow);
   }
 
   static void sampleTaskFn_(void* arg) {
@@ -145,16 +147,16 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 bool LoggingManager::start() {
   if (!s_cfg) return false;
 
-  // block if web server running (unchanged)
+  // Logging owns the device: take Wi-Fi (and therefore web server) down NOW.
   if (WebServerManager::isRunning()) {
-    UI::println("Refusing to start logging while web server is running.",
-                "", UI::TARGET_SERIAL, UI::LVL_WARN);
-    return false;
+    UI::println("Stopping web server for logging…", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
   }
+  WiFiManager::suspendForLogging();   // synchronous OFF
+
 
   //PowerManager::setCpuFreqForLogging();
 
-  SensorManager::debugDump("before-header");
+  //SensorManager::debugDump("before-header");
 
   // sampling cadence
   s_intervalMs = StorageManager_getSampleIntervalMs();
@@ -196,7 +198,7 @@ bool LoggingManager::start() {
 #endif
   // turn LED on
   IndicatorManager::ledOn();
-  UI::println("Logging started.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 1200);
+  UI::toast("Logging started");
   unsigned hz = s_intervalMs ? (1000UL / s_intervalMs) : 0;
   char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
   UI::status(String(st));
@@ -216,15 +218,11 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
 }
 
 void LoggingManager::stop() {
-  // Stop sampling first (prevents enqueues while we close files)
   s_running = false;
-  // turn LED off
   IndicatorManager::ledOff();
-
-  // Close log (and flush/drain in StorageManager if you implemented it)
   StorageManager_stopLog();
-
   PowerManager::restoreCpuFreqAfterLogging();
+  WiFiManager::resumeAfterLogging();
 
 #if defined(ESP32)
   // Report task-lateness stats (these replace the old loop()-based lateTicks)
@@ -236,38 +234,6 @@ void LoggingManager::stop() {
 
 bool LoggingManager::isRunning() {
   return s_running;
-}
-
-// Legacy loop-based sampling (kept, but not used when the task is running)
-void LoggingManager::loop() {
-#if defined(ESP32)
-  // If the sampler task exists, sampling is task-driven. Keep loop() light.
-  if (s_sampleTask) return;
-#endif
-
-  if (!s_running) return;
-
-  unsigned long now = millis();
-  if (now - s_lastSample < s_intervalMs) return;
-  s_lastSample += s_intervalMs;
-
-  // Deterministic timestamp for THIS sample
-  uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * s_intervalMs;
-  s_sampleCount++;
-
-  // Collect dynamic values from all sensors
-  const uint16_t cap = 1 + SensorManager::dynamicColumnCount();
-  float values[32];
-  uint16_t maxOut = (cap < 32) ? cap : 32;
-  uint16_t nWritten = 0;
-  SensorManager::sampleValues(values, maxOut, nWritten);
-
-  // One mark per sample
-  uint64_t _markTime = 0;
-  bool _markNow = dequeue(&_markTime);
-
-  // Non-blocking: enqueue for storage to consume
-  (void)StorageManager_enqueueSample(ts_ms, values, nWritten, _markNow);
 }
 
 void LoggingManager::mark() {

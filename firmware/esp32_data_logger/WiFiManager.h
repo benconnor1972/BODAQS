@@ -58,14 +58,9 @@ public:
   static void setOnlineCallback(OnOnlineFn cb);
   static void setOfflineCallback(OnOfflineFn cb);
   static void setUiCallback(OnUiFn cb);
-  static void noteUserActivity();   // call on each HTTP request or user action
-  // Force Wi-Fi down during logging, but remember whether it was enabled.
+  static void noteUserActivity();   
   static void suspendForLogging();
-
-  // Restore Wi-Fi policy after logging.
-  // If wifiEnabledDefault=true, Wi-Fi should come back enabled+connected.
-  // Otherwise restore the prior "enabled" preference (and connect if enabled).
-  static void resumeAfterLogging(bool wifiEnabledDefault);
+  static void resumeAfterLogging();
 
 
 private:
@@ -73,7 +68,7 @@ private:
   static void enterOff_();
   static void enterIdle_();
   static void startScan_();
-  static void selectAndConnect_();  // uses last scan results
+  static void selectAndConnect_();  
   static bool loggingGuard_();      // true if logging is active
   static bool configuredNetworksExist_();
   static void clearIntent_();

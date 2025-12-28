@@ -269,10 +269,7 @@ void loop() {
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
-
-  //LoggingManager::loop();      // producer: fills StorageManager's sample queue
-  StorageManager_loop();       // consumer: formats & flushes to SD
-
+  StorageManager_loop();       
   WebServerManager::loop();
   UI::loop();
   MenuSystem::loop();

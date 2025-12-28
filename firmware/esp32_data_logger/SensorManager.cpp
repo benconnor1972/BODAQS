@@ -427,16 +427,6 @@ void buildHeader(char* out, size_t n, bool humanTs) {
 void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     written = 0;
     if (!out || cap == 0) return;
-
-    //
-    // 1. Write sample_id as the first column
-    //
-    if (written < cap) {
-        out[written++] = (float)s_sampleID++;   // Or g_sampleCounter++
-    } else {
-        return;
-    }
-
     //
     // 2. Write all sensor columns as before
     //

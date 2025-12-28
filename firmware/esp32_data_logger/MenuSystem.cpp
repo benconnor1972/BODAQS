@@ -13,6 +13,8 @@
 #include "CalCapture.h"
 #include "WiFiManager.h"
 #include <WiFi.h>
+#include <esp_system.h>   // esp_restart()
+
 
 // ---- Menu debug toggle ----
 #ifndef MENU_DEBUG
@@ -49,6 +51,9 @@ static const char* dirName(MenuSystem::Dir d) {
   }
 }
 
+static uint8_t s_mainTop = 0;   // first visible item in main menu (scroll window)
+static constexpr uint8_t MAIN_VISIBLE_ROWS = 5;
+
 namespace {
   using State = MenuSystem::State;
   using Dir   = MenuSystem::Dir;
@@ -60,9 +65,10 @@ namespace {
     SensorsToggle,
     SampleRate,
     Calibration,
-    Sleep
+    Sleep,
+    Restart
   };
-  static inline uint8_t mainItemCount_() { return 5; }
+  static inline uint8_t mainItemCount_() { return 6; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -145,6 +151,8 @@ namespace {
         return "Calibration";
       case MainItem::Sleep:
         return "Sleep";
+      case MainItem::Restart:
+        return "Restart";
       default:
         return "?";
     }
@@ -152,16 +160,34 @@ namespace {
 
   static void drawMain_() {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;  // toast visible, skip repaint
-    drawHeader_("Menu");  
-    for (uint8_t i = 0; i < mainItemCount_(); ++i) {
+    drawHeader_("Menu");
+
+    const uint8_t N = mainItemCount_();
+
+    // Clamp top in case N changed
+    if (N <= MAIN_VISIBLE_ROWS) {
+      s_mainTop = 0;
+    } else {
+      const uint8_t maxTop = (uint8_t)(N - MAIN_VISIBLE_ROWS);
+      if (s_mainTop > maxTop) s_mainTop = maxTop;
+    }
+
+    // Draw a 5-line window starting at s_mainTop
+    for (uint8_t row = 0; row < MAIN_VISIBLE_ROWS; ++row) {
+      const uint8_t i = (uint8_t)(s_mainTop + row);
+      if (i >= N) break;
+
       const String label = mainItemLabel_(static_cast<MainItem>(i));
       String line = (i == s_mainSel) ? "> " : "  ";
       line += label;
-      const int y = 12 + i * 10;
+
+      const int y = 12 + row * 10;   // note: row, not i
       UI::oledText(0, y, line);
     }
+
     DisplayManager::present();
   }
+
 
   static void openMainSelection_() {
     switch (static_cast<MainItem>(s_mainSel)) {
@@ -229,6 +255,30 @@ namespace {
         s_calSel     = 0;
         s_calUiPhase = CalUiPhase::Idle;
         drawCalibSensors_();
+        break;
+      }
+
+      case MainItem::Restart: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+
+        // Guard: no restart while logging
+        if (LoggingManager::isRunning()) {
+          UI::toastModal("Stop logging first", 1200);
+          deferUiFor(1200);
+          drawMain_();
+          break;
+        }
+
+        UI::toastModal("Restarting…", 800);
+        deferUiFor(800);
+        DisplayManager::present(); // ensure OLED pushes immediately (if applicable)
+
+        Serial.println("[Menu] Restarting via esp_restart()");
+        Serial.flush();
+        delay(150);
+
+        esp_restart(); // does not return
         break;
       }
     }
@@ -518,8 +568,47 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       if (d == Dir::Left) { requestClose(); return; }
 
       const uint8_t N = mainItemCount_();
-      if (d == Dir::Up)    { s_mainSel = (uint8_t)((s_mainSel + N - 1) % N); redraw_(); return; }
-      if (d == Dir::Down)  { s_mainSel = (uint8_t)((s_mainSel + 1) % N);     redraw_(); return; }
+      if (d == Dir::Up) {
+        if (N == 0) return;
+
+        const uint8_t oldSel = s_mainSel;
+        s_mainSel = (uint8_t)((s_mainSel + N - 1) % N);
+
+        // Wrap case: 0 -> N-1
+        if (oldSel == 0 && s_mainSel == (uint8_t)(N - 1)) {
+          s_mainTop = (N > MAIN_VISIBLE_ROWS) ? (uint8_t)(N - MAIN_VISIBLE_ROWS) : 0;
+          redraw_();
+          return;
+        }
+
+        // Keep selection visible
+        if (s_mainSel < s_mainTop) s_mainTop = s_mainSel;
+
+        redraw_();
+        return;
+      }
+
+      if (d == Dir::Down) {
+        if (N == 0) return;
+
+        const uint8_t oldSel = s_mainSel;
+        s_mainSel = (uint8_t)((s_mainSel + 1) % N);
+
+        // Wrap case: N-1 -> 0
+        if (oldSel == (uint8_t)(N - 1) && s_mainSel == 0) {
+          s_mainTop = 0;
+          redraw_();
+          return;
+        }
+
+        // Keep selection visible
+        if (s_mainSel >= (uint8_t)(s_mainTop + MAIN_VISIBLE_ROWS)) {
+          s_mainTop = (uint8_t)(s_mainSel - (MAIN_VISIBLE_ROWS - 1));
+        }
+
+        redraw_();
+        return;
+      }
       if (d == Dir::Enter || d == Dir::Right) { openMainSelection_(); return; }
       break;
     }
