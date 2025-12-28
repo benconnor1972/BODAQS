@@ -108,6 +108,19 @@ void setup() {
     SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
     DumpActiveBoardButtons();
 
+    //Debug
+    auto dumpAdc = [](const char* tag){
+      Serial.printf("\n[ADC] %s\n", tag);
+      int pins[] = {15,17,18,10};
+      for (int p : pins) {
+        int v = analogRead(p);
+        Serial.printf("  GPIO%02d = %d\n", p, v);
+      }
+    };
+
+    dumpAdc("before WiFi");
+
+
   if (!gBoard) {
     Serial.println("FATAL: Board not selected");
     while (true) delay(1000);

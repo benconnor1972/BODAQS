@@ -13,7 +13,7 @@ public:
     const char* name = nullptr;
 
     // Wiring / polarity
-    uint8_t  pin = 36;
+    uint8_t  pin = -1;
     bool     invert = false;
 
     // RAW smoothing (EMA + deadband)

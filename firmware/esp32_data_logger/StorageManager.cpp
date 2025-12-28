@@ -648,7 +648,7 @@ static void startLog() {
     logFileMMC.println(header);
     logFileMMC.flush();
   }
-
+  loggingActive = true;
   Serial.println("[Storage] Log file opened successfully.");
   loggingActive = true;
 
