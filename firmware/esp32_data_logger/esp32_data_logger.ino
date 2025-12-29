@@ -23,6 +23,8 @@
 #include "WiFiManager.h"
 #include "BoardSelect.h"
 #include "IndicatorManager.h"
+#include "PowerManager.h"
+#include "BoardProfile.h"
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 
@@ -234,6 +236,9 @@ void setup() {
 
   Serial.println("SETUP: I Done");
 
+  if (gBoard && gBoard->fuel.type != FuelGaugeType::None) {
+    PowerManager::fuelGaugeBegin(gBoard->fuel.i2c_addr);
+  }
   // Start OLED if present
   DisplayManager::begin(cfg, gBoard->display, gBoard->i2c);
 
@@ -273,6 +278,7 @@ void loop() {
   WebServerManager::loop();
   UI::loop();
   MenuSystem::loop();
+  PowerManager::fuelGaugeLoop();
 }
 
 
