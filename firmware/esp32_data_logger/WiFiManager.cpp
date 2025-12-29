@@ -10,8 +10,7 @@ static const uint32_t SCAN_TIMEOUT_MS     = 6000;   // single active scan budget
 static const uint32_t CONNECT_TIMEOUT_MS  = 12000;  // assoc/auth/IP wait
 static const int      RSSI_FLOOR_DBM      = -90;    // ignore weaker than this
 static uint32_t s_linkDropDeadlineMs = 0;
-//static const uint32_t IDLE_OFF_MS = 15UL * 60UL * 1000UL;  // 15 minutes
-static const uint32_t IDLE_OFF_MS = 01UL * 60UL * 500UL;  // 15 minutes
+static const uint32_t IDLE_OFF_MS = 015UL * 60UL * 500UL;  // 15 minutes
 static uint32_t s_idleOffDeadlineMs = 0;
 static bool s_rtcSyncPending = false;   // we connected solely to set time
 static bool s_prevEnabledBeforeLogging = false;
@@ -257,10 +256,21 @@ bool WiFiManager::isEnabled() { return s_enabled; }
 
 void WiFiManager::connectNow() {
   if (!s_enabled || loggingGuard_()) return;
+
   s_haveIntentConnect = true;
-  if (s_state == WiFiMgrState::ONLINE) {
-    s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;   // treat as activity
+
+  // Treat as user activity regardless of state
+  s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
+
+  // If we're not already trying, kick the state machine
+  if (s_state == WiFiMgrState::OFF) {
+    enterIdle_();
   }
+  if (s_state == WiFiMgrState::IDLE) {
+    // Start the actual connection attempt
+    selectAndConnect_();          // or enterScanning_()/enterConnecting_()
+  }
+  notifyUi_();
 }
 
 void WiFiManager::disconnect() {

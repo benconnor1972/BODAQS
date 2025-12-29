@@ -216,7 +216,7 @@ namespace {
         // Kick Wi-Fi once and let the loop finish the start later
         WiFiManager::enable();
         WiFiManager::connectNow();
-
+        WiFiManager::noteUserActivity();
         s_wsPending    = true;
         s_wsDeadlineMs = millis() + 20000;   // 20s budget max
 
