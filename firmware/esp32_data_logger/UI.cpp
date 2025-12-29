@@ -3,6 +3,7 @@
 #include "ConfigManager.h"
 #include "MenuSystem.h"
 #include "WiFiManager.h"
+#include "PowerManager.h"
 #include <WiFi.h>   // for WiFi.SSID() and WiFi.localIP()
 #include <time.h>
 
@@ -32,7 +33,7 @@ static String makeWifiSummary_() {
     case WiFiMgrState::OFF:        return "WiFi: off";
     case WiFiMgrState::IDLE:       return "WiFi: idle";
     case WiFiMgrState::SCANNING:
-    case WiFiMgrState::CONNECTING: return "WiFi: connecting…";
+    case WiFiMgrState::CONNECTING: return "WiFi: connecting";
     case WiFiMgrState::ONLINE:     return "WiFi: (up)";
   }
   return "WiFi: ?";
@@ -83,14 +84,46 @@ void UI::loop() {
     s_lastWifiSummary = now;
   }
 
-    // New: update footer clock once per second
+  // New: update footer clock once per second
   if ((int32_t)(millis() - s_nextClockUiCheckMs) >= 0) {
     s_nextClockUiCheckMs = millis() + 1000;
-    String clk;
-    makeClockString_(clk);
-    DisplayManager::setFooterLine(clk);
-  }
 
+    // Left side: clock
+    String left;
+    makeClockString_(left);
+
+    // Right side: battery
+    String right;
+    if (PowerManager::fuelGaugeOk()) {
+      int pct = (int)lroundf(PowerManager::batterySocPercent());
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+      right = String(pct) + "%";
+    } else {
+      right = "";   // or "--%" if you prefer a placeholder
+    }
+
+    // Compose a single line with right-aligned battery (monospace assumption)
+    constexpr int FOOTER_COLS = 21;  // 128px / 6px per char (GFX default font, size=1)
+
+    // If right part is too long, truncate it
+    if ((int)right.length() > FOOTER_COLS) right = right.substring(0, FOOTER_COLS);
+
+    // Available space for left once we reserve the right-hand text
+    int leftMax = FOOTER_COLS - (int)right.length();
+    if (leftMax < 0) leftMax = 0;
+
+    if ((int)left.length() > leftMax) {
+      left = left.substring(0, leftMax);
+    }
+
+    // Pad with spaces so 'right' ends at the far right
+    String footer = left;
+    while ((int)footer.length() < leftMax) footer += ' ';
+    footer += right;
+
+    DisplayManager::setFooterLine(footer);
+  }
   DisplayManager::loop();
 }
 

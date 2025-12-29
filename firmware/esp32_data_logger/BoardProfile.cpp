@@ -97,7 +97,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .fuel = {
     // Thing Plus S3 fuel gauge support (MAX17048)
     .type = FuelGaugeType::MAX17048,
-    .i2c_addr = 0x36
+    .i2c_addr = 0x32
   },
 
   .analog = {

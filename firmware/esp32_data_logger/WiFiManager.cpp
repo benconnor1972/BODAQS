@@ -10,7 +10,8 @@ static const uint32_t SCAN_TIMEOUT_MS     = 6000;   // single active scan budget
 static const uint32_t CONNECT_TIMEOUT_MS  = 12000;  // assoc/auth/IP wait
 static const int      RSSI_FLOOR_DBM      = -90;    // ignore weaker than this
 static uint32_t s_linkDropDeadlineMs = 0;
-static const uint32_t IDLE_OFF_MS = 15UL * 60UL * 1000UL;  // 15 minutes
+//static const uint32_t IDLE_OFF_MS = 15UL * 60UL * 1000UL;  // 15 minutes
+static const uint32_t IDLE_OFF_MS = 01UL * 60UL * 500UL;  // 15 minutes
 static uint32_t s_idleOffDeadlineMs = 0;
 static bool s_rtcSyncPending = false;   // we connected solely to set time
 static bool s_prevEnabledBeforeLogging = false;
@@ -170,7 +171,7 @@ void WiFiManager::loop() {
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
         btStop();
-        enterIdle_();
+        enterOff_();
         s_linkDropDeadlineMs = 0;
         notifyUi_();
         break;
@@ -187,8 +188,9 @@ void WiFiManager::loop() {
             WiFi.disconnect(true);
             WiFi.mode(WIFI_OFF);
             btStop();
-            enterIdle_();
+            enterOff_();
             s_idleOffDeadlineMs = 0;
+
             notifyUi_();
             break;
           }
