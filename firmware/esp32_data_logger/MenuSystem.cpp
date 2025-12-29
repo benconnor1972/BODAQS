@@ -220,7 +220,7 @@ namespace {
         s_wsPending    = true;
         s_wsDeadlineMs = millis() + 20000;   // 20s budget max
 
-        UI::toastModal("Connecting…", 800);
+        UI::toastModal("Connecting", 800);
         deferUiFor(800);
         drawMain_();
         break;

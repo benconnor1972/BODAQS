@@ -33,7 +33,7 @@ static String makeWifiSummary_() {
     case WiFiMgrState::OFF:        return "WiFi: off";
     case WiFiMgrState::IDLE:       return "WiFi: idle";
     case WiFiMgrState::SCANNING:
-    case WiFiMgrState::CONNECTING: return "WiFi: connecting…";
+    case WiFiMgrState::CONNECTING: return "WiFi: connecting";
     case WiFiMgrState::ONLINE:     return "WiFi: (up)";
   }
   return "WiFi: ?";
