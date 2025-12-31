@@ -12,13 +12,47 @@ def _read_file_bytes(path: str) -> bytes:
 def _sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
-def load_event_schema(path: str) -> Tuple[Dict[str, Any], str]:
+from typing import Dict, Any, Tuple, Union
+
+def load_event_schema(
+    path: str,
+    *,
+    return_meta: bool = False,
+) -> Union[Dict[str, Any], Tuple[Dict[str, Any], dict]]:
+    """
+    Load an event schema YAML file.
+
+    Parameters
+    ----------
+    path : str
+        Path to YAML schema file.
+    return_meta : bool, optional
+        If True, also return metadata (e.g. content hash).
+
+    Returns
+    -------
+    schema : dict
+        Parsed schema definition.
+
+    (schema, meta) : tuple, optional
+        Only when return_meta=True. Meta contains diagnostics
+        such as content hash.
+    """
     data_bytes = _read_file_bytes(path)
-    h = _sha256(data_bytes)
     schema = yaml.safe_load(io.BytesIO(data_bytes))
+
     if not isinstance(schema, dict):
         raise ValueError("Top-level YAML must be a mapping (dict).")
-    return schema, h
+
+    if not return_meta:
+        return schema
+
+    meta = {
+        "sha256": _sha256(data_bytes),
+        "source_path": path,
+    }
+    return schema, meta
+
 
 def _validate_debounce_block(prefix: str, deb: Any, issues: List[str]):
     """Validate a debounce mapping: {gap_s, prefer_key, prefer_abs, prefer_max}."""

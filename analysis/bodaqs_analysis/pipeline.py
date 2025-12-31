@@ -61,7 +61,6 @@ def preprocess_session(session: Dict[str, Any],
                        sample_rate_hz: Optional[float] = None,
                        zeroing_enabled: bool = True,
                        zero_window_s: float = 1.0,
-                       zero_method: str = "lowest_1s_mean",
                        clip_0_1: bool = False,
                        va_cols: Optional[Sequence[str]] = None,
                        va_window_points: int = 11,
@@ -69,55 +68,89 @@ def preprocess_session(session: Dict[str, Any],
     """Normalize (in-place zeroing) + compute velocity/acceleration."""
     df = session["df"].copy()
 
-    # Normalize / zero / scale
+    # QC: ensure structure exists early
+    qc = session.setdefault("qc", {})
+    transforms = qc.setdefault("transforms", {})
+
+    # ---------------- Normalize / zero / scale ----------------
     df2, report = normalize_and_scale(
         df,
         normalize_ranges,
         zeroing_enabled=zeroing_enabled,
         zero_window_s=zero_window_s,
         clip_0_1=clip_0_1,
-        add_zeroed_column=False,
-        in_place_zero=True,
+        return_meta=True,        
     )
     session["df"] = df2
 
-    # QC: ensure structure exists
-    qc = session.setdefault("qc", {})
-    transforms = qc.setdefault("transforms", {})
-
-    # Update qc transforms
-    zeroed_offsets = {r["column"]: r.get("offset") for r in report if r.get("status") == "ok" and "offset" in r}
+    # Update QC transforms from report
+    # (report entries may be missing/empty depending on input columns)
+    by_channel = {}
+    methods = set()
+    
+    for r in report:
+        if r.get("status") != "ok":
+            continue
+        z = r.get("zeroing") or {}
+        if not z.get("enabled", False):
+            continue
+    
+        col = r["column"]
+        m = z.get("method")
+        if m:
+            methods.add(m)
+    
+        if "offset" in z and z["offset"] is not None:
+            by_channel[col] = {"offset": float(z["offset"]), "method": m}
+        elif "segment_offsets" in z and z["segment_offsets"]:
+            by_channel[col] = {"segment_offsets": z["segment_offsets"], "method": m}
+    
     transforms["zeroed"] = {
         "applied": bool(zeroing_enabled),
-        "method": zero_method,
-        "by_channel": {k: {"offset": float(v)} for k, v in zeroed_offsets.items()} if zeroed_offsets else None,
-    }
-    transforms["scaled"] = {
-        "applied": True,
-        "by_channel": {r["column"]: {"full_range": r.get("full_range")} for r in report if r.get("status") == "ok"},
+        "method": (next(iter(methods)) if len(methods) == 1 else ("mixed" if methods else None)),
+        "window_s": float(zero_window_s),
+        "by_channel": by_channel or None,
     }
 
-    # Velocity/acceleration on selected base columns (or all normalized range keys)
+    transforms["scaled"] = {
+        "applied": True,
+        "by_channel": {
+            r["column"]: {"full_range": float(r.get("full_range"))}
+            for r in report
+            if r.get("status") == "ok" and r.get("full_range") is not None
+        } or None,
+    }
+
+    # ---------------- Velocity/acceleration ----------------
     if va_cols is None:
         va_cols = list(normalize_ranges.keys())
 
-    va_result = estimate_va_from_zeroed(
+    df3, va_meta = estimate_va_from_zeroed(
         df2,
         cols=list(va_cols),
         sample_rate_hz=sample_rate_hz,
         window_points=va_window_points,
         poly_order=va_poly_order,
+        return_meta=True,            # <-- opt-in diagnostics
     )
-    df3 = va_result[0] if isinstance(va_result, tuple) else va_result
     session["df"] = df3
 
-    # best-effort sample rate
-    session.setdefault("meta", {})
+    transforms["va"] = {
+        "applied": True,
+        "by_channel": list(va_meta.get("cols", [])) if va_meta else list(va_cols),
+        "dt": float(va_meta["dt"]) if va_meta and va_meta.get("dt") is not None else None,
+        "window_points": int(va_window_points),
+        "poly_order": int(va_poly_order),
+    }
+
+    # ---------------- Meta ----------------
+    meta = session.setdefault("meta", {})
     if sample_rate_hz is not None:
-        session["meta"]["sample_rate_hz"] = float(sample_rate_hz)
+        meta["sample_rate_hz"] = float(sample_rate_hz)
 
     validate_session(session)
     return session
+
 
 
 def run_macro(csv_path: str,
@@ -129,6 +162,10 @@ def run_macro(csv_path: str,
     """Convenience macro pipeline: load -> preprocess -> detect -> metrics."""
     session = load_session(csv_path, timezone=timezone)
     session = preprocess_session(session, normalize_ranges=normalize_ranges, sample_rate_hz=sample_rate_hz)
+
+    assert "df" in session, "preprocess_session() must set session['df']"
+    assert isinstance(session["df"], pd.DataFrame), "session['df'] must be a DataFrame"
+    assert "time_s" in session["df"].columns, "session['df'] must contain 'time_s'"
 
     schema = load_event_schema(schema_path)
     events_df = detect_events_from_schema(session["df"], schema)

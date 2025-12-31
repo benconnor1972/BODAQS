@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Iterable, Optional, Sequence, Tuple, List
+from typing import Any, Dict, Optional, Sequence, Tuple, Union, List, Iterable
+
 import numpy as np
 import pandas as pd
 
@@ -85,20 +86,33 @@ def _savgol_numpy(y, window_points, poly_order, deriv, dt):
     filt = np.convolve(ypad, coeff[::-1], mode="valid") * scale
     return filt
 
-def estimate_va_from_zeroed(df,
-                            cols=None,
-                            sample_rate_hz=None,
-                            time_col="time_s",
-                            window_points=11,
-                            poly_order=3,
-                            vel_suffix="_vel",
-                            acc_suffix="_acc",
-                             strip_zeroed_suffix: bool = True):
+
+def estimate_va_from_zeroed(
+    df: pd.DataFrame,
+    cols: Optional[Sequence[str]] = None,
+    sample_rate_hz: Optional[float] = None,
+    time_col: str = "time_s",
+    window_points: int = 11,
+    poly_order: int = 3,
+    vel_suffix: str = "_vel",
+    acc_suffix: str = "_acc",
+    strip_zeroed_suffix: bool = True,
+    *,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, Any]]]:
+    """
+    Estimate velocity/acceleration using Savitzky–Golay differentiation.
+
+    Public contract:
+    - Returns a DataFrame by default.
+    - If return_meta=True, returns (df_out, meta) where meta contains dt and parameters.
+    """
     _validate_params(window_points, poly_order)
     dt = _infer_dt(df, sample_rate_hz=sample_rate_hz, time_col=time_col)
     target_cols = _pick_cols(df, cols)
 
     out = df.copy()
+
     # interpolate numeric gaps gently
     data = out[target_cols].apply(pd.to_numeric, errors="coerce").interpolate(limit_direction="both")
 
@@ -110,8 +124,23 @@ def estimate_va_from_zeroed(df,
         else:
             v = _savgol_numpy(y, window_points, poly_order, deriv=1, dt=dt)
             a = _savgol_numpy(y, window_points, poly_order, deriv=2, dt=dt)
-        base = c[:-len('_zeroed')] if (strip_zeroed_suffix and c.endswith('_zeroed')) else c
+
+        base = c[:-len("_zeroed")] if (strip_zeroed_suffix and c.endswith("_zeroed")) else c
         out[base + vel_suffix] = v
         out[base + acc_suffix] = a
 
-    return out, {"dt": dt, "window_points": window_points, "poly_order": poly_order, "cols": target_cols}
+    if not return_meta:
+        return out
+
+    meta = {
+        "dt": dt,
+        "window_points": window_points,
+        "poly_order": poly_order,
+        "cols": list(target_cols),
+        "time_col": time_col,
+        "sample_rate_hz": sample_rate_hz,
+        "strip_zeroed_suffix": strip_zeroed_suffix,
+        "vel_suffix": vel_suffix,
+        "acc_suffix": acc_suffix,
+    }
+    return out, meta

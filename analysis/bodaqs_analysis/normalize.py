@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, Sequence, Tuple
+from typing import Dict, Any, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 
@@ -78,20 +78,21 @@ def normalize_and_scale(
     segment_col: str = "segment_id",
     min_samples_abs_min: int = 10,
     clip_0_1: bool = False,
-    add_zeroed_column: bool = True,
-    in_place_zero: bool = False,
     output_suffix_norm: str = "_norm",
-    output_suffix_zeroed: str = "_zeroed",
     use_median_window: bool = True,
-) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, Any]]]:
     """
-    Zero (optionally) and scale selected columns.
+    Zero (in-place, optional) and scale selected columns.
 
-    Contract:
-    - Always produces <col>_norm for cols in `ranges` (when col exists and is numeric).
-    - If in_place_zero=True: writes zeroed data back into the base column <col>.
-      Otherwise, if add_zeroed_column=True: writes <col>_zeroed.
-    - Returns (new_df, report) where report contains offsets and method metadata.
+    Public contract:
+    - Returns a DataFrame by default.
+    - If return_report=True, returns (new_df, meta).
+    - meta contains per-column zeroing/scaling details and timebase info used for windowing.
+    - For each col in `ranges` (if present & numeric):
+        - If zeroing_enabled: writes zeroed values back into <col> (in-place zero).
+        - Always writes <col>_norm (scaled by full_range).
+    - No *_zeroed columns are produced.
     """
     frame = df.copy()
 
@@ -107,34 +108,34 @@ def normalize_and_scale(
     dt_use = dt_est if np.isfinite(dt_est) and dt_est > 0 else dt_fallback
     min_samples = max(int(min_samples_abs_min), int(np.ceil(zero_window_s / dt_use)))
 
-    report: List[Dict[str, Any]] = []
+    per_column: List[Dict[str, Any]] = []
 
     use_segments = bool(zero_per_segment and segment_col in frame.columns)
     segments = frame[segment_col].unique().tolist() if use_segments else [None]
 
     for col, full_range in ranges.items():
         if col not in frame.columns:
-            report.append({"column": col, "status": "missing"})
+            per_column.append({"column": col, "status": "missing"})
             continue
 
         s = pd.to_numeric(frame[col], errors="coerce")
         if s.dropna().empty:
-            report.append({"column": col, "status": "non_numeric_or_empty"})
+            per_column.append({"column": col, "status": "non_numeric_or_empty"})
             continue
 
-        # --- Compute zeroed series + metadata ---
         meta: Dict[str, Any] = {}
         offset: float = 0.0
         segment_offsets: Optional[Dict[Any, float]] = None
 
         if not zeroing_enabled:
-            # No zeroing: treat as offset=0
             zeroed = s.astype(float)
             meta = {"method": "zeroing_disabled"}
         else:
             if not use_segments:
-                info = _min_window_avg_offset(frame, col, np.asarray(t_s, dtype=float), zero_window_s,
-                                              use_median_window, min_samples)
+                info = _min_window_avg_offset(
+                    frame, col, np.asarray(t_s, dtype=float), zero_window_s,
+                    use_median_window, min_samples
+                )
                 if info is None:
                     offset = float(s.dropna().iloc[0])
                     meta = {"method": "fallback_first_value", "offset": offset}
@@ -145,7 +146,6 @@ def normalize_and_scale(
                 zeroed = (s - offset).astype(float)
 
             else:
-                # Per-segment offsets
                 segment_offsets = {}
                 zeroed = pd.Series(np.nan, index=frame.index, dtype=float)
 
@@ -154,8 +154,10 @@ def normalize_and_scale(
                     seg_df = frame.loc[mask]
                     seg_t = np.asarray(t_s, dtype=float)[mask.to_numpy()]
 
-                    info = _min_window_avg_offset(seg_df, col, seg_t, zero_window_s,
-                                                  use_median_window, min_samples)
+                    info = _min_window_avg_offset(
+                        seg_df, col, seg_t, zero_window_s,
+                        use_median_window, min_samples
+                    )
                     if info is None:
                         off = float(s.loc[mask].dropna().iloc[0]) if s.loc[mask].dropna().size else 0.0
                     else:
@@ -165,36 +167,60 @@ def normalize_and_scale(
 
                 meta = {"method": "per_segment"}
 
-        # --- Compute norm ---
+        # Always write zeroed back into base col if zeroing_enabled (in-place zeroing policy)
+        if zeroing_enabled:
+            frame.loc[:, col] = zeroed
+
+        # Norm always computed from the (zeroed or original) series used above
         norm = zeroed / float(full_range)
         if clip_0_1:
             norm = norm.clip(0.0, 1.0)
-
-        # --- Write outputs ---
-        if in_place_zero:
-            frame.loc[:, col] = zeroed
-        elif add_zeroed_column:
-            frame.loc[:, col + output_suffix_zeroed] = zeroed
-
         frame.loc[:, col + output_suffix_norm] = norm
 
-        # --- Report ---
         rec: Dict[str, Any] = {
             "column": col,
             "status": "ok",
             "full_range": float(full_range),
-            "zeroing_enabled": bool(zeroing_enabled),
             "clip_0_1": bool(clip_0_1),
-            "in_place_zero": bool(in_place_zero),
-            "add_zeroed_column": bool(add_zeroed_column),
+            "zeroing": {
+                "enabled": bool(zeroing_enabled),
+                "per_segment": bool(use_segments),
+                "method": meta.get("method") if isinstance(meta, dict) else None,
+                "window_s": float(zero_window_s),
+                "use_median_window": bool(use_median_window),
+                "min_samples": int(min_samples),
+            },
             "meta": meta,
         }
-        if not use_segments:
-            rec["offset"] = float(offset) if zeroing_enabled else 0.0
+
+        if not zeroing_enabled:
+            rec["zeroing"]["offset"] = 0.0
+        elif not use_segments:
+            rec["zeroing"]["offset"] = float(offset)
         else:
-            rec["segment_offsets"] = segment_offsets
+            rec["zeroing"]["segment_offsets"] = segment_offsets
+
+        per_column.append(rec)
+    
+        if not return_meta:
+            return frame
+    
+        meta_out: Dict[str, Any] = {
+            "per_column": per_column,
+            "time_col": tcol,
+            "dt_s": float(dt_use),
+            "zero_window_s": float(zero_window_s),
+            "zero_per_segment": bool(use_segments),
+            "segment_col": segment_col if use_segments else None,
+            "min_samples": int(min_samples),
+        }
+        return frame, meta_out
+t_offsets"] = segment_offsets
 
         report.append(rec)
 
+    if not return_report:
+        return frame
     return frame, report
+
 
