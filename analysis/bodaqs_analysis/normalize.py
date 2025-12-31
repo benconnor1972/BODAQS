@@ -202,25 +202,19 @@ def normalize_and_scale(
 
         per_column.append(rec)
     
-        if not return_meta:
-            return frame
-    
-        meta_out: Dict[str, Any] = {
-            "per_column": per_column,
-            "time_col": tcol,
-            "dt_s": float(dt_use),
-            "zero_window_s": float(zero_window_s),
-            "zero_per_segment": bool(use_segments),
-            "segment_col": segment_col if use_segments else None,
-            "min_samples": int(min_samples),
-        }
-        return frame, meta_out
-t_offsets"] = segment_offsets
-
-        report.append(rec)
-
-    if not return_report:
+    if not return_meta:
         return frame
-    return frame, report
+
+    meta_out: Dict[str, Any] = {
+        "per_column": per_column,
+        "time_col": tcol,
+        "dt_s": float(dt_use),
+        "zero_window_s": float(zero_window_s),
+        "zero_per_segment": bool(use_segments),
+        "segment_col": segment_col if use_segments else None,
+        "min_samples": int(min_samples),
+    }
+    return frame, meta_out
+
 
 

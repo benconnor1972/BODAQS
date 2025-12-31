@@ -73,7 +73,7 @@ def preprocess_session(session: Dict[str, Any],
     transforms = qc.setdefault("transforms", {})
 
     # ---------------- Normalize / zero / scale ----------------
-    df2, report = normalize_and_scale(
+    df2, norm_meta = normalize_and_scale(
         df,
         normalize_ranges,
         zeroing_enabled=zeroing_enabled,
@@ -81,6 +81,7 @@ def preprocess_session(session: Dict[str, Any],
         clip_0_1=clip_0_1,
         return_meta=True,        
     )
+    per_column = norm_meta.get("per_column",[])
     session["df"] = df2
 
     # Update QC transforms from report
@@ -88,7 +89,7 @@ def preprocess_session(session: Dict[str, Any],
     by_channel = {}
     methods = set()
     
-    for r in report:
+    for r in per_column:
         if r.get("status") != "ok":
             continue
         z = r.get("zeroing") or {}
@@ -116,7 +117,7 @@ def preprocess_session(session: Dict[str, Any],
         "applied": True,
         "by_channel": {
             r["column"]: {"full_range": float(r.get("full_range"))}
-            for r in report
+            for r in per_column
             if r.get("status") == "ok" and r.get("full_range") is not None
         } or None,
     }

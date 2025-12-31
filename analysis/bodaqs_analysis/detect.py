@@ -61,8 +61,8 @@ def _robust_dt(df: pd.DataFrame, meta: dict) -> float:
     dt_val = float(meta.get("dt", np.nan))
     if np.isfinite(dt_val) and dt_val > 0:
         return dt_val
-    if "t" in df.columns and len(df) > 1:
-        t_sec = _to_seconds(df["t"])
+    if "time_s" in df.columns and len(df) > 1:
+        t_sec = _to_seconds(df["time_s"])
         diffs = np.diff(t_sec)
         diffs = diffs[(diffs > 0) & np.isfinite(diffs)]
         if diffs.size:
@@ -214,7 +214,7 @@ def _trigger_local_extrema(df, dt, ev, base_t0_sec=None):
 
     series_name = ev["inputs"].get(signal)
     y = _series_get(df, series_name).copy()
-    t = _to_seconds(df["t"])
+    t = _to_seconds(df["time_s"])
     n = len(y)
     if n == 0:
         return []
@@ -307,7 +307,7 @@ def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None):
 
     series_name = ev["inputs"].get(signal)   # e.g. 'rear_shock [mm]_vel'
     y = _series_get(df, series_name).astype(float)
-    t = _to_seconds(df["t"])
+    t = _to_seconds(df["time_s"])
     n = len(y)
     if n == 0:
         return []
@@ -396,7 +396,7 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
     if n == 0:
         return []
 
-    t = _to_seconds(df["t"])
+    t = _to_seconds(df["time_s"])
 
     value = float(trig.get("value", 0.0))  # currently unused, reserved for future relative semantics
     direction = trig.get("dir", "rising")
@@ -607,7 +607,7 @@ def _apply_conditions(df, dt, ev, t0_idx, inputs_map):
     """
     Evaluate pre/post conditions for an event candidate using a fully-resolved inputs_map.
     """
-    t = _to_seconds(df["t"])
+    t = _to_seconds(df["time_s"])
 
     def make_slice(within):
         start_s, end_s = within
@@ -764,7 +764,7 @@ def _compute_metrics(
     trig_results: dict | None = None,
     primary_trigger_id: str | None = None,
 ):
-    t = _to_seconds(df["t"])
+    t = _to_seconds(df["time_s"])
     seg = df.iloc[start_idx:end_idx]
     metrics = ev.get("metrics", []) or []
     out = {}
@@ -1014,7 +1014,7 @@ def detect_events_from_schema(df: Optional[pd.DataFrame] = None,
 
     rows = []
     n = len(df)
-    tvec = df["t"].to_numpy()
+    tvec = df["time_s"].to_numpy()
 
     for ev in events:
         ev_id  = ev.get("id")
