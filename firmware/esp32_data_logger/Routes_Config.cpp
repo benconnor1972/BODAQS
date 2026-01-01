@@ -509,9 +509,9 @@ void registerConfigRoutes(WebServer& srv) {
           html += "<small>Leave blank to inherit type-supported methods.</small>";
           html += "</div>";
         }
-        emitParamRow("sensor_zero_count", "Sensor zero count");
-        emitParamRow("sensor_full_count", "Sensor full count");
-        emitParamRow("invert", "Invert direction");
+        emitParamRow("sensor_zero_count", "Sensor count at zero travel");
+        emitParamRow("sensor_full_count", "Sensor count at full travel");
+        emitParamRow("invert", "Invert measurement direction");
 
         // ---- Smoothing ----
         html += F("<h4>Smoothing</h4>");
@@ -1182,7 +1182,7 @@ void registerConfigRoutes(WebServer& srv) {
     // ---------- Persist full config ----------
     //Serial.printf("[WEB] saving tmp: bindings=%u\n", (unsigned)tmp.buttonBindingCount);
               
-    //ConfigManager::save(tmp);           // writes file and updates active config
+    ConfigManager::save(tmp);           // writes file and updates active config
     //ConfigManager::debugDumpConfigFile();
 
     // Redirect back to GET with ok=1
