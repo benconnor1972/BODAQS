@@ -25,8 +25,30 @@
 #include "IndicatorManager.h"
 #include "PowerManager.h"
 #include "BoardProfile.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_heap_caps.h"
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
+
+
+//Debug
+static void dbgHeartbeat_()
+{
+  static uint32_t last = 0;
+  uint32_t now = millis();
+  if (now - last < 5000) return;
+  last = now;
+
+  Serial.printf("[HB] ms=%lu core=%d heap=%u largest=%u\n",
+                (unsigned long)now,
+                xPortGetCoreID(),
+                ESP.getFreeHeap(),
+                heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+  // Optional: stack watermark for loop task (call from the task you care about)
+  Serial.printf("[HB] stack watermark=%u\n", (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+}
 
 
 // --- Small utils ------------------------------------------------------------
@@ -279,6 +301,7 @@ void loop() {
   UI::loop();
   MenuSystem::loop();
   PowerManager::fuelGaugeLoop();
+  dbgHeartbeat_();
 }
 
 
