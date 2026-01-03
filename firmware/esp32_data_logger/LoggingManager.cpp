@@ -10,6 +10,9 @@
 #include "PowerManager.h"
 #include "IndicatorManager.h"
 #include "WiFiManager.h"
+#include "DebugTrace.h"
+#include "esp_timer.h"
+
 
 // FreeRTOS (ESP32 Arduino)
 #if defined(ESP32)
@@ -67,62 +70,105 @@ namespace {
   }
 
   // One sample, no scheduling logic (task provides cadence)
-  static inline void sampleOnce_() {
-    if (!s_running) return;
+static inline void sampleOnce_() {
+  if (!s_running) return;
+  if (s_intervalMs < 1) return;
+  if (s_intervalMs > 1000) return; // sanity, optional
 
-    // Deterministic timestamp for THIS sample (grid-aligned)
-    uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * s_intervalMs;
-    const uint32_t sample_id = (uint32_t)s_sampleCount;
-    s_sampleCount++;
 
-    // Collect dynamic values from all sensors (+ sample_id first, per your SensorManager)
-    const uint16_t cap = 1 + SensorManager::dynamicColumnCount();
-    float values[32];
-    uint16_t maxOut = (cap < 32) ? cap : 32;
-    uint16_t nWritten = 0;
-    SensorManager::sampleValues(values, maxOut, nWritten);
-
-    // One mark per sample
-    uint64_t _markTime = 0;
-    bool _markNow = dequeue(&_markTime);
-
-    // Non-blocking: enqueue row for StorageManager_loop() to consume/flush
-    (void)StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, _markNow);
+  // --------- 1 Hz production-rate diagnostic ---------
+  static uint32_t s_prodCount = 0;
+  static uint32_t s_prodT0_ms = 0;
+  if (s_prodT0_ms == 0) s_prodT0_ms = millis();
+  ++s_prodCount;
+  uint32_t now_ms = millis();
+  if ((uint32_t)(now_ms - s_prodT0_ms) >= 1000) {
+    Serial.printf("[PROD] samples/s=%lu intervalMs=%u running=%d\n",
+                  (unsigned long)s_prodCount,
+                  (unsigned)s_intervalMs,
+                  (int)s_running);
+    s_prodCount = 0;
+    s_prodT0_ms = now_ms;
   }
 
-  static void sampleTaskFn_(void* arg) {
-    // Ensure at least 1 tick
-    TickType_t periodTicks = pdMS_TO_TICKS(s_intervalMs);
-    if (periodTicks < 1) periodTicks = 1;
+  // --------- Deterministic timestamp for THIS sample (grid-aligned) ---------
+  uint32_t intervalMs = s_intervalMs;
+  if (intervalMs == 0) intervalMs = 1; // safety
 
-    TickType_t lastWake = xTaskGetTickCount();
+  uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * (uint64_t)intervalMs;
+  const uint32_t sample_id = (uint32_t)s_sampleCount;
+  ++s_sampleCount;
 
-    // Lag tracking in ms (coarse but useful)
-    uint32_t expectedMs = millis();
+  // --------- Cache dynamic column count (avoid doing it at 500 Hz) ---------
+  static uint16_t s_maxOutCached = 0;
+  static uint32_t s_cacheT0_ms = 0;
 
-    for (;;) {
-      vTaskDelayUntil(&lastWake, periodTicks);
+  // Refresh cache occasionally (every ~1s) in case sensors change mid-run
+  if (s_maxOutCached == 0 || (uint32_t)(now_ms - s_cacheT0_ms) >= 1000) {
+    s_cacheT0_ms = now_ms;
+    uint16_t cap = SensorManager::dynamicColumnCount(); // number of sensor columns (not including sample_id)
+    if (cap > 32) cap = 32;
+    s_maxOutCached = cap;
+  }
 
-      // If stopped, park lightly rather than burning CPU.
-      if (!s_running) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        expectedMs = millis();
-        continue;
-      }
+  float values[32];
+  uint16_t nWritten = 0;
+  SensorManager::sampleValues(values, s_maxOutCached, nWritten);
 
-      expectedMs += (uint32_t)s_intervalMs;
-      uint32_t nowMs = millis();
-      uint32_t lagMs = (nowMs >= expectedMs) ? (nowMs - expectedMs) : 0;
+  // --------- One mark per sample ---------
+  uint64_t markTime = 0;
+  bool markNow = dequeue(&markTime);
 
-      // Count as "late" if we're >1 interval behind
-      if (lagMs > s_intervalMs) {
-        ++s_lateTicks;
-        if (lagMs > s_lateMaxLagMs) s_lateMaxLagMs = lagMs;
-      }
+  // --------- Enqueue for StorageManager_loop() ---------
+  (void)StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, markNow);
+}
 
-      sampleOnce_();
+
+static void sampleTaskFn_(void* arg) {
+  int64_t next_us = esp_timer_get_time();
+  bool wasRunning = false;
+
+  for (;;) {
+    if (!s_running) {
+      wasRunning = false;
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
     }
+
+    if (!wasRunning) {
+      wasRunning = true;
+      next_us = esp_timer_get_time();
+    }
+
+    uint32_t intervalMs = s_intervalMs;
+    if (intervalMs == 0) intervalMs = 1;
+    const int64_t interval_us = (int64_t)intervalMs * 1000LL;
+
+    next_us += interval_us;
+
+    // Wait until deadline, but ALWAYS block at least 1 tick so IDLE0 runs.
+    // This is crucial for the task watchdog.
+    for (;;) {
+      int64_t now_us = esp_timer_get_time();
+      int64_t remaining_us = next_us - now_us;
+
+      if (remaining_us <= 0) break;
+
+      if (remaining_us > 1500) {
+        // Plenty of time: sleep 1 tick.
+        vTaskDelay(1);
+      } else {
+        // Very close: still sleep 1 tick occasionally to avoid starving IDLE0.
+        // For 2ms period, this will add some jitter but keeps system stable.
+        vTaskDelay(1);
+      }
+    }
+
+    sampleOnce_();
   }
+}
+
+
 #endif
 
   static inline uint32_t clampDiv_(uint32_t num, uint16_t den) {
@@ -146,12 +192,15 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 
 bool LoggingManager::start() {
   if (!s_cfg) return false;
+  TRACE("enter start()");
 
   // Logging owns the device: take Wi-Fi (and therefore web server) down NOW.
   if (WebServerManager::isRunning()) {
     UI::println("Stopping web server for logging…", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
   }
+
   WiFiManager::suspendForLogging();   // synchronous OFF
+  TRACE("stop webserver/wifi? (if any)");
 
 
   //PowerManager::setCpuFreqForLogging();
@@ -161,10 +210,21 @@ bool LoggingManager::start() {
   // sampling cadence
   s_intervalMs = StorageManager_getSampleIntervalMs();
 
-  // sanity check RTC (unchanged)
+  TRACE("RTC sanity check begin");
   String ts;
-  do { ts = RTCManager_getFastTimestamp(); delay(10); }
-  while (ts.length() == 0 || ts.startsWith("0000-00-00"));
+  uint32_t t0 = millis();
+  while (true) {
+    ts = RTCManager_getFastTimestamp();
+    if (ts.length() && !ts.startsWith("0000-00-00")) break;
+
+    if ((int32_t)(millis() - (t0 + 2000)) >= 0) {   // 2s timeout
+      TRACE("RTC sanity check TIMEOUT");
+      Serial.printf("[RTC] still invalid: '%s'\n", ts.c_str());
+      break; // either continue with millis-based timestamp, or just proceed
+    }
+    delay(10);
+  }
+  TRACE("RTC sanity check done");
 
   // time anchors + grid align
   s_t0_ms = RTCManager_getEpochMs();
@@ -177,7 +237,9 @@ bool LoggingManager::start() {
 #endif
 
   // Open/create log file
+  TRACE("Entering storagemanager_startlog");
   StorageManager_startLog();
+  TRACE("storagemanager_startlog complete");
 
   s_running = true;
 
@@ -192,16 +254,20 @@ bool LoggingManager::start() {
       nullptr,
       3,          // priority: higher than UI/web loops
       &s_sampleTask,
-      1           // core 1 keeps WiFi (often core 0) from interfering as much
+      0           // core 1 keeps WiFi (often core 0) from interfering as much
     );
   }
 #endif
   // turn LED on
   IndicatorManager::ledOn();
-  UI::toast("Logging started");
+  TRACE("LED turned on");
+
+  //UI::toast("Logging started");
   unsigned hz = s_intervalMs ? (1000UL / s_intervalMs) : 0;
   char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
   UI::status(String(st));
+  TRACE("exit start()");
+
   return true;
 }
 

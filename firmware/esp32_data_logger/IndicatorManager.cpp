@@ -1,6 +1,7 @@
 #include "IndicatorManager.h"
 #include "BoardProfile.h"   // provides board::BoardProfile definition
 #include <Arduino.h>
+#include "DebugTrace.h"
 
 bool  IndicatorManager::s_hasLed = false;
 int8_t IndicatorManager::s_ledPin = -1;
@@ -24,8 +25,10 @@ bool IndicatorManager::hasLed() {
 }
 
 void IndicatorManager::ledOn() {
+  TRACE("Entering LED on");
   if (!s_hasLed) return;
   digitalWrite(s_ledPin, s_ledActiveHigh ? HIGH : LOW);
+  TRACE("Exiting LED on");
 }
 
 void IndicatorManager::ledOff() {
