@@ -152,7 +152,8 @@ volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since l
 bool g_sdTrackEnabled = true;                    // can be toggled off if desired
 
 SdFat* StorageManager_getSd() {
-    return isSpiBackend() ? &sd : nullptr;
+  return isSpiBackend() ? &sd : nullptr;   // if s_sd is the SdFs instance used by SPI backend
+  // or: return gSd;
 }
 
 
@@ -400,6 +401,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
 
     if (clk < 0 || cmd < 0 || d0 < 0) {
       Serial.println("[Storage] SDMMC backend selected but sdmmc_clk/cmd/d0 not set");
+      gSd = nullptr;
       return;
     }
 
@@ -412,6 +414,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
       const int d3 = s_storage->sdmmc_d3;
       if (d1 < 0 || d2 < 0 || d3 < 0) {
         Serial.println("[Storage] SDMMC 4-bit selected but d1/d2/d3 not set");
+        gSd = nullptr;
         return;
       }
       SD_MMC.setPins(clk, cmd, d0, d1, d2, d3);
@@ -423,6 +426,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
 
     if (!ok) {
       Serial.println("[Storage] SD_MMC.begin FAILED, returning");
+      gSd = nullptr;
       return;
     }
 
@@ -430,6 +434,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     if (cardType == CARD_NONE) {
       Serial.println("[Storage] No SD card attached (cardType=CARD_NONE)");
       SD_MMC.end();
+      gSd = nullptr;
       return;
     }
 
@@ -441,9 +446,14 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     Serial.print(sizeMB);
     Serial.println(" MB");
 
+    // ---- IMPORTANT: publish the active filesystem handle ----
+    gSd = nullptr;   // <-- SdFat pointer remains null in SDMMC mode (by design)
+
+    //Serial.printf("[Storage] gFs=%p (SD_MMC), gSd=%p (SdFat)\n", (void*)gFs, (void*)gSd);
     Serial.println("[Storage] SD_MMC.begin OK.");
     return;
   }
+
 
   Serial.println("[Storage] begin(): storage backend = None");
 }

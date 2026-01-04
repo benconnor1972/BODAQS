@@ -143,6 +143,7 @@ void AnalogPotSensor::sample(float& selectedOut, int& smoothedRawOut) {
       selectedOut = float(x_mm_sensor);
       break;
   }
+  
 }
 
 

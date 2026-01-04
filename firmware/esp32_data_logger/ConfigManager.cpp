@@ -220,7 +220,7 @@ static void copyStrBoundedC_(const char* src, char* dst, size_t dstsz) {
 void ConfigManager::begin(SdFs* sdRef, const char* filename) {
   // IMPORTANT: ConfigManager must not retain a SdFat pointer in SDMMC mode.
   // StorageManager_getSd() returns nullptr when SDIO_SDMMC is active.
-  g_sd = nullptr;
+  g_sd = sdRef;
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
 
   g_specCount = 0;

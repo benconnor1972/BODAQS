@@ -123,74 +123,60 @@ static void addTransformsFromDirAny_(const char* dirPath, JsonArray outArr) {
 void registerTransformRoutes(WebServer& srv) {
   WebServer* S = &srv;
 
-  // -------- GET /api/transforms/list?sensor=... [&mode=...]
-  S->on("/api/transforms/list", HTTP_GET, [S](){
-    auto& srv = *S;
-    // NOTE: 'mode' is accepted for future filtering (RAW/LINEAR/POLY/LUT).
-    // We still include every discovered file here; your UI chooses visibility.
-    if (!srv.hasArg("sensor")) {
-      StaticJsonDocument<64> err; err["error"] = "missing sensor";
-      String out; serializeJson(err, out);
-      srv.send(400, F("application/json"), out);
-      return;
-    }
-    const String sensor = srv.arg("sensor");
-    String mode = srv.hasArg("mode") ? srv.arg("mode") : "";
+// -------- GET /api/transforms/list?sensor=...
+S->on("/api/transforms/list", HTTP_GET, [S](){
+  auto& srv = *S;
 
-    SdFs* sd = WebServerManager::sd();
-    const bool useSpi = (sd != nullptr);
+  if (!srv.hasArg("sensor")) {
+    srv.send(400, F("application/json"), F("{\"error\":\"sensor required\"}"));
+    return;
+  }
 
-    // Build result
-    StaticJsonDocument<4096> doc;
-    JsonArray items = doc.to<JsonArray>();
+  const String sensor = srv.arg("sensor");
 
+  // Ensure registry is loaded for this sensor (prefer SdFat if available)
+  SdFs* sd = WebServerManager::sd();
+  if (sd) {
+    gTransforms.loadForSensor(sensor, *sd);
+  } else {
+    // fallback: FS-style backend (SD_MMC)
+    gTransforms.loadForSensor(sensor, SD_MMC);
+  }
 
-    // Always include identity
-    {
-      JsonObject id = items.createNestedObject();
-      id["id"]    = "identity";
-      id["label"] = "Identity (no transform)";
-      id["type"]  = "RAW";
-    }
+  DynamicJsonDocument doc(8192);
+  JsonArray items = doc.createNestedArray("items");
 
-    // Per-sensor directory: /cal/<sensor>/
-    {
-      String dir = F("/cal/");
-      dir += sensor;
-      dir += '/';
-    addTransformsFromDirAny_(dir.c_str(), items);
+  // Always include identity
+  {
+    JsonObject o = items.createNestedObject();
+    o["id"]        = "identity";
+    o["label"]     = "identity";
+    o["type"]      = "identity";
+    o["in_units"]  = "";
+    o["out_units"] = "";
+  }
 
-    }
+  // Registry-backed transforms
+  auto metas = gTransforms.list(sensor);
+  for (const auto& m : metas) {
+    // If your identity transform also appears in list(), skip duplicates:
+    if (m.id == "identity") continue;
 
-    // Generic directory: /cal/
-    addTransformsFromDirAny_("/cal/", items);
+    JsonObject o = items.createNestedObject();
+    o["id"]        = m.id;
+    o["label"]     = m.label;
+    o["type"]      = m.type;
+    o["in_units"]  = m.inUnits;
+    o["out_units"] = m.outUnits;
+  }
 
+  String out;
+  serializeJson(doc, out);
 
-    // Optional: filter by mode if provided (only hides non-matching)
-    if (mode.length()) {
-      String m = mode; m.toUpperCase();
-      // Create filtered copy
-      StaticJsonDocument<4096> filtered;
-      JsonArray f = filtered.to<JsonArray>();
-      for (JsonObject o : items) {
-        String t = o["type"].as<const char*>();
-        if (!t.length()) t = "";
-        t.toUpperCase();
-        if (m == "RAW" || m == "ANY") { f.add(o); continue; }
-        if ((m == "POLY" && t == "POLY") || (m == "LUT" && (t == "LUT" || t == "CSV"))) f.add(o);
-        else if (m == t) f.add(o);
-      }
+  srv.sendHeader("Cache-Control", "no-store");
+  srv.send(200, F("application/json"), out);
+});
 
-      String out; serializeJson(f, out);
-      srv.sendHeader("Cache-Control", "no-store");
-      srv.send(200, F("application/json"), out);
-      return;
-    }
-
-    String out; serializeJson(items, out);
-    srv.sendHeader("Cache-Control", "no-store");
-    srv.send(200, F("application/json"), out);
-  });
 
   // -------- POST /api/transforms/select (sensor=...&id=...)
   S->on("/api/transforms/select", HTTP_POST, [S](){
@@ -223,9 +209,6 @@ void registerTransformRoutes(WebServer& srv) {
       srv.send(404, F("application/json"), F("{\"error\":\"sensor not found\"}"));
       return;
     }
-
-    // --- Persist to config file (this is the one that actually sticks) ---
-    ConfigManager::saveSensorParamByIndex((uint8_t)foundIdx, "output_id", id);
 
     // --- Best-effort: update live sensor immediately (and APPLY) ---
     for (uint8_t j = 0; j < SensorManager::count(); ++j) {
