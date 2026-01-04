@@ -6,30 +6,58 @@
 void Sensor::attachTransform(const TransformRegistry& reg) {
   const String sensorId = String(name()); // folder key: /cal/<name>/
 
-  // Try the selected transform (may be empty/missing)
+  Serial.printf("[XFORM] attach begin sensor='%s' selected='%s'\n",
+                sensorId.c_str(),
+                m_selectedTransformId.c_str());
+
+  // 1) Try the selected transform via registry (unless empty)
   const OutputTransform* t = nullptr;
+  bool triedSelected = false;
+
   if (m_selectedTransformId.length()) {
+    triedSelected = true;
+    Serial.printf("[XFORM] lookup: reg.get(sensor='%s', id='%s')\n",
+                  sensorId.c_str(),
+                  m_selectedTransformId.c_str());
+
     t = reg.get(sensorId, m_selectedTransformId);
+
+    if (t) {
+      Serial.printf("[XFORM] lookup OK: id='%s' label='%s'\n",
+                    t->meta.id.c_str(),
+                    t->meta.label.c_str());
+    } else {
+      Serial.printf("[XFORM] lookup FAIL: sensor='%s' id='%s'\n",
+                    sensorId.c_str(),
+                    m_selectedTransformId.c_str());
+      if (m_selectedTransformId != "identity") {
+        Serial.printf("[XFORM] NOT FOUND sensor='%s' id='%s' -> will use identity fallback\n",
+                      sensorId.c_str(),
+                      m_selectedTransformId.c_str());
+      }
+    }
+  } else {
+    Serial.printf("[XFORM] no selected id (empty) -> will use identity fallback\n");
   }
 
-  // Fallback: identity (0..1 -> 0..1). Keep units_label from config.
+  // 2) Fallback: identity
+  bool usedIdentityFallback = false;
   if (!t) {
+    usedIdentityFallback = true;
     static IdentityTransform s_identity("identity", "Linear");
     t = &s_identity;
   }
 
   m_transform = t;
 
-  //Debug
-  //Serial.printf("[XFORM] %s select='%s' -> '%s'\n",
-  //              name(),
-  //              m_selectedTransformId.c_str(),
-  //              (m_transform ? m_transform->meta.id.c_str() : "(null)"));
-
-  // IMPORTANT: do NOT overwrite m_outputUnitsLabel here anymore.
-  // Units come from the per-sensor config field `units_label` for non-RAW outputs,
-  // and from "counts" implicitly when RAW is selected.
+  // 3) Summary
+  Serial.printf("[XFORM] attach end sensor='%s' triedSelected=%d usedIdentity=%d result='%s'\n",
+                sensorId.c_str(),
+                (int)triedSelected,
+                (int)usedIdentityFallback,
+                (m_transform ? m_transform->meta.id.c_str() : "(null)"));
 }
+
 
 void Sensor::setIncludeRaw(bool b) {
   m_includeRaw = b;

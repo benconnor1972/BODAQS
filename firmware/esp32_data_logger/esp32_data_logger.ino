@@ -29,6 +29,10 @@
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
 
+#include "FS.h"
+#include "SD_MMC.h"
+#include <SdFat.h>
+
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 
 
@@ -119,8 +123,8 @@ void onWebServerToggle(ButtonEvent event);
 
 LoggerConfig g_cfg;  
 TransformRegistry gTransforms;
-SdFs* gSd = nullptr; 
-
+SdFs*  gSd = nullptr;     // stays for SPI SdFat backend
+fs::FS* gFs = nullptr;    // NEW: active filesystem for SDMMC (and could be used for SPI too if you want)
 
 using namespace board;
 
@@ -301,7 +305,7 @@ void loop() {
   UI::loop();
   MenuSystem::loop();
   PowerManager::fuelGaugeLoop();
-  dbgHeartbeat_();
+  //dbgHeartbeat_();
 }
 
 
