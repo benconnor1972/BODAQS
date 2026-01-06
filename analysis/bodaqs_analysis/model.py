@@ -62,11 +62,56 @@ def validate_session(session: Dict[str, Any], *, require_df: bool = True) -> Non
         if "df" not in session or not isinstance(session["df"], pd.DataFrame):
             raise ValueError("session['df'] must be a pandas DataFrame")
         df = session["df"]
+        
+        # Canonical time vector
+        if "time_s" in df.columns:
+            t = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(dtype=float)
+        else:
+            # time_s index path
+            t = pd.to_numeric(df.index.to_series(), errors="coerce").to_numpy(dtype=float)
+
+        if t.size < 2:
+            raise ValueError("time_s must contain at least two samples")
+        if not np.isfinite(t).all():
+            raise ValueError("time_s contains non-finite values")
+        if np.any(np.diff(t) < 0):
+            raise ValueError("time_s must be monotonic non-decreasing")
+
         # Time axis: either time_s col or index name time_s
         has_time_col = "time_s" in df.columns
         has_time_idx = getattr(df.index, "name", None) == "time_s"
         if not (has_time_col or has_time_idx):
             raise ValueError("session['df'] must have a 'time_s' column or a time_s index")
+
+        # Optional but strongly recommended in v0+: stream timebase metadata
+        meta = session.get("meta") or {}
+        streams = meta.get("streams")
+
+        if streams is None:
+            raise ValueError("session['meta'] missing required key: streams")
+        if not isinstance(streams, dict) or not streams:
+            raise ValueError("session['meta']['streams'] must be a non-empty dict")
+
+        # Require a 'primary' stream for now (your analysis df)
+        if "primary" not in streams:
+            raise ValueError("session['meta']['streams'] missing required stream: 'primary'")
+
+        primary = streams["primary"]
+        if not isinstance(primary, dict):
+            raise ValueError("session['meta']['streams']['primary'] must be a dict")
+
+        for k in ("kind", "time_col", "sample_rate_hz", "dt_s", "jitter_frac"):
+            if k not in primary:
+                raise ValueError(f"session['meta']['streams']['primary'] missing required key: {k}")
+
+        # Basic sanity on timebase numbers
+        dt_s = float(primary["dt_s"])
+        sr_hz = float(primary["sample_rate_hz"])
+        if not np.isfinite(dt_s) or dt_s <= 0:
+            raise ValueError("primary stream dt_s must be finite and > 0")
+        if not np.isfinite(sr_hz) or sr_hz <= 0:
+            raise ValueError("primary stream sample_rate_hz must be finite and > 0")
+
 
 def validate_segments(segments_df: pd.DataFrame) -> None:
     req = {"segment_id","t0_s","t1_s","label","source","session_id"}

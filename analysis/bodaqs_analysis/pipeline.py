@@ -11,6 +11,8 @@ from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df
 from .model import validate_metrics_df
 from .model import validate_session
+from .timebase import register_stream_timebase
+
 
 def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
     """Load a CSV into a v0 Session dict (df_raw + initial qc/meta)."""
@@ -151,6 +153,17 @@ def preprocess_session(session: Dict[str, Any],
     if sample_rate_hz is not None:
         meta["sample_rate_hz"] = float(sample_rate_hz)
 
+    # ---------------- Timebase / streams meta (v0) ----------------
+    # For now, your analysis df is a single "primary" stream.
+    # Later, you'll add additional streams (imu, etc.) and register each.
+    register_stream_timebase(
+        session,
+        stream_name="primary",
+        df_stream=session["df"],   # df3 (post normalize + VA) is now in session["df"]
+        time_col="time_s",
+        sample_rate_hz=meta.get("sample_rate_hz"),  # may be None; estimator will infer from time_s
+        jitter_tol_frac=0.05,
+    )
     validate_session(session)
     return session
 
