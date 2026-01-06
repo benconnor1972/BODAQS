@@ -7,7 +7,9 @@ from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
 from .va import estimate_va_from_zeroed
 from .schema import load_event_schema
-from .detect import detect_events_from_schema, extract_metrics_df
+from .detect import detect_events_from_schema
+from .metrics import extract_metrics_df
+from .model import validate_metrics_df
 from .model import validate_session
 
 def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
@@ -172,7 +174,8 @@ def run_macro(csv_path: str,
     events_df = detect_events_from_schema(session["df"], schema)
 
     metrics_df = extract_metrics_df(events_df)
-
+    # Contract validation (always on for v0)
+    validate_metrics_df(metrics_df, events_df=events_df)
     return {
         "session": session,
         "schema": schema,

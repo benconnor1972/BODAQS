@@ -1,5 +1,8 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from .model import validate_events_df
+from .metrics import extract_metrics_df  # contract: metrics live in metrics.py
+
 import math
 import numpy as np
 import pandas as pd
@@ -203,6 +206,16 @@ def _validate_event_series_with_map(ev: dict, df: pd.DataFrame, inputs_map: dict
                 f"Event '{ev_id}': signal '{name}' maps to column '{col}', "
                 f"which is not in event_analysis_df."
             )
+
+def _hash_event_params(ev_resolved: dict, *, schema_version: str = "") -> str:
+    """
+    Contract: params_hash is a hash of the event’s effective schema block.
+    We hash a stable JSON serialization of the resolved event dict plus schema_version.
+    """
+    import json, hashlib
+    payload = {"schema_version": str(schema_version), "event": ev_resolved}
+    b = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(b).hexdigest()
 
 def _trigger_local_extrema(df, dt, ev, base_t0_sec=None):
     trig = ev["trigger"]
@@ -1012,9 +1025,15 @@ def detect_events_from_schema(df: Optional[pd.DataFrame] = None,
         keep = set(event_ids)
         events = [e for e in events if e.get("id") in keep]
 
+
     rows = []
     n = len(df)
     tvec = df["time_s"].to_numpy()
+
+    # Contract: event_id must be unique per *instance*.
+    # We'll generate event_id as "{schema_id}:{occurrence_index}" per contract recommendation.
+    # Keying by schema_id + sensor keeps occurrences stable across sensor-expanded events.
+    occurrence_ctr: dict[tuple[str, str], int] = {}
 
     for ev in events:
         ev_id  = ev.get("id")
@@ -1248,32 +1267,84 @@ def detect_events_from_schema(df: Optional[pd.DataFrame] = None,
                 primary_trigger_id=primary_id,
             )
 
+            # ---- Contract mapping ----
+            schema_id = ev_id                      # schema event definition id
+            schema_version = schema.get("version") or schema.get("schema_version") or ""
+            event_name = ev.get("label") or schema_id
+            signal = (trig.get("signal") or "")    # schema terminology
+
+            # Convert your internal [start_idx:end_idx) slicing to inclusive end_idx for contract
+            end_idx_incl = int(max(start_idx, end_idx - 1))
+
+            # Contract event_id: unique per detected instance: "{schema_id}:{occurrence_index}"
+            key = (schema_id, str(sensor))
+            occ = occurrence_ctr.get(key, 0)
+            occurrence_ctr[key] = occ + 1
+            event_instance_id = f"{schema_id}:{occ}"
+
+            # QC / optional fields
+            qc_flags = []
+            if edge_clip:
+                qc_flags.append("edge_clipped")
+
             row = {
-                "event_id": ev_id,
-                "event_type": ttype,
-                "sensor": sensor,
-                "t0_index": int(t0_idx),
-                "t0_time": float(tvec[t0_idx]),
-                "win_pre_s": float(pre_s),
-                "win_post_s": float(post_s),
-                "start_index": int(start_idx),
-                "end_index": int(end_idx),
-                "edge_clip": bool(edge_clip),
-                "trigger_strength": c.get("trigger_strength"),
-                "trigger_value": c.get("trigger_value"),
-                "detector_type": "schema",
+                # ---- Row Identity (required) ----
+                "event_id": event_instance_id,
+                "schema_id": schema_id,
+                "schema_version": str(schema_version),
+                "event_name": str(event_name),
+
+                # ---- Signal Context (required) ----
+                "signal": str(signal),
+
+                # ---- Time & Index Anchoring (required) ----
+                "start_idx": int(start_idx),
+                "end_idx": int(end_idx_incl),
+                "start_time_s": float(tvec[int(start_idx)]),
+                "end_time_s": float(tvec[int(end_idx_incl)]),
+                "trigger_idx": int(t0_idx),
+                "trigger_time_s": float(tvec[int(t0_idx)]),
+
+                # ---- Provenance & QC (required) ----
+                "detector_version": "schema/v0",
+                "params_hash": _hash_event_params(ev_resolved, schema_version=schema_version),
+
+                # ---- Optional / future-proof ----
+                "qc_flags": qc_flags or None,
+                "score": c.get("trigger_strength", None),
+                "meta": {
+                    "sensor": sensor,
+                    "trigger_type": ttype,
+                    "window": {"pre_s": float(pre_s), "post_s": float(post_s), "align": str(align)},
+                    "edge_clip": bool(edge_clip),
+                    "trigger_strength": c.get("trigger_strength"),
+                    "trigger_value": c.get("trigger_value"),
+                },
             }
+
+            # Optional: include segmentation if present
+            if "segment_id" in df.columns:
+                row["segment_id"] = df.iloc[int(t0_idx)]["segment_id"]
+
+            # Optional: tags from schema (if you support them)
+            if "tags" in ev and ev.get("tags") is not None:
+                row["tags"] = ev.get("tags")
+
+            # Optional: units (if you have a mapping; placeholder hook)
+            # row["units"] = ...
 
             # Snapshot a few values at t0 using resolved inputs
             for k in ("disp","vel","acc","disp_norm"):
                 colk = inputs_map.get(k)
                 if colk in df.columns:
-                    row[f"{k}_at_t0"] = float(df.iloc[t0_idx][colk])
+                    row[f"{k}_at_trigger"] = float(df.iloc[t0_idx][colk])
 
             # Save secondary trigger times (if any)
-            for st_id, sc in sec_outputs.items():
-                row[f"trig_{st_id}_t0_index"] = int(sc["t0_index"])
-                row[f"trig_{st_id}_t0_time"]  = float(sc["t0_time"])
+            if sec_outputs:
+                row["meta"]["secondary_triggers"] = {
+                    st_id: {"trigger_idx": int(sc["t0_index"]), "trigger_time_s": float(sc["t0_time"])}
+                    for st_id, sc in sec_outputs.items()
+                }
 
             row.update(m)
             rows.append(row)
@@ -1283,25 +1354,14 @@ def detect_events_from_schema(df: Optional[pd.DataFrame] = None,
 
     EVENTS_DF = pd.DataFrame(rows)
     if not EVENTS_DF.empty:
-        EVENTS_DF = EVENTS_DF.sort_values(["event_id","t0_index"]).reset_index(drop=True)
+        EVENTS_DF = EVENTS_DF.sort_values(["schema_id","trigger_idx"]).reset_index(drop=True)
 
     globals()["EVENTS_DF"] = EVENTS_DF
     print(f"[Detect] Built EVENTS_DF with {len(EVENTS_DF)} rows "
           f"from {len(raw_events)} schema event(s) "
           f"→ {len(events)} sensor-expanded event(s).")
     if not EVENTS_DF.empty:
-        print(EVENTS_DF[["event_id","t0_time","start_index","end_index"]].head(50).to_string(index=False))
+        print(EVENTS_DF[["event_id","schema_id","trigger_time_s","start_idx","end_idx"]].head(50).to_string(index=False))
+    validate_events_df(EVENTS_DF, df=df)
     return EVENTS_DF
 
-def extract_metrics_df(events_df: pd.DataFrame,
-                       *,
-                       id_cols: Sequence[str] = ("event_id","event_type","sensor","t0_time","t0_index","start_index","end_index")) -> pd.DataFrame:
-    """Return a tidy metrics dataframe from EVENTS_DF.
-
-    Metrics are columns that start with 'm_' in the current notebook schema.
-    """
-    if events_df is None or len(events_df) == 0:
-        return pd.DataFrame()
-    cols = [c for c in events_df.columns if c.startswith("m_")]
-    keep = [c for c in id_cols if c in events_df.columns]
-    return events_df[keep + cols].copy()
