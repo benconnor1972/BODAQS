@@ -12,6 +12,8 @@ from .metrics import extract_metrics_df
 from .model import validate_metrics_df
 from .model import validate_session
 from .timebase import register_stream_timebase
+from .signal_standardize import standardize_signals
+
 
 
 def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
@@ -165,6 +167,26 @@ def preprocess_session(session: Dict[str, Any],
         jitter_tol_frac=0.05,
     )
     validate_session(session)
+
+    # ---------------- Signals: standardise + enforce (v0.2) ----------------
+    # Units hint: keys you normalise are your engineered position bases.
+    units_by_base = {k: "mm" for k in normalize_ranges.keys()}
+
+    # Domain hint (optional but now that you want domain, this is a good start)
+    domain_by_base = {
+        "front_shock": "suspension",
+        "rear_shock": "suspension",
+    }
+
+    session = standardize_signals(
+        session,
+        units_by_base=units_by_base,
+        domain_by_base=domain_by_base,
+        strict_registry_parse=True,  # Step 3 normaliser exists, so tighten
+        derive_va=False,             # you already compute VA above
+    )
+
+    
     return session
 
 

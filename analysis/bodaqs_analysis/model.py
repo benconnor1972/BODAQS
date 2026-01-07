@@ -112,6 +112,52 @@ def validate_session(session: Dict[str, Any], *, require_df: bool = True) -> Non
         if not np.isfinite(sr_hz) or sr_hz <= 0:
             raise ValueError("primary stream sample_rate_hz must be finite and > 0")
 
+def validate_signals_registry_shape(session: Dict[str, Any]) -> None:
+    """
+    Validate the *shape* of session['meta']['signals'] against the v0.2 signal-registry contract.
+
+    This is intentionally structural only:
+      - registry exists and is a dict
+      - keys correspond to df columns
+      - required fields exist with basic types
+
+    Semantic enforcement (units/kind rules) comes later in Step 4.
+    """
+    if not isinstance(session, dict):
+        raise ValueError("session must be a dict-like object")
+    if "df" not in session or not isinstance(session["df"], pd.DataFrame):
+        raise ValueError("session['df'] must be a pandas DataFrame")
+    if "meta" not in session or not isinstance(session["meta"], dict):
+        raise ValueError("session['meta'] must be a dict")
+
+    df = session["df"]
+    signals = session["meta"].get("signals")
+    if signals is None:
+        raise ValueError("session['meta'] missing required key: signals")
+    if not isinstance(signals, dict):
+        raise ValueError("session['meta']['signals'] must be a dict")
+
+    # Every registry key must exist as a df column
+    extra = [k for k in signals.keys() if k not in df.columns]
+    if extra:
+        raise ValueError(f"meta.signals contains keys not in df.columns: {extra[:20]}")
+
+    # Minimal required fields per entry
+    required = ("kind", "unit", "domain", "op_chain")
+    for col, info in signals.items():
+        if not isinstance(info, dict):
+            raise ValueError(f"signals[{col!r}] must be a dict")
+        missing = [k for k in required if k not in info]
+        if missing:
+            raise ValueError(f"signals[{col!r}] missing required key(s): {missing}")
+        if not isinstance(info["kind"], str):
+            raise ValueError(f"signals[{col!r}]['kind'] must be a str")
+        if info["unit"] is not None and not isinstance(info["unit"], str):
+            raise ValueError(f"signals[{col!r}]['unit'] must be str or None")
+        if info["domain"] is not None and not isinstance(info["domain"], str):
+            raise ValueError(f"signals[{col!r}]['domain'] must be str or None")
+        if not isinstance(info["op_chain"], list) or not all(isinstance(x, str) for x in info["op_chain"]):
+            raise ValueError(f"signals[{col!r}]['op_chain'] must be list[str]")
 
 def validate_segments(segments_df: pd.DataFrame) -> None:
     req = {"segment_id","t0_s","t1_s","label","source","session_id"}
