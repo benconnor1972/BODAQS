@@ -206,7 +206,14 @@ def run_macro(csv_path: str,
     assert "time_s" in session["df"].columns, "session['df'] must contain 'time_s'"
 
     schema = load_event_schema(schema_path)
-    events_df = detect_events_from_schema(session["df"], schema)
+
+    #debug
+    assert "signals" in session.get("meta", {}), "meta.signals missing; did standardize_signals run?"
+    assert isinstance(session.get("meta"), dict), "session['meta'] missing"
+    assert isinstance(session["meta"].get("signals"), dict) and session["meta"]["signals"], \
+    "meta.signals missing/empty: you must build the signals registry before detection"
+
+    events_df = detect_events_from_schema(session["df"], schema, meta=session.get("meta"))
 
     metrics_df = extract_metrics_df(events_df)
     # Contract validation (always on for v0)
