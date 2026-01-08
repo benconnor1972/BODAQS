@@ -1,8 +1,8 @@
 # test_signalname.py
 import pytest
 
-from signalname import parse_signal_name, format_signal_name, SignalNameError
-from signalspec import DEFAULT_SPEC
+from bodaqs_analysis.signalname import parse_signal_name, format_signal_name, SignalNameError, SignalNameParts
+from bodaqs_analysis.signalspec import DEFAULT_SPEC
 
 def rt(s: str) -> str:
     parts = parse_signal_name(s, DEFAULT_SPEC)
@@ -43,6 +43,5 @@ def test_suffix_after_unit_must_be_op():
         parse_signal_name("rear_shock [mm]_zeroed", DEFAULT_SPEC)
 
 def test_format_unknown_kind():
-    from signalname import SignalNameParts
     with pytest.raises(SignalNameError):
         format_signal_name(SignalNameParts(base="x", kind="weird"), DEFAULT_SPEC)

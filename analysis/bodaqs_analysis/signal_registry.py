@@ -7,8 +7,8 @@ from typing import Any, Dict, Optional, Iterable, Set
 import pandas as pd
 import numpy as np
 
-from signalname import parse_signal_name, SignalNameError, SignalNameParts
-from signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
+from .signalname import parse_signal_name, SignalNameError, SignalNameParts
+from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
 
 
 # Columns that are not "signals" but may be numeric and should be tolerated.
@@ -24,6 +24,7 @@ DEFAULT_NON_SIGNAL_COLUMNS: Set[str] = {
     "grid_idx",
 }
 
+TIMEBASE_COLUMNS = {"time_s", "time_ms", "timestamp", "timestamp_ms"}
 
 def _is_numeric_series(s: pd.Series) -> bool:
     # Treat bool as numeric-ish but we typically want it to be QC or flags.
@@ -71,6 +72,9 @@ def build_signals_registry(
     signals: Dict[str, Dict[str, Any]] = {}
 
     for col in df.columns:
+        if col in TIMEBASE_COLUMNS:
+            continue
+    
         s = df[col]
 
         # Skip obvious non-signal columns

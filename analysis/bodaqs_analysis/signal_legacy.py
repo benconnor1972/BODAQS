@@ -6,8 +6,8 @@ from typing import Dict, Any, Optional, Tuple, List, Iterable
 
 import pandas as pd
 
-from signalname import parse_signal_name, format_signal_name, SignalNameError, SignalNameParts
-from signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
+from .signalname import parse_signal_name, format_signal_name, SignalNameError, SignalNameParts
+from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
 
 
 # Legacy suffix -> op token

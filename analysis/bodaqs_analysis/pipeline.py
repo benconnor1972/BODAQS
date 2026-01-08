@@ -5,7 +5,7 @@ import pandas as pd
 
 from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
-from .va import estimate_va_from_zeroed
+from .va import estimate_va
 from .schema import load_event_schema
 from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df
@@ -71,7 +71,7 @@ def preprocess_session(session: Dict[str, Any],
                        va_cols: Optional[Sequence[str]] = None,
                        va_window_points: int = 11,
                        va_poly_order: int = 3) -> Dict[str, Any]:
-    """Normalize (in-place zeroing) + compute velocity/acceleration."""
+    """Normalize, zero + compute velocity/acceleration."""
     df = session["df"].copy()
 
     # QC: ensure structure exists early
@@ -132,7 +132,7 @@ def preprocess_session(session: Dict[str, Any],
     if va_cols is None:
         va_cols = list(normalize_ranges.keys())
 
-    df3, va_meta = estimate_va_from_zeroed(
+    df3, va_meta = estimate_va(
         df2,
         cols=list(va_cols),
         sample_rate_hz=sample_rate_hz,

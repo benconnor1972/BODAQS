@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Sequence, List
 
-from signalspec import (
+from .signalspec import (
     DEFAULT_SPEC,
     SignalSpec,
     KIND_SUFFIX_RAW,

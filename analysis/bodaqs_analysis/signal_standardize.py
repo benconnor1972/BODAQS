@@ -7,15 +7,18 @@ from typing import Any, Dict, Optional, Sequence, Tuple, List
 import numpy as np
 import pandas as pd
 
-from signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
-from signalname import parse_signal_name, format_signal_name, SignalNameError, SignalNameParts
-from signal_registry import build_signals_registry
-from model import validate_signals_registry_shape
+from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
+from .signalname import parse_signal_name, format_signal_name, SignalNameError, SignalNameParts
+from .signal_registry import build_signals_registry
+from .model import validate_signals_registry_shape
+from .signal_legacy import normalize_legacy_columns  # local import to avoid cycles
 
 
 # ---------------------------
 # Semantic validation (Step 4)
 # ---------------------------
+
+
 
 class SignalSemanticsError(ValueError):
     pass
@@ -112,8 +115,7 @@ def standardize_signals(
       4) validate registry shape + semantics
       5) record QC report
     """
-    from signal_legacy import normalize_legacy_columns  # local import to avoid cycles
-
+    
     if "df" not in session:
         raise ValueError("session missing 'df'")
     if "meta" not in session:
