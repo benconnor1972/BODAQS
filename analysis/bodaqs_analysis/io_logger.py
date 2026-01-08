@@ -87,48 +87,90 @@ def load_logger_csv(path: str) -> pd.DataFrame:
     )
 
     # ---- Canonicalise time to 'time_s' ----
-    # Supported:
-    #  - clock string: "HH:MM:SS.sss" in column 'timestamp'
-    #  - numeric: seconds/ms/us in common columns
+    # Preferred time sources (most stable -> least):
+    #  - timestamp_ms (numeric, ms)
+    #  - ts_ms / time_ms (numeric, ms)
+    #  - time_s / t / time / ts (numeric, seconds-ish; heuristics applied)
+    #  - timestamp (clock string "HH:MM:SS.mmm" or "MM:SS.mmm") fallback
     time_s = None
 
-    if "timestamp" in df.columns:
-        # Try clock string first
-        t_clock = pd.to_datetime(df["timestamp"], format="%H:%M:%S.%f", errors="coerce")
+    def _use_numeric(col: str, *, assume_ms: bool) -> None:
+        nonlocal df, time_s
+        t_num = pd.to_numeric(df[col], errors="coerce")
+        mask = t_num.notna()
+        if not mask.any():
+            return
 
-        if t_clock.notna().any():
-            df = df.loc[t_clock.notna()].copy()
-            time_s = (t_clock.loc[t_clock.notna()] - t_clock.loc[t_clock.notna()].iloc[0]).dt.total_seconds()
+        df = df.loc[mask].copy()
+        t_num = t_num.loc[mask].astype(np.float64)
+
+        if assume_ms:
+            t_sec = t_num * 1e-3
         else:
-            # Fallback: numeric in timestamp column
-            t_num = pd.to_numeric(df["timestamp"], errors="coerce")
-            df = df.loc[t_num.notna()].copy()
-            t_num = t_num.loc[t_num.notna()]
             # Heuristic scale: us / ms / s
             tmax = float(t_num.max()) if len(t_num) else 0.0
-            if tmax > 1e12:       # likely microseconds since boot/epoch
-                t_num = t_num * 1e-6
-            elif tmax > 1e9:      # could be epoch seconds (too big) or ms
-                # treat as ms (common for loggers); adjust if needed later
-                t_num = t_num * 1e-3
-            elif tmax > 1e6:      # likely milliseconds
-                t_num = t_num * 1e-3
-            # else already seconds
-            time_s = (t_num - float(t_num.iloc[0])).astype(np.float64)
+            if tmax > 1e12:        # likely microseconds
+                t_sec = t_num * 1e-6
+            elif tmax > 1e6:       # likely milliseconds (or larger)
+                t_sec = t_num * 1e-3
+            else:
+                t_sec = t_num       # seconds
+        time_s = (t_sec - float(t_sec.iloc[0])).to_numpy(dtype=np.float64)
 
-    else:
-        # Try common numeric time columns if 'timestamp' absent
-        for cand in ("time_s", "t", "time", "ts", "ts_ms", "time_ms"):
+    def _use_clock_string(col: str) -> None:
+        nonlocal df, time_s
+        # Use your robust parser (handles MM:SS(.mmm), commas, etc.)
+        t_dt = parse_clock_column_to_datetime(df[col])
+        mask = t_dt.notna()
+        if not mask.any():
+            return
+
+        df = df.loc[mask].copy()
+        t_dt_f = t_dt.loc[mask]
+        # Dummy-date datetime deltas handle midnight rollovers correctly (adds 24h)
+        time_s = (t_dt_f - t_dt_f.iloc[0]).dt.total_seconds().to_numpy(dtype=np.float64)
+
+    # 1) Strong preference: explicit ms column from logger
+    if "timestamp_ms" in df.columns:
+        _use_numeric("timestamp_ms", assume_ms=True)
+
+    # 2) Next: other common numeric ms columns
+    if time_s is None:
+        for cand in ("ts_ms", "time_ms"):
             if cand in df.columns:
-                t_num = pd.to_numeric(df[cand], errors="coerce")
-                df = df.loc[t_num.notna()].copy()
-                t_num = t_num.loc[t_num.notna()]
+                _use_numeric(cand, assume_ms=True)
+                if time_s is not None:
+                    break
 
-                tmax = float(t_num.max()) if len(t_num) else 0.0
-                if cand.endswith("_ms") or tmax > 1e6:
-                    t_num = t_num * 1e-3
-                time_s = (t_num - float(t_num.iloc[0])).astype(np.float64)
-                break
+    # 3) Next: other numeric time columns (seconds-ish)
+    if time_s is None:
+        for cand in ("time_s", "t", "time", "ts"):
+            if cand in df.columns:
+                _use_numeric(cand, assume_ms=False)
+                if time_s is not None:
+                    break
+
+    # 4) Fallback: human-readable timestamp
+    if time_s is None and "timestamp" in df.columns:
+        _use_clock_string("timestamp")
+
+        # If that failed, last-resort: treat timestamp as numeric
+        if time_s is None:
+            _use_numeric("timestamp", assume_ms=False)
+
+    if time_s is None:
+        raise ValueError(
+            "No usable time column found (expected 'timestamp_ms', 'timestamp', or a numeric time column)."
+        )
+
+    df["time_s"] = np.asarray(time_s, dtype=np.float64)
+
+
+    if time_s is None:
+        raise ValueError("No usable time column found (expected 'timestamp_ms', 'timestamp', or a numeric time column).")
+
+    df["time_s"] = np.asarray(time_s, dtype=np.float64)
+
 
     if time_s is None:
         raise ValueError("No usable time column found (expected 'timestamp' or a numeric time column).")
@@ -137,7 +179,7 @@ def load_logger_csv(path: str) -> pd.DataFrame:
 
     # ---- Clean numeric columns (leave timestamp as-is) ----
     for c in df.columns:
-        if c in ("timestamp",):
+        if c in ("timestamp","timestamp_ms"):
             continue
         df[c] = (
             df[c]
@@ -149,7 +191,7 @@ def load_logger_csv(path: str) -> pd.DataFrame:
 
     # Drop NaNs and deduplicate by canonical time
     df = df.dropna().drop_duplicates(subset="time_s", keep="first").reset_index(drop=True)
-    df = df[df["time_s"].diff().fillna(0) >= 0]  # keep monotonic time
+    df = df[df["time_s"].diff().fillna(0) > 0]  # keep monotonic time
 
     return df
 

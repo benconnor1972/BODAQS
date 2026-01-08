@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
+from .signalname import parse_signal_name, format_signal_name, SignalNameParts
+from .signalspec import DEFAULT_SPEC
 
 TIME_COL_CANDIDATES_DEFAULT = ("time_s","t","time","timestamp","ts_ms","ts","Time","Timestamp")
 
@@ -32,6 +34,48 @@ def _ensure_time_seconds(frame: pd.DataFrame, tcol: str | None):
         return (idx - idx[0]).total_seconds()
     n = len(frame)
     return np.arange(n, dtype=float) if n > 1 else np.array([0.0])
+
+def _name_zeroed(col: str) -> str:
+    """Given an engineered signal like 'front_shock [mm]', return 'front_shock [mm]_op_zeroed'."""
+    parts = parse_signal_name(col, spec=DEFAULT_SPEC)
+    if parts.kind != "":
+        raise ValueError(f"zeroing expects engineered signal (kind=''), got {col!r}")
+    if parts.unit is None:
+        raise ValueError(f"zeroing expects engineered signal with unit, got {col!r}")
+
+    return format_signal_name(
+        SignalNameParts(
+            base=parts.base,
+            kind="",
+            domain=parts.domain,
+            unit=parts.unit,
+            ops=tuple(list(parts.ops) + ["zeroed"]),
+        ),
+        spec=DEFAULT_SPEC,
+    )
+
+
+def _name_norm(col: str) -> str:
+    """
+    Given an engineered displacement signal like 'front_shock [mm]' (domain optional),
+    return a dimensionless normalised signal: 'front_shock_norm [1]'.
+    """
+    parts = parse_signal_name(col, spec=DEFAULT_SPEC)
+    if parts.kind != "":
+        raise ValueError(f"norm expects engineered base signal (kind=''), got {col!r}")
+
+    # Note: norm is a *different physical quantity* (dimensionless), so it should not be an _op_ on [mm].
+    return format_signal_name(
+        SignalNameParts(
+            base=f"{parts.base}_norm",
+            kind="",
+            domain=parts.domain,
+            unit="1",
+            ops=(),
+        ),
+        spec=DEFAULT_SPEC,
+    )
+
 
 def _median_dt_seconds(t: np.ndarray):
     dt = np.diff(t)
@@ -90,9 +134,8 @@ def normalize_and_scale(
     - If return_report=True, returns (new_df, meta).
     - meta contains per-column zeroing/scaling details and timebase info used for windowing.
     - For each col in `ranges` (if present & numeric):
-        - If zeroing_enabled: writes zeroed values back into <col> (in-place zero).
-        - Always writes <col>_norm (scaled by full_range).
-    - No *_zeroed columns are produced.
+        - If zeroing_enabled: writes <col>_op_zeroed
+        - Writes <base>_norm [1]
     """
     frame = df.copy()
 
@@ -168,14 +211,28 @@ def normalize_and_scale(
                 meta = {"method": "per_segment"}
 
         # Always write zeroed back into base col if zeroing_enabled (in-place zeroing policy)
+        zeroed_col = None
         if zeroing_enabled:
-            frame.loc[:, col] = zeroed
+            # --- Create explicit zeroed column (no in-place overwrite) ---
+            zeroed_col = _name_zeroed(col)
+            frame.loc[:, zeroed_col] = zeroed
 
-        # Norm always computed from the (zeroed or original) series used above
-        norm = zeroed / float(full_range)
+        # --- Create dimensionless norm column ---
+        norm_col = _name_norm(col)
+        
+        # choose source for normalization (zeroed if enabled, else base)
+        norm_source = zeroed_col if (zeroed_col is not None) else col
+        
+        rng = float(full_range) if full_range else np.nan
+        if np.isfinite(rng) and rng > 0:
+            normed = frame[norm_source] / rng
+        else:
+            normed = np.nan
+        
         if clip_0_1:
-            norm = norm.clip(0.0, 1.0)
-        frame.loc[:, col + output_suffix_norm] = norm
+            normed = normed.clip(0.0, 1.0)
+        
+        frame.loc[:, norm_col] = normed
 
         rec: Dict[str, Any] = {
             "column": col,

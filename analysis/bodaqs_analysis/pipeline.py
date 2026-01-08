@@ -5,10 +5,16 @@ import pandas as pd
 
 from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
-from .va import estimate_va_from_zeroed
+from .va import estimate_va
 from .schema import load_event_schema
-from .detect import detect_events_from_schema, extract_metrics_df
+from .detect import detect_events_from_schema
+from .metrics import extract_metrics_df
+from .model import validate_metrics_df
 from .model import validate_session
+from .timebase import register_stream_timebase
+from .signal_standardize import standardize_signals
+
+
 
 def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
     """Load a CSV into a v0 Session dict (df_raw + initial qc/meta)."""
@@ -65,7 +71,7 @@ def preprocess_session(session: Dict[str, Any],
                        va_cols: Optional[Sequence[str]] = None,
                        va_window_points: int = 11,
                        va_poly_order: int = 3) -> Dict[str, Any]:
-    """Normalize (in-place zeroing) + compute velocity/acceleration."""
+    """Normalize, zero + compute velocity/acceleration."""
     df = session["df"].copy()
 
     # QC: ensure structure exists early
@@ -126,7 +132,7 @@ def preprocess_session(session: Dict[str, Any],
     if va_cols is None:
         va_cols = list(normalize_ranges.keys())
 
-    df3, va_meta = estimate_va_from_zeroed(
+    df3, va_meta = estimate_va(
         df2,
         cols=list(va_cols),
         sample_rate_hz=sample_rate_hz,
@@ -149,7 +155,38 @@ def preprocess_session(session: Dict[str, Any],
     if sample_rate_hz is not None:
         meta["sample_rate_hz"] = float(sample_rate_hz)
 
+    # ---------------- Timebase / streams meta (v0) ----------------
+    # For now, your analysis df is a single "primary" stream.
+    # Later, you'll add additional streams (imu, etc.) and register each.
+    register_stream_timebase(
+        session,
+        stream_name="primary",
+        df_stream=session["df"],   # df3 (post normalize + VA) is now in session["df"]
+        time_col="time_s",
+        sample_rate_hz=meta.get("sample_rate_hz"),  # may be None; estimator will infer from time_s
+        jitter_tol_frac=0.05,
+    )
     validate_session(session)
+
+    # ---------------- Signals: standardise + enforce (v0.2) ----------------
+    # Units hint: keys you normalise are your engineered position bases.
+    units_by_base = {k: "mm" for k in normalize_ranges.keys()}
+
+    # Domain hint (optional but now that you want domain, this is a good start)
+    domain_by_base = {
+        "front_shock": "suspension",
+        "rear_shock": "suspension",
+    }
+
+    session = standardize_signals(
+        session,
+        units_by_base=units_by_base,
+        domain_by_base=domain_by_base,
+        strict_registry_parse=True,  # Step 3 normaliser exists, so tighten
+        derive_va=False,             # you already compute VA above
+    )
+
+    
     return session
 
 
@@ -172,7 +209,8 @@ def run_macro(csv_path: str,
     events_df = detect_events_from_schema(session["df"], schema)
 
     metrics_df = extract_metrics_df(events_df)
-
+    # Contract validation (always on for v0)
+    validate_metrics_df(metrics_df, events_df=events_df)
     return {
         "session": session,
         "schema": schema,

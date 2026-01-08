@@ -4,6 +4,9 @@ from typing import Any, Dict, Optional, Sequence, Tuple, Union, List, Iterable
 import numpy as np
 import pandas as pd
 
+from .signalname import parse_signal_name, format_signal_name, SignalNameParts
+from .signalspec import DEFAULT_SPEC
+
 # Optional SciPy: used for Savitzky–Golay smoothing if available
 try:
     from scipy.signal import savgol_filter  # type: ignore
@@ -34,6 +37,43 @@ def _infer_dt(df, sample_rate_hz=None, time_col="time_s"):
         if np.isfinite(dt) and dt > 0:
             return float(dt)
     raise ValueError("Cannot infer dt. Provide sample_rate_hz or a valid time column or DatetimeIndex.")
+
+# place these at top-level, after imports
+def _name_vel(col: str) -> str:
+    parts = parse_signal_name(col, spec=DEFAULT_SPEC)
+    if parts.kind != "":
+        raise ValueError(f"velocity expects engineered base signal (kind=''), got {col!r}")
+    if parts.unit != "mm":
+        raise ValueError(f"velocity expects unit [mm], got {col!r}")
+
+    return format_signal_name(
+        SignalNameParts(
+            base=f"{parts.base}_vel",
+            kind="",
+            domain=parts.domain,
+            unit="mm/s",
+            ops=(),
+        ),
+        spec=DEFAULT_SPEC,
+    )
+
+def _name_acc(col: str) -> str:
+    parts = parse_signal_name(col, spec=DEFAULT_SPEC)
+    if parts.kind != "":
+        raise ValueError(f"acceleration expects engineered base signal (kind=''), got {col!r}")
+    if parts.unit != "mm":
+        raise ValueError(f"acceleration expects unit [mm], got {col!r}")
+
+    return format_signal_name(
+        SignalNameParts(
+            base=f"{parts.base}_acc",
+            kind="",
+            domain=parts.domain,
+            unit="mm/s^2",
+            ops=(),
+        ),
+        spec=DEFAULT_SPEC,
+    )
 
 def _pick_cols(df, cols):
     """Pick numeric columns to process, excluding obvious time-like columns."""
@@ -87,7 +127,7 @@ def _savgol_numpy(y, window_points, poly_order, deriv, dt):
     return filt
 
 
-def estimate_va_from_zeroed(
+def estimate_va(
     df: pd.DataFrame,
     cols: Optional[Sequence[str]] = None,
     sample_rate_hz: Optional[float] = None,
@@ -96,7 +136,6 @@ def estimate_va_from_zeroed(
     poly_order: int = 3,
     vel_suffix: str = "_vel",
     acc_suffix: str = "_acc",
-    strip_zeroed_suffix: bool = True,
     *,
     return_meta: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, Any]]]:
@@ -125,9 +164,11 @@ def estimate_va_from_zeroed(
             v = _savgol_numpy(y, window_points, poly_order, deriv=1, dt=dt)
             a = _savgol_numpy(y, window_points, poly_order, deriv=2, dt=dt)
 
-        base = c[:-len("_zeroed")] if (strip_zeroed_suffix and c.endswith("_zeroed")) else c
-        out[base + vel_suffix] = v
-        out[base + acc_suffix] = a
+        vel_col = _name_vel(c)
+        acc_col = _name_acc(c)
+        
+        out[vel_col] = v
+        out[acc_col] = a
 
     if not return_meta:
         return out
@@ -139,8 +180,5 @@ def estimate_va_from_zeroed(
         "cols": list(target_cols),
         "time_col": time_col,
         "sample_rate_hz": sample_rate_hz,
-        "strip_zeroed_suffix": strip_zeroed_suffix,
-        "vel_suffix": vel_suffix,
-        "acc_suffix": acc_suffix,
     }
     return out, meta
