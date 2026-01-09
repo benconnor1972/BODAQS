@@ -2,17 +2,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 import pandas as pd
+import numpy as np
 
 from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
 from .va import estimate_va
 from .schema import load_event_schema
 from .detect import detect_events_from_schema
-from .metrics import extract_metrics_df
+from .metrics import extract_metrics_df, compute_metrics_from_segments
 from .model import validate_metrics_df
 from .model import validate_session
 from .timebase import register_stream_timebase
 from .signal_standardize import standardize_signals
+from .segment import extract_segments, SegmentRequest
 
 
 
@@ -189,38 +191,94 @@ def preprocess_session(session: Dict[str, Any],
     
     return session
 
+def run_macro(csv_path: str,
+              schema_path: str,
+              *,
+              normalize_ranges: Dict[str, float],
+              sample_rate_hz: Optional[float] = None,
+              timezone: Optional[str] = None) -> Dict[str, Any]:
+    """Convenience macro pipeline: load -> preprocess -> detect -> segment -> metrics."""
+    session = load_session(csv_path, timezone=timezone)
+    session = preprocess_session(
+        session,
+        normalize_ranges=normalize_ranges,
+        sample_rate_hz=sample_rate_hz,
+    )
+    # debug
+    t = session["df"]["time_s"].to_numpy()
+    print("time_s start/end:", t[0], t[-1])
+    print("median dt:", float(np.median(np.diff(t))))
+    print("min dt:", float(np.min(np.diff(t))))
+    print("max dt:", float(np.max(np.diff(t))))
 
+    # debug: inspect signal registry shape
+    sig = session.get("meta", {}).get("signals", {})
+    print("signals entries:", len(sig))
 
-def run_macro(csv_path: str,
-              schema_path: str,
-              *,
-              normalize_ranges: Dict[str, float],
-              sample_rate_hz: Optional[float] = None,
-              timezone: Optional[str] = None) -> Dict[str, Any]:
-    """Convenience macro pipeline: load -> preprocess -> detect -> metrics."""
-    session = load_session(csv_path, timezone=timezone)
-    session = preprocess_session(session, normalize_ranges=normalize_ranges, sample_rate_hz=sample_rate_hz)
+    # show a few entries
+    for col, info in list(sig.items())[:10]:
+        print(col, "->", info)
 
-    assert "df" in session, "preprocess_session() must set session['df']"
-    assert isinstance(session["df"], pd.DataFrame), "session['df'] must be a DataFrame"
-    assert "time_s" in session["df"].columns, "session['df'] must contain 'time_s'"
+    # show kind/unit distribution
+    kinds = {}
+    units = {}
+    for info in sig.values():
+        if isinstance(info, dict):
+            kinds[info.get("kind")] = kinds.get(info.get("kind"), 0) + 1
+            units[info.get("unit")] = units.get(info.get("unit"), 0) + 1
+    print("kind counts:", kinds)
+    print("unit counts:", units)
+
+#debug
+    assert "df" in session
+    assert "time_s" in session["df"].columns
+    assert "signals" in session.get("meta", {})
 
     schema = load_event_schema(schema_path)
+    events_df = detect_events_from_schema(
+        session["df"],
+        schema,
+        meta=session["meta"],
+    )
+#debug
+    print("event_name unique:", sorted(events_df["event_name"].dropna().unique().tolist()))
+    print("schema_id unique:", sorted(events_df["schema_id"].dropna().unique().tolist()))
+    print("events rows:", len(events_df))
+#debug
+
+    # Segment extraction (one event type per call in v0)
+    bundle = extract_segments(
+        df=session["df"],
+        events=events_df,
+        meta=session["meta"],
+        schema=schema,
+        request=SegmentRequest(
+            schema_id="rebounds",  # match your schema event id/name
+        ),
+    )
+#debug
+    print("segments columns:", list(bundle["segments"].columns))
+    print(bundle["segments"].head(3))
+    print("segments valid:", int(bundle["segments"]["valid"].sum()), "/", len(bundle["segments"]))
+    print(bundle["segments"]["reason"].value_counts().head(10))
+    
+    t = bundle.get("data", {}).get("t_rel_s", None)
+    print("t_rel_s type:", type(t))
+    if isinstance(t, np.ndarray):
+        print("t_rel_s shape:", t.shape, "dtype:", t.dtype)
+        print("t_rel_s first:", t.ravel()[:10])
+    else:
+        print("t_rel_s value:", t)
 
-    #debug
-    assert "signals" in session.get("meta", {}), "meta.signals missing; did standardize_signals run?"
-    assert isinstance(session.get("meta"), dict), "session['meta'] missing"
-    assert isinstance(session["meta"].get("signals"), dict) and session["meta"]["signals"], \
-    "meta.signals missing/empty: you must build the signals registry before detection"
-
-    events_df = detect_events_from_schema(session["df"], schema, meta=session.get("meta"))
-
-    metrics_df = extract_metrics_df(events_df)
-    # Contract validation (always on for v0)
-    validate_metrics_df(metrics_df, events_df=events_df)
-    return {
-        "session": session,
-        "schema": schema,
-        "events": events_df,
-        "metrics": metrics_df,
-    }
+#debug
+    # Metrics from SegmentBundle
+    metrics_df = compute_metrics_from_segments(bundle, schema=schema)
+    validate_metrics_df(metrics_df, events_df=events_df)
+
+    return {
+        "session": session,
+        "schema": schema,
+        "events": events_df,
+        "segments": bundle,
+        "metrics": metrics_df,
+    }
