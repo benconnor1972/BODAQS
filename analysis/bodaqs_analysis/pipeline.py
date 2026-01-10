@@ -271,10 +271,9 @@ def run_macro(csv_path: str,
         print("t_rel_s value:", t)
 
 #debug
-    # Metrics from SegmentBundle
-    metrics_df = compute_metrics_from_segments(bundle, schema=schema)
-    validate_metrics_df(metrics_df, events_df=events_df)
-
+    # Metrics from SegmentBundle
+    metrics_df = compute_metrics_from_segments(bundle, schema=schema)
+    validate_metrics_df(metrics_df, events_df=events_df)
     return {
         "session": session,
         "schema": schema,

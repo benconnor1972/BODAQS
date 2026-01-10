@@ -695,7 +695,9 @@ def _eval_simple_tests(df, t0_idx, t, tests, inputs_map):
                 return False
 
         elif typ == "delta":
-            op = test.get("op", ">=")
+            cmp = test.get("cmp")
+            if cmp is None:
+                raise ValueError("Condition test missing required key 'cmp' (see schema spec v0.1)")
             val = float(test.get("value", 0.0))
             ref = y[t0_idx]
             dseg = seg - ref
@@ -704,13 +706,15 @@ def _eval_simple_tests(df, t0_idx, t, tests, inputs_map):
                 "<=": np.nanmin(dseg) <= val,
                 ">":  np.nanmax(dseg) >  val,
                 "<":  np.nanmin(dseg) <  val,
-            }.get(op, False)
+            }.get(cmp, False)
             if not cond:
                 return False
 
         elif typ == "peak":
             kind = test.get("kind", "max")
-            op = test.get("op", ">=")
+            cmp = test.get("cmp")
+            if cmp is None:
+                raise ValueError("Condition test missing required key 'cmp' (see schema spec v0.1)")
             val = float(test.get("value", 0.0))
             peak_val = np.nanmax(seg) if kind == "max" else np.nanmin(seg)
             cond = {
@@ -718,7 +722,7 @@ def _eval_simple_tests(df, t0_idx, t, tests, inputs_map):
                 "<=": peak_val <= val,
                 ">":  peak_val >  val,
                 "<":  peak_val <  val,
-            }.get(op, False)
+            }.get(cmp, False)
             if not cond:
                 return False
         else:
@@ -1108,14 +1112,12 @@ def detect_events_from_schema(
 
     df, meta, schema = _require_inputs(df=df, meta=meta, schema=schema)
 
-    print("[DEBUG] detect_events_from_schema: meta keys:", list(meta.keys()))
-    print(
-        "[DEBUG] detect_events_from_schema: meta.signals present:",
-        isinstance(meta.get("signals"), dict),
-        "len=",
-        len(meta.get("signals") or {})
-    )
-    
+    # Optional absolute datetime anchoring (contract-reserved column)
+    _t0_dt_raw = meta.get("t0_datetime")
+    _t0_ts = pd.to_datetime(_t0_dt_raw, errors="coerce") if _t0_dt_raw is not None else None
+    if _t0_ts is not None and pd.isna(_t0_ts):
+        _t0_ts = None
+
     dt = _robust_dt(df, meta)
     if not np.isfinite(dt) or dt <= 0:
         print("[Detect] Warning: invalid dt; skipping time-based distances/edge windows; using prominence-only.")
@@ -1373,12 +1375,6 @@ def detect_events_from_schema(
                 trig_results[st_id] = chosen
                 sec_outputs[st_id] = chosen
                 
-                #debug
-                if schema_id == "rebounds":
-                    print("DEBUG sec_outputs keys:", list(sec_outputs.keys()))
-                    if "rebound_end" in sec_outputs:
-                        print("DEBUG rebound_end chosen:", sec_outputs["rebound_end"].get("t0_time"), sec_outputs["rebound_end"].get("t0_index"))
-                #debug
 
             # ---- Persist trigger timings into row columns (Option A) ----
             trigger_cols: dict[str, Any] = {}
@@ -1416,21 +1412,25 @@ def detect_events_from_schema(
             schema_version = schema.get("version") or schema.get("schema_version") or ""
             event_name = ev.get("label") or schema_id
             signal = (trig.get("signal") or "")    # schema terminology
+            signal_col = inputs_map.get(signal) if signal else None
+            signal_col = str(signal_col) if (signal_col is not None) else None
+            signals = list((ev_resolved.get("inputs") or {}).keys())
 
             # Convert your internal [start_idx:end_idx) slicing to inclusive end_idx for contract
             end_idx_incl = int(max(start_idx, end_idx - 1))
 
-            # Contract event_id: unique per detected instance: "{schema_id}:{occurrence_index}"
+            # event_id: unique per detected instance (Option B): "{schema_id}:{sensor}:{occurrence_index}"
             key = (schema_id, str(sensor))
             occ = occurrence_ctr.get(key, 0)
             occurrence_ctr[key] = occ + 1
-            event_instance_id = f"{schema_id}:{occ}"
+            event_instance_id = f"{schema_id}:{sensor}:{occ}"
 
             # QC / optional fields
             qc_flags = []
             if edge_clip:
                 qc_flags.append("edge_clipped")
 
+            trigger_time_s = float(tvec[int(t0_idx)])
             row = {
                 # ---- Row Identity (required) ----
                 "event_id": event_instance_id,
@@ -1440,6 +1440,9 @@ def detect_events_from_schema(
 
                 # ---- Signal Context (required) ----
                 "signal": str(signal),
+                "signal_col": signal_col,
+                "signals": signals or None,
+
 
                 # ---- Time & Index Anchoring (required) ----
                 "start_idx": int(start_idx),
@@ -1447,7 +1450,8 @@ def detect_events_from_schema(
                 "start_time_s": float(tvec[int(start_idx)]),
                 "end_time_s": float(tvec[int(end_idx_incl)]),
                 "trigger_idx": int(t0_idx),
-                "trigger_time_s": float(tvec[int(t0_idx)]),
+                "trigger_time_s": float(trigger_time_s),
+                "trigger_datetime": (_t0_ts + pd.to_timedelta(trigger_time_s, unit="s")) if _t0_ts is not None else None,
 
                 # ---- Provenance & QC (required) ----
                 "detector_version": "schema/v0",
@@ -1496,22 +1500,9 @@ def detect_events_from_schema(
             row.update(m)
             rows.append(row)
             
-            #debug
-            if schema_id == "rebounds":
-                print("DEBUG row keys (trigger cols):",
-                      [k for k in row.keys() if k.endswith("_time_s") or k.endswith("_idx")][:20])
-                print("DEBUG rebound_end_time_s:", row.get("rebound_end_time_s"))
-            #debug  
-            
-        print(f"[DEBUG] {ev_id}({sensor}): passed conditions={kept}")
 
 
     EVENTS_DF = pd.DataFrame(rows)
-    #debug
-    print("rebound_end_time_s in events_df:", "rebound_end_time_s" in EVENTS_DF.columns)
-    if "rebound_end_time_s" in EVENTS_DF.columns:
-        print(EVENTS_DF["rebound_end_time_s"].describe())
-    #debug
 
     if not EVENTS_DF.empty:
         EVENTS_DF = EVENTS_DF.sort_values(["schema_id","trigger_idx"]).reset_index(drop=True)

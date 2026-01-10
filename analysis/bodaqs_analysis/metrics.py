@@ -50,7 +50,7 @@ def extract_metrics_df(
     metric_cols = [c for c in events_df.columns if isinstance(c, str) and c.startswith("m_")]
 
     if id_cols is None:
-        # Preferred identity bundle (Event Table Contract v0.1.1)
+        # Preferred identity bundle (Event Table Contract v0.1.2+)
         preferred = (
             "event_id",
             "schema_id",
@@ -60,6 +60,7 @@ def extract_metrics_df(
             "signal_col",
             "segment_id",
             "trigger_time_s",
+            "trigger_datetime",
             "tags",
         )
 
@@ -75,49 +76,12 @@ def extract_metrics_df(
 
         looks_contract = all(
             c in events_df.columns
-            for c in ("event_id", "schema_id", "schema_version", "event_name", "signal", "trigger_time_s")
+            for c in ("event_id", "schema_id", "schema_version", "event_name", "signal", "trigger_time_s", "signal_col")
         )
         id_cols = preferred if looks_contract else legacy
 
     keep = [c for c in id_cols if c in events_df.columns]
     return events_df[keep + metric_cols].copy()
-
-
-def validate_metrics_df(
-    metrics_df: pd.DataFrame,
-    *,
-    events_df: Optional[pd.DataFrame] = None,
-    strict: bool = True,
-) -> None:
-    """Lightweight validation for a wide metrics dataframe.
-
-    - Ensures metric columns are prefixed with 'm_'.
-    - Ensures identity columns (if present) are sane.
-    - If events_df is provided and both contain 'event_id', checks joinability.
-    """
-    if metrics_df is None:
-        raise ValueError("metrics_df is None")
-
-    if len(metrics_df) == 0:
-        return
-
-    # Metric columns
-    metric_cols = [c for c in metrics_df.columns if isinstance(c, str) and c.startswith("m_")]
-    if strict and not metric_cols:
-        raise ValueError("metrics_df has no 'm_' metric columns")
-
-    # event_id uniqueness if present
-    if "event_id" in metrics_df.columns:
-        if metrics_df["event_id"].isna().any() and strict:
-            raise ValueError("metrics_df.event_id contains NaN")
-        if metrics_df["event_id"].duplicated().any() and strict:
-            raise ValueError("metrics_df.event_id must be unique")
-
-    # Optional cross-check with events_df
-    if events_df is not None and "event_id" in metrics_df.columns and "event_id" in events_df.columns:
-        missing = set(metrics_df["event_id"]) - set(events_df["event_id"])
-        if missing and strict:
-            raise ValueError(f"metrics_df contains event_id not present in events_df: {sorted(list(missing))[:5]} ...")
 
 
 # -------------------------
@@ -149,8 +113,8 @@ def compute_metrics_from_segments(
     schema:
         Concrete event schema (your YAML loaded to dict).
     strict:
-        If True, missing triggers or spec inconsistencies raise ValueError.
-        If False, best-effort fallbacks are used.
+        If True, missing triggers raise ValueError.
+        If False, missing triggers yield NaNs (no legacy fallback sources are used).
 
     Returns
     -------
@@ -174,7 +138,6 @@ def compute_metrics_from_segments(
 
     seg_valid = seg_all[seg_all["valid"]].reset_index(drop=True)
     if len(seg_valid) == 0:
-        # no valid segments → return empty but with identity cols (optional)
         return pd.DataFrame()
 
     ev = events_all.iloc[seg_valid["event_row"].to_numpy()].reset_index(drop=True)
@@ -230,7 +193,6 @@ def compute_metrics_from_segments(
             elif name.startswith("d_"):
                 dbg_cols[name] = values
             else:
-                # enforce naming
                 if strict:
                     raise ValueError(f"Metric implementation returned non-prefixed column: {name}")
                 out_cols[f"m_{name}"] = values
@@ -242,18 +204,15 @@ def compute_metrics_from_segments(
     for name, values in out_cols.items():
         metrics_df[name] = values
 
-    # Add debug columns if any
     for name, values in dbg_cols.items():
         metrics_df[name] = values
 
-    # Validate basic shape
     if len(metrics_df) != n_seg:
         raise AssertionError("metrics_df row count must equal number of valid segments")
 
     return metrics_df
 
 
-# Alias for convenience / future naming
 compute_metrics = compute_metrics_from_segments
 
 
@@ -262,14 +221,6 @@ compute_metrics = compute_metrics_from_segments
 # -------------------------
 
 def _metric_peak(ctx: MetricsContext, spec: Mapping[str, Any], *, strict: bool) -> Dict[str, np.ndarray]:
-    """
-    Schema example:
-      - type: peak
-        signal: disp
-        kind: max   # or min
-        return_time: true (optional)
-        id: my_metric_id (optional)
-    """
     role = str(spec.get("signal", "")).strip()
     if not role:
         raise ValueError("peak metric requires 'signal' role")
@@ -302,17 +253,6 @@ def _metric_peak(ctx: MetricsContext, spec: Mapping[str, Any], *, strict: bool) 
 
 
 def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, strict: bool) -> Dict[str, np.ndarray]:
-    """
-    Schema example:
-      - type: interval_stats
-        signal: vel
-        start_trigger: rebound_start
-        end_trigger: rebound_end
-        ops: [mean, max, min, delta]
-        smooth_ms: 20 (optional)
-        min_delay_s: 0.02 (optional)
-        return_debug: true (optional)
-    """
     role = str(spec.get("signal", "")).strip()
     if not role:
         raise ValueError("interval_stats metric requires 'signal' role")
@@ -338,55 +278,43 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
 
     y = _get_role_array(ctx, role, strict=strict)
 
-    # Trigger times in absolute session time
+    # Trigger times in absolute session time (NO legacy fallbacks; NO meta fallbacks)
     t0_abs = _resolve_trigger_time_s(ctx.events, trigger_id=start_tr, strict=strict)
     t1_abs = _resolve_trigger_time_s(ctx.events, trigger_id=end_tr, strict=strict)
 
-    # Alignment time for the segment is stored on segments as trigger_time_s (standardised)
     if "trigger_time_s" not in ctx.segments.columns:
         raise ValueError("segments table must contain 'trigger_time_s' (alignment time)")
 
     align_abs = ctx.segments["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
 
-    # Enforce min_delay if requested
     if min_delay_s > 0:
         t0_abs = np.maximum(t0_abs, align_abs + min_delay_s)
 
-    # Convert to relative times
     t0_rel = t0_abs - align_abs
     t1_rel = t1_abs - align_abs
 
-    # Ensure ordering (swap if inverted)
     swapped = t1_rel < t0_rel
     if np.any(swapped):
         tmp = t0_rel.copy()
         t0_rel[swapped] = t1_rel[swapped]
         t1_rel[swapped] = tmp[swapped]
 
-    # Convert rel times to indices on shared grid
     grid = ctx.t_rel_s
     i0 = np.searchsorted(grid, t0_rel, side="left")
     i1 = np.searchsorted(grid, t1_rel, side="right")
 
-    # Clamp to bounds
     i0 = np.clip(i0, 0, len(grid) - 1)
     i1 = np.clip(i1, 0, len(grid))
 
-    # Optional smoothing (simple moving average)
     if smooth_ms and smooth_ms > 0:
         win = max(1, int(round((smooth_ms / 1000.0) / ctx.dt_s)))
-        if win > 1:
-            y_smooth = _moving_average_2d(y, win)
-        else:
-            y_smooth = y
+        y_smooth = _moving_average_2d(y, win) if win > 1 else y
     else:
         y_smooth = y
 
     base_id = _metric_id(spec, fallback=f"interval_{role}")
-
     out: Dict[str, np.ndarray] = {}
 
-    # Compute each op per segment (vectorised with per-row slicing loop where needed)
     for op in ops:
         op = str(op).strip().lower()
         col = f"m_{base_id}_{op}"
@@ -405,7 +333,6 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
             if strict:
                 raise ValueError(f"Unsupported interval op: {op}")
 
-    # Optional debug columns
     if return_debug:
         out[f"d_{base_id}_t0_rel_s"] = t0_rel.astype(np.float64, copy=False)
         out[f"d_{base_id}_t1_rel_s"] = t1_rel.astype(np.float64, copy=False)
@@ -430,6 +357,7 @@ def _preferred_identity_cols(events: pd.DataFrame) -> List[str]:
         "signal_col",
         "segment_id",
         "trigger_time_s",
+        "trigger_datetime",
         "tags",
     ]
     return [c for c in preferred if c in events.columns]
@@ -441,8 +369,7 @@ def _get_t_rel_grid(data: Mapping[str, Any]) -> np.ndarray:
     arr = data["t_rel_s"]
     if not isinstance(arr, np.ndarray) or arr.ndim != 2 or arr.shape[0] < 1:
         raise ValueError("bundle.data['t_rel_s'] must be a 2D array with at least one segment")
-    grid = arr[0].astype(np.float64, copy=False)
-    return grid
+    return arr[0].astype(np.float64, copy=False)
 
 
 def _estimate_dt(t_rel: np.ndarray) -> float:
@@ -455,7 +382,7 @@ def _estimate_dt(t_rel: np.ndarray) -> float:
 
 
 def _schema_event_def_for_bundle(events: pd.DataFrame, schema: Mapping[str, Any], *, strict: bool) -> Mapping[str, Any]:
-    # Prefer schema_id from events table (Event Table Contract)
+    schema_id = ""
     if "schema_id" in events.columns:
         ids = sorted(set(events["schema_id"].dropna().astype(str).tolist()))
         if len(ids) == 1:
@@ -464,17 +391,13 @@ def _schema_event_def_for_bundle(events: pd.DataFrame, schema: Mapping[str, Any]
             raise ValueError(f"Expected one schema_id in bundle.events; got: {ids}")
         else:
             schema_id = ids[0] if ids else ""
-    else:
-        schema_id = ""
 
-    # Find schema event by id
     events_def = schema.get("events")
     if isinstance(events_def, list) and schema_id:
         for ev in events_def:
             if isinstance(ev, dict) and str(ev.get("id", "")) == schema_id:
                 return ev
 
-    # Fallback: try event_name match
     if isinstance(events_def, list) and "event_name" in events.columns:
         names = sorted(set(events["event_name"].dropna().astype(str).tolist()))
         if len(names) == 1:
@@ -492,17 +415,11 @@ def _metric_id(spec: Mapping[str, Any], *, fallback: str) -> str:
     mid = spec.get("id")
     if isinstance(mid, str) and mid.strip():
         return mid.strip()
-    # Normalize fallback to a safe id
     return fallback.replace(" ", "_").replace("/", "_")
 
 
 def _get_role_array(ctx: MetricsContext, role: str, *, strict: bool) -> np.ndarray:
     if role not in ctx.data:
-        if strict:
-            raise ValueError(f"Role '{role}' not present in bundle.data")
-        # best effort: allow primary
-        if role == "disp" and "primary" in ctx.data:
-            return ctx.data["primary"]
         raise ValueError(f"Role '{role}' not present in bundle.data")
     arr = ctx.data[role]
     if not isinstance(arr, np.ndarray) or arr.ndim != 2:
@@ -511,74 +428,50 @@ def _get_role_array(ctx: MetricsContext, role: str, *, strict: bool) -> np.ndarr
 
 
 def _resolve_trigger_time_s(events: pd.DataFrame, trigger_id: str, strict: bool) -> np.ndarray:
+    """Resolve per-event trigger time in absolute session seconds.
+
+    Policy (no backward compatibility):
+    - Use ONLY:
+        (a) canonical 'trigger_time_s' when trigger_id is 'trigger' or 'trigger_time_s'
+        (b) per-trigger column f"{trigger_id}_time_s"
+    - Do NOT look in meta bags.
+    - Do NOT infer *_start/_end from other canonical columns.
+    """
     n = len(events)
-    out = np.full(n, np.nan, dtype=np.float64)
 
-    # (0) Canonical special-case: base anchor
     if trigger_id in ("trigger", "trigger_time_s"):
-        if "trigger_time_s" in events.columns:
-            v = events["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
-            return v
-
-    # (1) Preferred: column "<trigger_id>_time_s"
-    col = f"{trigger_id}_time_s"
-    if col in events.columns:
-        v = events[col].to_numpy(dtype=np.float64, copy=False)
-        if strict:
-            bad = int(np.sum(~np.isfinite(v)))
-            if bad:
-                raise ValueError(f"Missing trigger '{trigger_id}' time_s for {bad}/{n} events ({col})")
-        return v
-
-    # (2) Common legacy: if trigger_id is the primary start trigger, fall back to trigger_time_s
-    if trigger_id.endswith("_start") and "trigger_time_s" in events.columns:
+        if "trigger_time_s" not in events.columns:
+            raise ValueError("events table missing canonical column 'trigger_time_s'")
         v = events["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
         if strict:
             bad = int(np.sum(~np.isfinite(v)))
             if bad:
-                raise ValueError(f"Missing trigger '{trigger_id}' time_s for {bad}/{n} events (trigger_time_s)")
+                raise ValueError(f"Missing canonical trigger_time_s for {bad}/{n} events")
         return v
 
-    # (3) meta.triggers bag
-    if "meta" in events.columns:
-        out = np.full(n, np.nan, dtype=np.float64)
-        for i, meta in enumerate(events["meta"].tolist()):
-            if isinstance(meta, dict):
-                tr = meta.get("triggers")
-                if isinstance(tr, dict):
-                    tinfo = tr.get(trigger_id)
-                    if isinstance(tinfo, dict) and "time_s" in tinfo:
-                        out[i] = float(tinfo["time_s"])
-        if np.isfinite(out).all():
-            return out
+    col = f"{trigger_id}_time_s"
+    if col not in events.columns:
         if strict:
-            bad = int(np.sum(~np.isfinite(out)))
-            raise ValueError(f"Missing trigger '{trigger_id}' time_s for {bad}/{n} events (meta.triggers)")
+            raise ValueError(f"Missing required trigger column: {col}")
+        return np.full(n, np.nan, dtype=np.float64)
 
-    # (4) Fallbacks
-    if not strict:
-        if trigger_id.endswith("_start") and "start_time_s" in events.columns:
-            return events["start_time_s"].to_numpy(dtype=np.float64, copy=False)
-        if trigger_id.endswith("_end") and "end_time_s" in events.columns:
-            return events["end_time_s"].to_numpy(dtype=np.float64, copy=False)
-        if "trigger_time_s" in events.columns:
-            return events["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
-
-    raise ValueError(f"Could not resolve trigger_id='{trigger_id}' to per-event time_s")
+    v = events[col].to_numpy(dtype=np.float64, copy=False)
+    if strict:
+        bad = int(np.sum(~np.isfinite(v)))
+        if bad:
+            raise ValueError(f"Missing trigger '{trigger_id}' time_s for {bad}/{n} events ({col})")
+    return v
 
 
 def _moving_average_2d(y: np.ndarray, win: int) -> np.ndarray:
-    """Simple moving average along axis=1, NaN-aware-ish (fills NaN as 0 with weights)."""
     if win <= 1:
         return y
 
-    # weights
     w = np.ones(win, dtype=np.float64)
 
     y0 = np.nan_to_num(y, nan=0.0)
     m = np.isfinite(y).astype(np.float64)
 
-    # Convolve each row
     out = np.empty_like(y0, dtype=np.float64)
     out_m = np.empty_like(m, dtype=np.float64)
 
@@ -610,7 +503,6 @@ def _delta_interval(y: np.ndarray, i0: np.ndarray, i1: np.ndarray) -> np.ndarray
         a = int(i0[r]); b = int(i1[r])
         if b <= a:
             continue
-        # Use last included sample as end
         end_idx = max(a, b - 1)
         out[r] = float(y[r, end_idx] - y[r, a])
     return out
