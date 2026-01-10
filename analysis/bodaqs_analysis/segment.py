@@ -293,6 +293,11 @@ def _resolve_effective_spec(
                     "Filter with SegmentRequest(event_name=...)."
                 )
 
+        #debug
+        print("event_key:", event_key)
+        print("schema keys:", list(schema.keys()))
+        #debug
+
         seg_def = _schema_segment_defaults(schema, event_key)
         if seg_def is not None:
             anchor = seg_def.get("anchor", anchor)  # type: ignore
@@ -338,18 +343,42 @@ def _resolve_effective_spec(
 
 def _schema_segment_defaults(schema: Mapping[str, Any], event_key: Optional[str]) -> Optional[Mapping[str, Any]]:
     """
-    Schema layout varies; keep this defensive.
-    Expected (per your updated schema): schema["events"][event_key]["segment_defaults"].
+    Supports schemas where schema["events"] is either:
+      A) dict keyed by event id/schema_id
+      B) list of event dicts containing an 'id' (or 'schema_id') field
+    Returns the event's 'segment_defaults' dict if present.
     """
+    if not event_key:
+        return None
+
     try:
-        events = schema.get("events", {})
-        if event_key and event_key in events:
-            sd = events[event_key].get("segment_defaults")
-            if isinstance(sd, dict):
-                return sd
+        events = schema.get("events", None)
+
+        # A) Mapping form: events[event_key]
+        if isinstance(events, Mapping):
+            ev = events.get(event_key)
+            if isinstance(ev, Mapping):
+                sd = ev.get("segment_defaults")
+                return sd if isinstance(sd, Mapping) else None
+            return None
+
+        # B) List form: find dict with matching id/schema_id
+        if isinstance(events, list):
+            for ev in events:
+                if not isinstance(ev, Mapping):
+                    continue
+                eid = ev.get("id", None)
+                if eid is None:
+                    eid = ev.get("schema_id", None)
+                if isinstance(eid, str) and eid == event_key:
+                    sd = ev.get("segment_defaults")
+                    return sd if isinstance(sd, Mapping) else None
+            return None
+
         return None
     except Exception:
         return None
+
 
 
 # -------------------------

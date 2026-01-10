@@ -510,30 +510,34 @@ def _get_role_array(ctx: MetricsContext, role: str, *, strict: bool) -> np.ndarr
     return arr.astype(np.float64, copy=False)
 
 
-def _resolve_trigger_time_s(events: pd.DataFrame, *, trigger_id: str, strict: bool) -> np.ndarray:
-    """
-    Resolve a trigger_id to absolute session time for each event row.
-
-    Resolution order (v0):
-      1) If trigger_id matches the primary trigger concept (common convention):
-         - 'rebound_start' is treated as primary trigger for rebounds.
-      2) If events has a flat column '{trigger_id}_time_s', use it.
-      3) If events.meta contains triggers: meta['triggers'][trigger_id]['time_s'].
-      4) If strict=False, fall back:
-         - '*_start' -> start_time_s
-         - '*_end'   -> end_time_s
-         - else      -> trigger_time_s
-    """
+def _resolve_trigger_time_s(events: pd.DataFrame, trigger_id: str, strict: bool) -> np.ndarray:
     n = len(events)
+    out = np.full(n, np.nan, dtype=np.float64)
 
-    # (1) Common convention: rebound_start == primary trigger (your schema uses it this way)
-    if trigger_id == "rebound_start" and "trigger_time_s" in events.columns:
-        return events["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
+    # (0) Canonical special-case: base anchor
+    if trigger_id in ("trigger", "trigger_time_s"):
+        if "trigger_time_s" in events.columns:
+            v = events["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
+            return v
 
-    # (2) Flat column naming
-    flat = f"{trigger_id}_time_s"
-    if flat in events.columns:
-        return events[flat].to_numpy(dtype=np.float64, copy=False)
+    # (1) Preferred: column "<trigger_id>_time_s"
+    col = f"{trigger_id}_time_s"
+    if col in events.columns:
+        v = events[col].to_numpy(dtype=np.float64, copy=False)
+        if strict:
+            bad = int(np.sum(~np.isfinite(v)))
+            if bad:
+                raise ValueError(f"Missing trigger '{trigger_id}' time_s for {bad}/{n} events ({col})")
+        return v
+
+    # (2) Common legacy: if trigger_id is the primary start trigger, fall back to trigger_time_s
+    if trigger_id.endswith("_start") and "trigger_time_s" in events.columns:
+        v = events["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
+        if strict:
+            bad = int(np.sum(~np.isfinite(v)))
+            if bad:
+                raise ValueError(f"Missing trigger '{trigger_id}' time_s for {bad}/{n} events (trigger_time_s)")
+        return v
 
     # (3) meta.triggers bag
     if "meta" in events.columns:

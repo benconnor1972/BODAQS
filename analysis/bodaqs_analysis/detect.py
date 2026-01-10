@@ -130,139 +130,72 @@ def _resolve_search_window(trig: dict, t: np.ndarray, base_t0_sec: float | None)
 def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = None) -> dict:
 
     """
-
     Resolve schema signal roles (disp/vel/acc/disp_zeroed/disp_norm/...) to concrete df column names.
-
-
-
     Registry-first:
-
       - Prefer session["meta"]["signals"] if present (canonical, domain-aware).
-
     Fallback:
-
       - If schema provides naming.suffixes, use suffix concatenation (legacy support).
-
-
-
     Returns:
-
       inputs_map: { role -> column_name }
-
     """
 
     out: dict[str, str] = {}
-
-
-
     # ---------------- Registry-first resolution ----------------
-
     signals = None
-
     if isinstance(meta, dict):
-
         signals = meta.get("signals")
-
     if isinstance(signals, dict) and signals:
-
         # Build quick lookup by base (sensor name) and by derived base names.
-
         # In your naming contract, base is embedded in column names; we match by parsing names.
-
         try:
-
             from .signalname import parse_signal_name  # adjust import path if needed
-
         except Exception:
-
             parse_signal_name = None  # fallback below
 
-
-
         # Helper: find a column in registry matching predicate
-
         def _find_col(pred):
-
             for col, info in signals.items():
-
                 if pred(col, info):
-
                     return col
-
             return None
 
-
-
         # Helper: identify whether registry entry corresponds to a sensor base
-
         # Prefer parse_signal_name if available; else basic prefix matching.
-
         def _is_base_match(col: str, base: str) -> bool:
-
             if parse_signal_name:
-
                 try:
-
                     parts = parse_signal_name(col)
-
                     return parts.base == base
-
                 except Exception:
-
                     return False
 
             # crude fallback (should rarely be used)
-
             return col.startswith(base)
 
-
-
         # Engineered displacement for this sensor (domain may be injected)
-
         disp_col = _find_col(lambda c, info: _is_base_match(c, sensor) and info.get("kind", "") == "" and info.get("unit") == "mm")
-
         if disp_col:
-
             out["disp"] = disp_col
 
-
-
         # Velocity & acceleration are derived bases in your implementation: <sensor>_vel / <sensor>_acc
-
         vel_col = _find_col(lambda c, info: _is_base_match(c, f"{sensor}_vel") and info.get("kind", "") == "" and info.get("unit") == "mm/s")
 
         if vel_col:
-
             out["vel"] = vel_col
 
-
-
         acc_col = _find_col(lambda c, info: _is_base_match(c, f"{sensor}_acc") and info.get("kind", "") == "" and info.get("unit") == "mm/s^2")
-
         if acc_col:
-
             out["acc"] = acc_col
 
-
-
         # Normalised displacement: <sensor>_norm [1]
-
         norm_col = _find_col(lambda c, info: _is_base_match(c, f"{sensor}_norm") and info.get("kind", "") == "" and info.get("unit") == "1")
-
         if norm_col:
-
             out["disp_norm"] = norm_col
 
-
-
         # Zeroed displacement: op token "zeroed" applied to disp_col
-
         # Name convention: "<disp_col>_op_zeroed"
-
         if disp_col:
-
             zeroed_col = f"{disp_col}_op_zeroed"
-
             # only include if it exists in registry keys
 
             if zeroed_col in signals:
@@ -1439,8 +1372,32 @@ def detect_events_from_schema(
 
                 trig_results[st_id] = chosen
                 sec_outputs[st_id] = chosen
+                
+                #debug
+                if schema_id == "rebounds":
+                    print("DEBUG sec_outputs keys:", list(sec_outputs.keys()))
+                    if "rebound_end" in sec_outputs:
+                        print("DEBUG rebound_end chosen:", sec_outputs["rebound_end"].get("t0_time"), sec_outputs["rebound_end"].get("t0_index"))
+                #debug
 
+            # ---- Persist trigger timings into row columns (Option A) ----
+            trigger_cols: dict[str, Any] = {}
 
+            def _put_trigger(tid: str, c: dict) -> None:
+                # Candidate dict contract: contains t0_time (sec) and t0_index (int)
+                t = c.get("t0_time", np.nan)
+                i = c.get("t0_index", -1)
+                trigger_cols[f"{tid}_time_s"] = float(t) if np.isfinite(t) else np.nan
+                trigger_cols[f"{tid}_idx"]    = int(i) if i is not None else -1
+
+            # Primary trigger (write under schema trigger id)
+            primary_c = trig_results.get(primary_id)
+            if primary_c:
+                _put_trigger(primary_id, primary_c)
+
+            # Secondaries
+            for tid, c in sec_outputs.items():
+                _put_trigger(tid, c)
 
             # ---- METRICS ----
             m = _compute_metrics(
@@ -1507,6 +1464,9 @@ def detect_events_from_schema(
                     "trigger_strength": c.get("trigger_strength"),
                     "trigger_value": c.get("trigger_value"),
                 },
+                
+                # ---- NEW: Trigger-id columns (primary + secondaries) ----
+                **trigger_cols,
             }
 
             # Optional: include segmentation if present
@@ -1535,13 +1495,27 @@ def detect_events_from_schema(
 
             row.update(m)
             rows.append(row)
-
+            
+            #debug
+            if schema_id == "rebounds":
+                print("DEBUG row keys (trigger cols):",
+                      [k for k in row.keys() if k.endswith("_time_s") or k.endswith("_idx")][:20])
+                print("DEBUG rebound_end_time_s:", row.get("rebound_end_time_s"))
+            #debug  
+            
         print(f"[DEBUG] {ev_id}({sensor}): passed conditions={kept}")
 
 
     EVENTS_DF = pd.DataFrame(rows)
+    #debug
+    print("rebound_end_time_s in events_df:", "rebound_end_time_s" in EVENTS_DF.columns)
+    if "rebound_end_time_s" in EVENTS_DF.columns:
+        print(EVENTS_DF["rebound_end_time_s"].describe())
+    #debug
+
     if not EVENTS_DF.empty:
         EVENTS_DF = EVENTS_DF.sort_values(["schema_id","trigger_idx"]).reset_index(drop=True)
+
 
     globals()["EVENTS_DF"] = EVENTS_DF
     print(f"[Detect] Built EVENTS_DF with {len(EVENTS_DF)} rows "
