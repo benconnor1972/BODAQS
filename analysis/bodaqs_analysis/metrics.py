@@ -38,21 +38,32 @@ def extract_metrics_df(
 ) -> pd.DataFrame:
     """Return a wide metrics dataframe from an events_df.
 
-    - Metric columns are those prefixed with 'm_'.
-    - By default, keeps the Metrics identity bundle if present.
-    - Contract-aligned: does NOT add or require start/end window columns.
-
-    This is a *projection* helper. It does not compute metrics.
+    - Metric columns are those prefixed with 'm_' (and 'd_' if present).
+    - Preserves event identity columns if present.
+    - Contract-aligned projection only (no inference, no synthesis).
     """
     if events_df is None or len(events_df) == 0:
         return pd.DataFrame()
 
-    metric_cols = [c for c in events_df.columns if isinstance(c, str) and c.startswith("m_")]
+    if "event_id" not in events_df.columns:
+        raise ValueError("events_df missing required column 'event_id'")
+
+    # Metric + debug columns
+    metric_cols = [
+        c for c in events_df.columns
+        if isinstance(c, str) and (c.startswith("m_") or c.startswith("d_"))
+    ]
+
+    # Explicit forbidden columns (contract)
+    forbidden = {"start_idx", "end_idx", "start_time_s", "end_time_s"}
 
     if id_cols is None:
-        # Preferred identity bundle (Event Table Contract v0.1.2+)
-        preferred = (
+        # All identity-like columns we are willing to preserve
+        identity_candidates = (
+            # Required join key
             "event_id",
+
+            # Contract identity bundle
             "schema_id",
             "schema_version",
             "event_name",
@@ -62,10 +73,8 @@ def extract_metrics_df(
             "trigger_time_s",
             "trigger_datetime",
             "tags",
-        )
 
-        # Legacy-ish (older notebooks / transitions)
-        legacy = (
+            # Legacy identity
             "event_type",
             "sensor",
             "t0_time",
@@ -74,14 +83,17 @@ def extract_metrics_df(
             "end_index",
         )
 
-        looks_contract = all(
-            c in events_df.columns
-            for c in ("event_id", "schema_id", "schema_version", "event_name", "signal", "trigger_time_s", "signal_col")
-        )
-        id_cols = preferred if looks_contract else legacy
+        id_cols = [
+            c for c in identity_candidates
+            if c in events_df.columns and c not in forbidden
+        ]
+    else:
+        id_cols = [c for c in id_cols if c in events_df.columns and c not in forbidden]
 
-    keep = [c for c in id_cols if c in events_df.columns]
-    return events_df[keep + metric_cols].copy()
+    keep = list(dict.fromkeys(id_cols + metric_cols))  # preserve order, de-dupe
+
+    return events_df.loc[:, keep].copy()
+
 
 
 # -------------------------

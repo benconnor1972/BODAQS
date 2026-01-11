@@ -21,6 +21,9 @@ from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequen
 
 import numpy as np
 import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # -------------------------
@@ -151,13 +154,38 @@ def extract_segments(
     events_sel = _filter_events(events, req)
     
     #debug
-    print("events total:", len(events))
-    print("events schema_id counts:\n", events["schema_id"].value_counts())
-    print("request:", req)
+    logger.debug("---- segment selection ----")
+    logger.debug(
+        "events total: %d",
+        len(events),
+    )
+
+    logger.debug(
+        "events schema_id counts:\n%s",
+        events["schema_id"].value_counts().to_string(),
+    )
+
+    logger.debug(
+        "request: %s",
+        req,
+    )
+
     events_sel = _filter_events(events, req)
-    print("events selected:", len(events_sel))
-    print("selected schema_id unique:", sorted(events_sel["schema_id"].dropna().unique().tolist()))
-    print("selected event_name unique:", sorted(events_sel["event_name"].dropna().unique().tolist())[:5])
+
+    logger.debug(
+        "events selected: %d",
+        len(events_sel),
+    )
+
+    logger.debug(
+        "selected schema_id unique: %s",
+        sorted(events_sel["schema_id"].dropna().unique().tolist()),
+    )
+
+    logger.debug(
+        "selected event_name unique (first 5): %s",
+        sorted(events_sel["event_name"].dropna().unique().tolist())[:5],
+    )
     #debug
 
 
@@ -165,10 +193,27 @@ def extract_segments(
     resolved = _resolve_effective_spec(schema, events_sel, req)
 
     #debug
-    print("resolved anchor:", resolved["anchor"])
-    print("resolved window:", resolved["window"])
-    print("resolved grid:", resolved["grid"])
-    print("resolved roles:", [r.role for r in resolved["roles"]])
+    logger.debug("---- resolved spec ----")
+    logger.debug(
+        "resolved anchor: %s",
+        resolved["anchor"],
+    )
+
+    logger.debug(
+        "resolved window: %s",
+        resolved["window"],
+    )
+
+    logger.debug(
+        "resolved grid: %s",
+        resolved["grid"],
+    )
+
+    logger.debug(
+        "resolved roles: %s",
+        [r.role for r in resolved["roles"]],
+    )
+
     #debug
 
     # Resolve roles -> df columns (registry aware)
@@ -292,11 +337,6 @@ def _resolve_effective_spec(
                     f"extract_segments v0 expects one event_name at a time; got {names}. "
                     "Filter with SegmentRequest(event_name=...)."
                 )
-
-        #debug
-        print("event_key:", event_key)
-        print("schema keys:", list(schema.keys()))
-        #debug
 
         seg_def = _schema_segment_defaults(schema, event_key)
         if seg_def is not None:

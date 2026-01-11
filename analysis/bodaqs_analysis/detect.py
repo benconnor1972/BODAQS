@@ -6,6 +6,10 @@ from .metrics import extract_metrics_df  # contract: metrics live in metrics.py
 import math
 import numpy as np
 import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # Optional SciPy peak finding
 try:
@@ -197,55 +201,29 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
         if disp_col:
             zeroed_col = f"{disp_col}_op_zeroed"
             # only include if it exists in registry keys
-
             if zeroed_col in signals:
-
                 out["disp_zeroed"] = zeroed_col
-
             else:
-
                 # Some implementations may store op_chain in registry; try to find it that way.
-
                 z2 = _find_col(lambda c, info: _is_base_match(c, sensor) and info.get("unit") == "mm"
-
                                              and "zeroed" in (info.get("op_chain") or []))
-
                 if z2:
-
                     out["disp_zeroed"] = z2
 
-
-
         # Raw counts: kind="raw" and unit="counts"
-
         raw_col = _find_col(lambda c, info: _is_base_match(c, sensor) and info.get("kind") == "raw" and info.get("unit") == "counts")
-
         if raw_col:
-
             out["raw"] = raw_col
-
-
-
         # If registry provided anything, we're done (roles not found will be validated elsewhere)
-
         if out:
-
             return out
 
-
-
     # ---------------- Legacy suffix-only fallback ----------------
-
     naming = schema.get("naming", {}) or {}
-
     suffixes = (naming.get("suffixes") or {})
-
     for role, suf in suffixes.items():
-
         if sensor:
-
             out[role] = f"{sensor}{suf}"
-
     return out
 
 
@@ -1120,7 +1098,10 @@ def detect_events_from_schema(
 
     dt = _robust_dt(df, meta)
     if not np.isfinite(dt) or dt <= 0:
-        print("[Detect] Warning: invalid dt; skipping time-based distances/edge windows; using prominence-only.")
+        logger.warning(
+            "Invalid dt; skipping time-based distances/edge windows; using prominence-only."
+        )
+
 
     defaults = schema.get("defaults", {}) or {}
     def_window = defaults.get("window", {}) or {}
@@ -1162,7 +1143,10 @@ def detect_events_from_schema(
         ev_id  = ev.get("id")
         if "SKIP_EVENTS" in globals():
             if ev_id in globals()["SKIP_EVENTS"]:
-                print(f"[Skip] Event '{ev_id}' skipped per SKIP_EVENTS.")
+                logger.debug(
+                    "Event %r skipped per SKIP_EVENTS.",
+                    ev_id,
+                )
                 continue
 
         sensor = ev.get("sensor")
@@ -1191,13 +1175,32 @@ def detect_events_from_schema(
         if sig and col and col in df.columns:
             arr = df[col].to_numpy()
             if not np.isfinite(arr).any():
-                print(f"[DEBUG] {ev_id}({sensor}): trigger series '{col}' is all non-finite")
+                logger.warn(
+                    "%s(%s): trigger series %r is all non-finite",
+                    ev_id,
+                    sensor,
+                    col,
+                )
             else:
                 vmin, vmax = float(np.nanmin(arr)), float(np.nanmax(arr))
                 if np.allclose(vmin, vmax):
-                    print(f"[DEBUG] {ev_id}({sensor}): trigger '{col}' is flat (min=max={vmin:.3g})")
+                    logger.warn(
+                        "%s(%s): trigger %r is flat (min=max=%g)",
+                        ev_id,
+                        sensor,
+                        col,
+                        vmin,
+                    )
+
         elif sig:
-            print(f"[DEBUG] {ev_id}({sensor}): missing trigger series for signal='{sig}' → inputs[{sig!r}]={col!r}")
+            logger.warn(
+                "%s(%s): missing trigger series for signal=%r → inputs[%r]=%r",
+                ev_id,
+                sensor,
+                sig,
+                sig,
+                col,
+            )
 
         # ---- Validate against the resolved inputs map ----
         _validate_event_series_with_map(ev, df, inputs_map)
@@ -1220,10 +1223,17 @@ def detect_events_from_schema(
             cands = _trigger_phased_threshold_crossing(df, dt, ev_resolved, base_t0_sec=None)
             prefer_key_default = "t0_index"
         elif ttype == "custom":
-            print(f"[WARN] Custom trigger not implemented for '{ev_id}'. Skipping.")
+            logger.warning(
+                "Custom trigger not implemented for %r. Skipping.",
+                ev_id,
+            )
             cands, prefer_key_default = [], "t0_index"
         else:
-            print(f"[WARN] Unknown trigger type '{ttype}' for '{ev_id}'. Skipping.")
+            logger.warning(
+                "Unknown trigger type %r for %r. Skipping.",
+                ttype,
+                ev_id,
+            )
             cands, prefer_key_default = [], "t0_index"
 
         # Effective prefer_key / prefer_abs / prefer_max for PRIMARY debouncing
@@ -1242,8 +1252,12 @@ def detect_events_from_schema(
         else:
             effective_prefer_max = True  # default: pick max score
 
-        print(f"[DEBUG] {ev_id}({sensor}): raw candidates={len(cands)}")
-
+        logger.debug(
+            "%s(%s): raw candidates=%d",
+            ev_id,
+            sensor,
+            len(cands),
+        )
 
 
         # ---- Debounce (once) for primary trigger ----
@@ -1256,9 +1270,17 @@ def detect_events_from_schema(
             prefer_abs=effective_prefer_abs,
             prefer_max=effective_prefer_max,
         )
-        print(f"[DEBUG] {ev_id}({sensor}): after debounce={len(cands)} "
-              f"(gap={debounce_s}s, prefer_key={effective_prefer_key}, "
-              f"prefer_abs={effective_prefer_abs})")
+        logger.debug(
+            "%s(%s): after debounce=%d "
+            "(gap=%ss, prefer_key=%r, prefer_abs=%s)",
+            ev_id,
+            sensor,
+            len(cands),
+            debounce_s,
+            effective_prefer_key,
+            effective_prefer_abs,
+        )
+
         
         # ---- Window / conditions / metrics ----
         window = ev.get("window", {}) or {}
@@ -1340,7 +1362,11 @@ def detect_events_from_schema(
                 elif st_type == "phased_threshold_crossing":
                     st_cands = _trigger_phased_threshold_crossing(df, dt, st_ev, base_t0_sec=base_t0_sec)
                 else:
-                    print(f"[WARN] Secondary trigger type '{st_type}' not implemented for '{ev_id}'.")
+                    logger.warning(
+                        "Secondary trigger type %r not implemented for %r.",
+                        st_type,
+                        ev_id,
+                    )
                     st_cands = []
 
                 if not st_cands:
@@ -1509,11 +1535,21 @@ def detect_events_from_schema(
 
 
     globals()["EVENTS_DF"] = EVENTS_DF
-    print(f"[Detect] Built EVENTS_DF with {len(EVENTS_DF)} rows "
-          f"from {len(raw_events)} schema event(s) "
-          f"→ {len(events)} sensor-expanded event(s).")
+    logger.info(
+        "Built EVENTS_DF with %d rows from %d schema event(s) → %d sensor-expanded event(s)",
+        len(EVENTS_DF),
+        len(raw_events),
+        len(events),
+    )
     if not EVENTS_DF.empty:
-        print(EVENTS_DF[["event_id","schema_id","trigger_time_s","start_idx","end_idx"]].head(50).to_string(index=False))
+        logger.debug(
+            "EVENTS_DF preview:\n%s",
+            EVENTS_DF[
+                ["event_id", "schema_id", "trigger_time_s", "start_idx", "end_idx"]
+            ]
+            .head(5)
+            .to_string(index=False),
+        )
     validate_events_df(EVENTS_DF, df=df)
     return EVENTS_DF
 

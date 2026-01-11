@@ -304,26 +304,40 @@ def validate_events_df(events_df: pd.DataFrame, *, df: Optional[pd.DataFrame] = 
         if not ((events_df["start_idx"] >= 0) & (events_df["end_idx"] < n)).all():
             raise ValueError("events_df index bounds violated (start/end outside df length)")
 
+
+
 def validate_metrics_df(
     metrics_df: pd.DataFrame,
     *,
     events_df: Optional[pd.DataFrame] = None,
     strict: bool = True,
+    require_metric_cols_in_strict: bool = False,
 ) -> None:
     """
-    Validate metrics_df against the Metrics Table Contract (v0.1.2).
+    Validate metrics_df against the Metrics Table Contract (v0).
 
-    Contract essentials:
+    Contract essentials (see BODAQS_Metrics_Table_Contract_v0.md):
       - metrics_df has 'event_id' and it is unique
       - metrics_df contains only:
           * identity columns (optional)
           * metric columns prefixed 'm_'
-          * debug columns prefixed 'd_'
-      - metrics_df must NOT contain window / trigger columns
+      - metrics_df must NOT contain window columns (start/end idx/time)
       - if events_df provided:
           * events_df.event_id must be unique
           * every metrics_df.event_id exists in events_df
-          * identity columns must match (strict mode only)
+          * identity columns (if present) match events_df values exactly (strict mode only)
+
+    Extension:
+      - debug/diagnostic columns prefixed 'd_' are allowed.
+
+    Parameters
+    ----------
+    strict:
+        Enables identity match checking vs events_df (if provided).
+
+    require_metric_cols_in_strict:
+        Optional policy check: if True and strict=True, require at least one 'm_' column.
+        Note: the v0 contract allows missing metric columns; this is just a stronger sanity check.
     """
     if metrics_df is None:
         raise ValueError("metrics_df is None")
@@ -347,15 +361,13 @@ def validate_metrics_df(
     cols = set(metrics_df.columns)
 
     # ------------------------------------------------------------------
-    # Hard-forbidden columns (window / trigger semantics)
+    # Hard-forbidden columns (excluded by Metrics Table Contract v0)
     # ------------------------------------------------------------------
     forbidden_exact = {
-        "start_idx", "end_idx", "trigger_idx",
-        "start_time_s", "end_time_s"
-    } #later to include trigger_time_s
-    # NOTE: trigger_time_s is allowed for now to support existing metrics projection.
-# Future contract may remove it in favor of trigger_datetime only.
-
+        "start_idx", "end_idx", "start_time_s", "end_time_s",
+        # additional: trigger indices should never leak into metrics_df
+        "trigger_idx",
+    }
     leaked = forbidden_exact & cols
     if leaked:
         raise ValueError(
@@ -366,17 +378,32 @@ def validate_metrics_df(
     # ------------------------------------------------------------------
     # Allowed column classes
     # ------------------------------------------------------------------
+    # Required + recommended identity (contract)
     allowed_identity = {
         "event_id",
         "schema_id",
         "schema_version",
         "event_name",
         "signal",
-        "signal_col",
         "segment_id",
-        "trigger_datetime",
         "trigger_time_s",
+    }
+
+    # Optional identity / annotation (per your pipeline + projection helper)
+    allowed_identity |= {
+        "signal_col",
+        "trigger_datetime",
         "tags",
+    }
+
+    # Legacy projection compatibility (allowed but not required)
+    allowed_identity |= {
+        "event_type",
+        "sensor",
+        "t0_time",
+        "t0_index",
+        "start_index",
+        "end_index",
     }
 
     unknown = []
@@ -388,15 +415,17 @@ def validate_metrics_df(
         unknown.append(c)
 
     if unknown:
+        unknown_sorted = sorted(unknown)
         raise ValueError(
-            "metrics_df has columns not allowed by contract: "
-            + ", ".join(sorted(unknown[:20]))
+            "metrics_df has columns not allowed by contract (must be identity, m_*, or d_*): "
+            + ", ".join(unknown_sorted[:20])
+            + ("" if len(unknown_sorted) <= 20 else f" … (+{len(unknown_sorted) - 20} more)")
         )
 
     # ------------------------------------------------------------------
-    # Metric presence (strict)
+    # Optional policy: require at least one metric column
     # ------------------------------------------------------------------
-    if strict:
+    if strict and require_metric_cols_in_strict:
         metric_cols = [c for c in cols if isinstance(c, str) and c.startswith("m_")]
         if not metric_cols:
             raise ValueError("metrics_df has no 'm_' metric columns")
@@ -404,47 +433,70 @@ def validate_metrics_df(
     # ------------------------------------------------------------------
     # Cross-check vs events_df (if provided)
     # ------------------------------------------------------------------
-    if events_df is not None and len(events_df) > 0:
-        if "event_id" not in events_df.columns:
-            raise ValueError("events_df missing required column for join: event_id")
+    if events_df is None or len(events_df) == 0:
+        return
 
-        # events_df must be 1:1 on event_id
-        e_counts = events_df["event_id"].value_counts()
-        non_unique = e_counts[e_counts != 1]
-        if not non_unique.empty:
+    if "event_id" not in events_df.columns:
+        raise ValueError("events_df missing required column for join: event_id")
+
+    # events_df must be 1:1 on event_id
+    e_counts = events_df["event_id"].value_counts()
+    non_unique = e_counts[e_counts != 1]
+    if not non_unique.empty:
+        raise ValueError(
+            "events_df has non-unique event_id(s); cannot enforce 1:1 join. Examples: "
+            + ", ".join([f"{k}={int(v)}" for k, v in non_unique.head(10).items()])
+        )
+
+    # All metrics_df.event_id must exist in events_df
+    missing = set(metrics_df["event_id"]) - set(events_df["event_id"])
+    if missing:
+        raise ValueError(
+            f"metrics_df references missing event_id(s): {sorted(list(missing))[:20]}"
+        )
+
+    # ------------------------------------------------------------------
+    # Identity consistency checks (strict mode only)
+    # ------------------------------------------------------------------
+    if not strict:
+        return
+
+    # Note: trigger_datetime is allowed but intentionally not identity-checked.
+    check_cols = (
+        "schema_id",
+        "schema_version",
+        "event_name",
+        "signal",
+        "signal_col",
+        "segment_id",
+        "trigger_time_s",
+        # legacy identity columns (if present on both sides)
+        "event_type",
+        "sensor",
+        "t0_time",
+        "t0_index",
+        "start_index",
+        "end_index",
+    )
+
+    for col in check_cols:
+        if col not in metrics_df.columns or col not in events_df.columns:
+            continue
+
+        merged = metrics_df[["event_id", col]].merge(
+            events_df[["event_id", col]],
+            on="event_id",
+            how="left",
+            suffixes=("_m", "_e"),
+        )
+
+        a = merged[f"{col}_m"]
+        b = merged[f"{col}_e"]
+
+        # NaN-safe equality: treat NaN==NaN as equal
+        mism_mask = ~(a.eq(b) | (a.isna() & b.isna()))
+        if mism_mask.any():
             raise ValueError(
-                "events_df has non-unique event_id(s); cannot enforce 1:1 join. Examples: "
-                + ", ".join([f"{k}={int(v)}" for k, v in non_unique.head(10).items()])
+                f"metrics_df identity column '{col}' does not match events_df for some rows"
             )
 
-        # All metrics_df.event_id must exist in events_df
-        missing = set(metrics_df["event_id"]) - set(events_df["event_id"])
-        if missing:
-            raise ValueError(
-                f"metrics_df references missing event_id(s): {sorted(list(missing))[:20]}"
-            )
-
-        # ------------------------------------------------------------------
-        # Identity consistency checks (strict mode only)
-        # ------------------------------------------------------------------
-        if strict:
-            for col in (
-                "schema_id",
-                "schema_version",
-                "event_name",
-                "signal",
-                "signal_col",
-                "segment_id",
-            ):
-                if col in metrics_df.columns and col in events_df.columns:
-                    merged = metrics_df[["event_id", col]].merge(
-                        events_df[["event_id", col]],
-                        on="event_id",
-                        how="left",
-                        suffixes=("_m", "_e"),
-                    )
-                    mism = merged[merged[f"{col}_m"] != merged[f"{col}_e"]]
-                    if len(mism) > 0:
-                        raise ValueError(
-                            f"metrics_df identity column '{col}' does not match events_df for some rows"
-                        )
