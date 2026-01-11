@@ -2,19 +2,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 import pandas as pd
+import numpy as np
+import logging
 
 from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
 from .va import estimate_va
 from .schema import load_event_schema
 from .detect import detect_events_from_schema
-from .metrics import extract_metrics_df
+from .metrics import extract_metrics_df, compute_metrics_from_segments
 from .model import validate_metrics_df
 from .model import validate_session
 from .timebase import register_stream_timebase
 from .signal_standardize import standardize_signals
+from .segment import extract_segments, SegmentRequest
 
-
+logger = logging.getLogger(__name__)
 
 def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
     """Load a CSV into a v0 Session dict (df_raw + initial qc/meta)."""
@@ -185,35 +188,133 @@ def preprocess_session(session: Dict[str, Any],
         strict_registry_parse=True,  # Step 3 normaliser exists, so tighten
         derive_va=False,             # you already compute VA above
     )
-
-    
     return session
-
-
 
 def run_macro(csv_path: str,
               schema_path: str,
               *,
               normalize_ranges: Dict[str, float],
               sample_rate_hz: Optional[float] = None,
-              timezone: Optional[str] = None) -> Dict[str, Any]:
-    """Convenience macro pipeline: load -> preprocess -> detect -> metrics."""
-    session = load_session(csv_path, timezone=timezone)
-    session = preprocess_session(session, normalize_ranges=normalize_ranges, sample_rate_hz=sample_rate_hz)
+              timezone: Optional[str] = None) -> Dict[str, Any]:
+    """Convenience macro pipeline: load -> preprocess -> detect -> segment -> metrics."""
+    session = load_session(csv_path, timezone=timezone)    logger.info("Session load complete: %s", csv_path)
 
-    assert "df" in session, "preprocess_session() must set session['df']"
-    assert isinstance(session["df"], pd.DataFrame), "session['df'] must be a DataFrame"
-    assert "time_s" in session["df"].columns, "session['df'] must contain 'time_s'"
+    session = preprocess_session(
+        session,
+        normalize_ranges=normalize_ranges,
+        sample_rate_hz=sample_rate_hz,
+    )    logger.info("Session pre-process complete")
+
+
+    # debug
+    t = session["df"]["time_s"].to_numpy()
+    logger.debug("time_s start/end: %s .. %s", t[0], t[-1])
+    logger.debug("dt median/min/max: %s / %s / %s", float(np.median(np.diff(t))), float(np.min(np.diff(t))), float(np.max(np.diff(t))))
+
+
+    # debug: inspect signal registry shape
+    sig = session.get("meta", {}).get("signals", {})
+    logger.debug("signals entries: %d", len(sig))
+
+    # show a few entries
+    for col, info in list(sig.items())[:10]:
+        logger.debug("%s -> %s", col, info)
+
+    # show kind/unit distribution
+    kinds = {}
+    units = {}
+    for info in sig.values():
+        if isinstance(info, dict):
+            kinds[info.get("kind")] = kinds.get(info.get("kind"), 0) + 1
+            units[info.get("unit")] = units.get(info.get("unit"), 0) + 1
+    logger.debug("kind counts: ", kinds)
+    logger.debug("unit counts: ", units)
+
+    #debug
+    assert "df" in session
+    assert "time_s" in session["df"].columns
+    assert "signals" in session.get("meta", {})
 
     schema = load_event_schema(schema_path)
-    events_df = detect_events_from_schema(session["df"], schema)
+    schema = load_event_schema(schema_path)
+    
+    logger.info("Schema load complete")
 
-    metrics_df = extract_metrics_df(events_df)
-    # Contract validation (always on for v0)
+    
+    events_df = detect_events_from_schema(
+        session["df"],
+        schema,
+        meta=session["meta"],
+    )
+    #debug
+    logger.info("Event detection complete")
+    logger.info("events rows: %d", len(events_df))
+    logger.debug("event_name unique: %s", sorted(events_df["event_name"].dropna().unique().tolist()))
+    logger.debug("schema_id unique %s:", sorted(events_df["schema_id"].dropna().unique().tolist()))
+    #debug
+
+    # Segment extraction (one schema event per call in v0)
+    schema_event_ids = [e["id"] for e in schema["events"]]
+    logger.info("Running segment extraction for schema events: %s", schema_event_ids)
+
+    bundles_by_schema_id: dict[str, dict] = {}
+    metrics_parts: list[pd.DataFrame] = []
+
+    for sid in schema_event_ids:
+        bundle = extract_segments(
+            df=session["df"],
+            events=events_df,
+            meta=session["meta"],
+            schema=schema,
+            request=SegmentRequest(schema_id=sid),
+        )
+        bundles_by_schema_id[sid] = bundle
+        logger.info("Segment extraction complete (schema_id=%s)", sid)
+
+        seg = bundle["segments"]
+        valid_n = int(seg["valid"].sum()) if "valid" in seg.columns else 0
+        total_n = len(seg)
+        logger.info("segments valid (schema_id=%s): %d/%d", sid, valid_n, total_n)
+
+        # debug
+        logger.debug("segments head(3) (schema_id=%s):\n%s", sid, seg.head(3).to_string(index=False))
+
+        if "reason" in seg.columns:
+            logger.debug(
+                "segments.reason value_counts head(10) (schema_id=%s):\n%s",
+                sid,
+                seg["reason"].value_counts().head(10).to_string(),
+            )
+
+        t = bundle.get("data", {}).get("t_rel_s", None)
+        if isinstance(t, np.ndarray):
+            logger.debug("t_rel_s shape=%s dtype=%s (schema_id=%s)", t.shape, t.dtype, sid)
+            logger.debug("t_rel_s first10 (schema_id=%s): %s", sid, t.ravel()[:10])
+        else:
+            logger.debug("t_rel_s not ndarray (schema_id=%s): type=%s value=%r", sid, type(t), t)
+        # debug
+
+        # Metrics from SegmentBundle (per schema event)
+        metrics_i = compute_metrics_from_segments(bundle, schema=schema)
+        logger.info("Metrics calculation complete (schema_id=%s)", sid)
+
+        # Ensure schema_id is present for grouping/faceting downstream
+        if "schema_id" not in metrics_i.columns:
+            metrics_i = metrics_i.copy()
+            metrics_i["schema_id"] = sid
+
+        metrics_parts.append(metrics_i)
+
+    metrics_df = pd.concat(metrics_parts, ignore_index=True) if metrics_parts else pd.DataFrame()
+
     validate_metrics_df(metrics_df, events_df=events_df)
+    logger.info("Metrics validation complete")
+
     return {
         "session": session,
         "schema": schema,
         "events": events_df,
+        "segments": bundles_by_schema_id,
         "metrics": metrics_df,
     }
+

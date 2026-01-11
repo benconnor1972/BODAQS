@@ -1,5 +1,5 @@
 import pandas as pd
-
+import numpy as np
 from bodaqs_analysis import extract_metrics_df
 
 
@@ -35,7 +35,7 @@ def test_extract_metrics_df_contract():
     assert metrics["m_peak_vel"].iloc[0] == 2.1
 
 
-def test_extract_metrics_df_legacy():
+def test_extract_metrics_df_legacy_projection_only():
     events_legacy = pd.DataFrame({
         "event_id": ["shock_rebound", "shock_rebound"],
         "event_type": ["local_extrema", "local_extrema"],
@@ -57,6 +57,50 @@ def test_extract_metrics_df_legacy():
     assert required.issubset(metrics.columns), f"Missing: {required - set(metrics.columns)}"
     assert len(metrics) == 2
     assert metrics["m_peak_vel"].iloc[1] == 2.4
+
+def test_extract_metrics_df_excludes_secondary_trigger_columns():
+    """Secondary trigger columns belong to events_df only and must not leak."""
+    events = pd.DataFrame({
+        "event_id": ["e0"],
+        "schema_id": ["rebounds"],
+        "schema_version": ["1.0"],
+        "event_name": ["Rebound"],
+        "signal": ["vel"],
+        "trigger_time_s": [1.2],
+        "rebound_start_time_s": [1.1],
+        "rebound_end_time_s": [1.3],
+        "m_peak_vel": [2.1],
+    })
+
+    metrics = extract_metrics_df(events)
+
+    forbidden = {
+        "rebound_start_time_s",
+        "rebound_end_time_s",
+    }
+    assert forbidden.isdisjoint(metrics.columns), (
+        f"Secondary trigger columns leaked into metrics_df: "
+        f"{forbidden & set(metrics.columns)}"
+    )
+
+
+def test_extract_metrics_df_keeps_trigger_datetime_if_present():
+    """Real-time anchoring should survive projection if present."""
+    events = pd.DataFrame({
+        "event_id": ["e0"],
+        "schema_id": ["rebounds"],
+        "schema_version": ["1.0"],
+        "event_name": ["Rebound"],
+        "signal": ["vel"],
+        "trigger_time_s": [1.2],
+        "trigger_datetime": pd.to_datetime(["2025-01-01T00:00:01.200"]),
+        "m_peak_vel": [2.1],
+    })
+
+    metrics = extract_metrics_df(events)
+
+    assert "trigger_datetime" in metrics.columns
+    assert metrics["trigger_datetime"].iloc[0] == pd.Timestamp("2025-01-01T00:00:01.200")
 
 def test_metrics_event_id_refs_exist_exactly_once_contract():
     # Contract-style events_df with unique event_id

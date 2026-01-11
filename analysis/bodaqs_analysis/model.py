@@ -3,7 +3,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypedDict, Union, Sequence
 import pandas as pd
 import numpy as np
+import re
 
+_TRIGGER_TIME_RE = re.compile(r"^[A-Za-z0-9_]+_time_s$")
+_TRIGGER_IDX_RE  = re.compile(r"^[A-Za-z0-9_]+_idx$")
+
+_CANON_TIME = {"start_time_s", "end_time_s", "trigger_time_s"}
+_CANON_IDX  = {"start_idx", "end_idx", "trigger_idx"}
 
 # NOTE: v0 contract uses plain dicts; these TypedDicts are for documentation & editor hints only.
 
@@ -190,7 +196,20 @@ EVENTS_REQUIRED_COLS_V0 = (
     "trigger_time_s",
     "detector_version",
     "params_hash",
+    "signal_col",
 )
+
+import re
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+_TRIGGER_TIME_RE = re.compile(r"^[A-Za-z0-9_]+_time_s$")
+_TRIGGER_IDX_RE  = re.compile(r"^[A-Za-z0-9_]+_idx$")
+
+_CANON_TIME = {"start_time_s", "end_time_s", "trigger_time_s"}
+_CANON_IDX  = {"start_idx", "end_idx", "trigger_idx"}
 
 def validate_events_df(events_df: pd.DataFrame, *, df: Optional[pd.DataFrame] = None) -> None:
     if events_df is None:
@@ -208,7 +227,7 @@ def validate_events_df(events_df: pd.DataFrame, *, df: Optional[pd.DataFrame] = 
     if dup:
         raise ValueError(f"events_df has duplicate event_id(s): {dup[:10]}")
 
-    # type/coercion checks
+    # canonical type/coercion checks
     for c in ("start_idx", "end_idx", "trigger_idx"):
         if not pd.api.types.is_integer_dtype(events_df[c]):
             # allow ints stored as floats if they are whole numbers
@@ -221,7 +240,54 @@ def validate_events_df(events_df: pd.DataFrame, *, df: Optional[pd.DataFrame] = 
         if not np.isfinite(vals.to_numpy()).all():
             raise ValueError(f"events_df column '{c}' must be finite numeric")
 
-    # ordering invariants
+    # optional trigger_datetime support (v0.1.2 draft)
+    if "trigger_datetime" in events_df.columns:
+        s = events_df["trigger_datetime"]
+
+        # Accept datetime64 directly; if object dtype, require coercible values
+        if pd.api.types.is_datetime64_any_dtype(s):
+            pass
+        elif pd.api.types.is_object_dtype(s):
+            coerced = pd.to_datetime(s, errors="coerce")
+            bad_mask = s.notna() & coerced.isna()
+            if bad_mask.any():
+                examples = s[bad_mask].astype(str).head(5).tolist()
+                raise ValueError(
+                    f"events_df.trigger_datetime has non-coercible values (examples): {examples}"
+                )
+        else:
+            raise ValueError(
+                "events_df.trigger_datetime must be datetime64 dtype or object convertible to datetime"
+            )
+
+    # additive per-trigger column validation (v0.1.2 draft)
+    trigger_time_cols = [
+        c for c in events_df.columns
+        if isinstance(c, str) and c not in _CANON_TIME and _TRIGGER_TIME_RE.match(c)
+    ]
+    trigger_idx_cols = [
+        c for c in events_df.columns
+        if isinstance(c, str) and c not in _CANON_IDX and _TRIGGER_IDX_RE.match(c)
+    ]
+
+    # *_idx: integer-like OR NaN
+    for c in trigger_idx_cols:
+        s = events_df[c]
+        if pd.api.types.is_integer_dtype(s):
+            continue
+        vals = pd.to_numeric(s, errors="coerce")
+        nn = vals.dropna()
+        if len(nn) and not (nn % 1 == 0).all():
+            raise ValueError(f"events_df trigger index column '{c}' must be integer-like (or NaN)")
+
+    # *_time_s: finite numeric OR NaN
+    for c in trigger_time_cols:
+        vals = pd.to_numeric(events_df[c], errors="coerce").to_numpy()
+        ok = np.isfinite(vals) | np.isnan(vals)
+        if not ok.all():
+            raise ValueError(f"events_df trigger time column '{c}' must be finite numeric (or NaN)")
+
+    # ordering invariants (canonical)
     if not (events_df["start_idx"] <= events_df["trigger_idx"]).all():
         raise ValueError("events_df invariant violated: start_idx <= trigger_idx")
     if not (events_df["trigger_idx"] <= events_df["end_idx"]).all():
@@ -238,20 +304,40 @@ def validate_events_df(events_df: pd.DataFrame, *, df: Optional[pd.DataFrame] = 
         if not ((events_df["start_idx"] >= 0) & (events_df["end_idx"] < n)).all():
             raise ValueError("events_df index bounds violated (start/end outside df length)")
 
+
+
 def validate_metrics_df(
     metrics_df: pd.DataFrame,
     *,
     events_df: Optional[pd.DataFrame] = None,
-    require_all_metric_cols_prefixed: bool = True,
+    strict: bool = True,
+    require_metric_cols_in_strict: bool = False,
 ) -> None:
     """
-    Validate metrics_df against Metrics Table Contract v0.
+    Validate metrics_df against the Metrics Table Contract (v0).
 
-    Contract essentials:
+    Contract essentials (see BODAQS_Metrics_Table_Contract_v0.md):
       - metrics_df has 'event_id' and it is unique
-      - if events_df provided: every metrics_df.event_id exists exactly once in events_df.event_id
-      - metric columns are prefixed with 'm_'
-      - metrics_df must NOT contain window/index columns (those belong to events_df)
+      - metrics_df contains only:
+          * identity columns (optional)
+          * metric columns prefixed 'm_'
+      - metrics_df must NOT contain window columns (start/end idx/time)
+      - if events_df provided:
+          * events_df.event_id must be unique
+          * every metrics_df.event_id exists in events_df
+          * identity columns (if present) match events_df values exactly (strict mode only)
+
+    Extension:
+      - debug/diagnostic columns prefixed 'd_' are allowed.
+
+    Parameters
+    ----------
+    strict:
+        Enables identity match checking vs events_df (if provided).
+
+    require_metric_cols_in_strict:
+        Optional policy check: if True and strict=True, require at least one 'm_' column.
+        Note: the v0 contract allows missing metric columns; this is just a stronger sanity check.
     """
     if metrics_df is None:
         raise ValueError("metrics_df is None")
@@ -259,73 +345,158 @@ def validate_metrics_df(
     if len(metrics_df) == 0:
         return  # empty allowed
 
+    # ------------------------------------------------------------------
+    # Required join key
+    # ------------------------------------------------------------------
     if "event_id" not in metrics_df.columns:
         raise ValueError("metrics_df missing required column: event_id")
 
-    # event_id uniqueness
+    if metrics_df["event_id"].isna().any():
+        raise ValueError("metrics_df.event_id contains NaN")
+
     dup = metrics_df["event_id"][metrics_df["event_id"].duplicated()].unique().tolist()
     if dup:
         raise ValueError(f"metrics_df has duplicate event_id(s): {dup[:10]}")
 
-    # Must not contain event-window/index columns
-    forbidden = {"start_idx", "end_idx", "start_time_s", "end_time_s"}
-    present_forbidden = sorted(forbidden.intersection(set(metrics_df.columns)))
-    if present_forbidden:
+    cols = set(metrics_df.columns)
+
+    # ------------------------------------------------------------------
+    # Hard-forbidden columns (excluded by Metrics Table Contract v0)
+    # ------------------------------------------------------------------
+    forbidden_exact = {
+        "start_idx", "end_idx", "start_time_s", "end_time_s",
+        # additional: trigger indices should never leak into metrics_df
+        "trigger_idx",
+    }
+    leaked = forbidden_exact & cols
+    if leaked:
         raise ValueError(
-            "metrics_df contains forbidden columns (belong in events_df): "
-            + ", ".join(present_forbidden)
+            "metrics_df contains forbidden window/trigger columns: "
+            + ", ".join(sorted(leaked))
         )
 
-    # Metric columns convention
-    non_id_cols = [c for c in metrics_df.columns if c != "event_id"]
-    if require_all_metric_cols_prefixed:
-        # Allow “identity bundle” columns (recommended by contract)
-        allowed_identity = {
-            "schema_id",
-            "schema_version",
-            "event_name",
-            "signal",
-            "segment_id",
-            "trigger_time_s",
-            "tags",
-        }
-        bad = [
-            c for c in non_id_cols
-            if (c not in allowed_identity) and (not str(c).startswith("m_"))
-        ]
-        if bad:
+    # ------------------------------------------------------------------
+    # Allowed column classes
+    # ------------------------------------------------------------------
+    # Required + recommended identity (contract)
+    allowed_identity = {
+        "event_id",
+        "schema_id",
+        "schema_version",
+        "event_name",
+        "signal",
+        "segment_id",
+        "trigger_time_s",
+    }
+
+    # Optional identity / annotation (per your pipeline + projection helper)
+    allowed_identity |= {
+        "signal_col",
+        "trigger_datetime",
+        "tags",
+    }
+
+    # Legacy projection compatibility (allowed but not required)
+    allowed_identity |= {
+        "event_type",
+        "sensor",
+        "t0_time",
+        "t0_index",
+        "start_index",
+        "end_index",
+    }
+
+    unknown = []
+    for c in cols:
+        if c in allowed_identity:
+            continue
+        if isinstance(c, str) and (c.startswith("m_") or c.startswith("d_")):
+            continue
+        unknown.append(c)
+
+    if unknown:
+        unknown_sorted = sorted(unknown)
+        raise ValueError(
+            "metrics_df has columns not allowed by contract (must be identity, m_*, or d_*): "
+            + ", ".join(unknown_sorted[:20])
+            + ("" if len(unknown_sorted) <= 20 else f" … (+{len(unknown_sorted) - 20} more)")
+        )
+
+    # ------------------------------------------------------------------
+    # Optional policy: require at least one metric column
+    # ------------------------------------------------------------------
+    if strict and require_metric_cols_in_strict:
+        metric_cols = [c for c in cols if isinstance(c, str) and c.startswith("m_")]
+        if not metric_cols:
+            raise ValueError("metrics_df has no 'm_' metric columns")
+
+    # ------------------------------------------------------------------
+    # Cross-check vs events_df (if provided)
+    # ------------------------------------------------------------------
+    if events_df is None or len(events_df) == 0:
+        return
+
+    if "event_id" not in events_df.columns:
+        raise ValueError("events_df missing required column for join: event_id")
+
+    # events_df must be 1:1 on event_id
+    e_counts = events_df["event_id"].value_counts()
+    non_unique = e_counts[e_counts != 1]
+    if not non_unique.empty:
+        raise ValueError(
+            "events_df has non-unique event_id(s); cannot enforce 1:1 join. Examples: "
+            + ", ".join([f"{k}={int(v)}" for k, v in non_unique.head(10).items()])
+        )
+
+    # All metrics_df.event_id must exist in events_df
+    missing = set(metrics_df["event_id"]) - set(events_df["event_id"])
+    if missing:
+        raise ValueError(
+            f"metrics_df references missing event_id(s): {sorted(list(missing))[:20]}"
+        )
+
+    # ------------------------------------------------------------------
+    # Identity consistency checks (strict mode only)
+    # ------------------------------------------------------------------
+    if not strict:
+        return
+
+    # Note: trigger_datetime is allowed but intentionally not identity-checked.
+    check_cols = (
+        "schema_id",
+        "schema_version",
+        "event_name",
+        "signal",
+        "signal_col",
+        "segment_id",
+        "trigger_time_s",
+        # legacy identity columns (if present on both sides)
+        "event_type",
+        "sensor",
+        "t0_time",
+        "t0_index",
+        "start_index",
+        "end_index",
+    )
+
+    for col in check_cols:
+        if col not in metrics_df.columns or col not in events_df.columns:
+            continue
+
+        merged = metrics_df[["event_id", col]].merge(
+            events_df[["event_id", col]],
+            on="event_id",
+            how="left",
+            suffixes=("_m", "_e"),
+        )
+
+        a = merged[f"{col}_m"]
+        b = merged[f"{col}_e"]
+
+        # NaN-safe equality: treat NaN==NaN as equal
+        mism_mask = ~(a.eq(b) | (a.isna() & b.isna()))
+        if mism_mask.any():
             raise ValueError(
-                "metrics_df has non-metric columns not in identity bundle and not prefixed 'm_': "
-                + ", ".join(bad[:20])
+                f"metrics_df identity column '{col}' does not match events_df for some rows"
             )
 
-    # Join guarantees vs events_df (if provided)
-    if events_df is not None and len(events_df) > 0:
-        if "event_id" not in events_df.columns:
-            raise ValueError("events_df missing required column for join: event_id")
-
-        # events_df event_id must be unique for a strict 1:1 join
-        e_counts = events_df["event_id"].value_counts()
-        non_unique = e_counts[e_counts != 1]
-        if not non_unique.empty:
-            raise ValueError(
-                "events_df has non-unique event_id(s); cannot enforce 1:1 join. Examples: "
-                + ", ".join([f"{k}={int(v)}" for k, v in non_unique.head(10).items()])
-            )
-
-        missing = set(metrics_df["event_id"]) - set(events_df["event_id"])
-        if missing:
-            raise ValueError(f"metrics_df references missing event_id(s): {sorted(list(missing))[:20]}")
-
-        # Optional: identity bundle consistency if present in both
-        for col in ("schema_id", "schema_version", "event_name", "signal", "segment_id", "trigger_time_s"):
-            if col in metrics_df.columns and col in events_df.columns:
-                merged = metrics_df[["event_id", col]].merge(
-                    events_df[["event_id", col]],
-                    on="event_id",
-                    how="left",
-                    suffixes=("_m", "_e"),
-                )
-                mism = merged[merged[f"{col}_m"] != merged[f"{col}_e"]]
-                if len(mism) > 0:
-                    raise ValueError(f"metrics_df identity column '{col}' does not match events_df for some rows")
