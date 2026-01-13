@@ -183,6 +183,7 @@ def validate_events(events_df: pd.DataFrame) -> None:
         raise ValueError("events_df has event(s) with t_peak_s outside [t0_s, t1_s]")
 
 EVENTS_REQUIRED_COLS_V0 = (
+    "session_id",          # NEW: unified identity / aggregation key
     "event_id",
     "schema_id",
     "schema_version",
@@ -222,10 +223,20 @@ def validate_events_df(events_df: pd.DataFrame, *, df: Optional[pd.DataFrame] = 
     if missing_cols:
         raise ValueError(f"events_df missing required columns: {missing_cols}")
 
-    # event_id uniqueness
-    dup = events_df["event_id"][events_df["event_id"].duplicated()].unique().tolist()
-    if dup:
-        raise ValueError(f"events_df has duplicate event_id(s): {dup[:10]}")
+    # (session_id, event_id) uniqueness
+    if "session_id" not in events_df.columns:
+        raise ValueError("events_df missing required column: session_id")
+
+    dup_pairs = events_df[["session_id", "event_id"]].duplicated()
+    if dup_pairs.any():
+        examples = (
+            events_df.loc[dup_pairs, ["session_id", "event_id"]]
+            .astype(str)
+            .head(10)
+            .to_dict(orient="records")
+        )
+        raise ValueError(f"events_df has duplicate (session_id, event_id) pairs (examples): {examples}")
+
 
     # canonical type/coercion checks
     for c in ("start_idx", "end_idx", "trigger_idx"):
@@ -346,17 +357,24 @@ def validate_metrics_df(
         return  # empty allowed
 
     # ------------------------------------------------------------------
-    # Required join key
+    # Required join keys (unified rule): session_id + event_id
     # ------------------------------------------------------------------
-    if "event_id" not in metrics_df.columns:
-        raise ValueError("metrics_df missing required column: event_id")
+    for k in ("session_id", "event_id"):
+        if k not in metrics_df.columns:
+            raise ValueError(f"metrics_df missing required column: {k}")
+        if metrics_df[k].isna().any():
+            raise ValueError(f"metrics_df.{k} contains NaN")
 
-    if metrics_df["event_id"].isna().any():
-        raise ValueError("metrics_df.event_id contains NaN")
+    dup_pairs = metrics_df[["session_id", "event_id"]].duplicated()
+    if dup_pairs.any():
+        examples = (
+            metrics_df.loc[dup_pairs, ["session_id", "event_id"]]
+            .astype(str)
+            .head(10)
+            .to_dict(orient="records")
+        )
+        raise ValueError(f"metrics_df has duplicate (session_id, event_id) pairs (examples): {examples}")
 
-    dup = metrics_df["event_id"][metrics_df["event_id"].duplicated()].unique().tolist()
-    if dup:
-        raise ValueError(f"metrics_df has duplicate event_id(s): {dup[:10]}")
 
     cols = set(metrics_df.columns)
 
@@ -380,6 +398,7 @@ def validate_metrics_df(
     # ------------------------------------------------------------------
     # Required + recommended identity (contract)
     allowed_identity = {
+        "session_id",
         "event_id",
         "schema_id",
         "schema_version",
@@ -433,27 +452,28 @@ def validate_metrics_df(
     # ------------------------------------------------------------------
     # Cross-check vs events_df (if provided)
     # ------------------------------------------------------------------
-    if events_df is None or len(events_df) == 0:
-        return
+    for k in ("session_id", "event_id"):
+        if k not in events_df.columns:
+            raise ValueError(f"events_df missing required column for join: {k}")
 
-    if "event_id" not in events_df.columns:
-        raise ValueError("events_df missing required column for join: event_id")
-
-    # events_df must be 1:1 on event_id
-    e_counts = events_df["event_id"].value_counts()
+    # events_df must be 1:1 on (session_id, event_id)
+    e_counts = events_df.groupby(["session_id", "event_id"]).size()
     non_unique = e_counts[e_counts != 1]
     if not non_unique.empty:
+        examples = non_unique.head(10)
+        example_str = ", ".join([f"{sid}:{eid}={int(n)}" for (sid, eid), n in examples.items()])
         raise ValueError(
-            "events_df has non-unique event_id(s); cannot enforce 1:1 join. Examples: "
-            + ", ".join([f"{k}={int(v)}" for k, v in non_unique.head(10).items()])
+            "events_df has non-unique (session_id, event_id) pairs; cannot enforce 1:1 join. Examples: "
+            + example_str
         )
 
-    # All metrics_df.event_id must exist in events_df
-    missing = set(metrics_df["event_id"]) - set(events_df["event_id"])
+    # All metrics_df (session_id, event_id) must exist in events_df
+    m_keys = set(map(tuple, metrics_df[["session_id", "event_id"]].to_numpy()))
+    e_keys = set(map(tuple, events_df[["session_id", "event_id"]].to_numpy()))
+    missing = m_keys - e_keys
     if missing:
-        raise ValueError(
-            f"metrics_df references missing event_id(s): {sorted(list(missing))[:20]}"
-        )
+        examples = [f"{sid}:{eid}" for sid, eid in list(missing)[:20]]
+        raise ValueError(f"metrics_df references missing (session_id, event_id) pairs: {examples}")
 
     # ------------------------------------------------------------------
     # Identity consistency checks (strict mode only)
@@ -483,9 +503,9 @@ def validate_metrics_df(
         if col not in metrics_df.columns or col not in events_df.columns:
             continue
 
-        merged = metrics_df[["event_id", col]].merge(
-            events_df[["event_id", col]],
-            on="event_id",
+        merged = metrics_df[["session_id", "event_id", col]].merge(
+            events_df[["session_id", "event_id", col]],
+            on=["session_id", "event_id"],
             how="left",
             suffixes=("_m", "_e"),
         )

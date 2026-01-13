@@ -12,7 +12,6 @@ from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
 
 
 # Columns that are not "signals" but may be numeric and should be tolerated.
-# Adjust to match your session schema / trigger-grid fields.
 DEFAULT_NON_SIGNAL_COLUMNS: Set[str] = {
     "mark",
     "sample_id",

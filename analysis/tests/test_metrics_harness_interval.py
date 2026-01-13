@@ -93,6 +93,7 @@ def test_interval_stats_between_secondary_triggers_mean_min_max():
         y=y,
         trigger_time_s=0.0,
         events_overrides={
+            "session_id": ["test_session_001"],  
             "rebound_start_time_s": [a],
             "rebound_end_time_s": [b],
             # If your resolver also supports *_idx, you can add them later
@@ -113,6 +114,9 @@ def test_interval_stats_between_secondary_triggers_mean_min_max():
 
     assert isinstance(metrics_df, pd.DataFrame)
     assert len(metrics_df) == 1
+    assert "session_id" in metrics_df.columns
+    assert metrics_df.loc[0, "session_id"] == "test_session_001"
+
 
     # Expected on y=t over [a,b]
     expected_mean = 0.5 * (a + b)
@@ -172,6 +176,7 @@ def test_interval_stats_missing_end_trigger_strict_raises():
         y=y,
         trigger_time_s=0.0,
         events_overrides={
+            "session_id": ["test_session_001"],  # NEW
             "rebound_start_time_s": [-0.2],
             # Missing on purpose: rebound_end_time_s
         },

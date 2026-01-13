@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import pandas as pd
 import numpy as np
 import logging
+import os
+import re
 
 from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
@@ -16,6 +18,8 @@ from .model import validate_session
 from .timebase import register_stream_timebase
 from .signal_standardize import standardize_signals
 from .segment import extract_segments, SegmentRequest
+
+_UNIT_RE = re.compile(r"\[(.*?)\]")
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +193,7 @@ def preprocess_session(session: Dict[str, Any],
         derive_va=False,             # you already compute VA above
     )
     return session
-
+     
 def run_macro(csv_path: str,
               schema_path: str,
               *,
@@ -235,12 +239,25 @@ def run_macro(csv_path: str,
     assert "time_s" in session["df"].columns
     assert "signals" in session.get("meta", {})
 
-    schema = load_event_schema(schema_path)
+    meta = session.setdefault("meta", {})
+    if not isinstance(meta, dict):
+        raise ValueError("session['meta'] must be a dict")
+
+    # Standardized session_id: CSV filename stem (no extension)
+    meta["session_id"] = os.path.splitext(os.path.basename(str(csv_path)))[0]
+    session["meta"]["session_id"] = session["session_id"]
+    # add a minimal signals registry (see helper below)
+    session["meta"]["signals"] = build_minimal_signal_registry(session["df"])
+    
     schema = load_event_schema(schema_path)
     
     logger.info("Schema load complete")
 
-    
+    print("meta keys:", sorted(session["meta"].keys()))
+    print("meta.session_id:", session["meta"].get("session_id"))
+    print("df has rear_shock [mm]?:", "rear_shock [mm]" in session["df"].columns)
+    print("rear-ish:", [c for c in session["df"].columns if isinstance(c,str) and "rear" in c.lower()])
+
     events_df = detect_events_from_schema(
         session["df"],
         schema,

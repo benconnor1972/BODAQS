@@ -1295,6 +1295,8 @@ def detect_events_from_schema(
         post_n = _sec_to_samples_opt(post_s, dt) or 0
 
         kept = 0
+        rej = {"conditions": 0, "nan": 0, "clipped": 0, "saved": 0}
+
         for c in cands:
             t0_idx = c["t0_index"]
             start_idx = t0_idx - pre_n
@@ -1304,12 +1306,15 @@ def detect_events_from_schema(
 
             # ---- CONDITIONS ----
             if not _apply_conditions(df, dt, ev_resolved, t0_idx, inputs_map):
+                rej["conditions"] += 1
+                logger.debug("%s(%s): candidate t0_idx=%d failed conditions", ev_id, sensor, t0_idx)
                 continue
             kept += 1
 
             seg = df.iloc[start_idx:end_idx]
             nan_frac = float(seg.isna().any(axis=1).mean())
             if (max_nan_fraction is not None) and (nan_frac > max_nan_fraction):
+                rej["nan"] += 1
                 continue
 
             if skip_if_clipped:
@@ -1322,6 +1327,7 @@ def detect_events_from_schema(
                     if np.any(seg_arr == np.nanmin(arr)) or np.any(seg_arr == np.nanmax(arr)):
                         clipped = True; break
                 if clipped:
+                    rej["clipped"] += 1
                     continue
 
             # ---- PRIMARY trigger result for this candidate ----
@@ -1525,10 +1531,32 @@ def detect_events_from_schema(
 
             row.update(m)
             rows.append(row)
-            
-
+            rej["saved"] += 1
+            logger.debug("%s(%s): candidates=%d kept_after_conditions=%d rows_total=%d",
+             ev_id, sensor, len(cands), kept, len(rows))
+        logger.debug("%s(%s): after loop: cands=%d kept=%d saved=%d rejected=%r", ev_id, sensor, len(cands), kept, rej["saved"], rej)
 
     EVENTS_DF = pd.DataFrame(rows)
+    # Inject session_id
+    session_id = None
+    if isinstance(meta, dict):
+        session_id = meta.get("session_id")
+
+    if not session_id:
+        raise ValueError("detect_events_from_schema: meta must include session_id (required for events_df contract)")
+
+    # Ensure column exists and is filled
+    if "session_id" not in EVENTS_DF.columns:
+        EVENTS_DF.insert(0, "session_id", session_id)
+    else:
+        # Fill missing / validate consistency
+        if EVENTS_DF["session_id"].isna().any():
+            EVENTS_DF["session_id"] = EVENTS_DF["session_id"].fillna(session_id)
+        # If it exists, enforce all values match the passed-in session_id
+        bad = EVENTS_DF["session_id"].astype(str) != str(session_id)
+        if bad.any():
+            raise ValueError("detect_events_from_schema: events_df.session_id does not match meta.session_id for some rows")
+
 
     if not EVENTS_DF.empty:
         EVENTS_DF = EVENTS_DF.sort_values(["schema_id","trigger_idx"]).reset_index(drop=True)
