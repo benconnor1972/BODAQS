@@ -7,8 +7,10 @@ def make_minimal_segment_bundle(
     t_rel_s: np.ndarray,
     y: np.ndarray,
     trigger_time_s: float = 0.0,
+    session_id: str = "test_session",
     events_overrides: dict | None = None,
 ):
+
     """
     Construct a minimal, valid SegmentBundle for metrics testing.
 
@@ -26,6 +28,7 @@ def make_minimal_segment_bundle(
 
     # --- events_df ---
     events = {
+        "session_id": [session_id],  # NEW (unified rule)
         "event_id": ["e0"],
         "schema_id": ["test"],
         "schema_version": ["1.0"],
@@ -35,6 +38,7 @@ def make_minimal_segment_bundle(
         "trigger_time_s": [trigger_time_s],
     }
 
+
     if events_overrides:
         events.update(events_overrides)
 
@@ -42,10 +46,12 @@ def make_minimal_segment_bundle(
 
     # --- segments_df ---
     segments_df = pd.DataFrame({
+        "session_id": [session_id],  # optional
         "event_row": [0],
         "valid": [True],
         "trigger_time_s": [trigger_time_s],
     })
+
 
     # --- data ---
     data = {

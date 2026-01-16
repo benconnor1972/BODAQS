@@ -132,98 +132,108 @@ def _resolve_search_window(trig: dict, t: np.ndarray, base_t0_sec: float | None)
     return _clip_bounds(n, i0, i1)
 
 def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = None) -> dict:
-
     """
     Resolve schema signal roles (disp/vel/acc/disp_zeroed/disp_norm/...) to concrete df column names.
-    Registry-first:
-      - Prefer session["meta"]["signals"] if present (canonical, domain-aware).
-    Fallback:
-      - If schema provides naming.suffixes, use suffix concatenation (legacy support).
+
+    Registry-only:
+      - Requires meta["signals"] (canonical, parseable, domain-aware).
+      - Returns only roles it can confidently resolve from the registry.
+      - Does NOT attempt legacy suffix concatenation fallback.
+
     Returns:
       inputs_map: { role -> column_name }
     """
-
     out: dict[str, str] = {}
-    # ---------------- Registry-first resolution ----------------
-    signals = None
-    if isinstance(meta, dict):
-        signals = meta.get("signals")
-    if isinstance(signals, dict) and signals:
-        # Build quick lookup by base (sensor name) and by derived base names.
-        # In your naming contract, base is embedded in column names; we match by parsing names.
-        try:
-            from .signalname import parse_signal_name  # adjust import path if needed
-        except Exception:
-            parse_signal_name = None  # fallback below
 
-        # Helper: find a column in registry matching predicate
-        def _find_col(pred):
-            for col, info in signals.items():
-                if pred(col, info):
-                    return col
-            return None
+    # Must have a signals registry
+    signals = meta.get("signals") if isinstance(meta, dict) else None
+    if not isinstance(signals, dict) or not signals:
+        return out  # let caller/validator decide how to handle "no mapping"
 
-        # Helper: identify whether registry entry corresponds to a sensor base
-        # Prefer parse_signal_name if available; else basic prefix matching.
-        def _is_base_match(col: str, base: str) -> bool:
-            if parse_signal_name:
-                try:
-                    parts = parse_signal_name(col)
-                    return parts.base == base
-                except Exception:
-                    return False
+    try:
+        from .signalname import parse_signal_name
+    except Exception:
+        parse_signal_name = None
 
-            # crude fallback (should rarely be used)
-            return col.startswith(base)
+    def _is_base_match(col: str, base: str) -> bool:
+        if not isinstance(col, str):
+            return False
+        if parse_signal_name:
+            try:
+                parts = parse_signal_name(col)
+                return parts.base == base
+            except Exception:
+                return False
+        # If parse isn't available, don't guess — registry-only mode.
+        return False
 
-        # Engineered displacement for this sensor (domain may be injected)
-        disp_col = _find_col(lambda c, info: _is_base_match(c, sensor) and info.get("kind", "") == "" and info.get("unit") == "mm")
-        if disp_col:
-            out["disp"] = disp_col
+    def _find_col(pred):
+        for col, info in signals.items():
+            if isinstance(info, dict) and pred(col, info):
+                return col
+        return None
 
-        # Velocity & acceleration are derived bases in your implementation: <sensor>_vel / <sensor>_acc
-        vel_col = _find_col(lambda c, info: _is_base_match(c, f"{sensor}_vel") and info.get("kind", "") == "" and info.get("unit") == "mm/s")
+    # Engineered displacement for this sensor (any domain is OK; domain can be used later for tie-breaks)
+    disp_col = _find_col(
+        lambda c, info: _is_base_match(c, sensor)
+        and info.get("kind", "") == ""
+        and info.get("unit") == "mm"
+    )
+    if disp_col:
+        out["disp"] = disp_col
 
-        if vel_col:
-            out["vel"] = vel_col
+    # Velocity & acceleration: base = f"{sensor}_vel"/"{sensor}_acc"
+    vel_col = _find_col(
+        lambda c, info: _is_base_match(c, f"{sensor}_vel")
+        and info.get("kind", "") == ""
+        and info.get("unit") == "mm/s"
+    )
+    if vel_col:
+        out["vel"] = vel_col
 
-        acc_col = _find_col(lambda c, info: _is_base_match(c, f"{sensor}_acc") and info.get("kind", "") == "" and info.get("unit") == "mm/s^2")
-        if acc_col:
-            out["acc"] = acc_col
+    acc_col = _find_col(
+        lambda c, info: _is_base_match(c, f"{sensor}_acc")
+        and info.get("kind", "") == ""
+        and info.get("unit") == "mm/s^2"
+    )
+    if acc_col:
+        out["acc"] = acc_col
 
-        # Normalised displacement: <sensor>_norm [1]
-        norm_col = _find_col(lambda c, info: _is_base_match(c, f"{sensor}_norm") and info.get("kind", "") == "" and info.get("unit") == "1")
-        if norm_col:
-            out["disp_norm"] = norm_col
+    # Normalised displacement (friendly role name "disp_norm"):
+    # Under Option A, norm is an op-chain on the SAME base displacement, with unit "1".
+    # e.g. '<sensor>... [1]_op_zeroed_norm'
+    norm_col = _find_col(
+        lambda c, info: _is_base_match(c, sensor)
+        and info.get("kind", "") == ""
+        and info.get("unit") == "1"
+        and ("zeroed" in (info.get("op_chain") or []))
+        and ("norm"   in (info.get("op_chain") or []))
+    )
+    if norm_col:
+        out["disp_norm"] = norm_col
 
-        # Zeroed displacement: op token "zeroed" applied to disp_col
-        # Name convention: "<disp_col>_op_zeroed"
-        if disp_col:
-            zeroed_col = f"{disp_col}_op_zeroed"
-            # only include if it exists in registry keys
-            if zeroed_col in signals:
-                out["disp_zeroed"] = zeroed_col
-            else:
-                # Some implementations may store op_chain in registry; try to find it that way.
-                z2 = _find_col(lambda c, info: _is_base_match(c, sensor) and info.get("unit") == "mm"
-                                             and "zeroed" in (info.get("op_chain") or []))
-                if z2:
-                    out["disp_zeroed"] = z2
 
-        # Raw counts: kind="raw" and unit="counts"
-        raw_col = _find_col(lambda c, info: _is_base_match(c, sensor) and info.get("kind") == "raw" and info.get("unit") == "counts")
-        if raw_col:
-            out["raw"] = raw_col
-        # If registry provided anything, we're done (roles not found will be validated elsewhere)
-        if out:
-            return out
+    # Zeroed displacement:
+    # Prefer op_chain contains "zeroed" on the *same* base sensor displacement (unit mm).
+    zeroed_col = _find_col(
+        lambda c, info: _is_base_match(c, sensor)
+        and info.get("kind", "") == ""
+        and info.get("unit") == "mm"
+        and (info.get("op_chain") == ["zeroed"] or tuple(info.get("op_chain") or ()) == ("zeroed",))
 
-    # ---------------- Legacy suffix-only fallback ----------------
-    naming = schema.get("naming", {}) or {}
-    suffixes = (naming.get("suffixes") or {})
-    for role, suf in suffixes.items():
-        if sensor:
-            out[role] = f"{sensor}{suf}"
+    )
+    if zeroed_col:
+        out["disp_zeroed"] = zeroed_col
+
+    # Raw counts: kind="raw" and unit="counts"
+    raw_col = _find_col(
+        lambda c, info: _is_base_match(c, sensor)
+        and info.get("kind") == "raw"
+        and info.get("unit") == "counts"
+    )
+    if raw_col:
+        out["raw"] = raw_col
+
     return out
 
 
@@ -269,12 +279,20 @@ def _validate_event_series_with_map(ev: dict, df: pd.DataFrame, inputs_map: dict
     def _collect_refs(blocks):
         refs = set()
         for blk in (blocks or []):
+            if not isinstance(blk, dict):
+                continue
             for key in ("any_of", "all_of"):
-                for test in (blk.get(key) or []):
+                tests = blk.get(key) or []
+                if not isinstance(tests, list):
+                    continue
+                for test in tests:
+                    if not isinstance(test, dict):
+                        continue
                     s = test.get("signal")
                     if s:
                         refs.add(s)
         return refs
+
 
     cond_refs   = _collect_refs(ev.get("preconditions")) | _collect_refs(ev.get("postconditions"))
     metric_refs = {m.get("signal") for m in (ev.get("metrics") or []) if m.get("signal")}
@@ -283,10 +301,12 @@ def _validate_event_series_with_map(ev: dict, df: pd.DataFrame, inputs_map: dict
     # ---- Validate each referenced signal via the resolved mapping ----
     for name in needed:
         if name not in inputs_map:
+            avail = sorted(inputs_map.keys())
             raise KeyError(
                 f"Event '{ev_id}': a condition/metric references '{name}', "
-                f"but resolved inputs_map only has {list(inputs_map.keys())}."
+                f"but resolved inputs_map only has {avail}."
             )
+
         col = inputs_map[name]
         if col not in df.columns:
             raise KeyError(
@@ -1295,6 +1315,8 @@ def detect_events_from_schema(
         post_n = _sec_to_samples_opt(post_s, dt) or 0
 
         kept = 0
+        rej = {"conditions": 0, "nan": 0, "clipped": 0, "saved": 0}
+
         for c in cands:
             t0_idx = c["t0_index"]
             start_idx = t0_idx - pre_n
@@ -1304,12 +1326,15 @@ def detect_events_from_schema(
 
             # ---- CONDITIONS ----
             if not _apply_conditions(df, dt, ev_resolved, t0_idx, inputs_map):
+                rej["conditions"] += 1
+                logger.debug("%s(%s): candidate t0_idx=%d failed conditions", ev_id, sensor, t0_idx)
                 continue
             kept += 1
 
             seg = df.iloc[start_idx:end_idx]
             nan_frac = float(seg.isna().any(axis=1).mean())
             if (max_nan_fraction is not None) and (nan_frac > max_nan_fraction):
+                rej["nan"] += 1
                 continue
 
             if skip_if_clipped:
@@ -1322,6 +1347,7 @@ def detect_events_from_schema(
                     if np.any(seg_arr == np.nanmin(arr)) or np.any(seg_arr == np.nanmax(arr)):
                         clipped = True; break
                 if clipped:
+                    rej["clipped"] += 1
                     continue
 
             # ---- PRIMARY trigger result for this candidate ----
@@ -1525,10 +1551,32 @@ def detect_events_from_schema(
 
             row.update(m)
             rows.append(row)
-            
-
+            rej["saved"] += 1
+            logger.debug("%s(%s): candidates=%d kept_after_conditions=%d rows_total=%d",
+             ev_id, sensor, len(cands), kept, len(rows))
+        logger.debug("%s(%s): after loop: cands=%d kept=%d saved=%d rejected=%r", ev_id, sensor, len(cands), kept, rej["saved"], rej)
 
     EVENTS_DF = pd.DataFrame(rows)
+    # Inject session_id
+    session_id = None
+    if isinstance(meta, dict):
+        session_id = meta.get("session_id")
+
+    if not session_id:
+        raise ValueError("detect_events_from_schema: meta must include session_id (required for events_df contract)")
+
+    # Ensure column exists and is filled
+    if "session_id" not in EVENTS_DF.columns:
+        EVENTS_DF.insert(0, "session_id", session_id)
+    else:
+        # Fill missing / validate consistency
+        if EVENTS_DF["session_id"].isna().any():
+            EVENTS_DF["session_id"] = EVENTS_DF["session_id"].fillna(session_id)
+        # If it exists, enforce all values match the passed-in session_id
+        bad = EVENTS_DF["session_id"].astype(str) != str(session_id)
+        if bad.any():
+            raise ValueError("detect_events_from_schema: events_df.session_id does not match meta.session_id for some rows")
+
 
     if not EVENTS_DF.empty:
         EVENTS_DF = EVENTS_DF.sort_values(["schema_id","trigger_idx"]).reset_index(drop=True)

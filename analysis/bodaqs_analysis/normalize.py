@@ -4,8 +4,21 @@ import numpy as np
 import pandas as pd
 from .signalname import parse_signal_name, format_signal_name, SignalNameParts
 from .signalspec import DEFAULT_SPEC
+import re
 
 TIME_COL_CANDIDATES_DEFAULT = ("time_s","t","time","timestamp","ts_ms","ts","Time","Timestamp")
+_UNIT_RE = re.compile(r"\s*\[(.*?)\]\s*$")
+
+def _set_unit(col: str, unit: str) -> str:
+    # Replace trailing " [..]" if present; else append.
+    if _UNIT_RE.search(col):
+        return _UNIT_RE.sub(f" [{unit}]", col)
+    return f"{col} [{unit}]"
+
+def _name_zeroed_norm(col: str) -> str:
+    # Unitless result, and encode both ops explicitly
+    base_u1 = _set_unit(col, "1")
+    return f"{base_u1}_op_zeroed_op_norm"
 
 def _find_time_col(frame: pd.DataFrame):
     for c in TIME_COL_CANDIDATES:
@@ -57,21 +70,29 @@ def _name_zeroed(col: str) -> str:
 
 def _name_norm(col: str) -> str:
     """
-    Given an engineered displacement signal like 'front_shock [mm]' (domain optional),
-    return a dimensionless normalised signal: 'front_shock_norm [1]'.
+    Given an engineered signal like:
+      - 'front_shock_dom_suspension [mm]'
+      - 'front_shock_dom_suspension [mm]_op_zeroed'
+    return a dimensionless normalised signal that keeps the SAME base (so quantity stays 'disp'),
+    changes unit to '1', and appends op 'norm'.
+
+    Examples:
+      - base -> 'front_shock_dom_suspension [1]_op_norm'
+      - zeroed -> 'front_shock_dom_suspension [1]_op_zeroed_op_norm'   (encodes both ops)
     """
     parts = parse_signal_name(col, spec=DEFAULT_SPEC)
     if parts.kind != "":
-        raise ValueError(f"norm expects engineered base signal (kind=''), got {col!r}")
+        raise ValueError(f"norm expects engineered signal (kind=''), got {col!r}")
 
-    # Note: norm is a *different physical quantity* (dimensionless), so it should not be an _op_ on [mm].
+    # Keep base unchanged -> quantity remains 'disp'
+    # Append 'norm' to ops (preserving any existing ops like 'zeroed')
     return format_signal_name(
         SignalNameParts(
-            base=f"{parts.base}_norm",
+            base=parts.base,
             kind="",
             domain=parts.domain,
-            unit="1",
-            ops=(),
+            unit="1",  # dimensionless
+            ops=tuple(list(parts.ops) + ["norm"]),
         ),
         spec=DEFAULT_SPEC,
     )
@@ -217,22 +238,26 @@ def normalize_and_scale(
             zeroed_col = _name_zeroed(col)
             frame.loc[:, zeroed_col] = zeroed
 
-        # --- Create dimensionless norm column ---
-        norm_col = _name_norm(col)
-        
-        # choose source for normalization (zeroed if enabled, else base)
-        norm_source = zeroed_col if (zeroed_col is not None) else col
-        
-        rng = float(full_range) if full_range else np.nan
-        if np.isfinite(rng) and rng > 0:
-            normed = frame[norm_source] / rng
-        else:
-            normed = np.nan
-        
-        if clip_0_1:
-            normed = normed.clip(0.0, 1.0)
-        
-        frame.loc[:, norm_col] = normed
+            # --- Create dimensionless norm column (encode both ops) ---
+            # choose source for normalization (zeroed if enabled, else base)
+            norm_source = zeroed_col if (zeroed_col is not None) else col
+
+            # Name reflects the transform chain applied to the source.
+            # If source is zeroed, output becomes ...[1]_op_zeroed_op_norm (both ops encoded).
+            norm_col = _name_norm(norm_source)
+
+            rng = float(full_range) if full_range else np.nan
+            if np.isfinite(rng) and rng > 0:
+                normed = frame[norm_source] / rng
+            else:
+                normed = np.nan
+
+            if clip_0_1:
+                normed = normed.clip(0.0, 1.0)
+
+            frame.loc[:, norm_col] = normed
+
+
 
         rec: Dict[str, Any] = {
             "column": col,

@@ -36,8 +36,8 @@ def test_va_zero_norm_outputs_canonical_columns_and_registry():
     session = make_session(df_in)
 
     ranges = {
-        "front_shock [mm]": 200.0,
-        "rear_shock [mm]": 200.0,
+        "front_shock_dom_suspension [mm]": 200.0,
+        "rear_shock_dom_suspension [mm]": 200.0,
     }
 
     out = preprocess_session(
@@ -47,7 +47,7 @@ def test_va_zero_norm_outputs_canonical_columns_and_registry():
         zeroing_enabled=True,
         zero_window_s=0.2,
         clip_0_1=True,
-        va_cols=["front_shock [mm]", "rear_shock [mm]"],
+        va_cols=["front_shock_dom_suspension [mm]", "rear_shock_dom_suspension [mm]"],
         va_window_points=11,
         va_poly_order=3,
     )
@@ -63,18 +63,19 @@ def test_va_zero_norm_outputs_canonical_columns_and_registry():
     assert "rear_shock_dom_suspension [mm]_op_zeroed" in odf.columns
 
     # Dimensionless normalised columns with correct unit
-    assert "front_shock_norm [1]" in odf.columns
-    assert "rear_shock_norm [1]" in odf.columns
+    assert "front_shock_dom_suspension [1]_op_zeroed_norm" in odf.columns
+    assert "rear_shock_dom_suspension [1]_op_zeroed_norm" in odf.columns
 
     # VA columns are canonical with correct units
-    assert "front_shock_vel [mm/s]" in odf.columns
-    assert "front_shock_acc [mm/s^2]" in odf.columns
+    assert "front_shock_vel_dom_suspension [mm/s]" in odf.columns
+    assert "front_shock_acc_dom_suspension [mm/s^2]" in odf.columns
 
     # Parse sanity (won't raise)
     parse_signal_name("front_shock_dom_suspension [mm]_op_zeroed")
-    parse_signal_name("front_shock_norm [1]")
-    parse_signal_name("front_shock_vel [mm/s]")
-    parse_signal_name("front_shock_acc [mm/s^2]")
+    parse_signal_name("front_shock_dom_suspension [1]_op_zeroed_norm")
+    parse_signal_name("front_shock_vel_dom_suspension [mm/s]")
+    parse_signal_name("front_shock_acc_dom_suspension [mm/s^2]")
+
 
 
     # time_s should be finite and monotonic (non-decreasing)
@@ -90,7 +91,8 @@ def test_va_zero_norm_outputs_canonical_columns_and_registry():
     assert sigs["front_shock_raw_dom_suspension [counts]"]["kind"] == "raw"
     assert sigs["front_shock_raw_dom_suspension [counts]"]["unit"] == "counts"
     assert sigs["front_shock_dom_suspension [mm]_op_zeroed"]["op_chain"] == ["zeroed"]
-    assert sigs["front_shock_norm [1]"]["unit"] == "1"
+    assert sigs["front_shock_dom_suspension [1]_op_zeroed_norm"]["unit"] == "1"
+
 
 
 def test_zeroed_differs_from_base_by_constant_offset():
@@ -99,11 +101,11 @@ def test_zeroed_differs_from_base_by_constant_offset():
 
     out = preprocess_session(
         session,
-        normalize_ranges={"front_shock [mm]": 200.0},
+        normalize_ranges={"front_shock_dom_suspension [mm]": 200.0},
         sample_rate_hz=100.0,
         zeroing_enabled=True,
         zero_window_s=0.2,
-        va_cols=["front_shock [mm]"],
+        va_cols=["front_shock_dom_suspension [mm]"],
     )
 
     odf = out["df"]
@@ -120,6 +122,6 @@ def test_zeroed_differs_from_base_by_constant_offset():
     assert np.nanmax(diff) - np.nanmin(diff) < 1e-6
 
     # Norm is clipped [0,1]
-    norm = odf["front_shock_norm [1]"].to_numpy()
+    norm = odf["front_shock_dom_suspension [1]_op_zeroed_norm"].to_numpy()
     assert np.nanmin(norm) >= -1e-3
     assert np.nanmax(norm) <= 1.0 + 1e-3

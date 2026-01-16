@@ -45,8 +45,11 @@ def extract_metrics_df(
     if events_df is None or len(events_df) == 0:
         return pd.DataFrame()
 
-    if "event_id" not in events_df.columns:
-        raise ValueError("events_df missing required column 'event_id'")
+    # Unified rule: session_id + event_id are required identity/join keys
+    for k in ("session_id", "event_id"):
+        if k not in events_df.columns:
+            raise ValueError(f"events_df missing required column '{k}'")
+
 
     # Metric + debug columns
     metric_cols = [
@@ -60,8 +63,10 @@ def extract_metrics_df(
     if id_cols is None:
         # All identity-like columns we are willing to preserve
         identity_candidates = (
-            # Required join key
+            # Required join keys (unified rule)
+            "session_id",
             "event_id",
+
 
             # Contract identity bundle
             "schema_id",
@@ -153,6 +158,10 @@ def compute_metrics_from_segments(
         return pd.DataFrame()
 
     ev = events_all.iloc[seg_valid["event_row"].to_numpy()].reset_index(drop=True)
+    # Unified rule: session_id must be present for identity/join semantics
+    if "session_id" not in ev.columns:
+        raise ValueError("bundle['events'] missing required column: session_id")
+
 
     # Validate data shapes
     t_rel = _get_t_rel_grid(data)
@@ -211,6 +220,9 @@ def compute_metrics_from_segments(
 
     # Build output dataframe: identity bundle + m_* + optional debug
     id_cols = _preferred_identity_cols(ctx.events)
+    # Force unified join key presence at the front (without duplicating)
+    if "session_id" in ctx.events.columns:
+        id_cols = ["session_id"] + [c for c in id_cols if c != "session_id"]
     metrics_df = ctx.events[id_cols].copy()
 
     for name, values in out_cols.items():
@@ -361,6 +373,7 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
 
 def _preferred_identity_cols(events: pd.DataFrame) -> List[str]:
     preferred = [
+        "session_id",   # unified rule: primary identity / aggregation key
         "event_id",
         "schema_id",
         "schema_version",
@@ -373,6 +386,7 @@ def _preferred_identity_cols(events: pd.DataFrame) -> List[str]:
         "tags",
     ]
     return [c for c in preferred if c in events.columns]
+
 
 
 def _get_t_rel_grid(data: Mapping[str, Any]) -> np.ndarray:

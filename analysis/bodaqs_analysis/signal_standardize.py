@@ -42,6 +42,12 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
 
     errors: List[str] = []
 
+    # Units where we expect a real per-sensor physical quantity (engineered signals)
+    _PHYSICAL_UNITS = {"mm", "mm/s", "mm/s^2", "1"}
+
+    # Coarse quantity vocabulary (v0.1 for Option 1 resolution)
+    _ALLOWED_QUANTITIES = {"disp", "vel", "acc", "disp_norm", "raw"}
+
     for col, info in signals.items():
         if col not in df.columns:
             errors.append(f"signals key not in df.columns: {col!r}")
@@ -53,6 +59,10 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
         domain = info.get("domain", None)
         op_chain = info.get("op_chain", [])
 
+        # NEW fields (may be absent in older registries)
+        sensor = info.get("sensor", None)
+        quantity = info.get("quantity", None)
+
         # Kind must be valid
         if kind not in ("", "raw", "qc"):
             errors.append(f"{col!r}: invalid kind {kind!r}")
@@ -63,7 +73,7 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
 
         # Ops must be allowed
         if spec.strict_ops:
-            bad_ops = [t for t in op_chain if t not in spec.allowed_ops]
+            bad_ops = [t for t in (op_chain or []) if t not in spec.allowed_ops]
             if bad_ops:
                 errors.append(f"{col!r}: unknown op token(s) {bad_ops}")
 
@@ -75,16 +85,56 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
         # Raw: should be counts
         if kind == "raw":
             if unit != RAW_UNIT_DEFAULT:
-                errors.append(f"{col!r}: raw signal unit should be '{RAW_UNIT_DEFAULT}', got {unit!r}")
+                errors.append(
+                    f"{col!r}: raw signal unit should be '{RAW_UNIT_DEFAULT}', got {unit!r}"
+                )
 
         # QC: should be boolish
         if kind == "qc":
             if not _is_boolish_series(s):
                 errors.append(f"{col!r}: qc signal not bool/0-1 dtype={s.dtype}")
 
+        # ------------------------------------------------------------------
+        # NEW: Option 1 registry semantics checks (sensor + quantity)
+        # ------------------------------------------------------------------
+
+        # Helper: non-empty string
+        def _is_nonempty_str(x) -> bool:
+            return isinstance(x, str) and bool(x.strip())
+
+        # For engineered physical quantities, require sensor + quantity.
+        # (Skip enforcement if unit is missing, since that's already an error above.)
+        if kind == "" and isinstance(unit, str) and unit.strip() in _PHYSICAL_UNITS:
+            if not _is_nonempty_str(sensor):
+                errors.append(f"{col!r}: engineered physical signal missing sensor")
+            if not _is_nonempty_str(quantity):
+                errors.append(f"{col!r}: engineered physical signal missing quantity")
+            elif quantity not in _ALLOWED_QUANTITIES:
+                errors.append(
+                    f"{col!r}: unknown quantity {quantity!r} (allowed: {sorted(_ALLOWED_QUANTITIES)})"
+                )
+
+            # Additional unit↔quantity consistency checks (lightweight, catches obvious bugs)
+            if _is_nonempty_str(quantity):
+                if quantity == "disp" and unit.strip() != "mm" and unit.strip() != "1":
+                    errors.append(f"{col!r}: quantity 'disp' should have unit 'mm' or '1', got {unit!r}")
+                if quantity == "vel" and unit.strip() != "mm/s":
+                    errors.append(f"{col!r}: quantity 'vel' should have unit 'mm/s', got {unit!r}")
+                if quantity == "acc" and unit.strip() != "mm/s^2":
+                    errors.append(f"{col!r}: quantity 'acc' should have unit 'mm/s^2', got {unit!r}")
+                    errors.append(f"{col!r}: quantity 'disp_norm' should have unit '1', got {unit!r}")
+
+        # For raw signals, we also want sensor + quantity='raw'
+        if kind == "raw":
+            if not _is_nonempty_str(sensor):
+                errors.append(f"{col!r}: raw signal missing sensor")
+            if quantity != "raw":
+                errors.append(f"{col!r}: raw signal quantity should be 'raw', got {quantity!r}")
+
+        # QC signals: do not require sensor/quantity (can be global flags)
+
     if errors:
         raise SignalSemanticsError("Signal semantics validation failed:\n- " + "\n- ".join(errors))
-
 
 # ---------------------------
 # Standardisation pass
@@ -95,6 +145,57 @@ class StandardizeReport:
     renamed: List[Dict[str, Any]]
     derived: List[str]
     notes: List[str]
+
+def canonicalize_signal_names(
+    session: Dict[str, Any],
+    *,
+    spec: SignalSpec = DEFAULT_SPEC,
+    units_by_base: Optional[Dict[str, str]] = None,
+    domain_by_base: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """
+    Rename-only pass:
+      - Normalize legacy names -> canonical names (df columns only)
+      - Record rename report in session['qc']
+      - Does NOT build signals registry
+      - Does NOT validate signals semantics
+    """
+    if "qc" not in session or not isinstance(session["qc"], dict):
+        session["qc"] = {}
+    qc = session["qc"]
+    qc.setdefault("naming", {})
+    qc.setdefault("signals", {})
+
+    df: pd.DataFrame = session["df"]
+
+    df2, rename_report = normalize_legacy_columns(
+        df,
+        spec=spec,
+        units_by_base=units_by_base,
+        domain_by_base=domain_by_base,
+    )
+    session["df"] = df2
+
+    qc["naming"]["legacy_renames"] = [r.__dict__ for r in rename_report]
+    return session
+
+
+def rebuild_and_validate_signal_registry(
+    session: Dict[str, Any],
+    *,
+    spec: SignalSpec = DEFAULT_SPEC,
+    strict_registry_parse: bool = True,
+) -> Dict[str, Any]:
+    """
+    Final-pass registry rebuild + validation:
+      - build_signals_registry()
+      - validate_signals_registry_shape()
+      - validate_signals_semantics()
+    """
+    session = build_signals_registry(session, spec=spec, strict=strict_registry_parse)
+    validate_signals_registry_shape(session)
+    validate_signals_semantics(session, spec=spec)
+    return session
 
 
 def standardize_signals(
@@ -108,139 +209,29 @@ def standardize_signals(
     va_bases: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Single canonical pass:
-      1) legacy rename -> canonical
-      2) build signals registry
-      3) (optional) derive vel/acc signals (preferred separate signals)
-      4) validate registry shape + semantics
-      5) record QC report
+    Backward-compatible wrapper.
+
+    NOTE: VA derivation is now owned by va.py (estimate_va). This wrapper no longer
+    supports derive_va=True.
     """
-    
-    if "df" not in session:
-        raise ValueError("session missing 'df'")
-    if "meta" not in session:
-        raise ValueError("session missing 'meta'")
-    if "qc" not in session:
-        session["qc"] = {}
+    if derive_va:
+        raise ValueError(
+            "standardize_signals(derive_va=True) is deprecated/removed; "
+            "compute vel/acc in va.py (estimate_va) before rebuilding the registry."
+        )
 
-    df: pd.DataFrame = session["df"]
-
-    # 1) Normalize legacy names -> canonical
-    df2, rename_report = normalize_legacy_columns(
-        df,
+    session = canonicalize_signal_names(
+        session,
         spec=spec,
         units_by_base=units_by_base,
         domain_by_base=domain_by_base,
     )
-    session["df"] = df2
-
-    # 2) Build registry (strict once legacy normaliser exists)
-    session = build_signals_registry(session, spec=spec, strict=strict_registry_parse)
-    validate_signals_registry_shape(session)
-
-    derived_cols: List[str] = []
-    notes: List[str] = []
-
-    # 3) Optional: derive vel/acc as separate engineered signals
-    if derive_va:
-        df3, new_cols = derive_velocity_acceleration(
-            session,
-            spec=spec,
-            bases=va_bases,
-        )
-        session["df"] = df3
-        derived_cols.extend(new_cols)
-
-        # registry must be refreshed because df changed
-        session = build_signals_registry(session, spec=spec, strict=True)
-        validate_signals_registry_shape(session)
-
-    # 4) Enforce semantics
-    validate_signals_semantics(session, spec=spec)
-
-    # 5) Record report in QC
-    qc = session.setdefault("qc", {})
-    qc.setdefault("naming", {})
-    qc.setdefault("signals", {})
-
-    qc["naming"]["legacy_renames"] = [r.__dict__ for r in rename_report]
-    qc["signals"]["derived_columns"] = derived_cols
-    qc["signals"]["notes"] = notes
-
+    session = rebuild_and_validate_signal_registry(
+        session,
+        spec=spec,
+        strict_registry_parse=strict_registry_parse,
+    )
     return session
 
 
-# ---------------------------
-# Optional VA derivation helpers
-# ---------------------------
 
-def derive_velocity_acceleration(
-    session: Dict[str, Any],
-    *,
-    spec: SignalSpec,
-    bases: Optional[Sequence[str]] = None,
-) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Derive *_vel and *_acc from engineered position signals with unit [mm] by finite difference.
-
-    This is deliberately simple; you can later swap to your Savitzky-Golay VA estimator.
-    """
-    df = session["df"].copy()
-    sigs = session["meta"]["signals"]
-
-    # Candidate engineered mm signals
-    candidates = []
-    for col, info in sigs.items():
-        if info.get("kind", "") != "":
-            continue
-        if info.get("unit") != "mm":
-            continue
-        parts = parse_signal_name(col, spec=spec)
-        if parts.ops:
-            continue  # only base signals
-        if bases is not None and parts.base not in set(bases):
-            continue
-        candidates.append((col, parts))
-
-    if "time_s" not in df.columns:
-        raise ValueError("derive_velocity_acceleration requires df['time_s']")
-
-    t = df["time_s"].to_numpy(dtype=np.float64)
-    dt = np.diff(t)
-    if len(dt) == 0 or np.nanmin(dt) <= 0:
-        raise ValueError("time_s must be strictly increasing for VA derivation")
-
-    new_cols: List[str] = []
-    for col, parts in candidates:
-        x = df[col].to_numpy(dtype=np.float64)
-
-        # vel: dx/dt (centered-ish using gradient)
-        v = np.gradient(x, t)
-        vel_name = format_signal_name(
-            SignalNameParts(
-                base=f"{parts.base}_vel",
-                kind="",
-                domain=parts.domain,
-                unit="mm/s",
-                ops=(),
-            ),
-            spec=spec,
-        )
-        df[vel_name] = v
-        new_cols.append(vel_name)
-
-        a = np.gradient(v, t)
-        acc_name = format_signal_name(
-            SignalNameParts(
-                base=f"{parts.base}_acc",
-                kind="",
-                domain=parts.domain,
-                unit="mm/s^2",
-                ops=(),
-            ),
-            spec=spec,
-        )
-        df[acc_name] = a
-        new_cols.append(acc_name)
-
-    return df, new_cols

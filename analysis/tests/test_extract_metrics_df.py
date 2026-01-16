@@ -2,9 +2,11 @@ import pandas as pd
 import numpy as np
 from bodaqs_analysis import extract_metrics_df
 
+sid = "S1"
 
 def test_extract_metrics_df_contract():
     events_contract = pd.DataFrame({
+        "session_id": sid,
         "event_id": ["shock_rebound:0", "shock_rebound:1"],
         "schema_id": ["shock_rebound", "shock_rebound"],
         "schema_version": ["1.0", "1.0"],
@@ -37,6 +39,7 @@ def test_extract_metrics_df_contract():
 
 def test_extract_metrics_df_legacy_projection_only():
     events_legacy = pd.DataFrame({
+        "session_id": sid,
         "event_id": ["shock_rebound", "shock_rebound"],
         "event_type": ["local_extrema", "local_extrema"],
         "sensor": ["rear", "rear"],
@@ -61,6 +64,7 @@ def test_extract_metrics_df_legacy_projection_only():
 def test_extract_metrics_df_excludes_secondary_trigger_columns():
     """Secondary trigger columns belong to events_df only and must not leak."""
     events = pd.DataFrame({
+        "session_id": sid,        
         "event_id": ["e0"],
         "schema_id": ["rebounds"],
         "schema_version": ["1.0"],
@@ -87,6 +91,7 @@ def test_extract_metrics_df_excludes_secondary_trigger_columns():
 def test_extract_metrics_df_keeps_trigger_datetime_if_present():
     """Real-time anchoring should survive projection if present."""
     events = pd.DataFrame({
+        "session_id": sid,        
         "event_id": ["e0"],
         "schema_id": ["rebounds"],
         "schema_version": ["1.0"],
@@ -105,6 +110,7 @@ def test_extract_metrics_df_keeps_trigger_datetime_if_present():
 def test_metrics_event_id_refs_exist_exactly_once_contract():
     # Contract-style events_df with unique event_id
     events = pd.DataFrame({
+        "session_id": sid,                
         "event_id": ["shock_rebound:0", "shock_rebound:1"],
         "schema_id": ["shock_rebound", "shock_rebound"],
         "schema_version": ["1.0", "1.0"],
