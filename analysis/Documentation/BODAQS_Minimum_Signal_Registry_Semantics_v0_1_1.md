@@ -1,4 +1,4 @@
-# BODAQS — Minimum Signal Registry Semantics (v0.1)
+# BODAQS — Minimum Signal Registry Semantics (v0.11)
 
 This document defines the **minimum required semantics** for `session["meta"]["signals"]` so that downstream code (event detection, segment extraction, metrics, and visualization) can resolve schema “signals/roles” (e.g. `disp`, `vel`, `acc`) to concrete dataframe columns **without relying on column-name string hacks**.
 

@@ -124,6 +124,56 @@ def basic_validate(schema: Dict[str, Any]) -> List[str]:
     }
     allowed_dirs = {"rising", "falling", "either"}
 
+    def _validate_segment_defaults_roles(prefix: str, ev: dict) -> None:
+        seg = ev.get("segment_defaults", None)
+        if seg is None:
+            return
+        if not isinstance(seg, dict):
+            issues.append(f"{prefix}.segment_defaults must be a mapping if present.")
+            return
+
+        roles = seg.get("roles", None)
+        if roles is None:
+            return
+        if not isinstance(roles, list):
+            issues.append(f"{prefix}.segment_defaults.roles must be a list if present.")
+            return
+
+        for j, r in enumerate(roles):
+            rprefix = f"{prefix}.segment_defaults.roles[{j}]"
+
+            # Reject string-form roles
+            if isinstance(r, str):
+                issues.append(
+                    f"{rprefix}: string-form roles are not allowed; use dict form "
+                    f"{{role: <name>, prefer: {{quantity: <q>, unit: <u>, op_chain: [...]}}}}."
+                )
+                continue
+
+            if not isinstance(r, dict):
+                issues.append(f"{rprefix}: must be a mapping/dict.")
+                continue
+
+            role = r.get("role", None)
+            prefer = r.get("prefer", None)
+
+            if not isinstance(role, str) or not role.strip():
+                issues.append(f"{rprefix}.role must be a non-empty string.")
+
+            if not isinstance(prefer, dict):
+                issues.append(f"{rprefix}.prefer must be a mapping/dict.")
+                continue
+
+            # Strict requirements for deterministic registry resolution
+            q = prefer.get("quantity", None)
+            u = prefer.get("unit", None)
+
+            if not isinstance(q, str) or not q.strip():
+                issues.append(f"{rprefix}.prefer.quantity must be a non-empty string.")
+            if not isinstance(u, str) or not u.strip():
+                issues.append(f"{rprefix}.prefer.unit must be a non-empty string.")
+
+
     for i, ev in enumerate(events):
         prefix = f"events[{i}]"
         if not isinstance(ev, dict):
@@ -238,6 +288,9 @@ def basic_validate(schema: Dict[str, Any]) -> List[str]:
                         # not strictly required, but helpful to flag obvious mistakes
                         if "end_trigger" not in m:
                             issues.append(f"{mprefix}: interval_stats should specify 'end_trigger'.")
+                            
+        # ---- segment_defaults.roles (dict-form only) ----
+        _validate_segment_defaults_roles(prefix, ev)
 
     return issues
 

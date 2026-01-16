@@ -102,11 +102,6 @@ def extract_segments(
 
     resolved = _resolve_effective_spec(schema, events_sel, req)
 
-    #debug
-    for rs in resolved["roles"]:
-        if rs.role == "disp_norm":
-            print("disp_norm prefer:", rs.prefer)
-
     role_to_col_by_eventrow = _resolve_roles_to_columns_per_eventrow(
         meta_signals=meta.get("signals", {}),
         roles=resolved["roles"],
@@ -439,15 +434,6 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
     pref_unit = _norm_unit(_get_pref(prefer, "unit"))
     pref_op_chain = _norm_op_chain(_get_pref(prefer, "op_chain"))
 
-    #debug
-    if role == "disp_norm":
-        print("DEBUG disp_norm prefer:", prefer)
-        print("DEBUG disp_norm pref_sensor:", pref_sensor)
-        print("DEBUG disp_norm pref_quantity:", pref_quantity)
-        print("DEBUG disp_norm pref_unit:", pref_unit)
-        print("DEBUG disp_norm pref_op_chain:", pref_op_chain)
-
-
     if pref_sensor is None and event_sensor:
         pref_sensor = _norm_str(event_sensor)
 
@@ -467,9 +453,6 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
         unit = _norm_unit(info.get("unit"))
         op_chain = _norm_op_chain(info.get("op_chain"))
 
-        #debug
-        if role == "disp_norm" and quantity == "disp":
-            print("DEBUG disp_norm candidate:", col, "sensor=", sensor, "unit=", unit, "op_chain=", info.get("op_chain"))
 
         if pref_sensor is not None and sensor != pref_sensor:
             continue
@@ -515,7 +498,6 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
         raise ValueError(f"Ambiguous role resolution for role={role!r} prefer={prefer!r}: candidates={tied_cols}")
 
     return candidates[0][0]
-
 
 def _compute_segment_indices(
     *,
@@ -611,7 +593,6 @@ def _compute_segment_indices(
     seg_df = pd.DataFrame(rows)
     n_expected_out = int(seg_df["n_expected"].max()) if len(seg_df) else 0
     return seg_df, n_expected_out
-
 
 def _materialize_arrays_per_event(
     *,

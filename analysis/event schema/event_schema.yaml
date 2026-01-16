@@ -5,7 +5,6 @@ naming:
     disp: ' [mm]'
     vel: ' _vel [mm/s]'
     acc: ' _acc [mm/s^2]'
-    disp_norm: ' [mm]_op_norm'
 defaults:
   window:
     pre_s: 2.0

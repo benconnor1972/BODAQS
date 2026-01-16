@@ -213,9 +213,6 @@ def run_macro(csv_path: str,
         sample_rate_hz=sample_rate_hz,
     )    logger.info("Session pre-process complete")
 
-    cols = [c for c in session["df"].columns if "front_shock" in c and "dom_suspension" in c]
-    print("\n".join(cols))
-
     # debug
     t = session["df"]["time_s"].to_numpy()
     logger.debug("time_s start/end: %s .. %s", t[0], t[-1])
@@ -293,13 +290,6 @@ def run_macro(csv_path: str,
         if events_sel.empty:
             logger.info("No events for schema_id=%s; skipping.", sid)
             continue
-
-        #debug
-        sig = session["meta"]["signals"]
-        print("signals count:", len(sig))
-        print("example disp cols:", [c for c,i in sig.items() if isinstance(i,dict) and i.get("quantity")=="disp"][:10])
-        print("example keys:", list(next(iter(sig.values())).keys()) if sig else None)
-        #debug
 
         bundle = extract_segments(
             df=session["df"],

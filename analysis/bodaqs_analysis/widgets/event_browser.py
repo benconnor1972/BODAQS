@@ -186,27 +186,6 @@ def _role_spec_from_semantic_tuple(
     except TypeError:
         # 2) Fall back to minimal constructor
         rs = RoleSpecCls(role=role)
-
-    # 3) FORCE populate prefer, regardless of constructor signature
-    if hasattr(rs, "prefer"):
-        try:
-            # replace entirely to avoid stale empty dicts
-            rs.prefer = dict(prefer)
-        except Exception:
-            # last resort: update in place
-            try:
-                rs.prefer.update(prefer)
-            except Exception:
-                pass
-
-    # 4) Optional: also set explicit attrs if they exist on this RoleSpec version
-    for k, v in prefer.items():
-        if hasattr(rs, k):
-            try:
-                setattr(rs, k, v)
-            except Exception:
-                pass
-
     return rs
 
 
@@ -251,6 +230,51 @@ def make_event_browser_widget_for_loader(
 
     w_event_type = W.Dropdown(options=[], description="Event type:", layout=W.Layout(width="380px"))
     w_event = W.Dropdown(options=[], description="Event:", layout=W.Layout(width="520px"))
+   
+    # --- Prev/Next buttons for event navigation ---
+    w_prev = W.Button(description="", icon="arrow-left", tooltip="Previous event", layout=W.Layout(width="36px"))
+    w_next = W.Button(description="", icon="arrow-right", tooltip="Next event", layout=W.Layout(width="36px"))
+
+    def _event_labels() -> List[str]:
+        # Dropdown options are labels (strings)
+        return list(w_event.options) if w_event.options else []
+
+    def _event_index() -> int:
+        labels = _event_labels()
+        try:
+            return labels.index(w_event.value)
+        except Exception:
+            return -1
+
+    def _update_nav_buttons(*_):
+        labels = _event_labels()
+        idx = _event_index()
+        w_prev.disabled = (not labels) or (idx <= 0)
+        w_next.disabled = (not labels) or (idx == -1) or (idx >= len(labels) - 1)
+
+    def _go_delta(delta: int):
+        labels = _event_labels()
+        if not labels:
+            return
+        idx = _event_index()
+        if idx == -1:
+            w_event.value = labels[0]
+            return
+        j = max(0, min(len(labels) - 1, idx + delta))
+        if labels[j] != w_event.value:
+            w_event.value = labels[j]  # triggers downstream observers
+
+    def _on_prev(_btn):
+        _go_delta(-1)
+
+    def _on_next(_btn):
+        _go_delta(+1)
+
+    w_prev.on_click(_on_prev)
+    w_next.on_click(_on_next)
+
+    # keep enabled/disabled state in sync
+    w_event.observe(_update_nav_buttons, names="value")
 
     w_pre = W.FloatText(value=float(default_pre_s), description="Pre (s):", layout=W.Layout(width="160px"))
     w_post = W.FloatText(value=float(default_post_s), description="Post (s):", layout=W.Layout(width="160px"))
@@ -346,6 +370,8 @@ def make_event_browser_widget_for_loader(
             w_event.value = labels[0]
 
         _rebuild_sensor_and_signals()
+        _update_nav_buttons()
+
 
     def _selected_event_row() -> Tuple[Optional[pd.DataFrame], Optional[pd.Series]]:
         if not w_event.value:
@@ -536,7 +562,7 @@ def make_event_browser_widget_for_loader(
         [
             W.HBox([w_sessions, W.VBox([w_active_session, w_event_type])]),
             W.HBox([w_auto_sensor, w_sensor]),
-            W.HBox([w_event]),
+            W.HBox([w_event, w_prev, w_next]),
             W.HBox([w_pre, w_post, w_show_secondary, w_show_grid, w_show_stats, w_show_resolve]),
             W.HBox([w_signals]),
             out,

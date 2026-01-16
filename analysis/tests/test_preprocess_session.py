@@ -9,8 +9,8 @@ def test_preprocess_session_invariants_basic():
     n = 200
     df = pd.DataFrame({
         "time_s": np.arange(n) * 0.01,
-        "front_shock [mm]": np.linspace(10, 50, n),
-        "rear_shock [mm]": np.linspace(5, 45, n),
+        "front_shock_dom_suspension [mm]": np.linspace(10, 50, n),
+        "rear_shock_dom_suspension [mm]": np.linspace(5, 45, n),
     })
     session = {
         "session_id": "test_session_001",
@@ -21,8 +21,8 @@ def test_preprocess_session_invariants_basic():
     }
 
     normalize_ranges = {
-        "front_shock [mm]": 200.0,
-        "rear_shock [mm]": 200.0,
+        "front_shock_dom_suspension [mm]": 200.0,
+        "rear_shock_dom_suspension [mm]": 200.0,
     }
 
     out = preprocess_session(
@@ -41,8 +41,8 @@ def test_preprocess_session_invariants_basic():
     # Base cols + canonical norm cols exist
     assert "front_shock_dom_suspension [mm]" in odf.columns
     assert "rear_shock_dom_suspension [mm]" in odf.columns
-    assert "front_shock_norm [1]" in odf.columns
-    assert "rear_shock_norm [1]" in odf.columns
+    assert "front_shock_dom_suspension [1]_op_zeroed_norm" in odf.columns
+    assert "rear_shock_dom_suspension [1]_op_zeroed_norm" in odf.columns
 
     # Zeroed columns exist if zeroing is enabled by default
     assert "front_shock_dom_suspension [mm]_op_zeroed" in odf.columns
