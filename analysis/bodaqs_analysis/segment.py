@@ -1,17 +1,9 @@
 """
 BODAQS Segment Extractor (skeleton)
 
-Purpose
--------
-Extract aligned sample windows ("segments") around detected events, using:
-- df timebase contract: numeric, monotonic df["time_s"]
-- event table contract: start/trigger/end fields (idx + time_s)
-- signal registry: session["meta"]["signals"] mapping column -> semantics
-- schema-level segment_defaults (optional) + runtime overrides
-
-This module is intentionally:
-- independent of detection (consumes events_df)
-- independent of metrics (produces SegmentBundle intermediate)
+This version includes:
+- Option B sensor binding per event row (bind from each event row's signal_col via the registry)
+- op_chain token normalization inside the resolver: 'op_zeroed' == 'zeroed', etc.
 """
 
 from __future__ import annotations
@@ -25,11 +17,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
-# -------------------------
-# Types / Contracts
-# -------------------------
-
 AnchorField = Literal[
     "start_time_s",
     "trigger_time_s",
@@ -39,7 +26,7 @@ AnchorField = Literal[
     "end_idx",
 ]
 
-PadMode = Literal["nan", "edge", "drop"]  # edge = clamp indices + pad (future: edge-fill)
+PadMode = Literal["nan", "edge", "drop"]
 GridMode = Literal["native", "resample"]
 
 
@@ -57,15 +44,14 @@ class OutputSpec:
     pad: PadMode = "nan"
     include_time_s: bool = True
     include_t_rel_s: bool = True
-    include_primary_signal: bool = True  # include event.signal_col as role="primary"
+    include_primary_signal: bool = True
     dtype: Any = np.float32
 
 
 @dataclass(frozen=True)
 class GridSpec:
     mode: GridMode = "native"
-    dt_s: Optional[float] = None  # required for resample
-    # future: interpolation method, anti-alias, etc.
+    dt_s: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -75,25 +61,13 @@ class RoleSpec:
 
 
 @dataclass(frozen=True)
-class SegmentDefaults:
-    # Defaults that can be attached to schema per event (optional)
-    anchor: AnchorField = "trigger_time_s"
-    window: WindowSpec = field(default_factory=WindowSpec)
-    roles: Tuple[RoleSpec, ...] = field(default_factory=tuple)
-    grid: GridSpec = field(default_factory=GridSpec)
-
-
-@dataclass(frozen=True)
 class SegmentRequest:
-    """
-    Runtime request. Typically you select events (filter) then optionally override schema defaults.
-    """
-    # Selector
+    """Runtime request. Typically you select events (filter) then optionally override schema defaults."""
+
     event_name: Optional[str] = None
     schema_id: Optional[str] = None
     tags_any: Optional[Sequence[str]] = None
 
-    # Overrides (optional)
     anchor: Optional[AnchorField] = None
     window: Optional[WindowSpec] = None
     roles: Optional[Sequence[RoleSpec]] = None
@@ -101,17 +75,8 @@ class SegmentRequest:
     output: OutputSpec = field(default_factory=OutputSpec)
 
 
-# SegmentBundle: returned intermediate
-# - events: filtered events used
-# - segments: per-row extraction metadata (indices, validity)
-# - data: role -> (n_seg, n_samples) arrays (+ time arrays)
-# - qc: summary
 SegmentBundle = Dict[str, Any]
 
-
-# -------------------------
-# Public API
-# -------------------------
 
 def extract_segments(
     df: pd.DataFrame,
@@ -121,111 +86,35 @@ def extract_segments(
     schema: Optional[Mapping[str, Any]] = None,
     request: Optional[SegmentRequest] = None,
 ) -> SegmentBundle:
-    """
-    Extract aligned windows around events.
-
-    Parameters
-    ----------
-    df:
-        Session dataframe, must contain numeric monotonic 'time_s'.
-    events:
-        Detected events table per your contract (must include start/trigger/end idx/time fields).
-    meta:
-        Session meta dict, must include meta["signals"] registry mapping df column -> semantics.
-    schema:
-        Event schema dict (optional). If provided, schema defaults are used (segment_defaults).
-    request:
-        SegmentRequest selecting events & overriding schema defaults.
-
-    Returns
-    -------
-    SegmentBundle dict:
-        {
-          "spec": {...resolved...},
-          "events": events_df,
-          "segments": segments_df,
-          "data": {role: array, "time_s": array?, "t_rel_s": array?},
-          "qc": {...}
-        }
-    """
     _validate_df_timebase(df)
 
     req = request or SegmentRequest()
     events_sel = _filter_events(events, req)
-    
-    #debug
-    logger.debug("---- segment selection ----")
-    logger.debug(
-        "events total: %d",
-        len(events),
-    )
 
-    logger.debug(
-        "events schema_id counts:\n%s",
-        events["schema_id"].value_counts().to_string(),
-    )
+    if events_sel is None or len(events_sel) == 0:
+        return {
+            "data": {},
+            "spec": {"anchor": None, "window": None, "grid": None, "role_to_col": {}, "role_to_col_mode": "none"},
+            "segments": pd.DataFrame([{"valid": False, "reason": "no selected events"}]),
+            "events": events_sel if events_sel is not None else pd.DataFrame(),
+            "qc": meta.get("qc") if isinstance(meta, dict) else None,
+        }
 
-    logger.debug(
-        "request: %s",
-        req,
-    )
-
-    events_sel = _filter_events(events, req)
-
-    logger.debug(
-        "events selected: %d",
-        len(events_sel),
-    )
-
-    logger.debug(
-        "selected schema_id unique: %s",
-        sorted(events_sel["schema_id"].dropna().unique().tolist()),
-    )
-
-    logger.debug(
-        "selected event_name unique (first 5): %s",
-        sorted(events_sel["event_name"].dropna().unique().tolist())[:5],
-    )
-    #debug
-
-
-    # Resolve defaults per-event_name (or schema_id) from schema, then apply request overrides.
     resolved = _resolve_effective_spec(schema, events_sel, req)
 
     #debug
-    logger.debug("---- resolved spec ----")
-    logger.debug(
-        "resolved anchor: %s",
-        resolved["anchor"],
-    )
+    for rs in resolved["roles"]:
+        if rs.role == "disp_norm":
+            print("disp_norm prefer:", rs.prefer)
 
-    logger.debug(
-        "resolved window: %s",
-        resolved["window"],
-    )
-
-    logger.debug(
-        "resolved grid: %s",
-        resolved["grid"],
-    )
-
-    logger.debug(
-        "resolved roles: %s",
-        [r.role for r in resolved["roles"]],
-    )
-
-    #debug
-
-    # Resolve roles -> df columns (registry aware)
-    role_to_col = _resolve_roles_to_columns(
+    role_to_col_by_eventrow = _resolve_roles_to_columns_per_eventrow(
         meta_signals=meta.get("signals", {}),
         roles=resolved["roles"],
         df_columns=df.columns,
-        include_primary=(req.output.include_primary_signal),
+        include_primary=req.output.include_primary_signal,
         events_df=events_sel,
     )
 
-    # Compute extraction indices per event row
     seg_df, n_expected = _compute_segment_indices(
         df_time_s=df["time_s"].to_numpy(),
         events_df=events_sel,
@@ -235,11 +124,13 @@ def extract_segments(
         grid=resolved["grid"],
     )
 
-    # Materialize arrays
-    data = _materialize_arrays(
+    seg_df = seg_df.copy()
+    seg_df["role_to_col"] = seg_df["event_row"].map(lambda i: role_to_col_by_eventrow.get(int(i), {}))
+
+    data = _materialize_arrays_per_event(
         df=df,
         segments_df=seg_df,
-        role_to_col=role_to_col,
+        role_to_col_by_eventrow=role_to_col_by_eventrow,
         n_expected=n_expected,
         output=req.output,
     )
@@ -252,7 +143,8 @@ def extract_segments(
             "window": resolved["window"],
             "grid": resolved["grid"],
             "roles": list(resolved["roles"]),
-            "role_to_col": role_to_col,
+            "role_to_col": None,
+            "role_to_col_mode": "per_event_row",
             "output": req.output,
         },
         "events": events_sel,
@@ -262,22 +154,14 @@ def extract_segments(
     }
 
 
-# -------------------------
-# Filtering / Spec resolution
-# -------------------------
-
 def _filter_events(events: pd.DataFrame, req: SegmentRequest) -> pd.DataFrame:
     out = events.copy()
 
-    # Prefer schema_id (canonical, stable)
     if req.schema_id is not None and "schema_id" in out.columns:
         out = out[out["schema_id"] == req.schema_id]
-
-    # Fallback to event_name (human label) ONLY if schema_id not supplied
     elif req.event_name is not None and "event_name" in out.columns:
         out = out[out["event_name"] == req.event_name]
 
-    # Optional tags filter (applies after primary selection)
     if req.tags_any and "tags" in out.columns:
         want = set(req.tags_any)
 
@@ -296,28 +180,18 @@ def _filter_events(events: pd.DataFrame, req: SegmentRequest) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-
 def _resolve_effective_spec(
     schema: Optional[Mapping[str, Any]],
     events_df: pd.DataFrame,
     req: SegmentRequest,
 ) -> Dict[str, Any]:
-    """
-    Resolve: schema segment_defaults (optional) + request overrides.
-    For v0, we use:
-      - one effective spec for the whole selection (assumes homogeneous event types)
-    """
-    # ---- base defaults ----
     anchor: AnchorField = "trigger_time_s"
     window = WindowSpec(mode="time", pre_s=0.0, post_s=0.0)
     grid = GridSpec(mode="native", dt_s=None)
-    roles: List[RoleSpec] = [RoleSpec("disp")]
+    roles: List[RoleSpec] = []
 
-    # ---- schema-derived defaults (optional) ----
+    event_key = None
     if schema is not None:
-        # Choose schema event key. Prefer schema_id (stable), fallback to event_name (legacy).
-        event_key = None
-
         if "schema_id" in events_df.columns and len(events_df) > 0:
             ids = sorted(set(events_df["schema_id"].dropna().astype(str).tolist()))
             if len(ids) == 1:
@@ -341,6 +215,7 @@ def _resolve_effective_spec(
         seg_def = _schema_segment_defaults(schema, event_key)
         if seg_def is not None:
             anchor = seg_def.get("anchor", anchor)  # type: ignore
+
             w = seg_def.get("window", {})
             if isinstance(w, dict):
                 window = WindowSpec(
@@ -348,11 +223,7 @@ def _resolve_effective_spec(
                     pre_s=float(w.get("pre_s", window.pre_s)),
                     post_s=float(w.get("post_s", window.post_s)),
                 )
-            r = seg_def.get("roles")
-            if isinstance(r, list) and r:
-                roles = [RoleSpec(role=str(x)) if not isinstance(x, dict)
-                         else RoleSpec(role=str(x.get("role")), prefer=dict(x.get("prefer", {})))
-                         for x in r]
+
             g = seg_def.get("grid", {})
             if isinstance(g, dict):
                 grid = GridSpec(
@@ -360,17 +231,59 @@ def _resolve_effective_spec(
                     dt_s=g.get("dt_s", grid.dt_s),
                 )
 
-    # ---- request overrides ----
+            r = seg_def.get("roles")
+            if r is not None:
+                if not isinstance(r, list) or not r:
+                    raise ValueError("schema segment_defaults.roles must be a non-empty list in strict mode")
+
+                parsed: List[RoleSpec] = []
+                for x in r:
+                    if not isinstance(x, dict):
+                        raise ValueError(
+                            "schema segment_defaults.roles entries must be dicts in strict mode; "
+                            f"got {type(x)} entry {x!r}"
+                        )
+
+                    role = str(x.get("role", "")).strip()
+                    prefer = x.get("prefer", None)
+
+                    if not role:
+                        raise ValueError(f"schema role dict missing/empty 'role': {x!r}")
+                    if not isinstance(prefer, dict) or not prefer:
+                        raise ValueError(f"schema role {role!r} must include non-empty prefer dict; got {prefer!r}")
+                    if not str(prefer.get("quantity", "")).strip():
+                        raise ValueError(f"schema role {role!r} prefer must include non-empty 'quantity'")
+
+                    parsed.append(RoleSpec(role=role, prefer=dict(prefer)))
+
+                roles = parsed
+
     if req.anchor is not None:
         anchor = req.anchor
     if req.window is not None:
         window = req.window
     if req.grid is not None:
         grid = req.grid
-    if req.roles is not None:
-        roles = list(req.roles)
 
-    # Basic sanity
+    if req.roles is not None:
+        parsed: List[RoleSpec] = []
+        for rs in req.roles:
+            if not isinstance(rs, RoleSpec):
+                raise ValueError(f"req.roles must contain RoleSpec objects; got {type(rs)}")
+            prefer = getattr(rs, "prefer", None)
+            if not isinstance(prefer, Mapping) or not prefer:
+                raise ValueError(f"RoleSpec {rs.role!r} missing prefer (strict mode)")
+            if not str(prefer.get("quantity", "")).strip():
+                raise ValueError(f"RoleSpec {rs.role!r} prefer must include non-empty 'quantity'")
+            parsed.append(rs)
+        roles = parsed
+
+    if not roles:
+        raise ValueError(
+            "No roles resolved. In strict mode (Option B), roles must be specified in schema "
+            "segment_defaults.roles as dicts with prefer{quantity,...}, or in SegmentRequest.roles."
+        )
+
     if window.mode == "time":
         if window.pre_s < 0 or window.post_s < 0:
             raise ValueError("window pre_s/post_s must be >= 0")
@@ -381,210 +294,228 @@ def _resolve_effective_spec(
     return {"anchor": anchor, "window": window, "grid": grid, "roles": tuple(roles)}
 
 
-def _schema_segment_defaults(schema: Mapping[str, Any], event_key: Optional[str]) -> Optional[Mapping[str, Any]]:
-    """
-    Supports schemas where schema["events"] is either:
-      A) dict keyed by event id/schema_id
-      B) list of event dicts containing an 'id' (or 'schema_id') field
-    Returns the event's 'segment_defaults' dict if present.
-    """
-    if not event_key:
+def _schema_segment_defaults(schema: Mapping[str, Any], event_key: str | None) -> Optional[Mapping[str, Any]]:
+    if schema is None or event_key is None:
         return None
 
-    try:
-        events = schema.get("events", None)
+    events = schema.get("events")
+    if isinstance(events, list):
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            ev_id = ev.get("id")
+            ev_name = ev.get("event_name") or ev.get("name")
+            if str(ev_id) == str(event_key) or str(ev_name) == str(event_key):
+                seg = ev.get("segment_defaults")
+                return seg if isinstance(seg, dict) else None
 
-        # A) Mapping form: events[event_key]
-        if isinstance(events, Mapping):
-            ev = events.get(event_key)
-            if isinstance(ev, Mapping):
-                sd = ev.get("segment_defaults")
-                return sd if isinstance(sd, Mapping) else None
-            return None
+    seg_defaults = schema.get("segment_defaults")
+    if isinstance(seg_defaults, dict):
+        seg = seg_defaults.get(str(event_key))
+        return seg if isinstance(seg, dict) else None
 
-        # B) List form: find dict with matching id/schema_id
-        if isinstance(events, list):
-            for ev in events:
-                if not isinstance(ev, Mapping):
-                    continue
-                eid = ev.get("id", None)
-                if eid is None:
-                    eid = ev.get("schema_id", None)
-                if isinstance(eid, str) and eid == event_key:
-                    sd = ev.get("segment_defaults")
-                    return sd if isinstance(sd, Mapping) else None
-            return None
-
-        return None
-    except Exception:
-        return None
+    return None
 
 
-
-# -------------------------
-# Registry role resolution
-# -------------------------
-
-def _resolve_roles_to_columns(
+def _resolve_roles_to_columns_per_eventrow(
     *,
     meta_signals: Mapping[str, Any],
     roles: Sequence[RoleSpec],
     df_columns: Iterable[str],
     include_primary: bool,
     events_df: pd.DataFrame,
-) -> Dict[str, str]:
-    """
-    Resolve each role to a concrete df column name using meta["signals"] registry.
-    Also optionally includes a role "primary" mapped to events_df["signal_col"].
-    """
+) -> Dict[int, Dict[str, str]]:
     df_cols = set(df_columns)
-    role_to_col: Dict[str, str] = {}
+    out: Dict[int, Dict[str, str]] = {}
 
-    # Fast path: include primary signal from event table if present.
-    if include_primary and "signal_col" in events_df.columns and len(events_df) > 0:
-        # If mixed, require consistent
-        cols = sorted(set(events_df["signal_col"].dropna().astype(str).tolist()))
-        if len(cols) == 1 and cols[0] in df_cols:
-            role_to_col["primary"] = cols[0]
+    if events_df is None or len(events_df) == 0:
+        return out
+    if "signal_col" not in events_df.columns:
+        raise ValueError("events_df missing required 'signal_col' for Option B sensor binding")
 
-    # --- Prefer the detected event's concrete signal column ---
-    primary_signal_col = None
-    if events_df is not None and "signal_col" in events_df.columns:
-        uniq = [x for x in events_df["signal_col"].dropna().unique().tolist() if isinstance(x, str)]
-        if len(uniq) == 1:
-            primary_signal_col = uniq[0]
-        
-    # Resolve additional roles via registry
-    # Registry format: column -> {kind, unit, domain, op_chain, base, ...}
-    for rs in roles:
-        col = _pick_column_for_role(meta_signals, rs.role, rs.prefer, primary_signal_col=primary_signal_col)
-        if col is None:
-            raise ValueError(f"Could not resolve role '{rs.role}' via meta['signals']")
-        if col not in df_cols:
-            raise ValueError(f"Resolved role '{rs.role}' -> '{col}', but column not in df")
-        role_to_col[rs.role] = col
+    for i, ev in events_df.iterrows():
+        role_to_col: Dict[str, str] = {}
 
-    return role_to_col
+        primary_col = None
+        sigcol = ev.get("signal_col", None)
+        if isinstance(sigcol, str) and sigcol in df_cols:
+            primary_col = sigcol
+            if include_primary:
+                role_to_col["primary"] = sigcol
+
+        event_sensor = None
+        if isinstance(sigcol, str):
+            info = meta_signals.get(sigcol)
+            if isinstance(info, dict):
+                s = info.get("sensor", None)
+                if isinstance(s, str) and s.strip():
+                    event_sensor = s.strip()
+
+            # Fallback: if registry doesn't have this exact column key,
+            # derive sensor from the canonical name (base token before _vel/_acc/_raw etc).
+            if event_sensor is None:
+                try:
+                    from .signalname import parse_signal_name
+                    parts = parse_signal_name(sigcol)
+                    base = parts.base  # e.g. "front_shock_vel"
+                    if base.endswith("_vel"):
+                        base = base[:-4]
+                    elif base.endswith("_acc"):
+                        base = base[:-4]
+                    elif base.endswith("_raw"):
+                        base = base[:-4]
+                    event_sensor = base
+                except Exception:
+                    event_sensor = None
 
 
-def _pick_column_for_role(meta_signals: dict, role: str, prefer: list[str] | None,
-                          *, primary_signal_col: str | None = None) -> str | None:
-    role = (role or "").strip().lower()
+        for rs in roles:
+            col = _pick_column_for_role(
+                meta_signals,
+                rs.role,
+                rs.prefer,
+                primary_signal_col=primary_col,
+                event_sensor=event_sensor,
+            )
+            if col is None:
+                raise ValueError(
+                    f"Could not resolve role {rs.role!r} for event_row={int(i)} "
+                    f"(schema_id={ev.get('schema_id')!r}, signal_col={sigcol!r}, bound_sensor={event_sensor!r}) "
+                    f"via meta['signals']"
+                )
+            if col not in df_cols:
+                raise ValueError(f"Resolved role '{rs.role}' -> '{col}', but column not in df")
+            role_to_col[rs.role] = col
 
-    # Helper: ensure candidate exists in registry
-    def has(col: str) -> bool:
-        return isinstance(col, str) and col in meta_signals
+        out[int(i)] = role_to_col
 
-    # 1) If events told us the concrete signal column, use it as disp.
-    if role == "disp" and primary_signal_col and has(primary_signal_col):
-        return primary_signal_col
+    return out
 
-    # 2) Derive related columns from the disp prefix when possible.
-    # disp col example: "rear_shock_dom_suspension [mm]"
-    # vel col:         "rear_shock_vel [mm/s]"
-    # acc col:         "rear_shock_acc [mm/s^2]"
-    # norm col:        "rear_shock_norm [1]"
-    # zeroed col:      "rear_shock_dom_suspension [mm]_op_zeroed"
-    if primary_signal_col:
-        prefix = primary_signal_col.split("_", 1)[0]  # "rear" would be wrong; use better:
-        # Better prefix extraction: take token before first "_" is too short.
-        # Use first two tokens if present: "rear_shock"
-        parts = primary_signal_col.split("_")
-        prefix = "_".join(parts[:2]) if len(parts) >= 2 else parts[0]
 
-        if role == "vel":
-            cand = f"{prefix}_vel [mm/s]"
-            if has(cand): return cand
+def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *, event_sensor=None):
+    """Registry-first role resolution with op_chain normalization."""
 
-        if role == "acc":
-            cand = f"{prefix}_acc [mm/s^2]"
-            if has(cand): return cand
+    def _get_pref(p, k, default=None):
+        if p is None:
+            return default
+        if isinstance(p, dict):
+            return p.get(k, default)
+        return getattr(p, k, default)
 
-        if role in ("disp_norm", "norm"):
-            cand = f"{prefix}_norm [1]"
-            if has(cand): return cand
+    def _norm_str(x):
+        if x is None:
+            return None
+        s = str(x).strip()
+        return s if s else None
 
-        if role in ("disp_zeroed", "zeroed"):
-            cand = f"{primary_signal_col}_op_zeroed"
-            if has(cand): return cand
+    def _norm_kind(x):
+        s = _norm_str(x)
+        return s or ""
 
-    # 3) Fallback: scan registry by unit/op_chain (kind is blank for engineered signals)
-    want = {
-        "disp":        {"unit": "mm",     "op": None},
-        "vel":         {"unit": "mm/s",   "op": None},
-        "acc":         {"unit": "mm/s^2", "op": None},
-        "disp_norm":   {"unit": "1",      "name_contains": "_norm"},
-        "disp_zeroed": {"unit": "mm",     "op": "zeroed"},
-    }.get(role)
+    def _norm_unit(x):
+        return _norm_str(x)
 
-    if not want:
-        return None
+    def _norm_op_token(tok: Any) -> str:
+        t = str(tok).strip()
+        if t.startswith("op_"):
+            t = t[3:]
+        return t
 
-    best = None
-    best_score = -1
+    def _norm_op_chain(x):
+        if x is None:
+            return ()
+        if isinstance(x, (list, tuple)):
+            return tuple(_norm_op_token(v) for v in x if str(v).strip())
+        s = str(x).strip()
+        if not s:
+            return ()
+        if "|" in s:
+            return tuple(_norm_op_token(p) for p in s.split("|") if p)
+        return (_norm_op_token(s),)
 
-    for col, info in meta_signals.items():
+    pref_sensor = _norm_str(_get_pref(prefer, "sensor"))
+    pref_quantity = _norm_str(_get_pref(prefer, "quantity"))
+    pref_kind = _norm_kind(_get_pref(prefer, "kind"))
+    pref_unit = _norm_unit(_get_pref(prefer, "unit"))
+    pref_op_chain = _norm_op_chain(_get_pref(prefer, "op_chain"))
+
+    #debug
+    if role == "disp_norm":
+        print("DEBUG disp_norm prefer:", prefer)
+        print("DEBUG disp_norm pref_sensor:", pref_sensor)
+        print("DEBUG disp_norm pref_quantity:", pref_quantity)
+        print("DEBUG disp_norm pref_unit:", pref_unit)
+        print("DEBUG disp_norm pref_op_chain:", pref_op_chain)
+
+
+    if pref_sensor is None and event_sensor:
+        pref_sensor = _norm_str(event_sensor)
+
+    if pref_quantity is None and isinstance(role, str) and role.strip():
+        pref_quantity = role.strip()
+
+    candidates = []
+    for col, info in (meta_signals or {}).items():
+        if not isinstance(col, str):
+            continue
         if not isinstance(info, dict):
             continue
 
-        unit = info.get("unit")
-        kind = info.get("kind")
-        op_chain = info.get("op_chain") or []
+        sensor = _norm_str(info.get("sensor"))
+        quantity = _norm_str(info.get("quantity"))
+        kind = _norm_kind(info.get("kind"))
+        unit = _norm_unit(info.get("unit"))
+        op_chain = _norm_op_chain(info.get("op_chain"))
 
-        if kind == "raw":
+        #debug
+        if role == "disp_norm" and quantity == "disp":
+            print("DEBUG disp_norm candidate:", col, "sensor=", sensor, "unit=", unit, "op_chain=", info.get("op_chain"))
+
+        if pref_sensor is not None and sensor != pref_sensor:
+            continue
+        if pref_quantity is not None and quantity != pref_quantity:
+            continue
+        if pref_kind and kind != pref_kind:
+            continue
+        if pref_unit is not None and unit != pref_unit:
+            continue
+        if pref_op_chain and op_chain != pref_op_chain:
             continue
 
-        if unit != want.get("unit"):
-            continue
+        candidates.append((col, info))
 
-        if want.get("op") is not None:
-            if want["op"] not in op_chain:
-                continue
+    if not candidates:
+        if isinstance(role, str) and role.strip().lower() == "primary" and primary_signal_col:
+            return primary_signal_col
+        return None
 
-        if want.get("name_contains"):
-            if want["name_contains"] not in col:
-                continue
-
-        # Prefer suspension domain if present (your disp has domain='suspension')
+    def _score(col_info):
+        col, info = col_info
         score = 0
-        if info.get("domain") == "suspension":
+        if info.get("sensor") is not None:
             score += 2
-        if primary_signal_col and col.startswith(primary_signal_col.split("[", 1)[0].strip()):
+        if info.get("quantity") is not None:
             score += 2
+        if info.get("unit") is not None:
+            score += 1
+        if (info.get("kind") or "") != "":
+            score += 1
+        if info.get("op_chain"):
+            score += 1
+        if primary_signal_col and col == primary_signal_col:
+            score += 10
+        return score
 
-        if score > best_score:
-            best = col
-            best_score = score
+    candidates.sort(key=_score, reverse=True)
 
-    return best
+    best_score = _score(candidates[0])
+    tied = [c for c in candidates if _score(c) == best_score]
+    tied_cols = [c[0] for c in tied]
+    if len(set(tied_cols)) > 1:
+        raise ValueError(f"Ambiguous role resolution for role={role!r} prefer={prefer!r}: candidates={tied_cols}")
 
+    return candidates[0][0]
 
-
-def _role_semantics(role: str) -> Dict[str, Any]:
-    role = role.strip().lower()
-
-    # Normalize common unit spellings
-    def u(*alts: str) -> List[str]:
-        return [a for a in alts if a]
-
-    if role in ("disp", "displacement"):
-        return {"kind_any": ["disp", "displacement", "position"], "unit_any": u("[mm]", "mm")}
-    if role in ("vel", "velocity"):
-        return {"kind_any": ["vel", "velocity"], "unit_any": u("[mm/s]", "mm/s")}
-    if role in ("acc", "accel", "acceleration"):
-        return {"kind_any": ["acc", "accel", "acceleration"], "unit_any": u("[mm/s^2]", "mm/s^2")}
-    if role in ("disp_norm", "norm"):
-        return {"kind_any": ["disp", "displacement", "position"], "unit_any": u("[1]", "1"), "op_contains": ["norm"]}
-    if role in ("disp_zeroed", "zeroed"):
-        return {"kind_any": ["disp", "displacement", "position"], "unit_any": u("[mm]", "mm"), "op_contains": ["op_zeroed"]}
-
-    return {}
-
-
-
-# -------------------------
-# Index computation
-# -------------------------
 
 def _compute_segment_indices(
     *,
@@ -595,17 +526,11 @@ def _compute_segment_indices(
     pad: PadMode,
     grid: GridSpec,
 ) -> Tuple[pd.DataFrame, int]:
-    """
-    Returns:
-      segments_df: per-event extraction metadata
-      n_expected: expected samples per segment (for native grid)
-    """
     if df_time_s.ndim != 1:
         raise ValueError("df_time_s must be 1D")
     if len(df_time_s) == 0:
         raise ValueError("df_time_s is empty")
 
-    # Estimate dt for native fixed-length extraction
     dt_est = float(np.median(np.diff(df_time_s))) if len(df_time_s) >= 3 else float(df_time_s[-1] - df_time_s[0])
     if dt_est <= 0:
         raise ValueError("Non-positive dt estimate from df_time_s; ensure monotonic increasing time_s")
@@ -624,12 +549,7 @@ def _compute_segment_indices(
         n_expected = int(window.pre_n + window.post_n + 1)
 
     rows: List[Dict[str, Any]] = []
-
     for i, ev in events_df.iterrows():
-
-        # -------------------------------------------------
-        # 1) Resolve anchor for THIS event
-        # -------------------------------------------------
         if anchor.endswith("_idx"):
             trigger_idx = int(ev[anchor])
             if trigger_idx < 0 or trigger_idx >= len(df_time_s):
@@ -650,15 +570,11 @@ def _compute_segment_indices(
                 valid = True
                 reason = ""
 
-        # -------------------------------------------------
-        # 2) Compute requested window indices
-        # -------------------------------------------------
         if valid:
             if window.mode == "samples":
                 req_start_idx = int(trigger_idx - window.pre_n)
                 req_end_idx_excl = int(trigger_idx + window.post_n)
             else:
-                # time mode: convert seconds to indices using df_time_s
                 t0 = trigger_time_s - float(window.pre_s)
                 t1 = trigger_time_s + float(window.post_s)
                 req_start_idx = int(np.searchsorted(df_time_s, t0, side="left"))
@@ -666,72 +582,61 @@ def _compute_segment_indices(
         else:
             req_start_idx = req_end_idx_excl = -1
 
-
-        # -------------------------------------------------
-        # 3) Apply padding / clipping
-        # -------------------------------------------------
         if valid:
             start_idx = max(0, req_start_idx)
             end_idx_excl = min(len(df_time_s), req_end_idx_excl)
-            n_expected = end_idx_excl - start_idx
-            if n_expected <= 0:
+            n_here = end_idx_excl - start_idx
+            if n_here <= 0:
                 valid = False
                 reason = "empty segment after clipping"
         else:
             start_idx = end_idx_excl = -1
-            n_expected = 0
+            n_here = 0
 
-        # -------------------------------------------------
-        # 4) NOW build the row (all variables exist)
-        # -------------------------------------------------
-        row = {
-            "event_row": int(i),
-            "valid": bool(valid),
-            "reason": reason,
-            "trigger_time_s": float(trigger_time_s) if valid else np.nan,
-            "trigger_idx": int(trigger_idx) if valid else -1,
-            "req_start_idx": int(req_start_idx),
-            "req_end_idx_excl": int(req_end_idx_excl),
-            "start_idx": int(start_idx),
-            "end_idx_excl": int(end_idx_excl),
-            "n_expected": int(n_expected),
-        }
-
-        rows.append(row)
-
+        rows.append(
+            {
+                "event_row": int(i),
+                "valid": bool(valid),
+                "reason": reason,
+                "trigger_time_s": float(trigger_time_s) if valid else np.nan,
+                "trigger_idx": int(trigger_idx) if valid else -1,
+                "req_start_idx": int(req_start_idx),
+                "req_end_idx_excl": int(req_end_idx_excl),
+                "start_idx": int(start_idx),
+                "end_idx_excl": int(end_idx_excl),
+                "n_expected": int(n_here),
+            }
+        )
 
     seg_df = pd.DataFrame(rows)
     n_expected_out = int(seg_df["n_expected"].max()) if len(seg_df) else 0
-    return seg_df, n_expected
+    return seg_df, n_expected_out
 
 
-# -------------------------
-# Materialization
-# -------------------------
-
-def _materialize_arrays(
+def _materialize_arrays_per_event(
     *,
     df: pd.DataFrame,
     segments_df: pd.DataFrame,
-    role_to_col: Mapping[str, str],
+    role_to_col_by_eventrow: Mapping[int, Mapping[str, str]],
     n_expected: int,
     output: OutputSpec,
 ) -> Dict[str, np.ndarray]:
     valid_mask = segments_df["valid"].to_numpy(dtype=bool) if "valid" in segments_df.columns else np.ones(len(segments_df), bool)
     n_seg = int(valid_mask.sum())
 
-    # Allocate
+    role_keys: List[str] = []
+    for _, m in role_to_col_by_eventrow.items():
+        role_keys = list(m.keys())
+        break
+
     data: Dict[str, np.ndarray] = {}
 
     def _alloc() -> np.ndarray:
         if output.pad == "nan":
-            arr = np.full((n_seg, n_expected), np.nan, dtype=output.dtype)
-        else:
-            arr = np.zeros((n_seg, n_expected), dtype=output.dtype)
-        return arr
+            return np.full((n_seg, n_expected), np.nan, dtype=output.dtype)
+        return np.zeros((n_seg, n_expected), dtype=output.dtype)
 
-    # Pre-allocate per role
-    for role in role_to_col.keys():
+    for role in role_keys:
         data[role] = _alloc()
 
     if output.include_time_s:
@@ -739,32 +644,30 @@ def _materialize_arrays(
     if output.include_t_rel_s:
         data["t_rel_s"] = _alloc()
 
-    # Prepare for fast slicing
     time_s = df["time_s"].to_numpy(dtype=np.float64)
 
     seg_out_i = 0
-    for seg_i, seg in segments_df.iterrows():
+    for _, seg in segments_df.iterrows():
         if not bool(seg.get("valid", True)):
             continue
+
+        event_row = int(seg["event_row"])
+        role_to_col = role_to_col_by_eventrow.get(event_row, None)
+        if not isinstance(role_to_col, Mapping) or not role_to_col:
+            raise ValueError(f"Missing role_to_col mapping for event_row={event_row}")
 
         start_idx = int(seg["start_idx"])
         end_idx_excl = int(seg["end_idx_excl"])
         anchor_t = float(seg["trigger_time_s"])
 
-        # The slice we can take from df
         sl = slice(start_idx, end_idx_excl)
         have = end_idx_excl - start_idx
 
-        # We want to place into a fixed-length window aligned to anchor.
-        # For v0, we map the slice into the center by computing the requested start index.
-        # Use req_start_idx to determine left padding (when clamped).
         req_start_idx = int(seg.get("req_start_idx", start_idx))
         left_pad = max(0, start_idx - req_start_idx)
 
-        # If the slice is longer than expected due to dt jitter, clamp.
         copy_n = min(have, n_expected - left_pad)
 
-        # Fill time arrays
         if output.include_time_s or output.include_t_rel_s:
             t_slice = time_s[sl][:copy_n]
             if output.include_time_s:
@@ -772,20 +675,14 @@ def _materialize_arrays(
             if output.include_t_rel_s:
                 data["t_rel_s"][seg_out_i, left_pad:left_pad + copy_n] = (t_slice - anchor_t).astype(output.dtype, copy=False)
 
-        # Fill signal roles
         for role, col in role_to_col.items():
             x = df[col].to_numpy(dtype=output.dtype, copy=False)[sl][:copy_n]
             data[role][seg_out_i, left_pad:left_pad + copy_n] = x
 
         seg_out_i += 1
 
-    # Also return a compact index mapping if needed (future)
     return data
 
-
-# -------------------------
-# QC / Validation
-# -------------------------
 
 def _validate_df_timebase(df: pd.DataFrame) -> None:
     if "time_s" not in df.columns:
@@ -819,11 +716,5 @@ def _qc_summary(segments_df: pd.DataFrame) -> Dict[str, Any]:
     return {"n_total": n_total, "n_valid": n_valid, "n_invalid": n_invalid, "reasons": reasons}
 
 
-# -------------------------
-# Example usage (remove in production)
-# -------------------------
-
 if __name__ == "__main__":
-    # This is only a placeholder; wire into your pipeline:
-    # bundle = extract_segments(session["df"], events, meta=session["meta"], schema=schema, request=SegmentRequest(event_name="rebound"))
     pass

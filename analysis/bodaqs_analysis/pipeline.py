@@ -16,7 +16,10 @@ from .metrics import extract_metrics_df, compute_metrics_from_segments
 from .model import validate_metrics_df
 from .model import validate_session
 from .timebase import register_stream_timebase
-from .signal_standardize import standardize_signals
+from .signal_standardize import (
+    canonicalize_signal_names,
+    rebuild_and_validate_signal_registry,
+)
 from .segment import extract_segments, SegmentRequest
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
@@ -84,6 +87,18 @@ def preprocess_session(session: Dict[str, Any],
     # QC: ensure structure exists early
     qc = session.setdefault("qc", {})
     transforms = qc.setdefault("transforms", {})
+
+    # ---------------- Signals: canonicalize base names early ----------------
+    units_by_base = {k: "mm" for k in normalize_ranges.keys()}
+    domain_by_base = {"front_shock": "suspension", "rear_shock": "suspension"}
+
+    session["df"] = df  # ensure session df is current
+    session = canonicalize_signal_names(
+        session,
+        units_by_base=units_by_base,
+        domain_by_base=domain_by_base,
+    )
+    df = session["df"]  # refresh local df after rename
 
     # ---------------- Normalize / zero / scale ----------------
     df2, norm_meta = normalize_and_scale(
@@ -175,24 +190,13 @@ def preprocess_session(session: Dict[str, Any],
     )
     validate_session(session)
 
-    # ---------------- Signals: standardise + enforce (v0.2) ----------------
-    # Units hint: keys you normalise are your engineered position bases.
-    units_by_base = {k: "mm" for k in normalize_ranges.keys()}
-
-    # Domain hint (optional but now that you want domain, this is a good start)
-    domain_by_base = {
-        "front_shock": "suspension",
-        "rear_shock": "suspension",
-    }
-
-    session = standardize_signals(
+    # ---------------- Signals: rebuild registry + validate (final df) ----------------
+    session = rebuild_and_validate_signal_registry(
         session,
-        units_by_base=units_by_base,
-        domain_by_base=domain_by_base,
-        strict_registry_parse=True,  # Step 3 normaliser exists, so tighten
-        derive_va=False,             # you already compute VA above
+        strict_registry_parse=True,
     )
     return session
+
      
 def run_macro(csv_path: str,
               schema_path: str,
@@ -209,6 +213,8 @@ def run_macro(csv_path: str,
         sample_rate_hz=sample_rate_hz,
     )    logger.info("Session pre-process complete")
 
+    cols = [c for c in session["df"].columns if "front_shock" in c and "dom_suspension" in c]
+    print("\n".join(cols))
 
     # debug
     t = session["df"]["time_s"].to_numpy()
@@ -244,25 +250,21 @@ def run_macro(csv_path: str,
         raise ValueError("session['meta'] must be a dict")
 
     # Standardized session_id: CSV filename stem (no extension)
-    meta["session_id"] = os.path.splitext(os.path.basename(str(csv_path)))[0]
-    session["meta"]["session_id"] = session["session_id"]
-    # add a minimal signals registry (see helper below)
-    session["meta"]["signals"] = build_minimal_signal_registry(session["df"])
+    sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
+    session["session_id"] = sid
+    meta["session_id"] = sid
+
     
     schema = load_event_schema(schema_path)
     
     logger.info("Schema load complete")
 
-    print("meta keys:", sorted(session["meta"].keys()))
-    print("meta.session_id:", session["meta"].get("session_id"))
-    print("df has rear_shock [mm]?:", "rear_shock [mm]" in session["df"].columns)
-    print("rear-ish:", [c for c in session["df"].columns if isinstance(c,str) and "rear" in c.lower()])
-
     events_df = detect_events_from_schema(
         session["df"],
         schema,
         meta=session["meta"],
-    )
+    )
+
     #debug
     logger.info("Event detection complete")
     logger.info("events rows: %d", len(events_df))
@@ -271,16 +273,37 @@ def run_macro(csv_path: str,
     #debug
 
     # Segment extraction (one schema event per call in v0)
-    schema_event_ids = [e["id"] for e in schema["events"]]
-    logger.info("Running segment extraction for schema events: %s", schema_event_ids)
+    detected_sids = sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()) if (
+        isinstance(events_df, pd.DataFrame) and ("schema_id" in events_df.columns)
+    ) else []
+
+    defined_sids = sorted([str(e.get("id")) for e in (schema.get("events") or []) if isinstance(e, dict) and e.get("id")])
+    missing = [sid for sid in defined_sids if sid not in set(detected_sids)]
+    if missing:
+        logger.info("Schema events with zero detections this run: %s", missing)
+
+    logger.info("Running segment extraction for detected schema events: %s", detected_sids)
 
     bundles_by_schema_id: dict[str, dict] = {}
     metrics_parts: list[pd.DataFrame] = []
 
-    for sid in schema_event_ids:
+    for sid in detected_sids:
+        # (Optional but nice) pre-filter for clarity + earlier logging
+        events_sel = events_df[events_df["schema_id"].astype(str) == str(sid)]
+        if events_sel.empty:
+            logger.info("No events for schema_id=%s; skipping.", sid)
+            continue
+
+        #debug
+        sig = session["meta"]["signals"]
+        print("signals count:", len(sig))
+        print("example disp cols:", [c for c,i in sig.items() if isinstance(i,dict) and i.get("quantity")=="disp"][:10])
+        print("example keys:", list(next(iter(sig.values())).keys()) if sig else None)
+        #debug
+
         bundle = extract_segments(
             df=session["df"],
-            events=events_df,
+            events=events_df,  # extract_segments will select internally; keep as-is
             meta=session["meta"],
             schema=schema,
             request=SegmentRequest(schema_id=sid),

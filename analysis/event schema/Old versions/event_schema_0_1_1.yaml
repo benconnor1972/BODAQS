@@ -1,4 +1,4 @@
-specification: 0.1.1
+specification: '0.1.1'
 version: '4'
 naming:
   suffixes:
@@ -26,8 +26,8 @@ events:
 - id: deep_compression
   label: deep compression (0.8 <= disp_norm < 0.98)
   sensors:
-    - rear_shock
-    - front_shock
+  - rear_shock
+  - front_shock
   trigger:
     type: local_extrema
     signal: disp
@@ -60,43 +60,27 @@ events:
     post_s: 0.8
     align: trigger
   metrics:
-    - type: peak
-      signal: disp
-      kind: max
+  - type: peak
+    signal: disp
+    kind: max
   tags:
-    - basic
-    - kinematics
+  - basic
+  - kinematics
   segment_defaults:
     anchor: trigger_time_s
     window:
       pre_s: 0.2
       post_s: 0.8
     roles:
-      - role: disp
-        prefer: &id001
-          quantity: disp
-          unit: mm
-          op_chain: [zeroed]
-      - role: vel
-        prefer: &id002
-          quantity: vel
-          unit: mm/s
-          op_chain: []
-      - role: acc
-        prefer: &id003
-          quantity: acc
-          unit: mm/s^2
-          op_chain: []
-      - role: disp_norm
-        prefer: &id004
-          quantity: disp
-          unit: "1"
-          op_chain: [zeroed, norm]
+    - disp
+    - vel
+    - acc
+    - disp_norm
 - id: rebounds
   label: all rebound events >0.4
   sensors:
-    - rear_shock
-    - front_shock
+  - rear_shock
+  - front_shock
   trigger:
     id: rebound_start
     type: simple_threshold_crossing
@@ -142,38 +126,34 @@ events:
     post_s: 0.8
     align: trigger
   metrics:
-    - type: interval_stats
-      signal: vel
-      start_trigger: rebound_start
-      end_trigger: rebound_end
-      ops:
-      - mean
-      - max
-      - min
-      polarity: neg_to_pos
-      smooth_ms: 20
-      min_delay_s: 0.02
-      return_debug: true
-    - type: interval_stats
-      signal: disp
-      start_trigger: rebound_start
-      end_trigger: rebound_end
-      ops:
-      - delta
+  - type: interval_stats
+    signal: vel
+    start_trigger: rebound_start
+    end_trigger: rebound_end
+    ops:
+    - mean
+    - max
+    - min
+    polarity: neg_to_pos
+    smooth_ms: 20
+    min_delay_s: 0.02
+    return_debug: true
+  - type: interval_stats
+    signal: disp
+    start_trigger: rebound_start
+    end_trigger: rebound_end
+    ops:
+    - delta
   tags:
-    - kinematics
-    - rebound
+  - kinematics
+  - rebound
   segment_defaults:
     anchor: trigger_time_s
     window:
       pre_s: 0.2
       post_s: 0.8
     roles:
-      - role: disp
-        prefer: *id001
-      - role: vel
-        prefer: *id002
-      - role: acc
-        prefer: *id003
-      - role: disp_norm
-        prefer: *id004
+    - disp
+    - vel
+    - acc
+    - disp_norm
