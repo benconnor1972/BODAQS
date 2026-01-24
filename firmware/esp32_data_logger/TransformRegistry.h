@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include "OutputTransform.h"
+#include <FS.h>   // for fs::FS
 
 namespace fs { class FS; }   // FS-style interface
 class SdFs;                  // <- forward-declare (SdFat typedefs to this)
@@ -10,11 +11,10 @@ class SdFs;                  // <- forward-declare (SdFat typedefs to this)
 class TransformRegistry {
 public:
   // Scan /cal/<sensorId>/ and load transforms
-  bool loadForSensor(const String& sensorId, fs::FS& fs);  // FS backend
   bool loadForSensor(const String& sensorId, SdFs& sd);    // SdFat backend (SdFs)
+  bool loadForSensor(const String& sensorId, fs::FS& fs);
 
   // Force reload
-  bool reload(const String& sensorId, fs::FS& fs)  { return loadForSensor(sensorId, fs); }
   bool reload(const String& sensorId, SdFs& sd)    { return loadForSensor(sensorId, sd); }
 
   // Accessors
@@ -33,13 +33,13 @@ private:
   String calDirFor(const String& sensorId) const;
 
   // Backends
-  bool loadPoly_fs (const String& sensorId, const String& path, fs::FS& fs);
-  bool loadPoly_cfg_fs (const String& sensorId, const String& path, fs::FS& fs);  // <-- add this
-  bool loadLUT_fs  (const String& sensorId, const String& path, fs::FS& fs);
-
   bool loadPoly_sd (const String& sensorId, const String& path, SdFs& sd);
   bool loadPoly_cfg_sd (const String& sensorId, const String& path, SdFs& sd);    // <-- add this
   bool loadLUT_sd  (const String& sensorId, const String& path, SdFs& sd);
+
+  bool loadPoly_fs (const String& sensorId, const String& path, fs::FS& fs);
+  bool loadPoly_cfg_fs (const String& sensorId, const String& path, fs::FS& fs);    // <-- add this
+  bool loadLUT_fs  (const String& sensorId, const String& path, fs::FS& fs);
 };
 
 extern TransformRegistry gTransforms;

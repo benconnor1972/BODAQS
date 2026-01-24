@@ -58,7 +58,9 @@ public:
   static void setOnlineCallback(OnOnlineFn cb);
   static void setOfflineCallback(OnOfflineFn cb);
   static void setUiCallback(OnUiFn cb);
-  static void noteUserActivity();   // call on each HTTP request or user action
+  static void noteUserActivity();   
+  static void suspendForLogging();
+  static void resumeAfterLogging();
 
 
 private:
@@ -66,11 +68,13 @@ private:
   static void enterOff_();
   static void enterIdle_();
   static void startScan_();
-  static void selectAndConnect_();  // uses last scan results
+  static void selectAndConnect_();  
   static bool loggingGuard_();      // true if logging is active
   static bool configuredNetworksExist_();
   static void clearIntent_();
   static void shutdownRadio_();     // 
+  static bool s_loggingSuspended;
+  static bool s_restoreEnabledAfterLogging; 
 
 
   static WiFiMgrState s_state;

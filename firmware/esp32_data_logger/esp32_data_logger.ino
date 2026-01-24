@@ -22,8 +22,37 @@
 #include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "BoardSelect.h"
+#include "IndicatorManager.h"
+#include "PowerManager.h"
+#include "BoardProfile.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_heap_caps.h"
+
+#include "FS.h"
+#include "SD_MMC.h"
+#include <SdFat.h>
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
+
+
+//Debug
+static void dbgHeartbeat_()
+{
+  static uint32_t last = 0;
+  uint32_t now = millis();
+  if (now - last < 5000) return;
+  last = now;
+
+  Serial.printf("[HB] ms=%lu core=%d heap=%u largest=%u\n",
+                (unsigned long)now,
+                xPortGetCoreID(),
+                ESP.getFreeHeap(),
+                heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+  // Optional: stack watermark for loop task (call from the task you care about)
+  Serial.printf("[HB] stack watermark=%u\n", (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+}
 
 
 // --- Small utils ------------------------------------------------------------
@@ -87,17 +116,15 @@ static CalMask parseCalMaskCSV(const char* csv) {
 
 static void buildSensorsFromConfig();
 static bool s_rtcConnectIntent = false;
-
-//static void buildSensorsFromConfig();
 void onToggleLogging(ButtonEvent event);
 void onMarkEvent(ButtonEvent event);
 void onWebServerToggle(ButtonEvent event);
 
 
-LoggerConfig g_cfg;   // holds everything we load from loggercfg
+LoggerConfig g_cfg;  
 TransformRegistry gTransforms;
-SdFs* gSd = nullptr;   // SdFat typedefs to SdFs
-
+SdFs*  gSd = nullptr;     // stays for SPI SdFat backend
+fs::FS* gFs = nullptr;    // NEW: active filesystem for SDMMC (and could be used for SPI too if you want)
 
 using namespace board;
 
@@ -105,20 +132,30 @@ static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 
 void setup() {
   
+    Serial.begin(115200);
     SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
     DumpActiveBoardButtons();
 
-  // Optional sanity check
+    //Debug
+    auto dumpAdc = [](const char* tag){
+      Serial.printf("\n[ADC] %s\n", tag);
+      int pins[] = {15,17,18,10};
+      for (int p : pins) {
+        int v = analogRead(p);
+        Serial.printf("  GPIO%02d = %d\n", p, v);
+      }
+    };
+
+    dumpAdc("before WiFi");
+
+
   if (!gBoard) {
     Serial.println("FATAL: Board not selected");
     while (true) delay(1000);
   }
   
-  Serial.begin(115200);
-
   //Buffer debug
   static uint32_t g_sampleCounter = 0;
-
 
   RTCManager_setHumanReadable(true); // false = fast integer, true = readable
   StorageManager_begin(*gBoard);           
@@ -138,8 +175,10 @@ void setup() {
   g_cfg.oledIdleDimMs  = 30000; // 30s
   g_cfg.sampleRateHz   = 100;   // fallback
 
+  IndicatorManager::begin(*board::gBoard);
+
   ConfigManager::begin(StorageManager_getSd(), "/config/loggercfg.txt");
-  //ConfigManager::debugDumpConfigFile();
+
 
   if (!ConfigManager::load(g_cfg)) {
     Serial.println("[CFG] Load failed — using defaults");
@@ -190,39 +229,42 @@ void setup() {
 
   const auto& cfg = ConfigManager::get();
 
+  // Choose RTC
+  RTCManager_begin(RTC_INTERNAL);
+  // RTCManager_begin(RTC_EXTERNAL);
+
+  //Initialise wifi manager
+  Serial.println("SETUP: G wifimanager::begin");
+  WiFiManager::begin(isLoggingPredicate);
+  Serial.println("SETUP: G Done");
+
   // Bring Wi-Fi up on boot only if the user asked for it by default
   if (ConfigManager::hasConfiguredNetworks() && cfg.wifiEnabledDefault) {
     WiFiManager::enable();
     WiFiManager::connectNow();   // one pass: scan → select → connect
+    WiFiManager::maybeConnectForRTC();   
+
+  } else {
+    WiFiManager::disable();  // ensures clean OFF
+    WiFiManager::maybeConnectForRTC();  // if your signature takes cfg; otherwise keep your existing call
   }
 
  
-  // Choose RTC
-  RTCManager_begin(RTC_INTERNAL);
-  // RTCManager_begin(RTC_EXTERNAL);
+
 
   // Timezone + NTP list
   String n1, n2, n3;
   splitCsv3(g_cfg.ntpServers, n1, n2, n3);
   configTzTime(g_cfg.tz, n1.length()? n1.c_str(): nullptr, n2.length()? n2.c_str(): nullptr, n3.length()? n3.c_str(): nullptr);
-  
-    Serial.println("SETUP: G wifimanager::begin");
-
-  WiFiManager::begin();
-
-  Serial.println("SETUP: G Done");
-
-    Serial.println("SETUP: H maybeconnectforRTC");
-
-  WiFiManager::maybeConnectForRTC();   
-  Serial.println("SETUP: H Done");
-
 
   // 3) Init logging *after* sensors exist
   LoggingManager::begin(&g_cfg);
 
   Serial.println("SETUP: I Done");
 
+  if (gBoard && gBoard->fuel.type != FuelGaugeType::None) {
+    PowerManager::fuelGaugeBegin(gBoard->fuel.i2c_addr);
+  }
   // Start OLED if present
   DisplayManager::begin(cfg, gBoard->display, gBoard->i2c);
 
@@ -247,7 +289,7 @@ void setup() {
   MenuSystem::begin(&g_cfg);
     Serial.println("SETUP: M Done");
 
-  MenuSystem::setIdleCloseMs(120000);
+  MenuSystem::setIdleCloseMs(300000);
   Serial.println("SETUP: N Done");
 
     Serial.println("SETUP: ALL DONE");
@@ -258,13 +300,12 @@ void loop() {
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
-
-  //LoggingManager::loop();      // producer: fills StorageManager's sample queue
-  StorageManager_loop();       // consumer: formats & flushes to SD
-
+  StorageManager_loop();       
   WebServerManager::loop();
   UI::loop();
   MenuSystem::loop();
+  PowerManager::fuelGaugeLoop();
+  //dbgHeartbeat_();
 }
 
 

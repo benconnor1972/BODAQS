@@ -52,9 +52,12 @@ void AnalogPotSensor::applyParams(const Params& p) {
   m_fullMm = p.sensorFullTravelMm;
   installed_zero_count_ = p.installedZeroCount;
 
-  const long spanCounts = long(m_full) - long(m_zero);
+  long spanCounts = long(m_full) - long(m_zero);
+  long spanAbs    = abs(spanCounts);
   if (m_fullMm > 0.0f && spanCounts != 0) {
-    counts_per_mm_ = double(spanCounts) / double(m_fullMm);   // counts per 1 mm along sensor axis
+    spanCounts = m_full - m_zero;
+    spanAbs = abs(spanCounts);
+    counts_per_mm_ = double(spanAbs) / double(m_fullMm);   // counts per 1 mm along sensor axis
   } else {
     counts_per_mm_ = 0.0;  // invalid; sampling will output a safe 0
   }
@@ -74,7 +77,6 @@ void AnalogPotSensor::applyParams(const Params& p) {
 // ---------- RAW helpers ----------
 int AnalogPotSensor::readOnce() const {
   int raw = analogRead(m_pin);
-  if (m_invert) raw = 4095 - raw;
   return raw;
 }
 
@@ -119,7 +121,9 @@ void AnalogPotSensor::sample(float& selectedOut, int& smoothedRawOut) {
     selectedOut = 0.0f;
     return;
   }
-  const double x_mm_sensor = (double(smoothed) - double(installed_zero_count_)) / k;
+  double x_mm_sensor = (double(smoothed) - double(installed_zero_count_)) / k;
+  // Apply polarity in real-units space. This preserves raw ADC counts.
+  if (m_invert) x_mm_sensor = -x_mm_sensor;
 
   // 4) Output by mode
   switch (m_mode) {
@@ -139,6 +143,7 @@ void AnalogPotSensor::sample(float& selectedOut, int& smoothedRawOut) {
       selectedOut = float(x_mm_sensor);
       break;
   }
+  
 }
 
 
@@ -206,9 +211,19 @@ bool AnalogPotSensor::updateCalibration(int32_t latestCounts) {
   ++cal_.samples;
 
   if (cal_.mode == CalMode::RANGE) {
-    if (latestCounts < cal_.min_counts) cal_.min_counts = latestCounts;
-    if (latestCounts > cal_.max_counts) cal_.max_counts = latestCounts;
+    // RANGE is a 2-point capture with LABELLED endpoints:
+    //  - 1st sample: zero-travel endpoint
+    //  - 2nd sample: full-travel endpoint
+    if (cal_.samples == 1) {
+      cal_.min_counts = latestCounts;   // labelled "zero travel"
+    } else if (cal_.samples == 2) {
+      cal_.max_counts = latestCounts;   // labelled "full travel"
+    } else {
+      // Ignore any extra samples in RANGE mode to preserve labels.
+      // (If you later want "sweep" calibration, do it explicitly and store both labels separately.)
+    }
   }
+
   return true;
 }
 
@@ -226,7 +241,7 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
   } else if (cal_.mode == CalMode::RANGE) {
     const bool haveMin = (cal_.min_counts != INT32_MAX);
     const bool haveMax = (cal_.max_counts != INT32_MIN);
-    if (!haveMin || !haveMax || cal_.max_counts <= cal_.min_counts) {
+    if (!haveMin || !haveMax || cal_.max_counts == cal_.min_counts) {
       cal_.phase = CalPhase::COMPLETE;
       cal_.mode  = CalMode::NONE;
       return false;
@@ -234,21 +249,33 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
     sensor_zero_count_ = cal_.min_counts;
     sensor_full_count_ = cal_.max_counts;
 
+    // Default invert comes from labelled endpoints:
+    // zero-travel captured first (sensor_zero_count_), full-travel captured second (sensor_full_count_).
+    // If full < zero, counts decrease with increasing travel => invert mapping.
+    const bool autoInvert = (sensor_full_count_ < sensor_zero_count_);
+    m_invert = autoInvert;   // apply immediately at runtime
+
     // keep legacy mirrors in sync
     m_zero   = sensor_zero_count_;
     m_full   = sensor_full_count_;
     // m_fullMm already mirrors sensor_full_travel_mm_ in applyParams (verify if needed)
 
-    const long spanCounts = long(m_full) - long(m_zero);
-    counts_per_mm_ = (m_fullMm > 0.0f && spanCounts != 0)
-                  ? double(spanCounts) / double(m_fullMm)
-                  : 0.0;
-
+    long spanCounts = long(m_full) - long(m_zero);
+    long spanAbs    = abs(spanCounts);
+    if (m_fullMm > 0.0f && spanCounts != 0) {
+      spanCounts = m_full - m_zero;
+      spanAbs = abs(spanCounts);
+      counts_per_mm_ = double(spanAbs) / double(m_fullMm);   // counts per 1 mm along sensor axis
+    } else {
+      counts_per_mm_ = 0.0;  // invalid; sampling will output a safe 0
+    }
 
     if (persist) {
       const char* sname = this->name();
       ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
       ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
+      ConfigManager::saveSensorParamByName(sname, "invert", autoInvert ? "true" : "false");
+
     }
   }
 
@@ -342,17 +369,17 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     // Wiring
     {"ain",            ParamType::Int,   "-1",   "-1",  "7",   nullptr, "Analog input ordinal (AIN0..). -1=use pin"},
-    {"invert",         ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Invert reading"},
+    {"invert",         ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Invert readings (set automatically during range calibration - override not recommended)"},
 
     // RAW smoothing
     {"ema_alpha",      ParamType::Float, "0.2",  "0",   "1",    nullptr, "EMA alpha [0..1]"},
     {"deadband",       ParamType::Int,   "0",    "0",   "4095", nullptr, "Deadband (counts)"},
 
     // Anchors / geometry
-    {"sensor_zero_count",     ParamType::Int,   "0",    nullptr,nullptr,nullptr,"Counts at 0"},
-    {"sensor_full_count",     ParamType::Int,   "4095", nullptr,nullptr,nullptr,"Counts at full scale"},
+    {"sensor_zero_count",     ParamType::Int,   "0",    nullptr,nullptr,nullptr,"Counts at sensor 0 position"},
+    {"sensor_full_count",     ParamType::Int,   "4095", nullptr,nullptr,nullptr,"Counts at sensor full scale position"},
     {"sensor_full_travel_mm", ParamType::Float, "0",    "0",   nullptr,nullptr, "If 1 => normalized; >1 => mm"},
-    {"installed_zero_count", ParamType::Int, "", nullptr, nullptr, nullptr, "Installed zero (counts)"},
+    {"installed_zero_count", ParamType::Int, "", nullptr, nullptr, nullptr, "Installed zero point (counts)"},
 
     // Output policy
     {"output_mode", ParamType::Enum,"RAW,LINEAR,POLY,LUT", nullptr,nullptr,nullptr, "Output method: RAW, scaled (LINEAR) or transformed (POLY/LUT)."},
@@ -372,7 +399,9 @@ Sensor* AnalogPotSensor::create(const char* instanceName, const ParamPack& param
   long li; bool b; double d; String s;
 
   // Wiring / polarity
-  if (params.getBool("invert", b))       p.invert = b;
+  if (params.getBool("invert", b))        p.invert = b;
+  if (params.getInt("pin", li))           p.pin = (int8_t)li;
+
 
   // Smoothing
   if (params.getFloat("ema_alpha", d))   p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);

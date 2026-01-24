@@ -88,7 +88,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
         .present=true,
         .pin=2,
         .mode=0,
-        .active_low=true,
+        .active_low=false,
         .use_internal_pullup=true },
     },
     .count = 6,
@@ -97,7 +97,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .fuel = {
     // Thing Plus S3 fuel gauge support (MAX17048)
     .type = FuelGaugeType::MAX17048,
-    .i2c_addr = 0x36
+    .i2c_addr = 0x32
   },
 
   .analog = {
@@ -130,8 +130,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
   .indicators = {
     // PLACEHOLDERS
-    .has_led = false,
-    .led_pin = -1,
+    .has_led = true,
+    .led_pin = 1,
     .led_active_high = true,
 
     .has_buzzer = false,

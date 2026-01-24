@@ -10,6 +10,7 @@
 #include "WiFiManager.h"
 #include "WebServerManager.h"  // for canStart()
 #include "BoardSelect.h" 
+#include "TransformRegistry.h"
 
 // ---- Helpers (file scope) ----
 static String fmtIPv4(const uint8_t a[4]) {
@@ -17,6 +18,31 @@ static String fmtIPv4(const uint8_t a[4]) {
   snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
            a[0], a[1], a[2], a[3]);
   return String(buf);
+}
+
+static void appendTopNav(String& html, const char* active) {
+  auto a = [&](const char* href, const char* label, bool bold=false){
+    html += "<a href='"; html += href; html += "' style='margin-right:12px;";
+    if (bold) html += "font-weight:700;";
+    html += "'>";
+    html += label;
+    html += "</a>";
+  };
+
+  html += "<div style='margin:10px 0 14px 0; padding:8px 10px; background:#f3f3f3; border-radius:8px;'>";
+
+  // Home / Files
+  a("/", "Home");
+  a("/files", "Files");  // change if your files route differs
+
+  html += "<span style='margin:0 10px; color:#888;'>|</span>";
+
+  // Config pages
+  a("/config",         "General",  strcmp(active, "/config")==0);
+  a("/config/sensors", "Sensors",  strcmp(active, "/config/sensors")==0);
+  a("/config/buttons", "Buttons",  strcmp(active, "/config/buttons")==0);
+
+  html += "</div>";
 }
 
 
@@ -38,11 +64,8 @@ void registerConfigRoutes(WebServer& srv) {
 
     String html = htmlHeader(F("Config"));
 
-    html += F("<p>"
-              "<b>General</b> | "
-              "<a href='/config/sensors'>Sensors</a> | "
-              "<a href='/config/buttons'>Buttons</a>"
-              "</p><hr>");
+    appendTopNav(html, "/config");
+    html += F("<hr>");
 
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
@@ -237,7 +260,6 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
     html += F("</form>");
 
-    html += F("<p><a href='/'>Home</a> &nbsp; <a href='/files'>Files</a></p>");
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
   });
@@ -253,11 +275,8 @@ void registerConfigRoutes(WebServer& srv) {
 
     String html = htmlHeader(F("Sensors"));
 
-    html += F("<p>"
-              "<a href='/config'>General</a> | "
-              "<b>Sensors</b> | "
-              "<a href='/config/buttons'>Buttons</a>"
-              "</p><hr>");
+    appendTopNav(html, "/config/sensors");
+    html += F("<hr>");
 
     html += F("<form method='POST' action='/config/sensors'>");
 
@@ -267,9 +286,7 @@ void registerConfigRoutes(WebServer& srv) {
     const uint8_t n = cfg.sensorCount();
     if (n == 0) {
       html += F("<p><em>No sensors configured.</em></p>");
-    } else {
-      html += F("<form method='POST' action='/config'>");
-      html += F("<input type='hidden' name='submit' value='sensors'>");
+    }
 
       for (uint8_t i = 0; i < n; ++i) {
         SensorSpec sp; 
@@ -492,9 +509,9 @@ void registerConfigRoutes(WebServer& srv) {
           html += "<small>Leave blank to inherit type-supported methods.</small>";
           html += "</div>";
         }
-        emitParamRow("sensor_zero_count", "Sensor zero count");
-        emitParamRow("sensor_full_count", "Sensor full count");
-        emitParamRow("invert", "Invert direction");
+        emitParamRow("sensor_zero_count", "Sensor count at zero travel");
+        emitParamRow("sensor_full_count", "Sensor count at full travel");
+        emitParamRow("invert", "Invert measurement direction");
 
         // ---- Smoothing ----
         html += F("<h4>Smoothing</h4>");
@@ -565,7 +582,7 @@ void registerConfigRoutes(WebServer& srv) {
         delay(0);
       }
 
-    }
+    
 
     // --- per-sensor transform UI script (unchanged) ---
     html += F(
@@ -623,10 +640,6 @@ void registerConfigRoutes(WebServer& srv) {
 
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
-
-    html += F("<p><a href='/'>Home</a> &nbsp; <a href='/files'>Files</a></p>");
-    html += htmlFooter();
-    srv.send(200, F("text/html"), html);
   });
 
   // -------------------- GET /config/buttons --------------------
@@ -640,11 +653,9 @@ void registerConfigRoutes(WebServer& srv) {
 
     String html = htmlHeader(F("Buttons"));
 
-    html += F("<p>"
-              "<a href='/config'>General</a> | "
-              "<a href='/config/sensors'>Sensors</a> | "
-              "<b>Buttons</b>"
-              "</p><hr>");
+    appendTopNav(html, "/config/buttons");
+    html += F("<hr>");
+
 
     html += F("<form method='POST' action='/config/buttons'>");
 
@@ -792,28 +803,30 @@ void registerConfigRoutes(WebServer& srv) {
         long newOm = oldOm; bool omChanged = false;
 
         if (getArgLast("output_mode", v)) {
-          v.trim(); v.toUpperCase();
-          long vi = v.toInt();
-          if      (v=="RAW"||vi==0) newOm=0;
-          else if (v=="LINEAR"||vi==1) newOm=1;
-          else if (v=="POLY"||vi==2) newOm=2;
+          v.trim(); 
+          v.toUpperCase(); 
+          long vi = v.toInt(); 
+          if (v=="RAW"||vi==0) newOm=0; 
+          else if (v=="LINEAR"||vi==1) newOm=1; 
+          else if (v=="POLY"||vi==2) newOm=2; 
           else if (v=="LUT"||vi==3) newOm=3;
           if (newOm != oldOm) omChanged = true;
           sp.params.setInt("output_mode", newOm);
         }
 
-        { bool inc=false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
-        if (getArgLast("units_label", v))           sp.params.set("units_label", v);
-        if (getArgLast("sensor_full_travel_mm", v)) sp.params.set("sensor_full_travel_mm", v);
+        bool idChanged = false;
+        String oldId; sp.params.get("output_id", oldId); oldId.trim();
 
-        // Persist selected transform id if posted
         if (getArgLast("output_id", v)) {
           v.trim();
+          if (v != oldId) idChanged = true;
           sp.params.set("output_id", v);
-          ConfigManager::saveSensorParamByIndex(idx, "output_id", v);
         }
+
         sp.params.setBool("__om_changed", omChanged);
+        sp.params.setBool("__id_changed", idChanged);
       }
+
 
       // Calibration
       {
@@ -884,6 +897,9 @@ void registerConfigRoutes(WebServer& srv) {
         if (!ok) Serial.printf("[WEB] set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
       }
 
+      // Commit all param changes into tmp so ConfigManager::save(tmp) persists them
+      tmp.sensors[idx].params = sp.params;
+
       // Persist header/spec
       ConfigManager::setSensorHeaderByIndex(idx, sp);
 
@@ -910,12 +926,18 @@ void registerConfigRoutes(WebServer& srv) {
         live->setOutputUnitsLabel(u.c_str());
 
         // If output_mode changed, re-attach transform + units label policy
-        bool omChanged = false;
+        bool omChanged = false, idChanged = false;
         sp.params.getBool("__om_changed", omChanged);
-        if (omChanged) {
+        sp.params.getBool("__id_changed", idChanged);
+        if (omChanged || idChanged) {
           // NOTE: Transform reload and selection are handled in the Transforms routes.
           // Here we just refresh units label according to current selection stored in params.
-          String selId; sp.params.get("output_id", selId); selId.trim();
+          String selId; 
+          sp.params.get("output_id", selId); 
+          selId.trim();
+          live->setSelectedTransformId(selId);
+          live->attachTransform(gTransforms);
+
           if ((OutputMode)om == OutputMode::RAW) {
             live->setOutputUnitsLabel("counts");
           } else if ((OutputMode)om == OutputMode::LINEAR) {
@@ -1158,7 +1180,7 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     // ---------- Persist full config ----------
-    Serial.printf("[WEB] saving tmp: bindings=%u\n", (unsigned)tmp.buttonBindingCount);
+    //Serial.printf("[WEB] saving tmp: bindings=%u\n", (unsigned)tmp.buttonBindingCount);
               
     ConfigManager::save(tmp);           // writes file and updates active config
     //ConfigManager::debugDumpConfigFile();

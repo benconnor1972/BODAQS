@@ -11,7 +11,7 @@ class WebServerManager {
 public:
   using IsLoggingFn = bool (*)();
 
-  static void begin(SdFat* sdRef, IsLoggingFn isLogging = nullptr);
+  static void begin(SdFs* sdRef, IsLoggingFn isLogging = nullptr);
   static void setStaConfig(const String& ssid, const String& password); //legacy
   static bool start();
   static void stop();
@@ -21,7 +21,7 @@ public:
 
   // NEW: give the web server access to the live config struct
   static void attachConfig(LoggerConfig* cfg);
-  static SdFat* sd();   // expose the shared SdFat* for route modules
+  static SdFs* sd();   // expose the shared SdFat* for route modules
 
 
 private:

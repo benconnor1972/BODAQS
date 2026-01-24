@@ -15,7 +15,7 @@ namespace {
 
   //constexpr uint8_t MAX_SENSORS = 8;     // single definition
 
-  static SdFat*     g_sd = nullptr;
+  static SdFs*     g_sd = nullptr;
   static char       g_cfgName[32] = "loggercfg";
   static SensorSpec g_specs[MAX_SENSORS];
   static ParamStore g_stores[MAX_SENSORS];
@@ -217,10 +217,10 @@ static void copyStrBoundedC_(const char* src, char* dst, size_t dstsz) {
   dst[dstsz - 1] = '\0';
 }
 
-void ConfigManager::begin(SdFat* sdRef, const char* filename) {
+void ConfigManager::begin(SdFs* sdRef, const char* filename) {
   // IMPORTANT: ConfigManager must not retain a SdFat pointer in SDMMC mode.
   // StorageManager_getSd() returns nullptr when SDIO_SDMMC is active.
-  g_sd = nullptr;
+  g_sd = sdRef;
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
 
   g_specCount = 0;

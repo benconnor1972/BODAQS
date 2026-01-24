@@ -1,4 +1,4 @@
-﻿.DS_Store
+.DS_Store
 Thumbs.db
 *.swp
 .vscode/
@@ -38,3 +38,4 @@ _autosave-*
 **/fp-lib-table-bak
 *.cache
 */-backups/
+To do/~$To do list.xlsx

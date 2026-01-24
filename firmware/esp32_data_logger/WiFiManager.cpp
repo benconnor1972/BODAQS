@@ -10,10 +10,11 @@ static const uint32_t SCAN_TIMEOUT_MS     = 6000;   // single active scan budget
 static const uint32_t CONNECT_TIMEOUT_MS  = 12000;  // assoc/auth/IP wait
 static const int      RSSI_FLOOR_DBM      = -90;    // ignore weaker than this
 static uint32_t s_linkDropDeadlineMs = 0;
-// Auto-off after inactivity
-static const uint32_t IDLE_OFF_MS = 15UL * 60UL * 1000UL;  // 15 minutes
+static const uint32_t IDLE_OFF_MS = 015UL * 60UL * 500UL;  // 15 minutes
 static uint32_t s_idleOffDeadlineMs = 0;
 static bool s_rtcSyncPending = false;   // we connected solely to set time
+static bool s_prevEnabledBeforeLogging = false;
+static bool s_suspendedForLogging = false;
 
 WiFiMgrState WiFiManager::s_state = WiFiMgrState::OFF;
 bool         WiFiManager::s_enabled = false;
@@ -23,6 +24,9 @@ uint32_t     WiFiManager::s_stateDeadlineMs = 0;
 String       WiFiManager::s_targetSsid;
 uint8_t      WiFiManager::s_targetBssid[6] = {0};
 bool         WiFiManager::s_targetBssidSet = false;
+bool         WiFiManager::s_loggingSuspended = false;
+bool         WiFiManager::s_restoreEnabledAfterLogging = false;
+
 
 IsLoggingActiveFn WiFiManager::s_isLogging = nullptr;
 WiFiManager::OnOnlineFn  WiFiManager::s_onOnline = nullptr;
@@ -52,11 +56,9 @@ static void tryRtcSyncIfPending_() {
   s_rtcSyncPending = false;
 
   const auto& cfg = ConfigManager::get();
-  if (ok && !cfg.wifiEnabledDefault) {
-    // Public API handles callbacks, state, UI, WIFI_OFF, etc.
-    WiFiManager::disconnect();
+  if (!cfg.wifiEnabledDefault) {
+    WiFiManager::disable();
   } else {
-    // Keep link up (your 15-min idle timer runs); count this as activity
     WiFiManager::noteUserActivity();
   }
 }
@@ -168,7 +170,7 @@ void WiFiManager::loop() {
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
         btStop();
-        enterIdle_();
+        enterOff_();
         s_linkDropDeadlineMs = 0;
         notifyUi_();
         break;
@@ -185,8 +187,9 @@ void WiFiManager::loop() {
             WiFi.disconnect(true);
             WiFi.mode(WIFI_OFF);
             btStop();
-            enterIdle_();
+            enterOff_();
             s_idleOffDeadlineMs = 0;
+
             notifyUi_();
             break;
           }
@@ -209,22 +212,21 @@ void WiFiManager::loop() {
       break;
     }
   }
-
-  // Throttled debug print (1 Hz)
-  //static uint32_t nextDbgMs = 0;
-  //if ((int32_t)(millis() - nextDbgMs) >= 0) {
-  //  nextDbgMs = millis() + 1000;
-  //  auto st = WiFiManager::status();
-  //  Serial.printf("[WiFiHUD] state=%d wl=%d ssid='%s' ip=%s rssi=%d\n",
-  //                (int)st.state, (int)st.wl, st.ssid.c_str(),
-  //                WiFi.localIP().toString().c_str(), st.rssi);
-  //}
 }
 
 
 // ----- public control -----
 void WiFiManager::enable() {
   if (s_enabled) return;
+  auto dumpAdc = [](const char* tag){
+    Serial.printf("\n[ADC] %s\n", tag);
+    int pins[] = {15,17,18,10};
+    for (int p : pins) {
+      int v = analogRead(p);
+      Serial.printf("  GPIO%02d = %d\n", p, v);
+    }
+  };
+  dumpAdc("after WiFi on");
   s_enabled = true;
   if (s_state == WiFiMgrState::OFF) enterIdle_();
   notifyUi_();
@@ -232,22 +234,43 @@ void WiFiManager::enable() {
 
 void WiFiManager::disable() {
   s_enabled = false;
+
+  // Tell app we're going offline (only if we were actually online)
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
-  WiFi.disconnect(true);
+
+  // FAST OFF: do not wait for graceful disconnect; just kill the radio.
+  // WiFi.disconnect(...) can block for seconds when connected / sockets active.
   WiFi.mode(WIFI_OFF);
   btStop();
+
+  // Optional best-effort cleanup AFTER the radio is already off.
+  // Keep it non-blocking-ish: no erase, no long waits.
+  WiFi.disconnect(false);
+
   enterOff_();
   notifyUi_();
 }
+
 
 bool WiFiManager::isEnabled() { return s_enabled; }
 
 void WiFiManager::connectNow() {
   if (!s_enabled || loggingGuard_()) return;
+
   s_haveIntentConnect = true;
-  if (s_state == WiFiMgrState::ONLINE) {
-    s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;   // treat as activity
+
+  // Treat as user activity regardless of state
+  s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
+
+  // If we're not already trying, kick the state machine
+  if (s_state == WiFiMgrState::OFF) {
+    enterIdle_();
   }
+  if (s_state == WiFiMgrState::IDLE) {
+    // Start the actual connection attempt
+    selectAndConnect_();          // or enterScanning_()/enterConnecting_()
+  }
+  notifyUi_();
 }
 
 void WiFiManager::disconnect() {
@@ -260,11 +283,14 @@ void WiFiManager::disconnect() {
 }
 
 void WiFiManager::shutdownRadio_() {
-  // Hard power-down of Wi-Fi + BT
-  WiFi.disconnect(true, true);
+  // FAST OFF: kill Wi-Fi + BT immediately.
   WiFi.mode(WIFI_OFF);
   btStop();
+
+  // Best-effort cleanup after OFF (avoid erase=true / wifioff waits)
+  WiFi.disconnect(false);
 }
+
 
 
 void WiFiManager::maybeConnectForRTC() {
@@ -277,6 +303,26 @@ void WiFiManager::maybeConnectForRTC() {
   s_haveIntentConnect = true;       // kick SCANNING → CONNECTING path
   s_rtcSyncPending = true;          // remember why we’re doing this
 }
+
+void WiFiManager::suspendForLogging() {
+  if (s_suspendedForLogging) return;
+  s_prevEnabledBeforeLogging = s_enabled;
+  s_suspendedForLogging = true;
+  disable();  
+}
+
+void WiFiManager::resumeAfterLogging() {
+  if (!s_suspendedForLogging) return;
+  s_suspendedForLogging = false;
+  if (s_prevEnabledBeforeLogging) {
+    enable();
+    connectNow();
+    noteUserActivity();
+  } else {
+    disable(); // stay OFF
+  }
+}
+
 
 
 WiFiStatus WiFiManager::status() {
@@ -448,6 +494,9 @@ void WiFiManager::selectAndConnect_() {
   const uint8_t* bssidPtr = s_targetBssidSet ? s_targetBssid : nullptr;
   int channel = chosenChannel > 0 ? chosenChannel : 0; // 0 = auto if unknown
   WiFi.begin(s_targetSsid.c_str(), (pwd ? pwd : ""), channel, bssidPtr, true /* connect */);
+  s_state = WiFiMgrState::CONNECTING;
+  s_stateDeadlineMs = millis() + CONNECT_TIMEOUT_MS;
+  notifyUi_();
 
 }
 

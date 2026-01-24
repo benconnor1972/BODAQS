@@ -116,7 +116,14 @@ public:
   virtual int32_t currentRawCounts() const { return 0; }
 
   // -------- Output Transform integration --------
-  void setSelectedTransformId(const String& id) { m_selectedTransformId = id; }
+  void setSelectedTransformId(const String& id) {
+    String s = id;
+    s.trim();
+    int dot = s.lastIndexOf('.');
+    if (dot > 0) s = s.substring(0, dot); // "wheel_mm.lut" -> "wheel_mm"
+    m_selectedTransformId = s;
+  }
+
   const String& selectedTransformId() const     { return m_selectedTransformId; }
 
   // Attach a transform from the registry; safe to call anytime

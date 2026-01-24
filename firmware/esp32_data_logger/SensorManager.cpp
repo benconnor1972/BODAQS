@@ -105,6 +105,7 @@ void registerSensor(Sensor* s) {
 }
 
 void buildSensorsFromConfig(const LoggerConfig& cfg) {
+  Serial.printf("[SENS] Starting buildSensorsFromConfig");
   const uint8_t n = cfg.sensorCount();
   if (n == 0) {
     UI::status("No sensors");
@@ -170,9 +171,29 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
+    Serial.printf("[XFORM] about to load transforms for '%s'\n", sp.name);
+
+    Serial.printf("[XFORM] gSd ptr=%p\n", (void*)gSd);
+
     // Preload any transforms on disk for this sensor
-    if (gSd) {
-      gTransforms.loadForSensor(sp.name, *gSd);   // scans /cal/<sp.name>/
+Serial.printf("[XFORM] about to load transforms for '%s'\n", sp.name);
+
+// Preload any transforms on disk for this sensor
+    if (SD_MMC.cardType() != CARD_NONE) {
+      gTransforms.loadForSensor(sp.name, SD_MMC);   // fs::FS&
+    } else if (gSd) {
+      gTransforms.loadForSensor(sp.name, *gSd);     // SdFs& (SPI backend)
+    } else {
+      Serial.println("[XFORM] no SD backend available -> skipping transform load");
+    }
+
+    {
+      auto metas = gTransforms.list(sp.name);
+      Serial.printf("[XFORM] loaded %u transforms for sensor='%s':\n",
+                    (unsigned)metas.size(), sp.name);
+      for (const auto& m : metas) {
+        Serial.printf("  id='%s' label='%s'\n", m.id, m.label);
+      }
     }
 
     // Selected transform (shape) from config; identity if absent
@@ -194,6 +215,10 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       }
     }
 
+    // NEW: strip filename extension (".lut", ".poly", etc)
+    int dot = outId.lastIndexOf('.');
+    if (dot > 0) outId = outId.substring(0, dot);
+
     // sanitize and apply if present
     if (outId.length()) {
       outId.trim();
@@ -203,6 +228,8 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
         if (c == ',' || c == ';' || c <= ' ') outId.remove(outId.length()-1);
         else break;
       }
+
+
       // Persist normalized id so future saves keep the clean value
       ConfigManager::saveSensorParamByName(sp.name, "output_id", outId);
       s->setSelectedTransformId(outId);
@@ -427,16 +454,6 @@ void buildHeader(char* out, size_t n, bool humanTs) {
 void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     written = 0;
     if (!out || cap == 0) return;
-
-    //
-    // 1. Write sample_id as the first column
-    //
-    if (written < cap) {
-        out[written++] = (float)s_sampleID++;   // Or g_sampleCounter++
-    } else {
-        return;
-    }
-
     //
     // 2. Write all sensor columns as before
     //

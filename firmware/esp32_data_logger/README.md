@@ -39,7 +39,7 @@ This document summarizes the major modules in the project, what each one is resp
 **Purpose:** Load/save the logger’s global settings and the list of **SensorSpec**s from `loggercfg.txt`. It also owns a per‑sensor key/value store backing the **ParamPack** interface used by sensor code.
 
 **Key responsibilities**
-- `begin(SdFat*, filename)` — wire to shared SD object and file name.
+- `begin(SdFs*, filename)` — wire to shared SD object and file name.
 - `load(LoggerConfig&)` / `save(const LoggerConfig&)` — merge text file with defaults and persist changes.
 - Manage **SensorSpec** array (type, name, mutedDefault, ParamPack for per-sensor params).
 - Simple string‑backed **ParamStore** (arrays `keys[]`/`vals[]`, bounded sizes) with case‑insensitive lookups.

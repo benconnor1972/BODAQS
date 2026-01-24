@@ -13,7 +13,7 @@ public:
     const char* name = nullptr;
 
     // Wiring / polarity
-    uint8_t  pin = 36;
+    uint8_t  pin = -1;
     bool     invert = false;
 
     // RAW smoothing (EMA + deadband)
@@ -140,8 +140,8 @@ private:
   float    m_invSpan = 1.0f;    // cached 1/(full-zero) if non-zero
 
   // Output
-  OutputMode m_mode = OutputMode::RAW; // RAW or LINEAR
-  bool       m_includeRaw = false;
+  //OutputMode m_mode = OutputMode::RAW; // RAW or LINEAR
+  //bool       m_includeRaw = false;
 
   // Calibration capability
   CalMask    m_allowedMask = (CalMask)(CAL_ZERO | CAL_RANGE);
