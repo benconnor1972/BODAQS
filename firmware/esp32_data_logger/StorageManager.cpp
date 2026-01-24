@@ -53,12 +53,14 @@ static uint64_t s_flushTotalMs  = 0;
 constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
 
 struct SampleRow {
-    uint32_t sample_id = 0;
-    uint64_t ts_ms = 0;
-    uint16_t nValues = 0;
-    bool     mark = false;
-    float    values[SM_MAX_DYNAMIC_COLS];
+  uint32_t sample_id = 0;
+  uint64_t ts_ms = 0;
+  uint16_t nValues = 0;
+  bool     mark = false;
+  volatile uint8_t ready = 0;          // NEW
+  float    values[SM_MAX_DYNAMIC_COLS];
 };
+
 
 #if defined(ESP32)
 static portMUX_TYPE s_qMux = portMUX_INITIALIZER_UNLOCKED;
@@ -103,14 +105,15 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
                                   const float* values, uint16_t nValues, bool mark) {
   if (!loggingActive) return false;
   if (!values || nValues == 0) return false;
-
   if (nValues > SM_MAX_DYNAMIC_COLS) nValues = SM_MAX_DYNAMIC_COLS;
+
+  uint16_t idx;
 
 #if defined(ESP32)
   portENTER_CRITICAL(&s_qMux);
 #endif
 
-  if (s_qCap == 0 || s_rows == nullptr) {
+  if (s_qCap == 0 || s_rows == nullptr || s_qCount >= s_qCap) {
     ++s_samplesDropped;
 #if defined(ESP32)
     portEXIT_CRITICAL(&s_qMux);
@@ -118,16 +121,32 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
     return false;
   }
 
-  if (s_qCount >= s_qCap) {  // full
-    ++s_samplesDropped;
-#if defined(ESP32)
-    portEXIT_CRITICAL(&s_qMux);
-#endif
-    return false;
-  }
-
-  const uint16_t idx = s_qHead;
+  idx = s_qHead;
   s_qHead = (uint16_t)((s_qHead + 1) % s_qCap);
+
+  // Mark not-ready while we fill it
+  s_rows[idx].ready = 0;
+
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_qMux);
+#endif
+
+  // Fill payload (outside lock)
+  SampleRow &row = s_rows[idx];
+  row.sample_id = sample_id;
+  row.ts_ms     = ts_ms;
+  row.nValues   = nValues;
+  row.mark      = mark;
+  memcpy(row.values, values, nValues * sizeof(float));
+  // Optional hygiene:
+  // for (uint16_t i=nValues; i<SM_MAX_DYNAMIC_COLS; ++i) row.values[i]=0;
+
+  // Publish: set ready + increment count
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_qMux);
+#endif
+
+  row.ready = 1;
   ++s_qCount;
   if (s_qCount > s_qMax) s_qMax = s_qCount;
 
@@ -135,17 +154,9 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
   portEXIT_CRITICAL(&s_qMux);
 #endif
 
-  // Copy payload *outside* the critical section to keep lock time tiny.
-  // This is safe because idx is reserved for this producer and won't be read until tail catches up.
-  SampleRow &row = s_rows[idx];
-  row.sample_id = sample_id;
-  row.ts_ms     = ts_ms;
-  row.nValues   = nValues;
-  row.mark      = mark;
-  memcpy(row.values, values, nValues * sizeof(float));
-
   return true;
 }
+
 
 //Debug
 volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
@@ -216,6 +227,15 @@ static bool dequeueSample(SampleRow &out) {
   }
 
   const uint16_t idx = s_qTail;
+
+  // If producer reserved but hasn't finished filling, don't pop it yet
+  if (s_rows[idx].ready == 0) {
+#if defined(ESP32)
+    portEXIT_CRITICAL(&s_qMux);
+#endif
+    return false;  // try again next loop iteration
+  }
+
   s_qTail = (uint16_t)((s_qTail + 1) % s_qCap);
   --s_qCount;
 
@@ -224,6 +244,8 @@ static bool dequeueSample(SampleRow &out) {
 #endif
 
   out = s_rows[idx];
+  // Optional: clear ready so stale reads are obvious in debug
+  s_rows[idx].ready = 0;
   return true;
 }
 
