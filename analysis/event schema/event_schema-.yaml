@@ -159,9 +159,6 @@ events:
       end_trigger: rebound_end
       ops:
       - delta
-    - type: peak
-      signal: disp
-      kind: max
   tags:
     - kinematics
     - rebound
