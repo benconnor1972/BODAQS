@@ -22,6 +22,7 @@ venv/
 
 # Data/outputs (keep dirs with .gitkeep if you need them visible)
 analysis/**/__*
+analysis/artifacts/*
 
 logs/*
 *.parquet
