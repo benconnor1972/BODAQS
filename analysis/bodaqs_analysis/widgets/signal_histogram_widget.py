@@ -49,13 +49,20 @@ def _registry_signal_cols(session: Dict[str, Any]) -> List[str]:
             cols.append(c)
     return cols
 
-
-def _vals(df: pd.DataFrame, col: str, dropna: bool) -> np.ndarray:
+def _vals(df: pd.DataFrame, col: str, dropna: bool, *, include_inactive: bool) -> np.ndarray:
     s = pd.to_numeric(df[col], errors="coerce")
+
+    # Apply activity mask unless the user explicitly includes inactive samples.
+    if (not include_inactive) and ("active_mask_qc" in df.columns):
+        mask = df["active_mask_qc"].astype(bool)
+        s = s[mask]
+
     v = s.to_numpy(dtype=float, copy=False)
     if dropna:
         v = v[np.isfinite(v)]
     return v
+
+
 
 
 # -------------------------
@@ -116,6 +123,7 @@ def make_signal_histogram_widget_for_loader(
     w_cdf = W.Checkbox(value=False, description="CDF")
     w_norm = W.Checkbox(value=True, description="Normalize")
     w_dropna = W.Checkbox(value=True, description="Drop NaN/inf")
+    w_include_inactive = W.Checkbox(value=False, description="Include inactive")
 
     out = W.Output()
 
@@ -138,7 +146,12 @@ def make_signal_histogram_widget_for_loader(
 
             def get_vals(sid: str, sig: str) -> np.ndarray:
                 session = session_loader(str(sid))
-                return _vals(session["df"], sig, dropna=w_dropna.value)
+                return _vals(
+                    session["df"],
+                    sig,
+                    dropna=bool(w_dropna.value),
+                    include_inactive=bool(w_include_inactive.value),
+                )
 
             if compare_sessions and compare_signals:
                 for sid in sel_sessions:
@@ -189,12 +202,12 @@ def make_signal_histogram_widget_for_loader(
     for w in (
         w_sessions_mode, w_sessions,
         w_signals_mode, w_signals,
-        w_bins, w_cdf, w_norm, w_dropna,
+        w_bins, w_cdf, w_norm, w_dropna, w_include_inactive,
     ):
         w.observe(_render, names="value")
 
     controls = W.VBox([
-        W.HBox([w_bins, w_cdf, w_norm, w_dropna]),
+        W.HBox([w_bins, w_cdf, w_norm, w_dropna, w_include_inactive]),
         W.HBox([
             W.VBox([w_sessions_mode, w_sessions]),
             W.VBox([w_signals_mode, w_signals]),

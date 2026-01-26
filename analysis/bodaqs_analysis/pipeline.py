@@ -24,6 +24,20 @@ from .segment import extract_segments, SegmentRequest
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 
+# ---- Activity mask (QC) ----
+# Hard-coded for now (per your preference)
+ACTIVE_SIGNAL_BASE_1 = "rear_shock_dom_suspension [mm]"  
+ACTIVE_SIGNAL_BASE_2 = "rear_shock_vel_dom_suspension [mm/s]"  
+ACTIVE_DISP_THRESH = 20.0
+ACTIVE_VEL_THRESH  = 50.0
+
+ACTIVE_WINDOW   = "500ms"  # rolling soften
+ACTIVE_PADDING  = "1s"     # expand active segments
+ACTIVE_MIN_SEG  = "3s"     # discard bursts shorter than this
+
+ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
+
+
 logger = logging.getLogger(__name__)
 
 def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
@@ -70,6 +84,73 @@ def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, 
         "df": df_raw.copy(),
     }
     return session
+
+def _build_active_mask_from_time_s(
+    df: pd.DataFrame,
+    *,
+    disp_col: str,
+    vel_col: str,
+    disp_thresh: float,
+    vel_thresh: float,
+    window: str,
+    padding: str,
+    min_segment: str,
+) -> pd.Series:
+    """
+    Return boolean mask aligned to df.index. Uses time_s to build a TimedeltaIndex internally.
+    Non-destructive: does not modify df.
+    """
+    if "time_s" not in df.columns:
+        raise ValueError("Expected 'time_s' in df for activity mask")
+
+    if disp_col not in df.columns or vel_col not in df.columns:
+        # soft-fail: return all True so downstream behaves identically to "no masking"
+        return pd.Series(True, index=df.index, name=ACTIVE_MASK_COL)
+
+    # build a time index locally (do NOT mutate df index)
+    t = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(dtype=float, copy=False)
+    td = pd.to_timedelta(t, unit="s")
+
+    disp_active = pd.Series(pd.to_numeric(df[disp_col], errors="coerce").to_numpy(), index=td).abs() > disp_thresh
+    vel_active  = pd.Series(pd.to_numeric(df[vel_col],  errors="coerce").to_numpy(), index=td).abs() > vel_thresh
+
+    active = disp_active & vel_active   # keep your current AND policy (change to | if desired)
+
+    # rolling soften
+    active = active.rolling(window, min_periods=1).max().astype(bool)
+
+    pad = pd.to_timedelta(padding)
+    minseg = pd.to_timedelta(min_segment)
+
+    # contiguous blocks (time-indexed series)
+    merged: list[list[pd.Timedelta]] = []
+    if active.any():
+        block_id = (active != active.shift(fill_value=False)).cumsum()
+        segments = []
+        for _, g in active.groupby(block_id):
+            if not bool(g.iloc[0]):
+                continue
+            s = g.index[0] - pad
+            e = g.index[-1] + pad
+            segments.append([s, e])
+
+        segments.sort(key=lambda x: x[0])
+        for s, e in segments:
+            if not merged or s > merged[-1][1]:
+                merged.append([s, e])
+            else:
+                merged[-1][1] = max(merged[-1][1], e)
+
+        merged = [[s, e] for s, e in merged if (e - s) >= minseg]
+
+    # apply merged blocks to td index
+    keep_td = pd.Series(False, index=td)
+    for s, e in merged:
+        keep_td |= (keep_td.index >= s) & (keep_td.index <= e)
+
+    # return aligned to df rows (original df index)
+    keep = pd.Series(keep_td.to_numpy(dtype=bool), index=df.index, name=ACTIVE_MASK_COL)
+    return keep
 
 def preprocess_session(session: Dict[str, Any],
                        *,
@@ -164,6 +245,44 @@ def preprocess_session(session: Dict[str, Any],
     )
     session["df"] = df3
 
+    # ---------------- Activity mask (QC; non-destructive) ----------------
+    # Derive companion columns from ACTIVE_SIGNAL_BASE
+    # Assumes your VA naming convention appends "_vel" to the signal column name.
+    # Adjust vel_col derivation if your VA uses a different convention.
+    disp_col = ACTIVE_SIGNAL_BASE_1
+    vel_col = ACTIVE_SIGNAL_BASE_2
+
+    active_mask = _build_active_mask_from_time_s(
+        session["df"],
+        disp_col=disp_col,
+        vel_col=vel_col,
+        disp_thresh=ACTIVE_DISP_THRESH,
+        vel_thresh=ACTIVE_VEL_THRESH,
+        window=ACTIVE_WINDOW,
+        padding=ACTIVE_PADDING,
+        min_segment=ACTIVE_MIN_SEG,
+    )
+
+    # Store as QC column (won't be in registry signals)
+    session["df"][ACTIVE_MASK_COL] = active_mask
+
+    # Record provenance in qc/meta
+    qc = session.setdefault("qc", {})
+    qc.setdefault("activity_mask", {})
+    qc["activity_mask"] = {
+        "applied": True,
+        "mask_col": ACTIVE_MASK_COL,
+        "disp_col": disp_col,
+        "vel_col": vel_col,
+        "disp_thresh": float(ACTIVE_DISP_THRESH),
+        "vel_thresh": float(ACTIVE_VEL_THRESH),
+        "window": str(ACTIVE_WINDOW),
+        "padding": str(ACTIVE_PADDING),
+        "min_segment": str(ACTIVE_MIN_SEG),
+        "logic": "disp&vel",
+        "version": "v0",
+    }
+
     transforms["va"] = {
         "applied": True,
         "by_channel": list(va_meta.get("cols", [])) if va_meta else list(va_cols),
@@ -202,6 +321,7 @@ def run_macro(
     csv_path: str,
     schema_path: str,
     *,
+    zeroing_enabled: bool = True,
     normalize_ranges: Dict[str, float],
     sample_rate_hz: Optional[float] = None,
     timezone: Optional[str] = None,
@@ -220,6 +340,7 @@ def run_macro(
         session,
         normalize_ranges=normalize_ranges,
         sample_rate_hz=sample_rate_hz,
+        zeroing_enabled=zeroing_enabled,
     )
     logger.info("Session pre-process complete")
 
@@ -277,9 +398,24 @@ def run_macro(
     # debug
     logger.info("Event detection complete")
     logger.info("events rows: %d", len(events_df))
-    logger.debug("event_name unique: %s", sorted(events_df["event_name"].dropna().unique().tolist()))
-    logger.debug("schema_id unique %s:", sorted(events_df["schema_id"].dropna().unique().tolist()))
-    # debug
+
+    if isinstance(events_df, pd.DataFrame):
+        if "event_name" in events_df.columns:
+            logger.debug(
+                "event_name unique: %s",
+                sorted(events_df["event_name"].dropna().unique().tolist()),
+            )
+        else:
+            logger.debug("events_df has no 'event_name' column; columns=%s", list(events_df.columns))
+
+        if "schema_id" in events_df.columns:
+            logger.debug(
+                "schema_id unique: %s",
+                sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()),
+            )
+        else:
+            logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
+
 
     # Segment extraction (one schema event per call in v0)
     detected_sids = sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()) if (
