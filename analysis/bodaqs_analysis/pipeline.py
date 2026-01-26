@@ -198,26 +198,40 @@ def preprocess_session(session: Dict[str, Any],
     return session
 
      
-def run_macro(csv_path: str,
-              schema_path: str,
-              *,
-              normalize_ranges: Dict[str, float],
-              sample_rate_hz: Optional[float] = None,
-              timezone: Optional[str] = None) -> Dict[str, Any]:
-    """Convenience macro pipeline: load -> preprocess -> detect -> segment -> metrics."""
-    session = load_session(csv_path, timezone=timezone)    logger.info("Session load complete: %s", csv_path)
+def run_macro(
+    csv_path: str,
+    schema_path: str,
+    *,
+    normalize_ranges: Dict[str, float],
+    sample_rate_hz: Optional[float] = None,
+    timezone: Optional[str] = None,
+    strict: bool = True,
+) -> Dict[str, Any]:
+    """Convenience macro pipeline: load -> preprocess -> detect -> segment -> metrics.
+
+    strict:
+        When True, metrics computation enforces strict trigger/spec requirements (may raise).
+        When False, missing trigger times (etc.) should propagate as NaN where supported.
+    """
+    session = load_session(csv_path, timezone=timezone)
+    logger.info("Session load complete: %s", csv_path)
 
     session = preprocess_session(
         session,
         normalize_ranges=normalize_ranges,
         sample_rate_hz=sample_rate_hz,
-    )    logger.info("Session pre-process complete")
+    )
+    logger.info("Session pre-process complete")
 
     # debug
     t = session["df"]["time_s"].to_numpy()
     logger.debug("time_s start/end: %s .. %s", t[0], t[-1])
-    logger.debug("dt median/min/max: %s / %s / %s", float(np.median(np.diff(t))), float(np.min(np.diff(t))), float(np.max(np.diff(t))))
-
+    logger.debug(
+        "dt median/min/max: %s / %s / %s",
+        float(np.median(np.diff(t))),
+        float(np.min(np.diff(t))),
+        float(np.max(np.diff(t))),
+    )
 
     # debug: inspect signal registry shape
     sig = session.get("meta", {}).get("signals", {})
@@ -234,10 +248,10 @@ def run_macro(csv_path: str,
         if isinstance(info, dict):
             kinds[info.get("kind")] = kinds.get(info.get("kind"), 0) + 1
             units[info.get("unit")] = units.get(info.get("unit"), 0) + 1
-    logger.debug("kind counts: ", kinds)
-    logger.debug("unit counts: ", units)
+    logger.debug("kind counts: %s", kinds)
+    logger.debug("unit counts: %s", units)
 
-    #debug
+    # debug
     assert "df" in session
     assert "time_s" in session["df"].columns
     assert "signals" in session.get("meta", {})
@@ -251,9 +265,7 @@ def run_macro(csv_path: str,
     session["session_id"] = sid
     meta["session_id"] = sid
 
-    
     schema = load_event_schema(schema_path)
-    
     logger.info("Schema load complete")
 
     events_df = detect_events_from_schema(
@@ -262,12 +274,12 @@ def run_macro(csv_path: str,
         meta=session["meta"],
     )
 
-    #debug
+    # debug
     logger.info("Event detection complete")
     logger.info("events rows: %d", len(events_df))
     logger.debug("event_name unique: %s", sorted(events_df["event_name"].dropna().unique().tolist()))
     logger.debug("schema_id unique %s:", sorted(events_df["schema_id"].dropna().unique().tolist()))
-    #debug
+    # debug
 
     # Segment extraction (one schema event per call in v0)
     detected_sids = sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()) if (
@@ -307,25 +319,18 @@ def run_macro(csv_path: str,
         logger.info("segments valid (schema_id=%s): %d/%d", sid, valid_n, total_n)
 
         # debug
-        logger.debug("segments head(3) (schema_id=%s):\n%s", sid, seg.head(3).to_string(index=False))
-
-        if "reason" in seg.columns:
-            logger.debug(
-                "segments.reason value_counts head(10) (schema_id=%s):\n%s",
-                sid,
-                seg["reason"].value_counts().head(10).to_string(),
-            )
-
-        t = bundle.get("data", {}).get("t_rel_s", None)
-        if isinstance(t, np.ndarray):
-            logger.debug("t_rel_s shape=%s dtype=%s (schema_id=%s)", t.shape, t.dtype, sid)
-            logger.debug("t_rel_s first10 (schema_id=%s): %s", sid, t.ravel()[:10])
-        else:
-            logger.debug("t_rel_s not ndarray (schema_id=%s): type=%s value=%r", sid, type(t), t)
+        t2 = bundle["data"].get("t_rel_s")
+        logger.debug("t_rel_s type=%s shape=%s", type(t2), getattr(t2, "shape", None))
+        if isinstance(t2, np.ndarray):
+            logger.debug("t_rel_s[0][:10]=%s", t2[0][:10])
+            logger.debug("t_rel_s[0][-10:]=%s", t2[0][-10:])
+            d = np.diff(t2[0].astype(float))
+            logger.debug("diff stats: min=%s med=%s max=%s", np.nanmin(d), np.nanmedian(d), np.nanmax(d))
+            logger.debug("nonpositive diffs=%d", int(np.sum(d <= 0)))
         # debug
 
         # Metrics from SegmentBundle (per schema event)
-        metrics_i = compute_metrics_from_segments(bundle, schema=schema)
+        metrics_i = compute_metrics_from_segments(bundle, schema=schema, strict=strict)
         logger.info("Metrics calculation complete (schema_id=%s)", sid)
 
         # Ensure schema_id is present for grouping/faceting downstream
@@ -347,4 +352,4 @@ def run_macro(csv_path: str,
         "segments": bundles_by_schema_id,
         "metrics": metrics_df,
     }
-
+
