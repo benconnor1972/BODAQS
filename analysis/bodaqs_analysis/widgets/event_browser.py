@@ -9,6 +9,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import ipywidgets as W
 from IPython.display import display, clear_output
+from collections import OrderedDict
+import matplotlib.ticker as mticker
+import itertools
 
 from bodaqs_analysis.segment import extract_segments, SegmentRequest, WindowSpec, RoleSpec
 
@@ -194,6 +197,7 @@ def make_event_browser_widget_for_loader(
     events_df: pd.DataFrame,
     *,
     session_loader: Callable[[str], dict],
+    session_key_col: str = "session_id",
     default_quantities: Sequence[str] = ("disp", "vel"),
     default_pre_s: float = 0.8,
     default_post_s: float = 0.8,
@@ -205,12 +209,16 @@ def make_event_browser_widget_for_loader(
     if events_df is None or len(events_df) == 0:
         raise ValueError("events_df is empty")
 
-    _require_cols(events_df, ("session_id", "event_id", "signal_col", "trigger_time_s"), name="events_df")
+    _require_cols(
+    events_df,
+    (session_key_col, "session_id", "event_id", "signal_col", "trigger_time_s"),
+    name="events_df",
+    )
     et_col = _event_type_col(events_df)
     _require_cols(events_df, (et_col,), name="events_df")
 
-    # ---- Controls (NOTE: session selector is now multi-select + active session)
-    all_sessions = sorted(events_df["session_id"].dropna().astype(str).unique().tolist())
+    # ---- Controls (NOTE: session selector is now multi-select)
+    all_sessions = sorted(events_df[session_key_col].dropna().astype(str).unique().tolist())
 
     # multi-select for "scope"
     w_sessions = W.SelectMultiple(
@@ -218,14 +226,6 @@ def make_event_browser_widget_for_loader(
         value=(all_sessions[0],) if all_sessions else (),
         description="Sessions:",
         layout=W.Layout(width="380px", height="120px"),
-    )
-
-    # single active session used for extraction (can be changed by the user)
-    w_active_session = W.Dropdown(
-        options=all_sessions,
-        value=all_sessions[0] if all_sessions else None,
-        description="Active:",
-        layout=W.Layout(width="380px"),
     )
 
     w_event_type = W.Dropdown(options=[], description="Event type:", layout=W.Layout(width="380px"))
@@ -279,9 +279,14 @@ def make_event_browser_widget_for_loader(
     w_pre = W.FloatText(value=float(default_pre_s), description="Pre (s):", layout=W.Layout(width="160px"))
     w_post = W.FloatText(value=float(default_post_s), description="Post (s):", layout=W.Layout(width="160px"))
 
-    # Sensor + signals are derived from the *active session's* registry
-    w_sensor = W.Dropdown(options=[""], value="", description="Sensor:", layout=W.Layout(width="320px"))
-    w_auto_sensor = W.Checkbox(value=True, description="Auto (from event)")
+    # Sensor + signals are derived from the registry
+    w_sensor = W.Dropdown(
+        options=["All"],   # will be replaced dynamically once registry is available
+        value="All",
+        description="Sensor:",
+        layout=W.Layout(width="380px"),
+    )
+
 
     w_signals = W.SelectMultiple(
         options=[],
@@ -292,7 +297,7 @@ def make_event_browser_widget_for_loader(
 
     w_show_secondary = W.Checkbox(value=True, description="Show secondary triggers")
     w_show_grid = W.Checkbox(value=True, description="Grid")
-    w_show_stats = W.Checkbox(value=True, description="Stats")
+    w_show_stats = W.Checkbox(value=False, description="Stats")
     w_show_resolve = W.Checkbox(value=False, description="Resolve info")
 
     out = W.Output()
@@ -300,58 +305,102 @@ def make_event_browser_widget_for_loader(
     # ---- Session cache (avoid re-loading repeatedly)
     _session_cache: Dict[str, dict] = {}
 
-    def _get_session(session_id: str) -> dict:
-        sid = str(session_id)
-        if sid not in _session_cache:
-            _session_cache[sid] = session_loader(sid)
-        return _session_cache[sid]
+    def _get_session(session_key: str) -> dict:
+        sk = str(session_key)
+        if sk not in _session_cache:
+            _session_cache[sk] = session_loader(sk)
+        return _session_cache[sk]
 
-    def _active_session_id() -> Optional[str]:
-        sid = w_active_session.value
-        if sid is None:
-            return None
-        sid = str(sid)
-        return sid if sid else None
-
-    def _active_registry() -> dict:
-        sid = _active_session_id()
-        if not sid:
-            raise ValueError("No active session selected")
-        sess = _get_session(sid)
-        return _get_registry(sess.get("meta") or {})
+    def _event_registry() -> dict:
+        ev_df, ev_row = _selected_event_row()
+        if ev_row is None:
+            raise ValueError("No event selected")
+        session = _get_session(str(ev_row[session_key_col]))
+        return _get_registry(session.get("meta") or {})
 
     def _filtered_events() -> pd.DataFrame:
-        # Scope by selected sessions + event type
-        scope = set(map(str, _coerce_list(w_sessions.value)))
+        scope = list(map(str, _coerce_list(w_sessions.value)))
         if not scope:
             return events_df.iloc[0:0]
 
-        sub = events_df[events_df["session_id"].astype(str).isin(scope)].copy()
+        sub = events_df[events_df[session_key_col].astype(str).isin(scope)].copy()
+
+        # Apply event type filter
         if w_event_type.value:
             sub = sub[sub[et_col].astype(str) == str(w_event_type.value)].copy()
+
+        # Apply sensor filter ONLY if scope is unambiguous
+        sel_sensor = w_sensor.value
+        if sel_sensor and str(sel_sensor) != "All" and len(scope) == 1:
+            sess = _get_session(scope[0])
+            registry = _get_registry(sess.get("meta") or {})
+
+            sel_sensor = str(sel_sensor).strip()
+            mask = []
+            for _, r in sub.iterrows():
+                col = r.get("signal_col", None)
+                if not isinstance(col, str) or not col.strip():
+                    mask.append(False)
+                    continue
+                info = registry.get(col.strip())
+                mask.append(isinstance(info, dict) and info.get("sensor") == sel_sensor)
+
+            sub = sub.loc[pd.Series(mask, index=sub.index)].copy()
+
         return sub
 
-    def _rebuild_active_session_options(*_):
-        # When scope changes, update active session dropdown to only those sessions
-        scope = list(map(str, _coerce_list(w_sessions.value)))
-        w_active_session.options = scope
-        if scope:
-            if w_active_session.value not in scope:
-                w_active_session.value = scope[0]
-        else:
-            w_active_session.value = None
-        _rebuild_event_type()
 
     def _rebuild_event_type(*_):
-        sub = _filtered_events()
-        etypes = sorted(sub[et_col].dropna().astype(str).unique().tolist())
-        w_event_type.options = etypes
-        if etypes:
-            if w_event_type.value not in etypes:
-                w_event_type.value = etypes[0]
-        else:
+        scope = set(map(str, _coerce_list(w_sessions.value)))
+        if not scope:
+            w_event_type.options = []
             w_event_type.value = None
+            w_event.options = []
+            w_event.value = None
+            _update_nav_buttons()
+            return
+
+        # scope-only (no event type / sensor filtering here)
+        sub = events_df[events_df[session_key_col].astype(str).isin(scope)].copy()
+        etypes = sorted(sub[et_col].dropna().astype(str).unique().tolist())
+
+        prev = w_event_type.value  # remember user choice
+
+        w_event_type.options = etypes
+
+        # restore if still valid, else choose a sensible default
+        if prev in etypes:
+            w_event_type.value = prev
+        else:
+            w_event_type.value = etypes[0] if etypes else None
+
         _rebuild_events()
+        _rebuild_sensor_options()
+
+
+
+    def _rebuild_sensor_options(*_):
+        scope = list(map(str, _coerce_list(w_sessions.value)))
+        if not scope:
+            w_sensor.options = ["All"]
+            w_sensor.value = "All"
+            return
+
+        # Pick a stable session for sensor universe (first in scope)
+        sess = _get_session(scope[0])
+        registry = _get_registry(sess.get("meta") or {})
+
+        sensors = sorted({
+            info.get("sensor")
+            for info in registry.values()
+            if isinstance(info, dict) and isinstance(info.get("sensor"), str)
+        })
+        sensors = [s for s in sensors if s and s != "active"]
+
+        current = w_sensor.value
+        opts = ["All"] + sensors
+        w_sensor.options = opts
+        w_sensor.value = current if current in opts else "All"
 
     def _rebuild_events(*_):
         sub = _filtered_events()
@@ -363,13 +412,17 @@ def make_event_browser_widget_for_loader(
         labels = []
         for _, r in sub.sort_values(["session_id", "trigger_time_s"]).iterrows():
             labels.append(
-                f"{r['session_id']} :: {r['event_id']}  |  t={float(r['trigger_time_s']):.3f}s  |  {r.get('signal_col','')}"
+                f"{r['session_id']} :: {r['event_id']}  |  t={float(r['trigger_time_s']):.3f}s"
             )
+
+        current = w_event.value
         w_event.options = labels
-        if labels:
+
+        if current in labels:
+            w_event.value = current
+        elif labels:
             w_event.value = labels[0]
 
-        _rebuild_sensor_and_signals()
         _update_nav_buttons()
 
 
@@ -392,40 +445,101 @@ def make_event_browser_widget_for_loader(
             return None, None
         return ev, ev.iloc[0]
 
-    def _rebuild_sensor_and_signals(*_):
-        # Update sensor list from active session's registry
+    def _rebuild_signals_only(*_):
+        # Update sensor list from event's registry
         try:
-            registry = _active_registry()
+            registry = _event_registry()
         except Exception:
-            w_sensor.options = [""]
-            w_sensor.value = ""
             w_signals.options = []
             w_signals.value = ()
             return
 
-        sensors = sorted({info.get("sensor") for info in registry.values() if isinstance(info, dict) and info.get("sensor")})
-        sensors = [s for s in sensors if isinstance(s, str) and s.strip()]
-        w_sensor.options = (sensors or [""])
-        if sensors and (w_sensor.value not in sensors):
-            w_sensor.value = sensors[0]
-        if not sensors:
-            w_sensor.value = ""
-
         # Auto sensor from event anchor when enabled
         ev_df, ev_row = _selected_event_row()
         inferred = _infer_event_sensor(registry, ev_row) if ev_row is not None else None
-        active_sensor = inferred if (w_auto_sensor.value and inferred) else (w_sensor.value or None)
+        active_sensor = None if (w_sensor.value in (None, "", "All")) else str(w_sensor.value).strip()
+        if not active_sensor and inferred:
+            active_sensor = inferred  # implicit “auto” when All
         active_sensor = active_sensor.strip() if isinstance(active_sensor, str) else None
+
+        # --- Remember current selection (before we replace options) ---
+        prev = tuple(w_signals.value) if w_signals.value is not None else ()
 
         opts = _registry_signal_options_for_sensor(registry, active_sensor)
         w_signals.options = opts
+        avail = {key for (_, key) in opts}
 
-        # Default by quantity
+        # 1) Restore remembered selection if still valid
+        kept = tuple(k for k in prev if k in avail)
+        if kept:
+            w_signals.value = kept
+            return
+
+        # Helper: choose "best" single key among candidates
+        def _pick_best(cands):
+            if not cands:
+                return None
+
+            # Prefer: kind == "" (not raw/qc), then opk == "" (no op chain)
+            def score(k):
+                quantity, unit, kind, opk = k
+                return (
+                    0 if (kind == "" or kind is None) else 1,
+                    0 if (opk == "" or opk is None) else 1,
+                    str(unit),
+                    str(k),
+                )
+
+            return sorted(cands, key=score)[0]
+
+        # 2) Default to trigger role for the selected event (single series)
+        trigger_role = None
+        if ev_row is not None:
+            trigger_role = ev_row.get("signal", None)
+            trigger_role = trigger_role.strip() if isinstance(trigger_role, str) else None
+
+        if trigger_role:
+            trig_cands = [key for (_, key) in opts if key and key[0] == trigger_role]
+            best = _pick_best(trig_cands)
+            if best is not None:
+                w_signals.value = (best,)
+                return
+
+        # 3) Fall back to default_quantities (same behavior as before)
         desired = set(_coerce_list(default_quantities))
-        selected = [key for (_, key) in opts if key[0] in desired]
+        selected = [key for (_, key) in opts if key and key[0] in desired]
         w_signals.value = tuple(selected) if selected else ()
 
     def _render(*_):
+        
+        def _set_ylim_zero_at_frac(ax_i, data_min, data_max, frac0, pad=0.05):
+            """
+            Choose y-lims [ymin, ymax] that contain [data_min, data_max] and place y=0 at frac0.
+            frac0 in (0,1): 0 at ymin + frac0*(ymax-ymin).
+            """
+            # If data range is degenerate, make a small span
+            if not np.isfinite(data_min) or not np.isfinite(data_max):
+                return
+            if data_min == data_max:
+                span = abs(data_min) if data_min != 0 else 1.0
+                data_min -= 0.5 * span
+                data_max += 0.5 * span
+
+            # Required range so that ymin <= data_min and ymax >= data_max
+            req = []
+            if data_min < 0:
+                req.append((-data_min) / max(frac0, 1e-6))
+            if data_max > 0:
+                req.append((data_max) / max(1.0 - frac0, 1e-6))
+            if not req:
+                # All data on one side of 0; still make a reasonable range
+                req.append(max(abs(data_min), abs(data_max), 1.0))
+
+            rng = max(req) * (1.0 + pad)
+            ymin = -frac0 * rng
+            ymax = (1.0 - frac0) * rng
+            ax_i.set_ylim(ymin, ymax)
+
         with out:
             clear_output(wait=True)
 
@@ -434,15 +548,19 @@ def make_event_browser_widget_for_loader(
                 print("No event selected.")
                 return
 
-            # Use the event's session_id for extraction (this is the big win vs passing `session` in)
-            event_session_id = str(ev_row["session_id"])
-            session = _get_session(event_session_id)
+            # Loader key (unique across runs) + display id (friendly)
+            event_session_key = str(ev_row[session_key_col])
+            event_session_id  = str(ev_row["session_id"])
+            session = _get_session(event_session_key)
+
             registry = _get_registry(session.get("meta") or {})
 
             # Determine active sensor for the event
-            inferred = _infer_event_sensor(registry, ev_row)
-            sensor = inferred if (w_auto_sensor.value and inferred) else (w_sensor.value or None)
-            sensor = sensor.strip() if isinstance(sensor, str) else None
+            inferred = _infer_event_sensor(registry, ev_row) if ev_row is not None else None
+            sensor = None if (w_sensor.value in (None, "", "All")) else str(w_sensor.value).strip()
+            if not sensor and inferred:
+                sensor = inferred  # implicit “auto” when All
+
 
             # Build RoleSpecs from selected semantic tuples
             role_specs = []
@@ -497,11 +615,79 @@ def make_event_browser_widget_for_loader(
                 print("No series available to plot.")
                 return
 
-            fig, ax = plt.subplots(figsize=(9.5, 4.2))
-            for name, y in series:
-                ax.plot(t_rel, y, label=name)
+            # group series by unit
+            by_unit = OrderedDict()
+            for semantic in _coerce_list(w_signals.value):
+                quantity, unit, kind, opk = semantic
+                key = str(quantity)
+                if key not in data:
+                    continue
+                y = np.asarray(data[key])[0]
+                unit_key = unit or ""  # empty string = unitless
+                by_unit.setdefault(unit_key, []).append((quantity, y))
 
-            ax.axvline(0.0, linestyle="--", linewidth=1.0)
+
+            fig, ax = plt.subplots(figsize=(9.5, 4.2))
+
+            axes = [ax]
+            unit_to_ax = {list(by_unit.keys())[0]: ax}
+
+            # create additional y-axes if needed
+            for i, unit in enumerate(list(by_unit.keys())[1:], start=1):
+                ax_i = ax.twinx()
+                ax_i.spines["right"].set_position(("outward", 60 * (i - 1)))
+                axes.append(ax_i)
+                unit_to_ax[unit] = ax_i
+
+            colors = itertools.cycle(plt.rcParams["axes.prop_cycle"].by_key()["color"])
+            for unit, items in by_unit.items():
+                ax_i = unit_to_ax[unit]
+                for quantity, y in items:
+                    ax_i.plot(t_rel, y, label=quantity, color=next(colors))
+
+            # sci notation outside ~1e-4..1e4
+            fmt = mticker.ScalarFormatter(useMathText=True)
+            fmt.set_powerlimits((-4, 4))  
+
+            for ax_i in axes:
+                ax_i.yaxis.set_major_formatter(fmt)
+
+            # Compute desired frac0 from primary axis (based on its current limits)
+            ymin0, ymax0 = ax.get_ylim()
+            frac0 = (0.0 - ymin0) / (ymax0 - ymin0) if ymax0 != ymin0 else 0.5
+            frac0 = float(np.clip(frac0, 0.05, 0.95))
+
+            # Apply aligned 0-position limits to every axis based on that frac0
+            for ax_i in axes:
+                lines = ax_i.get_lines()
+                if not lines:
+                    continue
+                y_all = np.concatenate([ln.get_ydata() for ln in lines if ln.get_ydata() is not None])
+                y_all = y_all[np.isfinite(y_all)]
+                if y_all.size == 0:
+                    continue
+                _set_ylim_zero_at_frac(ax_i, float(y_all.min()), float(y_all.max()), frac0, pad=0.05)
+
+
+            handles = []
+            labels = []
+            for ax_i in axes:
+                h, l = ax_i.get_legend_handles_labels()
+                handles.extend(h)
+                labels.extend(l)
+
+            ax.legend(handles, labels, loc="best")
+
+            for ax_i in axes:
+                ax_i.axvline(
+                    0.0,
+                    linestyle="--",
+                    linewidth=1.2,
+                    color="0.25",
+                    zorder=3,
+                )
+
+            ax.axvline(0.0, linestyle="--", linewidth=1.0, color="0.25",zorder=3)
             ax.text(0.0, 0.98, "trigger", transform=ax.get_xaxis_transform(), ha="left", va="top")
 
             if w_show_secondary.value:
@@ -509,16 +695,24 @@ def make_event_browser_widget_for_loader(
                 for col, t_abs in _secondary_time_cols(ev_row):
                     tsec = float(t_abs) - t0
                     ax.axvline(tsec, linestyle=":", linewidth=1.0)
-                    ax.text(tsec, 0.98, col.replace("_time_s", ""), transform=ax.get_xaxis_transform(),
-                            rotation=90, ha="right", va="top", fontsize=8)
+                    ax.text(
+                        tsec, 0.98, col.replace("_time_s", ""),
+                        transform=ax.get_xaxis_transform(),
+                        rotation=90, ha="right", va="top", fontsize=8
+                    )
 
-            ax.set_title(f"Event browser — {event_session_id} | {ev_row[et_col]} | {ev_row['event_id']} | {sensor or ''}".strip())
+            ax.set_title(
+                f"Event browser — {event_session_id} | {ev_row[et_col]} | {ev_row['event_id']} | {sensor or ''}".strip()
+            )
             ax.set_xlabel("t_rel_s (s)")
-            ax.set_ylabel("value")
+            for unit, ax_i in unit_to_ax.items():
+                if unit:
+                    ax_i.set_ylabel(unit)
+                else:
+                    ax_i.set_ylabel("")  # unitless or leave blank
 
             if w_show_grid.value:
                 ax.grid(True, which="both", axis="both", alpha=0.3)
-            ax.legend(loc="best")
             plt.show()
 
             if w_show_stats.value:
@@ -535,7 +729,7 @@ def make_event_browser_widget_for_loader(
                 print("\nResolve info:")
                 print("  scope sessions:", list(_coerce_list(w_sessions.value)))
                 print("  event session:", event_session_id)
-                print("  active session:", _active_session_id())
+                print("  event session key:", event_session_key)
                 print("  event_type_col:", et_col)
                 print("  event type:", ev_row.get(et_col))
                 print("  event signal_col:", ev_row.get("signal_col"))
@@ -545,23 +739,21 @@ def make_event_browser_widget_for_loader(
                 print("\nResolved spec:")
                 print("  role_to_col:", spec.get("role_to_col"))
 
+
     # ---- Wire up
-    w_sessions.observe(_rebuild_active_session_options, names="value")
-    w_active_session.observe(_rebuild_sensor_and_signals, names="value")
+    w_sessions.observe(_rebuild_event_type, names="value")
     w_event_type.observe(_rebuild_events, names="value")
-    w_event.observe(_rebuild_sensor_and_signals, names="value")
-    w_auto_sensor.observe(_rebuild_sensor_and_signals, names="value")
-    w_sensor.observe(_rebuild_sensor_and_signals, names="value")
+    w_event.observe(_rebuild_signals_only, names="value")
+    w_sensor.observe(_rebuild_events, names="value")
+
 
     for w in (w_event, w_pre, w_post, w_signals, w_show_secondary, w_show_grid, w_show_stats, w_show_resolve):
         w.observe(_render, names="value")
 
     # ---- Init
-    _rebuild_active_session_options()
     ui = W.VBox(
         [
-            W.HBox([w_sessions, W.VBox([w_active_session, w_event_type])]),
-            W.HBox([w_auto_sensor, w_sensor]),
+            W.HBox([w_sessions, W.VBox([w_event_type, w_sensor])]),
             W.HBox([w_event, w_prev, w_next]),
             W.HBox([w_pre, w_post, w_show_secondary, w_show_grid, w_show_stats, w_show_resolve]),
             W.HBox([w_signals]),
@@ -570,6 +762,7 @@ def make_event_browser_widget_for_loader(
     )
 
     display(ui)
+    _rebuild_event_type()
     _render()
 
     return {
@@ -577,10 +770,8 @@ def make_event_browser_widget_for_loader(
         "out": out,
         "controls": {
             "sessions": w_sessions,
-            "active_session": w_active_session,
             "event_type": w_event_type,
             "sensor": w_sensor,
-            "auto_sensor": w_auto_sensor,
             "event": w_event,
             "signals": w_signals,
         },

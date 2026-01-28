@@ -97,6 +97,38 @@ def list_sessions(store: "ArtifactStore", run_id: str) -> List[str]:
             out.append(p.name)
     return sorted(out)
 
+def list_all_sessions(store) -> List[Dict[str, Any]]:
+    """
+    Returns a list of entries:
+      {run_id, session_id, run_description, session_description, created_at}
+    Safe if manifests are missing fields.
+    """
+    out: List[Dict[str, Any]] = []
+    for run_id in list_runs(store):
+        run_manifest = {}
+        try:
+            run_manifest = store.read_json(store.path_run_manifest(run_id))
+        except Exception:
+            pass
+
+        run_desc = run_manifest.get("description")
+        created_at = run_manifest.get("created_at")
+
+        for session_id in list_sessions(store, run_id):
+            sess_manifest = {}
+            try:
+                sess_manifest = store.read_json(store.path_session_manifest(run_id, session_id))
+            except Exception:
+                pass
+
+            out.append({
+                "run_id": run_id,
+                "session_id": session_id,
+                "created_at": created_at,
+                "run_description": run_desc,
+                "session_description": sess_manifest.get("description"),
+            })
+    return out
 
 def list_event_types(store: "ArtifactStore", run_id: str, session_id: str) -> List[str]:
     """
@@ -135,6 +167,44 @@ def list_metric_event_types(store: "ArtifactStore", run_id: str, session_id: str
 
     return sorted(out)
 
+def load_all_events_for_selected(store, *, key_to_ref: dict[str, tuple[str, str]]) -> pd.DataFrame:
+    """
+    Loads and concatenates events across all selected sessions, adding:
+      - session_key (run_id::session_id)
+      - run_id, session_id
+    Assumes your artifacts are partitioned by schema_id under:
+      events/<schema_id>/events.parquet
+    """
+    dfs = []
+
+    for session_key, (run_id, session_id) in key_to_ref.items():
+        # Discover schema_id folders by scanning events dir
+        events_root = store.session_dir(run_id, session_id) / "events"
+        if not events_root.exists():
+            continue
+
+        for schema_dir in events_root.iterdir():
+            if not schema_dir.is_dir():
+                continue
+            p = schema_dir / "events.parquet"
+            if not p.exists():
+                continue
+
+            df = store.read_df(p)
+            if df.empty:
+                continue
+
+            # Add cross-run identity columns
+            df = df.copy()
+            df["session_key"] = session_key
+            df["run_id"] = run_id
+            df["session_id"] = session_id  # keep for convenience
+            dfs.append(df)
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+
 def save_session_artifacts(
     store: ArtifactStore,
     *,
@@ -158,6 +228,7 @@ def write_run_manifest(
     session_ids: list[str],
     git_sha: Optional[str] = None,
     timezone_label: str = "AWST",
+    description: str | None = None,
     pipeline_config: Optional[Mapping[str, Any]] = None,
 ) -> None:
     obj: Dict[str, Any] = {
@@ -165,6 +236,7 @@ def write_run_manifest(
         "run_id": run_id,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "timezone": timezone_label,
+        "description": description,
         "sessions": session_ids,
     }
     if git_sha:
@@ -179,11 +251,15 @@ def write_session_manifest(
     *,
     run_id: str,
     session_id: str,
+    description: str | None = None,
     contracts: Optional[Mapping[str, str]] = None,
     source: Optional[Mapping[str, Any]] = None,
     summary: Optional[Mapping[str, Any]] = None,
 ) -> None:
-    obj: Dict[str, Any] = {"session_id": session_id}
+    obj: Dict[str, Any] = {
+        "session_id": session_id,
+        "description": description,  # always present (may be None)
+    }
     if contracts:
         obj["contracts"] = dict(contracts)
     if source:
@@ -192,6 +268,7 @@ def write_session_manifest(
         obj["summary"] = dict(summary)
 
     store.write_json(store.path_session_manifest(run_id, session_id), obj)
+
 
 def _freeze_schema_yaml_for_event_type(*, run_id: str, session_id: str, event_type: str) -> None:
     """
@@ -381,3 +458,46 @@ def ensure_session_is_new(
             f"Session artifacts already exist for run_id={run_id!r}, session_id={session_id!r} "
             f"({df_path}). Refusing to overwrite. Pass force=True to allow."
         )
+        
+def update_manifest_description(path: Path, description: str | None) -> None:
+    obj = store.read_json(path)
+    obj["description"] = description
+    store.write_json(path, obj)
+    
+def set_run_description(
+    store,
+    *,
+    run_id: str,
+    description: Optional[str],
+) -> None:
+    """
+    Update the run manifest's description field in-place.
+    Leaves all other fields untouched.
+    """
+    if description is not None and not str(description).strip():
+        description = None
+
+    path = store.path_run_manifest(run_id)
+    obj = store.read_json(path)
+    obj["description"] = description
+    store.write_json(path, obj)
+
+
+def set_session_description(
+    store,
+    *,
+    run_id: str,
+    session_id: str,
+    description: Optional[str],
+) -> None:
+    """
+    Update a session manifest's description field in-place.
+    Leaves all other fields untouched.
+    """
+    if description is not None and not str(description).strip():
+        description = None
+
+    path = store.path_session_manifest(run_id, session_id)
+    obj = store.read_json(path)
+    obj["description"] = description
+    store.write_json(path, obj)

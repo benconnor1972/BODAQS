@@ -73,20 +73,21 @@ def make_signal_histogram_widget_for_loader(
     events_df: pd.DataFrame,
     *,
     session_loader: Callable[[str], Dict[str, Any]],
+    session_key_col: str = "session_id",
     default_bins: int = 50,
     max_bins: int = 500,
 ) -> dict:
     """
     Signal histogram / CDF widget using session_loader.
 
-    Sessions are discovered from events_df["session_id"].
+    Sessions are discovered from events_df[session_key_col].
     Signals are listed from each session's registry.
     """
+    if session_key_col not in events_df.columns:
+        raise ValueError(f"events_df must contain {session_key_col!r} column")
 
-    if "session_id" not in events_df.columns:
-        raise ValueError("events_df must contain 'session_id' column")
+    session_ids = sorted(events_df[session_key_col].astype(str).unique())
 
-    session_ids = sorted(events_df["session_id"].astype(str).unique())
 
     # Load ONE session to discover registry signals
     first_session = session_loader(session_ids[0])
