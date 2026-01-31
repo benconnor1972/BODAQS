@@ -14,6 +14,8 @@ import matplotlib.ticker as mticker
 import itertools
 
 from bodaqs_analysis.segment import extract_segments, SegmentRequest, WindowSpec, RoleSpec
+from IPython.display import clear_output
+from bodaqs_analysis.widgets.loaders import make_session_loader, load_all_events_for_selected
 
 # ---- internal helpers (paste this whole block near the top of event_browser.py) ----
 # Put it AFTER your imports (numpy/pandas/etc.) but BEFORE make_event_browser_widget_for_loader()
@@ -221,15 +223,19 @@ def make_event_browser_widget_for_loader(
     all_sessions = sorted(events_df[session_key_col].dropna().astype(str).unique().tolist())
 
     # multi-select for "scope"
+    sessions_label = W.Label("Sessions:")
     w_sessions = W.SelectMultiple(
         options=all_sessions,
         value=(all_sessions[0],) if all_sessions else (),
-        description="Sessions:",
-        layout=W.Layout(width="380px", height="120px"),
+        description="",
+        rows=min(8, max(3, len(all_sessions))),
+        layout=W.Layout(width="380px"),
     )
 
+    dummy_label = W.Label(" ")
+    event_label = W.Label("Event:")
     w_event_type = W.Dropdown(options=[], description="Event type:", layout=W.Layout(width="380px"))
-    w_event = W.Dropdown(options=[], description="Event:", layout=W.Layout(width="520px"))
+    w_event = W.Dropdown(options=[], description="", layout=W.Layout(width="450px"))
    
     # --- Prev/Next buttons for event navigation ---
     w_prev = W.Button(description="", icon="arrow-left", tooltip="Previous event", layout=W.Layout(width="36px"))
@@ -287,18 +293,18 @@ def make_event_browser_widget_for_loader(
         layout=W.Layout(width="380px"),
     )
 
-
+    signals_label = W.Label("Signals:")
     w_signals = W.SelectMultiple(
         options=[],
         value=(),
-        description="Signals:",
-        layout=W.Layout(width="520px", height="140px"),
+        description="",
+        layout=W.Layout(width="380px", height="140px"),
     )
 
-    w_show_secondary = W.Checkbox(value=True, description="Show secondary triggers")
+    w_show_secondary = W.Checkbox(value=True, description="Sec. triggers")
     w_show_grid = W.Checkbox(value=True, description="Grid")
     w_show_stats = W.Checkbox(value=False, description="Stats")
-    w_show_resolve = W.Checkbox(value=False, description="Resolve info")
+    w_show_resolve = W.Checkbox(value=False, description="Info")
 
     out = W.Output()
 
@@ -753,10 +759,10 @@ def make_event_browser_widget_for_loader(
     # ---- Init
     ui = W.VBox(
         [
-            W.HBox([w_sessions, W.VBox([w_event_type, w_sensor])]),
-            W.HBox([w_event, w_prev, w_next]),
-            W.HBox([w_pre, w_post, w_show_secondary, w_show_grid, w_show_stats, w_show_resolve]),
-            W.HBox([w_signals]),
+            W.HBox([W.VBox([sessions_label, w_sessions]), W.VBox([dummy_label, w_event_type, w_sensor])]),
+            W.HBox([W.VBox([event_label, w_event]), W.VBox([dummy_label,W.HBox([w_prev, w_next])])]),
+
+            W.HBox([W.VBox([signals_label, w_signals]),W.VBox([dummy_label, W.HBox([w_pre, w_post]), W.HBox([w_show_secondary, w_show_grid]), W.HBox([w_show_stats, w_show_resolve])])]),
             out,
         ]
     )
@@ -777,3 +783,41 @@ def make_event_browser_widget_for_loader(
         },
         "cache": _session_cache,
     }
+
+def make_event_browser_rebuilder(
+    *,
+    sel: Dict[str, Any],
+    schema: dict,
+    out: Optional[W.Output] = None,
+    session_key_col: str = "session_key",
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Rebuild helper for the event browser widget (recreates the widget on selector change).
+    """
+
+    if out is None:
+        out = W.Output()
+
+    state: Dict[str, Any] = {"handles": None}
+
+    def rebuild() -> None:
+        store = sel["store"]
+        key_to_ref = sel["get_key_to_ref"]()
+        session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
+
+        events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+        # Expect events_df_sel already includes a session_key column
+
+        with out:
+            clear_output(wait=True)
+            state["handles"] = make_event_browser_widget_for_loader(
+                schema,
+                events_df_sel,
+                session_loader=session_loader,
+                session_key_col=session_key_col,
+                **kwargs,
+            )
+
+    rebuild()
+    return {"out": out, "rebuild": rebuild, "state": state}

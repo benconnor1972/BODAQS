@@ -20,7 +20,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import ipywidgets as W
 from IPython.display import display, clear_output
-
+from IPython.display import clear_output
+from bodaqs_analysis.widgets.loaders import make_session_loader, load_all_events_for_selected
 
 # -------------------------
 # Registry helpers
@@ -97,34 +98,43 @@ def make_signal_histogram_widget_for_loader(
         raise ValueError("No signal columns found in registry or df")
 
     # --- UI ---
+    sessions_label = W.Label("Sessions:")
     w_sessions_mode = W.RadioButtons(
         options=[("Aggregate sessions", False), ("Compare sessions", True)],
         value=False,
-        description="Sessions:",
+        description="",
     )
     w_sessions = W.SelectMultiple(
         options=session_ids,
         value=tuple(session_ids[:1]),
-        description="Pick:",
+        description="",
+        rows=min(8, max(3, len(session_ids), len(signal_cols))),
+        layout=W.Layout(width="450px"),
     )
 
+    signals_label = W.Label("Signals:")
     w_signals_mode = W.RadioButtons(
         options=[("Aggregate signals", False), ("Compare signals", True)],
         value=False,
-        description="Signals:",
+        description="",
     )
     w_signals = W.SelectMultiple(
         options=signal_cols,
         value=tuple(signal_cols[:1]),
-        description="Pick:",
-        rows=8,
+        description="",
+        rows=min(8, max(3, len(session_ids), len(signal_cols))),
+        layout=W.Layout(width="450px"),
+
     )
 
-    w_bins = W.BoundedIntText(value=default_bins, min=1, max=max_bins, description="Bins:")
+    w_bins = W.BoundedIntText(value=default_bins, min=1, max=max_bins, description="Bins:", layout = W.Layout(width="150px"))
     w_cdf = W.Checkbox(value=False, description="CDF")
     w_norm = W.Checkbox(value=True, description="Normalize")
     w_dropna = W.Checkbox(value=True, description="Drop NaN/inf")
     w_include_inactive = W.Checkbox(value=False, description="Include inactive")
+    for w in (w_cdf, w_norm, w_dropna, w_include_inactive):
+        w.layout = W.Layout(width="auto")
+
 
     out = W.Output()
 
@@ -208,10 +218,18 @@ def make_signal_histogram_widget_for_loader(
         w.observe(_render, names="value")
 
     controls = W.VBox([
-        W.HBox([w_bins, w_cdf, w_norm, w_dropna, w_include_inactive]),
+        W.HBox(
+            [w_bins, w_cdf, w_norm, w_dropna, w_include_inactive],
+            layout=W.Layout(
+                justify_content="flex-start",
+                align_items="center",
+                gap="6px",
+                flex_flow="row wrap",  
+            ),
+        ),
         W.HBox([
-            W.VBox([w_sessions_mode, w_sessions]),
-            W.VBox([w_signals_mode, w_signals]),
+            W.VBox([sessions_label, w_sessions_mode, w_sessions]),
+            W.VBox([signals_label, w_signals_mode, w_signals]),
         ]),
     ])
 
@@ -223,3 +241,39 @@ def make_signal_histogram_widget_for_loader(
         "session_ids": session_ids,
         "signal_cols": signal_cols,
     }
+
+def make_signal_histogram_rebuilder(
+    *,
+    sel: Dict[str, Any],
+    out: Optional[W.Output] = None,
+    session_key_col: str = "session_key",
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Rebuild helper for the signal histogram widget (recreates the widget on selector change).
+    """
+
+
+    if out is None:
+        out = W.Output()
+
+    state: Dict[str, Any] = {"handles": None}
+
+    def rebuild() -> None:
+        store = sel["store"]
+        key_to_ref = sel["get_key_to_ref"]()
+        session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
+
+        events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+
+        with out:
+            clear_output(wait=True)
+            state["handles"] = make_signal_histogram_widget_for_loader(
+                events_df_sel,
+                session_loader=session_loader,
+                session_key_col=session_key_col,
+                **kwargs,
+            )
+
+    rebuild()
+    return {"out": out, "rebuild": rebuild, "state": state}

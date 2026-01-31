@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Callable
 
 import ipywidgets as W
 import pandas as pd
+import threading
+import asyncio
 
 from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
 
@@ -96,7 +98,7 @@ def make_session_selector(
     )
 
     out = W.Output()
-
+    
     # state (closed over)
     _label_to_sel: Dict[str, Dict[str, str]] = {}
     _selected: List[Dict[str, str]] = []
@@ -158,3 +160,47 @@ def make_session_selector(
         "get_key_to_ref": get_key_to_ref,
         "get_events_index_df": get_events_index_df,
     }
+
+def attach_refresh(
+    sel: Dict[str, Any],
+    rebuild_fns: List[Callable[[], None]],
+) -> Dict[str, Any]:
+    """
+    Attach selector observers and call rebuild functions immediately when run/sessions change.
+    (No threads; reliable in Jupyter.)
+    """
+    run_dd = sel.get("run_dd")
+    sessions_sel = sel.get("sessions_sel")
+    if run_dd is None or sessions_sel is None:
+        raise ValueError("selector handle must include 'run_dd' and 'sessions_sel'")
+
+    in_fire = False  # re-entrancy guard
+
+    def _fire(*_):
+        nonlocal in_fire
+        if in_fire:
+            return
+        in_fire = True
+        try:
+            for fn in rebuild_fns:
+                try:
+                    fn()
+                except Exception as e:
+                    print(f"[attach_refresh] rebuild failed: {e!r}")
+        finally:
+            in_fire = False
+
+    run_dd.observe(_fire, names="value")
+    sessions_sel.observe(_fire, names="value")
+
+    def detach():
+        try:
+            run_dd.unobserve(_fire, names="value")
+        except Exception:
+            pass
+        try:
+            sessions_sel.unobserve(_fire, names="value")
+        except Exception:
+            pass
+
+    return {"detach": detach, "trigger": _fire}

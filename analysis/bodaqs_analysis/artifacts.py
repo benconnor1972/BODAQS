@@ -167,44 +167,6 @@ def list_metric_event_types(store: "ArtifactStore", run_id: str, session_id: str
 
     return sorted(out)
 
-def load_all_events_for_selected(store, *, key_to_ref: dict[str, tuple[str, str]]) -> pd.DataFrame:
-    """
-    Loads and concatenates events across all selected sessions, adding:
-      - session_key (run_id::session_id)
-      - run_id, session_id
-    Assumes your artifacts are partitioned by schema_id under:
-      events/<schema_id>/events.parquet
-    """
-    dfs = []
-
-    for session_key, (run_id, session_id) in key_to_ref.items():
-        # Discover schema_id folders by scanning events dir
-        events_root = store.session_dir(run_id, session_id) / "events"
-        if not events_root.exists():
-            continue
-
-        for schema_dir in events_root.iterdir():
-            if not schema_dir.is_dir():
-                continue
-            p = schema_dir / "events.parquet"
-            if not p.exists():
-                continue
-
-            df = store.read_df(p)
-            if df.empty:
-                continue
-
-            # Add cross-run identity columns
-            df = df.copy()
-            df["session_key"] = session_key
-            df["run_id"] = run_id
-            df["session_id"] = session_id  # keep for convenience
-            dfs.append(df)
-
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
-
-
 def save_session_artifacts(
     store: ArtifactStore,
     *,
