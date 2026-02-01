@@ -122,7 +122,7 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
                     errors.append(f"{col!r}: quantity 'vel' should have unit 'mm/s', got {unit!r}")
                 if quantity == "acc" and unit.strip() != "mm/s^2":
                     errors.append(f"{col!r}: quantity 'acc' should have unit 'mm/s^2', got {unit!r}")
-                    errors.append(f"{col!r}: quantity 'disp_norm' should have unit '1', got {unit!r}")
+                   # errors.append(f"{col!r}: quantity 'disp_norm' should have unit '1', got {unit!r}")
 
         # For raw signals, we also want sensor + quantity='raw'
         if kind == "raw":
