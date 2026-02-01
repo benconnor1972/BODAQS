@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -51,44 +52,23 @@ def _require_cols(df: pd.DataFrame, cols: Sequence[str], *, name: str) -> None:
 def _metric_cols(metrics_df: pd.DataFrame) -> List[str]:
     return [c for c in metrics_df.columns if isinstance(c, str) and c.startswith("m_")]
 
+def _path_registry_signals_json(store, run_id: str, session_id: str) -> Path:
+    # per artifacts spec v0.2: runs/<run_id>/sessions/<session_id>/registry/signals.json
+    return store.session_dir(run_id, session_id) / "registry" / "signals.json"
 
-def _infer_sensor_from_signal_col(col: Optional[str]) -> Optional[str]:
+
+def _load_registry_signals_snapshot(store, run_id: str, session_id: str) -> dict:
     """
-    Best-effort sensor extraction from canonical column naming.
-
-    Common patterns:
-      - "{sensor}_dom_{...}"
-      - "{sensor}_{...}" (fallback)
-
-    Examples:
-      "front_shock_dom_suspension [mm]" -> "front_shock"
-      "rear_shock_dom_suspension [mm]"  -> "rear_shock"
+    Load registry snapshot. Returns mapping: col_name -> info dict.
+    Accepts either:
+      - {"<col>": {...}, ...}
+      - {"signals": {"<col>": {...}}, ...}   (if you ever wrap it)
     """
-    if not isinstance(col, str):
-        return None
-    s = col.strip()
-    if not s:
-        return None
-
-    # Strip trailing unit suffix like " [mm]" for parsing.
-    s2 = re.sub(r"\s*\[[^\]]+\]\s*$", "", s)
-
-    m = re.match(r"^(.+?)_dom_", s2)
-    if m:
-        return m.group(1)
-
-    # Fallback: take up to first underscore, but only if that seems meaningful.
-    if "_" in s2:
-        return s2.split("_", 1)[0]
-
-    return s2
-
-
-def _add_sensor_col(viz_df: pd.DataFrame, *, signal_col: str) -> pd.DataFrame:
-    out = viz_df.copy()
-    out["_sensor"] = out[signal_col].map(_infer_sensor_from_signal_col)
-    return out
-
+    p = _path_registry_signals_json(store, run_id, session_id)
+    obj = store.read_json(p)  # will raise if missing/unreadable
+    if isinstance(obj, dict) and "signals" in obj and isinstance(obj["signals"], dict):
+        return obj["signals"]
+    return obj if isinstance(obj, dict) else {}
 
 # ----------------------------
 # extracting tables from session
@@ -144,6 +124,50 @@ def _default_metrics_getter(session: dict) -> pd.DataFrame:
         "Provide metrics_getter=... or ensure session contains metrics_df."
     )
 
+def _resolve_trigger_signal_col(schema: dict, *, schema_id: str, role: str) -> str | None:
+    """
+    Resolve (schema_id, role) -> canonical signal_col via schema definition.
+    """
+    sch = schema.get(schema_id)
+    if not isinstance(sch, dict):
+        return None
+
+    triggers = sch.get("triggers") or {}
+    trig = triggers.get(role)
+    if not isinstance(trig, dict):
+        return None
+
+    col = trig.get("signal_col")
+    return col.strip() if isinstance(col, str) and col.strip() else None
+
+
+def _resolve_sensor_from_event(
+    *,
+    schema: dict,
+    registry: dict,
+    ev_row: pd.Series,
+    schema_id_col: str,
+    role_col: str,
+) -> str | None:
+    """
+    Resolve sensor for an event row using:
+      event → schema → canonical signal → registry
+    """
+    schema_id = str(ev_row.get(schema_id_col, "")).strip()
+    role = str(ev_row.get(role_col, "")).strip()
+    if not schema_id or not role:
+        return None
+
+    sig_col = _resolve_trigger_signal_col(schema, schema_id=schema_id, role=role)
+    if not sig_col:
+        return None
+
+    info = registry.get(sig_col)
+    if not isinstance(info, dict):
+        return None
+
+    sensor = info.get("sensor")
+    return sensor.strip() if isinstance(sensor, str) and sensor.strip() else None
 
 # ----------------------------
 # NEW consumer-pattern widget
@@ -152,6 +176,7 @@ def _default_metrics_getter(session: dict) -> pd.DataFrame:
 def make_metric_scatter_widget_for_loader(
     *,
     store,
+    schema: dict,
     key_to_ref: Dict[str, Tuple[str, str]],
     events_index_df: pd.DataFrame,
     session_loader: Callable[[str], dict],  # kept for symmetry / future use
@@ -163,19 +188,17 @@ def make_metric_scatter_widget_for_loader(
     default_alpha: float = 0.6,
     default_size: int = 18,
 ) -> dict:
-
     """
     Consumer-pattern metric scatter widget.
 
-    events_index_df:
-        Selector-provided index containing at least session_key/run_id/session_id.
-        Only session_key is strictly required by this widget; session_id is used for display/debug.
+    IMPORTANT:
+    Sensor resolution is schema-mediated:
+        event row -> (schema_id, signal_col) -> schema triggers -> canonical signal_col -> registry -> sensor
 
-    session_loader(session_key) -> session dict:
-        Must load session artifacts (events + metrics available inside, see getters above).
-
-    Returns:
-        {"viz_df": <joined df>, "out": <ipywidgets.Output>, "refresh": <callable>}
+    Robustness:
+    - If events_df_sel[signal_col] is a ROLE (e.g. "disp"), it is resolved via schema triggers.
+    - If events_df_sel[signal_col] is already a canonical df column, it is resolved directly via registry.
+    - No parsing/normalization of column names.
     """
     if events_index_df is None or len(events_index_df) == 0:
         raise ValueError("events_index_df is empty")
@@ -201,8 +224,16 @@ def make_metric_scatter_widget_for_loader(
         raise ValueError("No metrics found for selected sessions.")
 
     # Required columns
-    _require_cols(events_df_sel, (session_key_col, event_id_col, schema_id_col, signal_col), name="events_df_sel")
-    _require_cols(metrics_df_sel, (session_key_col, event_id_col, schema_id_col), name="metrics_df_sel")
+    _require_cols(
+        events_df_sel,
+        (session_key_col, event_id_col, schema_id_col, signal_col),
+        name="events_df_sel",
+    )
+    _require_cols(
+        metrics_df_sel,
+        (session_key_col, event_id_col, schema_id_col),
+        name="metrics_df_sel",
+    )
 
     metric_cols = _metric_cols(metrics_df_sel)
     if not metric_cols:
@@ -210,8 +241,12 @@ def make_metric_scatter_widget_for_loader(
 
     # Join identity: safest is (session_key, schema_id, event_id)
     viz_df = events_df_sel[
-        [session_key_col, "run_id", "session_id", schema_id_col, event_id_col, signal_col] +
-        ([event_type_col] if event_type_col not in (schema_id_col,) and event_type_col in events_df_sel.columns else [])
+        [session_key_col, "run_id", "session_id", schema_id_col, event_id_col, signal_col]
+        + (
+            [event_type_col]
+            if event_type_col not in (schema_id_col,) and event_type_col in events_df_sel.columns
+            else []
+        )
     ].merge(
         metrics_df_sel[[session_key_col, schema_id_col, event_id_col] + metric_cols],
         on=[session_key_col, schema_id_col, event_id_col],
@@ -223,34 +258,149 @@ def make_metric_scatter_widget_for_loader(
     if event_type_col not in viz_df.columns:
         viz_df[event_type_col] = viz_df[schema_id_col].astype(str)
 
-    viz_df = _add_sensor_col(viz_df, signal_col=signal_col)
-
-
     if viz_df is None or len(viz_df) == 0:
         raise ValueError("No rows after building viz_df (events/metrics join produced nothing)")
+
+    # ----------------------------
+    # Registry + schema mediated sensor resolution
+    # ----------------------------
+
+    # Get a registry dict from any loaded session.
+    # (Assumes registry is stable across sessions; that's the intent of your registry snapshot contract.)
+    # Prefer meta['signals'] (your pipeline uses this), otherwise fail fast.
+    _sk0 = next(iter(key_to_ref.keys()))
+    _sess0 = session_loader(_sk0)
+    _meta0 = (_sess0 or {}).get("meta") or {}
+    registry = _meta0.get("signals") or {}
+    if not isinstance(registry, dict) or not registry:
+        raise ValueError(
+            "Signal registry not found or empty in session_loader(session_key)['meta']['signals']"
+        )
+
+    def _build_schema_sensor_maps(schema_obj: dict, registry_obj: dict) -> Dict[str, Dict[str, str]]:
+        """
+        Build per-schema_id lookup: token -> sensor
+        Where token can be:
+          - trigger ROLE key (e.g. 'disp')
+          - trigger canonical signal_col (e.g. 'rear_shock_dom_suspension [mm]')
+        """
+        out: Dict[str, Dict[str, str]] = {}
+
+        if not isinstance(schema_obj, dict):
+            return out
+
+        for sid, sch in schema_obj.items():
+            if not isinstance(sid, str):
+                continue
+            if not isinstance(sch, dict):
+                continue
+
+            triggers = sch.get("triggers") or {}
+            if not isinstance(triggers, dict):
+                continue
+
+            m: Dict[str, str] = {}
+            for role, trig in triggers.items():
+                if not isinstance(trig, dict):
+                    continue
+
+                sigcol = trig.get("signal_col")
+                if not isinstance(sigcol, str) or not sigcol.strip():
+                    continue
+                sigcol = sigcol.strip()
+
+                info = registry_obj.get(sigcol)
+                if not isinstance(info, dict):
+                    continue
+                sensor = info.get("sensor")
+                if not isinstance(sensor, str) or not sensor.strip():
+                    continue
+                sensor = sensor.strip()
+
+                # allow lookup by role as well as by canonical signal column
+                if isinstance(role, str) and role.strip():
+                    m[role.strip()] = sensor
+                m[sigcol] = sensor
+
+            if m:
+                out[sid] = m
+
+        return out
+
+    schema_sensor_map_by_schema = _build_schema_sensor_maps(schema, registry)
+
+    def _resolve_sensor(schema_id_val: object, token_val: object) -> str:
+        """
+        Resolve sensor for a row using schema + registry only.
+        token_val is whatever is stored in viz_df[signal_col] (role or resolved column).
+        """
+        sid = str(schema_id_val) if schema_id_val is not None else ""
+        tok = str(token_val) if token_val is not None else ""
+        sid = sid.strip()
+        tok = tok.strip()
+        if not sid or not tok:
+            return ""
+
+        # 1) Schema-mediated lookup (role or canonical col)
+        m = schema_sensor_map_by_schema.get(sid)
+        if isinstance(m, dict):
+            s = m.get(tok)
+            if isinstance(s, str) and s.strip():
+                return s.strip()
+
+        # 2) If token is already canonical df column, allow direct registry lookup
+        info = registry.get(tok)
+        if isinstance(info, dict):
+            s2 = info.get("sensor")
+            if isinstance(s2, str) and s2.strip():
+                return s2.strip()
+
+        return ""
+
+    viz_df["_sensor"] = [
+        _resolve_sensor(sid, tok)
+        for sid, tok in zip(viz_df[schema_id_col].astype(str), viz_df[signal_col].astype(str))
+    ]
+
+    if viz_df["_sensor"].astype(str).str.len().sum() == 0:
+        # Helpful debug: show a small sample of schema_id + token values
+        ex = viz_df[[schema_id_col, signal_col]].drop_duplicates().head(8)
+        logger.warning(
+            "Could not resolve any sensors via schema+registry. "
+            "This likely means your schema triggers don't map to registry signal_col keys. "
+            "Sample (schema_id, %s):\n%s",
+            signal_col,
+            ex.to_string(index=False),
+        )
 
     # ----------------------------
     # options from viz_df
     # ----------------------------
     sessions = sorted(viz_df[session_key_col].dropna().astype(str).unique().tolist())
     event_types = sorted(viz_df[event_type_col].dropna().astype(str).unique().tolist())
-    signals = sorted(viz_df[signal_col].dropna().astype(str).unique().tolist())
+
     sensors = sorted([x for x in viz_df["_sensor"].dropna().astype(str).unique().tolist() if x])
+    if not sensors:
+        raise ValueError(
+            "No sensors could be resolved via schema+registry (viz_df['_sensor'] is empty). "
+            "Check that schema['<schema_id>']['triggers'][<role>]['signal_col'] matches registry keys."
+        )
+
     metrics = sorted(_metric_cols(viz_df))
 
     if not sessions:
         raise ValueError("No non-null session_key values after join")
     if not event_types:
         raise ValueError(f"No non-null values found in {event_type_col!r} after join")
-    if not signals:
-        raise ValueError(f"No non-null values found in {signal_col!r} after join")
     if len(metrics) == 0:
         raise ValueError("No metric columns found after join (expected 'm_' prefix)")
 
     # ----------------------------
     # UI
     # ----------------------------
-    w_event = W.Dropdown(options=event_types, value=event_types[0], description="Event:")
+    dummy_label = W.Label(" ")
+    event_label = W.Label("Event:")
+    w_event = W.Dropdown(options=event_types, value=event_types[0], description="")
 
     w_sessions_mode = W.RadioButtons(
         options=[("Aggregate sessions", False), ("Compare sessions", True)],
@@ -260,99 +410,85 @@ def make_metric_scatter_widget_for_loader(
     w_sessions = W.SelectMultiple(
         options=sessions,
         value=tuple(sessions),  # default-safe selection
-        description="Pick:",
-        rows=min(8, max(3, len(sessions))),
+        description="",
+        rows=min(8, max(3, len(sessions), len(sensors))),
         layout=W.Layout(width="450px"),
-
     )
 
-    w_sensor = W.Dropdown(
-        options=(["(any)"] + sensors) if sensors else ["(any)"],
-        value="(any)",
-        description="Sensor:",
-        layout=W.Layout(width="360px"),
-    )
-
-    w_signals_mode = W.RadioButtons(
-        options=[("Aggregate signals", False), ("Compare signals", True)],
+    w_sensors_mode = W.RadioButtons(
+        options=[("Aggregate sensors", False), ("Compare sensors", True)],
         value=False,
-        description="Signals:",
+        description="Sensors:",
     )
-    w_signals = W.SelectMultiple(
-        options=signals,
-        value=tuple(signals[:1]),
-        description="Pick:",
-        rows=min(8, max(3, len(signals))),
+    w_sensors = W.SelectMultiple(
+        options=sensors,
+        value=tuple(sensors[:1]),
+        description="",
+        rows=min(8, max(3, len(sessions), len(sensors))),
+        layout=W.Layout(width="450px"),
     )
 
+    metrics_label = W.Label("Metrics to chart:")
     w_x = W.Dropdown(options=metrics, value=metrics[0], description="X:")
-    w_y = W.Dropdown(options=metrics, value=metrics[1] if len(metrics) > 1 else metrics[0], description="Y:")
+    w_x.style = {"description_width": "initial"}
 
-    w_alpha = W.BoundedFloatText(value=float(default_alpha), min=0.05, max=1.0, step=0.05, description="Alpha:")
-    w_size = W.BoundedIntText(value=int(default_size), min=1, max=200, step=1, description="Size:")
+    w_y = W.Dropdown(options=metrics, value=metrics[1] if len(metrics) > 1 else metrics[0], description="Y:")
+    w_y.style = {"description_width": "initial"}
+
+    w_alpha = W.BoundedFloatText(
+        value=float(default_alpha),
+        min=0.05,
+        max=1.0,
+        step=0.05,
+        description="Alpha:",
+        layout=W.Layout(width="150px"),
+    )
+    w_size = W.BoundedIntText(
+        value=int(default_size),
+        min=1,
+        max=200,
+        step=1,
+        description="Size:",
+        layout=W.Layout(width="150px"),
+    )
 
     w_grid = W.Checkbox(value=True, description="Grid")
     w_equal = W.Checkbox(value=False, description="Equal axes")
     w_diag = W.Checkbox(value=False, description="y=x line")
-    w_stats = W.Checkbox(value=True, description="Stats")
-    w_regress = W.Checkbox(value=False, description="Regression")
+    w_stats = W.Checkbox(value=False, description="Stats")
+    w_regress = W.Checkbox(value=True, description="Regression")
 
     out = W.Output()
 
     def _filtered_base() -> pd.DataFrame:
         sel_sessions = list(map(str, w_sessions.value))
-        sel_signals = list(map(str, w_signals.value))
-        if not sel_sessions or not sel_signals:
+        sel_sensors  = list(map(str, w_sensors.value))
+
+        if not sel_sessions or not sel_sensors:
             return viz_df.iloc[0:0]
 
         sub = viz_df[
             (viz_df[event_type_col].astype(str) == str(w_event.value))
             & (viz_df[session_key_col].astype(str).isin(sel_sessions))
-            & (viz_df[signal_col].astype(str).isin(sel_signals))
+            & (viz_df["_sensor"].astype(str).isin(sel_sensors))
         ].copy()
-
-        if w_sensor.value and w_sensor.value != "(any)":
-            sub = sub[sub["_sensor"].astype(str) == str(w_sensor.value)].copy()
 
         return sub
 
-    def _rebuild_signals(*_):
-        # Restrict signal options to those valid for the current event type (+ optional sensor)
-        sub = viz_df.copy()
-
-        # NEW: filter by current event type
-        sub = sub[sub[event_type_col].astype(str) == str(w_event.value)]
-
-        # existing: filter by sensor (if set)
-        if w_sensor.value and w_sensor.value != "(any)":
-            sub = sub[sub["_sensor"].astype(str) == str(w_sensor.value)]
-
-        sigs = sorted(sub[signal_col].dropna().astype(str).unique().tolist())
-        if not sigs:
-            sigs = signals[:]  # fallback: keep full list
-
-        prev = set(map(str, w_signals.value))
-        w_signals.options = sigs
-        keep = [s for s in sigs if s in prev]
-        if keep:
-            w_signals.value = tuple(keep)
-        else:
-            w_signals.value = tuple(sigs[:1]) if sigs else ()
-
-    def _rebuild_sessions(*_):
-        # sessions that actually have rows for the current event type (+ optional sensor)
+    def _rebuild_sensors(*_):
+        # Restrict sensor options to those valid for the current event type
         sub = viz_df[viz_df[event_type_col].astype(str) == str(w_event.value)]
-        if w_sensor.value and w_sensor.value != "(any)":
-            sub = sub[sub["_sensor"].astype(str) == str(w_sensor.value)]
+        sens = sorted([x for x in sub["_sensor"].dropna().astype(str).unique().tolist() if x])
+        if not sens:
+            sens = sensors[:]  # fallback
 
-        sess = sorted(sub[session_key_col].dropna().astype(str).unique().tolist())
-        if not sess:
-            sess = sessions[:]  # fallback
-
-        prev = set(map(str, w_sessions.value))
-        w_sessions.options = sess
-        keep = [s for s in sess if s in prev]
-        w_sessions.value = tuple(keep) if keep else tuple(sess)  # default to “all valid”
+        prev = set(map(str, w_sensors.value))
+        w_sensors.options = sens
+        keep = [s for s in sens if s in prev]
+        if keep:
+            w_sensors.value = tuple(keep)
+        else:
+            w_sensors.value = tuple(sens[:1]) if sens else ()
 
     def _coerce_xy(sub: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         x = pd.to_numeric(sub[w_x.value], errors="coerce").to_numpy(dtype=float)
@@ -398,13 +534,13 @@ def make_metric_scatter_widget_for_loader(
             clear_output(wait=True)
 
             sel_sessions = list(w_sessions.value)
-            sel_signals = list(w_signals.value)
+            sel_sensors = list(w_sensors.value)
 
             if not sel_sessions:
                 print("Select at least one session.")
                 return
-            if not sel_signals:
-                print("Select at least one signal.")
+            if not sel_sensors:
+                print("Select at least one sensor.")
                 return
 
             base = _filtered_base()
@@ -413,29 +549,29 @@ def make_metric_scatter_widget_for_loader(
                 return
 
             compare_sessions = bool(w_sessions_mode.value)
-            compare_signals = bool(w_signals_mode.value)
+            compare_sensors = bool(w_sensors_mode.value)
 
             # Build series list: (label, df_subset)
             series: List[Tuple[str, pd.DataFrame]] = []
 
-            if compare_sessions and compare_signals:
+            if compare_sessions and compare_sensors:
                 for sk in sel_sessions:
-                    for sig in sel_signals:
+                    for s in sel_sensors:
                         sub = base[
                             (base[session_key_col].astype(str) == str(sk))
-                            & (base[signal_col].astype(str) == str(sig))
+                            & (base["_sensor"].astype(str) == str(s))
                         ]
-                        series.append((f"{sk} | {sig}", sub))
+                        series.append((f"{sk} | {s}", sub))
 
-            elif compare_sessions and (not compare_signals):
+            elif compare_sessions and (not compare_sensors):
                 for sk in sel_sessions:
                     sub = base[base[session_key_col].astype(str) == str(sk)]
                     series.append((str(sk), sub))
 
-            elif (not compare_sessions) and compare_signals:
-                for sig in sel_signals:
-                    sub = base[base[signal_col].astype(str) == str(sig)]
-                    series.append((str(sig), sub))
+            elif (not compare_sessions) and compare_sensors:
+                for s in sel_sensors:
+                    sub = base[base["_sensor"].astype(str) == str(s)]
+                    series.append((str(s), sub))
 
             else:
                 series.append(("aggregate", base))
@@ -457,7 +593,7 @@ def make_metric_scatter_widget_for_loader(
                     x, y,
                     s=int(w_size.value),
                     alpha=float(w_alpha.value),
-                    label=(label if (compare_sessions or compare_signals) else None),
+                    label=(label if (compare_sessions or compare_sensors) else None),
                 )
 
                 fit = None
@@ -477,13 +613,12 @@ def make_metric_scatter_widget_for_loader(
 
             mode_bits = [
                 ("sessions=compare" if compare_sessions else "sessions=aggregate"),
-                ("signals=compare" if compare_signals else "signals=aggregate"),
+                ("sensors=compare" if compare_sensors else "sensors=aggregate"),
             ]
-            sensor_bit = f"sensor={w_sensor.value}" if (w_sensor.value and w_sensor.value != "(any)") else "sensor=any"
 
             ax.set_title(
                 f"{w_y.value} vs {w_x.value}\n"
-                f"{event_type_col}={w_event.value} | {sensor_bit} | {', '.join(mode_bits)}"
+                f"{event_type_col}={w_event.value} | {', '.join(mode_bits)}"
             )
             ax.set_xlabel(w_x.value)
             ax.set_ylabel(w_y.value)
@@ -503,7 +638,7 @@ def make_metric_scatter_widget_for_loader(
                 ax.set_xlim(xmin, xmax)
                 ax.set_ylim(ymin, ymax)
 
-            if (compare_sessions or compare_signals):
+            if (compare_sessions or compare_sensors):
                 ax.legend(title="series", fontsize=9)
 
             if not any_points:
@@ -538,11 +673,40 @@ def make_metric_scatter_widget_for_loader(
 
     def refresh() -> None:
         nonlocal viz_df
-        # reload from disk for current selection snapshot
-        events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
-        metrics_df_sel = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
-       # _rebuild_sessions()
-        _rebuild_signals()
+
+        events_df_sel2 = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+        metrics_df_sel2 = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
+
+        if events_df_sel2 is None or events_df_sel2.empty:
+            raise ValueError("No events found for selected sessions (refresh).")
+        if metrics_df_sel2 is None or metrics_df_sel2.empty:
+            raise ValueError("No metrics found for selected sessions (refresh).")
+
+        metric_cols2 = _metric_cols(metrics_df_sel2)
+        viz_df2 = events_df_sel2[
+            [session_key_col, "run_id", "session_id", schema_id_col, event_id_col, signal_col]
+            + (
+                [event_type_col]
+                if event_type_col not in (schema_id_col,) and event_type_col in events_df_sel2.columns
+                else []
+            )
+        ].merge(
+            metrics_df_sel2[[session_key_col, schema_id_col, event_id_col] + metric_cols2],
+            on=[session_key_col, schema_id_col, event_id_col],
+            how="inner",
+            validate="one_to_one",
+        )
+        if event_type_col not in viz_df2.columns:
+            viz_df2[event_type_col] = viz_df2[schema_id_col].astype(str)
+
+        # Recompute sensors from schema+registry
+        viz_df2["_sensor"] = [
+            _resolve_sensor(sid, tok)
+            for sid, tok in zip(viz_df2[schema_id_col].astype(str), viz_df2[signal_col].astype(str))
+        ]
+
+        viz_df = viz_df2
+        _rebuild_sensors()
         _render()
 
     # Wire up
@@ -550,9 +714,8 @@ def make_metric_scatter_widget_for_loader(
         w_event,
         w_sessions_mode,
         w_sessions,
-        w_sensor,
-        w_signals_mode,
-        w_signals,
+        w_sensors_mode,
+        w_sensors,
         w_x,
         w_y,
         w_alpha,
@@ -565,31 +728,33 @@ def make_metric_scatter_widget_for_loader(
     ):
         w.observe(_render, names="value")
 
-    w_sensor.observe(_rebuild_signals, names="value")
-    w_event.observe(_rebuild_signals, names="value")
- #   w_event.observe(_rebuild_sessions, names="value")
- #   w_sensor.observe(_rebuild_sessions, names="value")
-
+    w_event.observe(_rebuild_sensors, names="value")
 
     controls = W.VBox(
         [
-            W.HBox([w_event, w_sensor]),
-            W.HBox([w_x, w_y, w_alpha, w_size, w_grid, w_equal, w_diag, w_regress, w_stats]),
+            W.HBox([W.VBox([event_label, w_event])]),
+            W.HBox([W.VBox([metrics_label, w_x]), W.VBox([dummy_label, w_y])]),
             W.HBox(
                 [
                     W.VBox([w_sessions_mode, w_sessions]),
-                    W.VBox([w_signals_mode, w_signals]),
+                    W.VBox([w_sensors_mode, w_sensors]),
+                ]
+            ),
+            W.HBox(
+                [
+                    W.VBox([w_alpha, w_size]),
+                    W.VBox([W.HBox([w_regress, w_stats, w_grid]), W.HBox([w_equal, w_diag])]),
                 ]
             ),
         ]
     )
 
     display(W.VBox([controls, out]))
- #   _rebuild_sessions
-    _rebuild_signals()
+    _rebuild_sensors()
     _render()
 
     return {"viz_df": viz_df, "out": out, "refresh": refresh}
+
 
 
 # ----------------------------
@@ -657,6 +822,7 @@ def make_metric_scatter_widget(
 def make_metric_scatter_rebuilder(
     *,
     sel: Dict[str, Any],
+    schema: dict,
     out: Optional[W.Output] = None,
     event_type_col: str = "schema_id",
     signal_col: str = "signal_col",
@@ -686,6 +852,7 @@ def make_metric_scatter_rebuilder(
             clear_output(wait=True)
             state["handles"] = make_metric_scatter_widget_for_loader(
                 store=store,
+                schema=schema,
                 key_to_ref=key_to_ref,
                 events_index_df=events_index_df,
                 session_loader=session_loader,
