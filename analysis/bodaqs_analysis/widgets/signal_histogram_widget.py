@@ -63,6 +63,21 @@ def _vals(df: pd.DataFrame, col: str, dropna: bool, *, include_inactive: bool) -
         v = v[np.isfinite(v)]
     return v
 
+def _sort_signals_by_unit(
+    signal_cols: list[str],
+    registry: dict,
+) -> list[str]:
+    """
+    Sort signals by unit, then by signal name.
+    Unknown units are grouped last.
+    """
+    def key(sig: str):
+        info = registry.get(sig, {})
+        unit = info.get("unit")
+        unit = unit if isinstance(unit, str) and unit.strip() else "~"  # '~' sorts after letters
+        return (unit, sig)
+
+    return sorted(signal_cols, key=key)
 
 
 
@@ -92,7 +107,15 @@ def make_signal_histogram_widget_for_loader(
 
     # Load ONE session to discover registry signals
     first_session = session_loader(session_ids[0])
-    signal_cols = sorted(_registry_signal_cols(first_session))
+
+    # Registry from the loaded session (canonical metadata)
+    registry = (first_session.get("meta") or {}).get("signals") or {}
+    if not isinstance(registry, dict):
+        registry = {}
+
+    signal_cols = list(_registry_signal_cols(first_session))
+    signal_cols = _sort_signals_by_unit(signal_cols, registry)
+
 
     if not signal_cols:
         raise ValueError("No signal columns found in registry or df")
@@ -115,7 +138,7 @@ def make_signal_histogram_widget_for_loader(
     signals_label = W.Label("Signals:")
     w_signals_mode = W.RadioButtons(
         options=[("Aggregate signals", False), ("Compare signals", True)],
-        value=False,
+        value=True,
         description="",
     )
     w_signals = W.SelectMultiple(

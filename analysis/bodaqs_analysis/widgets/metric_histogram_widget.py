@@ -233,46 +233,6 @@ def _resolve_sensor(
 # Widget constructors
 # -------------------------
 
-def make_metric_histogram_widget(
-    events_df: pd.DataFrame,
-    metrics_df: pd.DataFrame,
-    *,
-    # legacy defaults kept, but see for_loader below for consumer defaults
-    session_key_col: str = "session_id",
-    event_id_col: str = "event_id",
-    schema_id_col: str = "schema_id",
-    event_type_col: str = "event_name",
-    signal_col: str = "signal_col",
-    default_bins: int = 50,
-    max_bins: int = 200,
-) -> dict:
-    """
-    Legacy-friendly constructor.
-
-    Prefer make_metric_histogram_widget_for_loader() in consumer notebooks.
-
-    NOTE: legacy path remains SIGNAL-driven (not sensor-driven) for backward compatibility.
-    """
-    viz_df, metric_cols = _build_viz_df(
-        events_df=events_df,
-        metrics_df=metrics_df,
-        session_key_col=session_key_col,
-        event_id_col=event_id_col,
-        schema_id_col=schema_id_col,
-        event_type_col=event_type_col,
-        signal_col=signal_col,
-    )
-    return _make_widget_from_viz_df_legacy(
-        viz_df=viz_df,
-        metric_cols=metric_cols,
-        session_key_col=session_key_col,
-        event_type_col=event_type_col,
-        signal_col=signal_col,
-        default_bins=default_bins,
-        max_bins=max_bins,
-    )
-
-
 def make_metric_histogram_widget_for_loader(
     *,
     store: Any,
@@ -420,7 +380,7 @@ def _make_widget_from_viz_df_consumer(
     lbl_sensors = W.Label("Sensors")
     w_sens_mode = W.RadioButtons(
         options=[("Aggregate sensors", False), ("Compare sensors", True)],
-        value=False,
+        value=True,
         description="",
     )
     w_sensors = W.SelectMultiple(
@@ -439,8 +399,28 @@ def _make_widget_from_viz_df_consumer(
     w_cdf = W.Checkbox(value=False, description="CDF")
     w_norm = W.Checkbox(value=True, description="Normalize")
     w_dropna = W.Checkbox(value=True, description="Drop NaNs")
+    w_show_stats = W.Checkbox(value=True, description="Show stats")
+
 
     out = W.Output()
+
+    def _rebuild_metrics(*_):
+        # Restrict metric dropdown to metrics that have at least one finite value for the selected event type
+        sub = viz_df[viz_df[event_type_col].astype(str) == str(w_event.value)]
+        if sub is None or len(sub) == 0:
+            mcols = metrics[:]  # fallback
+        else:
+            mcols = []
+            for c in metrics:
+                v = pd.to_numeric(sub[c], errors="coerce").to_numpy(dtype=float)
+                if np.isfinite(v).any():
+                    mcols.append(c)
+            if not mcols:
+                mcols = metrics[:]  # fallback
+
+        prev = str(w_metric.value) if w_metric.value is not None else ""
+        w_metric.options = mcols
+        w_metric.value = prev if prev in mcols else (mcols[0] if mcols else None)
 
     def _vals(sub: pd.DataFrame) -> np.ndarray:
         s = pd.to_numeric(sub[w_metric.value], errors="coerce")
@@ -539,12 +519,18 @@ def _make_widget_from_viz_df_consumer(
 
             plt.show()
 
-            print("Summary stats:")
-            for name, vals in series:
-                print(_series_stats(name, vals))
+            if w_show_stats.value:
+                print("Summary stats:")
+                for name, vals in series:
+                    print(_series_stats(name, vals))
 
-    for w in (w_sess_mode, w_sessions, w_sens_mode, w_sensors, w_event, w_metric, w_bins, w_cdf, w_norm, w_dropna):
-        w.observe(_render, names="value")
+
+    def _on_event_change(*_):
+        _rebuild_metrics()
+        _render()
+    
+    for w in (w_sess_mode, w_sessions, w_sens_mode, w_sensors, w_event, w_metric, w_bins, w_cdf, w_norm, w_dropna, w_show_stats):
+        w.observe(_on_event_change, names="value")
 
     top_row = W.VBox([W.HBox([W.VBox([event_label, w_event]), W.VBox([metric_label, w_metric])])])
 
@@ -555,201 +541,15 @@ def _make_widget_from_viz_df_consumer(
         [
             top_row,
             W.HBox([sessions_col, sensors_col], layout=W.Layout(gap="12px", align_items="flex-start")),
-            W.HBox([w_bins, w_cdf, w_norm, w_dropna])
+            W.HBox([w_bins, w_cdf, w_norm, w_dropna, w_show_stats])
         ]
     )
 
     display(W.VBox([controls, out]))
+    _rebuild_metrics()
     _render()
 
     return {"viz_df": viz_df, "out": out}
-
-
-def _make_widget_from_viz_df_legacy(
-    *,
-    viz_df: pd.DataFrame,
-    metric_cols: List[str],
-    session_key_col: str,
-    event_type_col: str,
-    signal_col: str,
-    default_bins: int,
-    max_bins: int,
-) -> dict:
-    """Internal: legacy UI (signal-driven) from a prepared viz_df."""
-    logger.info("metric_histogram (legacy): viz_df shape: %s", getattr(viz_df, "shape", None))
-
-    sessions = sorted(viz_df[session_key_col].dropna().astype(str).unique().tolist())
-    event_types = sorted(viz_df[event_type_col].dropna().astype(str).unique().tolist())
-    signals = sorted(viz_df[signal_col].dropna().astype(str).unique().tolist())
-    metrics = sorted(metric_cols)
-
-    if not sessions:
-        raise ValueError(f"No non-null {session_key_col!r} values after join")
-    if not event_types:
-        raise ValueError(f"No non-null values found in {event_type_col!r} after join")
-    if not signals:
-        raise ValueError(f"No non-null values found in {signal_col!r} after join")
-
-    # --- widgets ---
-    lbl_sessions = W.Label("Sessions")
-    w_sess_mode = W.RadioButtons(
-        options=[("Aggregate sessions", False), ("Compare sessions", True)],
-        value=False,
-        description="",
-    )
-    w_sessions = W.SelectMultiple(
-        options=sessions,
-        value=tuple(sessions),  # default: include all sessions to avoid empty intersections
-        rows=min(8, max(3, len(sessions))),
-    )
-
-    lbl_signals = W.Label("Signals")
-    w_sig_mode = W.RadioButtons(
-        options=[("Aggregate signals", False), ("Compare signals", True)],
-        value=False,
-        description="",
-    )
-    w_signals = W.SelectMultiple(
-        options=signals,
-        value=tuple(signals[:1]),
-        rows=min(8, max(3, len(signals))),
-    )
-
-    w_event = W.Dropdown(options=event_types, value=event_types[0], description="Event:")
-    w_metric = W.Dropdown(options=metrics, value=metrics[0], description="Metric:")
-    w_bins = W.BoundedIntText(value=int(default_bins), min=1, max=int(max_bins), step=1, description="Bins:")
-    w_cdf = W.Checkbox(value=False, description="CDF")
-    w_norm = W.Checkbox(value=True, description="Normalize")
-    w_dropna = W.Checkbox(value=True, description="Drop NaNs")
-
-    out = W.Output()
-
-    def _render(*_):
-        with out:
-            clear_output(wait=True)
-
-            sel_sessions = list(map(str, w_sessions.value or ()))
-            sel_signals = list(map(str, w_signals.value or ()))
-
-            if not sel_sessions:
-                print("Select at least one session.")
-                return
-            if not sel_signals:
-                print("Select at least one signal.")
-                return
-
-            base = viz_df[
-                (viz_df[event_type_col].astype(str) == str(w_event.value))
-                & (viz_df[session_key_col].astype(str).isin(sel_sessions))
-                & (viz_df[signal_col].astype(str).isin(sel_signals))
-            ]
-
-            compare_sessions = bool(w_sess_mode.value)
-            compare_signals = bool(w_sig_mode.value)
-
-            series: List[Tuple[str, np.ndarray]] = []
-
-            def _vals(sub: pd.DataFrame) -> np.ndarray:
-                s = pd.to_numeric(sub[w_metric.value], errors="coerce")
-                if w_dropna.value:
-                    s = s.dropna()
-                return s.to_numpy()
-
-            if compare_sessions and compare_signals:
-                for sk in sel_sessions:
-                    for sig in sel_signals:
-                        sub = base[(base[session_key_col].astype(str) == sk) & (base[signal_col].astype(str) == sig)]
-                        series.append((f"{sk} | {sig}", _vals(sub)))
-
-            elif compare_sessions and (not compare_signals):
-                for sk in sel_sessions:
-                    sub = base[base[session_key_col].astype(str) == sk]
-                    series.append((str(sk), _vals(sub)))
-
-            elif (not compare_sessions) and compare_signals:
-                for sig in sel_signals:
-                    sub = base[base[signal_col].astype(str) == sig]
-                    series.append((str(sig), _vals(sub)))
-
-            else:
-                series.append(("aggregate", _vals(base)))
-
-            fig, ax = plt.subplots(figsize=(8.3, 4.2))
-
-            for name, vals in series:
-                _plot_series(
-                    ax,
-                    vals,
-                    int(w_bins.value),
-                    cdf=bool(w_cdf.value),
-                    norm=bool(w_norm.value),
-                    label=(name if (compare_sessions or compare_signals) else None),
-                )
-
-            mode_bits = [
-                ("sessions=compare" if compare_sessions else "sessions=aggregate"),
-                ("signals=compare" if compare_signals else "signals=aggregate"),
-            ]
-
-            ax.set_title(
-                f"{w_metric.value} distribution\n"
-                f"{event_type_col}={w_event.value} | {', '.join(mode_bits)}"
-            )
-            ax.set_xlabel(w_metric.value)
-            ax.set_ylabel(
-                ("Cumulative proportion" if w_norm.value else "Cumulative count") if w_cdf.value
-                else ("Proportion" if w_norm.value else "Count")
-            )
-            ax.grid(True, which="major", axis="both", alpha=0.3)
-
-            if (compare_sessions or compare_signals):
-                ax.legend(title="series", fontsize=9)
-
-            if all(len(v) == 0 for _, v in series):
-                ax.text(
-                    0.5,
-                    0.5,
-                    "No numeric values after filtering",
-                    ha="center",
-                    va="center",
-                    transform=ax.transAxes,
-                )
-                ax.set_axis_off()
-
-            plt.show()
-
-            print("Summary stats:")
-            for name, vals in series:
-                print(_series_stats(name, vals))
-
-    for w in (w_sess_mode, w_sessions, w_sig_mode, w_signals, w_event, w_metric, w_bins, w_cdf, w_norm, w_dropna):
-        w.observe(_render, names="value")
-
-    top_row = W.HBox(
-        [w_event, w_metric, w_bins, w_cdf, w_norm, w_dropna],
-        layout=W.Layout(
-            justify_content="flex-start",
-            align_items="center",
-            gap="10px",
-            flex_flow="row wrap",
-        ),
-    )
-
-    sessions_col = W.VBox([lbl_sessions, w_sess_mode, w_sessions], layout=W.Layout(align_items="flex-start"))
-    signals_col = W.VBox([lbl_signals, w_sig_mode, w_signals], layout=W.Layout(align_items="flex-start"))
-
-    controls = W.VBox(
-        [
-            top_row,
-            W.HBox([sessions_col, signals_col], layout=W.Layout(gap="12px", align_items="flex-start")),
-        ]
-    )
-
-    display(W.VBox([controls, out]))
-    _render()
-
-    return {"viz_df": viz_df, "out": out}
-
 
 def make_metric_histogram_rebuilder(
     *,

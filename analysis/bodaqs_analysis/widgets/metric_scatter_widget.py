@@ -52,123 +52,6 @@ def _require_cols(df: pd.DataFrame, cols: Sequence[str], *, name: str) -> None:
 def _metric_cols(metrics_df: pd.DataFrame) -> List[str]:
     return [c for c in metrics_df.columns if isinstance(c, str) and c.startswith("m_")]
 
-def _path_registry_signals_json(store, run_id: str, session_id: str) -> Path:
-    # per artifacts spec v0.2: runs/<run_id>/sessions/<session_id>/registry/signals.json
-    return store.session_dir(run_id, session_id) / "registry" / "signals.json"
-
-
-def _load_registry_signals_snapshot(store, run_id: str, session_id: str) -> dict:
-    """
-    Load registry snapshot. Returns mapping: col_name -> info dict.
-    Accepts either:
-      - {"<col>": {...}, ...}
-      - {"signals": {"<col>": {...}}, ...}   (if you ever wrap it)
-    """
-    p = _path_registry_signals_json(store, run_id, session_id)
-    obj = store.read_json(p)  # will raise if missing/unreadable
-    if isinstance(obj, dict) and "signals" in obj and isinstance(obj["signals"], dict):
-        return obj["signals"]
-    return obj if isinstance(obj, dict) else {}
-
-# ----------------------------
-# extracting tables from session
-# ----------------------------
-
-def _default_events_getter(session: dict) -> pd.DataFrame:
-    """
-    Try a few common places for events_df inside the session artifact.
-    Adjust if your session contract differs.
-    """
-    if not isinstance(session, dict):
-        raise ValueError("session_loader returned a non-dict session")
-
-    # Most likely patterns (adapt as needed)
-    if "events_df" in session and isinstance(session["events_df"], pd.DataFrame):
-        return session["events_df"]
-    if "events" in session and isinstance(session["events"], pd.DataFrame):
-        return session["events"]
-    if "tables" in session and isinstance(session["tables"], dict):
-        t = session["tables"]
-        if "events_df" in t and isinstance(t["events_df"], pd.DataFrame):
-            return t["events_df"]
-        if "events" in t and isinstance(t["events"], pd.DataFrame):
-            return t["events"]
-
-    raise ValueError(
-        "Could not locate events_df in session. "
-        "Provide events_getter=... or ensure session contains events_df."
-    )
-
-
-def _default_metrics_getter(session: dict) -> pd.DataFrame:
-    """
-    Try a few common places for metrics_df inside the session artifact.
-    Adjust if your session contract differs.
-    """
-    if not isinstance(session, dict):
-        raise ValueError("session_loader returned a non-dict session")
-
-    if "metrics_df" in session and isinstance(session["metrics_df"], pd.DataFrame):
-        return session["metrics_df"]
-    if "metrics" in session and isinstance(session["metrics"], pd.DataFrame):
-        return session["metrics"]
-    if "tables" in session and isinstance(session["tables"], dict):
-        t = session["tables"]
-        if "metrics_df" in t and isinstance(t["metrics_df"], pd.DataFrame):
-            return t["metrics_df"]
-        if "metrics" in t and isinstance(t["metrics"], pd.DataFrame):
-            return t["metrics"]
-
-    raise ValueError(
-        "Could not locate metrics_df in session. "
-        "Provide metrics_getter=... or ensure session contains metrics_df."
-    )
-
-def _resolve_trigger_signal_col(schema: dict, *, schema_id: str, role: str) -> str | None:
-    """
-    Resolve (schema_id, role) -> canonical signal_col via schema definition.
-    """
-    sch = schema.get(schema_id)
-    if not isinstance(sch, dict):
-        return None
-
-    triggers = sch.get("triggers") or {}
-    trig = triggers.get(role)
-    if not isinstance(trig, dict):
-        return None
-
-    col = trig.get("signal_col")
-    return col.strip() if isinstance(col, str) and col.strip() else None
-
-
-def _resolve_sensor_from_event(
-    *,
-    schema: dict,
-    registry: dict,
-    ev_row: pd.Series,
-    schema_id_col: str,
-    role_col: str,
-) -> str | None:
-    """
-    Resolve sensor for an event row using:
-      event → schema → canonical signal → registry
-    """
-    schema_id = str(ev_row.get(schema_id_col, "")).strip()
-    role = str(ev_row.get(role_col, "")).strip()
-    if not schema_id or not role:
-        return None
-
-    sig_col = _resolve_trigger_signal_col(schema, schema_id=schema_id, role=role)
-    if not sig_col:
-        return None
-
-    info = registry.get(sig_col)
-    if not isinstance(info, dict):
-        return None
-
-    sensor = info.get("sensor")
-    return sensor.strip() if isinstance(sensor, str) and sensor.strip() else None
-
 # ----------------------------
 # NEW consumer-pattern widget
 # ----------------------------
@@ -417,7 +300,7 @@ def make_metric_scatter_widget_for_loader(
 
     w_sensors_mode = W.RadioButtons(
         options=[("Aggregate sensors", False), ("Compare sensors", True)],
-        value=False,
+        value=True,
         description="Sensors:",
     )
     w_sensors = W.SelectMultiple(
@@ -489,6 +372,39 @@ def make_metric_scatter_widget_for_loader(
             w_sensors.value = tuple(keep)
         else:
             w_sensors.value = tuple(sens[:1]) if sens else ()
+
+    def _rebuild_metrics(*_):
+        # Restrict metric options to those that actually exist (non-all-NaN) for the current event type
+        sub = viz_df[viz_df[event_type_col].astype(str) == str(w_event.value)]
+        if sub is None or len(sub) == 0:
+            mcols = metrics[:]  # fallback
+        else:
+            mcols = []
+            for c in metrics:
+                v = pd.to_numeric(sub[c], errors="coerce").to_numpy(dtype=float)
+                if np.isfinite(v).any():
+                    mcols.append(c)
+
+            if not mcols:
+                mcols = metrics[:]  # fallback
+
+        # Preserve prior selections if still valid
+        prev_x = str(w_x.value) if w_x.value is not None else ""
+        prev_y = str(w_y.value) if w_y.value is not None else ""
+
+        w_x.options = mcols
+        w_y.options = mcols
+
+        if prev_x in mcols:
+            w_x.value = prev_x
+        else:
+            w_x.value = mcols[0] if mcols else None
+
+        if prev_y in mcols:
+            w_y.value = prev_y
+        else:
+            # pick a different default if possible
+            w_y.value = mcols[1] if (mcols and len(mcols) > 1 and mcols[1] != w_x.value) else (mcols[0] if mcols else None)
 
     def _coerce_xy(sub: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         x = pd.to_numeric(sub[w_x.value], errors="coerce").to_numpy(dtype=float)
@@ -707,6 +623,7 @@ def make_metric_scatter_widget_for_loader(
 
         viz_df = viz_df2
         _rebuild_sensors()
+        _rebuild_metrics()
         _render()
 
     # Wire up
@@ -728,8 +645,13 @@ def make_metric_scatter_widget_for_loader(
     ):
         w.observe(_render, names="value")
 
-    w_event.observe(_rebuild_sensors, names="value")
+    def _on_event_change(*_):
+        _rebuild_sensors()
+        _rebuild_metrics()
+        _render()
 
+    w_event.observe(_on_event_change, names="value")
+    
     controls = W.VBox(
         [
             W.HBox([W.VBox([event_label, w_event])]),
@@ -751,73 +673,11 @@ def make_metric_scatter_widget_for_loader(
 
     display(W.VBox([controls, out]))
     _rebuild_sensors()
+    _rebuild_metrics()
     _render()
 
     return {"viz_df": viz_df, "out": out, "refresh": refresh}
 
-
-
-# ----------------------------
-# LEGACY API (unchanged)
-# ----------------------------
-
-def make_metric_scatter_widget(
-    events_df: pd.DataFrame,
-    metrics_df: pd.DataFrame,
-    *,
-    event_type_col: str = "event_name",
-    signal_col: str = "signal_col",
-    default_alpha: float = 0.6,
-    default_size: int = 18,
-) -> dict:
-    """
-    Legacy (pre-consumer-pattern) widget.
-
-    Retained so existing notebooks keep working.
-    """
-    if events_df is None or len(events_df) == 0:
-        raise ValueError("events_df is empty")
-    if metrics_df is None or len(metrics_df) == 0:
-        raise ValueError("metrics_df is empty")
-
-    _require_cols(events_df, ("session_id", "event_id", event_type_col, signal_col), name="events_df")
-    _require_cols(metrics_df, ("session_id", "event_id"), name="metrics_df")
-
-    metric_cols = _metric_cols(metrics_df)
-    if not metric_cols:
-        raise ValueError("No metric columns found in metrics_df (expected columns prefixed with 'm_')")
-
-    viz_df = events_df[["session_id", "event_id", event_type_col, signal_col]].merge(
-        metrics_df[["session_id", "event_id"] + metric_cols],
-        on=["session_id", "event_id"],
-        how="inner",
-        validate="one_to_one",
-    )
-    viz_df = _add_sensor_col(viz_df, signal_col=signal_col)
-
-    # Reuse the new widget machinery by fabricating a minimal loader-style index.
-    # (This keeps behaviour identical without duplicating the full UI code.)
-    idx = pd.DataFrame({"session_key": viz_df["session_id"].astype(str)})
-    idx = idx.drop_duplicates(ignore_index=True)
-
-    def _fake_loader(session_key: str) -> dict:
-        sid = str(session_key)
-        ev = events_df[events_df["session_id"].astype(str) == sid].copy()
-        met = metrics_df[metrics_df["session_id"].astype(str) == sid].copy()
-        # Expose in the simplest expected form for default getters:
-        return {"events_df": ev, "metrics_df": met}
-
-    return make_metric_scatter_widget_for_loader(
-        events_index_df=idx,
-        session_loader=_fake_loader,
-        session_key_col="session_key",
-        event_id_col="event_id",
-        session_id_col="session_id",
-        event_type_col=event_type_col,
-        signal_col=signal_col,
-        default_alpha=default_alpha,
-        default_size=default_size,
-    )
 
 def make_metric_scatter_rebuilder(
     *,
