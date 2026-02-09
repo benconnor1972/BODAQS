@@ -7,12 +7,13 @@ with event trigger overlays (hover metrics) and selector-driven rebuilding.
 Key features:
 - Consumes selector scope but enforces a SINGLE active session within the widget.
 - Single figure:
-  - One x-axis with native rangeslider.
-- Detail y-axis can be frozen (computed per session + selected detail signals).
-- Events: multi-select event types (schema_id/event_type), markers on fixed lane,
+  - xaxis (with rangeslider) shows ONLY a normalized "overview" trace (one signal).
+  - xaxis2 (matches xaxis) shows detail signals (multi-select) and event markers.
+- Detail y-axis is frozen (computed per session + selected detail signals).
+- Events: multi-select event types (schema_id/event_type), markers on fixed lane (yaxis2),
   hover shows trigger time + selected numeric metrics (events<->metrics joined 1:1).
 - Marks: optional overlay from session df column 'mark' as cross markers with stable color.
-- Bookmarks: persisted to a per-user local JSON store via BookmarkStore.
+- Bookmarks stored in memory only (not persisted).
 
 Requires:
   - plotly (FigureWidget requires anywidget + jupyterlab widget manager configured)
@@ -21,20 +22,17 @@ Requires:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import ipywidgets as W
 from IPython.display import display, clear_output, Javascript
-import re
+import time
 
 import plotly.graph_objects as go
 
-# Local per-user bookmark persistence
-from bodaqs_analysis.bookmarks import BookmarkStore, check_drift, coerce_restore_view
-
-EVENT_SIGNAL_COL = "signal_col"  # required by events table contract
 
 # -----------------------------
 # Utilities
@@ -121,11 +119,24 @@ def _compute_y_range(df: pd.DataFrame, cols: Sequence[str]) -> Optional[Tuple[fl
     return (lo - pad, hi + pad)
 
 
+def _normalize01(y: np.ndarray) -> np.ndarray:
+    """Normalize finite values to [0,1] (robust for overview/rangeslider)."""
+    y = y.astype(float, copy=False)
+    m = np.isfinite(y)
+    if not m.any():
+        return np.full_like(y, np.nan, dtype=float)
+    lo = float(np.nanmin(y[m]))
+    hi = float(np.nanmax(y[m]))
+    if hi == lo:
+        return np.zeros_like(y, dtype=float)
+    out = (y - lo) / (hi - lo)
+    out[~m] = np.nan
+    return out
+
 _SIGNAL_PALETTE = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
 ]
-
 
 def _stable_color_for_signal(sig: str) -> str:
     """
@@ -139,17 +150,22 @@ def _stable_color_for_signal(sig: str) -> str:
         h = (h * 16777619) & 0xFFFFFFFF
     return _SIGNAL_PALETTE[h % len(_SIGNAL_PALETTE)]
 
-def _event_key(et: str, sig: str) -> str:
-    # stable string key for widget selection value
-    return f"{et}||{sig}"
 
-def _split_event_key(k: str) -> Tuple[str, str]:
-    # safe split for "et||sig"
-    if not isinstance(k, str) or "||" not in k:
-        return ("", "")
-    et, sig = k.split("||", 1)
-    return (et, sig)
-    
+# -----------------------------
+# Bookmarks
+# -----------------------------
+
+@dataclass
+class WindowBookmark:
+    name: str
+    comment: str
+    session_key: str
+    t0: float
+    t1: float
+    detail_signals: Tuple[str, ...]
+    selected_event_types: Tuple[str, ...]
+
+
 # -----------------------------
 # Main widget
 # -----------------------------
@@ -177,7 +193,7 @@ def make_session_window_browser_widget_for_loader(
     - sessions discovered from events_index_df[session_key_col]
     - session_loader loads a single session dict with keys: "df", "meta"
     - events_loader / metrics_loader return per-session frames
-    - bookmarks are persisted via BookmarkStore (per-user local file)
+    - bookmarks stored in-memory only
     """
     if events_index_df is None or len(events_index_df) == 0:
         raise ValueError("events_index_df is empty")
@@ -203,42 +219,33 @@ def make_session_window_browser_widget_for_loader(
         value=(),
         description="",
         rows=6,
-        layout=W.Layout(width="380px"),
+        layout=W.Layout(width="300px"),
     )
-    event_types_hint = W.HTML("<span style='color:#666; font-size: 90%'>Select one or more</span>")
+    event_types_hint = W.HTML(
+        "<span style='color:#666; font-size: 90%'>Select one or more</span>"
+    )
 
-    # Marks toggle (default True)
-    w_show_marks = W.Checkbox(value=True, description="Show marks", layout=W.Layout(width="220px"))
+    # NEW: marks toggle (default True)
+    w_show_marks = W.Checkbox(
+        value=True,
+        description="Show marks",
+        layout=W.Layout(width="220px"),
+    )
 
     detail_title = W.HTML("Detail signals")
     w_detail_signals = W.SelectMultiple(options=[], value=(), description="", rows=8, layout=W.Layout(width="380px"))
     w_detail_autodown = W.Checkbox(value=True, description="Auto downsample detail", layout=W.Layout(width="220px"))
 
-    # Bookmark controls (persisted)
+    # Bookmark controls
     w_bm_name = W.Text(value="", description="Name:", layout=W.Layout(width="450px"))
     w_bm_comment = W.Text(value="", description="Comment:", layout=W.Layout(width="450px"))
     b_save = W.Button(description="Save", button_style="", layout=W.Layout(width="120px"))
     b_delete = W.Button(description="Delete", button_style="", layout=W.Layout(width="120px"))
     b_load = W.Button(description="Load", button_style="", layout=W.Layout(width="120px"))
-    w_bm_list = W.Select(
-        options=[("(New bookmark…)", "")],
-        value="",
-        description="Saved:",
-        rows=8,
-        layout=W.Layout(width="450px"),
-    )
-
-    bm_status = W.Output(layout=W.Layout(width="450px"))
+    w_bm_list = W.Select(options=[], value=None, description="Saved:", rows=8, layout=W.Layout(width="450px"))
 
     DESC_PAD = "90px"
-
-    # ---------------- Bookmark store ----------------
-    bm_store = BookmarkStore()
-    try:
-        bm_store.load()
-    except Exception as e:
-        with bm_status:
-            print(f"[bookmarks] Failed to load store: {e!r}")
+    out = W.Output()
 
     # ---------------- state ----------------
     state: Dict[str, Any] = {
@@ -252,8 +259,8 @@ def make_session_window_browser_widget_for_loader(
         "metrics_df": None,
         "events_merged": None,
         "event_color_map": {},
-        # bookmarks persistence
-        "bookmark_store": bm_store,
+        # bookmarks
+        "bookmarks": [],  # List[WindowBookmark]
         "updating": False,  # guard recursion
         "fig": None,
         # marks
@@ -261,9 +268,9 @@ def make_session_window_browser_widget_for_loader(
     }
 
     # stable mark styling
-    MARK_COLOR = "#111111"  # stable / fixed
-    MARK_SYMBOL = "x"       # cross
-    MARK_SIZE = 7
+    MARK_COLOR = "#111111"     # stable / fixed
+    MARK_SYMBOL = "x"          # cross
+    MARK_SIZE = 9
 
     # ---------------- Plotly figure ----------------
     fig = go.FigureWidget()
@@ -417,11 +424,11 @@ def make_session_window_browser_widget_for_loader(
         if kept:
             w_detail_signals.value = kept
         else:
-            registry2 = state.get("_registry") or {}
+            registry = state.get("_registry") or {}
             mm_cols = [
                 c for c in opts
-                if (isinstance(registry2, dict) and isinstance(registry2.get(c, {}), dict)
-                    and str(registry2.get(c, {}).get("unit", "")).strip() == "mm")
+                if (isinstance(registry, dict) and isinstance(registry.get(c, {}), dict)
+                    and str(registry.get(c, {}).get("unit", "")).strip() == "mm")
             ]
 
             chosen = mm_cols[0] if mm_cols else (opts[0] if opts else None)
@@ -430,68 +437,29 @@ def make_session_window_browser_widget_for_loader(
         state["registry_cols"] = registry_cols
         state["numeric_cols"] = numeric_cols_sorted
 
-
-        # Full-session extent (used to pin rangeslider to full session)
-        full_range = None
-        try:
-            t_full2 = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
-            t_full2 = t_full2[np.isfinite(t_full2)]
-            if t_full2.size:
-                full_range = (float(t_full2.min()), float(t_full2.max()))
-        except Exception:
-            full_range = None
-
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
         state["detail_y_range"] = _compute_y_range(df_, sel)
 
     # ---------------- event UI rebuild ----------------
 
     def _rebuild_event_type_options(merged: pd.DataFrame):
-        if (
-            merged is None
-            or merged.empty
-            or event_type_col not in merged.columns
-            or EVENT_SIGNAL_COL not in merged.columns
-        ):
+        if merged is None or merged.empty or event_type_col not in merged.columns:
             w_event_types.options = []
             w_event_types.value = ()
             return
 
-        m = merged[[event_type_col, EVENT_SIGNAL_COL]].copy()
-        m[event_type_col] = m[event_type_col].astype(str)
-        m[EVENT_SIGNAL_COL] = m[EVENT_SIGNAL_COL].astype(str)
-
-        pairs = (
-            m.dropna()
-             .drop_duplicates()
-             .sort_values([event_type_col, EVENT_SIGNAL_COL])
-        )
-
-        opts: List[Tuple[str, str]] = []
-        for _, r in pairs.iterrows():
-            et = str(r[event_type_col])
-            sig = str(r[EVENT_SIGNAL_COL])
-            label = f"{et} — {sig}"
-            key = _event_key(et, sig)
-            opts.append((label, key))
-
+        opts = sorted(merged[event_type_col].dropna().astype(str).unique().tolist())
         prev = tuple(map(str, _coerce_list(w_event_types.value)))
         w_event_types.options = opts
-
-        valid = {v for _, v in opts}
-        kept = tuple([v for v in prev if v in valid])
+        kept = tuple([x for x in prev if x in opts])
         w_event_types.value = kept
-
 
     # ---------------- events hover + colors ----------------
 
     def _build_event_hovertext(row: pd.Series, *, max_metrics: int = 10) -> str:
         et = str(row.get(event_type_col, ""))
-        sig = str(row.get(EVENT_SIGNAL_COL, ""))
         t_ = row.get(trigger_time_col, None)
         bits = [f"type: {et}"]
-        if sig:
-            bits.append(f"signal: {sig}")
         if t_ is not None and np.isfinite(pd.to_numeric(t_, errors="coerce")):
             bits.append(f"t: {float(t_):.3f}s")
 
@@ -508,22 +476,16 @@ def make_session_window_browser_widget_for_loader(
 
         return "<br>".join(bits)
 
-    def _event_color_for_pair(et: str, sig: str) -> str:
+    def _event_color_for(et: str) -> str:
         cmap = state.get("event_color_map") or {}
-
-        key = f"{et}||{sig}"
-
         palette = [
             "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
             "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
         ]
-
-        if key not in cmap:
-            cmap[key] = palette[len(cmap) % len(palette)]
-
+        if et not in cmap:
+            cmap[et] = palette[len(cmap) % len(palette)]
         state["event_color_map"] = cmap
-        return cmap[key]
-
+        return cmap[et]
 
     # ---------------- plotting ----------------
 
@@ -540,7 +502,7 @@ def make_session_window_browser_widget_for_loader(
 
     def _current_lane_y() -> float:
         """
-        Fixed y position based on current y-range (or frozen range).
+        Fixed y position on main y-axis based on current y-range (or frozen range).
         """
         yr = fig.layout.yaxis.range
         if yr is None or len(yr) != 2:
@@ -563,22 +525,12 @@ def make_session_window_browser_widget_for_loader(
         if trigger_time_col not in merged.columns or event_type_col not in merged.columns:
             return
 
-        sel_keys = set(map(str, _coerce_list(w_event_types.value)))
-        if not sel_keys:
-            return
-
-        sel_pairs = set()
-        for k in sel_keys:
-            et, sig = _split_event_key(k)
-            if et and sig:
-                sel_pairs.add((et, sig))
-
-        if not sel_pairs:
+        sel_types = set(map(str, _coerce_list(w_event_types.value)))
+        if not sel_types:
             return
 
         m = merged.copy()
         m[event_type_col] = m[event_type_col].astype(str)
-        m[EVENT_SIGNAL_COL] = m[EVENT_SIGNAL_COL].astype(str)
 
         tt = pd.to_numeric(m[trigger_time_col], errors="coerce")
         m = m[np.isfinite(tt)]
@@ -599,18 +551,14 @@ def make_session_window_browser_widget_for_loader(
                     tmin, tmax = float(t_full.min()), float(t_full.max())
                     m = m[(m["_tt"] >= tmin) & (m["_tt"] <= tmax)]
 
-        # pair filter
-        m = m[m.apply(lambda r: (r[event_type_col], r[EVENT_SIGNAL_COL]) in sel_pairs, axis=1)]
+        m = m[m[event_type_col].isin(sel_types)]
         if m.empty:
             return
 
         y_mark = _current_lane_y()
 
-        # group keys sorted for stable trace ordering
-        keys = sorted(set(zip(m[event_type_col], m[EVENT_SIGNAL_COL])))
-
-        for et, sig in keys:
-            sub = m[(m[event_type_col] == et) & (m[EVENT_SIGNAL_COL] == sig)]
+        for et in sorted(m[event_type_col].unique()):
+            sub = m[m[event_type_col] == et]
             xs = sub["_tt"].to_numpy(dtype=float)
             ys = np.full_like(xs, y_mark, dtype=float)
 
@@ -621,11 +569,11 @@ def make_session_window_browser_widget_for_loader(
                     x=xs,
                     y=ys,
                     mode="markers",
-                    marker=dict(size=7, color=_event_color_for_pair(et, sig), symbol="circle"),
+                    marker=dict(size=7, color=_event_color_for(et), symbol="circle"),
                     hovertemplate="%{text}<extra></extra>",
                     text=hover,
                     showlegend=True,
-                    name=f"event: {et} — {sig}",
+                    name=f"event: {et}",
                     cliponaxis=False,
                 )
             )
@@ -665,6 +613,7 @@ def make_session_window_browser_widget_for_loader(
         y_mark = _current_lane_y()
         ys = np.full_like(xs, y_mark, dtype=float)
 
+        # lightweight hover: time + mark value
         text = [f"mark<br>t: {x:.3f}s" for x in xs]
 
         fig.add_trace(
@@ -680,6 +629,65 @@ def make_session_window_browser_widget_for_loader(
                 cliponaxis=False,
             )
         )
+
+    def _update_detail_only_for_window(*, t0: float, t1: float):
+        """
+        Update ONLY the detail signals + overlays for the given window,
+        without touching the overview trace or clearing fig.data.
+        """
+        df_ = state["df"]
+        if df_ is None:
+            return
+
+        if t1 < t0:
+            t0, t1 = t1, t0
+
+        # window df
+        t = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
+        mask = np.isfinite(t) & (t >= t0) & (t <= t1)
+        df_win = df_.loc[mask].copy() if mask.any() else df_.iloc[0:0].copy()
+
+        if w_detail_autodown.value and len(df_win) > detail_max_points:
+            idx = _downsample_indices(len(df_win), detail_max_points)
+            df_win = df_win.iloc[idx].copy()
+
+        t_win = _to_numeric_series(df_win, time_col).to_numpy(dtype=float)
+
+        sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
+        sel = tuple([c for c in sel if c in df_win.columns])
+
+        with fig.batch_update():
+            # Trim everything after overview (if you still have an overview trace)
+            if len(fig.data) > 1:
+                fig.data = fig.data[:1]
+
+            # Re-add detail traces
+            for sig in sel:
+                y = _to_numeric_series(df_win, sig).to_numpy(dtype=float)
+                fig.add_trace(
+                    go.Scatter(
+                        x=t_win,
+                        y=y,
+                        xaxis="x2",
+                        yaxis="y",
+                        mode="lines",
+                        name=sig,
+                        line=dict(width=1.3),
+                        showlegend=False,
+                    )
+                )
+
+            # Ensure frozen y-range remains in effect
+            yr = state.get("detail_y_range")
+            if yr is not None:
+                fig.layout.yaxis.range = list(yr)
+                fig.layout.yaxis.autorange = False
+            else:
+                fig.layout.yaxis.autorange = True
+
+            # Add overlays for this window
+            _add_event_markers(t0=t0, t1=t1, for_detail=True)
+            _add_mark_markers(t0=t0, t1=t1, for_detail=True)
 
     def _apply_all_traces(df_: pd.DataFrame):
         if df_ is None or len(df_) == 0:
@@ -703,17 +711,6 @@ def make_session_window_browser_widget_for_loader(
             except Exception:
                 prev_range = None
 
-        # Full-session extent (used to pin rangeslider to full session)
-        full_range = None
-        try:
-            t_full2 = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
-            t_full2 = t_full2[np.isfinite(t_full2)]
-            if t_full2.size:
-                full_range = (float(t_full2.min()), float(t_full2.max()))
-        except Exception:
-            full_range = None
-
-
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
         sel = tuple([c for c in sel if c in df_.columns])
 
@@ -727,6 +724,7 @@ def make_session_window_browser_widget_for_loader(
         with fig.batch_update():
             fig.data = ()  # rebuild once per control change
 
+            # Detail signal traces
             for sig in sel:
                 y = _to_numeric_series(df_plot, sig).to_numpy(dtype=float)
                 fig.add_trace(
@@ -740,6 +738,7 @@ def make_session_window_browser_widget_for_loader(
                     )
                 )
 
+            # y-axis freezing
             yr = state.get("detail_y_range")
             if yr is not None:
                 fig.layout.yaxis.range = list(yr)
@@ -747,21 +746,16 @@ def make_session_window_browser_widget_for_loader(
             else:
                 fig.layout.yaxis.autorange = True
 
+            # Overlays (add-only)
             _add_event_markers(t0=None, t1=None, for_detail=False)
             _add_mark_markers(t0=None, t1=None, for_detail=False)
 
-            # Keep the current visible window (xaxis.range) if it was set,
-            # but ALWAYS keep the rangeslider showing the FULL session time range.
             if prev_range is not None:
                 a, b = prev_range
                 fig.layout.xaxis.autorange = False
                 fig.layout.xaxis.range = [a, b]
-
-            # Full-session extent for the rangeslider "mini-map"
-            if full_range is not None:
-                fa, fb = full_range
                 if hasattr(fig.layout.xaxis, "rangeslider") and fig.layout.xaxis.rangeslider is not None:
-                    fig.layout.xaxis.rangeslider.range = [fa, fb]
+                    fig.layout.xaxis.rangeslider.range = [a, b]
 
     # ---------------- session refresh ----------------
 
@@ -788,8 +782,6 @@ def make_session_window_browser_widget_for_loader(
 
         _apply_all_traces(df_)
 
-        _rebuild_bookmark_list()  # refresh list on session change
-
     # ---------------- callbacks ----------------
 
     def _on_session_change(*_):
@@ -808,316 +800,105 @@ def make_session_window_browser_widget_for_loader(
         if df_ is None:
             return
 
+        if state.get("in_slider_drag"):
+            return
+
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
         state["detail_y_range"] = _compute_y_range(df_, sel)
 
         _apply_all_traces(df_)
 
+    # Observers
     w_session.observe(_on_session_change, names="value")
-    for w in (w_detail_signals, w_detail_autodown, w_event_types, w_show_marks):
+    for w in (
+        w_detail_signals,
+        w_detail_autodown,
+        w_event_types,
+        w_show_marks,   # NEW
+    ):
         w.observe(_on_controls_change, names="value")
 
-    # ---------------- bookmarks (persisted) ----------------
+    # ---------------- bookmarks ----------------
 
-    def _format_label(entry: Dict[str, Any]) -> str:
-        title = str(entry.get("title") or "").strip()
-        t0 = float(_deep_get(entry, ("window", "t0"), 0.0))
-        t1 = float(_deep_get(entry, ("window", "t1"), 0.0))
-        base = title if title else f"{t0:.2f}–{t1:.2f}s"
-        return f"{base}  ({t0:.2f}–{t1:.2f}s)"
-
-    def _deep_get(d: Dict[str, Any], path: Tuple[str, ...], default=None):
-        cur: Any = d
-        for k in path:
-            if not isinstance(cur, dict) or k not in cur:
-                return default
-            cur = cur[k]
-        return cur
-
-    _BOOKMARK_N_RE = re.compile(r"^\s*Bookmark\s+(\d+)\s*$", re.IGNORECASE)
-
-    def _next_default_bookmark_title(entries: List[Dict[str, Any]]) -> str:
-        nmax = 0
-        for e in entries:
-            t = str(e.get("title") or "")
-            m = _BOOKMARK_N_RE.match(t)
-            if m:
-                try:
-                    nmax = max(nmax, int(m.group(1)))
-                except Exception:
-                    pass
-        return f"Bookmark {nmax + 1}"
-
+    def _bookmark_label(bm: WindowBookmark) -> str:
+        nm = bm.name.strip() if bm.name else ""
+        base = nm if nm else f"{bm.t0:.2f}–{bm.t1:.2f}s"
+        return f"{base}  ({bm.session_key})"
 
     def _rebuild_bookmark_list():
-        store: BookmarkStore = state["bookmark_store"]
-        sk = str(w_session.value)
-        entries = store.list(session_key=sk)
+        bms: List[WindowBookmark] = state["bookmarks"]
+        labels = [_bookmark_label(b) for b in bms]
+        w_bm_list.options = labels
+        if labels:
+            if w_bm_list.value not in labels:
+                w_bm_list.value = labels[-1]
+        else:
+            w_bm_list.value = None
 
-        opts: List[Tuple[str, str]] = [("(New bookmark…)", "")]
-
-        for e in entries:
-            if not isinstance(e, dict):
-                continue
-            bid = e.get("bookmark_id")
-            if not isinstance(bid, str) or not bid:
-                continue
-            opts.append((_format_label(e), bid))
-
-        w_bm_list.options = opts
-
-        # keep current selection if still valid; else default to "new"
-        cur = w_bm_list.value
-        valid_ids = {v for _, v in opts}
-        w_bm_list.value = cur if cur in valid_ids else ""
-
-
-    def _selected_bookmark_entry() -> Optional[Dict[str, Any]]:
-        bid = w_bm_list.value
-        if not bid:
+    def _selected_bookmark() -> Optional[WindowBookmark]:
+        val = w_bm_list.value
+        if not val:
             return None
-        store: BookmarkStore = state["bookmark_store"]
-        return store.get(str(bid))
-
+        for b in state["bookmarks"]:
+            if _bookmark_label(b) == val:
+                return b
+        return None
 
     def _save_bookmark(_btn):
-        sess = state.get("session")
-        df_ = state.get("df")
-        if sess is None or df_ is None:
+        df_ = state["df"]
+        if df_ is None:
             return
-
-        store: BookmarkStore = state["bookmark_store"]
-        sk = str(w_session.value)
-
-        # Current window + view state
         t0, t1 = _get_current_window()
-        view = {
-            "detail_signals": list(map(str, _coerce_list(w_detail_signals.value))),
-            "event_types": list(map(str, _coerce_list(w_event_types.value))),
-            "show_marks": bool(w_show_marks.value),
-        }
-        yr = state.get("detail_y_range")
-        if yr is not None:
-            view["y_lock"] = {"enabled": True, "range": [float(yr[0]), float(yr[1])]}
-
-        # Determine save mode
-        selected_id = w_bm_list.value  # if set => edit mode
-
-        # Name/comment
-        name = str(w_bm_name.value or "").strip()
-        note = str(w_bm_comment.value or "").strip()
-
-        try:
-            entries = store.list(session_key=sk)
-
-            if selected_id:
-                # EDIT MODE: update the selected bookmark id
-                bid = str(selected_id)
-                patch = {
-                    "title": name if name else None,
-                    "note": note if note else None,
-                    "window": {"t0": float(min(t0, t1)), "t1": float(max(t0, t1)), "units": "s"},
-                    "view": dict(view),
-                    "scope": dict((_selected_bookmark_entry() or {}).get("scope") or {}),
-                }
-                # Clean Nones
-                if patch["title"] is None:
-                    patch.pop("title")
-                if patch["note"] is None:
-                    patch.pop("note")
-
-                store.update(bid, patch=patch)
-                store.save()
-
-                _rebuild_bookmark_list()
-                w_bm_list.value = bid  # keep selection
-
-                with bm_status:
-                    clear_output(wait=True)
-                    print("Updated.")
-                return
-
-            # NEW MODE: create new (or update-by-name if name exists)
-            if not name:
-                name = _next_default_bookmark_title(entries)
-
-            # If name matches existing within this session, update that existing one instead of creating dup
-            existing = None
-            for e in entries:
-                if str(e.get("title") or "").strip() == name:
-                    existing = e
-                    break
-
-            if existing is not None and isinstance(existing.get("bookmark_id"), str):
-                bid = existing["bookmark_id"]
-                patch = {
-                    "title": name,
-                    "note": note if note else None,
-                    "window": {"t0": float(min(t0, t1)), "t1": float(max(t0, t1)), "units": "s"},
-                    "view": dict(view),
-                }
-                if patch["note"] is None:
-                    patch.pop("note")
-                store.update(bid, patch=patch)
-                store.save()
-
-                _rebuild_bookmark_list()
-                w_bm_list.value = bid  # select it => now editing that bookmark
-
-                with bm_status:
-                    clear_output(wait=True)
-                    print("Updated (matched name).")
-                return
-
-            # Otherwise: create a new bookmark
-            bid = store.add_from_view(
-                session=sess,
-                session_key=sk,
-                t0=float(t0),
-                t1=float(t1),
-                view=view,
-                title=name,
-                note=note,
-                private=True,
-                time_col=time_col,
-            )
-            store.save()
-
-            _rebuild_bookmark_list()
-            w_bm_list.value = bid
-
-            # After NEW save: clear fields + deselect to encourage next "new" capture
-            state["updating"] = True
-            try:
-                w_bm_name.value = ""
-                w_bm_comment.value = ""
-                w_bm_list.value = ""
-            finally:
-                state["updating"] = False
-
-            with bm_status:
-                clear_output(wait=True)
-                print(f"Saved as {name!r}.")
-
-        except Exception as e:
-            with bm_status:
-                clear_output(wait=True)
-                print(f"[bookmarks] Save failed: {e!r}")
-
+        bm = WindowBookmark(
+            name=str(w_bm_name.value or "").strip(),
+            comment=str(w_bm_comment.value or "").strip(),
+            session_key=str(w_session.value),
+            t0=float(t0),
+            t1=float(t1),
+            detail_signals=tuple(map(str, _coerce_list(w_detail_signals.value))),
+            selected_event_types=tuple(map(str, _coerce_list(w_event_types.value))),
+        )
+        state["bookmarks"].append(bm)
+        _rebuild_bookmark_list()
 
     def _load_bookmark(_btn):
-        entry = _selected_bookmark_entry()
-        if entry is None:
+        bm = _selected_bookmark()
+        if bm is None:
             return
 
-        target_session_key = str(_deep_get(entry, ("scope", "session_key"), ""))
-        if target_session_key and str(w_session.value) != target_session_key:
+        if str(w_session.value) != bm.session_key:
             state["updating"] = True
             try:
-                w_session.value = target_session_key
+                w_session.value = bm.session_key
             finally:
                 state["updating"] = False
-            _refresh_all_for_session(target_session_key)
-
-        sess = state.get("session")
-        if sess is None:
-            return
-
-        # Drift warnings
-        warns = []
-        try:
-            warns = check_drift(entry, session=sess, time_col_default=time_col)
-        except Exception:
-            warns = []
-        with bm_status:
-            clear_output(wait=True)
-            if warns:
-                print("Warnings:")
-                for w in warns:
-                    print(" -", w)
-
-        # Restore view (safe intersections)
-        avail_signals = list(map(str, w_detail_signals.options))
-        avail_event_types = list(map(str, w_event_types.options))
-        view = coerce_restore_view(entry, available_signals=avail_signals, available_event_types=avail_event_types)
+            _refresh_all_for_session(bm.session_key)
 
         state["updating"] = True
         try:
-            ds = view.get("detail_signals")
-            if isinstance(ds, list):
-                kept = tuple([s for s in ds if s in avail_signals])
-                w_detail_signals.value = kept if kept else ()
+            opts = set(map(str, w_detail_signals.options))
+            kept = tuple([s for s in bm.detail_signals if s in opts])
+            w_detail_signals.value = kept if kept else ()
 
-            et = view.get("event_types")
-            if isinstance(et, list):
-                kept_et = tuple([s for s in et if s in avail_event_types])
-                w_event_types.value = kept_et if kept_et else ()
+            et_opts = set(map(str, w_event_types.options))
+            kept_et = tuple([s for s in bm.selected_event_types if s in et_opts])
+            w_event_types.value = kept_et if kept_et else tuple(map(str, w_event_types.options))
 
-            sm = view.get("show_marks")
-            if isinstance(sm, bool):
-                w_show_marks.value = sm
-
-            t0 = float(_deep_get(entry, ("window", "t0"), 0.0))
-            t1 = float(_deep_get(entry, ("window", "t1"), 0.0))
-            fig.layout.xaxis.range = [t0, t1]
+            fig.layout.xaxis.range = [bm.t0, bm.t1]
         finally:
             state["updating"] = False
 
         df_ = state["df"]
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
-        state["detail_y_range"] = _compute_y_range(df_, sel) if df_ is not None else None
+        state["detail_y_range"] = _compute_y_range(df_, sel)
         _apply_all_traces(df_)
 
     def _delete_bookmark(_btn):
-        bid = w_bm_list.value
-        if not bid:
+        bm = _selected_bookmark()
+        if bm is None:
             return
-        store: BookmarkStore = state["bookmark_store"]
-        try:
-            ok = store.delete(str(bid))
-            if ok:
-                store.save()
-            _rebuild_bookmark_list()
-            with bm_status:
-                clear_output(wait=True)
-                print("Deleted." if ok else "Not found.")
-        except Exception as e:
-            with bm_status:
-                clear_output(wait=True)
-                print(f"[bookmarks] Delete failed: {e!r}")
-
-    def _on_bookmark_select(change):
-        if state.get("updating"):
-            return
-
-        bid = change.get("new")
-
-        if not bid:
-            # "" => New mode
-            state["updating"] = True
-            try:
-                w_bm_name.value = ""
-                w_bm_comment.value = ""
-            finally:
-                state["updating"] = False
-
-            with bm_status:
-                clear_output(wait=True)
-            return
-
-        entry = _selected_bookmark_entry()
-        if not entry:
-            return
-
-        state["updating"] = True
-        try:
-            w_bm_name.value = str(entry.get("title") or "")
-            w_bm_comment.value = str(entry.get("note") or "")
-        finally:
-            state["updating"] = False
-
-
-    w_bm_list.observe(_on_bookmark_select, names="value")
+        state["bookmarks"] = [b for b in state["bookmarks"] if b is not bm]
+        _rebuild_bookmark_list()
 
     b_save.on_click(_save_bookmark)
     b_load.on_click(_load_bookmark)
@@ -1125,15 +906,22 @@ def make_session_window_browser_widget_for_loader(
 
     # ---------------- layout ----------------
 
-    session_box = W.VBox([session_title, w_session], layout=W.Layout(gap="6px", width="450px"))
+    session_box = W.VBox(
+        [session_title, w_session],
+        layout=W.Layout(gap="6px", width="450px"),
+    )
 
     top_controls_row = W.HBox(
         [session_box],
         layout=W.Layout(gap="40px", align_items="flex-start", justify_content="space-between", width="1200px"),
     )
 
-    detail_box = W.VBox([detail_title, w_detail_signals, w_detail_autodown], layout=W.Layout(gap="6px", width="520px"))
+    detail_box = W.VBox(
+        [detail_title, w_detail_signals, w_detail_autodown],
+        layout=W.Layout(gap="6px", width="520px"),
+    )
 
+    # NEW: show-marks checkbox goes under event selector
     events_box = W.VBox(
         [event_types_title, event_types_hint, w_event_types, w_show_marks],
         layout=W.Layout(gap="6px", width="450px"),
@@ -1141,23 +929,33 @@ def make_session_window_browser_widget_for_loader(
 
     bookmarks_box = W.VBox(
         [
-            W.HTML("Bookmarks (per-user store)", layout=W.Layout(padding=f"0 0 0 {DESC_PAD}")),
+            W.HTML("Bookmarks (memory only)", layout=W.Layout(padding=f"0 0 0 {DESC_PAD}")),
             w_bm_name,
             w_bm_comment,
-            W.HBox([b_save, b_load, b_delete], layout=W.Layout(gap="8px", padding=f"0 0 0 {DESC_PAD}")),
+            W.HBox(
+                [b_save, b_load, b_delete],
+                layout=W.Layout(gap="8px", padding=f"0 0 0 {DESC_PAD}"),
+            ),
             w_bm_list,
-            bm_status,
         ],
         layout=W.Layout(gap="6px"),
     )
 
-    bottom_row = W.HBox([detail_box, events_box, bookmarks_box],
-                        layout=W.Layout(gap="16px", align_items="flex-start", width="100%"))
+    bottom_row = W.HBox(
+        [detail_box, events_box, bookmarks_box],
+        layout=W.Layout(gap="16px", align_items="flex-start", width="100%"),
+    )
 
     plot_row = W.VBox([fig], layout=W.Layout(width="100%"))
 
-    root = W.VBox([top_controls_row, plot_row, bottom_row],
-                  layout=W.Layout(gap="10px", width="100%"))
+    root = W.VBox(
+        [
+            top_controls_row,
+            plot_row,
+            bottom_row,
+        ],
+        layout=W.Layout(gap="10px", width="100%"),
+    )
     display(root)
 
     def _force_plotly_resize(delay_ms: int = 150):
@@ -1180,13 +978,14 @@ def make_session_window_browser_widget_for_loader(
         """))
 
     _refresh_all_for_session(str(w_session.value))
+    _rebuild_bookmark_list()
     _force_plotly_resize(600)
 
     return {
         "root": root,
         "state": state,
         "fig": fig,
-        "bookmark_store": bm_store,
+        "bookmarks": state["bookmarks"],
     }
 
 
