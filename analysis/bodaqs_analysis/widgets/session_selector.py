@@ -86,7 +86,7 @@ def make_session_selector(
         options=run_options,
         value=default_run_id if default_run_id in dict(run_options).values() or default_run_id == "__ALL__" else "__ALL__",
         description="Run",
-        layout=W.Layout(width="50%"),
+        layout=W.Layout(width="800px"),
     )
 
     sessions_sel = W.SelectMultiple(
@@ -94,7 +94,7 @@ def make_session_selector(
         value=(),
         rows=rows,
         description="Sessions",
-        layout=W.Layout(width="100%"),
+        layout=W.Layout(width="800px"),
     )
 
     out = W.Output()
@@ -128,11 +128,11 @@ def make_session_selector(
             [{"session_key": k, "run_id": rid, "session_id": sid} for k, (rid, sid) in _key_to_ref.items()]
         )
 
-        with out:
-            out.clear_output()
-            print("SELECTED =")
-            for s in _selected:
-                print(" ", s)
+#        with out:
+#            out.clear_output()
+#            print("SELECTED =")
+#            for s in _selected:
+#                print(" ", s)
 
     run_dd.observe(_refresh_sessions, names="value")
     sessions_sel.observe(_update_selected, names="value")
