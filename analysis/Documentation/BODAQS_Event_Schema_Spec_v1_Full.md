@@ -1,17 +1,15 @@
-# BODAQS Event Schema Specification v1.0 — Full Document
-
-# BODAQS Event Schema Specification — Section 1
-## Conceptual Model & Dataflow
+# BODAQS Event Schema Specification — 
+## Section 1 - Conceptual Model & Dataflow
 
 ### 1.1 Fundamental Objects
 
 Signals, registry entries, roles, event instances, and SegmentBundles form the core abstractions.
 
-Signals are numeric time series in session["df"].  
-Registry entries provide semantic metadata.  
-Roles are schema-level semantic references resolved dynamically.  
-Event instances are per-sensor detected occurrences.  
-SegmentBundles hold aligned waveform slices.
+ - Signals are numeric time series in the session dataframe.  
+ - Registry entries provide semantic metadata, allowing roles to be resolved from signals.  
+ - Roles are schema-level semantic references that are resolved dynamically.  
+ - Event instances are per-sensor detected occurrences of schema-defined events.  
+ = SegmentBundles hold aligned data  slices.
 
 ---
 
@@ -19,14 +17,16 @@ SegmentBundles hold aligned waveform slices.
 
 raw → canonicalized → registry → detection → segmentation → metrics
 
-All schema logic operates exclusively on registry-resolved roles.
+ - raw data is data as-received
+ - canonicalized data is data whose columns have been re-named into canonical form 
+ - the registry stores semantic metadata (e.g. units, transform operations performed on the data). All schema logic involving roles resolves them exclusively from registry data.
 
 ---
 
 ### 1.3 Registry-First Semantics
 
 Resolution matches sensor, quantity, unit, kind, and op_chain.  
-No suffix guessing or fallback is permitted.
+Semantic roles should not be parsed from signal names.
 
 Derived signals retain transformation lineage via op_chain.
 
@@ -35,8 +35,6 @@ Derived signals retain transformation lineage via op_chain.
 ### 1.4 Event Expansion
 
 Each event definition expands into one instance per sensor at runtime.
-
-Schemas remain sensor-agnostic.
 
 ---
 
@@ -52,17 +50,11 @@ Schemas remain sensor-agnostic.
 
 ### 1.6 Determinism & Failure
 
-Ambiguity or missing semantics produce hard failures.
-
-The system guarantees deterministic, reproducible metrics.
+Ambiguity or missing semantics produce hard failures. The system is intended to guarantee deterministic, reproducible metrics.
 
 ---
 
-
----
-
-# BODAQS Event Schema Specification — Section 2
-## Formal Event Schema Grammar
+## Section 2 - Formal Event Schema Grammar
 
 ### 2.1 EventDef
 
@@ -128,11 +120,7 @@ Additional fields depend on metric type.
 
 ---
 
-
----
-
-# BODAQS Event Schema Specification — Section 3
-## Trigger Engine: simple_threshold_crossing
+## Section 3 - Trigger Engine: simple_threshold_crossing
 
 This section defines the semantics of the simple_threshold_crossing trigger engine, including state behavior,
 search window interaction, hysteresis, spacing, and debounce effects.
