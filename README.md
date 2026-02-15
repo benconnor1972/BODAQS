@@ -12,24 +12,17 @@ BODAQS aims to offer an alternative: hardware that can be built with basic solde
 
 Follow along as we iterate the hardware, firmware and analysis and share our results.
 
-## Workflow and user experience
-
-
-
 ## Hardware
-The brains of the BODAQS logger is a Sparkfun ESP32 Thing Plus S3 development board, which is available at low cost worldwide. Additional circuitry to ensure sensor inputs are clean and noise-free can be built on stripboard (available from electronics hobby shops) or on a small custom PCB (available from Asian suppliers at astonishingly low cost). Designs and bills of materials are provided for both options and either can be assembled by someone with (or who is prepared to learn) basic soldering skills.
+The brains of the BODAQS logger is a Sparkfun ESP32 Thing Plus S3 development board, which is available at low cost worldwide. Additional circuitry to ensure sensor inputs are clean and noise-free can be built on stripboard (available from electronics hobby shops) or on a small custom PCB (available from Asian suppliers at astonishingly low cost). Designs and bills of materials are provided for both options and either can be assembled by someone who has (or who is prepared to learn) basic soldering skills.
 
-The logger also features a small OLED screen and 5-way navigation pad for changing settings, and can support an optional handlebar-mounted switch to start and stop logging and mark events of interest in the log. 
+Sensors are plugged in to one or more of the four analog input connectors, or via an I2C digital connection. The logger also features a small OLED screen and 5-way navigation pad for changing settings, and can support an optional handlebar-mounted switch to start and stop logging and mark events of interest in the log. 
 
 ## Firmware
 The code that runs on the logger handles a wide array of tasks, and is designed with expansion in mind. Some of the key firmware modules include:
-Configuration
-Sensor management
-Calibration
-Logging
-Wifi management
-Managing Web access
-Running the menu system
-Doing data transformations
-Managing storage
+
+ - Logging: the logger samples its sensors and records the results to SD card at rates up to 500Hz (500 times per second). Log files are written in human-readable CSV format.  
+ - Configuration management: configuration settings including sensor setup, wifi settings and user preferences are stored in a human-readable configuration file on the SD card
+ - Calibration: basic sensor calibration can be done on the logger - for analog inputs, setting the full range and zero point are supported. Calibration parameters are stored on the SD card.
+ - Web access: users can connect to the logger via wifi and download (or upload) files or configure the device.
+ - Data transformation: users can specify tranformation functions for logger outputs, for example to report measured shock movement as wheel movement. Transformation functions can be specified as polynomials or look-up tables and are stored per-sensor on the SD card.
 
