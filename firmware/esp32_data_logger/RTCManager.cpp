@@ -2,6 +2,8 @@
 #include <WiFi.h>
 #include <time.h>
 #include <stdlib.h>  // for getenv (only needed if you keep the TZ print)
+#include <sys/time.h>  // settimeofday
+
 
 // For external RTC (stub now, add DS3231 later)
 #include <Wire.h>
@@ -165,5 +167,21 @@ String RTCManager_getDateTimeString() {
     // Format as YYYY-MM-DD_HH-MM-SS (safe for filenames)
     strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", &timeinfo);
     return String(buf);
+}
+
+void RTCManager_invalidateInternalTime() {
+  // Set system time to epoch 0 so RTCManager_hasValidTime() becomes false
+  // (your validity check is based on year >= 2020).
+  struct timeval tv;
+  tv.tv_sec  = 0;
+  tv.tv_usec = 0;
+  settimeofday(&tv, nullptr);
+
+  // Reset cached base so helpers don't continue from a "valid" cached base.
+  baseMillis = millis();
+  baseEpoch  = 0;
+  lastSyncMs = 0;
+
+  Serial.println("[RTC] Internal time invalidated (epoch=0). Next boot should require SNTP.");
 }
 
