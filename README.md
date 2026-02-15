@@ -26,3 +26,15 @@ The code that runs on the logger handles a wide array of tasks, and is designed 
  - Web access: users can connect to the logger via wifi and download (or upload) files or configure the device.
  - Data transformation: users can specify tranformation functions for logger outputs, for example to report measured shock movement as wheel movement. Transformation functions can be specified as polynomials or look-up tables and are stored per-sensor on the SD card.
 
+## Analysis
+Sampling and recording sensor data is simply an engineering problem. Interpreting the data to find meaning is categorically different. Anyone who has attempted to browse a large, dense dataset in a spreadsheet will attest that the conclusions do not write themselves.
+
+The specifics of how one interprets data depend on the intended task. How then should analysis of suspension data be done? If the objective is to "make my suspension not suck", then you might build analysis tools that detect bad things happening and suggest what to do about them based on a general understanding of the physics of suspension. But the more specific and detailed the objective becomes, the less likely it is that general-purpose analysis will reveal the answers sought.
+
+The BODAQS project walks the line between a black-box 'suspension wizard' and simply dumping raw data on the user. It provides a transparent set of analysis tools on a free and open-source platform, with the raw and derived datasets delivered in standard (and documented) form so that, if users are so inclined, they can extend the analysis however they choose.
+
+Features of the BODAQS analysis framework include:
+ - Python-based toolset:
+ - Runs in Jupyter Lab:
+ - Batch pre-processing pipeline:
+ - Browsing and event-detection tools: 

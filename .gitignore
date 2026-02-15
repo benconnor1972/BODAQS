@@ -40,3 +40,4 @@ _autosave-*
 *.cache
 */-backups/
 To do/~$To do list.xlsx
+*.lck
