@@ -18,7 +18,7 @@ At the centre of BODAQS is a small logger you can mount on a bike to record what
 
 It’s designed to be modular: you can start simple and add capability over time.
 
-The logger records at a high maximum **sample rate** (how many measurements it takes each second), so it can capture rapid events like fast suspension movement in fine detail.
+The logger records at a maximum sample rate of 500Hz (500 samples per second), so it can capture rapid events like fast suspension movement in fine detail.
 
 A small screen and buttons make it usable on the bike, and an optional handlebar-mounted button lets you tag moments of interest (for example: a hard landing) so they’re easy to find later.
 
@@ -34,7 +34,7 @@ Interpretation depends on your question: you might be trying to tune for a speci
 
 BODAQS aims to sit between a black-box “just trust the result” tool and a blank page. The goal isn’t to provide instant answers for everyone, but to provide a guided, transparent framework that supports ambition and curiosity helps you build real understanding.
 
-The analysis tooling is built in **Python** (a widely used language for data work), and is designed so you can use it as-is, adapt it to your own questions, and share improvements back with the community.
+The analysis tooling is built in Python (a widely used language for data work), and is designed so you can use it as-is, adapt it to your own questions, and share improvements back with the community.
 
 Features of the BODAQS analysis framework include:
 - A pre-processing pipeline to clean, validate, and organise logs into consistent, comparable sessions.
