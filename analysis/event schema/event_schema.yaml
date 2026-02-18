@@ -299,6 +299,91 @@ events:
         prefer: *id003
       - role: disp_norm
         prefer: *id004
+- id: rebounds_all>25
+  label: rebound events with max normalized displacement >0.25
+  sensors:
+    - rear_shock
+    - front_shock
+  trigger:
+    id: rebound_start
+    type: simple_threshold_crossing
+    signal: vel
+    value: 0.0
+    dir: falling
+    hysteresis: 0
+    distance_s: 0.015
+    edge_ignore_s: 1
+    debounce:
+      gap_s: 0.3
+      prefer_key: disp
+      prefer_abs: false
+      prefer_max: true
+  secondary_triggers:
+  - id: rebound_end
+    type: simple_threshold_crossing
+    signal: vel
+    value: 0.0
+    base_trigger: rebound_start
+    search:
+      min_delay_s: 0.05
+      max_delay_s: 0.8
+      direction: forward
+    dir: rising
+    debounce:
+      gap_s: 0.8
+      prefer_key: t0_index
+      prefer_abs: false
+      prefer_max: false
+  preconditions:
+  - within_s:
+    - -0.01
+    - 0.01
+    all_of:
+    - type: peak
+      signal: disp_norm
+      kind: max
+      cmp: '>'
+      value: 0.25
+  window:
+    pre_s: 0.2
+    post_s: 0.8
+    align: trigger
+  metrics:
+    - type: interval_stats
+      signal: vel
+      start_trigger: rebound_start
+      end_trigger: rebound_end
+      ops:
+      - mean
+      - max
+      - min
+      polarity: neg_to_pos
+      smooth_ms: 20
+      min_delay_s: 0.02
+      return_debug: true
+    - type: peak
+      signal: disp
+      kind: max
+    - type: peak
+      signal: disp
+      kind: min
+  tags:
+    - kinematics
+    - rebound
+  segment_defaults:
+    anchor: trigger_time_s
+    window:
+      pre_s: 0.2
+      post_s: 0.8
+    roles:
+      - role: disp
+        prefer: *id001
+      - role: vel
+        prefer: *id002
+      - role: acc
+        prefer: *id003
+      - role: disp_norm
+        prefer: *id004
 - id: compressions_25_50
   label: compression events with max normalized displacement >0.25 and <=0.5
   sensors:
@@ -854,3 +939,96 @@ events:
         prefer: *id003
       - role: disp_norm
         prefer: *id004        
+- id: rebounds_peakvel
+  label: rebound events measured from the point of peak rebound velocity
+  sensors:
+    - rear_shock
+    - front_shock
+  trigger:
+    id: rebound_max_vel
+    type: local_extrema
+    signal: vel
+    kind: min
+    prominence: 100
+    distance_s: 0.015
+    edge_ignore_s: 0.1
+    debounce:
+      gap_s: 0.1
+      prefer_key: vel
+      prefer_abs: true
+      prefer_max: true
+  secondary_triggers:
+  - id: rebound_end
+    type: simple_threshold_crossing
+    signal: vel
+    value: 0.0
+    base_trigger: rebound_max_vel
+    search:
+      min_delay_s: 0.05
+      max_delay_s: 0.8
+      direction: forward
+    dir: rising
+    debounce:
+      gap_s: 0.1
+      prefer_key: t0_index
+      prefer_abs: false
+      prefer_max: false
+  preconditions:
+  - within_s:
+    - -0.01
+    - 0.01
+    all_of:
+    - type: peak
+      signal: disp_norm
+      kind: max
+      cmp: '>'
+      value: 0.25
+  window:
+    pre_s: 0.2
+    post_s: 0.8
+    align: trigger
+  metrics:
+    - type: interval_stats
+      signal: vel
+      start_trigger: rebound_max_vel
+      end_trigger: rebound_end
+      ops:
+      - mean
+      - min
+      polarity: neg_to_pos
+      smooth_ms: 20
+      min_delay_s: 0.02
+      return_debug: true
+    - type: interval_stats
+      signal: disp
+      start_trigger: rebound_max_vel
+      end_trigger: rebound_end
+      ops:
+      - max
+      polarity: neg_to_pos
+      smooth_ms: 20
+      min_delay_s: 0.02
+      return_debug: true
+    - type: peak
+      signal: disp
+      kind: max
+    - type: peak
+      signal: disp
+      kind: min
+  tags:
+    - kinematics
+    - rebound
+  segment_defaults:
+    anchor: trigger_time_s
+    window:
+      pre_s: 0.2
+      post_s: 0.8
+    roles:
+      - role: disp
+        prefer: *id001
+      - role: vel
+        prefer: *id002
+      - role: acc
+        prefer: *id003
+      - role: disp_norm
+        prefer: *id004
