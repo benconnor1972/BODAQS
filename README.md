@@ -1,6 +1,16 @@
-# BODAQS
+```
+███████████     ███████    ██████████     █████████      ██████     █████████
+░███░░░░░███  ███░░░░░███ ░░███░░░░███   ███░░░░░███   ███░░░░███  ███░░░░░███
+░███    ░███ ███     ░░███ ░███   ░░███ ░███    ░███  ███    ░░███░███    ░░░
+░██████████ ░███      ░███ ░███    ░███ ░███████████ ░███     ░███░░█████████
+░███░░░░░███░███      ░███ ░███    ░███ ░███░░░░░███ ░███   ██░███ ░░░░░░░░███
+░███    ░███░░███     ███  ░███    ███  ░███    ░███ ░░███ ░░████  ███    ░███
+███████████  ░░░███████░   ██████████   █████   █████ ░░░██████░██░░█████████
+░░░░░░░░░░░     ░░░░░░░    ░░░░░░░░░░   ░░░░░   ░░░░░    ░░░░░░ ░░  ░░░░░░░░░
+```
 
-### Bicycle Open Data Acquisition System
+
+# Bicycle Open Data Acquisition System
 
 BODAQS is a project focused on making mountain-bike data acquisition and analysis accessible — allowing the curious to explore and learn, and the driven a new tool to chase performance.
 
