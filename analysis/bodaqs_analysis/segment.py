@@ -434,7 +434,10 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
     pref_unit = _norm_unit(_get_pref(prefer, "unit"))
     pref_op_chain = _norm_op_chain(_get_pref(prefer, "op_chain"))
 
-    if pref_sensor is None and event_sensor:
+    # Option B binding: if we know the sensor for this event row, it must win.
+    # This prevents schema role anchors (prefer.sensor) from accidentally pinning
+    # roles to the wrong sensor across multi-sensor events.
+    if event_sensor:
         pref_sensor = _norm_str(event_sensor)
 
     if pref_quantity is None and isinstance(role, str) and role.strip():
@@ -462,11 +465,19 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
             continue
         if pref_unit is not None and unit != pref_unit:
             continue
-        if pref_op_chain and op_chain != pref_op_chain:
-            continue
+        # prefer.op_chain means "these ops must be present", not "exactly these ops".
+        # This lets schemas remain stable when the pipeline adds extra ops (e.g. zeroed).
+        if pref_op_chain:
+            have = set(op_chain)
+            need = set(pref_op_chain)
+            if not need.issubset(have):
+                continue
 
         candidates.append((col, info))
 
+    logger.debug("role=%r pref_sensor=%r pref_quantity=%r pref_unit=%r pref_kind=%r pref_op_chain=%r",
+                 role, pref_sensor, pref_quantity, pref_unit, pref_kind, pref_op_chain)
+                 
     if not candidates:
         if isinstance(role, str) and role.strip().lower() == "primary" and primary_signal_col:
             return primary_signal_col
