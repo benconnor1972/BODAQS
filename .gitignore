@@ -22,6 +22,7 @@ venv/
 
 # Data/outputs (keep dirs with .gitkeep if you need them visible)
 analysis/**/__*
+analysis/artifacts/*
 
 logs/*
 *.parquet
@@ -33,6 +34,8 @@ logs/*
 *.bak
 *.kicad_prl
 *~
+hardware/*-backups/
+hardware/**/*.lck
 _autosave-*
 **/sym-lib-table-bak
 **/fp-lib-table-bak
