@@ -94,7 +94,7 @@ def build_signals_registry(
         tok = b.split("_", 1)[0].strip()
         return tok or None
 
-    def _infer_quantity_from_parts(base: Optional[str], kind: str, unit: Optional[str]) -> Optional[str]:
+    def _infer_quantity_from_parts(base: Optional[str], kind: str, unit: Optional[str], ops: Optional[Iterable[str]] = None) ->Optional[str]:
         """
         Infer a coarse semantic quantity for resolution:
           - raw -> 'raw'
@@ -123,6 +123,12 @@ def build_signals_registry(
         if b.endswith("_norm"):
             return "disp_norm"
 
+        ops_l = [str(o).lower() for o in (ops or [])]
+
+        # If the op chain includes norm, treat as normalized displacement
+        if "norm" in ops_l:
+            return "disp_norm"
+        
         # Unit-driven fallback (useful for canonical disp)
         if u == "mm":
             return "disp"
@@ -131,12 +137,10 @@ def build_signals_registry(
         if u == "mm/s^2":
             return "acc"
         if u == "1":
-            return "disp"
+            return "disp_norm"
 
         return None
-
     # ---- build ----------------------------------------------------
-
     signals: Dict[str, Dict[str, Any]] = {}
 
     for col in df.columns:
@@ -162,8 +166,7 @@ def build_signals_registry(
             ops = list(parts.ops)  # adjust to list(parts.ops or []) if needed
 
             sensor_id = _infer_sensor_id_from_base(getattr(parts, "base", None))
-            quantity = _infer_quantity_from_parts(getattr(parts, "base", None), kind, unit)
-
+            quantity = _infer_quantity_from_parts(getattr(parts, "base", None), kind, unit, ops)
             info: Dict[str, Any] = {
                 "kind": kind,                 # "" | "raw" | "qc"
                 "unit": unit,                 # string or None

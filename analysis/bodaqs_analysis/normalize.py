@@ -230,34 +230,31 @@ def normalize_and_scale(
                     zeroed.loc[mask] = s.loc[mask] - off
 
                 meta = {"method": "per_segment"}
-        print(offset)
+
         # Always write zeroed back into base col if zeroing_enabled (in-place zeroing policy)
+        # --- Create explicit zeroed column (only if enabled) ---
         zeroed_col = None
         if zeroing_enabled:
-            # --- Create explicit zeroed column (no in-place overwrite) ---
             zeroed_col = _name_zeroed(col)
             frame.loc[:, zeroed_col] = zeroed
 
-            # --- Create dimensionless norm column (encode both ops) ---
-            # choose source for normalization (zeroed if enabled, else base)
-            norm_source = zeroed_col if (zeroed_col is not None) else col
+        # --- Always create dimensionless norm column ---
+        # choose source for normalization (zeroed if present, else base)
+        norm_source = zeroed_col if (zeroed_col is not None) else col
 
-            # Name reflects the transform chain applied to the source.
-            # If source is zeroed, output becomes ...[1]_op_zeroed_op_norm (both ops encoded).
-            norm_col = _name_norm(norm_source)
+        # Name reflects transform chain applied to the source.
+        norm_col = _name_norm(norm_source)
 
-            rng = float(full_range) if full_range else np.nan
-            if np.isfinite(rng) and rng > 0:
-                normed = frame[norm_source] / rng
-            else:
-                normed = np.nan
+        rng = float(full_range) if full_range else np.nan
+        if np.isfinite(rng) and rng > 0:
+            normed = pd.to_numeric(frame[norm_source], errors="coerce") / rng
+        else:
+            normed = np.nan
 
-            if clip_0_1:
-                normed = normed.clip(0.0, 1.0)
+        if clip_0_1:
+            normed = normed.clip(0.0, 1.0)
 
-            frame.loc[:, norm_col] = normed
-
-
+        frame.loc[:, norm_col] = normed
 
         rec: Dict[str, Any] = {
             "column": col,

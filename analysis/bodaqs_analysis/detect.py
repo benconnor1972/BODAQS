@@ -132,40 +132,10 @@ def _resolve_search_window(trig: dict, t: np.ndarray, base_t0_sec: float | None)
     return _clip_bounds(n, i0, i1)
 
 def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = None) -> dict:
-    """
-    Resolve schema signal roles (disp/vel/acc/disp_zeroed/disp_norm/...) to concrete df column names.
-
-    Registry-only:
-      - Requires meta["signals"] (canonical, parseable, domain-aware).
-      - Returns only roles it can confidently resolve from the registry.
-      - Does NOT attempt legacy suffix concatenation fallback.
-
-    Returns:
-      inputs_map: { role -> column_name }
-    """
     out: dict[str, str] = {}
-
-    # Must have a signals registry
     signals = meta.get("signals") if isinstance(meta, dict) else None
     if not isinstance(signals, dict) or not signals:
-        return out  # let caller/validator decide how to handle "no mapping"
-
-    try:
-        from .signalname import parse_signal_name
-    except Exception:
-        parse_signal_name = None
-
-    def _is_base_match(col: str, base: str) -> bool:
-        if not isinstance(col, str):
-            return False
-        if parse_signal_name:
-            try:
-                parts = parse_signal_name(col)
-                return parts.base == base
-            except Exception:
-                return False
-        # If parse isn't available, don't guess — registry-only mode.
-        return False
+        return out
 
     def _find_col(pred):
         for col, info in signals.items():
@@ -173,18 +143,20 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
                 return col
         return None
 
-    # Engineered displacement for this sensor (any domain is OK; domain can be used later for tie-breaks)
+    # Engineered displacement for this sensor
     disp_col = _find_col(
-        lambda c, info: _is_base_match(c, sensor)
+        lambda c, info: info.get("sensor") == sensor
+        and info.get("quantity") == "disp"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm"
     )
     if disp_col:
         out["disp"] = disp_col
 
-    # Velocity & acceleration: base = f"{sensor}_vel"/"{sensor}_acc"
+    # Velocity & acceleration (registry knows these too)
     vel_col = _find_col(
-        lambda c, info: _is_base_match(c, f"{sensor}_vel")
+        lambda c, info: info.get("sensor") == sensor
+        and info.get("quantity") == "vel"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm/s"
     )
@@ -192,42 +164,54 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
         out["vel"] = vel_col
 
     acc_col = _find_col(
-        lambda c, info: _is_base_match(c, f"{sensor}_acc")
+        lambda c, info: info.get("sensor") == sensor
+        and info.get("quantity") == "acc"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm/s^2"
     )
     if acc_col:
         out["acc"] = acc_col
 
-    # Normalised displacement (friendly role name "disp_norm"):
-    # Under Option A, norm is an op-chain on the SAME base displacement, with unit "1".
-    # e.g. '<sensor>... [1]_op_zeroed_norm'
+    # Helper: subset op matching
+    def _has_ops(info: dict, required) -> bool:
+        ops = info.get("op_chain") or []
+        return set(required).issubset(set(ops))
+
+    # Normalised displacement role name "disp_norm"
+    # Prefer zeroed+norm if present, else allow plain norm.
     norm_col = _find_col(
-        lambda c, info: _is_base_match(c, sensor)
+        lambda c, info: info.get("sensor") == sensor
+        and info.get("quantity") in ("disp_norm", "disp")   # allow older registries
         and info.get("kind", "") == ""
         and info.get("unit") == "1"
-        and ("zeroed" in (info.get("op_chain") or []))
-        and ("norm"   in (info.get("op_chain") or []))
+        and _has_ops(info, ("zeroed", "norm"))
     )
+    if not norm_col:
+        norm_col = _find_col(
+            lambda c, info: info.get("sensor") == sensor
+            and info.get("quantity") in ("disp_norm", "disp")
+            and info.get("kind", "") == ""
+            and info.get("unit") == "1"
+            and _has_ops(info, ("norm",))
+        )
     if norm_col:
         out["disp_norm"] = norm_col
 
-
-    # Zeroed displacement:
-    # Prefer op_chain contains "zeroed" on the *same* base sensor displacement (unit mm).
+    # Zeroed displacement (optional): any displacement with 'zeroed' in op_chain
     zeroed_col = _find_col(
-        lambda c, info: _is_base_match(c, sensor)
+        lambda c, info: info.get("sensor") == sensor
+        and info.get("quantity") == "disp"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm"
-        and (info.get("op_chain") == ["zeroed"] or tuple(info.get("op_chain") or ()) == ("zeroed",))
-
+        and _has_ops(info, ("zeroed",))
     )
     if zeroed_col:
         out["disp_zeroed"] = zeroed_col
 
-    # Raw counts: kind="raw" and unit="counts"
+    # Raw counts (optional)
     raw_col = _find_col(
-        lambda c, info: _is_base_match(c, sensor)
+        lambda c, info: info.get("sensor") == sensor
+        and info.get("quantity") == "raw"
         and info.get("kind") == "raw"
         and info.get("unit") == "counts"
     )
