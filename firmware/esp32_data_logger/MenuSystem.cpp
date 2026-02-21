@@ -13,6 +13,8 @@
 #include "CalCapture.h"
 #include "WiFiManager.h"
 #include <WiFi.h>
+#include "RTCManager.h"
+
 #include <esp_system.h>   // esp_restart()
 
 
@@ -277,7 +279,7 @@ namespace {
         Serial.println("[Menu] Restarting via esp_restart()");
         Serial.flush();
         delay(150);
-
+        RTCManager_invalidateInternalTime();
         esp_restart(); // does not return
         break;
       }

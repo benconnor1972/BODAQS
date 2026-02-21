@@ -9,7 +9,9 @@ enum RTCSource {
     RTC_EXTERNAL
 };
 
-//void RTCManager_debugPrintTimes();
+// Invalidate ESP32 internal time so next boot forces SNTP/NTP to repopulate it.
+// Does not touch any external RTC (not implemented / not in use).
+void RTCManager_invalidateInternalTime();
 
 // Initialize RTC system
 void RTCManager_begin(RTCSource source = RTC_INTERNAL);

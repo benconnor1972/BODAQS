@@ -627,6 +627,15 @@ def _materialize_arrays_per_event(
 
     time_s = df["time_s"].to_numpy(dtype=np.float64)
 
+    # Estimate a global dt from the session timebase (must be positive)
+    if len(time_s) < 3:
+        raise ValueError("time_s has < 3 samples; cannot build segment grids")
+    dt_global = float(np.median(np.diff(time_s)))
+    if dt_global <= 0 or not np.isfinite(dt_global):
+        raise ValueError(f"Non-positive dt estimated from df.time_s: dt={dt_global}")
+
+    grid_idx = np.arange(n_expected, dtype=np.float64)
+
     seg_out_i = 0
     for _, seg in segments_df.iterrows():
         if not bool(seg.get("valid", True)):
@@ -649,13 +658,26 @@ def _materialize_arrays_per_event(
 
         copy_n = min(have, n_expected - left_pad)
 
+        # --- Build full finite grids first (no NaNs in t_rel_s) ---
         if output.include_time_s or output.include_t_rel_s:
-            t_slice = time_s[sl][:copy_n]
+            # time at column left_pad equals time_s[start_idx]
+            base_time0 = float(time_s[start_idx]) - left_pad * dt_global
             if output.include_time_s:
-                data["time_s"][seg_out_i, left_pad:left_pad + copy_n] = t_slice.astype(output.dtype, copy=False)
-            if output.include_t_rel_s:
-                data["t_rel_s"][seg_out_i, left_pad:left_pad + copy_n] = (t_slice - anchor_t).astype(output.dtype, copy=False)
+                data["time_s"][seg_out_i, :] = (base_time0 + grid_idx * dt_global).astype(output.dtype, copy=False)
 
+            if output.include_t_rel_s:
+                base_rel0 = (float(time_s[start_idx]) - anchor_t) - left_pad * dt_global
+                data["t_rel_s"][seg_out_i, :] = (base_rel0 + grid_idx * dt_global).astype(output.dtype, copy=False)
+
+            # Optionally overwrite the “have” region with exact timestamps (keeps perfect fidelity)
+            if copy_n > 0:
+                t_slice = time_s[sl][:copy_n]
+                if output.include_time_s:
+                    data["time_s"][seg_out_i, left_pad:left_pad + copy_n] = t_slice.astype(output.dtype, copy=False)
+                if output.include_t_rel_s:
+                    data["t_rel_s"][seg_out_i, left_pad:left_pad + copy_n] = (t_slice - anchor_t).astype(output.dtype, copy=False)
+
+        # --- Copy signal roles (still padded with NaN if requested) ---
         for role, col in role_to_col.items():
             x = df[col].to_numpy(dtype=output.dtype, copy=False)[sl][:copy_n]
             data[role][seg_out_i, left_pad:left_pad + copy_n] = x
@@ -663,6 +685,7 @@ def _materialize_arrays_per_event(
         seg_out_i += 1
 
     return data
+
 
 
 def _validate_df_timebase(df: pd.DataFrame) -> None:

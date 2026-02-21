@@ -169,7 +169,6 @@ def build_signals_registry(
                 "unit": unit,                 # string or None
                 "domain": domain,             # string or None
                 "op_chain": ops,              # list[str]
-                # NEW:
                 "sensor": sensor_id,          # e.g. rear_shock
                 "quantity": quantity,         # disp / vel / acc / disp_norm / raw
             }
@@ -195,7 +194,6 @@ def build_signals_registry(
                 "unit": None,
                 "domain": None,
                 "op_chain": [],
-                # NEW: cannot safely infer without parse
                 "sensor": None,
                 "quantity": None,
                 "notes": f"unparsed numeric column; needs normalization: {e}",
