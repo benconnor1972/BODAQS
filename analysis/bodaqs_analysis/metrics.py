@@ -164,7 +164,19 @@ def compute_metrics_from_segments(
 
 
     # Validate data shapes
-    t_rel = _get_t_rel_grid(data)
+    t_rel_2d = data.get("t_rel_s", None)
+    if not isinstance(t_rel_2d, np.ndarray) or t_rel_2d.ndim != 2:
+        raise ValueError("bundle.data['t_rel_s'] must be a 2D numpy array")
+
+    # Must match (n_seg, n_samp) shape contract
+    n_seg = len(seg_valid)
+    if t_rel_2d.shape[0] != n_seg:
+        raise ValueError(
+            f"bundle.data['t_rel_s'] has shape {t_rel_2d.shape}, expected first dim == n_valid_segments ({n_seg}). "
+            "This often indicates a transposed t_rel_s array."
+        )
+
+    t_rel = t_rel_2d[0].astype(np.float64, copy=False)
     dt_s = _estimate_dt(t_rel)
 
     # Ensure all role arrays have correct shape
@@ -401,10 +413,22 @@ def _get_t_rel_grid(data: Mapping[str, Any]) -> np.ndarray:
 def _estimate_dt(t_rel: np.ndarray) -> float:
     if t_rel.ndim != 1 or len(t_rel) < 3:
         raise ValueError("t_rel_s grid must be 1D with >= 3 samples")
-    dt = float(np.median(np.diff(t_rel)))
+
+    d = np.diff(t_rel.astype(np.float64, copy=False))
+    d_f = d[np.isfinite(d)]
+    if len(d_f) == 0:
+        raise ValueError("Non-finite dt estimated from t_rel_s (all diffs non-finite)")
+
+    dt = float(np.median(d_f))
     if dt <= 0 or not np.isfinite(dt):
-        raise ValueError("Non-positive dt estimated from t_rel_s")
+        raise ValueError(
+            "Non-positive dt estimated from t_rel_s. "
+            f"dt={dt}, "
+            f"t0={float(t_rel[0])}, tN={float(t_rel[-1])}, "
+            f"diff_min={float(np.nanmin(d_f))}, diff_med={float(np.nanmedian(d_f))}, diff_max={float(np.nanmax(d_f))}"
+        )
     return dt
+
 
 
 def _schema_event_def_for_bundle(events: pd.DataFrame, schema: Mapping[str, Any], *, strict: bool) -> Mapping[str, Any]:

@@ -41,4 +41,6 @@ _autosave-*
 **/fp-lib-table-bak
 *.cache
 */-backups/
+**/*-backups/
 To do/~$To do list.xlsx
+*.lck

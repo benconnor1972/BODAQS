@@ -9,6 +9,7 @@
 #include "ButtonBindingTable.h"
 #include "ConfigManager.h"
 #include "BoardSelect.h" 
+#include "WiFiManager.h"
 
 #ifndef BTN_DEBUG
 #define BTN_DEBUG 1
@@ -302,27 +303,49 @@ void ButtonActions::onMarkEvent(ButtonEvent event) {
 
 
 void ButtonActions::onWebServerToggle(ButtonEvent event) {
-  //if (event != BUTTON_PRESSED) return;
+  // Make this action strictly the "double press" action.
+  if (event != BUTTON_DOUBLE_CLICK) return;
 
+  // If web server is running, treat this as a full "WiFi off".
   if (WebServerManager::isRunning()) {
     WebServerManager::stop();
+    WiFiManager::disable();
     UI::println("Web server stopped.", "WiFi off", UI::TARGET_BOTH, UI::LVL_INFO, 2000);
     UI::status("Ready");
     return;
   }
 
+  // If we can't start (e.g. logging active), don't touch WiFi.
   if (!WebServerManager::canStart()) {
-    UI::println("Cannot start server while logging active or SD unavailable.", "Busy Logging", UI::TARGET_BOTH, UI::LVL_WARN);
+    UI::println("Cannot start server while logging active.", "Busy", UI::TARGET_BOTH, UI::LVL_WARN);
     return;
   }
 
-  if (WebServerManager::start()) {
-    UI::println(String("Web server at ") + WiFi.localIP().toString(), "WiFi on", UI::TARGET_BOTH, UI::LVL_INFO, 2000);        
-     
-  } else {
-    UI::println("Failed to start web server (WiFi or SD issue).", "WiFi fail", UI::TARGET_BOTH, UI::LVL_ERROR);
+  // Ensure WiFi is allowed and initiate a connection attempt.
+  if (!WiFiManager::isEnabled()) {
+    WiFiManager::enable();
   }
+
+  // If already connected, start the server immediately.
+  if (WiFi.status() == WL_CONNECTED) {
+    if (WebServerManager::start()) {
+      UI::println(String("Web server at ") + WiFi.localIP().toString(),
+                  "WiFi on", UI::TARGET_BOTH, UI::LVL_INFO, 2000);
+      UI::status("WiFi on");
+    } else {
+      // At this point WiFi is connected but server failed—this is a real failure.
+      UI::println("Failed to start web server.", "WS fail", UI::TARGET_BOTH, UI::LVL_ERROR);
+      UI::status("Ready");
+    }
+    return;
+  }
+
+  // Not connected yet: kick async connect and show "starting..."
+  WiFiManager::connectNow();
+  UI::println("Connecting WiFi...", "WiFi starting", UI::TARGET_BOTH, UI::LVL_INFO, 1500);
+  UI::status("WiFi...");
 }
+
 
 void ButtonActions::onNavUp(ButtonEvent event) {
   BLOG("[BTN] Up %s\n", evName(event));
