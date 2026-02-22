@@ -42,7 +42,7 @@ Sampling and recording sensor data is an engineering problem; deciding what it *
 
 Interpretation depends on your question: you might be trying to tune for a specific outcome or just to get within the wide window of "good enough" — and different questions call for different ways of looking at the same ride.
 
-BODAQS aims to sit between a black-box “just trust the result” tool and a blank page. The goal isn’t to provide instant answers for everyone, but to provide a guided, transparent framework that supports ambition and curiosity helps you build real understanding.
+BODAQS aims to sit between a black-box “just trust the result” tool and a blank page. The goal isn’t to provide instant answers for everyone, but to provide a guided, transparent framework that supports ambition and curiosity and helps you build real understanding.
 
 The analysis tooling is built in Python (a widely used language for data work), and is designed so you can use it as-is, adapt it to your own questions, and share improvements back with the community.
 
