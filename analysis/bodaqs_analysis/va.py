@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple, Union, List, Iterable
 
 import numpy as np
 import pandas as pd
+import math
 
 from .signalname import parse_signal_name, format_signal_name, SignalNameParts
 from .signalspec import DEFAULT_SPEC
@@ -116,7 +117,7 @@ def _savgol_numpy(y, window_points, poly_order, deriv, dt):
     x = np.arange(-half, half + 1, dtype=float)
     A = np.vander(x, N=poly_order + 1, increasing=True)  # columns: x^0..x^p
     pinv = np.linalg.pinv(A)
-    coeff = pinv[deriv, :] * np.math.factorial(deriv)     # derivative at x=0
+    coeff = pinv[deriv, :] * math.factorial(deriv)     # derivative at x=0
     scale = (dt ** (-deriv))
 
     # Reflect-pad

@@ -20,10 +20,9 @@ venv/
 .env
 .env.*
 
-# Data/outputs (keep dirs with .gitkeep if you need them visible)
-analysis/**/__*
+# Data/outputs (keep dirs with .gitkeep if you need them visible)\
 analysis/artifacts/*
-
+analysis/jupyter notebook
 logs/*
 *.parquet
 *.feather
