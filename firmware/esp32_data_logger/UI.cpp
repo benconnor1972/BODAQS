@@ -19,13 +19,21 @@ String   s_lastWifiSummary;
 static String makeWifiSummary_() {
   auto st = WiFiManager::status();
 
-  // Prefer link truth first
   if (st.wl == WL_CONNECTED) {
+    // Build the two strings we want to alternate between.
     String ssid = st.ssid.length() ? st.ssid : WiFi.SSID();
     if (!ssid.length()) ssid = "(connected)";
-    String ip   = WiFi.localIP().toString();
-    String rssi = String(st.rssi) + " dBm";
-    return "WiFi: " + ssid; // + " " + ip + " " + rssi;
+
+    String ip = WiFi.localIP().toString();
+    if (!ip.length() || ip == "0.0.0.0") ip = "(no ip)";
+
+    const String a = "WiFi: " + ssid;
+    const String b = "IP: "   + ip;
+
+    // Alternate once per second. Since UI::loop() already runs at 1 Hz,
+    // this will flip each time UI::loop() refreshes the status.
+    const bool showIp = ((millis() / 1000) & 0x1) != 0;
+    return showIp ? b : a;
   }
 
   // Otherwise reflect state machine
