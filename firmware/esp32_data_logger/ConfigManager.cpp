@@ -435,7 +435,8 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
       return true;
     }
 
-    if (!strcasecmp(sub, "static_ip")) {
+
+   if (!strcasecmp(sub, "static_ip")) {
       bool b;
       if (ConfigManager::parseBool(String(val), b)) w.staticIp = b;
       return true;
