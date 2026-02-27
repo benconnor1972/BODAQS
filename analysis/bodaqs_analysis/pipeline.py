@@ -9,7 +9,7 @@ import re
 
 from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
-from .va import estimate_va
+from .va import estimate_va, name_vel
 from .schema import load_event_schema
 from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df, compute_metrics_from_segments
@@ -20,23 +20,11 @@ from .signal_standardize import (
     canonicalize_signal_names,
     rebuild_and_validate_signal_registry,
 )
+from .signal_registry import build_signals_registry
 from .segment import extract_segments, SegmentRequest
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
-
-# ---- Activity mask (QC) ----
-# Hard-coded for now (per your preference)
-ACTIVE_SIGNAL_BASE_1 = "rear_shock_dom_suspension [mm]"  
-ACTIVE_SIGNAL_BASE_2 = "rear_shock_vel_dom_suspension [mm/s]"  
-ACTIVE_DISP_THRESH = 20.0
-ACTIVE_VEL_THRESH  = 50.0
-
-ACTIVE_WINDOW   = "500ms"  # rolling soften
-ACTIVE_PADDING  = "1s"     # expand active segments
-ACTIVE_MIN_SEG  = "3s"     # discard bursts shorter than this
-
 ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
-
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +73,39 @@ def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, 
     }
     return session
 
+def load_and_canonicalize(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Step 1 helper for notebooks/UI:
+      - load session
+      - canonicalize signal names (best effort, inferred from column units)
+      - build signals registry (so we can list displacement signals)
+    Does NOT require normalize_ranges.
+    """
+    session = load_session(csv_path, timezone=timezone)
+
+    # Infer units from column headers like "... [mm]"
+    df = session["df"]
+    units_by_col: Dict[str, str] = {}
+    for c in df.columns:
+        m = _UNIT_RE.search(str(c))
+        if m:
+            u = (m.group(1) or "").strip()
+            if u:
+                units_by_col[str(c)] = u
+
+    # Conservative domain mapping (can expand later)
+    domain_by_base = {"front_shock": "suspension", "rear_shock": "suspension"}
+
+    session = canonicalize_signal_names(
+        session,
+        units_by_base=units_by_col,   # note: mapping is by *column name* in your current pipeline :contentReference[oaicite:3]{index=3}
+        domain_by_base=domain_by_base,
+    )
+
+    # Populate session["meta"]["signals"] with quantity="disp"/"vel"/... etc.
+    session = build_signals_registry(session, strict=False)
+    return session
+    
 def _build_active_mask_from_time_s(
     df: pd.DataFrame,
     *,
@@ -158,10 +179,19 @@ def preprocess_session(session: Dict[str, Any],
                        sample_rate_hz: Optional[float] = None,
                        zeroing_enabled: bool = True,
                        zero_window_s: float = 1.0,
+                       zero_min_samples: int = 10,
                        clip_0_1: bool = False,
+                       active_signal_disp_col: Optional[str] = None,
+                       active_signal_vel_col: Optional[str] = None,
+                       active_disp_thresh: float = 20,
+                       active_vel_thresh: float = 50,
+                       active_window: str = "500ms",
+                       active_padding: str = "1s",
+                       active_min_seg: str = "3s",
                        va_cols: Optional[Sequence[str]] = None,
                        va_window_points: int = 11,
                        va_poly_order: int = 3) -> Dict[str, Any]:
+    
     """Normalize, zero + compute velocity/acceleration."""
     df = session["df"].copy()
 
@@ -169,17 +199,24 @@ def preprocess_session(session: Dict[str, Any],
     qc = session.setdefault("qc", {})
     transforms = qc.setdefault("transforms", {})
 
-    # ---------------- Signals: canonicalize base names early ----------------
-    units_by_base = {k: "mm" for k in normalize_ranges.keys()}
+    # ---------------- Signals: canonicalize names early (no dependency on normalize_ranges) ----------------
+    units_by_col: Dict[str, str] = {}
+    for c in df.columns:
+        m = _UNIT_RE.search(str(c))
+        if m:
+            u = (m.group(1) or "").strip()
+            if u:
+                units_by_col[str(c)] = u
+
     domain_by_base = {"front_shock": "suspension", "rear_shock": "suspension"}
 
-    session["df"] = df  # ensure session df is current
+    session["df"] = df
     session = canonicalize_signal_names(
         session,
-        units_by_base=units_by_base,
+        units_by_base=units_by_col,
         domain_by_base=domain_by_base,
     )
-    df = session["df"]  # refresh local df after rename
+    df = session["df"]  
 
     # ---------------- Normalize / zero / scale ----------------
     df2, norm_meta = normalize_and_scale(
@@ -235,6 +272,10 @@ def preprocess_session(session: Dict[str, Any],
     if va_cols is None:
         va_cols = list(normalize_ranges.keys())
 
+    # Ensure VA is computed for the activity-mask displacement signal if provided
+    if active_signal_disp_col and (active_signal_disp_col not in set(va_cols)):
+        va_cols = list(va_cols) + [active_signal_disp_col]
+
     df3, va_meta = estimate_va(
         df2,
         cols=list(va_cols),
@@ -249,18 +290,20 @@ def preprocess_session(session: Dict[str, Any],
     # Derive companion columns from ACTIVE_SIGNAL_BASE
     # Assumes your VA naming convention appends "_vel" to the signal column name.
     # Adjust vel_col derivation if your VA uses a different convention.
-    disp_col = ACTIVE_SIGNAL_BASE_1
-    vel_col = ACTIVE_SIGNAL_BASE_2
 
+    # If user specified only displacement for activity mask, derive the velocity name
+    if active_signal_disp_col and not active_signal_vel_col:
+        active_signal_vel_col = name_vel(active_signal_disp_col)
+    
     active_mask = _build_active_mask_from_time_s(
         session["df"],
-        disp_col=disp_col,
-        vel_col=vel_col,
-        disp_thresh=ACTIVE_DISP_THRESH,
-        vel_thresh=ACTIVE_VEL_THRESH,
-        window=ACTIVE_WINDOW,
-        padding=ACTIVE_PADDING,
-        min_segment=ACTIVE_MIN_SEG,
+        disp_col=active_signal_disp_col,
+        vel_col=active_signal_vel_col,
+        disp_thresh=active_disp_thresh,
+        vel_thresh=active_vel_thresh,
+        window=active_window,
+        padding=active_padding,
+        min_segment=active_min_seg,
     )
 
     # Store as QC column (won't be in registry signals)
@@ -272,13 +315,13 @@ def preprocess_session(session: Dict[str, Any],
     qc["activity_mask"] = {
         "applied": True,
         "mask_col": ACTIVE_MASK_COL,
-        "disp_col": disp_col,
-        "vel_col": vel_col,
-        "disp_thresh": float(ACTIVE_DISP_THRESH),
-        "vel_thresh": float(ACTIVE_VEL_THRESH),
-        "window": str(ACTIVE_WINDOW),
-        "padding": str(ACTIVE_PADDING),
-        "min_segment": str(ACTIVE_MIN_SEG),
+        "disp_col": active_signal_disp_col,
+        "vel_col": active_signal_vel_col,
+        "disp_thresh": float(active_disp_thresh),
+        "vel_thresh": float(active_vel_thresh),
+        "window": str(active_window),
+        "padding": str(active_padding),
+        "min_segment": str(active_min_seg),
         "logic": "disp&vel",
         "version": "v0",
     }
@@ -322,6 +365,16 @@ def run_macro(
     schema_path: str,
     *,
     zeroing_enabled: bool = True,
+    zero_window_s: float = 1,
+    zero_min_samples: int = 10,
+    clip_0_1: bool = False,
+    active_signal_disp_col: [str] = None,
+    active_signal_vel_col: [str] = None,
+    active_disp_thresh: float = 20,
+    active_vel_thresh: float = 50,
+    active_window: str = "500ms",
+    active_padding: str = "1s",
+    active_min_seg: str = "3s",
     normalize_ranges: Dict[str, float],
     sample_rate_hz: Optional[float] = None,
     timezone: Optional[str] = None,
@@ -341,6 +394,16 @@ def run_macro(
         normalize_ranges=normalize_ranges,
         sample_rate_hz=sample_rate_hz,
         zeroing_enabled=zeroing_enabled,
+        zero_window_s=zero_window_s,
+        zero_min_samples=zero_min_samples,
+        clip_0_1=clip_0_1,
+        active_signal_disp_col=active_signal_disp_col,
+        active_signal_vel_col=active_signal_vel_col,
+        active_disp_thresh=active_disp_thresh,
+        active_vel_thresh=active_vel_thresh,
+        active_window=active_window,
+        active_padding=active_padding,
+        active_min_seg=active_min_seg,
     )
     logger.info("Session pre-process complete")
 
