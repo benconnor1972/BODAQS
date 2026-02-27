@@ -23,8 +23,8 @@ venv/
 # Data/outputs (keep dirs with .gitkeep if you need them visible)\
 analysis/artifacts/*
 analysis/jupyter notebook
-analysis_old/*
-analysis/old/*
+analysis_old/
+analysis/old/
 analysis/tests/*
 logs/*
 *.parquet
