@@ -23,20 +23,7 @@ from .signal_standardize import (
 from .segment import extract_segments, SegmentRequest
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
-
-# ---- Activity mask (QC) ----
-# Hard-coded for now (per your preference)
-ACTIVE_SIGNAL_BASE_1 = "rear_shock_dom_suspension [mm]"  
-ACTIVE_SIGNAL_BASE_2 = "rear_shock_vel_dom_suspension [mm/s]"  
-ACTIVE_DISP_THRESH = 20.0
-ACTIVE_VEL_THRESH  = 50.0
-
-ACTIVE_WINDOW   = "500ms"  # rolling soften
-ACTIVE_PADDING  = "1s"     # expand active segments
-ACTIVE_MIN_SEG  = "3s"     # discard bursts shorter than this
-
 ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
-
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +145,19 @@ def preprocess_session(session: Dict[str, Any],
                        sample_rate_hz: Optional[float] = None,
                        zeroing_enabled: bool = True,
                        zero_window_s: float = 1.0,
+                       zero_min_samples: int = 10,
                        clip_0_1: bool = False,
+                       active_signal_disp_col: Optional[bool] = None,
+                       active_signal_vel_col: Optional[bool] = None,
+                       active_disp_thresh: float = 20,
+                       active_vel_thresh: float = 50,
+                       active_window: str = "500ms",
+                       active_padding: str = "1s",
+                       active_min_seg: str = "3s",
                        va_cols: Optional[Sequence[str]] = None,
                        va_window_points: int = 11,
                        va_poly_order: int = 3) -> Dict[str, Any]:
+    
     """Normalize, zero + compute velocity/acceleration."""
     df = session["df"].copy()
 
@@ -249,18 +245,16 @@ def preprocess_session(session: Dict[str, Any],
     # Derive companion columns from ACTIVE_SIGNAL_BASE
     # Assumes your VA naming convention appends "_vel" to the signal column name.
     # Adjust vel_col derivation if your VA uses a different convention.
-    disp_col = ACTIVE_SIGNAL_BASE_1
-    vel_col = ACTIVE_SIGNAL_BASE_2
 
     active_mask = _build_active_mask_from_time_s(
         session["df"],
-        disp_col=disp_col,
-        vel_col=vel_col,
-        disp_thresh=ACTIVE_DISP_THRESH,
-        vel_thresh=ACTIVE_VEL_THRESH,
-        window=ACTIVE_WINDOW,
-        padding=ACTIVE_PADDING,
-        min_segment=ACTIVE_MIN_SEG,
+        disp_col=active_signal_disp_col,
+        vel_col=active_signal_vel_col,
+        disp_thresh=active_disp_thresh,
+        vel_thresh=active_vel_thresh,
+        window=active_window,
+        padding=active_padding,
+        min_segment=active_min_seg,
     )
 
     # Store as QC column (won't be in registry signals)
@@ -272,13 +266,13 @@ def preprocess_session(session: Dict[str, Any],
     qc["activity_mask"] = {
         "applied": True,
         "mask_col": ACTIVE_MASK_COL,
-        "disp_col": disp_col,
-        "vel_col": vel_col,
-        "disp_thresh": float(ACTIVE_DISP_THRESH),
-        "vel_thresh": float(ACTIVE_VEL_THRESH),
-        "window": str(ACTIVE_WINDOW),
-        "padding": str(ACTIVE_PADDING),
-        "min_segment": str(ACTIVE_MIN_SEG),
+        "disp_col": active_signal_disp_col,
+        "vel_col": active_signal_vel_col,
+        "disp_thresh": float(active_disp_thresh),
+        "vel_thresh": float(active_vel_thresh),
+        "window": str(active_window),
+        "padding": str(active_padding),
+        "min_segment": str(active_min_seg),
         "logic": "disp&vel",
         "version": "v0",
     }
@@ -322,6 +316,16 @@ def run_macro(
     schema_path: str,
     *,
     zeroing_enabled: bool = True,
+    zero_window_s: float = 1,
+    zero_min_samples: int = 10,
+    clip_0_1: bool = False,
+    active_signal_disp_col: [bool] = None,
+    active_signal_vel_col: [bool] = None,
+    active_disp_thresh: float = 20,
+    active_vel_thresh: float = 50,
+    active_window: str = "500ms",
+    active_padding: str = "1s",
+    active_min_seg: str = "3s",
     normalize_ranges: Dict[str, float],
     sample_rate_hz: Optional[float] = None,
     timezone: Optional[str] = None,
@@ -341,6 +345,16 @@ def run_macro(
         normalize_ranges=normalize_ranges,
         sample_rate_hz=sample_rate_hz,
         zeroing_enabled=zeroing_enabled,
+        zero_window_s=zero_window_s,
+        zero_min_samples=zero_min_samples,
+        clip_0_1=clip_0_1,
+        active_signal_disp_col=active_signal_disp_col,
+        active_signal_vel_col=active_signal_vel_col,
+        active_disp_thresh=active_disp_thresh,
+        active_vel_thresh=active_vel_thresh,
+        active_window=active_window,
+        active_padding=active_padding,
+        active_min_seg=active_min_seg,
     )
     logger.info("Session pre-process complete")
 
