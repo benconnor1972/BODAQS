@@ -9,7 +9,7 @@ import re
 
 from .io_logger import load_logger_csv, parse_run_stats_footer
 from .normalize import normalize_and_scale
-from .va import estimate_va
+from .va import estimate_va, name_vel
 from .schema import load_event_schema
 from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df, compute_metrics_from_segments
@@ -20,6 +20,7 @@ from .signal_standardize import (
     canonicalize_signal_names,
     rebuild_and_validate_signal_registry,
 )
+from .signal_registry import build_signals_registry
 from .segment import extract_segments, SegmentRequest
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
@@ -72,6 +73,39 @@ def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, 
     }
     return session
 
+def load_and_canonicalize(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Step 1 helper for notebooks/UI:
+      - load session
+      - canonicalize signal names (best effort, inferred from column units)
+      - build signals registry (so we can list displacement signals)
+    Does NOT require normalize_ranges.
+    """
+    session = load_session(csv_path, timezone=timezone)
+
+    # Infer units from column headers like "... [mm]"
+    df = session["df"]
+    units_by_col: Dict[str, str] = {}
+    for c in df.columns:
+        m = _UNIT_RE.search(str(c))
+        if m:
+            u = (m.group(1) or "").strip()
+            if u:
+                units_by_col[str(c)] = u
+
+    # Conservative domain mapping (can expand later)
+    domain_by_base = {"front_shock": "suspension", "rear_shock": "suspension"}
+
+    session = canonicalize_signal_names(
+        session,
+        units_by_base=units_by_col,   # note: mapping is by *column name* in your current pipeline :contentReference[oaicite:3]{index=3}
+        domain_by_base=domain_by_base,
+    )
+
+    # Populate session["meta"]["signals"] with quantity="disp"/"vel"/... etc.
+    session = build_signals_registry(session, strict=False)
+    return session
+    
 def _build_active_mask_from_time_s(
     df: pd.DataFrame,
     *,
@@ -147,8 +181,8 @@ def preprocess_session(session: Dict[str, Any],
                        zero_window_s: float = 1.0,
                        zero_min_samples: int = 10,
                        clip_0_1: bool = False,
-                       active_signal_disp_col: Optional[bool] = None,
-                       active_signal_vel_col: Optional[bool] = None,
+                       active_signal_disp_col: Optional[str] = None,
+                       active_signal_vel_col: Optional[str] = None,
                        active_disp_thresh: float = 20,
                        active_vel_thresh: float = 50,
                        active_window: str = "500ms",
@@ -165,17 +199,24 @@ def preprocess_session(session: Dict[str, Any],
     qc = session.setdefault("qc", {})
     transforms = qc.setdefault("transforms", {})
 
-    # ---------------- Signals: canonicalize base names early ----------------
-    units_by_base = {k: "mm" for k in normalize_ranges.keys()}
+    # ---------------- Signals: canonicalize names early (no dependency on normalize_ranges) ----------------
+    units_by_col: Dict[str, str] = {}
+    for c in df.columns:
+        m = _UNIT_RE.search(str(c))
+        if m:
+            u = (m.group(1) or "").strip()
+            if u:
+                units_by_col[str(c)] = u
+
     domain_by_base = {"front_shock": "suspension", "rear_shock": "suspension"}
 
-    session["df"] = df  # ensure session df is current
+    session["df"] = df
     session = canonicalize_signal_names(
         session,
-        units_by_base=units_by_base,
+        units_by_base=units_by_col,
         domain_by_base=domain_by_base,
     )
-    df = session["df"]  # refresh local df after rename
+    df = session["df"]  
 
     # ---------------- Normalize / zero / scale ----------------
     df2, norm_meta = normalize_and_scale(
@@ -231,6 +272,10 @@ def preprocess_session(session: Dict[str, Any],
     if va_cols is None:
         va_cols = list(normalize_ranges.keys())
 
+    # Ensure VA is computed for the activity-mask displacement signal if provided
+    if active_signal_disp_col and (active_signal_disp_col not in set(va_cols)):
+        va_cols = list(va_cols) + [active_signal_disp_col]
+
     df3, va_meta = estimate_va(
         df2,
         cols=list(va_cols),
@@ -246,6 +291,10 @@ def preprocess_session(session: Dict[str, Any],
     # Assumes your VA naming convention appends "_vel" to the signal column name.
     # Adjust vel_col derivation if your VA uses a different convention.
 
+    # If user specified only displacement for activity mask, derive the velocity name
+    if active_signal_disp_col and not active_signal_vel_col:
+        active_signal_vel_col = name_vel(active_signal_disp_col)
+    
     active_mask = _build_active_mask_from_time_s(
         session["df"],
         disp_col=active_signal_disp_col,
@@ -319,8 +368,8 @@ def run_macro(
     zero_window_s: float = 1,
     zero_min_samples: int = 10,
     clip_0_1: bool = False,
-    active_signal_disp_col: [bool] = None,
-    active_signal_vel_col: [bool] = None,
+    active_signal_disp_col: [str] = None,
+    active_signal_vel_col: [str] = None,
     active_disp_thresh: float = 20,
     active_vel_thresh: float = 50,
     active_window: str = "500ms",

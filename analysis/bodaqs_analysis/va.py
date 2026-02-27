@@ -8,6 +8,17 @@ import math
 from .signalname import parse_signal_name, format_signal_name, SignalNameParts
 from .signalspec import DEFAULT_SPEC
 
+
+# ---- Public helpers (stable contract) ---------------------------------
+
+def name_vel(col: str) -> str:
+    """Return the canonical velocity column name derived from an engineered [mm] displacement column."""
+    return _name_vel(col)
+
+def name_acc(col: str) -> str:
+    """Return the canonical acceleration column name derived from an engineered [mm] displacement column."""
+    return _name_acc(col)
+    
 # Optional SciPy: used for Savitzky–Golay smoothing if available
 try:
     from scipy.signal import savgol_filter  # type: ignore
