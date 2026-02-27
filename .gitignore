@@ -26,6 +26,9 @@ analysis/jupyter notebook
 analysis_old/
 analysis/old/
 analysis/tests/*
+analysis/documentation/old versions/*
+analysis/event schema/old versions/*
+firmware/libraries/*
 logs/*
 *.parquet
 *.feather
