@@ -44,52 +44,22 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .buttons = {
     .btn = {
       // button0.id=nav_up,   pin=6, mode=poll
-      { .id="nav_up",
-        .present=true,
-        .pin=6,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_up",    true, 6, 1, true,  true },
 
       // button1.id=nav_down, pin=7, mode=poll
-      { .id="nav_down",
-        .present=true,
-        .pin=7,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_down",  true, 7, 1, true,  true },
 
-      // button2.id=nav_left, pin=4, mode=poll
-      { .id="nav_left",
-        .present=true,
-        .pin=5,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      // button2.id=nav_left, pin=5, mode=poll
+      { "nav_left",  true, 5, 1, true,  true },
 
-      // button3.id=nav_right, pin=5, mode=poll
-      { .id="nav_right",
-        .present=true,
-        .pin=4,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      // button3.id=nav_right, pin=4, mode=poll
+      { "nav_right", true, 4, 1, true,  true },
 
       // button4.id=nav_enter, pin=21, mode=interrupt
-      { .id="nav_enter",
-        .present=true,
-        .pin=21,
-        .mode=0,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_enter", true, 21, 0, true,  true },
 
       // button5.id=mark, pin=2, mode=interrupt
-      { .id="mark",
-        .present=true,
-        .pin=2,
-        .mode=0,
-        .active_low=false,
-        .use_internal_pullup=true },
+      { "mark",      true, 2, 0, false, true },
     },
     .count = 6,
   },
@@ -173,55 +143,25 @@ static const BoardProfile THING_PLUS_A = {
     .rst = -1
   },
 
-  .buttons = {
+    .buttons = {
     .btn = {
       // button0.id=nav_up,   pin=32, mode=poll
-      { .id="nav_up",
-        .present=true,
-        .pin=32,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_up",    true, 32, 1, true, true },
 
       // button1.id=nav_down, pin=15, mode=poll
-      { .id="nav_down",
-        .present=true,
-        .pin=15,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_down",  true, 15, 1, true, true },
 
       // button2.id=nav_left, pin=12, mode=poll
-      { .id="nav_left",
-        .present=true,
-        .pin=12,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_left",  true, 12, 1, true, true },
 
       // button3.id=nav_right, pin=33, mode=poll
-      { .id="nav_right",
-        .present=true,
-        .pin=33,
-        .mode=1,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_right", true, 33, 1, true, true },
 
       // button4.id=nav_enter, pin=13, mode=interrupt
-      { .id="nav_enter",
-        .present=true,
-        .pin=13,
-        .mode=0,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "nav_enter", true, 13, 0, true, true },
 
       // button5.id=mark, pin=14, mode=interrupt
-      { .id="mark",
-        .present=true,
-        .pin=14,
-        .mode=0,
-        .active_low=true,
-        .use_internal_pullup=true },
+      { "mark",      true, 14, 0, true, true },
     },
     .count = 6,
   },

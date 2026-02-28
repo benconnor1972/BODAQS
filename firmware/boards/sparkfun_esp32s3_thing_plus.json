@@ -1,0 +1,32 @@
+{
+  "name": "SparkFun ESP32-S3 Thing Plus (custom)",
+  "vendor": "SparkFun",
+  "url": "https://www.sparkfun.com/",
+  "platform": "espressif32",
+  "frameworks": ["arduino"],
+
+  "hardware": {
+    "flash": 4194304,
+    "ram": 327680
+  },
+
+  "build": {
+    "core": "esp32",
+    "mcu": "esp32s3",
+    "f_cpu": "240000000L",
+    "f_flash": "80000000L",
+    "flash_mode": "dio",
+    "variant": "sparkfun_esp32s3_thing_plus",
+    "extra_flags": [
+      "-DSPARKFUN_ESP32S3_THING_PLUS"
+    ]
+  },
+
+  "upload": {
+    "flash_size": "4MB",
+    "maximum_size": 1310720,
+    "maximum_ram_size": 327680,
+    "require_upload_port": true,
+    "speed": 921600
+  }
+}

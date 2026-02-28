@@ -38,8 +38,11 @@ struct CalibrationState {
 
 // -------- Output policy --------
 struct OutputConfig {
-  OutputMode primary   = OutputMode::RAW;
+  OutputMode primary    = OutputMode::RAW;
   bool       includeRaw = false;
+
+  constexpr OutputConfig() = default;
+  constexpr OutputConfig(OutputMode m, bool include) : primary(m), includeRaw(include) {}
 };
 
 // -------- RAW smoothing config (pre-transform) --------
