@@ -1,11 +1,15 @@
 #include "ButtonBindingTable.h"
 #include "ButtonActions.h"
 #include <string.h>
-#include <Arduino.h>   // for Serial (optional; remove if you don't want logging)
+#include <Arduino.h>
 #include "BoardProfile.h"
-#include "BoardSelect.h"    // declares board::gBoard
+#include "BoardSelect.h"
+#include "DebugLog.h"
 
 using ButtonActions::ActionId;
+
+#define BTN_TABLE_LOGW(...) LOGW_TAG("BTN", __VA_ARGS__)
+#define BTN_TABLE_LOGI(...) LOGI_TAG("BTN", __VA_ARGS__)
 
 namespace {
 
@@ -101,7 +105,7 @@ void ButtonBindingTable::initFromConfig(const LoggerConfig& cfg) {
     }
 
     if (s_bindingCount >= MAX_BUTTON_BINDINGS) {
-      Serial.println(F("[BTN] Binding table full; extra bindings skipped."));
+      BTN_TABLE_LOGW("Binding table full; extra bindings skipped.\n");
       break;
     }
 
@@ -111,8 +115,8 @@ void ButtonBindingTable::initFromConfig(const LoggerConfig& cfg) {
     r.action      = act;
   }
 
-  Serial.printf("[BTN] ButtonBindingTable: %u binding(s) loaded\n",
-                (unsigned)s_bindingCount);
+  BTN_TABLE_LOGI("ButtonBindingTable: %u binding(s) loaded\n",
+                 (unsigned)s_bindingCount);
 }
 
 void ButtonBindingTable::handleButtonEvent(uint8_t buttonIndex, ButtonEvent ev) {

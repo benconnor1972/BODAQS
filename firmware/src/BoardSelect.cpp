@@ -1,6 +1,7 @@
 #include "BoardSelect.h"
 #include <ctype.h> 
 #include <Arduino.h>
+#include "DebugLog.h"
 
 namespace board {
 
@@ -40,26 +41,25 @@ namespace board {
 
   void DumpActiveBoardButtons() {
     if (!gBoard) {
-      Serial.println("[Board] gBoard=null");
+      LOGW_TAG("Board", "gBoard=null\n");
       return;
     }
 
     const auto& bp = *gBoard;
-    Serial.print("[Board] Active profile: ");
-    Serial.println(bp.name ? bp.name : "(null)");
+    LOGI_TAG("Board", "Active profile: %s\n", bp.name ? bp.name : "(null)");
 
-    Serial.println("[Board] Buttons:");
+    LOGI_TAG("Board", "Buttons:\n");
     for (uint8_t i = 0; i < bp.buttons.count; ++i) {
       const auto& b = bp.buttons.btn[i];
       if (!b.present) continue;
 
-      Serial.printf("  %u %-12s pin=%d mode=%s active_low=%u pullup=%u\n",
-                    (unsigned)i,
-                    b.id,
-                    (int)b.pin,
-                    (b.mode == 1) ? "poll" : "interrupt",
-                    (unsigned)b.active_low,
-                    (unsigned)b.use_internal_pullup);
+      LOGI("  %u %-12s pin=%d mode=%s active_low=%u pullup=%u\n",
+           (unsigned)i,
+           b.id,
+           (int)b.pin,
+           (b.mode == 1) ? "poll" : "interrupt",
+           (unsigned)b.active_low,
+           (unsigned)b.use_internal_pullup);
     }
   }
 

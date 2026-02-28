@@ -4,10 +4,19 @@
 #include "MenuSystem.h"
 #include "WiFiManager.h"
 #include "PowerManager.h"
+#include "DebugLog.h"
 #include <WiFi.h>   // for WiFi.SSID() and WiFi.localIP()
 #include <time.h>
 
-
+static LogLevel uiLevelToLogLevel_(uint8_t level) {
+  switch (level) {
+    case UI::LVL_ERROR: return LOG_ERROR;
+    case UI::LVL_WARN:  return LOG_WARN;
+    case UI::LVL_INFO:  return LOG_INFO;
+    case UI::LVL_DEBUG: return LOG_DEBUG;
+    default:            return LOG_INFO;
+  }
+}
 
 static uint8_t s_target       = UI::TARGET_SERIAL; // 1=serial,2=oled,3=both
 static uint8_t s_serialLevel  = UI::LVL_INFO;      // only print if cfg level >= msg level
@@ -139,7 +148,7 @@ void UI::println(const String& serialText, const String& oledText, uint8_t targe
   uint8_t tgt = (targets == TARGET_DEFAULT) ? s_target : targets;
 
   if ((tgt & TARGET_SERIAL) && s_serialLevel >= level && serialText.length()) {
-    Serial.println(serialText);
+    Log_println(uiLevelToLogLevel_(level), serialText.c_str());
   }
   if ((tgt & TARGET_OLED) && s_oledLevel >= level && oledText.length() && DisplayManager::available()) {
     DisplayManager::toast(oledText, oledToastMs);
@@ -157,8 +166,7 @@ void UI::status(const String& line) {
   if (DisplayManager::available()) {
     DisplayManager::setStatusLine(line);
   }
-  // Optional: also mirror to Serial at debug level
-  // Serial.println(String("[STATUS] ") + line);
+  // Optional: also mirror to the logger at debug level.
 }
 
 void UI::toast(const String& oledText, uint16_t durationMs) {

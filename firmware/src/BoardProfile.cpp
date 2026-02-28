@@ -111,8 +111,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
   .perf = {
     // Reasonable defaults; tweak per board / PSRAM availability / SD speed.
-    .queue_depth = 1024,
-    .ring_buffer_bytes = 65536
+    .queue_depth = 256,
+    .ring_buffer_bytes = 32768
   }
 };
 

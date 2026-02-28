@@ -8,6 +8,9 @@
 #include "WebServerManager.h"
 #include "DisplayManager.h"
 #include "StorageManager.h"    // if you have a flush/close; otherwise remove
+#include "DebugLog.h"
+
+#define PWR_LOGI(...) LOGI_TAG("PWR", __VA_ARGS__)
 
 // ---------------- Existing CPU-freq logic ----------------
 static uint32_t g_prevCpuFreqMhz = 240;    // default / compile-time expectation
@@ -119,8 +122,7 @@ void PowerManager::sleepOnEnterEXT0()
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_ext0_wakeup(WAKE_PIN, WAKE_LEVEL);
 
-  Serial.println("[PWR] Deep sleep (EXT0 on GPIO13, wake on LOW)...");
-  Serial.flush();
+  PWR_LOGI("Deep sleep (EXT0 on GPIO13, wake on LOW)...\n");
   delay(50);
 
   esp_deep_sleep_start();

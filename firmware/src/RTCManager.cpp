@@ -3,7 +3,12 @@
 #include <time.h>
 #include <stdlib.h>  // for getenv (only needed if you keep the TZ print)
 #include <sys/time.h>  // settimeofday
+#include "DebugLog.h"
 
+#define RTC_LOGE(...) LOGE_TAG("RTC", __VA_ARGS__)
+#define RTC_LOGW(...) LOGW_TAG("RTC", __VA_ARGS__)
+#define RTC_LOGI(...) LOGI_TAG("RTC", __VA_ARGS__)
+#define RTC_LOGD(...) LOGD_TAG("RTC", __VA_ARGS__)
 
 // For external RTC (stub now, add DS3231 later)
 #include <Wire.h>
@@ -29,7 +34,7 @@ bool RTCManager_hasValidTime() {
 bool RTCManager_waitForSNTP(uint32_t timeout_ms) {
   const uint32_t deadline = millis() + timeout_ms;
   // Consider anything >= 2020-01-01 as "valid"
-  const time_t sane = 1577836800;  
+  const time_t sane = 1577836800;
   time_t now = 0;
 
   while ((int32_t)(millis() - deadline) < 0) {
@@ -40,10 +45,10 @@ bool RTCManager_waitForSNTP(uint32_t timeout_ms) {
     static uint32_t nextLog = 0;
     if ((int32_t)(millis() - nextLog) >= 0) {
       nextLog = millis() + 1000;
-      Serial.printf("[RTC] Waiting SNTP… WiFi OK, RSSI %d\n", WiFi.RSSI());
+      RTC_LOGI("Waiting SNTP... WiFi OK, RSSI %d\n", WiFi.RSSI());
     }
   }
-  Serial.println("[RTC] NTP: timeout waiting for SNTP.");
+  RTC_LOGW("NTP: timeout waiting for SNTP.\n");
   return false;
 }
 
@@ -56,7 +61,7 @@ void RTCManager_begin(RTCSource source) {
     Wire.begin();
     // externalRTC.begin(); // Uncomment for DS3231
     // if (!externalRTC.isrunning()) {
-    //     Serial.println("RTC not running, setting to compile time.");
+    //     RTC_LOGI("RTC not running, setting to compile time.\n");
     //     externalRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
     // }
   } else {
@@ -109,7 +114,7 @@ String RTCManager_getFastTimestamp() {
     uint64_t epochMs = RTCManager_getEpochMs();
 
     if (!useHumanReadableTimestamps) {
-        // IMPORTANT: String(uint64_t) can be flaky — format explicitly:
+        // IMPORTANT: String(uint64_t) can be flaky - format explicitly:
         char buf[24];
         snprintf(buf, sizeof(buf), "%llu", (unsigned long long)epochMs);
         return String(buf);
@@ -182,6 +187,5 @@ void RTCManager_invalidateInternalTime() {
   baseEpoch  = 0;
   lastSyncMs = 0;
 
-  Serial.println("[RTC] Internal time invalidated (epoch=0). Next boot should require SNTP.");
+  RTC_LOGI("Internal time invalidated (epoch=0). Next boot should require SNTP.\n");
 }
-

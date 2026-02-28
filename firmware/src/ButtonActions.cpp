@@ -10,15 +10,9 @@
 #include "ConfigManager.h"
 #include "BoardSelect.h" 
 #include "WiFiManager.h"
+#include "DebugLog.h"
 
-#ifndef BTN_DEBUG
-#define BTN_DEBUG 1
-#endif
-#if BTN_DEBUG
-  #define BLOG(...)  do { Serial.printf(__VA_ARGS__); } while (0)
-#else
-  #define BLOG(...)  do {} while (0)
-#endif
+#define BLOG(...) LOGD_TAG("BTN", __VA_ARGS__)
 
 static const char* evName(ButtonEvent e) {
   switch (e) {
@@ -119,7 +113,7 @@ namespace {
       r.action      = act;
     }
 
-    Serial.printf("[BTN] Loaded %u button bindings from config\n", (unsigned)s_bindingCount);
+    LOGI_TAG("BTN", "Loaded %u button bindings from config\n", (unsigned)s_bindingCount);
   }
 
   // Dispatch from (buttonIndex, event) -> one or more actions
@@ -155,12 +149,12 @@ namespace {
 void ButtonActions::begin() {
   const LoggerConfig& cfg = ConfigManager::get();
 
-  Serial.println("[BTN] Initializing buttons from config:");
+  LOGI_TAG("BTN", "Initializing buttons from config:\n");
   const uint8_t boardCount = (board::gBoard) ? board::gBoard->buttons.count : 0;
-  Serial.printf("  boardButtons=%u bindingCount=%u debounce=%u ms\n",
-                (unsigned)boardCount,
-                (unsigned)cfg.buttonBindingCount,
-                (unsigned)cfg.debounceMs);
+  LOGI("  boardButtons=%u bindingCount=%u debounce=%u ms\n",
+       (unsigned)boardCount,
+       (unsigned)cfg.buttonBindingCount,
+       (unsigned)cfg.debounceMs);
 
 
   initBindingsFromConfig_(cfg);
@@ -180,7 +174,7 @@ void ButtonActions::registerButtons() {
   const LoggerConfig& cfg = ConfigManager::get();
 
   if (!board::gBoard) {
-    Serial.println("[BTN] ERROR: no active board profile (gBoard is null)");
+    LOGE_TAG("BTN", "ERROR: no active board profile (gBoard is null)\n");
     return;
   }
 
@@ -192,7 +186,7 @@ void ButtonActions::registerButtons() {
 
     if (!b.present) continue;
     if (b.pin < 0) {
-      Serial.printf("[BTN] Skipping '%s' (pin=%d)\n", b.id, (int)b.pin);
+      LOGW_TAG("BTN", "Skipping '%s' (pin=%d)\n", b.id, (int)b.pin);
       continue;
     }
 
@@ -201,12 +195,12 @@ void ButtonActions::registerButtons() {
 
     ButtonCallback cb = s_buttonCallbacks[i];
 
-    Serial.printf("[BTN] Register %-12s idx=%u pin=%d mode=%s debounce=%u ms\n",
-                  b.id,
-                  (unsigned)i,
-                  (int)b.pin,
-                  (mode == BUTTON_INTERRUPT ? "INT" : "POLL"),
-                  (unsigned)cfg.debounceMs);
+    LOGI_TAG("BTN", "Register %-12s idx=%u pin=%d mode=%s debounce=%u ms\n",
+             b.id,
+             (unsigned)i,
+             (int)b.pin,
+             (mode == BUTTON_INTERRUPT ? "INT" : "POLL"),
+             (unsigned)cfg.debounceMs);
 
     ButtonManager_register((uint8_t)b.pin, mode, cfg.debounceMs, cb);
   }

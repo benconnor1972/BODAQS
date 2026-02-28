@@ -11,6 +11,9 @@
 #include "WebServerManager.h"  // for canStart()
 #include "BoardSelect.h" 
 #include "TransformRegistry.h"
+#include "DebugLog.h"
+
+#define WEB_LOGW(...) LOGW_TAG("WEB", __VA_ARGS__)
 
 // ---- Helpers (file scope) ----
 static String fmtIPv4(const uint8_t a[4]) {
@@ -894,7 +897,7 @@ void registerConfigRoutes(WebServer& srv) {
           case ParamType::Float: ok = sp.params.setFloat(pkey.c_str(), (float)val.toFloat());               break;
           default:               ok = sp.params.set     (pkey.c_str(), val);                                break;
         }
-        if (!ok) Serial.printf("[WEB] set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
+        if (!ok) WEB_LOGW("set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
       }
 
       // Commit all param changes into tmp so ConfigManager::save(tmp) persists them
@@ -1180,7 +1183,7 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     // ---------- Persist full config ----------
-    //Serial.printf("[WEB] saving tmp: bindings=%u\n", (unsigned)tmp.buttonBindingCount);
+    // Debug aid for saving tmp bindings count if needed later.
               
     ConfigManager::save(tmp);           // writes file and updates active config
     //ConfigManager::debugDumpConfigFile();

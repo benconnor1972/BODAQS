@@ -5,9 +5,14 @@
 #include "Calibration.h"
 #include "SensorRegistry.h"
 #include "StorageManager.h"
+#include "DebugLog.h"
 #include <ctype.h>
 #include <string.h>
 
+#define CFG_LOGE(...) LOGE_TAG("CFG", __VA_ARGS__)
+#define CFG_LOGW(...) LOGW_TAG("CFG", __VA_ARGS__)
+#define CFG_LOGI(...) LOGI_TAG("CFG", __VA_ARGS__)
+#define CFG_LOGD(...) LOGD_TAG("CFG", __VA_ARGS__)
 
 
 // ---- private per-sensor key/value storage (backing ParamPack) ----
@@ -354,8 +359,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
 
     if (!strcasecmp(sub, "type"))  { sp->type = strToSensorType(val); return true; }
     if (!strcasecmp(sub, "name"))  {
-      Serial.print(F("[CFG] set name for sensor")); Serial.print(idx);
-      Serial.print(F(" = '")); Serial.print(val); Serial.println(F("'"));
+      CFG_LOGD("set name for sensor%ld = '%s'\n", idx, val);
       copyStrBounded(val, sp->name, sizeof(sp->name)); 
       return true; 
     }
@@ -394,6 +398,18 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
+  if (keyEquals(key, "log_level")) {
+    if (!val[0] || !strcasecmp(val, "default")) {
+      cfg.logLevelOverride = 0xFF;
+      return true;
+    }
+
+    LogLevel level;
+    if (Log_parseLevel(val, level)) {
+      cfg.logLevelOverride = (uint8_t)level;
+    }
+    return true;
+  }
 
     // ---- new-style WiFi globals ----
   if (keyEquals(key, "wifi_enabled_default")) {bool b; if (ConfigManager::parseBool(String(val), b)) cfg.wifiEnabledDefault = b; return true;  }
@@ -473,7 +489,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
     // Optional: print a one-time warning if you want visibility.
     static bool warned = false;
     if (!warned) {
-      Serial.println("[CFG] Note: buttonN.* entries are ignored; hardware buttons now come from BoardProfile.");
+      CFG_LOGW("Note: buttonN.* entries are ignored; hardware buttons now come from BoardProfile.\n");
       warned = true;
     }
     return true;
@@ -483,7 +499,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "button_count")) {
     static bool warnedCount = false;
     if (!warnedCount) {
-      Serial.println("[CFG] Note: button_count is ignored; hardware buttons now come from BoardProfile.");
+      CFG_LOGW("Note: button_count is ignored; hardware buttons now come from BoardProfile.\n");
       warnedCount = true;
     }
     return true;
@@ -528,14 +544,12 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
 }
 
 bool ConfigManager::load(LoggerConfig& cfg) {
-  Serial.println(F("[CFG] Load: starting"));
+  CFG_LOGI("Load: starting\n");
 
   // ---- Read whole config file into memory via StorageManager ----
   String content;
   if (!StorageManager_loadTextFile(g_cfgName, content)) {
-    Serial.print(F("[CFG] Load: failed to open/read '"));
-    Serial.print(g_cfgName);
-    Serial.println(F("', using defaults"));
+    CFG_LOGW("Load: failed to open/read '%s', using defaults\n", g_cfgName);
     return false;
   }
 
@@ -664,12 +678,12 @@ bool ConfigManager::load(LoggerConfig& cfg) {
   // Now commit cfg as usual:
   s_cfg = cfg;
 
-  Serial.println(F("[CFG] Load OK"));
+  CFG_LOGI("Load OK\n");
   return true;
 }
 
 bool ConfigManager::save(const LoggerConfig& cfg) {
-  Serial.println("[CFG] save: starting");
+  CFG_LOGI("save: starting\n");
 
   String out;
   out.reserve(4096);
@@ -756,9 +770,10 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
   kv_u("debounce_ms", (unsigned)cfg.debounceMs);
+  kv("log_level", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
   line("");
 
-  Serial.println("[CFG] save: globals ok");
+  CFG_LOGD("save: globals ok\n");
 
   // ---------------- Button bindings ----------------
   line("# bindings");
@@ -822,7 +837,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
   line("");
 
-  Serial.println("[CFG] save: wifi ok");
+  CFG_LOGD("save: wifi ok\n");
 
   // ---------------- UI ----------------
   kv_u("ui_target", (unsigned)cfg.uiTarget);
@@ -859,12 +874,12 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
     line("");
   }
 
-  Serial.println("[CFG] save: sensors ok");
+  CFG_LOGD("save: sensors ok\n");
 
   // ---------------- Persist ----------------
   const bool ok = StorageManager_saveTextFile(g_cfgName, out);
   if (!ok) {
-    Serial.println("[CFG] save: StorageManager_saveTextFile failed");
+    CFG_LOGE("save: StorageManager_saveTextFile failed\n");
     return false;
   }
 
@@ -875,55 +890,54 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
 
 void ConfigManager::print(const LoggerConfig& cfg) {
-  Serial.println(F("[CFG] --- current config ---"));
-  Serial.print(F("sampleRateHz="));   Serial.println(cfg.sampleRateHz);
-  Serial.print(F("timestampHuman=")); Serial.println(cfg.timestampHuman ? "true":"false");
-  Serial.print(F("tz="));             Serial.println(cfg.tz);
-  Serial.print(F("debounceMs="));     Serial.println(cfg.debounceMs);
-  
-  Serial.print(F("wifiEnabledDefault="));       Serial.println(cfg.wifiEnabledDefault ? "true":"false");
-  Serial.print(F("wifiAutoTimeOnRtcInvalid=")); Serial.println(cfg.wifiAutoTimeOnRtcInvalid ? "true":"false");
-  Serial.print(F("wifiNetworkCount="));         Serial.println(cfg.wifiNetworkCount);
+  LOGI("[CFG] --- current config ---\n");
+  LOGI("sampleRateHz=%u\n", cfg.sampleRateHz);
+  LOGI("timestampHuman=%s\n", cfg.timestampHuman ? "true" : "false");
+  LOGI("tz=%s\n", cfg.tz);
+  LOGI("debounceMs=%u\n", cfg.debounceMs);
+  LOGI("logLevel=%s\n", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
+
+  LOGI("wifiEnabledDefault=%s\n", cfg.wifiEnabledDefault ? "true" : "false");
+  LOGI("wifiAutoTimeOnRtcInvalid=%s\n", cfg.wifiAutoTimeOnRtcInvalid ? "true" : "false");
+  LOGI("wifiNetworkCount=%u\n", cfg.wifiNetworkCount);
   for (uint8_t i = 0; i < 5; ++i) {
     const auto& w = cfg.wifi[i];
     if (!w.ssid[0]) continue;
-    Serial.print(F("  wifi")); Serial.print(i); Serial.print(F(": ssid='")); Serial.print(w.ssid);
-    Serial.print(F("' hidden=")); Serial.print(w.hidden ? "1":"0");
-    Serial.print(F(" minRssi=")); Serial.print((int)w.minRssi);
-    Serial.print(F(" bssidSet=")); Serial.print(w.bssidSet ? "1":"0");
+    LOGI("  wifi%u: ssid='%s' hidden=%s minRssi=%d bssidSet=%s",
+         i, w.ssid, w.hidden ? "1" : "0", (int)w.minRssi, w.bssidSet ? "1" : "0");
     if (w.bssidSet) {
-      Serial.printf(" (%02X:%02X:%02X:%02X:%02X:%02X)",
-        w.bssid[0],w.bssid[1],w.bssid[2],w.bssid[3],w.bssid[4],w.bssid[5]);
+      LOGI(" (%02X:%02X:%02X:%02X:%02X:%02X)",
+           w.bssid[0], w.bssid[1], w.bssid[2], w.bssid[3], w.bssid[4], w.bssid[5]);
     }
-    Serial.print(F(" pwd=")); Serial.println("********");
+    LOGI(" pwd=********\n");
   }
 
 
-  Serial.print(F("wifiSSID="));       Serial.println(cfg.wifiSSID);
-  Serial.print(F("wifiPassword="));   Serial.println("********");
-  Serial.print(F("ntpServers="));     Serial.println(cfg.ntpServers);
-  Serial.print(F("timeCheckUrl="));   Serial.println(cfg.timeCheckUrl);
-  Serial.print(F("uiTarget="));       Serial.println(cfg.uiTarget);
-  Serial.print(F("uiSerialLevel="));  Serial.println(cfg.uiSerialLevel);
-  Serial.print(F("uiOledLevel="));    Serial.println(cfg.uiOledLevel);
-  Serial.print(F("oledBrightness=")); Serial.println(cfg.oledBrightness);
-  Serial.print(F("oledIdleDimMs="));  Serial.println(cfg.oledIdleDimMs);
+  LOGI("wifiSSID=%s\n", cfg.wifiSSID);
+  LOGI("wifiPassword=********\n");
+  LOGI("ntpServers=%s\n", cfg.ntpServers);
+  LOGI("timeCheckUrl=%s\n", cfg.timeCheckUrl);
+  LOGI("uiTarget=%u\n", cfg.uiTarget);
+  LOGI("uiSerialLevel=%u\n", cfg.uiSerialLevel);
+  LOGI("uiOledLevel=%u\n", cfg.uiOledLevel);
+  LOGI("oledBrightness=%u\n", cfg.oledBrightness);
+  LOGI("oledIdleDimMs=%u\n", cfg.oledIdleDimMs);
 
   const uint8_t n = cfg.sensorCount();
-  Serial.print(F("sensors=")); Serial.println(n);
+  LOGI("sensors=%u\n", n);
 
   for (uint8_t i = 0; i < n; ++i) {
     const SensorSpec& sp = cfg.sensors[i];
-    Serial.print(F("  [")); Serial.print(i);
-    Serial.print(F("] type=")); Serial.print(SensorRegistry::typeLabel(sp.type));
-    Serial.print(F(" name="));  Serial.print(sp.name);
-    Serial.print(F(" muted=")); Serial.println(sp.mutedDefault ? "true" : "false");
+    LOGI("  [%u] type=%s name=%s muted=%s\n",
+         i,
+         SensorRegistry::typeLabel(sp.type),
+         sp.name,
+         sp.mutedDefault ? "true" : "false");
 
     // Print params from the active ParamStore slot i
     const ParamStore* st = &g_stores[i];
     for (uint8_t k = 0; k < st->size(); ++k) {
-      Serial.print(F("     ")); Serial.print(st->keys[k]); Serial.print('=');
-      Serial.println(st->vals[k]);
+      LOGI("     %s=%s\n", st->keys[k], st->vals[k]);
     }
   }
 }
@@ -1100,13 +1114,12 @@ bool ConfigManager::recomputeCalibrationFromUnits(const char* sensorName,
 
 void ConfigManager::printCalibration(const char* sensorName) {
   if (!sensorName || !*sensorName) {
-    Serial.println(F("printCalibration: invalid sensor name"));
+    LOGW("printCalibration: invalid sensor name\n");
     return;
   }
   int8_t idx = ConfigManager::findSensorByName(sensorName);
   if (idx < 0) {
-    Serial.print(F("printCalibration: sensor not found: "));
-    Serial.println(sensorName);
+    LOGW("printCalibration: sensor not found: %s\n", sensorName);
     return;
   }
   printCalibration(idx);
@@ -1114,7 +1127,7 @@ void ConfigManager::printCalibration(const char* sensorName) {
 
 void ConfigManager::printCalibration(int8_t sensorIndex) {
   if (sensorIndex < 0 || uint8_t(sensorIndex) >= kCalSlots) {
-    Serial.println(F("printCalibration: invalid sensor index"));
+    LOGW("printCalibration: invalid sensor index\n");
     return;
   }
 
@@ -1123,26 +1136,23 @@ void ConfigManager::printCalibration(int8_t sensorIndex) {
   // Directly use the TU-local cache; no externs here
   const Calibration& c = g_cals[idx];
 
-  Serial.print(F("sensor"));
-  Serial.print(idx);
-  Serial.println(F(".calibration {"));
-
-  Serial.print(F("  enabled        = ")); Serial.println(c.enabled ? F("1") : F("0"));
-  Serial.print(F("  mode           = ")); Serial.print((int)(c.mode == CalMode::RANGE ? 2 : (c.mode == CalMode::ZERO ? 1 : 0)));
-  Serial.print(F(" (")); Serial.print(calModeToStr(c.mode)); Serial.println(F(")"));
-
-  Serial.print(F("  r0_raw         = ")); Serial.println(c.r0_raw, 6);
-  Serial.print(F("  r1_raw         = ")); Serial.println(c.r1_raw, 6);
-  Serial.print(F("  capture_avg_ms = ")); Serial.println(c.capture_avg_ms);
-  Serial.print(F("  capture_n      = ")); Serial.println(c.capture_n);
-  Serial.print(F("  ts_epoch_ms    = ")); Serial.println((unsigned long long)c.ts_epoch_ms);
+  LOGI("sensor%u.calibration {\n", idx);
+  LOGI("  enabled        = %s\n", c.enabled ? "1" : "0");
+  LOGI("  mode           = %d (%s)\n",
+       (int)(c.mode == CalMode::RANGE ? 2 : (c.mode == CalMode::ZERO ? 1 : 0)),
+       calModeToStr(c.mode));
+  LOGI("  r0_raw         = %.6f\n", c.r0_raw);
+  LOGI("  r1_raw         = %.6f\n", c.r1_raw);
+  LOGI("  capture_avg_ms = %u\n", c.capture_avg_ms);
+  LOGI("  capture_n      = %u\n", c.capture_n);
+  LOGI("  ts_epoch_ms    = %llu\n", (unsigned long long)c.ts_epoch_ms);
 
   // Derived terms (k_gain/k_offset) are meaningful only after recompute(u0,u1).
-  Serial.print(F("  k_gain         = ")); Serial.println(c.k_gain, 9);
-  Serial.print(F("  k_offset       = ")); Serial.println(c.k_offset, 9);
+  LOGI("  k_gain         = %.9f\n", c.k_gain);
+  LOGI("  k_offset       = %.9f\n", c.k_offset);
 
   // Convenience: span in RAW
-  Serial.print(F("  delta_r        = ")); Serial.println(c.r1_raw - c.r0_raw, 6);
+  LOGI("  delta_r        = %.6f\n", c.r1_raw - c.r0_raw);
 
   // --- Mode visibility ---
   CalModeMask typeMask  = typeSupportedMask(g_specs[idx].type);
@@ -1150,21 +1160,24 @@ void ConfigManager::printCalibration(int8_t sensorIndex) {
   if (allowMask == 0xFF) allowMask = typeMask;
   CalModeMask resolvedMask = (typeMask & allowMask);
 
-  Serial.print(F("  supportedModes = ")); Serial.println(calMaskToStr(typeMask));
-  Serial.print(F("  allowedMask    = ")); Serial.println(calMaskToStr(allowMask));
-  Serial.print(F("  menuMask       = ")); Serial.println(calMaskToStr(resolvedMask));
+  const String typeMaskText = calMaskToStr(typeMask);
+  const String allowMaskText = calMaskToStr(allowMask);
+  const String resolvedMaskText = calMaskToStr(resolvedMask);
+  LOGI("  supportedModes = %s\n", typeMaskText.c_str());
+  LOGI("  allowedMask    = %s\n", allowMaskText.c_str());
+  LOGI("  menuMask       = %s\n", resolvedMaskText.c_str());
 
 
-  Serial.println(F("}"));
+  LOGI("}\n");
 }
 
 
 void ConfigManager::printAllCalibrations() {
-  Serial.println(F("=== Calibration Summary ==="));
+  LOGI("=== Calibration Summary ===\n");
   for (int8_t i = 0; i < kCalSlots; ++i) {
     printCalibration(i);
   }
-  Serial.println(F("==========================="));
+  LOGI("===========================\n");
 }
 
 CalModeMask ConfigManager::calAllowedMaskByIndex(uint8_t index) {
@@ -1221,28 +1234,27 @@ const LoggerConfig::WiFiEntry* ConfigManager::wifiNetworks(size_t& count) {
 
 void ConfigManager::debugDumpConfigFile() {
   String content;
-  Serial.print(F("[CFG] Opening file: "));
-  Serial.println(g_cfgName);
+  CFG_LOGI("Opening file: %s\n", g_cfgName);
 
   if (!StorageManager_loadTextFile(g_cfgName, content)) {
-    Serial.println(F("[CFG] open FAIL"));
+    CFG_LOGW("open FAIL\n");
     return;
   }
 
-  Serial.println(F("[CFG] --- file contents ---"));
+  CFG_LOGI("--- file contents ---\n");
 
-  // Print line-by-line to avoid one huge Serial.println() and match old behaviour
+  // Print line-by-line to avoid one huge buffered log and match old behaviour.
   int start = 0;
   while (start < (int)content.length()) {
     int end = content.indexOf('\n', start);
     if (end < 0) end = content.length();
     String line = content.substring(start, end);
     if (line.endsWith("\r")) line.remove(line.length() - 1);
-    Serial.println(line);
+    LOGI("%s\n", line.c_str());
     start = end + 1;
   }
 
-  Serial.println(F("[CFG] --- end file ---"));
+  CFG_LOGI("--- end file ---\n");
 }
 
 

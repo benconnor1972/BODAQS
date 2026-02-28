@@ -9,13 +9,16 @@
 #include "ConfigManager.h"
 #include "SensorManager.h"
 #include "TransformRegistry.h"
+#include "DebugLog.h"
 
 using namespace HtmlUtil;
+
+#define XFORM_LOGE(...) LOGE_TAG("XFORM", __VA_ARGS__)
 
 // --- tiny SD helper ---
 static bool ensureSd_(SdFs*& out) {
   out = WebServerManager::sd();
-  if (!out) { Serial.println(F("[XFORM] SdFs* is null")); return false; }
+  if (!out) { XFORM_LOGE("SdFs* is null\n"); return false; }
   return true;
 }
 
