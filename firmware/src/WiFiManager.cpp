@@ -3,6 +3,7 @@
 #include <esp_wifi.h>
 #include <esp_bt.h>
 #include <esp_coexist.h>
+#include <esp_heap_caps.h>
 #include <cstring>
 #include "RTCManager.h"
 #include "DebugLog.h"
@@ -45,6 +46,46 @@ WiFiManager::OnUiFn WiFiManager::s_onUi = nullptr;
 String WiFiManager::s_currSsid;
 int    WiFiManager::s_currRssi = 0;
 
+static const char* wifiModeName_(wifi_mode_t mode) {
+  switch (mode) {
+    case WIFI_MODE_NULL: return "OFF";
+    case WIFI_MODE_STA:  return "STA";
+    case WIFI_MODE_AP:   return "AP";
+    case WIFI_MODE_APSTA:return "AP+STA";
+    default:             return "?";
+  }
+}
+
+static void wifiDiag_(const char* reason) {
+  WIFI_LOGD("%s: mode=%s wl=%d heap=%u largest=%u\n",
+            reason ? reason : "wifi",
+            wifiModeName_(WiFi.getMode()),
+            (int)WiFi.status(),
+            ESP.getFreeHeap(),
+            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
+
+static void keepStaIdle_(const char* reason) {
+  wifiDiag_(reason);
+  WiFi.scanDelete();
+  WiFi.disconnect(false, false);
+  if (WiFi.getMode() != WIFI_STA && !WiFi.mode(WIFI_STA)) {
+    WIFI_LOGW("keepStaIdle_: failed to enter WIFI_STA\n");
+  }
+  btStop();
+  wifiDiag_("keepStaIdle done");
+}
+
+static void hardOff_(const char* reason) {
+  wifiDiag_(reason);
+  WiFi.scanDelete();
+  if (!WiFi.mode(WIFI_OFF)) {
+    WIFI_LOGW("hardOff_: WiFi.mode(WIFI_OFF) failed\n");
+  }
+  btStop();
+  wifiDiag_("hardOff done");
+}
+
 // Free helper, no access to WiFiManager privates needed
 static void tryRtcSyncIfPending_() {
   if (!s_rtcSyncPending) return;
@@ -84,8 +125,7 @@ void WiFiManager::begin(IsLoggingActiveFn isLoggingFn) {
   s_idleOffDeadlineMs = 0;
 
   WiFi.persistent(false);       // don’t touch NVS
-  WiFi.mode(WIFI_OFF);          // fully stop Wi-Fi driver
-  btStop();                     // stop BT controller (safe to call even if never started)
+  hardOff_("begin");
 
 }
 
@@ -136,14 +176,9 @@ void WiFiManager::loop() {
       }
       break;
 
-    case WiFiMgrState::SCANNING: {
-      int sc = WiFi.scanComplete();
-      if (sc >= 0 || millis() >= s_stateDeadlineMs) {
-        // scan finished OR timebox expired — proceed
-        selectAndConnect_();
-      }
+    case WiFiMgrState::SCANNING:
+      // startScan_() performs a synchronous scan and advances state directly.
       break;
-    }
 
     case WiFiMgrState::CONNECTING: {
       if (WiFi.status() == WL_CONNECTED) {
@@ -159,9 +194,7 @@ void WiFiManager::loop() {
 
       } else if (millis() >= s_stateDeadlineMs) {
         // connection attempt ended — return to IDLE (single pass only)
-        WiFi.disconnect(true, true);
-        WiFi.mode(WIFI_OFF);
-        btStop();
+        keepStaIdle_("connect timeout");
         enterIdle_();
         clearIntent_();
         notifyUi_();
@@ -175,9 +208,7 @@ void WiFiManager::loop() {
       if (!s_enabled) {
         // user disabled Wi-Fi: immediate teardown
         if (s_onOffline) s_onOffline();
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        btStop();
+        hardOff_("disabled while online");
         enterOff_();
         s_linkDropDeadlineMs = 0;
         notifyUi_();
@@ -192,12 +223,10 @@ void WiFiManager::loop() {
           if (s_idleOffDeadlineMs != 0 && (int32_t)(millis() - s_idleOffDeadlineMs) >= 0) {
             // Timeout: drop to IDLE (radio off) until user asks again
             if (s_onOffline) s_onOffline();
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
-            btStop();
-            enterOff_();
+            keepStaIdle_("idle timeout");
+            enterIdle_();
             s_idleOffDeadlineMs = 0;
-
+            clearIntent_();
             notifyUi_();
             break;
           }
@@ -210,10 +239,9 @@ void WiFiManager::loop() {
       } else if ((int32_t)(millis() - s_linkDropDeadlineMs) >= 0) {
         // still down after debounce: tear down to IDLE
         if (s_onOffline) s_onOffline();
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        btStop();
+        keepStaIdle_("link drop");
         enterIdle_();
+        clearIntent_();
         s_linkDropDeadlineMs = 0;
         notifyUi_();
       }
@@ -235,6 +263,7 @@ void WiFiManager::enable() {
     }
   };
   dumpAdc("after WiFi on");
+  wifiDiag_("enable");
   s_enabled = true;
   if (s_state == WiFiMgrState::OFF) enterIdle_();
   notifyUi_();
@@ -246,14 +275,10 @@ void WiFiManager::disable() {
   // Tell app we're going offline (only if we were actually online)
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
 
-  // FAST OFF: do not wait for graceful disconnect; just kill the radio.
-  // WiFi.disconnect(...) can block for seconds when connected / sockets active.
-  WiFi.mode(WIFI_OFF);
-  btStop();
-
-  // Optional best-effort cleanup AFTER the radio is already off.
-  // Keep it non-blocking-ish: no erase, no long waits.
-  WiFi.disconnect(false);
+  clearIntent_();
+  s_idleOffDeadlineMs = 0;
+  s_linkDropDeadlineMs = 0;
+  hardOff_("disable");
 
   enterOff_();
   notifyUi_();
@@ -264,6 +289,15 @@ bool WiFiManager::isEnabled() { return s_enabled; }
 
 void WiFiManager::connectNow() {
   if (!s_enabled || loggingGuard_()) return;
+  if (s_state == WiFiMgrState::SCANNING || s_state == WiFiMgrState::CONNECTING) {
+    wifiDiag_("connectNow ignored: already busy");
+    return;
+  }
+  if (s_state == WiFiMgrState::ONLINE) {
+    noteUserActivity();
+    wifiDiag_("connectNow ignored: already online");
+    return;
+  }
 
   s_haveIntentConnect = true;
 
@@ -275,28 +309,24 @@ void WiFiManager::connectNow() {
     enterIdle_();
   }
   if (s_state == WiFiMgrState::IDLE) {
-    // Start the actual connection attempt
-    selectAndConnect_();          // or enterScanning_()/enterConnecting_()
+    // Start a fresh scan/connect pass.
+    startScan_();
   }
   notifyUi_();
 }
 
 void WiFiManager::disconnect() {
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
-  WiFi.disconnect(true, true);
-  WiFi.mode(WIFI_OFF);
-  btStop();
+  clearIntent_();
+  s_idleOffDeadlineMs = 0;
+  s_linkDropDeadlineMs = 0;
+  keepStaIdle_("disconnect");
   enterIdle_();
   notifyUi_();
 }
 
 void WiFiManager::shutdownRadio_() {
-  // FAST OFF: kill Wi-Fi + BT immediately.
-  WiFi.mode(WIFI_OFF);
-  btStop();
-
-  // Best-effort cleanup after OFF (avoid erase=true / wifioff waits)
-  WiFi.disconnect(false);
+  hardOff_("shutdownRadio");
 }
 
 
@@ -362,21 +392,38 @@ void WiFiManager::enterIdle_() {
 }
 
 void WiFiManager::startScan_() {
-  // Configure radio for STA scans only; we’ll bring it up briefly
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(true);                  // allow modem-sleep while connected
-  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);   // IDF-level: modem sleep policy (optional but nice)
+  // Configure radio for STA scans only; we'll bring it up briefly.
+  wifiDiag_("startScan");
+  if (!WiFi.mode(WIFI_STA)) {
+    WIFI_LOGE("startScan_: WiFi.mode(WIFI_STA) failed\n");
+    enterIdle_();
+    clearIntent_();
+    return;
+  }
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
   // Reset any target decided earlier
   s_targetSsid = "";
   s_targetBssidSet = false;
   memset(s_targetBssid, 0, sizeof(s_targetBssid));
 
-  // Kick scan in async mode; we’ll timebox with a deadline
+  // Run a synchronous scan. The async path was unreliable on this core/runtime.
   WiFi.scanDelete();
-  WiFi.scanNetworks(true /* async */, true /* show hidden */);
   s_state = WiFiMgrState::SCANNING;
-  s_stateDeadlineMs = millis() + SCAN_TIMEOUT_MS;
+  s_stateDeadlineMs = 0;
   notifyUi_();
+
+  const int sc = WiFi.scanNetworks(false /* sync */, true /* show hidden */, false /* passive */, 300 /* ms per chan */);
+  WIFI_LOGI("startScan_: sync scan returned %d\n", sc);
+  if (sc < 0) {
+    WIFI_LOGW("startScan_: synchronous scan failed\n");
+    enterIdle_();
+    clearIntent_();
+    notifyUi_();
+    return;
+  }
+
+  selectAndConnect_();
 }
 
 static bool bssidEqual_(const uint8_t a[6], const uint8_t b[6]) {
@@ -386,14 +433,7 @@ static bool bssidEqual_(const uint8_t a[6], const uint8_t b[6]) {
 
 void WiFiManager::selectAndConnect_() {
   int n = WiFi.scanComplete();
-  if (n < 0) n = 0;  // treat as no results if scan not finished
-  // Build a quick map of best RSSI per SSID (and remember BSSID/channel)
-  struct Seen {
-    int rssi = -127;
-    uint8_t bssid[6] = {0};
-    bool bssidSet = false;
-  };
-  // Since we only have up to 5 targets, we can choose directly without a full map.
+  if (n < 0) n = 0;
 
   // Choose the strongest eligible network across ALL configured entries.
   size_t count = 0;
@@ -468,8 +508,10 @@ void WiFiManager::selectAndConnect_() {
 
   // No candidate — back to IDLE
   if (chosenIndex < 0) {
+    WIFI_LOGW("selectAndConnect_: no eligible AP found\n");
     WiFi.scanDelete();
     enterIdle_();
+    clearIntent_();
     return;
   }
 
@@ -479,12 +521,18 @@ void WiFiManager::selectAndConnect_() {
   else { memset(s_targetBssid, 0, 6); s_targetBssidSet = false; }
 
   WiFi.scanDelete();
-  WiFi.mode(WIFI_STA);
+  wifiDiag_("selectAndConnect");
+  if (!WiFi.mode(WIFI_STA)) {
+    WIFI_LOGE("selectAndConnect_: WiFi.mode(WIFI_STA) failed\n");
+    enterIdle_();
+    clearIntent_();
+    return;
+  }
   WiFi.setSleep(true);
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
 
-    auto ipFrom = [](const uint8_t a[4]) -> IPAddress {
+  auto ipFrom = [](const uint8_t a[4]) -> IPAddress {
     return IPAddress(a[0], a[1], a[2], a[3]);
   };
 
@@ -510,6 +558,13 @@ void WiFiManager::selectAndConnect_() {
   const char* pwd = nets[chosenIndex].password;
   const uint8_t* bssidPtr = s_targetBssidSet ? s_targetBssid : nullptr;
   int channel = chosenChannel > 0 ? chosenChannel : 0; // 0 = auto if unknown
+  WIFI_LOGI("selected[%d]: ssid='%s' rssi=%d channel=%d staticIp=%d\n",
+            chosenIndex,
+            s_targetSsid.c_str(),
+            chosenRssi,
+            channel,
+            (int)nets[chosenIndex].staticIp);
+  wifiDiag_("before WiFi.begin");
   WiFi.begin(s_targetSsid.c_str(), (pwd ? pwd : ""), channel, bssidPtr, true /* connect */);
   s_state = WiFiMgrState::CONNECTING;
   s_stateDeadlineMs = millis() + CONNECT_TIMEOUT_MS;
