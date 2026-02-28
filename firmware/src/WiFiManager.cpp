@@ -3,8 +3,8 @@
 #include <esp_wifi.h>
 #include <esp_bt.h>
 #include <esp_coexist.h>
-#include "RTCManager.h"   // <-- add this include
-
+#include <cstring>
+#include "RTCManager.h"   
 
 static const uint32_t SCAN_TIMEOUT_MS     = 6000;   // single active scan budget
 static const uint32_t CONNECT_TIMEOUT_MS  = 12000;  // assoc/auth/IP wait
@@ -409,7 +409,10 @@ void WiFiManager::selectAndConnect_() {
     if (nets[i].bssidSet) {
       for (int k = 0; k < n; ++k) {
         if (!String(nets[i].ssid).equals(WiFi.SSID(k))) continue;
-        uint8_t b[6]; WiFi.BSSID(k, b);
+
+        const uint8_t* b = WiFi.BSSID(k);
+        if (!b) continue;
+
         if (bssidEqual_(b, nets[i].bssid)) {
           bestRssi = WiFi.RSSI(k);
           memcpy(bestBssid, b, 6);
@@ -427,13 +430,19 @@ void WiFiManager::selectAndConnect_() {
         int r = WiFi.RSSI(k);
         if (r > bestRssi) {
           bestRssi = r;
-          WiFi.BSSID(k, bestBssid);
+
+          const uint8_t* b = WiFi.BSSID(k);
+          if (b) {
+            memcpy(bestBssid, b, 6);
+          } else {
+            memset(bestBssid, 0, 6);
+          }
+
           bestSet = true;
           bestChannel = WiFi.channel(k);
         }
       }
     }
-
     // Eligibility check: respect per-entry min RSSI (or global floor)
     const int minNeed = (nets[i].minRssi >= -100 && nets[i].minRssi <= -10)
                         ? nets[i].minRssi : RSSI_FLOOR_DBM;
