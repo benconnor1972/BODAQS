@@ -131,18 +131,28 @@ void registerConfigRoutes(WebServer& srv) {
     html += String(cfg.debounceMs);
     html += F("'"); html += dis; html += F("><br>");
 
-        // NTP + time check
-    html += F("<label>NTP servers (CSV): </label><input type='text' name='ntp_servers' value='");
-    html += htmlEscape(String(cfg.ntpServers));
-    html += F("'"); html += dis; html += F("><br>");
-
-    html += F("<label>HTTP time check URL: </label><input type='text' name='time_check_url' value='");
-    html += htmlEscape(String(cfg.timeCheckUrl));
-    html += F("'"); html += dis; html += F("></fieldset>");
+    html += F("<label>Log level: </label><select name='log_level'");
+    html += dis; html += F(">");
+    {
+      const char* selectedLevel = (cfg.logLevelOverride == 0xFF)
+                                    ? "default"
+                                    : Log_levelName((LogLevel)cfg.logLevelOverride);
+      const char* levelOptions[] = {"default", "error", "warn", "info", "debug", "trace"};
+      for (const char* option : levelOptions) {
+        html += F("<option value='");
+        html += option;
+        html += F("'");
+        if (String(selectedLevel) == option) html += F(" selected");
+        html += F(">");
+        html += option;
+        html += F("</option>");
+      }
+    }
+    html += F("</select><br>");
+    html += F("</fieldset>");
 
     // ---------- Wi-Fi (multi-network) ----------
     html += F("<fieldset><legend>Network & NTP</legend>");
-    html += F("<h4>Wi-Fi (multi-network)</h4>");
 
     // toggles
     html += F("<div class='row'><label>Enable Wi-Fi by default</label>");
@@ -158,6 +168,20 @@ void registerConfigRoutes(WebServer& srv) {
     if (cfg.wifiAutoTimeOnRtcInvalid) html += F(" checked");
     if (locked) html += F(" disabled");
     html += F("></div>");
+
+    html += F("<div class='row'><label>NTP servers (CSV)</label><input type='text' name='ntp_servers' value='");
+    html += htmlEscape(String(cfg.ntpServers));
+    html += F("'");
+    if (locked) html += F(" disabled");
+    html += F("></div>");
+
+    html += F("<div class='row'><label>HTTP time check URL</label><input type='text' name='time_check_url' value='");
+    html += htmlEscape(String(cfg.timeCheckUrl));
+    html += F("'");
+    if (locked) html += F(" disabled");
+    html += F("></div>");
+
+    html += F("<h4>Wi-Fi (multi-network)</h4>");
 
     // advisory count (display only)
     html += F("<div class='row'><label>Configured networks</label>");
@@ -1070,6 +1094,33 @@ void registerConfigRoutes(WebServer& srv) {
     if (srv.hasArg("tz")) {
       String tz = srv.arg("tz"); tz.trim();
       if (tz.length() < (int)sizeof(tmp.tz)) tz.toCharArray(tmp.tz, sizeof(tmp.tz));
+    }
+
+    if (srv.hasArg("ntp_servers")) {
+      String ntpServers = srv.arg("ntp_servers"); ntpServers.trim();
+      if (ntpServers.length() < (int)sizeof(tmp.ntpServers)) {
+        ntpServers.toCharArray(tmp.ntpServers, sizeof(tmp.ntpServers));
+      }
+    }
+
+    if (srv.hasArg("time_check_url")) {
+      String timeCheckUrl = srv.arg("time_check_url"); timeCheckUrl.trim();
+      if (timeCheckUrl.length() < (int)sizeof(tmp.timeCheckUrl)) {
+        timeCheckUrl.toCharArray(tmp.timeCheckUrl, sizeof(tmp.timeCheckUrl));
+      }
+    }
+
+    if (srv.hasArg("log_level")) {
+      String levelText = srv.arg("log_level");
+      levelText.trim();
+      if (!levelText.length() || levelText.equalsIgnoreCase("default")) {
+        tmp.logLevelOverride = 0xFF;
+      } else {
+        LogLevel level;
+        if (Log_parseLevel(levelText.c_str(), level)) {
+          tmp.logLevelOverride = (uint8_t)level;
+        }
+      }
     }
 
     // ---- Wi-Fi globals + 5 slots ----

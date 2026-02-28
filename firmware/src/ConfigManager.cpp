@@ -51,7 +51,6 @@ namespace {
     dst[cap - 1] = '\0';
   }
 
-
   // small helpers
 
   static inline bool keyEquals(const char* a, const char* b) { return a && b && strcasecmp(a,b)==0; }
@@ -71,6 +70,22 @@ namespace {
     if (!dst || cap == 0) return;
     if (!src) { dst[0] = '\0'; return; }
     strncpy(dst, src, cap - 1); dst[cap - 1] = '\0';
+  }
+
+  static bool shouldPersistSensorKey_(uint8_t idx, const char* key) {
+    if (!key || !*key || idx >= g_specCount) return false;
+
+    // `pin` is a legacy fallback for analog sensors. When `ain` is present,
+    // the physical GPIO is board-derived and `pin` becomes redundant noise.
+    if (strcasecmp(key, "pin") == 0) {
+      const ParamStore& st = g_stores[idx];
+      for (uint8_t i = 0; i < st.count; ++i) {
+        const char* k = st.keys[i];
+        if (k && strcasecmp(k, "ain") == 0) return false;
+      }
+    }
+
+    return true;
   }
 
   static SensorType strToSensorType(const char* v) {
@@ -769,6 +784,8 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
+  kv("ntp_servers", cfg.ntpServers);
+  kv("time_check_url", cfg.timeCheckUrl);
   kv_u("debounce_ms", (unsigned)cfg.debounceMs);
   kv("log_level", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
   line("");
@@ -864,6 +881,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
     const ParamStore& st = g_stores[i];
     for (uint8_t k = 0; k < st.size(); ++k) {
+      if (!shouldPersistSensorKey_(i, st.keys[k])) continue;
       // Keys/vals are char*; make them null-safe
       out += "sensor"; out += String(i); out += ".";
       out += NZ(st.keys[k]);
