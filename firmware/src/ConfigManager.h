@@ -37,6 +37,7 @@ struct LoggerConfig {
 
   // buttons / debounce
   uint16_t debounceMs = 50;
+  uint8_t  logLevelOverride = 0xFF; // 0xFF = use compile-time default
 
   // --- Button bindings ---
   ButtonBindingDef buttonBindings[MAX_BUTTON_BINDINGS];

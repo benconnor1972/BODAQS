@@ -7,13 +7,16 @@
 #include "HtmlUtil.h"
 #include "WiFiManager.h"
 #include "WebServerManager.h"
+#include "DebugLog.h"
 
 using namespace HtmlUtil;
+
+#define FILES_LOGE(...) LOGE_TAG("FILES", __VA_ARGS__)
 
 static bool ensureSd_(SdFs*& out) {
   out = WebServerManager::sd();
   if (!out) {
-    Serial.println(F("[FILES] SdFat* is null (call WebServerManager::begin first)"));
+    FILES_LOGE("SdFat* is null (call WebServerManager::begin first)\n");
     return false;
   }
   return true;
@@ -1102,14 +1105,14 @@ S->on("/rmdir", HTTP_POST, [S](){
 
         if (useSpi) {
           if (!outSpi.open(full.c_str(), O_WRITE | O_CREAT | O_TRUNC)) {
-            Serial.println(F("[FILES] upload: SPI open failed"));
+            FILES_LOGE("upload: SPI open failed\n");
             up.status = UPLOAD_FILE_ABORTED;
             return;
           }
         } else {
           outMMC = SD_MMC.open(full.c_str(), FILE_WRITE);
           if (!outMMC) {
-            Serial.println(F("[FILES] upload: SD_MMC open failed"));
+            FILES_LOGE("upload: SD_MMC open failed\n");
             up.status = UPLOAD_FILE_ABORTED;
             return;
           }

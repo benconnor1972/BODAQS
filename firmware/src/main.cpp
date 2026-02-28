@@ -34,6 +34,11 @@
 #include <SdFat.h>
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
+#define BOOT_LOGW(...) LOGW_TAG("BOOT", __VA_ARGS__)
+#define BOOT_LOGE(...) LOGE_TAG("BOOT", __VA_ARGS__)
+#define BOOT_LOGI(...) LOGI_TAG("BOOT", __VA_ARGS__)
+#define HB_LOGD(...)   LOGD_TAG("HB", __VA_ARGS__)
+#define ADC_LOGD(...)  LOGD_TAG("ADC", __VA_ARGS__)
 
 
 //Debug
@@ -44,14 +49,14 @@ static void dbgHeartbeat_()
   if (now - last < 5000) return;
   last = now;
 
-  Serial.printf("[HB] ms=%lu core=%d heap=%u largest=%u\n",
-                (unsigned long)now,
-                xPortGetCoreID(),
-                ESP.getFreeHeap(),
-                heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  HB_LOGD("ms=%lu core=%d heap=%u largest=%u\n",
+          (unsigned long)now,
+          xPortGetCoreID(),
+          ESP.getFreeHeap(),
+          heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
   // Optional: stack watermark for loop task (call from the task you care about)
-  Serial.printf("[HB] stack watermark=%u\n", (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+  HB_LOGD("stack watermark=%u\n", (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 }
 
 
@@ -120,6 +125,14 @@ void onToggleLogging(ButtonEvent event);
 void onMarkEvent(ButtonEvent event);
 void onWebServerToggle(ButtonEvent event);
 
+static void applyLogSettings_(const LoggerConfig& cfg) {
+  Log_setEnabled(true);
+  Log_resetLevel();
+  if (cfg.logLevelOverride <= LOG_TRACE) {
+    Log_setLevel((LogLevel)cfg.logLevelOverride);
+  }
+}
+
 
 LoggerConfig g_cfg;  
 TransformRegistry gTransforms;
@@ -138,11 +151,11 @@ void setup() {
 
     //Debug
     auto dumpAdc = [](const char* tag){
-      Serial.printf("\n[ADC] %s\n", tag);
+      ADC_LOGD("\n%s\n", tag);
       int pins[] = {15,17,18,10};
       for (int p : pins) {
         int v = analogRead(p);
-        Serial.printf("  GPIO%02d = %d\n", p, v);
+        LOGD("  GPIO%02d = %d\n", p, v);
       }
     };
 
@@ -150,7 +163,7 @@ void setup() {
 
 
   if (!gBoard) {
-    Serial.println("FATAL: Board not selected");
+    BOOT_LOGE("FATAL: Board not selected\n");
     while (true) delay(1000);
   }
   
@@ -161,9 +174,7 @@ void setup() {
   StorageManager_begin(*gBoard);           
   gSd = StorageManager_getSd();      
 
-  // Debug settings
-  Log_setEnabled(true);
-  Log_setLevel(LOG_DEBUG);
+  applyLogSettings_(g_cfg);
 
   StorageManager_setSampleRate(100);   // 100 Hz logging
 
@@ -181,31 +192,32 @@ void setup() {
 
 
   if (!ConfigManager::load(g_cfg)) {
-    Serial.println("[CFG] Load failed — using defaults");
+    LOGW_TAG("CFG", "Load failed, using defaults\n");
   } else {
-    Serial.printf("[CFG] Loaded");
+    LOGI_TAG("CFG", "Loaded");
   }
 
-  Serial.println("SETUP: A ButtonBindingTable::initFromConfig");
+  applyLogSettings_(g_cfg);
+  BOOT_LOGI("SETUP: A ButtonBindingTable::initFromConfig\n");
   ButtonBindingTable::initFromConfig(ConfigManager::get());
-  Serial.println("SETUP: A done");
+  BOOT_LOGI("SETUP: A done\n");
 
 
   // 1) Sensor framework
-  Serial.println("SETUP: B Sensormanager::begin");
+  BOOT_LOGI("SETUP: B Sensormanager::begin\n");
 
   SensorManager::begin(&g_cfg);
-    Serial.println("SETUP: B done");
+    BOOT_LOGI("SETUP: B done\n");
 
-  Serial.println("SETUP: C buildsensorsfromFromConfig");
+  BOOT_LOGI("SETUP: C buildsensorsfromFromConfig\n");
 
   SensorManager::buildSensorsFromConfig(g_cfg);
-  Serial.println("SETUP: C done");
+  BOOT_LOGI("SETUP: C done\n");
 
-  Serial.println("SETUP: D finalize begin");
+  BOOT_LOGI("SETUP: D finalize begin\n");
 
   SensorManager::finalizeBegin();
-    Serial.println("SETUP: D done");
+    BOOT_LOGI("SETUP: D done\n");
 
   //PROBE("[SENS] debugDump");
   //SensorManager::debugDump("after-register");
@@ -215,17 +227,17 @@ void setup() {
 
 
   //ConfigManager::print(g_cfg);
-  //Serial.println("[BOOT] after ConfigManager::print");
+  // Boot probe after ConfigManager::print.
   //Serial.flush();
 
-  Serial.println("SETUP: E webservermanager::attachconfig");
+  BOOT_LOGI("SETUP: E webservermanager::attachconfig\n");
   WebServerManager::attachConfig(&g_cfg);
-      Serial.println("SETUP: E done");
+      BOOT_LOGI("SETUP: E done\n");
 
-  Serial.println("SETUP: F storagemanager_getSD");
+  BOOT_LOGI("SETUP: F storagemanager_getSD\n");
 
   WebServerManager::begin(StorageManager_getSd(), isLoggingPredicate);
-    Serial.println("SETUP: F done");
+    BOOT_LOGI("SETUP: F done\n");
 
   const auto& cfg = ConfigManager::get();
 
@@ -234,9 +246,9 @@ void setup() {
   // RTCManager_begin(RTC_EXTERNAL);
 
   //Initialise wifi manager
-  Serial.println("SETUP: G wifimanager::begin");
+  BOOT_LOGI("SETUP: G wifimanager::begin\n");
   WiFiManager::begin(isLoggingPredicate);
-  Serial.println("SETUP: G Done");
+  BOOT_LOGI("SETUP: G Done\n");
 
   // Bring Wi-Fi up on boot only if the user asked for it by default
   if (ConfigManager::hasConfiguredNetworks() && cfg.wifiEnabledDefault) {
@@ -260,7 +272,7 @@ void setup() {
   // 3) Init logging *after* sensors exist
   LoggingManager::begin(&g_cfg);
 
-  Serial.println("SETUP: I Done");
+  BOOT_LOGI("SETUP: I Done\n");
 
   if (gBoard && gBoard->fuel.type != FuelGaugeType::None) {
     PowerManager::fuelGaugeBegin(gBoard->fuel.i2c_addr);
@@ -268,11 +280,11 @@ void setup() {
   // Start OLED if present
   DisplayManager::begin(cfg, gBoard->display, gBoard->i2c);
 
-  Serial.println("SETUP: J Done");
+  BOOT_LOGI("SETUP: J Done\n");
 
   // Configure routing (Serial/OLED/Both + levels)
   UI::begin(g_cfg);
-    Serial.println("SETUP: K Done");
+    BOOT_LOGI("SETUP: K Done\n");
 
 
   // Show initial status
@@ -280,19 +292,19 @@ void setup() {
   UI::println("Device ready.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 1200);
 
   ButtonActions::begin();
-    Serial.println("SETUP: L Done");
+    BOOT_LOGI("SETUP: L Done\n");
 
 
   //ConfigManager::printAllCalibrations();
 
   // Start the menu system
   MenuSystem::begin(&g_cfg);
-    Serial.println("SETUP: M Done");
+    BOOT_LOGI("SETUP: M Done\n");
 
   MenuSystem::setIdleCloseMs(300000);
-  Serial.println("SETUP: N Done");
+  BOOT_LOGI("SETUP: N Done\n");
 
-    Serial.println("SETUP: ALL DONE");
+    BOOT_LOGI("SETUP: ALL DONE\n");
 
 }
 

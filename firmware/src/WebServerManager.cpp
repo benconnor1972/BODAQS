@@ -15,7 +15,13 @@
 #include "Routes_Config.h"
 #include "Routes_Transforms.h"
 #include "HtmlUtil.h"
+#include "DebugLog.h"
 using namespace HtmlUtil;
+
+#define WS_LOGE(...) LOGE_TAG("WS", __VA_ARGS__)
+#define WS_LOGW(...) LOGW_TAG("WS", __VA_ARGS__)
+#define WS_LOGI(...) LOGI_TAG("WS", __VA_ARGS__)
+#define WS_LOGD(...) LOGD_TAG("WS", __VA_ARGS__)
 
 
 // gTransforms is defined in esp32_data_logger.ino (non-static there)
@@ -66,7 +72,7 @@ static void ws_diag_on_response(int code) {
 // -------------------- helpers --------------------
 static bool ensureSd() {
   if (!g_sd) {
-    Serial.println(F("[WS] ensureSd: no SdFs* provided (call begin(StorageManager_getSd(), ...) first)"));
+    WS_LOGW("ensureSd: no SdFs* provided (call begin(StorageManager_getSd(), ...) first)\n");
     return false;
   }
   return true; // StorageManager owns begin()
@@ -96,24 +102,24 @@ bool WebServerManager::canStart() {
 
 bool WebServerManager::start() {
   if (g_running) {
-    Serial.println(F("[WS] start: already running"));
+    WS_LOGD("start: already running\n");
     return true;
   }
 
   if (!canStart()) {
-    Serial.println(F("[WS] start: canStart() = false (probably logging active)"));
+    WS_LOGD("start: canStart() = false (probably logging active)\n");
     return false;
   }
 
   wl_status_t wl = WiFi.status();
-  Serial.printf("[WS] start: WiFi.status()=%d (need %d=WL_CONNECTED)\n", (int)wl, (int)WL_CONNECTED);
+  WS_LOGD("start: WiFi.status()=%d (need %d=WL_CONNECTED)\n", (int)wl, (int)WL_CONNECTED);
   if (wl != WL_CONNECTED) {
-    Serial.println(F("[WS] start: WiFi not connected; will retry from loop()"));
+    WS_LOGI("start: WiFi not connected; will retry from loop()\n");
     return false;
   }
 
   IPAddress ip = WiFi.localIP();
-  Serial.printf("[WS] start: starting on http://%s/\n", ip.toString().c_str());
+  WS_LOGI("start: starting on http://%s/\n", ip.toString().c_str());
 
   // Allocate server and wire routes if first time
   if (!g_server) {
@@ -124,7 +130,7 @@ bool WebServerManager::start() {
   g_server->begin();
   g_running = true;
 
-  Serial.printf("[WS] start: listening http://%s/\n", WiFi.localIP().toString().c_str());
+  WS_LOGI("start: listening http://%s/\n", WiFi.localIP().toString().c_str());
   return true;
 }
 
@@ -226,17 +232,17 @@ void WebServerManager::setupRoutes() {
   g_server->onNotFound([](){
     WiFiManager::noteUserActivity();
     String uri = g_server->uri();
-    Serial.printf("[WS] 404 %s %s\n",
-                  (g_server->method() == HTTP_GET ? "GET" :
-                  g_server->method() == HTTP_POST ? "POST" :
-                  g_server->method() == HTTP_PUT ? "PUT" :
-                  g_server->method() == HTTP_DELETE ? "DEL" : "?"),
-                  uri.c_str());
+    WS_LOGD("404 %s %s\n",
+            (g_server->method() == HTTP_GET ? "GET" :
+            g_server->method() == HTTP_POST ? "POST" :
+            g_server->method() == HTTP_PUT ? "PUT" :
+            g_server->method() == HTTP_DELETE ? "DEL" : "?"),
+            uri.c_str());
     const int ac = g_server->args();
     for (int i = 0; i < ac; ++i) {
-      Serial.printf("      arg[%d] %s = %s\n", i,
-                    g_server->argName(i).c_str(),
-                    g_server->arg(i).c_str());
+      LOGD("      arg[%d] %s = %s\n", i,
+           g_server->argName(i).c_str(),
+           g_server->arg(i).c_str());
     }
     g_server->send(404, "text/plain", "Not found");
   });

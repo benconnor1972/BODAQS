@@ -12,6 +12,14 @@
 #include "WiFiManager.h"
 #include "DebugTrace.h"
 #include "esp_timer.h"
+#include "DebugLog.h"
+
+#define LOGGING_LOGE(...) LOGE_TAG("Logging", __VA_ARGS__)
+#define LOGGING_LOGW(...) LOGW_TAG("Logging", __VA_ARGS__)
+#define LOGGING_LOGI(...) LOGI_TAG("Logging", __VA_ARGS__)
+#define LOGGING_LOGD(...) LOGD_TAG("Logging", __VA_ARGS__)
+#define PROD_LOGD(...)    LOGD_TAG("PROD", __VA_ARGS__)
+#define RTC_LOGW(...)     LOGW_TAG("RTC", __VA_ARGS__)
 
 
 // FreeRTOS (ESP32 Arduino)
@@ -83,10 +91,10 @@ static inline void sampleOnce_() {
   ++s_prodCount;
   uint32_t now_ms = millis();
   if ((uint32_t)(now_ms - s_prodT0_ms) >= 1000) {
-    Serial.printf("[PROD] samples/s=%lu intervalMs=%u running=%d\n",
-                  (unsigned long)s_prodCount,
-                  (unsigned)s_intervalMs,
-                  (int)s_running);
+    PROD_LOGD("samples/s=%lu intervalMs=%u running=%d\n",
+              (unsigned long)s_prodCount,
+              (unsigned)s_intervalMs,
+              (int)s_running);
     s_prodCount = 0;
     s_prodT0_ms = now_ms;
   }
@@ -219,7 +227,7 @@ bool LoggingManager::start() {
 
     if ((int32_t)(millis() - (t0 + 2000)) >= 0) {   // 2s timeout
       TRACE("RTC sanity check TIMEOUT");
-      Serial.printf("[RTC] still invalid: '%s'\n", ts.c_str());
+      RTC_LOGW("still invalid: '%s'\n", ts.c_str());
       break; // either continue with millis-based timestamp, or just proceed
     }
     delay(10);
@@ -292,9 +300,9 @@ void LoggingManager::stop() {
 
 #if defined(ESP32)
   // Report task-lateness stats (these replace the old loop()-based lateTicks)
-  Serial.printf("[Logging] lateTicks=%lu maxLagMs=%lu\n",
-                (unsigned long)s_lateTicks,
-                (unsigned long)s_lateMaxLagMs);
+  LOGGING_LOGI("lateTicks=%lu maxLagMs=%lu\n",
+               (unsigned long)s_lateTicks,
+               (unsigned long)s_lateMaxLagMs);
 #endif
 }
 

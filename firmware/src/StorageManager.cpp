@@ -6,6 +6,15 @@
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
 #include "SPI.h"
 #include "DebugTrace.h"
+#include "DebugLog.h"
+
+#define STOR_LOGE(...) LOGE_TAG("Storage", __VA_ARGS__)
+#define STOR_LOGW(...) LOGW_TAG("Storage", __VA_ARGS__)
+#define STOR_LOGI(...) LOGI_TAG("Storage", __VA_ARGS__)
+#define STOR_LOGD(...) LOGD_TAG("Storage", __VA_ARGS__)
+#define SD_LOGD(...)   LOGD_TAG("SD", __VA_ARGS__)
+#define ROW_LOGD(...)  LOGD_TAG("ROW", __VA_ARGS__)
+#define DRAIN_LOGD(...) LOGD_TAG("DRAIN", __VA_ARGS__)
 
 // If you use SD_MMC and SdFat, include the right headers here as you already do elsewhere:
 // #include "SD_MMC.h"
@@ -87,7 +96,7 @@ static void allocQueue(uint16_t depth) {
   s_rows = new SampleRow[depth];
 
   if (!s_rows) {
-    Serial.println("[Storage] ERROR: allocQueue failed (OOM)");
+    STOR_LOGE("allocQueue failed (OOM)\n");
     s_qCap = 0;
     s_qHead = s_qTail = s_qCount = 0;
     s_qMax = 0;
@@ -193,8 +202,8 @@ static size_t logWriteInternal(const void* data, size_t len) {
     }
     uint32_t dt = millis() - t0;
     if (dt > 200) {
-      Serial.printf("[SD] logWriteInternal len=%u dt=%lu ms bufIndex=%u loggingActive=%d\n",
-                    (unsigned)len, (unsigned long)dt, (unsigned)bufferIndex, (int)loggingActive);
+      SD_LOGD("logWriteInternal len=%u dt=%lu ms bufIndex=%u loggingActive=%d\n",
+              (unsigned)len, (unsigned long)dt, (unsigned)bufferIndex, (int)loggingActive);
     }
 }
 
@@ -258,8 +267,7 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
         // SPI / SdFat backend
         FsFile f = sd.open(path, O_RDONLY);
         if (!f) {
-            Serial.print("[Storage] loadTextFile: SPI open failed for ");
-            Serial.println(path);
+            STOR_LOGW("loadTextFile: SPI open failed for %s\n", path);
             return false;
         }
 
@@ -269,8 +277,7 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
             out += (char)c;
         }
         f.close();
-        Serial.print("[Storage] loadTextFile: SPI read OK, bytes=");
-        Serial.println(out.length());
+        STOR_LOGD("loadTextFile: SPI read OK, bytes=%u\n", (unsigned)out.length());
         return true;
 
     } else {
@@ -278,8 +285,7 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
         String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
         File f = SD_MMC.open(absPath.c_str(), FILE_READ);
         if (!f) {
-            Serial.print("[Storage] loadTextFile: SD_MMC open failed for ");
-            Serial.println(path);
+            STOR_LOGW("loadTextFile: SD_MMC open failed for %s\n", path);
             return false;
         }
 
@@ -289,8 +295,7 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
             out += (char)c;
         }
         f.close();
-        Serial.print("[Storage] loadTextFile: SD_MMC read OK, bytes=");
-        Serial.println(out.length());
+        STOR_LOGD("loadTextFile: SD_MMC read OK, bytes=%u\n", (unsigned)out.length());
         return true;
     }
 }
@@ -305,8 +310,7 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
     // -------- SPI / SdFat backend --------
     FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
     if (!f) {
-      Serial.print("[Storage] saveTextFile: SPI open failed for ");
-      Serial.println(path);
+      STOR_LOGW("saveTextFile: SPI open failed for %s\n", path);
       return false;
     }
 
@@ -315,8 +319,8 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
     f.close();
 
     if (written != len) {
-      Serial.printf("[Storage] saveTextFile: SPI short write (%u/%u)\n",
-                    (unsigned)written, (unsigned)len);
+      STOR_LOGW("saveTextFile: SPI short write (%u/%u)\n",
+                (unsigned)written, (unsigned)len);
       return false;
     }
     return true;
@@ -329,7 +333,7 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   // StorageManager_begin() already did SD_MMC.begin() on this backend.
   // But we still guard against "no card".
   if (SD_MMC.cardType() == CARD_NONE) {
-    Serial.println("[Storage] saveTextFile: SD_MMC not mounted / no card");
+    STOR_LOGW("saveTextFile: SD_MMC not mounted / no card\n");
     return false;
   }
 
@@ -341,8 +345,7 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
 
   File f = SD_MMC.open(absPath.c_str(), FILE_WRITE);
   if (!f) {
-    Serial.print("[Storage] saveTextFile: SD_MMC open failed for ");
-    Serial.println(absPath);
+    STOR_LOGW("saveTextFile: SD_MMC open failed for %s\n", absPath.c_str());
     return false;
   }
 
@@ -351,8 +354,8 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   f.close();
 
   if (written != len) {
-    Serial.printf("[Storage] saveTextFile: SD_MMC short write (%u/%u)\n",
-                  (unsigned)written, (unsigned)len);
+    STOR_LOGW("saveTextFile: SD_MMC short write (%u/%u)\n",
+              (unsigned)written, (unsigned)len);
     return false;
   }
 
@@ -372,11 +375,11 @@ void StorageManager_begin(const board::BoardProfile& bp) {
   }
 
   if (isSpiBackend()) {
-    Serial.println("[Storage] begin: starting SPI (SdFat)");
+    STOR_LOGI("begin: starting SPI (SdFat)\n");
 
     const int csPin = s_storage->cs;
     if (csPin < 0) {
-      Serial.println("[Storage] SPI backend selected but storage.cs is not set");
+      STOR_LOGE("SPI backend selected but storage.cs is not set\n");
       return;
     }
 
@@ -397,24 +400,24 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     SdSpiConfig cfg(csPin, DEDICATED_SPI, hz);
 
     if (!sd.begin(cfg)) {
-      Serial.printf("[Storage] sd.begin failed, err=0x%02X data=0x%02X\n",
-                    sd.sdErrorCode(), sd.sdErrorData());
+      STOR_LOGW("sd.begin failed, err=0x%02X data=0x%02X\n",
+                sd.sdErrorCode(), sd.sdErrorData());
 
       SdSpiConfig slowCfg(csPin, SHARED_SPI, SD_SCK_MHZ(4));
       if (!sd.begin(slowCfg)) {
-        Serial.printf("[Storage] retry slow failed, err=0x%02X data=0x%02X\n",
-                      sd.sdErrorCode(), sd.sdErrorData());
+        STOR_LOGE("retry slow failed, err=0x%02X data=0x%02X\n",
+                  sd.sdErrorCode(), sd.sdErrorData());
         return;
       }
     }
 
-    Serial.println("[Storage] SD init OK (SPI_SDFAT).");
+    STOR_LOGI("SD init OK (SPI_SDFAT).\n");
     return;
   }
 
   if (isSdmmcBackend()) {
-    Serial.println("[Storage] begin(): backend = SDMMC (SD_MMC)");
-    Serial.println("[Storage] begin (SDMMC): starting SD_MMC");
+    STOR_LOGI("begin(): backend = SDMMC (SD_MMC)\n");
+    STOR_LOGI("begin (SDMMC): starting SD_MMC\n");
 
     // Pins must come from the board profile now
     const int clk = s_storage->sdmmc_clk;
@@ -422,7 +425,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     const int d0  = s_storage->sdmmc_d0;
 
     if (clk < 0 || cmd < 0 || d0 < 0) {
-      Serial.println("[Storage] SDMMC backend selected but sdmmc_clk/cmd/d0 not set");
+      STOR_LOGE("SDMMC backend selected but sdmmc_clk/cmd/d0 not set\n");
       gSd = nullptr;
       return;
     }
@@ -435,7 +438,7 @@ void StorageManager_begin(const board::BoardProfile& bp) {
       const int d2 = s_storage->sdmmc_d2;
       const int d3 = s_storage->sdmmc_d3;
       if (d1 < 0 || d2 < 0 || d3 < 0) {
-        Serial.println("[Storage] SDMMC 4-bit selected but d1/d2/d3 not set");
+        STOR_LOGE("SDMMC 4-bit selected but d1/d2/d3 not set\n");
         gSd = nullptr;
         return;
       }
@@ -443,41 +446,37 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     }
 
     const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit);
-    Serial.print("[Storage] SD_MMC.begin result: ");
-    Serial.println(ok ? "OK (true)" : "FAILED (false)");
+    STOR_LOGI("SD_MMC.begin result: %s\n", ok ? "OK (true)" : "FAILED (false)");
 
     if (!ok) {
-      Serial.println("[Storage] SD_MMC.begin FAILED, returning");
+      STOR_LOGE("SD_MMC.begin FAILED, returning\n");
       gSd = nullptr;
       return;
     }
 
     uint8_t cardType = SD_MMC.cardType();
     if (cardType == CARD_NONE) {
-      Serial.println("[Storage] No SD card attached (cardType=CARD_NONE)");
+      STOR_LOGW("No SD card attached (cardType=CARD_NONE)\n");
       SD_MMC.end();
       gSd = nullptr;
       return;
     }
 
-    Serial.print("[Storage] SD_MMC cardType = ");
-    Serial.println(cardType);
+    STOR_LOGI("SD_MMC cardType = %u\n", (unsigned)cardType);
 
     uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
-    Serial.print("[Storage] SD card size: ");
-    Serial.print(sizeMB);
-    Serial.println(" MB");
+    STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
 
     // ---- IMPORTANT: publish the active filesystem handle ----
     gSd = nullptr;   // <-- SdFat pointer remains null in SDMMC mode (by design)
 
-    //Serial.printf("[Storage] gFs=%p (SD_MMC), gSd=%p (SdFat)\n", (void*)gFs, (void*)gSd);
-    Serial.println("[Storage] SD_MMC.begin OK.");
+    // Optional debug aid: inspect active filesystem handles here if needed.
+    STOR_LOGI("SD_MMC.begin OK.\n");
     return;
   }
 
 
-  Serial.println("[Storage] begin(): storage backend = None");
+  STOR_LOGW("begin(): storage backend = None\n");
 }
 
 
@@ -524,15 +523,15 @@ static bool preallocate(FsFile& f, uint32_t mib) {
   bytes = ((bytes + cluster - 1) / cluster) * cluster;
 
   if (!f.preAllocate(bytes)) {
-    Serial.println("[Storage] preAllocate failed; continuing without it.");
+    STOR_LOGW("preAllocate failed; continuing without it.\n");
     return false;
   }
   // Start logical length at 0 but keep space reserved
   if (!f.truncate(0)) {
-    Serial.println("[Storage] truncate(0) after preAllocate failed.");
+    STOR_LOGW("truncate(0) after preAllocate failed.\n");
     return false;
   }
-  Serial.printf("[Storage] Pre-allocated %lu MiB contiguous.\n", (unsigned long)mib);
+  STOR_LOGI("Pre-allocated %lu MiB contiguous.\n", (unsigned long)mib);
   return true;
 }
 
@@ -542,16 +541,15 @@ static bool openNewLogFile_SPI(const String& longName) {
   // 1) Long name
   logFile = sd.open(longName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
   if (!logFile) {
-    Serial.println("[Storage] SPI: long name failed, trying 8.3...");
+    STOR_LOGW("SPI: long name failed, trying 8.3...\n");
 
     // 2) 8.3 short name
     String shortName = make83Name(longName);
-    Serial.print("[Storage] SPI: 8.3 candidate: ");
-    Serial.println(shortName);
+    STOR_LOGI("SPI: 8.3 candidate: %s\n", shortName.c_str());
 
     logFile = sd.open(shortName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
     if (!logFile) {
-      Serial.println("[Storage] SPI: 8.3 failed, trying LOGnnnn.CSV...");
+      STOR_LOGW("SPI: 8.3 failed, trying LOGnnnn.CSV...\n");
 
       char fallback[20];
       for (int i = 1; i < 10000; i++) {
@@ -559,19 +557,17 @@ static bool openNewLogFile_SPI(const String& longName) {
         if (!sd.exists(fallback)) {
           logFile = sd.open(fallback, O_WRONLY | O_CREAT | O_EXCL);
           if (logFile) {
-            Serial.print("[Storage] SPI: Using fallback: ");
-            Serial.println(fallback);
+            STOR_LOGI("SPI: Using fallback: %s\n", fallback);
             break;
           }
         }
       }
       if (!logFile) {
-        Serial.println("[Storage] SPI: No available filename; giving up.");
+        STOR_LOGE("SPI: No available filename; giving up.\n");
         return false;
       }
     } else {
-      Serial.print("[Storage] SPI: Using 8.3: ");
-      Serial.println(shortName);
+      STOR_LOGI("SPI: Using 8.3: %s\n", shortName.c_str());
     }
   }
 
@@ -602,31 +598,27 @@ static bool openNewLogFile_SDMMC(const String& longName) {
 
   // 1) Long name
   if (tryCreate(longName, logFileMMC)) {
-    Serial.print("[Storage] SD_MMC: Using long filename: ");
-    Serial.println(longName);
+    STOR_LOGI("SD_MMC: Using long filename: %s\n", longName.c_str());
     return true;
   }
 
   // 2) 8.3 short name
-  Serial.println("[Storage] SD_MMC: long name failed, trying 8.3...");
+  STOR_LOGW("SD_MMC: long name failed, trying 8.3...\n");
   String shortName = make83Name(longName);
-  Serial.print("[Storage] SD_MMC: 8.3 candidate: ");
-  Serial.println(shortName);
+  STOR_LOGI("SD_MMC: 8.3 candidate: %s\n", shortName.c_str());
 
   if (tryCreate(shortName, logFileMMC)) {
-    Serial.print("[Storage] SD_MMC: Using 8.3: ");
-    Serial.println(shortName);
+    STOR_LOGI("SD_MMC: Using 8.3: %s\n", shortName.c_str());
     return true;
   }
 
   // 3) Fallback numbered files
-  Serial.println("[Storage] SD_MMC: 8.3 failed, trying LOGnnnn.CSV...");
+  STOR_LOGW("SD_MMC: 8.3 failed, trying LOGnnnn.CSV...\n");
   char fallback[20];
   for (int i = 1; i < 10000; i++) {
     snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
     if (tryCreate(String(fallback), logFileMMC)) {
-      Serial.print("[Storage] SD_MMC: Using fallback: ");
-      Serial.println(fallback);
+      STOR_LOGI("SD_MMC: Using fallback: %s\n", fallback);
       return true;
     }
   }
@@ -651,7 +643,7 @@ static void startLog() {
   filename += ".CSV";
 
   TRACE("[Storage] Trying to open log: ");
-  Serial.println(filename);
+  STOR_LOGI("Trying to open log: %s\n", filename.c_str());
 
   bool ok = false;
 
@@ -661,7 +653,7 @@ static void startLog() {
 
     ok = openNewLogFile_SPI(filename);  // handles long name, 8.3, fallback
     if (!ok) {
-      Serial.println("[Storage] No available filename; giving up.");
+      STOR_LOGE("No available filename; giving up.\n");
       return;
     }
 
@@ -671,8 +663,7 @@ static void startLog() {
     String path = "/";
     path += filename;
 
-    Serial.print("[Storage] SD_MMC path = ");
-    Serial.println(path);
+    STOR_LOGI("SD_MMC path = %s\n", path.c_str());
 
     ok = openNewLogFile_SDMMC(path);
     if (!ok) {
@@ -706,11 +697,10 @@ static void startLog() {
     memcpy(header, idPrefix, idLen);
   } else {
     // If this ever happens, we ran out of header buffer space
-    Serial.println("[Storage] Warning: header buffer too small for sample_id prefix");
+    STOR_LOGW("Warning: header buffer too small for sample_id prefix\n");
   }
 
-  Serial.print("[Storage] Header: ");
-  Serial.println(header);
+  STOR_LOGI("Header: %s\n", header);
 
   if (isSpiBackend()) {
     logFile.println(header);
@@ -807,11 +797,14 @@ void StorageManager_stopLog() {
   }
 
   loggingActive = false;
-  Serial.printf("[Storage] samplesDropped=%lu\n", (unsigned long)s_samplesDropped);
-  Serial.printf("[Storage] flushCount=%lu maxFlushMs=%lu avgFlushMs=%.2f\n", (unsigned long)s_flushCount, (unsigned long)s_flushMaxMs, s_flushCount ? (double)s_flushTotalMs / s_flushCount : 0.0);
-  Serial.printf("[Storage] qMax=%u/%u\n", s_qMax, s_qCap);
+  STOR_LOGI("samplesDropped=%lu\n", (unsigned long)s_samplesDropped);
+  STOR_LOGI("flushCount=%lu maxFlushMs=%lu avgFlushMs=%.2f\n",
+            (unsigned long)s_flushCount,
+            (unsigned long)s_flushMaxMs,
+            s_flushCount ? (double)s_flushTotalMs / s_flushCount : 0.0);
+  STOR_LOGI("qMax=%u/%u\n", s_qMax, s_qCap);
 
-  Serial.println("Log file closed.");
+  STOR_LOGI("Log file closed.\n");
   
   // Clear any leftover queued samples (we're no longer logging)
   s_qHead = s_qTail = s_qCount = 0;
@@ -844,7 +837,7 @@ void StorageManager_setCustomHeader(const char* csv) {
 void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t nValues, bool mark)
 {
     if (!logIsOpen()) {
-        Serial.println("[Storage] logCsvDynamic: file not open");
+        STOR_LOGW("logCsvDynamic: file not open\n");
         return;
     }
     if (nValues == 0 || !values) return;
@@ -958,7 +951,7 @@ void StorageManager_loop() {
 
       if (t_row0) {
         uint32_t us = micros() - t_row0;
-        Serial.printf("[ROW] us=%lu nValues=%u\n", (unsigned long)us, (unsigned)row.nValues);
+        ROW_LOGD("us=%lu nValues=%u\n", (unsigned long)us, (unsigned)row.nValues);
       }
 
       // Stop draining if we've exceeded our loop time budget
@@ -968,10 +961,10 @@ void StorageManager_loop() {
     // Occasional drain diagnostics if this loop took a noticeable chunk of time
     uint32_t dt_us = micros() - t0_us;
     if (dt_us > 50000) { // >50ms spent draining (should be rare)
-      Serial.printf("[DRAIN] processed=%u dt=%lu ms bufIndex=%u qMax=%u/%u\n",
-                    (unsigned)processed, (unsigned long)(dt_us / 1000UL),
-                    (unsigned)bufferIndex,
-                    (unsigned)s_qMax, (unsigned)s_qCap);
+      DRAIN_LOGD("processed=%u dt=%lu ms bufIndex=%u qMax=%u/%u\n",
+                 (unsigned)processed, (unsigned long)(dt_us / 1000UL),
+                 (unsigned)bufferIndex,
+                 (unsigned)s_qMax, (unsigned)s_qCap);
     }
   }
 

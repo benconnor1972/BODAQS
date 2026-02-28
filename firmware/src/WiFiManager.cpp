@@ -4,7 +4,15 @@
 #include <esp_bt.h>
 #include <esp_coexist.h>
 #include <cstring>
-#include "RTCManager.h"   
+#include "RTCManager.h"
+#include "DebugLog.h"
+
+#define WIFI_LOGE(...) LOGE_TAG("WiFi", __VA_ARGS__)
+#define WIFI_LOGW(...) LOGW_TAG("WiFi", __VA_ARGS__)
+#define WIFI_LOGI(...) LOGI_TAG("WiFi", __VA_ARGS__)
+#define WIFI_LOGD(...) LOGD_TAG("WiFi", __VA_ARGS__)
+#define RTC_LOGI(...)  LOGI_TAG("RTC", __VA_ARGS__)
+#define ADC_LOGD(...)  LOGD_TAG("ADC", __VA_ARGS__)
 
 static const uint32_t SCAN_TIMEOUT_MS     = 6000;   // single active scan budget
 static const uint32_t CONNECT_TIMEOUT_MS  = 12000;  // assoc/auth/IP wait
@@ -48,10 +56,10 @@ static void tryRtcSyncIfPending_() {
     // Re-issue SNTP config AFTER link-up to ensure client starts a query now.
     // (Safe to call multiple times; it resets the SNTP client.)
     configTzTime(tz, "0.pool.ntp.org", "1.pool.ntp.org", "time.nist.gov");
-    Serial.printf("[RTC] Re-kicked SNTP with TZ='%s'\n", tz);
+    RTC_LOGI("Re-kicked SNTP with TZ='%s'\n", tz);
 
   }
-  const bool ok = RTCManager_waitForSNTP(15000); // wait briefly for NTP
+  (void)RTCManager_waitForSNTP(15000); // wait briefly for NTP
   RTCManager_sync();                            // capture baseEpoch from system
   s_rtcSyncPending = false;
 
@@ -219,11 +227,11 @@ void WiFiManager::loop() {
 void WiFiManager::enable() {
   if (s_enabled) return;
   auto dumpAdc = [](const char* tag){
-    Serial.printf("\n[ADC] %s\n", tag);
+    ADC_LOGD("\n%s\n", tag);
     int pins[] = {15,17,18,10};
     for (int p : pins) {
       int v = analogRead(p);
-      Serial.printf("  GPIO%02d = %d\n", p, v);
+      LOGD("  GPIO%02d = %d\n", p, v);
     }
   };
   dumpAdc("after WiFi on");

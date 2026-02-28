@@ -12,6 +12,7 @@
 #include "Calibration.h"
 #include "CalCapture.h"
 #include "WiFiManager.h"
+#include "DebugLog.h"
 #include <WiFi.h>
 #include "RTCManager.h"
 
@@ -19,15 +20,7 @@
 
 
 // ---- Menu debug toggle ----
-#ifndef MENU_DEBUG
-#define MENU_DEBUG 1   // set to 0 to silence MenuSystem logs
-#endif
-
-#if MENU_DEBUG
-  #define MLOG(...)  do { Serial.printf(__VA_ARGS__); } while (0)
-#else
-  #define MLOG(...)  do {} while (0)
-#endif
+#define MLOG(...) LOGD_TAG("MENU", __VA_ARGS__)
 
 // Pretty names for states/dirs
 static const char* stateName(MenuSystem::State s) {
@@ -276,7 +269,7 @@ namespace {
         deferUiFor(800);
         DisplayManager::present(); // ensure OLED pushes immediately (if applicable)
 
-        Serial.println("[Menu] Restarting via esp_restart()");
+        LOGI_TAG("Menu", "Restarting via esp_restart()\n");
         Serial.flush();
         delay(150);
         RTCManager_invalidateInternalTime();

@@ -4,6 +4,7 @@
 #include "UI.h"
 #include "SensorManager.h"
 #include "LoggingManager.h"
+#include "DebugLog.h"
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -136,7 +137,7 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
   if (disp.type == board::DisplayType::None) {
     s_present = false;
     s_status  = "";
-    Serial.println(F("[DISP] No display (BoardProfile)."));
+    LOGI_TAG("DISP", "No display (BoardProfile).\n");
     return false;
   }
 
@@ -144,11 +145,11 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
   if (!i2c.present || i2c.sda < 0 || i2c.scl < 0) {
     s_present = false;
     s_status  = "OLED unavailable";
-    Serial.println(F("[DISP] I2C not present or invalid pins; display disabled."));
+    LOGW_TAG("DISP", "I2C not present or invalid pins; display disabled.\n");
     return false;
   }
 
-  Serial.println(F("[DISP] begin: starting I2C"));
+  LOGI_TAG("DISP", "begin: starting I2C\n");
 
   // I2C bring-up (from board profile)
   Wire.begin(i2c.sda, i2c.scl);
@@ -162,16 +163,15 @@ const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
     uint8_t err = Wire.endTransmission(true);
     if (err == 0) {
       addrToUse = disp.addr_primary;
-      Serial.println(F("[DISP] I2C: found OLED at primary address"));
+      LOGI_TAG("DISP", "I2C: found OLED at primary address\n");
     } else {
       Wire.beginTransmission(disp.addr_alt);
       err = Wire.endTransmission(true);
       if (err == 0) {
         addrToUse = disp.addr_alt;
-        Serial.println(F("[DISP] I2C: found OLED at alternate address"));
+        LOGI_TAG("DISP", "I2C: found OLED at alternate address\n");
       } else {
-        Serial.print(F("[DISP] I2C: no OLED found, err="));
-        Serial.println(err);
+        LOGW_TAG("DISP", "I2C: no OLED found, err=%u\n", (unsigned)err);
       }
     }
   }
@@ -179,25 +179,24 @@ const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
   if (addrToUse == 0) {
     s_present = false;
     s_status  = "OLED not detected";
-    Serial.println(F("[DISP] OLED not detected; display disabled."));
+    LOGW_TAG("DISP", "OLED not detected; display disabled.\n");
     return false;
   }
 
   // --- Initialise the SSD1306 ---
-  Serial.print(F("[DISP] Initialising SSD1306 at 0x"));
-  Serial.println(addrToUse, HEX);
+  LOGI_TAG("DISP", "Initialising SSD1306 at 0x%02X\n", (unsigned)addrToUse);
 
   bool ok = oled.begin(SSD1306_SWITCHCAPVCC,
                        addrToUse,
                        /*reset=*/false,
                        /*periphBegin=*/false);
   if (!ok) {
-    Serial.println(F("[DISP] oled.begin() failed; display disabled."));
+    LOGE_TAG("DISP", "oled.begin() failed; display disabled.\n");
     s_present = false;
     return false;
   }
 
-  Serial.println(F("[DISP] oled.begin() OK"));
+  LOGI_TAG("DISP", "oled.begin() OK\n");
 
   // Brightness & idle dim from cfg (unchanged)
   s_nominal    = (cfg.oledBrightness == 0) ? 200 : cfg.oledBrightness;
@@ -222,7 +221,7 @@ const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
   s_lastActive  = 255;
 
   drawAll();
-  Serial.println(F("[DISP] begin: complete"));
+  LOGI_TAG("DISP", "begin: complete\n");
   return true;
 }
 

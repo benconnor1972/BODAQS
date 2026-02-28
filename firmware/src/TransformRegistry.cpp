@@ -3,6 +3,12 @@
 #include <FS.h>        // fs::FS
 #include <SdFat.h>     // SdFat/SdFs
 #include <algorithm>
+#include "DebugLog.h"
+
+#define XFORM_LOGE(...) LOGE_TAG("XFORM", __VA_ARGS__)
+#define XFORM_LOGW(...) LOGW_TAG("XFORM", __VA_ARGS__)
+#define XFORM_LOGI(...) LOGI_TAG("XFORM", __VA_ARGS__)
+#define XFORM_LOGD(...) LOGD_TAG("XFORM", __VA_ARGS__)
 
 // ---------- utils ----------
 static bool endsWith(const String& s, const char* suffix) {
@@ -25,25 +31,25 @@ String TransformRegistry::calDirFor(const String& sensorId) const {
 
 // ---------- public APIs (FS + SdFs) ----------
 bool TransformRegistry::loadForSensor(const String& sensorId, SdFs& sd) {
-  Serial.println("[XFORM_FAT] HIT loadForSensor(SdFs)");
+  XFORM_LOGD("FAT: HIT loadForSensor(SdFs)\n");
 
   sensors_.erase(sensorId);
   const String dir = calDirFor(sensorId);
 
-  Serial.printf("[XFORM_FAT] sensor='%s' dir='%s'\n", sensorId.c_str(), dir.c_str());
+  XFORM_LOGD("FAT: sensor='%s' dir='%s'\n", sensorId.c_str(), dir.c_str());
 
   if (!sd.exists(dir.c_str())) {
-    Serial.printf("[XFORM_FAT] dir missing: %s\n", dir.c_str());
+    XFORM_LOGD("FAT: dir missing: %s\n", dir.c_str());
     return true;
   }
 
   FsFile d;
   if (!d.open(dir.c_str(), O_RDONLY)) {
-    Serial.printf("[XFORM_FAT] dir open FAIL: %s\n", dir.c_str());
+    XFORM_LOGW("FAT: dir open FAIL: %s\n", dir.c_str());
     return false;
   }
   if (!d.isDir()) {
-    Serial.printf("[XFORM_FAT] not a dir: %s\n", dir.c_str());
+    XFORM_LOGW("FAT: not a dir: %s\n", dir.c_str());
     d.close();
     return false;
   }
@@ -57,26 +63,26 @@ bool TransformRegistry::loadForSensor(const String& sensorId, SdFs& sd) {
 
     String full = dir + name;
 
-    Serial.printf("[XFORM_FAT] entry: %s%s\n", full.c_str(), isDir ? "/" : "");
+    XFORM_LOGD("FAT: entry: %s%s\n", full.c_str(), isDir ? "/" : "");
 
     if (isDir) continue;
 
     if (endsWith(full, ".poly.json")) {
-      Serial.printf("[XFORM_FAT] load poly json: %s\n", full.c_str());
+      XFORM_LOGD("FAT: load poly json: %s\n", full.c_str());
       loadPoly_sd(sensorId, full, sd);
 
     } else if (endsWith(full, ".poly.cfg") ||
                endsWith(full, ".poly.txt") ||
                endsWith(full, ".poly")) {
-      Serial.printf("[XFORM_FAT] load poly cfg: %s\n", full.c_str());
+      XFORM_LOGD("FAT: load poly cfg: %s\n", full.c_str());
       loadPoly_cfg_sd(sensorId, full, sd);
 
     } else if (endsWith(full, ".lut.csv")) {
-      Serial.printf("[XFORM_FAT] load lut csv: %s\n", full.c_str());
+      XFORM_LOGD("FAT: load lut csv: %s\n", full.c_str());
       loadLUT_sd(sensorId, full, sd);
 
     } else {
-      Serial.printf("[XFORM_FAT] skip (suffix): %s\n", full.c_str());
+      XFORM_LOGD("FAT: skip (suffix): %s\n", full.c_str());
     }
   }
 
@@ -86,25 +92,25 @@ bool TransformRegistry::loadForSensor(const String& sensorId, SdFs& sd) {
 
 
 bool TransformRegistry::loadForSensor(const String& sensorId, fs::FS& fs) {
-  Serial.println("[XFORM_FS] HIT loadForSensor(fs::FS)");
+  XFORM_LOGD("FS: HIT loadForSensor(fs::FS)\n");
 
   sensors_.erase(sensorId);
   const String dir = calDirFor(sensorId);
 
-  Serial.printf("[XFORM_FS] sensor='%s' dir='%s'\n", sensorId.c_str(), dir.c_str());
+  XFORM_LOGD("FS: sensor='%s' dir='%s'\n", sensorId.c_str(), dir.c_str());
 
   if (!fs.exists(dir)) {
-    Serial.printf("[XFORM_FS] dir missing: %s\n", dir.c_str());
+    XFORM_LOGD("FS: dir missing: %s\n", dir.c_str());
     return true;
   }
 
   File d = fs.open(dir, FILE_READ);
   if (!d) {
-    Serial.printf("[XFORM_FS] dir open FAIL: %s\n", dir.c_str());
+    XFORM_LOGW("FS: dir open FAIL: %s\n", dir.c_str());
     return false;
   }
   if (!d.isDirectory()) {
-    Serial.printf("[XFORM_FS] not a dir: %s\n", dir.c_str());
+    XFORM_LOGW("FS: not a dir: %s\n", dir.c_str());
     d.close();
     return false;
   }
@@ -126,26 +132,26 @@ bool TransformRegistry::loadForSensor(const String& sensorId, fs::FS& fs) {
 
     String full = base + name;
 
-    Serial.printf("[XFORM_FS] entry: %s%s\n", full.c_str(), isDir ? "/" : "");
+    XFORM_LOGD("FS: entry: %s%s\n", full.c_str(), isDir ? "/" : "");
 
     if (isDir) continue;
 
     if (endsWith(full, ".poly.json")) {
-      Serial.printf("[XFORM_FS_XX] load poly json: %s\n", full.c_str());
+      XFORM_LOGD("FS: load poly json: %s\n", full.c_str());
       loadPoly_fs(sensorId, full, fs);
 
     } else if (endsWith(full, ".poly.cfg") ||
                endsWith(full, ".poly.txt") ||
                endsWith(full, ".poly")) {
-      Serial.printf("[XFORM_FS_XX] load poly cfg: %s\n", full.c_str());
+      XFORM_LOGD("FS: load poly cfg: %s\n", full.c_str());
       loadPoly_cfg_fs(sensorId, full, fs);
 
     } else if (endsWith(full, ".lut.csv")) {
-      Serial.printf("[XFORM_FS_XX] load lut csv: %s\n", full.c_str());
+      XFORM_LOGD("FS: load lut csv: %s\n", full.c_str());
       loadLUT_fs(sensorId, full, fs);
 
     } else {
-      Serial.printf("[XFORM_FS] skip (suffix): %s\n", full.c_str());
+      XFORM_LOGD("FS: skip (suffix): %s\n", full.c_str());
     }
   }
 
@@ -155,7 +161,7 @@ bool TransformRegistry::loadForSensor(const String& sensorId, fs::FS& fs) {
 
 
 const OutputTransform* TransformRegistry::get(const String& sensorId, const String& id) const {
-  Serial.printf("[XFORM] reg.get(sensor='%s', id='%s')\n", sensorId.c_str(), id.c_str());
+  XFORM_LOGD("reg.get(sensor='%s', id='%s')\n", sensorId.c_str(), id.c_str());
   auto it = sensors_.find(sensorId);
   if (it == sensors_.end()) return nullptr;
   auto jt = it->second.byId.find(id);
@@ -297,7 +303,7 @@ bool TransformRegistry::loadPoly_sd(const String& sensorId, const String& path, 
 
   sanitizeId(t->meta.id);
   if (t->meta.id.isEmpty()) {
-    Serial.printf("[XFORM] ERROR: missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
+    XFORM_LOGE("missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
     return false;
   }
   if (t->meta.label.isEmpty()) t->meta.label = t->meta.id;
@@ -347,7 +353,7 @@ bool TransformRegistry::loadLUT_sd(const String& sensorId, const String& path, S
 
   sanitizeId(t->meta.id);
   if (t->meta.id.isEmpty()) {
-    Serial.printf("[XFORM] ERROR: missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
+    XFORM_LOGE("missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
     return false;
   }
   if (t->meta.label.isEmpty()) t->meta.label = t->meta.id;
@@ -391,7 +397,7 @@ bool TransformRegistry::loadPoly_fs(const String& sensorId,
 
   sanitizeId(t->meta.id);
   if (t->meta.id.isEmpty()) {
-    Serial.printf("[XFORM] ERROR: missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
+    XFORM_LOGE("missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
     return false;
   }
   if (t->meta.label.isEmpty()) t->meta.label = t->meta.id;
@@ -454,7 +460,7 @@ bool TransformRegistry::loadLUT_fs(const String& sensorId,
 
   sanitizeId(t->meta.id);
   if (t->meta.id.isEmpty()) {
-    Serial.printf("[XFORM] ERROR: missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
+    XFORM_LOGE("missing '#id=' metadata in file: %s (skipping)\n", path.c_str());
     return false;
   }
   if (t->meta.label.isEmpty()) t->meta.label = t->meta.id;

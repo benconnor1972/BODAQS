@@ -10,6 +10,16 @@
 #include "BoardSelect.h" 
 #include <cstring>
 #include "BoardSelect.h"
+#include "DebugLog.h"
+
+#define SENS_LOGE(...) LOGE_TAG("SENS", __VA_ARGS__)
+#define SENS_LOGW(...) LOGW_TAG("SENS", __VA_ARGS__)
+#define SENS_LOGI(...) LOGI_TAG("SENS", __VA_ARGS__)
+#define SENS_LOGD(...) LOGD_TAG("SENS", __VA_ARGS__)
+#define XFORM_LOGW(...) LOGW_TAG("XFORM", __VA_ARGS__)
+#define XFORM_LOGI(...) LOGI_TAG("XFORM", __VA_ARGS__)
+#define XFORM_LOGD(...) LOGD_TAG("XFORM", __VA_ARGS__)
+#define SM_LOGI(...) LOGI_TAG("SM", __VA_ARGS__)
 
 //Debug
 static uint32_t s_sampleID = 0;
@@ -105,7 +115,7 @@ void registerSensor(Sensor* s) {
 }
 
 void buildSensorsFromConfig(const LoggerConfig& cfg) {
-  Serial.printf("[SENS] Starting buildSensorsFromConfig");
+  SENS_LOGI("Starting buildSensorsFromConfig\n");
   const uint8_t n = cfg.sensorCount();
   if (n == 0) {
     UI::status("No sensors");
@@ -115,7 +125,7 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
   for (uint8_t i = 0; i < n; ++i) {
     SensorSpec sp;
     if (!cfg.getSensorSpec(i, sp)) { ///need tp make this non-global
-      Serial.printf("[SENS] spec %u read failed\n", i);
+      SENS_LOGW("spec %u read failed\n", i);
       continue;
     }
 
@@ -124,25 +134,25 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       long ain = -1;
       if (sp.params.getInt("ain", ain)) {
         if (!board::gBoard) {
-          Serial.printf("[SENS] sensor '%s' has ain=%ld but gBoard is null\n", sp.name, ain);
+          SENS_LOGW("sensor '%s' has ain=%ld but gBoard is null\n", sp.name, ain);
         } else {
           const auto& bp = *board::gBoard;
 
           if (ain < 0 || ain >= (long)bp.analog.count) {
-            Serial.printf("[SENS] sensor '%s': ain=%ld out of range (board analog.count=%u)\n",
-                          sp.name, ain, (unsigned)bp.analog.count);
+            SENS_LOGW("sensor '%s': ain=%ld out of range (board analog.count=%u)\n",
+                      sp.name, ain, (unsigned)bp.analog.count);
           } else {
             const int pin = bp.analog.pins[(uint8_t)ain];
             if (pin < 0) {
-              Serial.printf("[SENS] sensor '%s': AIN%ld not available on this board (pin<0)\n",
-                            sp.name, ain);
+              SENS_LOGW("sensor '%s': AIN%ld not available on this board (pin<0)\n",
+                        sp.name, ain);
             } else {
               // Inject resolved pin so existing analog sensor implementations keep working.
               // If your analog sensors expect a different key than "pin", change it here.
               sp.params.set("pin", String(pin));
               // Optional: persist normalized mapping (not required)
               // ConfigManager::saveSensorParamByName(sp.name, "pin", String(pin));
-              Serial.printf("[SENS] sensor '%s': ain=%ld -> pin=%d\n", sp.name, ain, pin);
+              SENS_LOGI("sensor '%s': ain=%ld -> pin=%d\n", sp.name, ain, pin);
             }
           }
         }
@@ -151,48 +161,44 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
 
     const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
     if (!ti) {
-      Serial.printf("[SENS] type %u not registered (sensor '%s')\n",
-                    (unsigned)sp.type, sp.name);
+      SENS_LOGW("type %u not registered (sensor '%s')\n",
+                (unsigned)sp.type, sp.name);
       continue;
     }
 
     long pinCheck;
     if (!sp.params.getInt("pin", pinCheck) || pinCheck < 0) {
-      Serial.printf("[SENS] '%s': no valid analog input assigned (missing or invalid ain)\n",
-                    sp.name);
+      SENS_LOGW("'%s': no valid analog input assigned (missing or invalid ain)\n",
+                sp.name);
       continue;
     }
 
     // Create via registry factory — IMPORTANT: respect muted default from config
     Sensor* s = ti->create(sp.name, sp.params, sp.mutedDefault);
     if (!s) {
-      Serial.printf("[SENS] create failed for '%s' (type %u)\n",
-                    sp.name, (unsigned)sp.type);
+      SENS_LOGE("create failed for '%s' (type %u)\n",
+                sp.name, (unsigned)sp.type);
       continue;
     }
 
-    Serial.printf("[XFORM] about to load transforms for '%s'\n", sp.name);
-
-    Serial.printf("[XFORM] gSd ptr=%p\n", (void*)gSd);
+    XFORM_LOGI("about to load transforms for '%s'\n", sp.name);
+    XFORM_LOGD("gSd ptr=%p\n", (void*)gSd);
 
     // Preload any transforms on disk for this sensor
-Serial.printf("[XFORM] about to load transforms for '%s'\n", sp.name);
-
-// Preload any transforms on disk for this sensor
     if (SD_MMC.cardType() != CARD_NONE) {
       gTransforms.loadForSensor(sp.name, SD_MMC);   // fs::FS&
     } else if (gSd) {
       gTransforms.loadForSensor(sp.name, *gSd);     // SdFs& (SPI backend)
     } else {
-      Serial.println("[XFORM] no SD backend available -> skipping transform load");
+      XFORM_LOGW("no SD backend available -> skipping transform load\n");
     }
 
     {
       auto metas = gTransforms.list(sp.name);
-      Serial.printf("[XFORM] loaded %u transforms for sensor='%s':\n",
-                    (unsigned)metas.size(), sp.name);
+      XFORM_LOGI("loaded %u transforms for sensor='%s':\n",
+                 (unsigned)metas.size(), sp.name);
       for (const auto& m : metas) {
-        Serial.printf("  id='%s' label='%s'\n", m.id, m.label);
+        LOGI("  id='%s' label='%s'\n", m.id, m.label);
       }
     }
 
@@ -354,11 +360,8 @@ Serial.printf("[XFORM] about to load transforms for '%s'\n", sp.name);
     s->setAllowedCalMask(finalMask);
 
     #ifdef SERIAL_DEBUG
-    Serial.print(F("[CalMask] "));
-    Serial.print(sp.name);
-    Serial.print(F(" supported=")); Serial.print((int)supported, HEX);
-    Serial.print(F(" allowed="));   Serial.print((int)allowed,   HEX);
-    Serial.print(F(" final="));     Serial.println((int)finalMask, HEX);
+    SENS_LOGD("[CalMask] %s supported=%X allowed=%X final=%X\n",
+              sp.name, (int)supported, (int)allowed, (int)finalMask);
     #endif
   }
 }
@@ -480,7 +483,7 @@ void debugDump(const char* tag) {
   uint8_t n = 0;
   for (uint8_t i = 0; i < kSlots; ++i) if (s_list[i]) ++n;
 
-  Serial.printf("[SM] %s: sensors=%u\n", tag, (unsigned)n);
+  SM_LOGI("%s: sensors=%u\n", tag, (unsigned)n);
 
   for (uint8_t i = 0; i < kSlots; ++i) {
     Sensor* s = s_list[i];
@@ -488,8 +491,8 @@ void debugDump(const char* tag) {
     const uint8_t cols = s->columnCount();
     char firstCol[24] = {0};
     if (cols) s->getColumnName(0, firstCol, sizeof(firstCol));
-    Serial.printf("  slot=%u muted=%d cols=%u firstCol='%s'\n",
-                  (unsigned)i, (int)s->muted(), (unsigned)cols, firstCol);
+    LOGI("  slot=%u muted=%d cols=%u firstCol='%s'\n",
+         (unsigned)i, (int)s->muted(), (unsigned)cols, firstCol);
   }
 }
 
