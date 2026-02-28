@@ -86,6 +86,39 @@ static void hardOff_(const char* reason) {
   wifiDiag_("hardOff done");
 }
 
+static void splitCsv3_(const char* csv, String& s1, String& s2, String& s3) {
+  s1 = "";
+  s2 = "";
+  s3 = "";
+  if (!csv) return;
+
+  String src(csv);
+  src.trim();
+  if (!src.length()) return;
+
+  int p1 = src.indexOf(',');
+  if (p1 < 0) {
+    s1 = src;
+    s1.trim();
+    return;
+  }
+
+  s1 = src.substring(0, p1);
+  s1.trim();
+
+  int p2 = src.indexOf(',', p1 + 1);
+  if (p2 < 0) {
+    s2 = src.substring(p1 + 1);
+    s2.trim();
+    return;
+  }
+
+  s2 = src.substring(p1 + 1, p2);
+  s2.trim();
+  s3 = src.substring(p2 + 1);
+  s3.trim();
+}
+
 // Free helper, no access to WiFiManager privates needed
 static void tryRtcSyncIfPending_() {
   if (!s_rtcSyncPending) return;
@@ -93,11 +126,16 @@ static void tryRtcSyncIfPending_() {
     const auto& cfg = ConfigManager::get();
     // Use saved TZ if set; else fall back to AWST (UTC+8; POSIX uses inverted sign)
     const char* tz = (cfg.tz[0] ? cfg.tz : "AWST-8");
+    String n1, n2, n3;
+    splitCsv3_(cfg.ntpServers, n1, n2, n3);
 
     // Re-issue SNTP config AFTER link-up to ensure client starts a query now.
     // (Safe to call multiple times; it resets the SNTP client.)
-    configTzTime(tz, "0.pool.ntp.org", "1.pool.ntp.org", "time.nist.gov");
-    RTC_LOGI("Re-kicked SNTP with TZ='%s'\n", tz);
+    configTzTime(tz,
+                 n1.length() ? n1.c_str() : nullptr,
+                 n2.length() ? n2.c_str() : nullptr,
+                 n3.length() ? n3.c_str() : nullptr);
+    RTC_LOGI("Re-kicked SNTP with TZ='%s' servers='%s'\n", tz, cfg.ntpServers);
 
   }
   (void)RTCManager_waitForSNTP(15000); // wait briefly for NTP
