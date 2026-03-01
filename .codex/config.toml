@@ -1,0 +1,9 @@
+[commands]
+# Firmware
+build_firmware  = "cd firmware && pio run"
+upload_firmware = "cd firmware && pio run -t upload"
+
+smoke_analysis = ".\\.venv\\Scripts\\python -c \"import bodaqs_analysis; print('bodaqs_analysis ok')\""
+test_analysis  = ".\\.venv\\Scripts\\python -m pytest -q analysis"
+jlab           = ".\\.venv\\Scripts\\python -m jupyter lab --notebook-dir=analysis"
+

@@ -11286,7 +11286,7 @@
 			(justify left bottom)
 		)
 	)
-	(gr_text "BODAQS 4 Prototype D"
+	(gr_text "BODAQS 4 Prototype E"
 		(at 161.621588 78.678752 0)
 		(layer "F.SilkS")
 		(uuid "c7778efc-d378-42e6-a724-ce927bf85a2f")
