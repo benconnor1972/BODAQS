@@ -467,7 +467,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "BODAQS shield Proto E.kicad_pro",
+    "filename": "BODAQS shield Proto E SMD.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -508,7 +508,7 @@
       "plot": "./",
       "pos_files": "",
       "specctra_dsn": "",
-      "step": "BODAQS shield Proto E.step",
+      "step": "BODAQS shield Proto E SMD.step",
       "svg": "",
       "vrml": ""
     },
