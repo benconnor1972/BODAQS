@@ -4586,7 +4586,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K"
 			(at 162.56 39.37 90)
 			(effects
 				(font
@@ -4655,7 +4655,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "Analog Input 4"
+		(property "Value" "Analog4"
 			(at 177.8 101.5999 0)
 			(effects
 				(font
@@ -4859,7 +4859,7 @@
 				)
 			)
 		)
-		(property "Value" "Bar switch"
+		(property "Value" "Bar"
 			(at 22.86 45.72 0)
 			(effects
 				(font
@@ -4930,7 +4930,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K"
 			(at 255.27 39.37 90)
 			(effects
 				(font
@@ -4999,7 +4999,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "Analog Input 2"
+		(property "Value" "Analog2"
 			(at 270.51 101.5999 0)
 			(effects
 				(font
@@ -5202,7 +5202,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K'"
 			(at 162.56 96.52 90)
 			(effects
 				(font
@@ -5440,7 +5440,7 @@
 				)
 			)
 		)
-		(property "Value" "I2C Breakout"
+		(property "Value" "I2C"
 			(at 22.86 24.13 0)
 			(effects
 				(font
@@ -6064,7 +6064,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "220nF"
+		(property "Value" "47nF"
 			(at 242.57 111.7599 0)
 			(effects
 				(font
@@ -6133,7 +6133,7 @@
 				)
 			)
 		)
-		(property "Value" "Navigation pad"
+		(property "Value" "Navigation"
 			(at 50.8 22.86 0)
 			(effects
 				(font
@@ -6214,7 +6214,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100nF"
+		(property "Value" "10nF"
 			(at 210.82 111.7599 0)
 			(effects
 				(font
@@ -6419,7 +6419,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100nF"
+		(property "Value" "10nF"
 			(at 118.11 111.7599 0)
 			(effects
 				(font
@@ -6724,7 +6724,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "220nF"
+		(property "Value" "47nF"
 			(at 242.57 54.6099 0)
 			(effects
 				(font
@@ -6994,7 +6994,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100nF"
+		(property "Value" "10nF"
 			(at 118.11 54.6099 0)
 			(effects
 				(font
@@ -7415,7 +7415,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "220nF"
+		(property "Value" "47nF"
 			(at 149.86 111.7599 0)
 			(effects
 				(font
@@ -7485,7 +7485,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "220nF"
+		(property "Value" "47nF"
 			(at 149.86 54.6099 0)
 			(effects
 				(font
@@ -7964,7 +7964,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric"
 			(at 72.0852 97.79 0)
 			(effects
 				(font
@@ -8160,7 +8160,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K"
 			(at 152.4 39.37 90)
 			(effects
 				(font
@@ -8903,7 +8903,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K"
 			(at 245.11 39.37 90)
 			(effects
 				(font
@@ -9174,7 +9174,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K"
 			(at 245.11 96.52 90)
 			(effects
 				(font
@@ -9242,7 +9242,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K"
 			(at 152.4 96.52 90)
 			(effects
 				(font
@@ -9681,7 +9681,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100nF"
+		(property "Value" "10nF"
 			(at 210.82 54.6099 0)
 			(effects
 				(font
@@ -9881,7 +9881,7 @@
 				)
 			)
 		)
-		(property "Value" "2K"
+		(property "Value" "4.7K"
 			(at 255.27 96.52 90)
 			(effects
 				(font
@@ -10416,7 +10416,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "Analog Input 3"
+		(property "Value" "Analog3"
 			(at 177.8 44.4499 0)
 			(effects
 				(font
@@ -10750,7 +10750,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "Analog Input 1"
+		(property "Value" "Analog1"
 			(at 270.51 44.4499 0)
 			(effects
 				(font
@@ -10822,7 +10822,7 @@
 				)
 			)
 		)
-		(property "Value" "LD1117V33"
+		(property "Value" "LDL1117S33R"
 			(at 52.07 78.74 0)
 			(effects
 				(font
@@ -10839,7 +10839,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://www.st.com/resource/en/datasheet/ld1117.pdf"
+		(property "Datasheet" ""
 			(at 54.61 88.9 0)
 			(effects
 				(font

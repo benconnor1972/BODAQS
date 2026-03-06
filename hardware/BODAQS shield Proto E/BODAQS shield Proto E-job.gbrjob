@@ -5,17 +5,17 @@
       "Application": "Pcbnew",
       "Version": "9.0.5"
     },
-    "CreationDate": "2025-12-09T08:08:29+08:00"
+    "CreationDate": "2026-03-04T16:08:23+11:00"
   },
   "GeneralSpecs": {
     "ProjectId": {
-      "Name": "BODAQS shield v2",
-      "GUID": "424f4441-5153-4207-9368-69656c642076",
+      "Name": "BODAQS shield Proto E",
+      "GUID": "424f4441-5153-4207-9368-69656c642050",
       "Revision": "rev?"
     },
     "Size": {
       "X": 65.2,
-      "Y": 80.2
+      "Y": 72.45
     },
     "LayerNumber": 2,
     "BoardThickness": 1.6,
@@ -27,44 +27,54 @@
       "PadToPad": 0.2,
       "PadToTrack": 0.2,
       "TrackToTrack": 0.2,
-      "MinLineWidth": 0.4,
+      "MinLineWidth": 0.2,
       "TrackToRegion": 0.5,
       "RegionToRegion": 0.5
     }
   ],
   "FilesAttributes": [
     {
-      "Path": "BODAQS shield v2-F_Cu.gbr",
+      "Path": "BODAQS shield Proto E-F_Cu.gtl",
       "FileFunction": "Copper,L1,Top",
       "FilePolarity": "Positive"
     },
     {
-      "Path": "BODAQS shield v2-B_Cu.gbr",
+      "Path": "BODAQS shield Proto E-B_Cu.gbl",
       "FileFunction": "Copper,L2,Bot",
       "FilePolarity": "Positive"
     },
     {
-      "Path": "BODAQS shield v2-F_Silkscreen.gbr",
+      "Path": "BODAQS shield Proto E-F_Paste.gtp",
+      "FileFunction": "SolderPaste,Top",
+      "FilePolarity": "Positive"
+    },
+    {
+      "Path": "BODAQS shield Proto E-B_Paste.gbp",
+      "FileFunction": "SolderPaste,Bot",
+      "FilePolarity": "Positive"
+    },
+    {
+      "Path": "BODAQS shield Proto E-F_Silkscreen.gto",
       "FileFunction": "Legend,Top",
       "FilePolarity": "Positive"
     },
     {
-      "Path": "BODAQS shield v2-B_Silkscreen.gbr",
+      "Path": "BODAQS shield Proto E-B_Silkscreen.gbo",
       "FileFunction": "Legend,Bot",
       "FilePolarity": "Positive"
     },
     {
-      "Path": "BODAQS shield v2-F_Mask.gbr",
+      "Path": "BODAQS shield Proto E-F_Mask.gts",
       "FileFunction": "SolderMask,Top",
       "FilePolarity": "Negative"
     },
     {
-      "Path": "BODAQS shield v2-B_Mask.gbr",
+      "Path": "BODAQS shield Proto E-B_Mask.gbs",
       "FileFunction": "SolderMask,Bot",
       "FilePolarity": "Negative"
     },
     {
-      "Path": "BODAQS shield v2-Edge_Cuts.gbr",
+      "Path": "BODAQS shield Proto E-Edge_Cuts.gm1",
       "FileFunction": "Profile",
       "FilePolarity": "Positive"
     }
