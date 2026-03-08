@@ -2,23 +2,54 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+import itertools
+from collections import OrderedDict
+
+import ipywidgets as W
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import ipywidgets as W
-from IPython.display import display, clear_output
-from collections import OrderedDict
-import matplotlib.ticker as mticker
-import itertools
+from IPython.display import clear_output, display
 
 from bodaqs_analysis.segment import extract_segments, SegmentRequest, WindowSpec, RoleSpec
-from IPython.display import clear_output
 from bodaqs_analysis.widgets.loaders import make_session_loader, load_all_events_for_selected
+from bodaqs_analysis.widgets.contracts import (
+    RegistryPolicy,
+    RebuilderHandle,
+    SESSION_KEY_COL,
+    SessionLoader,
+    SessionSelectorHandle,
+    WidgetHandle,
+    selection_snapshot_from_handle,
+)
+from bodaqs_analysis.widgets.registry_scope import validate_registry_policy
+from bodaqs_analysis.widgets.event_browser_options import (
+    build_event_labels,
+    build_event_type_options,
+    build_sensor_options,
+    parse_event_label,
+)
+from bodaqs_analysis.widgets.event_browser_render import (
+    choose_active_sensor,
+    set_ylim_zero_at_frac,
+)
+from bodaqs_analysis.widgets.event_browser_scope import (
+    ScopeConfig,
+    ScopeResolution,
+    filter_events,
+    get_registry_from_session_meta,
+    infer_event_sensor,
+    rebuild_scope_resolution,
+    resolve_sensor_for_row,
+)
+from bodaqs_analysis.widgets.event_semantics import (
+    registry_signal_options_for_sensor,
+    role_spec_from_semantic_tuple,
+)
 
-# ---- internal helpers (paste this whole block near the top of event_browser.py) ----
-# Put it AFTER your imports (numpy/pandas/etc.) but BEFORE make_event_browser_widget_for_loader()
 
 def _coerce_list(x):
     if x is None:
@@ -77,139 +108,26 @@ def _event_type_col(events_df: pd.DataFrame) -> str:
     return "event_type" if "event_type" in events_df.columns else "schema_id"
 
 
-def _get_registry(meta: dict) -> dict:
-    sigs = (meta or {}).get("signals")
-    if not isinstance(sigs, dict) or not sigs:
-        raise ValueError("session['meta']['signals'] missing/empty (required for segment extraction)")
-    return sigs
-
-
-def _infer_event_sensor(registry: dict, ev_row: pd.Series) -> Optional[str]:
-    """Infer sensor from the event's anchor signal column."""
-    if ev_row is None:
-        return None
-    for k in ("signal_col", "anchor_col", "primary_col"):
-        v = ev_row.get(k, None)
-        if isinstance(v, str) and v.strip():
-            info = registry.get(v.strip())
-            if isinstance(info, dict):
-                s = info.get("sensor")
-                if isinstance(s, str) and s.strip():
-                    return s.strip()
-    return None
-
-
-def _opkey(op_chain) -> str:
-    if op_chain is None:
-        return ""
-    if isinstance(op_chain, (list, tuple)):
-        return "|".join(str(x) for x in op_chain)
-    return str(op_chain)
-
-
-def _registry_signal_options_for_sensor(
-    registry: dict,
-    sensor: Optional[str],
-) -> List[Tuple[str, Tuple[str, str, str, str]]]:
-    """
-    Build SelectMultiple options from registry entries for a given sensor.
-
-    Each option value is a tuple:
-      (quantity, unit, kind, op_chain_key)
-
-    Label is human-friendly.
-    """
-    if not sensor:
-        return []
-
-    opts: List[Tuple[str, Tuple[str, str, str, str]]] = []
-    seen = set()
-
-    for col, info in registry.items():
-        if not isinstance(info, dict):
-            continue
-        if info.get("sensor") != sensor:
-            continue
-
-        kind = (info.get("kind") or "").strip()
-        if kind == "qc":
-            continue  # keep QC out of plotting roles by default
-
-        quantity = info.get("quantity")
-        if not isinstance(quantity, str) or not quantity.strip():
-            continue
-        quantity = quantity.strip()
-
-        unit = info.get("unit") or ""
-        unit = str(unit)
-
-        opk = _opkey(info.get("op_chain") or [])
-
-        key = (quantity, unit, kind, opk)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        unit_s = f" [{unit}]" if unit else ""
-        kind_s = f" ({kind})" if kind else ""
-        op_s = f" ⟶{opk}" if opk else ""
-        label = f"{quantity}{unit_s}{kind_s}{op_s}"
-        opts.append((label, key))
-
-    order = {"disp": 0, "disp_norm": 1, "vel": 2, "acc": 3, "raw": 4}
-    opts.sort(key=lambda kv: (order.get(kv[1][0], 99), kv[0]))
-    return opts
-
-def _role_spec_from_semantic_tuple(
-    RoleSpecCls,
-    *,
-    role: str,
-    sensor: Optional[str],
-    semantic: Tuple[str, str, str, str],
-):
-    """
-    semantic = (quantity, unit, kind, opk)
-
-    Construct RoleSpec in the most compatible way possible, then
-    *force-populate* rs.prefer post-construction (because some RoleSpec
-    constructors in segment.py do not accept prefer=...).
-    """
-    quantity, unit, kind, opk = semantic
-    op_chain = [p for p in opk.split("|") if p] if opk else []
-
-    prefer = {
-        "sensor": sensor,
-        "quantity": quantity,
-        "unit": (unit or None),
-        "kind": (kind or None),
-        "op_chain": op_chain,
-    }
-
-    # 1) Try direct prefer (if supported)
-    try:
-        rs = RoleSpecCls(role=role, prefer=prefer)
-    except TypeError:
-        # 2) Fall back to minimal constructor
-        rs = RoleSpecCls(role=role)
-    return rs
-
 
 def make_event_browser_widget_for_loader(
-    schema: dict,
+    schema: Mapping[str, Any],
     events_df: pd.DataFrame,
     *,
-    session_loader: Callable[[str], dict],
-    session_key_col: str = "session_id",
+    session_loader: SessionLoader,
+    session_key_col: str = SESSION_KEY_COL,
+    registry_policy: RegistryPolicy = "union",
     default_quantities: Sequence[str] = ("disp", "vel"),
     default_pre_s: float = 0.8,
     default_post_s: float = 0.8,
-):
+    auto_display: bool = False,
+) -> WidgetHandle:
     """
     Same widget, but session is selected in the UI and loaded lazily via session_loader(session_id)->session dict.
     The loaded session must include: {"df": DataFrame, "meta": {"signals": ...}, ...}
     """
     if events_df is None or len(events_df) == 0:
         raise ValueError("events_df is empty")
+    validate_registry_policy(registry_policy)
 
     _require_cols(
     events_df,
@@ -322,162 +240,72 @@ def make_event_browser_widget_for_loader(
         ev_df, ev_row = _selected_event_row()
         if ev_row is None:
             raise ValueError("No event selected")
-        session = _get_session(str(ev_row[session_key_col]))
-        return _get_registry(session.get("meta") or {})
+        sk = str(ev_row.get(session_key_col))
+        reg = _scope_resolution.registries_by_session.get(sk)
+        if isinstance(reg, dict) and reg:
+            return reg
+        session = _get_session(sk)
+        return get_registry_from_session_meta(session)
 
     # ----------------------------
-    # Schema-mediated sensor resolver (event -> schema -> canonical signal_col -> registry -> sensor)
+    # Schema-mediated sensor resolver (session-aware)
     # ----------------------------
+    scope_config = ScopeConfig(
+        session_key_col=session_key_col,
+        event_type_col=et_col,
+        signal_col="signal_col",
+        registry_policy=registry_policy,
+    )
+    _scope_resolution = ScopeResolution({}, {}, None)
 
-    def _build_schema_sensor_maps(schema: dict, registry: dict) -> Dict[str, Dict[str, str]]:
-        """
-        For each schema_id, build a mapping that can resolve:
-          - role/token -> sensor
-          - canonical signal_col -> sensor
-        using schema triggers + registry.
-        """
-        out: Dict[str, Dict[str, str]] = {}
+    def _rebuild_scope_resolution(scope: List[str]) -> None:
+        nonlocal _scope_resolution
+        _scope_resolution = rebuild_scope_resolution(
+            scope_sessions=scope,
+            get_session=_get_session,
+            schema=schema,
+            config=scope_config,
+        )
 
-        if not isinstance(schema, dict) or not schema:
-            return out
+    def _resolve_sensor_for_session(
+        *,
+        session_key: object,
+        schema_id_val: object,
+        token_val: object,
+    ) -> str:
+        return resolve_sensor_for_row(
+            session_key=session_key,
+            schema_id_val=schema_id_val,
+            token_val=token_val,
+            resolution=_scope_resolution,
+        )
 
-        for sid, sch in schema.items():
-            if not isinstance(sch, dict):
-                continue
-            sid_s = str(sid).strip()
-            if not sid_s:
-                continue
-
-            triggers = sch.get("triggers") or {}
-            if not isinstance(triggers, dict):
-                continue
-
-            m: Dict[str, str] = {}
-
-            for role, trig in triggers.items():
-                if not isinstance(trig, dict):
-                    continue
-
-                sigcol = trig.get("signal_col")
-                sigcol = sigcol.strip() if isinstance(sigcol, str) else ""
-                if not sigcol:
-                    continue
-
-                info = registry.get(sigcol)
-                if not isinstance(info, dict):
-                    continue
-                sensor = info.get("sensor")
-                sensor = sensor.strip() if isinstance(sensor, str) else ""
-                if not sensor:
-                    continue
-
-                # Allow lookup by role as well as canonical signal column
-                if isinstance(role, str) and role.strip():
-                    m[role.strip()] = sensor
-                m[sigcol] = sensor
-
-            if m:
-                out[sid_s] = m
-
-        return out
-
-    # Cache per "stable registry snapshot" (recomputed when scope changes)
-    _schema_sensor_map_by_schema: Dict[str, Dict[str, str]] = {}
-
-    def _stable_registry_for_scope(scope: List[str]) -> dict:
-        """
-        Choose a stable session to source the registry snapshot.
-        Assumes registry is stable across sessions (your intended contract).
-        """
-        if not scope:
-            return {}
-        sess = _get_session(scope[0])
-        return _get_registry(sess.get("meta") or {})
-
-    def _rebuild_schema_sensor_maps_for_scope(scope: List[str]) -> dict:
-        registry = _stable_registry_for_scope(scope)
-        nonlocal _schema_sensor_map_by_schema
-        _schema_sensor_map_by_schema = _build_schema_sensor_maps(schema, registry)
-        return registry
-
-    def _resolve_sensor(schema_id_val: object, token_val: object, *, registry: dict) -> str:
-        """
-        Resolve sensor for a row using schema + registry only.
-        token_val is whatever is stored in events_df['signal_col'] (role or resolved column).
-        """
-        sid = str(schema_id_val) if schema_id_val is not None else ""
-        tok = str(token_val) if token_val is not None else ""
-        sid = sid.strip()
-        tok = tok.strip()
-        if not sid or not tok:
-            return ""
-
-        # 1) Schema-mediated lookup (role or canonical col)
-        m = _schema_sensor_map_by_schema.get(sid)
-        if isinstance(m, dict):
-            s = m.get(tok)
-            if isinstance(s, str) and s.strip():
-                return s.strip()
-
-        # 2) If token is already canonical df column, allow direct registry lookup
-        info = registry.get(tok)
-        if isinstance(info, dict):
-            s2 = info.get("sensor")
-            if isinstance(s2, str) and s2.strip():
-                return s2.strip()
-
-        return ""
-
-    def _infer_event_sensor_for_row(ev_row: pd.Series, *, registry: dict) -> Optional[str]:
-        """
-        Infer sensor for display/auto-mode. Tries signal_col then anchor/primary, schema-mediated.
-        """
-        if ev_row is None:
-            return None
-
-        schema_id_val = ev_row.get(et_col, None)
-
-        for k in ("signal_col", "anchor_col", "primary_col"):
-            tok = ev_row.get(k, None)
-            s = _resolve_sensor(schema_id_val, tok, registry=registry)
-            if s:
-                return s
-        return None
+    def _infer_event_sensor_for_row(ev_row: pd.Series) -> Optional[str]:
+        return infer_event_sensor(
+            ev_row=ev_row,
+            candidate_token_cols=("signal_col", "anchor_col", "primary_col"),
+            config=scope_config,
+            resolution=_scope_resolution,
+        )
 
     def _filtered_events() -> pd.DataFrame:
         scope = list(map(str, _coerce_list(w_sessions.value)))
-        if not scope:
-            return events_df.iloc[0:0].copy()
-
-        sub = events_df[events_df[session_key_col].astype(str).isin(scope)].copy()
-
-        # Apply event type filter
-        if w_event_type.value:
-            sub = sub[sub[et_col].astype(str) == str(w_event_type.value)].copy()
-
-        # Build/rebuild schema sensor maps + get stable registry snapshot
-        registry = _rebuild_schema_sensor_maps_for_scope(scope)
-
-        # Multi-select sensor filter: empty selection => no filtering
-        sel_sensors = tuple(map(str, _coerce_list(w_sensor.value)))
-        sel_sensors = tuple(s.strip() for s in sel_sensors if s and str(s).strip())
-        if sel_sensors:
-            sel_set = set(sel_sensors)
-
-            mask = []
-            for _, r in sub.iterrows():
-                s = _resolve_sensor(r.get(et_col), r.get("signal_col"), registry=registry)
-                mask.append(bool(s) and (s in sel_set))
-
-            sub = sub.loc[pd.Series(mask, index=sub.index)].copy()
-
-        return sub
+        _rebuild_scope_resolution(scope)
+        return filter_events(
+            events_df=events_df,
+            scope_sessions=scope,
+            selected_event_type=(str(w_event_type.value) if w_event_type.value else None),
+            selected_sensors=tuple(map(str, _coerce_list(w_sensor.value))),
+            config=scope_config,
+            resolution=_scope_resolution,
+        )
 
 
 
     def _rebuild_event_type(*_):
         scope = set(map(str, _coerce_list(w_sessions.value)))
         if not scope:
+            _scope_resolution.error = None
             w_event_type.options = []
             w_event_type.value = None
             w_event.options = []
@@ -486,8 +314,12 @@ def make_event_browser_widget_for_loader(
             return
 
         # scope-only (no event type / sensor filtering here)
-        sub = events_df[events_df[session_key_col].astype(str).isin(scope)].copy()
-        etypes = sorted(sub[et_col].dropna().astype(str).unique().tolist())
+        etypes = build_event_type_options(
+            events_df=events_df,
+            scope_sessions=list(scope),
+            session_key_col=session_key_col,
+            event_type_col=et_col,
+        )
 
         prev = w_event_type.value  # remember user choice
 
@@ -511,21 +343,24 @@ def make_event_browser_widget_for_loader(
             w_sensor.value = ()
             return
 
-        # Build a sensor universe based on the *currently visible events* (scope + event type),
-        # using schema-mediated resolution.
-        sub = events_df[events_df[session_key_col].astype(str).isin(scope)].copy()
-        if w_event_type.value:
-            sub = sub[sub[et_col].astype(str) == str(w_event_type.value)].copy()
+        _rebuild_scope_resolution(scope)
+        if _scope_resolution.error:
+            w_sensor.options = []
+            w_sensor.value = ()
+            return
 
-        registry = _rebuild_schema_sensor_maps_for_scope(scope)
-
-        sensors = set()
-        for _, r in sub.iterrows():
-            s = _resolve_sensor(r.get(et_col), r.get("signal_col"), registry=registry)
-            if s and s != "active":
-                sensors.add(s)
-
-        sensors = sorted(sensors)
+        sensors = build_sensor_options(
+            events_df=events_df,
+            scope_sessions=scope,
+            selected_event_type=(str(w_event_type.value) if w_event_type.value else None),
+            session_key_col=session_key_col,
+            event_type_col=et_col,
+            resolve_sensor_for_row_fn=lambda r: _resolve_sensor_for_session(
+                session_key=r.get(session_key_col),
+                schema_id_val=r.get(et_col),
+                token_val=r.get("signal_col"),
+            ),
+        )
 
         current = tuple(map(str, _coerce_list(w_sensor.value)))
 
@@ -546,12 +381,12 @@ def make_event_browser_widget_for_loader(
             w_event.options = []
             return
 
-        # Show only events that belong to the scope; include session_id in label now
-        labels = []
-        for _, r in sub.sort_values(["session_id", "trigger_time_s"]).iterrows():
-            labels.append(
-                f"{r['session_id']} :: {r['event_id']}  |  t={float(r['trigger_time_s']):.3f}s"
-            )
+        labels = build_event_labels(
+            filtered_events_df=sub,
+            session_id_col="session_id",
+            event_id_col="event_id",
+            trigger_time_col="trigger_time_s",
+        )
 
         current = w_event.value
         w_event.options = labels
@@ -568,10 +403,7 @@ def make_event_browser_widget_for_loader(
         if not w_event.value:
             return None, None
 
-        # Parse session_id and event_id from label
-        left, rest = str(w_event.value).split(" :: ", 1)
-        event_id = rest.split("  |  ", 1)[0].strip()
-        session_id = left.strip()
+        session_id, event_id = parse_event_label(str(w_event.value))
 
         sub = _filtered_events()
         ev = sub[
@@ -594,7 +426,7 @@ def make_event_browser_widget_for_loader(
 
         # Auto sensor from event anchor when enabled
         ev_df, ev_row = _selected_event_row()
-        inferred = _infer_event_sensor_for_row(ev_row, registry=registry) if ev_row is not None else None
+        inferred = _infer_event_sensor_for_row(ev_row) if ev_row is not None else None
 
         sel_sensors = tuple(map(str, _coerce_list(w_sensor.value)))
         sel_sensors = tuple(s.strip() for s in sel_sensors if s and str(s).strip())
@@ -613,7 +445,7 @@ def make_event_browser_widget_for_loader(
         # --- Remember current selection (before we replace options) ---
         prev = tuple(w_signals.value) if w_signals.value is not None else ()
 
-        opts = _registry_signal_options_for_sensor(registry, active_sensor)
+        opts = registry_signal_options_for_sensor(registry=registry, sensor=active_sensor)
         w_signals.options = opts
         avail = {key for (_, key) in opts}
 
@@ -659,37 +491,12 @@ def make_event_browser_widget_for_loader(
         w_signals.value = tuple(selected) if selected else ()
 
     def _render(*_):
-        
-        def _set_ylim_zero_at_frac(ax_i, data_min, data_max, frac0, pad=0.05):
-            """
-            Choose y-lims [ymin, ymax] that contain [data_min, data_max] and place y=0 at frac0.
-            frac0 in (0,1): 0 at ymin + frac0*(ymax-ymin).
-            """
-            # If data range is degenerate, make a small span
-            if not np.isfinite(data_min) or not np.isfinite(data_max):
-                return
-            if data_min == data_max:
-                span = abs(data_min) if data_min != 0 else 1.0
-                data_min -= 0.5 * span
-                data_max += 0.5 * span
-
-            # Required range so that ymin <= data_min and ymax >= data_max
-            req = []
-            if data_min < 0:
-                req.append((-data_min) / max(frac0, 1e-6))
-            if data_max > 0:
-                req.append((data_max) / max(1.0 - frac0, 1e-6))
-            if not req:
-                # All data on one side of 0; still make a reasonable range
-                req.append(max(abs(data_min), abs(data_max), 1.0))
-
-            rng = max(req) * (1.0 + pad)
-            ymin = -frac0 * rng
-            ymax = (1.0 - frac0) * rng
-            ax_i.set_ylim(ymin, ymax)
-
         with out:
             clear_output(wait=True)
+
+            if _scope_resolution.error:
+                print(_scope_resolution.error)
+                return
 
             ev_row_df, ev_row = _selected_event_row()
             if ev_row is None:
@@ -701,20 +508,16 @@ def make_event_browser_widget_for_loader(
             event_session_id  = str(ev_row["session_id"])
             session = _get_session(event_session_key)
 
-            registry = _get_registry(session.get("meta") or {})
+            registry = get_registry_from_session_meta(session)
 
             # Determine active sensor for the event (multi-select semantics)
-            inferred = _infer_event_sensor_for_row(ev_row, registry=registry) if ev_row is not None else None
+            inferred = _infer_event_sensor_for_row(ev_row) if ev_row is not None else None
 
             sel_sensors = tuple(map(str, _coerce_list(w_sensor.value)))
-            sel_sensors = tuple(s.strip() for s in sel_sensors if s and str(s).strip())
-
-            if not sel_sensors:
-                sensor = inferred
-            elif len(sel_sensors) == 1:
-                sensor = sel_sensors[0]
-            else:
-                sensor = inferred if (inferred and inferred in sel_sensors) else sel_sensors[0]
+            sensor = choose_active_sensor(
+                inferred_sensor=inferred,
+                selected_sensors=sel_sensors,
+            )
 
 
 
@@ -724,7 +527,7 @@ def make_event_browser_widget_for_loader(
             for semantic in _coerce_list(w_signals.value):
                 qty = str(semantic[0])
                 role_specs.append(
-                    _role_spec_from_semantic_tuple(RoleSpec, role=qty, sensor=sensor, semantic=semantic)
+                    role_spec_from_semantic_tuple(RoleSpec, role=qty, sensor=sensor, semantic=semantic)
                 )
 
             if not role_specs:
@@ -827,7 +630,7 @@ def make_event_browser_widget_for_loader(
                 y_all = y_all[np.isfinite(y_all)]
                 if y_all.size == 0:
                     continue
-                _set_ylim_zero_at_frac(ax_i, float(y_all.min()), float(y_all.max()), frac0, pad=0.05)
+                set_ylim_zero_at_frac(ax_i, float(y_all.min()), float(y_all.max()), frac0, pad=0.05)
 
 
             handles = []
@@ -922,11 +725,16 @@ def make_event_browser_widget_for_loader(
         ]
     )
 
-    display(ui)
-    _rebuild_event_type()
-    _render()
+    def refresh() -> None:
+        _rebuild_event_type()
+        _render()
+
+    refresh()
+    if auto_display:
+        display(ui)
 
     return {
+        "root": ui,
         "ui": ui,
         "out": out,
         "controls": {
@@ -937,16 +745,18 @@ def make_event_browser_widget_for_loader(
             "signals": w_signals,
         },
         "cache": _session_cache,
+        "refresh": refresh,
     }
 
 def make_event_browser_rebuilder(
     *,
-    sel: Dict[str, Any],
-    schema: dict,
+    sel: SessionSelectorHandle,
+    schema: Mapping[str, Any],
     out: Optional[W.Output] = None,
-    session_key_col: str = "session_key",
+    session_key_col: str = SESSION_KEY_COL,
+    registry_policy: RegistryPolicy = "union",
     **kwargs,
-) -> Dict[str, Any]:
+) -> RebuilderHandle:
     """
     Rebuild helper for the event browser widget (recreates the widget on selector change).
     """
@@ -957,8 +767,9 @@ def make_event_browser_rebuilder(
     state: Dict[str, Any] = {"handles": None}
 
     def rebuild() -> None:
+        snapshot = selection_snapshot_from_handle(sel)
         store = sel["store"]
-        key_to_ref = sel["get_key_to_ref"]()
+        key_to_ref = snapshot.key_to_ref
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
 
         events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
@@ -971,8 +782,16 @@ def make_event_browser_rebuilder(
                 events_df_sel,
                 session_loader=session_loader,
                 session_key_col=session_key_col,
+                registry_policy=registry_policy,
+                auto_display=False,
                 **kwargs,
             )
+            h = state["handles"]
+            root = h.get("root") or h.get("ui")
+            if root is not None:
+                display(root)
 
     rebuild()
     return {"out": out, "rebuild": rebuild, "state": state}
+
+

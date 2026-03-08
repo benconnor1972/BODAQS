@@ -2,181 +2,103 @@
 """
 BODAQS signal-sample histogram widget (loader-based).
 
-Public API:
-    make_signal_histogram_widget_for_loader(
-        events_df,
-        *,
-        session_loader,
-        default_bins=50,
-    )
+Public APIs:
+    make_signal_histogram_widget_for_loader(...)
+    make_signal_histogram_rebuilder(...)
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Callable, List, Tuple, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import ipywidgets as W
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import ipywidgets as W
-from IPython.display import display, clear_output
+from IPython.display import clear_output, display
+
+from bodaqs_analysis.widgets.contracts import (
+    RebuilderHandle,
+    RegistryPolicy,
+    SESSION_ID_COL,
+    SESSION_KEY_COL,
+    SessionLoader,
+    SessionSelectorHandle,
+    WidgetHandle,
+    selection_snapshot_from_handle,
+)
+from bodaqs_analysis.widgets.histogram_core import (
+    compute_trimmed_quantile_metrics,
+    format_metric,
+    parse_optional_float,
+    plot_hist_or_cdf,
+)
 from bodaqs_analysis.widgets.loaders import make_session_loader
-
-# -------------------------
-# Registry helpers
-# -------------------------
-
-def _registry_signal_cols(session: Dict[str, Any]) -> List[str]:
-    """
-    Prefer session["meta"]["signals"] keys as canonical signal names.
-    Fallback to meta["channels"], then numeric df columns.
-    """
-    meta = session.get("meta") or {}
-    df: pd.DataFrame = session["df"]
-
-    signals = meta.get("signals")
-    if isinstance(signals, dict) and signals:
-        return [c for c in signals.keys() if c in df.columns]
-
-    channels = meta.get("channels")
-    if isinstance(channels, list):
-        return [c for c in channels if c in df.columns]
-
-    cols: List[str] = []
-    for c in df.columns:
-        s = pd.to_numeric(df[c], errors="coerce")
-        if np.isfinite(s.to_numpy()).any():
-            cols.append(c)
-    return cols
-
-def _vals(df: pd.DataFrame, col: str, dropna: bool, *, include_inactive: bool) -> np.ndarray:
-    s = pd.to_numeric(df[col], errors="coerce")
-
-    # Apply activity mask unless the user explicitly includes inactive samples.
-    if (not include_inactive) and ("active_mask_qc" in df.columns):
-        mask = df["active_mask_qc"].astype(bool)
-        s = s[mask]
-
-    v = s.to_numpy(dtype=float, copy=False)
-    if dropna:
-        v = v[np.isfinite(v)]
-    return v
-
-def _sort_signals_by_unit(
-    signal_cols: list[str],
-    registry: dict,
-) -> list[str]:
-    """
-    Sort signals by unit, then by signal name.
-    Unknown units are grouped last.
-    """
-    def key(sig: str):
-        info = registry.get(sig, {})
-        unit = info.get("unit")
-        unit = unit if isinstance(unit, str) and unit.strip() else "~"  # '~' sorts after letters
-        return (unit, sig)
-
-    return sorted(signal_cols, key=key)
-
-
-def _compute_trimmed_metrics(values: np.ndarray, a: Optional[float]) -> Dict[str, Any]:
-    vals = np.asarray(values, dtype=float)
-    finite = vals[np.isfinite(vals)]
-    n_total = int(len(finite))
-
-    trimmed = finite if a is None else finite[finite >= float(a)]
-    n_trim = int(len(trimmed))
-
-    out: Dict[str, Any] = {
-        "n_total": n_total,
-        "n_trim": n_trim,
-        "insufficient": n_trim < 5,
-        "q25": np.nan,
-        "q50": np.nan,
-        "q75": np.nan,
-        "q90": np.nan,
-        "q95": np.nan,
-        "iqr": np.nan,
-        "skew_q": np.nan,
-    }
-    if out["insufficient"]:
-        return out
-
-    q25, q50, q75, q90, q95 = np.quantile(trimmed, [0.25, 0.5, 0.75, 0.9, 0.95])
-    iqr = float(q75 - q25)
-    skew_q = float("nan")
-    if abs(iqr) > 1e-12:
-        skew_q = float((q75 + q25 - (2.0 * q50)) / iqr)
-
-    out.update(
-        {
-            "q25": float(q25),
-            "q50": float(q50),
-            "q75": float(q75),
-            "q90": float(q90),
-            "q95": float(q95),
-            "iqr": iqr,
-            "skew_q": skew_q,
-        }
-    )
-    return out
-
-
-def _parse_trim_cutoff(raw: str) -> Optional[float]:
-    txt = str(raw).strip()
-    if txt == "":
-        return None
-    try:
-        return float(txt)
-    except ValueError:
-        return None
-
-
-def _fmt_metric(value: float) -> str:
-    v = float(value)
-    if not np.isfinite(v):
-        return "NaN"
-    return f"{v:.4g}"
+from bodaqs_analysis.widgets.registry_scope import validate_registry_policy
+from bodaqs_analysis.widgets.signal_histogram_scope import (
+    resolve_scope_signal_options,
+    signal_values,
+)
 
 
 # -------------------------
 # Widget
 # -------------------------
 
+
 def make_signal_histogram_widget_for_loader(
     events_df: pd.DataFrame,
     *,
-    session_loader: Callable[[str], Dict[str, Any]],
-    session_key_col: str = "session_id",
+    session_loader: SessionLoader,
+    session_key_col: str = SESSION_KEY_COL,
+    registry_policy: RegistryPolicy = "union",
     default_bins: int = 50,
     max_bins: int = 500,
-) -> dict:
+    auto_display: bool = False,
+    loader_key_resolver: Optional[Callable[[str], str]] = None,
+) -> WidgetHandle:
     """
     Signal histogram / CDF widget using session_loader.
 
     Sessions are discovered from events_df[session_key_col].
-    Signals are listed from each session's registry.
+    Signals are resolved per-session from each session registry/df and then
+    combined by registry_policy: "union", "intersection", or "strict".
     """
     if session_key_col not in events_df.columns:
         raise ValueError(f"events_df must contain {session_key_col!r} column")
+    validate_registry_policy(registry_policy)
 
-    session_ids = sorted(events_df[session_key_col].astype(str).unique())
+    session_ids = sorted(events_df[session_key_col].dropna().astype(str).unique().tolist())
+    if not session_ids:
+        raise ValueError("No sessions available in events_df for signal histogram")
 
+    session_cache: Dict[str, Dict[str, Any]] = {}
 
-    # Load ONE session to discover registry signals
-    first_session = session_loader(session_ids[0])
+    def _resolve_loader_key(session_id: str) -> str:
+        if loader_key_resolver is None:
+            return str(session_id)
+        return str(loader_key_resolver(str(session_id)))
 
-    # Registry from the loaded session (canonical metadata)
-    registry = (first_session.get("meta") or {}).get("signals") or {}
-    if not isinstance(registry, dict):
-        registry = {}
+    def _get_session(session_id: str) -> Dict[str, Any]:
+        sid = str(session_id)
+        if sid not in session_cache:
+            sess = session_loader(_resolve_loader_key(sid))
+            if not isinstance(sess, dict):
+                raise ValueError("session_loader must return a dict-like object")
+            if "df" not in sess:
+                raise ValueError("session_loader result missing required key 'df'")
+            if not isinstance(sess["df"], pd.DataFrame):
+                raise ValueError("session_loader result['df'] must be a pandas DataFrame")
+            session_cache[sid] = sess
+        return session_cache[sid]
 
-    signal_cols = list(_registry_signal_cols(first_session))
-    signal_cols = _sort_signals_by_unit(signal_cols, registry)
-
-
-    if not signal_cols:
-        raise ValueError("No signal columns found in registry or df")
+    def _resolve_signals_for_scope(scope_sessions: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+        resolved = resolve_scope_signal_options(
+            scope_sessions=scope_sessions,
+            get_session=_get_session,
+            registry_policy=registry_policy,
+        )
+        return resolved.options, resolved.by_session
 
     # --- UI ---
     sessions_label = W.Label("Sessions:")
@@ -189,26 +111,20 @@ def make_signal_histogram_widget_for_loader(
         options=session_ids,
         value=tuple(session_ids[:1]),
         description="",
-        rows=min(8, max(3, len(session_ids), len(signal_cols))),
+        rows=min(8, max(3, len(session_ids))),
         layout=W.Layout(width="450px"),
     )
 
     signals_label = W.Label("Signals:")
-    w_signals_mode = W.RadioButtons(
-        options=[("Aggregate signals", False), ("Compare signals", True)],
-        value=True,
-        description="",
-    )
     w_signals = W.SelectMultiple(
-        options=signal_cols,
-        value=tuple(signal_cols[:1]),
+        options=[],
+        value=(),
         description="",
-        rows=min(8, max(3, len(session_ids), len(signal_cols))),
+        rows=min(8, max(3, len(session_ids))),
         layout=W.Layout(width="450px"),
-
     )
 
-    w_bins = W.BoundedIntText(value=default_bins, min=1, max=max_bins, description="Bins:", layout = W.Layout(width="150px"))
+    w_bins = W.BoundedIntText(value=default_bins, min=1, max=max_bins, description="Bins:", layout=W.Layout(width="150px"))
     w_cdf = W.Checkbox(value=False, description="CDF")
     w_norm = W.Checkbox(value=True, description="Normalize")
     w_dropna = W.Checkbox(value=True, description="Drop NaN/inf")
@@ -224,99 +140,141 @@ def make_signal_histogram_widget_for_loader(
     for w in (w_cdf, w_norm, w_dropna, w_include_inactive, w_show_metrics):
         w.layout = W.Layout(width="auto")
 
+    out = W.Output()
+
+    state: Dict[str, Any] = {
+        "signal_policy_error": None,
+        "session_signal_cols": {},
+        "session_cache": session_cache,
+    }
+
     def _toggle_trim_input(*_):
         enabled = bool(w_show_metrics.value)
         w_trim_a.disabled = not enabled
         w_trim_help.layout = W.Layout(display="block" if enabled else "none")
 
-    _toggle_trim_input()
+    def _rebuild_signal_options(*_):
+        sel_sessions = list(map(str, w_sessions.value or ()))
+        prev = list(map(str, w_signals.value or ()))
 
-    out = W.Output()
+        if not sel_sessions:
+            w_signals.options = []
+            w_signals.value = ()
+            state["signal_policy_error"] = None
+            state["session_signal_cols"] = {}
+            return
+
+        try:
+            options, by_session = _resolve_signals_for_scope(sel_sessions)
+            state["signal_policy_error"] = None
+            state["session_signal_cols"] = by_session
+        except Exception as exc:
+            options = []
+            state["signal_policy_error"] = str(exc)
+            state["session_signal_cols"] = {}
+
+        w_signals.options = options
+        kept = tuple([s for s in prev if s in options])
+        w_signals.value = kept if kept else (tuple(options[:1]) if options else ())
+
+    _toggle_trim_input()
 
     # --- render ---
     def _render(*_):
         with out:
             clear_output(wait=True)
 
-            sel_sessions = list(w_sessions.value)
-            sel_signals = list(w_signals.value)
+            signal_policy_error = state.get("signal_policy_error")
+            if signal_policy_error:
+                print(signal_policy_error)
+                return
+
+            sel_sessions = list(map(str, w_sessions.value or ()))
+            sel_signals = list(map(str, w_signals.value or ()))
 
             if not sel_sessions or not sel_signals:
                 print("Select at least one session and one signal.")
                 return
 
             compare_sessions = bool(w_sessions_mode.value)
-            compare_signals = bool(w_signals_mode.value)
 
             series: List[Tuple[str, np.ndarray]] = []
 
             def get_vals(sid: str, sig: str) -> np.ndarray:
-                session = session_loader(str(sid))
-                return _vals(
+                session = _get_session(str(sid))
+                return signal_values(
                     session["df"],
                     sig,
                     dropna=bool(w_dropna.value),
                     include_inactive=bool(w_include_inactive.value),
                 )
 
-            if compare_sessions and compare_signals:
+            if compare_sessions:
                 for sid in sel_sessions:
                     for sig in sel_signals:
                         series.append((f"{sid} | {sig}", get_vals(sid, sig)))
-
-            elif compare_sessions:
-                for sid in sel_sessions:
-                    vals = np.concatenate([get_vals(sid, sig) for sig in sel_signals])
-                    series.append((sid, vals))
-
-            elif compare_signals:
+            else:
                 for sig in sel_signals:
-                    vals = np.concatenate([get_vals(sid, sig) for sid in sel_sessions])
+                    parts = [get_vals(sid, sig) for sid in sel_sessions]
+                    vals = np.concatenate(parts) if parts else np.array([], dtype=float)
                     series.append((sig, vals))
 
-            else:
-                vals = np.concatenate(
-                    [get_vals(sid, sig) for sid in sel_sessions for sig in sel_signals]
-                )
-                series.append(("aggregate", vals))
-
             fig, ax = plt.subplots(figsize=(8.3, 4.2))
+            any_plotted = False
 
             for name, vals in series:
-                if w_cdf.value:
-                    x = np.sort(vals)
-                    y = np.arange(1, len(x) + 1)
-                    if w_norm.value:
-                        y = y / len(x)
-                    ax.step(x, y, where="post", label=name)
-                else:
-                    weights = None
-                    if w_norm.value:
-                        weights = np.ones_like(vals) / len(vals)
-                    ax.hist(vals, bins=w_bins.value, histtype="step", weights=weights, label=name)
+                clean = np.asarray(vals, dtype=float)
+                clean = clean[np.isfinite(clean)]
+                if clean.size == 0:
+                    continue
+
+                any_plotted = True
+                plot_hist_or_cdf(
+                    ax,
+                    clean,
+                    int(w_bins.value),
+                    cdf=bool(w_cdf.value),
+                    norm=bool(w_norm.value),
+                    label=name,
+                )
 
             ax.set_title("Signal sample distribution")
             ax.set_xlabel("Signal value")
-            ax.set_ylabel("Cumulative proportion" if w_cdf.value else "Proportion" if w_norm.value else "Count")
+            ax.set_ylabel(
+                "Cumulative proportion"
+                if w_cdf.value
+                else ("Proportion" if w_norm.value else "Count")
+            )
             ax.grid(True, alpha=0.3)
 
-            if compare_sessions or compare_signals:
+            if len(series) > 1:
                 ax.legend(fontsize=9)
+
+            if not any_plotted:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "No numeric values after filtering",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+                ax.set_axis_off()
 
             plt.show()
 
             if w_show_metrics.value:
-                a = _parse_trim_cutoff(w_trim_a.value)
+                a = parse_optional_float(w_trim_a.value)
                 rows: List[Dict[str, str]] = []
 
                 for name, vals in series:
-                    metrics = _compute_trimmed_metrics(vals, a)
+                    metrics = compute_trimmed_quantile_metrics(vals, a)
                     row = {
                         "Group": str(name),
-                        "n_trim / n_total": f"{metrics['n_trim']} / {metrics['n_total']}",
+                        "n_trim / n_total": f"{metrics.n_trim} / {metrics.n_total}",
                     }
 
-                    if metrics["insufficient"]:
+                    if metrics.insufficient:
                         row.update(
                             {
                                 "Q25": "insufficient data",
@@ -331,86 +289,134 @@ def make_signal_histogram_widget_for_loader(
                     else:
                         row.update(
                             {
-                                "Q25": _fmt_metric(metrics["q25"]),
-                                "Q50": _fmt_metric(metrics["q50"]),
-                                "Q75": _fmt_metric(metrics["q75"]),
-                                "IQR": _fmt_metric(metrics["iqr"]),
-                                "Q90": _fmt_metric(metrics["q90"]),
-                                "Q95": _fmt_metric(metrics["q95"]),
-                                "skew_Q": _fmt_metric(metrics["skew_q"]),
+                                "Q25": format_metric(metrics.q25),
+                                "Q50": format_metric(metrics.q50),
+                                "Q75": format_metric(metrics.q75),
+                                "IQR": format_metric(metrics.iqr),
+                                "Q90": format_metric(metrics.q90),
+                                "Q95": format_metric(metrics.q95),
+                                "skew_Q": format_metric(metrics.skew_q),
                             }
                         )
                     rows.append(row)
 
-                trim_label = "none" if a is None else _fmt_metric(a)
+                trim_label = "none" if a is None else format_metric(a)
                 print(f"Trimmed quantile metrics (a={trim_label})")
                 display(pd.DataFrame(rows))
 
+    def _on_scope_change(*_):
+        _rebuild_signal_options()
+        _render()
+
     for w in (
-        w_sessions_mode, w_sessions,
-        w_signals_mode, w_signals,
-        w_bins, w_cdf, w_norm, w_dropna, w_include_inactive,
-        w_show_metrics, w_trim_a,
+        w_sessions_mode,
+        w_signals,
+        w_bins,
+        w_cdf,
+        w_norm,
+        w_dropna,
+        w_include_inactive,
+        w_show_metrics,
+        w_trim_a,
     ):
         w.observe(_render, names="value")
+
+    w_sessions.observe(_on_scope_change, names="value")
     w_show_metrics.observe(_toggle_trim_input, names="value")
 
-    controls = W.VBox([
-        W.HBox(
-            [w_bins, w_cdf, w_norm, w_dropna, w_include_inactive, w_show_metrics, w_trim_a],
-            layout=W.Layout(
-                justify_content="flex-start",
-                align_items="center",
-                gap="6px",
-                flex_flow="row wrap",  
+    controls = W.VBox(
+        [
+            W.HBox(
+                [w_bins, w_cdf, w_norm, w_dropna, w_include_inactive, w_show_metrics, w_trim_a],
+                layout=W.Layout(
+                    justify_content="flex-start",
+                    align_items="center",
+                    gap="6px",
+                    flex_flow="row wrap",
+                ),
             ),
-        ),
-        w_trim_help,
-        W.HBox([
-            W.VBox([sessions_label, w_sessions_mode, w_sessions]),
-            W.VBox([signals_label, w_signals_mode, w_signals]),
-        ]),
-    ])
+            w_trim_help,
+            W.HBox(
+                [
+                    W.VBox([sessions_label, w_sessions_mode, w_sessions]),
+                    W.VBox([signals_label, w_signals]),
+                ]
+            ),
+        ]
+    )
 
-    display(W.VBox([controls, out]))
-    _render()
+    root = W.VBox([controls, out])
+
+    def refresh() -> None:
+        _rebuild_signal_options()
+        _render()
+
+    refresh()
+
+    if auto_display:
+        display(root)
 
     return {
+        "root": root,
         "out": out,
         "session_ids": session_ids,
-        "signal_cols": signal_cols,
+        "signal_cols": list(map(str, w_signals.options)),
+        "state": state,
+        "controls": {
+            "sessions_mode": w_sessions_mode,
+            "sessions": w_sessions,
+            "signals": w_signals,
+            "bins": w_bins,
+            "cdf": w_cdf,
+            "normalize": w_norm,
+            "dropna": w_dropna,
+            "include_inactive": w_include_inactive,
+            "show_metrics": w_show_metrics,
+            "trim_cutoff": w_trim_a,
+        },
+        "refresh": refresh,
     }
+
 
 def make_signal_histogram_rebuilder(
     *,
-    sel: Dict[str, Any],
+    sel: SessionSelectorHandle,
     out: Optional[W.Output] = None,
-    session_key_col: str = "session_key",
+    session_key_col: str = SESSION_KEY_COL,
     **kwargs,
-) -> Dict[str, Any]:
+) -> RebuilderHandle:
     """
     Rebuild helper for the signal histogram widget (recreates the widget on selector change).
     """
-
-
     if out is None:
         out = W.Output()
 
     state: Dict[str, Any] = {"handles": None}
 
     def rebuild() -> None:
+        snapshot = selection_snapshot_from_handle(sel)
         store = sel["store"]
-        key_to_ref = sel["get_key_to_ref"]()
+        key_to_ref = snapshot.key_to_ref
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
 
-        # The signal histogram only needs selected session identities.
-        # Avoid loading all events parquet files here.
-        if session_key_col == "session_key":
+        loader_key_resolver: Optional[Callable[[str], str]] = None
+        if session_key_col == SESSION_KEY_COL:
             session_values = [str(k) for k in key_to_ref.keys()]
-        elif session_key_col == "session_id":
-            session_values = [str(v[1]) for v in key_to_ref.values()]
+        elif session_key_col == SESSION_ID_COL:
+            sid_to_key: Dict[str, str] = {}
+            for sk, (_rid, sid) in key_to_ref.items():
+                sid_s = str(sid)
+                if sid_s in sid_to_key and sid_to_key[sid_s] != sk:
+                    raise ValueError(
+                        "session_id values are not unique across selected runs; "
+                        "use session_key-based wiring instead."
+                    )
+                sid_to_key[sid_s] = str(sk)
+            session_values = sorted(sid_to_key.keys())
+            loader_key_resolver = lambda sid, m=sid_to_key: m[str(sid)]
         else:
             session_values = [str(k) for k in key_to_ref.keys()]
+
         events_df_sel = pd.DataFrame({session_key_col: session_values})
 
         with out:
@@ -419,9 +425,14 @@ def make_signal_histogram_rebuilder(
                 events_df_sel,
                 session_loader=session_loader,
                 session_key_col=session_key_col,
+                loader_key_resolver=loader_key_resolver,
+                auto_display=False,
                 **kwargs,
             )
+            h = state["handles"]
+            root = h.get("root") or h.get("ui")
+            if root is not None:
+                display(root)
 
     rebuild()
     return {"out": out, "rebuild": rebuild, "state": state}
-

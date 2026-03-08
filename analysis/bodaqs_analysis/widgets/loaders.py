@@ -2,11 +2,20 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Tuple
+from typing import Any
 
 import pandas as pd
 
 from bodaqs_analysis.artifacts import load_session_artifacts
+from bodaqs_analysis.widgets.contracts import (
+    ArtifactStoreLike,
+    KeyToRef,
+    RUN_ID_COL,
+    SESSION_ID_COL,
+    SESSION_KEY_COL,
+    SessionArtifacts,
+    SessionLoader,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,18 +25,20 @@ _EVENT_COLUMNS_KNOWN_FASTPARQUET_NATYPE = {
 }
 
 
-def make_session_loader(*, store, key_to_ref: Dict[str, Tuple[str, str]]):
+def make_session_loader(*, store: ArtifactStoreLike, key_to_ref: KeyToRef) -> SessionLoader:
     """
     Returns session_loader(session_key) -> {"df": ..., "meta": ...}
 
     This is the standard "consumer" contract used by widgets.
     """
-    def session_loader(session_key: str) -> dict:
+    def session_loader(session_key: str) -> SessionArtifacts:
         run_id, session_id = key_to_ref[str(session_key)]
         return load_session_artifacts(store, run_id=run_id, session_id=session_id)
+
     return session_loader
 
-def _read_events_df_robust(store, path) -> pd.DataFrame:
+
+def _read_events_df_robust(store: ArtifactStoreLike, path: Any) -> pd.DataFrame:
     """
     Read events parquet robustly across mixed historical schemas.
 
@@ -60,7 +71,7 @@ def _read_events_df_robust(store, path) -> pd.DataFrame:
         raise
 
 
-def load_all_events_for_selected(store, *, key_to_ref: dict[str, tuple[str, str]]) -> pd.DataFrame:
+def load_all_events_for_selected(store: ArtifactStoreLike, *, key_to_ref: KeyToRef) -> pd.DataFrame:
     """
     Loads and concatenates events across all selected sessions, adding:
       - session_key (run_id::session_id)
@@ -89,14 +100,14 @@ def load_all_events_for_selected(store, *, key_to_ref: dict[str, tuple[str, str]
 
             # Add cross-run identity columns
             df = df.copy()
-            df["session_key"] = session_key
-            df["run_id"] = run_id
-            df["session_id"] = session_id  # keep for convenience
+            df[SESSION_KEY_COL] = session_key
+            df[RUN_ID_COL] = run_id
+            df[SESSION_ID_COL] = session_id  # keep for convenience
             dfs.append(df)
 
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
     
-def load_all_metrics_for_selected(store, *, key_to_ref: Dict[str, Tuple[str, str]]) -> pd.DataFrame:
+def load_all_metrics_for_selected(store: ArtifactStoreLike, *, key_to_ref: KeyToRef) -> pd.DataFrame:
     """
     Load + concat metrics for the selected sessions.
 
@@ -126,9 +137,9 @@ def load_all_metrics_for_selected(store, *, key_to_ref: Dict[str, Tuple[str, str
                 continue
 
             df = df.copy()
-            df["session_key"] = session_key
-            df["run_id"] = run_id
-            df["session_id"] = session_id
+            df[SESSION_KEY_COL] = session_key
+            df[RUN_ID_COL] = run_id
+            df[SESSION_ID_COL] = session_id
             dfs.append(df)
 
     return pd.concat(dfs, ignore_index=True, sort=False) if dfs else pd.DataFrame()

@@ -5,251 +5,76 @@ Metric histogram / CDF browser widget.
 Consumer-pattern implementation for the BODAQS JupyterLab artifacts pipeline.
 
 Public APIs:
-    - make_metric_histogram_widget(events_df, metrics_df, ...)            # legacy-friendly (UNCHANGED)
-    - make_metric_histogram_widget_for_loader(store, schema, key_to_ref, ...)  # selector consumer pattern (UPDATED)
-    - make_metric_histogram_rebuilder(sel, schema, ...)                   # rebuild-on-selector-change pattern (UPDATED)
-
-Notes:
-- Expects metric columns prefixed with "m_".
-- Joins events and metrics on a stable identity key:
-    (session_key, schema_id, event_id) by default.
-- Consumer path resolves sensors via:
-    event row -> (schema_id, token in signal_col) -> schema triggers -> canonical signal_col -> registry -> sensor
-- Legacy path remains signal-driven for backward compatibility.
+    - make_metric_histogram_widget_for_loader(...)
+    - make_metric_histogram_rebuilder(...)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Sequence, Tuple, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
+import ipywidgets as W
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import ipywidgets as W
-from IPython.display import display, clear_output
+from IPython.display import clear_output, display
+
+from bodaqs_analysis.widgets.contracts import (
+    ArtifactStoreLike,
+    EVENT_ID_COL,
+    KeyToRef,
+    RegistryPolicy,
+    RebuilderHandle,
+    SCHEMA_ID_COL,
+    SESSION_KEY_COL,
+    SIGNAL_COL,
+    SessionLoader,
+    SessionSelectorHandle,
+    WidgetHandle,
+    selection_snapshot_from_handle,
+)
+from bodaqs_analysis.widgets.histogram_core import plot_hist_or_cdf, series_stats_line
+from bodaqs_analysis.widgets.loaders import (
+    load_all_events_for_selected,
+    load_all_metrics_for_selected,
+    make_session_loader,
+)
+from bodaqs_analysis.widgets.metric_widget_data import (
+    assign_sensor_column,
+    build_metric_viz_df,
+    registry_maps_for_sessions,
+    require_cols,
+)
+from bodaqs_analysis.widgets.registry_scope import validate_registry_policy
 
 logger = logging.getLogger(__name__)
-
-
-# -------------------------
-# Helpers
-# -------------------------
-
-def _require_cols(df: pd.DataFrame, cols: Sequence[str], *, name: str) -> None:
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"{name} missing required column(s): {missing}")
-
-
-def _uniq(seq):
-    seen = set()
-    out = []
-    for x in seq:
-        if x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
-
-
-def _metric_cols(metrics_df: pd.DataFrame) -> List[str]:
-    cols: List[str] = []
-    for c in metrics_df.columns:
-        if isinstance(c, str) and c.startswith("m_"):
-            cols.append(c)
-    return cols
-
-
-def _series_stats(name: str, vals: np.ndarray) -> str:
-    vals = np.asarray(vals, dtype=float)
-    vals = vals[np.isfinite(vals)]
-    if len(vals) == 0:
-        return f"- {name}: count=0"
-    vmin = float(np.min(vals))
-    vmax = float(np.max(vals))
-    mean = float(np.mean(vals))
-    med = float(np.median(vals))
-    return f"- {name}: count={len(vals)}  min={vmin:.6g}  max={vmax:.6g}  mean={mean:.6g}  median={med:.6g}"
-
-
-def _plot_series(
-    ax,
-    vals: np.ndarray,
-    bins: int,
-    *,
-    cdf: bool,
-    norm: bool,
-    label: Optional[str],
-) -> None:
-    vals = np.asarray(vals, dtype=float)
-    vals = vals[np.isfinite(vals)]
-    if len(vals) == 0:
-        return
-
-    if cdf:
-        x = np.sort(vals)
-        y = np.arange(1, len(x) + 1, dtype=float)
-        if norm:
-            y = y / float(len(x))
-        ax.step(x, y, where="post", label=label)
-    else:
-        weights = None
-        if norm:
-            weights = np.ones_like(vals, dtype=float) / float(len(vals))
-        ax.hist(vals, bins=int(bins), weights=weights, histtype="step", label=label)
-
-
-def _build_viz_df(
-    *,
-    events_df: pd.DataFrame,
-    metrics_df: pd.DataFrame,
-    session_key_col: str,
-    event_id_col: str,
-    schema_id_col: str,
-    event_type_col: str,
-    signal_col: str,
-) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Join events + metrics into a single viz_df and return (viz_df, metric_cols).
-    """
-    if events_df is None or len(events_df) == 0:
-        raise ValueError("events_df is empty")
-    if metrics_df is None or len(metrics_df) == 0:
-        raise ValueError("metrics_df is empty")
-
-    _require_cols(events_df, (session_key_col, event_id_col, schema_id_col, event_type_col, signal_col), name="events_df")
-    _require_cols(metrics_df, (session_key_col, event_id_col, schema_id_col), name="metrics_df")
-
-    metric_cols = _metric_cols(metrics_df)
-    if not metric_cols:
-        raise ValueError("No metric columns found in metrics_df (expected columns prefixed with 'm_')")
-
-    left_cols = _uniq([session_key_col, schema_id_col, event_id_col, event_type_col, signal_col])
-    right_cols = _uniq([session_key_col, schema_id_col, event_id_col] + metric_cols)
-
-    viz_df = events_df[left_cols].merge(
-        metrics_df[right_cols],
-        on=[session_key_col, schema_id_col, event_id_col],
-        how="inner",
-        validate="one_to_one",
-    )
-
-    return viz_df, metric_cols
-
-
-# -------------------------
-# Schema-mediated sensor resolution (consumer path)
-# -------------------------
-
-def _build_schema_sensor_maps(schema_obj: dict, registry_obj: dict) -> Dict[str, Dict[str, str]]:
-    """
-    Build per-schema_id lookup: token -> sensor
-
-    token can be:
-      - trigger ROLE key (e.g. 'disp')
-      - trigger canonical signal_col (e.g. 'rear_shock_dom_suspension [mm]')
-    """
-    out: Dict[str, Dict[str, str]] = {}
-
-    if not isinstance(schema_obj, dict):
-        return out
-
-    for sid, sch in schema_obj.items():
-        if not isinstance(sid, str):
-            continue
-        if not isinstance(sch, dict):
-            continue
-
-        triggers = sch.get("triggers") or {}
-        if not isinstance(triggers, dict):
-            continue
-
-        m: Dict[str, str] = {}
-        for role, trig in triggers.items():
-            if not isinstance(trig, dict):
-                continue
-
-            sigcol = trig.get("signal_col")
-            if not isinstance(sigcol, str) or not sigcol.strip():
-                continue
-            sigcol = sigcol.strip()
-
-            info = registry_obj.get(sigcol)
-            if not isinstance(info, dict):
-                continue
-
-            sensor = info.get("sensor")
-            if not isinstance(sensor, str) or not sensor.strip():
-                continue
-            sensor = sensor.strip()
-
-            # allow lookup by role as well as by canonical signal column
-            if isinstance(role, str) and role.strip():
-                m[role.strip()] = sensor
-            m[sigcol] = sensor
-
-        if m:
-            out[sid] = m
-
-    return out
-
-
-def _resolve_sensor(
-    *,
-    schema_sensor_map_by_schema: Dict[str, Dict[str, str]],
-    registry: dict,
-    schema_id_val: object,
-    token_val: object,
-) -> str:
-    """
-    Resolve sensor for a row using schema + registry only.
-    token_val is whatever is stored in viz_df[signal_col] (role or resolved column).
-    """
-    sid = str(schema_id_val) if schema_id_val is not None else ""
-    tok = str(token_val) if token_val is not None else ""
-    sid = sid.strip()
-    tok = tok.strip()
-    if not sid or not tok:
-        return ""
-
-    # 1) Schema-mediated lookup (role or canonical col)
-    m = schema_sensor_map_by_schema.get(sid)
-    if isinstance(m, dict):
-        s = m.get(tok)
-        if isinstance(s, str) and s.strip():
-            return s.strip()
-
-    # 2) If token is already canonical df column, allow direct registry lookup
-    info = registry.get(tok)
-    if isinstance(info, dict):
-        s2 = info.get("sensor")
-        if isinstance(s2, str) and s2.strip():
-            return s2.strip()
-
-    return ""
 
 
 # -------------------------
 # Widget constructors
 # -------------------------
 
+
 def make_metric_histogram_widget_for_loader(
     *,
-    store: Any,
-    schema: dict,
-    key_to_ref: Dict[str, Tuple[str, str]],
+    store: ArtifactStoreLike,
+    schema: Mapping[str, Any],
+    key_to_ref: KeyToRef,
     events_index_df: pd.DataFrame,
-    session_loader: Any,  # required (used to get registry snapshot)
-    session_key_col: str = "session_key",
-    event_id_col: str = "event_id",
-    schema_id_col: str = "schema_id",
-    event_type_col: str = "schema_id",
-    signal_col: str = "signal_col",
+    session_loader: SessionLoader,
+    session_key_col: str = SESSION_KEY_COL,
+    event_id_col: str = EVENT_ID_COL,
+    schema_id_col: str = SCHEMA_ID_COL,
+    event_type_col: str = SCHEMA_ID_COL,
+    signal_col: str = SIGNAL_COL,
+    registry_policy: RegistryPolicy = "union",
     default_bins: int = 10,
     max_bins: int = 200,
-) -> dict:
+    auto_display: bool = False,
+) -> WidgetHandle:
     """
-    Consumer-pattern metric histogram widget (SENSOR-driven).
+    Consumer-pattern metric histogram widget (sensor-driven).
 
     Sensor resolution is schema-mediated:
         event row -> (schema_id, token in signal_col) -> schema triggers -> canonical signal_col -> registry -> sensor
@@ -258,20 +83,18 @@ def make_metric_histogram_widget_for_loader(
         raise ValueError("events_index_df is empty")
     if not key_to_ref:
         raise ValueError("key_to_ref is empty")
-    if not isinstance(schema, dict) or not schema:
+    if not isinstance(schema, Mapping) or not schema:
         raise ValueError("schema is missing/empty (required for schema-mediated sensor resolution)")
     if session_loader is None:
-        raise ValueError("session_loader is required (used to load registry snapshot)")
+        raise ValueError("session_loader is required")
+    validate_registry_policy(registry_policy)
 
-    _require_cols(events_index_df, (session_key_col,), name="events_index_df")
-
-    # Import here to avoid circular imports in some notebook setups
-    from bodaqs_analysis.widgets.loaders import load_all_events_for_selected, load_all_metrics_for_selected
+    require_cols(events_index_df, (session_key_col,), name="events_index_df")
 
     events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
     metrics_df_sel = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
 
-    viz_df, metric_cols = _build_viz_df(
+    viz_df, metric_cols = build_metric_viz_df(
         events_df=events_df_sel,
         metrics_df=metrics_df_sel,
         session_key_col=session_key_col,
@@ -279,42 +102,36 @@ def make_metric_histogram_widget_for_loader(
         schema_id_col=schema_id_col,
         event_type_col=event_type_col,
         signal_col=signal_col,
+        include_optional_event_cols=("run_id", "session_id"),
+        require_event_type_col=True,
     )
 
-    # ---- load registry once from any selected session ----
-    all_session_keys = (
+    all_session_keys = sorted(
         events_index_df[session_key_col].dropna().astype(str).unique().tolist()
     )
-    all_session_keys = sorted(all_session_keys)
     if not all_session_keys:
         raise ValueError("No session_key values found in events_index_df")
 
-    sk0 = all_session_keys[0]
-    sess0 = session_loader(sk0)
-    meta0 = (sess0 or {}).get("meta") or {}
-    registry = meta0.get("signals") or {}
-    if not isinstance(registry, dict) or not registry:
-        raise ValueError(
-            "Signal registry not found or empty in session_loader(session_key)['meta']['signals']"
-        )
-
-    schema_sensor_map_by_schema = _build_schema_sensor_maps(schema, registry)
-
-    viz_df["_sensor"] = [
-        _resolve_sensor(
-            schema_sensor_map_by_schema=schema_sensor_map_by_schema,
-            registry=registry,
-            schema_id_val=sid,
-            token_val=tok,
-        )
-        for sid, tok in zip(viz_df[schema_id_col].astype(str), viz_df[signal_col].astype(str))
-    ]
+    registries_by_session, schema_maps_by_session = registry_maps_for_sessions(
+        session_keys=all_session_keys,
+        session_loader=session_loader,
+        schema=schema,
+        registry_policy=registry_policy,
+    )
+    viz_df["_sensor"] = assign_sensor_column(
+        viz_df=viz_df,
+        session_key_col=session_key_col,
+        schema_id_col=schema_id_col,
+        signal_col=signal_col,
+        registries_by_session=registries_by_session,
+        schema_maps_by_session=schema_maps_by_session,
+    )
 
     if viz_df["_sensor"].astype(str).str.len().sum() == 0:
-        ex = viz_df[[schema_id_col, signal_col]].drop_duplicates().head(8)
+        ex = viz_df[[session_key_col, schema_id_col, signal_col]].drop_duplicates().head(8)
         logger.warning(
             "metric_histogram: Could not resolve any sensors via schema+registry. "
-            "Sample (schema_id, %s):\n%s",
+            "Sample (session_key, schema_id, %s):\n%s",
             signal_col,
             ex.to_string(index=False),
         )
@@ -326,12 +143,14 @@ def make_metric_histogram_widget_for_loader(
         event_type_col=event_type_col,
         default_bins=default_bins,
         max_bins=max_bins,
+        auto_display=auto_display,
     )
 
 
 # -------------------------
 # UI builders
 # -------------------------
+
 
 def _make_widget_from_viz_df_consumer(
     *,
@@ -341,7 +160,8 @@ def _make_widget_from_viz_df_consumer(
     event_type_col: str,
     default_bins: int,
     max_bins: int,
-) -> dict:
+    auto_display: bool,
+) -> WidgetHandle:
     """Internal: consumer UI from prepared viz_df (expects viz_df['_sensor'])."""
     logger.info("metric_histogram (consumer): viz_df shape: %s", getattr(viz_df, "shape", None))
 
@@ -360,10 +180,9 @@ def _make_widget_from_viz_df_consumer(
     if not sensors:
         raise ValueError(
             "No sensors could be resolved via schema+registry (viz_df['_sensor'] is empty). "
-            "Check that schema['<schema_id>']['triggers'][<role>]['signal_col'] matches registry keys."
+            "Check that schema triggers and session registries are compatible."
         )
 
-    # --- widgets ---
     lbl_sessions = W.Label("Sessions")
     w_sess_mode = W.RadioButtons(
         options=[("Aggregate sessions", False), ("Compare sessions", True)],
@@ -372,43 +191,42 @@ def _make_widget_from_viz_df_consumer(
     )
     w_sessions = W.SelectMultiple(
         options=sessions,
-        value=tuple(sessions),  # default-safe selection
+        value=tuple(sessions),
         rows=min(8, max(3, len(sensors), len(sessions))),
         layout=W.Layout(width="450px"),
     )
 
     lbl_sensors = W.Label("Sensors")
-    w_sens_mode = W.RadioButtons(
-        options=[("Aggregate sensors", False), ("Compare sensors", True)],
-        value=True,
-        description="",
-    )
     w_sensors = W.SelectMultiple(
         options=sensors,
         value=tuple(sensors[:1]),
-        rows=min(8, max(3, len(sensors), len (sessions))),
+        rows=min(8, max(3, len(sensors), len(sessions))),
         layout=W.Layout(width="450px"),
-
     )
 
     event_label = W.Label("Event:")
     metric_label = W.Label("Metric:")
     w_event = W.Dropdown(options=event_types, value=event_types[0], description="")
     w_metric = W.Dropdown(options=metrics, value=metrics[0], description="")
-    w_bins = W.BoundedIntText(value=int(default_bins), min=1, max=int(max_bins), step=1, description="Bins:", layout=W.Layout(width="150px"),)
+    w_bins = W.BoundedIntText(
+        value=int(default_bins),
+        min=1,
+        max=int(max_bins),
+        step=1,
+        description="Bins:",
+        layout=W.Layout(width="150px"),
+    )
     w_cdf = W.Checkbox(value=False, description="CDF")
     w_norm = W.Checkbox(value=True, description="Normalize")
     w_dropna = W.Checkbox(value=True, description="Drop NaNs")
     w_show_stats = W.Checkbox(value=True, description="Show stats")
 
-
     out = W.Output()
 
     def _rebuild_metrics(*_):
-        # Restrict metric dropdown to metrics that have at least one finite value for the selected event type
         sub = viz_df[viz_df[event_type_col].astype(str) == str(w_event.value)]
         if sub is None or len(sub) == 0:
-            mcols = metrics[:]  # fallback
+            mcols = metrics[:]
         else:
             mcols = []
             for c in metrics:
@@ -416,17 +234,19 @@ def _make_widget_from_viz_df_consumer(
                 if np.isfinite(v).any():
                     mcols.append(c)
             if not mcols:
-                mcols = metrics[:]  # fallback
+                mcols = metrics[:]
 
         prev = str(w_metric.value) if w_metric.value is not None else ""
         w_metric.options = mcols
         w_metric.value = prev if prev in mcols else (mcols[0] if mcols else None)
 
     def _vals(sub: pd.DataFrame) -> np.ndarray:
+        if w_metric.value is None:
+            return np.array([], dtype=float)
         s = pd.to_numeric(sub[w_metric.value], errors="coerce")
         if w_dropna.value:
             s = s.dropna()
-        return s.to_numpy()
+        return s.to_numpy(dtype=float)
 
     def _render(*_):
         with out:
@@ -449,11 +269,10 @@ def _make_widget_from_viz_df_consumer(
             ]
 
             compare_sessions = bool(w_sess_mode.value)
-            compare_sensors = bool(w_sens_mode.value)
 
             series: List[Tuple[str, np.ndarray]] = []
 
-            if compare_sessions and compare_sensors:
+            if compare_sessions:
                 for sk in sel_sessions:
                     for s in sel_sensors:
                         sub = base[
@@ -461,49 +280,41 @@ def _make_widget_from_viz_df_consumer(
                             & (base["_sensor"].astype(str) == s)
                         ]
                         series.append((f"{sk} | {s}", _vals(sub)))
-
-            elif compare_sessions and (not compare_sensors):
-                for sk in sel_sessions:
-                    sub = base[base[session_key_col].astype(str) == sk]
-                    series.append((str(sk), _vals(sub)))
-
-            elif (not compare_sessions) and compare_sensors:
+            else:
                 for s in sel_sensors:
                     sub = base[base["_sensor"].astype(str) == s]
                     series.append((str(s), _vals(sub)))
 
-            else:
-                series.append(("aggregate", _vals(base)))
-
             fig, ax = plt.subplots(figsize=(8.3, 4.2))
-
+            show_series_labels = len(series) > 1
             for name, vals in series:
-                _plot_series(
+                plot_hist_or_cdf(
                     ax,
                     vals,
                     int(w_bins.value),
                     cdf=bool(w_cdf.value),
                     norm=bool(w_norm.value),
-                    label=(name if (compare_sessions or compare_sensors) else None),
+                    label=(name if show_series_labels else None),
                 )
 
             mode_bits = [
                 ("sessions=compare" if compare_sessions else "sessions=aggregate"),
-                ("sensors=compare" if compare_sensors else "sensors=aggregate"),
+                "sensors=compare",
             ]
 
             ax.set_title(
                 f"{w_metric.value} distribution\n"
                 f"{event_type_col}={w_event.value} | {', '.join(mode_bits)}"
             )
-            ax.set_xlabel(w_metric.value)
+            ax.set_xlabel(str(w_metric.value))
             ax.set_ylabel(
-                ("Cumulative proportion" if w_norm.value else "Cumulative count") if w_cdf.value
+                ("Cumulative proportion" if w_norm.value else "Cumulative count")
+                if w_cdf.value
                 else ("Proportion" if w_norm.value else "Count")
             )
             ax.grid(True, which="major", axis="both", alpha=0.3)
 
-            if (compare_sessions or compare_sensors):
+            if show_series_labels:
                 ax.legend(title="series", fontsize=9)
 
             if all(len(v) == 0 for _, v in series):
@@ -522,65 +333,95 @@ def _make_widget_from_viz_df_consumer(
             if w_show_stats.value:
                 print("Summary stats:")
                 for name, vals in series:
-                    print(_series_stats(name, vals))
+                    print(series_stats_line(name, vals))
 
-
-    def _on_event_change(*_):
+    def _on_controls_change(*_):
         _rebuild_metrics()
         _render()
-    
-    for w in (w_sess_mode, w_sessions, w_sens_mode, w_sensors, w_event, w_metric, w_bins, w_cdf, w_norm, w_dropna, w_show_stats):
-        w.observe(_on_event_change, names="value")
+
+    for w in (
+        w_sess_mode,
+        w_sessions,
+        w_sensors,
+        w_event,
+        w_metric,
+        w_bins,
+        w_cdf,
+        w_norm,
+        w_dropna,
+        w_show_stats,
+    ):
+        w.observe(_on_controls_change, names="value")
 
     top_row = W.VBox([W.HBox([W.VBox([event_label, w_event]), W.VBox([metric_label, w_metric])])])
-
     sessions_col = W.VBox([lbl_sessions, w_sess_mode, w_sessions], layout=W.Layout(align_items="flex-start"))
-    sensors_col = W.VBox([lbl_sensors, w_sens_mode, w_sensors], layout=W.Layout(align_items="flex-start"))
-
+    sensors_col = W.VBox([lbl_sensors, w_sensors], layout=W.Layout(align_items="flex-start"))
     controls = W.VBox(
         [
             top_row,
             W.HBox([sessions_col, sensors_col], layout=W.Layout(gap="12px", align_items="flex-start")),
-            W.HBox([w_bins, w_cdf, w_norm, w_dropna, w_show_stats])
+            W.HBox([w_bins, w_cdf, w_norm, w_dropna, w_show_stats]),
         ]
     )
+    root = W.VBox([controls, out])
 
-    display(W.VBox([controls, out]))
-    _rebuild_metrics()
-    _render()
+    def refresh() -> None:
+        _rebuild_metrics()
+        _render()
 
-    return {"viz_df": viz_df, "out": out}
+    refresh()
+    if auto_display:
+        display(root)
+
+    return {
+        "root": root,
+        "out": out,
+        "viz_df": viz_df,
+        "controls": {
+            "sessions_mode": w_sess_mode,
+            "sessions": w_sessions,
+            "sensors": w_sensors,
+            "event": w_event,
+            "metric": w_metric,
+            "bins": w_bins,
+            "cdf": w_cdf,
+            "normalize": w_norm,
+            "dropna": w_dropna,
+            "show_stats": w_show_stats,
+        },
+        "refresh": refresh,
+    }
+
 
 def make_metric_histogram_rebuilder(
     *,
-    sel: Dict[str, Any],
-    schema: dict,
+    sel: SessionSelectorHandle,
+    schema: Mapping[str, Any],
     out: Optional[W.Output] = None,
-    session_key_col: str = "session_key",
-    event_id_col: str = "event_id",
-    schema_id_col: str = "schema_id",
-    event_type_col: str = "schema_id",
-    signal_col: str = "signal_col",
+    session_key_col: str = SESSION_KEY_COL,
+    event_id_col: str = EVENT_ID_COL,
+    schema_id_col: str = SCHEMA_ID_COL,
+    event_type_col: str = SCHEMA_ID_COL,
+    signal_col: str = SIGNAL_COL,
+    registry_policy: RegistryPolicy = "union",
     default_bins: int = 10,
     max_bins: int = 200,
-) -> Dict[str, Any]:
+) -> RebuilderHandle:
     """
     Rebuild-on-selector-change helper.
 
     Returns: {"out": out, "rebuild": rebuild, "state": {"handles": ...}}
     """
-    from IPython.display import clear_output
-    from bodaqs_analysis.widgets.loaders import make_session_loader
-
     if out is None:
         out = W.Output()
 
     state: Dict[str, Any] = {"handles": None}
 
     def rebuild() -> None:
+        snapshot = selection_snapshot_from_handle(sel)
         store = sel["store"]
-        key_to_ref = sel["get_key_to_ref"]()
-        events_index_df = sel["get_events_index_df"]()
+        key_to_ref = snapshot.key_to_ref
+        events_index_df = snapshot.events_index_df
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
 
         with out:
@@ -596,9 +437,15 @@ def make_metric_histogram_rebuilder(
                 schema_id_col=schema_id_col,
                 event_type_col=event_type_col,
                 signal_col=signal_col,
+                registry_policy=registry_policy,
                 default_bins=default_bins,
                 max_bins=max_bins,
+                auto_display=False,
             )
+            h = state["handles"]
+            root = h.get("root") or h.get("ui")
+            if root is not None:
+                display(root)
 
     rebuild()
     return {"out": out, "rebuild": rebuild, "state": state}

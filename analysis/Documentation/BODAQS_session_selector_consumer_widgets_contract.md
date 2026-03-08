@@ -11,6 +11,96 @@ selector outputs and loader contracts.
 
 ---
 
+## Typed contracts module
+
+Concrete type contracts are now drafted in:
+
+- `analysis/bodaqs_analysis/widgets/contracts.py`
+
+Key exported contracts/signatures:
+
+```python
+SessionKey = str
+SessionRef = tuple[str, str]  # (run_id, session_id)
+KeyToRef = Mapping[SessionKey, SessionRef]
+
+@dataclass(frozen=True)
+class SelectionSnapshot:
+    key_to_ref: dict[str, tuple[str, str]]
+    events_index_df: pd.DataFrame
+
+class SessionLoader(Protocol):
+    def __call__(self, session_key: str) -> SessionArtifacts: ...
+
+class SessionSelectorCoreHandle(TypedDict):
+    ui: Any
+    store: ArtifactStoreLike
+    get_selected: Callable[[], list[SessionSelection]]
+    get_key_to_ref: Callable[[], dict[str, tuple[str, str]]]
+    get_events_index_df: Callable[[], pd.DataFrame]
+
+class WidgetHandle(TypedDict, total=False):
+    ui: Any
+    root: Any
+    out: Any
+    state: dict[str, Any]
+    controls: dict[str, Any]
+    viz_df: pd.DataFrame
+    refresh: Callable[[], None]
+
+class RebuilderHandle(TypedDict):
+    out: Any
+    rebuild: Callable[[], None]
+    state: dict[str, Any]
+```
+
+Registry variability contract (multi-session):
+
+```python
+RegistryPolicy = Literal["union", "intersection", "strict"]
+
+@dataclass(frozen=True)
+class RegistryResolutionConfig:
+    policy: RegistryPolicy = "union"
+    include_qc: bool = False
+```
+
+This keeps `session_key` as the canonical identity across widget/service boundaries.
+
+---
+
+## Internal shared component boundaries (current)
+
+These are **internal** helper modules to keep reusable behavior centralized while
+keeping notebook-facing constructors stable:
+
+- `analysis/bodaqs_analysis/widgets/histogram_core.py`
+  - shared histogram/CDF plotting and summary/trimmed-quantile helpers
+  - used by both signal and metric histogram widgets
+- `analysis/bodaqs_analysis/widgets/metric_widget_data.py`
+  - shared metric widget data prep: events/metrics join, schema/registry sensor resolution
+  - used by metric histogram and metric scatter widgets
+- `analysis/bodaqs_analysis/widgets/signal_histogram_scope.py`
+  - signal-universe resolution and per-signal sample extraction for signal histogram
+- `analysis/bodaqs_analysis/widgets/event_browser_scope.py`
+  - scope-level registry/schema resolution and event filtering
+- `analysis/bodaqs_analysis/widgets/event_browser_options.py`
+  - event/sensor option generation + event label parse/build
+- `analysis/bodaqs_analysis/widgets/event_browser_render.py`
+  - event-browser rendering-specific helpers
+- `analysis/bodaqs_analysis/widgets/event_semantics.py`
+  - semantic signal option + RoleSpec construction helpers
+- `analysis/bodaqs_analysis/widgets/session_window_data.py`
+  - session-window data loading/joining/option derivation helpers
+- `analysis/bodaqs_analysis/widgets/session_window_plot.py`
+  - session-window plot/hover/color helpers
+- `analysis/bodaqs_analysis/widgets/session_window_bookmarks.py`
+  - bookmark label/default/options helpers
+
+Notebook-facing public API remains constructor/rebuilder functions in widget modules.
+
+---
+
 ## Definitions
 
 ### Identity
@@ -163,6 +253,7 @@ make_<widget>_for_loader(
     key_to_ref: dict[session_key, (run_id, session_id)],
     events_index_df: pd.DataFrame,
     session_loader: Callable[[str], dict],
+    auto_display: bool = False,
     ...
 ) -> dict
 ```
@@ -188,17 +279,29 @@ When joining events and metrics, prefer a stable composite key:
 - `(session_key, schema_id, event_id)` is the safest default.
 
 4) **UI defaults must not over-filter**  
-Defaults should avoid “empty intersection” states.
+Defaults should avoid "empty intersection" states.
 For example, defaulting session selection to **all sessions** in scope is generally safer than first-only.
+
+5) **Registry differences are explicit**  
+When a widget depends on per-session signal registries, it should expose or document a policy for
+multi-session differences:
+- `union`: allow any signal present in at least one selected session
+- `intersection`: only signals present in every selected session
+- `strict`: require identical signal sets and fail fast on mismatch
+
+6) **Constructors are pure (no implicit display side effects)**  
+`make_<widget>_for_loader(...)` should return a handle (including `root`/`ui`) and not call `display(...)`
+internally. Notebook/rebuilder code decides where/how to display.
 
 ### Recommended return dict
 
 | key | type | meaning |
 |---|---|---|
 | `ui` (optional) | widget/container | main widget UI if you want to return it |
+| `root` (optional) | widget/container | preferred top-level UI handle for display |
 | `out` | `ipywidgets.Output` | output area used for plotting/text |
 | `viz_df` (optional) | `pd.DataFrame` | joined/filtered debugging DF |
-| `refresh` (recommended) | `() -> None` or `(state)->None` | recompute internal state + rerender |
+| `refresh` (recommended) | `() -> None` | recompute internal state + rerender |
 
 > Some widgets also return `controls` and `cache` dicts for testing/debug.
 
@@ -206,42 +309,23 @@ For example, defaulting session selection to **all sessions** in scope is genera
 
 ## Refresh contract (recommended)
 
-Refreshing matters because:
-- selector state changes after widgets are created
-- widgets should update without requiring notebook-wide rebuilds
+Refreshing matters because selector scope changes after widgets are created.
 
-### Two acceptable patterns
+Current recommended wiring:
 
-#### Pattern A: refresh captures no selector state (preferred)
+- Rebuilder takes a `SessionSelectorHandle`
+- Rebuilder pulls fresh scope with `selection_snapshot_from_handle(sel)` each rebuild
+- Constructor is called with snapshot-derived inputs
+- Constructor returns a handle with `root` and optional `refresh`
 
-Widget is constructed with **getter callables**:
+`refresh()` should refresh widget-internal state from its current source.
+For session-window-style widgets, this should refresh the currently selected session.
 
-- `get_key_to_ref()`
-- `get_events_index_df()`
+Guardrails:
 
-Then `refresh()` internally calls those getters to recompute its state.
-
-Pros: simplest wiring; no stale closures.  
-Cons: widget depends on selector getters (still a clean contract).
-
-#### Pattern B: refresh accepts new selector state (also good)
-
-Widget is constructed once and returns:
-
-```python
-refresh(*, key_to_ref, events_index_df, session_loader) -> None
-```
-
-Notebook wiring updates the state and calls refresh.
-
-Pros: widget remains selector-agnostic.  
-Cons: slightly more notebook glue.
-
-### Guardrails
-
-- Avoid observer loops: refresh/rebuild helpers that mutate widget values should use a guard flag
-  or “preserve selection if still valid” logic.
-- Prefer rebuilding *data* (`viz_df`) and re-rendering rather than constantly rewriting control values.
+- avoid observer loops by using an `updating` guard when callbacks set widget values
+- preserve selections where still valid after option rebuilds
+- prefer rebuilding data + rerendering rather than rewriting every control
 
 ---
 
@@ -281,8 +365,10 @@ handles = make_metric_scatter_widget_for_loader(
     session_loader=session_loader,
     event_type_col="schema_id",
     signal_col="signal_col",
+    auto_display=False,
 )
 
+display(handles["root"])
 viz_df = handles.get("viz_df")  # debug
 ```
 
@@ -335,13 +421,35 @@ scatter = make_metric_scatter_rebuilder(sel=sel); display(scatter["out"])
 browser = make_event_browser_rebuilder(sel=sel, schema=schema); display(browser["out"])
 hist = make_signal_histogram_rebuilder(sel=sel); display(hist["out"])
 mhist = make_metric_histogram_rebuilder(sel=sel); display(mhist["out"])
+swb = make_session_window_browser_rebuilder(sel=sel); display(swb["out"])
 
 # wiring cell
 refresh = attach_refresh(
     sel,
-    rebuild_fns=[browser["rebuild"], hist["rebuild"], scatter["rebuild"], mhist["rebuild"]],
+    rebuild_fns=[browser["rebuild"], hist["rebuild"], scatter["rebuild"], mhist["rebuild"], swb["rebuild"]],
 )
 ```
 
 > This approach intentionally trades preservation of widget-local selections for robustness and simplicity.
 > If/when needed, rebuilders can be extended to reapply previous widget-local selections when still valid.
+
+---
+
+## Notebook smoke test command
+
+Use the script below to execute the current notebook compatibility checks in a repeatable way:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Tools\run_widget_notebook_smoke_tests.ps1
+```
+
+Notes:
+
+- Default run executes:
+  - `analysis/bodaqs_widget_test_notebook.ipynb`
+  - `analysis/bodaqs_event_schema_test_harness.ipynb`
+- Include the session notebook as well:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Tools\run_widget_notebook_smoke_tests.ps1 -IncludeSessionNotebook
+```

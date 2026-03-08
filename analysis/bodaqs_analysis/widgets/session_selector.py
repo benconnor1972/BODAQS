@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional, Callable
+from typing import Any, Mapping
 
 import ipywidgets as W
 import pandas as pd
-import threading
-import asyncio
 
 from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
+from bodaqs_analysis.widgets.contracts import (
+    MutableKeyToRef,
+    RebuildFn,
+    RefreshHandle,
+    RUN_ID_COL,
+    SESSION_ID_COL,
+    SESSION_KEY_COL,
+    SessionKey,
+    SessionSelection,
+    SessionSelectorHandle,
+)
 
 
-def make_session_key(run_id: str, session_id: str) -> str:
+def make_session_key(run_id: str, session_id: str) -> SessionKey:
     return f"{run_id}::{session_id}"
 
 
@@ -23,7 +32,7 @@ def make_session_selector(
     default_run_id: str = "__ALL__",
     select_first_by_default: bool = True,
     rows: int = 12,
-):
+) -> SessionSelectorHandle:
     """
     Returns dict with:
       ui: widgets container (display this)
@@ -35,13 +44,13 @@ def make_session_selector(
     """
     store = ArtifactStore(Path(artifacts_dir))
 
-    def _read_json_safe(path):
+    def _read_json_safe(path: Path) -> dict[str, Any]:
         try:
             return store.read_json(path)
         except Exception:
             return {}
 
-    def _get_run_meta(run_id: str):
+    def _get_run_meta(run_id: str) -> dict[str, str]:
         m = _read_json_safe(store.path_run_manifest(run_id))
         return {
             "created_at": str(m.get("created_at") or ""),
@@ -53,7 +62,9 @@ def make_session_selector(
         d = m.get("description")
         return str(d).strip() if d is not None else ""
 
-    def _build_session_index(selected_run_id: str | None):
+    def _build_session_index(
+        selected_run_id: str | None,
+    ) -> tuple[list[str], dict[str, SessionSelection]]:
         run_ids = list_runs(store) if selected_run_id in (None, "__ALL__") else [selected_run_id]
 
         rows_ = []
@@ -67,9 +78,9 @@ def make_session_selector(
                 label = f"{created_at} | {rdesc} | {sid} | {sdesc}"
                 rows_.append((label, rid, sid))
 
-        label_counts: Dict[str, int] = {}
-        options: List[str] = []
-        label_to_sel: Dict[str, Dict[str, str]] = {}
+        label_counts: dict[str, int] = {}
+        options: list[str] = []
+        label_to_sel: dict[str, SessionSelection] = {}
 
         for label, rid, sid in rows_:
             n = label_counts.get(label, 0) + 1
@@ -100,10 +111,10 @@ def make_session_selector(
     out = W.Output()
     
     # state (closed over)
-    _label_to_sel: Dict[str, Dict[str, str]] = {}
-    _selected: List[Dict[str, str]] = []
-    _key_to_ref: Dict[str, Tuple[str, str]] = {}
-    _events_index_df = pd.DataFrame(columns=["session_key", "run_id", "session_id"])
+    _label_to_sel: dict[str, SessionSelection] = {}
+    _selected: list[SessionSelection] = []
+    _key_to_ref: MutableKeyToRef = {}
+    _events_index_df = pd.DataFrame(columns=[SESSION_KEY_COL, RUN_ID_COL, SESSION_ID_COL])
 
     def _refresh_sessions(*_):
         nonlocal _label_to_sel
@@ -125,7 +136,10 @@ def make_session_selector(
         }
 
         _events_index_df = pd.DataFrame(
-            [{"session_key": k, "run_id": rid, "session_id": sid} for k, (rid, sid) in _key_to_ref.items()]
+            [
+                {SESSION_KEY_COL: k, RUN_ID_COL: rid, SESSION_ID_COL: sid}
+                for k, (rid, sid) in _key_to_ref.items()
+            ]
         )
 
 #        with out:
@@ -141,13 +155,13 @@ def make_session_selector(
 
     ui = W.VBox([W.HBox([run_dd]), sessions_sel, out])
 
-    def get_selected():
+    def get_selected() -> list[SessionSelection]:
         return list(_selected)
 
-    def get_key_to_ref():
+    def get_key_to_ref() -> MutableKeyToRef:
         return dict(_key_to_ref)
 
-    def get_events_index_df():
+    def get_events_index_df() -> pd.DataFrame:
         return _events_index_df.copy()
 
     return {
@@ -162,9 +176,9 @@ def make_session_selector(
     }
 
 def attach_refresh(
-    sel: Dict[str, Any],
-    rebuild_fns: List[Callable[[], None]],
-) -> Dict[str, Any]:
+    sel: Mapping[str, Any],
+    rebuild_fns: list[RebuildFn],
+) -> RefreshHandle:
     """
     Attach selector observers and call rebuild functions immediately when run/sessions change.
     (No threads; reliable in Jupyter.)
