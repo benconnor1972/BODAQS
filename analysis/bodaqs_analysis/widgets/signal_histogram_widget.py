@@ -13,15 +13,14 @@ Public API:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Callable, List, Tuple
+from typing import Any, Dict, Callable, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import ipywidgets as W
 from IPython.display import display, clear_output
-from IPython.display import clear_output
-from bodaqs_analysis.widgets.loaders import make_session_loader, load_all_events_for_selected
+from bodaqs_analysis.widgets.loaders import make_session_loader
 
 # -------------------------
 # Registry helpers
@@ -79,6 +78,65 @@ def _sort_signals_by_unit(
 
     return sorted(signal_cols, key=key)
 
+
+def _compute_trimmed_metrics(values: np.ndarray, a: Optional[float]) -> Dict[str, Any]:
+    vals = np.asarray(values, dtype=float)
+    finite = vals[np.isfinite(vals)]
+    n_total = int(len(finite))
+
+    trimmed = finite if a is None else finite[finite >= float(a)]
+    n_trim = int(len(trimmed))
+
+    out: Dict[str, Any] = {
+        "n_total": n_total,
+        "n_trim": n_trim,
+        "insufficient": n_trim < 5,
+        "q25": np.nan,
+        "q50": np.nan,
+        "q75": np.nan,
+        "q90": np.nan,
+        "q95": np.nan,
+        "iqr": np.nan,
+        "skew_q": np.nan,
+    }
+    if out["insufficient"]:
+        return out
+
+    q25, q50, q75, q90, q95 = np.quantile(trimmed, [0.25, 0.5, 0.75, 0.9, 0.95])
+    iqr = float(q75 - q25)
+    skew_q = float("nan")
+    if abs(iqr) > 1e-12:
+        skew_q = float((q75 + q25 - (2.0 * q50)) / iqr)
+
+    out.update(
+        {
+            "q25": float(q25),
+            "q50": float(q50),
+            "q75": float(q75),
+            "q90": float(q90),
+            "q95": float(q95),
+            "iqr": iqr,
+            "skew_q": skew_q,
+        }
+    )
+    return out
+
+
+def _parse_trim_cutoff(raw: str) -> Optional[float]:
+    txt = str(raw).strip()
+    if txt == "":
+        return None
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
+def _fmt_metric(value: float) -> str:
+    v = float(value)
+    if not np.isfinite(v):
+        return "NaN"
+    return f"{v:.4g}"
 
 
 # -------------------------
@@ -155,9 +213,23 @@ def make_signal_histogram_widget_for_loader(
     w_norm = W.Checkbox(value=True, description="Normalize")
     w_dropna = W.Checkbox(value=True, description="Drop NaN/inf")
     w_include_inactive = W.Checkbox(value=False, description="Include inactive")
-    for w in (w_cdf, w_norm, w_dropna, w_include_inactive):
+    w_show_metrics = W.Checkbox(value=False, description="Show metrics")
+    w_trim_a = W.Text(
+        value="",
+        description="Trim cutoff (a):",
+        placeholder="blank = no trimming",
+        layout=W.Layout(width="240px"),
+    )
+    w_trim_help = W.HTML("<small>Exclude values &lt; a from metric computation.</small>")
+    for w in (w_cdf, w_norm, w_dropna, w_include_inactive, w_show_metrics):
         w.layout = W.Layout(width="auto")
 
+    def _toggle_trim_input(*_):
+        enabled = bool(w_show_metrics.value)
+        w_trim_a.disabled = not enabled
+        w_trim_help.layout = W.Layout(display="block" if enabled else "none")
+
+    _toggle_trim_input()
 
     out = W.Output()
 
@@ -233,16 +305,59 @@ def make_signal_histogram_widget_for_loader(
 
             plt.show()
 
+            if w_show_metrics.value:
+                a = _parse_trim_cutoff(w_trim_a.value)
+                rows: List[Dict[str, str]] = []
+
+                for name, vals in series:
+                    metrics = _compute_trimmed_metrics(vals, a)
+                    row = {
+                        "Group": str(name),
+                        "n_trim / n_total": f"{metrics['n_trim']} / {metrics['n_total']}",
+                    }
+
+                    if metrics["insufficient"]:
+                        row.update(
+                            {
+                                "Q25": "insufficient data",
+                                "Q50": "insufficient data",
+                                "Q75": "insufficient data",
+                                "IQR": "insufficient data",
+                                "Q90": "insufficient data",
+                                "Q95": "insufficient data",
+                                "skew_Q": "insufficient data",
+                            }
+                        )
+                    else:
+                        row.update(
+                            {
+                                "Q25": _fmt_metric(metrics["q25"]),
+                                "Q50": _fmt_metric(metrics["q50"]),
+                                "Q75": _fmt_metric(metrics["q75"]),
+                                "IQR": _fmt_metric(metrics["iqr"]),
+                                "Q90": _fmt_metric(metrics["q90"]),
+                                "Q95": _fmt_metric(metrics["q95"]),
+                                "skew_Q": _fmt_metric(metrics["skew_q"]),
+                            }
+                        )
+                    rows.append(row)
+
+                trim_label = "none" if a is None else _fmt_metric(a)
+                print(f"Trimmed quantile metrics (a={trim_label})")
+                display(pd.DataFrame(rows))
+
     for w in (
         w_sessions_mode, w_sessions,
         w_signals_mode, w_signals,
         w_bins, w_cdf, w_norm, w_dropna, w_include_inactive,
+        w_show_metrics, w_trim_a,
     ):
         w.observe(_render, names="value")
+    w_show_metrics.observe(_toggle_trim_input, names="value")
 
     controls = W.VBox([
         W.HBox(
-            [w_bins, w_cdf, w_norm, w_dropna, w_include_inactive],
+            [w_bins, w_cdf, w_norm, w_dropna, w_include_inactive, w_show_metrics, w_trim_a],
             layout=W.Layout(
                 justify_content="flex-start",
                 align_items="center",
@@ -250,6 +365,7 @@ def make_signal_histogram_widget_for_loader(
                 flex_flow="row wrap",  
             ),
         ),
+        w_trim_help,
         W.HBox([
             W.VBox([sessions_label, w_sessions_mode, w_sessions]),
             W.VBox([signals_label, w_signals_mode, w_signals]),
@@ -287,7 +403,15 @@ def make_signal_histogram_rebuilder(
         key_to_ref = sel["get_key_to_ref"]()
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
 
-        events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+        # The signal histogram only needs selected session identities.
+        # Avoid loading all events parquet files here.
+        if session_key_col == "session_key":
+            session_values = [str(k) for k in key_to_ref.keys()]
+        elif session_key_col == "session_id":
+            session_values = [str(v[1]) for v in key_to_ref.values()]
+        else:
+            session_values = [str(k) for k in key_to_ref.keys()]
+        events_df_sel = pd.DataFrame({session_key_col: session_values})
 
         with out:
             clear_output(wait=True)
@@ -300,3 +424,4 @@ def make_signal_histogram_rebuilder(
 
     rebuild()
     return {"out": out, "rebuild": rebuild, "state": state}
+

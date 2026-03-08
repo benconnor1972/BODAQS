@@ -1,11 +1,19 @@
 # bodaqs_analysis/widgets/loaders.py
 from __future__ import annotations
 
+import logging
 from typing import Dict, Tuple
 
 import pandas as pd
 
 from bodaqs_analysis.artifacts import load_session_artifacts
+
+logger = logging.getLogger(__name__)
+
+_EVENT_COLUMNS_KNOWN_FASTPARQUET_NATYPE = {
+    "meta.secondary_triggers.rebound_start.trigger_idx",
+    "meta.secondary_triggers.rebound_end.trigger_idx",
+}
 
 
 def make_session_loader(*, store, key_to_ref: Dict[str, Tuple[str, str]]):
@@ -18,6 +26,38 @@ def make_session_loader(*, store, key_to_ref: Dict[str, Tuple[str, str]]):
         run_id, session_id = key_to_ref[str(session_key)]
         return load_session_artifacts(store, run_id=run_id, session_id=session_id)
     return session_loader
+
+def _read_events_df_robust(store, path) -> pd.DataFrame:
+    """
+    Read events parquet robustly across mixed historical schemas.
+
+    Some historical files fail to read with fastparquet when optional
+    secondary-trigger index columns contain pd.NA in integer-typed data.
+    """
+    try:
+        return store.read_df(path)
+    except TypeError as exc:
+        if "NAType" not in str(exc):
+            raise
+
+    try:
+        from fastparquet import ParquetFile
+
+        all_cols = list(ParquetFile(path).columns)
+        cols = [c for c in all_cols if c not in _EVENT_COLUMNS_KNOWN_FASTPARQUET_NATYPE]
+        if not cols:
+            raise TypeError("No readable columns after excluding known NAType-problematic columns")
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "events loader fallback for %s: excluded columns %s",
+                path,
+                sorted(_EVENT_COLUMNS_KNOWN_FASTPARQUET_NATYPE.intersection(set(all_cols))),
+            )
+        return store.read_df(path, columns=cols)
+    except Exception:
+        # Preserve original traceback context if fallback cannot recover.
+        raise
 
 
 def load_all_events_for_selected(store, *, key_to_ref: dict[str, tuple[str, str]]) -> pd.DataFrame:
@@ -43,7 +83,7 @@ def load_all_events_for_selected(store, *, key_to_ref: dict[str, tuple[str, str]
             if not p.exists():
                 continue
 
-            df = store.read_df(p)
+            df = _read_events_df_robust(store, p)
             if df.empty:
                 continue
 
