@@ -397,6 +397,13 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
             return p.get(k, default)
         return getattr(p, k, default)
 
+    def _has_pref_key(p, k: str) -> bool:
+        if p is None:
+            return False
+        if isinstance(p, Mapping):
+            return k in p
+        return hasattr(p, k)
+
     def _norm_str(x):
         if x is None:
             return None
@@ -432,6 +439,7 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
     pref_quantity = _norm_str(_get_pref(prefer, "quantity"))
     pref_kind = _norm_kind(_get_pref(prefer, "kind"))
     pref_unit = _norm_unit(_get_pref(prefer, "unit"))
+    pref_has_op_chain = _has_pref_key(prefer, "op_chain")
     pref_op_chain = _norm_op_chain(_get_pref(prefer, "op_chain"))
 
     # Option B binding: if we know the sensor for this event row, it must win.
@@ -465,12 +473,15 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
             continue
         if pref_unit is not None and unit != pref_unit:
             continue
-        # prefer.op_chain means "these ops must be present", not "exactly these ops".
-        # This lets schemas remain stable when the pipeline adds extra ops (e.g. zeroed).
+        # prefer.op_chain present and non-empty means "these ops must be present".
+        # prefer.op_chain explicitly [] means "base/no-op signal only".
         if pref_op_chain:
             have = set(op_chain)
             need = set(pref_op_chain)
             if not need.issubset(have):
+                continue
+        elif pref_has_op_chain:
+            if len(op_chain) != 0:
                 continue
 
         candidates.append((col, info))
@@ -486,6 +497,8 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
     def _score(col_info):
         col, info = col_info
         score = 0
+        op_chain = _norm_op_chain(info.get("op_chain"))
+        op_len = len(op_chain)
         if info.get("sensor") is not None:
             score += 2
         if info.get("quantity") is not None:
@@ -494,8 +507,15 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
             score += 1
         if (info.get("kind") or "") != "":
             score += 1
-        if info.get("op_chain"):
-            score += 1
+        # Prefer cleaner (fewer-op) variants unless schema explicitly asks for ops.
+        if pref_op_chain:
+            # Fewer extras beyond requested ops wins.
+            score -= max(0, op_len - len(pref_op_chain))
+        elif pref_has_op_chain:
+            # Explicit [] preference already filters to op_len==0.
+            score -= op_len
+        else:
+            score -= op_len
         if primary_signal_col and col == primary_signal_col:
             score += 10
         return score

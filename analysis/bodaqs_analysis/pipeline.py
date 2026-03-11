@@ -15,13 +15,17 @@ from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df, compute_metrics_from_segments
 from .model import validate_metrics_df
 from .model import validate_session
-from .timebase import register_stream_timebase
+from .timebase import register_stream_timebase, estimate_uniform_timebase
 from .signal_standardize import (
     canonicalize_signal_names,
     rebuild_and_validate_signal_registry,
 )
 from .signal_registry import build_signals_registry
 from .segment import extract_segments, SegmentRequest
+from .preprocess_filters import (
+    apply_butterworth_smoothing,
+    normalize_butterworth_smoothing_configs,
+)
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
@@ -188,6 +192,8 @@ def preprocess_session(session: Dict[str, Any],
                        active_window: str = "500ms",
                        active_padding: str = "1s",
                        active_min_seg: str = "3s",
+                       butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
+                       butterworth_generate_residuals: bool = False,
                        va_cols: Optional[Sequence[str]] = None,
                        va_window_points: int = 11,
                        va_poly_order: int = 3) -> Dict[str, Any]:
@@ -268,6 +274,63 @@ def preprocess_session(session: Dict[str, Any],
         } or None,
     }
 
+    # ---------------- Resolve canonical preprocessing sample-rate ----------------
+    # Use the same source for all preprocessing transforms (explicit sample_rate_hz
+    # if provided, else inferred from canonical time_s).
+    tb = estimate_uniform_timebase(
+        df2,
+        time_col="time_s",
+        sample_rate_hz=sample_rate_hz,
+    )
+    preprocess_sample_rate_hz = float(tb.sample_rate_hz)
+
+    # ---------------- Optional offline Butterworth smoothing ----------------
+    bw_configs = normalize_butterworth_smoothing_configs(butterworth_smoothing)
+    bw_meta: Dict[str, Any] = {
+        "configs": [],
+        "eligible_columns": [],
+        "generated": [],
+        "generated_residuals": [],
+        "skipped": [],
+        "warnings": [],
+        "sample_rate_hz": preprocess_sample_rate_hz,
+        "generate_residuals": bool(butterworth_generate_residuals),
+    }
+    if bw_configs:
+        df2, bw_meta = apply_butterworth_smoothing(
+            df2,
+            sample_rate_hz=preprocess_sample_rate_hz,
+            configs=bw_configs,
+            generate_residuals=bool(butterworth_generate_residuals),
+        )
+        session["df"] = df2
+        qc_warnings = qc.setdefault("warnings", [])
+        qc_warnings.extend([str(w) for w in bw_meta.get("warnings", [])])
+
+    if bw_configs:
+        transforms["filtered"] = {
+            "applied": bool(bw_meta.get("generated")),
+            "method": "butterworth_zero_phase_sosfiltfilt",
+            "params": {
+                "sample_rate_hz": float(preprocess_sample_rate_hz),
+                "configs": bw_meta.get("configs", []),
+                "eligible_columns": bw_meta.get("eligible_columns", []),
+                "generated_columns": [g["output_col"] for g in bw_meta.get("generated", [])],
+                "generated_residual_columns": [
+                    g["output_col"] for g in bw_meta.get("generated_residuals", [])
+                ],
+                "n_generated": int(len(bw_meta.get("generated", []))),
+                "n_generated_residuals": int(len(bw_meta.get("generated_residuals", []))),
+                "n_skipped": int(len(bw_meta.get("skipped", []))),
+                "generate_residuals": bool(bw_meta.get("generate_residuals", False)),
+            },
+        }
+    else:
+        transforms.setdefault(
+            "filtered",
+            {"applied": False, "method": None, "params": None},
+        )
+
     # ---------------- Velocity/acceleration ----------------
     if va_cols is None:
         va_cols = list(normalize_ranges.keys())
@@ -279,7 +342,7 @@ def preprocess_session(session: Dict[str, Any],
     df3, va_meta = estimate_va(
         df2,
         cols=list(va_cols),
-        sample_rate_hz=sample_rate_hz,
+        sample_rate_hz=preprocess_sample_rate_hz,
         window_points=va_window_points,
         poly_order=va_poly_order,
         return_meta=True,            # <-- opt-in diagnostics
@@ -377,6 +440,8 @@ def run_macro(
     active_min_seg: str = "3s",
     normalize_ranges: Dict[str, float],
     sample_rate_hz: Optional[float] = None,
+    butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
+    butterworth_generate_residuals: bool = False,
     timezone: Optional[str] = None,
     strict: bool = True,
 ) -> Dict[str, Any]:
@@ -404,6 +469,8 @@ def run_macro(
         active_window=active_window,
         active_padding=active_padding,
         active_min_seg=active_min_seg,
+        butterworth_smoothing=butterworth_smoothing,
+        butterworth_generate_residuals=butterworth_generate_residuals,
     )
     logger.info("Session pre-process complete")
 

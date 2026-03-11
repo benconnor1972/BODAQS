@@ -530,11 +530,18 @@ def make_event_browser_widget_for_loader(
 
             # Build RoleSpecs from selected semantic tuples
             role_specs = []
-            
-            for semantic in _coerce_list(w_signals.value):
+            selected_roles: List[Tuple[str, Tuple[str, str, str, str]]] = []
+            for idx, semantic in enumerate(_coerce_list(w_signals.value)):
                 qty = str(semantic[0])
+                role_name = f"{qty}__sel_{idx}"
+                selected_roles.append((role_name, semantic))
                 role_specs.append(
-                    role_spec_from_semantic_tuple(RoleSpec, role=qty, sensor=sensor, semantic=semantic)
+                    role_spec_from_semantic_tuple(
+                        RoleSpec,
+                        role=role_name,
+                        sensor=sensor,
+                        semantic=semantic,
+                    )
                 )
 
             if not role_specs:
@@ -571,13 +578,14 @@ def make_event_browser_widget_for_loader(
             t_rel = np.asarray(t_rel)[0]
 
             series = []
-            for semantic in _coerce_list(w_signals.value):
+            for role_name, semantic in selected_roles:
                 quantity, unit, kind, opk = semantic
-                key = str(quantity)
-                if key in data:
-                    y = np.asarray(data[key])[0]
+                if role_name in data:
+                    y = np.asarray(data[role_name])[0]
                     unit_s = f" [{unit}]" if unit else ""
-                    series.append((f"{key}{unit_s}", y))
+                    kind_s = f" ({kind})" if kind else ""
+                    op_s = f" -> {opk}" if opk else ""
+                    series.append((f"{quantity}{unit_s}{kind_s}{op_s}", y))
 
             if not series and "primary" in data:
                 series.append(("primary", np.asarray(data["primary"])[0]))
@@ -588,14 +596,16 @@ def make_event_browser_widget_for_loader(
 
             # group series by unit
             by_unit = OrderedDict()
-            for semantic in _coerce_list(w_signals.value):
+            for role_name, semantic in selected_roles:
                 quantity, unit, kind, opk = semantic
-                key = str(quantity)
-                if key not in data:
+                if role_name not in data:
                     continue
-                y = np.asarray(data[key])[0]
+                y = np.asarray(data[role_name])[0]
                 unit_key = unit or ""  # empty string = unitless
-                by_unit.setdefault(unit_key, []).append((quantity, y))
+                kind_s = f" ({kind})" if kind else ""
+                op_s = f" -> {opk}" if opk else ""
+                plot_label = f"{quantity}{kind_s}{op_s}"
+                by_unit.setdefault(unit_key, []).append((plot_label, y))
 
 
             fig, ax = plt.subplots(figsize=(9.5, 4.2))
@@ -613,8 +623,8 @@ def make_event_browser_widget_for_loader(
             colors = itertools.cycle(plt.rcParams["axes.prop_cycle"].by_key()["color"])
             for unit, items in by_unit.items():
                 ax_i = unit_to_ax[unit]
-                for quantity, y in items:
-                    ax_i.plot(t_rel, y, label=quantity, color=next(colors))
+                for plot_label, y in items:
+                    ax_i.plot(t_rel, y, label=plot_label, color=next(colors))
 
             # sci notation outside ~1e-4..1e4
             fmt = mticker.ScalarFormatter(useMathText=True)
@@ -706,7 +716,7 @@ def make_event_browser_widget_for_loader(
                 print("  event signal_col:", ev_row.get("signal_col"))
                 print("  inferred sensor:", inferred)
                 print("  sensor used:", sensor)
-                print("  selected quantities:", [k[0] for k in _coerce_list(w_signals.value)])
+                print("  selected signals:", list(_coerce_list(w_signals.value)))
                 print("\nResolved spec:")
                 print("  role_to_col:", spec.get("role_to_col"))
 
