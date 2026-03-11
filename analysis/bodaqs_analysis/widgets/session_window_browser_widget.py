@@ -21,18 +21,46 @@ Requires:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import ipywidgets as W
 from IPython.display import display, clear_output, Javascript
-import re
 
 import plotly.graph_objects as go
 
 # Local per-user bookmark persistence
 from bodaqs_analysis.bookmarks import BookmarkStore, check_drift, coerce_restore_view
+from bodaqs_analysis.widgets.contracts import (
+    EVENT_ID_COL,
+    SCHEMA_ID_COL,
+    SESSION_ID_COL,
+    SESSION_KEY_COL,
+    RebuilderHandle,
+    SessionLoader,
+    SessionSelectorHandle,
+    WidgetHandle,
+    selection_snapshot_from_handle,
+)
+from bodaqs_analysis.widgets.session_window_bookmarks import (
+    build_bookmark_options,
+    deep_get,
+    next_default_bookmark_title,
+)
+from bodaqs_analysis.widgets.session_window_data import (
+    build_event_type_pair_options,
+    compute_detail_y_range,
+    derive_signal_options,
+    load_optional_df,
+    merge_events_metrics,
+    require_session,
+)
+from bodaqs_analysis.widgets.session_window_plot import (
+    build_event_hovertext,
+    event_color_for_pair,
+    init_session_window_figure,
+)
 
 EVENT_SIGNAL_COL = "signal_col"  # required by events table contract
 
@@ -57,68 +85,6 @@ def _downsample_indices(n: int, max_points: int) -> np.ndarray:
 
 def _to_numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce")
-
-
-def _infer_signal_cols_from_registry(session: dict) -> List[str]:
-    """
-    Pull candidate signal columns from session['meta']['signals'] keys.
-    Assumes registry keys are df columns.
-    """
-    meta = (session or {}).get("meta") or {}
-    reg = meta.get("signals") or {}
-    if not isinstance(reg, dict):
-        return []
-    cols = []
-    for k in reg.keys():
-        if isinstance(k, str) and k.strip():
-            cols.append(k.strip())
-    return cols
-
-
-def _filter_numeric_cols(df: pd.DataFrame, cols: Sequence[str], *, time_col: str) -> List[str]:
-    out = []
-    for c in cols:
-        if c == time_col:
-            continue
-        if c not in df.columns:
-            continue
-        v = _to_numeric_series(df, c).to_numpy(dtype=float)
-        if np.isfinite(v).any():
-            out.append(c)
-    return out
-
-
-def _sort_cols_by_unit(cols: Sequence[str], registry: dict) -> List[str]:
-    """Sort by registry unit, then by column name. Unknown units sort last."""
-    def key(c: str):
-        info = registry.get(c, {}) if isinstance(registry, dict) else {}
-        unit = info.get("unit")
-        unit = unit.strip() if isinstance(unit, str) else ""
-        unit_sort = unit if unit else "~"
-        return (unit_sort, c)
-    return sorted(list(cols), key=key)
-
-
-def _compute_y_range(df: pd.DataFrame, cols: Sequence[str]) -> Optional[Tuple[float, float]]:
-    """Compute a stable y-range across the full session df for the selected columns."""
-    vals = []
-    for c in cols:
-        if c not in df.columns:
-            continue
-        v = pd.to_numeric(df[c], errors="coerce").to_numpy(dtype=float)
-        v = v[np.isfinite(v)]
-        if v.size:
-            vals.append(v)
-    if not vals:
-        return None
-    lo = float(np.min([v.min() for v in vals]))
-    hi = float(np.max([v.max() for v in vals]))
-    if lo == hi:
-        lo -= 1.0
-        hi += 1.0
-    span = hi - lo
-    pad = 0.03 * span
-    return (lo - pad, hi + pad)
 
 
 _SIGNAL_PALETTE = [
@@ -157,20 +123,21 @@ def _split_event_key(k: str) -> Tuple[str, str]:
 def make_session_window_browser_widget_for_loader(
     *,
     events_index_df: pd.DataFrame,
-    session_loader: Callable[[str], Dict[str, Any]],
+    session_loader: SessionLoader,
     # optional loaders for events/metrics
     events_loader: Optional[Callable[[str], pd.DataFrame]] = None,
     metrics_loader: Optional[Callable[[str], pd.DataFrame]] = None,
     # keys / columns
-    session_key_col: str = "session_key",
-    session_id_col: str = "session_id",
-    event_id_col: str = "event_id",
-    event_type_col: str = "schema_id",
+    session_key_col: str = SESSION_KEY_COL,
+    session_id_col: str = SESSION_ID_COL,
+    event_id_col: str = EVENT_ID_COL,
+    event_type_col: str = SCHEMA_ID_COL,
     trigger_time_col: str = "trigger_time_s",
     time_col: str = "time_s",
     # perf
     detail_max_points: int = 8000,
-) -> Dict[str, Any]:
+    auto_display: bool = False,
+) -> WidgetHandle:
     """
     Build the Session Window Browser widget.
 
@@ -268,212 +235,63 @@ def make_session_window_browser_widget_for_loader(
     # ---------------- Plotly figure ----------------
     fig = go.FigureWidget()
     state["fig"] = fig
-
-    fig.update_layout(
-        height=520,
-        margin=dict(l=55, r=20, t=20, b=160),  # extra for slider + legend
-        xaxis=dict(
-            title="time (s)",
-            rangeslider=dict(visible=True),
-            showgrid=True,
-        ),
-        yaxis=dict(
-            title="value",
-            showgrid=True,
-        ),
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            x=0.5, xanchor="center",
-            y=-0.45, yanchor="top",
-            yref="paper",
-        ),
-        uirevision="keep",
-    )
-
-    def _init_fig():
-        fig.layout = go.Layout(
-            height=520,
-            margin=dict(l=55, r=20, t=20, b=90),
-            xaxis=dict(
-                title="time (s)",
-                rangeslider=dict(visible=True),
-                showgrid=True,
-            ),
-            yaxis=dict(
-                title="value",
-                showgrid=True,
-            ),
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.2,
-                xanchor="center",
-                x=0.5,
-            ),
-        )
-
-        fig.update_layout(
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                x=0.5,
-                xanchor="center",
-                y=-0.5,
-                yanchor="top",
-                yref="paper",
-            ),
-            margin=dict(l=55, r=20, t=20, b=200),
-        )
-
-        fig.layout.uirevision = "keep"
-        fig.layout.xaxis.uirevision = "keep"
-        fig.layout.yaxis.uirevision = "keep"
-
-        fig.data = []
-
-        fig.layout.autosize = True
-        fig.layout.width = None
-
-        try:
-            fig._config = dict(getattr(fig, "_config", {}) or {}, responsive=True)
-        except Exception:
-            pass
-
-    _init_fig()
+    init_session_window_figure(fig)
 
     # ---------------- data loading ----------------
 
     def _load_session(session_key: str) -> Dict[str, Any]:
-        sess = session_loader(str(session_key))
-        if not isinstance(sess, dict):
-            raise ValueError("session_loader must return a dict-like session")
-        if "df" not in sess:
-            raise ValueError("session missing required key 'df'")
-        df_ = sess["df"]
-        if not isinstance(df_, pd.DataFrame):
-            raise ValueError("session['df'] must be a pandas DataFrame")
-        if time_col not in df_.columns:
-            raise ValueError(f"session['df'] must contain {time_col!r} column")
-        return sess
+        return require_session(
+            session_loader=session_loader,
+            session_key=str(session_key),
+            time_col=time_col,
+        )
 
     def _load_events_for_session(session_key: str) -> pd.DataFrame:
-        if events_loader is None:
-            return pd.DataFrame()
-        df_ = events_loader(str(session_key))
-        return df_.copy() if isinstance(df_, pd.DataFrame) else pd.DataFrame()
+        return load_optional_df(loader=events_loader, session_key=str(session_key))
 
     def _load_metrics_for_session(session_key: str) -> pd.DataFrame:
-        if metrics_loader is None:
-            return pd.DataFrame()
-        df_ = metrics_loader(str(session_key))
-        return df_.copy() if isinstance(df_, pd.DataFrame) else pd.DataFrame()
+        return load_optional_df(loader=metrics_loader, session_key=str(session_key))
 
     def _merge_events_metrics(events_df: pd.DataFrame, metrics_df: pd.DataFrame) -> pd.DataFrame:
-        """1:1 join via (session_id, event_id) per metrics contract."""
-        if events_df is None or events_df.empty:
-            return pd.DataFrame()
-        if metrics_df is None or metrics_df.empty:
-            return events_df.copy()
-
-        if session_id_col not in events_df.columns or event_id_col not in events_df.columns:
-            return events_df.copy()
-        if session_id_col not in metrics_df.columns or event_id_col not in metrics_df.columns:
-            return events_df.copy()
-
-        join_keys = [session_id_col, event_id_col]
-        metric_cols = [c for c in metrics_df.columns if c not in join_keys]
-        merged = events_df.merge(metrics_df[join_keys + metric_cols], on=join_keys, how="left", suffixes=("", "_m"))
-        return merged
+        return merge_events_metrics(
+            events_df=events_df,
+            metrics_df=metrics_df,
+            session_id_col=session_id_col,
+            event_id_col=event_id_col,
+        )
 
     # ---------------- signal dropdown rebuild ----------------
 
     def _rebuild_signal_dropdowns(sess: dict):
-        df_ = sess["df"]
-        meta = (sess or {}).get("meta") or {}
-        registry = meta.get("signals") or {}
-        if not isinstance(registry, dict):
-            registry = {}
-        state["_registry"] = registry
-
-        registry_cols = _infer_signal_cols_from_registry(sess)
-        if not registry_cols:
-            registry_cols = [c for c in df_.columns if isinstance(c, str)]
-
-        numeric_cols = _filter_numeric_cols(df_, registry_cols, time_col=time_col)
-        if not numeric_cols:
-            numeric_cols = [c for c in df_.columns if c != time_col and pd.api.types.is_numeric_dtype(df_[c])]
-
-        numeric_cols_sorted = _sort_cols_by_unit(numeric_cols, registry)
-
         prev_detail = tuple(map(str, _coerce_list(w_detail_signals.value)))
+        result = derive_signal_options(
+            session=sess,
+            prev_detail=prev_detail,
+            time_col=time_col,
+            preferred_unit="mm",
+        )
 
-        w_detail_signals.options = numeric_cols_sorted
-        opts = list(map(str, numeric_cols_sorted))
+        state["_registry"] = result.registry
+        state["registry_cols"] = result.registry_cols
+        state["numeric_cols"] = result.numeric_cols_sorted
+        state["detail_y_range"] = result.detail_y_range
 
-        kept = tuple([c for c in prev_detail if c in opts])
-
-        if kept:
-            w_detail_signals.value = kept
-        else:
-            registry2 = state.get("_registry") or {}
-            mm_cols = [
-                c for c in opts
-                if (isinstance(registry2, dict) and isinstance(registry2.get(c, {}), dict)
-                    and str(registry2.get(c, {}).get("unit", "")).strip() == "mm")
-            ]
-
-            chosen = mm_cols[0] if mm_cols else (opts[0] if opts else None)
-            w_detail_signals.value = (chosen,) if chosen else ()
-
-        state["registry_cols"] = registry_cols
-        state["numeric_cols"] = numeric_cols_sorted
-
-
-        # Full-session extent (used to pin rangeslider to full session)
-        full_range = None
-        try:
-            t_full2 = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
-            t_full2 = t_full2[np.isfinite(t_full2)]
-            if t_full2.size:
-                full_range = (float(t_full2.min()), float(t_full2.max()))
-        except Exception:
-            full_range = None
-
-        sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
-        state["detail_y_range"] = _compute_y_range(df_, sel)
+        w_detail_signals.options = result.numeric_cols_sorted
+        w_detail_signals.value = result.selected_detail
 
     # ---------------- event UI rebuild ----------------
 
     def _rebuild_event_type_options(merged: pd.DataFrame):
-        if (
-            merged is None
-            or merged.empty
-            or event_type_col not in merged.columns
-            or EVENT_SIGNAL_COL not in merged.columns
-        ):
+        opts = build_event_type_pair_options(
+            merged=merged,
+            event_type_col=event_type_col,
+            event_signal_col=EVENT_SIGNAL_COL,
+            key_builder=_event_key,
+        )
+        if not opts:
             w_event_types.options = []
             w_event_types.value = ()
             return
-
-        m = merged[[event_type_col, EVENT_SIGNAL_COL]].copy()
-        m[event_type_col] = m[event_type_col].astype(str)
-        m[EVENT_SIGNAL_COL] = m[EVENT_SIGNAL_COL].astype(str)
-
-        pairs = (
-            m.dropna()
-             .drop_duplicates()
-             .sort_values([event_type_col, EVENT_SIGNAL_COL])
-        )
-
-        opts: List[Tuple[str, str]] = []
-        for _, r in pairs.iterrows():
-            et = str(r[event_type_col])
-            sig = str(r[EVENT_SIGNAL_COL])
-            label = f"{et} — {sig}"
-            key = _event_key(et, sig)
-            opts.append((label, key))
 
         prev = tuple(map(str, _coerce_list(w_event_types.value)))
         w_event_types.options = opts
@@ -483,46 +301,24 @@ def make_session_window_browser_widget_for_loader(
         w_event_types.value = kept
 
 
-    # ---------------- events hover + colors ----------------
-
     def _build_event_hovertext(row: pd.Series, *, max_metrics: int = 10) -> str:
-        et = str(row.get(event_type_col, ""))
-        sig = str(row.get(EVENT_SIGNAL_COL, ""))
-        t_ = row.get(trigger_time_col, None)
-        bits = [f"type: {et}"]
-        if sig:
-            bits.append(f"signal: {sig}")
-        if t_ is not None and np.isfinite(pd.to_numeric(t_, errors="coerce")):
-            bits.append(f"t: {float(t_):.3f}s")
-
-        metric_items: List[Tuple[str, float]] = []
-        for c, v in row.items():
-            if not isinstance(c, str) or not c.startswith("m_"):
-                continue
-            if isinstance(v, (int, float, np.integer, np.floating)) and np.isfinite(v):
-                metric_items.append((c, float(v)))
-        metric_items.sort(key=lambda x: x[0])
-
-        for c, v in metric_items[:max_metrics]:
-            bits.append(f"{c}: {v:.3g}")
-
-        return "<br>".join(bits)
+        return build_event_hovertext(
+            row=row,
+            event_type_col=event_type_col,
+            event_signal_col=EVENT_SIGNAL_COL,
+            trigger_time_col=trigger_time_col,
+            max_metrics=max_metrics,
+        )
 
     def _event_color_for_pair(et: str, sig: str) -> str:
         cmap = state.get("event_color_map") or {}
-
-        key = f"{et}||{sig}"
-
-        palette = [
-            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-        ]
-
-        if key not in cmap:
-            cmap[key] = palette[len(cmap) % len(palette)]
-
+        color = event_color_for_pair(
+            color_map=cmap,
+            event_type=str(et),
+            signal=str(sig),
+        )
         state["event_color_map"] = cmap
-        return cmap[key]
+        return color
 
 
     # ---------------- plotting ----------------
@@ -784,7 +580,7 @@ def make_session_window_browser_widget_for_loader(
         _rebuild_event_type_options(merged)
 
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
-        state["detail_y_range"] = _compute_y_range(df_, sel)
+        state["detail_y_range"] = compute_detail_y_range(df_, sel)
 
         _apply_all_traces(df_)
 
@@ -809,7 +605,7 @@ def make_session_window_browser_widget_for_loader(
             return
 
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
-        state["detail_y_range"] = _compute_y_range(df_, sel)
+        state["detail_y_range"] = compute_detail_y_range(df_, sel)
 
         _apply_all_traces(df_)
 
@@ -819,51 +615,17 @@ def make_session_window_browser_widget_for_loader(
 
     # ---------------- bookmarks (persisted) ----------------
 
-    def _format_label(entry: Dict[str, Any]) -> str:
-        title = str(entry.get("title") or "").strip()
-        t0 = float(_deep_get(entry, ("window", "t0"), 0.0))
-        t1 = float(_deep_get(entry, ("window", "t1"), 0.0))
-        base = title if title else f"{t0:.2f}–{t1:.2f}s"
-        return f"{base}  ({t0:.2f}–{t1:.2f}s)"
-
     def _deep_get(d: Dict[str, Any], path: Tuple[str, ...], default=None):
-        cur: Any = d
-        for k in path:
-            if not isinstance(cur, dict) or k not in cur:
-                return default
-            cur = cur[k]
-        return cur
-
-    _BOOKMARK_N_RE = re.compile(r"^\s*Bookmark\s+(\d+)\s*$", re.IGNORECASE)
+        return deep_get(d, path, default)
 
     def _next_default_bookmark_title(entries: List[Dict[str, Any]]) -> str:
-        nmax = 0
-        for e in entries:
-            t = str(e.get("title") or "")
-            m = _BOOKMARK_N_RE.match(t)
-            if m:
-                try:
-                    nmax = max(nmax, int(m.group(1)))
-                except Exception:
-                    pass
-        return f"Bookmark {nmax + 1}"
+        return next_default_bookmark_title(entries)
 
 
     def _rebuild_bookmark_list():
         store: BookmarkStore = state["bookmark_store"]
         sk = str(w_session.value)
-        entries = store.list(session_key=sk)
-
-        opts: List[Tuple[str, str]] = [("(New bookmark…)", "")]
-
-        for e in entries:
-            if not isinstance(e, dict):
-                continue
-            bid = e.get("bookmark_id")
-            if not isinstance(bid, str) or not bid:
-                continue
-            opts.append((_format_label(e), bid))
-
+        opts = build_bookmark_options(store=store, session_key=sk)
         w_bm_list.options = opts
 
         # keep current selection if still valid; else default to "new"
@@ -1065,7 +827,7 @@ def make_session_window_browser_widget_for_loader(
 
         df_ = state["df"]
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
-        state["detail_y_range"] = _compute_y_range(df_, sel) if df_ is not None else None
+        state["detail_y_range"] = compute_detail_y_range(df_, sel) if df_ is not None else None
         _apply_all_traces(df_)
 
     def _delete_bookmark(_btn):
@@ -1158,7 +920,6 @@ def make_session_window_browser_widget_for_loader(
 
     root = W.VBox([top_controls_row, plot_row, bottom_row],
                   layout=W.Layout(gap="10px", width="100%"))
-    display(root)
 
     def _force_plotly_resize(delay_ms: int = 150):
         display(Javascript(f"""
@@ -1179,29 +940,46 @@ def make_session_window_browser_widget_for_loader(
         }}, {int(delay_ms)});
         """))
 
-    _refresh_all_for_session(str(w_session.value))
-    _force_plotly_resize(600)
+    def refresh() -> None:
+        _refresh_all_for_session(str(w_session.value))
+
+    refresh()
+
+    if auto_display:
+        display(root)
+        _force_plotly_resize(600)
 
     return {
         "root": root,
         "state": state,
         "fig": fig,
         "bookmark_store": bm_store,
+        "refresh": refresh,
+        "controls": {
+            "session": w_session,
+            "event_types": w_event_types,
+            "show_marks": w_show_marks,
+            "detail_signals": w_detail_signals,
+            "detail_autodown": w_detail_autodown,
+            "bookmark_name": w_bm_name,
+            "bookmark_comment": w_bm_comment,
+            "bookmark_list": w_bm_list,
+        },
     }
 
 
 def make_session_window_browser_rebuilder(
     *,
-    sel: Dict[str, Any],
+    sel: SessionSelectorHandle,
     out: Optional[W.Output] = None,
-    session_key_col: str = "session_key",
-    session_id_col: str = "session_id",
-    event_id_col: str = "event_id",
-    event_type_col: str = "schema_id",
+    session_key_col: str = SESSION_KEY_COL,
+    session_id_col: str = SESSION_ID_COL,
+    event_id_col: str = EVENT_ID_COL,
+    event_type_col: str = SCHEMA_ID_COL,
     trigger_time_col: str = "trigger_time_s",
     time_col: str = "time_s",
     detail_max_points: int = 8000,
-) -> Dict[str, Any]:
+) -> RebuilderHandle:
     """
     Rebuild-on-selector-change wrapper (thin notebook cell pattern).
     """
@@ -1210,16 +988,24 @@ def make_session_window_browser_rebuilder(
 
     state: Dict[str, Any] = {"handles": None}
 
-    def rebuild():
+    def rebuild() -> None:
         from bodaqs_analysis.widgets.loaders import (
             make_session_loader,
             load_all_events_for_selected,
             load_all_metrics_for_selected,
         )
 
+        snapshot = selection_snapshot_from_handle(sel)
         store = sel["store"]
-        key_to_ref = sel["get_key_to_ref"]()
-        events_index_df = sel["get_events_index_df"]()
+        key_to_ref = snapshot.key_to_ref
+        events_index_df = snapshot.events_index_df
+
+        if not key_to_ref:
+            with out:
+                clear_output(wait=True)
+                print("No sessions available for the current selector scope.")
+            state["handles"] = None
+            return
 
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
 
@@ -1255,7 +1041,15 @@ def make_session_window_browser_rebuilder(
                 trigger_time_col=trigger_time_col,
                 time_col=time_col,
                 detail_max_points=detail_max_points,
+                auto_display=False,
             )
+            h = state["handles"]
+            root = h.get("root") or h.get("ui")
+            if root is not None:
+                display(root)
 
     rebuild()
     return {"out": out, "rebuild": rebuild, "state": state}
+
+
+
