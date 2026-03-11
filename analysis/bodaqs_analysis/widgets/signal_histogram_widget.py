@@ -25,6 +25,7 @@ from bodaqs_analysis.widgets.contracts import (
     SessionLoader,
     SessionSelectorHandle,
     WidgetHandle,
+    entity_snapshot_from_handle,
     selection_snapshot_from_handle,
 )
 from bodaqs_analysis.widgets.histogram_core import (
@@ -51,6 +52,8 @@ def make_signal_histogram_widget_for_loader(
     *,
     session_loader: SessionLoader,
     session_key_col: str = SESSION_KEY_COL,
+    entity_to_members: Optional[Dict[str, List[str]]] = None,
+    entity_labels: Optional[Dict[str, str]] = None,
     registry_policy: RegistryPolicy = "union",
     default_bins: int = 50,
     max_bins: int = 500,
@@ -60,7 +63,7 @@ def make_signal_histogram_widget_for_loader(
     """
     Signal histogram / CDF widget using session_loader.
 
-    Sessions are discovered from events_df[session_key_col].
+    Entities are discovered from events_df[session_key_col].
     Signals are resolved per-session from each session registry/df and then
     combined by registry_policy: "union", "intersection", or "strict".
     """
@@ -68,9 +71,17 @@ def make_signal_histogram_widget_for_loader(
         raise ValueError(f"events_df must contain {session_key_col!r} column")
     validate_registry_policy(registry_policy)
 
-    session_ids = sorted(events_df[session_key_col].dropna().astype(str).unique().tolist())
-    if not session_ids:
-        raise ValueError("No sessions available in events_df for signal histogram")
+    entity_ids = sorted(events_df[session_key_col].dropna().astype(str).unique().tolist())
+    if not entity_ids:
+        raise ValueError("No entities available in events_df for signal histogram")
+
+    entity_to_members = {
+        str(k): list(map(str, v))
+        for k, v in dict(entity_to_members or {}).items()
+    }
+    for entity_id in entity_ids:
+        entity_to_members.setdefault(str(entity_id), [str(entity_id)])
+    entity_labels = {str(k): str(v) for k, v in dict(entity_labels or {}).items()}
 
     session_cache: Dict[str, Dict[str, Any]] = {}
 
@@ -101,17 +112,12 @@ def make_signal_histogram_widget_for_loader(
         return resolved.options, resolved.by_session
 
     # --- UI ---
-    sessions_label = W.Label("Sessions:")
-    w_sessions_mode = W.RadioButtons(
-        options=[("Aggregate sessions", False), ("Compare sessions", True)],
-        value=False,
-        description="",
-    )
+    sessions_label = W.Label("Entities:")
     w_sessions = W.SelectMultiple(
-        options=session_ids,
-        value=tuple(session_ids[:1]),
+        options=entity_ids,
+        value=tuple(entity_ids),
         description="",
-        rows=min(8, max(3, len(session_ids))),
+        rows=min(8, max(3, len(entity_ids))),
         layout=W.Layout(width="450px"),
     )
 
@@ -120,7 +126,7 @@ def make_signal_histogram_widget_for_loader(
         options=[],
         value=(),
         description="",
-        rows=min(8, max(3, len(session_ids))),
+        rows=min(8, max(3, len(entity_ids))),
         layout=W.Layout(width="450px"),
     )
 
@@ -154,18 +160,26 @@ def make_signal_histogram_widget_for_loader(
         w_trim_help.layout = W.Layout(display="block" if enabled else "none")
 
     def _rebuild_signal_options(*_):
-        sel_sessions = list(map(str, w_sessions.value or ()))
+        sel_entities = list(map(str, w_sessions.value or ()))
         prev = list(map(str, w_signals.value or ()))
 
-        if not sel_sessions:
+        if not sel_entities:
             w_signals.options = []
             w_signals.value = ()
             state["signal_policy_error"] = None
             state["session_signal_cols"] = {}
             return
 
+        scope_sessions = sorted(
+            {
+                sk
+                for entity_id in sel_entities
+                for sk in entity_to_members.get(str(entity_id), [str(entity_id)])
+            }
+        )
+
         try:
-            options, by_session = _resolve_signals_for_scope(sel_sessions)
+            options, by_session = _resolve_signals_for_scope(scope_sessions)
             state["signal_policy_error"] = None
             state["session_signal_cols"] = by_session
         except Exception as exc:
@@ -175,7 +189,27 @@ def make_signal_histogram_widget_for_loader(
 
         w_signals.options = options
         kept = tuple([s for s in prev if s in options])
-        w_signals.value = kept if kept else (tuple(options[:1]) if options else ())
+        if kept:
+            w_signals.value = kept
+            return
+
+        # Prefer a signal present in all selected entities, so compare mode
+        # shows multiple entity series by default.
+        common_by_entity: list[set[str]] = []
+        for entity_id in sel_entities:
+            members = entity_to_members.get(str(entity_id), [str(entity_id)])
+            entity_signal_set: set[str] = set()
+            for sk in members:
+                entity_signal_set.update(map(str, by_session.get(str(sk), [])))
+            if entity_signal_set:
+                common_by_entity.append(entity_signal_set)
+
+        common_options: set[str] = set(options)
+        if common_by_entity:
+            common_options = common_options.intersection(*common_by_entity)
+
+        preferred = [opt for opt in options if opt in common_options]
+        w_signals.value = (tuple(preferred[:1]) if preferred else (tuple(options[:1]) if options else ()))
 
     _toggle_trim_input()
 
@@ -189,43 +223,43 @@ def make_signal_histogram_widget_for_loader(
                 print(signal_policy_error)
                 return
 
-            sel_sessions = list(map(str, w_sessions.value or ()))
+            sel_entities = list(map(str, w_sessions.value or ()))
             sel_signals = list(map(str, w_signals.value or ()))
 
-            if not sel_sessions or not sel_signals:
-                print("Select at least one session and one signal.")
+            if not sel_entities or not sel_signals:
+                print("Select at least one entity and one signal.")
                 return
-
-            compare_sessions = bool(w_sessions_mode.value)
 
             series: List[Tuple[str, np.ndarray]] = []
 
-            def get_vals(sid: str, sig: str) -> np.ndarray:
-                session = _get_session(str(sid))
-                return signal_values(
-                    session["df"],
-                    sig,
-                    dropna=bool(w_dropna.value),
-                    include_inactive=bool(w_include_inactive.value),
-                )
+            def get_vals_for_entity(entity_id: str, sig: str) -> np.ndarray:
+                parts = []
+                for sid in entity_to_members.get(str(entity_id), [str(entity_id)]):
+                    session = _get_session(str(sid))
+                    parts.append(
+                        signal_values(
+                            session["df"],
+                            sig,
+                            dropna=bool(w_dropna.value),
+                            include_inactive=bool(w_include_inactive.value),
+                        )
+                    )
+                return np.concatenate(parts) if parts else np.array([], dtype=float)
 
-            if compare_sessions:
-                for sid in sel_sessions:
-                    for sig in sel_signals:
-                        series.append((f"{sid} | {sig}", get_vals(sid, sig)))
-            else:
+            for entity_id in sel_entities:
+                display_entity = entity_labels.get(str(entity_id), str(entity_id))
                 for sig in sel_signals:
-                    parts = [get_vals(sid, sig) for sid in sel_sessions]
-                    vals = np.concatenate(parts) if parts else np.array([], dtype=float)
-                    series.append((sig, vals))
+                    series.append((f"{display_entity} | {sig}", get_vals_for_entity(entity_id, sig)))
 
             fig, ax = plt.subplots(figsize=(8.3, 4.2))
             any_plotted = False
+            no_data_series: list[str] = []
 
             for name, vals in series:
                 clean = np.asarray(vals, dtype=float)
                 clean = clean[np.isfinite(clean)]
                 if clean.size == 0:
+                    no_data_series.append(str(name))
                     continue
 
                 any_plotted = True
@@ -262,6 +296,9 @@ def make_signal_histogram_widget_for_loader(
                 ax.set_axis_off()
 
             plt.show()
+
+            if no_data_series:
+                print("No numeric values for:", ", ".join(no_data_series))
 
             if w_show_metrics.value:
                 a = parse_optional_float(w_trim_a.value)
@@ -309,7 +346,6 @@ def make_signal_histogram_widget_for_loader(
         _render()
 
     for w in (
-        w_sessions_mode,
         w_signals,
         w_bins,
         w_cdf,
@@ -338,7 +374,7 @@ def make_signal_histogram_widget_for_loader(
             w_trim_help,
             W.HBox(
                 [
-                    W.VBox([sessions_label, w_sessions_mode, w_sessions]),
+                    W.VBox([sessions_label, w_sessions]),
                     W.VBox([signals_label, w_signals]),
                 ]
             ),
@@ -359,11 +395,11 @@ def make_signal_histogram_widget_for_loader(
     return {
         "root": root,
         "out": out,
-        "session_ids": session_ids,
+        "entity_ids": entity_ids,
+        "session_ids": entity_ids,  # backward-compatible alias
         "signal_cols": list(map(str, w_signals.options)),
         "state": state,
         "controls": {
-            "sessions_mode": w_sessions_mode,
             "sessions": w_sessions,
             "signals": w_signals,
             "bins": w_bins,
@@ -395,16 +431,18 @@ def make_signal_histogram_rebuilder(
 
     def rebuild() -> None:
         snapshot = selection_snapshot_from_handle(sel)
+        entity_snapshot = entity_snapshot_from_handle(sel)
         store = sel["store"]
         key_to_ref = snapshot.key_to_ref
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
 
         loader_key_resolver: Optional[Callable[[str], str]] = None
+        entity_ids = [str(e.entity_key) for e in entity_snapshot.selected_entities]
         if session_key_col == SESSION_KEY_COL:
-            session_values = [str(k) for k in key_to_ref.keys()]
+            session_values = entity_ids
         elif session_key_col == SESSION_ID_COL:
             sid_to_key: Dict[str, str] = {}
-            for sk, (_rid, sid) in key_to_ref.items():
+            for sk, (_rid, sid) in entity_snapshot.key_to_ref.items():
                 sid_s = str(sid)
                 if sid_s in sid_to_key and sid_to_key[sid_s] != sk:
                     raise ValueError(
@@ -425,6 +463,11 @@ def make_signal_histogram_rebuilder(
                 events_df_sel,
                 session_loader=session_loader,
                 session_key_col=session_key_col,
+                entity_to_members=entity_snapshot.entity_to_effective_members,
+                entity_labels={
+                    str(entity.entity_key): str(entity.label)
+                    for entity in entity_snapshot.selected_entities
+                },
                 loader_key_resolver=loader_key_resolver,
                 auto_display=False,
                 **kwargs,

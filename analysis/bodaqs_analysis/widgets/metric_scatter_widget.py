@@ -20,6 +20,7 @@ from IPython.display import clear_output, display
 
 from bodaqs_analysis.widgets.contracts import (
     ArtifactStoreLike,
+    ENTITY_KEY_COL,
     EVENT_ID_COL,
     KeyToRef,
     RegistryPolicy,
@@ -27,13 +28,17 @@ from bodaqs_analysis.widgets.contracts import (
     SCHEMA_ID_COL,
     SESSION_KEY_COL,
     SIGNAL_COL,
+    EntitySelectionSnapshot,
     SessionLoader,
     SessionSelectorHandle,
     WidgetHandle,
+    entity_snapshot_from_handle,
     selection_snapshot_from_handle,
 )
 from bodaqs_analysis.widgets.loaders import (
+    load_all_events_for_entities,
     load_all_events_for_selected,
+    load_all_metrics_for_entities,
     load_all_metrics_for_selected,
     make_session_loader,
 )
@@ -60,6 +65,7 @@ def make_metric_scatter_widget_for_loader(
     key_to_ref: KeyToRef,
     events_index_df: pd.DataFrame,
     session_loader: SessionLoader,
+    entity_snapshot: Optional[EntitySelectionSnapshot] = None,
     session_key_col: str = SESSION_KEY_COL,
     event_id_col: str = EVENT_ID_COL,
     schema_id_col: str = SCHEMA_ID_COL,
@@ -90,8 +96,13 @@ def make_metric_scatter_widget_for_loader(
     if not all_session_keys:
         raise ValueError("No session_key values found in events_index_df")
 
-    events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
-    metrics_df_sel = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
+    if entity_snapshot is None:
+        events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+        metrics_df_sel = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
+    else:
+        events_df_sel = load_all_events_for_entities(store, snapshot=entity_snapshot)
+        metrics_df_sel = load_all_metrics_for_entities(store, snapshot=entity_snapshot)
+
     viz_df, metric_cols = build_metric_viz_df(
         events_df=events_df_sel,
         metrics_df=metrics_df_sel,
@@ -100,7 +111,7 @@ def make_metric_scatter_widget_for_loader(
         schema_id_col=schema_id_col,
         event_type_col=event_type_col,
         signal_col=signal_col,
-        include_optional_event_cols=("run_id", "session_id"),
+        include_optional_event_cols=("run_id", "session_id", "entity_key", "entity_kind", "source_session_key"),
         require_event_type_col=False,
     )
 
@@ -129,13 +140,14 @@ def make_metric_scatter_widget_for_loader(
             ex.to_string(index=False),
         )
 
-    sessions = sorted(viz_df[session_key_col].dropna().astype(str).unique().tolist())
+    scope_entity_col = ENTITY_KEY_COL if ENTITY_KEY_COL in viz_df.columns else session_key_col
+    entities = sorted(viz_df[scope_entity_col].dropna().astype(str).unique().tolist())
     event_types = sorted(viz_df[event_type_col].dropna().astype(str).unique().tolist())
     sensors = sorted([x for x in viz_df["_sensor"].dropna().astype(str).unique().tolist() if x])
     metrics = sorted(metric_cols)
 
-    if not sessions:
-        raise ValueError("No non-null session_key values after join")
+    if not entities:
+        raise ValueError("No non-null scope entity values after join")
     if not event_types:
         raise ValueError(f"No non-null values found in {event_type_col!r} after join")
     if not metrics:
@@ -150,16 +162,12 @@ def make_metric_scatter_widget_for_loader(
     event_label = W.Label("Event:")
     w_event = W.Dropdown(options=event_types, value=event_types[0], description="")
 
-    w_sessions_mode = W.RadioButtons(
-        options=[("Aggregate sessions", False), ("Compare sessions", True)],
-        value=False,
-        description="Sessions:",
-    )
+    entities_label = W.Label("Entities:")
     w_sessions = W.SelectMultiple(
-        options=sessions,
-        value=tuple(sessions),
+        options=entities,
+        value=tuple(entities),
         description="",
-        rows=min(8, max(3, len(sessions), len(sensors))),
+        rows=min(8, max(3, len(entities), len(sensors))),
         layout=W.Layout(width="450px"),
     )
 
@@ -168,7 +176,7 @@ def make_metric_scatter_widget_for_loader(
         options=sensors,
         value=tuple(sensors[:1]),
         description="",
-        rows=min(8, max(3, len(sessions), len(sensors))),
+        rows=min(8, max(3, len(entities), len(sensors))),
         layout=W.Layout(width="450px"),
     )
 
@@ -209,14 +217,14 @@ def make_metric_scatter_widget_for_loader(
     }
 
     def _filtered_base() -> pd.DataFrame:
-        sel_sessions = list(map(str, w_sessions.value))
+        sel_entities = list(map(str, w_sessions.value))
         sel_sensors = list(map(str, w_sensors.value))
-        if not sel_sessions or not sel_sensors:
+        if not sel_entities or not sel_sensors:
             return viz_df.iloc[0:0]
 
         sub = viz_df[
             (viz_df[event_type_col].astype(str) == str(w_event.value))
-            & (viz_df[session_key_col].astype(str).isin(sel_sessions))
+            & (viz_df[scope_entity_col].astype(str).isin(sel_entities))
             & (viz_df["_sensor"].astype(str).isin(sel_sensors))
         ].copy()
         return sub
@@ -301,10 +309,10 @@ def make_metric_scatter_widget_for_loader(
         with out:
             clear_output(wait=True)
 
-            sel_sessions = list(w_sessions.value)
+            sel_entities = list(w_sessions.value)
             sel_sensors = list(w_sensors.value)
-            if not sel_sessions:
-                print("Select at least one session.")
+            if not sel_entities:
+                print("Select at least one entity.")
                 return
             if not sel_sensors:
                 print("Select at least one sensor.")
@@ -315,20 +323,14 @@ def make_metric_scatter_widget_for_loader(
                 print("No rows after filtering.")
                 return
 
-            compare_sessions = bool(w_sessions_mode.value)
-
             series: List[Tuple[str, pd.DataFrame]] = []
-            if compare_sessions:
-                for sk in sel_sessions:
-                    for s in sel_sensors:
-                        sub = base[
-                            (base[session_key_col].astype(str) == str(sk))
-                            & (base["_sensor"].astype(str) == str(s))
-                        ]
-                        series.append((f"{sk} | {s}", sub))
-            else:
-                for s in sel_sensors:
-                    series.append((str(s), base[base["_sensor"].astype(str) == str(s)]))
+            for entity in sel_entities:
+                for sensor in sel_sensors:
+                    sub = base[
+                        (base[scope_entity_col].astype(str) == str(entity))
+                        & (base["_sensor"].astype(str) == str(sensor))
+                    ]
+                    series.append((f"{entity} | {sensor}", sub))
 
             fig, ax = plt.subplots(figsize=(8.8, 5.2))
             show_series_labels = len(series) > 1
@@ -365,13 +367,9 @@ def make_metric_scatter_widget_for_loader(
 
                 fit_results.append((label, fit, int(len(x))))
 
-            mode_bits = [
-                ("sessions=compare" if compare_sessions else "sessions=aggregate"),
-                "sensors=compare",
-            ]
             ax.set_title(
                 f"{w_y.value} vs {w_x.value}\n"
-                f"{event_type_col}={w_event.value} | {', '.join(mode_bits)}"
+                f"{event_type_col}={w_event.value} | entities=compare, sensors=compare"
             )
             ax.set_xlabel(str(w_x.value))
             ax.set_ylabel(str(w_y.value))
@@ -427,11 +425,16 @@ def make_metric_scatter_widget_for_loader(
                     print(f"- {label}: n={n}  {eq}  R^2={r2:.6g}")
 
     def refresh() -> None:
-        nonlocal viz_df, metric_cols, sessions, event_types, sensors, metrics
+        nonlocal viz_df, metric_cols, entities, event_types, sensors, metrics
         nonlocal registries_by_session, schema_maps_by_session
 
-        events_df_sel2 = load_all_events_for_selected(store, key_to_ref=key_to_ref)
-        metrics_df_sel2 = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
+        if entity_snapshot is None:
+            events_df_sel2 = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+            metrics_df_sel2 = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
+        else:
+            events_df_sel2 = load_all_events_for_entities(store, snapshot=entity_snapshot)
+            metrics_df_sel2 = load_all_metrics_for_entities(store, snapshot=entity_snapshot)
+
         viz_df2, metric_cols2 = build_metric_viz_df(
             events_df=events_df_sel2,
             metrics_df=metrics_df_sel2,
@@ -440,7 +443,7 @@ def make_metric_scatter_widget_for_loader(
             schema_id_col=schema_id_col,
             event_type_col=event_type_col,
             signal_col=signal_col,
-            include_optional_event_cols=("run_id", "session_id"),
+            include_optional_event_cols=("run_id", "session_id", "entity_key", "entity_kind", "source_session_key"),
             require_event_type_col=False,
         )
 
@@ -465,7 +468,7 @@ def make_metric_scatter_widget_for_loader(
 
         viz_df = viz_df2
         metric_cols = metric_cols2
-        sessions = sorted(viz_df[session_key_col].dropna().astype(str).unique().tolist())
+        entities = sorted(viz_df[scope_entity_col].dropna().astype(str).unique().tolist())
         event_types = sorted(viz_df[event_type_col].dropna().astype(str).unique().tolist())
         sensors = sorted([x for x in viz_df["_sensor"].dropna().astype(str).unique().tolist() if x])
         metrics = sorted(metric_cols)
@@ -474,9 +477,9 @@ def make_metric_scatter_widget_for_loader(
         state["registries_by_session"] = registries_by_session
         state["schema_maps_by_session"] = schema_maps_by_session
 
-        w_sessions.options = sessions
-        kept_sessions = tuple([s for s in map(str, w_sessions.value) if s in sessions])
-        w_sessions.value = kept_sessions if kept_sessions else tuple(sessions)
+        w_sessions.options = entities
+        kept_entities = tuple([s for s in map(str, w_sessions.value) if s in entities])
+        w_sessions.value = kept_entities if kept_entities else tuple(entities)
 
         w_event.options = event_types
         if str(w_event.value) not in set(event_types):
@@ -492,7 +495,6 @@ def make_metric_scatter_widget_for_loader(
         _render()
 
     for w in (
-        w_sessions_mode,
         w_sessions,
         w_sensors,
         w_x,
@@ -515,7 +517,7 @@ def make_metric_scatter_widget_for_loader(
             W.HBox([W.VBox([metrics_label, w_x]), W.VBox([dummy_label, w_y])]),
             W.HBox(
                 [
-                    W.VBox([w_sessions_mode, w_sessions]),
+                    W.VBox([entities_label, w_sessions]),
                     W.VBox([sensors_label, w_sensors]),
                 ]
             ),
@@ -544,7 +546,6 @@ def make_metric_scatter_widget_for_loader(
         "state": state,
         "controls": {
             "event": w_event,
-            "sessions_mode": w_sessions_mode,
             "sessions": w_sessions,
             "sensors": w_sensors,
             "x": w_x,
@@ -580,6 +581,7 @@ def make_metric_scatter_rebuilder(
 
     def rebuild() -> None:
         snapshot = selection_snapshot_from_handle(sel)
+        entity_snapshot = entity_snapshot_from_handle(sel)
         store = sel["store"]
         key_to_ref = snapshot.key_to_ref
         events_index_df = snapshot.events_index_df
@@ -593,6 +595,7 @@ def make_metric_scatter_rebuilder(
                 key_to_ref=key_to_ref,
                 events_index_df=events_index_df,
                 session_loader=session_loader,
+                entity_snapshot=entity_snapshot,
                 event_type_col=event_type_col,
                 signal_col=signal_col,
                 registry_policy=registry_policy,

@@ -144,7 +144,7 @@ def make_event_browser_widget_for_loader(
     sessions_label = W.Label("Sessions:")
     w_sessions = W.SelectMultiple(
         options=all_sessions,
-        value=(all_sessions[0],) if all_sessions else (),
+        value=tuple(all_sessions),
         description="",
         rows=min(8, max(5, len(all_sessions))),
         layout=W.Layout(width="380px"),
@@ -386,6 +386,7 @@ def make_event_browser_widget_for_loader(
             session_id_col="session_id",
             event_id_col="event_id",
             trigger_time_col="trigger_time_s",
+            session_key_col=session_key_col,
         )
 
         current = w_event.value
@@ -403,13 +404,19 @@ def make_event_browser_widget_for_loader(
         if not w_event.value:
             return None, None
 
-        session_id, event_id = parse_event_label(str(w_event.value))
+        session_id, event_id, session_key = parse_event_label(str(w_event.value))
 
         sub = _filtered_events()
-        ev = sub[
-            (sub["session_id"].astype(str) == session_id) &
-            (sub["event_id"].astype(str) == str(event_id))
-        ].copy()
+        if session_key:
+            ev = sub[
+                (sub[session_key_col].astype(str) == str(session_key))
+                & (sub["event_id"].astype(str) == str(event_id))
+            ].copy()
+        else:
+            ev = sub[
+                (sub["session_id"].astype(str) == session_id)
+                & (sub["event_id"].astype(str) == str(event_id))
+            ].copy()
 
         if len(ev) != 1:
             return None, None
@@ -770,10 +777,15 @@ def make_event_browser_rebuilder(
         snapshot = selection_snapshot_from_handle(sel)
         store = sel["store"]
         key_to_ref = snapshot.key_to_ref
-        session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
+        if not key_to_ref:
+            with out:
+                clear_output(wait=True)
+                print("No sessions available for the current selector scope.")
+            state["handles"] = None
+            return
 
+        session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
         events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
-        # Expect events_df_sel already includes a session_key column
 
         with out:
             clear_output(wait=True)

@@ -26,10 +26,15 @@ SessionId = str
 SessionRef = tuple[RunId, SessionId]
 KeyToRef = Mapping[SessionKey, SessionRef]
 MutableKeyToRef = Dict[SessionKey, SessionRef]
+EntityKey = str
+AggregationKey = str
 
 SESSION_KEY_COL = "session_key"
 RUN_ID_COL = "run_id"
 SESSION_ID_COL = "session_id"
+ENTITY_KEY_COL = "entity_key"
+ENTITY_KIND_COL = "entity_kind"
+SOURCE_SESSION_KEY_COL = "source_session_key"
 SCHEMA_ID_COL = "schema_id"
 EVENT_ID_COL = "event_id"
 SIGNAL_COL = "signal_col"
@@ -83,6 +88,8 @@ class SelectionSnapshot:
 # ---------------------------------------------------------------------------
 
 RegistryPolicy = Literal["union", "intersection", "strict"]
+EventSchemaPolicy = RegistryPolicy
+EntityKind = Literal["session", "aggregation"]
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,49 @@ class SignalUniverse(TypedDict):
     by_session: Dict[SessionKey, list[str]]
     union: list[str]
     intersection: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Entity scope contracts (sessions + persisted aggregations)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AggregationDefinition:
+    """Persisted aggregation definition."""
+
+    aggregation_key: AggregationKey
+    title: str
+    member_session_keys: tuple[SessionKey, ...]
+    registry_policy: RegistryPolicy = "union"
+    event_schema_policy: EventSchemaPolicy = "union"
+    created_at_utc: str = ""
+    updated_at_utc: str = ""
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class ScopeEntity:
+    """Selectable scope entity: physical session or aggregation."""
+
+    entity_key: EntityKey
+    kind: EntityKind
+    label: str
+    member_session_keys: tuple[SessionKey, ...]
+
+
+@dataclass(frozen=True)
+class EntitySelectionSnapshot:
+    """Resolved entity selection for widget scope consumers."""
+
+    selected_entities: list[ScopeEntity]
+    entity_to_effective_members: Dict[EntityKey, list[SessionKey]]
+    expanded_session_keys: list[SessionKey]
+    key_to_ref: MutableKeyToRef
+    events_index_df: pd.DataFrame
+
+    def selected_entity_keys(self) -> list[EntityKey]:
+        return [str(e.entity_key) for e in self.selected_entities]
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +204,61 @@ class SessionSelectorHandle(SessionSelectorCoreHandle, total=False):
     run_dd: Any
     sessions_sel: Any
     out: Any
+    entities_sel: Any
+    get_selected_entities: Callable[[], list[ScopeEntity]]
+    get_entity_snapshot: Callable[[], EntitySelectionSnapshot]
+
+
+def entity_snapshot_from_handle(sel: Mapping[str, Any]) -> EntitySelectionSnapshot:
+    """Create an EntitySelectionSnapshot from a selector handle dict."""
+
+    get_entity_snapshot = sel.get("get_entity_snapshot")
+    if callable(get_entity_snapshot):
+        snapshot = get_entity_snapshot()
+        if isinstance(snapshot, EntitySelectionSnapshot):
+            return EntitySelectionSnapshot(
+                selected_entities=list(snapshot.selected_entities),
+                entity_to_effective_members={
+                    str(k): list(map(str, v))
+                    for k, v in dict(snapshot.entity_to_effective_members).items()
+                },
+                expanded_session_keys=list(map(str, snapshot.expanded_session_keys)),
+                key_to_ref=dict(snapshot.key_to_ref),
+                events_index_df=snapshot.events_index_df.copy(),
+            )
+        raise ValueError("get_entity_snapshot() must return an EntitySelectionSnapshot")
+
+    # Backwards-compatible fallback: project session selection to session entities.
+    core = selection_snapshot_from_handle(sel)
+    entities = [
+        ScopeEntity(
+            entity_key=str(sk),
+            kind="session",
+            label=str(sk),
+            member_session_keys=(str(sk),),
+        )
+        for sk in core.session_keys()
+    ]
+    members = {str(sk): [str(sk)] for sk in core.session_keys()}
+    return EntitySelectionSnapshot(
+        selected_entities=entities,
+        entity_to_effective_members=members,
+        expanded_session_keys=core.session_keys(),
+        key_to_ref=dict(core.key_to_ref),
+        events_index_df=core.events_index_df.copy(),
+    )
 
 
 def selection_snapshot_from_handle(sel: Mapping[str, Any]) -> SelectionSnapshot:
     """Create a SelectionSnapshot from a selector handle dict."""
+
+    get_entity_snapshot = sel.get("get_entity_snapshot")
+    if callable(get_entity_snapshot):
+        entity_snapshot = entity_snapshot_from_handle(sel)
+        return SelectionSnapshot(
+            key_to_ref=dict(entity_snapshot.key_to_ref),
+            events_index_df=entity_snapshot.events_index_df.copy(),
+        )
 
     get_key_to_ref = sel.get("get_key_to_ref")
     get_events_index_df = sel.get("get_events_index_df")
@@ -214,4 +315,3 @@ class SnapshotWidgetBuilder(Protocol):
     """Builder that constructs a widget from a selector snapshot."""
 
     def __call__(self, *, sel: SessionSelectorHandle, snapshot: SelectionSnapshot) -> WidgetHandle: ...
-

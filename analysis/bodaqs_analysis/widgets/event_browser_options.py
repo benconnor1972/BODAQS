@@ -53,20 +53,34 @@ def build_event_labels(
     session_id_col: str,
     event_id_col: str,
     trigger_time_col: str,
+    session_key_col: str | None = None,
 ) -> list[str]:
     if filtered_events_df is None or filtered_events_df.empty:
         return []
     labels: list[str] = []
-    for _, r in filtered_events_df.sort_values([session_id_col, trigger_time_col]).iterrows():
-        labels.append(
-            f"{r[session_id_col]} :: {r[event_id_col]}  |  t={float(r[trigger_time_col]):.3f}s"
-        )
+    sort_cols = [session_id_col, trigger_time_col]
+    if session_key_col and session_key_col in filtered_events_df.columns:
+        sort_cols = [session_key_col, trigger_time_col]
+
+    for _, r in filtered_events_df.sort_values(sort_cols).iterrows():
+        if session_key_col and session_key_col in filtered_events_df.columns:
+            labels.append(
+                f"{r[session_id_col]} [{r[session_key_col]}] :: {r[event_id_col]}  |  t={float(r[trigger_time_col]):.3f}s"
+            )
+        else:
+            labels.append(
+                f"{r[session_id_col]} :: {r[event_id_col]}  |  t={float(r[trigger_time_col]):.3f}s"
+            )
     return labels
 
 
-def parse_event_label(label: str) -> tuple[str, str]:
+def parse_event_label(label: str) -> tuple[str, str, str]:
     left, rest = str(label).split(" :: ", 1)
     event_id = rest.split("  |  ", 1)[0].strip()
     session_id = left.strip()
-    return session_id, event_id
-
+    session_key = ""
+    if session_id.endswith("]") and " [" in session_id:
+        sid, sk = session_id.rsplit(" [", 1)
+        session_id = sid.strip()
+        session_key = sk[:-1].strip()
+    return session_id, event_id, session_key

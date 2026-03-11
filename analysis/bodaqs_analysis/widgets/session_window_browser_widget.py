@@ -1000,6 +1000,13 @@ def make_session_window_browser_rebuilder(
         key_to_ref = snapshot.key_to_ref
         events_index_df = snapshot.events_index_df
 
+        if not key_to_ref:
+            with out:
+                clear_output(wait=True)
+                print("No sessions available for the current selector scope.")
+            state["handles"] = None
+            return
+
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
 
         events_all = load_all_events_for_selected(store, key_to_ref=key_to_ref)

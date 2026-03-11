@@ -22,7 +22,9 @@ from IPython.display import clear_output, display
 
 from bodaqs_analysis.widgets.contracts import (
     ArtifactStoreLike,
+    ENTITY_KEY_COL,
     EVENT_ID_COL,
+    EntitySelectionSnapshot,
     KeyToRef,
     RegistryPolicy,
     RebuilderHandle,
@@ -32,11 +34,14 @@ from bodaqs_analysis.widgets.contracts import (
     SessionLoader,
     SessionSelectorHandle,
     WidgetHandle,
+    entity_snapshot_from_handle,
     selection_snapshot_from_handle,
 )
 from bodaqs_analysis.widgets.histogram_core import plot_hist_or_cdf, series_stats_line
 from bodaqs_analysis.widgets.loaders import (
+    load_all_events_for_entities,
     load_all_events_for_selected,
+    load_all_metrics_for_entities,
     load_all_metrics_for_selected,
     make_session_loader,
 )
@@ -63,6 +68,7 @@ def make_metric_histogram_widget_for_loader(
     key_to_ref: KeyToRef,
     events_index_df: pd.DataFrame,
     session_loader: SessionLoader,
+    entity_snapshot: Optional[EntitySelectionSnapshot] = None,
     session_key_col: str = SESSION_KEY_COL,
     event_id_col: str = EVENT_ID_COL,
     schema_id_col: str = SCHEMA_ID_COL,
@@ -91,8 +97,12 @@ def make_metric_histogram_widget_for_loader(
 
     require_cols(events_index_df, (session_key_col,), name="events_index_df")
 
-    events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
-    metrics_df_sel = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
+    if entity_snapshot is None:
+        events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+        metrics_df_sel = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
+    else:
+        events_df_sel = load_all_events_for_entities(store, snapshot=entity_snapshot)
+        metrics_df_sel = load_all_metrics_for_entities(store, snapshot=entity_snapshot)
 
     viz_df, metric_cols = build_metric_viz_df(
         events_df=events_df_sel,
@@ -102,7 +112,7 @@ def make_metric_histogram_widget_for_loader(
         schema_id_col=schema_id_col,
         event_type_col=event_type_col,
         signal_col=signal_col,
-        include_optional_event_cols=("run_id", "session_id"),
+        include_optional_event_cols=("run_id", "session_id", "entity_key", "entity_kind", "source_session_key"),
         require_event_type_col=True,
     )
 
@@ -141,6 +151,7 @@ def make_metric_histogram_widget_for_loader(
         metric_cols=metric_cols,
         session_key_col=session_key_col,
         event_type_col=event_type_col,
+        scope_entity_col=(ENTITY_KEY_COL if ENTITY_KEY_COL in viz_df.columns else session_key_col),
         default_bins=default_bins,
         max_bins=max_bins,
         auto_display=auto_display,
@@ -158,6 +169,7 @@ def _make_widget_from_viz_df_consumer(
     metric_cols: List[str],
     session_key_col: str,
     event_type_col: str,
+    scope_entity_col: str,
     default_bins: int,
     max_bins: int,
     auto_display: bool,
@@ -168,13 +180,13 @@ def _make_widget_from_viz_df_consumer(
     if "_sensor" not in viz_df.columns:
         raise ValueError("viz_df missing required '_sensor' column (consumer path)")
 
-    sessions = sorted(viz_df[session_key_col].dropna().astype(str).unique().tolist())
+    entities = sorted(viz_df[scope_entity_col].dropna().astype(str).unique().tolist())
     event_types = sorted(viz_df[event_type_col].dropna().astype(str).unique().tolist())
     sensors = sorted([x for x in viz_df["_sensor"].dropna().astype(str).unique().tolist() if x])
     metrics = sorted(metric_cols)
 
-    if not sessions:
-        raise ValueError(f"No non-null {session_key_col!r} values after join")
+    if not entities:
+        raise ValueError(f"No non-null {scope_entity_col!r} values after join")
     if not event_types:
         raise ValueError(f"No non-null values found in {event_type_col!r} after join")
     if not sensors:
@@ -183,16 +195,11 @@ def _make_widget_from_viz_df_consumer(
             "Check that schema triggers and session registries are compatible."
         )
 
-    lbl_sessions = W.Label("Sessions")
-    w_sess_mode = W.RadioButtons(
-        options=[("Aggregate sessions", False), ("Compare sessions", True)],
-        value=False,
-        description="",
-    )
+    lbl_sessions = W.Label("Entities")
     w_sessions = W.SelectMultiple(
-        options=sessions,
-        value=tuple(sessions),
-        rows=min(8, max(3, len(sensors), len(sessions))),
+        options=entities,
+        value=tuple(entities),
+        rows=min(8, max(3, len(sensors), len(entities))),
         layout=W.Layout(width="450px"),
     )
 
@@ -200,7 +207,7 @@ def _make_widget_from_viz_df_consumer(
     w_sensors = W.SelectMultiple(
         options=sensors,
         value=tuple(sensors[:1]),
-        rows=min(8, max(3, len(sensors), len(sessions))),
+        rows=min(8, max(3, len(sensors), len(entities))),
         layout=W.Layout(width="450px"),
     )
 
@@ -264,26 +271,19 @@ def _make_widget_from_viz_df_consumer(
 
             base = viz_df[
                 (viz_df[event_type_col].astype(str) == str(w_event.value))
-                & (viz_df[session_key_col].astype(str).isin(sel_sessions))
+                & (viz_df[scope_entity_col].astype(str).isin(sel_sessions))
                 & (viz_df["_sensor"].astype(str).isin(sel_sensors))
             ]
 
-            compare_sessions = bool(w_sess_mode.value)
-
             series: List[Tuple[str, np.ndarray]] = []
 
-            if compare_sessions:
-                for sk in sel_sessions:
-                    for s in sel_sensors:
-                        sub = base[
-                            (base[session_key_col].astype(str) == sk)
-                            & (base["_sensor"].astype(str) == s)
-                        ]
-                        series.append((f"{sk} | {s}", _vals(sub)))
-            else:
+            for sk in sel_sessions:
                 for s in sel_sensors:
-                    sub = base[base["_sensor"].astype(str) == s]
-                    series.append((str(s), _vals(sub)))
+                    sub = base[
+                        (base[scope_entity_col].astype(str) == sk)
+                        & (base["_sensor"].astype(str) == s)
+                    ]
+                    series.append((f"{sk} | {s}", _vals(sub)))
 
             fig, ax = plt.subplots(figsize=(8.3, 4.2))
             show_series_labels = len(series) > 1
@@ -297,14 +297,9 @@ def _make_widget_from_viz_df_consumer(
                     label=(name if show_series_labels else None),
                 )
 
-            mode_bits = [
-                ("sessions=compare" if compare_sessions else "sessions=aggregate"),
-                "sensors=compare",
-            ]
-
             ax.set_title(
                 f"{w_metric.value} distribution\n"
-                f"{event_type_col}={w_event.value} | {', '.join(mode_bits)}"
+                f"{event_type_col}={w_event.value} | entities=compare, sensors=compare"
             )
             ax.set_xlabel(str(w_metric.value))
             ax.set_ylabel(
@@ -340,7 +335,6 @@ def _make_widget_from_viz_df_consumer(
         _render()
 
     for w in (
-        w_sess_mode,
         w_sessions,
         w_sensors,
         w_event,
@@ -354,7 +348,7 @@ def _make_widget_from_viz_df_consumer(
         w.observe(_on_controls_change, names="value")
 
     top_row = W.VBox([W.HBox([W.VBox([event_label, w_event]), W.VBox([metric_label, w_metric])])])
-    sessions_col = W.VBox([lbl_sessions, w_sess_mode, w_sessions], layout=W.Layout(align_items="flex-start"))
+    sessions_col = W.VBox([lbl_sessions, w_sessions], layout=W.Layout(align_items="flex-start"))
     sensors_col = W.VBox([lbl_sensors, w_sensors], layout=W.Layout(align_items="flex-start"))
     controls = W.VBox(
         [
@@ -378,7 +372,6 @@ def _make_widget_from_viz_df_consumer(
         "out": out,
         "viz_df": viz_df,
         "controls": {
-            "sessions_mode": w_sess_mode,
             "sessions": w_sessions,
             "sensors": w_sensors,
             "event": w_event,
@@ -419,6 +412,7 @@ def make_metric_histogram_rebuilder(
 
     def rebuild() -> None:
         snapshot = selection_snapshot_from_handle(sel)
+        entity_snapshot = entity_snapshot_from_handle(sel)
         store = sel["store"]
         key_to_ref = snapshot.key_to_ref
         events_index_df = snapshot.events_index_df
@@ -432,6 +426,7 @@ def make_metric_histogram_rebuilder(
                 key_to_ref=key_to_ref,
                 events_index_df=events_index_df,
                 session_loader=session_loader,
+                entity_snapshot=entity_snapshot,
                 session_key_col=session_key_col,
                 event_id_col=event_id_col,
                 schema_id_col=schema_id_col,

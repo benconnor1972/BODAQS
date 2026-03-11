@@ -17,15 +17,43 @@ Concrete type contracts are now drafted in:
 
 - `analysis/bodaqs_analysis/widgets/contracts.py`
 
-Key exported contracts/signatures:
+Key exported contracts/signatures (entity-aware):
 
 ```python
 SessionKey = str
 SessionRef = tuple[str, str]  # (run_id, session_id)
 KeyToRef = Mapping[SessionKey, SessionRef]
+EntityKind = Literal["session", "aggregation"]
+EventSchemaPolicy = RegistryPolicy
 
 @dataclass(frozen=True)
 class SelectionSnapshot:
+    key_to_ref: dict[str, tuple[str, str]]
+    events_index_df: pd.DataFrame
+
+@dataclass(frozen=True)
+class AggregationDefinition:
+    aggregation_key: str
+    title: str
+    member_session_keys: tuple[str, ...]
+    registry_policy: RegistryPolicy
+    event_schema_policy: EventSchemaPolicy
+    created_at_utc: str
+    updated_at_utc: str
+    note: str | None
+
+@dataclass(frozen=True)
+class ScopeEntity:
+    entity_key: str
+    kind: EntityKind
+    label: str
+    member_session_keys: tuple[str, ...]
+
+@dataclass(frozen=True)
+class EntitySelectionSnapshot:
+    selected_entities: list[ScopeEntity]
+    entity_to_effective_members: dict[str, list[str]]
+    expanded_session_keys: list[str]
     key_to_ref: dict[str, tuple[str, str]]
     events_index_df: pd.DataFrame
 
@@ -38,6 +66,8 @@ class SessionSelectorCoreHandle(TypedDict):
     get_selected: Callable[[], list[SessionSelection]]
     get_key_to_ref: Callable[[], dict[str, tuple[str, str]]]
     get_events_index_df: Callable[[], pd.DataFrame]
+    get_selected_entities: Callable[[], list[ScopeEntity]]
+    get_entity_snapshot: Callable[[], EntitySelectionSnapshot]
 
 class WidgetHandle(TypedDict, total=False):
     ui: Any
@@ -58,6 +88,7 @@ Registry variability contract (multi-session):
 
 ```python
 RegistryPolicy = Literal["union", "intersection", "strict"]
+EventSchemaPolicy = RegistryPolicy
 
 @dataclass(frozen=True)
 class RegistryResolutionConfig:
@@ -65,7 +96,8 @@ class RegistryResolutionConfig:
     include_qc: bool = False
 ```
 
-This keeps `session_key` as the canonical identity across widget/service boundaries.
+`session_key` remains the canonical physical-session identity across widget/service boundaries.
+`entity_key` adds a stable selection identity for session-aggregation workflows.
 
 ---
 
@@ -123,12 +155,43 @@ Canonical format:
 
 ## Session selector contract
 
-The selector is responsible for:
+The selector layer is split into two notebook-facing constructors:
+
+1. `make_session_aggregation_editor(...)` for creating/updating/deleting persisted aggregations.
+2. `make_session_selector(...)` for selecting entities (sessions + persisted aggregations) for downstream widgets.
+
+This split allows aggregation management to run in a separate cell and to be skipped entirely when saved aggregations are already available.
+
+### `make_session_aggregation_editor(...) -> dict`
+
+Aggregation editor responsibilities:
 - discovering available runs/sessions under `artifacts/`
-- allowing the user to choose a **run scope** and a **multi-select session scope**
-- providing *live* getters that reflect the current UI state
+- allowing the user to choose a **run scope**
+- managing local persisted **session aggregations** (CRUD + validation)
+- applying the same display-mode toggle used by selector:
+  - default: description-first labels with ID fallback
+  - optional: explicit IDs + descriptions (`Show run and session IDs`)
+- persisting to the local aggregation store
+
+Expected return keys:
+
+| key | type | meaning |
+|---|---|---|
+| `ui` | ipywidgets widget/container | display this in the notebook |
+| `store` | `ArtifactStore` | artifact store rooted at `artifacts_dir` |
+| `run_dd` | widget | run dropdown control |
+| `show_ids_cb` | widget | label-mode toggle |
+| `sessions_sel` | widget | physical-session selection for aggregation membership |
+| `out` | widget | status/debug output |
+| `refresh` | `() -> None` | reload sessions + aggregation dropdown |
 
 ### `make_session_selector(...) -> dict`
+
+Selection widget responsibilities:
+- discovering available runs/sessions under `artifacts/`
+- loading persisted local **session aggregations**
+- allowing multi-select of **entities** (physical sessions + aggregations)
+- providing *live* getters that reflect the current UI state
 
 **Required return keys**
 
@@ -136,16 +199,19 @@ The selector is responsible for:
 |---|---|---|
 | `ui` | ipywidgets widget/container | display this in the notebook |
 | `store` | `ArtifactStore` | artifact store rooted at `artifacts_dir` |
-| `get_selected` | `() -> list[{"run_id": str, "session_id": str}]` | current selected sessions |
-| `get_key_to_ref` | `() -> dict[str, tuple[str,str]]` | mapping `session_key -> (run_id, session_id)` |
-| `get_events_index_df` | `() -> pd.DataFrame` | index DF with columns `session_key, run_id, session_id` |
+| `get_selected` | `() -> list[{"run_id": str, "session_id": str}]` | current expanded physical-session selection |
+| `get_selected_entities` | `() -> list[ScopeEntity]` | currently selected entities |
+| `get_entity_snapshot` | `() -> EntitySelectionSnapshot` | selected entities + effective member expansion |
+| `get_key_to_ref` | `() -> dict[str, tuple[str,str]]` | mapping for expanded physical sessions only |
+| `get_events_index_df` | `() -> pd.DataFrame` | expanded index DF with columns `session_key, run_id, session_id` |
 
 **Optional return keys (recommended for debugging / advanced wiring)**
 
 | key | type | meaning |
 |---|---|---|
 | `run_dd` | widget | run dropdown control |
-| `sessions_sel` | widget | session multi-select control |
+| `entities_sel` | widget | entity multi-select control (session + aggregation) |
+| `show_ids_cb` | widget | label-mode toggle |
 | `out` | widget | debug output area |
 
 ### Invariants
@@ -154,16 +220,32 @@ The selector must maintain these invariants:
 
 1) **Non-empty default selection (optional but recommended)**  
 If `select_first_by_default=True`, the selector should ensure at least one session is selected initially,
-so downstream “Run all cells” succeeds without manual interaction.
+so downstream "Run all cells" succeeds without manual interaction.
 
 2) **Live getters**  
-`get_key_to_ref()` and `get_events_index_df()` must reflect the *current* selector state.
+`get_entity_snapshot()`, `get_key_to_ref()`, and `get_events_index_df()` must reflect the *current* selector state.
 Implementations may maintain cached internal state, but **must update that state on UI changes**.
 
 3) **Identity consistency**  
 `get_events_index_df()` must be consistent with `get_key_to_ref()`:
 
 - `sorted(get_events_index_df()["session_key"].unique()) == sorted(get_key_to_ref().keys())`
+
+4) **Entity overlap dedupe policy**  
+When both explicit session entities and aggregation entities are selected:
+- explicit sessions take precedence
+- overlapping members are removed from affected aggregation effective-member sets
+- selector should surface a warning message in `out`
+
+5) **Aggregation persistence**  
+Aggregations are persisted locally per user in:
+- `~/.bodaqs/session_aggregations_v1.json`
+
+Store rules:
+- schema/versioned JSON with atomic writes
+- unique `aggregation_key`
+- non-empty `member_session_keys`
+- policies constrained to `union|intersection|strict`
 
 ---
 
@@ -219,6 +301,16 @@ Expected to return a concatenated DataFrame across selected sessions, including:
 - `schema_id`, `event_id`
 - `signal_col` (anchor signal column)
 
+Entity-aware variant:
+
+```python
+events_df_sel = load_all_events_for_entities(store, snapshot=entity_snapshot)
+```
+
+Expected additional provenance columns:
+
+- `entity_key`, `entity_kind`, `source_session_key`
+
 ### Metrics loader
 
 ```python
@@ -230,6 +322,16 @@ Expected to return a concatenated DataFrame across selected sessions, including:
 - `session_key`, `run_id`, `session_id` (stamped identity)
 - `schema_id`, `event_id`
 - metric columns prefixed by `m_...`
+
+Entity-aware variant:
+
+```python
+metrics_df_sel = load_all_metrics_for_entities(store, snapshot=entity_snapshot)
+```
+
+Expected additional provenance columns:
+
+- `entity_key`, `entity_kind`, `source_session_key`
 
 ---
 
@@ -267,7 +369,7 @@ make_<widget>_for_loader(
 ### Required behavior
 
 1) **Scope = selector output**  
-Widget scope is defined by the selector outputs (`key_to_ref` / `events_index_df`).
+Widget scope is defined by selector outputs (`entity_snapshot`, `key_to_ref`, `events_index_df`).
 
 2) **Identity columns preserved**  
 When building internal working tables (e.g., `viz_df`), the widget should preserve:
@@ -278,18 +380,32 @@ When building internal working tables (e.g., `viz_df`), the widget should preser
 When joining events and metrics, prefer a stable composite key:
 - `(session_key, schema_id, event_id)` is the safest default.
 
-4) **UI defaults must not over-filter**  
-Defaults should avoid "empty intersection" states.
-For example, defaulting session selection to **all sessions** in scope is generally safer than first-only.
+4) **Entity compare-by-default**  
+For non-time-series widgets, selected entities are compared by default.
+Aggregation entities are treated as in-memory unions of effective member sessions.
 
-5) **Registry differences are explicit**  
+5) **UI defaults must not over-filter**  
+Defaults should avoid "empty intersection" states.
+For example, defaulting entity selection to **all entities** in scope is generally safer than first-only.
+
+6) **Registry differences are explicit**  
 When a widget depends on per-session signal registries, it should expose or document a policy for
 multi-session differences:
 - `union`: allow any signal present in at least one selected session
 - `intersection`: only signals present in every selected session
 - `strict`: require identical signal sets and fail fast on mismatch
 
-6) **Constructors are pure (no implicit display side effects)**  
+Event schema policy for aggregations uses the same values:
+- `union`: allow all schema-id sets
+- `intersection`: keep common schema-id set
+- `strict`: require identical schema-id sets and identical schema hash per schema-id across all members
+  - strict mode fails if any required schema hash is missing from session metadata
+
+7) **Time-series v1 scope rule**  
+`event_browser` and `session_window_browser` accept exactly one selected entity at a time.
+If the selected entity is an aggregation, render faceted per-member views (no synthetic continuous timeline).
+
+8) **Constructors are pure (no implicit display side effects)**  
 `make_<widget>_for_loader(...)` should return a handle (including `root`/`ui`) and not call `display(...)`
 internally. Notebook/rebuilder code decides where/how to display.
 
@@ -314,7 +430,7 @@ Refreshing matters because selector scope changes after widgets are created.
 Current recommended wiring:
 
 - Rebuilder takes a `SessionSelectorHandle`
-- Rebuilder pulls fresh scope with `selection_snapshot_from_handle(sel)` each rebuild
+- Rebuilder pulls fresh scope with `entity_snapshot_from_handle(sel)` and/or `selection_snapshot_from_handle(sel)` each rebuild
 - Constructor is called with snapshot-derived inputs
 - Constructor returns a handle with `root` and optional `refresh`
 
@@ -332,15 +448,24 @@ Guardrails:
 ## Worked example: selector cell (thin notebook glue)
 
 ```python
-from bodaqs_analysis.widgets.session_selector import make_session_selector
+from bodaqs_analysis.widgets.session_selector import (
+    make_session_aggregation_editor,
+    make_session_selector,
+)
 from bodaqs_analysis.widgets.loaders import make_session_loader
 
+# Optional cell: run only when creating/editing persisted aggregations
+agg = make_session_aggregation_editor(artifacts_dir="artifacts")
+display(agg["ui"])
+
+# Selection-only widget (can run even if aggregation editor cell is skipped)
 sel = make_session_selector(artifacts_dir="artifacts", select_first_by_default=True)
 display(sel["ui"])
 
 store = sel["store"]
 
 # Live snapshot (pull fresh whenever you build/refresh widgets)
+entity_snapshot = sel["get_entity_snapshot"]()
 key_to_ref = sel["get_key_to_ref"]()
 events_index_df = sel["get_events_index_df"]()
 session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
@@ -377,6 +502,8 @@ viz_df = handles.get("viz_df")  # debug
 ## Notes on current implementations (consistency check)
 
 - The selector provides `ui`, `store`, and the three getters: `get_selected`, `get_key_to_ref`, `get_events_index_df`.
+- The selector and aggregation editor both expose `Show run and session IDs` (default unchecked).
+- Default label mode is description-first with ID fallback when description is missing.
 - The session loader (`make_session_loader`) returns `{"df","meta"}` from `load_session_artifacts`.
 - Migrated widgets follow the “scope via selector, load via store helpers, preserve session_key” approach.
 
@@ -394,8 +521,8 @@ The session selector module provides:
 
 - `attach_refresh(sel, rebuild_fns, ...) -> {"detach": ..., "trigger": ...}`
 
-This attaches observers to `sel["run_dd"]` and `sel["sessions_sel"]` and calls each rebuild function when the
-selection changes.
+This attaches observers to available selector controls (`run_dd`, `entities_sel`, `show_ids_cb`, and
+`sessions_sel` when present) and calls each rebuild function when selection/scope changes.
 
 ### Widget-side rebuilder helper
 
@@ -453,3 +580,4 @@ Notes:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Tools\run_widget_notebook_smoke_tests.ps1 -IncludeSessionNotebook
 ```
+
