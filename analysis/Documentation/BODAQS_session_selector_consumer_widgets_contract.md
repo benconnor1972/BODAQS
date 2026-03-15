@@ -57,6 +57,20 @@ class EntitySelectionSnapshot:
     key_to_ref: dict[str, tuple[str, str]]
     events_index_df: pd.DataFrame
 
+@dataclass(frozen=True)
+class PersistedEntityScopeSelection:
+    artifacts_root: str
+    saved_at_utc: str
+    selected_entity_keys: tuple[str, ...]
+    selected_entity_kinds: dict[str, EntityKind]
+    selected_labels: dict[str, str]
+
+@dataclass(frozen=True)
+class PersistedEntityScopeLoadResult:
+    snapshot: EntitySelectionSnapshot
+    warnings: list[str]
+    source: PersistedEntityScopeSelection
+
 class SessionLoader(Protocol):
     def __call__(self, session_key: str) -> SessionArtifacts: ...
 
@@ -204,6 +218,8 @@ Selection widget responsibilities:
 | `get_entity_snapshot` | `() -> EntitySelectionSnapshot` | selected entities + effective member expansion |
 | `get_key_to_ref` | `() -> dict[str, tuple[str,str]]` | mapping for expanded physical sessions only |
 | `get_events_index_df` | `() -> pd.DataFrame` | expanded index DF with columns `session_key, run_id, session_id` |
+| `save_selection` | `() -> PersistedEntityScopeSelection` | persist current entity selection for reuse in other notebooks |
+| `load_selection` | `() -> PersistedEntityScopeLoadResult` | restore the last persisted entity selection into the selector UI |
 
 **Optional return keys (recommended for debugging / advanced wiring)**
 
@@ -212,6 +228,8 @@ Selection widget responsibilities:
 | `run_dd` | widget | run dropdown control |
 | `entities_sel` | widget | entity multi-select control (session + aggregation) |
 | `show_ids_cb` | widget | label-mode toggle |
+| `autosave_cb` | widget | autosave toggle (default checked) |
+| `refresh_signal` | widget | hidden refresh token observed by `attach_refresh(...)` |
 | `out` | widget | debug output area |
 
 ### Invariants
@@ -246,6 +264,50 @@ Store rules:
 - unique `aggregation_key`
 - non-empty `member_session_keys`
 - policies constrained to `union|intersection|strict`
+
+6) **Persisted scope selection**  
+Current selector scope may be persisted locally per user in:
+- `~/.bodaqs/entity_scope_selection_v1.json`
+
+Rules:
+- schema/versioned JSON with atomic writes
+- stores selected `entity_key`s, not pre-expanded physical-session sets
+- restore is validated against the current artifacts root and current aggregation definitions
+- missing entities are dropped with warnings; a fully unresolved restore is an error
+- live selector may autosave on each valid selection change; default UI state is autosave enabled
+
+---
+
+## Persisted scope handle
+
+To support multi-notebook workflows without introducing implicit widget fallback,
+persisted scope is exposed as a second, explicit selector-shaped source:
+
+- `analysis/bodaqs_analysis/widgets/entity_scope_store.py`
+
+Notebook-facing factory:
+
+```python
+make_persisted_entity_scope_handle(
+    *,
+    artifacts_dir: str | Path = "artifacts",
+    strict: bool = False,
+) -> SessionSelectorHandle
+```
+
+Responsibilities:
+- load the last saved entity selection from the local persisted-scope store
+- resolve selected `entity_key`s against the current artifact inventory and aggregation store
+- expose the same selector getters consumed by widget rebuilders:
+  - `get_selected()`
+  - `get_selected_entities()`
+  - `get_entity_snapshot()`
+  - `get_key_to_ref()`
+  - `get_events_index_df()`
+- provide a reload control for explicit re-sync when the persisted selection changes
+
+This keeps widget contracts explicit: downstream widgets consume a selector-compatible handle,
+whether the source is a live selector UI or a persisted scope handle.
 
 ---
 

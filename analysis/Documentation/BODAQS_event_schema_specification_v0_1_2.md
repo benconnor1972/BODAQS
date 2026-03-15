@@ -156,6 +156,72 @@ segment_defaults:
 
 ---
 
+## 6. Metric definitions
+
+Metrics are defined under each event's `metrics` list.
+
+### 6.1 Signal-role metrics
+
+The existing waveform metrics operate on **roles** resolved from the registry-bound segment bundle:
+
+- `peak`
+- `interval_stats`
+
+For these metric types:
+
+- `signal` refers to a **role** such as `disp`, `vel`, `acc`, `disp_norm`
+- `signal` must not refer to trigger metadata such as `t0_index`
+
+### 6.2 Trigger-derived metrics: `trigger_delta`
+
+`trigger_delta` computes a scalar difference between two resolved trigger anchors for the same event instance.
+
+Definition:
+
+```yaml
+- type: trigger_delta
+  start_trigger: <trigger id>
+  end_trigger: <trigger id>
+  quantity: seconds | samples
+  id: <optional metric id>
+  abs: <optional bool, default false>
+  return_debug: <optional bool, default false>
+```
+
+Rules:
+
+- `signal` MUST NOT be present
+- `start_trigger` and `end_trigger` are required
+- `quantity: seconds` computes `end_time_s - start_time_s`
+- `quantity: samples` computes `end_idx - start_idx`
+- if `abs: true`, the absolute value is returned
+
+Trigger resolution uses the event table trigger fields:
+
+- primary trigger:
+  - time: `trigger_time_s`
+  - index: `trigger_idx` (or legacy `t0_index` where present)
+- named trigger ids:
+  - time: `{trigger_id}_time_s`
+  - index: `{trigger_id}_idx`
+
+Example:
+
+```yaml
+metrics:
+  - type: trigger_delta
+    start_trigger: topout_start
+    end_trigger: topout_end
+    quantity: samples
+    id: airtime_n
+    return_debug: true
+```
+
+This metric type is intended for trigger/index/time-derived quantities and should be preferred over treating
+trigger metadata as a fake signal role.
+
+---
+
 ## Appendix: Sensor-Bound Signal Resolution Model
 
 ### Overview

@@ -95,12 +95,11 @@ events:
       - max
       min_delay_s: 0.02
       return_debug: true
-    - type: interval_stats
-      signal: t0_index
+    - type: trigger_delta
       start_trigger: topout_start
       end_trigger: topout_end
-      ops:
-      - delta
+      quantity: seconds
+      id: airtime_n
       return_debug: true
   tags:
     - kinematics

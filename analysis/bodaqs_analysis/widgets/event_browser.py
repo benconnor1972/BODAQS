@@ -15,7 +15,11 @@ import pandas as pd
 from IPython.display import clear_output, display
 
 from bodaqs_analysis.segment import extract_segments, SegmentRequest, WindowSpec, RoleSpec
-from bodaqs_analysis.widgets.loaders import make_session_loader, load_all_events_for_selected
+from bodaqs_analysis.widgets.loaders import (
+    load_all_events_for_selected,
+    load_all_metrics_for_selected,
+    make_session_loader,
+)
 from bodaqs_analysis.widgets.contracts import (
     RegistryPolicy,
     RebuilderHandle,
@@ -49,6 +53,10 @@ from bodaqs_analysis.widgets.event_semantics import (
     registry_signal_options_for_sensor,
     role_spec_from_semantic_tuple,
 )
+
+SemanticKey = tuple[str, str, str, str]
+SelectedRole = tuple[str, str, SemanticKey, str | None]
+ExtractedSeries = tuple[str, np.ndarray, SemanticKey]
 
 
 def _coerce_list(x):
@@ -93,6 +101,197 @@ def _series_stats(x):
     }
 
 
+def _metric_items(row: pd.Series) -> list[tuple[str, str]]:
+    if row is None:
+        return []
+
+    items: list[tuple[str, str]] = []
+    for c in sorted(row.index):
+        if not isinstance(c, str) or not c.startswith("m_"):
+            continue
+        v = row.get(c, np.nan)
+        if pd.isna(v):
+            continue
+        if isinstance(v, (float, np.floating, int, np.integer)):
+            items.append((c, f"{float(v):.6g}"))
+        else:
+            items.append((c, str(v)))
+    return items
+
+
+def _merge_event_metrics(
+    *,
+    events_df: pd.DataFrame,
+    metrics_df: pd.DataFrame | None,
+    session_key_col: str,
+) -> pd.DataFrame:
+    if events_df is None or events_df.empty:
+        return pd.DataFrame()
+    if metrics_df is None or metrics_df.empty:
+        return events_df.copy()
+
+    join_keys = []
+    for col in (session_key_col, "event_id", "schema_id"):
+        if col in events_df.columns and col in metrics_df.columns:
+            join_keys.append(col)
+
+    if session_key_col not in join_keys or "event_id" not in join_keys:
+        return events_df.copy()
+
+    metric_cols = [c for c in metrics_df.columns if c not in join_keys]
+    if not metric_cols:
+        return events_df.copy()
+
+    return events_df.merge(
+        metrics_df[join_keys + metric_cols],
+        on=join_keys,
+        how="left",
+        suffixes=("", "_m"),
+    )
+
+
+def _registry_has_semantic(
+    *,
+    registry: Mapping[str, Mapping[str, Any]],
+    sensor: str | None,
+    semantic: tuple[str, str, str, str],
+) -> bool:
+    if not sensor:
+        return False
+
+    quantity, unit, kind, opk = semantic
+    sensor_s = str(sensor)
+    unit_s = str(unit or "")
+    kind_s = str(kind or "")
+    opk_s = str(opk or "")
+
+    for info in registry.values():
+        if not isinstance(info, Mapping):
+            continue
+        if str(info.get("sensor", "")) != sensor_s:
+            continue
+        if str(info.get("quantity", "")).strip() != str(quantity):
+            continue
+        if str(info.get("unit") or "") != unit_s:
+            continue
+        if str(info.get("kind") or "").strip() != kind_s:
+            continue
+        op_chain = info.get("op_chain") or []
+        if isinstance(op_chain, (list, tuple)):
+            info_opk = "|".join(str(x) for x in op_chain)
+        else:
+            info_opk = str(op_chain or "")
+        if info_opk == opk_s:
+            return True
+    return False
+
+
+def _registry_columns_for_semantic(
+    *,
+    registry: Mapping[str, Mapping[str, Any]],
+    sensor: str | None,
+    semantic: tuple[str, str, str, str],
+) -> list[str]:
+    if not sensor:
+        return []
+
+    quantity, unit, kind, opk = semantic
+    sensor_s = str(sensor)
+    unit_s = str(unit or "")
+    kind_s = str(kind or "")
+    opk_s = str(opk or "")
+    matched: list[str] = []
+
+    for col, info in registry.items():
+        if not isinstance(col, str) or not isinstance(info, Mapping):
+            continue
+        if str(info.get("sensor", "")) != sensor_s:
+            continue
+        if str(info.get("quantity", "")).strip() != str(quantity):
+            continue
+        if str(info.get("unit") or "") != unit_s:
+            continue
+        if str(info.get("kind") or "").strip() != kind_s:
+            continue
+        op_chain = info.get("op_chain") or []
+        if isinstance(op_chain, (list, tuple)):
+            info_opk = "|".join(str(x) for x in op_chain)
+        else:
+            info_opk = str(op_chain or "")
+        if info_opk != opk_s:
+            continue
+        matched.append(col)
+
+    matched.sort(key=lambda c: (len(c), c))
+    return matched
+
+
+def _extract_series_for_selected_roles(
+    *,
+    session: Mapping[str, Any],
+    event_row_df: pd.DataFrame,
+    event_type: str,
+    schema: Mapping[str, Any],
+    window: WindowSpec,
+    selected_roles: Sequence[SelectedRole],
+) -> tuple[np.ndarray | None, list[ExtractedSeries], dict[str, Any], str | None]:
+    series: list[ExtractedSeries] = []
+    spec: dict[str, Any] = {}
+    t_rel: np.ndarray | None = None
+    primary_reason: str | None = None
+
+    for role_name, sensor_name, semantic, anchor_col in selected_roles:
+        local_event_df = event_row_df.reset_index(drop=True).copy()
+        if anchor_col:
+            local_event_df["signal_col"] = anchor_col
+
+        req = SegmentRequest(
+            schema_id=str(event_type),
+            window=window,
+            roles=[
+                role_spec_from_semantic_tuple(
+                    RoleSpec,
+                    role=role_name,
+                    sensor=sensor_name,
+                    semantic=semantic,
+                )
+            ],
+        )
+
+        bundle = extract_segments(
+            session["df"],
+            local_event_df,
+            meta=session["meta"],
+            schema=schema,
+            request=req,
+        )
+
+        data = bundle.get("data", {})
+        spec = bundle.get("spec", {})
+        segs = bundle.get("segments", None)
+        if segs is None or len(segs) == 0 or not bool(segs.iloc[0].get("valid", False)):
+            primary_reason = segs.iloc[0].get("reason") if (segs is not None and len(segs)) else None
+            continue
+
+        t_local = data.get("t_rel_s", None)
+        if t_local is None:
+            continue
+        if t_rel is None:
+            t_rel = np.asarray(t_local)[0]
+
+        if role_name not in data:
+            continue
+
+        quantity, unit, kind, opk = semantic
+        y = np.asarray(data[role_name])[0]
+        unit_s = f" [{unit}]" if unit else ""
+        kind_s = f" ({kind})" if kind else ""
+        op_s = f" -> {opk}" if opk else ""
+        series.append((f"{sensor_name} | {quantity}{unit_s}{kind_s}{op_s}", y, semantic))
+
+    return t_rel, series, spec, primary_reason
+
+
 def _require_cols(df: pd.DataFrame, cols: Sequence[str], *, name: str):
     missing = [c for c in cols if c not in df.columns]
     if missing:
@@ -114,6 +313,7 @@ def make_event_browser_widget_for_loader(
     events_df: pd.DataFrame,
     *,
     session_loader: SessionLoader,
+    metrics_df: pd.DataFrame | None = None,
     session_key_col: str = SESSION_KEY_COL,
     registry_policy: RegistryPolicy = "union",
     default_quantities: Sequence[str] = ("disp", "vel"),
@@ -136,9 +336,14 @@ def make_event_browser_widget_for_loader(
     )
     et_col = _event_type_col(events_df)
     _require_cols(events_df, (et_col,), name="events_df")
+    events_viz_df = _merge_event_metrics(
+        events_df=events_df,
+        metrics_df=metrics_df,
+        session_key_col=session_key_col,
+    )
 
     # ---- Controls (NOTE: session selector is now multi-select)
-    all_sessions = sorted(events_df[session_key_col].dropna().astype(str).unique().tolist())
+    all_sessions = sorted(events_viz_df[session_key_col].dropna().astype(str).unique().tolist())
 
     # multi-select for "scope"
     sessions_label = W.Label("Sessions:")
@@ -204,10 +409,9 @@ def make_event_browser_widget_for_loader(
     w_post = W.FloatText(value=float(default_post_s), description="Post (s):", layout=W.Layout(width="160px"))
 
     # Sensor + signals are derived from the registry
-    w_sensor = W.SelectMultiple(
+    w_sensor = W.Dropdown(
         options=[],              # populated by _rebuild_sensor_options
-        value=(),                # empty = no filtering (equivalent to "All")
-        rows=3,
+        value=None,
         description="Sensors:",
         layout=W.Layout(width="380px"),
     )
@@ -221,7 +425,9 @@ def make_event_browser_widget_for_loader(
     )
 
     w_show_secondary = W.Checkbox(value=True, description="Sec. triggers")
+    w_show_all_sensors = W.Checkbox(value=False, description="Show all sensors")
     w_show_grid = W.Checkbox(value=True, description="Grid")
+    w_show_metrics = W.Checkbox(value=False, description="Show metrics")
     w_show_stats = W.Checkbox(value=False, description="Stats")
     w_show_resolve = W.Checkbox(value=False, description="Info")
 
@@ -291,11 +497,12 @@ def make_event_browser_widget_for_loader(
     def _filtered_events() -> pd.DataFrame:
         scope = list(map(str, _coerce_list(w_sessions.value)))
         _rebuild_scope_resolution(scope)
+        selected_sensor = str(w_sensor.value).strip() if w_sensor.value else ""
         return filter_events(
-            events_df=events_df,
+            events_df=events_viz_df,
             scope_sessions=scope,
             selected_event_type=(str(w_event_type.value) if w_event_type.value else None),
-            selected_sensors=tuple(map(str, _coerce_list(w_sensor.value))),
+            selected_sensors=((selected_sensor,) if selected_sensor else ()),
             config=scope_config,
             resolution=_scope_resolution,
         )
@@ -315,7 +522,7 @@ def make_event_browser_widget_for_loader(
 
         # scope-only (no event type / sensor filtering here)
         etypes = build_event_type_options(
-            events_df=events_df,
+            events_df=events_viz_df,
             scope_sessions=list(scope),
             session_key_col=session_key_col,
             event_type_col=et_col,
@@ -340,17 +547,17 @@ def make_event_browser_widget_for_loader(
         scope = list(map(str, _coerce_list(w_sessions.value)))
         if not scope:
             w_sensor.options = []
-            w_sensor.value = ()
+            w_sensor.value = None
             return
 
         _rebuild_scope_resolution(scope)
         if _scope_resolution.error:
             w_sensor.options = []
-            w_sensor.value = ()
+            w_sensor.value = None
             return
 
         sensors = build_sensor_options(
-            events_df=events_df,
+            events_df=events_viz_df,
             scope_sessions=scope,
             selected_event_type=(str(w_event_type.value) if w_event_type.value else None),
             session_key_col=session_key_col,
@@ -362,23 +569,24 @@ def make_event_browser_widget_for_loader(
             ),
         )
 
-        current = tuple(map(str, _coerce_list(w_sensor.value)))
+        current = str(w_sensor.value) if w_sensor.value else None
 
         opts = sensors
         w_sensor.options = opts
 
-        # Keep selections that still exist
-        kept = tuple([s for s in current if s in opts])
-        w_sensor.value = kept
-        
-        if not w_sensor.value and opts:
-            w_sensor.value = (opts[0],)
+        if current in opts:
+            w_sensor.value = current
+        elif opts:
+            w_sensor.value = opts[0]
+        else:
+            w_sensor.value = None
 
 
     def _rebuild_events(*_):
         sub = _filtered_events()
         if len(sub) == 0:
             w_event.options = []
+            w_event.value = None
             return
 
         labels = build_event_labels(
@@ -435,18 +643,8 @@ def make_event_browser_widget_for_loader(
         ev_df, ev_row = _selected_event_row()
         inferred = _infer_event_sensor_for_row(ev_row) if ev_row is not None else None
 
-        sel_sensors = tuple(map(str, _coerce_list(w_sensor.value)))
-        sel_sensors = tuple(s.strip() for s in sel_sensors if s and str(s).strip())
-
-        # Empty selection => "All" (auto): use inferred if available, else no sensor filter
-        if not sel_sensors:
-            active_sensor = inferred
-        # Single selection => use it
-        elif len(sel_sensors) == 1:
-            active_sensor = sel_sensors[0]
-        # Multiple selections => prefer inferred if it's among them, else pick first
-        else:
-            active_sensor = inferred if (inferred and inferred in sel_sensors) else sel_sensors[0]
+        selected_sensor = str(w_sensor.value).strip() if w_sensor.value else ""
+        active_sensor = selected_sensor or inferred
 
 
         # --- Remember current selection (before we replace options) ---
@@ -460,6 +658,11 @@ def make_event_browser_widget_for_loader(
         kept = tuple(k for k in prev if k in avail)
         if kept:
             w_signals.value = kept
+            return
+
+        mm_keys = [key for (_, key) in opts if key and str(key[1] or "") == "mm"]
+        if mm_keys:
+            w_signals.value = (mm_keys[0],)
             return
 
         # Helper: choose "best" single key among candidates
@@ -479,7 +682,7 @@ def make_event_browser_widget_for_loader(
 
             return sorted(cands, key=score)[0]
 
-        # 2) Default to trigger role for the selected event (single series)
+        # 3) Default to trigger role for the selected event (single series)
         trigger_role = None
         if ev_row is not None:
             trigger_role = ev_row.get("signal", None)
@@ -492,7 +695,7 @@ def make_event_browser_widget_for_loader(
                 w_signals.value = (best,)
                 return
 
-        # 3) Fall back to default_quantities (same behavior as before)
+        # 4) Fall back to default_quantities (same behavior as before)
         desired = set(_coerce_list(default_quantities))
         selected = [key for (_, key) in opts if key and key[0] in desired]
         w_signals.value = tuple(selected) if selected else ()
@@ -517,208 +720,218 @@ def make_event_browser_widget_for_loader(
 
             registry = get_registry_from_session_meta(session)
 
-            # Determine active sensor for the event (multi-select semantics)
+            # Determine active sensor for the event
             inferred = _infer_event_sensor_for_row(ev_row) if ev_row is not None else None
 
-            sel_sensors = tuple(map(str, _coerce_list(w_sensor.value)))
+            selected_sensor = str(w_sensor.value).strip() if w_sensor.value else ""
             sensor = choose_active_sensor(
                 inferred_sensor=inferred,
-                selected_sensors=sel_sensors,
+                selected_sensors=((selected_sensor,) if selected_sensor else ()),
             )
 
 
 
-            # Build RoleSpecs from selected semantic tuples
-            role_specs = []
-            selected_roles: List[Tuple[str, Tuple[str, str, str, str]]] = []
+            # Build role selection plan
+            selected_roles: List[SelectedRole] = []
+            sensors_to_plot: List[str] = []
+            if bool(w_show_all_sensors.value):
+                sensors_to_plot = [str(s) for s in list(w_sensor.options or []) if str(s).strip()]
+            elif sensor:
+                sensors_to_plot = [str(sensor)]
+
+            if not sensors_to_plot and inferred:
+                sensors_to_plot = [str(inferred)]
+
             for idx, semantic in enumerate(_coerce_list(w_signals.value)):
                 qty = str(semantic[0])
-                role_name = f"{qty}__sel_{idx}"
-                selected_roles.append((role_name, semantic))
-                role_specs.append(
-                    role_spec_from_semantic_tuple(
-                        RoleSpec,
-                        role=role_name,
-                        sensor=sensor,
+                for sensor_name in sensors_to_plot:
+                    matched_cols = _registry_columns_for_semantic(
+                        registry=registry,
+                        sensor=sensor_name,
                         semantic=semantic,
                     )
-                )
+                    if not matched_cols:
+                        continue
+                    role_name = f"{qty}__{sensor_name}__sel_{idx}"
+                    anchor_col = matched_cols[0] if bool(w_show_all_sensors.value) else None
+                    selected_roles.append((role_name, sensor_name, semantic, anchor_col))
 
-            if not role_specs:
+            if not selected_roles:
                 print("No signals selected. Select at least one signal to plot.")
                 return
-                
-            req = SegmentRequest(
-                schema_id=str(ev_row[et_col]),
-                window=WindowSpec(mode="time", pre_s=float(w_pre.value), post_s=float(w_post.value)),
-                roles=role_specs,
-            )
 
-            bundle = extract_segments(
-                session["df"],
-                ev_row_df.reset_index(drop=True),
-                meta=session["meta"],
+            req_window = WindowSpec(mode="time", pre_s=float(w_pre.value), post_s=float(w_post.value))
+            t_rel, series_raw, spec, primary_reason = _extract_series_for_selected_roles(
+                session=session,
+                event_row_df=ev_row_df,
+                event_type=str(ev_row[et_col]),
                 schema=schema,
-                request=req,
+                window=req_window,
+                selected_roles=selected_roles,
             )
 
-            data = bundle.get("data", {})
-            spec = bundle.get("spec", {})
-            segs = bundle.get("segments", None)
-
-            if segs is None or len(segs) == 0 or not bool(segs.iloc[0].get("valid", False)):
-                reason = segs.iloc[0].get("reason") if (segs is not None and len(segs)) else None
-                print("Segment invalid:", reason or "no segments")
-                return
-
-            t_rel = data.get("t_rel_s", None)
-            if t_rel is None:
-                print("Bundle missing t_rel_s")
-                return
-            t_rel = np.asarray(t_rel)[0]
-
-            series = []
-            for role_name, semantic in selected_roles:
-                quantity, unit, kind, opk = semantic
-                if role_name in data:
-                    y = np.asarray(data[role_name])[0]
+            series: list[ExtractedSeries] = []
+            for name, y, semantic in series_raw:
+                if bool(w_show_all_sensors.value):
+                    series.append((name, y, semantic))
+                else:
+                    quantity, unit, kind, opk = semantic
                     unit_s = f" [{unit}]" if unit else ""
                     kind_s = f" ({kind})" if kind else ""
                     op_s = f" -> {opk}" if opk else ""
-                    series.append((f"{quantity}{unit_s}{kind_s}{op_s}", y))
-
-            if not series and "primary" in data:
-                series.append(("primary", np.asarray(data["primary"])[0]))
+                    series.append((f"{quantity}{unit_s}{kind_s}{op_s}", y, semantic))
 
             if not series:
-                print("No series available to plot.")
+                print("Segment invalid:" if primary_reason else "No series available to plot.", primary_reason or "")
+                return
+
+            if t_rel is None:
+                print("Bundle missing t_rel_s")
                 return
 
             # group series by unit
             by_unit = OrderedDict()
-            for role_name, semantic in selected_roles:
+            for plot_label, y, semantic in series:
                 quantity, unit, kind, opk = semantic
-                if role_name not in data:
-                    continue
-                y = np.asarray(data[role_name])[0]
                 unit_key = unit or ""  # empty string = unitless
-                kind_s = f" ({kind})" if kind else ""
-                op_s = f" -> {opk}" if opk else ""
-                plot_label = f"{quantity}{kind_s}{op_s}"
                 by_unit.setdefault(unit_key, []).append((plot_label, y))
 
-
-            fig, ax = plt.subplots(figsize=(9.5, 4.2))
-
-            axes = [ax]
-            unit_to_ax = {list(by_unit.keys())[0]: ax}
-
-            # create additional y-axes if needed
-            for i, unit in enumerate(list(by_unit.keys())[1:], start=1):
-                ax_i = ax.twinx()
-                ax_i.spines["right"].set_position(("outward", 60 * (i - 1)))
-                axes.append(ax_i)
-                unit_to_ax[unit] = ax_i
-
-            colors = itertools.cycle(plt.rcParams["axes.prop_cycle"].by_key()["color"])
-            for unit, items in by_unit.items():
-                ax_i = unit_to_ax[unit]
-                for plot_label, y in items:
-                    ax_i.plot(t_rel, y, label=plot_label, color=next(colors))
-
-            # sci notation outside ~1e-4..1e4
-            fmt = mticker.ScalarFormatter(useMathText=True)
-            fmt.set_powerlimits((-4, 4))  
-
-            for ax_i in axes:
-                ax_i.yaxis.set_major_formatter(fmt)
-
-            # Compute desired frac0 from primary axis (based on its current limits)
-            ymin0, ymax0 = ax.get_ylim()
-            frac0 = (0.0 - ymin0) / (ymax0 - ymin0) if ymax0 != ymin0 else 0.5
-            frac0 = float(np.clip(frac0, 0.05, 0.95))
-
-            # Apply aligned 0-position limits to every axis based on that frac0
-            for ax_i in axes:
-                lines = ax_i.get_lines()
-                if not lines:
-                    continue
-                y_all = np.concatenate([ln.get_ydata() for ln in lines if ln.get_ydata() is not None])
-                y_all = y_all[np.isfinite(y_all)]
-                if y_all.size == 0:
-                    continue
-                set_ylim_zero_at_frac(ax_i, float(y_all.min()), float(y_all.max()), frac0, pad=0.05)
+            if not by_unit:
+                print("No plotted series resolved for the selected signals.")
+                return
 
 
-            handles = []
-            labels = []
-            for ax_i in axes:
-                h, l = ax_i.get_legend_handles_labels()
-                handles.extend(h)
-                labels.extend(l)
+            chart_out = W.Output(layout=W.Layout(width="780px" if bool(w_show_metrics.value) else "980px"))
+            metrics_out = W.Output(layout=W.Layout(width="340px"))
 
-            ax.legend(handles, labels, loc="best")
+            with chart_out:
+                fig, ax = plt.subplots(figsize=(9.5, 4.2))
 
-            for ax_i in axes:
-                ax_i.axvline(
-                    0.0,
-                    linestyle="--",
-                    linewidth=1.2,
-                    color="0.25",
-                    zorder=3,
+                axes = [ax]
+                unit_to_ax = {list(by_unit.keys())[0]: ax}
+
+                # create additional y-axes if needed
+                for i, unit in enumerate(list(by_unit.keys())[1:], start=1):
+                    ax_i = ax.twinx()
+                    ax_i.spines["right"].set_position(("outward", 60 * (i - 1)))
+                    axes.append(ax_i)
+                    unit_to_ax[unit] = ax_i
+
+                colors = itertools.cycle(plt.rcParams["axes.prop_cycle"].by_key()["color"])
+                for unit, items in by_unit.items():
+                    ax_i = unit_to_ax[unit]
+                    for plot_label, y in items:
+                        ax_i.plot(t_rel, y, label=plot_label, color=next(colors))
+
+                fmt = mticker.ScalarFormatter(useMathText=True)
+                fmt.set_powerlimits((-4, 4))
+                for ax_i in axes:
+                    ax_i.yaxis.set_major_formatter(fmt)
+
+                ymin0, ymax0 = ax.get_ylim()
+                frac0 = (0.0 - ymin0) / (ymax0 - ymin0) if ymax0 != ymin0 else 0.5
+                frac0 = float(np.clip(frac0, 0.05, 0.95))
+
+                for ax_i in axes:
+                    lines = ax_i.get_lines()
+                    if not lines:
+                        continue
+                    y_all = np.concatenate([ln.get_ydata() for ln in lines if ln.get_ydata() is not None])
+                    y_all = y_all[np.isfinite(y_all)]
+                    if y_all.size == 0:
+                        continue
+                    set_ylim_zero_at_frac(ax_i, float(y_all.min()), float(y_all.max()), frac0, pad=0.05)
+
+                handles = []
+                labels = []
+                for ax_i in axes:
+                    h, l = ax_i.get_legend_handles_labels()
+                    handles.extend(h)
+                    labels.extend(l)
+
+                ax.legend(handles, labels, loc="best")
+
+                for ax_i in axes:
+                    ax_i.axvline(
+                        0.0,
+                        linestyle="--",
+                        linewidth=1.2,
+                        color="0.25",
+                        zorder=3,
+                    )
+
+                ax.axvline(0.0, linestyle="--", linewidth=1.0, color="0.25", zorder=3)
+                ax.text(0.0, 0.98, "trigger", transform=ax.get_xaxis_transform(), ha="left", va="top")
+
+                if w_show_secondary.value:
+                    t0 = float(ev_row["trigger_time_s"])
+                    for col, t_abs in _secondary_time_cols(ev_row):
+                        tsec = float(t_abs) - t0
+                        ax.axvline(tsec, linestyle=":", linewidth=1.0)
+                        ax.text(
+                            tsec, 0.98, col.replace("_time_s", ""),
+                            transform=ax.get_xaxis_transform(),
+                            rotation=90, ha="right", va="top", fontsize=8
+                        )
+
+                title_sensor = sensor or ""
+                if bool(w_show_all_sensors.value):
+                    title_sensor = "all sensors"
+                ax.set_title(
+                    f"Event browser - {event_session_id} | {ev_row[et_col]} | {ev_row['event_id']} | {title_sensor}".strip()
                 )
+                ax.set_xlabel("t_rel_s (s)")
+                for unit, ax_i in unit_to_ax.items():
+                    if unit:
+                        ax_i.set_ylabel(unit)
+                    else:
+                        ax_i.set_ylabel("")
 
-            ax.axvline(0.0, linestyle="--", linewidth=1.0, color="0.25",zorder=3)
-            ax.text(0.0, 0.98, "trigger", transform=ax.get_xaxis_transform(), ha="left", va="top")
+                if w_show_grid.value:
+                    ax.grid(True, which="both", axis="both", alpha=0.3)
+                plt.show()
 
-            if w_show_secondary.value:
-                t0 = float(ev_row["trigger_time_s"])
-                for col, t_abs in _secondary_time_cols(ev_row):
-                    tsec = float(t_abs) - t0
-                    ax.axvline(tsec, linestyle=":", linewidth=1.0)
-                    ax.text(
-                        tsec, 0.98, col.replace("_time_s", ""),
-                        transform=ax.get_xaxis_transform(),
-                        rotation=90, ha="right", va="top", fontsize=8
-                    )
+            if bool(w_show_metrics.value):
+                with metrics_out:
+                    metric_items = _metric_items(ev_row)
+                    if metric_items:
+                        print("Metrics:")
+                        for key, val in metric_items:
+                            print(f"  {key}: {val}")
+                    else:
+                        print("No event metrics available.")
+                display(W.HBox([chart_out, metrics_out]))
+            else:
+                display(chart_out)
 
-            ax.set_title(
-                f"Event browser — {event_session_id} | {ev_row[et_col]} | {ev_row['event_id']} | {sensor or ''}".strip()
-            )
-            ax.set_xlabel("t_rel_s (s)")
-            for unit, ax_i in unit_to_ax.items():
-                if unit:
-                    ax_i.set_ylabel(unit)
-                else:
-                    ax_i.set_ylabel("")  # unitless or leave blank
+            if w_show_stats.value or w_show_resolve.value:
+                aux_out = W.Output()
+                with aux_out:
+                    if w_show_stats.value:
+                        print("Series stats (finite only):")
+                        for name, y, _semantic in series:
+                            st = _series_stats(y)
+                            print(
+                                f"  {name:16s}  n={st['n']:4d}  "
+                                f"min={st['min']:+.4g}  max={st['max']:+.4g}  "
+                                f"mean={st['mean']:+.4g}  median={st['median']:+.4g}"
+                            )
 
-            if w_show_grid.value:
-                ax.grid(True, which="both", axis="both", alpha=0.3)
-            plt.show()
-
-            if w_show_stats.value:
-                print("Series stats (finite only):")
-                for name, y in series:
-                    st = _series_stats(y)
-                    print(
-                        f"  {name:16s}  n={st['n']:4d}  "
-                        f"min={st['min']:+.4g}  max={st['max']:+.4g}  "
-                        f"mean={st['mean']:+.4g}  median={st['median']:+.4g}"
-                    )
-
-            if w_show_resolve.value:
-                print("\nResolve info:")
-                print("  scope sessions:", list(_coerce_list(w_sessions.value)))
-                print("  event session:", event_session_id)
-                print("  event session key:", event_session_key)
-                print("  event_type_col:", et_col)
-                print("  event type:", ev_row.get(et_col))
-                print("  event signal_col:", ev_row.get("signal_col"))
-                print("  inferred sensor:", inferred)
-                print("  sensor used:", sensor)
-                print("  selected signals:", list(_coerce_list(w_signals.value)))
-                print("\nResolved spec:")
-                print("  role_to_col:", spec.get("role_to_col"))
+                    if w_show_resolve.value:
+                        print("\nResolve info:")
+                        print("  scope sessions:", list(_coerce_list(w_sessions.value)))
+                        print("  event session:", event_session_id)
+                        print("  event session key:", event_session_key)
+                        print("  event_type_col:", et_col)
+                        print("  event type:", ev_row.get(et_col))
+                        print("  event signal_col:", ev_row.get("signal_col"))
+                        print("  inferred sensor:", inferred)
+                        print("  sensor used:", sensor)
+                        print("  plotting sensors:", sensors_to_plot)
+                        print("  selected signals:", list(_coerce_list(w_signals.value)))
+                        print("\nResolved spec:")
+                        print("  role_to_col:", spec.get("role_to_col"))
+                display(aux_out)
 
 
     # ---- Wire up
@@ -726,9 +939,21 @@ def make_event_browser_widget_for_loader(
     w_event_type.observe(_rebuild_events, names="value")
     w_event.observe(_rebuild_signals_only, names="value")
     w_sensor.observe(_rebuild_events, names="value")
+    w_sensor.observe(_rebuild_signals_only, names="value")
 
 
-    for w in (w_event, w_pre, w_post, w_signals, w_show_secondary, w_show_grid, w_show_stats, w_show_resolve):
+    for w in (
+        w_event,
+        w_pre,
+        w_post,
+        w_signals,
+        w_show_secondary,
+        w_show_all_sensors,
+        w_show_grid,
+        w_show_metrics,
+        w_show_stats,
+        w_show_resolve,
+    ):
         w.observe(_render, names="value")
 
     # ---- Init
@@ -737,7 +962,7 @@ def make_event_browser_widget_for_loader(
             W.HBox([W.VBox([sessions_label, w_sessions]), W.VBox([dummy_label, w_event_type, w_sensor])]),
             W.HBox([W.VBox([event_label, w_event]), W.VBox([dummy_label,W.HBox([w_prev, w_next])])]),
 
-            W.HBox([W.VBox([signals_label, w_signals]),W.VBox([dummy_label, W.HBox([w_pre, w_post]), W.HBox([w_show_secondary, w_show_grid]), W.HBox([w_show_stats, w_show_resolve])])]),
+            W.HBox([W.VBox([signals_label, w_signals]),W.VBox([dummy_label, W.HBox([w_pre, w_post]), W.HBox([w_show_secondary, w_show_all_sensors]), W.HBox([w_show_grid, w_show_metrics]), W.HBox([w_show_stats, w_show_resolve])])]),
             out,
         ]
     )
@@ -760,6 +985,8 @@ def make_event_browser_widget_for_loader(
             "sensor": w_sensor,
             "event": w_event,
             "signals": w_signals,
+            "show_all_sensors": w_show_all_sensors,
+            "show_metrics": w_show_metrics,
         },
         "cache": _session_cache,
         "refresh": refresh,
@@ -796,6 +1023,7 @@ def make_event_browser_rebuilder(
 
         session_loader = make_session_loader(store=store, key_to_ref=key_to_ref)
         events_df_sel = load_all_events_for_selected(store, key_to_ref=key_to_ref)
+        metrics_df_sel = load_all_metrics_for_selected(store, key_to_ref=key_to_ref)
 
         with out:
             clear_output(wait=True)
@@ -803,6 +1031,7 @@ def make_event_browser_rebuilder(
                 schema,
                 events_df_sel,
                 session_loader=session_loader,
+                metrics_df=metrics_df_sel,
                 session_key_col=session_key_col,
                 registry_policy=registry_policy,
                 auto_display=False,

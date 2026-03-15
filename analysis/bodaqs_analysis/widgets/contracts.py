@@ -151,6 +151,26 @@ class EntitySelectionSnapshot:
         return [str(e.entity_key) for e in self.selected_entities]
 
 
+@dataclass(frozen=True)
+class PersistedEntityScopeSelection:
+    """Persisted user selection of scope entities."""
+
+    artifacts_root: str
+    saved_at_utc: str
+    selected_entity_keys: tuple[EntityKey, ...]
+    selected_entity_kinds: Dict[EntityKey, EntityKind]
+    selected_labels: Dict[EntityKey, str]
+
+
+@dataclass(frozen=True)
+class PersistedEntityScopeLoadResult:
+    """Resolved persisted scope selection against current artifacts/aggregations."""
+
+    snapshot: EntitySelectionSnapshot
+    warnings: list[str]
+    source: PersistedEntityScopeSelection
+
+
 # ---------------------------------------------------------------------------
 # Loader and selector interfaces
 # ---------------------------------------------------------------------------
@@ -205,8 +225,13 @@ class SessionSelectorHandle(SessionSelectorCoreHandle, total=False):
     sessions_sel: Any
     out: Any
     entities_sel: Any
+    show_ids_cb: Any
+    autosave_cb: Any
+    refresh_signal: Any
     get_selected_entities: Callable[[], list[ScopeEntity]]
     get_entity_snapshot: Callable[[], EntitySelectionSnapshot]
+    save_selection: Callable[[], PersistedEntityScopeSelection]
+    load_selection: Callable[[], PersistedEntityScopeLoadResult]
 
 
 def entity_snapshot_from_handle(sel: Mapping[str, Any]) -> EntitySelectionSnapshot:

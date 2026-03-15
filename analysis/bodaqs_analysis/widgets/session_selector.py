@@ -12,6 +12,8 @@ from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
 from bodaqs_analysis.widgets.contracts import (
     EntitySelectionSnapshot,
     MutableKeyToRef,
+    PersistedEntityScopeLoadResult,
+    PersistedEntityScopeSelection,
     RebuildFn,
     RefreshHandle,
     RUN_ID_COL,
@@ -21,6 +23,10 @@ from bodaqs_analysis.widgets.contracts import (
     SessionSelection,
     SessionSelectorHandle,
     ScopeEntity,
+)
+from bodaqs_analysis.widgets.entity_scope_store import (
+    load_entity_scope_selection,
+    save_entity_scope_selection,
 )
 from bodaqs_analysis.widgets.entity_scope import (
     expand_selected_entities,
@@ -533,6 +539,7 @@ def make_session_selector(
     select_first_by_default: bool = True,
     rows: int = 12,
     show_ids_default: bool = False,
+    autosave_default: bool = True,
 ) -> SessionSelectorHandle:
     """
     Selection-only entity selector.
@@ -565,7 +572,22 @@ def make_session_selector(
         indent=False,
         layout=W.Layout(width="260px"),
     )
+    autosave_cb = W.Checkbox(
+        value=bool(autosave_default),
+        description="Autosave selection",
+        indent=False,
+        layout=W.Layout(width="180px"),
+    )
     b_refresh = W.Button(description="Refresh", tooltip="Reload sessions and aggregations")
+    b_save_selection = W.Button(
+        description="Save selection",
+        tooltip="Persist current entity selection for reuse in other notebooks",
+    )
+    b_load_selection = W.Button(
+        description="Load saved selection",
+        tooltip="Restore the last persisted entity selection",
+    )
+    refresh_signal = W.IntText(value=0, layout=W.Layout(display="none"))
 
     entities_sel = W.SelectMultiple(
         options=[],
@@ -726,7 +748,76 @@ def make_session_selector(
                     f"Aggregation {entity_key}: removed overlapping members due to explicit session selections: {', '.join(reduced)}"
                 )
 
+        if bool(autosave_cb.value) and _selected_entities:
+            try:
+                _persist_selection(silent=True)
+            except Exception as exc:
+                warnings.append(f"Autosave failed: {exc}")
+
         _set_status(warnings)
+
+    def _selection_labels_from_entity_keys(entity_keys: Sequence[str]) -> tuple[list[str], list[str]]:
+        labels: list[str] = []
+        missing: list[str] = []
+        for entity_key in entity_keys:
+            match = next(
+                (
+                    label
+                    for label, entity in _entity_label_to_entity.items()
+                    if str(entity.entity_key) == str(entity_key)
+                ),
+                None,
+            )
+            if match is None:
+                missing.append(str(entity_key))
+                continue
+            labels.append(match)
+        return labels, missing
+
+    def _persist_selection(*, silent: bool) -> PersistedEntityScopeSelection:
+        selection = save_entity_scope_selection(
+            sel={
+                "get_selected_entities": get_selected_entities,
+            },
+            artifacts_root=store.root,
+        )
+        if not silent:
+            _set_status(
+                [
+                    f"Saved selection at {selection.saved_at_utc}.",
+                    f"Selected entities: {', '.join(selection.selected_entity_keys)}",
+                ]
+            )
+        return selection
+
+    def save_selection() -> PersistedEntityScopeSelection:
+        return _persist_selection(silent=False)
+
+    def load_selection() -> PersistedEntityScopeLoadResult:
+        _refresh_scope_sources()
+        _rebuild_entity_options()
+        result = load_entity_scope_selection(artifacts_dir=store.root, strict=False)
+        labels, missing = _selection_labels_from_entity_keys(result.source.selected_entity_keys)
+        if not labels:
+            raise ValueError("Saved selection contains no entities available in the current selector")
+        prev_labels = tuple(map(str, entities_sel.value or ()))
+        entities_sel.value = tuple(labels)
+
+        status_lines = [
+            f"Loaded saved selection from {result.source.saved_at_utc}.",
+            f"Selected entities: {', '.join(result.source.selected_entity_keys)}",
+        ]
+        status_lines.extend(result.warnings)
+        if missing:
+            status_lines.append(
+                "Selector could not map persisted entities into the current option list: "
+                + ", ".join(missing[:6])
+            )
+        if status_lines:
+            _set_status(status_lines)
+        if tuple(labels) == prev_labels:
+            refresh_signal.value = int(refresh_signal.value or 0) + 1
+        return result
 
     def _refresh_all(*_):
         _refresh_scope_sources()
@@ -736,15 +827,38 @@ def make_session_selector(
     run_dd.observe(_refresh_all, names="value")
     show_ids_cb.observe(_refresh_all, names="value")
     entities_sel.observe(_refresh_scope_state, names="value")
+    def _on_autosave_change(change):
+        if bool(change.get("new")) and _selected_entities:
+            try:
+                _persist_selection(silent=True)
+            except Exception as exc:
+                _set_status([f"Autosave failed: {exc}"])
+
+    autosave_cb.observe(_on_autosave_change, names="value")
+    def _on_save_selection(_):
+        try:
+            save_selection()
+        except Exception as exc:
+            _set_status([f"Save selection failed: {exc}"])
+
+    def _on_load_selection(_):
+        try:
+            load_selection()
+        except Exception as exc:
+            _set_status([f"Load selection failed: {exc}"])
+
     b_refresh.on_click(_refresh_all)
+    b_save_selection.on_click(_on_save_selection)
+    b_load_selection.on_click(_on_load_selection)
 
     _refresh_all()
 
     ui = W.VBox(
         [
-            W.HBox([run_dd, show_ids_cb, b_refresh]),
+            W.HBox([run_dd, show_ids_cb, autosave_cb, b_refresh, b_save_selection, b_load_selection]),
             entities_sel,
             out,
+            refresh_signal,
         ]
     )
 
@@ -778,12 +892,16 @@ def make_session_selector(
         "run_dd": run_dd,
         "entities_sel": entities_sel,
         "show_ids_cb": show_ids_cb,
+        "autosave_cb": autosave_cb,
+        "refresh_signal": refresh_signal,
         "out": out,
         "get_selected": get_selected,
         "get_selected_entities": get_selected_entities,
         "get_entity_snapshot": get_entity_snapshot,
         "get_key_to_ref": get_key_to_ref,
         "get_events_index_df": get_events_index_df,
+        "save_selection": save_selection,
+        "load_selection": load_selection,
     }
 
 
@@ -798,8 +916,11 @@ def attach_refresh(
     sessions_sel = sel.get("sessions_sel")
     entities_sel = sel.get("entities_sel")
     show_ids_cb = sel.get("show_ids_cb")
+    refresh_signal = sel.get("refresh_signal")
 
-    observed_widgets = [w for w in (run_dd, sessions_sel, entities_sel, show_ids_cb) if w is not None]
+    observed_widgets = [
+        w for w in (run_dd, sessions_sel, entities_sel, show_ids_cb, refresh_signal) if w is not None
+    ]
     if not observed_widgets:
         raise ValueError("selector handle must include at least one observable selector widget")
 
