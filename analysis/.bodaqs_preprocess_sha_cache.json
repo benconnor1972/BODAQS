@@ -1,4 +1,508 @@
 {
+  "C:\\Users\\benco\\Downloads\\1970-01-01_00-00-00.CSV|57273|1758886047": {
+    "sha256": "b2d6a7fefd734dbb855ce4a372eda3b3661f431962ba3244c1395b6536586a5e"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-10_07-45-07.CSV|25976|1757461533": {
+    "sha256": "5e43107a450c074e3415e62368d5d12ebaadcec33d72239d59dfc09e2d02ff7b"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-10_08-02-40.CSV|39705|1757462598": {
+    "sha256": "c7297b0caea02ffde33b072b396c6e4a565f5a69038e3c22aca5694ce71ca9cf"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-10_08-14-40.CSV|50567|1757463360": {
+    "sha256": "d7530cad17b435101bee6e62279e1ff9f55a772406d54719b7a9d905e92d0658"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-10_16-36-11.CSV|19920|1757493400": {
+    "sha256": "b389b3830c7aad770fe9662d589ddf2049237029c21776374ffd3383aad3a6cd"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-11_18-31-49.CSV|39874|1757586486": {
+    "sha256": "f7e3c0f4f1e533f610f7f0ce0c33464f7d1990d693325f4924ad4ca82522d614"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-11_19-48-37.CSV|17154|1757591243": {
+    "sha256": "4389caa08c870dcb7c3ed7442ac61b2a7dbdf6756084c6dbbc19e65228f499ee"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-11_19-55-05.CSV|40042|1757591738": {
+    "sha256": "8ea3b80ad9ec27187f701efdb37b5ddb31a7810e00d705dc95155c12220d3f79"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-11_21-15-32.CSV|32627|1757596556": {
+    "sha256": "3f5622fc3881c918942c46aaa6d964225a40128b6199cbb48258ada5423a6d2c"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_05-46-53.CSV|31340|1757627245": {
+    "sha256": "0e75dffa444afd7e72695c9e7cc20267347915e6a305ed25eb3143550584d8c3"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_05-51-28.CSV|28304|1757627512": {
+    "sha256": "50320eb1d5caf391e9e0717e6089291cc0c6def9ce1dfdd52b2807518168b337"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_06-10-23.CSV|13895|1757628711": {
+    "sha256": "16d7d614e2f8b43c02db665c4ed67a81591354639ff5c448a055dfe809554889"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_06-11-17.CSV|15658|1757628695": {
+    "sha256": "8f08d10bc9f93a1eeadca3aa811ffa5629329bf7073069ec655bf951404e5fab"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_06-34-33.CSV|14588|1757630123": {
+    "sha256": "80e778404e3e2f4abc294059342d6d88a28045cf09a1c7f871e8473424e052b2"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_06-37-58.CSV|21718|1757630303": {
+    "sha256": "ff77c81f6ce3c8ac81268e15faf8b24ad1db9b81f22cefa64040f51aba33867d"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_06-47-14.CSV|16262|1757630857": {
+    "sha256": "2aa76025c90e66fe532ef5badacbd6eaabce2807582604e381c6bb265a8dbe73"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-12_07-20-40.CSV|40636|1757633097": {
+    "sha256": "b7b337d4fae20dc001741d5b1b494bea913771031b9c965f52933deeed5b39fa"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-25_18-22-56.CSV|53144|1758797102": {
+    "sha256": "bf6964449a851471867953721121af4f68d7e729b61d1f6fa956da41b0150abd"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-25_18-48-14.CSV|72444|1758797996": {
+    "sha256": "f52e5b308b8c440fd2d03f42deeef56d95da894a2306ad40a8931f30e62d7f17"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-09-25_20-41-46.CSV|64407|1758804075": {
+    "sha256": "0689bf21366e9afad52b95f350a4e2ad7d479707ffcc0236393754806f73b18a"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-10_20-06-08.CSV|322863|1760098020": {
+    "sha256": "222dd18919f5d32e58c8b46bd6e1601530854fa127d9be809816d5ac5f740eb3"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-10_20-26-34.CSV|196229|1760099241": {
+    "sha256": "9691310184c2869b90bc467ba191671858234388c2cb574826ff59341dd0fe6d"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-10_20-29-18.CSV|158848|1760099390": {
+    "sha256": "57d44206f4f8fe455d1ee5920d9ef124a1666add95ffd49fe8d00af614bfe8d4"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-10_20-32-09.CSV|149499|1760099553": {
+    "sha256": "b54205b8e7ccc81209eff4d5734b8327207ea6c5e02a51e70475e3244beda8ce"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-10_21-13-39.CSV|124358|1760102054": {
+    "sha256": "3921fecbb341f57f7cd5d4bf9a4499d5ed409c4809edf5857ac40a057b4b2b64"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-10_21-32-13.CSV|239215|1760103170": {
+    "sha256": "cd69425e634e2beab73a82ed1f977c194139a9d74ccb76de47226318b17f2e9c"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-11_20-35-21.CSV|352960|1760186302": {
+    "sha256": "4f2e11ffbd8cd60a033516f6d247eb5469071643f5454d767c6b687d22eec4e4"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-12_08-44-24_72 Virgins.CSV|5954084|1760240637": {
+    "sha256": "99d2fffd0b99f5dbeec0108f0d01669190668ae5fe63b0f5b8c1a52b53456f5f"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-12_10-09-14_Slot machine.CSV|14271333|1760240711": {
+    "sha256": "a9b3a0ed87444ea058b45d4fec14c2610f51421b50eae90a8b757fe186dbada5"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-12_10-43-07_bennet boys.CSV|9183795|1760240788": {
+    "sha256": "51ca8ad79d84c0cd339ccf78946e9d8e55aec6cd2bb94fb3268c8bc87e5eb7b4"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-19_09-26-15.CSV|9439089|1760849188": {
+    "sha256": "264894383b42b4a67dc1ae098ef97968e8c081ccb23e6e9abfa45e8fde789cdc"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-19_09-44-38.CSV|7479688|1760849263": {
+    "sha256": "25f710781fe2a8e7b04432c85054b08379b047f8418c4231ddcc712a87c0dbdb"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-19_10-13-30.CSV|4017736|1760849335": {
+    "sha256": "c8900c2e31aa2bdfc8ba4947e6fc76e8acd618123d11a58536f603c5ed266191"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-19_10-41-21.CSV|10306893|1760849417": {
+    "sha256": "81744a8a7e2bd37e7c9f8ffc77f5705c1664f7cf138cffd32cd7ee101b3784cd"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-19_11-42-53.CSV|5303290|1760849465": {
+    "sha256": "b2b1b43e20d37c2829218491547077e52314fa09d9318b9c2abdb273bbefa3c7"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-21_19-24-13.CSV|4834410|1761046206": {
+    "sha256": "e79f34cb3c5b0870ae6557e94cdcc551ac9dc4139812bc938170c403655f198a"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-25_12-19-17.CSV|21114242|1761394621": {
+    "sha256": "237111b1ed2d10d94899307452b1e195ddceca99372d69e2e2d335c471af1170"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-25_12-56-07.CSV|10552272|1761394667": {
+    "sha256": "3ed3619a18724a4c6eb595e9e5b3d5a163a8718aafe651881f271889add072db"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-25_14-11-17.CSV|6038851|1761394693": {
+    "sha256": "a754fcc3419f00bed13ebb247db248c59a6d95576a70460ad4d6f656b4135146"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-25_14-39-03.CSV|4509688|1761394718": {
+    "sha256": "f9f8e0fc70e7ffec15121b6a00fe940951dc14fbc659cee0aa9f01444bdf2117"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-25_16-03-42.CSV|9089137|1761394753": {
+    "sha256": "030a969db916a7f490db245b05a478cd99647d9e52f516ba2b6cd8e284ee32f1"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-25_16-43-36.CSV|4516521|1761394772": {
+    "sha256": "514c1977eb95e7e687da98cddde691c858c3d359be61f5e4a88a3aa716eb4688"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-25_16-57-33.CSV|13089|1761394775": {
+    "sha256": "ae7fb74b17310cb0e4ad8821b412b05d581b728273e1f4fff36f06eaa8987d14"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-26_08-25-31_bennetboys.CSV|7634867|1761474656": {
+    "sha256": "745e6f9455b18d5cbb1d0267616f08f1e2811433fe8253f4f4c2adaf07097cb2"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-26_09-01-45_slotslabs.CSV|7432457|1761474685": {
+    "sha256": "4e71470307962d43630267013feb74d9b23e3a7a7f1ba71aa44c2209cc80ff7a"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-10-26_09-46-02_newnormal.CSV|3708712|1761474699": {
+    "sha256": "a559f15445c7116a96373ce5973f0d66a1d394dd83fb016277147e5c31377906"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-11-21_17-03-21.CSV|778076|1763715866": {
+    "sha256": "247c724a126689a5ce3a55945f218024b437725e23d29204a55a1dd751f1c9f4"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-11-21_17-43-13.CSV|547419|1763718300": {
+    "sha256": "946ac5632eb73064c988fd9aca956d570b9b0b0b0019e7acc38b632de1b427db"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-11-21_17-52-21.CSV|550023|1763718812": {
+    "sha256": "0461ffa43413a0d2d46e3895e3ea8b68f9b5159f32c090c4032ae13386b4bfb7"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-11-22_08-14-41.CSV|490195|1763770549": {
+    "sha256": "b5346d1a2fd0241089d3a24acf213463d04e581f8ef2d0f60d7331c8f3773d4a"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-11-22_16-12-55.CSV|393826|1763799225": {
+    "sha256": "acecd5a5b3e85a926db7c2a7e054b28f448f9011b5fdc7d6921b224572eaaf5a"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-11-30_18-56-45.CSV|252274|1765094108": {
+    "sha256": "ddb2f56ada75ea5a1dab744d6c69832006017ed2b66f445a7a5b4587568ee23a"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-06_14-58-32.CSV|334272|1765094103": {
+    "sha256": "4e37759766edc3e39578ceab7acd4cdc54abe3a820f9b4d5ea4626d68e907c6e"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-06_15-01-36.CSV|28512|1765094100": {
+    "sha256": "c63e4e50e50ede4ab3b775e3ba6950a4a3359cf703bec3822a7843bffd41f9aa"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-06_15-16-59.CSV|51868|1765094098": {
+    "sha256": "5a23f5b1c75ed225b411d1c47635169effea256bf7a17d3261b34d8d8be13a45"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-07_15-36-40.CSV|9029|1765094096": {
+    "sha256": "8625eb8d7364ff79a86d92024bcac82e2d56ff90405ec33b448ee6f83b0fdf6c"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_15-14-54.CSV|51|1766819739": {
+    "sha256": "f574ca2bf81ac444b2e7d9ea9f8bc4f2f48000062214c748afbf5159b65be3bf"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_15-18-47.CSV|51|1766819986": {
+    "sha256": "f574ca2bf81ac444b2e7d9ea9f8bc4f2f48000062214c748afbf5159b65be3bf"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_15-43-31.CSV|229726|1766821455": {
+    "sha256": "94bdc4dfb2db0506eddc48ad54eb2bf5e05dbf66995b0cbc276753e77d9c9294"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_15-54-11.CSV|541514|1766822088": {
+    "sha256": "cd2fe77adf4b83baeedcc38af4a9963a94e0e84abf3cea00e561c9500cc958b8"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_17-26-58.CSV|180|1766827654": {
+    "sha256": "b463d855adebe22dff84b82aa6e2d22eecadfe38326aa8aa66ff0c5ff7c56076"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_17-33-58.CSV|62568|1766828078": {
+    "sha256": "edbec23030bffc1146f75f27c017ec66f6bc72d683c65cfab99e723b249a8239"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_17-40-10.CSV|139863|1766828447": {
+    "sha256": "b3b3178c6142a36df3d1e049ce296678de89fa7c5eef400c3b0bdb1827613fdf"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_17-52-16.CSV|473496|1766829176": {
+    "sha256": "91e2a174516068cfbd6d1adb1a81e61475b2ab8494a542364e2da6c76f28318e"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_17-59-36.CSV|200448|1766829610": {
+    "sha256": "3892ce88cd4d7dc37b39a972764ee4c933568842953458b5c2fe018c6cb1b6fe"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-27_18-19-28.CSV|527368|1766830803": {
+    "sha256": "627c0cd36c75b126a403d1ad22092682dfe5708cbe95fa8ceb5e91ad7373c2be"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_13-40-10 (1).CSV|570669|1766900618": {
+    "sha256": "6d134e87e2325756a54c2fba375b9ff36becb1a47e34611314d91ba58efaf449"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_13-40-10.CSV|570669|1766900468": {
+    "sha256": "6d134e87e2325756a54c2fba375b9ff36becb1a47e34611314d91ba58efaf449"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_13-42-59.CSV|115958|1766900684": {
+    "sha256": "342f8051dd5c66ba77403552eae1006ea678b6d9511e73d89686ebfd025990a5"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_13-46-48.CSV|784442|1766900850": {
+    "sha256": "01b2cf056ae6f6376c629c384c46086a9810ea16a3b5c8f105d74fb6bb7187cd"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_13-48-57.CSV|1032713|1766900993": {
+    "sha256": "5529588be09891148a27008ec362f87b6e51eb9a7c7753ce917a759dd8327152"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_13-50-51.CSV|631945|1766901125": {
+    "sha256": "122241aa6979ba0a3ddc0d5f9383e8a00893e89a6d8a31b1d032800399bf2e24"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_14-39-15.CSV|513423|1766904032": {
+    "sha256": "405801c047f5805d2939d2600d09d46bd7c5a013ce73cc4a9d3e5a05986e8d32"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_14-41-43.CSV|1051779|1766904250": {
+    "sha256": "c7724d1264b98422cbe7e90a40e0bdb6390da7482ed1c1422ab1f53d488daefa"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_15-12-09.CSV|467420|1766905957": {
+    "sha256": "1d14c1a6b0f5750fccf96170bac4ef028259b309a4fc2b9b7a510aa72cc9ced6"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_16-27-52.CSV|344703|1766910511": {
+    "sha256": "087f7f03fc80c503bc5c48d2072367ac0629e4af0a76a6cf8095c52c3f721de5"
+  },
+  "C:\\Users\\benco\\Downloads\\2025-12-28_16-33-00.CSV|249228|1766910804": {
+    "sha256": "976952ff6fd9c7b662d6da3dc141af7fcfb793b4cf3e776b6c7a58b88380e9c4"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_06-45-44.CSV|36151|1771487537": {
+    "sha256": "3d163f84941703544b08a4baac9bb6f83799fc406368e942ea0583e93983f44b"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_08-35-11.CSV|8427039|1771487575": {
+    "sha256": "13b5b40762ce37f6910d7a288727952b53f1718f2f529cc42b011b04e766c5ef"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_08-40-31.CSV|3436281|1771487612": {
+    "sha256": "eecb3003f0dd9ce43929ff8e57c27acbb7ce034c1f9224140b0d2f886b0411b5"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_08-43-00.CSV|9178489|1771487649": {
+    "sha256": "707e6c3c55c5083c7ca14dbba91c55919e0c36e678ffcf9b9fd4f7d6098fe8eb"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_08-50-08.CSV|4258742|1771487688": {
+    "sha256": "cc91e93419823f93fdc8557c9b7bf0597e1429a415bcf80ce68800ec8c1ca3d9"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_08-55-18.CSV|3624662|1771487714": {
+    "sha256": "d0b339c606858166b128fe32635f64a9c567a27232be6e46f314d04c08950feb"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_08-57-46.CSV|2162523|1771487737": {
+    "sha256": "bbbf16d158d1367afb90de579026e4c1d7a951ead9ca5248e00598914566ad06"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_08-59-25.CSV|5886923|1771487773": {
+    "sha256": "db826ebe0850085167ea399b7f2be774c186f32bd356683a5e00bb3db7ebff9a"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_09-37-10.CSV|9306044|1771487828": {
+    "sha256": "c7c03ae0c31409db76540aa5caf0251a2707280a4d971d2e26cfee7013d22f24"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_09-43-31.CSV|8870602|1771487880": {
+    "sha256": "2ccdbe0eb9b3017285ecd7ebdeb6b48180202a786522c447ecfca46ca3998093"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_09-52-25.CSV|3379377|1771487914": {
+    "sha256": "5a8c43300d5226f43e4cd0b13e5ab209f5611adad4f4c3b9d4a9675b51c7b1cf"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_09-54-41.CSV|2861622|1771487939": {
+    "sha256": "435d93dbdc6f686207e05d3048f4877cb4359d207f34f31f93937e130b010816"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_10-00-40.CSV|2492181|1771487955": {
+    "sha256": "d51c4a61a2c91f987d7914967bac0383737de846ccd18c9d52a6dbc35f257480"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_10-02-36.CSV|6341827|1771487997": {
+    "sha256": "2ce47b06323f5d7d853f598822cdb19af243eceba1978f2a8958b5cf9fad99e5"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-04-49.CSV|2681519|1771488013": {
+    "sha256": "c7eadc7ff7fe1bf60e0309f874e4f3e1a50ab6a2a96ebe52b92b71b2122c479d"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-06-20.CSV|4318944|1771488033": {
+    "sha256": "9bfbc5e2662f8db8f9a7ca8851e04275f64fb8e42655705ecb9166f00326ea8a"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-09-34.CSV|11867857|1771488088": {
+    "sha256": "98d902a571216e3c18615c45ce207f1f267a9f530ec481e31ed92e2517032c6f"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-18-26.CSV|2219401|1771488105": {
+    "sha256": "ef0d82a0c7ac77925e23f611fee41a82bf98d5a40246607bf4adb292a46ef7bc"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-20-09.CSV|3509378|1771488124": {
+    "sha256": "01aeacc6bb628b8b40a69567430180d194cb81dfb7d159f76f99543c7087a495"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-23-44.CSV|4657441|1771488148": {
+    "sha256": "e6fcbf3b2a7cd6e1605194d189e383ecb154f3d98635403e9f684835ec99a403"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-26-56.CSV|1851065|1771488178": {
+    "sha256": "03ebb27f0b306fa7686416cfd9b021c5153008218d729e3530ad6337f21058dc"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_12-28-18.CSV|3953503|1771488203": {
+    "sha256": "32e7f92635d35583636ca134dfba6802ad5655575ac74381bc56fc16f1630baa"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_13-04-07.CSV|8693189|1771488246": {
+    "sha256": "e15a6aac41f56c269a6fe793a7a7e60181c4a1368bad6285e54e7f3b79ed3b67"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_13-09-09.CSV|6203241|1771488271": {
+    "sha256": "021d2c30dc0cf7195264320a410d17a195ee70dadfc0c08163d2121d185fc60e"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_13-14-06.CSV|5024591|1771488321": {
+    "sha256": "e9087e56d8daf9dd70f698fbf91094579257b894b9503241657cd79988ce0c9f"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_13-18-49.CSV|2354403|1771488332": {
+    "sha256": "14cdb456a298086331116623a07317ee7efe3de8dfefc406c6170a78cb27c1a2"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_13-20-52.CSV|4312055|1771488361": {
+    "sha256": "3a973cc857383941fdf2b46aeaf673f7b86ae93218639c22768add0e8baa81fb"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_13-24-27.CSV|5303764|1771488382": {
+    "sha256": "58b603b56e517bb7ec8eb7fd112d9ac37d3bc643ceb1a41ef98f27ef2062c503"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_13-27-43.CSV|2085996|1771488393": {
+    "sha256": "9c5fde78bb1e812be14b9d0b31341ce1c5d15aafcab19108fe5f27b4ad0b1b44"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_14-03-55.CSV|8942699|1771488432": {
+    "sha256": "eed0be3c7baf5b4b60e0650606e2c9259860d55301577dad97aa4d503604995b"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_14-10-52.CSV|9203671|1771488473": {
+    "sha256": "da4c202537d9cd3e5a1b91265e32d905d2c9d2d19b0193e05c1d5d03bfcb80da"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-19_14-20-35.CSV|26812496|1771488592": {
+    "sha256": "6987a6562f0bc5c697f7c4e07ef92f08142faeccc599830bc3e3be7d9e0443b4"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_08-34-26.CSV|2664018|1771575370": {
+    "sha256": "fc72f5be85fffae9afa0c98622d3797dc3b5dbd44d39ff73e4e021129dc51728"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_08-36-01 (1).CSV|4140230|1771575403": {
+    "sha256": "c637ca77e0fcb5b8b957ecc3cf279f91acacfa5f52e05953f939a55c0787869a"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_08-36-01.CSV|4140230|1771575386": {
+    "sha256": "c637ca77e0fcb5b8b957ecc3cf279f91acacfa5f52e05953f939a55c0787869a"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_08-39-06.CSV|13699394|1771575460": {
+    "sha256": "c4560273b8281be81cb5f62ba34de17bfe48b425d3a4e36b2cf1eda857a66655"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_08-48-33.CSV|8073790|1771575490": {
+    "sha256": "dbbc15e3bd8fbda3957afd46ba4edd4a37c967e720e2977b89033559308dc487"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_09-13-59.CSV|2635268|1771575511": {
+    "sha256": "bcfdf0e1acc28be7565a82094536e14d692578fc59a67df0232c40547fbbd371"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_10-08-36.CSV|2855140|1771575653": {
+    "sha256": "af38a90d65f5b3bb1a85542bcbf2c530bfe9c904811c4ebf141b987022674e67"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_10-10-16.CSV|4458247|1771575531": {
+    "sha256": "6207f93524b9d9b861a10c5ec192b3f1f5ef16521158745d9de1019d152dd9f5"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_10-15-52.CSV|8592222|1771575682": {
+    "sha256": "2761f5a7dcbd9600f8e2a8efd7ea7a3ad467411c44447a07a6258e726154b638"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_10-31-09.CSV|6987361|1771575726": {
+    "sha256": "61e5804eecf48244f90895c172e46a8b0e4dc9eb5adb562e927cb4ab2ba73ac7"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_11-43-37.CSV|4949063|1771575962": {
+    "sha256": "600e9447ce5bb92863bf7e88fa468f00cfd57b6aab9f0f694020e639cf30df39"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_11-54-25.CSV|10494820|1771576727": {
+    "sha256": "3189c5e11d3991806aaefba53ae93567b829a5874fe3f591956b7b41bbd7f5c7"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_12-00-14 (1).CSV|2299999|1771576646": {
+    "sha256": "5b157a0300f8ab73e0d07f2d8c11e2d5df486d68e60ba2a15256aa6d3a098168"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_12-00-14.CSV|2299999|1771576637": {
+    "sha256": "5b157a0300f8ab73e0d07f2d8c11e2d5df486d68e60ba2a15256aa6d3a098168"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_12-02-22.CSV|3047592|1771576921": {
+    "sha256": "abdbfe176c6b3bfddf9b7324129d649d2f58d8ee421d9b707a33d33576ff789b"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_12-04-40.CSV|4612993|1771577055": {
+    "sha256": "c6a23af947b6670a6924e81cb8a3878e9788b9deb763f68768ab72b0e39ca010"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_12-46-12.CSV|8162252|1771577087": {
+    "sha256": "668cc787a977dbc74f84d0d8846abe8b4164580cfb178fe276f92fded31bbfb4"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_12-58-25.CSV|14999740|1771577501": {
+    "sha256": "a35a04fe505e460d7970ff8ecc28c8e698caaca097e349cc4e101a2776a24543"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_13-06-37.CSV|2088272|1771577509": {
+    "sha256": "c2fc88436d597e3f9e727f6df7a685e21b5f2604687c86d50d17eaa3f9b5f84d"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_13-08-45.CSV|4490019|1771577526": {
+    "sha256": "4c48620335218caed256683fd34f4b484867732ed3c28b4f5736ba62539a2fae"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-02-20_13-23-37.CSV|5076005|1771577561": {
+    "sha256": "efcf67339a732caa670ffab011ff8123b2b6fff7e046f97f54917a5f32b3afda"
+  },
+  "C:\\Users\\benco\\Downloads\\2026-03-13_16-24-08.CSV|642843|1773354686": {
+    "sha256": "f324df4bf990afe56ba2e1f304419c1e88dfe1a62eb01a3a4d81f83f96e216bc"
+  },
+  "C:\\Users\\benco\\Downloads\\ANZ (1).csv|620|1674874877": {
+    "sha256": "6372ab04c556773d642fdff8701abb0f588ffed27e86b75b99bb8584b09f08ad"
+  },
+  "C:\\Users\\benco\\Downloads\\ANZ (2).csv|5075|1678076524": {
+    "sha256": "cb3b87c585090f2461f42860ddd0639f300189b202dc9b806f9652848948f980"
+  },
+  "C:\\Users\\benco\\Downloads\\ANZ (3).csv|7733|1720316192": {
+    "sha256": "4bdbbdfb4fdc7f32a75bbf8db3fc218c7a31d4a55e9d73a43fd3bd8a396fb378"
+  },
+  "C:\\Users\\benco\\Downloads\\ANZ (4).csv|17658|1720316255": {
+    "sha256": "24f946e7aa57334de95f0523928a47c3b388710d5eb086eb4f3ae37a3c21b11c"
+  },
+  "C:\\Users\\benco\\Downloads\\ANZ (5).csv|20897|1742939188": {
+    "sha256": "51783f20241e42b6902da736ea7c324839481c9809ba61e5a3309a5fd4db51bd"
+  },
+  "C:\\Users\\benco\\Downloads\\ANZ (6).csv|2719|1756014319": {
+    "sha256": "7b6e28361e0b73596b495ad9e73b71c8bda0a8af9813e13b0b0fac67e375949c"
+  },
+  "C:\\Users\\benco\\Downloads\\ANZ.csv|2754|1674874871": {
+    "sha256": "29b9957822823c64d76df5fee1871fd6216512fd2424eadabf0c7ba09640e3e4"
+  },
+  "C:\\Users\\benco\\Downloads\\Confirmation.csv|663|1674878325": {
+    "sha256": "4a325b26786a3a4118bf397717717f2b219ecc23ab8e83ff682180a688a6791c"
+  },
+  "C:\\Users\\benco\\Downloads\\L1970010.CSV|629558|1766823298": {
+    "sha256": "05d8e40938497650f39e5a9c2f4e1c246ef9d54274bbc1b09b469f02a07ee510"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0001.CSV|968104|1766823468": {
+    "sha256": "61e4466586f129a63efe2856509bcd45c9c237377a699a593abac84e311daa6d"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0003.CSV|505261|1766827078": {
+    "sha256": "c8feb0d8ac29f030fe78ca84574e4fdc907d45a3fe3cefd313a5ef51b8385c14"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0005.CSV|216074|1759478251": {
+    "sha256": "9d182727055cc696d1c837263f605509688726c9582060681d7afcfd5fd637ae"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0006.CSV|254469|1759478281": {
+    "sha256": "ac9ebbfa6f5e00326d3d344bfbd4938e186c1e654f90f0bc65c023c23d8ab292"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0008.CSV|330608|1759478299": {
+    "sha256": "d4e2cdaa28258361f4b5ae046f7abd47ab0b32336ab8aadafa0f8671fdac8230"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0009_Stage 1.CSV|14020471|1759478680": {
+    "sha256": "267c5efca99976cd54e4ad28ba68e0bb2966d19c6c0d5ec339bb4bcae89b9f0d"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0010_Stage 2.CSV|13113540|1759480241": {
+    "sha256": "50959c72ad6e9756098372b23c3f39820b48a742677018c991032e7be5c9e3dd"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0011_Stage 3.CSV|24623583|1759480773": {
+    "sha256": "7acd46aae5805b2fa6bd56ca72403180efbb003a2f1c15f80cb612de7aee6540"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0012_Stage 3.CSV|10019046|1759482034": {
+    "sha256": "047cad433f058e8a743628315dc48a2d7d49b22d8967f0d9e3c88b2cfefceb91"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0013_Stage 5.CSV|19982021|1759483979": {
+    "sha256": "5e1e6a3e4e083adc707acd7ab655f0c2309a1536e618ace333ae3f119d36cfd6"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0014_Stage 6.CSV|43549225|1759485854": {
+    "sha256": "4dfbf30ce1f822d5c4a950f12e9ffc000f8c0617eddaaa5dd53bafe28c00d449"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0015_Stage 7.CSV|7075794|1759486367": {
+    "sha256": "23061c27433ea5943d4635c7d21bd59462f47c2256c97362bf609e3afce59c5d"
+  },
+  "C:\\Users\\benco\\Downloads\\LOG0016.CSV|108933|1759743066": {
+    "sha256": "ed608e6cade775315d58c8c25f244e67702cfbb80f0510289dac6664097be822"
+  },
+  "C:\\Users\\benco\\Downloads\\Monthly-Diesel-prices-Metro-202201-202212.csv|484|1725370506": {
+    "sha256": "a146aa39f7e107c6c0290b325d414e006ef7cadc022d904e093b4197f139910f"
+  },
+  "C:\\Users\\benco\\Downloads\\Transactions (1).csv|2120|1654083058": {
+    "sha256": "989ba1010c0e8a7da0168f1a466cca4b562dc84c2d13a8789fb5326206627d1f"
+  },
+  "C:\\Users\\benco\\Downloads\\Transactions.csv|5349|1652168424": {
+    "sha256": "4a9693f37e98d79a9bcc01859fbd2c29dbad08efab950d94d5f94f684e99ae37"
+  },
+  "C:\\Users\\benco\\Downloads\\finances_2022-11-26_01_18_37.csv|50863|1669425522": {
+    "sha256": "b1db137bc9e158619c60d0260665313b1f22524eab7c90d15581eac0a129be5d"
+  },
+  "C:\\Users\\benco\\Downloads\\finances_2022-12-31_05_03_29.csv|80992|1672463017": {
+    "sha256": "3ceb67d7120a4c9d165fb21ce6a78603b441b9dd519f4c8da8f05436fc670210"
+  },
+  "C:\\Users\\benco\\Downloads\\finances_2024-09-27_10_55_06.csv|165383|1727434507": {
+    "sha256": "fcb1e763b7016b62ff8b6f70e14c6e861f8773f61fee172e3e5f49a58bd5f60b"
+  },
+  "C:\\Users\\benco\\Downloads\\memberships_2022-06-01_11_58_41.csv|5096|1654084731": {
+    "sha256": "2ecda24d03e78be419d1eea2968e8b25f2574cf64a623dc2bfdb36eb07cd6283"
+  },
+  "C:\\Users\\benco\\Downloads\\memberships_2022-11-26_01_34_42.csv|5688|1669426487": {
+    "sha256": "5307388702eaa461b4b8dcc6f49a00a06f6782a34c0336afce71575a7b9d8f26"
+  },
+  "C:\\Users\\benco\\Downloads\\transactions_2022-06-01_11_48_56.csv|22085|1654084146": {
+    "sha256": "4231be285343894e1de46bfd3d13d184d265f523b1ddb019ad9ad9bbd6a75185"
+  },
+  "C:\\Users\\benco\\Downloads\\transactions_2022-11-26_01_24_49.csv|96043|1669425895": {
+    "sha256": "e3fa0eec04d8c5e60ddbf0da38ce7f05af7ac341a9016609c8d2c26ce435b538"
+  },
+  "C:\\Users\\benco\\Downloads\\transactions_2024-09-26_13_08_15.csv|28667|1727614059": {
+    "sha256": "74ab3dfe077039211cb523bf3f77baef3b3ba2672edba44827e33c6d1df3245c"
+  },
+  "C:\\Users\\benco\\Downloads\\unused_functions.csv|1434|1756714672": {
+    "sha256": "6db54d3e4aad7ccf08f96586ff2a67c4b144fe13ae2760fa80b9368a59c4478f"
+  },
+  "C:\\Users\\benco\\Downloads\\wheel_mm.lut (1).csv|372|1771063106": {
+    "sha256": "a0583619f0659ec56a33a39c5bab7957861755af3e32183f3fccfa417844d0fe"
+  },
+  "C:\\Users\\benco\\Downloads\\wheel_mm.lut (2).csv|372|1771488941": {
+    "sha256": "a0583619f0659ec56a33a39c5bab7957861755af3e32183f3fccfa417844d0fe"
+  },
+  "C:\\Users\\benco\\Downloads\\wheel_mm.lut.csv|372|1764028256": {
+    "sha256": "a0583619f0659ec56a33a39c5bab7957861755af3e32183f3fccfa417844d0fe"
+  },
   "C:\\Users\\benco\\dev\\BODAQS\\logs\\2026-02-01_09-43-45.CSV|8649366|1769934529": {
     "sha256": "acd9796b2fab6eac9b53b2b0fe999bb60bc18906897a46759784191c0c59daee"
   },

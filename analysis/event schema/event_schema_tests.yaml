@@ -1,0 +1,133 @@
+specification: 0.1.1
+version: '5'
+naming:
+  suffixes:
+    disp: ' [mm]'
+    vel: ' _vel [mm/s]'
+    acc: ' _acc [mm/s^2]'
+defaults:
+  window:
+    pre_s: 2.0
+    post_s: 1.0
+    align: trigger
+  debounce:
+    gap_s: 0.2
+    prefer_key: t0_index
+    prefer_abs: false
+    prefer_max: false
+series:
+- id: mark
+  kind: trigger
+  source: system:mark
+  column: mark
+  edge: rising
+events:
+- id: Jump
+  label: Jump with airtime >= 0.2s
+  sensors:
+    - rear_shock
+    - front_shock
+  trigger:
+    id: topout_start
+    type: simple_threshold_crossing
+    signal: disp_norm
+    value: 0.05
+    dir: falling
+    hysteresis: 0
+    distance_s: 0.015
+    edge_ignore_s: 1
+    debounce:
+      gap_s: 0.3
+      prefer_key: t0_index
+      prefer_abs: false
+      prefer_max: false
+  secondary_triggers:
+  - id: max_compression
+    type: local_extrema
+    signal: disp
+    kind: max
+    prominence: 5
+    base_trigger: topout_start
+    search:
+      min_delay_s: 0.2
+      max_delay_s: 5.0
+    debounce:
+      gap_s: 0.3
+      prefer_key: t0_index
+      prefer_abs: false
+      prefer_max: false
+  - id: topout_end
+    type: simple_threshold_crossing
+    signal: disp_norm
+    value: 0.05
+    dir: rising
+    hysteresis: 0
+    distance_s: 0.015
+    edge_ignore_s: 1
+    base_trigger: topout_start
+    search:
+      min_delay_s: 0.2
+      max_delay_s: 5.0
+    debounce:
+      gap_s: 0.3
+      prefer_key: t0_index
+      prefer_abs: false
+      prefer_max: false
+  preconditions:
+  - within_s:
+    - 0.0
+    - 0.2
+    all_of:
+    - type: range
+      signal: disp_norm
+      max: 0.05
+  window:
+    pre_s: 0.2
+    post_s: 0.8
+    align: trigger
+  metrics:
+    - type: interval_stats
+      signal: vel
+      start_trigger: topout_end
+      end_trigger: max_compression
+      ops:
+      - mean
+      - max
+      min_delay_s: 0.02
+      return_debug: true
+    - type: interval_stats
+      signal: t0_index
+      start_trigger: topout_start
+      end_trigger: topout_end
+      ops:
+      - delta
+      return_debug: true
+  tags:
+    - kinematics
+    - compression
+  segment_defaults:
+    anchor: trigger_time_s
+    window:
+      pre_s: 0.2
+      post_s: 0.8
+    roles:
+      - role: disp
+        prefer: &id001
+          quantity: disp
+          unit: mm
+          op_chain: []
+      - role: vel
+        prefer: &id002
+          quantity: vel
+          unit: mm/s
+          op_chain: []
+      - role: acc
+        prefer: &id003
+          quantity: acc
+          unit: mm/s^2
+          op_chain: []
+      - role: disp_norm
+        prefer: &id004
+          quantity: disp_norm
+          unit: "1"
+          op_chain: [norm]

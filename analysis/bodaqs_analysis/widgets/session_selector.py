@@ -95,6 +95,18 @@ def _format_run_session_label(
     return " | ".join(parts)
 
 
+def _format_run_label(
+    *,
+    run_id: str,
+    run_description: str,
+    show_ids: bool,
+) -> str:
+    run_desc = str(run_description or "").strip()
+    if show_ids:
+        return f"run_id={run_id} | run_desc={run_desc or '(none)'}"
+    return run_desc or run_id
+
+
 def _format_aggregation_label(
     *,
     aggregation_key: str,
@@ -106,6 +118,27 @@ def _format_aggregation_label(
     if show_ids:
         return f"Aggregation | title={title_s or '(none)'} | key={aggregation_key} | n={n_members}"
     return f"Aggregation | {title_s or aggregation_key} ({n_members})"
+
+
+def _build_run_options(
+    *,
+    store: ArtifactStore,
+    show_ids: bool,
+) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = [("__All runs__", "__ALL__")]
+    for run_id in list_runs(store):
+        run_meta = _get_run_meta(store, run_id)
+        options.append(
+            (
+                _format_run_label(
+                    run_id=str(run_id),
+                    run_description=run_meta["description"],
+                    show_ids=show_ids,
+                ),
+                str(run_id),
+            )
+        )
+    return options
 
 
 def _build_session_index(
@@ -170,7 +203,7 @@ def make_session_aggregation_editor(
     except Exception:
         pass
 
-    run_options = [("__All runs__", "__ALL__")] + [(rid, rid) for rid in list_runs(store)]
+    run_options = _build_run_options(store=store, show_ids=bool(show_ids_default))
     run_dd = W.Dropdown(
         options=run_options,
         value=(
@@ -268,6 +301,12 @@ def make_session_aggregation_editor(
 
     def _refresh_sessions(*_) -> None:
         nonlocal _label_to_sel, _session_key_to_label, _all_key_to_ref_cache
+
+        prev_run = str(run_dd.value or "__ALL__")
+        run_options = _build_run_options(store=store, show_ids=bool(show_ids_cb.value))
+        valid_run_values = {str(v) for _, v in run_options}
+        run_dd.options = run_options
+        run_dd.value = prev_run if prev_run in valid_run_values else "__ALL__"
 
         _all_key_to_ref_cache = _all_key_to_ref(store)
 
@@ -508,7 +547,7 @@ def make_session_selector(
     except Exception:
         pass
 
-    run_options = [("__All runs__", "__ALL__")] + [(rid, rid) for rid in list_runs(store)]
+    run_options = _build_run_options(store=store, show_ids=bool(show_ids_default))
     run_dd = W.Dropdown(
         options=run_options,
         value=(
@@ -567,6 +606,12 @@ def make_session_selector(
 
     def _rebuild_entity_options(*_) -> None:
         nonlocal _entity_label_to_entity
+
+        prev_run = str(run_dd.value or "__ALL__")
+        run_options = _build_run_options(store=store, show_ids=bool(show_ids_cb.value))
+        valid_run_values = {str(v) for _, v in run_options}
+        run_dd.options = run_options
+        run_dd.value = prev_run if prev_run in valid_run_values else "__ALL__"
 
         prev_keys = {str(e.entity_key) for e in _selected_entities}
         try:
