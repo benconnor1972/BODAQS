@@ -11,6 +11,7 @@ from .signalspec import (
     KIND_SUFFIX_QC,
     DOMAIN_PREFIX,
     OP_PREFIX,
+    is_allowed_op_token,
 )
 
 class SignalNameError(ValueError):
@@ -87,12 +88,14 @@ def parse_signal_name(name: str, spec: SignalSpec = DEFAULT_SPEC) -> SignalNameP
         if OP_PREFIX in op_payload:
             raise SignalNameError(f"repeated '{OP_PREFIX}' is not allowed: {name!r}")
 
-        ops = [t for t in op_payload.split("_") if t]
+        ops_raw = [t for t in op_payload.split("_") if t]
+        ops = _coalesce_composite_ops(ops_raw, spec=spec)
+        ops = _normalize_butterworth_residual_ops(ops, spec=spec)
         if not ops:
             raise SignalNameError(f"no op tokens parsed from: {name!r}")
 
         if spec.strict_ops:
-            unknown = [t for t in ops if t not in spec.allowed_ops]
+            unknown = [t for t in ops if not is_allowed_op_token(t, spec=spec)]
             if unknown:
                 raise SignalNameError(f"unknown op token(s) {unknown} in: {name!r}")
 
@@ -179,9 +182,57 @@ def format_signal_name(parts: SignalNameParts, spec: SignalSpec = DEFAULT_SPEC) 
             # paranoia guard: ops tokens should never contain the prefix
             raise SignalNameError("ops tokens must not contain OP_PREFIX")
         if spec.strict_ops:
-            unknown = [t for t in parts.ops if t not in spec.allowed_ops]
+            unknown = [t for t in parts.ops if not is_allowed_op_token(t, spec=spec)]
             if unknown:
                 raise SignalNameError(f"unknown op token(s): {unknown}")
         ops_str = OP_PREFIX + "_".join(parts.ops)
 
     return f"{parts.base}{kind_suffix}{dom_suffix}{unit_str}{ops_str}"
+
+
+def _coalesce_composite_ops(tokens: Sequence[str], *, spec: SignalSpec) -> List[str]:
+    """
+    Coalesce multi-token op tags that embed underscores (e.g. Butterworth_3Hz_4Order)
+    while preserving legacy underscore-delimited op chains.
+    """
+    out: List[str] = []
+    i = 0
+    while i < len(tokens):
+        if i + 2 < len(tokens):
+            candidate = f"{tokens[i]}_{tokens[i + 1]}_{tokens[i + 2]}"
+            if is_allowed_op_token(candidate, spec=spec):
+                out.append(candidate)
+                i += 3
+                continue
+        out.append(tokens[i])
+        i += 1
+    return out
+
+
+def _normalize_butterworth_residual_ops(tokens: Sequence[str], *, spec: SignalSpec) -> List[str]:
+    """
+    Normalize residual naming suffix from Butterworth-derived columns:
+      ..._op_<prior_ops>_Butterworth_<x>Hz_<y>Order_resid
+    to an op chain where residual semantics are represented as 'diff' and the
+    Butterworth op token is omitted.
+    """
+    if not tokens:
+        return list(tokens)
+    if tokens[-1] != "resid":
+        return list(tokens)
+
+    head = list(tokens[:-1])
+    removed = False
+    kept: List[str] = []
+    for tok in head:
+        if tok.startswith("Butterworth_") and is_allowed_op_token(tok, spec=spec):
+            removed = True
+            continue
+        kept.append(tok)
+
+    if not removed:
+        return list(tokens)
+
+    if "diff" not in kept:
+        kept.append("diff")
+    return kept

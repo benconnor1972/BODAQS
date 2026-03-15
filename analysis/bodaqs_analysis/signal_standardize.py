@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
+from .signalspec import is_allowed_op_token
 from .signalname import parse_signal_name, format_signal_name, SignalNameError, SignalNameParts
 from .signal_registry import build_signals_registry
 from .model import validate_signals_registry_shape
@@ -73,7 +74,7 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
 
         # Ops must be allowed
         if spec.strict_ops:
-            bad_ops = [t for t in (op_chain or []) if t not in spec.allowed_ops]
+            bad_ops = [t for t in (op_chain or []) if not is_allowed_op_token(t, spec=spec)]
             if bad_ops:
                 errors.append(f"{col!r}: unknown op token(s) {bad_ops}")
 

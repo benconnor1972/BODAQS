@@ -139,6 +139,23 @@ def _savgol_numpy(y, window_points, poly_order, deriv, dt):
     return filt
 
 
+def _effective_savgol_params(n: int, window_points: int, poly_order: int):
+    """
+    Return (window, poly) adapted to length n, or None when SG is not viable.
+    """
+    if n < 3:
+        return None
+    w = int(window_points)
+    if w > n:
+        w = n if (n % 2 == 1) else (n - 1)
+    if w < 3:
+        return None
+    p = min(int(poly_order), w - 1)
+    if p < 1:
+        p = 1
+    return w, p
+
+
 def estimate_va(
     df: pd.DataFrame,
     cols: Optional[Sequence[str]] = None,
@@ -169,12 +186,23 @@ def estimate_va(
 
     for c in target_cols:
         y = data[c].to_numpy()
-        if _HAVE_SCIPY:
-            v = savgol_filter(y, window_points, poly_order, deriv=1, delta=dt, mode="interp")
-            a = savgol_filter(y, window_points, poly_order, deriv=2, delta=dt, mode="interp")
+        eff = _effective_savgol_params(len(y), window_points, poly_order)
+        if eff is None:
+            if len(y) >= 2:
+                # Robust fallback for very short signals.
+                v = np.gradient(y, dt)
+                a = np.gradient(v, dt)
+            else:
+                v = np.full_like(y, np.nan, dtype=float)
+                a = np.full_like(y, np.nan, dtype=float)
         else:
-            v = _savgol_numpy(y, window_points, poly_order, deriv=1, dt=dt)
-            a = _savgol_numpy(y, window_points, poly_order, deriv=2, dt=dt)
+            w_eff, p_eff = eff
+            if _HAVE_SCIPY:
+                v = savgol_filter(y, w_eff, p_eff, deriv=1, delta=dt, mode="interp")
+                a = savgol_filter(y, w_eff, p_eff, deriv=2, delta=dt, mode="interp")
+            else:
+                v = _savgol_numpy(y, w_eff, p_eff, deriv=1, dt=dt)
+                a = _savgol_numpy(y, w_eff, p_eff, deriv=2, dt=dt)
 
         vel_col = _name_vel(c)
         acc_col = _name_acc(c)

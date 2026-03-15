@@ -214,6 +214,8 @@ def compute_metrics_from_segments(
             cols = _metric_peak(ctx, spec, strict=strict)
         elif mtype == "interval_stats":
             cols = _metric_interval_stats(ctx, spec, strict=strict)
+        elif mtype == "trigger_delta":
+            cols = _metric_trigger_delta(ctx, spec, strict=strict)
         else:
             if strict:
                 raise ValueError(f"Unsupported metric type: {mtype}")
@@ -379,6 +381,45 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
     return out
 
 
+def _metric_trigger_delta(ctx: MetricsContext, spec: Mapping[str, Any], *, strict: bool) -> Dict[str, np.ndarray]:
+    start_tr = str(spec.get("start_trigger", "")).strip()
+    end_tr = str(spec.get("end_trigger", "")).strip()
+    if not start_tr or not end_tr:
+        raise ValueError("trigger_delta requires 'start_trigger' and 'end_trigger'")
+
+    quantity = str(spec.get("quantity", "")).strip().lower()
+    if quantity not in {"seconds", "samples"}:
+        raise ValueError("trigger_delta requires quantity='seconds' or 'samples'")
+
+    if "signal" in spec and strict:
+        raise ValueError("trigger_delta does not support 'signal'; use trigger ids only")
+
+    use_abs = bool(spec.get("abs", False))
+    return_debug = bool(spec.get("return_debug", False))
+
+    if quantity == "seconds":
+        start_vals = _resolve_trigger_time_s(ctx.events, trigger_id=start_tr, strict=strict)
+        end_vals = _resolve_trigger_time_s(ctx.events, trigger_id=end_tr, strict=strict)
+    else:
+        start_vals = _resolve_trigger_idx(ctx.events, trigger_id=start_tr, strict=strict).astype(np.float64, copy=False)
+        end_vals = _resolve_trigger_idx(ctx.events, trigger_id=end_tr, strict=strict).astype(np.float64, copy=False)
+
+    delta = end_vals - start_vals
+    if use_abs:
+        delta = np.abs(delta)
+
+    base_id = _metric_id(spec, fallback=f"trigger_delta_{start_tr}_{end_tr}_{quantity}")
+    out: Dict[str, np.ndarray] = {f"m_{base_id}": delta.astype(np.float64, copy=False)}
+
+    if return_debug:
+        out[f"d_{base_id}_start_time_s"] = _resolve_trigger_time_s(ctx.events, trigger_id=start_tr, strict=False)
+        out[f"d_{base_id}_end_time_s"] = _resolve_trigger_time_s(ctx.events, trigger_id=end_tr, strict=False)
+        out[f"d_{base_id}_start_idx"] = _resolve_trigger_idx(ctx.events, trigger_id=start_tr, strict=False).astype(np.float64, copy=False)
+        out[f"d_{base_id}_end_idx"] = _resolve_trigger_idx(ctx.events, trigger_id=end_tr, strict=False).astype(np.float64, copy=False)
+
+    return out
+
+
 # -------------------------
 # Helpers
 # -------------------------
@@ -511,6 +552,35 @@ def _resolve_trigger_time_s(events: pd.DataFrame, trigger_id: str, strict: bool)
         if bad:
             raise ValueError(f"Missing trigger '{trigger_id}' time_s for {bad}/{n} events ({col})")
     return v
+
+
+def _resolve_trigger_idx(events: pd.DataFrame, trigger_id: str, strict: bool) -> np.ndarray:
+    """Resolve per-event trigger index in trigger-grid sample coordinates."""
+    n = len(events)
+
+    if trigger_id in ("trigger", "trigger_idx", "t0_index"):
+        col = "trigger_idx" if "trigger_idx" in events.columns else "t0_index"
+        if col not in events.columns:
+            raise ValueError("events table missing canonical trigger index column ('trigger_idx' or 't0_index')")
+        v = pd.to_numeric(events[col], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+        if strict:
+            bad = int(np.sum(~np.isfinite(v)))
+            if bad:
+                raise ValueError(f"Missing canonical trigger index for {bad}/{n} events")
+        return v.astype(np.int64, copy=False) if np.isfinite(v).all() else v
+
+    col = f"{trigger_id}_idx"
+    if col not in events.columns:
+        if strict:
+            raise ValueError(f"Missing required trigger column: {col}")
+        return np.full(n, np.nan, dtype=np.float64)
+
+    v = pd.to_numeric(events[col], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    if strict:
+        bad = int(np.sum(~np.isfinite(v)))
+        if bad:
+            raise ValueError(f"Missing trigger '{trigger_id}' idx for {bad}/{n} events ({col})")
+    return v.astype(np.int64, copy=False) if np.isfinite(v).all() else v
 
 
 def _moving_average_2d(y: np.ndarray, win: int) -> np.ndarray:

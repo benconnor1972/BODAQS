@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
+import ast
+import json
 
 import ipywidgets as W
 
 from ..va import name_vel
+from ..preprocess_filters import normalize_butterworth_smoothing_configs
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -38,6 +41,8 @@ class PreprocessDefaults:
     zero_min_samples: int = 10
 
     clip_0_1: bool = False
+    butterworth_smoothing: Optional[List[Dict[str, Any]]] = None
+    butterworth_generate_residuals: bool = False
 
     active_enabled: bool = True
     active_disp_thresh: float = 20.0
@@ -127,6 +132,16 @@ class PreprocessControls:
 
         # Clipping & prompting
         self.w_clip_0_1 = W.Checkbox(value=self.defaults.clip_0_1, description="Clip to [0, 1]")
+        self.w_bw_smoothing = W.Textarea(
+            value=json.dumps(self.defaults.butterworth_smoothing or [], indent=2),
+            description="Configs",
+            placeholder='e.g. [{"cutoff_hz": 3.0, "order": 4}]',
+            layout=W.Layout(width="100%", height="120px"),
+        )
+        self.w_bw_generate_residuals = W.Checkbox(
+            value=bool(self.defaults.butterworth_generate_residuals),
+            description="Generate residual series",
+        )
         self.w_prompt_desc = W.Checkbox(value=self.defaults.prompt_for_descriptions, description="Prompt for descriptions")
 
         # Actions
@@ -176,6 +191,9 @@ class PreprocessControls:
 
         sec_misc = W.VBox([
             self.w_clip_0_1,
+            W.HTML("<b>Offline Butterworth smoothing</b> (JSON/Python list of dicts)"),
+            self.w_bw_smoothing,
+            self.w_bw_generate_residuals,
             self.w_prompt_desc,
         ])
 
@@ -189,7 +207,7 @@ class PreprocessControls:
         acc.set_title(1, "Displacements & Normalisation")
         acc.set_title(2, "Zeroing")
         acc.set_title(3, "Activity Mask")
-        acc.set_title(4, "Clipping & Notes")
+        acc.set_title(4, "Clipping, Smoothing & Notes")
         acc.set_title(5, "Actions")
         acc.selected_index = 0
         return acc
@@ -314,6 +332,12 @@ class PreprocessControls:
                 if not (w.value or "").strip():
                     warnings.append(f"{label} is blank (this will likely error later).")
 
+        # Butterworth smoothing config sanity
+        try:
+            _ = self._parse_butterworth_smoothing_configs()
+        except Exception as e:
+            errors.append(f"Butterworth smoothing config is invalid: {e}")
+
         if print_to_output:
             with self._out:
                 self._out.clear_output()
@@ -348,6 +372,8 @@ class PreprocessControls:
             zero_min_samples=int(self.w_zero_min_samples.value),
 
             clip_0_1=bool(self.w_clip_0_1.value),
+            butterworth_smoothing=self._parse_butterworth_smoothing_configs(),
+            butterworth_generate_residuals=bool(self.w_bw_generate_residuals.value),
 
             # Activity mask: only displacement; velocity derived in pipeline (or can be passed explicitly)
             active_signal_disp_col=(str(self.w_active_disp_col.value) if self.w_active_enabled.value else None),
@@ -364,6 +390,30 @@ class PreprocessControls:
         )
 
         return cfg
+
+    def _parse_butterworth_smoothing_configs(self) -> List[Dict[str, Any]]:
+        text = (self.w_bw_smoothing.value or "").strip()
+        if not text:
+            return []
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                raw = ast.literal_eval(text)
+            except Exception as e:
+                raise ValueError(
+                    "Expected JSON (or Python-literal) list of dicts like "
+                    "[{\"cutoff_hz\": 3.0, \"order\": 4}]"
+                ) from e
+
+        if not isinstance(raw, list):
+            raise ValueError("Expected a list of dict configs")
+
+        normalized = normalize_butterworth_smoothing_configs(raw)
+        return [
+            {"cutoff_hz": float(cfg.cutoff_hz), "order": int(cfg.order)}
+            for cfg in normalized
+        ]
 
     def _print_config(self) -> None:
         errs, warns = self.validate(print_to_output=True)

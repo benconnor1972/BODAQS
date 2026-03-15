@@ -12,6 +12,8 @@ from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
 from bodaqs_analysis.widgets.contracts import (
     EntitySelectionSnapshot,
     MutableKeyToRef,
+    PersistedEntityScopeLoadResult,
+    PersistedEntityScopeSelection,
     RebuildFn,
     RefreshHandle,
     RUN_ID_COL,
@@ -21,6 +23,10 @@ from bodaqs_analysis.widgets.contracts import (
     SessionSelection,
     SessionSelectorHandle,
     ScopeEntity,
+)
+from bodaqs_analysis.widgets.entity_scope_store import (
+    load_entity_scope_selection,
+    save_entity_scope_selection,
 )
 from bodaqs_analysis.widgets.entity_scope import (
     expand_selected_entities,
@@ -95,6 +101,18 @@ def _format_run_session_label(
     return " | ".join(parts)
 
 
+def _format_run_label(
+    *,
+    run_id: str,
+    run_description: str,
+    show_ids: bool,
+) -> str:
+    run_desc = str(run_description or "").strip()
+    if show_ids:
+        return f"run_id={run_id} | run_desc={run_desc or '(none)'}"
+    return run_desc or run_id
+
+
 def _format_aggregation_label(
     *,
     aggregation_key: str,
@@ -106,6 +124,27 @@ def _format_aggregation_label(
     if show_ids:
         return f"Aggregation | title={title_s or '(none)'} | key={aggregation_key} | n={n_members}"
     return f"Aggregation | {title_s or aggregation_key} ({n_members})"
+
+
+def _build_run_options(
+    *,
+    store: ArtifactStore,
+    show_ids: bool,
+) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = [("__All runs__", "__ALL__")]
+    for run_id in list_runs(store):
+        run_meta = _get_run_meta(store, run_id)
+        options.append(
+            (
+                _format_run_label(
+                    run_id=str(run_id),
+                    run_description=run_meta["description"],
+                    show_ids=show_ids,
+                ),
+                str(run_id),
+            )
+        )
+    return options
 
 
 def _build_session_index(
@@ -170,7 +209,7 @@ def make_session_aggregation_editor(
     except Exception:
         pass
 
-    run_options = [("__All runs__", "__ALL__")] + [(rid, rid) for rid in list_runs(store)]
+    run_options = _build_run_options(store=store, show_ids=bool(show_ids_default))
     run_dd = W.Dropdown(
         options=run_options,
         value=(
@@ -268,6 +307,12 @@ def make_session_aggregation_editor(
 
     def _refresh_sessions(*_) -> None:
         nonlocal _label_to_sel, _session_key_to_label, _all_key_to_ref_cache
+
+        prev_run = str(run_dd.value or "__ALL__")
+        run_options = _build_run_options(store=store, show_ids=bool(show_ids_cb.value))
+        valid_run_values = {str(v) for _, v in run_options}
+        run_dd.options = run_options
+        run_dd.value = prev_run if prev_run in valid_run_values else "__ALL__"
 
         _all_key_to_ref_cache = _all_key_to_ref(store)
 
@@ -494,6 +539,7 @@ def make_session_selector(
     select_first_by_default: bool = True,
     rows: int = 12,
     show_ids_default: bool = False,
+    autosave_default: bool = True,
 ) -> SessionSelectorHandle:
     """
     Selection-only entity selector.
@@ -508,7 +554,7 @@ def make_session_selector(
     except Exception:
         pass
 
-    run_options = [("__All runs__", "__ALL__")] + [(rid, rid) for rid in list_runs(store)]
+    run_options = _build_run_options(store=store, show_ids=bool(show_ids_default))
     run_dd = W.Dropdown(
         options=run_options,
         value=(
@@ -526,7 +572,22 @@ def make_session_selector(
         indent=False,
         layout=W.Layout(width="260px"),
     )
+    autosave_cb = W.Checkbox(
+        value=bool(autosave_default),
+        description="Autosave selection",
+        indent=False,
+        layout=W.Layout(width="180px"),
+    )
     b_refresh = W.Button(description="Refresh", tooltip="Reload sessions and aggregations")
+    b_save_selection = W.Button(
+        description="Save selection",
+        tooltip="Persist current entity selection for reuse in other notebooks",
+    )
+    b_load_selection = W.Button(
+        description="Load saved selection",
+        tooltip="Restore the last persisted entity selection",
+    )
+    refresh_signal = W.IntText(value=0, layout=W.Layout(display="none"))
 
     entities_sel = W.SelectMultiple(
         options=[],
@@ -567,6 +628,12 @@ def make_session_selector(
 
     def _rebuild_entity_options(*_) -> None:
         nonlocal _entity_label_to_entity
+
+        prev_run = str(run_dd.value or "__ALL__")
+        run_options = _build_run_options(store=store, show_ids=bool(show_ids_cb.value))
+        valid_run_values = {str(v) for _, v in run_options}
+        run_dd.options = run_options
+        run_dd.value = prev_run if prev_run in valid_run_values else "__ALL__"
 
         prev_keys = {str(e.entity_key) for e in _selected_entities}
         try:
@@ -681,7 +748,76 @@ def make_session_selector(
                     f"Aggregation {entity_key}: removed overlapping members due to explicit session selections: {', '.join(reduced)}"
                 )
 
+        if bool(autosave_cb.value) and _selected_entities:
+            try:
+                _persist_selection(silent=True)
+            except Exception as exc:
+                warnings.append(f"Autosave failed: {exc}")
+
         _set_status(warnings)
+
+    def _selection_labels_from_entity_keys(entity_keys: Sequence[str]) -> tuple[list[str], list[str]]:
+        labels: list[str] = []
+        missing: list[str] = []
+        for entity_key in entity_keys:
+            match = next(
+                (
+                    label
+                    for label, entity in _entity_label_to_entity.items()
+                    if str(entity.entity_key) == str(entity_key)
+                ),
+                None,
+            )
+            if match is None:
+                missing.append(str(entity_key))
+                continue
+            labels.append(match)
+        return labels, missing
+
+    def _persist_selection(*, silent: bool) -> PersistedEntityScopeSelection:
+        selection = save_entity_scope_selection(
+            sel={
+                "get_selected_entities": get_selected_entities,
+            },
+            artifacts_root=store.root,
+        )
+        if not silent:
+            _set_status(
+                [
+                    f"Saved selection at {selection.saved_at_utc}.",
+                    f"Selected entities: {', '.join(selection.selected_entity_keys)}",
+                ]
+            )
+        return selection
+
+    def save_selection() -> PersistedEntityScopeSelection:
+        return _persist_selection(silent=False)
+
+    def load_selection() -> PersistedEntityScopeLoadResult:
+        _refresh_scope_sources()
+        _rebuild_entity_options()
+        result = load_entity_scope_selection(artifacts_dir=store.root, strict=False)
+        labels, missing = _selection_labels_from_entity_keys(result.source.selected_entity_keys)
+        if not labels:
+            raise ValueError("Saved selection contains no entities available in the current selector")
+        prev_labels = tuple(map(str, entities_sel.value or ()))
+        entities_sel.value = tuple(labels)
+
+        status_lines = [
+            f"Loaded saved selection from {result.source.saved_at_utc}.",
+            f"Selected entities: {', '.join(result.source.selected_entity_keys)}",
+        ]
+        status_lines.extend(result.warnings)
+        if missing:
+            status_lines.append(
+                "Selector could not map persisted entities into the current option list: "
+                + ", ".join(missing[:6])
+            )
+        if status_lines:
+            _set_status(status_lines)
+        if tuple(labels) == prev_labels:
+            refresh_signal.value = int(refresh_signal.value or 0) + 1
+        return result
 
     def _refresh_all(*_):
         _refresh_scope_sources()
@@ -691,15 +827,38 @@ def make_session_selector(
     run_dd.observe(_refresh_all, names="value")
     show_ids_cb.observe(_refresh_all, names="value")
     entities_sel.observe(_refresh_scope_state, names="value")
+    def _on_autosave_change(change):
+        if bool(change.get("new")) and _selected_entities:
+            try:
+                _persist_selection(silent=True)
+            except Exception as exc:
+                _set_status([f"Autosave failed: {exc}"])
+
+    autosave_cb.observe(_on_autosave_change, names="value")
+    def _on_save_selection(_):
+        try:
+            save_selection()
+        except Exception as exc:
+            _set_status([f"Save selection failed: {exc}"])
+
+    def _on_load_selection(_):
+        try:
+            load_selection()
+        except Exception as exc:
+            _set_status([f"Load selection failed: {exc}"])
+
     b_refresh.on_click(_refresh_all)
+    b_save_selection.on_click(_on_save_selection)
+    b_load_selection.on_click(_on_load_selection)
 
     _refresh_all()
 
     ui = W.VBox(
         [
-            W.HBox([run_dd, show_ids_cb, b_refresh]),
+            W.HBox([run_dd, show_ids_cb, autosave_cb, b_refresh, b_save_selection, b_load_selection]),
             entities_sel,
             out,
+            refresh_signal,
         ]
     )
 
@@ -733,12 +892,16 @@ def make_session_selector(
         "run_dd": run_dd,
         "entities_sel": entities_sel,
         "show_ids_cb": show_ids_cb,
+        "autosave_cb": autosave_cb,
+        "refresh_signal": refresh_signal,
         "out": out,
         "get_selected": get_selected,
         "get_selected_entities": get_selected_entities,
         "get_entity_snapshot": get_entity_snapshot,
         "get_key_to_ref": get_key_to_ref,
         "get_events_index_df": get_events_index_df,
+        "save_selection": save_selection,
+        "load_selection": load_selection,
     }
 
 
@@ -753,8 +916,11 @@ def attach_refresh(
     sessions_sel = sel.get("sessions_sel")
     entities_sel = sel.get("entities_sel")
     show_ids_cb = sel.get("show_ids_cb")
+    refresh_signal = sel.get("refresh_signal")
 
-    observed_widgets = [w for w in (run_dd, sessions_sel, entities_sel, show_ids_cb) if w is not None]
+    observed_widgets = [
+        w for w in (run_dd, sessions_sel, entities_sel, show_ids_cb, refresh_signal) if w is not None
+    ]
     if not observed_widgets:
         raise ValueError("selector handle must include at least one observable selector widget")
 

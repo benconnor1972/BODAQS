@@ -176,8 +176,9 @@ No `*_zeroed` columns are created.
 ```python
 "filtered": {
     "applied": bool,
-    "method": str | None,
-    "params": dict | None,
+    "method": str | None,              # e.g. "butterworth_zero_phase_sosfiltfilt"
+    "params": dict | None,             # includes smoothing configs + generated/skip counts
+                                      # and optional residual generation metadata
 }
 ```
 
@@ -244,8 +245,14 @@ Requirements:
 - `meta["streams"]["primary"]` must exist and describe the timebase of `session["df"]`
 - Contains canonical base channel columns listed in `meta["channels"]`
 - Derived columns are added only when computed:
+  - Butterworth smoothing variants (displacement only): `{channel}_op_Butterworth_<x>Hz_<y>Order`
+  - Butterworth residual variants (optional): `{channel}_op_Butterworth_<x>Hz_<y>Order_resid`
   - Velocity: `{channel}_vel`
   - Acceleration: `{channel}_acc`
+
+Residual semantics:
+- Residual values are `source_disp - smoothed_disp`.
+- Registry `op_chain` for residual columns includes `diff` and excludes the Butterworth token.
 
 Units for derived columns are implied from base channel units.
 

@@ -113,10 +113,12 @@ all_of: list[TestDef]
 
 ### 2.6 MetricDef
 
-type: peak | interval_stats  
+type: peak | interval_stats | trigger_delta  
 signal: role  
 
 Additional fields depend on metric type.
+
+For `trigger_delta`, `signal` is not used and must be omitted.
 
 ---
 
@@ -1578,6 +1580,8 @@ tags: list[string] | null
 
 Additional fields depend on metric type.
 
+For `trigger_delta`, `signal` is not used and must be omitted.
+
 If id is omitted, a stable id is auto-generated.
 
 ---
@@ -1771,6 +1775,66 @@ Ensures uniqueness and traceability.
 • explicit interval semantics  
 • strict trigger-time usage  
 • reproducible metrics  
+
+---
+
+## 10.10 trigger_delta Metric
+
+`trigger_delta` computes a scalar difference between two trigger anchors for the same event instance.
+
+Definition:
+
+type: trigger_delta  
+start_trigger: string  
+end_trigger: string  
+quantity: seconds | samples  
+abs: bool (default: false)  
+return_debug: bool (default: false)  
+
+### 10.10.1 Trigger Resolution
+
+Trigger anchors are resolved from event trigger metadata, not from signal roles.
+
+Supported sources:
+
+• primary trigger time: `trigger_time_s`  
+• primary trigger index: `trigger_idx` (or legacy `t0_index` where present)  
+• named trigger time: `{trigger_id}_time_s`  
+• named trigger index: `{trigger_id}_idx`  
+
+No registry lookup is performed.
+
+### 10.10.2 Computation
+
+If `quantity = seconds`:
+
+delta = end_time_s - start_time_s
+
+If `quantity = samples`:
+
+delta = end_idx - start_idx
+
+If `abs = true`:
+
+delta = |delta|
+
+### 10.10.3 Output
+
+The output is a single scalar metric column:
+
+`m_<metric_id>`
+
+If `return_debug = true`, the implementation may also emit:
+
+• `d_<metric_id>_start_time_s`  
+• `d_<metric_id>_end_time_s`  
+• `d_<metric_id>_start_idx`  
+• `d_<metric_id>_end_idx`  
+
+### 10.10.4 Purpose
+
+This metric exists for trigger/time/index-derived quantities and should be preferred over treating trigger
+metadata such as `t0_index` as a signal role.
 
 ---
 

@@ -64,7 +64,11 @@ Each `SignalInfo` MUST contain the following keys:
 
 - `op_chain`: `list[str]`
   - List of analysis-side operation tokens applied to produce this column (possibly empty).
-  - Examples: `["zeroed"]`, `["zeroed", "norm"]`.
+  - Examples: `["zeroed"]`, `["zeroed", "norm"]`, `["zeroed", "Butterworth_3Hz_4Order"]`, `["zeroed", "diff"]`.
+
+Residual naming note:
+- Columns ending with `_op_Butterworth_<x>Hz_<y>Order_resid` are interpreted as residual outputs.
+- Their registry `op_chain` should include `diff` and should not include `Butterworth_<x>Hz_<y>Order`.
 
 ### Optional but recommended keys
 

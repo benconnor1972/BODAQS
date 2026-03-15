@@ -207,6 +207,8 @@ session = preprocess_session(
     *,
     normalize_ranges: Dict[str, float],
     sample_rate_hz: Optional[float] = None,
+    butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
+    butterworth_generate_residuals: bool = False,
     ...
 )
 ```
@@ -218,6 +220,10 @@ session = preprocess_session(
 - `session["df"]` remains a DataFrame
 - `time_s` is preserved
 - QC and transform provenance are recorded under `session["qc"]`
+- When `butterworth_smoothing` is provided, additional append-only displacement variants are created
+  using zero-phase SOS Butterworth filtering.
+- When `butterworth_generate_residuals=True`, each generated Butterworth series also emits an
+  append-only residual series named `<butterworth_series>_resid`.
 
 ---
 
@@ -268,6 +274,8 @@ results = run_macro(
     *,
     normalize_ranges: Dict[str, float],
     sample_rate_hz: Optional[float] = None,
+    butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
+    butterworth_generate_residuals: bool = False,
     timezone: Optional[str] = None,
 )
 ```

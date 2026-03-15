@@ -279,7 +279,13 @@ def _validate_event_series_with_map(ev: dict, df: pd.DataFrame, inputs_map: dict
 
 
     cond_refs   = _collect_refs(ev.get("preconditions")) | _collect_refs(ev.get("postconditions"))
-    metric_refs = {m.get("signal") for m in (ev.get("metrics") or []) if m.get("signal")}
+    metric_refs = {
+        m.get("signal")
+        for m in (ev.get("metrics") or [])
+        if isinstance(m, dict)
+        and str(m.get("type", "")).strip() != "trigger_delta"
+        and m.get("signal")
+    }
     needed      = {x for x in (cond_refs | metric_refs) if x}
 
     # ---- Validate each referenced signal via the resolved mapping ----
@@ -297,6 +303,21 @@ def _validate_event_series_with_map(ev: dict, df: pd.DataFrame, inputs_map: dict
                 f"Event '{ev_id}': signal '{name}' maps to column '{col}', "
                 f"which is not in event_analysis_df."
             )
+
+    for m in (ev.get("metrics") or []):
+        if not isinstance(m, dict):
+            continue
+        if str(m.get("type", "")).strip() != "trigger_delta":
+            continue
+        if m.get("signal"):
+            raise ValueError(f"Event '{ev_id}': trigger_delta must not define 'signal'.")
+        quantity = str(m.get("quantity", "")).strip().lower()
+        if quantity not in {"seconds", "samples"}:
+            raise ValueError(
+                f"Event '{ev_id}': trigger_delta requires quantity 'seconds' or 'samples', got {quantity!r}."
+            )
+        if not str(m.get("start_trigger", "")).strip() or not str(m.get("end_trigger", "")).strip():
+            raise ValueError(f"Event '{ev_id}': trigger_delta requires non-empty start_trigger and end_trigger.")
 
 def _hash_event_params(ev_resolved: dict, *, schema_version: str = "") -> str:
     """
@@ -909,6 +930,46 @@ def _compute_metrics(
             mask = y > thr
             val = float(np.sum(mask) * dx)
             out[f"m_time_above_{signal}_{thr:g}"] = val
+
+        elif mtype == "trigger_delta":
+            if trig_results is None:
+                continue
+
+            start_id = str(m.get("start_trigger", "")).strip()
+            end_id = str(m.get("end_trigger", "")).strip()
+            quantity = str(m.get("quantity", "")).strip().lower()
+            if not start_id or not end_id or quantity not in {"seconds", "samples"}:
+                continue
+
+            start_key = primary_trigger_id if start_id in {"primary", "trigger"} else start_id
+            end_key = primary_trigger_id if end_id in {"primary", "trigger"} else end_id
+            s_c = trig_results.get(start_key)
+            e_c = trig_results.get(end_key)
+            if not s_c or not e_c:
+                continue
+
+            if quantity == "seconds":
+                s_v = float(s_c.get("t0_time", np.nan))
+                e_v = float(e_c.get("t0_time", np.nan))
+            else:
+                s_v = float(s_c.get("t0_index", np.nan))
+                e_v = float(e_c.get("t0_index", np.nan))
+
+            if not (np.isfinite(s_v) and np.isfinite(e_v)):
+                continue
+
+            delta = e_v - s_v
+            if m.get("abs", False):
+                delta = abs(delta)
+
+            mid = str(m.get("id", "")).strip() or f"trigger_delta_{start_id}_{end_id}_{quantity}"
+            out[f"m_{mid}"] = float(delta)
+
+            if m.get("return_debug", False):
+                out[f"d_{mid}_start_time_s"] = float(s_c.get("t0_time", np.nan))
+                out[f"d_{mid}_end_time_s"] = float(e_c.get("t0_time", np.nan))
+                out[f"d_{mid}_start_idx"] = float(s_c.get("t0_index", np.nan))
+                out[f"d_{mid}_end_idx"] = float(e_c.get("t0_index", np.nan))
 
         # ---------- generic interval-based metrics ----------
         elif mtype == "interval_stats":
