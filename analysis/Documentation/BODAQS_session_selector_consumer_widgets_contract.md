@@ -181,7 +181,7 @@ This split allows aggregation management to run in a separate cell and to be ski
 Aggregation editor responsibilities:
 - discovering available runs/sessions under `artifacts/`
 - allowing the user to choose a **run scope**
-- managing local persisted **session aggregations** (CRUD + validation)
+- managing canonical persisted **session aggregations** (CRUD + validation)
 - applying the same display-mode toggle used by selector:
   - default: description-first labels with ID fallback
   - optional: explicit IDs + descriptions (`Show run and session IDs`)
@@ -203,7 +203,7 @@ Expected return keys:
 
 Selection widget responsibilities:
 - discovering available runs/sessions under `artifacts/`
-- loading persisted local **session aggregations**
+- loading persisted canonical **session aggregations**
 - allowing multi-select of **entities** (physical sessions + aggregations)
 - providing *live* getters that reflect the current UI state
 
@@ -229,6 +229,7 @@ Selection widget responsibilities:
 | `entities_sel` | widget | entity multi-select control (session + aggregation) |
 | `show_ids_cb` | widget | label-mode toggle |
 | `autosave_cb` | widget | autosave toggle (default checked) |
+| `aggregation_store` | service object | aggregation backend used by selector/load-restore flows |
 | `refresh_signal` | widget | hidden refresh token observed by `attach_refresh(...)` |
 | `out` | widget | debug output area |
 
@@ -256,14 +257,15 @@ When both explicit session entities and aggregation entities are selected:
 - selector should surface a warning message in `out`
 
 5) **Aggregation persistence**  
-Aggregations are persisted locally per user in:
-- `~/.bodaqs/session_aggregations_v1.json`
+Aggregations are persisted canonically in:
+- `artifacts/library/aggregations_v1.json`
 
 Store rules:
 - schema/versioned JSON with atomic writes
 - unique `aggregation_key`
 - non-empty `member_session_keys`
 - policies constrained to `union|intersection|strict`
+- if the canonical store is empty and a legacy local store exists, implementations may bootstrap/import local aggregations once
 
 6) **Persisted scope selection**  
 Current selector scope may be persisted locally per user in:
@@ -275,6 +277,7 @@ Rules:
 - restore is validated against the current artifacts root and current aggregation definitions
 - missing entities are dropped with warnings; a fully unresolved restore is an error
 - live selector may autosave on each valid selection change; default UI state is autosave enabled
+- selector/editor implementations may inject a different aggregation backend; canonical library aggregation storage is the default
 
 ---
 

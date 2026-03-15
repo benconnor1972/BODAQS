@@ -14,6 +14,7 @@ import ipywidgets as W
 import pandas as pd
 
 from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
+from bodaqs_analysis.library.aggregations import AggregationProvider, make_default_aggregation_store
 from bodaqs_analysis.widgets.contracts import (
     EntitySelectionSnapshot,
     PersistedEntityScopeLoadResult,
@@ -26,7 +27,6 @@ from bodaqs_analysis.widgets.contracts import (
     SessionSelectorHandle,
 )
 from bodaqs_analysis.widgets.entity_scope import build_entity_selection_snapshot
-from bodaqs_analysis.widgets.session_aggregations import SessionAggregationStore
 
 STORE_SCHEMA = "bodaqs.entity_scope_selection.store"
 STORE_VERSION = 1
@@ -155,6 +155,7 @@ def _format_aggregation_label(
 def _build_entity_index(
     *,
     store: ArtifactStore,
+    aggregation_store: AggregationProvider | None = None,
     show_ids: bool = False,
 ) -> dict[str, ScopeEntity]:
     key_to_ref = _all_key_to_ref(store)
@@ -178,7 +179,7 @@ def _build_entity_index(
             member_session_keys=(str(session_key),),
         )
 
-    agg_store = SessionAggregationStore()
+    agg_store = aggregation_store or make_default_aggregation_store(artifact_store=store)
     try:
         agg_store.load()
     except Exception:
@@ -371,6 +372,7 @@ def load_entity_scope_selection(
     *,
     artifacts_dir: str | Path = "artifacts",
     store_path: Optional[Path] = None,
+    aggregation_store: AggregationProvider | None = None,
     strict: bool = False,
 ) -> PersistedEntityScopeLoadResult:
     artifact_store = ArtifactStore(Path(artifacts_dir))
@@ -392,7 +394,11 @@ def load_entity_scope_selection(
             raise EntityScopeStoreError(message)
         warnings.append(message)
 
-    entity_index = _build_entity_index(store=artifact_store, show_ids=False)
+    entity_index = _build_entity_index(
+        store=artifact_store,
+        aggregation_store=aggregation_store,
+        show_ids=False,
+    )
     selected_entities: list[ScopeEntity] = []
     missing: list[str] = []
 
@@ -429,6 +435,7 @@ def load_entity_scope_selection(
 def make_persisted_entity_scope_handle(
     *,
     artifacts_dir: str | Path = "artifacts",
+    aggregation_store: AggregationProvider | None = None,
     strict: bool = False,
     auto_display: bool = False,
 ) -> SessionSelectorHandle:
@@ -457,6 +464,7 @@ def make_persisted_entity_scope_handle(
         nonlocal _snapshot, _warnings, _source
         result = load_entity_scope_selection(
             artifacts_dir=artifacts_dir,
+            aggregation_store=aggregation_store,
             strict=strict,
         )
         _snapshot = result.snapshot
@@ -517,6 +525,7 @@ def make_persisted_entity_scope_handle(
     handle: SessionSelectorHandle = {
         "ui": ui,
         "store": artifact_store,
+        "aggregation_store": aggregation_store or make_default_aggregation_store(artifact_store=artifact_store),
         "out": out,
         "refresh_signal": refresh_signal,
         "get_selected": get_selected,

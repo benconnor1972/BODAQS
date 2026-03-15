@@ -55,6 +55,18 @@ class ArtifactStore:
     def path_session_meta(self, run_id: str, session_id: str) -> Path:
         return self.session_dir(run_id, session_id) / "session" / "meta.json"
 
+    def path_session_annotations_dir(self, run_id: str, session_id: str) -> Path:
+        return self.session_dir(run_id, session_id) / "annotations"
+
+    def path_session_notes(self, run_id: str, session_id: str) -> Path:
+        return self.path_session_annotations_dir(run_id, session_id) / "session_notes.json"
+
+    def path_library_dir(self) -> Path:
+        return self.root / "library"
+
+    def path_canonical_aggregations(self) -> Path:
+        return self.path_library_dir() / "aggregations_v1.json"
+
     def path_events_df(self, run_id: str, session_id: str, event_type: str) -> Path:
         return self.session_dir(run_id, session_id) / "events" / event_type / "events.parquet"
 

@@ -279,6 +279,12 @@ Code and widgets may assume the following paths exist if the artifact is present
   runs/<run_id>/sessions/<session_id>/session/meta.json
   ```
 
+* Session annotations / canonical notes (optional)
+
+  ```
+  runs/<run_id>/sessions/<session_id>/annotations/session_notes.json
+  ```
+
 * Events table
 
   ```
