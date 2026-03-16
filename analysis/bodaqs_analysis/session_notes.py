@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,9 @@ TEMPLATE_SCHEMA = "bodaqs.session_notes.template"
 TEMPLATE_VERSION = 1
 NOTE_SCHEMA = "bodaqs.session_notes.document"
 NOTE_VERSION = 1
-DEFAULT_TEMPLATE_ROOT = Path("Configs") / "session_note_templates"
+DEFAULT_TEMPLATE_ROOT = Path("analysis") / "templates" / "session_note_templates"
+
+logger = logging.getLogger(__name__)
 
 
 class SessionNotesError(ValueError):
@@ -293,6 +296,7 @@ def _document_to_mapping(doc: SessionNoteDocument) -> dict[str, Any]:
 class SessionNoteTemplateStore:
     def __init__(self, root: Optional[str | Path] = None):
         self.root = Path(root).expanduser() if root else default_template_root()
+        self._template_errors: dict[str, str] = {}
 
     def _template_paths(self) -> Iterable[Path]:
         if not self.root.exists():
@@ -300,14 +304,24 @@ class SessionNoteTemplateStore:
         return sorted(self.root.glob("*/*.json"))
 
     def list_templates(self) -> list[SessionNoteTemplate]:
+        self._template_errors = {}
         templates: list[SessionNoteTemplate] = []
         for path in self._template_paths():
             try:
                 templates.append(self.load_template_file(path))
-            except Exception:
+            except Exception as exc:
+                rel_path = str(path.relative_to(self.root))
+                message = f"Failed to load session note template {rel_path}: {exc}"
+                self._template_errors[rel_path] = str(exc)
+                logger.warning(message)
                 continue
         templates.sort(key=lambda t: (t.template_id, t.template_version))
         return templates
+
+    def template_load_errors(self) -> dict[str, str]:
+        if not self._template_errors:
+            self.list_templates()
+        return dict(self._template_errors)
 
     def load_template_file(self, path: str | Path) -> SessionNoteTemplate:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -322,6 +336,17 @@ class SessionNoteTemplateStore:
     def get_latest_template(self, template_id: str) -> SessionNoteTemplate:
         matches = [t for t in self.list_templates() if t.template_id == str(template_id)]
         if not matches:
+            prefix = f"{template_id}/"
+            related_errors = [
+                f"{path}: {error}"
+                for path, error in self.template_load_errors().items()
+                if path.replace("\\", "/").startswith(prefix)
+            ]
+            if related_errors:
+                raise SessionNotesError(
+                    f"No valid templates found for template_id={template_id!r}. "
+                    f"Template load failures: {'; '.join(related_errors)}"
+                )
             raise SessionNotesError(f"No templates found for template_id={template_id!r}")
         return sorted(matches, key=lambda t: t.template_version)[-1]
 

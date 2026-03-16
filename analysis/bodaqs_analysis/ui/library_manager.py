@@ -30,6 +30,11 @@ from bodaqs_analysis.session_notes import (
 from bodaqs_analysis.ui.aggregation_manager import make_aggregation_library_manager
 
 
+DESCRIPTION_LABEL_WIDTH = "120px"
+NOTE_LABEL_WIDTH = "120px"
+NOTE_INPUT_WIDTH = "520px"
+
+
 def _read_json_safe(store: ArtifactStore, path: Path) -> dict[str, Any]:
     try:
         return store.read_json(path)
@@ -65,13 +70,12 @@ def _coerce_text_value(raw: str) -> str | None:
 
 
 def _field_label(field: SessionNoteFieldDef) -> str:
-    if field.unit:
-        return f"{field.label} ({field.unit})"
     return field.label
 
 
 def _make_field_widget(field: SessionNoteFieldDef) -> W.Widget:
-    layout = W.Layout(width="340px")
+    style = {"description_width": NOTE_LABEL_WIDTH}
+    layout = W.Layout(width=NOTE_INPUT_WIDTH)
     description = _field_label(field)
     if field.field_type == "bool":
         return W.Checkbox(
@@ -79,6 +83,7 @@ def _make_field_widget(field: SessionNoteFieldDef) -> W.Widget:
             description=description,
             indent=False,
             layout=layout,
+            style=style,
         )
     if field.field_type == "enum":
         options: list[tuple[str, str | None]] = []
@@ -93,6 +98,7 @@ def _make_field_widget(field: SessionNoteFieldDef) -> W.Widget:
             value=value,
             description=description,
             layout=layout,
+            style=style,
         )
     if field.field_type == "multi_enum":
         return W.SelectMultiple(
@@ -101,17 +107,20 @@ def _make_field_widget(field: SessionNoteFieldDef) -> W.Widget:
             description=description,
             rows=min(max(len(field.enum_options), 2), 6),
             layout=layout,
+            style=style,
         )
     if field.field_type == "text":
         return W.Textarea(
             value=str(field.default or ""),
             description=description,
             layout=W.Layout(width="520px", height="90px"),
+            style=style,
         )
     return W.Text(
         value="" if field.default is None else str(field.default),
         description=description,
         layout=layout,
+        style=style,
     )
 
 
@@ -156,6 +165,14 @@ def _set_widget_value(widget: W.Widget, field: SessionNoteFieldDef, value: Any) 
     widget.value = "" if value is None else str(value)
 
 
+def _blank_field_value(field: SessionNoteFieldDef) -> Any:
+    if field.field_type == "bool":
+        return False
+    if field.field_type == "multi_enum":
+        return ()
+    return None
+
+
 def make_library_manager(
     *,
     artifacts_dir: str | Path = "artifacts",
@@ -189,20 +206,25 @@ def make_library_manager(
         value=None,
         rows=rows,
         description="Sessions",
-        layout=W.Layout(width="920px"),
+        layout=W.Layout(width="720px"),
     )
 
     w_run_desc = W.Textarea(
         value="",
         description="Run desc",
         layout=W.Layout(width="520px", height="70px"),
+        style={"description_width": DESCRIPTION_LABEL_WIDTH},
     )
     w_session_desc = W.Textarea(
         value="",
         description="Session desc",
         layout=W.Layout(width="520px", height="70px"),
+        style={"description_width": DESCRIPTION_LABEL_WIDTH},
     )
-    b_save_desc = W.Button(description="Save descriptions")
+    b_save_desc = W.Button(
+        description="Save descriptions",
+        layout=W.Layout(margin=f"0 0 0 {DESCRIPTION_LABEL_WIDTH}"),
+    )
 
     templates = template_store.list_templates()
     template_options = [(_template_label(t), f"{t.template_id}@{t.template_version}") for t in templates]
@@ -210,7 +232,8 @@ def make_library_manager(
         options=template_options or [("(No templates found)", "")],
         value=(template_options[0][1] if template_options else ""),
         description="Template",
-        layout=W.Layout(width="520px"),
+        layout=W.Layout(width=NOTE_INPUT_WIDTH),
+        style={"description_width": NOTE_LABEL_WIDTH},
     )
     b_load_note = W.Button(description="Load note")
     b_new_note = W.Button(description="New from template")
@@ -218,17 +241,20 @@ def make_library_manager(
     w_note_title = W.Text(
         value="",
         description="Note title",
-        layout=W.Layout(width="520px"),
+        layout=W.Layout(width=NOTE_INPUT_WIDTH),
+        style={"description_width": NOTE_LABEL_WIDTH},
     )
     w_custom_json = W.Textarea(
         value="{}",
         description="Custom",
-        layout=W.Layout(width="520px", height="90px"),
+        layout=W.Layout(width=NOTE_INPUT_WIDTH, height="90px"),
+        style={"description_width": NOTE_LABEL_WIDTH},
     )
     w_free_text = W.Textarea(
         value="",
         description="Notes",
-        layout=W.Layout(width="520px", height="120px"),
+        layout=W.Layout(width=NOTE_INPUT_WIDTH, height="120px"),
+        style={"description_width": NOTE_LABEL_WIDTH},
     )
     metadata_html = W.HTML()
     fields_box = W.VBox()
@@ -256,6 +282,7 @@ def make_library_manager(
         "current_template": None,
         "field_defs": {},
         "field_widgets": {},
+        "template_errors": {},
         "updating": False,
     }
 
@@ -369,11 +396,18 @@ def make_library_manager(
         state["field_widgets"] = field_widgets
         fields_box.children = tuple(children)
 
-    def _load_note_into_controls(note: SessionNoteDocument | None, template: SessionNoteTemplate) -> None:
+    def _load_note_into_controls(
+        note: SessionNoteDocument | None,
+        template: SessionNoteTemplate,
+        *,
+        use_template_defaults: bool,
+    ) -> None:
         _build_fields(template)
         state["current_note"] = note
         w_note_title.value = "" if note is None or note.title is None else str(note.title)
-        w_free_text.value = "" if note is None or note.free_text_notes is None else str(note.free_text_notes)
+        w_free_text.value = (
+            "" if note is None or note.free_text_notes is None else str(note.free_text_notes)
+        )
         w_custom_json.value = json.dumps(
             {} if note is None else note.custom_values,
             indent=2,
@@ -384,10 +418,14 @@ def make_library_manager(
         if note is not None:
             value_source.update(note.values)
         for field in template.fields:
+            if note is None and not use_template_defaults:
+                value = _blank_field_value(field)
+            else:
+                value = value_source.get(field.field_id, field.default)
             _set_widget_value(
                 state["field_widgets"][field.field_id],
                 field,
-                value_source.get(field.field_id, field.default),
+                value,
             )
 
     def _refresh_editor(*_) -> None:
@@ -433,7 +471,11 @@ def make_library_manager(
                 template = templates[0]
 
         if template is not None:
-            _load_note_into_controls(note, template)
+            _load_note_into_controls(
+                note,
+                template,
+                use_template_defaults=False,
+            )
         else:
             fields_box.children = (W.HTML("<i>No templates available.</i>"),)
             state["current_note"] = note
@@ -444,9 +486,21 @@ def make_library_manager(
         _render_metadata(run_id, session_id, row, note)
 
     def _refresh_all(*_) -> None:
+        template_errors = template_store.template_load_errors()
+        state["template_errors"] = template_errors
         _refresh_session_options()
         _refresh_editor()
         aggregation_manager["refresh"]()
+        if template_errors:
+            _status(
+                [
+                    "Template load warnings:",
+                    *[
+                        f"- {path}: {error}"
+                        for path, error in sorted(template_errors.items())
+                    ],
+                ]
+            )
 
     def _on_template_change(change: Mapping[str, Any]) -> None:
         if state["updating"]:
@@ -458,9 +512,17 @@ def make_library_manager(
         template = template_store.get_template(template_id, template_version)
         note = state.get("current_note")
         if note is not None and note.template_id == template_id and note.template_version == template_version:
-            _load_note_into_controls(note, template)
+            _load_note_into_controls(
+                note,
+                template,
+                use_template_defaults=False,
+            )
             return
-        _load_note_into_controls(None, template)
+        _load_note_into_controls(
+            None,
+            template,
+            use_template_defaults=False,
+        )
 
     def _on_select(_):
         _refresh_editor()
@@ -525,7 +587,11 @@ def make_library_manager(
             w_template.value = f"{template.template_id}@{template.template_version}"
         finally:
             state["updating"] = False
-        _load_note_into_controls(note, template)
+        _load_note_into_controls(
+            note,
+            template,
+            use_template_defaults=False,
+        )
         _render_metadata(str(row["run_id"]), str(row["session_id"]), row, note)
         _status([f"Loaded note for {row['session_key']}."])
 
@@ -545,7 +611,11 @@ def make_library_manager(
             template_id=template.template_id,
             template_version=template.template_version,
         )
-        _load_note_into_controls(note, template)
+        _load_note_into_controls(
+            note,
+            template,
+            use_template_defaults=True,
+        )
         _status([f"Prepared new note for {run_id}::{session_id} from {template.template_id}@{template.template_version}."])
 
     def _on_save_note(_):
@@ -595,24 +665,32 @@ def make_library_manager(
     session_controls = W.HBox([w_filter, show_ids_cb, b_refresh])
     description_box = W.VBox(
         [
-            W.HTML("<b>Descriptions</b>"),
+            W.HTML("<div style='font-size:1.15em;font-weight:700'>Descriptions</div>"),
             w_run_desc,
             w_session_desc,
             b_save_desc,
         ],
         layout=W.Layout(width="540px"),
     )
-    note_controls = W.HBox([w_template, b_load_note, b_new_note, b_save_note])
+    note_controls = W.VBox(
+        [
+            w_template,
+            W.HBox(
+                [b_load_note, b_new_note, b_save_note],
+                layout=W.Layout(margin=f"0 0 0 {NOTE_LABEL_WIDTH}"),
+            ),
+        ]
+    )
     note_box = W.VBox(
         [
-            W.HTML("<b>Session note</b>"),
+            W.HTML("<div style='font-size:1.15em;font-weight:700'>Session note</div>"),
             note_controls,
             w_note_title,
             fields_box,
             w_custom_json,
             w_free_text,
         ],
-        layout=W.Layout(width="560px"),
+        layout=W.Layout(width="860px"),
     )
     right_col = W.VBox(
         [
@@ -622,11 +700,11 @@ def make_library_manager(
             details,
             status_out,
         ],
-        layout=W.Layout(width="620px"),
+        layout=W.Layout(width="930px"),
     )
     sessions_tab = W.HBox(
         [
-            W.VBox([session_controls, sessions_sel], layout=W.Layout(width="940px")),
+            W.VBox([session_controls, sessions_sel], layout=W.Layout(width="740px")),
             right_col,
         ]
     )

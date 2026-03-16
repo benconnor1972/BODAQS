@@ -69,7 +69,7 @@ Templates should live centrally, outside individual sessions.
 Recommended location:
 
 ```text
-Configs/session_note_templates/<template_id>/<version>.json
+analysis/templates/session_note_templates/<template_id>/<version>.json
 ```
 
 ---
