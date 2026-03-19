@@ -9,6 +9,7 @@ import ipywidgets as W
 import pandas as pd
 
 from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
+from bodaqs_analysis.library.aggregations import AggregationStore, make_default_aggregation_store
 from bodaqs_analysis.widgets.contracts import (
     EntitySelectionSnapshot,
     MutableKeyToRef,
@@ -34,7 +35,6 @@ from bodaqs_analysis.widgets.entity_scope import (
     validate_registry_policy_for_sessions,
 )
 from bodaqs_analysis.widgets.loaders import make_session_loader
-from bodaqs_analysis.widgets.session_aggregations import SessionAggregationStore
 
 
 def make_session_key(run_id: str, session_id: str) -> SessionKey:
@@ -192,6 +192,7 @@ def _build_session_index(
 def make_session_aggregation_editor(
     *,
     artifacts_dir: str | Path = "artifacts",
+    aggregation_store: AggregationStore | None = None,
     default_run_id: str = "__ALL__",
     rows: int = 12,
     show_ids_default: bool = False,
@@ -203,7 +204,7 @@ def make_session_aggregation_editor(
     persisted aggregations. It is independent of `make_session_selector`.
     """
     store = ArtifactStore(Path(artifacts_dir))
-    agg_store = SessionAggregationStore()
+    agg_store = aggregation_store or make_default_aggregation_store(artifact_store=store)
     try:
         agg_store.load()
     except Exception:
@@ -524,6 +525,7 @@ def make_session_aggregation_editor(
     return {
         "ui": ui,
         "store": store,
+        "aggregation_store": agg_store,
         "run_dd": run_dd,
         "show_ids_cb": show_ids_cb,
         "sessions_sel": sessions_sel,
@@ -535,6 +537,7 @@ def make_session_aggregation_editor(
 def make_session_selector(
     *,
     artifacts_dir: str | Path = "artifacts",
+    aggregation_store: AggregationStore | None = None,
     default_run_id: str = "__ALL__",
     select_first_by_default: bool = True,
     rows: int = 12,
@@ -548,7 +551,7 @@ def make_session_selector(
     the aggregation editor cell has not been run in the current notebook session.
     """
     store = ArtifactStore(Path(artifacts_dir))
-    agg_store = SessionAggregationStore()
+    agg_store = aggregation_store or make_default_aggregation_store(artifact_store=store)
     try:
         agg_store.load()
     except Exception:
@@ -796,7 +799,11 @@ def make_session_selector(
     def load_selection() -> PersistedEntityScopeLoadResult:
         _refresh_scope_sources()
         _rebuild_entity_options()
-        result = load_entity_scope_selection(artifacts_dir=store.root, strict=False)
+        result = load_entity_scope_selection(
+            artifacts_dir=store.root,
+            aggregation_store=agg_store,
+            strict=False,
+        )
         labels, missing = _selection_labels_from_entity_keys(result.source.selected_entity_keys)
         if not labels:
             raise ValueError("Saved selection contains no entities available in the current selector")
@@ -889,6 +896,7 @@ def make_session_selector(
     return {
         "ui": ui,
         "store": store,
+        "aggregation_store": agg_store,
         "run_dd": run_dd,
         "entities_sel": entities_sel,
         "show_ids_cb": show_ids_cb,

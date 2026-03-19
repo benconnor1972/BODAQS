@@ -223,6 +223,7 @@ class SessionSelectorHandle(SessionSelectorCoreHandle, total=False):
 
     run_dd: Any
     sessions_sel: Any
+    aggregation_store: Any
     out: Any
     entities_sel: Any
     show_ids_cb: Any
