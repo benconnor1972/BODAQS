@@ -8,6 +8,7 @@ from typing import Any, Dict, Mapping, Sequence
 import ipywidgets as W
 import pandas as pd
 from IPython.display import display
+from ipydatagrid import DataGrid, TextRenderer
 
 from bodaqs_analysis.artifacts import (
     ArtifactStore,
@@ -41,23 +42,52 @@ def _read_json_safe(store: ArtifactStore, path: Path) -> dict[str, Any]:
     except Exception:
         return {}
 
+_GRID_STYLE = {
+    "background_color": "#ffffff",
+    "grid_line_color": "#e5e7eb",
+    "header_background_color": "#f5f7fa",
+    "header_grid_line_color": "#d9dde3",
+    "selection_fill_color": "rgba(156, 163, 175, 0.18)",
+    "selection_border_color": "#9ca3af",
+    "header_selection_fill_color": "rgba(156, 163, 175, 0.18)",
+    "header_selection_border_color": "#9ca3af",
+}
 
-def _format_session_label(row: Mapping[str, Any], *, show_ids: bool) -> str:
-    created_at = str(row.get("created_at") or "").strip()
-    run_id = str(row.get("run_id") or "").strip()
-    session_id = str(row.get("session_id") or "").strip()
-    run_desc = str(row.get("run_description") or "").strip()
-    session_desc = str(row.get("session_description") or "").strip()
 
-    if show_ids:
-        run_part = f"run_id={run_id} | run_desc={run_desc or '(none)'}"
-        session_part = f"session_id={session_id} | session_desc={session_desc or '(none)'}"
-    else:
-        run_part = run_desc or run_id
-        session_part = session_desc or session_id
+def _grid_height_px(*, row_count: int, min_rows: int, max_rows: int) -> str:
+    visible_rows = max(min_rows, min(max_rows, row_count if row_count > 0 else min_rows))
+    return f"{visible_rows * 28 + 36}px"
 
-    parts = [p for p in (created_at, run_part, session_part) if p]
-    return " | ".join(parts)
+
+def _make_grid(
+    columns: Sequence[str],
+    *,
+    width: str = "100%",
+    height: str,
+    base_column_size: int,
+    column_widths: dict[str, int],
+) -> DataGrid:
+    return DataGrid(
+        pd.DataFrame(columns=list(columns)),
+        selection_mode="row",
+        header_visibility="column",
+        base_column_size=base_column_size,
+        base_row_size=30,
+        layout=W.Layout(width=width, height=height, border="1px solid #d1d5db"),
+        auto_fit_columns=False,
+        column_widths=column_widths,
+        default_renderer=TextRenderer(
+            font="13px Segoe UI, Tahoma, Arial, sans-serif",
+            vertical_alignment="center",
+            background_color="#ffffff",
+        ),
+        header_renderer=TextRenderer(
+            font="600 12px Segoe UI, Tahoma, Arial, sans-serif",
+            vertical_alignment="center",
+            background_color="#f5f7fa",
+        ),
+        grid_style=_GRID_STYLE,
+    )
 
 
 def _template_label(template: SessionNoteTemplate) -> str:
@@ -194,19 +224,34 @@ def make_library_manager(
         placeholder="Search ids, descriptions, or projected note fields",
         layout=W.Layout(width="520px"),
     )
-    show_ids_cb = W.Checkbox(
-        value=bool(show_ids_default),
-        description="Show run and session IDs",
-        indent=False,
-        layout=W.Layout(width="250px"),
-    )
     b_refresh = W.Button(description="Refresh")
     sessions_sel = W.Select(
         options=[],
         value=None,
         rows=rows,
         description="Sessions",
-        layout=W.Layout(width="720px"),
+        layout=W.Layout(display="none"),
+    )
+    session_grid_max_rows = max(8, rows)
+    session_grid = _make_grid(
+        [
+            "Created",
+            "Run description",
+            "Session / aggregation",
+            "Projection status",
+            "Run ID",
+            "Session ID",
+        ],
+        height=_grid_height_px(row_count=0, min_rows=3, max_rows=session_grid_max_rows),
+        base_column_size=155,
+        column_widths={
+            "Created": 165,
+            "Run description": 220,
+            "Session / aggregation": 250,
+            "Projection status": 130,
+            "Run ID": 180,
+            "Session ID": 220,
+        },
     )
 
     w_run_desc = W.Textarea(
@@ -278,12 +323,15 @@ def make_library_manager(
         "catalog_df": pd.DataFrame(),
         "label_to_session_key": {},
         "session_key_to_row": {},
+        "grid_index_to_label": {},
         "current_note": None,
         "current_template": None,
         "field_defs": {},
         "field_widgets": {},
         "template_errors": {},
         "updating": False,
+        "syncing_grid": False,
+        "syncing_hidden": False,
     }
 
     def _status(lines: Sequence[str]) -> None:
@@ -315,12 +363,12 @@ def make_library_manager(
         label_to_session_key: dict[str, str] = {}
         session_key_to_row: dict[str, Mapping[str, Any]] = {}
         options: list[str] = []
+        rows_data: list[dict[str, Any]] = []
         filter_text = str(w_filter.value or "").strip().lower()
         label_counts: dict[str, int] = {}
 
         for _, row in catalog_df.iterrows():
             row_dict = row.to_dict()
-            label = _format_session_label(row_dict, show_ids=bool(show_ids_cb.value))
             search_blob = " ".join(
                 str(value)
                 for value in row_dict.values()
@@ -328,19 +376,91 @@ def make_library_manager(
             ).lower()
             if filter_text and filter_text not in search_blob:
                 continue
-            n = label_counts.get(label, 0) + 1
-            label_counts[label] = n
-            unique_label = label if n == 1 else f"{label} [#{n}]"
+            base_label = str(row_dict["session_key"])
+            n = label_counts.get(base_label, 0) + 1
+            label_counts[base_label] = n
+            unique_label = base_label if n == 1 else f"{base_label} [#{n}]"
             session_key = str(row_dict["session_key"])
             options.append(unique_label)
             label_to_session_key[unique_label] = session_key
             session_key_to_row[session_key] = row_dict
+            rows_data.append(
+                {
+                    "Created": str(row_dict.get("created_at") or ""),
+                    "Run description": str(row_dict.get("run_description") or ""),
+                    "Session / aggregation": str(row_dict.get("session_description") or ""),
+                    "Projection status": str(row_dict.get("projection_status") or ""),
+                    "Run ID": str(row_dict.get("run_id") or ""),
+                    "Session ID": str(row_dict.get("session_id") or ""),
+                }
+            )
 
         previous = str(sessions_sel.value or "")
         sessions_sel.options = options
         sessions_sel.value = previous if previous in label_to_session_key else (options[0] if options else None)
+        grid_df = pd.DataFrame.from_records(
+            rows_data,
+            columns=[
+                "Created",
+                "Run description",
+                "Session / aggregation",
+                "Projection status",
+                "Run ID",
+                "Session ID",
+            ],
+        )
+        grid_df.index = pd.RangeIndex(start=0, stop=len(grid_df), step=1)
+        session_grid.data = grid_df
+        session_grid.layout.height = _grid_height_px(
+            row_count=len(rows_data),
+            min_rows=3,
+            max_rows=session_grid_max_rows,
+        )
         state["label_to_session_key"] = label_to_session_key
         state["session_key_to_row"] = session_key_to_row
+        state["grid_index_to_label"] = {idx: label for idx, label in enumerate(options)}
+        _sync_grid_from_hidden()
+
+    def _selected_label_from_grid() -> str | None:
+        visible_df = session_grid.get_visible_data()
+        for rect in list(session_grid.selections or []):
+            row_start = int(rect.get("r1", -1))
+            row_end = int(rect.get("r2", -1))
+            if row_start < 0 or row_end < row_start:
+                continue
+            for row_pos in range(row_start, row_end + 1):
+                if row_pos < 0 or row_pos >= len(visible_df.index):
+                    continue
+                return state["grid_index_to_label"].get(int(visible_df.index[row_pos]))
+        return None
+
+    def _sync_hidden_from_grid(*_) -> None:
+        if state["syncing_grid"]:
+            return
+        state["syncing_hidden"] = True
+        try:
+            sessions_sel.value = _selected_label_from_grid()
+        finally:
+            state["syncing_hidden"] = False
+
+    def _sync_grid_from_hidden(*_) -> None:
+        if state["syncing_hidden"]:
+            return
+        selected_label = str(sessions_sel.value or "")
+        visible_df = session_grid.get_visible_data()
+        state["syncing_grid"] = True
+        try:
+            session_grid.clear_selection()
+            if visible_df.empty or not selected_label:
+                return
+            last_col = max(0, len(visible_df.columns) - 1)
+            for row_pos in range(len(visible_df.index)):
+                label = state["grid_index_to_label"].get(int(visible_df.index[row_pos]))
+                if label == selected_label:
+                    session_grid.select(row_pos, 0, row_pos, last_col, clear_mode="all")
+                    return
+        finally:
+            state["syncing_grid"] = False
 
     def _render_metadata(run_id: str, session_id: str, row: Mapping[str, Any], note: SessionNoteDocument | None) -> None:
         note_part = "None"
@@ -654,15 +774,16 @@ def make_library_manager(
 
     w_template.observe(_on_template_change, names="value")
     sessions_sel.observe(_on_select, names="value")
+    sessions_sel.observe(_sync_grid_from_hidden, names="value")
+    session_grid.observe(_sync_hidden_from_grid, names="selections")
     b_refresh.on_click(_refresh_all)
     b_save_desc.on_click(_on_save_descriptions)
     b_load_note.on_click(_on_load_note)
     b_new_note.on_click(_on_new_note)
     b_save_note.on_click(_on_save_note)
-    show_ids_cb.observe(_refresh_session_options, names="value")
     w_filter.observe(_refresh_session_options, names="value")
 
-    session_controls = W.HBox([w_filter, show_ids_cb, b_refresh])
+    session_controls = W.HBox([w_filter, b_refresh])
     description_box = W.VBox(
         [
             W.HTML("<div style='font-size:1.15em;font-weight:700'>Descriptions</div>"),
@@ -704,7 +825,7 @@ def make_library_manager(
     )
     sessions_tab = W.HBox(
         [
-            W.VBox([session_controls, sessions_sel], layout=W.Layout(width="740px")),
+            W.VBox([session_controls, session_grid, sessions_sel], layout=W.Layout(width="740px")),
             right_col,
         ]
     )
@@ -728,8 +849,9 @@ def make_library_manager(
         "aggregation_manager": aggregation_manager,
         "controls": {
             "filter": w_filter,
-            "show_ids": show_ids_cb,
+            "show_ids": None,
             "sessions": sessions_sel,
+            "session_grid": session_grid,
             "run_description": w_run_desc,
             "session_description": w_session_desc,
             "template": w_template,
