@@ -249,6 +249,7 @@ bool LoggingManager::start() {
   StorageManager_startLog();
   TRACE("storagemanager_startlog complete");
 
+  SensorManager::onLoggingStart();
   s_running = true;
 
 #if defined(ESP32)
@@ -293,6 +294,7 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
 
 void LoggingManager::stop() {
   s_running = false;
+  SensorManager::onLoggingStop();
   IndicatorManager::ledOff();
   StorageManager_stopLog();
   PowerManager::restoreCpuFreqAfterLogging();

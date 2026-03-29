@@ -13,6 +13,8 @@ namespace SensorManager {
   void finalizeBegin();
   void applyConfig(const LoggerConfig& cfg);
   void loop();
+  void onLoggingStart();
+  void onLoggingStop();
 
   // registry / access
   void    registerSensor(Sensor* s);

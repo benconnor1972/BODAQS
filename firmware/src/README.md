@@ -54,6 +54,7 @@ This document summarizes the major modules in the project, what each one is resp
 - `save()` writes **all** config keys (globals + sensors) deterministically.
 - Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
 - File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `invert`, `ema_alpha_permille`, `deadband_counts`, `zero_count`, `full_count`, `full_travel_mm`.
+- File format keys used by AS5600 string-pot sensors include `counts_per_turn`, `wrap_threshold_counts`, `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`, and `assume_turn0_at_start`.
 
 ---
 
@@ -85,6 +86,21 @@ This document summarizes the major modules in the project, what each one is resp
 **Notes**
 - Produces normalized and/or raw columns; column names include the sensor `name` (e.g. `pot1_norm`).
 - Honors **muted** state via `SensorManager` (muted sensors still tick but are skipped in log output).
+
+## `AS5600StringPotSensorBase` / `AS5600StringPotAnalog`
+
+**Purpose:** Acquire a wrapped one-turn AS5600 reading, unwrap it across multiple turns in firmware, and report unwrapped travel while still logging wrapped raw counts.
+
+**Key params (from ParamPack)**
+- `ain` / `pin`
+- `counts_per_turn`, `wrap_threshold_counts`, `assume_turn0_at_start`
+- `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`
+- `invert`, `ema_alpha`, `deadband`, `output_mode`, `include_raw`
+
+**Notes**
+- `RAW` mode reports wrapped counts as the primary column.
+- `LINEAR` mode reports unwrapped mm using the calibrated unwrapped span.
+- The sensor resets its unwrap tracker to turn 0 at each logging start when `assume_turn0_at_start=true`.
 
 ---
 
@@ -266,6 +282,19 @@ sensorN.deadband_counts=0
 sensorN.zero_count=0
 sensorN.full_count=4095
 sensorN.full_travel_mm=0
+
+sensorN.type=as5600_string_pot_analog
+sensorN.name=stringpot1
+sensorN.ain=0
+sensorN.counts_per_turn=4096
+sensorN.wrap_threshold_counts=2048
+sensorN.assume_turn0_at_start=true
+sensorN.sensor_zero_count=0
+sensorN.sensor_full_count=24576
+sensorN.installed_zero_count=0
+sensorN.sensor_full_travel_mm=600
+sensorN.output_mode=LINEAR
+sensorN.include_raw=true
 ```
 
 ---

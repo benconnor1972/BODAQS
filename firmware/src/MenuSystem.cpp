@@ -80,6 +80,7 @@ namespace {
   static uint8_t    s_calSel     = 0;              // selected sensor index
   static uint8_t    s_calOptSel  = 0;              // selected row within screen
   static CalUiPhase s_calUiPhase = CalUiPhase::Idle;
+  static unsigned long s_lastRangeTrackMs = 0;
 
   static unsigned long s_deferUiUntilMs = 0;
   static bool          s_deferRedraw    = false;
@@ -114,6 +115,7 @@ namespace {
   static void drawCalibSensors_();
   static void drawCalibDetail_();
   static RangeCapture s_rangeCap;   // <--- ADD THIS LINE
+  static void tickActiveRangeCalibration_();
 
   inline void touch() { s_lastInputMs = millis(); }
 
@@ -400,6 +402,21 @@ namespace {
     }
   }
 
+  static void tickActiveRangeCalibration_() {
+    if (s_state != State::CalibDetail || s_calUiPhase != CalUiPhase::RangeActive) return;
+
+    Sensor* s = SensorManager::at(s_calSel);
+    if (!s || !s->hasRawCounts()) return;
+
+    const unsigned long now = millis();
+    if (s_lastRangeTrackMs != 0 && (now - s_lastRangeTrackMs) < 2) return;
+    s_lastRangeTrackMs = now;
+
+    // Keep calibration-space counts advancing while the operator moves the sensor.
+    // Wrapped sensors use this to accumulate turn crossings between the start and finish marks.
+    (void)s->currentRawCounts();
+  }
+
   static void toggleSelectedSensor_() {
     const uint8_t sel = s_sensorSel;
     bool m = false;
@@ -508,6 +525,7 @@ void MenuSystem::requestOpen() {
 void MenuSystem::requestClose() {
   UI::endModal();
   s_wsPending = false;
+  s_lastRangeTrackMs = 0;
   if (s_state != State::Inactive) {
     MLOG("[MENU] requestClose from %s\n", stateName(s_state));
     s_state = State::Inactive;
@@ -674,6 +692,7 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       }
 
       if (d == Dir::Left) {
+        s_lastRangeTrackMs = 0;
         s_calUiPhase = CalUiPhase::Idle;   // reset when backing out
         s_state      = State::CalibSensors;
         drawCalibSensors_();
@@ -765,6 +784,8 @@ void MenuSystem::select()   { onNav(Dir::Enter, BUTTON_PRESSED); }
 void MenuSystem::loop() {
   if (s_state == State::Inactive) return;
 
+  tickActiveRangeCalibration_();
+
   if (s_deferRedraw && (long)(millis() - s_deferUiUntilMs) >= 0) {
     s_deferRedraw = false;
     redraw_();
@@ -847,6 +868,7 @@ void MenuSystem::onMark() {
           UI::toastModal(msg, 2000);
           deferUiFor(2000);
           s_calUiPhase = CalUiPhase::RangeActive;
+          s_lastRangeTrackMs = 0;
           s_calOptSel  = 0; // "Finish RANGE"
           drawCalibDetail_();
         } else {
@@ -868,6 +890,7 @@ void MenuSystem::onMark() {
         UI::toastModal(msg, 2000);
         deferUiFor(2000);
         s_calUiPhase = CalUiPhase::RangeFinished;
+        s_lastRangeTrackMs = 0;
         s_calOptSel  = 0; // "Save"
         drawCalibDetail_();
       }
@@ -928,6 +951,7 @@ void MenuSystem::onMark() {
         // Cancel
         s->finishCalibration(false);
         s_calUiPhase = CalUiPhase::Idle;
+        s_lastRangeTrackMs = 0;
         s_calOptSel  = 0;
         drawCalibDetail_();
       }

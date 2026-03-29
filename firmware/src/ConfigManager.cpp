@@ -91,6 +91,12 @@ namespace {
   static SensorType strToSensorType(const char* v) {
     if (!v) return SensorType::AnalogPot;
     if (!strcasecmp(v, "analog_pot") || !strcasecmp(v, "pot")) return SensorType::AnalogPot;
+    if (!strcasecmp(v, "as5600_string_pot_analog") || !strcasecmp(v, "as5600_pot_analog")) {
+      return SensorType::AS5600StringPotAnalog;
+    }
+    if (!strcasecmp(v, "as5600_string_pot_i2c") || !strcasecmp(v, "as5600_pot_i2c")) {
+      return SensorType::AS5600StringPotI2C;
+    }
     return SensorType::AnalogPot;
   }
 
@@ -109,23 +115,8 @@ namespace {
 
   // Convert a SensorType to a config-safe key like "analog_pot"
   static String typeKeyForSave(SensorType t) {
-    const char* lbl = SensorRegistry::typeLabel(t);  // e.g. "Analog Pot"
-    String s = lbl ? String(lbl) : String("unknown");
-    s.toLowerCase();
-    // replace non-alnum with underscores to match keys like "analog_pot"
-    for (size_t i = 0; i < s.length(); ++i) {
-      char c = s[i];
-      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) s.setCharAt(i, '_');
-    }
-    // collapse multiple underscores (optional)
-    String out; out.reserve(s.length());
-    bool prevUnd = false;
-    for (size_t i = 0; i < s.length(); ++i) {
-      char c = s[i];
-      if (c == '_') { if (!prevUnd) { out += c; prevUnd = true; } }
-      else { out += c; prevUnd = false; }
-    }
-    return out;
+    const char* key = SensorRegistry::typeKey(t);
+    return (key && key[0]) ? String(key) : String("unknown");
   }
 
 
@@ -169,12 +160,7 @@ namespace {
   }
 
   static CalModeMask typeSupportedMask(SensorType t) {
-    switch (t) {
-      case SensorType::AnalogPot:
-        return CAL_ZERO | CAL_RANGE;
-      default:
-        return CAL_NONE;
-    }
+    return SensorRegistry::supportedCalMask(t);
   }
 
   // Parse "HH:HH:HH:HH:HH:HH" into 6 bytes; returns true on success

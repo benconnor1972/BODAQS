@@ -140,3 +140,10 @@ bool ParamPack::setBool(const char* key, bool b) {
   return set(key, b ? String("true") : String("false"));
 }
 
+bool ParamPack::clear() {
+  ParamStore* st = const_cast<ParamStore*>(reinterpret_cast<const ParamStore*>(impl_));
+  if (!st) return false;
+  st->clear();
+  return true;
+}
+

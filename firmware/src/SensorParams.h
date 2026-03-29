@@ -7,7 +7,7 @@
 #include <Arduino.h>
 
 struct ParamStore {
-  static const uint8_t MAX = 16;   // max params per sensor
+  static const uint8_t MAX = 32;   // max params per sensor
   char     keys[MAX][24];
   char     vals[MAX][32];
   uint8_t  count = 0;
@@ -75,6 +75,7 @@ public:
   bool setInt(const char* key, long v);
   bool setFloat(const char* key, double v);
   bool setBool(const char* key, bool v);
+  bool clear();
 
   void bind(const void* impl) { impl_ = impl; }
 

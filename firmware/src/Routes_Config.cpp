@@ -379,7 +379,9 @@ void registerConfigRoutes(WebServer& srv) {
         };
 
         // --- Fieldset / legend
-        html += F("<fieldset><legend>");
+        html += F("<fieldset id='sensor-");
+        html += String(i);
+        html += F("'><legend>");
         const char* dispName = (sp.name && sp.name[0]) ? sp.name : "sensor";
         html += htmlEscape(String(dispName));
         html += F(" — ");
@@ -392,9 +394,36 @@ void registerConfigRoutes(WebServer& srv) {
         html += "<input type='text' name='s"; html += String(i); html += ".name' value='";
         html += htmlEscape(String(sp.name)); html += "'"; html += dis; html += "></div>";
 
-        html += "<div class='row'><label>Type</label><input type='text' value='";
-        html += typeLabelStr;
-        html += "'"; if (locked) html += " disabled"; html += "></div>";
+        html += "<div class='row'><label>Type</label><select name='s";
+        html += String(i);
+        html += ".type'";
+        if (locked) html += " disabled";
+        html += ">";
+        const SensorType typeChoices[] = {
+          SensorType::AnalogPot,
+          SensorType::AS5600StringPotAnalog,
+          SensorType::AS5600StringPotI2C,
+        };
+        for (const auto typeChoice : typeChoices) {
+          const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
+          if (!tiChoice) continue; // only show implemented/registered types
+          const char* key = SensorRegistry::typeKey(typeChoice);
+          const char* label = SensorRegistry::typeLabel(typeChoice);
+          html += "<option value='";
+          html += htmlEscape(String(key ? key : "unknown"));
+          html += "'";
+          if (sp.type == typeChoice) html += " selected";
+          html += ">";
+          html += htmlEscape(String(label ? label : "Unknown Sensor"));
+          html += "</option>";
+        }
+        html += "</select> ";
+        html += "<button type='submit' name='apply_type_idx' value='";
+        html += String(i);
+        html += "'";
+        if (locked) html += " disabled";
+        html += ">Apply Type</button>";
+        html += "<small>Reloads fields for the selected type, prunes incompatible params, and takes effect after reboot.</small></div>";
 
         // Board-aware Analog Input selector (AIN ordinal)
         {
@@ -540,6 +569,12 @@ void registerConfigRoutes(WebServer& srv) {
         emitParamRow("sensor_full_count", "Sensor count at full travel");
         emitParamRow("invert", "Invert measurement direction");
 
+        // ---- Wrapping ----
+        html += F("<h4>Wrapping</h4>");
+        emitParamRow("counts_per_turn", "Counts per turn");
+        emitParamRow("wrap_threshold_counts", "Wrap threshold (counts)");
+        emitParamRow("assume_turn0_at_start", "Assume turn 0 at log start");
+
         // ---- Smoothing ----
         html += F("<h4>Smoothing</h4>");
         emitParamRow("ema_alpha", "EMA alpha");
@@ -550,6 +585,7 @@ void registerConfigRoutes(WebServer& srv) {
           "ain","muted",
           "output_mode","include_raw","sensor_full_travel_mm","units_label",
           "cal_allowed","sensor_zero_count","sensor_full_count","invert",
+          "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start",
           "ema_alpha","deadband"
         };
         auto isShown = [&](const char* key)->bool{
@@ -751,6 +787,10 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     LoggerConfig tmp = ConfigManager::get();
+    int applyTypeIdx = -1;
+    if (srv.hasArg("apply_type_idx")) {
+      applyTypeIdx = srv.arg("apply_type_idx").toInt();
+    }
 
     // ---------- SENSORS ----------
     // enumerate current specs, mutate copies, and persist via ConfigManager helpers
@@ -776,9 +816,53 @@ void registerConfigRoutes(WebServer& srv) {
         out = (v=="true"||v=="1"||v=="on"); return true;
       };
 
+      bool typeChanged = false;
+
       // Basic
       {
         String v;
+        SensorType oldType = sp.type;
+        if (getArgLast("type", v)) {
+          v.trim();
+          if (v.length()) {
+            if (v.equalsIgnoreCase("analog_pot") || v.equalsIgnoreCase("pot")) {
+              sp.type = SensorType::AnalogPot;
+            } else if (v.equalsIgnoreCase("as5600_string_pot_analog") || v.equalsIgnoreCase("as5600_pot_analog")) {
+              sp.type = SensorType::AS5600StringPotAnalog;
+            } else if (v.equalsIgnoreCase("as5600_string_pot_i2c") || v.equalsIgnoreCase("as5600_pot_i2c")) {
+              sp.type = SensorType::AS5600StringPotI2C;
+            }
+          }
+        }
+        typeChanged = (sp.type != oldType);
+        tmp.sensors[idx].type = sp.type;
+        if (typeChanged) {
+          const SensorTypeInfo* newTi = SensorRegistry::lookup(sp.type);
+          size_t newDefCount = 0;
+          const ParamDef* newDefs = newTi ? newTi->paramDefs(newDefCount) : nullptr;
+          String keepVals[ParamStore::MAX];
+          bool   haveVals[ParamStore::MAX] = {false};
+
+          if (newDefs) {
+            const size_t keepCount = (newDefCount < ParamStore::MAX) ? newDefCount : ParamStore::MAX;
+            for (size_t d = 0; d < keepCount; ++d) {
+              haveVals[d] = sp.params.get(newDefs[d].key, keepVals[d]);
+            }
+          }
+
+          sp.params.clear();
+
+          if (newDefs) {
+            const size_t seedCount = (newDefCount < ParamStore::MAX) ? newDefCount : ParamStore::MAX;
+            for (size_t d = 0; d < seedCount; ++d) {
+              if (haveVals[d]) {
+                sp.params.set(newDefs[d].key, keepVals[d]);
+              } else if (newDefs[d].def) {
+                sp.params.set(newDefs[d].key, String(newDefs[d].def));
+              }
+            }
+          }
+        }
         if (getArgLast("name", v)) { 
           v.trim(); 
           if (v.length()) {
@@ -850,6 +934,10 @@ void registerConfigRoutes(WebServer& srv) {
           sp.params.set("output_id", v);
         }
 
+        { bool inc = false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
+        if (getArgLast("sensor_full_travel_mm", v)) { double f = v.toFloat(); sp.params.setFloat("sensor_full_travel_mm", (float)f); }
+        if (getArgLast("units_label", v)) { sp.params.set("units_label", v); }
+
         sp.params.setBool("__om_changed", omChanged);
         sp.params.setBool("__id_changed", idChanged);
       }
@@ -885,6 +973,14 @@ void registerConfigRoutes(WebServer& srv) {
         if (getArgLast("deadband", v))  { long   i = v.toInt();  sp.params.setInt("deadband", (long)i); }
       }
 
+      // Wrapping
+      {
+        String v;
+        if (getArgLast("counts_per_turn", v))       { long vi = v.toInt(); sp.params.setInt("counts_per_turn", vi); }
+        if (getArgLast("wrap_threshold_counts", v)) { long vi = v.toInt(); sp.params.setInt("wrap_threshold_counts", vi); }
+        { bool assume = false; if (getBoolLast("assume_turn0_at_start", assume)) sp.params.setBool("assume_turn0_at_start", assume); }
+      }
+
       // Generic ParamDefs pass (remaining keys defined by the sensor)
       int ac = srv.args();
       for (int ai = 0; ai < ac; ++ai) {
@@ -898,6 +994,8 @@ void registerConfigRoutes(WebServer& srv) {
             pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
             pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("invert") ||
+            pkey.equalsIgnoreCase("counts_per_turn") || pkey.equalsIgnoreCase("wrap_threshold_counts") ||
+            pkey.equalsIgnoreCase("assume_turn0_at_start") ||
             pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
             pkey.equalsIgnoreCase("ain")) {
           continue;
@@ -936,7 +1034,7 @@ void registerConfigRoutes(WebServer& srv) {
         Sensor* s = SensorManager::get(j);
         if (s && String(s->name()) == String(sp.name)) { live = s; break; }
       }
-      if (live) {
+      if (live && !typeChanged) {
         // muted
         live->setMuted(sp.mutedDefault);
 
@@ -979,7 +1077,12 @@ void registerConfigRoutes(WebServer& srv) {
   
 
     ConfigManager::save(tmp);
-    srv.sendHeader("Location", "/config/sensors?ok=1");
+    String location = "/config/sensors?ok=1";
+    if (applyTypeIdx >= 0) {
+      location += "#sensor-";
+      location += String(applyTypeIdx);
+    }
+    srv.sendHeader("Location", location);
     srv.send(303, F("text/plain"), F("Saved"));
   });
 

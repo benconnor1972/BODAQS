@@ -63,6 +63,8 @@ public:
   virtual void begin() = 0;
   virtual void loop() {}
   virtual void applyConfig(const LoggerConfig&) {}
+  virtual void onLoggingStart() {}
+  virtual void onLoggingStop() {}
 
   // ----- Runtime muting -----
   virtual bool muted() const = 0;
