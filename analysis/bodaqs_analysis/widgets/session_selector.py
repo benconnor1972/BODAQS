@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 import ipywidgets as W
 import pandas as pd
+from ipydatagrid import DataGrid, TextRenderer
 
 from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
 from bodaqs_analysis.library.aggregations import AggregationStore, make_default_aggregation_store
@@ -46,7 +47,8 @@ def _events_index_df_from_key_to_ref(key_to_ref: Mapping[str, tuple[str, str]]) 
         [
             {SESSION_KEY_COL: k, RUN_ID_COL: rid, SESSION_ID_COL: sid}
             for k, (rid, sid) in key_to_ref.items()
-        ]
+        ],
+        columns=[SESSION_KEY_COL, RUN_ID_COL, SESSION_ID_COL],
     )
 
 
@@ -110,7 +112,7 @@ def _format_run_label(
     run_desc = str(run_description or "").strip()
     if show_ids:
         return f"run_id={run_id} | run_desc={run_desc or '(none)'}"
-    return run_desc or run_id
+    return run_desc
 
 
 def _format_aggregation_label(
@@ -210,31 +212,62 @@ def make_session_aggregation_editor(
     except Exception:
         pass
 
-    run_options = _build_run_options(store=store, show_ids=bool(show_ids_default))
+    run_options = _build_run_options(store=store, show_ids=True)
     run_dd = W.Dropdown(
         options=run_options,
-        value=(
-            default_run_id
-            if default_run_id in dict(run_options).values() or default_run_id == "__ALL__"
-            else "__ALL__"
-        ),
+        value="__ALL__",
         description="Run",
-        layout=W.Layout(width="820px"),
-    )
-
-    show_ids_cb = W.Checkbox(
-        value=bool(show_ids_default),
-        description="Show run and session IDs",
-        indent=False,
-        layout=W.Layout(width="260px"),
+        layout=W.Layout(display="none"),
     )
 
     sessions_sel = W.SelectMultiple(
         options=[],
         value=(),
-        rows=rows,
-        description="Sessions",
-        layout=W.Layout(width="820px"),
+        layout=W.Layout(display="none"),
+    )
+    session_grid = DataGrid(
+        pd.DataFrame(
+            columns=[
+                "Created",
+                "Run description",
+                "Session description",
+                "Run ID",
+                "Session ID",
+            ]
+        ),
+        selection_mode="row",
+        header_visibility="column",
+        base_column_size=150,
+        base_row_size=30,
+        layout=W.Layout(width="100%", height=f"{max(8, rows) * 28 + 36}px"),
+        auto_fit_columns=False,
+        column_widths={
+            "Created": 165,
+            "Run description": 240,
+            "Session description": 280,
+            "Run ID": 180,
+            "Session ID": 220,
+        },
+        default_renderer=TextRenderer(
+            font="13px Segoe UI, Tahoma, Arial, sans-serif",
+            vertical_alignment="center",
+            background_color="#ffffff",
+        ),
+        header_renderer=TextRenderer(
+            font="600 12px Segoe UI, Tahoma, Arial, sans-serif",
+            vertical_alignment="center",
+            background_color="#f5f7fa",
+        ),
+        grid_style={
+            "background_color": "#ffffff",
+            "grid_line_color": "#e5e7eb",
+            "header_background_color": "#f5f7fa",
+            "header_grid_line_color": "#d9dde3",
+            "selection_fill_color": "rgba(156, 163, 175, 0.18)",
+            "selection_border_color": "#9ca3af",
+            "header_selection_fill_color": "rgba(156, 163, 175, 0.18)",
+            "header_selection_border_color": "#9ca3af",
+        },
     )
 
     w_agg_list = W.Dropdown(
@@ -268,7 +301,8 @@ def make_session_aggregation_editor(
     _label_to_sel: dict[str, SessionSelection] = {}
     _session_key_to_label: dict[str, str] = {}
     _all_key_to_ref_cache: MutableKeyToRef = {}
-    _state: Dict[str, Any] = {"updating": False}
+    _grid_index_to_label: dict[int, str] = {}
+    _state: Dict[str, Any] = {"updating": False, "syncing_grid": False, "syncing_hidden": False}
 
     def _set_status(lines: Sequence[str]) -> None:
         with out:
@@ -294,7 +328,7 @@ def make_session_aggregation_editor(
                     aggregation_key=str(a.aggregation_key),
                     title=str(a.title),
                     n_members=len(a.member_session_keys),
-                    show_ids=bool(show_ids_cb.value),
+                    show_ids=True,
                 ),
                 a.aggregation_key,
             )
@@ -307,27 +341,98 @@ def make_session_aggregation_editor(
         w_agg_list.value = prev if prev in valid else opts[0][1]
 
     def _refresh_sessions(*_) -> None:
-        nonlocal _label_to_sel, _session_key_to_label, _all_key_to_ref_cache
+        nonlocal _label_to_sel, _session_key_to_label, _all_key_to_ref_cache, _grid_index_to_label
 
-        prev_run = str(run_dd.value or "__ALL__")
-        run_options = _build_run_options(store=store, show_ids=bool(show_ids_cb.value))
-        valid_run_values = {str(v) for _, v in run_options}
-        run_dd.options = run_options
-        run_dd.value = prev_run if prev_run in valid_run_values else "__ALL__"
+        run_dd.options = _build_run_options(store=store, show_ids=True)
+        run_dd.value = "__ALL__"
 
         _all_key_to_ref_cache = _all_key_to_ref(store)
 
         options, _label_to_sel, _session_key_to_label = _build_session_index(
             store=store,
-            selected_run_id=run_dd.value,
-            show_ids=bool(show_ids_cb.value),
+            selected_run_id="__ALL__",
+            show_ids=True,
         )
         prev = tuple(map(str, sessions_sel.value or ()))
         sessions_sel.options = options
         kept = tuple([lbl for lbl in prev if lbl in _label_to_sel])
         sessions_sel.value = kept if kept else ()
+        _grid_index_to_label = {idx: label for idx, label in enumerate(options)}
+
+        rows_data: list[dict[str, Any]] = []
+        for label in options:
+            selected = _label_to_sel.get(label)
+            if not selected:
+                continue
+            run_id = str(selected["run_id"])
+            session_id = str(selected["session_id"])
+            run_meta = _get_run_meta(store, run_id)
+            session_desc = _get_session_desc(store, run_id, session_id)
+            rows_data.append(
+                {
+                    "Created": run_meta["created_at"],
+                    "Run description": run_meta["description"],
+                    "Session description": session_desc,
+                    "Run ID": run_id,
+                    "Session ID": session_id,
+                }
+            )
+        grid_df = pd.DataFrame.from_records(
+            rows_data,
+            columns=["Created", "Run description", "Session description", "Run ID", "Session ID"],
+        )
+        grid_df.index = pd.RangeIndex(start=0, stop=len(grid_df), step=1)
+        session_grid.data = grid_df
+        _sync_grid_from_hidden()
 
         _refresh_aggregation_options()
+
+    def _selected_labels_from_grid() -> tuple[str, ...]:
+        labels: list[str] = []
+        seen: set[str] = set()
+        visible_df = session_grid.get_visible_data()
+        for rect in list(session_grid.selections or []):
+            row_start = int(rect.get("r1", -1))
+            row_end = int(rect.get("r2", -1))
+            if row_start < 0 or row_end < row_start:
+                continue
+            for row_pos in range(row_start, row_end + 1):
+                if row_pos < 0 or row_pos >= len(visible_df.index):
+                    continue
+                label = _grid_index_to_label.get(int(visible_df.index[row_pos]))
+                if not label or label in seen:
+                    continue
+                seen.add(label)
+                labels.append(label)
+        return tuple(labels)
+
+    def _sync_hidden_from_grid(*_) -> None:
+        if _state["syncing_grid"]:
+            return
+        labels = _selected_labels_from_grid()
+        _state["syncing_hidden"] = True
+        try:
+            sessions_sel.value = labels
+        finally:
+            _state["syncing_hidden"] = False
+
+    def _sync_grid_from_hidden(*_) -> None:
+        if _state["syncing_hidden"]:
+            return
+        label_set = set(map(str, sessions_sel.value or ()))
+        visible_df = session_grid.get_visible_data()
+        _state["syncing_grid"] = True
+        try:
+            session_grid.clear_selection()
+            if visible_df.empty or not label_set:
+                return
+            last_col = max(0, len(visible_df.columns) - 1)
+            for row_pos in range(len(visible_df.index)):
+                label = _grid_index_to_label.get(int(visible_df.index[row_pos]))
+                if label in label_set:
+                    session_grid.select(row_pos, 0, row_pos, last_col, clear_mode="none")
+        finally:
+            _state["syncing_grid"] = False
 
     def _selected_session_keys_from_ui() -> list[str]:
         keys: list[str] = []
@@ -493,8 +598,8 @@ def make_session_aggregation_editor(
         sessions_sel.value = tuple(labels)
         _set_status([f"Loaded {len(labels)} sessions from {key}."])
 
-    run_dd.observe(_refresh_sessions, names="value")
-    show_ids_cb.observe(_refresh_sessions, names="value")
+    session_grid.observe(_sync_hidden_from_grid, names="selections")
+    sessions_sel.observe(_sync_grid_from_hidden, names="value")
     w_agg_list.observe(_on_agg_select, names="value")
 
     b_refresh.on_click(_refresh_sessions)
@@ -507,7 +612,8 @@ def make_session_aggregation_editor(
 
     ui = W.VBox(
         [
-            W.HBox([run_dd, show_ids_cb, b_refresh]),
+            W.HBox([b_refresh]),
+            session_grid,
             sessions_sel,
             W.VBox(
                 [
@@ -527,7 +633,8 @@ def make_session_aggregation_editor(
         "store": store,
         "aggregation_store": agg_store,
         "run_dd": run_dd,
-        "show_ids_cb": show_ids_cb,
+        "show_ids_cb": None,
+        "session_grid": session_grid,
         "sessions_sel": sessions_sel,
         "out": out,
         "refresh": _refresh_sessions,
@@ -557,24 +664,14 @@ def make_session_selector(
     except Exception:
         pass
 
-    run_options = _build_run_options(store=store, show_ids=bool(show_ids_default))
+    run_options = _build_run_options(store=store, show_ids=True)
     run_dd = W.Dropdown(
         options=run_options,
-        value=(
-            default_run_id
-            if default_run_id in dict(run_options).values() or default_run_id == "__ALL__"
-            else "__ALL__"
-        ),
+        value="__ALL__",
         description="Run",
-        layout=W.Layout(width="820px"),
+        layout=W.Layout(display="none"),
     )
 
-    show_ids_cb = W.Checkbox(
-        value=bool(show_ids_default),
-        description="Show run and session IDs",
-        indent=False,
-        layout=W.Layout(width="260px"),
-    )
     autosave_cb = W.Checkbox(
         value=bool(autosave_default),
         description="Autosave selection",
@@ -595,14 +692,63 @@ def make_session_selector(
     entities_sel = W.SelectMultiple(
         options=[],
         value=(),
-        rows=rows,
-        description="Entities",
-        layout=W.Layout(width="820px"),
+        layout=W.Layout(display="none"),
+    )
+    entity_grid = DataGrid(
+        pd.DataFrame(
+            columns=[
+                "Type",
+                "Created",
+                "Run description",
+                "Session / aggregation",
+                "Run ID",
+                "Session ID / key",
+                "Members",
+            ]
+        ),
+        selection_mode="row",
+        header_visibility="column",
+        base_column_size=140,
+        base_row_size=30,
+        layout=W.Layout(width="100%", height=f"{max(8, rows) * 28 + 36}px"),
+        auto_fit_columns=False,
+        column_widths={
+            "Type": 110,
+            "Created": 165,
+            "Run description": 220,
+            "Session / aggregation": 280,
+            "Run ID": 180,
+            "Session ID / key": 220,
+            "Members": 90,
+        },
+        default_renderer=TextRenderer(
+            font="13px Segoe UI, Tahoma, Arial, sans-serif",
+            vertical_alignment="center",
+            background_color="#ffffff",
+        ),
+        header_renderer=TextRenderer(
+            font="600 12px Segoe UI, Tahoma, Arial, sans-serif",
+            vertical_alignment="center",
+            background_color="#f5f7fa",
+        ),
+        grid_style={
+            "background_color": "#ffffff",
+            "grid_line_color": "#e5e7eb",
+            "header_background_color": "#f5f7fa",
+            "header_grid_line_color": "#d9dde3",
+            "selection_fill_color": "rgba(156, 163, 175, 0.18)",
+            "selection_border_color": "#9ca3af",
+            "header_selection_fill_color": "rgba(156, 163, 175, 0.18)",
+            "header_selection_border_color": "#9ca3af",
+        },
     )
 
     out = W.Output(layout=W.Layout(width="1240px"))
 
     _entity_label_to_entity: dict[str, ScopeEntity] = {}
+    _entity_key_to_label: dict[str, str] = {}
+    _grid_index_to_label: dict[int, str] = {}
+    _grid_df = pd.DataFrame()
     _all_key_to_ref_cache: MutableKeyToRef = {}
     _events_index_df_all = pd.DataFrame(columns=[SESSION_KEY_COL, RUN_ID_COL, SESSION_ID_COL])
 
@@ -617,6 +763,7 @@ def make_session_selector(
     )
     _key_to_ref: MutableKeyToRef = {}
     _events_index_df = pd.DataFrame(columns=[SESSION_KEY_COL, RUN_ID_COL, SESSION_ID_COL])
+    _ui_state: dict[str, bool] = {"syncing_grid": False, "syncing_hidden": False}
 
     def _set_status(lines: Sequence[str]) -> None:
         with out:
@@ -629,14 +776,58 @@ def make_session_selector(
         _all_key_to_ref_cache = _all_key_to_ref(store)
         _events_index_df_all = _events_index_df_from_key_to_ref(_all_key_to_ref_cache)
 
-    def _rebuild_entity_options(*_) -> None:
-        nonlocal _entity_label_to_entity
+    def _selected_labels_from_grid() -> tuple[str, ...]:
+        labels: list[str] = []
+        seen: set[str] = set()
+        visible_df = entity_grid.get_visible_data()
+        for rect in list(entity_grid.selections or []):
+            row_start = int(rect.get("r1", -1))
+            row_end = int(rect.get("r2", -1))
+            if row_start < 0 or row_end < row_start:
+                continue
+            for row_pos in range(row_start, row_end + 1):
+                if row_pos < 0 or row_pos >= len(visible_df.index):
+                    continue
+                label = _grid_index_to_label.get(int(visible_df.index[row_pos]))
+                if not label or label in seen:
+                    continue
+                seen.add(label)
+                labels.append(label)
+        return tuple(labels)
 
-        prev_run = str(run_dd.value or "__ALL__")
-        run_options = _build_run_options(store=store, show_ids=bool(show_ids_cb.value))
-        valid_run_values = {str(v) for _, v in run_options}
-        run_dd.options = run_options
-        run_dd.value = prev_run if prev_run in valid_run_values else "__ALL__"
+    def _sync_hidden_from_grid(*_) -> None:
+        if _ui_state["syncing_grid"]:
+            return
+        labels = _selected_labels_from_grid()
+        _ui_state["syncing_hidden"] = True
+        try:
+            entities_sel.value = labels
+        finally:
+            _ui_state["syncing_hidden"] = False
+
+    def _sync_grid_from_hidden(*_) -> None:
+        if _ui_state["syncing_hidden"]:
+            return
+        label_set = set(map(str, entities_sel.value or ()))
+        visible_df = entity_grid.get_visible_data()
+        _ui_state["syncing_grid"] = True
+        try:
+            entity_grid.clear_selection()
+            if visible_df.empty or not label_set:
+                return
+            last_col = max(0, len(visible_df.columns) - 1)
+            for row_pos in range(len(visible_df.index)):
+                label = _grid_index_to_label.get(int(visible_df.index[row_pos]))
+                if label in label_set:
+                    entity_grid.select(row_pos, 0, row_pos, last_col, clear_mode="none")
+        finally:
+            _ui_state["syncing_grid"] = False
+
+    def _rebuild_entity_options(*_) -> None:
+        nonlocal _entity_label_to_entity, _entity_key_to_label, _grid_index_to_label, _grid_df
+
+        run_dd.options = _build_run_options(store=store, show_ids=True)
+        run_dd.value = "__ALL__"
 
         prev_keys = {str(e.entity_key) for e in _selected_entities}
         try:
@@ -646,13 +837,14 @@ def make_session_selector(
 
         _, _, session_key_to_label = _build_session_index(
             store=store,
-            selected_run_id=run_dd.value,
-            show_ids=bool(show_ids_cb.value),
+            selected_run_id="__ALL__",
+            show_ids=True,
         )
 
         label_counts: dict[str, int] = {}
         options: list[str] = []
         mapping: dict[str, ScopeEntity] = {}
+        rows_data: list[dict[str, Any]] = []
 
         for session_key in sorted(session_key_to_label.keys()):
             base = f"Session | {session_key_to_label[session_key]}"
@@ -666,13 +858,27 @@ def make_session_selector(
                 member_session_keys=(str(session_key),),
             )
             options.append(label)
+            run_id, session_id = _all_key_to_ref_cache.get(str(session_key), ("", ""))
+            run_meta = _get_run_meta(store, str(run_id)) if run_id else {"created_at": "", "description": ""}
+            session_desc = _get_session_desc(store, str(run_id), str(session_id)) if run_id and session_id else ""
+            rows_data.append(
+                {
+                    "Type": "Session",
+                    "Created": run_meta["created_at"],
+                    "Run description": run_meta["description"],
+                    "Session / aggregation": session_desc,
+                    "Run ID": str(run_id),
+                    "Session ID / key": str(session_id),
+                    "Members": 1,
+                }
+            )
 
         for agg in agg_store.list():
             base = _format_aggregation_label(
                 aggregation_key=str(agg.aggregation_key),
                 title=str(agg.title),
                 n_members=len(agg.member_session_keys),
-                show_ids=bool(show_ids_cb.value),
+                show_ids=True,
             )
             n = label_counts.get(base, 0) + 1
             label_counts[base] = n
@@ -684,9 +890,38 @@ def make_session_selector(
                 member_session_keys=tuple(map(str, agg.member_session_keys)),
             )
             options.append(label)
+            rows_data.append(
+                {
+                    "Type": "Aggregation",
+                    "Created": "",
+                    "Run description": "",
+                    "Session / aggregation": str(agg.title or agg.aggregation_key),
+                    "Run ID": "",
+                    "Session ID / key": str(agg.aggregation_key),
+                    "Members": len(agg.member_session_keys),
+                }
+            )
 
         _entity_label_to_entity = mapping
+        _entity_key_to_label = {
+            str(entity.entity_key): label for label, entity in _entity_label_to_entity.items()
+        }
         entities_sel.options = options
+        _grid_index_to_label = {idx: label for idx, label in enumerate(options)}
+        _grid_df = pd.DataFrame.from_records(
+            rows_data,
+            columns=[
+                "Type",
+                "Created",
+                "Run description",
+                "Session / aggregation",
+                "Run ID",
+                "Session ID / key",
+                "Members",
+            ],
+        )
+        _grid_df.index = pd.RangeIndex(start=0, stop=len(_grid_df), step=1)
+        entity_grid.data = _grid_df
 
         kept = tuple(
             lbl
@@ -699,6 +934,7 @@ def make_session_selector(
             entities_sel.value = (options[0],)
         else:
             entities_sel.value = ()
+        _sync_grid_from_hidden()
 
     def _refresh_scope_state(*_) -> None:
         nonlocal _selected, _selected_entities, _entity_snapshot, _key_to_ref, _events_index_df
@@ -763,14 +999,7 @@ def make_session_selector(
         labels: list[str] = []
         missing: list[str] = []
         for entity_key in entity_keys:
-            match = next(
-                (
-                    label
-                    for label, entity in _entity_label_to_entity.items()
-                    if str(entity.entity_key) == str(entity_key)
-                ),
-                None,
-            )
+            match = _entity_key_to_label.get(str(entity_key))
             if match is None:
                 missing.append(str(entity_key))
                 continue
@@ -832,7 +1061,8 @@ def make_session_selector(
         _refresh_scope_state()
 
     run_dd.observe(_refresh_all, names="value")
-    show_ids_cb.observe(_refresh_all, names="value")
+    entity_grid.observe(_sync_hidden_from_grid, names="selections")
+    entities_sel.observe(_sync_grid_from_hidden, names="value")
     entities_sel.observe(_refresh_scope_state, names="value")
     def _on_autosave_change(change):
         if bool(change.get("new")) and _selected_entities:
@@ -862,7 +1092,8 @@ def make_session_selector(
 
     ui = W.VBox(
         [
-            W.HBox([run_dd, show_ids_cb, autosave_cb, b_refresh, b_save_selection, b_load_selection]),
+            W.HBox([autosave_cb, b_refresh, b_save_selection, b_load_selection]),
+            entity_grid,
             entities_sel,
             out,
             refresh_signal,
@@ -898,8 +1129,9 @@ def make_session_selector(
         "store": store,
         "aggregation_store": agg_store,
         "run_dd": run_dd,
+        "entity_grid": entity_grid,
         "entities_sel": entities_sel,
-        "show_ids_cb": show_ids_cb,
+        "show_ids_cb": None,
         "autosave_cb": autosave_cb,
         "refresh_signal": refresh_signal,
         "out": out,

@@ -1,4 +1,331 @@
 {
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_10-21-46.CSV|2357359|1760074772": {
+    "sha256": "f7e02e915220a2fa1dbb7029c2c9cbbdc0ba5621bfb2702819c93352af8aac5d"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_10-49-03.CSV|1576399|1760074772": {
+    "sha256": "fa3fdedc648efca15472b63cbc7a2b920a0af125573b64178046d3441cfb940b"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_11-14-59.CSV|1349790|1760074772": {
+    "sha256": "1ce1952d104291b87b757e0d8a4a2507d3448a640fbf4f1f9c99375f956d38cd"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_11-38-40.CSV|1546405|1760074772": {
+    "sha256": "9afa2a96207f480f2cb5a895a8463d5a035c9a5d2cc1dd5f85b915b0464261fe"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_12-00-02.CSV|1609770|1760074772": {
+    "sha256": "8a2451b98e82862d69a9b8de88d88cbc3c742d04bf2bc481cf2eb78d8d75e1db"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_12-24-05.CSV|1224841|1760074772": {
+    "sha256": "526dca1fe0d7fd031b6bc5e475093382faaa8ab4809fdce70ca75a31c100db15"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_13-34-33.CSV|1744972|1760074772": {
+    "sha256": "e2c2188497c489d60a9523629d1d38b68978bc7238a6a4f31dc2087d6c1612ed"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_13-55-09.CSV|2372356|1760074772": {
+    "sha256": "fe83635628f99fd3f50fac1a93de9bf60b10401aa7f4f7f9793fec68395700de"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-09-28_15-06-43.CSV|1156699|1760074772": {
+    "sha256": "9d2d97f2991cfdbc340f5b79e3005d25d43da027de677e0e0696da7dd62a05e6"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-12_08-44-24_72 Virgins.CSV|5954084|1760240637": {
+    "sha256": "99d2fffd0b99f5dbeec0108f0d01669190668ae5fe63b0f5b8c1a52b53456f5f"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-12_10-09-14_Slot machine.CSV|14271333|1760240711": {
+    "sha256": "a9b3a0ed87444ea058b45d4fec14c2610f51421b50eae90a8b757fe186dbada5"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-12_10-43-07_bennet boys.CSV|9183795|1760240788": {
+    "sha256": "51ca8ad79d84c0cd339ccf78946e9d8e55aec6cd2bb94fb3268c8bc87e5eb7b4"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-19_09-26-15_nutbuzzer.CSV|9439089|1760849188": {
+    "sha256": "264894383b42b4a67dc1ae098ef97968e8c081ccb23e6e9abfa45e8fde789cdc"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-19_09-44-38_slackline.CSV|7479688|1760849263": {
+    "sha256": "25f710781fe2a8e7b04432c85054b08379b047f8418c4231ddcc712a87c0dbdb"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-19_10-13-30_slackline.CSV|4017736|1760849335": {
+    "sha256": "c8900c2e31aa2bdfc8ba4947e6fc76e8acd618123d11a58536f603c5ed266191"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-19_10-41-21_aztec.CSV|10306893|1760849417": {
+    "sha256": "81744a8a7e2bd37e7c9f8ffc77f5705c1664f7cf138cffd32cd7ee101b3784cd"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-19_11-42-53_tombstone.CSV|5303290|1760849465": {
+    "sha256": "b2b1b43e20d37c2829218491547077e52314fa09d9318b9c2abdb273bbefa3c7"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-21_19-24-13.CSV|4834410|1761046206": {
+    "sha256": "e79f34cb3c5b0870ae6557e94cdcc551ac9dc4139812bc938170c403655f198a"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-25_12-19-17_cashout.CSV|21114242|1761394621": {
+    "sha256": "237111b1ed2d10d94899307452b1e195ddceca99372d69e2e2d335c471af1170"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-25_12-56-07_sendit.CSV|10552272|1761394667": {
+    "sha256": "3ed3619a18724a4c6eb595e9e5b3d5a163a8718aafe651881f271889add072db"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-25_14-11-17_sendit.CSV|6038851|1761394693": {
+    "sha256": "a754fcc3419f00bed13ebb247db248c59a6d95576a70460ad4d6f656b4135146"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-25_14-39-03_sendit.CSV|4509688|1761394718": {
+    "sha256": "f9f8e0fc70e7ffec15121b6a00fe940951dc14fbc659cee0aa9f01444bdf2117"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-25_16-03-42_blackglove.CSV|9089137|1761394753": {
+    "sha256": "030a969db916a7f490db245b05a478cd99647d9e52f516ba2b6cd8e284ee32f1"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-25_16-43-36_damit.CSV|4516521|1761394772": {
+    "sha256": "514c1977eb95e7e687da98cddde691c858c3d359be61f5e4a88a3aa716eb4688"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-26_08-25-31_bennetboys.CSV|7634867|1761474656": {
+    "sha256": "745e6f9455b18d5cbb1d0267616f08f1e2811433fe8253f4f4c2adaf07097cb2"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-26_09-01-45_slotslabs.CSV|7432457|1761474685": {
+    "sha256": "4e71470307962d43630267013feb74d9b23e3a7a7f1ba71aa44c2209cc80ff7a"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-10-26_09-46-02_newnormal.CSV|3708712|1761474699": {
+    "sha256": "a559f15445c7116a96373ce5973f0d66a1d394dd83fb016277147e5c31377906"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-21_17-52-21.CSV|550023|1763718812": {
+    "sha256": "0461ffa43413a0d2d46e3895e3ea8b68f9b5159f32c090c4032ae13386b4bfb7"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-22_08-14-41.CSV|490195|1763770549": {
+    "sha256": "b5346d1a2fd0241089d3a24acf213463d04e581f8ef2d0f60d7331c8f3773d4a"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-22_16-12-55.CSV|393826|1763799225": {
+    "sha256": "acecd5a5b3e85a926db7c2a7e054b28f448f9011b5fdc7d6921b224572eaaf5a"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-30_08-54-23.CSV|24519041|1764923130": {
+    "sha256": "b6105a196b0d91c5cd7e49d03b2d0ad26c7a2ac79a62513943b87c3b27145dbb"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-30_09-12-12.CSV|6539853|1764923183": {
+    "sha256": "8d55232a514df46e53fcfe0996b98ecaaf0c77a05959e2e0be9aa00d181d5270"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-30_09-19-35.CSV|5604508|1764923238": {
+    "sha256": "ef30bdb132d568d436e7d2dec471f0a066d27291409b38a27840970442548c5e"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-30_10-03-38.CSV|4268109|1764923274": {
+    "sha256": "8db9cdc3c844dd74cb6c7613319ac3652f05c35a3bf0e683d3fb562599f6807e"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2025-11-30_10-12-36.CSV|24328501|1764923396": {
+    "sha256": "d5e3ac59f4b941d63b276271d1eff8bc87e607939c424e0c1d5e5aca69035255"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-04_06-37-32.CSV|9230568|1767480134": {
+    "sha256": "439dfc33434e8dc9fca9ed887139dc15df02aa7d3b01ac141616b0eb33a6adf5"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-04_07-08-37.CSV|6319030|1767481912": {
+    "sha256": "6fb84cc067792b17c369102d7cb0ad6f5b7f13d60a5c21d7996bcbf2e8323045"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_09-45-58.CSV|5029822|1769335515": {
+    "sha256": "9eaa9c6881bd4b4ccee566c7fc01e8c9e40c35b1da7e1a61aadefc835c9d3648"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_10-09-00.CSV|7646900|1769335542": {
+    "sha256": "20b7aa2d30b437acad33dc83581af732301e646388d15a35f889100b96ee4541"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_10-27-52.CSV|5003804|1769335491": {
+    "sha256": "061dc6c1fdf83c95c7575fc5bae627fd5a6964117d011273ab41789c55d0466b"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_10-49-10.CSV|7137484|1769335457": {
+    "sha256": "f84e9b9054663b00005c1b8b22b11f027900a512cc84f13761ff5280179474fd"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_11-11-29.CSV|8520231|1769335409": {
+    "sha256": "80b7a739f10ddf3a1ebbeb335541cb803c4002f826369cc364c42a9e737152ff"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_11-35-12.CSV|10650873|1769334456": {
+    "sha256": "7720f9babb737884bbed26cb62ea9351b25b6fbc8b02ad11f4329b0d1fbdd3d6"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_12-35-01.CSV|8398614|1769334418": {
+    "sha256": "b901709783a309cf1155631ce8c46042d2befd0b15d64a4ffce879bd0964e9f0"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_12-54-47.CSV|9811944|1769334345": {
+    "sha256": "214301240caa93ba57fe201ad4b6eb5d258b968258959562dcb4c702e5348877"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_13-21-24.CSV|38378802|1769334576": {
+    "sha256": "a1368ca84c0a8d4631088bc0cfb8f6ca85bf975f44f6b893486bbb860afad43e"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_13-42-38.CSV|8167807|1769334248": {
+    "sha256": "cd8c7ec33efbbe97124f3c4a1d42c3c1621b9472a732ea41eee70960ecbd4d84"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_14-04-23.CSV|9210001|1769334135": {
+    "sha256": "dd392a9c8a9389846e0f52bb49e0cded55fbbb0803aa51bdb46761d88b08f826"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_14-13-31.CSV|309585|1769334092": {
+    "sha256": "254180abdd570458ff0cf8527200f3c6bad9250a38ecae2e7a137826d14aecc2"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-01-25_14-13-44.CSV|64209|1769334082": {
+    "sha256": "52249b4187e8ba4ee539f3a714af23a92bde32443afe9c7e704d1b3892fb0316"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-01_09-43-45.CSV|8649366|1769934529": {
+    "sha256": "acd9796b2fab6eac9b53b2b0fe999bb60bc18906897a46759784191c0c59daee"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-01_09-48-24.CSV|3870108|1769934548": {
+    "sha256": "eda978c2e605d462c1e4eaedd4e90d529f1fe614892c199a2352c972ee1a7ee7"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-01_10-10-28.CSV|13390257|1769934629": {
+    "sha256": "b3bc2e3978159bc46bce3867c35b54c34b762c6b135e501cc3c0e11782f3044c"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-01_10-18-23.CSV|5866272|1769934661": {
+    "sha256": "6661c6dd9ab0fdc63c6ba1cf3edc616c065e77c40648b5d4e1aa23f4aa28cf28"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-01_10-50-01.CSV|12501629|1769934723": {
+    "sha256": "0ae0427c1d8cc1a6007ec1b20b3eaf7a33dfcd3b6154fd268520823d3adfcdec"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_06-45-44.CSV|36151|1771487537": {
+    "sha256": "3d163f84941703544b08a4baac9bb6f83799fc406368e942ea0583e93983f44b"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_08-35-11.CSV|8427039|1771487575": {
+    "sha256": "13b5b40762ce37f6910d7a288727952b53f1718f2f529cc42b011b04e766c5ef"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_08-40-31.CSV|3436281|1771487612": {
+    "sha256": "eecb3003f0dd9ce43929ff8e57c27acbb7ce034c1f9224140b0d2f886b0411b5"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_08-43-00.CSV|9178489|1771487649": {
+    "sha256": "707e6c3c55c5083c7ca14dbba91c55919e0c36e678ffcf9b9fd4f7d6098fe8eb"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_08-50-08.CSV|4258742|1771487688": {
+    "sha256": "cc91e93419823f93fdc8557c9b7bf0597e1429a415bcf80ce68800ec8c1ca3d9"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_08-55-18.CSV|3624662|1771487714": {
+    "sha256": "d0b339c606858166b128fe32635f64a9c567a27232be6e46f314d04c08950feb"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_08-57-46.CSV|2162523|1771487737": {
+    "sha256": "bbbf16d158d1367afb90de579026e4c1d7a951ead9ca5248e00598914566ad06"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_08-59-25.CSV|5886923|1771487773": {
+    "sha256": "db826ebe0850085167ea399b7f2be774c186f32bd356683a5e00bb3db7ebff9a"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_09-37-10.CSV|9306044|1771487828": {
+    "sha256": "c7c03ae0c31409db76540aa5caf0251a2707280a4d971d2e26cfee7013d22f24"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_09-43-31.CSV|8870602|1771487880": {
+    "sha256": "2ccdbe0eb9b3017285ecd7ebdeb6b48180202a786522c447ecfca46ca3998093"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_09-52-25.CSV|3379377|1771487914": {
+    "sha256": "5a8c43300d5226f43e4cd0b13e5ab209f5611adad4f4c3b9d4a9675b51c7b1cf"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_09-54-41.CSV|2861622|1771487939": {
+    "sha256": "435d93dbdc6f686207e05d3048f4877cb4359d207f34f31f93937e130b010816"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_10-00-40.CSV|2492181|1771487955": {
+    "sha256": "d51c4a61a2c91f987d7914967bac0383737de846ccd18c9d52a6dbc35f257480"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_10-02-36.CSV|6341827|1771487997": {
+    "sha256": "2ce47b06323f5d7d853f598822cdb19af243eceba1978f2a8958b5cf9fad99e5"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-04-49.CSV|2681519|1771488013": {
+    "sha256": "c7eadc7ff7fe1bf60e0309f874e4f3e1a50ab6a2a96ebe52b92b71b2122c479d"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-06-20.CSV|4318944|1771488033": {
+    "sha256": "9bfbc5e2662f8db8f9a7ca8851e04275f64fb8e42655705ecb9166f00326ea8a"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-09-34.CSV|11867857|1771488088": {
+    "sha256": "98d902a571216e3c18615c45ce207f1f267a9f530ec481e31ed92e2517032c6f"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-18-26.CSV|2219401|1771488105": {
+    "sha256": "ef0d82a0c7ac77925e23f611fee41a82bf98d5a40246607bf4adb292a46ef7bc"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-20-09.CSV|3509378|1771488124": {
+    "sha256": "01aeacc6bb628b8b40a69567430180d194cb81dfb7d159f76f99543c7087a495"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-23-44.CSV|4657441|1771488148": {
+    "sha256": "e6fcbf3b2a7cd6e1605194d189e383ecb154f3d98635403e9f684835ec99a403"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-26-56.CSV|1851065|1771488178": {
+    "sha256": "03ebb27f0b306fa7686416cfd9b021c5153008218d729e3530ad6337f21058dc"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_12-28-18.CSV|3953503|1771488203": {
+    "sha256": "32e7f92635d35583636ca134dfba6802ad5655575ac74381bc56fc16f1630baa"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_13-04-07.CSV|8693189|1771488246": {
+    "sha256": "e15a6aac41f56c269a6fe793a7a7e60181c4a1368bad6285e54e7f3b79ed3b67"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_13-09-09.CSV|6203241|1771488271": {
+    "sha256": "021d2c30dc0cf7195264320a410d17a195ee70dadfc0c08163d2121d185fc60e"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_13-14-06.CSV|5024591|1771488321": {
+    "sha256": "e9087e56d8daf9dd70f698fbf91094579257b894b9503241657cd79988ce0c9f"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_13-18-49.CSV|2354403|1771488332": {
+    "sha256": "14cdb456a298086331116623a07317ee7efe3de8dfefc406c6170a78cb27c1a2"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_13-20-52.CSV|4312055|1771488361": {
+    "sha256": "3a973cc857383941fdf2b46aeaf673f7b86ae93218639c22768add0e8baa81fb"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_13-24-27.CSV|5303764|1771488382": {
+    "sha256": "58b603b56e517bb7ec8eb7fd112d9ac37d3bc643ceb1a41ef98f27ef2062c503"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_13-27-43.CSV|2085996|1771488393": {
+    "sha256": "9c5fde78bb1e812be14b9d0b31341ce1c5d15aafcab19108fe5f27b4ad0b1b44"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_14-03-55.CSV|8942699|1771488432": {
+    "sha256": "eed0be3c7baf5b4b60e0650606e2c9259860d55301577dad97aa4d503604995b"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_14-10-52.CSV|9203671|1771488473": {
+    "sha256": "da4c202537d9cd3e5a1b91265e32d905d2c9d2d19b0193e05c1d5d03bfcb80da"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-19_14-20-35.CSV|26812496|1771488592": {
+    "sha256": "6987a6562f0bc5c697f7c4e07ef92f08142faeccc599830bc3e3be7d9e0443b4"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_08-34-26.CSV|2664018|1771575370": {
+    "sha256": "fc72f5be85fffae9afa0c98622d3797dc3b5dbd44d39ff73e4e021129dc51728"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_08-36-01.CSV|4140230|1771575386": {
+    "sha256": "c637ca77e0fcb5b8b957ecc3cf279f91acacfa5f52e05953f939a55c0787869a"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_08-39-06.CSV|13699394|1771575460": {
+    "sha256": "c4560273b8281be81cb5f62ba34de17bfe48b425d3a4e36b2cf1eda857a66655"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_08-48-33.CSV|8073790|1771575490": {
+    "sha256": "dbbc15e3bd8fbda3957afd46ba4edd4a37c967e720e2977b89033559308dc487"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_09-13-59.CSV|2635268|1771575511": {
+    "sha256": "bcfdf0e1acc28be7565a82094536e14d692578fc59a67df0232c40547fbbd371"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_10-08-36.CSV|2855140|1771575653": {
+    "sha256": "af38a90d65f5b3bb1a85542bcbf2c530bfe9c904811c4ebf141b987022674e67"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_10-10-16.CSV|4458247|1771575531": {
+    "sha256": "6207f93524b9d9b861a10c5ec192b3f1f5ef16521158745d9de1019d152dd9f5"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_10-15-52.CSV|8592222|1771575682": {
+    "sha256": "2761f5a7dcbd9600f8e2a8efd7ea7a3ad467411c44447a07a6258e726154b638"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_10-31-09.CSV|6987361|1771575726": {
+    "sha256": "61e5804eecf48244f90895c172e46a8b0e4dc9eb5adb562e927cb4ab2ba73ac7"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_11-43-37.CSV|4949063|1771575962": {
+    "sha256": "600e9447ce5bb92863bf7e88fa468f00cfd57b6aab9f0f694020e639cf30df39"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_11-54-25.CSV|10494820|1771576727": {
+    "sha256": "3189c5e11d3991806aaefba53ae93567b829a5874fe3f591956b7b41bbd7f5c7"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_12-00-14.CSV|2299999|1771576637": {
+    "sha256": "5b157a0300f8ab73e0d07f2d8c11e2d5df486d68e60ba2a15256aa6d3a098168"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_12-02-22.CSV|3047592|1771576921": {
+    "sha256": "abdbfe176c6b3bfddf9b7324129d649d2f58d8ee421d9b707a33d33576ff789b"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_12-04-40.CSV|4612993|1771577055": {
+    "sha256": "c6a23af947b6670a6924e81cb8a3878e9788b9deb763f68768ab72b0e39ca010"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_12-46-12.CSV|8162252|1771577087": {
+    "sha256": "668cc787a977dbc74f84d0d8846abe8b4164580cfb178fe276f92fded31bbfb4"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_12-58-25.CSV|14999740|1771577501": {
+    "sha256": "a35a04fe505e460d7970ff8ecc28c8e698caaca097e349cc4e101a2776a24543"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_13-06-37.CSV|2088272|1771577509": {
+    "sha256": "c2fc88436d597e3f9e727f6df7a685e21b5f2604687c86d50d17eaa3f9b5f84d"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026-02-20_13-08-45.CSV|4490019|1771577526": {
+    "sha256": "4c48620335218caed256683fd34f4b484867732ed3c28b4f5736ba62539a2fae"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026a-01-04_06-37-32a.CSV|6935025|1767591231": {
+    "sha256": "4df68c7f04506f1345082dfec9c07193fd1913ac22307dbbd3f6de92015dbb29"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\2026a-01-04_07-08-37a.CSV|4737678|1767586047": {
+    "sha256": "ee4d15421ebaf41d1374eaa9ca3c8f99a87ce494d4832e792fad2f28b3928245"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\Raw_logger_data.CSV|5954084|1760240637": {
+    "sha256": "99d2fffd0b99f5dbeec0108f0d01669190668ae5fe63b0f5b8c1a52b53456f5f"
+  },
+  "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\Tunnel Vision.CSV|5560767|1767077989": {
+    "sha256": "7f81da899d5ddc2690c8c08ed91ce92791f60d347fd6c13d4e6878d288e8d347"
+  },
   "C:\\Users\\benco\\Downloads\\1970-01-01_00-00-00.CSV|57273|1758886047": {
     "sha256": "b2d6a7fefd734dbb855ce4a372eda3b3661f431962ba3244c1395b6536586a5e"
   },
