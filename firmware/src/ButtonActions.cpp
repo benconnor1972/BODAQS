@@ -208,6 +208,10 @@ void ButtonActions::registerButtons() {
 
 
 void ButtonActions::invoke(ActionId action, ButtonEvent ev) {
+  if (MenuSystem::isActive() && MenuSystem::handleAction(action, ev)) {
+    return;
+  }
+
   switch (action) {
     case ACT_LOGGING_TOGGLE:
       onToggleLogging(ev);
@@ -271,12 +275,9 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
 }
 
 void ButtonActions::onMarkEvent(ButtonEvent event) {
-  // Let the MENU see only PRESSED (avoid double-trigger on RELEASED)
   if (MenuSystem::isActive()) {
-    if (event == BUTTON_PRESSED) {
-      MenuSystem::onMark();
-    }
-    return;  // do not fall through to logging, etc.
+    MenuSystem::handleAction(ACT_MARK_EVENT, event);
+    return;
   }
 
   // Outside the menu: accept PRESSED or RELEASED as you prefer
