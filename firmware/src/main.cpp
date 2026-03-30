@@ -62,19 +62,6 @@ static void dbgHeartbeat_()
 
 // --- Small utils ------------------------------------------------------------
 
-static void splitCsv3(const char* csv, String& s1, String& s2, String& s3) {
-  s1 = s2 = s3 = String();
-  if (!csv || !*csv) return;
-  String all(csv); all.trim();
-  int p1 = all.indexOf(',');
-  if (p1 < 0) { s1 = all; return; }
-  s1 = all.substring(0, p1); s1.trim();
-  int p2 = all.indexOf(',', p1 + 1);
-  if (p2 < 0) { s2 = all.substring(p1 + 1); s2.trim(); return; }
-  s2 = all.substring(p1 + 1, p2); s2.trim();
-  s3 = all.substring(p2 + 1); s3.trim();
-}
-
 // Parse "ZERO,RANGE" → CalMask (case-insensitive). Unknown tokens are ignored.
 static CalMask parseCalMaskCSV(const char* csv) {
   if (!csv || !*csv) return CAL_NONE;
@@ -201,6 +188,7 @@ void setup() {
   BOOT_LOGI("SETUP: A ButtonBindingTable::initFromConfig\n");
   ButtonBindingTable::initFromConfig(ConfigManager::get());
   BOOT_LOGI("SETUP: A done\n");
+  RTCManager_setTimezone(g_cfg.tz);
 
 
   // 1) Sensor framework
@@ -262,13 +250,6 @@ void setup() {
   }
 
  
-
-
-  // Timezone + NTP list
-  String n1, n2, n3;
-  splitCsv3(g_cfg.ntpServers, n1, n2, n3);
-  configTzTime(g_cfg.tz, n1.length()? n1.c_str(): nullptr, n2.length()? n2.c_str(): nullptr, n3.length()? n3.c_str(): nullptr);
-
   // 3) Init logging *after* sensors exist
   LoggingManager::begin(&g_cfg);
 

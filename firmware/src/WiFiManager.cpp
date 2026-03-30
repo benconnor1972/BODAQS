@@ -119,26 +119,67 @@ static void splitCsv3_(const char* csv, String& s1, String& s2, String& s3) {
   s3.trim();
 }
 
+static const char* firstNonEmptyHost_(const String& s1, const String& s2, const String& s3) {
+  if (s1.length()) return s1.c_str();
+  if (s2.length()) return s2.c_str();
+  if (s3.length()) return s3.c_str();
+  return nullptr;
+}
+
+static void logRtcSyncNetworkDiag_(const char* ntpHost) {
+  LOGD_TAG("RTC", "RTC sync net: local=%s gateway=%s subnet=%s dns1=%s dns2=%s\n",
+           WiFi.localIP().toString().c_str(),
+           WiFi.gatewayIP().toString().c_str(),
+           WiFi.subnetMask().toString().c_str(),
+           WiFi.dnsIP(0).toString().c_str(),
+           WiFi.dnsIP(1).toString().c_str());
+
+  if (!ntpHost || !*ntpHost) {
+    LOGD_TAG("RTC", "RTC sync DNS: no NTP hostname configured\n");
+    return;
+  }
+
+  IPAddress resolved;
+  const int rc = WiFi.hostByName(ntpHost, resolved);
+  if (rc == 1) {
+    LOGD_TAG("RTC", "RTC sync DNS: hostByName('%s') -> %s\n",
+             ntpHost,
+             resolved.toString().c_str());
+  } else {
+    LOGW_TAG("RTC", "RTC sync DNS: hostByName('%s') failed rc=%d\n", ntpHost, rc);
+  }
+}
+
+static void setRtcSyncPowerSave_(bool enabled) {
+  if (enabled) {
+    LOGD_TAG("RTC", "RTC sync: restoring WiFi modem sleep\n");
+    WiFi.setSleep(true);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  } else {
+    LOGD_TAG("RTC", "RTC sync: forcing WiFi power save off\n");
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+  }
+}
+
 // Free helper, no access to WiFiManager privates needed
 static void tryRtcSyncIfPending_() {
   if (!s_rtcSyncPending) return;
   {
     const auto& cfg = ConfigManager::get();
-    // Use saved TZ if set; else fall back to AWST (UTC+8; POSIX uses inverted sign)
-    const char* tz = (cfg.tz[0] ? cfg.tz : "AWST-8");
     String n1, n2, n3;
     splitCsv3_(cfg.ntpServers, n1, n2, n3);
 
-    // Re-issue SNTP config AFTER link-up to ensure client starts a query now.
-    // (Safe to call multiple times; it resets the SNTP client.)
-    configTzTime(tz,
-                 n1.length() ? n1.c_str() : nullptr,
-                 n2.length() ? n2.c_str() : nullptr,
-                 n3.length() ? n3.c_str() : nullptr);
-    RTC_LOGI("Re-kicked SNTP with TZ='%s' servers='%s'\n", tz, cfg.ntpServers);
-
+    setRtcSyncPowerSave_(false);
+    RTC_LOGI("Starting RTC network sync with TZ='%s' servers='%s'\n",
+             cfg.tz[0] ? cfg.tz : "UTC",
+             cfg.ntpServers);
+    logRtcSyncNetworkDiag_(firstNonEmptyHost_(n1, n2, n3));
+    if (!RTCManager_syncNetworkTime(cfg.tz, cfg.ntpServers, cfg.timeCheckUrl, 15000, 5000)) {
+      LOGW_TAG("RTC", "RTC sync failed after SNTP and HTTP fallback\n");
+    }
   }
-  (void)RTCManager_waitForSNTP(15000); // wait briefly for NTP
+  setRtcSyncPowerSave_(true);
   RTCManager_sync();                            // capture baseEpoch from system
   s_rtcSyncPending = false;
 
@@ -592,18 +633,17 @@ void WiFiManager::selectAndConnect_() {
   }
 
 
-  // Begin connect (password may be empty for open). Use the 5-arg overload to pin BSSID/channel.
+  // Comparison patch: avoid pinning channel/BSSID during association.
+  // We still use the scan results for network selection, but let the core choose the BSSID/channel.
   const char* pwd = nets[chosenIndex].password;
-  const uint8_t* bssidPtr = s_targetBssidSet ? s_targetBssid : nullptr;
-  int channel = chosenChannel > 0 ? chosenChannel : 0; // 0 = auto if unknown
   WIFI_LOGI("selected[%d]: ssid='%s' rssi=%d channel=%d staticIp=%d\n",
             chosenIndex,
             s_targetSsid.c_str(),
             chosenRssi,
-            channel,
+            chosenChannel,
             (int)nets[chosenIndex].staticIp);
   wifiDiag_("before WiFi.begin");
-  WiFi.begin(s_targetSsid.c_str(), (pwd ? pwd : ""), channel, bssidPtr, true /* connect */);
+  WiFi.begin(s_targetSsid.c_str(), (pwd ? pwd : ""));
   s_state = WiFiMgrState::CONNECTING;
   s_stateDeadlineMs = millis() + CONNECT_TIMEOUT_MS;
   notifyUi_();

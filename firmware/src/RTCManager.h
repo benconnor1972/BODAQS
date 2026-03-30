@@ -16,6 +16,9 @@ void RTCManager_invalidateInternalTime();
 // Initialize RTC system
 void RTCManager_begin(RTCSource source = RTC_INTERNAL);
 
+// Apply POSIX TZ string for localtime()/timestamp formatting.
+void RTCManager_setTimezone(const char* tz);
+
 // Call periodically to resync epoch once per second
 void RTCManager_loop();
 
@@ -40,6 +43,18 @@ bool RTCManager_hasValidTime();
 
 // Wait for SNTP to populate time (does NOT manipulate Wi-Fi). Returns true on success.
 bool RTCManager_waitForSNTP(uint32_t timeoutMs = 8000);
+
+// Attempt to sync internal time over the network. Applies timezone, tries SNTP,
+// and falls back to HTTP if configured.
+bool RTCManager_syncNetworkTime(const char* tz,
+                                const char* ntpServersCsv,
+                                const char* timeCheckUrl,
+                                uint32_t sntpTimeoutMs = 8000,
+                                uint32_t httpTimeoutMs = 5000);
+
+// Fallback time sync over HTTP. Expects a Unix epoch or a JSON body containing
+// a "unixtime" field. Returns true if system time was updated successfully.
+bool RTCManager_syncFromHttp(const char* url, uint32_t timeoutMs = 5000);
 
 
 #endif

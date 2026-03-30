@@ -3,6 +3,8 @@
 #include <time.h>
 #include <stdlib.h>  // for getenv (only needed if you keep the TZ print)
 #include <sys/time.h>  // settimeofday
+#include <esp_sntp.h>
+#include <HTTPClient.h>
 #include "DebugLog.h"
 
 #define RTC_LOGE(...) LOGE_TAG("RTC", __VA_ARGS__)
@@ -23,6 +25,134 @@ static time_t baseEpoch = 0;
 static unsigned long lastSyncMs = 0;
 static bool useHumanReadableTimestamps = false;
 
+static void splitCsv3_(const char* csv, String& s1, String& s2, String& s3) {
+  s1 = "";
+  s2 = "";
+  s3 = "";
+  if (!csv) return;
+
+  String src(csv);
+  src.trim();
+  if (!src.length()) return;
+
+  int p1 = src.indexOf(',');
+  if (p1 < 0) {
+    s1 = src;
+    s1.trim();
+    return;
+  }
+
+  s1 = src.substring(0, p1);
+  s1.trim();
+
+  int p2 = src.indexOf(',', p1 + 1);
+  if (p2 < 0) {
+    s2 = src.substring(p1 + 1);
+    s2.trim();
+    return;
+  }
+
+  s2 = src.substring(p1 + 1, p2);
+  s2.trim();
+  s3 = src.substring(p2 + 1);
+  s3.trim();
+}
+
+static const char* sntpStatusName_(sntp_sync_status_t status) {
+  switch (status) {
+    case SNTP_SYNC_STATUS_RESET:       return "RESET";
+    case SNTP_SYNC_STATUS_COMPLETED:   return "COMPLETED";
+    case SNTP_SYNC_STATUS_IN_PROGRESS: return "IN_PROGRESS";
+    default:                           return "?";
+  }
+}
+
+static const char* sntpModeName_(sntp_sync_mode_t mode) {
+  switch (mode) {
+    case SNTP_SYNC_MODE_IMMED:  return "IMMED";
+    case SNTP_SYNC_MODE_SMOOTH: return "SMOOTH";
+    default:                    return "?";
+  }
+}
+
+static void sntpTimeSyncNotification_(struct timeval* tv) {
+  if (!tv) {
+    RTC_LOGI("SNTP callback: time sync notification with null timeval\n");
+    return;
+  }
+
+  RTC_LOGI("SNTP callback: tv_sec=%lld tv_usec=%ld\n",
+           (long long)tv->tv_sec,
+           (long)tv->tv_usec);
+}
+
+static bool isSpace_(char c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static bool parseLeadingEpoch_(const String& body, time_t& epochOut) {
+  const char* p = body.c_str();
+  while (*p && isSpace_(*p)) ++p;
+  if (!*p) return false;
+
+  char* end = nullptr;
+  long long v = strtoll(p, &end, 10);
+  if (end == p) return false;
+  while (*end && isSpace_(*end)) ++end;
+  if (*end != '\0') return false;
+  if (v < 1577836800LL) return false;
+
+  epochOut = (time_t)v;
+  return true;
+}
+
+static bool parseJsonUnixtime_(const String& body, time_t& epochOut) {
+  const char* key = "\"unixtime\"";
+  int pos = body.indexOf(key);
+  if (pos < 0) return false;
+
+  pos = body.indexOf(':', pos + (int)strlen(key));
+  if (pos < 0) return false;
+  ++pos;
+
+  while (pos < body.length() && isSpace_(body[pos])) ++pos;
+  if (pos >= body.length()) return false;
+
+  char* end = nullptr;
+  long long v = strtoll(body.c_str() + pos, &end, 10);
+  if (end == body.c_str() + pos) return false;
+  if (v < 1577836800LL) return false;
+
+  epochOut = (time_t)v;
+  return true;
+}
+
+static void configureSntp_(const char* ntpServersCsv) {
+  String n1, n2, n3;
+  splitCsv3_(ntpServersCsv, n1, n2, n3);
+  if (!n1.length()) n1 = "pool.ntp.org";
+  if (!n2.length()) n2 = "time.nist.gov";
+
+  if (esp_sntp_enabled()) {
+    esp_sntp_stop();
+  }
+
+  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+  esp_sntp_servermode_dhcp(false);
+  esp_sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+  esp_sntp_set_time_sync_notification_cb(sntpTimeSyncNotification_);
+  esp_sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
+  esp_sntp_setservername(0, n1.c_str());
+  esp_sntp_setservername(1, n2.length() ? n2.c_str() : "");
+  esp_sntp_setservername(2, n3.length() ? n3.c_str() : "");
+  esp_sntp_init();
+
+  RTC_LOGI("SNTP configured: server0='%s' server1='%s' server2='%s'\n",
+           n1.c_str(),
+           n2.c_str(),
+           n3.c_str());
+}
+
 bool RTCManager_hasValidTime() {
   struct tm tmnow;
   // Non-blocking probe; if SNTP/RTC is ready, this will succeed quickly.
@@ -31,11 +161,26 @@ bool RTCManager_hasValidTime() {
   return (tmnow.tm_year + 1900) >= 2020;
 }
 
+void RTCManager_setTimezone(const char* tz) {
+  const char* applied = (tz && *tz) ? tz : "UTC";
+  setenv("TZ", applied, 1);
+  tzset();
+  RTC_LOGD("Timezone applied: '%s'\n", applied);
+}
+
 bool RTCManager_waitForSNTP(uint32_t timeout_ms) {
   const uint32_t deadline = millis() + timeout_ms;
   // Consider anything >= 2020-01-01 as "valid"
   const time_t sane = 1577836800;
   time_t now = 0;
+
+  RTC_LOGD("SNTP wait: enabled=%d mode=%s status=%s server0='%s' server1='%s' server2='%s'\n",
+           esp_sntp_enabled() ? 1 : 0,
+           sntpModeName_(esp_sntp_get_sync_mode()),
+           sntpStatusName_(esp_sntp_get_sync_status()),
+           esp_sntp_getservername(0) ? esp_sntp_getservername(0) : "",
+           esp_sntp_getservername(1) ? esp_sntp_getservername(1) : "",
+           esp_sntp_getservername(2) ? esp_sntp_getservername(2) : "");
 
   while ((int32_t)(millis() - deadline) < 0) {
     time(&now);
@@ -45,11 +190,94 @@ bool RTCManager_waitForSNTP(uint32_t timeout_ms) {
     static uint32_t nextLog = 0;
     if ((int32_t)(millis() - nextLog) >= 0) {
       nextLog = millis() + 1000;
-      RTC_LOGI("Waiting SNTP... WiFi OK, RSSI %d\n", WiFi.RSSI());
+      RTC_LOGI("Waiting SNTP... WiFi OK, RSSI %d, enabled=%d, status=%s\n",
+               WiFi.RSSI(),
+               esp_sntp_enabled() ? 1 : 0,
+               sntpStatusName_(esp_sntp_get_sync_status()));
     }
   }
-  RTC_LOGW("NTP: timeout waiting for SNTP.\n");
+  RTC_LOGW("NTP: timeout waiting for SNTP. enabled=%d status=%s\n",
+           esp_sntp_enabled() ? 1 : 0,
+           sntpStatusName_(esp_sntp_get_sync_status()));
   return false;
+}
+
+bool RTCManager_syncNetworkTime(const char* tz,
+                                const char* ntpServersCsv,
+                                const char* timeCheckUrl,
+                                uint32_t sntpTimeout_ms,
+                                uint32_t httpTimeout_ms) {
+  RTCManager_setTimezone(tz);
+  configureSntp_(ntpServersCsv);
+
+  if (RTCManager_waitForSNTP(sntpTimeout_ms)) {
+    RTCManager_sync();
+    return true;
+  }
+
+  if (RTCManager_syncFromHttp(timeCheckUrl, httpTimeout_ms)) {
+    RTCManager_sync();
+    return true;
+  }
+
+  return false;
+}
+
+bool RTCManager_syncFromHttp(const char* url, uint32_t timeout_ms) {
+  if (!url || !*url) {
+    RTC_LOGD("HTTP time fallback skipped: no URL configured\n");
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    RTC_LOGW("HTTP time fallback skipped: WiFi not connected\n");
+    return false;
+  }
+
+  HTTPClient http;
+  http.setTimeout(timeout_ms);
+  http.setConnectTimeout(timeout_ms);
+
+  RTC_LOGI("HTTP time fallback: GET %s\n", url);
+  if (!http.begin(url)) {
+    RTC_LOGW("HTTP time fallback: begin() failed\n");
+    return false;
+  }
+
+  const int code = http.GET();
+  if (code <= 0) {
+    RTC_LOGW("HTTP time fallback: GET failed code=%d\n", code);
+    http.end();
+    return false;
+  }
+
+  RTC_LOGD("HTTP time fallback: HTTP %d\n", code);
+  if (code != HTTP_CODE_OK) {
+    RTC_LOGW("HTTP time fallback: unexpected HTTP status %d\n", code);
+    http.end();
+    return false;
+  }
+
+  const String body = http.getString();
+  http.end();
+
+  time_t epoch = 0;
+  if (!parseLeadingEpoch_(body, epoch) && !parseJsonUnixtime_(body, epoch)) {
+    RTC_LOGW("HTTP time fallback: could not parse epoch from response\n");
+    RTC_LOGD("HTTP time fallback body: %.96s\n", body.c_str());
+    return false;
+  }
+
+  struct timeval tv;
+  tv.tv_sec = epoch;
+  tv.tv_usec = 0;
+  if (settimeofday(&tv, nullptr) != 0) {
+    RTC_LOGW("HTTP time fallback: settimeofday failed\n");
+    return false;
+  }
+
+  RTC_LOGI("HTTP time fallback: set epoch=%lld\n", (long long)epoch);
+  RTCManager_sync();
+  return true;
 }
 
 
@@ -66,7 +294,7 @@ void RTCManager_begin(RTCSource source) {
     // }
   } else {
     // Internal RTC (ESP32 system time)
-    configTzTime("AWST-8", "pool.ntp.org", "time.nist.gov");
+    esp_sntp_set_time_sync_notification_cb(sntpTimeSyncNotification_);
   }
   RTCManager_sync();
 }
