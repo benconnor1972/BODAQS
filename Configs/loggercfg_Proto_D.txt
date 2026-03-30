@@ -69,7 +69,7 @@ binding4.event=released
 binding4.action=menu_nav_enter
 
 binding5.button=mark
-binding5.event=pressed
+binding5.event=click
 binding5.action=mark_event
 
 binding6.button=mark

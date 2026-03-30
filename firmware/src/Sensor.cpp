@@ -8,6 +8,7 @@
 
 void Sensor::attachTransform(const TransformRegistry& reg) {
   const String sensorId = String(name()); // folder key: /cal/<name>/
+  const bool selectedIsIdentity = (m_selectedTransformId == "identity");
 
   XFORM_LOGD("attach begin sensor='%s' selected='%s'\n",
              sensorId.c_str(),
@@ -17,7 +18,7 @@ void Sensor::attachTransform(const TransformRegistry& reg) {
   const OutputTransform* t = nullptr;
   bool triedSelected = false;
 
-  if (m_selectedTransformId.length()) {
+  if (m_selectedTransformId.length() && !selectedIsIdentity) {
     triedSelected = true;
     XFORM_LOGD("lookup: reg.get(sensor='%s', id='%s')\n",
                sensorId.c_str(),
@@ -33,12 +34,12 @@ void Sensor::attachTransform(const TransformRegistry& reg) {
       XFORM_LOGD("lookup FAIL: sensor='%s' id='%s'\n",
                  sensorId.c_str(),
                  m_selectedTransformId.c_str());
-      if (m_selectedTransformId != "identity") {
-        XFORM_LOGD("NOT FOUND sensor='%s' id='%s' -> will use identity fallback\n",
-                   sensorId.c_str(),
-                   m_selectedTransformId.c_str());
-      }
+      XFORM_LOGD("NOT FOUND sensor='%s' id='%s' -> will use identity fallback\n",
+                 sensorId.c_str(),
+                 m_selectedTransformId.c_str());
     }
+  } else if (selectedIsIdentity) {
+    XFORM_LOGD("selected id is identity -> using built-in no-op transform\n");
   } else {
     XFORM_LOGD("no selected id (empty) -> will use identity fallback\n");
   }

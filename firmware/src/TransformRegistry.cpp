@@ -25,6 +25,13 @@ static inline void sanitizeId(String& s) {
   }
 }
 
+static String dirOpenPath_(const String& dir) {
+  if (dir.length() > 1 && dir.endsWith("/")) {
+    return dir.substring(0, dir.length() - 1);
+  }
+  return dir;
+}
+
 String TransformRegistry::calDirFor(const String& sensorId) const {
   return String("/cal/") + sensorId + "/";
 }
@@ -96,18 +103,14 @@ bool TransformRegistry::loadForSensor(const String& sensorId, fs::FS& fs) {
 
   sensors_.erase(sensorId);
   const String dir = calDirFor(sensorId);
+  const String openDir = dirOpenPath_(dir);
 
   XFORM_LOGD("FS: sensor='%s' dir='%s'\n", sensorId.c_str(), dir.c_str());
 
-  if (!fs.exists(dir)) {
-    XFORM_LOGD("FS: dir missing: %s\n", dir.c_str());
-    return true;
-  }
-
-  File d = fs.open(dir, FILE_READ);
+  File d = fs.open(openDir, FILE_READ);
   if (!d) {
-    XFORM_LOGW("FS: dir open FAIL: %s\n", dir.c_str());
-    return false;
+    XFORM_LOGD("FS: dir missing/open FAIL: %s\n", openDir.c_str());
+    return true;
   }
   if (!d.isDirectory()) {
     XFORM_LOGW("FS: not a dir: %s\n", dir.c_str());

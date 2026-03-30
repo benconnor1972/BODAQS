@@ -68,6 +68,35 @@ static String jsStringEscape_(const String& in) {
   return out;
 }
 
+static String urlEncodeQueryValue_(const String& in) {
+  String out;
+  out.reserve(in.length() * 3);
+  static const char hex[] = "0123456789ABCDEF";
+  for (size_t i = 0; i < in.length(); ++i) {
+    const uint8_t c = (uint8_t)in[i];
+    const bool unreserved =
+      (c >= 'A' && c <= 'Z') ||
+      (c >= 'a' && c <= 'z') ||
+      (c >= '0' && c <= '9') ||
+      c == '-' || c == '_' || c == '.' || c == '~' || c == '/';
+    if (unreserved) {
+      out += (char)c;
+    } else {
+      out += '%';
+      out += hex[(c >> 4) & 0x0F];
+      out += hex[c & 0x0F];
+    }
+  }
+  return out;
+}
+
+static String dirOpenPath_(const String& dir) {
+  if (dir.length() > 1 && dir.endsWith("/")) {
+    return dir.substring(0, dir.length() - 1);
+  }
+  return dir;
+}
+
 static bool isFileInDir_(const String& filePath, const String& dirNorm) {
   // dirNorm is normalized directory (leading '/', trailing '/' unless root)
   const String p = filePath;
@@ -157,12 +186,12 @@ static void listDir_(SdFat* sd, const String& dir, String& html) {
     if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) { e.close(); continue; }
 
     html += F("<tr><td></td><td>📁 <a href=\"/files?path=");
-    html += htmlEscape(normDir(dir) + String(name) + "/");
+    html += htmlEscape(urlEncodeQueryValue_(normDir(dir) + String(name) + "/"));
     html += F("\">");
     html += htmlEscape(String(name));
     html += F("</a></td><td>-</td><td>"
               "<a class='delete' href=\"/rmdir?path=");
-    html += htmlEscape(normDir(dir) + String(name) + "/");
+    html += htmlEscape(urlEncodeQueryValue_(normDir(dir) + String(name) + "/"));
     html += F("\">Remove</a>"
               "</td></tr>");
 
@@ -179,17 +208,17 @@ static void listDir_(SdFat* sd, const String& dir, String& html) {
 
     const String full = normDir(dir) + String(name);
     html += F("<tr><td><input type='checkbox' class='filecb' name='path' value='");
-    html += htmlEscape(full);
+    html += htmlEscape(urlEncodeQueryValue_(full));
     html += F("'></td><td>");
     html += htmlEscape(String(name));
     html += F("</td><td>");
     html += prettySize_(sz);
     html += F("</td><td>"
               "<a class='download' href=\"/download?path=");
-    html += htmlEscape(full);
+    html += htmlEscape(urlEncodeQueryValue_(full));
     html += F("\">Download</a> "
               "<a class='delete' href=\"/delete?path=");
-    html += htmlEscape(full);
+    html += htmlEscape(urlEncodeQueryValue_(full));
     html += F("\">Delete</a></td></tr>");
 
     e.close();
@@ -201,7 +230,8 @@ static void listDir_(SdFat* sd, const String& dir, String& html) {
 
 // SD_MMC version of directory listing (same HTML as listDir_ for SdFat) (same HTML as listDir_ for SdFat)
 static void listDirMMC_(const String& dir, String& html) {
-  File d = SD_MMC.open(dir.c_str());
+  const String openDir = dirOpenPath_(dir);
+  File d = SD_MMC.open(openDir.c_str());
   if (!d || !d.isDirectory()) {
     html += F("<p>Failed to open directory.</p>");
     if (d) d.close();
@@ -222,7 +252,7 @@ static void listDirMMC_(const String& dir, String& html) {
         }
 
         html += F("<tr><td></td><td>📁 <a href=\"/files?path=");
-        html += htmlEscape(normDir(dir) + name + "/");
+        html += htmlEscape(urlEncodeQueryValue_(normDir(dir) + name + "/"));
         html += F("\">");
         html += htmlEscape(name);
         html += F("</a></td><td>-</td><td>-</td></tr>");
@@ -238,7 +268,7 @@ static void listDirMMC_(const String& dir, String& html) {
   }
 
   // --- Files ---
-  d = SD_MMC.open(dir.c_str());
+  d = SD_MMC.open(openDir.c_str());
   if (!d || !d.isDirectory()) {
     if (d) d.close();
     return;
@@ -254,17 +284,17 @@ static void listDirMMC_(const String& dir, String& html) {
 
         const String full = normDir(dir) + name;
         html += F("<tr><td><input type='checkbox' class='filecb' name='path' value='");
-        html += htmlEscape(full);
+        html += htmlEscape(urlEncodeQueryValue_(full));
         html += F("'></td><td>");
         html += htmlEscape(name);
         html += F("</td><td>");
         html += prettySize_(sz);
         html += F("</td><td>"
                   "<a class='download' href=\"/download?path=");
-        html += htmlEscape(full);
+        html += htmlEscape(urlEncodeQueryValue_(full));
         html += F("\">Download</a> "
                   "<a class='delete' href=\"/delete?path=");
-        html += htmlEscape(full);
+        html += htmlEscape(urlEncodeQueryValue_(full));
         html += F("\">Delete</a></td></tr>");
       }
       e.close();
@@ -287,7 +317,7 @@ static void emitBreadcrumbs_(const String& dir, String& html) {
     if (dir[i] == '/') {
       html += F(" / ");
       html += "<a href='/files?path=";
-      html += htmlEscape(acc);
+      html += htmlEscape(urlEncodeQueryValue_(acc));
       html += "'>";
       // label = tail of acc (segment name)
       int last = acc.lastIndexOf('/', acc.length() - 2);
@@ -326,7 +356,7 @@ void registerFileRoutes(WebServer& srv) {
 
     // Upload form (multipart)
     html += F("<form method='POST' action='/upload?path=");
-    html += htmlEscape(dir);
+    html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("' enctype='multipart/form-data' style='margin:8px 0'>"
              "<input type='file' name='file' multiple>"
              "<button type='submit'>Upload</button></form>");
@@ -334,7 +364,7 @@ void registerFileRoutes(WebServer& srv) {
     // New folder form
     html += F("<form method='POST' action='/mkdir' style='margin:8px 0'>"
               "<input type='hidden' name='path' value='");
-    html += htmlEscape(dir);
+    html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>"
               "<input type='text' name='name' placeholder='New folder name'> "
               "<button type='submit'>Create</button></form>");
@@ -342,7 +372,7 @@ void registerFileRoutes(WebServer& srv) {
     // Parent link
     if (dir != "/") {
       html += F("<p><a href='/files?path=");
-      html += htmlEscape(parentDir(dir));
+      html += htmlEscape(urlEncodeQueryValue_(parentDir(dir)));
       html += F("'>⬆ Parent</a></p>");
     }
 
@@ -356,7 +386,7 @@ void registerFileRoutes(WebServer& srv) {
 
     html += F("<form id='multiForm' method='POST'>");
     html += F("<input type='hidden' name='dir' value='");
-    html += htmlEscape(dir);
+    html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>");
 
     // Table
@@ -504,7 +534,7 @@ S->on("/delete", HTTP_GET, [S](){
     return;
   }
 
-  srv.sendHeader(F("Location"), "/files?path=" + parentDir(path));
+  srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(parentDir(path)));
   srv.send(303, F("text/plain"), F("Deleted"));
 });
 
@@ -547,7 +577,7 @@ S->on("/download_multi", HTTP_POST, [S](){
 
   if (nSel == 0) {
     html += F("<p>No files selected.</p><p><a href='/files?path=");
-    html += htmlEscape(dir);
+    html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>Back</a></p>");
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
@@ -575,7 +605,7 @@ S->on("/download_multi", HTTP_POST, [S](){
   // Throttled loop; cannot reliably detect download completion in browser JS.
   html += F("function next(){"
             "if(i>=files.length){window.location='/files?path=");
-  html += jsStringEscape_(dir);
+  html += jsStringEscape_(urlEncodeQueryValue_(dir));
   html += F("'; return;}"
             "trigger(files[i]);"
             "i++;"
@@ -585,7 +615,7 @@ S->on("/download_multi", HTTP_POST, [S](){
             "})();</script>");
 
   html += F("<p><a href='/files?path=");
-  html += htmlEscape(dir);
+  html += htmlEscape(urlEncodeQueryValue_(dir));
   html += F("'>Back to files</a></p>");
   html += htmlFooter();
 
@@ -624,7 +654,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
   if (nSel == 0) {
     String html = htmlHeader(F("Delete selected"));
     html += F("<h2>Delete selected</h2><p>No files selected.</p><p><a href='/files?path=");
-    html += htmlEscape(dir);
+    html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>Back</a></p>");
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
@@ -654,7 +684,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
     }
     html += F("<button type='submit' class='delete'>Yes, delete</button> ");
     html += F("<a href='/files?path=");
-    html += htmlEscape(dir);
+    html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>Cancel</a></form>");
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
@@ -709,7 +739,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
   html += String(failCount);
   html += F("</p>");
   html += F("<p><a href='/files?path=");
-  html += htmlEscape(dir);
+  html += htmlEscape(urlEncodeQueryValue_(dir));
   html += F("'>Back to files</a></p>");
   html += htmlFooter();
 
@@ -747,7 +777,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
     if (nSel == 0) {
       String html = htmlHeader(F("Download ZIP"));
       html += F("<h2>Download ZIP</h2><p>No files selected.</p><p><a href='/files?path=");
-      html += htmlEscape(dir);
+      html += htmlEscape(urlEncodeQueryValue_(dir));
       html += F("'>Back</a></p>");
       html += htmlFooter();
       srv.send(200, F("text/html"), html);
@@ -903,10 +933,10 @@ S->on("/rmdir", HTTP_GET, [S](){
     html += htmlEscape(p);
     html += F("</b>?</p><p>"
               "<a class='delete' href='/rmdir?path=");
-    html += htmlEscape(p);
+    html += htmlEscape(urlEncodeQueryValue_(p));
     html += F("&confirm=1'>Yes, remove</a> &nbsp; "
               "<a href='/files?path=");
-    html += htmlEscape(parentDir(p));
+    html += htmlEscape(urlEncodeQueryValue_(parentDir(p)));
     html += F("'>Cancel</a></p>");
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
@@ -932,7 +962,8 @@ S->on("/rmdir", HTTP_GET, [S](){
     }
     d.close();
   } else {
-    File d = SD_MMC.open(p.c_str());
+    const String openPath = dirOpenPath_(p);
+    File d = SD_MMC.open(openPath.c_str());
     if (!d || !d.isDirectory()) {
       if (d) d.close();
       srv.send(404, F("text/plain"), F("Not found"));
@@ -968,7 +999,7 @@ S->on("/rmdir", HTTP_GET, [S](){
     return;
   }
 
-  srv.sendHeader(F("Location"), "/files?path=" + parentDir(p));
+  srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(parentDir(p)));
   srv.send(303, F("text/plain"), F("Removed"));
 });
 
@@ -1003,7 +1034,7 @@ S->on("/mkdir", HTTP_POST, [S](){
     return;
   }
 
-  srv.sendHeader(F("Location"), "/files?path=" + normDir(base));
+  srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(normDir(base)));
   srv.send(303);
 });
 
@@ -1031,7 +1062,8 @@ S->on("/rmdir", HTTP_POST, [S](){
     while (e.openNext(&d, O_READ)) { e.close(); empty = false; break; }
     d.close();
   } else {
-    File d = SD_MMC.open(p.c_str());
+    const String openPath = dirOpenPath_(p);
+    File d = SD_MMC.open(openPath.c_str());
     if (!d || !d.isDirectory()) {
       if (d) d.close();
       srv.send(404, F("text/plain"), F("Not found"));
@@ -1064,7 +1096,7 @@ S->on("/rmdir", HTTP_POST, [S](){
     return;
   }
 
-  srv.sendHeader(F("Location"), "/files?path=" + parentDir(p));
+  srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(parentDir(p)));
   srv.send(303);
 });
 
@@ -1076,7 +1108,7 @@ S->on("/rmdir", HTTP_POST, [S](){
       auto& srv = *S;
       String p = srv.hasArg("path") ? srv.arg("path") : "/";
       if (!safeRelPath(p)) p = "/";
-      srv.sendHeader(F("Location"), "/files?path=" + normDir(p));
+  srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(normDir(p)));
       srv.send(303);
     },
     // onUpload: stream file data to SD (SPI or SD_MMC)
