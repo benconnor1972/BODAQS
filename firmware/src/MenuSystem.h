@@ -3,6 +3,7 @@
 #include "ButtonManager.h"  // for ButtonEvent
 
 struct LoggerConfig;
+namespace ButtonActions { enum ActionId : uint8_t; }
 //class Menu;
 
 namespace MenuSystem {
@@ -26,6 +27,7 @@ namespace MenuSystem {
 
   // Generic nav hook (optional—kept if you’re already using it)
   void onNav(Dir d, ButtonEvent ev);
+  bool handleAction(ButtonActions::ActionId action, ButtonEvent ev);
   void onMark();  // handle MARK button while menu is open
 
 }

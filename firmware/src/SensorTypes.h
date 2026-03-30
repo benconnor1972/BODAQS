@@ -6,8 +6,10 @@ constexpr uint8_t MAX_SENSORS = 16;   // must be visible to ConfigManager.h
 
 // Extend as you add new sensors (keep 0 = Unknown).
 enum class SensorType : uint8_t {
-  Unknown   = 0,
-  AnalogPot = 1,
+  Unknown                = 0,
+  AnalogPot              = 1,
+  AS5600StringPotAnalog  = 2,
+  AS5600StringPotI2C     = 3,
   // StrainGauge = 2,
   // Accelerometer = 3,
 };

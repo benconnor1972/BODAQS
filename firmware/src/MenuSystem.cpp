@@ -11,6 +11,7 @@
 #include "Sensor.h"
 #include "Calibration.h"
 #include "CalCapture.h"
+#include "ButtonActions.h"
 #include "WiFiManager.h"
 #include "DebugLog.h"
 #include <WiFi.h>
@@ -80,6 +81,7 @@ namespace {
   static uint8_t    s_calSel     = 0;              // selected sensor index
   static uint8_t    s_calOptSel  = 0;              // selected row within screen
   static CalUiPhase s_calUiPhase = CalUiPhase::Idle;
+  static unsigned long s_lastRangeTrackMs = 0;
 
   static unsigned long s_deferUiUntilMs = 0;
   static bool          s_deferRedraw    = false;
@@ -113,7 +115,10 @@ namespace {
   static void redraw_();
   static void drawCalibSensors_();
   static void drawCalibDetail_();
+  static void toggleSelectedSensor_();
   static RangeCapture s_rangeCap;   // <--- ADD THIS LINE
+  static void tickActiveRangeCalibration_();
+  static bool activateCurrentSelection_();
 
   inline void touch() { s_lastInputMs = millis(); }
 
@@ -400,6 +405,186 @@ namespace {
     }
   }
 
+  static void tickActiveRangeCalibration_() {
+    if (s_state != State::CalibDetail || s_calUiPhase != CalUiPhase::RangeActive) return;
+
+    Sensor* s = SensorManager::at(s_calSel);
+    if (!s || !s->hasRawCounts()) return;
+
+    const unsigned long now = millis();
+    if (s_lastRangeTrackMs != 0 && (now - s_lastRangeTrackMs) < 2) return;
+    s_lastRangeTrackMs = now;
+
+    // Keep calibration-space counts advancing while the operator moves the sensor.
+    // Wrapped sensors use this to accumulate turn crossings between the start and finish marks.
+    (void)s->currentRawCounts();
+  }
+
+  static bool activateCurrentSelection_() {
+    switch (s_state) {
+      case State::Main:
+        openMainSelection_();
+        return true;
+
+      case State::SensorsList:
+        toggleSelectedSensor_();
+        return true;
+
+      case State::RatePicker:
+        applyRate_();
+        return true;
+
+      case State::CalibSensors:
+        s_calOptSel  = 0;
+        s_calUiPhase = CalUiPhase::Idle;
+        s_state      = State::CalibDetail;
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        drawCalibDetail_();
+        return true;
+
+      case State::CalibDetail: {
+        Sensor* s = SensorManager::at(s_calSel);
+        if (!s) {
+          s_state = State::CalibSensors;
+          s_calUiPhase = CalUiPhase::Idle;
+          drawCalibSensors_();
+          return true;
+        }
+
+        switch (s_calUiPhase) {
+          case CalUiPhase::Idle: {
+            CalModeMask mask = s->allowedCalMask();
+            const bool zeroAllowed  = (mask & CAL_ZERO);
+            const bool rangeAllowed = (mask & CAL_RANGE);
+
+            if (s_calOptSel == 0 && zeroAllowed) {
+              if (!s->beginCalibration(CalMode::ZERO)) {
+                UI::toastModal("Zero fail", 2000);
+                deferUiFor(2000);
+                return true;
+              }
+
+              const int32_t avg = sampleAverageCounts(s, 100);
+              s->updateCalibration(avg);
+              char msg[48];
+              snprintf(msg, sizeof(msg), "ZERO: %ld", (long)s->currentRawCounts());
+              UI::toastModal(msg, 2000);
+              deferUiFor(2000);
+              s_calUiPhase = CalUiPhase::ZeroCaptured;
+              s_calOptSel  = 0;
+              drawCalibDetail_();
+              return true;
+            }
+
+            const bool startRangeSelected =
+              (rangeAllowed && ((zeroAllowed && s_calOptSel == 1) || (!zeroAllowed && s_calOptSel == 0)));
+            if (startRangeSelected) {
+              if (s->beginCalibration(CalMode::RANGE)) {
+                s_rangeCap.reset();
+                s_rangeCap.captureStart(s, 100);
+                s->updateCalibration(s_rangeCap.start);
+                char msg[48];
+                snprintf(msg, sizeof(msg), "RANGE start: %ld", (long)s_rangeCap.start);
+                UI::toastModal(msg, 2000);
+                deferUiFor(2000);
+                s_calUiPhase = CalUiPhase::RangeActive;
+                s_lastRangeTrackMs = 0;
+                s_calOptSel  = 0;
+                drawCalibDetail_();
+              } else {
+                UI::toastModal("Range fail", 2000);
+                deferUiFor(2000);
+              }
+              return true;
+            }
+
+            return true;
+          }
+
+          case CalUiPhase::RangeActive:
+            if (s_calOptSel == 0) {
+              s_rangeCap.captureFinish(s, 100);
+              s->updateCalibration(s_rangeCap.finish);
+              char msg[48];
+              snprintf(msg, sizeof(msg), "RANGE finish: %ld", (long)s_rangeCap.finish);
+              UI::toastModal(msg, 2000);
+              deferUiFor(2000);
+              s_calUiPhase = CalUiPhase::RangeFinished;
+              s_lastRangeTrackMs = 0;
+              s_calOptSel  = 0;
+              drawCalibDetail_();
+            } else {
+              s->finishCalibration(false);
+              s_calUiPhase = CalUiPhase::Idle;
+              s_lastRangeTrackMs = 0;
+              s_calOptSel  = 0;
+              drawCalibDetail_();
+            }
+            return true;
+
+          case CalUiPhase::ZeroCaptured:
+            if (s_calOptSel == 0) {
+              if (s->finishCalibration(true)) {
+                UI::toastModal("Zero saved", 2000);
+                deferUiFor(2000);
+                s_calUiPhase = CalUiPhase::Idle;
+                s_calOptSel  = 0;
+                s_state      = State::CalibSensors;
+                guardEnterRight();
+                drawCalibSensors_();
+              } else {
+                UI::toastModal("Save failed", 2000);
+                deferUiFor(2000);
+                drawCalibDetail_();
+              }
+            } else {
+              s->finishCalibration(false);
+              s_calUiPhase = CalUiPhase::Idle;
+              s_calOptSel  = 0;
+              drawCalibDetail_();
+            }
+            return true;
+
+          case CalUiPhase::RangeFinished:
+            if (s_calOptSel == 0) {
+              const bool invert = (s_rangeCap.finish < s_rangeCap.start);
+              if (s->finishCalibration(true)) {
+                SensorSpec sp;
+                if (ConfigManager::getSensorSpec(s_calSel, sp)) {
+                  ConfigManager::saveSensorParamByName(sp.name, "invert", invert ? "true" : "false");
+                }
+
+                UI::toastModal("Range saved", 2000);
+                deferUiFor(2000);
+                s_calUiPhase = CalUiPhase::Idle;
+                s_calOptSel  = 0;
+                s_state      = State::CalibSensors;
+                guardEnterRight();
+                drawCalibSensors_();
+              } else {
+                UI::toastModal("Save fail", 2000);
+                deferUiFor(2000);
+                drawCalibDetail_();
+              }
+            } else {
+              s->finishCalibration(false);
+              s_calUiPhase = CalUiPhase::Idle;
+              s_lastRangeTrackMs = 0;
+              s_calOptSel  = 0;
+              drawCalibDetail_();
+            }
+            return true;
+        }
+        return true;
+      }
+
+      case State::Inactive:
+      default:
+        return false;
+    }
+  }
+
   static void toggleSelectedSensor_() {
     const uint8_t sel = s_sensorSel;
     bool m = false;
@@ -488,6 +673,45 @@ void MenuSystem::setIdleCloseMs(uint32_t ms) {
   s_idleCloseMs = ms;
 }
 
+bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
+  if (!isActive()) return false;
+
+  switch (action) {
+    case ButtonActions::ACT_MENU_NAV_UP:
+      if (ev == BUTTON_PRESSED) onNav(Dir::Up, BUTTON_PRESSED);
+      return true;
+
+    case ButtonActions::ACT_MENU_NAV_DOWN:
+      if (ev == BUTTON_PRESSED) onNav(Dir::Down, BUTTON_PRESSED);
+      return true;
+
+    case ButtonActions::ACT_MENU_NAV_LEFT:
+      if (ev == BUTTON_PRESSED) onNav(Dir::Left, BUTTON_PRESSED);
+      return true;
+
+    case ButtonActions::ACT_MENU_NAV_RIGHT:
+      if (ev == BUTTON_PRESSED) onNav(Dir::Right, BUTTON_PRESSED);
+      return true;
+
+    case ButtonActions::ACT_MENU_NAV_ENTER:
+      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
+      return true;
+
+    case ButtonActions::ACT_MARK_EVENT:
+      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
+      return true;
+
+    case ButtonActions::ACT_LOGGING_TOGGLE:
+    case ButtonActions::ACT_WEB_TOGGLE:
+      touch();
+      return true;
+
+    case ButtonActions::ACT_NONE:
+    default:
+      return false;
+  }
+}
+
 void MenuSystem::requestOpen() {
   UI::beginModal();
   if (s_state == State::Inactive) {
@@ -508,6 +732,7 @@ void MenuSystem::requestOpen() {
 void MenuSystem::requestClose() {
   UI::endModal();
   s_wsPending = false;
+  s_lastRangeTrackMs = 0;
   if (s_state != State::Inactive) {
     MLOG("[MENU] requestClose from %s\n", stateName(s_state));
     s_state = State::Inactive;
@@ -604,7 +829,9 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
         redraw_();
         return;
       }
-      if (d == Dir::Enter || d == Dir::Right) { openMainSelection_(); return; }
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
+      }
       break;
     }
 
@@ -615,7 +842,9 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       if (d == Dir::Up)    { s_sensorSel = (uint8_t)((s_sensorSel + n - 1) % n); redraw_(); return; }
       if (d == Dir::Down)  { s_sensorSel = (uint8_t)((s_sensorSel + 1) % n);     redraw_(); return; }
       if (d == Dir::Left)  { s_state = State::Main; redraw_(); return; }
-      if (d == Dir::Enter || d == Dir::Right) { toggleSelectedSensor_(); return; }
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
+      }
       break;
     }
 
@@ -630,11 +859,11 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
 
         // ✅ Commit on PRESSED (after the guard window), not RELEASED
         if ((d == Dir::Enter || d == Dir::Right) && millis() >= s_enterGuardUntilMs) {
-          applyRate_(); return;
+          if (activateCurrentSelection_()) return;
         }
       }
-      if ((d == Dir::Enter || d == Dir::Right) && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
-        applyRate_(); return;
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
       }
       break;
     }
@@ -647,14 +876,8 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       if (d == Dir::Up)    { s_calSel = (uint8_t)((s_calSel + n - 1) % n); drawCalibSensors_(); return; }
       if (d == Dir::Down)  { s_calSel = (uint8_t)((s_calSel + 1) % n);     drawCalibSensors_(); return; }
       if (d == Dir::Left)  { s_state = State::Main; drawMain_(); return; }
-      if (d == Dir::Enter || d == Dir::Right) {
-        s_calOptSel  = 0;
-        s_calUiPhase = CalUiPhase::Idle;   // reset phase on entry
-        s_state      = State::CalibDetail;
-        s_swallowEnterRelease = true;   // <--- ADD
-        guardEnterRight();              // <--- add
-        drawCalibDetail_();
-        return;
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
       }
       break;
     }
@@ -674,6 +897,7 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       }
 
       if (d == Dir::Left) {
+        s_lastRangeTrackMs = 0;
         s_calUiPhase = CalUiPhase::Idle;   // reset when backing out
         s_state      = State::CalibSensors;
         drawCalibSensors_();
@@ -682,71 +906,9 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       if (d == Dir::Up)   { if (s_calOptSel > 0) --s_calOptSel; drawCalibDetail_(); return; }
       if (d == Dir::Down) { if (s_calOptSel + 1 < rowCount) ++s_calOptSel; drawCalibDetail_(); return; }
 
-      // Enter/Right behavior per phase
-      if (d == Dir::Enter || d == Dir::Right) {
-        switch (s_calUiPhase) {
-          case CalUiPhase::Idle:
-          case CalUiPhase::RangeActive:
-            // Enter/Right do nothing in these phases
-            return;
-
-          case CalUiPhase::ZeroCaptured: {
-            if (s_calOptSel == 0) {
-              // Save
-              if (s->finishCalibration(true)) {
-                UI::toastModal("Zero saved",2000);
-                deferUiFor(2000);
-                // Pop to sensor selection
-                s_calUiPhase = CalUiPhase::Idle;
-                s_calOptSel  = 0;
-                s_state      = State::CalibSensors;
-                guardEnterRight();          // prevent same press from activating next screen
-                drawCalibSensors_();
-              } else {
-                UI::toastModal("Save fail",2000);
-                deferUiFor(2000);
-                drawCalibDetail_();
-              }
-              return;                       // <--- IMPORTANT: stop here
-            } else {
-              // Cancel (stay on detail screen, reset to initial options)
-              s->finishCalibration(false);
-              s_calUiPhase = CalUiPhase::Idle;
-              s_calOptSel  = 0;
-              drawCalibDetail_();
-              return;
-            }
-          }
-
-
-          case CalUiPhase::RangeFinished: {
-            if (s_calOptSel == 0) {
-              // Save
-              if (s->finishCalibration(true)) {
-                UI::toastModal("Range saved",2000);
-                deferUiFor(2000);
-                // Pop to sensor selection
-                s_calUiPhase = CalUiPhase::Idle;
-                s_calOptSel  = 0;
-                s_state      = State::CalibSensors;
-                guardEnterRight();          // prevent same press from activating next screen
-                drawCalibSensors_();
-              } else {
-                UI::toastModal("Save fail",2000);
-                deferUiFor(2000);
-                drawCalibDetail_();
-              }
-              return;                       // <--- IMPORTANT: stop here
-            } else {
-              // Cancel (stay on detail screen, reset to initial options)
-              s->finishCalibration(false);
-              s_calUiPhase = CalUiPhase::Idle;
-              s_calOptSel  = 0;
-              drawCalibDetail_();
-              return;
-            }
-          }
-        }
+      // Enter/Right activate the current row in all calibration phases.
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
       }
       break;
     }
@@ -764,6 +926,8 @@ void MenuSystem::select()   { onNav(Dir::Enter, BUTTON_PRESSED); }
 
 void MenuSystem::loop() {
   if (s_state == State::Inactive) return;
+
+  tickActiveRangeCalibration_();
 
   if (s_deferRedraw && (long)(millis() - s_deferUiUntilMs) >= 0) {
     s_deferRedraw = false;
@@ -803,136 +967,8 @@ void MenuSystem::loop() {
   }
 }
 
-// -------- MARK handling --------
+// Compatibility wrapper for older call sites.
 void MenuSystem::onMark() {
-  if (s_state != State::CalibDetail) return;
-
-  Sensor* s = SensorManager::at(s_calSel);
-  if (!s) return;
-
-  switch (s_calUiPhase) {
-    case CalUiPhase::Idle: {
-      CalModeMask mask = s->allowedCalMask();
-
-      // Row mapping in Idle:
-      // - If both allowed: row0=Zero, row1=Start RANGE
-      // - If only one allowed, it's row0
-      bool zeroAllowed  = (mask & CAL_ZERO);
-      bool rangeAllowed = (mask & CAL_RANGE);
-
-      if (s_calOptSel == 0 && (mask & CAL_ZERO)) {
-        if (!s->beginCalibration(CalMode::ZERO)) { UI::toastModal("Zero fail",2000); deferUiFor(2000); return; }
-        const int32_t avg = sampleAverageCounts(s, 100);
-        s->updateCalibration(avg);
-        char msg[48];
-        snprintf(msg, sizeof(msg), "ZERO: %ld", (long)s->currentRawCounts());
-        UI::toastModal(msg, 2000);
-        deferUiFor(2000);
-        s_calUiPhase = CalUiPhase::ZeroCaptured;
-        s_calOptSel  = 0;
-        drawCalibDetail_();
-        return;
-      }
-
-      // Start RANGE can be row1 (if zero present) or row0 (if only RANGE allowed)
-      const bool startRangeSelected =
-        (rangeAllowed && ((zeroAllowed && s_calOptSel == 1) || (!zeroAllowed && s_calOptSel == 0)));
-      if (startRangeSelected) {
-        if (s->beginCalibration(CalMode::RANGE)) {
-          s_rangeCap.reset();
-          s_rangeCap.captureStart(s, 100);
-          s->updateCalibration(s_rangeCap.start);  // seed min/max
-          char msg[48];
-          snprintf(msg, sizeof(msg), "RANGE start: %ld", (long)s_rangeCap.start);
-          UI::toastModal(msg, 2000);
-          deferUiFor(2000);
-          s_calUiPhase = CalUiPhase::RangeActive;
-          s_calOptSel  = 0; // "Finish RANGE"
-          drawCalibDetail_();
-        } else {
-          UI::toastModal("Range fail",2000);
-          deferUiFor(2000);
-        }
-        return;
-      }
-      // If neither action is actually available, do nothing
-      return;
-    }
-
-    case CalUiPhase::RangeActive: {
-      if (s_calOptSel == 0) {
-        s_rangeCap.captureFinish(s, 100);
-        s->updateCalibration(s_rangeCap.finish);  // finalize min/max
-        char msg[48];
-        snprintf(msg, sizeof(msg), "RANGE finish: %ld", (long)s_rangeCap.finish);
-        UI::toastModal(msg, 2000);
-        deferUiFor(2000);
-        s_calUiPhase = CalUiPhase::RangeFinished;
-        s_calOptSel  = 0; // "Save"
-        drawCalibDetail_();
-      }
-      return;
-    }
-
-    case CalUiPhase::ZeroCaptured: {
-      if (s_calOptSel == 0) {
-        // Save
-        if (s->finishCalibration(true)) {
-          UI::toastModal("Zero saved",2000);
-          deferUiFor(2000);
-          // Pop to sensor selection
-          s_calUiPhase = CalUiPhase::Idle;
-          s_calOptSel  = 0;
-          s_state      = State::CalibSensors;
-          guardEnterRight();          // prevent same press from activating next screen
-          drawCalibSensors_();
-        } else {
-          UI::toastModal("Save failed",2000);
-          deferUiFor(2000);
-          drawCalibDetail_();
-        }
-        return;                       // <--- IMPORTANT: stop here
-      } else {
-        // Cancel (stay on detail screen, reset to initial options)
-        s->finishCalibration(false);
-        s_calUiPhase = CalUiPhase::Idle;
-        s_calOptSel  = 0;
-        drawCalibDetail_();
-        return;
-      }
-    }
-    case CalUiPhase::RangeFinished: {
-      if (s_calOptSel == 0) {
-        const bool invert = (s_rangeCap.finish < s_rangeCap.start);
-
-        if (s->finishCalibration(true)) {
-          // persist 'invert'
-          SensorSpec sp;
-
-          if (ConfigManager::getSensorSpec(s_calSel, sp)) {
-            ConfigManager::saveSensorParamByName(sp.name, "invert", invert ? "true" : "false");
-          }
-
-          UI::toastModal("Range saved",2000);
-          deferUiFor(2000);
-          s_calUiPhase = CalUiPhase::Idle;
-          s_calOptSel  = 0;
-          s_state      = State::CalibSensors;
-          guardEnterRight();
-          drawCalibSensors_();
-        } else {
-          UI::toast("Save failed");
-          drawCalibDetail_();
-        }
-      } else {
-        // Cancel
-        s->finishCalibration(false);
-        s_calUiPhase = CalUiPhase::Idle;
-        s_calOptSel  = 0;
-        drawCalibDetail_();
-      }
-      return;
-    }
-
-  }
+  if (!isActive()) return;
+  onNav(Dir::Enter, BUTTON_PRESSED);
 }

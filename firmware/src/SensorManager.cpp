@@ -382,6 +382,14 @@ void loop() {
   for (auto* s : s_list) if (s) s->loop();
 }
 
+void onLoggingStart() {
+  for (auto* s : s_list) if (s) s->onLoggingStart();
+}
+
+void onLoggingStop() {
+  for (auto* s : s_list) if (s) s->onLoggingStop();
+}
+
 uint8_t count() {
   uint8_t n = 0;
   for (auto* s : s_list) if (s) ++n;

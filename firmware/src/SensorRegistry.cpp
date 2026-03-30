@@ -11,14 +11,18 @@ namespace {
   // Defaults if a type registered via legacy API (no key/label/mask):
   inline const char* defaultKeyFor(SensorType t) {
     switch (t) {
-      case SensorType::AnalogPot: return "analog_pot";
+      case SensorType::AnalogPot:             return "analog_pot";
+      case SensorType::AS5600StringPotAnalog: return "as5600_string_pot_analog";
+      case SensorType::AS5600StringPotI2C:    return "as5600_string_pot_i2c";
       case SensorType::Unknown:
       default:                    return "unknown";
     }
   }
   inline const char* defaultLabelFor(SensorType t) {
     switch (t) {
-      case SensorType::AnalogPot: return "Analog Potentiometer";
+      case SensorType::AnalogPot:             return "Analog Potentiometer";
+      case SensorType::AS5600StringPotAnalog: return "AS5600 String Pot (Analog)";
+      case SensorType::AS5600StringPotI2C:    return "AS5600 String Pot (I2C)";
       case SensorType::Unknown:
       default:                    return "Unknown Sensor";
     }
@@ -104,6 +108,8 @@ namespace SensorRegistry {
   CalModeMask supportedCalMask(SensorType t) {
     switch (t) {
       case SensorType::AnalogPot:
+      case SensorType::AS5600StringPotAnalog:
+      case SensorType::AS5600StringPotI2C:
         return static_cast<CalModeMask>(CAL_ZERO | CAL_RANGE);
       // Add other types as you implement calibration support:
       // case SensorType::Accelerometer: return CAL_NONE;

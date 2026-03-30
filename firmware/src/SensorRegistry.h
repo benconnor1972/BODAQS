@@ -31,6 +31,7 @@ namespace SensorRegistry {
                     Sensor* (*create)(const char*, const ParamPack&, bool), CalModeMask supportedMask);
 
   const SensorTypeInfo* lookup(SensorType t);
+  const char*           typeKey(SensorType t);
   const char*           typeLabel(SensorType t);
 
   // NEW: query helper
