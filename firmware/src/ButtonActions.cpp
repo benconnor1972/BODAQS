@@ -280,8 +280,9 @@ void ButtonActions::onMarkEvent(ButtonEvent event) {
     return;
   }
 
-  // Outside the menu: accept PRESSED or RELEASED as you prefer
-  if (event != BUTTON_PRESSED && event != BUTTON_RELEASED) return;
+  // Outside the menu, mark is a short-click action so held/double-click gestures
+  // can win cleanly on the same physical button.
+  if (event != BUTTON_CLICK) return;
 
   if (auto* top = topOverride()) {
     auto fn = top->fn; // copy to avoid surprises if it pops itself
