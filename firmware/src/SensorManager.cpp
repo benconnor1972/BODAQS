@@ -61,6 +61,18 @@ namespace {
     }
     return total;
   }
+
+  bool sensorNeedsAnalogPin_(SensorType t) {
+    switch (t) {
+      case SensorType::AnalogPot:
+      case SensorType::AS5600StringPotAnalog:
+        return true;
+      case SensorType::AS5600StringPotI2C:
+      case SensorType::Unknown:
+      default:
+        return false;
+    }
+  }
 }
 
 static CalMask parseCalMaskCSV(const char* csv) {
@@ -130,7 +142,7 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
     }
 
     // --- Resolve analog input ordinal (ain) to a physical GPIO pin via BoardProfile ---
-    {
+    if (sensorNeedsAnalogPin_(sp.type)) {
       long ain = -1;
       if (sp.params.getInt("ain", ain)) {
         if (!board::gBoard) {
@@ -147,11 +159,7 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
               SENS_LOGW("sensor '%s': AIN%ld not available on this board (pin<0)\n",
                         sp.name, ain);
             } else {
-              // Inject resolved pin so existing analog sensor implementations keep working.
-              // If your analog sensors expect a different key than "pin", change it here.
               sp.params.set("pin", String(pin));
-              // Optional: persist normalized mapping (not required)
-              // ConfigManager::saveSensorParamByName(sp.name, "pin", String(pin));
               SENS_LOGI("sensor '%s': ain=%ld -> pin=%d\n", sp.name, ain, pin);
             }
           }
@@ -166,11 +174,13 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
-    long pinCheck;
-    if (!sp.params.getInt("pin", pinCheck) || pinCheck < 0) {
-      SENS_LOGW("'%s': no valid analog input assigned (missing or invalid ain)\n",
-                sp.name);
-      continue;
+    if (sensorNeedsAnalogPin_(sp.type)) {
+      long pinCheck;
+      if (!sp.params.getInt("pin", pinCheck) || pinCheck < 0) {
+        SENS_LOGW("'%s': no valid analog input assigned (missing or invalid ain)\n",
+                  sp.name);
+        continue;
+      }
     }
 
     // Create via registry factory — IMPORTANT: respect muted default from config

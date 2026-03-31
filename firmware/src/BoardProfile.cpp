@@ -38,6 +38,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
     .addr_primary = 0x3C,
     .addr_alt     = 0x3D,
+    .bus_index    = 0,
     .rst = -1
   },
 
@@ -67,7 +68,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .fuel = {
     // Thing Plus S3 fuel gauge support (MAX17048)
     .type = FuelGaugeType::MAX17048,
-    .i2c_addr = 0x32
+    .i2c_addr = 0x36,
+    .bus_index = 0
   },
 
   .analog = {
@@ -81,12 +83,15 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   },
 
   .i2c = {
-    // If you have I2C available, set present=true and pins above.
-    .present = true,
-    .sda = 8,
-    .scl = 9,
-    .hz  = 400000
+    {
+      // If you have I2C available, set present=true and pins above.
+      .present = true,
+      .sda = 8,
+      .scl = 9,
+      .hz  = 400000
+    }
   },
+  .i2c_count = 1,
 
   .spi = MakeSPI(
     /*present*/ true,
@@ -140,6 +145,7 @@ static const BoardProfile THING_PLUS_A = {
 
     .addr_primary = 0x3C,
     .addr_alt     = 0x3D,
+    .bus_index    = 0,
     .rst = -1
   },
 
@@ -169,7 +175,8 @@ static const BoardProfile THING_PLUS_A = {
   .fuel = {
     // Keep MAX17048 unless your board lacks it.
     .type = FuelGaugeType::MAX17048,
-    .i2c_addr = 0x36
+    .i2c_addr = 0x36,
+    .bus_index = 0
   },
 
   .analog = {
@@ -181,11 +188,14 @@ static const BoardProfile THING_PLUS_A = {
   },
 
   .i2c = {
-    .present = true,
-    .sda = 21,
-    .scl = 22,
-    .hz  = 400000
+    {
+      .present = true,
+      .sda = 21,
+      .scl = 22,
+      .hz  = 400000
+    }
   },
+  .i2c_count = 1,
 
   .spi = MakeSPI(
     /*present*/ true,

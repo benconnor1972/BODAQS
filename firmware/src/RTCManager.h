@@ -2,6 +2,7 @@
 #define RTCMANAGER_H
 
 #include <Arduino.h>
+class TwoWire;
 
 // Choose source of time
 enum RTCSource {
@@ -14,7 +15,7 @@ enum RTCSource {
 void RTCManager_invalidateInternalTime();
 
 // Initialize RTC system
-void RTCManager_begin(RTCSource source = RTC_INTERNAL);
+void RTCManager_begin(RTCSource source = RTC_INTERNAL, TwoWire* extRtcWire = nullptr);
 
 // Apply POSIX TZ string for localtime()/timestamp formatting.
 void RTCManager_setTimezone(const char* tz);

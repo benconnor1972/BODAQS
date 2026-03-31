@@ -244,7 +244,9 @@ bool AS5600StringPotSensorBase::updateCalibration(int32_t latestCounts) {
   if (cal_.phase != CalPhase::ACTIVE) return false;
   ++cal_.samples;
 
-  if (cal_.mode == CalMode::RANGE) {
+  if (cal_.mode == CalMode::ZERO) {
+    cal_.first_counts = latestCounts;
+  } else if (cal_.mode == CalMode::RANGE) {
     if (cal_.samples == 1) {
       cal_.first_counts = latestCounts;
     } else if (cal_.samples == 2) {
@@ -258,7 +260,8 @@ bool AS5600StringPotSensorBase::finishCalibration(bool persist) {
   if (cal_.phase != CalPhase::ACTIVE) return false;
 
   if (cal_.mode == CalMode::ZERO) {
-    installed_zero_count_ = currentRawCounts();
+    const bool haveZero = (cal_.first_counts != INT32_MAX);
+    installed_zero_count_ = haveZero ? cal_.first_counts : currentRawCounts();
     if (persist) {
       const char* sname = name();
       ConfigManager::saveSensorParamByName(sname, "installed_zero_count", String(installed_zero_count_));

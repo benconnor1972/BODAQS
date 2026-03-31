@@ -5,6 +5,7 @@
 #include <sys/time.h>  // settimeofday
 #include <esp_sntp.h>
 #include <HTTPClient.h>
+#include "I2CManager.h"
 #include "DebugLog.h"
 
 #define RTC_LOGE(...) LOGE_TAG("RTC", __VA_ARGS__)
@@ -24,6 +25,7 @@ static unsigned long baseMillis = 0;
 static time_t baseEpoch = 0;
 static unsigned long lastSyncMs = 0;
 static bool useHumanReadableTimestamps = false;
+static TwoWire* s_externalRtcWire = nullptr;
 
 static void splitCsv3_(const char* csv, String& s1, String& s2, String& s3) {
   s1 = "";
@@ -282,11 +284,14 @@ bool RTCManager_syncFromHttp(const char* url, uint32_t timeout_ms) {
 
 
 // --- Setup RTC ---
-void RTCManager_begin(RTCSource source) {
+void RTCManager_begin(RTCSource source, TwoWire* extRtcWire) {
   currentSource = source;
 
   if (currentSource == RTC_EXTERNAL) {
-    Wire.begin();
+    s_externalRtcWire = extRtcWire ? extRtcWire : I2CManager::bus(0);
+    if (!s_externalRtcWire) {
+      RTC_LOGW("External RTC selected but no I2C bus available\n");
+    }
     // externalRTC.begin(); // Uncomment for DS3231
     // if (!externalRTC.isrunning()) {
     //     RTC_LOGI("RTC not running, setting to compile time.\n");

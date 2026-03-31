@@ -1,12 +1,13 @@
 #pragma once
 #include <Arduino.h>
+#include <Wire.h>
 #include "BoardProfile.h" 
 
 struct LoggerConfig; // fwd declare
 
 namespace DisplayManager {
   // Initializes I2C + OLED using cfg; safe to call even if no OLED present.
-  bool begin(const LoggerConfig& cfg, const board::DisplayProfile& disp, const board::I2CProfile& i2c);
+  bool begin(const LoggerConfig& cfg, const board::DisplayProfile& disp, TwoWire* wire);
 
   // Call in loop() (non-blocking)
   void loop();

@@ -6,6 +6,7 @@
 namespace board {
 
 static constexpr uint8_t BOARD_MAX_BUTTONS = 6;
+static constexpr uint8_t BOARD_MAX_I2C_BUSES = 2;
 
 // ---------- IDs / Types ----------
 enum class BoardID : uint8_t {
@@ -61,6 +62,7 @@ struct DisplayProfile {
   // If using I2C OLED
   uint8_t addr_primary = 0x3C;
   uint8_t addr_alt     = 0x3D;
+  uint8_t bus_index    = 0;
 
   // Optional reset pin for the display (if wired)
   int8_t rst = -1;                 // -1 = not used
@@ -69,6 +71,7 @@ struct DisplayProfile {
 struct FuelGaugeProfile {
   FuelGaugeType type = FuelGaugeType::None;
   uint8_t i2c_addr = 0x36;         // MAX17048 default
+  uint8_t bus_index = 0;
 };
 
 struct I2CProfile {
@@ -122,7 +125,8 @@ struct BoardProfile {
   FuelGaugeProfile fuel;
 
   AnalogInputsProfile analog;
-  I2CProfile i2c;
+  I2CProfile i2c[BOARD_MAX_I2C_BUSES];
+  uint8_t i2c_count = 0;
   SPIProfile spi;
 
   IndicatorsProfile indicators;
