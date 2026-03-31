@@ -468,7 +468,7 @@ namespace {
               const int32_t avg = sampleAverageCounts(s, 100);
               s->updateCalibration(avg);
               char msg[48];
-              snprintf(msg, sizeof(msg), "ZERO: %ld", (long)s->currentRawCounts());
+              snprintf(msg, sizeof(msg), "ZERO: %ld", (long)avg);
               UI::toastModal(msg, 2000);
               deferUiFor(2000);
               s_calUiPhase = CalUiPhase::ZeroCaptured;

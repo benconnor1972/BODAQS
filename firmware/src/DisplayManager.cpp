@@ -4,9 +4,9 @@
 #include "UI.h"
 #include "SensorManager.h"
 #include "LoggingManager.h"
+#include "I2CManager.h"
 #include "DebugLog.h"
 
-#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
@@ -19,7 +19,8 @@ static constexpr int8_t   OLED_RST_PIN = -1; // no reset pin
 //static constexpr int    OLED_SDA  = 21; // Thing Plus 
 //static constexpr int    OLED_SCL  = 22; // Thing Plus
 
-static Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, OLED_RST_PIN);
+static Adafruit_SSD1306* s_oled = nullptr;
+static TwoWire*          s_wire = nullptr;
 
 static bool     s_present      = false;
 static String   s_status       = "";
@@ -47,26 +48,28 @@ namespace {
 
 
   static void renderStatus_() {
+    if (!s_oled) return;
     const int lineH = 10;
     // Top strip
-    oled.fillRect(0, 0, OLED_W, lineH, BLACK);
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setTextWrap(false);
-    oled.setCursor(0, 0);
-    oled.print(s_status);
+    s_oled->fillRect(0, 0, OLED_W, lineH, BLACK);
+    s_oled->setTextSize(1);
+    s_oled->setTextColor(SSD1306_WHITE);
+    s_oled->setTextWrap(false);
+    s_oled->setCursor(0, 0);
+    s_oled->print(s_status);
   }
 
   // New: bottom strip for footer (clock)
   static void renderFooter_() {
+    if (!s_oled) return;
     const int lineH = 8;
     const int y = OLED_H - lineH;
-    oled.fillRect(0, y, OLED_W, lineH, BLACK);
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setTextWrap(false);
-    oled.setCursor(0, y);
-    oled.print(s_footer);
+    s_oled->fillRect(0, y, OLED_W, lineH, BLACK);
+    s_oled->setTextSize(1);
+    s_oled->setTextColor(SSD1306_WHITE);
+    s_oled->setTextWrap(false);
+    s_oled->setCursor(0, y);
+    s_oled->print(s_footer);
   }
 
   void drawIdleHud_() {
@@ -106,8 +109,8 @@ namespace {
 }
 
 static void drawAll() {
-  if (!s_present) return;
-  oled.clearDisplay(); 
+  if (!s_present || !s_oled) return;
+  s_oled->clearDisplay(); 
   renderStatus_();
   renderFooter_();
  
@@ -115,23 +118,29 @@ static void drawAll() {
   if (s_toast.length()) {
     int16_t x = 0;
     int16_t y = (OLED_H / 2 - 8); // 8px font height
-    oled.setCursor(x, y);
-    oled.setTextSize(2);
-    oled.print(s_toast);
+    s_oled->setCursor(x, y);
+    s_oled->setTextSize(2);
+    s_oled->print(s_toast);
   }
-  oled.display();
+  if (!I2CManager::lock(s_wire)) return;
+  s_oled->display();
+  I2CManager::unlock(s_wire);
 }
 
 static void setContrast(uint8_t c) {
+  if (!s_oled) return;
+  if (!I2CManager::lock(s_wire)) return;
   // Adafruit_SSD1306 exposes this via command
-  oled.ssd1306_command(SSD1306_SETCONTRAST);
-  oled.ssd1306_command(c);
+  s_oled->ssd1306_command(SSD1306_SETCONTRAST);
+  s_oled->ssd1306_command(c);
+  I2CManager::unlock(s_wire);
 }
 
 bool DisplayManager::begin(const LoggerConfig& cfg,
                            const board::DisplayProfile& disp,
-                           const board::I2CProfile& i2c) {
+                           TwoWire* wire) {
   s_cfg = &cfg;
+  s_wire = wire;
 
   // If no display on this board, disable cleanly.
   if (disp.type == board::DisplayType::None) {
@@ -141,32 +150,42 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
     return false;
   }
 
-  // Must have an I2C bus + valid pins for OLED.
-  if (!i2c.present || i2c.sda < 0 || i2c.scl < 0) {
+  if (!s_wire) {
     s_present = false;
     s_status  = "OLED unavailable";
-    LOGW_TAG("DISP", "I2C not present or invalid pins; display disabled.\n");
+    LOGW_TAG("DISP", "No I2C bus supplied; display disabled.\n");
     return false;
   }
 
-  LOGI_TAG("DISP", "begin: starting I2C\n");
+  if (s_oled) {
+    delete s_oled;
+    s_oled = nullptr;
+  }
+  s_oled = new Adafruit_SSD1306(OLED_W, OLED_H, s_wire, OLED_RST_PIN);
+  if (!s_oled) {
+    s_present = false;
+    s_status  = "OLED alloc fail";
+    LOGE_TAG("DISP", "Failed to allocate OLED object.\n");
+    return false;
+  }
 
-  // I2C bring-up (from board profile)
-  Wire.begin(i2c.sda, i2c.scl);
-const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
-  Wire.setClock(hz);
+  LOGI_TAG("DISP", "begin: probing OLED on configured I2C bus\n");
 
   // --- Quick bus probe before touching the SSD1306 lib ---
   uint8_t addrToUse = 0;
   {
-    Wire.beginTransmission(disp.addr_primary);
-    uint8_t err = Wire.endTransmission(true);
+    if (!I2CManager::lock(s_wire)) {
+      LOGW_TAG("DISP", "I2C bus lock failed during OLED probe\n");
+      return false;
+    }
+    s_wire->beginTransmission(disp.addr_primary);
+    uint8_t err = s_wire->endTransmission(true);
     if (err == 0) {
       addrToUse = disp.addr_primary;
       LOGI_TAG("DISP", "I2C: found OLED at primary address\n");
     } else {
-      Wire.beginTransmission(disp.addr_alt);
-      err = Wire.endTransmission(true);
+      s_wire->beginTransmission(disp.addr_alt);
+      err = s_wire->endTransmission(true);
       if (err == 0) {
         addrToUse = disp.addr_alt;
         LOGI_TAG("DISP", "I2C: found OLED at alternate address\n");
@@ -174,6 +193,7 @@ const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
         LOGW_TAG("DISP", "I2C: no OLED found, err=%u\n", (unsigned)err);
       }
     }
+    I2CManager::unlock(s_wire);
   }
 
   if (addrToUse == 0) {
@@ -186,10 +206,16 @@ const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
   // --- Initialise the SSD1306 ---
   LOGI_TAG("DISP", "Initialising SSD1306 at 0x%02X\n", (unsigned)addrToUse);
 
-  bool ok = oled.begin(SSD1306_SWITCHCAPVCC,
-                       addrToUse,
-                       /*reset=*/false,
-                       /*periphBegin=*/false);
+  if (!I2CManager::lock(s_wire)) {
+    LOGE_TAG("DISP", "I2C bus lock failed during oled.begin().\n");
+    s_present = false;
+    return false;
+  }
+  bool ok = s_oled->begin(SSD1306_SWITCHCAPVCC,
+                          addrToUse,
+                          /*reset=*/false,
+                          /*periphBegin=*/false);
+  I2CManager::unlock(s_wire);
   if (!ok) {
     LOGE_TAG("DISP", "oled.begin() failed; display disabled.\n");
     s_present = false;
@@ -203,7 +229,7 @@ const uint32_t hz = (i2c.hz != 0) ? i2c.hz : 100000;
   s_brightness = s_nominal;
   s_idleDimMs  = (cfg.oledIdleDimMs == 0) ? 30000 : cfg.oledIdleDimMs;
 
-  oled.setRotation(0);
+  s_oled->setRotation(0);
 
   s_present = true;
   setContrast(s_nominal);
@@ -283,17 +309,17 @@ bool DisplayManager::available() { return s_present; }
 
 void DisplayManager::clear()     { 
   if (!available()) return;
-  if (s_present) { 
-    oled.clearDisplay(); 
+  if (s_present && s_oled) { 
+    s_oled->clearDisplay(); 
   } 
 }
 
 void DisplayManager::drawText(int16_t x, int16_t y, const String& s, uint8_t size) {
   if (!available()) return;
-  oled.setCursor(x, y);   // (x,y) with y = baseline
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setTextSize(size);
-  oled.print(s);
+  s_oled->setCursor(x, y);   // (x,y) with y = baseline
+  s_oled->setTextColor(SSD1306_WHITE);
+  s_oled->setTextSize(size);
+  s_oled->print(s);
 }
 
 void DisplayManager::setBrightness(uint8_t b) {
@@ -303,5 +329,7 @@ void DisplayManager::setBrightness(uint8_t b) {
 
 void DisplayManager::present() {
   if (!available()) return;
-  oled.display();
+  if (!I2CManager::lock(s_wire)) return;
+  s_oled->display();
+  I2CManager::unlock(s_wire);
 }

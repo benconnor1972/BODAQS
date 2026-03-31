@@ -8,6 +8,7 @@
 #include "WebServerManager.h"
 #include "DisplayManager.h"
 #include "StorageManager.h"    // if you have a flush/close; otherwise remove
+#include "I2CManager.h"
 #include "DebugLog.h"
 
 #define PWR_LOGI(...) LOGI_TAG("PWR", __VA_ARGS__)
@@ -18,20 +19,40 @@ static uint32_t g_prevCpuFreqMhz = 240;    // default / compile-time expectation
 // ---------------- Fuel gauge state ----------------
 static bool     g_fgInit     = false;
 static bool     g_fgOk       = false;
+static bool     g_fgDetected = false;
 static uint8_t  g_fgAddr     = 0x36;
+static TwoWire* g_fgWire     = nullptr;
 static float    g_fgSocPct   = 0.0f;
 static float    g_fgVbat     = 0.0f;
 static uint32_t g_fgLastPoll = 0;
 
+static TwoWire* fuelWire_()
+{
+  if (g_fgWire) return g_fgWire;
+  g_fgWire = I2CManager::bus(0);
+  return g_fgWire;
+}
+
 static bool i2cRead16_(uint8_t addr, uint8_t reg, uint16_t &out)
 {
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false; // repeated-start
-  if (Wire.requestFrom((int)addr, 2) != 2) return false;
+  TwoWire* wire = fuelWire_();
+  if (!wire) return false;
+  if (!I2CManager::lock(wire)) return false;
 
-  const uint8_t msb = Wire.read();
-  const uint8_t lsb = Wire.read();
+  wire->beginTransmission(addr);
+  wire->write(reg);
+  if (wire->endTransmission(false) != 0) {
+    I2CManager::unlock(wire);
+    return false; // repeated-start
+  }
+  if (wire->requestFrom((int)addr, 2) != 2) {
+    I2CManager::unlock(wire);
+    return false;
+  }
+
+  const uint8_t msb = wire->read();
+  const uint8_t lsb = wire->read();
+  I2CManager::unlock(wire);
   out = (uint16_t(msb) << 8) | lsb;
   return true;
 }
@@ -57,8 +78,21 @@ static bool max17048_read_(uint8_t addr, float &vbat_V, float &soc_pct)
 
 static bool i2cProbe_(uint8_t addr)
 {
-  Wire.beginTransmission(addr);
-  return (Wire.endTransmission() == 0);
+  TwoWire* wire = fuelWire_();
+  if (!wire) return false;
+  if (!I2CManager::lock(wire)) return false;
+  wire->beginTransmission(addr);
+  const bool ok = (wire->endTransmission() == 0);
+  I2CManager::unlock(wire);
+  return ok;
+}
+
+static bool max17048LooksPlausible_(uint8_t addr, float& v, float& s)
+{
+  if (!max17048_read_(addr, v, s)) return false;
+  if (v < 2.0f || v > 5.5f) return false;
+  if (s < 0.0f || s > 100.0f) return false;
+  return true;
 }
 
 static void fuelGaugeInitIfNeeded_()
@@ -66,23 +100,36 @@ static void fuelGaugeInitIfNeeded_()
   if (g_fgInit) return;
   g_fgInit = true;
 
-  // Start I2C if not already started elsewhere.
-  // (Safe to call even if DisplayManager already did it.)
-  Wire.begin();
-  Wire.setClock(400000);
-
-  // If the configured address doesn't ACK, try common ones.
-  if (!i2cProbe_(g_fgAddr)) {
-    if (i2cProbe_(0x36)) g_fgAddr = 0x36;
-    else if (i2cProbe_(0x32)) g_fgAddr = 0x32;
+  if (!fuelWire_()) {
+    g_fgOk = false;
+    g_fgDetected = false;
+    PWR_LOGI("Fuel gauge skipped: no I2C bus available\n");
+    return;
   }
 
-  // Initial read to set ok flag
   float v = 0, s = 0;
-  g_fgOk = max17048_read_(g_fgAddr, v, s);
+  g_fgOk = max17048LooksPlausible_(g_fgAddr, v, s);
+  if (!g_fgOk) {
+    if (g_fgAddr != 0x36 && max17048LooksPlausible_(0x36, v, s)) {
+      g_fgAddr = 0x36;
+      g_fgOk = true;
+    } else if (g_fgAddr != 0x32 && max17048LooksPlausible_(0x32, v, s)) {
+      g_fgAddr = 0x32;
+      g_fgOk = true;
+    }
+  }
+
   if (g_fgOk) {
+    g_fgDetected = true;
     g_fgVbat = v;
     g_fgSocPct = s;
+    PWR_LOGI("Fuel gauge detected at 0x%02X: %.3f V %.1f%%\n",
+             (unsigned)g_fgAddr,
+             (double)g_fgVbat,
+             (double)g_fgSocPct);
+  } else {
+    g_fgDetected = false;
+    PWR_LOGI("Fuel gauge not detected on configured/fallback addresses\n");
   }
 }
 
@@ -142,17 +189,20 @@ void PowerManager::restoreCpuFreqAfterLogging() {
 
 // ---------------- Fuel gauge public API ----------------
 
-void PowerManager::fuelGaugeBegin(uint8_t i2c_addr)
+void PowerManager::fuelGaugeBegin(uint8_t i2c_addr, TwoWire* wire)
 {
   g_fgAddr = i2c_addr ? i2c_addr : 0x36;
+  g_fgWire = wire;
   g_fgInit = false;      // force re-init
   g_fgOk   = false;
+  g_fgDetected = false;
   fuelGaugeInitIfNeeded_();
 }
 
 void PowerManager::fuelGaugeLoop()
 {
   fuelGaugeInitIfNeeded_();
+  if (!g_fgDetected) return;
 
   // Poll at ~1 Hz; adjust later as you like
   const uint32_t now = millis();

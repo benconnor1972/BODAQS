@@ -22,6 +22,7 @@
 #include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "BoardSelect.h"
+#include "I2CManager.h"
 #include "IndicatorManager.h"
 #include "PowerManager.h"
 #include "BoardProfile.h"
@@ -189,6 +190,8 @@ void setup() {
   ButtonBindingTable::initFromConfig(ConfigManager::get());
   BOOT_LOGI("SETUP: A done\n");
   RTCManager_setTimezone(g_cfg.tz);
+  const auto& cfg = ConfigManager::get();
+  I2CManager::begin(*gBoard);
 
 
   // 1) Sensor framework
@@ -227,11 +230,9 @@ void setup() {
   WebServerManager::begin(StorageManager_getSd(), isLoggingPredicate);
     BOOT_LOGI("SETUP: F done\n");
 
-  const auto& cfg = ConfigManager::get();
-
   // Choose RTC
   RTCManager_begin(RTC_INTERNAL);
-  // RTCManager_begin(RTC_EXTERNAL);
+  // RTCManager_begin(RTC_EXTERNAL, I2CManager::bus(0));
 
   //Initialise wifi manager
   BOOT_LOGI("SETUP: G wifimanager::begin\n");
@@ -256,10 +257,13 @@ void setup() {
   BOOT_LOGI("SETUP: I Done\n");
 
   if (gBoard && gBoard->fuel.type != FuelGaugeType::None) {
-    PowerManager::fuelGaugeBegin(gBoard->fuel.i2c_addr);
+    PowerManager::fuelGaugeBegin(gBoard->fuel.i2c_addr,
+                                 I2CManager::bus(gBoard->fuel.bus_index));
   }
   // Start OLED if present
-  DisplayManager::begin(cfg, gBoard->display, gBoard->i2c);
+  DisplayManager::begin(cfg,
+                        gBoard->display,
+                        I2CManager::bus(gBoard->display.bus_index));
 
   BOOT_LOGI("SETUP: J Done\n");
 
