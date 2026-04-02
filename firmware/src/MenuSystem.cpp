@@ -747,7 +747,7 @@ void MenuSystem::requestClose() {
     //  String line = "WiFi: " + WiFi.SSID();
      // UI::status(line);
      // } else {
-     //   UI::status("Ready");
+      //   UI::status("Ready");
      // }
   }
 }

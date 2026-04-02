@@ -28,7 +28,7 @@ static const char* evName(ButtonEvent e) {
 
 namespace {
   const LoggerConfig* s_cfg = nullptr;
-  bool s_enterHoldFired = false;
+  unsigned long s_lastEnterToggleMs = 0;
 
   struct Slot {
     ButtonActions::MarkOverrideHandle id;
@@ -388,8 +388,12 @@ void ButtonActions::onNavEnter(ButtonEvent event) {
     //   MenuSystem::deactivate();
     // }
   } else {
-    // When menu is not active, Enter toggles logging on RELEASE
-    if (event == BUTTON_RELEASED) {
+    // When the menu is not active, tolerate either press- or release-bound
+    // Enter actions and suppress duplicate toggles if both edges arrive.
+    if (event == BUTTON_PRESSED || event == BUTTON_RELEASED) {
+      const unsigned long now = millis();
+      if (s_lastEnterToggleMs != 0 && (now - s_lastEnterToggleMs) < 250) return;
+      s_lastEnterToggleMs = now;
       ButtonActions::onToggleLogging(BUTTON_PRESSED);
     }
     // You can also reserve HELD for a different function here if desired
