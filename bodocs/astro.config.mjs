@@ -3,8 +3,7 @@ import {defineConfig} from 'astro/config';
 import starlight from '@astrojs/starlight';
 
 export default defineConfig({
-  site: 'https://benconnor1972.github.io/',
-  base: 'BODAQS',
+  site: 'https://bodaqs.net',
   integrations: [
     starlight({
       title: 'Bodocs',
