@@ -1,0 +1,58 @@
+---
+title: Welcome to BODOCS
+description: Get started building your docs site with Starlight.
+template: splash
+
+hero:
+  title: Welcome to <strong>BODOCS</strong>
+  tagline: Documentation and build guides for the BODAQS project
+  image:
+    dark: ../../assets/hero-dark.png
+    light: ../../assets/hero-light.png
+  actions:
+    - text: Start building
+      link: /hardware-guide/1-sourcing-hardware
+      icon: right-arrow
+
+---
+
+import {Card, CardGrid, LinkButton} from '@astrojs/starlight/components';
+
+## Next steps
+
+<CardGrid stagger>
+  <Card title="What is BODAQS?" icon="information">
+    // TODO, Create an overview page
+    What is BODAQS? The problems it attempts to solve, and how to get one of your own.
+  </Card>
+  <Card title="Read the hardware guide" icon="setting">
+    Assemble your tools and components, and get to building your own data logger.
+    <LinkButton
+      href="/hardware-guide/1-sourcing-hardware"
+      variant="minimal"
+      icon="right-arrow"
+      iconPlacement="end"
+    >
+      Start building
+    </LinkButton>
+  </Card>
+  <Card title="Read the software guide" icon="add-document">
+    //TODO.
+    Learn how to load and interpret the data you've so painstakingly collected.
+  </Card>
+
+  <Card title="Join the Discord" icon="seti:css">
+    Connect with other bike data enthusiasts, show off your hacks, get help, and generally hang out on the BODAQS
+    Discord server
+
+    <LinkButton
+      href="https://discord.gg/BkWuT4S5kB"
+      variant="minimal"
+      icon="external"
+      iconPlacement="start"
+    >
+      Join the Discord
+    </LinkButton>
+
+  </Card>
+</CardGrid>
