@@ -8,7 +8,7 @@ export default defineConfig({
     starlight({
       title: 'Bodocs',
       logo: {
-        replacesTitle:true,
+        replacesTitle: true,
         light: './src/assets/logo-light.svg',
         dark: './src/assets/logo-dark.svg',
       },
