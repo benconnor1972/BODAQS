@@ -15,7 +15,10 @@ export default defineConfig({
       customCss: [
         './src/styles/tokens.css',
       ],
-      social: [{icon: 'github', label: 'GitHub', href: 'https://github.com/benconnor1972/BODAQS'}],
+      social: [
+        {icon: 'github', label: 'GitHub', href: 'https://github.com/benconnor1972/BODAQS'},
+        {icon: 'discord', label: 'Discord', href: 'https://discord.gg/BkWuT4S5kB'}
+      ],
       sidebar: [
         {
           label: 'Hardware guide',
