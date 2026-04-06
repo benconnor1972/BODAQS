@@ -36,20 +36,29 @@ The printed circuit board (PCB) is custom-designed for this project. It is obtai
 ## Electronic parts
 #### Sparkfun ESP32 Thing Plus S3 development board.
   Make sure you purchase the correct variant: there are a wide range of ESP32 development boards even within the Sparkfun range. The correct board is [this one](https://www.sparkfun.com/sparkfun-thing-plus-esp32-s3.html). These are available from hobby electronics shops around the world, or from major global electronic distributors like Digikey and Mouser.
+![Dev board pic](../../../assets/pics/thing_plus_s3.png)
+
 
 #### 0.96” OLED display
   These displays, based on an SSD1306 driver chip, are a commodity item and many vendors sell functionally equivalent versions. They do vary slightly in the physical dimensions of the board however, and some versions may require minor case modifications to install. [This vendor](https://www.aliexpress.com/item/1005009067594342.html) is one of many selling the module the case was built around. If the vendor posts an illustration like the one shown here, it’s probably the same one. If you buy something different, don’t worry – it can probably be installed with only minor modifications.
+![OLED pic](../../../assets/pics/OLED.png)
+![OLED dims pic](../../../assets/pics/OLED_dims.png)
+
 
 #### 5-key membrane keypad
   This is another commodity item available from many vendors on AliExpress, Amazon and Ebay, like [this one](https://www.aliexpress.com/item/1005006245093356.html). Search for variations of “5 button membrane keypad” or “5 key matrix keyboard”.
+![keypad pic](../../../assets/pics/keypad.png)
 
 #### Li-ion battery
   The Li-ion battery is 18650 size, with JST-PH 2 pin connector. 18650 Li-ion cells are widely available as replacement parts from AliExpress, Amazon, Ebay and local vendors. For our purposes, all are equally good. However, make sure that:
     - The battery is an 18650
     - The battery’s capacity exceeds about 1000mAh
     - The battery comes with a 2-wire JST-PH connector. Some batteries are sold with JST-XH or SM-2P connectors, which are not the same and will not fit.
+![battery pic](../../../assets/pics/battery.png)
+
 
 <Aside type={"caution"} title="Always check polarity before connecting">
+![polarity pic](../../../assets/pics/correct_polarity.png)
   Not all battery connectors are wired with the same polarity. Check and double check that the positive and negative leads from your battery are correctly oriented. If they are not oriented as shown, gently lift the tabs on the plastic connector housing with a needle or the edge of a craft knife, withdraw the leads and re-install them in the correct positions. If the leads are not color-coded, then test the cell with a multi-meter to determine positive and negative.
 
   **Do not connect a battery with the incorrect or unknown polarity as it will probably damage the development board.**
@@ -59,12 +68,18 @@ The printed circuit board (PCB) is custom-designed for this project. It is obtai
 
  #### QWIIC connector cable.
   The exact variation doesn’t matter: it just needs the QWIIC connector on one end. You will be cutting it and soldering the other ends into the OLED display. Available from AliExpress, Amazon and Ebay, or from major global electronic distributors like Digikey and Mouser.
+![qwiic pic](../../../assets/pics/qwiic.png)
+
 
 ### Connectors
 
 The BODAQS 4 logger has 6 external connectors: 4 analog inputs, one I2C bus and one connector for a handlebar-mounted switch. The connectors specified are DIN EN / IEC 61076-2-104 connectors, often referred to as M8 metal circular connectors.
 - The 4 analog inputs and 1 remote switch use male 3-pin connectors, Amphenol 8-03PMMS-SH7001
 - The I2C bus connection uses a male 4-pin connector, Amphenol 8-04PMMS-SH7001
+
+![male 3 pin pic](../../../assets/pics/male_3_pin.png)
+![male 4 pin pic](../../../assets/pics/male_4_pin.png)
+
 <Aside  title="Optional">
   Not all the connectors need to be installed. If you are only intending to run two analog inputs (linear pots for suspension, say) and don’t want a handlebar-mounted switch, you could build the logger with just two connectors.
   - The **premium** option for connectors is name brand connectors from TE Connectivity or Amphenol.
@@ -74,6 +89,7 @@ The BODAQS 4 logger has 6 external connectors: 4 analog inputs, one I2C bus and 
 
 #### Plugs for the connectors.
 These need to match the connectors. It is easiest to buy these as sealed cable tails and solder them to your sensor wires. There are many Amphenol options, or search for M8 connectors on AliExpress, Amazon or e-bay and look for something like the picture.
+![plugs pic](../../../assets/pics/plugs.png)
 
 
 ##  3D printed parts
@@ -95,6 +111,8 @@ The design files and STLs are available here [link to be added] and ready-to-pri
 The best starting set of sensors is two linear potentiometers (pots).
 These sensors change their resistance according to how far they are compressed or extended, which makes them useful for measuring suspension movement.
 Linear pots are available from a range of suppliers including major international electronics distributors, specialist suppliers of instrumentation, motorsport suppliers and manufacturers.
+![linear pot pic](../../../assets/pics/linear_pots.png)
+
 
 The most economical way to buy linear pots is on AliExpress.
 There are numerous options, but I personally use [these items](https://www.aliexpress.com/item/1005008810289538.html).
@@ -112,27 +130,40 @@ The following tools are <Badge variant="danger" text="Required" /> or <Badge tex
 
 #### Soldering iron
 <Badge variant="danger" text="Required" /> You will be soldering pin headers into a PCB and short wires to connectors, so you will need a soldering iron suitable for electronics use and some solder around 0.8mm diameter.
+![soldering iron 1 pic](../../../assets/pics/soldering_iron_1.png)
+![soldering iron 2 pic](../../../assets/pics/soldering_iron_2.png)
+
+<Aside  title="Optional">
+ The premium soldering iron option is a TS101 or Pinecil USB smart soldering iron. These feature a high power output, rapid heatup, and can be run with a lightweight cable, which makes them excellent for fine work. However, budget options can do the job just fine.
+</Aside>
 
 #### Side cutters
 <Badge variant="danger" text="Required" /> You should get a small flush-cut set intended for electronics rather than a larger set intended for more general electrical work.
+![cutter pic](../../../assets/pics/sidecutters.png)
 
 #### 2.5mm allen key
 <Badge variant="danger" text="Required" /> For fitting the case together. If you don't have a decent set of allen keys, you can pick a set up from almost any hardware store
 
 #### Wire strippers
 <Badge text="Recommended" variant="caution"/> You can strip wire with side cutters if you are careful, or your teeth if you are a maniac, but these make it much easier.
+![stripper pic](../../../assets/pics/wire_strippers.png)
 
 #### Multi-meter
 <Badge text="Recommended" variant="caution"/> For polarity & continuity testingm and fault finding. Even a basic model is sufficient for the needs of this project. Not needed if everything goes perfectly.
+![multimeter pic](../../../assets/pics/multimeter.png)
 
 #### Miniature hot air gun
 <Badge text="Recommended" variant="caution"/> For heating shrink-sleeve. A match, cigarette lighter, or glossy print of the author (price on request) can be used instead if necessary.
+![hot air gun pic](../../../assets/pics/hot_air.png)
 
 ### Minor components and consumables
 In addition, you will need:
 - Some light-gauge (22, 24 or 26 gauge) hookup wire, preferably in four colors – less than a metre in total. You can get this from electronics hobby shops, online, or scavenge it from an old network cable.
+![wire pic](../../../assets/pics/wire.png)
 - 2.5mm shrink-sleeve for covering soldered joints
+![shrink pic](../../../assets/pics/shrink.png)
 - Silicone sealant, for waterproofing
+![silicone pic](../../../assets/pics/silicone.png)
 - 4 M3x16 socket-head cap screws and nuts to hold the case together
 - (Optional but recommended): a small section of thin, transparent rigid plastic for waterproofing the screen. I cut up an old visor for this.
 
