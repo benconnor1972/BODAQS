@@ -1,0 +1,165 @@
+---
+import { Image } from 'astro:assets';
+import type { ImageMetadata } from 'astro';
+
+export interface Props {
+  src: string;
+  alt: string;
+  thumbnailWidth?: string | number;
+  maxWidth?: string | number;
+}
+
+const { src, alt, thumbnailWidth = 200, maxWidth = '90vw' } = Astro.props;
+
+// Vite builds this map at compile time; keys are project-root-relative paths.
+// Pass src as e.g. "/src/assets/pics/foo.png" to get image pipeline optimisation.
+// Any other string (remote URL, public path) falls back to a plain <img>.
+const imageModules = import.meta.glob<{ default: ImageMetadata }>(
+  '/src/assets/**/*.{png,jpg,jpeg,gif}'
+);
+const resolvedImage = imageModules[src] ? (await imageModules[src]()).default : null;
+
+const id = `lb-${Math.random().toString(36).slice(2, 8)}`;
+
+function toCssUnit(v: string | number) {
+  return typeof v === 'number' ? `${v}px` : v;
+}
+
+---
+
+<div class="lb-wrap">
+  <button
+    command="show-modal"
+    class="lb-trigger"
+    commandfor={id}
+    style={`width: ${toCssUnit(thumbnailWidth)}`}
+    aria-label={`View full size: ${alt}`}
+  >
+    {resolvedImage
+      ? <Image src={resolvedImage} alt={alt} class="lb-thumb" />
+      : <img src={src} alt={alt} class="lb-thumb" />
+    }
+  </button>
+
+  <dialog id={id} class="lb-popover"  closedby="any">
+    <!-- clicking the image closes the popover -->
+    <button
+      class="lb-img-btn"
+      commandfor={id}
+      command="close"
+      aria-label="Close image"
+    >
+      {resolvedImage
+        ? <Image src={resolvedImage} alt={alt} class="lb-full" style={`max-width: ${toCssUnit(maxWidth)}`} />
+        : <img src={src} alt={alt} class="lb-full" style={`max-width: ${toCssUnit(maxWidth)}`} />
+      }
+    </button>
+  </dialog>
+</div>
+
+<style is:global>
+  .lb-wrap {
+    display: inline-block;
+  }
+
+  /* ── thumbnail trigger ── */
+  .lb-trigger {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: zoom-in;
+    display: block;
+  }
+
+  .lb-thumb {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 4px;
+    transition: opacity 0.15s;
+  }
+
+  .lb-trigger:hover .lb-thumb {
+    opacity: 0.85;
+  }
+
+  /* ── popover ── */
+  .lb-popover {
+    border: none;
+    background: transparent;
+    padding: 0;
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    width: fit-content;
+    height: fit-content;
+    max-width: 100vw;
+    max-height: 100dvh;
+    overflow: visible;
+
+    opacity: 0;
+    scale: 0.96;
+    transition:
+      opacity    0.2s ease,
+      scale      0.2s ease,
+      display    0.2s allow-discrete,
+      overlay    0.2s allow-discrete;
+  }
+
+  .lb-popover[open] {
+    opacity: 1;
+    scale: 1;
+  }
+
+  @starting-style {
+    .lb-popover:popover-open {
+      opacity: 0;
+      scale: 0.96;
+    }
+  }
+
+  /* ── backdrop ── */
+  .lb-popover::backdrop {
+    cursor: zoom-out;
+    background: rgba(0, 0, 0, 0.82);
+    backdrop-filter: blur(4px);
+    opacity: 0;
+    transition:
+      opacity  0.2s ease,
+      display  0.2s allow-discrete,
+      overlay  0.2s allow-discrete;
+  }
+
+  .lb-popover[open]::backdrop {
+    opacity: 1;
+  }
+
+  @starting-style {
+    .lb-popover[open]::backdrop {
+      opacity: 0;
+    }
+  }
+
+  /* ── full-size image button ── */
+  .lb-img-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: zoom-out;
+    display: block;
+    line-height: 0;
+  }
+
+
+  .lb-full {
+    display: block;
+    width: auto;
+    height: auto;
+    max-height: 90dvh;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+  }
+
+
+</style>
