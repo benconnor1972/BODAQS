@@ -1,0 +1,23 @@
+---
+import Lightbox, {type Props} from "./Lightbox.astro"
+
+const {src, alt, thumbnailWidth, maxWidth} = Astro.props
+---
+
+<div class="flag">
+  <Lightbox src={src} alt={alt}  thumbnailWidth={thumbnailWidth} maxWidth={maxWidth} />
+  <div class="content"><slot/></div>
+</div>
+
+
+<style>
+  .flag {
+    display: flex;
+    grid-gap: var(--sl-content-gap-y);
+    align-items: flex-start;
+  }
+  .content{
+    margin-block: 0;
+    flex-grow: 1;
+  }
+</style>
