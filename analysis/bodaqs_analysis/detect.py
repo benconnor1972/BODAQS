@@ -1268,7 +1268,19 @@ def detect_events_from_schema(
             )
 
         # ---- Validate against the resolved inputs map ----
-        _validate_event_series_with_map(ev, df, inputs_map)
+        # Some schema events are expanded over multiple sensors. If a sensor is not
+        # present in this session (for example muted in firmware), skip just that
+        # sensor-expanded event instance and continue processing the others.
+        try:
+            _validate_event_series_with_map(ev, df, inputs_map)
+        except KeyError as exc:
+            logger.warning(
+                "%s(%s): skipping unavailable sensor-expanded event: %s",
+                ev_id,
+                sensor,
+                exc,
+            )
+            continue
 
         # ---- Use a resolved copy of the event for all downstream calls ----
         ev_resolved = dict(ev)
