@@ -10,7 +10,7 @@ hero:
     dark: ../../assets/hero-dark.svg
   actions:
     - text: Start building
-      link: /hardware-guide/1-sourcing-hardware
+      link: /hardware-guide
       icon: right-arrow
 ---
 
@@ -26,7 +26,7 @@ import {Card, CardGrid, LinkButton} from '@astrojs/starlight/components';
   <Card title="Read the hardware guide" icon="setting">
     Assemble your tools and components, and get to building your own data logger.
     <LinkButton
-      href="/hardware-guide/1-sourcing-hardware"
+      href="/hardware-guide"
       variant="minimal"
       icon="right-arrow"
       iconPlacement="end"
@@ -35,8 +35,15 @@ import {Card, CardGrid, LinkButton} from '@astrojs/starlight/components';
     </LinkButton>
   </Card>
   <Card title="Read the software guide" icon="add-document">
-    //TODO.
     Learn how to load and interpret the data you've so painstakingly collected.
+    <LinkButton
+      href="/software-guide"
+      variant="minimal"
+      icon="right-arrow"
+      iconPlacement="end"
+    >
+      Start crunching data
+    </LinkButton>
   </Card>
 
   <Card title="Discord & Instagram" icon="seti:css">
