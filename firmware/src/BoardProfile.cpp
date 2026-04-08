@@ -1,4 +1,5 @@
 // BoardProfile.cpp
+#include <Arduino.h>
 #include "BoardProfile.h"
 #include <string.h> // strcmp
 
@@ -122,6 +123,23 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 };
 
 // -----------------------------------------------------------------------------
+// Board: SparkFun ESP32 Thing Plus S3 on BODAQS 4 Prototype D
+// Variant with second I2C bus on the default UART TX/RX breakout pins.
+// -----------------------------------------------------------------------------
+static const BoardProfile THING_PLUS_S3_BODAQS_4_D_UART_I2C1 = [] {
+  BoardProfile p = THING_PLUS_S3_BODAQS_4_D;
+  p.name = "SparkFun ESP32 Thing Plus S3 on BODAQS 4 Proto D (UART TX/RX as I2C1)";
+  p.i2c[1] = {
+    .present = true,
+    .sda = TX,
+    .scl = RX,
+    .hz  = 400000
+  };
+  p.i2c_count = 2;
+  return p;
+}();
+
+// -----------------------------------------------------------------------------
 // Board: SparkFun ESP32 Thing Plus 
 // -----------------------------------------------------------------------------
 static const BoardProfile THING_PLUS_A = {
@@ -230,6 +248,7 @@ static const BoardProfile THING_PLUS_A = {
 const BoardProfile& GetBoardProfile(BoardID id) {
   switch (id) {
     case BoardID::ThingPlusS3_BODAQS_4_D:   return THING_PLUS_S3_BODAQS_4_D;
+    case BoardID::ThingPlusS3_BODAQS_4_D_UartI2C1: return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
     case BoardID::ThingPlus_A: return THING_PLUS_A;
     default:                          return THING_PLUS_S3_BODAQS_4_D;
   }
@@ -239,6 +258,7 @@ const BoardProfile& GetBoardProfileByName(const char* name) {
   if (!name) return THING_PLUS_S3_BODAQS_4_D;
 
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D.name) == 0)   return THING_PLUS_S3_BODAQS_4_D;
+  if (strcmp(name, THING_PLUS_S3_BODAQS_4_D_UART_I2C1.name) == 0) return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
   if (strcmp(name, THING_PLUS_A.name) == 0) return THING_PLUS_A;
 
   return THING_PLUS_S3_BODAQS_4_D;

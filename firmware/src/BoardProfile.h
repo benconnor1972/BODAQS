@@ -11,6 +11,7 @@ static constexpr uint8_t BOARD_MAX_I2C_BUSES = 2;
 // ---------- IDs / Types ----------
 enum class BoardID : uint8_t {
   ThingPlusS3_BODAQS_4_D = 0,
+  ThingPlusS3_BODAQS_4_D_UartI2C1,
   ThingPlus_A,
   // Add more here...
 };

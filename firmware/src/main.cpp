@@ -41,6 +41,10 @@
 #define HB_LOGD(...)   LOGD_TAG("HB", __VA_ARGS__)
 #define ADC_LOGD(...)  LOGD_TAG("ADC", __VA_ARGS__)
 
+#ifndef BODAQS_BOARD_PROFILE
+#define BODAQS_BOARD_PROFILE ThingPlusS3_BODAQS_4_D
+#endif
+
 
 //Debug
 static void dbgHeartbeat_()
@@ -134,7 +138,7 @@ static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 void setup() {
   
     Serial.begin(115200);
-    SelectBoard(BoardID::ThingPlusS3_BODAQS_4_D);
+    SelectBoard(BoardID::BODAQS_BOARD_PROFILE);
     DumpActiveBoardButtons();
 
     //Debug
