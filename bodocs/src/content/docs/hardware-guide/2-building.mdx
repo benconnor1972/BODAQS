@@ -106,26 +106,29 @@ esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write-flash 0x0 bodaqs-firmwa
 Aside: This is a fiddly job and it is worth getting organised to do it properly. There is limited room inside the case for excess wire so using the recommended wire lengths is important. Using the suggested wire colors will make your life easier too.
 | Function | Recommended Color |
 |----------|-------------------|
-| Vcc      | Red               |
-| Gnd      | Black             |
-| SDA      | Blue              |
-| SCL      | Yellow            |
+| Vcc            | Red               |
+| Gnd            | Black             |
+| SDA (I2C)      | Blue              |
+| SCL (I2C)      | Yellow            |
+| Signal (Analog)| Green             |
+| Mark (switch)  | Yellow            |
+| LED (Switch)   | Green            |
 
  - Cut and strip short sections of hookup wire for each connector in the recommended lengths. 
 
-| Connector | Pin    | Cable length |
-|-----------|--------|--------------|
-| Analog 1  | All    | x mm         |
-| Analog 2  | All    | x mm         |
-| Analog 3  | All    | x mm         |
-| Analog 4  | All    | x mm         |
-| Switch    | Switch | x mm         |
-|           | LED    | x mm         |
-|           | Gnd    | x mm         |
-| I2C       | Vcc    | x mm         |
-|           | Gnd    | x mm         |
-|           | SDA    | x mm         |
-|           | SCL    | x mm         |
+| Connector | Pin    | Cable length  |
+|-----------|--------|---------------|
+| Analog 1  | All    | 17 mm         |
+| Analog 2  | All    | 20 mm         |
+| Analog 3  | All    | 25 mm         |
+| Analog 4  | All    | 17 mm         |
+| Switch    | LED    | 46 mm         |
+|           | Mark   | 48 mm         |
+|           | Gnd    | 50 mm         |
+| I2C       | Gnd    | 35 mm         |
+|           | 3.3V   | 33 mm         |
+|           | SCL    | 31 mm         |
+|           | SDA    | 31 mm         |
 
  - Strip approximately 2-3mm from the ends of the wires and tin them with solder. Work quickly as too much heat will damage the wires' insulation.
 
@@ -139,7 +142,7 @@ Aside: This is a fiddly job and it is worth getting organised to do it properly.
 ## Assembling the unit
 Aside
 ### Prepare the case
- - Remove support material from the case. If printed in the recommended orientation, the majority of support material will be for the shallow indent where the kaypad sits. Make sure the laterial is thoroughly removed. The cosmetic appearance is not important since the keypad covers it, but it should be as flat as possible.
+ - Remove support material from the case. If printed in the recommended orientation, the majority of support material will be for the shallow indent where the kaypad sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since the keypad covers it, but it should be as flat as possible.
  - Optional: Install heat-set inserts. If you are using brass inserts rather than nuts to close your case, they should be installed now. Install them straight and flush using a soldering iron.  
 ### Install the components
  - Install the PCB and connectors. Place the PCB into the lower half of the case, ensuring the right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the upper half of the case). 
