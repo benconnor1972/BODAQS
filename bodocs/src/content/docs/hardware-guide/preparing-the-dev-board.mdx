@@ -4,7 +4,8 @@ sidebar:
   order: 2
 ---
 import {Aside, Tabs, TabItem } from '@astrojs/starlight/components';
-import Lede from '../../../components/Lede.astro';
+import Lede from '@components/Lede.astro';
+import MiniAside from '@components/MiniAside.astro';
 
 <Lede>
   Once you have all your parts, you're ready to start assembly.
@@ -18,7 +19,7 @@ import Lede from '../../../components/Lede.astro';
 
 ## Option 1: Browser flasher for Windows users
 
-<Aside>The ESPTool requires a chromium-based web browser such as Google Chrome, Microsoft Edge, or
+<Aside title={"Chromium only"}>The ESPTool requires a chromium-based web browser such as Google Chrome, Microsoft Edge, or
   Brave</Aside>
 
 - This is the easiest installation method for most Windows users.
@@ -42,10 +43,10 @@ import Lede from '../../../components/Lede.astro';
 
 <Tabs>
   <TabItem label="Via Pip (preferred)">
-    <Aside>
+    <MiniAside>
       For comprehensive setup for Apple computers see
       [The official installation guide](https://github.com/RavenSystem/esp-homekit-devices/wiki/Install-ESPTool-on-macOS)
-    </Aside>
+    </MiniAside>
     - Install [Python](https://www.python.org/downloads/) 3.10 or newer if it is not already installed.
     - Install `esptool` by running:
 
@@ -54,10 +55,10 @@ import Lede from '../../../components/Lede.astro';
     ```
   </TabItem>
   <TabItem label="Via Homebrew (MacOs only)">
-    <Aside>
+    <MiniAside type={'caution'}>
       The homebrew method is a quick way to get `esptool` installed on macOS, but it may not always have the latest version.
       For best results, install via pip
-    </Aside>
+    </MiniAside>
     If you have Homebrew installed, you can install `esptool` by running:
 
     ```bash
