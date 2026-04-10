@@ -92,15 +92,18 @@ Check keypad operation. Pressing the right arrow should enter the menu system. P
  </Flag>
 
 ### Assembling the connectors
- <Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
-**In this step you will be wiring the connectors to the PCB.** The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one connector for a handlebar-mounted switch. Other configurations are possible: the minimum useful configuration would be 2 analog inputs.
-
 <Aside type={"caution"} title="Fiddly work ahead">
 This is a fiddly job and it is worth getting organised to do it properly.
 There is limited room inside the case for excess wire so using the recommended wire lengths is important.
 Using the suggested wire colors will make your life easier too.
 </Aside>
+
+<Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
+
+**In this step you will be wiring the connectors to the PCB.**
+  The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one connector for a handlebar-mounted switch. Other configurations are possible: the minimum useful configuration would be 2 analog inputs.
 </Flag>
+
 
  <Aside  title="The UART connection">
 In addition to analog and I2C, the PCB breaks out a UART connection. This is not currently in use. In future it could be used to connect a GPS module. The pins can also be re-assigned in firmware to provide access to a second I2C bus, which may be useful for avoiding I2C address conflicts.
@@ -111,7 +114,7 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 
 
  <Flag src="/src/assets/pics/Build-11.jpg" alt="Build-11">
- ***Install the connectors in the 3d printed end pieces** and tighten. Ensure that the connector o-rings are on the outside and sit in the chamfered edges of the holes.
+ **Install the connectors in the 3d printed end pieces** and tighten. Ensure that the connector o-rings are on the outside and sit in the chamfered edges of the holes.
  Place the connector assemblies face-down. If possible, secure them in a vise.
  'Tin' the pins on the back of each connector with a small amount of solder
 </Flag>
@@ -119,6 +122,7 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
  <Flag src="/src/assets/pics/Build-12E.png" alt="Build-12">
  **Prepare the hookup wires.** Cut and strip short sections of hookup wire for each connector in the recommended lengths. *Note the lengths are for the insulated portion of the wire*. Allow some extra to strip the ends.
  Strip approximately 3-4mm from the ends of the wires and tin them with solder. Work quickly as too much heat will damage the wires' insulation.
+ </Flag>
 
 | Connector | Pin    | Cable length  |  Color       |
 |-----------|--------|---------------|--------------|
@@ -137,7 +141,6 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 |           | SCL    | 31 mm         | Yellow       |
 |           | SDA    | 31 mm         | Blue         |
 
-</Flag>
 
  <Flag src="/src/assets/pics/Build-12AE.png" alt="Build-12">
  **Solder the wires to the connectors.** This is much easier if the connector pins and wire ends are tinned first. Use the soldering iron to heat the pin until the solder melts. Insert the wire end into the molten solder and withdraw the heat. Repeat for all wires.

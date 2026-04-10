@@ -1,15 +1,16 @@
 ---
 import { Image } from 'astro:assets';
 import type { ImageMetadata } from 'astro';
-
+import {toCssUnit} from "@src/util/toCssUnit.ts"
 export interface Props {
   src: string;
   alt: string;
+  class?:string
   thumbnailWidth?: string | number;
   maxWidth?: string | number;
 }
 
-const { src, alt, thumbnailWidth = 200, maxWidth = '90vw' } = Astro.props;
+const { class:className,src, alt, thumbnailWidth = 200, maxWidth = '90vw' } = Astro.props;
 
 // Vite builds this map at compile time; keys are project-root-relative paths.
 // Pass src as e.g. "/src/assets/pics/foo.png" to get image pipeline optimisation.
@@ -21,13 +22,8 @@ const resolvedImage = imageModules[src] ? (await imageModules[src]()).default : 
 
 const id = `lb-${Math.random().toString(36).slice(2, 8)}`;
 
-function toCssUnit(v: string | number) {
-  return typeof v === 'number' ? `${v}px` : v;
-}
-
 ---
-
-<div class="lb-wrap">
+<div class:list={["lb-wrap", className ] }>
   <button
     command="show-modal"
     class="lb-trigger"

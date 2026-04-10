@@ -1,19 +1,24 @@
 ---
 import Lightbox, {type Props} from "./Lightbox.astro"
+import {toCssUnit} from "@src/util/toCssUnit.ts"
 
-const {src, alt, thumbnailWidth, maxWidth} = Astro.props
+const {src, alt, thumbnailWidth=200, maxWidth} = Astro.props
 ---
 
 <div class="flag">
-  <Lightbox src={src} alt={alt}  thumbnailWidth={thumbnailWidth} maxWidth={maxWidth} />
+  <div
+    style={`width: min(${toCssUnit(thumbnailWidth)}, 100%)`}
+    >
+  <Lightbox class="img" src={src} alt={alt}
+    thumbnailWidth={thumbnailWidth} maxWidth={maxWidth} />
+  </div>
   <div class="content"><slot/></div>
 </div>
-
 
 <style>
   .flag {
     display: flex;
-    flex-direction: column;
+    flex-flow: column nowrap;
     gap: var(--sl-content-gap-y);
     align-items: flex-start;
 
@@ -23,7 +28,7 @@ const {src, alt, thumbnailWidth, maxWidth} = Astro.props
   }
 
   .content{
+    flex: 1 ;
     margin-block: 0;
-    flex-grow: 1;
   }
 </style>

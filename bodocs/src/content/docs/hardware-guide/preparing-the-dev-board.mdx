@@ -3,7 +3,7 @@ title: Preparing the Dev Board
 sidebar:
   order: 2
 ---
-import {Aside, Card} from '@astrojs/starlight/components';
+import {Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 import Lede from '../../../components/Lede.astro';
 
 <Lede>
@@ -40,23 +40,33 @@ import Lede from '../../../components/Lede.astro';
 - This option is recommended for Mac and Linux users, and for Windows users who prefer a command-line method.
 - Download the firmware file here: **[BODAQS firmware binary](PLACEHOLDER_LINK_TO_BINARY)**.
 
+<Tabs>
+  <TabItem label="Via Pip (preferred)">
+    <Aside>
+      For comprehensive setup for Apple computers see
+      [The official installation guide](https://github.com/RavenSystem/esp-homekit-devices/wiki/Install-ESPTool-on-macOS)
+    </Aside>
+    - Install [Python](https://www.python.org/downloads/) 3.10 or newer if it is not already installed.
+    - Install `esptool` by running:
 
-<Card title={"Install ESPtool with homebrew (Mac users only)"}>
-  If you have Homebrew installed, you can install `esptool` by running:
+    ```bash
+      pip install esptool
+    ```
+  </TabItem>
+  <TabItem label="Via Homebrew (MacOs only)">
+    <Aside>
+      The homebrew method is a quick way to get `esptool` installed on macOS, but it may not always have the latest version.
+      For best results, install via pip
+    </Aside>
+    If you have Homebrew installed, you can install `esptool` by running:
 
-  ```bash
-  brew install esptool
-  ```
-</Card>
+    ```bash
+    brew install esptool
+    ```
+  </TabItem>
+</Tabs>
 
-<Card title={"Install ESPtool via Python"}>
-  - Install Python if it is not already installed.
-  - Install `esptool` by running:
-
-  ```bash
-  pip install esptool
-  ```
-</Card>
+---
 
 
 Once you have your firmware file and ESPtool installed, follow these steps to flash the firmware:

@@ -15,6 +15,11 @@ Agents should follow the collaboration rules and project conventions below.
 
 Top-level folders in this repo include:
 
+- `bodocs/`  
+  Astro/starlight(https://starlight.astro.build/) powered documentation site (treat as separate from source code; edits here should be limited to docs updates).
+  Contents of this folder are not expected to be edited when working on firmware or analysis tasks, except for documentation updates.
+  Content should be added to `bodocs/src/content/` in MDX format and assets to `bodocs/src/assets/` when relevant.
+
 - `firmware/`  
   ESP32 logger firmware (Arduino-style multi-file sketch folder: `.ino` + `.h/.cpp`).
 
