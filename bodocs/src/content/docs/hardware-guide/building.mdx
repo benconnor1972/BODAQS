@@ -2,86 +2,16 @@
 title: Building
 
 sidebar:
-  order: 2
+  order: 3
 ---
 
-import {Aside, Badge} from '@astrojs/starlight/components';
-import Lede from '../../../components/Lede.astro';
-import Lightbox from '../../../components/Lightbox.astro';
-import Flag from '../../../components/Flag.astro';
-
-## Install firmware on development board
-
-
-### Option 1: Browser flasher for Windows users
-
-- This is the easiest installation method for most Windows users.
-- Use **Google Chrome** or **Microsoft Edge**.
-- Download the BODAQS firmware file here: **[BODAQS firmware binary](PLACEHOLDER_LINK_TO_BINARY)**.
-- Connect the dev board to your computer with a **USB data cable**.
-- Open the Adafruit WebSerial ESPTool here: **[Adafruit WebSerial ESPTool](https://adafruit.github.io/Adafruit_WebSerial_ESPTool/)**.
-- Click **Connect**.
-- When Windows shows a list of serial devices, select the port for your BODAQS board and approve access.
-- In the first file row, enter offset **`0x0`**.
-- Click **Choose a file** and select the downloaded BODAQS firmware binary.
-- Leave the other file rows empty.
-- Click **Program**.
-- Wait for the flash process to complete.
-- If the board does not start automatically after flashing, press the **Reset** button on the board or unplug and reconnect it.
-
-### Option 2: ESPtool for Mac, Linux, and advanced users
-
-- This option is recommended for Mac and Linux users, and for Windows users who prefer a command-line method.
-- Download the firmware file here: **[BODAQS firmware binary](PLACEHOLDER_LINK_TO_BINARY)**.
-- Install Python if it is not already installed.
-- Install `esptool` by running:
-
-```bash
-pip install esptool
-```
-
-- Connect your BODAQS board to your computer with a **USB data cable**.
-- Identify the serial port used by the board:
-  - **Windows:** something like `COM3`
-  - **Mac:** something like `/dev/cu.usbmodem...`
-  - **Linux:** something like `/dev/ttyACM0` or `/dev/ttyUSB0`
-- Open a terminal or command prompt in the folder containing the downloaded firmware file.
-- Run the following command, replacing the port name and file name as needed:
-
-```bash
-esptool --chip esp32s3 --port YOUR_PORT write-flash 0x0 bodaqs-firmware.bin
-```
-
-- Example on Windows:
-
-```bash
-esptool --chip esp32s3 --port COM3 write-flash 0x0 bodaqs-firmware.bin
-```
-
-- Example on Mac or Linux:
-
-```bash
-esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write-flash 0x0 bodaqs-firmware.bin
-```
-
-- Wait for the flash process to complete.
-- If the board does not start automatically after flashing, press the **Reset** button on the board or unplug and reconnect it.
-
-### If flashing does not work
-
-- Check that your USB cable supports **data**, not just charging.
-- Try a different USB port.
-- Close any serial monitor or other software that may already be using the serial port.
-- Try unplugging and reconnecting the board.
-- If needed, restart the board and try again.
-- If browser flashing does not work, use the **ESPtool** method instead.
 
 ## Prepare the MicroSD card
  - Connect the MicroSD card to your computer and format it in FAT32.
- - Create a folder named 'config' in the card's root directory. 
- - Download the config file here [insert hyperlink] and place it in the config directory.
+ - Create a folder named 'config' in the card's root directory.
+ - Download the config file here [insert hyperlink] and place it in the config directory.   {/* //TODO, insert hyperlink*/}
  - Open the config file in a text editor and add some wifi credentials.
- - Eject the MicroSD card. Install it in the MicroSD slot in the underside of the dev board. 
+ - Eject the MicroSD card. Install it in the MicroSD slot in the underside of the dev board.
 
 ## Build the logger
 
@@ -93,8 +23,8 @@ Now the fun really begins. Check that you have all the things shown in the pictu
  <Aside  title="Soldering">
 It is assumed that you have basic soldering skills. If not, there are many online resources - it is not a difficult skill to learn.
 </Aside>
- 
- The dev board is installed in the PCB with a removeable pin/socket arrangement. This allows the dev board to be easily removed for re-use in later PCB revisions.
+
+The dev board is installed in the PCB with a removeable pin/socket arrangement. This allows the dev board to be easily removed for re-use in later PCB revisions.
  <Flag src="/src/assets/pics/Pins_1.jpg" alt="Pins 1 ">
  Cut two sections of pin header, one with 12 pins and one with 16, for soldering into the dev board.
 </Flag>
@@ -111,13 +41,13 @@ It is assumed that you have basic soldering skills. If not, there are many onlin
 </Flag>
 
  <Flag src="/src/assets/pics/Build-6.jpg" alt="Build-6">
- Insert the pin sockets into the PCB. 
+ Insert the pin sockets into the PCB.
  Insert the pin headers on the dev board into the sockets to keep the sockets square and parallel while you solder them.
 </Flag>
 <Lightbox src="/src/assets/pics/Build-7.jpg" alt="Build-7" />
 
  <Flag src="/src/assets/pics/Build-7BE.png" alt="Build-7B">
- Turn the assembly over and solder the pin sockets to the PCB from the underside. 
+ Turn the assembly over and solder the pin sockets to the PCB from the underside.
 </Flag>
 
  <Flag src="/src/assets/pics/Build-7CE.png" alt="Build-7C">
@@ -131,11 +61,11 @@ Cut the QWIIC cable, leaving approx 100mm of cable on the connector. Strip appro
 </Flag>
 
  <Flag src="/src/assets/pics/OLED-3E.png" alt="OLED-3E">
-If your OLED display has pin headers installed, carefully pry off the plastic collar at the base of the pin headers with a craft knife and cut the headers to around half their original length. Cut 4 sections of heat shrink, approx 6mm long and thread one onto each wire of the QWIIC cable. If the display has no pin headers installed, no action is needed. 
+If your OLED display has pin headers installed, carefully pry off the plastic collar at the base of the pin headers with a craft knife and cut the headers to around half their original length. Cut 4 sections of heat shrink, approx 6mm long and thread one onto each wire of the QWIIC cable. If the display has no pin headers installed, no action is needed.
 </Flag>
 
  <Flag src="/src/assets/pics/Build-20E2.png" alt="Build-20E2">
-Tin the ends of the wires and solder them to the pin headers or into the connector holes as applicable. Take care to solder the wires in the correct positions. Slide the heat shrink pieces down over the pin headers (if applicable) and apply heat. 
+Tin the ends of the wires and solder them to the pin headers or into the connector holes as applicable. Take care to solder the wires in the correct positions. Slide the heat shrink pieces down over the pin headers (if applicable) and apply heat.
 </Flag>
 <Lightbox src="/src/assets/pics/OLED-1E.png" alt="OLED-1E" />
 
@@ -145,7 +75,7 @@ The OLED display is fragile. Handle it with care so as not to crack it.
 If your OLED display has pin headers installed, do not attempt to de-solder them. It is easy to damage the copper traces when doing do.
 </Aside>
 
- 
+
 ### Connect the keypad and screen and check the build so far
  <Flag src="/src/assets/pics/Build-9.jpg" alt="Build-9">
 Plug the QWIIC connector into the dev board. Connect the membrane keypad to the navigation headers on the PCB, ensuring the connector orientation matches the picture.
@@ -158,11 +88,11 @@ Check keypad operation. Pressing the right arrow should enter the menu system. P
 
 ### Assembling the connectors
  <Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
-In this step you will be wiring the connectors to the PCB. The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one connector for a handlebar-mounted switch. Other configurations are possible: the minimum useful configuration would be 2 analog inputs. 
+In this step you will be wiring the connectors to the PCB. The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one connector for a handlebar-mounted switch. Other configurations are possible: the minimum useful configuration would be 2 analog inputs.
 
 <Aside type={"caution"} title="Fiddly work ahead">
-This is a fiddly job and it is worth getting organised to do it properly. 
-There is limited room inside the case for excess wire so using the recommended wire lengths is important. 
+This is a fiddly job and it is worth getting organised to do it properly.
+There is limited room inside the case for excess wire so using the recommended wire lengths is important.
 Using the suggested wire colors will make your life easier too.
 </Aside>
 </Flag>
@@ -176,13 +106,13 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 
 
  <Flag src="/src/assets/pics/Build-11.jpg" alt="Build-11">
- Install the connectors in the 3d printed end pieces and tighten. Ensure that the connector o-rings are on the outside and sit in the chamfered edges of the holes.  
+ Install the connectors in the 3d printed end pieces and tighten. Ensure that the connector o-rings are on the outside and sit in the chamfered edges of the holes.
  Place the connector assemblies face-down. If possible, secure them in a vise.
  'Tin' the pins on the back of each connector with a small amount of solder
 </Flag>
 
  <Flag src="/src/assets/pics/Build-12E.png" alt="Build-12">
- Cut and strip short sections of hookup wire for each connector in the recommended lengths. *Note the lengths are for the insulated portion of the wire*. Allow some extra to strip the ends.  
+ Cut and strip short sections of hookup wire for each connector in the recommended lengths. *Note the lengths are for the insulated portion of the wire*. Allow some extra to strip the ends.
  Strip approximately 3-4mm from the ends of the wires and tin them with solder. Work quickly as too much heat will damage the wires' insulation.
 
 | Connector | Pin    | Cable length  |  Color       |
@@ -206,7 +136,7 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 
  <Flag src="/src/assets/pics/Build-12AE.png" alt="Build-12">
  Solder the wires to the connectors. This is much easier if the connector pins and wire ends are tinned first. Use the soldering iron to heat the pin until the solder melts. Insert the wire end into the molten solder and withdraw the heat. Repeat for all wires.
- Check that all the wires are secure and excess solder is not present. 
+ Check that all the wires are secure and excess solder is not present.
  </Flag>
 <Lightbox src="/src/assets/pics/Build-13.jpg" alt="Build-13" />
 
@@ -225,14 +155,14 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 
 ### Prepare the case
  - Remove support material from the case. If printed in the recommended orientation, the majority of support material will be for the shallow indent where the kaypad sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since the keypad covers it, but it should be as flat as possible.
- - Optional: Install heat-set inserts. If you are using brass inserts rather than nuts to close your case, they should be installed now. Install them straight and flush using a soldering iron.  
+ - Optional: Install heat-set inserts. If you are using brass inserts rather than nuts to close your case, they should be installed now. Install them straight and flush using a soldering iron.
 ### Install the components
- - Install the PCB and connectors. Place the PCB into the lower half of the case, ensuring the right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the upper half of the case). 
+ - Install the PCB and connectors. Place the PCB into the lower half of the case, ensuring the right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the upper half of the case).
  - Position the case end pieces into their slots and ensure all the wiring sits cleanly.
  - If necessary trim or extend the battery wires. The recommended wire length is [xx] mm.
- - Install the battery. The battery sits in the slot on the right-hand side of the case with the wires facing to the front of the case. 
+ - Install the battery. The battery sits in the slot on the right-hand side of the case with the wires facing to the front of the case.
   Aside: check the battery polarity again.
- - Gently remove the plastic shell from the end of the keypad's ribbon connector by gently prying up the front edges of the locking tabs with a craft knife. Pass the ribbon connector through the hole in the front of the case and re-install the plastic connector shell. 
+ - Gently remove the plastic shell from the end of the keypad's ribbon connector by gently prying up the front edges of the locking tabs with a craft knife. Pass the ribbon connector through the hole in the front of the case and re-install the plastic connector shell.
  - Peel off the self-adhesive backing from the keypad and press it firmly down to the case.
  - Tuck the lower edge of the oled display into the slot at the bottom of the opening. Press firmly on the top corners of the display to lock it in place.
  Aside: be careful with the display.
@@ -240,9 +170,9 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
  - Route the battery wires as shown and connect to the JST connector on the dev board.
  - Connect the loose ends of the QWIIC cable to the OLED display. Connect the other end to the QWIIC connector on the dev board.
  - Connect the keypad connector the the navigation pins.
- - Carefully close the case. Take special care with the keypad ribbon connector. It can be bent, but minimise this if possible. 
+ - Carefully close the case. Take special care with the keypad ribbon connector. It can be bent, but minimise this if possible.
  - Secure the case with 4 x M3x16 cap screws and tighten.
- 
+
 ### Optional but recommended: waterproofing
 The water-resistance of the logger can be dramatically improved with the judicious application of caulking silicone at selected points:
  - Seal the keypad ribbon connector where it passes through the case from the back.
