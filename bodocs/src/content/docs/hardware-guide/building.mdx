@@ -18,9 +18,8 @@ import Lightbox from '@components/Lightbox.astro';
 
 ## Build the logger
 
- <Flag src="/src/assets/pics/Build-overview.png" alt="Build-overview">
 Now the fun really begins. Check that you have all the things shown in the picture.
-</Flag>
+ <Lightbox thumbnailWidth={600 } src="/src/assets/pics/Build-overview.png" alt="Build-overview"/>
 
 ### Solder headers to PCB and dev board
  <Aside  title="Soldering">
@@ -36,7 +35,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 </Flag>
 
  <Flag src="/src/assets/pics/Build-4E.jpg" alt="Build-4 ">
- **Check the pin header alignment.** The pin headers should be square to the board. If necessary, gently bend the header around the soldered pin. Solder the rest of the pins. 
+ **Check the pin header alignment.** The pin headers should be square to the board. If necessary, gently bend the header around the soldered pin. Solder the rest of the pins.
  <Aside  title="Use a breadboard if you have one">
  If you have a prototying breadboard, installing the headers in the breadboard for soldering will guarantee squareness.
 </Aside>
@@ -162,7 +161,7 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 ### Prepare the case
  <Flag src="/src/assets/pics/Build-17.jpg" alt="Build-17">
  **Remove support material** from the case using a craft knife. If printed in the recommended orientation, the majority of support material will be for the shallow indent where the kaypad sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since the keypad covers it, but it should be as flat as possible.
- 
+
  **Optional:** Install heat-set inserts. If you are using brass inserts rather than nuts to close your case, they should be installed now. Install them straight and flush using a soldering iron.
 
  </Flag>
@@ -171,11 +170,11 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 
  <Flag src="/src/assets/pics/Build-16.jpg" alt="Build-16">
  **Install the PCB and connectors**. Place the PCB into the lower half of the case, ensuring the right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the upper half of the case).
- 
+
  Position the case end pieces into their slots and ensure all the wiring sits cleanly.
  </Flag>
  <Aside type={"caution"} title="Take your time">
- Getting the PCB to sit flat may require some careful manoeuvring of the wires. Take your time and don't force anything. 
+ Getting the PCB to sit flat may require some careful manoeuvring of the wires. Take your time and don't force anything.
 </Aside>
 
  <Flag src="/src/assets/pics/Build-19.jpg" alt="Build-19">
@@ -190,35 +189,35 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 
  <Flag src="/src/assets/pics/Build-21.jpg" alt="Build-21">
  **Assemble the keypad and display**. Gently remove the plastic shell from the end of the keypad's ribbon connector by gently prying up the front edges of the locking tabs with a craft knife. Pass the ribbon connector through the hole in the front of the case and re-install the plastic connector shell.
- 
+
  Peel off the self-adhesive backing from the keypad and press it firmly down to the case.
   </Flag>
-  
+
  <Flag src="/src/assets/pics/Build-21A.png" alt="Build-21A">
 
  Tuck the lower edge of the oled display into the slot at the bottom of the opening. Press firmly on the top corners of the display to lock it in place.
  <Aside type={"caution"} title="Press only on the corners to avoid damaging the display.">
 </Aside>
  </Flag>
- 
+
 ### Connect up and close
 
  <Flag src="/src/assets/pics/Build-22.jpg" alt="Build-22">
  **Connect the keypad and display.** Connect the loose ends of the QWIIC cable to the OLED display. Connect the other end to the QWIIC connector on the dev board.
- 
- Connect the keypad connector the the navigation pins. 
+
+ Connect the keypad connector the the navigation pins.
   </Flag>
-  
+
    <Flag src="/src/assets/pics/Build-23.jpg" alt="Build-23">
  **Carefully close the case**. Take special care with the keypad ribbon connector. It can be bent, but minimise this if possible.
- 
+
  Secure the case with 4 x M3x12 cap screws and tighten.
- 
+
   <Aside  title="Congratulations!">
 Well done. Take the rest of the day off.
 </Aside>
   </Flag>
-  
+
 
 
 

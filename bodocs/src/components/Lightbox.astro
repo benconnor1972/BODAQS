@@ -32,7 +32,7 @@ function toCssUnit(v: string | number) {
     command="show-modal"
     class="lb-trigger"
     commandfor={id}
-    style={`width: ${toCssUnit(thumbnailWidth)}`}
+    style={`width: min(${toCssUnit(thumbnailWidth)}, 100%)`}
     aria-label={`View full size: ${alt}`}
   >
     {resolvedImage
@@ -96,7 +96,6 @@ function toCssUnit(v: string | number) {
     max-width: 100vw;
     max-height: 100dvh;
     overflow: visible;
-
     opacity: 0;
     scale: 0.96;
     transition:
@@ -121,7 +120,7 @@ function toCssUnit(v: string | number) {
   /* ── backdrop ── */
   .lb-popover::backdrop {
     cursor: zoom-out;
-    background: rgba(0, 0, 0, 0.82);
+    background: rgb(0 0 0 / 82%);
     backdrop-filter: blur(4px);
     opacity: 0;
     transition:
@@ -158,8 +157,10 @@ function toCssUnit(v: string | number) {
     max-height: 90dvh;
     object-fit: contain;
     border-radius: 4px;
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 12px 48px rgb(0 0 0 / 60%);
   }
+
+
 
 
 </style>
