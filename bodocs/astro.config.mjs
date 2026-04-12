@@ -12,6 +12,7 @@ export default defineConfig({
         light: './src/assets/logo-light.svg',
         dark: './src/assets/logo-dark.svg',
       },
+
       customCss: [
         './src/styles/tokens.css',
       ],
@@ -34,6 +35,7 @@ export default defineConfig({
         },
       ],
       sidebar: [
+        { slug: 'what-is-bodaqs' },
         {
           label: 'Hardware guide',
           autogenerate: {directory: 'hardware-guide'},
