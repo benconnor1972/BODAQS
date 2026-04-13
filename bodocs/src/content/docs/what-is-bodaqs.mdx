@@ -1,0 +1,95 @@
+---
+title: What is BODAQS?
+description: An introduction to the Bicycle Open Data Acquisition System — what it is, how it works, and who it's for.
+sidebar:
+  order: 0
+---
+
+import Lede from '@components/Lede.astro';
+import { LinkCard } from '@astrojs/starlight/components';
+
+<Lede>
+BODAQS (Bicycle open data acquisition system) is an open-source, build-it-yourself data collection
+and analysis system for mountain bikes, designed to be accessible to anyone with basic soldering
+skills and a curiosity about what their suspension is actually doing.
+
+Every professional gravity team has an engineer watching a laptop full of suspension data.
+BODAQS sits between the consumer products that give you a single number and the professional rigs
+that require a racing team's budget.
+</Lede>
+
+## The problem with suspension tuning
+
+For most riders, suspension setup is a vibe-based, iterative guessing game: adjust a click, do a
+run, wonder if that made things better or just 'different', repeat to exhaustion.
+
+At the sharp end of gravity racing, teams solve this with custom data acquisition rigs and dedicated
+engineers.
+A few consumer products have tried to bridge the gap — ShockWiz, now owned by SRAM, is the standout
+example, extracting meaningful suspension insight for most riders in under twenty minutes.
+
+ShockWiz, however is a closed system: the algorithm is proprietary, the data never leaves the
+device, and if
+your bike performance falls outside what it was designed to answer, you're out of options.
+
+For the rider who wants to go deeper, wants to do more with the data, or whose coil setup isn't
+supported,the choice has been: trust a black box, commission professional equipment, or go
+without.
+
+## The device
+
+BODAQS is a compact, hackable, open-source data logger you build yourself from widely available
+components using basic soldering skills and a 3D printer. It records inputs from suspension travel and other sensors, at up to 500Hz,
+capturing rapid events like suspension movement during a landing in fine detail.
+
+A small OLED screen and keypad make it usable on the bike, and an optional
+handlebar-mounted button lets you tag moments of interest mid-ride — a heavy landing, a sketchy
+section — so they're easy to find later.
+
+Logs are saved as standard CSV text tables: your data is yours,
+readable by any tool you choose. The full design is open: PCB schematics, firmware, and
+3D-printable sensor mounts are all available to build, fork, and improve.
+
+## The analysis
+
+Recording data is an engineering problem. Deciding what it *means* is the harder part — and the part
+that actually matters for tuning.
+
+BODAQS includes a Python analysis framework built on widely used open tools. A preprocessing
+pipeline cleans and validates your logs into consistent, comparable sessions. Automated event
+detection finds the moments that matter: jJump landings, deep compressions, and fast rebounds —
+
+Comparison tools let you visualise sessions, isolate events, and measure how your setup changes
+between runs.
+
+The framework is deliberately transparent: you can see every step from raw sensor signal to output
+metric. It isn't designed to hand you a suspension report card. It's designed to help you build real
+understanding of what your suspension is actually doing when you are riding your bike, on your
+trails, the way you ride.
+
+## Who it's for
+
+BODAQS is designed to scale with the user — in both the build, and the analysis.
+
+If you're new to data acquisition, the hardware guide walks you through assembling your first
+logger, and you'll have something real to look at after your first ride with as little as two
+sensors.
+
+If you're an experienced Python user, the analysis framework is structured for extension:
+define custom event schemas, write new metrics, build new notebooks.
+
+Whether your goal is to get within the wide window of "good enough", to chase optimisation gains at
+the sharp end, or simply understand why your bike feels the way it does on that particularly gnarly
+corner, BODAQS give you the tools to understand what's happening.
+
+
+---
+
+<LinkCard
+  title="Start building"
+  description="Assemble your tools and components, and get to building your own logger."
+  href="/hardware-guide"
+  icon="right-arrow"
+  iconPlacement="end"
+/>
+
