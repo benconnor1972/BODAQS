@@ -1,0 +1,42 @@
+---
+import {Aside} from "@astrojs/starlight/components";
+import type {StarlightIcon} from "@astrojs/starlight/types";
+
+
+// stolen from the Aside component which, annoyingly does not export its types
+const asideVariants = ['note', 'tip', 'caution', 'danger'] as const;
+
+interface Props {
+  title?: string
+  type?: (typeof asideVariants)[number];
+}
+
+const { title, type  } = Astro.props ;
+
+---
+<div class="wrapper">
+  <Aside type={Astro.props.type}>
+    {title && <p class="title">{title}</p>}
+    <slot/>
+  </Aside>
+</div>
+
+
+<style>
+
+ .wrapper{
+
+   p.title {font-weight: bold}
+
+   /* noinspection Stylelint  */
+   .starlight-aside__title{
+     display: none;
+   }
+
+   /* noinspection Stylelint */
+   .starlight-aside__content{
+     margin-block: 0;
+   }
+ }
+
+</style>

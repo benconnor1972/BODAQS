@@ -6,6 +6,7 @@ sidebar:
 ---
 import {Aside} from '@astrojs/starlight/components';
 import Flag from '@components/Flag.astro';
+import MiniAside from '@components/MiniAside.astro';
 import Lightbox from '@components/Lightbox.astro';
 
 
@@ -18,108 +19,143 @@ import Lightbox from '@components/Lightbox.astro';
 
 ## Build the logger
 
- <Flag src="/src/assets/pics/Build-overview.png" alt="Build-overview">
 Now the fun really begins. Check that you have all the things shown in the picture.
-</Flag>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/Build-overview.png" alt="Build-overview"/>
 
 ### Solder headers to PCB and dev board
- <Aside  title="Soldering">
-It is assumed that you have basic soldering skills. If not, there are many online resources - it is not a difficult skill to learn.
+<Aside title="Soldering">
+  It is assumed that you have basic soldering skills. If not, there are [many online resources](https://www.youtube.com/watch?v=rK38rpUy568&t=15) -
+  it's not particularly difficult and having some familiarity will greatly increase your success rate at building the logger.
 </Aside>
 
 The dev board is installed in the PCB with a removeable pin/socket arrangement. This allows the dev board to be easily removed for re-use in later PCB revisions.
- <Flag src="/src/assets/pics/Pins_1.jpg" alt="Pins 1 ">
- **Cut two sections of pin header**, one with 12 pins and one with 16, for soldering into the dev board.
+<Flag src="/src/assets/pics/Pins_1.jpg" alt="Pins 1 ">
+  **Cut two sections of pin header**, one with 12 pins and one with 16, for soldering into the dev
+  board.
 </Flag>
  <Flag src="/src/assets/pics/Build-1.jpg" alt="Build-1 ">
- **Install the pin headers.** Insert the short sides of the pin headers into the underside of the dev board (the side with no connectors). Solder *one pin* on each pin header to the dev board.
+  **Install the pin headers.** Insert the short sides of the pin headers into the underside of the
+  dev board (the side with no connectors). Solder *one pin* on each pin header to the dev board.
 </Flag>
 
- <Flag src="/src/assets/pics/Build-4E.jpg" alt="Build-4 ">
- **Check the pin header alignment.** The pin headers should be square to the board. If necessary, gently bend the header around the soldered pin. Solder the rest of the pins. 
- <Aside  title="Use a breadboard if you have one">
- If you have a prototying breadboard, installing the headers in the breadboard for soldering will guarantee squareness.
-</Aside>
- </Flag>
-
- <Flag src="/src/assets/pics/Build-5E.png" alt="Build-5">
- **Cut two sections of pin socket**, one with 12 holes and one with 16, for soldering into the PCB. Take care: unlike pin headers, these are not really made to be cut to length. Cut *through the next hole* rather than between the holes.
+<Flag src="/src/assets/pics/Build-4.jpg" alt="Build-4">
+  **Check the pin header alignment.** The pin headers should be square to the board. If necessary,
+  gently bend the header around the soldered pin. Solder the rest of the pins.
+  <MiniAside title="Use a breadboard if you have one">
+    If you have a prototying breadboard, installing the headers in the breadboard for soldering will
+    guarantee squareness.
+  </MiniAside>
 </Flag>
 
- <Flag src="/src/assets/pics/Build-6.jpg" alt="Build-6">
- **Insert the pin sockets into the PCB**.
- Insert the pin headers on the dev board into the sockets to keep the sockets square and parallel while you solder them.
-</Flag>
-<Lightbox src="/src/assets/pics/Build-7.jpg" alt="Build-7" />
-
- <Flag src="/src/assets/pics/Build-7BE.png" alt="Build-7B">
- **Solder the pin sockets to the PCB.** Turn the assembly over and solder the pin sockets to the PCB from the underside.
+<Flag src="/src/assets/pics/Build-5E.png" alt="Build-5">
+  **Cut two sections of pin socket**, one with 12 holes and one with 16, for soldering into the PCB.
+  Take care: unlike pin headers, these are not really made to be cut to length. Cut *through the
+  next hole* rather than between the holes.
 </Flag>
 
- <Flag src="/src/assets/pics/Build-7CE.png" alt="Build-7C">
- **Install navigation pin headers.** Cut a section of pin header 6 pins long and solder it into the PCB in the holes labelled 'navigation'.
+<Flag src="/src/assets/pics/Build-6.jpg" alt="Build-6">
+  **Insert the pin sockets into the PCB**.
+  Insert the pin headers on the dev board into the sockets to keep the sockets square and parallel
+  while you solder them.
+</Flag>
+<Lightbox src="/src/assets/pics/Build-7.jpg" alt="Build-7"/>
+
+<Flag src="/src/assets/pics/Build-7BE.png" alt="Build-7B">
+  **Solder the pin sockets to the PCB.** Turn the assembly over and solder the pin sockets to the
+  PCB from the underside.
+</Flag>
+
+<Flag src="/src/assets/pics/Build-7CE.png" alt="Build-7C">
+  **Install navigation pin headers.** Cut a section of pin header 6 pins long and solder it into the
+  PCB in the holes labelled 'navigation'.
 </Flag>
 
 ### Solder QWIIC cable to OLED display
 
- <Flag src="/src/assets/pics/OLED-5.png" alt="OLED-5">
-**Cut the QWIIC cable**, leaving approx 100mm of cable on the connector. Strip approx 4mm from the end of each wire.
+<Flag src="/src/assets/pics/OLED-5.png" alt="OLED-5">
+  **Cut the QWIIC cable**, leaving approx 100mm of cable on the connector. Strip approx 4mm from the
+  end of each wire.
 </Flag>
 
- <Flag src="/src/assets/pics/OLED-3E.png" alt="OLED-3E">
-**Prepare the OLED display.** If your OLED display has pin headers installed, carefully pry off the plastic collar at the base of the pin headers with a craft knife and cut the headers to around half their original length. Cut 4 sections of heat shrink, approx 6mm long and thread one onto each wire of the QWIIC cable. If the display has no pin headers installed, no action is needed.
+<Flag src="/src/assets/pics/OLED-3E.png" alt="OLED-3E">
+  **Prepare the OLED display.** If your OLED display has pin headers installed, carefully pry off
+  the plastic collar at the base of the pin headers with a craft knife and cut the headers to around
+  half their original length. Cut 4 sections of heat shrink, approx 6mm long and thread one onto
+  each wire of the QWIIC cable. If the display has no pin headers installed, no action is needed.
 </Flag>
 
- <Flag src="/src/assets/pics/Build-20E2.png" alt="Build-20E2">
-**Tin the ends of the wires** and solder them to the pin headers or into the connector holes as applicable. Take care to solder the wires in the correct positions. Slide the heat shrink pieces down over the pin headers (if applicable) and apply heat.
+<Flag src="/src/assets/pics/Build-20E2.png" alt="Build-20E2">
+  **Tin the ends of the wires** and solder them to the pin headers or into the connector holes as
+  applicable. Take care to solder the wires in the correct positions. Slide the heat shrink pieces
+  down over the pin headers (if applicable) and apply heat.
 </Flag>
-<Lightbox src="/src/assets/pics/OLED-1E.png" alt="OLED-1E" />
+<Lightbox src="/src/assets/pics/OLED-1E.png" alt="OLED-1E"/>
 
 
 <Aside type={"caution"} title="Take care with the OLED display">
-The OLED display is fragile. Handle it with care so as not to crack it.
-If your OLED display has pin headers installed, do not attempt to de-solder them. It is easy to damage the copper traces when doing do.
+  The OLED display is fragile. Handle it with care so as not to crack it.
+  If your OLED display has pin headers installed, do not attempt to de-solder them. It is easy to
+  damage the copper traces when doing do.
 </Aside>
 
 
 ### Connect the keypad and screen and check the build so far
- <Flag src="/src/assets/pics/Build-9.jpg" alt="Build-9">
-**Connect the keypad and display.** Plug the QWIIC connector into the dev board. Connect the membrane keypad to the navigation headers on the PCB, ensuring the connector orientation matches the picture.
+<Flag src="/src/assets/pics/Build-9.jpg" alt="Build-9">
+  **Connect the keypad and display.** Plug the QWIIC connector into the dev board. Connect the
+  membrane keypad to the navigation headers on the PCB, ensuring the connector orientation matches
+  the picture.
 </Flag>
 
- <Flag src="/src/assets/pics/Build-10.jpg" alt="Build-10">
-**Connect the dev board to a power supply** with a USB cable. Press the 'RST' button on the board. The OLED display should now show the home screen
-Check keypad operation. Pressing the right arrow should enter the menu system. Pressing the 'Sel' key from the home screen should toggle logging on and off.
- </Flag>
+<Flag src="/src/assets/pics/Build-10.jpg" alt="Build-10">
+  **Connect the dev board to a power supply** with a USB cable. Press the 'RST' button on the board.
+  The OLED display should now show the home screen
+  Check keypad operation. Pressing the right arrow should enter the menu system. Pressing the 'Sel'
+  key from the home screen should toggle logging on and off.
+</Flag>
 
 ### Assembling the connectors
- <Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
-**In this step you will be wiring the connectors to the PCB.** The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one connector for a handlebar-mounted switch. Other configurations are possible: the minimum useful configuration would be 2 analog inputs.
-
 <Aside type={"caution"} title="Fiddly work ahead">
-This is a fiddly job and it is worth getting organised to do it properly.
-There is limited room inside the case for excess wire so using the recommended wire lengths is important.
-Using the suggested wire colors will make your life easier too.
-</Aside>
-</Flag>
-
- <Aside  title="The UART connection">
-In addition to analog and I2C, the PCB breaks out a UART connection. This is not currently in use. In future it could be used to connect a GPS module. The pins can also be re-assigned in firmware to provide access to a second I2C bus, which may be useful for avoiding I2C address conflicts.
-(For example, the popular AS5600 magnetic rotary encoder has the same I2C address as the dev board's on-board battery monitor, so any AS5600 sensors will need to be on the second I2C bus). Future revisions of the PCB will break out both I2C buses.
+  This is a fiddly job and it is worth getting organised to do it properly.
+  There is limited room inside the case for excess wire so using the recommended wire lengths is
+  important.
+  Using the suggested wire colors will make your life easier too.
 </Aside>
 
+<Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
 
-
-
- <Flag src="/src/assets/pics/Build-11.jpg" alt="Build-11">
- ***Install the connectors in the 3d printed end pieces** and tighten. Ensure that the connector o-rings are on the outside and sit in the chamfered edges of the holes.
- Place the connector assemblies face-down. If possible, secure them in a vise.
- 'Tin' the pins on the back of each connector with a small amount of solder
+  **In this step you will be wiring the connectors to the PCB.**
+  The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one
+  connector for a handlebar-mounted switch. Other configurations are possible: the minimum useful
+  configuration would be 2 analog inputs.
 </Flag>
 
- <Flag src="/src/assets/pics/Build-12E.png" alt="Build-12">
- **Prepare the hookup wires.** Cut and strip short sections of hookup wire for each connector in the recommended lengths. *Note the lengths are for the insulated portion of the wire*. Allow some extra to strip the ends.
- Strip approximately 3-4mm from the ends of the wires and tin them with solder. Work quickly as too much heat will damage the wires' insulation.
+
+<Aside title="The UART connection">
+  In addition to analog and I2C, the PCB breaks out a UART connection. This is not currently in use.
+  In future it could be used to connect a GPS module. The pins can also be re-assigned in firmware
+  to provide access to a second I2C bus, which may be useful for avoiding I2C address conflicts.
+  (For example, the popular AS5600 magnetic rotary encoder has the same I2C address as the dev
+  board's on-board battery monitor, so any AS5600 sensors will need to be on the second I2C bus).
+  Future revisions of the PCB will break out both I2C buses.
+</Aside>
+
+
+
+
+<Flag src="/src/assets/pics/Build-11.jpg" alt="Build-11">
+  **Install the connectors in the 3d printed end pieces** and tighten. Ensure that the connector
+  o-rings are on the outside and sit in the chamfered edges of the holes.
+  Place the connector assemblies face-down. If possible, secure them in a vise.
+  'Tin' the pins on the back of each connector with a small amount of solder
+</Flag>
+
+<Flag src="/src/assets/pics/Build-12E.png" alt="Build-12">
+  **Prepare the hookup wires.** Cut and strip short sections of hookup wire for each connector in
+  the recommended lengths. *Note the lengths are for the insulated portion of the wire*. Allow some
+  extra to strip the ends.
+  Strip approximately 3-4mm from the ends of the wires and tin them with solder. Work quickly as too
+  much heat will damage the wires' insulation.
+</Flag>
 
 | Connector | Pin    | Cable length  |  Color       |
 |-----------|--------|---------------|--------------|
@@ -138,87 +174,109 @@ In addition to analog and I2C, the PCB breaks out a UART connection. This is not
 |           | SCL    | 31 mm         | Yellow       |
 |           | SDA    | 31 mm         | Blue         |
 
+
+<Flag src="/src/assets/pics/Build-12AE.png" alt="Build-12">
+  **Solder the wires to the connectors.** This is much easier if the connector pins and wire ends
+  are tinned first. Use the soldering iron to heat the pin until the solder melts. Insert the wire
+  end into the molten solder and withdraw the heat. Repeat for all wires.
+  Check that all the wires are secure and excess solder is not present.
+</Flag>
+<Lightbox src="/src/assets/pics/Build-13.jpg" alt="Build-13"/>
+
+<Flag src="/src/assets/pics/Build-14.jpg" alt="Build-14">
+  **Apply heat shrink.** Cut short sections (approx 6mm long) of 2.5mm heat shrink and pass one over
+  each wire down to the soldered connector joint. When all are in place, apply heat to activate the
+  heat shrink.
 </Flag>
 
- <Flag src="/src/assets/pics/Build-12AE.png" alt="Build-12">
- **Solder the wires to the connectors.** This is much easier if the connector pins and wire ends are tinned first. Use the soldering iron to heat the pin until the solder melts. Insert the wire end into the molten solder and withdraw the heat. Repeat for all wires.
- Check that all the wires are secure and excess solder is not present.
- </Flag>
-<Lightbox src="/src/assets/pics/Build-13.jpg" alt="Build-13" />
+<Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
+  **Solder the connectors to the PCB.** Solder the free ends of the wires into the PCB from the
+  underside. Take care to ensure the wires are connected correctly as per the picture. Trim any
+  excess wire sticking through to the top of the board.
 
- <Flag src="/src/assets/pics/Build-14.jpg" alt="Build-14">
- **Apply heat shrink.** Cut short sections (approx 6mm long) of 2.5mm heat shrink  and pass one over each wire down to the soldered connector joint. When all are in place, apply heat to activate the heat shrink.
- </Flag>
-
- <Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
- **Solder the connectors to the PCB.** Solder the free ends of the wires into the PCB from the underside. Take care to ensure the wires are connected correctly as per the picture. Trim any excess wire sticking through to the top of the board.
-
-<Aside type={"caution"} title="Handle with care">
- Handle the assembly with care. The wires are fragile and vulnerable to damage until the PCB and connectors are mounted in the case.
-</Aside>
+  <MiniAside type={"caution"} title="Handle with care">
+    Handle the assembly with care. The wires are fragile and vulnerable to damage until the PCB and
+    connectors are mounted in the case.
+  </MiniAside>
 </Flag>
- <Lightbox src="/src/assets/pics/Build-15.jpg" alt="Build-15" />
+ <Lightbox src="/src/assets/pics/Build-15.jpg" alt="Build-15"/>
 
 ### Prepare the case
- <Flag src="/src/assets/pics/Build-17.jpg" alt="Build-17">
- **Remove support material** from the case using a craft knife. If printed in the recommended orientation, the majority of support material will be for the shallow indent where the kaypad sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since the keypad covers it, but it should be as flat as possible.
- 
- **Optional:** Install heat-set inserts. If you are using brass inserts rather than nuts to close your case, they should be installed now. Install them straight and flush using a soldering iron.
+<Flag src="/src/assets/pics/Build-17.jpg" alt="Build-17">
+  **Remove support material** from the case using a craft knife. If printed in the recommended
+  orientation, the majority of support material will be for the shallow indent where the kaypad
+  sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since
+  the keypad covers it, but it should be as flat as possible.
 
- </Flag>
+  **Optional:** Install heat-set inserts. If you are using brass inserts rather than nuts to close
+  your case, they should be installed now. Install them straight and flush using a soldering iron.
+
+</Flag>
 
 ### Install the components
 
- <Flag src="/src/assets/pics/Build-16.jpg" alt="Build-16">
- **Install the PCB and connectors**. Place the PCB into the lower half of the case, ensuring the right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the upper half of the case).
- 
- Position the case end pieces into their slots and ensure all the wiring sits cleanly.
- </Flag>
+<Flag src="/src/assets/pics/Build-16.jpg" alt="Build-16">
+  **Install the PCB and connectors**. Place the PCB into the lower half of the case, ensuring the
+  right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the
+  upper half of the case).
+
+  Position the case end pieces into their slots and ensure all the wiring sits cleanly.
+</Flag>
  <Aside type={"caution"} title="Take your time">
- Getting the PCB to sit flat may require some careful manoeuvring of the wires. Take your time and don't force anything. 
+  Getting the PCB to sit flat may require some careful manoeuvring of the wires. Take your time and
+  don't force anything.
 </Aside>
 
- <Flag src="/src/assets/pics/Build-19.jpg" alt="Build-19">
- **Install the battery**. The battery sits in the slot on the right-hand side of the case with the wires facing to the front of the case.
- If necessary trim or extend the battery wires. The recommended wire length is [70?] mm.
- <Aside type={"caution"} title="Check the battery polarity again">
-</Aside>
- Route the battery wires as shown and connect to the JST connector on the dev board.
+<Flag src="/src/assets/pics/Build-19.jpg" alt="Build-19">
+  **Install the battery**. The battery sits in the slot on the right-hand side of the case with the
+  wires facing to the front of the case.
+  If necessary trim or extend the battery wires. The recommended wire length is [70?] mm.
+  <MiniAside type={"caution"} >
+    Check the battery polarity again
+  </MiniAside>
+  Route the battery wires as shown and connect to the JST connector on the dev board.
 
- </Flag>
-  <Lightbox src="/src/assets/pics/Build-18A.png" alt="Build-18" />
+</Flag>
+  <Lightbox src="/src/assets/pics/Build-18A.png" alt="Build-18"/>
 
- <Flag src="/src/assets/pics/Build-21.jpg" alt="Build-21">
- **Assemble the keypad and display**. Gently remove the plastic shell from the end of the keypad's ribbon connector by gently prying up the front edges of the locking tabs with a craft knife. Pass the ribbon connector through the hole in the front of the case and re-install the plastic connector shell.
- 
- Peel off the self-adhesive backing from the keypad and press it firmly down to the case.
-  </Flag>
-  
- <Flag src="/src/assets/pics/Build-21A.png" alt="Build-21A">
+<Flag src="/src/assets/pics/Build-21.jpg" alt="Build-21">
+  **Assemble the keypad and display**. Gently remove the plastic shell from the end of the keypad's
+  ribbon connector by gently prying up the front edges of the locking tabs with a craft knife. Pass
+  the ribbon connector through the hole in the front of the case and re-install the plastic
+  connector shell.
 
- Tuck the lower edge of the oled display into the slot at the bottom of the opening. Press firmly on the top corners of the display to lock it in place.
- <Aside type={"caution"} title="Press only on the corners to avoid damaging the display.">
-</Aside>
- </Flag>
- 
+  Peel off the self-adhesive backing from the keypad and press it firmly down to the case.
+</Flag>
+
+<Flag src="/src/assets/pics/Build-21A.png" alt="Build-21A">
+
+  Tuck the lower edge of the oled display into the slot at the bottom of the opening. Press firmly
+  on the top corners of the display to lock it in place.
+
+
+  <MiniAside type="caution" >*Press only on the corners to avoid damaging the display.*</MiniAside>
+</Flag>
+
 ### Connect up and close
 
- <Flag src="/src/assets/pics/Build-22.jpg" alt="Build-22">
- **Connect the keypad and display.** Connect the loose ends of the QWIIC cable to the OLED display. Connect the other end to the QWIIC connector on the dev board.
- 
- Connect the keypad connector the the navigation pins. 
-  </Flag>
-  
-   <Flag src="/src/assets/pics/Build-23.jpg" alt="Build-23">
- **Carefully close the case**. Take special care with the keypad ribbon connector. It can be bent, but minimise this if possible.
- 
- Secure the case with 4 x M3x12 cap screws and tighten.
- 
-  <Aside  title="Congratulations!">
-Well done. Take the rest of the day off.
+<Flag src="/src/assets/pics/Build-22.jpg" alt="Build-22">
+  **Connect the keypad and display.** Connect the loose ends of the QWIIC cable to the OLED display.
+  Connect the other end to the QWIIC connector on the dev board.
+
+  Connect the keypad connector the the navigation pins.
+</Flag>
+
+<Flag src="/src/assets/pics/Build-23.jpg" alt="Build-23">
+  **Carefully close the case**. Take special care with the keypad ribbon connector. It can be bent,
+  but minimise this if possible.
+
+  Secure the case with 4 x M3x12 cap screws and tighten.
+
+</Flag>
+<Aside title="Congratulations!" icon={"star"}>
+  Well done. Take the rest of the day off.
 </Aside>
-  </Flag>
-  
+
 
 
 
@@ -226,7 +284,7 @@ Well done. Take the rest of the day off.
 The water-resistance of the logger can be dramatically improved with the judicious application of caulking silicone at selected points:
  - Seal the keypad ribbon connector where it passes through the case from the back.
  - Cut a 16mm x 28mm piece of clear plastic (an old visor is ideal) and silicone it into the recess in front of the OLED display.
- - Partially fill the gasket groove in the top half of the case with silicone. Carefully apply silicone to teh groove (you can do this with a small syringe) and then form it to shape with this 3d-printed spatula tool.
+ - Partially fill the gasket groove in the top half of the case with silicone. Carefully apply silicone to the groove (you can do this with a small syringe) and then form it to shape with this 3d-printed spatula tool.
 
 ## Connecting and testing sensors
 [To come]

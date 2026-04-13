@@ -14,7 +14,7 @@ hero:
       icon: right-arrow
 ---
 
-import {Card, CardGrid, LinkButton} from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
 
 <Lede>
@@ -27,8 +27,15 @@ import Lede from '@components/Lede.astro';
 
 <CardGrid stagger>
   <Card title="What is BODAQS?" icon="information">
-    // TODO, Create an overview page
-    What is BODAQS? The problems it attempts to solve, and how to get one of your own.
+    Learn what BODAQS is, and the problems it sets out to solve.
+    <LinkButton
+      href="/what-is-bodaqs"
+      variant="minimal"
+      icon="right-arrow"
+      iconPlacement="end"
+    >
+      Read the overview
+    </LinkButton>
   </Card>
   <Card title="Read the hardware guide" icon="setting">
     Assemble your tools and components, and get to building your own data logger.
