@@ -11,6 +11,7 @@
 #include "TransformRegistry.h"
 #include "OutputTransform.h"
 #include "WiFiManager.h"
+#include "PowerManager.h"
 #include "Routes_Files.h"
 #include "Routes_Config.h"
 #include "Routes_Transforms.h"
@@ -66,6 +67,11 @@ static void ws_diag_on_response(int code) {
   else if (code >= 400 && code < 500) { ++g_ws_req_4xx; g_ws_last_err_ms = millis(); }
   else if (code >= 500) { ++g_ws_req_5xx; g_ws_last_err_ms = millis(); }
   if (g_ws_inflight) --g_ws_inflight;
+}
+
+static void noteHttpActivity_() {
+  WiFiManager::noteUserActivity();
+  PowerManager::noteActivity();
 }
 
 
@@ -197,13 +203,13 @@ void WebServerManager::setupRoutes() {
 
   // --- debug canary: always available ---
   g_server->on("/__ping", HTTP_GET, [](){
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
     g_server->send(200, "text/plain", "pong");
   });
 
   // --- debug health: JSON snapshot ---
   g_server->on("/__health", HTTP_GET, [](){
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
     String out;
     out.reserve(256);
     out += F("{\"wifi\":");
@@ -230,7 +236,7 @@ void WebServerManager::setupRoutes() {
 
   // --- log *every* unhandled request (method + URI + args) ---
   g_server->onNotFound([](){
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
     String uri = g_server->uri();
     WS_LOGD("404 %s %s\n",
             (g_server->method() == HTTP_GET ? "GET" :
@@ -249,7 +255,7 @@ void WebServerManager::setupRoutes() {
 }
 
 void WebServerManager::handleRoot() {
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
   String html = htmlHeader("ESP32 Logger");
 
   html += F("<h1>ESP32 Data Logger</h1>");
@@ -281,7 +287,7 @@ void WebServerManager::handleRoot() {
 
 void WebServerManager::handleNotFound() {
   if (!g_server) return;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
   String html = htmlHeader("404 Not Found");
   html += F("<h2>Not found</h2><p>The requested URL <code>");
   html += htmlEscape(g_server->uri());

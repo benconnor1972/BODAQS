@@ -9,6 +9,7 @@ static int buttonCount = 0;
 static bool s_pollingEnabled = true;
 static uint32_t s_pollIntervalMs = 8;  // throttle so we don’t scan every loop() tick
 static unsigned long s_lastPollMs = 0;
+static ButtonActivityCallback s_pressActivityCb = nullptr;
 
 
 static portMUX_TYPE buttonMux = portMUX_INITIALIZER_UNLOCKED;
@@ -18,6 +19,7 @@ static const unsigned long HOLD_THRESHOLD_MS = 800;  // long-press threshold
 
 void ButtonManager_setPollingEnabled(bool enabled) { s_pollingEnabled = enabled; }
 void ButtonManager_setPollIntervalMs(uint32_t ms)  { s_pollIntervalMs = ms ? ms : 1; }
+void ButtonManager_setPressActivityCallback(ButtonActivityCallback cb) { s_pressActivityCb = cb; }
 
 
 // Per-button hold tracking (kept here to avoid changing the header)
@@ -134,6 +136,7 @@ ButtonEvent ButtonManager_read(uint8_t pin) {
         if (reading == LOW) { // pressed (active-LOW)
           s_pressStartMs[i] = now;
           s_heldPosted[i]   = false;
+          if (s_pressActivityCb) s_pressActivityCb();
           return BUTTON_PRESSED;
         } else {              // released
           s_pressStartMs[i] = 0;
@@ -181,6 +184,10 @@ void ButtonManager_loop() {
         handleReleaseGesture_(i, b, now);
       }
 
+      if (ev == BUTTON_PRESSED && s_pressActivityCb) {
+        s_pressActivityCb();
+      }
+
       if (b.callback) {
         // still deliver raw PRESSED/RELEASED for configs bound to them
         b.callback(ev);
@@ -222,6 +229,7 @@ void ButtonManager_loop() {
             if (reading == LOW) {
               s_pressStartMs[i] = nowEdge;
               s_heldPosted[i]   = false;
+              if (s_pressActivityCb) s_pressActivityCb();
               if (b.callback) b.callback(BUTTON_PRESSED);
             } else {
               // RELEASE edge: handle click/double-click and reset hold

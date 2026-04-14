@@ -848,17 +848,6 @@ void StorageManager_stopLog() {
 
 
 
-// helper to format human-readable from epochMs when needed
-static void formatEpochMs(char* out, size_t outlen, uint64_t epochMs) {
-    time_t sec = (time_t)(epochMs / 1000ULL);
-    struct tm tm;
-    localtime_r(&sec, &tm);
-    unsigned ms = (unsigned)(epochMs % 1000ULL);
-    snprintf(out, outlen, "%04d-%02d-%02d %02d:%02d:%02d.%03u",
-             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
-}
-
 void StorageManager_setCustomHeader(const char* csv) {
     if (!csv || !csv[0]) {
         s_customHeader[0] = '\0';
@@ -887,17 +876,16 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     off = snprintf(line, sizeof(line), "%lu", (unsigned long)sample_id);
     if (off <= 0 || off >= (int)sizeof(line)) return;
 
-    // then timestamp (human: HH:MM:SS.mmm ; else raw epoch ms)
+    // then timestamp (human: local HH:MM:SS.mmm ; else raw epoch ms)
     if (RTCManager_isHumanReadable()) {
-        unsigned long long ms = ts_ms;
-        unsigned hh    = (unsigned)((ms / 3600000ULL) % 24ULL);
-        unsigned mm    = (unsigned)((ms / 60000ULL)   % 60ULL);
-        unsigned ss    = (unsigned)((ms / 1000ULL)    % 60ULL);
-        unsigned msecs = (unsigned)(ms % 1000ULL);
+        const time_t sec = (time_t)(ts_ms / 1000ULL);
+        struct tm tm;
+        localtime_r(&sec, &tm);
+        const unsigned msecs = (unsigned)(ts_ms % 1000ULL);
 
         int n = snprintf(line + off, sizeof(line) - (size_t)off,
-                         ",%02u:%02u:%02u.%03u",
-                         hh, mm, ss, msecs);
+                         ",%02d:%02d:%02d.%03u",
+                         tm.tm_hour, tm.tm_min, tm.tm_sec, msecs);
         if (n <= 0 || off + n >= (int)sizeof(line)) return;
         off += n;
     } else {

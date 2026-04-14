@@ -455,28 +455,26 @@ uint64_t RTCManager_getEpochMs() {
     return (uint64_t)baseEpoch * 1000ULL + (uint64_t)elapsedMs;
 }
 
-// --- Fast timestamp string ---
-String RTCManager_getFastTimestamp() {
-
-    uint64_t epochMs = RTCManager_getEpochMs();
+static void formatTimestampString_(uint64_t epochMs, char* out, size_t outLen) {
+    if (!out || outLen == 0) return;
 
     if (!useHumanReadableTimestamps) {
-        // IMPORTANT: String(uint64_t) can be flaky - format explicitly:
-        char buf[24];
-        snprintf(buf, sizeof(buf), "%llu", (unsigned long long)epochMs);
-        return String(buf);
+        snprintf(out, outLen, "%llu", (unsigned long long)epochMs);
+        return;
     }
 
-    // Convert to human-readable with ms
-    time_t sec = (time_t)(epochMs / 1000ULL);
+    const time_t sec = (time_t)(epochMs / 1000ULL);
     struct tm tm;
     localtime_r(&sec, &tm);
-    unsigned ms = (unsigned)(epochMs % 1000ULL);
+    const unsigned msecs = (unsigned)(epochMs % 1000ULL);
+    snprintf(out, outLen, "%02d:%02d:%02d.%03u",
+             tm.tm_hour, tm.tm_min, tm.tm_sec, msecs);
+}
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03u",
-             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+// --- Fast timestamp string ---
+String RTCManager_getFastTimestamp() {
+    char buf[24];
+    formatTimestampString_(RTCManager_getEpochMs(), buf, sizeof(buf));
     return String(buf);
 }
 
@@ -489,14 +487,8 @@ void RTCManager_setHumanReadable(bool humanReadable) {
 }
 
 String RTCManager_getTimestamp() {
-    uint64_t ms = RTCManager_getEpochMs();
-    time_t sec = (time_t)(ms / 1000ULL);
-    struct tm tm;
-    localtime_r(&sec, &tm);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03u",
-             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, tm.tm_sec, (unsigned)(ms % 1000ULL));
+    char buf[24];
+    formatTimestampString_(RTCManager_getEpochMs(), buf, sizeof(buf));
     return String(buf);
 }
 

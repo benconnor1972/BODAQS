@@ -9,6 +9,7 @@
 #include "DisplayManager.h"
 #include "StorageManager.h"    // if you have a flush/close; otherwise remove
 #include "I2CManager.h"
+#include "ConfigManager.h"
 #include "DebugLog.h"
 
 #define PWR_LOGI(...) LOGI_TAG("PWR", __VA_ARGS__)
@@ -25,6 +26,7 @@ static TwoWire* g_fgWire     = nullptr;
 static float    g_fgSocPct   = 0.0f;
 static float    g_fgVbat     = 0.0f;
 static uint32_t g_fgLastPoll = 0;
+static uint32_t g_lastActivityMs = 0;
 
 static TwoWire* fuelWire_()
 {
@@ -173,6 +175,31 @@ void PowerManager::sleepOnEnterEXT0()
   delay(50);
 
   esp_deep_sleep_start();
+}
+
+void PowerManager::noteActivity() {
+  g_lastActivityMs = millis();
+}
+
+void PowerManager::loop() {
+  const uint32_t timeoutMs = ConfigManager::get().autoSleepIdleMs;
+  const uint32_t now = millis();
+
+  if (g_lastActivityMs == 0) {
+    g_lastActivityMs = now;
+  }
+
+  if (LoggingManager::isRunning()) {
+    g_lastActivityMs = now;
+    return;
+  }
+
+  if (timeoutMs == 0) return;
+
+  if ((uint32_t)(now - g_lastActivityMs) < timeoutMs) return;
+
+  PWR_LOGI("Auto-sleep after %lu ms inactivity\n", (unsigned long)timeoutMs);
+  sleepOnEnterEXT0();
 }
 
 void PowerManager::setCpuFreqForLogging() {

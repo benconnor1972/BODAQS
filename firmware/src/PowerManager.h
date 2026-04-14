@@ -7,6 +7,8 @@ namespace PowerManager {
 
   // Sleep; wake when ENTER (GPIO13) is pressed (active-LOW -> wake level 0).
   void sleepOnEnterEXT0();
+  void noteActivity();
+  void loop();
 
   // CPU frequency tweaks during logging
   void setCpuFreqForLogging();
