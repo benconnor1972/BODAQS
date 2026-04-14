@@ -116,6 +116,7 @@ namespace {
   static void drawCalibSensors_();
   static void drawCalibDetail_();
   static void toggleSelectedSensor_();
+  static void showCalibrationCaptureToast_(const char* label, int32_t counts);
   static RangeCapture s_rangeCap;   // <--- ADD THIS LINE
   static void tickActiveRangeCalibration_();
   static bool activateCurrentSelection_();
@@ -132,12 +133,15 @@ namespace {
 
   static void drawFooterHint_(const char* hint) {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;  // toast visible, skip repaint
-    UI::println("", String(hint), UI::TARGET_OLED, UI::LVL_INFO);
+    UI::println("", String(hint), UI::TARGET_OLED, UI::LVL_INFO, 2000, 1);
   }
 
   static String mainItemLabel_(MainItem mi) {
     switch (mi) {
       case MainItem::WebServerToggle: {
+        if (s_wsPending) {
+          return "WiFi: CONNECTING";
+        }
         bool on = WebServerManager::isRunning();
         return String("WiFi: ") + (on ? "ON" : "OFF");
       }
@@ -200,29 +204,26 @@ namespace {
           WebServerManager::stop();
           WiFiManager::disable();   // optional: if you want Wi-Fi off when server off
           s_wsPending = false;      // cancel any pending start
-          UI::toastModal("WiFi off", 1000);
-          deferUiFor(1000);
           drawMain_();
           break;
         }
 
         if (!WebServerManager::canStart()) {
-          UI::toastModal("Busy/logging", 1200);
+          UI::toastModal("Busy/logging", 1200, 1);
           deferUiFor(1200);
           drawMain_();
           break;
         }
 
-        // Kick Wi-Fi once and let the loop finish the start later
+        s_wsPending    = true;
+        s_wsDeadlineMs = millis() + 20000;   // 20s budget max
+        drawMain_();
+
+        // Kick Wi-Fi once and let the loop finish the start later.
+        // Draw first so "CONNECTING" is visible before the blocking scan starts.
         WiFiManager::enable();
         WiFiManager::connectNow();
         WiFiManager::noteUserActivity();
-        s_wsPending    = true;
-        s_wsDeadlineMs = millis() + 20000;   // 20s budget max
-
-        UI::toastModal("Connecting", 800);
-        deferUiFor(800);
-        drawMain_();
         break;
       }
 
@@ -235,7 +236,7 @@ namespace {
         break;
 
       case MainItem::Sleep:
-        //DisplayManager::setStatusLine("Sleeping in 2s…");
+        //DisplayManager::setStatusLine("Sleeping in 2s...");
         delay(2000);
         PowerManager::sleepOnEnterEXT0();
         break;
@@ -264,13 +265,13 @@ namespace {
 
         // Guard: no restart while logging
         if (LoggingManager::isRunning()) {
-          UI::toastModal("Stop logging first", 1200);
+          UI::toastModal("Stop logging first", 1200, 1);
           deferUiFor(1200);
           drawMain_();
           break;
         }
 
-        UI::toastModal("Restarting…", 800);
+        UI::toastModal("Restarting...", 800, 1);
         deferUiFor(800);
         DisplayManager::present(); // ensure OLED pushes immediately (if applicable)
 
@@ -282,6 +283,12 @@ namespace {
         break;
       }
     }
+  }
+
+  static void showCalibrationCaptureToast_(const char* label, int32_t counts) {
+    char countLine[24];
+    snprintf(countLine, sizeof(countLine), "Count: %ld", (long)counts);
+    UI::toastModal(String(label) + "\n" + String(countLine), 2000, 1);
   }
 
   static void drawSensors_() {
@@ -460,16 +467,14 @@ namespace {
 
             if (s_calOptSel == 0 && zeroAllowed) {
               if (!s->beginCalibration(CalMode::ZERO)) {
-                UI::toastModal("Zero fail", 2000);
+                UI::toastModal("Zero fail", 2000, 1);
                 deferUiFor(2000);
                 return true;
               }
 
               const int32_t avg = sampleAverageCounts(s, 100);
               s->updateCalibration(avg);
-              char msg[48];
-              snprintf(msg, sizeof(msg), "ZERO: %ld", (long)avg);
-              UI::toastModal(msg, 2000);
+              showCalibrationCaptureToast_("Zero", avg);
               deferUiFor(2000);
               s_calUiPhase = CalUiPhase::ZeroCaptured;
               s_calOptSel  = 0;
@@ -484,16 +489,14 @@ namespace {
                 s_rangeCap.reset();
                 s_rangeCap.captureStart(s, 100);
                 s->updateCalibration(s_rangeCap.start);
-                char msg[48];
-                snprintf(msg, sizeof(msg), "RANGE start: %ld", (long)s_rangeCap.start);
-                UI::toastModal(msg, 2000);
+                showCalibrationCaptureToast_("Range start", s_rangeCap.start);
                 deferUiFor(2000);
                 s_calUiPhase = CalUiPhase::RangeActive;
                 s_lastRangeTrackMs = 0;
                 s_calOptSel  = 0;
                 drawCalibDetail_();
               } else {
-                UI::toastModal("Range fail", 2000);
+                UI::toastModal("Range fail", 2000, 1);
                 deferUiFor(2000);
               }
               return true;
@@ -506,9 +509,7 @@ namespace {
             if (s_calOptSel == 0) {
               s_rangeCap.captureFinish(s, 100);
               s->updateCalibration(s_rangeCap.finish);
-              char msg[48];
-              snprintf(msg, sizeof(msg), "RANGE finish: %ld", (long)s_rangeCap.finish);
-              UI::toastModal(msg, 2000);
+              showCalibrationCaptureToast_("Range finish", s_rangeCap.finish);
               deferUiFor(2000);
               s_calUiPhase = CalUiPhase::RangeFinished;
               s_lastRangeTrackMs = 0;
@@ -526,7 +527,7 @@ namespace {
           case CalUiPhase::ZeroCaptured:
             if (s_calOptSel == 0) {
               if (s->finishCalibration(true)) {
-                UI::toastModal("Zero saved", 2000);
+                UI::toastModal("Zero saved", 2000, 1);
                 deferUiFor(2000);
                 s_calUiPhase = CalUiPhase::Idle;
                 s_calOptSel  = 0;
@@ -534,7 +535,7 @@ namespace {
                 guardEnterRight();
                 drawCalibSensors_();
               } else {
-                UI::toastModal("Save failed", 2000);
+                UI::toastModal("Save failed", 2000, 1);
                 deferUiFor(2000);
                 drawCalibDetail_();
               }
@@ -555,7 +556,7 @@ namespace {
                   ConfigManager::saveSensorParamByName(sp.name, "invert", invert ? "true" : "false");
                 }
 
-                UI::toastModal("Range saved", 2000);
+                UI::toastModal("Range saved", 2000, 1);
                 deferUiFor(2000);
                 s_calUiPhase = CalUiPhase::Idle;
                 s_calOptSel  = 0;
@@ -563,7 +564,7 @@ namespace {
                 guardEnterRight();
                 drawCalibSensors_();
               } else {
-                UI::toastModal("Save fail", 2000);
+                UI::toastModal("Save fail", 2000, 1);
                 deferUiFor(2000);
                 drawCalibDetail_();
               }
@@ -593,7 +594,7 @@ namespace {
 
     MLOG("[MENU] toggle sensor %u -> %s\n", (unsigned)sel, (!m ? "Muted" : "Unmuted"));
 
-    UI::toastModal(!m ? "Muted" : "Unmuted", 2000);
+    UI::toastModal(!m ? "Muted" : "Unmuted", 2000, 1);
     touch();
     drawSensors_();
   }
@@ -648,14 +649,14 @@ namespace {
 
   static void applyRate_() {
     if (LoggingManager::isRunning()) {
-      UI::toastModal("Stop log", 2000);
+      UI::toastModal("Stop log", 2000, 1);
       deferUiFor(2000);
       return;
     }
 
     uint16_t hz = Rates::kList[s_rateIdx];
     LoggingManager::setSampleRateHz(hz);
-    UI::toastModal(String("Rate: ") + hz + " Hz", 2000);
+    UI::toastModal(String("Rate: ") + hz + " Hz", 2000, 1);
     deferUiFor(2000);
     s_state = State::Main;
     drawMain_();
@@ -694,6 +695,10 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
       return true;
 
     case ButtonActions::ACT_MENU_NAV_ENTER:
+      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
+      return true;
+
+    case ButtonActions::ACT_MENU_SELECT:
       if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
       return true;
 
@@ -938,24 +943,24 @@ void MenuSystem::loop() {
   if (s_wsPending) {
     auto st = WiFiManager::status();
 
-    if (st.wl == WL_CONNECTED && st.state == WiFiMgrState::ONLINE) {
-      // We have a link: try to start the server once
-      s_wsPending = false;
+      if (st.wl == WL_CONNECTED && st.state == WiFiMgrState::ONLINE) {
+        // We have a link: try to start the server once
+        s_wsPending = false;
 
-      if (WebServerManager::start()) {
-        UI::toastModal("WiFi on", 1000);
-      } else {
-        UI::toastModal("WiFi fail", 1200);
-        // Optional: keep Wi-Fi up, or turn it off:
-        // WiFiManager::disable();
-      }
-      deferUiFor(1200);
-      redraw_();            // update "Web server: ON/OFF" label
-    } else if ((int32_t)(millis() - s_wsDeadlineMs) >= 0) {
-      // Timeout: give up cleanly
-      s_wsPending = false;
-      UI::toastModal("WiFi timeout", 1200);
-      deferUiFor(1200);
+        if (WebServerManager::start()) {
+          redraw_();            // update label to "WiFi: ON" immediately
+        } else {
+          UI::toastModal("WiFi fail", 1200, 1);
+          // Optional: keep Wi-Fi up, or turn it off:
+          // WiFiManager::disable();
+          deferUiFor(1200);
+          redraw_();
+        }
+      } else if ((int32_t)(millis() - s_wsDeadlineMs) >= 0) {
+        // Timeout: give up cleanly
+        s_wsPending = false;
+        UI::toastModal("WiFi timeout", 1200, 1);
+        deferUiFor(1200);
       redraw_();
     }
   }

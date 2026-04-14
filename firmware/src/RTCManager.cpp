@@ -26,6 +26,12 @@ static time_t baseEpoch = 0;
 static unsigned long lastSyncMs = 0;
 static bool useHumanReadableTimestamps = false;
 static TwoWire* s_externalRtcWire = nullptr;
+static constexpr size_t kMaxSntpServerNameLen_ = 128;
+static char s_sntpServerNames_[3][kMaxSntpServerNameLen_] = {{0}, {0}, {0}};
+static const char* kBuiltinHttpTimeUrls_[] = {
+  "http://connectivitycheck.gstatic.com/generate_204",
+  "https://gettimeapi.dev/v1/time?timezone=UTC",
+};
 
 static void splitCsv3_(const char* csv, String& s1, String& s2, String& s3) {
   s1 = "";
@@ -129,11 +135,147 @@ static bool parseJsonUnixtime_(const String& body, time_t& epochOut) {
   return true;
 }
 
+static bool parseJsonTimestamp_(const String& body, time_t& epochOut) {
+  const char* key = "\"timestamp\"";
+  int pos = body.indexOf(key);
+  if (pos < 0) return false;
+
+  pos = body.indexOf(':', pos + (int)strlen(key));
+  if (pos < 0) return false;
+  ++pos;
+
+  while (pos < body.length() && isSpace_(body[pos])) ++pos;
+  if (pos >= body.length()) return false;
+
+  char* end = nullptr;
+  long long v = strtoll(body.c_str() + pos, &end, 10);
+  if (end == body.c_str() + pos) return false;
+  if (v < 1577836800LL) return false;
+
+  epochOut = (time_t)v;
+  return true;
+}
+
+static int64_t daysFromCivil_(int year, unsigned month, unsigned day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = (unsigned)(year - era * 400);
+  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return (int64_t)era * 146097LL + (int64_t)doe - 719468LL;
+}
+
+static bool parseHttpDate_(const String& dateHeader, time_t& epochOut) {
+  if (!dateHeader.length()) return false;
+
+  struct tm tm = {};
+  if (!strptime(dateHeader.c_str(), "%a, %d %b %Y %H:%M:%S GMT", &tm)) {
+    return false;
+  }
+
+  const int year = tm.tm_year + 1900;
+  const unsigned month = (unsigned)tm.tm_mon + 1U;
+  const unsigned day = (unsigned)tm.tm_mday;
+  const int64_t days = daysFromCivil_(year, month, day);
+  const int64_t epoch =
+      days * 86400LL +
+      (int64_t)tm.tm_hour * 3600LL +
+      (int64_t)tm.tm_min * 60LL +
+      (int64_t)tm.tm_sec;
+
+  if (epoch < 1577836800LL) return false;
+
+  epochOut = (time_t)epoch;
+  return true;
+}
+
+static bool applyEpoch_(time_t epoch, const char* sourceLabel) {
+  struct timeval tv;
+  tv.tv_sec = epoch;
+  tv.tv_usec = 0;
+  if (settimeofday(&tv, nullptr) != 0) {
+    RTC_LOGW("%s: settimeofday failed\n", sourceLabel ? sourceLabel : "time sync");
+    return false;
+  }
+
+  RTC_LOGI("%s: set epoch=%lld\n",
+           sourceLabel ? sourceLabel : "time sync",
+           (long long)epoch);
+  RTCManager_sync();
+  return true;
+}
+
+static bool syncFromHttpUrl_(const char* url, uint32_t timeout_ms) {
+  if (!url || !*url) return false;
+
+  static const char* kHeaderKeys[] = {"Date"};
+
+  HTTPClient http;
+  http.setReuse(false);
+  http.setTimeout(timeout_ms);
+  http.setConnectTimeout(timeout_ms);
+  http.useHTTP10(true);
+  http.collectHeaders(kHeaderKeys, sizeof(kHeaderKeys) / sizeof(kHeaderKeys[0]));
+
+  RTC_LOGI("HTTP time fallback: GET %s\n", url);
+  if (!http.begin(url)) {
+    RTC_LOGW("HTTP time fallback: begin() failed\n");
+    return false;
+  }
+
+  const int code = http.GET();
+  if (code <= 0) {
+    RTC_LOGW("HTTP time fallback: GET failed code=%d (%s)\n",
+             code,
+             HTTPClient::errorToString(code).c_str());
+    http.end();
+    return false;
+  }
+
+  const String dateHeader = http.header("Date");
+  const String body = http.getString();
+  RTC_LOGD("HTTP time fallback: HTTP %d\n", code);
+  if (code != HTTP_CODE_OK && code != HTTP_CODE_NO_CONTENT) {
+    RTC_LOGW("HTTP time fallback: unexpected HTTP status %d\n", code);
+    if (body.length()) {
+      RTC_LOGD("HTTP time fallback body: %.96s\n", body.c_str());
+    }
+  }
+  http.end();
+
+  time_t epoch = 0;
+  if (parseLeadingEpoch_(body, epoch) ||
+      parseJsonUnixtime_(body, epoch) ||
+      parseJsonTimestamp_(body, epoch)) {
+    return applyEpoch_(epoch, "HTTP time fallback");
+  }
+
+  if (parseHttpDate_(dateHeader, epoch)) {
+    RTC_LOGI("HTTP time fallback: using Date header '%s'\n", dateHeader.c_str());
+    return applyEpoch_(epoch, "HTTP time fallback");
+  }
+
+  if (!body.length() && dateHeader.length()) {
+    RTC_LOGW("HTTP time fallback: Date header present but could not parse '%s'\n",
+             dateHeader.c_str());
+  } else {
+    RTC_LOGW("HTTP time fallback: could not parse epoch from response\n");
+  }
+  if (body.length()) {
+    RTC_LOGD("HTTP time fallback body: %.96s\n", body.c_str());
+  }
+  return false;
+}
+
 static void configureSntp_(const char* ntpServersCsv) {
   String n1, n2, n3;
   splitCsv3_(ntpServersCsv, n1, n2, n3);
   if (!n1.length()) n1 = "pool.ntp.org";
   if (!n2.length()) n2 = "time.nist.gov";
+
+  snprintf(s_sntpServerNames_[0], sizeof(s_sntpServerNames_[0]), "%s", n1.c_str());
+  snprintf(s_sntpServerNames_[1], sizeof(s_sntpServerNames_[1]), "%s", n2.c_str());
+  snprintf(s_sntpServerNames_[2], sizeof(s_sntpServerNames_[2]), "%s", n3.c_str());
 
   if (esp_sntp_enabled()) {
     esp_sntp_stop();
@@ -144,15 +286,15 @@ static void configureSntp_(const char* ntpServersCsv) {
   esp_sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
   esp_sntp_set_time_sync_notification_cb(sntpTimeSyncNotification_);
   esp_sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
-  esp_sntp_setservername(0, n1.c_str());
-  esp_sntp_setservername(1, n2.length() ? n2.c_str() : "");
-  esp_sntp_setservername(2, n3.length() ? n3.c_str() : "");
+  esp_sntp_setservername(0, s_sntpServerNames_[0]);
+  esp_sntp_setservername(1, s_sntpServerNames_[1]);
+  esp_sntp_setservername(2, s_sntpServerNames_[2]);
   esp_sntp_init();
 
   RTC_LOGI("SNTP configured: server0='%s' server1='%s' server2='%s'\n",
-           n1.c_str(),
-           n2.c_str(),
-           n3.c_str());
+           s_sntpServerNames_[0],
+           s_sntpServerNames_[1],
+           s_sntpServerNames_[2]);
 }
 
 bool RTCManager_hasValidTime() {
@@ -226,60 +368,32 @@ bool RTCManager_syncNetworkTime(const char* tz,
 }
 
 bool RTCManager_syncFromHttp(const char* url, uint32_t timeout_ms) {
-  if (!url || !*url) {
-    RTC_LOGD("HTTP time fallback skipped: no URL configured\n");
-    return false;
-  }
   if (WiFi.status() != WL_CONNECTED) {
     RTC_LOGW("HTTP time fallback skipped: WiFi not connected\n");
     return false;
   }
 
-  HTTPClient http;
-  http.setTimeout(timeout_ms);
-  http.setConnectTimeout(timeout_ms);
-
-  RTC_LOGI("HTTP time fallback: GET %s\n", url);
-  if (!http.begin(url)) {
-    RTC_LOGW("HTTP time fallback: begin() failed\n");
-    return false;
+  if (url && *url) {
+    if (syncFromHttpUrl_(url, timeout_ms)) {
+      return true;
+    }
+    if (strstr(url, "worldtimeapi.org") != nullptr) {
+      RTC_LOGW("HTTP time fallback: configured WorldTimeAPI URL failed; trying built-in fallbacks\n");
+    }
+  } else {
+    RTC_LOGD("HTTP time fallback: no custom URL configured, trying built-in fallbacks\n");
   }
 
-  const int code = http.GET();
-  if (code <= 0) {
-    RTC_LOGW("HTTP time fallback: GET failed code=%d\n", code);
-    http.end();
-    return false;
+  for (size_t i = 0; i < sizeof(kBuiltinHttpTimeUrls_) / sizeof(kBuiltinHttpTimeUrls_[0]); ++i) {
+    const char* fallbackUrl = kBuiltinHttpTimeUrls_[i];
+    if (url && *url && strcmp(url, fallbackUrl) == 0) continue;
+    if (syncFromHttpUrl_(fallbackUrl, timeout_ms)) {
+      return true;
+    }
   }
 
-  RTC_LOGD("HTTP time fallback: HTTP %d\n", code);
-  if (code != HTTP_CODE_OK) {
-    RTC_LOGW("HTTP time fallback: unexpected HTTP status %d\n", code);
-    http.end();
-    return false;
-  }
-
-  const String body = http.getString();
-  http.end();
-
-  time_t epoch = 0;
-  if (!parseLeadingEpoch_(body, epoch) && !parseJsonUnixtime_(body, epoch)) {
-    RTC_LOGW("HTTP time fallback: could not parse epoch from response\n");
-    RTC_LOGD("HTTP time fallback body: %.96s\n", body.c_str());
-    return false;
-  }
-
-  struct timeval tv;
-  tv.tv_sec = epoch;
-  tv.tv_usec = 0;
-  if (settimeofday(&tv, nullptr) != 0) {
-    RTC_LOGW("HTTP time fallback: settimeofday failed\n");
-    return false;
-  }
-
-  RTC_LOGI("HTTP time fallback: set epoch=%lld\n", (long long)epoch);
-  RTCManager_sync();
-  return true;
+  RTC_LOGW("HTTP time fallback: all fallback URLs failed\n");
+  return false;
 }
 
 
@@ -395,9 +509,17 @@ time_t RTCManager_getEpoch() {
 
 // Get low resolution time stamp for file naming
 String RTCManager_getDateTimeString() {
-    // Use whatever RTC is active (internal or external)
+    // Keep filename generation non-blocking. Arduino's getLocalTime()
+    // defaults to a 5 s wait when the system clock is unset, which can
+    // stall log start on warm boots or after sleep.
+    const time_t sec = RTCManager_getEpoch();
+    if (sec < 1577836800) {
+        return "1970-01-01_00-00-00";
+    }
+
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
+    localtime_r(&sec, &timeinfo);
+    if ((timeinfo.tm_year + 1900) < 2020) {
         return "1970-01-01_00-00-00";
     }
 

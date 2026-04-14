@@ -144,14 +144,14 @@ void UI::loop() {
   DisplayManager::loop();
 }
 
-void UI::println(const String& serialText, const String& oledText, uint8_t targets, uint8_t level, uint16_t oledToastMs) {
+void UI::println(const String& serialText, const String& oledText, uint8_t targets, uint8_t level, uint16_t oledToastMs, uint8_t oledToastSize) {
   uint8_t tgt = (targets == TARGET_DEFAULT) ? s_target : targets;
 
   if ((tgt & TARGET_SERIAL) && s_serialLevel >= level && serialText.length()) {
     Log_println(uiLevelToLogLevel_(level), serialText.c_str());
   }
   if ((tgt & TARGET_OLED) && s_oledLevel >= level && oledText.length() && DisplayManager::available()) {
-    DisplayManager::toast(oledText, oledToastMs);
+    DisplayManager::toast(oledText, oledToastMs, oledToastSize);
   }
 }
 
@@ -169,16 +169,16 @@ void UI::status(const String& line) {
   // Optional: also mirror to the logger at debug level.
 }
 
-void UI::toast(const String& oledText, uint16_t durationMs) {
+void UI::toast(const String& oledText, uint16_t durationMs, uint8_t textSize) {
   if (UI::isModal()) return; 
   if (DisplayManager::available() && oledText.length()) {
-    DisplayManager::toast(oledText, durationMs);
+    DisplayManager::toast(oledText, durationMs, textSize);
   }
 }
 
-void UI::toastModal(const String& text, uint16_t durationMs) {
+void UI::toastModal(const String& text, uint16_t durationMs, uint8_t textSize) {
   if (DisplayManager::available() && text.length()) {
-    DisplayManager::toast(text, durationMs);
+    DisplayManager::toast(text, durationMs, textSize);
   }
 }
 

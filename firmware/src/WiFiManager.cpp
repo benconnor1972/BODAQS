@@ -4,6 +4,8 @@
 #include <esp_bt.h>
 #include <esp_coexist.h>
 #include <esp_heap_caps.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
 #include <cstring>
 #include "RTCManager.h"
 #include "DebugLog.h"
@@ -18,10 +20,20 @@
 static const uint32_t SCAN_TIMEOUT_MS     = 6000;   // single active scan budget
 static const uint32_t CONNECT_TIMEOUT_MS  = 12000;  // assoc/auth/IP wait
 static const int      RSSI_FLOOR_DBM      = -90;    // ignore weaker than this
+static const uint32_t RTC_SYNC_RETRY_DELAY_MS = 5000;
+static const uint8_t  RTC_SYNC_MAX_ATTEMPTS   = 3;
 static uint32_t s_linkDropDeadlineMs = 0;
 static const uint32_t IDLE_OFF_MS = 015UL * 60UL * 500UL;  // 15 minutes
 static uint32_t s_idleOffDeadlineMs = 0;
 static bool s_rtcSyncPending = false;   // we connected solely to set time
+static uint32_t s_rtcSyncRetryAtMs = 0;
+static uint8_t s_rtcSyncAttempts = 0;
+static int s_targetConfigIndex = -1;
+static int s_lastConnectedIndex = -1;
+static bool s_forceRtcSyncOnBoot = false;
+static bool s_invalidateRtcOnBoot = false;
+static esp_reset_reason_t s_bootResetReason = ESP_RST_UNKNOWN;
+static esp_sleep_wakeup_cause_t s_bootWakeCause = ESP_SLEEP_WAKEUP_UNDEFINED;
 static bool s_prevEnabledBeforeLogging = false;
 static bool s_suspendedForLogging = false;
 
@@ -53,6 +65,66 @@ static const char* wifiModeName_(wifi_mode_t mode) {
     case WIFI_MODE_AP:   return "AP";
     case WIFI_MODE_APSTA:return "AP+STA";
     default:             return "?";
+  }
+}
+
+static const char* resetReasonName_(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_UNKNOWN:   return "UNKNOWN";
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "?";
+  }
+}
+
+static const char* wakeCauseName_(esp_sleep_wakeup_cause_t cause) {
+  switch (cause) {
+    case ESP_SLEEP_WAKEUP_UNDEFINED:       return "UNDEFINED";
+    case ESP_SLEEP_WAKEUP_ALL:             return "ALL";
+    case ESP_SLEEP_WAKEUP_EXT0:            return "EXT0";
+    case ESP_SLEEP_WAKEUP_EXT1:            return "EXT1";
+    case ESP_SLEEP_WAKEUP_TIMER:           return "TIMER";
+    case ESP_SLEEP_WAKEUP_TOUCHPAD:        return "TOUCHPAD";
+    case ESP_SLEEP_WAKEUP_ULP:             return "ULP";
+    case ESP_SLEEP_WAKEUP_GPIO:            return "GPIO";
+    case ESP_SLEEP_WAKEUP_UART:            return "UART";
+    case ESP_SLEEP_WAKEUP_WIFI:            return "WIFI";
+    case ESP_SLEEP_WAKEUP_COCPU:           return "COCPU";
+    case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG: return "COCPU_TRAP";
+    case ESP_SLEEP_WAKEUP_BT:              return "BT";
+    default:                               return "?";
+  }
+}
+
+static bool shouldForceRtcSyncOnBoot_(esp_reset_reason_t resetReason,
+                                      esp_sleep_wakeup_cause_t wakeCause) {
+  if (wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED) return true;
+
+  switch (resetReason) {
+    case ESP_RST_POWERON:
+    case ESP_RST_UNKNOWN:
+      return false;
+    default:
+      return true;
+  }
+}
+
+static bool shouldInvalidateRtcOnBoot_(esp_reset_reason_t resetReason,
+                                       esp_sleep_wakeup_cause_t wakeCause) {
+  return resetReason == ESP_RST_DEEPSLEEP || wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED;
+}
+
+static void rememberConnectedNetwork_() {
+  if (s_targetConfigIndex >= 0) {
+    s_lastConnectedIndex = s_targetConfigIndex;
   }
 }
 
@@ -165,23 +237,60 @@ static void setRtcSyncPowerSave_(bool enabled) {
 // Free helper, no access to WiFiManager privates needed
 static void tryRtcSyncIfPending_() {
   if (!s_rtcSyncPending) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (RTCManager_hasValidTime()) {
+    RTC_LOGI("RTC sync completed after delayed SNTP update\n");
+    RTCManager_sync();
+    s_rtcSyncPending = false;
+    s_rtcSyncRetryAtMs = 0;
+    s_rtcSyncAttempts = 0;
+
+    const auto& cfg = ConfigManager::get();
+    if (!cfg.wifiEnabledDefault) {
+      WiFiManager::disable();
+    } else {
+      WiFiManager::noteUserActivity();
+    }
+    return;
+  }
+  if (s_rtcSyncRetryAtMs != 0 && (int32_t)(millis() - s_rtcSyncRetryAtMs) < 0) return;
+
+  bool synced = false;
+  bool finalAttempt = false;
   {
     const auto& cfg = ConfigManager::get();
     String n1, n2, n3;
     splitCsv3_(cfg.ntpServers, n1, n2, n3);
 
     setRtcSyncPowerSave_(false);
-    RTC_LOGI("Starting RTC network sync with TZ='%s' servers='%s'\n",
+    const uint8_t attempt = (uint8_t)(s_rtcSyncAttempts + 1);
+    RTC_LOGI("Starting RTC network sync attempt %u/%u with TZ='%s' servers='%s'\n",
+             (unsigned)attempt,
+             (unsigned)RTC_SYNC_MAX_ATTEMPTS,
              cfg.tz[0] ? cfg.tz : "UTC",
              cfg.ntpServers);
     logRtcSyncNetworkDiag_(firstNonEmptyHost_(n1, n2, n3));
-    if (!RTCManager_syncNetworkTime(cfg.tz, cfg.ntpServers, cfg.timeCheckUrl, 15000, 5000)) {
+    synced = RTCManager_syncNetworkTime(cfg.tz, cfg.ntpServers, cfg.timeCheckUrl, 15000, 5000);
+    s_rtcSyncAttempts = attempt;
+    finalAttempt = (s_rtcSyncAttempts >= RTC_SYNC_MAX_ATTEMPTS);
+    if (!synced) {
       LOGW_TAG("RTC", "RTC sync failed after SNTP and HTTP fallback\n");
+      if (!finalAttempt) {
+        s_rtcSyncRetryAtMs = millis() + RTC_SYNC_RETRY_DELAY_MS;
+        RTC_LOGI("RTC sync retry scheduled in %lu ms\n",
+                 (unsigned long)RTC_SYNC_RETRY_DELAY_MS);
+      }
     }
   }
   setRtcSyncPowerSave_(true);
-  RTCManager_sync();                            // capture baseEpoch from system
+  if (!synced && !finalAttempt) return;
+
+  if (synced) {
+    RTCManager_sync();                          // capture baseEpoch from system
+  }
   s_rtcSyncPending = false;
+  s_rtcSyncRetryAtMs = 0;
+  s_rtcSyncAttempts = 0;
 
   const auto& cfg = ConfigManager::get();
   if (!cfg.wifiEnabledDefault) {
@@ -199,12 +308,35 @@ void WiFiManager::begin(IsLoggingActiveFn isLoggingFn) {
   s_enabled   = false;
   s_state     = WiFiMgrState::OFF;
   s_haveIntentConnect = false;
+  s_targetConfigIndex = -1;
+  s_lastConnectedIndex = -1;
   s_currSsid = "";
   s_currRssi = 0;
   s_idleOffDeadlineMs = 0;
+  s_rtcSyncPending = false;
+  s_rtcSyncRetryAtMs = 0;
+  s_rtcSyncAttempts = 0;
+  s_bootResetReason = esp_reset_reason();
+  s_bootWakeCause = esp_sleep_get_wakeup_cause();
+  s_forceRtcSyncOnBoot = shouldForceRtcSyncOnBoot_(s_bootResetReason, s_bootWakeCause);
+  s_invalidateRtcOnBoot = shouldInvalidateRtcOnBoot_(s_bootResetReason, s_bootWakeCause);
 
   WiFi.persistent(false);       // don’t touch NVS
   hardOff_("begin");
+
+  if (s_forceRtcSyncOnBoot || s_invalidateRtcOnBoot) {
+    RTC_LOGI("RTC boot state: reset=%s wake=%s forceResync=%d invalidate=%d\n",
+             resetReasonName_(s_bootResetReason),
+             wakeCauseName_(s_bootWakeCause),
+             s_forceRtcSyncOnBoot ? 1 : 0,
+             s_invalidateRtcOnBoot ? 1 : 0);
+  } else {
+    LOGD_TAG("RTC", "RTC boot state: reset=%s wake=%s forceResync=%d invalidate=%d\n",
+             resetReasonName_(s_bootResetReason),
+             wakeCauseName_(s_bootWakeCause),
+             s_forceRtcSyncOnBoot ? 1 : 0,
+             s_invalidateRtcOnBoot ? 1 : 0);
+  }
 
 }
 
@@ -230,7 +362,8 @@ void WiFiManager::loop() {
       s_currSsid = WiFi.SSID();
       s_currRssi = WiFi.RSSI();
       s_state    = WiFiMgrState::ONLINE;
-      s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;   
+      s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
+      rememberConnectedNetwork_();
       clearIntent_();
       if (s_onOnline) s_onOnline();
       notifyUi_();
@@ -265,6 +398,7 @@ void WiFiManager::loop() {
         s_currRssi = WiFi.RSSI();
         s_state = WiFiMgrState::ONLINE;
         s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;   // <-- start idle timer
+        rememberConnectedNetwork_();
 
         if (s_onOnline) s_onOnline();
         clearIntent_();
@@ -273,6 +407,7 @@ void WiFiManager::loop() {
 
       } else if (millis() >= s_stateDeadlineMs) {
         // connection attempt ended — return to IDLE (single pass only)
+        s_targetConfigIndex = -1;
         keepStaIdle_("connect timeout");
         enterIdle_();
         clearIntent_();
@@ -297,14 +432,17 @@ void WiFiManager::loop() {
       if (wl == WL_CONNECTED) {
         // link OK; keep sticky & fresh RSSI
         s_currRssi = WiFi.RSSI();
+        tryRtcSyncIfPending_();
         s_linkDropDeadlineMs = 0;      // cancel any pending drop
           // ---- Auto-off check (idle timeout) ----
           if (s_idleOffDeadlineMs != 0 && (int32_t)(millis() - s_idleOffDeadlineMs) >= 0) {
-            // Timeout: drop to IDLE (radio off) until user asks again
+            // Timeout: fully turn Wi-Fi off until the user explicitly enables it again.
             if (s_onOffline) s_onOffline();
-            keepStaIdle_("idle timeout");
-            enterIdle_();
+            s_enabled = false;
+            hardOff_("idle timeout");
+            enterOff_();
             s_idleOffDeadlineMs = 0;
+            s_linkDropDeadlineMs = 0;
             clearIntent_();
             notifyUi_();
             break;
@@ -318,6 +456,7 @@ void WiFiManager::loop() {
       } else if ((int32_t)(millis() - s_linkDropDeadlineMs) >= 0) {
         // still down after debounce: tear down to IDLE
         if (s_onOffline) s_onOffline();
+        s_targetConfigIndex = -1;
         keepStaIdle_("link drop");
         enterIdle_();
         clearIntent_();
@@ -354,6 +493,7 @@ void WiFiManager::disable() {
   // Tell app we're going offline (only if we were actually online)
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
 
+  s_targetConfigIndex = -1;
   clearIntent_();
   s_idleOffDeadlineMs = 0;
   s_linkDropDeadlineMs = 0;
@@ -396,6 +536,7 @@ void WiFiManager::connectNow() {
 
 void WiFiManager::disconnect() {
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
+  s_targetConfigIndex = -1;
   clearIntent_();
   s_idleOffDeadlineMs = 0;
   s_linkDropDeadlineMs = 0;
@@ -413,12 +554,33 @@ void WiFiManager::shutdownRadio_() {
 void WiFiManager::maybeConnectForRTC() {
   const auto& cfg = ConfigManager::get();
   if (!cfg.wifiAutoTimeOnRtcInvalid) return;        // feature off in config
-  if (RTCManager_hasValidTime()) return;            // already valid
   if (!configuredNetworksExist_()) return;          // nowhere to connect
+
+  bool haveValidTime = RTCManager_hasValidTime();
+  if (s_invalidateRtcOnBoot && haveValidTime) {
+    RTC_LOGI("RTC auto-sync: invalidating retained time after reset=%s wake=%s\n",
+             resetReasonName_(s_bootResetReason),
+             wakeCauseName_(s_bootWakeCause));
+    RTCManager_invalidateInternalTime();
+    haveValidTime = false;
+  }
+
+  if (!s_forceRtcSyncOnBoot && haveValidTime) return;  // already valid and not a retained-clock boot
+
+  if (s_forceRtcSyncOnBoot) {
+    RTC_LOGI("RTC auto-sync: forcing resync after reset=%s wake=%s validBefore=%d\n",
+             resetReasonName_(s_bootResetReason),
+             wakeCauseName_(s_bootWakeCause),
+             haveValidTime ? 1 : 0);
+  }
 
   enable();                         // radios on
   s_haveIntentConnect = true;       // kick SCANNING → CONNECTING path
   s_rtcSyncPending = true;          // remember why we’re doing this
+  s_rtcSyncRetryAtMs = 0;
+  s_rtcSyncAttempts = 0;
+  s_forceRtcSyncOnBoot = false;
+  s_invalidateRtcOnBoot = false;
 }
 
 void WiFiManager::suspendForLogging() {
@@ -482,6 +644,7 @@ void WiFiManager::startScan_() {
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
   // Reset any target decided earlier
+  s_targetConfigIndex = -1;
   s_targetSsid = "";
   s_targetBssidSet = false;
   memset(s_targetBssid, 0, sizeof(s_targetBssid));
@@ -496,6 +659,7 @@ void WiFiManager::startScan_() {
   WIFI_LOGI("startScan_: sync scan returned %d\n", sc);
   if (sc < 0) {
     WIFI_LOGW("startScan_: synchronous scan failed\n");
+    s_targetConfigIndex = -1;
     enterIdle_();
     clearIntent_();
     notifyUi_();
@@ -522,6 +686,11 @@ void WiFiManager::selectAndConnect_() {
   uint8_t chosenBssid[6] = {0};
   bool chosenBssidSet = false;
   int chosenChannel = 0;
+  int preferredIndex = -1;
+  int preferredRssi = -127;
+  uint8_t preferredBssid[6] = {0};
+  bool preferredBssidSet = false;
+  int preferredChannel = 0;
 
   for (size_t i = 0; i < count; ++i) {
     if (!nets[i].ssid[0]) continue;
@@ -575,6 +744,14 @@ void WiFiManager::selectAndConnect_() {
                         ? nets[i].minRssi : RSSI_FLOOR_DBM;
     if (!bestSet || bestRssi < minNeed) continue;
 
+    if ((int)i == s_lastConnectedIndex) {
+      preferredIndex = (int)i;
+      preferredRssi = bestRssi;
+      memcpy(preferredBssid, bestBssid, 6);
+      preferredBssidSet = bestSet;
+      preferredChannel = bestChannel;
+    }
+
     // Keep the strongest overall; if tied, prefer earlier priority (smaller i)
     if (bestRssi > chosenRssi || (bestRssi == chosenRssi && chosenIndex == -1)) {
       chosenIndex   = (int)i;
@@ -585,9 +762,22 @@ void WiFiManager::selectAndConnect_() {
     }
   }
 
+  if (preferredIndex >= 0) {
+    WIFI_LOGI("selectAndConnect_: preferring last successful network[%d] ssid='%s' rssi=%d\n",
+              preferredIndex,
+              nets[preferredIndex].ssid,
+              preferredRssi);
+    chosenIndex = preferredIndex;
+    chosenRssi = preferredRssi;
+    memcpy(chosenBssid, preferredBssid, 6);
+    chosenBssidSet = preferredBssidSet;
+    chosenChannel = preferredChannel;
+  }
+
   // No candidate — back to IDLE
   if (chosenIndex < 0) {
     WIFI_LOGW("selectAndConnect_: no eligible AP found\n");
+    s_targetConfigIndex = -1;
     WiFi.scanDelete();
     enterIdle_();
     clearIntent_();
@@ -595,6 +785,7 @@ void WiFiManager::selectAndConnect_() {
   }
 
   // Attempt connect to the chosen network
+  s_targetConfigIndex = chosenIndex;
   s_targetSsid = String(nets[chosenIndex].ssid);
   if (chosenBssidSet) { memcpy(s_targetBssid, chosenBssid, 6); s_targetBssidSet = true; }
   else { memset(s_targetBssid, 0, 6); s_targetBssidSet = false; }
@@ -603,6 +794,7 @@ void WiFiManager::selectAndConnect_() {
   wifiDiag_("selectAndConnect");
   if (!WiFi.mode(WIFI_STA)) {
     WIFI_LOGE("selectAndConnect_: WiFi.mode(WIFI_STA) failed\n");
+    s_targetConfigIndex = -1;
     enterIdle_();
     clearIntent_();
     return;

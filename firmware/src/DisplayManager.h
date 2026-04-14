@@ -18,7 +18,7 @@ namespace DisplayManager {
   void setFooterLine(const String& line);   // bottom row (e.g., clock)
 
   // Transient message (bottom of screen), auto-expires
-  void toast(const String& text, uint16_t durationMs = 1500);
+  void toast(const String& text, uint16_t durationMs = 1500, uint8_t textSize = 2);
 
   // Optional helpers
   bool available();

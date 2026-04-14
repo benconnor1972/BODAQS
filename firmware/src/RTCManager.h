@@ -53,8 +53,9 @@ bool RTCManager_syncNetworkTime(const char* tz,
                                 uint32_t sntpTimeoutMs = 8000,
                                 uint32_t httpTimeoutMs = 5000);
 
-// Fallback time sync over HTTP. Expects a Unix epoch or a JSON body containing
-// a "unixtime" field. Returns true if system time was updated successfully.
+// Fallback time sync over HTTP(S). Accepts a Unix epoch body, JSON bodies
+// containing "unixtime" or "timestamp", or a valid RFC 7231 Date header.
+// If the configured URL fails, built-in fallback URLs are also tried.
 bool RTCManager_syncFromHttp(const char* url, uint32_t timeoutMs = 5000);
 
 

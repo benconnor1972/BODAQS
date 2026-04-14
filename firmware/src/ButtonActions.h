@@ -69,6 +69,7 @@ namespace ButtonActions {
     ACT_MENU_NAV_LEFT,
     ACT_MENU_NAV_RIGHT,
     ACT_MENU_NAV_ENTER,
+    ACT_MENU_SELECT,
   };
 
   // Central dispatcher used by the binding table

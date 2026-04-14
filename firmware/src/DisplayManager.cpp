@@ -26,6 +26,7 @@ static bool     s_present      = false;
 static String   s_status       = "";
 static String   s_footer       = "";      // <-- new: bottom row text
 static String   s_toast        = "";
+static uint8_t  s_toastSize    = 2;
 static uint32_t s_toastUntilMs = 0;
 static uint32_t s_lastActivity = 0;
 static uint16_t s_idleDimMs    = 30000;
@@ -116,11 +117,37 @@ static void drawAll() {
  
   // Toast (middle of screen)
   if (s_toast.length()) {
-    int16_t x = 0;
-    int16_t y = (OLED_H / 2 - 8); // 8px font height
-    s_oled->setCursor(x, y);
-    s_oled->setTextSize(2);
-    s_oled->print(s_toast);
+    String line1 = s_toast;
+    String line2 = "";
+    const int newline = s_toast.indexOf('\n');
+    if (newline >= 0) {
+      line1 = s_toast.substring(0, newline);
+      line2 = s_toast.substring(newline + 1);
+      const int nextNewline = line2.indexOf('\n');
+      if (nextNewline >= 0) {
+        line2 = line2.substring(0, nextNewline);
+      }
+    }
+
+    const uint8_t size = s_toastSize ? s_toastSize : 1;
+    const int16_t lineHeight = (int16_t)(8 * size + 2);
+    s_oled->setTextColor(SSD1306_WHITE);
+    s_oled->setTextWrap(false);
+    s_oled->setTextSize(size);
+
+    if (line2.length()) {
+      const int16_t totalHeight = (int16_t)(lineHeight * 2 - 2);
+      const int16_t y1 = (OLED_H - totalHeight) / 2;
+      const int16_t y2 = y1 + lineHeight;
+      s_oled->setCursor(0, y1);
+      s_oled->print(line1);
+      s_oled->setCursor(0, y2);
+      s_oled->print(line2);
+    } else {
+      const int16_t y = (OLED_H - (8 * size)) / 2;
+      s_oled->setCursor(0, y);
+      s_oled->print(line1);
+    }
   }
   if (!I2CManager::lock(s_wire)) return;
   s_oled->display();
@@ -237,6 +264,7 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
   // Reset UI state (unchanged)
   s_status        = "OLED ready";
   s_toast.clear();
+  s_toastSize     = 2;
   s_toastUntilMs  = 0;
   s_lastActivity  = millis();
   s_dimmed        = false;
@@ -263,6 +291,7 @@ void DisplayManager::loop() {
   // Toast expiry
   if (s_toast.length() && now >= s_toastUntilMs) {
     s_toast = "";
+    s_toastSize = 2;
     drawAll();
   }
 
@@ -296,9 +325,10 @@ void DisplayManager::setFooterLine(const String& line) {
   s_lastHudMs = 0;   // force redraw soon
 }
 
-void DisplayManager::toast(const String& text, uint16_t durationMs) {
+void DisplayManager::toast(const String& text, uint16_t durationMs, uint8_t textSize) {
   if (!s_present) return;
   s_toast = text;
+  s_toastSize = textSize ? textSize : 1;
   s_lastActivity = millis();
   s_toastUntilMs = s_lastActivity + durationMs;
   if (s_dimmed) { s_dimmed = false; setContrast(s_nominal); }

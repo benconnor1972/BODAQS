@@ -201,13 +201,16 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 bool LoggingManager::start() {
   if (!s_cfg) return false;
   TRACE("enter start()");
+  const uint32_t startT0 = millis();
 
   // Logging owns the device: take Wi-Fi (and therefore web server) down NOW.
   if (WebServerManager::isRunning()) {
-    UI::println("Stopping web server for logging…", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
+    UI::println("Stopping web server for logging...", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
   }
 
+  const uint32_t wifiOffT0 = millis();
   WiFiManager::suspendForLogging();   // synchronous OFF
+  const uint32_t wifiOffMs = millis() - wifiOffT0;
   TRACE("stop webserver/wifi? (if any)");
 
 
@@ -219,18 +222,9 @@ bool LoggingManager::start() {
   s_intervalMs = StorageManager_getSampleIntervalMs();
 
   TRACE("RTC sanity check begin");
-  String ts;
-  uint32_t t0 = millis();
-  while (true) {
-    ts = RTCManager_getFastTimestamp();
-    if (ts.length() && !ts.startsWith("0000-00-00")) break;
-
-    if ((int32_t)(millis() - (t0 + 2000)) >= 0) {   // 2s timeout
-      TRACE("RTC sanity check TIMEOUT");
-      RTC_LOGW("still invalid: '%s'\n", ts.c_str());
-      break; // either continue with millis-based timestamp, or just proceed
-    }
-    delay(10);
+  const bool rtcValid = RTCManager_hasValidTime();
+  if (!rtcValid) {
+    RTC_LOGW("start: RTC not valid; continuing with fallback filename/timestamps until resync\n");
   }
   TRACE("RTC sanity check done");
 
@@ -246,10 +240,14 @@ bool LoggingManager::start() {
 
   // Open/create log file
   TRACE("Entering storagemanager_startlog");
+  const uint32_t storageT0 = millis();
   StorageManager_startLog();
+  const uint32_t storageMs = millis() - storageT0;
   TRACE("storagemanager_startlog complete");
 
+  const uint32_t sensorStartT0 = millis();
   SensorManager::onLoggingStart();
+  const uint32_t sensorStartMs = millis() - sensorStartT0;
   s_running = true;
 
 #if defined(ESP32)
@@ -275,6 +273,12 @@ bool LoggingManager::start() {
   unsigned hz = s_intervalMs ? (1000UL / s_intervalMs) : 0;
   char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
   UI::status(String(st));
+  LOGGING_LOGI("start timing: wifiOff=%lu ms storage=%lu ms sensors=%lu ms total=%lu ms rtcValid=%d\n",
+               (unsigned long)wifiOffMs,
+               (unsigned long)storageMs,
+               (unsigned long)sensorStartMs,
+               (unsigned long)(millis() - startT0),
+               rtcValid ? 1 : 0);
   TRACE("exit start()");
 
   return true;

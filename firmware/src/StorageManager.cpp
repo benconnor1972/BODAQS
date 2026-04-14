@@ -629,6 +629,8 @@ static bool openNewLogFile_SDMMC(const String& longName) {
 // Start new log file
 static void startLog() {
   if (loggingActive) return;
+  const uint32_t totalT0 = millis();
+  const char* backendName = isSpiBackend() ? "SPI" : "SD_MMC";
 
   // Reset non-blocking sample queue
   s_qHead = s_qTail = s_qCount = 0;
@@ -637,23 +639,38 @@ static void startLog() {
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
 
+  const bool rtcValid = RTCManager_hasValidTime();
+  const uint32_t filenameT0 = millis();
   String filename = RTCManager_getDateTimeString();
+  const uint32_t filenameMs = millis() - filenameT0;
   filename.replace(":", "-");
   filename.replace(" ", "_");
   filename += ".CSV";
+
+  if (!rtcValid) {
+    STOR_LOGW("startLog: RTC invalid, using fallback filename '%s'\n", filename.c_str());
+  }
 
   TRACE("[Storage] Trying to open log: ");
   STOR_LOGI("Trying to open log: %s\n", filename.c_str());
 
   bool ok = false;
+  uint32_t openMs = 0;
+  const uint32_t openT0 = millis();
 
   if (isSpiBackend()) {
     // -------- SPI + SdFat path --------
     logFile.close();  // harmless if not open
 
     ok = openNewLogFile_SPI(filename);  // handles long name, 8.3, fallback
+    openMs = millis() - openT0;
     if (!ok) {
-      STOR_LOGE("No available filename; giving up.\n");
+      STOR_LOGE("No available filename; giving up. filenameMs=%lu openMs=%lu totalMs=%lu backend=%s rtcValid=%d\n",
+                (unsigned long)filenameMs,
+                (unsigned long)openMs,
+                (unsigned long)(millis() - totalT0),
+                backendName,
+                rtcValid ? 1 : 0);
       return;
     }
 
@@ -666,8 +683,15 @@ static void startLog() {
     STOR_LOGI("SD_MMC path = %s\n", path.c_str());
 
     ok = openNewLogFile_SDMMC(path);
+    openMs = millis() - openT0;
     if (!ok) {
       TRACE("[Storage] startLog: SD_MMC open failed");
+      STOR_LOGE("startLog: SD_MMC open failed. filenameMs=%lu openMs=%lu totalMs=%lu backend=%s rtcValid=%d\n",
+                (unsigned long)filenameMs,
+                (unsigned long)openMs,
+                (unsigned long)(millis() - totalT0),
+                backendName,
+                rtcValid ? 1 : 0);
       return;
     }
 
@@ -681,9 +705,11 @@ static void startLog() {
   //SensorManager::debugDump("startLog-beforeHeader");
 
   char header[256];
+  const uint32_t headerT0 = millis();
   TRACE("Entering sensormanager::buildheader");
   SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
   TRACE("Finished sensormanager::buildheader");
+  const uint32_t headerMs = millis() - headerT0;
 
   // ---- NEW: prepend sample_id column ----
   const char* idPrefix = "sample_id,";
@@ -702,6 +728,7 @@ static void startLog() {
 
   STOR_LOGI("Header: %s\n", header);
 
+  const uint32_t flushT0 = millis();
   if (isSpiBackend()) {
     logFile.println(header);
     logFile.flush();
@@ -709,8 +736,17 @@ static void startLog() {
     logFileMMC.println(header);
     logFileMMC.flush();
   }
+  const uint32_t flushMs = millis() - flushT0;
   loggingActive = true;
   TRACE("[Storage] Log file opened successfully.");
+  STOR_LOGI("startLog timing: filename=%lu ms open=%lu ms header=%lu ms firstFlush=%lu ms total=%lu ms backend=%s rtcValid=%d\n",
+            (unsigned long)filenameMs,
+            (unsigned long)openMs,
+            (unsigned long)headerMs,
+            (unsigned long)flushMs,
+            (unsigned long)(millis() - totalT0),
+            backendName,
+            rtcValid ? 1 : 0);
 
 }
 
