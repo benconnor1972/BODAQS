@@ -12,48 +12,77 @@
 
 # Bicycle Open Data Acquisition System
 
-BODAQS is a project focused on making mountain-bike data acquisition and analysis accessible — allowing the curious to explore and learn, and the driven a new tool to chase performance.
+BODAQS (Bicycle open data acquisition system) is an open-source, build-it-yourself data collection
+and analysis system for mountain bikes, designed to be accessible to anyone with some DIY skills and a curiosity about what their bike is actually doing.
+
+Data acquisition is ubiquitous in motorsport, and it's making its way into mountain-bike racing too. But for the engineering-minded (or budget-constrained), the choice is often between costly professional systems or consumer tools that keep the underlying data hidden.
+
+BODAQS aims to offer an alternative: hardware that can be built with basic soldering skills using widely available parts; software with deep functionality and a structure designed for long-term expansion; and analysis built on powerful, free tools — alongside mounting and mechanical designs that can be 3D printed at home or produced at low cost. 
 
 The project provides **open designs** for the hardware, software, analysis tools, and mechanical parts needed to collect and analyze mountain-bike data. It follows a build-it-yourself ethos, emphasising simplicity and low cost **without compromising functionality**.
 
-Data acquisition is ubiquitous in motorsport, and it's becoming more common at the sharp end of gravity mountain-bike racing too. But for the engineering-minded (or budget-constrained), the choice is often between costly professional systems or consumer tools that keep the underlying data hidden.
+## The problem with mountain bike (suspension) tuning
 
-BODAQS aims to offer an alternative: hardware that can be built with basic soldering skills using widely available parts; software with deep functionality and a structure designed for long-term expansion; and analysis built on powerful, free tools — alongside mounting and mechanical designs that can be 3D printed at home or produced at low cost.
+For most riders, suspension setup is a vibe-based, iterative guessing game: adjust a click, do a
+run, wonder if that made things better or just 'different', repeat to exhaustion.
 
-Follow along as we iterate the hardware, software and analysis and share our results.
+At the sharp end of gravity racing, teams with the budget chase these problems using data - but at a high cost. A few consumer products - notably Shockwiz, now owned by SRAM - have bridged the gap with a product that can provide meaningful suspension insight for most riders and be set up in under twenty minutes. But ShockWiz is a closed system: the algorithm is proprietary, the data never leaves the device, and if you run a coil shock, you're out of luck.
+
+For the rider who wants to go deeper, wants to do more with the data, or whose coil setup isn't
+supported,the choice has been: trust a black box, go all in on professional equipment, or go
+without.
 
 ## The device
 
-At the centre of BODAQS is a small logger you can mount on a bike to record what your suspension (and other sensors) are doing during a ride.
+The BODAQS logger is a compact, hackable, open-source data logger you build yourself from widely available
+components using basic soldering skills and a 3D printer. It records inputs from suspension and other sensors, at up to 1000Hz, and stores the data as standard CSV files readable by almost anything. The device can connect to wifi to allow settings to be edited or log files downloaded using any device with a web browser.
 
-It’s designed to be modular: you can start simple and add capability over time.
+A small OLED screen and keypad make it simple to use, and an optional
+handlebar-mounted button lets you tag moments of interest mid-ride — a heavy landing, a sketchy
+section — so they're easy to find later.
 
-The logger records at a maximum sample rate of 500Hz (500 samples per second), so it can capture rapid events like fast suspension movement in fine detail.
+The full design is open: PCB schematics and layouts, firmware, case, sensor mounts and more are all available to build, hack, and improve. There's a full bill of materials, build guide and advice on where to purchase the parts required.
 
-A small screen and buttons make it usable on the bike, and an optional handlebar-mounted button lets you tag moments of interest (for example: a hard landing) so they’re easy to find later.
+## The analysis
 
-Settings live on the device in a simple text configuration file. The device can connect to wifi to allow settings to be edited or log files downloaded using any device with a web browser.
+Recording data is an engineering problem. Deciding what it *means* is the harder part — and the part
+that actually matters for tuning.
 
-Logs are saved as plain text tables, so you can open them with common tools and keep your data portable.
+BODAQS uses a Python analysis framework built on widely used open tools. A preprocessing
+pipeline cleans and validates your logs into consistent, comparable sessions. Automated event
+detection finds the moments that matter: jump landings, deep compressions, whatever. Comparison tools let you visualise sessions, isolate events, and measure what happens when you change your setup. The framework is deliberately transparent: you can see every step from raw sensor signal to output metric. 
 
-## Analysis
+It isn't designed to hand you a suspension report card (but if we ever build one, you will be able to see exactly where its conclusions came from). It's designed to help you build real understanding of what your bike is actually doing when you are riding it, on your trails, the way you ride.
 
-Sampling and recording sensor data is an engineering problem; deciding what it *means* is the hard part. Anyone who has stared at a large time-series dataset in a spreadsheet knows the conclusions do not write themselves.
+## Who it's for
 
-Interpretation depends on your question: you might be trying to tune for a specific outcome or just to get within the wide window of "good enough" — and different questions call for different ways of looking at the same ride.
+BODAQS is designed to scale with the user — in both the build, and the analysis.
 
-BODAQS aims to sit between a black-box “just trust the result” tool and a blank page. The goal isn’t to provide instant answers for everyone, but to provide a guided, transparent framework that supports ambition and curiosity and helps you build real understanding.
+If you're new to data acquisition, the hardware guide walks you through assembling the
+logger, and you'll have something real to look at after your first ride with a couple of sensors - or even just one. 
 
-The analysis tooling is built in Python (a widely used language for data work), and is designed so you can use it as-is, adapt it to your own questions, and share improvements back with the community.
+If you're a top-end rider, mechanic or suspension shop with your own battle-tested ideas on how a bike should be set up, you'll have something you can use to test out and validate your own ideas and work, race faster, or to add value to your customers. 
 
-Features of the BODAQS analysis framework include:
-- A pre-processing pipeline to clean, validate, and organise logs into consistent, comparable sessions.
-- Automated detection of “events” (such as jump landings, rebounds from a deep compression, or other patterns you define) so you can fish the moments that matter from the sea of data.
-- Tools to browse sessions, events, and metrics — and to compare rides, setups, or components in a repeatable way.
+If you're a tinkerer, engineer, developer, data scientist or uncategorised nerd, you can contribute to the project. Code, designs, ideas, feedback - it's all welcome.
+
+## Enough of the pitch - where's this thing actually at?
+
+TL;DR: we've made a lot of progress and have a usable system, but we're not there yet.
+
+As of April 2026 everything is pretty much at the 'beta testing' stage. The hardware works well within the limits of what we have tested and we think the user experience is pretty good. The analysis software is looking like an engineer's workbench rather than a polished consumer product. We have a long to-do list. But if you're interested, curious and not afraid of a soldering iron and a terminal window, we're ready for you.
+
+Our immediate priorities:
+ - Getting a web-based analysis platform running so users can investigate their data without needing to install stuff on their computer
+ - Publishing public APIs for the firmware and analysis software
+ - Collecting feedback from our beta testers
+ - Extending the range of supported sensors.
+ 
+BODAQS is a project focused on making mountain-bike data acquisition and analysis accessible — allowing the curious to explore 
+and learn, and the driven a new tool to chase performance.
 
 ## Ethos and inspiration
 
 This project exists for many reasons but three specific precursors stand out:
  - ShockWiz: Nigel Wade's ground-breaking product, now owned by SRAM, is in a category of one: mountain bike suspension analysis products that can be set up by an average user in under 20 minutes and provide useful feedback to the vast majority of riders. I was a happy ShockWiz user for many years and probably still would be if I hadn't discovered coil suspension. An elegant product that extracts maximum insight from minimum hardware, with a simplicity that hides some very clever engineering.
- - Sufni: The first open-source mountain bike data acquisition project to cross my path. For a variety of reasons I decided to take a different path rather than build one, but it's an impressive piece of work and the use of Lego for sensor mounting deserves a credit of its own.
- - RepRap: The movement that gave birth to cheap and ubiquitous 3D printing wasn't driven by market analysis by some big corporation, but by people who wanted a thing they couldn't buy (at a reasonable price). The community development and sharing ethos persists although the 3D printer market is unrecognisable from 10 years ago.
+ - Sufni: The first open-source mountain bike data acquisition project to cross my path. For a variety of reasons I decided to take a different path rather than build one, but it provided the seed of the idea and the use of Lego for sensor mounting deserves a credit of its own.
+ - RepRap: The movement that gave birth to cheap and ubiquitous 3D printing wasn't driven by market analysis by some big corporation, but by people who wanted a thing they couldn't buy (at a reasonable price). The community development and sharing ethos persists to this day and the products available are massively better and cheaper than what was available just a few years ago.
