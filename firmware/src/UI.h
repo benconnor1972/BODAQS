@@ -20,7 +20,7 @@ namespace UI {
   void loop();                              // calls DisplayManager::loop()
 
   // Route one message. Provide verbose serial text + (optional) short OLED text.
-  void println(const String& serialText, const String& oledText = "", uint8_t targets = TARGET_DEFAULT, uint8_t level   = LVL_INFO, uint16_t oledToastMs = 2000);
+  void println(const String& serialText, const String& oledText = "", uint8_t targets = TARGET_DEFAULT, uint8_t level = LVL_INFO, uint16_t oledToastMs = 2000, uint8_t oledToastSize = 2);
 
   void oledText(int16_t x, int16_t y, const String& text); //print at an x,y location
 
@@ -28,9 +28,9 @@ namespace UI {
   void status(const String& line);
 
   // Quick toast on OLED bottom
-  void toast(const String& oledText, uint16_t durationMs = 1500);
+  void toast(const String& oledText, uint16_t durationMs = 1500, uint8_t textSize = 2);
   void clear(uint8_t target = TARGET_OLED);
-  void toastModal(const String& text, uint16_t durationMs = 1200);
+  void toastModal(const String& text, uint16_t durationMs = 1200, uint8_t textSize = 2);
 
     // Modal guards (menu owns the OLED while modal is true)
   void beginModal();

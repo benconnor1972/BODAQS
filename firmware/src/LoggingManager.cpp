@@ -204,7 +204,7 @@ bool LoggingManager::start() {
 
   // Logging owns the device: take Wi-Fi (and therefore web server) down NOW.
   if (WebServerManager::isRunning()) {
-    UI::println("Stopping web server for logging…", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
+    UI::println("Stopping web server for logging...", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
   }
 
   WiFiManager::suspendForLogging();   // synchronous OFF

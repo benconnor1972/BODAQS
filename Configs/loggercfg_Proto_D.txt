@@ -69,16 +69,20 @@ binding4.event=released
 binding4.action=menu_nav_enter
 
 binding5.button=mark
-binding5.event=click
-binding5.action=mark_event
+binding5.event=released
+binding5.action=menu_select
 
 binding6.button=mark
-binding6.event=double_click
-binding6.action=web_toggle
+binding6.event=click
+binding6.action=mark_event
 
 binding7.button=mark
-binding7.event=held
-binding7.action=logging_toggle
+binding7.event=double_click
+binding7.action=web_toggle
+
+binding8.button=mark
+binding8.event=held
+binding8.action=logging_toggle
 
 
 

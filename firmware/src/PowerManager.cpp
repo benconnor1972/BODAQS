@@ -143,7 +143,7 @@ static void preSleep_() {
   WebServerManager::stop();   // safe even if not started
 
   // Small UX: say good night and blank the OLED
-  DisplayManager::setStatusLine("Sleeping…");
+  DisplayManager::setStatusLine("Sleeping...");
   delay(60);
   DisplayManager::clear();
   DisplayManager::present();

@@ -84,6 +84,7 @@ namespace {
     if (t == "menu_nav_left")   return ACT_MENU_NAV_LEFT;
     if (t == "menu_nav_right")  return ACT_MENU_NAV_RIGHT;
     if (t == "menu_nav_enter")  return ACT_MENU_NAV_ENTER;
+    if (t == "menu_select")     return ACT_MENU_SELECT;
 
     return ACT_NONE;
   }
@@ -245,6 +246,9 @@ void ButtonActions::invoke(ActionId action, ButtonEvent ev) {
       onNavEnter(ev);
       return;
 
+    case ACT_MENU_SELECT:
+      return;
+
     case ACT_NONE:
     default:
       return;
@@ -258,18 +262,18 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
     if (LoggingManager::start()) {
       ButtonManager_setPollingEnabled(false);   // suspend nav polling
       UI::println("Logging started with RTC time.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
-      UI::toast("Log start");
+      UI::toast("Log start", 1500, 2);
       UI::status("Logging");
     } else {
       UI::println("Failed to start logging.", "", UI::TARGET_SERIAL, UI::LVL_ERROR);
-      UI::toast("Log start failed");
+      UI::toast("Log start\nfailed", 1500, 2);
       UI::status("Ready");
     }
   } else {
     LoggingManager::stop();
     ButtonManager_setPollingEnabled(true);   // re-enable nav polling
     UI::println("Logging stopped.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
-    UI::toast("Log stop");
+    UI::toast("Log stop", 1500, 2);
     UI::status("Ready");
   }
 }
@@ -292,7 +296,7 @@ void ButtonActions::onMarkEvent(ButtonEvent event) {
 
   if (LoggingManager::isRunning()) {
     LoggingManager::mark();
-    UI::toast("Marked", 1200);
+    UI::toast("Marked", 1200, 2);
     UI::println("Record marked.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
   }
 }
@@ -306,14 +310,14 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
   if (WebServerManager::isRunning()) {
     WebServerManager::stop();
     WiFiManager::disable();
-    UI::println("Web server stopped.", "WiFi off", UI::TARGET_BOTH, UI::LVL_INFO, 2000);
+    UI::println("Web server stopped.", "WiFi off", UI::TARGET_BOTH, UI::LVL_INFO, 2000, 2);
     UI::status("Ready");
     return;
   }
 
   // If we can't start (e.g. logging active), don't touch WiFi.
   if (!WebServerManager::canStart()) {
-    UI::println("Cannot start server while logging active.", "Busy", UI::TARGET_BOTH, UI::LVL_WARN);
+    UI::println("Cannot start server while logging active.", "Busy", UI::TARGET_BOTH, UI::LVL_WARN, 2000, 2);
     return;
   }
 
@@ -326,11 +330,11 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
   if (WiFi.status() == WL_CONNECTED) {
     if (WebServerManager::start()) {
       UI::println(String("Web server at ") + WiFi.localIP().toString(),
-                  "WiFi on", UI::TARGET_BOTH, UI::LVL_INFO, 2000);
+                  "WiFi on", UI::TARGET_BOTH, UI::LVL_INFO, 2000, 2);
       UI::status("WiFi on");
     } else {
       // At this point WiFi is connected but server failed—this is a real failure.
-      UI::println("Failed to start web server.", "WS fail", UI::TARGET_BOTH, UI::LVL_ERROR);
+      UI::println("Failed to start web server.", "WS fail", UI::TARGET_BOTH, UI::LVL_ERROR, 2000, 2);
       UI::status("Ready");
     }
     return;
@@ -338,7 +342,7 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
 
   // Not connected yet: kick async connect and show "starting..."
   WiFiManager::connectNow();
-  UI::println("Connecting WiFi...", "WiFi starting", UI::TARGET_BOTH, UI::LVL_INFO, 1500);
+  UI::println("Connecting WiFi...", "WiFi\nstarting", UI::TARGET_BOTH, UI::LVL_INFO, 1500, 2);
   UI::status("WiFi...");
 }
 

@@ -726,7 +726,7 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<fieldset><legend>Button bindings (new)</legend>");
     html += F("<p><small>Each row maps a (button ID, event) pair to an action. "
               "Events: pressed, released, click, double_click, held. "
-              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter.</small></p>");
+              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter, menu_select.</small></p>");
 
     for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
       const ButtonBindingDef& bd = (i < cfg.buttonBindingCount) ? cfg.buttonBindings[i] : ButtonBindingDef{};
