@@ -509,9 +509,17 @@ time_t RTCManager_getEpoch() {
 
 // Get low resolution time stamp for file naming
 String RTCManager_getDateTimeString() {
-    // Use whatever RTC is active (internal or external)
+    // Keep filename generation non-blocking. Arduino's getLocalTime()
+    // defaults to a 5 s wait when the system clock is unset, which can
+    // stall log start on warm boots or after sleep.
+    const time_t sec = RTCManager_getEpoch();
+    if (sec < 1577836800) {
+        return "1970-01-01_00-00-00";
+    }
+
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
+    localtime_r(&sec, &timeinfo);
+    if ((timeinfo.tm_year + 1900) < 2020) {
         return "1970-01-01_00-00-00";
     }
 
