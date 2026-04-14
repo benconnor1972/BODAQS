@@ -25,6 +25,7 @@ namespace ButtonActions {
   void onNavLeft(ButtonEvent event);
   void onNavRight(ButtonEvent event);
   void onNavEnter(ButtonEvent event);
+  void onSleep(ButtonEvent event);
 
   // ===========================================================================
   // Mark-button Override API (for wizards like Calibration)
@@ -70,6 +71,7 @@ namespace ButtonActions {
     ACT_MENU_NAV_RIGHT,
     ACT_MENU_NAV_ENTER,
     ACT_MENU_SELECT,
+    ACT_SLEEP,
   };
 
   // Central dispatcher used by the binding table

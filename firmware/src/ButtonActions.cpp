@@ -29,6 +29,7 @@ static const char* evName(ButtonEvent e) {
 namespace {
   const LoggerConfig* s_cfg = nullptr;
   unsigned long s_lastEnterToggleMs = 0;
+  bool s_navLeftPressStartedInMenu = false;
 
   struct Slot {
     ButtonActions::MarkOverrideHandle id;
@@ -85,6 +86,7 @@ namespace {
     if (t == "menu_nav_right")  return ACT_MENU_NAV_RIGHT;
     if (t == "menu_nav_enter")  return ACT_MENU_NAV_ENTER;
     if (t == "menu_select")     return ACT_MENU_SELECT;
+    if (t == "sleep")           return ACT_SLEEP;
 
     return ACT_NONE;
   }
@@ -249,6 +251,10 @@ void ButtonActions::invoke(ActionId action, ButtonEvent ev) {
     case ACT_MENU_SELECT:
       return;
 
+    case ACT_SLEEP:
+      onSleep(ev);
+      return;
+
     case ACT_NONE:
     default:
       return;
@@ -363,6 +369,11 @@ void ButtonActions::onNavDown(ButtonEvent event) {
 
 void ButtonActions::onNavLeft(ButtonEvent event) {
   BLOG("[BTN] Left %s\n", evName(event));
+
+  if (event == BUTTON_PRESSED) {
+    s_navLeftPressStartedInMenu = MenuSystem::isActive();
+  }
+
   if (event != BUTTON_PRESSED) return;
   if (MenuSystem::isActive()) { MenuSystem::navLeft(); return; }
   UI::println("Nav Left.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
@@ -402,6 +413,21 @@ void ButtonActions::onNavEnter(ButtonEvent event) {
     }
     // You can also reserve HELD for a different function here if desired
   }
+}
+
+void ButtonActions::onSleep(ButtonEvent event) {
+  if (event != BUTTON_HELD) return;
+
+  // A long hold that started while the menu was open should keep acting
+  // like an in-menu navigation gesture, even if the menu closes on PRESS.
+  if (s_navLeftPressStartedInMenu) {
+    s_navLeftPressStartedInMenu = false;
+    return;
+  }
+
+  if (MenuSystem::isActive()) return;
+
+  MenuSystem::requestSleep();
 }
 
 ButtonActions::MarkOverrideHandle ButtonActions::pushMarkOverride(std::function<void(ButtonEvent)> handler) {

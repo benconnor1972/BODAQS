@@ -120,6 +120,7 @@ namespace {
   static RangeCapture s_rangeCap;   // <--- ADD THIS LINE
   static void tickActiveRangeCalibration_();
   static bool activateCurrentSelection_();
+  static void requestSleepImpl_();
 
   inline void touch() { s_lastInputMs = millis(); }
 
@@ -236,9 +237,7 @@ namespace {
         break;
 
       case MainItem::Sleep:
-        //DisplayManager::setStatusLine("Sleeping in 2s...");
-        delay(2000);
-        PowerManager::sleepOnEnterEXT0();
+        requestSleepImpl_();
         break;
 
       case MainItem::SampleRate: {
@@ -662,6 +661,12 @@ namespace {
     drawMain_();
   }
 
+  static void requestSleepImpl_() {
+    // Keep the existing menu sleep behavior unchanged.
+    delay(2000);
+    PowerManager::sleepOnEnterEXT0();
+  }
+
 } // anon
 
 // -------- public API --------
@@ -755,6 +760,10 @@ void MenuSystem::requestClose() {
       //   UI::status("Ready");
      // }
   }
+}
+
+void MenuSystem::requestSleep() {
+  requestSleepImpl_();
 }
 
 void MenuSystem::onNav(Dir d, ButtonEvent ev) {
