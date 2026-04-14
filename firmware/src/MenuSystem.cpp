@@ -138,6 +138,9 @@ namespace {
   static String mainItemLabel_(MainItem mi) {
     switch (mi) {
       case MainItem::WebServerToggle: {
+        if (s_wsPending) {
+          return "WiFi: CONNECTING";
+        }
         bool on = WebServerManager::isRunning();
         return String("WiFi: ") + (on ? "ON" : "OFF");
       }
@@ -200,8 +203,6 @@ namespace {
           WebServerManager::stop();
           WiFiManager::disable();   // optional: if you want Wi-Fi off when server off
           s_wsPending = false;      // cancel any pending start
-          UI::toastModal("WiFi off", 1000);
-          deferUiFor(1000);
           drawMain_();
           break;
         }
@@ -213,16 +214,15 @@ namespace {
           break;
         }
 
-        // Kick Wi-Fi once and let the loop finish the start later
+        s_wsPending    = true;
+        s_wsDeadlineMs = millis() + 20000;   // 20s budget max
+        drawMain_();
+
+        // Kick Wi-Fi once and let the loop finish the start later.
+        // Draw first so "CONNECTING" is visible before the blocking scan starts.
         WiFiManager::enable();
         WiFiManager::connectNow();
         WiFiManager::noteUserActivity();
-        s_wsPending    = true;
-        s_wsDeadlineMs = millis() + 20000;   // 20s budget max
-
-        UI::toastModal("Connecting", 800);
-        deferUiFor(800);
-        drawMain_();
         break;
       }
 
@@ -938,24 +938,24 @@ void MenuSystem::loop() {
   if (s_wsPending) {
     auto st = WiFiManager::status();
 
-    if (st.wl == WL_CONNECTED && st.state == WiFiMgrState::ONLINE) {
-      // We have a link: try to start the server once
-      s_wsPending = false;
+      if (st.wl == WL_CONNECTED && st.state == WiFiMgrState::ONLINE) {
+        // We have a link: try to start the server once
+        s_wsPending = false;
 
-      if (WebServerManager::start()) {
-        UI::toastModal("WiFi on", 1000);
-      } else {
-        UI::toastModal("WiFi fail", 1200);
-        // Optional: keep Wi-Fi up, or turn it off:
-        // WiFiManager::disable();
-      }
-      deferUiFor(1200);
-      redraw_();            // update "Web server: ON/OFF" label
-    } else if ((int32_t)(millis() - s_wsDeadlineMs) >= 0) {
-      // Timeout: give up cleanly
-      s_wsPending = false;
-      UI::toastModal("WiFi timeout", 1200);
-      deferUiFor(1200);
+        if (WebServerManager::start()) {
+          redraw_();            // update label to "WiFi: ON" immediately
+        } else {
+          UI::toastModal("WiFi fail", 1200);
+          // Optional: keep Wi-Fi up, or turn it off:
+          // WiFiManager::disable();
+          deferUiFor(1200);
+          redraw_();
+        }
+      } else if ((int32_t)(millis() - s_wsDeadlineMs) >= 0) {
+        // Timeout: give up cleanly
+        s_wsPending = false;
+        UI::toastModal("WiFi timeout", 1200);
+        deferUiFor(1200);
       redraw_();
     }
   }
