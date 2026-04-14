@@ -24,6 +24,7 @@ static uint8_t s_oledLevel    = UI::LVL_INFO;
 
 static uint32_t s_nextWifiUiCheckMs = 0;
 String   s_lastWifiSummary;
+static constexpr float LOW_BATTERY_WARN_V = 3.30f;
 
 static String makeWifiSummary_() {
   auto st = WiFiManager::status();
@@ -54,6 +55,24 @@ static String makeWifiSummary_() {
     case WiFiMgrState::ONLINE:     return "WiFi: (up)";
   }
   return "WiFi: ?";
+}
+
+static bool makeLowBatteryWarning_(String& out) {
+  if (!PowerManager::fuelGaugeOk()) {
+    out = "";
+    return false;
+  }
+
+  const float vbat = PowerManager::batteryVoltage();
+  if (vbat <= 0.0f || vbat >= LOW_BATTERY_WARN_V) {
+    out = "";
+    return false;
+  }
+
+  char buf[24];
+  snprintf(buf, sizeof(buf), "LOW BAT: %.2fV", (double)vbat);
+  out = buf;
+  return true;
 }
 
 static uint32_t s_nextClockUiCheckMs = 0;
@@ -96,7 +115,13 @@ void UI::begin(const LoggerConfig& cfg) {
 void UI::loop() {
   if ((int32_t)(millis() - s_nextWifiUiCheckMs) >= 0) {
     s_nextWifiUiCheckMs = millis() + 1000;  // 1 Hz is plenty
-    String now = makeWifiSummary_();
+    String now;
+    String lowBattery;
+    if (makeLowBatteryWarning_(lowBattery) && ((millis() / 1000UL) & 0x1UL) == 0) {
+      now = lowBattery;
+    } else {
+      now = makeWifiSummary_();
+    }
     DisplayManager::setStatusLine(now);
     s_lastWifiSummary = now;
   }
