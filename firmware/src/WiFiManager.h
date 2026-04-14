@@ -46,6 +46,8 @@ public:
   // For RTC path: if RTC is invalid and auto-time is allowed, attempt one connect cycle.
   // (You can call this once at startup; it won’t churn.)
   static void maybeConnectForRTC();
+  static bool forceRtcSync();
+  static bool isRtcSyncPending();
 
   // Simple status snapshot for Display/Web.
   static WiFiStatus status();

@@ -6,6 +6,7 @@
 
 #include "HtmlUtil.h"
 #include "WiFiManager.h"
+#include "PowerManager.h"
 #include "WebServerManager.h"
 #include "DebugLog.h"
 
@@ -20,6 +21,11 @@ static bool ensureSd_(SdFs*& out) {
     return false;
   }
   return true;
+}
+
+static void noteHttpActivity_() {
+  WiFiManager::noteUserActivity();
+  PowerManager::noteActivity();
 }
 
 static String prettySize_(uint64_t bytes) {
@@ -338,7 +344,7 @@ void registerFileRoutes(WebServer& srv) {
   // ---------- GET /files?path=/dir/ ----------
   S->on("/files", HTTP_GET, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     // Determine backend: if WebServerManager::sd() is non-null, we're on SPI/SdFat.
     SdFat* sd = WebServerManager::sd();
@@ -432,7 +438,7 @@ void registerFileRoutes(WebServer& srv) {
 // ---------- GET /download?path=/dir/file ----------
 S->on("/download", HTTP_GET, [S](){
   auto& srv = *S;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
 
   SdFat* sd = WebServerManager::sd();
   bool useSpi = (sd != nullptr);
@@ -498,7 +504,7 @@ S->on("/download", HTTP_GET, [S](){
 // ---------- GET /delete?path=/dir/file ----------
 S->on("/delete", HTTP_GET, [S](){
   auto& srv = *S;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
 
   SdFat* sd = WebServerManager::sd();
   bool useSpi = (sd != nullptr);
@@ -545,7 +551,7 @@ S->on("/delete", HTTP_GET, [S](){
 // Returns an HTML page that sequentially triggers individual downloads via /download?path=...
 S->on("/download_multi", HTTP_POST, [S](){
   auto& srv = *S;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
 
   String dir = srv.hasArg("dir") ? srv.arg("dir") : "/";
   if (!safeRelPath(dir)) { dir = "/"; }
@@ -626,7 +632,7 @@ S->on("/download_multi", HTTP_POST, [S](){
 // ---------- POST /delete_multi (best-effort, confirm step) ----------
 S->on("/delete_multi", HTTP_POST, [S](){
   auto& srv = *S;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
 
   SdFat* sd = WebServerManager::sd();
   const bool useSpi = (sd != nullptr);
@@ -751,7 +757,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
   // ---------- POST /download_zip (selected files in current dir; store-only ZIP) ----------
   S->on("/download_zip", HTTP_POST, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     SdFat* sd = WebServerManager::sd();
     const bool useSpi = (sd != nullptr);
@@ -915,7 +921,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
 
 S->on("/rmdir", HTTP_GET, [S](){
   auto& srv = *S;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
 
   SdFat* sd = WebServerManager::sd();
   bool useSpi = (sd != nullptr);
@@ -1006,7 +1012,7 @@ S->on("/rmdir", HTTP_GET, [S](){
 // ---------- POST /mkdir (path + name) ----------
 S->on("/mkdir", HTTP_POST, [S](){
   auto& srv = *S;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
 
   SdFat* sd = WebServerManager::sd();
   bool useSpi = (sd != nullptr);
@@ -1042,7 +1048,7 @@ S->on("/mkdir", HTTP_POST, [S](){
 // ---------- POST /rmdir (path) (empty dirs only) ----------
 S->on("/rmdir", HTTP_POST, [S](){
   auto& srv = *S;
-  WiFiManager::noteUserActivity();
+  noteHttpActivity_();
 
   SdFat* sd = WebServerManager::sd();
   bool useSpi = (sd != nullptr);
@@ -1106,6 +1112,7 @@ S->on("/rmdir", HTTP_POST, [S](){
     // onRequest: just redirect back to /files
     [S](){
       auto& srv = *S;
+      noteHttpActivity_();
       String p = srv.hasArg("path") ? srv.arg("path") : "/";
       if (!safeRelPath(p)) p = "/";
   srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(normDir(p)));
@@ -1114,6 +1121,7 @@ S->on("/rmdir", HTTP_POST, [S](){
     // onUpload: stream file data to SD (SPI or SD_MMC)
     [S](){
       auto& srv = *S;
+      noteHttpActivity_();
 
       // Decide backend once per upload
       SdFat* sd = WebServerManager::sd();

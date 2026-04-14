@@ -9,6 +9,8 @@
 #include "ConfigManager.h"
 #include "SensorManager.h"
 #include "TransformRegistry.h"
+#include "PowerManager.h"
+#include "WiFiManager.h"
 #include "DebugLog.h"
 
 using namespace HtmlUtil;
@@ -122,6 +124,11 @@ static void addTransformsFromDirAny_(const char* dirPath, JsonArray outArr) {
   }
 }
 
+static void noteHttpActivity_() {
+  WiFiManager::noteUserActivity();
+  PowerManager::noteActivity();
+}
+
 
 void registerTransformRoutes(WebServer& srv) {
   WebServer* S = &srv;
@@ -129,6 +136,7 @@ void registerTransformRoutes(WebServer& srv) {
 // -------- GET /api/transforms/list?sensor=...
 S->on("/api/transforms/list", HTTP_GET, [S](){
   auto& srv = *S;
+  noteHttpActivity_();
 
   if (!srv.hasArg("sensor")) {
     srv.send(400, F("application/json"), F("{\"error\":\"sensor required\"}"));
@@ -184,6 +192,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
   // -------- POST /api/transforms/select (sensor=...&id=...)
   S->on("/api/transforms/select", HTTP_POST, [S](){
     auto& srv = *S;
+    noteHttpActivity_();
 
     if (!srv.hasArg("sensor") || !srv.hasArg("id")) {
       srv.send(400, F("application/json"), F("{\"error\":\"sensor and id required\"}"));
@@ -232,6 +241,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
   // -------- POST /api/transforms/reload (sensor=...)
   S->on("/api/transforms/reload", HTTP_POST, [S](){
     auto& srv = *S;
+    noteHttpActivity_();
     // Placeholder no-op: integrate a TransformRegistry here if/when available.
     srv.sendHeader("Cache-Control", "no-store");
     srv.send(200, F("application/json"), F("{\"ok\":true}"));

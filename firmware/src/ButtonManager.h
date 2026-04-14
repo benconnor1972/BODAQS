@@ -18,6 +18,7 @@ enum ButtonMode {
 };
 
 typedef void (*ButtonCallback)(ButtonEvent);
+typedef void (*ButtonActivityCallback)();
 
 struct Button {
     uint8_t pin;
@@ -35,5 +36,6 @@ ButtonEvent ButtonManager_read(uint8_t pin); // optional; returns BUTTON_NONE if
 void ButtonManager_loop();
 void ButtonManager_setPollingEnabled(bool enabled);
 void ButtonManager_setPollIntervalMs(uint32_t ms);
+void ButtonManager_setPressActivityCallback(ButtonActivityCallback cb);
 
 #endif

@@ -62,9 +62,10 @@ namespace {
     SampleRate,
     Calibration,
     Sleep,
+    ResetTime,
     Restart
   };
-  static inline uint8_t mainItemCount_() { return 6; }
+  static inline uint8_t mainItemCount_() { return 7; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -89,6 +90,7 @@ namespace {
   // Web server start choreography
   static bool     s_wsPending = false;       // waiting for Wi-Fi to start server
   static uint32_t s_wsDeadlineMs = 0;        // give up time
+  static bool     s_timeSyncPending = false; // waiting for manual RTC sync to finish
 
 
   static inline void deferUiFor(uint16_t ms) {
@@ -120,6 +122,7 @@ namespace {
   static RangeCapture s_rangeCap;   // <--- ADD THIS LINE
   static void tickActiveRangeCalibration_();
   static bool activateCurrentSelection_();
+  static void requestSleepImpl_();
 
   inline void touch() { s_lastInputMs = millis(); }
 
@@ -155,6 +158,11 @@ namespace {
         return "Calibration";
       case MainItem::Sleep:
         return "Sleep";
+      case MainItem::ResetTime:
+        if (s_timeSyncPending) {
+          return "Time: SYNCING";
+        }
+        return "Reset time";
       case MainItem::Restart:
         return "Restart";
       default:
@@ -236,10 +244,32 @@ namespace {
         break;
 
       case MainItem::Sleep:
-        //DisplayManager::setStatusLine("Sleeping in 2s...");
-        delay(2000);
-        PowerManager::sleepOnEnterEXT0();
+        requestSleepImpl_();
         break;
+
+      case MainItem::ResetTime: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+
+        if (LoggingManager::isRunning()) {
+          UI::toastModal("Stop logging first", 1200, 1);
+          deferUiFor(1200);
+          drawMain_();
+          break;
+        }
+
+        s_timeSyncPending = true;
+        drawMain_();
+
+        if (!WiFiManager::forceRtcSync()) {
+          s_timeSyncPending = false;
+          UI::toastModal("Time sync fail", 1200, 1);
+          deferUiFor(1200);
+          drawMain_();
+          break;
+        }
+        break;
+      }
 
       case MainItem::SampleRate: {
         s_swallowEnterRelease = true;   // <--- ADD
@@ -662,6 +692,12 @@ namespace {
     drawMain_();
   }
 
+  static void requestSleepImpl_() {
+    // Keep the existing menu sleep behavior unchanged.
+    delay(2000);
+    PowerManager::sleepOnEnterEXT0();
+  }
+
 } // anon
 
 // -------- public API --------
@@ -719,6 +755,9 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
 
 void MenuSystem::requestOpen() {
   UI::beginModal();
+  if (s_timeSyncPending && !WiFiManager::isRtcSyncPending()) {
+    s_timeSyncPending = false;
+  }
   if (s_state == State::Inactive) {
     MLOG("[MENU] requestOpen -> Inactive -> Main (sel=%u)\n", (unsigned)s_mainSel);
     s_state = State::Main;
@@ -755,6 +794,10 @@ void MenuSystem::requestClose() {
       //   UI::status("Ready");
      // }
   }
+}
+
+void MenuSystem::requestSleep() {
+  requestSleepImpl_();
 }
 
 void MenuSystem::onNav(Dir d, ButtonEvent ev) {
@@ -936,6 +979,11 @@ void MenuSystem::loop() {
 
   if (s_deferRedraw && (long)(millis() - s_deferUiUntilMs) >= 0) {
     s_deferRedraw = false;
+    redraw_();
+  }
+
+  if (s_timeSyncPending && !WiFiManager::isRtcSyncPending()) {
+    s_timeSyncPending = false;
     redraw_();
   }
 

@@ -69,6 +69,7 @@ namespace {
     if (t == "menu_nav_right")  return ButtonActions::ACT_MENU_NAV_RIGHT;
     if (t == "menu_nav_enter")  return ButtonActions::ACT_MENU_NAV_ENTER;
     if (t == "menu_select")     return ButtonActions::ACT_MENU_SELECT;
+    if (t == "sleep")           return ButtonActions::ACT_SLEEP;
 
     // Unknown action id
     return ButtonActions::ACT_NONE;

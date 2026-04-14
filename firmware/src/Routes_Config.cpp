@@ -7,7 +7,9 @@
 #include "SensorManager.h"
 #include "SensorRegistry.h"
 #include "OutputTransform.h"
+#include "RTCManager.h"
 #include "WiFiManager.h"
+#include "PowerManager.h"
 #include "WebServerManager.h"  // for canStart()
 #include "BoardSelect.h" 
 #include "TransformRegistry.h"
@@ -21,6 +23,11 @@ static String fmtIPv4(const uint8_t a[4]) {
   snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
            a[0], a[1], a[2], a[3]);
   return String(buf);
+}
+
+static void noteHttpActivity_() {
+  WiFiManager::noteUserActivity();
+  PowerManager::noteActivity();
 }
 
 static void appendTopNav(String& html, const char* active) {
@@ -57,7 +64,7 @@ void registerConfigRoutes(WebServer& srv) {
   // -------------------- GET /config --------------------
   S->on("/config", HTTP_GET, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     // Read the active config for display
     const LoggerConfig& cfg = ConfigManager::get();
@@ -130,6 +137,14 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<label>Debounce (ms): </label><input type='number' name='debounce_ms' min='0' max='1000' value='");
     html += String(cfg.debounceMs);
     html += F("'"); html += dis; html += F("><br>");
+
+    html += F("<label>Auto-sleep idle (ms): </label><input type='number' name='auto_sleep_idle_ms' min='0' max='4294967295' value='");
+    html += String((unsigned long)cfg.autoSleepIdleMs);
+    html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
+
+    html += F("<label>Wi-Fi idle timeout (ms): </label><input type='number' name='wifi_idle_timeout_ms' min='0' max='4294967295' value='");
+    html += String((unsigned long)cfg.wifiIdleTimeoutMs);
+    html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
 
     html += F("<label>Log level: </label><select name='log_level'");
     html += dis; html += F(">");
@@ -294,7 +309,7 @@ void registerConfigRoutes(WebServer& srv) {
   // -------------------- GET /config/sensors --------------------
   S->on("/config/sensors", HTTP_GET, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     const LoggerConfig& cfg = ConfigManager::get();
     const bool locked = !WebServerManager::canStart();
@@ -708,7 +723,7 @@ void registerConfigRoutes(WebServer& srv) {
   // -------------------- GET /config/buttons --------------------
   S->on("/config/buttons", HTTP_GET, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     const LoggerConfig& cfg = ConfigManager::get();
     const bool locked = !WebServerManager::canStart();
@@ -726,7 +741,7 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<fieldset><legend>Button bindings (new)</legend>");
     html += F("<p><small>Each row maps a (button ID, event) pair to an action. "
               "Events: pressed, released, click, double_click, held. "
-              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter, menu_select.</small></p>");
+              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter, menu_select, sleep.</small></p>");
 
     for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
       const ButtonBindingDef& bd = (i < cfg.buttonBindingCount) ? cfg.buttonBindings[i] : ButtonBindingDef{};
@@ -779,7 +794,7 @@ void registerConfigRoutes(WebServer& srv) {
   // -------------------- POST /config/sensors --------------------
   S->on("/config/sensors", HTTP_POST, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     if (!WebServerManager::canStart()) {
       srv.send(423, F("text/plain"), F("Locked while logging"));
@@ -1089,7 +1104,7 @@ void registerConfigRoutes(WebServer& srv) {
   // -------------------- POST /config/buttons --------------------
   S->on("/config/buttons", HTTP_POST, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     if (!WebServerManager::canStart()) {
       srv.send(423, F("text/plain"), F("Locked while logging"));
@@ -1164,7 +1179,7 @@ void registerConfigRoutes(WebServer& srv) {
   // -------------------- POST /config --------------------
   S->on("/config", HTTP_POST, [S](){
     auto& srv = *S;
-    WiFiManager::noteUserActivity();
+    noteHttpActivity_();
 
     if (!WebServerManager::canStart()) {
       srv.send(423, F("text/plain"), F("Locked while logging"));
@@ -1331,15 +1346,24 @@ void registerConfigRoutes(WebServer& srv) {
       // Buttons / debounce / external RTC
       auto setU8  = [&](const char* name, uint8_t&  field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>255) v=255; field=(uint8_t)v; };
       auto setU16 = [&](const char* name, uint16_t& field){ if (!srv.hasArg(name)) return; long v=srv.arg(name).toInt(); if (v<0) v=0; if (v>65535) v=65535; field=(uint16_t)v; };
+      auto setU32 = [&](const char* name, uint32_t& field){
+        if (!srv.hasArg(name)) return;
+        unsigned long long v = strtoull(srv.arg(name).c_str(), nullptr, 10);
+        if (v > 0xFFFFFFFFULL) v = 0xFFFFFFFFULL;
+        field = (uint32_t)v;
+      };
       auto setBool= [&](const char* name, bool& field){ if (!srv.hasArg(name)) return; String s=srv.arg(name); s.trim(); s.toLowerCase(); field=(s=="1"||s=="true"||s=="on"||s=="yes"); };
 
       setU16("debounce_ms",    tmp.debounceMs);
+      setU32("auto_sleep_idle_ms", tmp.autoSleepIdleMs);
+      setU32("wifi_idle_timeout_ms", tmp.wifiIdleTimeoutMs);
     }
 
     // ---------- Persist full config ----------
     // Debug aid for saving tmp bindings count if needed later.
               
     ConfigManager::save(tmp);           // writes file and updates active config
+    RTCManager_setHumanReadable(tmp.timestampHuman);
     //ConfigManager::debugDumpConfigFile();
 
     // Redirect back to GET with ok=1

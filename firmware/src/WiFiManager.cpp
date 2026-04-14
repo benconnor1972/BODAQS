@@ -23,8 +23,7 @@ static const int      RSSI_FLOOR_DBM      = -90;    // ignore weaker than this
 static const uint32_t RTC_SYNC_RETRY_DELAY_MS = 5000;
 static const uint8_t  RTC_SYNC_MAX_ATTEMPTS   = 3;
 static uint32_t s_linkDropDeadlineMs = 0;
-static const uint32_t IDLE_OFF_MS = 015UL * 60UL * 500UL;  // 15 minutes
-static uint32_t s_idleOffDeadlineMs = 0;
+static uint32_t s_idleOffLastActivityMs = 0;
 static bool s_rtcSyncPending = false;   // we connected solely to set time
 static uint32_t s_rtcSyncRetryAtMs = 0;
 static uint8_t s_rtcSyncAttempts = 0;
@@ -36,6 +35,9 @@ static esp_reset_reason_t s_bootResetReason = ESP_RST_UNKNOWN;
 static esp_sleep_wakeup_cause_t s_bootWakeCause = ESP_SLEEP_WAKEUP_UNDEFINED;
 static bool s_prevEnabledBeforeLogging = false;
 static bool s_suspendedForLogging = false;
+static bool s_restoreWifiAfterRtcSync = false;
+static bool s_prevEnabledBeforeRtcSync = false;
+static bool s_forceNetworkRtcSync = false;
 
 WiFiMgrState WiFiManager::s_state = WiFiMgrState::OFF;
 bool         WiFiManager::s_enabled = false;
@@ -158,6 +160,14 @@ static void hardOff_(const char* reason) {
   wifiDiag_("hardOff done");
 }
 
+static uint32_t wifiIdleTimeoutMs_() {
+  return ConfigManager::get().wifiIdleTimeoutMs;
+}
+
+static void noteIdleOffActivity_() {
+  s_idleOffLastActivityMs = millis();
+}
+
 static void splitCsv3_(const char* csv, String& s1, String& s2, String& s3) {
   s1 = "";
   s2 = "";
@@ -238,15 +248,25 @@ static void setRtcSyncPowerSave_(bool enabled) {
 static void tryRtcSyncIfPending_() {
   if (!s_rtcSyncPending) return;
   if (WiFi.status() != WL_CONNECTED) return;
-  if (RTCManager_hasValidTime()) {
+  if (!s_forceNetworkRtcSync && RTCManager_hasValidTime()) {
     RTC_LOGI("RTC sync completed after delayed SNTP update\n");
     RTCManager_sync();
     s_rtcSyncPending = false;
     s_rtcSyncRetryAtMs = 0;
     s_rtcSyncAttempts = 0;
+    s_forceNetworkRtcSync = false;
 
     const auto& cfg = ConfigManager::get();
-    if (!cfg.wifiEnabledDefault) {
+    if (s_restoreWifiAfterRtcSync) {
+      const bool keepEnabled = s_prevEnabledBeforeRtcSync;
+      s_restoreWifiAfterRtcSync = false;
+      s_prevEnabledBeforeRtcSync = false;
+      if (!keepEnabled) {
+        WiFiManager::disable();
+      } else {
+        WiFiManager::noteUserActivity();
+      }
+    } else if (!cfg.wifiEnabledDefault) {
       WiFiManager::disable();
     } else {
       WiFiManager::noteUserActivity();
@@ -291,9 +311,19 @@ static void tryRtcSyncIfPending_() {
   s_rtcSyncPending = false;
   s_rtcSyncRetryAtMs = 0;
   s_rtcSyncAttempts = 0;
+  s_forceNetworkRtcSync = false;
 
   const auto& cfg = ConfigManager::get();
-  if (!cfg.wifiEnabledDefault) {
+  if (s_restoreWifiAfterRtcSync) {
+    const bool keepEnabled = s_prevEnabledBeforeRtcSync;
+    s_restoreWifiAfterRtcSync = false;
+    s_prevEnabledBeforeRtcSync = false;
+    if (!keepEnabled) {
+      WiFiManager::disable();
+    } else {
+      WiFiManager::noteUserActivity();
+    }
+  } else if (!cfg.wifiEnabledDefault) {
     WiFiManager::disable();
   } else {
     WiFiManager::noteUserActivity();
@@ -312,7 +342,7 @@ void WiFiManager::begin(IsLoggingActiveFn isLoggingFn) {
   s_lastConnectedIndex = -1;
   s_currSsid = "";
   s_currRssi = 0;
-  s_idleOffDeadlineMs = 0;
+  s_idleOffLastActivityMs = 0;
   s_rtcSyncPending = false;
   s_rtcSyncRetryAtMs = 0;
   s_rtcSyncAttempts = 0;
@@ -320,6 +350,9 @@ void WiFiManager::begin(IsLoggingActiveFn isLoggingFn) {
   s_bootWakeCause = esp_sleep_get_wakeup_cause();
   s_forceRtcSyncOnBoot = shouldForceRtcSyncOnBoot_(s_bootResetReason, s_bootWakeCause);
   s_invalidateRtcOnBoot = shouldInvalidateRtcOnBoot_(s_bootResetReason, s_bootWakeCause);
+  s_restoreWifiAfterRtcSync = false;
+  s_prevEnabledBeforeRtcSync = false;
+  s_forceNetworkRtcSync = false;
 
   WiFi.persistent(false);       // don’t touch NVS
   hardOff_("begin");
@@ -362,7 +395,7 @@ void WiFiManager::loop() {
       s_currSsid = WiFi.SSID();
       s_currRssi = WiFi.RSSI();
       s_state    = WiFiMgrState::ONLINE;
-      s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
+      noteIdleOffActivity_();
       rememberConnectedNetwork_();
       clearIntent_();
       if (s_onOnline) s_onOnline();
@@ -397,7 +430,7 @@ void WiFiManager::loop() {
         s_currSsid = WiFi.SSID();
         s_currRssi = WiFi.RSSI();
         s_state = WiFiMgrState::ONLINE;
-        s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;   // <-- start idle timer
+        noteIdleOffActivity_();
         rememberConnectedNetwork_();
 
         if (s_onOnline) s_onOnline();
@@ -431,22 +464,28 @@ void WiFiManager::loop() {
 
       if (wl == WL_CONNECTED) {
         // link OK; keep sticky & fresh RSSI
+        const uint32_t idleTimeoutMs = wifiIdleTimeoutMs_();
         s_currRssi = WiFi.RSSI();
         tryRtcSyncIfPending_();
         s_linkDropDeadlineMs = 0;      // cancel any pending drop
-          // ---- Auto-off check (idle timeout) ----
-          if (s_idleOffDeadlineMs != 0 && (int32_t)(millis() - s_idleOffDeadlineMs) >= 0) {
-            // Timeout: fully turn Wi-Fi off until the user explicitly enables it again.
-            if (s_onOffline) s_onOffline();
-            s_enabled = false;
-            hardOff_("idle timeout");
-            enterOff_();
-            s_idleOffDeadlineMs = 0;
-            s_linkDropDeadlineMs = 0;
-            clearIntent_();
-            notifyUi_();
-            break;
-          }
+        if (idleTimeoutMs == 0) {
+          noteIdleOffActivity_();
+          break;
+        }
+        // ---- Auto-off check (idle timeout) ----
+        if (s_idleOffLastActivityMs != 0 &&
+            (uint32_t)(millis() - s_idleOffLastActivityMs) >= idleTimeoutMs) {
+          // Timeout: fully turn Wi-Fi off until the user explicitly enables it again.
+          if (s_onOffline) s_onOffline();
+          s_enabled = false;
+          hardOff_("idle timeout");
+          enterOff_();
+          s_idleOffLastActivityMs = 0;
+          s_linkDropDeadlineMs = 0;
+          clearIntent_();
+          notifyUi_();
+          break;
+        }
         break;
       }
 
@@ -495,8 +534,14 @@ void WiFiManager::disable() {
 
   s_targetConfigIndex = -1;
   clearIntent_();
-  s_idleOffDeadlineMs = 0;
+  s_idleOffLastActivityMs = 0;
   s_linkDropDeadlineMs = 0;
+  s_rtcSyncPending = false;
+  s_rtcSyncRetryAtMs = 0;
+  s_rtcSyncAttempts = 0;
+  s_restoreWifiAfterRtcSync = false;
+  s_prevEnabledBeforeRtcSync = false;
+  s_forceNetworkRtcSync = false;
   hardOff_("disable");
 
   enterOff_();
@@ -521,7 +566,7 @@ void WiFiManager::connectNow() {
   s_haveIntentConnect = true;
 
   // Treat as user activity regardless of state
-  s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
+  noteIdleOffActivity_();
 
   // If we're not already trying, kick the state machine
   if (s_state == WiFiMgrState::OFF) {
@@ -538,7 +583,7 @@ void WiFiManager::disconnect() {
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
   s_targetConfigIndex = -1;
   clearIntent_();
-  s_idleOffDeadlineMs = 0;
+  s_idleOffLastActivityMs = 0;
   s_linkDropDeadlineMs = 0;
   keepStaIdle_("disconnect");
   enterIdle_();
@@ -579,8 +624,41 @@ void WiFiManager::maybeConnectForRTC() {
   s_rtcSyncPending = true;          // remember why we’re doing this
   s_rtcSyncRetryAtMs = 0;
   s_rtcSyncAttempts = 0;
+  s_forceNetworkRtcSync = s_forceRtcSyncOnBoot;
   s_forceRtcSyncOnBoot = false;
   s_invalidateRtcOnBoot = false;
+}
+
+bool WiFiManager::forceRtcSync() {
+  if (loggingGuard_()) return false;
+  if (!configuredNetworksExist_()) return false;
+  if (s_rtcSyncPending) {
+    if (s_enabled) {
+      noteUserActivity();
+    }
+    return true;
+  }
+
+  RTC_LOGI("RTC manual sync requested\n");
+  s_prevEnabledBeforeRtcSync = s_enabled;
+  s_restoreWifiAfterRtcSync = true;
+  s_rtcSyncPending = true;
+  s_rtcSyncRetryAtMs = 0;
+  s_rtcSyncAttempts = 0;
+  s_forceNetworkRtcSync = true;
+  s_forceRtcSyncOnBoot = false;
+  s_invalidateRtcOnBoot = false;
+
+  enable();
+  connectNow();
+  if (s_enabled) {
+    noteUserActivity();
+  }
+  return true;
+}
+
+bool WiFiManager::isRtcSyncPending() {
+  return s_rtcSyncPending;
 }
 
 void WiFiManager::suspendForLogging() {
@@ -801,7 +879,7 @@ void WiFiManager::selectAndConnect_() {
   }
   WiFi.setSleep(true);
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-  s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
+  noteIdleOffActivity_();
 
   auto ipFrom = [](const uint8_t a[4]) -> IPAddress {
     return IPAddress(a[0], a[1], a[2], a[3]);
@@ -856,6 +934,6 @@ void WiFiManager::clearIntent_() {
 
 void WiFiManager::noteUserActivity() {
   if (s_enabled && s_state == WiFiMgrState::ONLINE) {
-    s_idleOffDeadlineMs = millis() + IDLE_OFF_MS;
+    noteIdleOffActivity_();
   }
 }

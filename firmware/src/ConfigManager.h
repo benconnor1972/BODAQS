@@ -38,6 +38,8 @@ struct LoggerConfig {
   // buttons / debounce
   uint16_t debounceMs = 50;
   uint8_t  logLevelOverride = 0xFF; // 0xFF = use compile-time default
+  uint32_t autoSleepIdleMs = 0;          // 0 = disabled
+  uint32_t wifiIdleTimeoutMs = 900000UL; // 15 minutes; 0 = disabled
 
   // --- Button bindings ---
   ButtonBindingDef buttonBindings[MAX_BUTTON_BINDINGS];

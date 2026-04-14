@@ -162,7 +162,6 @@ void setup() {
   //Buffer debug
   static uint32_t g_sampleCounter = 0;
 
-  RTCManager_setHumanReadable(true); // false = fast integer, true = readable
   StorageManager_begin(*gBoard);           
   gSd = StorageManager_getSd();      
 
@@ -193,6 +192,7 @@ void setup() {
   BOOT_LOGI("SETUP: A ButtonBindingTable::initFromConfig\n");
   ButtonBindingTable::initFromConfig(ConfigManager::get());
   BOOT_LOGI("SETUP: A done\n");
+  RTCManager_setHumanReadable(g_cfg.timestampHuman);
   RTCManager_setTimezone(g_cfg.tz);
   const auto& cfg = ConfigManager::get();
   I2CManager::begin(*gBoard);
@@ -283,6 +283,8 @@ void setup() {
   ButtonActions::begin();
     BOOT_LOGI("SETUP: L Done\n");
 
+  ButtonManager_setPressActivityCallback(PowerManager::noteActivity);
+
 
   //ConfigManager::printAllCalibrations();
 
@@ -291,6 +293,7 @@ void setup() {
     BOOT_LOGI("SETUP: M Done\n");
 
   MenuSystem::setIdleCloseMs(300000);
+  PowerManager::noteActivity();
   BOOT_LOGI("SETUP: N Done\n");
 
     BOOT_LOGI("SETUP: ALL DONE\n");
@@ -305,6 +308,7 @@ void loop() {
   WebServerManager::loop();
   UI::loop();
   MenuSystem::loop();
+  PowerManager::loop();
   PowerManager::fuelGaugeLoop();
   //dbgHeartbeat_();
 }

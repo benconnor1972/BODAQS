@@ -16,6 +16,7 @@ namespace MenuSystem {
   bool isActive();
   void requestOpen();
   void requestClose();
+  void requestSleep();
   void loop();
 
   // High-level nav helpers (used by ButtonActions)

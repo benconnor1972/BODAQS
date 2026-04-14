@@ -23,8 +23,8 @@ void RTCManager_setTimezone(const char* tz);
 // Call periodically to resync epoch once per second
 void RTCManager_loop();
 
-String RTCManager_getTimestamp();        // full timestamp with ms
-String RTCManager_getFastTimestamp();    // cached / fast timestamp
+String RTCManager_getTimestamp();        // timestamp string in active mode
+String RTCManager_getFastTimestamp();    // timestamp string in active mode
 String RTCManager_getDateTimeString();   // safe for filenames (to the second)
 uint64_t RTCManager_getEpochMs();
 

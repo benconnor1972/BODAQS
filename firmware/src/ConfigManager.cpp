@@ -399,6 +399,8 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
+  if (keyEquals(key, "auto_sleep_idle_ms")) { cfg.autoSleepIdleMs = (uint32_t)strtoul(val, nullptr, 10); return true; }
+  if (keyEquals(key, "wifi_idle_timeout_ms")) { cfg.wifiIdleTimeoutMs = (uint32_t)strtoul(val, nullptr, 10); return true; }
   if (keyEquals(key, "log_level")) {
     if (!val[0] || !strcasecmp(val, "default")) {
       cfg.logLevelOverride = 0xFF;
@@ -773,6 +775,8 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv("ntp_servers", cfg.ntpServers);
   kv("time_check_url", cfg.timeCheckUrl);
   kv_u("debounce_ms", (unsigned)cfg.debounceMs);
+  kv_u("auto_sleep_idle_ms", (unsigned)cfg.autoSleepIdleMs);
+  kv_u("wifi_idle_timeout_ms", (unsigned)cfg.wifiIdleTimeoutMs);
   kv("log_level", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
   line("");
 
@@ -899,6 +903,8 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("timestampHuman=%s\n", cfg.timestampHuman ? "true" : "false");
   LOGI("tz=%s\n", cfg.tz);
   LOGI("debounceMs=%u\n", cfg.debounceMs);
+  LOGI("autoSleepIdleMs=%lu\n", (unsigned long)cfg.autoSleepIdleMs);
+  LOGI("wifiIdleTimeoutMs=%lu\n", (unsigned long)cfg.wifiIdleTimeoutMs);
   LOGI("logLevel=%s\n", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
 
   LOGI("wifiEnabledDefault=%s\n", cfg.wifiEnabledDefault ? "true" : "false");
