@@ -6,40 +6,42 @@ sidebar:
 ---
 
 import Lede from '@components/Lede.astro';
-import { LinkCard } from '@astrojs/starlight/components';
+import {LinkCard} from '@astrojs/starlight/components';
 
 <Lede>
-BODAQS (Bicycle open data acquisition system) is an open-source, build-it-yourself data collection
-and analysis system for mountain bikes, designed to be accessible to anyone with basic soldering
-skills and a curiosity about what their suspension is actually doing.
+  BODAQS (Bicycle open data acquisition system) is an open-source, build-it-yourself data collection
+  and analysis system for mountain bikes, designed to be accessible to anyone with basic soldering
+  skills and a curiosity about what their suspension is actually doing.
+</Lede>
 
 Every professional gravity team has an engineer watching a laptop full of suspension data.
 BODAQS sits between the consumer products that give you a single number and the professional rigs
 that require a racing team's budget.
-</Lede>
 
 ## The problem with suspension tuning
 
-For most riders, suspension setup is a vibe-based, iterative guessing game: adjust a click, do a
+For most riders, suspension setup is a vibe-based, iterative guessing game: Adjust a click, do a
 run, wonder if that made things better or just 'different', repeat to exhaustion.
 
 At the sharp end of gravity racing, teams solve this with custom data acquisition rigs and dedicated
 engineers.
-A few consumer products have tried to bridge the gap — ShockWiz, now owned by SRAM, is the standout
+A few consumer products have tried to bridge the gap —
+[ShockWiz](https://www.sram.com/en/quarq/series/shockwiz), now owned by SRAM, is the standout
 example, extracting meaningful suspension insight for most riders in under twenty minutes.
 
 ShockWiz, however is a closed system: the algorithm is proprietary, the data never leaves the
-device, and if
-your bike performance falls outside what it was designed to answer, you're out of options.
+device, and if your bike performance questions fall outside what it was designed to answer,
+you're out of options.
 
 For the rider who wants to go deeper, wants to do more with the data, or whose coil setup isn't
-supported,the choice has been: trust a black box, commission professional equipment, or go
+supported, the choices have been scant: Trust a black box, commission professional equipment, or go
 without.
 
 ## The device
 
 BODAQS is a compact, hackable, open-source data logger you build yourself from widely available
-components using basic soldering skills and a 3D printer. It records inputs from suspension travel and other sensors, at up to 500Hz,
+components using basic soldering skills and a 3D printer.
+It records inputs from suspension travel and other sensors, at up to 500Hz,
 capturing rapid events like suspension movement during a landing in fine detail.
 
 A small OLED screen and keypad make it usable on the bike, and an optional
@@ -48,24 +50,24 @@ section — so they're easy to find later.
 
 Logs are saved as standard CSV text tables: your data is yours,
 readable by any tool you choose. The full design is open: PCB schematics, firmware, and
-3D-printable sensor mounts are all available to build, fork, and improve.
+3D-printable sensor mounts are all available to build, hack, and improve.
 
 ## The analysis
 
-Recording data is an engineering problem. Deciding what it *means* is the harder part — and the part
+Recording data is an engineering problem. Deciding what it *means* is the harder part, and the part
 that actually matters for tuning.
 
 BODAQS includes a Python analysis framework built on widely used open tools. A preprocessing
 pipeline cleans and validates your logs into consistent, comparable sessions. Automated event
-detection finds the moments that matter: jJump landings, deep compressions, and fast rebounds —
+detection finds the moments that matter: Jump landings, deep compressions, and fast rebounds.
 
 Comparison tools let you visualise sessions, isolate events, and measure how your setup changes
 between runs.
 
 The framework is deliberately transparent: you can see every step from raw sensor signal to output
-metric. It isn't designed to hand you a suspension report card. It's designed to help you build real
+metric. It isn't designed to hand you a suspension report card, rather, to help you build real
 understanding of what your suspension is actually doing when you are riding your bike, on your
-trails, the way you ride.
+trails, the way you ride them.
 
 ## Who it's for
 
@@ -75,12 +77,21 @@ If you're new to data acquisition, the hardware guide walks you through assembli
 logger, and you'll have something real to look at after your first ride with as little as two
 sensors.
 
+If you're building your own logger from scratch, you'll need:
+
+- Basic soldering skills and a few common tools (soldering iron, wire cutters, etc.)
+- A 3D printer (or access to one)
+- Steady hands and some patience
+- A computer to run the analysis
+
+That's about it.
+
 If you're an experienced Python user, the analysis framework is structured for extension:
 define custom event schemas, write new metrics, build new notebooks.
 
-Whether your goal is to get within the wide window of "good enough", to chase optimisation gains at
-the sharp end, or simply understand why your bike feels the way it does on that particularly gnarly
-corner, BODAQS give you the tools to understand what's happening.
+Whether your goal is to get within the window of "good enough", optimise your setup to six decimal
+places, or simply understand why your bike feels the way it does on that particular
+corner (you know the one), BODAQS give you the tools to understand what's happening.
 
 
 ---

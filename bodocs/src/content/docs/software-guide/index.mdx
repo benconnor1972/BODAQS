@@ -1,10 +1,150 @@
 ---
-title: Installing JupyterLab
+title: Setting up your environment
 description: Full parts list for building the BODAQS 4 Proto D hardware.
 sidebar:
-  order: 1
-
+order: 1
 ---
-## Installing python, pyenv and pipenv
+import {Aside, Tabs, TabItem} from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+import MiniAside from '@components/MiniAside.astro';
+
+## Installing python and pyenv
+
+macOS ships with a version of Python the operating system depends on. pyenv
+installs a completely separate Python alongside it — giving you full control
+without touching anything the system relies on.
+
+<Aside type="caution" title="Hands off the macOS system python">
+  Never modify or replace the Python at `/usr/bin/python3` on macOS, and avoid
+  using `sudo` to install Python packages. That interpreter belongs to the
+  operating system and breaking it is painful.
+</Aside>
+
+<Tabs>
+  <TabItem label="Mac">
+    Install [Homebrew](https://brew.sh) if you don't have it already, then
+    install pyenv:
+
+    ```bash
+    brew install pyenv
+    ```
+
+    Add pyenv to your shell so it initialises automatically. For **zsh**
+    (the default on modern Macs):
+
+    ```bash
+    echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.zshrc
+    echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.zshrc
+    echo 'eval "$(pyenv init -)"' >> ~/.zshrc
+    source ~/.zshrc
+    ```
+
+    Then install the Python version used by BODAQS:
+
+    ```bash
+    pyenv install 3.14.3
+    pyenv local 3.14.3
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    On Windows, use **pyenv-win**. Open PowerShell and run the installer:
+
+    ```powershell
+    Invoke-WebRequest -UseBasicParsing -Uri
+    "https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1"
+    -OutFile "./install-pyenv-win.ps1"; &"./install-pyenv-win.ps1"
+    ```
+
+    Close and reopen PowerShell, then install the Python version used by
+    BODAQS:
+
+    ```powershell
+    pyenv install 3.14.3
+    pyenv local 3.14.3
+    ```
+  </TabItem>
+</Tabs>
+
+<MiniAside>
+  `pyenv local` writes a `.python-version` file to the current folder.
+  Any terminal opened in that folder will automatically use the right Python
+  version.
+
+  If you are running this setup guide from the BODAQS project root, a `.python-version` file is
+  already there with the correct version, so you can skip the `pyenv local` step.
+</MiniAside>
 
 ## Installing JupyterLab
+
+<Lede>
+  [JupyterLab](https://jupyter.org/) is an interactive notebook environment for running 
+  scripts, visualising data, and writing documentation for the analysis.
+
+  It's the primary interface for running the BODAQS analysis pipeline, and visualising sensor
+  signals. It ships as part of the project's dependency set — no extra installation needed beyond
+  the steps below.
+</Lede>
+
+### Creating a virtual environment
+
+A virtual environment keeps the ~120 BODAQS packages isolated from your system
+Python so nothing conflicts. Make sure you've completed the Python and pyenv
+setup in the previous section before continuing.
+
+From the project root, create the environment:
+
+```bash
+python -m venv .venv
+```
+
+#### Activate the virtual environment
+
+<Tabs>
+  <TabItem label="Mac / Linux">
+    ```bash
+    source .venv/bin/activate
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```bash
+    .venv\Scripts\activate
+    ```
+  </TabItem>
+</Tabs>
+
+<MiniAside>
+  Once activated, your terminal prompt will show `(.venv)` at the start —
+  that's your confirmation the environment is live.
+</MiniAside>
+
+
+#### The relationship between pyenv and venv
+pyenv and venv work together to give you a clean, controlled Python environment.
+They both work to keep your working environment separate from the system Python, but they do it in different ways:
+
+##### pyenv
+Manages multiple Python versions on your system. It allows you to switch between different Python
+versions easily, without affecting the system Python. When you run `pyenv local 3.14.3`,
+it creates a `.python-version` file that tells pyenv to use that specific version of Python whenever you're in that directory.
+
+##### venv
+Creates isolated Python environments for your projects. When you run `python -m venv .venv`,
+it creates a new directory called `.venv` (you can name this anything) that contains its own
+Python interpreter (usually a symlink to the currently active one), a `site-packages` directory
+for installed packages, and activation scripts for initialising the environment in your shell.
+This means you can install packages in this environment without polluting other projects or the system Python.
+
+### Installing the dependencies
+
+`requirements.txt` pins every BODAQS dependency — JupyterLab, pandas, numpy,
+scipy, plotly, and the interactive notebook widgets. Install them all with:
+
+```bash
+pip install -r requirements.txt
+```
+
+<Aside>
+  This installs a large number of packages and may take a few minutes on first
+  run. Subsequent installs are much faster because pip caches what it's already
+  downloaded.
+</Aside>
