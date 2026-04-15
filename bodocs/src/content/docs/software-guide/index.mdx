@@ -12,7 +12,9 @@ import MiniAside from '@components/MiniAside.astro';
 
 macOS ships with a version of Python the operating system depends on. pyenv
 installs a completely separate Python alongside it — giving you full control
-without touching anything the system relies on.
+without touching anything the system relies on. Even on Windows,
+it is still best practice to use pyenv to manage your Python versions, so you can keep the BODAQS
+environment separate from any other Python work you might be doing.
 
 <Aside type="caution" title="Hands off the macOS system python">
   Never modify or replace the Python at `/usr/bin/python3` on macOS, and avoid
