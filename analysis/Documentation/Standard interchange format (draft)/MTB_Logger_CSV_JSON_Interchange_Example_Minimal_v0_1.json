@@ -1,0 +1,31 @@
+{
+  "contract": {
+    "name": "mtb_logger_timeseries",
+    "version": "0.1.0"
+  },
+  "session": {
+    "session_id": "example_minimal"
+  },
+  "streams": {
+    "primary": {
+      "type": "uniform",
+      "time_col": "time_s",
+      "time_unit": "s"
+    }
+  },
+  "columns": {
+    "time_s": {
+      "class": "time",
+      "dtype": "float64",
+      "stream": "primary",
+      "unit": "s"
+    },
+    "rear_shock_raw [counts]": {
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "quantity": "raw",
+      "unit": "counts"
+    }
+  }
+}
