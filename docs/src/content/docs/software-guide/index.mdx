@@ -1,12 +1,13 @@
 ---
-title: Setting up your environment
-description: Full parts list for building the BODAQS 4 Proto D hardware.
+title: Setting up your environment locally
+description: How to install python and Jupyterlab in a virtual environment
 sidebar:
-  order: 1
+  order: 0
 ---
 import {Aside, Tabs, TabItem} from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
 import MiniAside from '@components/MiniAside.astro';
+
 
 ## Installing python and pyenv
 
@@ -16,14 +17,14 @@ without touching anything the system relies on. Even on Windows,
 it is still best practice to use pyenv to manage your Python versions, so you can keep the BODAQS
 environment separate from any other Python work you might be doing.
 
-<Aside type="caution" title="Hands off the macOS system python">
-  Never modify or replace the Python at `/usr/bin/python3` on macOS, and avoid
-  using `sudo` to install Python packages. That interpreter belongs to the
-  operating system and breaking it is painful.
-</Aside>
-
 <Tabs>
   <TabItem label="Mac">
+    <Aside type="caution" title="Hands off the macOS system python">
+      Never modify or replace the Python at `/usr/bin/python3` on macOS, and avoid
+      using `sudo` to install Python packages. That interpreter belongs to the
+      operating system and breaking it is painful.
+    </Aside>
+
     Install [Homebrew](https://brew.sh) if you don't have it already, then
     install pyenv:
 
