@@ -1,8 +1,6 @@
 # BODAQS Analysis Notebook Overview
 
-This document summarizes the main notebooks in `analysis/` and explains what each one does in practice.
-
-The focus is operational rather than aspirational:
+This document summarizes the main notebooks in `analysis/` and explains what each one does in practice:
 
 - what the notebook is for
 - the major steps it performs
@@ -11,7 +9,20 @@ The focus is operational rather than aspirational:
 - any persisted artifacts or local state it writes
 - the contracts and reference documents it relies on
 
-The notebooks are listed in the working order requested for the overview.
+## Summary
+
+In the current workflow, the notebooks fit together as follows:
+
+1. Use [`bodaqs_batch_preprocessing_pipeline.ipynb`](../../bodaqs_batch_preprocessing_pipeline.ipynb) to process logger CSV files into canonical artifacts.
+2. Optionally, use [`BODAQS_library_manager.ipynb`](../../BODAQS_library_manager.ipynb) to curate descriptions, notes, and create aggregations.
+3. Use the dashboard and widget notebooks to consume the artifact library:
+   - [`BODAQS_simple_suspension_metrics.ipynb`](../../BODAQS_simple_suspension_metrics.ipynb)
+   - [`BODAQS_simple_suspension_metrics_persisted_scope.ipynb`](../../BODAQS_simple_suspension_metrics_persisted_scope.ipynb)
+   - [`bodaqs_widget_test_notebook.ipynb`](../../bodaqs_widget_test_notebook.ipynb)
+   - [`bodaqs_session_test_notebook.ipynb`](../../bodaqs_session_test_notebook.ipynb)
+4. Optionally, use [`bodaqs_event_schema_test_harness.ipynb`](../../bodaqs_event_schema_test_harness.ipynb) to develop and test event definitions.
+
+Artifacts are the stable handoff between notebooks, while local per-user files hold notebook convenience state such as selections and bookmarks.
 
 ## Shared context
 
@@ -21,14 +32,28 @@ The current notebook set falls into two broad groups:
 - **Consumer notebooks** discover and reuse those artifacts rather than recomputing them.
 
 The canonical artifact model is documented in
-[`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md).
-At a high level, producer notebooks write data under:
+[`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md).
+At a high level, the artifact tree stores:
+
+- run and session manifests for discovery, provenance, and descriptions
+- copied source CSV files and their hashes
+- the canonical session dataframe and metadata for each processed log
+- event tables and metric tables, partitioned by `schema_id`
+- a frozen copy of the schema used to generate each event set
+- optional session-attached annotations such as notes
+
+Producer notebooks write data under:
 
 ```text
 analysis/artifacts/runs/<run_id>/sessions/<session_id>/
 ```
 
-Important supporting state is also written outside the canonical artifact tree:
+Where:
+
+- a **Run** is a batch run of the preprocessing pipeline
+- a **Session** is the processed output of a single log file
+
+Some small local files provide supporting state information outside the canonical artifact tree:
 
 - local preprocess helper state in `.bodaqs_preprocess_last_dir.json` and `.bodaqs_preprocess_sha_cache.json`
 - per-user entity-scope selection in `~/.bodaqs/entity_scope_selection_v1.json`
@@ -36,7 +61,7 @@ Important supporting state is also written outside the canonical artifact tree:
 
 ## `bodaqs_batch_preprocessing_pipeline.ipynb`
 
-Notebook: [`bodaqs_batch_preprocessing_pipeline.ipynb`](../bodaqs_batch_preprocessing_pipeline.ipynb)
+Notebook: [`bodaqs_batch_preprocessing_pipeline.ipynb`](../../bodaqs_batch_preprocessing_pipeline.ipynb)
 
 **Role**
 
@@ -44,12 +69,12 @@ This is the main batch ingestion and preprocessing notebook. It turns one or mor
 
 ### Step 1. Select input CSV files
 
-- **Inputs:** a directory of raw logger CSV files and the existing `analysis/artifacts/` tree.
+- **Inputs:** a directory of raw logger CSV files and the existing `analysis/artifacts/` tree so that previously processed logger files can be identified.
 - **Outputs:** the selected file list (`CSV_FILES`) and a visible file-selection UI.
 - **Persisted artifacts:** no canonical analysis artifacts yet. The selector does update local helper files:
   - `.bodaqs_preprocess_last_dir.json`
   - `.bodaqs_preprocess_sha_cache.json`
-- **Contracts / documentation:** the selector behavior is aligned with the artifact discovery model in [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md).
+- **Contracts / documentation:** the selector behavior is aligned with the artifact discovery model in [`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md).
 
 ### Step 2. Load each CSV and canonicalize signals for preview
 
@@ -59,28 +84,29 @@ This is the main batch ingestion and preprocessing notebook. It turns one or mor
   - `session["meta"]["signals"]`
   - the union of detected displacement channels (`disp_cols_all`)
   - optional reporting of unclassified numeric columns
+- **What "canonicalize" means here:** this is a best-effort rename-and-enrich pass over dataframe column names. In the current implementation it infers units from existing headers such as `[...]`, applies a conservative hard-coded domain hint that maps `front_shock` and `rear_shock` bases into the `suspension` domain, and uses a small set of legacy rewrite rules such as converting `_zeroed` suffixes into canonical `_op_zeroed`, converting `<base>_raw` into `<base>_raw [counts]`, and adding units only when an explicit hint is available. Columns that still do not parse are left in place and flagged for later attention rather than being guessed at aggressively.
+- **What the signal registry is:** `session["meta"]["signals"]` is a per-session dictionary keyed by the exact dataframe column names in `session["df"]`. For each numeric signal column it records compact semantics such as `kind`, `unit`, `domain`, `op_chain`, inferred `sensor`, and inferred `quantity`, so later stages can resolve the meaning of a column without relying on ad hoc string matching in each notebook.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
-  - [`BODAQS_Session_Schema_v0_1.md`](./BODAQS_Session_Schema_v0_1.md)
-  - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](./BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
-  - [`MTB_Logger_CSV_JSON_Interchange_Contract_v0_1_draft.md`](./MTB_Logger_CSV_JSON_Interchange_Contract_v0_1_draft.md)
+  - [`BODAQS_Session_Schema_v0_1.md`](../BODAQS_Session_Schema_v0_1.md)
+  - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](../BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
 
 ### Step 3. Collect preprocessing and event-detection configuration
 
 - **Inputs:** the discovered displacement channels plus user-entered configuration:
-  - schema path
-  - normalization ranges
+  - directory path for the event schema
+  - normalization ranges for displacement sensors
   - zeroing settings
   - activity-mask settings
   - clipping and smoothing settings
   - ingestion mode
-  - whether to prompt for descriptions
+  - whether to prompt for run and session descriptions on ingestion
 - **Outputs:** a validated config dict suitable for `run_macro(...)`.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
-  - [`BODAQS_Public_API_Contract_v0.md`](./BODAQS_Public_API_Contract_v0.md)
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](./BODAQS_event_schema_specification_v0_1_2.md)
-  - [`BODAQS_Time_Handling_Contract_v0.md`](./BODAQS_Time_Handling_Contract_v0.md)
+  - [`BODAQS_Public_API_Contract_v0.md`](../BODAQS_Public_API_Contract_v0.md)
+  - [`BODAQS_event_schema_specification_v0_1_2.md`](../BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_Time_Handling_Contract_v0.md`](../BODAQS_Time_Handling_Contract_v0.md)
 
 ### Step 4. Run the macro pipeline for each selected session
 
@@ -93,10 +119,10 @@ This is the main batch ingestion and preprocessing notebook. It turns one or mor
   - `metrics`
 - **Persisted artifacts:** none at the moment this step returns; persistence happens in the next step.
 - **Contracts / documentation:**
-  - [`BODAQS_Public_API_Contract_v0.md`](./BODAQS_Public_API_Contract_v0.md)
-  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](./BODAQS_Event_Table_Contract_v0_1_3_draft.md)
-  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](./BODAQS_Metrics_Table_Contract_v0_2.md)
-  - [`BODAQS_Time_Handling_Contract_v0.md`](./BODAQS_Time_Handling_Contract_v0.md)
+  - [`BODAQS_Public_API_Contract_v0.md`](../BODAQS_Public_API_Contract_v0.md)
+  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
+  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)
+  - [`BODAQS_Time_Handling_Contract_v0.md`](../BODAQS_Time_Handling_Contract_v0.md)
 
 ### Step 5. Persist canonical artifacts for the batch run
 
@@ -113,36 +139,43 @@ This is the main batch ingestion and preprocessing notebook. It turns one or mor
   - `runs/<run_id>/sessions/<session_id>/events/<schema_id>/schema.yaml`
   - `runs/<run_id>/sessions/<session_id>/metrics/<schema_id>/metrics.parquet`
 - **Contracts / documentation:**
-  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md)
-  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](./BODAQS_Event_Table_Contract_v0_1_3_draft.md)
-  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](./BODAQS_Metrics_Table_Contract_v0_2.md)
+  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md)
+  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
+  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)
 
 ### Step 6. Optionally annotate the run and sessions with descriptions
 
 - **Inputs:** operator-entered run and session descriptions.
 - **Outputs:** updated manifest metadata.
 - **Persisted artifacts:** the existing run and session manifests are updated in place with `description` fields.
-- **Contracts / documentation:** [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md)
+- **Contracts / documentation:** [`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md)
 
 ## `BODAQS_library_manager.ipynb`
 
-Notebook: [`BODAQS_library_manager.ipynb`](../BODAQS_library_manager.ipynb)
+Notebook: [`BODAQS_library_manager.ipynb`](../../BODAQS_library_manager.ipynb)
 
 **Role**
 
-This notebook is the library-facing metadata management surface. It does not run the analysis pipeline itself; instead, it lets you browse existing sessions, edit descriptions, manage canonical session notes, and manage canonical aggregations.
+This notebook is for metadata management. It does not run the analysis pipeline itself; instead, it lets you browse existing sessions, edit descriptions, manage session notes, and create and manage canonical aggregations.
+
+A **session note** is a structured, per-session annotation document stored alongside a processed session. Notes are usually created from a versioned template and are intended to capture setup, context, and other human-entered information that should travel with the session across notebooks.
+
+An **aggregation** is a saved, named group of sessions that downstream consumer notebooks can treat as one selectable entity. In addition to the member sessions, an aggregation stores policy flags describing how to handle differences in signal registries and event-schema coverage across those members.
 
 ### Step 1. Build and browse the session catalog
 
 - **Inputs:** the existing `analysis/artifacts/` tree and the available session-note templates under `analysis/templates/session_note_templates/`.
-- **Outputs:** a catalog of sessions with run metadata, session metadata, and note projection status.
+- **Outputs:** a catalog of sessions with run metadata, session metadata, and a note catalog status.
+- **What the note catalog status means:** it summarizes whether the session has no saved note yet, has a note that can be cleanly projected into the flattened fields used for filtering and sorting, is missing the template needed to interpret that note, or has a mismatch between the stored note and the template version being projected.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
-  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md)
-  - [`BODAQS_session_notes_and_catalog_contract_draft.md`](./BODAQS_session_notes_and_catalog_contract_draft.md)
-  - [`../templates/session_note_templates/README.md`](../templates/session_note_templates/README.md)
+  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md)
+  - [`BODAQS_session_notes_and_catalog_contract_draft.md`](../BODAQS_session_notes_and_catalog_contract_draft.md)
+  - [`../../templates/session_note_templates/README.md`](../../templates/session_note_templates/README.md)
 
-### Step 2. Edit run and session descriptions
+After the catalog is open, the remaining interactions are random-access user actions rather than a required sequence.
+
+### Action A. Edit run and session descriptions
 
 - **Inputs:** the selected run/session and the description text entered in the UI.
 - **Outputs:** updated description fields visible in the catalog and manifests.
@@ -150,31 +183,31 @@ This notebook is the library-facing metadata management surface. It does not run
   - `runs/<run_id>/manifest.json`
   - `runs/<run_id>/sessions/<session_id>/manifest.json`
 - **Contracts / documentation:**
-  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md)
+  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md)
 
-### Step 3. Load, create, and save canonical session notes
+### Action B. Load, create, and save canonical session notes
 
 - **Inputs:** the selected session, a chosen note template, structured field values, custom JSON values, and free-text notes.
-- **Outputs:** validated in-memory `SessionNoteDocument` instances and updated catalog projection status.
+- **Outputs:** validated in-memory `SessionNoteDocument` instances and updated note catalog status.
 - **Persisted artifacts:**
   - `runs/<run_id>/sessions/<session_id>/annotations/session_notes.json`
 - **Contracts / documentation:**
-  - [`BODAQS_session_notes_and_catalog_contract_draft.md`](./BODAQS_session_notes_and_catalog_contract_draft.md)
-  - [`../templates/session_note_templates/README.md`](../templates/session_note_templates/README.md)
+  - [`BODAQS_session_notes_and_catalog_contract_draft.md`](../BODAQS_session_notes_and_catalog_contract_draft.md)
+  - [`../../templates/session_note_templates/README.md`](../../templates/session_note_templates/README.md)
 
-### Step 4. Create, update, and delete canonical aggregations
+### Action C. Create, update, and delete canonical aggregations
 
 - **Inputs:** selected sessions, aggregation title, optional note, and registry/schema policies.
 - **Outputs:** canonical aggregation definitions that can be reused by selector-driven consumer notebooks.
 - **Persisted artifacts:**
   - `artifacts/library/aggregations_v1.json`
 - **Contracts / documentation:**
-  - [`BODAQS_aggregation_library_contract_draft.md`](./BODAQS_aggregation_library_contract_draft.md)
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_aggregation_library_contract_draft.md`](../BODAQS_aggregation_library_contract_draft.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
 
 ## `BODAQS_simple_suspension_metrics.ipynb`
 
-Notebook: [`BODAQS_simple_suspension_metrics.ipynb`](../BODAQS_simple_suspension_metrics.ipynb)
+Notebook: [`BODAQS_simple_suspension_metrics.ipynb`](../../BODAQS_simple_suspension_metrics.ipynb)
 
 **Role**
 
@@ -191,8 +224,8 @@ This notebook is a dashboard-style consumer of previously processed artifacts. I
 - **Persisted artifacts:** no canonical analysis artifacts. By default, the selector may persist per-user scope state to:
   - `~/.bodaqs/entity_scope_selection_v1.json`
 - **Contracts / documentation:**
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
-  - [`BODAQS_aggregation_library_contract_draft.md`](./BODAQS_aggregation_library_contract_draft.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_aggregation_library_contract_draft.md`](../BODAQS_aggregation_library_contract_draft.md)
 
 ### Step 2. Render the simple suspension metrics dashboard
 
@@ -204,20 +237,20 @@ This notebook is a dashboard-style consumer of previously processed artifacts. I
   - a normalized-vs-engineering-units toggle
 - **Persisted artifacts:** none in the canonical artifact tree.
 - **Contracts / documentation:**
-  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](./BODAQS_Metrics_Table_Contract_v0_2.md)
-  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](./BODAQS_Event_Table_Contract_v0_1_3_draft.md)
-  - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](./BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
+  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)
+  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
+  - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](../BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
 
 ### Step 3. Rebuild the dashboard when scope changes
 
 - **Inputs:** selector refresh events and changes to the engineering-units toggle.
 - **Outputs:** refreshed dashboard tiles driven by the current selected scope.
 - **Persisted artifacts:** none beyond the selector's optional per-user autosave behavior.
-- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
 
 ## `BODAQS_simple_suspension_metrics_persisted_scope.ipynb`
 
-Notebook: [`BODAQS_simple_suspension_metrics_persisted_scope.ipynb`](../BODAQS_simple_suspension_metrics_persisted_scope.ipynb)
+Notebook: [`BODAQS_simple_suspension_metrics_persisted_scope.ipynb`](../../BODAQS_simple_suspension_metrics_persisted_scope.ipynb)
 
 **Role**
 
@@ -229,7 +262,7 @@ This is the persisted-scope variant of the same dashboard. It is best understood
 - **Outputs:** a selector-compatible handle with the same getters expected by downstream dashboards and widget rebuilders.
 - **Persisted artifacts:** none written by default. It reads:
   - `~/.bodaqs/entity_scope_selection_v1.json`
-- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
 
 ### Step 2. Render the same simple suspension metrics dashboard
 
@@ -237,27 +270,29 @@ This is the persisted-scope variant of the same dashboard. It is best understood
 - **Outputs:** the same front/rear displacement, velocity, and event-summary dashboard.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:** the same contracts as the main suspension dashboard:
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
-  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](./BODAQS_Metrics_Table_Contract_v0_2.md)
-  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](./BODAQS_Event_Table_Contract_v0_1_3_draft.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)
+  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
 
 ## `bodaqs_widget_test_notebook.ipynb`
 
-Notebook: [`bodaqs_widget_test_notebook.ipynb`](../bodaqs_widget_test_notebook.ipynb)
+Notebook: [`bodaqs_widget_test_notebook.ipynb`](../../bodaqs_widget_test_notebook.ipynb)
 
 **Role**
 
-This is the broad smoke-test and exploratory integration notebook for the generic widget layer. It is the most complete consumer-notebook example in the current analysis folder.
+This is a general-purpose exploration and testing notebook that presents a range of configurable data analysis widgets. The widgets are the prototypes for those used in `BODAQS_simple_suspension_metrics` and other special-purpose notebooks.
 
-### Step 1. Open the aggregation editor
+### Step 1. (Optional) Open the aggregation editor
 
 - **Inputs:** the existing artifact library and current session inventory.
 - **Outputs:** a standalone aggregation editor UI.
 - **Persisted artifacts:**
   - `artifacts/library/aggregations_v1.json`
 - **Contracts / documentation:**
-  - [`BODAQS_aggregation_library_contract_draft.md`](./BODAQS_aggregation_library_contract_draft.md)
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_aggregation_library_contract_draft.md`](../BODAQS_aggregation_library_contract_draft.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
+
+This cell can be omitted without affecting the functioning of the remainder of the notebook.
 
 ### Step 2. Open the session selector and schema context
 
@@ -266,8 +301,8 @@ This is the broad smoke-test and exploratory integration notebook for the generi
 - **Persisted artifacts:** no canonical analysis artifacts. The selector may persist per-user scope state to:
   - `~/.bodaqs/entity_scope_selection_v1.json`
 - **Contracts / documentation:**
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](./BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_event_schema_specification_v0_1_2.md`](../BODAQS_event_schema_specification_v0_1_2.md)
 
 ### Step 3. Exercise the signal histogram widget
 
@@ -275,8 +310,8 @@ This is the broad smoke-test and exploratory integration notebook for the generi
 - **Outputs:** an interactive signal histogram or CDF view.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
-  - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](./BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](../BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
 
 ### Step 4. Exercise the event browser widget
 
@@ -284,9 +319,9 @@ This is the broad smoke-test and exploratory integration notebook for the generi
 - **Outputs:** an interactive event inspection surface that joins event rows to metrics where possible and resolves sensor semantics through the schema and signal registry.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
-  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](./BODAQS_Event_Table_Contract_v0_1_3_draft.md)
-  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](./BODAQS_Metrics_Table_Contract_v0_2.md)
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](./BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
+  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)
+  - [`BODAQS_event_schema_specification_v0_1_2.md`](../BODAQS_event_schema_specification_v0_1_2.md)
 
 ### Step 5. Exercise the metric scatter and metric histogram widgets
 
@@ -294,9 +329,9 @@ This is the broad smoke-test and exploratory integration notebook for the generi
 - **Outputs:** interactive metric comparison views across entities, event types, and sensors.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
-  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](./BODAQS_Metrics_Table_Contract_v0_2.md)
-  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](./BODAQS_Event_Table_Contract_v0_1_3_draft.md)
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)
+  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
 
 ### Step 6. Exercise the session window browser and refresh wiring
 
@@ -306,16 +341,16 @@ This is the broad smoke-test and exploratory integration notebook for the generi
   - per-user bookmarks in `~/.bodaqs/bookmarks_v1.json`
   - optional per-user selector scope autosave in `~/.bodaqs/entity_scope_selection_v1.json`
 - **Contracts / documentation:**
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
-  - [`bodaqs_bookmarks_spec_v1.md`](./bodaqs_bookmarks_spec_v1.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`bodaqs_bookmarks_spec_v1.md`](../bodaqs_bookmarks_spec_v1.md)
 
 ## `bodaqs_session_test_notebook.ipynb`
 
-Notebook: [`bodaqs_session_test_notebook.ipynb`](../bodaqs_session_test_notebook.ipynb)
+Notebook: [`bodaqs_session_test_notebook.ipynb`](../../bodaqs_session_test_notebook.ipynb)
 
 **Role**
 
-This is a narrower smoke-test notebook focused on the session window browser only. It is useful when you want to validate or iterate on that widget without the extra surface area of the full widget test notebook.
+This notebook presents the session window browser only.
 
 ### Step 1. Build the selector and schema context
 
@@ -323,7 +358,7 @@ This is a narrower smoke-test notebook focused on the session window browser onl
 - **Outputs:** the selector handle, schema object, `events_index_df`, `key_to_ref`, and `session_loader`.
 - **Persisted artifacts:** no canonical analysis artifacts. The selector may autosave per-user scope state to:
   - `~/.bodaqs/entity_scope_selection_v1.json`
-- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
 
 ### Step 2. Build the session window browser
 
@@ -331,8 +366,8 @@ This is a narrower smoke-test notebook focused on the session window browser onl
 - **Outputs:** the session-window browser UI for a single active session at a time.
 - **Persisted artifacts:** none in the canonical artifact tree.
 - **Contracts / documentation:**
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
-  - [`bodaqs_bookmarks_spec_v1.md`](./bodaqs_bookmarks_spec_v1.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`bodaqs_bookmarks_spec_v1.md`](../bodaqs_bookmarks_spec_v1.md)
 
 ### Step 3. Attach rebuild-on-selection-change behavior
 
@@ -340,11 +375,11 @@ This is a narrower smoke-test notebook focused on the session window browser onl
 - **Outputs:** automatic browser rebuilds when the selection changes.
 - **Persisted artifacts:**
   - per-user bookmarks in `~/.bodaqs/bookmarks_v1.json` when bookmarks are saved
-- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+- **Contracts / documentation:** [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
 
 ## `bodaqs_event_schema_test_harness.ipynb`
 
-Notebook: [`bodaqs_event_schema_test_harness.ipynb`](../bodaqs_event_schema_test_harness.ipynb)
+Notebook: [`bodaqs_event_schema_test_harness.ipynb`](../../bodaqs_event_schema_test_harness.ipynb)
 
 **Role**
 
@@ -360,8 +395,8 @@ This notebook is the single-file schema-tuning harness. It is designed for fast 
 - **Outputs:** a fully explicit test configuration for one CSV and one schema revision.
 - **Persisted artifacts:** none yet.
 - **Contracts / documentation:**
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](./BODAQS_event_schema_specification_v0_1_2.md)
-  - [`BODAQS_Public_API_Contract_v0.md`](./BODAQS_Public_API_Contract_v0.md)
+  - [`BODAQS_event_schema_specification_v0_1_2.md`](../BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_Public_API_Contract_v0.md`](../BODAQS_Public_API_Contract_v0.md)
 
 ### Step 2. Run preprocessing for one session and persist the results
 
@@ -378,9 +413,9 @@ This notebook is the single-file schema-tuning harness. It is designed for fast 
   - `runs/<run_id>/sessions/<session_id>/events/<schema_id>/schema.yaml`
   - `runs/<run_id>/sessions/<session_id>/metrics/<schema_id>/metrics.parquet`
 - **Contracts / documentation:**
-  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md)
-  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](./BODAQS_Event_Table_Contract_v0_1_3_draft.md)
-  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](./BODAQS_Metrics_Table_Contract_v0_2.md)
+  - [`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md)
+  - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
+  - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)
 
 ### Step 3. Inspect detections in the event browser
 
@@ -388,26 +423,12 @@ This notebook is the single-file schema-tuning harness. It is designed for fast 
 - **Outputs:** an event browser configured against the latest processed single-session artifacts.
 - **Persisted artifacts:** none beyond the preprocessing artifacts already written.
 - **Contracts / documentation:**
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](./BODAQS_event_schema_specification_v0_1_2.md)
-  - [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
+  - [`BODAQS_event_schema_specification_v0_1_2.md`](../BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_session_selector_consumer_widgets_contract.md`](../BODAQS_session_selector_consumer_widgets_contract.md)
 
 ### Step 4. Iterate on the schema revision
 
 - **Inputs:** edits to the schema YAML and reruns of the preprocessing/browser cells.
 - **Outputs:** repeatable schema-tuning feedback against a known CSV.
 - **Persisted artifacts:** each rerun creates a fresh `run_id` under `analysis/artifacts/runs/`; this notebook intentionally does not reuse the preprocess selector SHA cache.
-- **Contracts / documentation:** [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md)
-
-## Summary
-
-In the current workflow, the notebooks fit together as follows:
-
-1. Use [`bodaqs_batch_preprocessing_pipeline.ipynb`](../bodaqs_batch_preprocessing_pipeline.ipynb) or [`bodaqs_event_schema_test_harness.ipynb`](../bodaqs_event_schema_test_harness.ipynb) to produce canonical artifacts.
-2. Use [`BODAQS_library_manager.ipynb`](../BODAQS_library_manager.ipynb) to curate descriptions, notes, and aggregations around those artifacts.
-3. Use the dashboard and widget notebooks to consume the artifact library:
-   - [`BODAQS_simple_suspension_metrics.ipynb`](../BODAQS_simple_suspension_metrics.ipynb)
-   - [`BODAQS_simple_suspension_metrics_persisted_scope.ipynb`](../BODAQS_simple_suspension_metrics_persisted_scope.ipynb)
-   - [`bodaqs_widget_test_notebook.ipynb`](../bodaqs_widget_test_notebook.ipynb)
-   - [`bodaqs_session_test_notebook.ipynb`](../bodaqs_session_test_notebook.ipynb)
-
-That division is one of the clearer design choices in the current analysis folder: artifacts are the stable handoff between notebooks, while local per-user files hold notebook convenience state such as selections and bookmarks.
+- **Contracts / documentation:** [`BODAQS_analysis_artifacts_specification_v0_2.md`](../BODAQS_analysis_artifacts_specification_v0_2.md)
