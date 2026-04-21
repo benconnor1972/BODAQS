@@ -20,6 +20,11 @@ static const unsigned long HOLD_THRESHOLD_MS = 800;  // long-press threshold
 void ButtonManager_setPollingEnabled(bool enabled) { s_pollingEnabled = enabled; }
 void ButtonManager_setPollIntervalMs(uint32_t ms)  { s_pollIntervalMs = ms ? ms : 1; }
 void ButtonManager_setPressActivityCallback(ButtonActivityCallback cb) { s_pressActivityCb = cb; }
+void ButtonManager_setDebounceAll(unsigned long debounceDelay) {
+  for (int i = 0; i < buttonCount; ++i) {
+    buttons[i].debounceDelay = debounceDelay;
+  }
+}
 
 
 // Per-button hold tracking (kept here to avoid changing the header)

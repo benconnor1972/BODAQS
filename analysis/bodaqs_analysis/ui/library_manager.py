@@ -225,9 +225,9 @@ def make_library_manager(
         layout=W.Layout(width="520px"),
     )
     b_refresh = W.Button(description="Refresh")
-    sessions_sel = W.Select(
+    sessions_sel = W.SelectMultiple(
         options=[],
-        value=None,
+        value=(),
         rows=rows,
         description="Sessions",
         layout=W.Layout(display="none"),
@@ -303,6 +303,22 @@ def make_library_manager(
     )
     metadata_html = W.HTML()
     fields_box = W.VBox()
+    save_confirm_html = W.HTML()
+    b_confirm_save_note = W.Button(description="Confirm save", button_style="warning")
+    b_cancel_save_note = W.Button(description="Cancel")
+    save_confirm_box = W.VBox(
+        [
+            save_confirm_html,
+            W.HBox([b_confirm_save_note, b_cancel_save_note]),
+        ],
+        layout=W.Layout(
+            display="none",
+            width=NOTE_INPUT_WIDTH,
+            border="1px solid #f59e0b",
+            padding="8px",
+            margin=f"0 0 0 {NOTE_LABEL_WIDTH}",
+        ),
+    )
     status_out = W.Output(layout=W.Layout(width="100%"))
 
     run_manifest_out = W.Output(layout=W.Layout(width="100%", max_height="240px", overflow="auto"))
@@ -332,6 +348,9 @@ def make_library_manager(
         "updating": False,
         "syncing_grid": False,
         "syncing_hidden": False,
+        "pending_note_save_session_keys": (),
+        "editor_staged": False,
+        "editor_source_session_key": None,
     }
 
     def _status(lines: Sequence[str]) -> None:
@@ -340,11 +359,62 @@ def make_library_manager(
             for line in lines:
                 print(line)
 
+    def _clear_save_confirmation() -> None:
+        state["pending_note_save_session_keys"] = ()
+        save_confirm_html.value = ""
+        save_confirm_box.layout.display = "none"
+
+    def _show_save_confirmation(lines: Sequence[str], session_keys: Sequence[str]) -> None:
+        html_lines = [html.escape(str(line)) for line in lines]
+        save_confirm_html.value = (
+            "<div style='font-size:0.95em;line-height:1.45'>"
+            + "<br>".join(html_lines)
+            + "</div>"
+        )
+        state["pending_note_save_session_keys"] = tuple(map(str, session_keys))
+        save_confirm_box.layout.display = "flex"
+
+    def _rows_from_session_keys(session_keys: Sequence[str]) -> list[Mapping[str, Any]]:
+        rows: list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        for session_key in session_keys:
+            key = str(session_key)
+            if not key or key in seen:
+                continue
+            row = state["session_key_to_row"].get(key)
+            if row is None:
+                continue
+            seen.add(key)
+            rows.append(row)
+        return rows
+
+    def _selected_session_keys() -> tuple[str, ...]:
+        keys: list[str] = []
+        seen: set[str] = set()
+        for label in tuple(map(str, sessions_sel.value or ())):
+            key = state["label_to_session_key"].get(label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            keys.append(key)
+        return tuple(keys)
+
+    def _selected_rows() -> list[Mapping[str, Any]]:
+        return _rows_from_session_keys(_selected_session_keys())
+
     def _selected_row() -> Mapping[str, Any] | None:
-        key = state["label_to_session_key"].get(str(sessions_sel.value or ""))
-        if not key:
+        rows = _selected_rows()
+        if not rows:
             return None
-        return state["session_key_to_row"].get(key)
+        return rows[0]
+
+    def _editor_source_row() -> Mapping[str, Any] | None:
+        session_key = str(state.get("editor_source_session_key") or "")
+        if session_key:
+            row = state["session_key_to_row"].get(session_key)
+            if row is not None:
+                return row
+        return _selected_row()
 
     def _selected_ids() -> tuple[str, str] | None:
         row = _selected_row()
@@ -395,9 +465,10 @@ def make_library_manager(
                 }
             )
 
-        previous = str(sessions_sel.value or "")
+        previous = tuple(map(str, sessions_sel.value or ()))
         sessions_sel.options = options
-        sessions_sel.value = previous if previous in label_to_session_key else (options[0] if options else None)
+        kept = tuple(label for label in previous if label in label_to_session_key)
+        sessions_sel.value = kept if kept else ((options[0],) if options else ())
         grid_df = pd.DataFrame.from_records(
             rows_data,
             columns=[
@@ -421,7 +492,9 @@ def make_library_manager(
         state["grid_index_to_label"] = {idx: label for idx, label in enumerate(options)}
         _sync_grid_from_hidden()
 
-    def _selected_label_from_grid() -> str | None:
+    def _selected_labels_from_grid() -> tuple[str, ...]:
+        labels: list[str] = []
+        seen: set[str] = set()
         visible_df = session_grid.get_visible_data()
         for rect in list(session_grid.selections or []):
             row_start = int(rect.get("r1", -1))
@@ -431,43 +504,59 @@ def make_library_manager(
             for row_pos in range(row_start, row_end + 1):
                 if row_pos < 0 or row_pos >= len(visible_df.index):
                     continue
-                return state["grid_index_to_label"].get(int(visible_df.index[row_pos]))
-        return None
+                label = state["grid_index_to_label"].get(int(visible_df.index[row_pos]))
+                if not label or label in seen:
+                    continue
+                seen.add(label)
+                labels.append(label)
+        return tuple(labels)
 
     def _sync_hidden_from_grid(*_) -> None:
         if state["syncing_grid"]:
             return
         state["syncing_hidden"] = True
         try:
-            sessions_sel.value = _selected_label_from_grid()
+            sessions_sel.value = _selected_labels_from_grid()
         finally:
             state["syncing_hidden"] = False
 
     def _sync_grid_from_hidden(*_) -> None:
         if state["syncing_hidden"]:
             return
-        selected_label = str(sessions_sel.value or "")
+        selected_labels = set(map(str, sessions_sel.value or ()))
         visible_df = session_grid.get_visible_data()
         state["syncing_grid"] = True
         try:
             session_grid.clear_selection()
-            if visible_df.empty or not selected_label:
+            if visible_df.empty or not selected_labels:
                 return
             last_col = max(0, len(visible_df.columns) - 1)
             for row_pos in range(len(visible_df.index)):
                 label = state["grid_index_to_label"].get(int(visible_df.index[row_pos]))
-                if label == selected_label:
-                    session_grid.select(row_pos, 0, row_pos, last_col, clear_mode="all")
-                    return
+                if label in selected_labels:
+                    session_grid.select(row_pos, 0, row_pos, last_col, clear_mode="none")
         finally:
             state["syncing_grid"] = False
 
-    def _render_metadata(run_id: str, session_id: str, row: Mapping[str, Any], note: SessionNoteDocument | None) -> None:
+    def _render_metadata(
+        run_id: str,
+        session_id: str,
+        row: Mapping[str, Any],
+        note: SessionNoteDocument | None,
+        *,
+        selected_count: int,
+    ) -> None:
         note_part = "None"
         if note is not None:
             note_part = f"{note.template_id}@{note.template_version} | updated {note.updated_at_utc}"
+        selected_part = (
+            f"<b>Selected sessions:</b> {selected_count}<br>"
+            if selected_count > 1
+            else ""
+        )
         metadata_html.value = (
             "<div style='font-family:monospace'>"
+            f"{selected_part}"
             f"<b>Run:</b> {html.escape(str(run_id))}<br>"
             f"<b>Session:</b> {html.escape(str(session_id))}<br>"
             f"<b>Created:</b> {html.escape(str(row.get('created_at') or ''))}<br>"
@@ -549,7 +638,26 @@ def make_library_manager(
             )
 
     def _refresh_editor(*_) -> None:
+        _clear_save_confirmation()
+        selected_rows = _selected_rows()
+        selected_count = len(selected_rows)
         row = _selected_row()
+        source_row = _editor_source_row()
+        source_session_key = "" if source_row is None else str(source_row["session_key"])
+        selected_session_key = "" if row is None else str(row["session_key"])
+        if (
+            state["editor_staged"]
+            and source_row is not None
+            and (selected_count != 1 or selected_session_key != source_session_key)
+        ):
+            _render_metadata(
+                str(source_row["run_id"]),
+                str(source_row["session_id"]),
+                source_row,
+                state.get("current_note"),
+                selected_count=selected_count,
+            )
+            return
         if not row:
             metadata_html.value = "<i>No session selected.</i>"
             fields_box.children = ()
@@ -559,6 +667,8 @@ def make_library_manager(
             w_custom_json.value = "{}"
             w_free_text.value = ""
             state["current_note"] = None
+            state["editor_staged"] = False
+            state["editor_source_session_key"] = None
             return
 
         run_id = str(row["run_id"])
@@ -603,7 +713,15 @@ def make_library_manager(
             state["field_defs"] = {}
             state["field_widgets"] = {}
 
-        _render_metadata(run_id, session_id, row, note)
+        state["editor_staged"] = False
+        state["editor_source_session_key"] = str(row["session_key"])
+        _render_metadata(
+            run_id,
+            session_id,
+            row,
+            note,
+            selected_count=selected_count,
+        )
 
     def _refresh_all(*_) -> None:
         template_errors = template_store.template_load_errors()
@@ -625,6 +743,7 @@ def make_library_manager(
     def _on_template_change(change: Mapping[str, Any]) -> None:
         if state["updating"]:
             return
+        _clear_save_confirmation()
         new_value = str(change.get("new") or "")
         if not new_value:
             return
@@ -637,18 +756,26 @@ def make_library_manager(
                 template,
                 use_template_defaults=False,
             )
+            source_row = _editor_source_row()
+            state["editor_staged"] = True
+            state["editor_source_session_key"] = None if source_row is None else str(source_row["session_key"])
             return
         _load_note_into_controls(
             None,
             template,
             use_template_defaults=False,
         )
+        source_row = _editor_source_row()
+        state["editor_staged"] = True
+        state["editor_source_session_key"] = None if source_row is None else str(source_row["session_key"])
 
     def _on_select(_):
         _refresh_editor()
 
     def _on_save_descriptions(_):
+        _clear_save_confirmation()
         ids = _selected_ids()
+        selected_count = len(_selected_rows())
         if ids is None:
             _status(["Select a session before saving descriptions."])
             return
@@ -665,7 +792,10 @@ def make_library_manager(
             description=_coerce_text_value(w_session_desc.value),
         )
         _refresh_all()
-        _status([f"Saved run/session descriptions for {run_id}::{session_id}."])
+        lines = [f"Saved run/session descriptions for {run_id}::{session_id}."]
+        if selected_count > 1:
+            lines.append(f"{selected_count} sessions are selected; descriptions apply to the active session only.")
+        _status(lines)
 
     def _selected_template() -> SessionNoteTemplate | None:
         value = str(w_template.value or "")
@@ -693,7 +823,9 @@ def make_library_manager(
         return {str(k): v for k, v in obj.items()}
 
     def _on_load_note(_):
+        _clear_save_confirmation()
         row = _selected_row()
+        selected_count = len(_selected_rows())
         if not row:
             _status(["Select a session before loading a note."])
             return
@@ -712,12 +844,25 @@ def make_library_manager(
             template,
             use_template_defaults=False,
         )
-        _render_metadata(str(row["run_id"]), str(row["session_id"]), row, note)
-        _status([f"Loaded note for {row['session_key']}."])
+        state["editor_staged"] = True
+        state["editor_source_session_key"] = str(row["session_key"])
+        _render_metadata(
+            str(row["run_id"]),
+            str(row["session_id"]),
+            row,
+            note,
+            selected_count=selected_count,
+        )
+        lines = [f"Loaded note for active session {row['session_key']}."]
+        if selected_count > 1:
+            lines.append(f"Save note will apply the current editor contents to {selected_count} selected sessions.")
+        _status(lines)
 
     def _on_new_note(_):
+        _clear_save_confirmation()
         ids = _selected_ids()
         template = _selected_template()
+        selected_count = len(_selected_rows())
         if ids is None:
             _status(["Select a session before creating a note."])
             return
@@ -736,41 +881,130 @@ def make_library_manager(
             template,
             use_template_defaults=True,
         )
-        _status([f"Prepared new note for {run_id}::{session_id} from {template.template_id}@{template.template_version}."])
+        state["editor_staged"] = True
+        state["editor_source_session_key"] = str(run_id) + "::" + str(session_id)
+        lines = [
+            f"Prepared new note for active session {run_id}::{session_id} from {template.template_id}@{template.template_version}."
+        ]
+        if selected_count > 1:
+            lines.append(f"Save note will apply the current editor contents to {selected_count} selected sessions.")
+        _status(lines)
+
+    def _save_note_to_rows(rows: Sequence[Mapping[str, Any]]) -> None:
+        template = state.get("current_template")
+        if template is None:
+            _status(["No note template is selected."])
+            return
+        try:
+            note_values = _collect_note_values()
+            custom_values = _parse_custom_values()
+            free_text_notes = _coerce_text_value(w_free_text.value)
+            title = _coerce_text_value(w_note_title.value)
+        except Exception as exc:
+            _status([f"Failed to save note: {exc}"])
+            return
+
+        source_session_key = str(state.get("editor_source_session_key") or "")
+        saved_source: SessionNoteDocument | None = None
+        overwrite_count = 0
+
+        try:
+            for row in rows:
+                run_id = str(row["run_id"])
+                session_id = str(row["session_id"])
+                session_key = str(row["session_key"])
+                existing = note_store.load_note(run_id=run_id, session_id=session_id)
+                if existing is not None:
+                    overwrite_count += 1
+                note = existing
+                if (
+                    note is None
+                    or note.template_id != template.template_id
+                    or note.template_version != template.template_version
+                ):
+                    note = note_store.create_note_from_template(
+                        run_id=run_id,
+                        session_id=session_id,
+                        template_id=template.template_id,
+                        template_version=template.template_version,
+                    )
+                updated = note_store.update_note(
+                    note,
+                    values=note_values,
+                    custom_values=custom_values,
+                    free_text_notes=free_text_notes,
+                    title=title,
+                    replace_values=True,
+                )
+                saved = note_store.save_note(updated)
+                if source_session_key and session_key == source_session_key:
+                    saved_source = saved
+        except Exception as exc:
+            _status([f"Failed to save note: {exc}"])
+            return
+
+        state["current_note"] = saved_source if saved_source is not None else state.get("current_note")
+        state["editor_staged"] = True
+        _refresh_all()
+        lines = [f"Saved session note to {len(rows)} session(s)."]
+        if overwrite_count > 0:
+            lines.append(f"Overwrote existing notes for {overwrite_count} session(s).")
+        _status(lines)
 
     def _on_save_note(_):
-        ids = _selected_ids()
+        _clear_save_confirmation()
+        rows = _selected_rows()
         template = state.get("current_template")
-        if ids is None:
+        if not rows:
             _status(["Select a session before saving a note."])
             return
         if template is None:
             _status(["No note template is selected."])
             return
-        run_id, session_id = ids
-        note = state.get("current_note")
-        if note is None or note.template_id != template.template_id or note.template_version != template.template_version:
-            note = note_store.create_note_from_template(
-                run_id=run_id,
-                session_id=session_id,
-                template_id=template.template_id,
-                template_version=template.template_version,
-            )
         try:
-            updated = note_store.update_note(
-                note,
-                values=_collect_note_values(),
-                custom_values=_parse_custom_values(),
-                free_text_notes=_coerce_text_value(w_free_text.value),
-                title=_coerce_text_value(w_note_title.value),
-            )
-            saved = note_store.save_note(updated)
+            _collect_note_values()
+            _parse_custom_values()
         except Exception as exc:
             _status([f"Failed to save note: {exc}"])
             return
-        state["current_note"] = saved
-        _refresh_all()
-        _status([f"Saved session note for {run_id}::{session_id}."])
+
+        overwrite_session_keys: list[str] = []
+        for row in rows:
+            existing = note_store.load_note(
+                run_id=str(row["run_id"]),
+                session_id=str(row["session_id"]),
+            )
+            if existing is not None:
+                overwrite_session_keys.append(str(row["session_key"]))
+
+        if len(rows) > 1 or overwrite_session_keys:
+            lines = [f"This will save the current editor note to {len(rows)} selected session(s)."]
+            if overwrite_session_keys:
+                lines.append(f"Existing notes will be overwritten for {len(overwrite_session_keys)} session(s).")
+                preview = ", ".join(overwrite_session_keys[:3])
+                if preview:
+                    suffix = " ..." if len(overwrite_session_keys) > 3 else ""
+                    lines.append(f"Overwrite targets: {preview}{suffix}")
+            lines.append("Click Confirm save to continue, or Cancel to keep editing.")
+            _show_save_confirmation(
+                lines,
+                [str(row["session_key"]) for row in rows],
+            )
+            return
+
+        _save_note_to_rows(rows)
+
+    def _on_confirm_save_note(_):
+        rows = _rows_from_session_keys(state["pending_note_save_session_keys"])
+        _clear_save_confirmation()
+        if not rows:
+            _status(["Select a session before saving a note."])
+            return
+        _save_note_to_rows(rows)
+
+    def _on_cancel_save_note(_):
+        _clear_save_confirmation()
+        _status(["Cancelled note save."])
 
     w_template.observe(_on_template_change, names="value")
     sessions_sel.observe(_on_select, names="value")
@@ -781,6 +1015,8 @@ def make_library_manager(
     b_load_note.on_click(_on_load_note)
     b_new_note.on_click(_on_new_note)
     b_save_note.on_click(_on_save_note)
+    b_confirm_save_note.on_click(_on_confirm_save_note)
+    b_cancel_save_note.on_click(_on_cancel_save_note)
     w_filter.observe(_refresh_session_options, names="value")
 
     session_controls = W.HBox([w_filter, b_refresh])
@@ -806,6 +1042,7 @@ def make_library_manager(
         [
             W.HTML("<div style='font-size:1.15em;font-weight:700'>Session note</div>"),
             note_controls,
+            save_confirm_box,
             w_note_title,
             fields_box,
             w_custom_json,

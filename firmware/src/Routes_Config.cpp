@@ -1,6 +1,7 @@
 #include "Routes_Config.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <string.h>
 
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
@@ -11,6 +12,10 @@
 #include "WiFiManager.h"
 #include "PowerManager.h"
 #include "WebServerManager.h"  // for canStart()
+#include "StorageManager.h"
+#include "ButtonActions.h"
+#include "ButtonBindingTable.h"
+#include "ButtonManager.h"
 #include "BoardSelect.h" 
 #include "TransformRegistry.h"
 #include "DebugLog.h"
@@ -28,6 +33,96 @@ static String fmtIPv4(const uint8_t a[4]) {
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
   PowerManager::noteActivity();
+}
+
+static void applyLogSettingsLive_(const LoggerConfig& cfg) {
+  Log_setEnabled(true);
+  Log_resetLevel();
+  if (cfg.logLevelOverride <= LOG_TRACE) {
+    Log_setLevel((LogLevel)cfg.logLevelOverride);
+  }
+}
+
+static void reloadTransformsForSensor_(const char* sensorName) {
+  if (!sensorName || !*sensorName) return;
+
+  if (SD_MMC.cardType() != CARD_NONE) {
+    gTransforms.loadForSensor(sensorName, SD_MMC);
+    return;
+  }
+
+  if (SdFs* sd = StorageManager_getSd()) {
+    gTransforms.loadForSensor(sensorName, *sd);
+  }
+}
+
+static String transformLabelForSelected_(const char* sensorName, const String& selectedId) {
+  if (!sensorName || !*sensorName) return String();
+
+  String trimmed = selectedId;
+  trimmed.trim();
+  if (!trimmed.length()) return String();
+
+  for (const auto& meta : gTransforms.list(sensorName)) {
+    if (meta.id == trimmed) return String(meta.label);
+  }
+  return String();
+}
+
+static Sensor* findLiveSensorByName_(const char* name) {
+  if (!name || !*name) return nullptr;
+
+  for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+    Sensor* s = SensorManager::get(j);
+    if (s && String(s->name()) == String(name)) return s;
+  }
+  return nullptr;
+}
+
+static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const SensorSpec& sp) {
+  Sensor* live = findLiveSensorByName_(lookupName);
+  if (!live && lookupName && strcmp(lookupName, sp.name) != 0) {
+    live = findLiveSensorByName_(sp.name);
+  }
+  if (!live) return false;
+  if (!live->reconfigureFromSpec(sp)) return false;
+
+  live->setMuted(sp.mutedDefault);
+
+  long om = 0;
+  sp.params.getInt("output_mode", om);
+  const OutputMode mode = (OutputMode)om;
+  live->setOutputMode(mode);
+
+  bool inc = false;
+  sp.params.getBool("include_raw", inc);
+  live->setIncludeRaw(inc);
+
+  String selId;
+  sp.params.get("output_id", selId);
+  selId.trim();
+
+  reloadTransformsForSensor_(live->name());
+  if (mode == OutputMode::RAW) {
+    live->setSelectedTransformId("identity");
+  } else {
+    live->setSelectedTransformId(selId);
+  }
+  live->attachTransform(gTransforms);
+
+  if (mode == OutputMode::RAW) {
+    live->setOutputUnitsLabel("counts");
+  } else if (mode == OutputMode::LINEAR) {
+    String explicitLabel;
+    sp.params.get("units_label", explicitLabel);
+    live->setOutputUnitsLabel(explicitLabel.c_str());
+  } else {
+    const String label = transformLabelForSelected_(live->name(), live->selectedTransformId());
+    live->setOutputUnitsLabel(label.c_str());
+  }
+
+  live->setAllowedCalMask(ConfigManager::calAllowedMaskByIndex(idx));
+  return true;
 }
 
 static void appendTopNav(String& html, const char* active) {
@@ -815,6 +910,8 @@ void registerConfigRoutes(WebServer& srv) {
     for (uint8_t idx = 0; idx < count; ++idx) {
       SensorSpec sp;
       if (!current.getSensorSpec(idx, sp)) continue;
+      char lookupName[sizeof(sp.name)] = {0};
+      strncpy(lookupName, sp.name, sizeof(lookupName) - 1);
 
       const String pfx = String("s") + idx + ".";
 
@@ -1044,54 +1141,18 @@ void registerConfigRoutes(WebServer& srv) {
       ConfigManager::setSensorHeaderByIndex(idx, sp);
 
       // Push changes into the live sensor (so they take effect immediately)
-      Sensor* live = nullptr;
-      for (uint8_t j = 0; j < SensorManager::count(); ++j) {
-        Sensor* s = SensorManager::get(j);
-        if (s && String(s->name()) == String(sp.name)) { live = s; break; }
-      }
-      if (live && !typeChanged) {
-        // muted
-        live->setMuted(sp.mutedDefault);
-
-        // output mode / include_raw
-        long om = 0; sp.params.getInt("output_mode", om);
-        live->setOutputMode((OutputMode)om);
-
-        bool inc = false; sp.params.getBool("include_raw", inc);
-        live->setIncludeRaw(inc);
-
-        // units label for the primary column
-        String u; sp.params.get("units_label", u);
-        if ((OutputMode)om == OutputMode::RAW) u = "counts";
-        live->setOutputUnitsLabel(u.c_str());
-
-        // If output_mode changed, re-attach transform + units label policy
-        bool omChanged = false, idChanged = false;
-        sp.params.getBool("__om_changed", omChanged);
-        sp.params.getBool("__id_changed", idChanged);
-        if (omChanged || idChanged) {
-          // NOTE: Transform reload and selection are handled in the Transforms routes.
-          // Here we just refresh units label according to current selection stored in params.
-          String selId; 
-          sp.params.get("output_id", selId); 
-          selId.trim();
-          live->setSelectedTransformId(selId);
-          live->attachTransform(gTransforms);
-
-          if ((OutputMode)om == OutputMode::RAW) {
-            live->setOutputUnitsLabel("counts");
-          } else if ((OutputMode)om == OutputMode::LINEAR) {
-            String explicitLabel; sp.params.get("units_label", explicitLabel);
-            live->setOutputUnitsLabel(explicitLabel.c_str());
-          } else {
+      if (!typeChanged && !applyLiveSensorSpec_(idx, lookupName, sp)) {
+        WEB_LOGW("live apply skipped for sensor %u ('%s')\n",
+                 (unsigned)idx,
+                 lookupName[0] ? lookupName : sp.name);
             // POLY/LUT: leave label to transform’s metadata (set via Transforms route)
-          }
-        }
       }
     }
-  
 
-    ConfigManager::save(tmp);
+    if (!ConfigManager::save(tmp)) {
+      srv.send(500, F("text/plain"), F("Failed to save config"));
+      return;
+    }
     String location = "/config/sensors?ok=1";
     if (applyTypeIdx >= 0) {
       location += "#sensor-";
@@ -1170,7 +1231,12 @@ void registerConfigRoutes(WebServer& srv) {
 
     tmp.buttonBindingCount = newBindingCount;
 
-    ConfigManager::save(tmp);
+    if (!ConfigManager::save(tmp)) {
+      srv.send(500, F("text/plain"), F("Failed to save config"));
+      return;
+    }
+    ButtonActions::reloadBindingsFromConfig(ConfigManager::get());
+    ButtonBindingTable::initFromConfig(ConfigManager::get());
     srv.sendHeader("Location", "/config/buttons?ok=1");
     srv.send(303, F("text/plain"), F("Saved"));
   });
@@ -1362,8 +1428,17 @@ void registerConfigRoutes(WebServer& srv) {
     // ---------- Persist full config ----------
     // Debug aid for saving tmp bindings count if needed later.
               
-    ConfigManager::save(tmp);           // writes file and updates active config
-    RTCManager_setHumanReadable(tmp.timestampHuman);
+    if (!ConfigManager::save(tmp)) {
+      srv.send(500, F("text/plain"), F("Failed to save config"));
+      return;
+    }
+
+    const LoggerConfig& liveCfg = ConfigManager::get();
+    StorageManager_setSampleRate(liveCfg.sampleRateHz);
+    RTCManager_setHumanReadable(liveCfg.timestampHuman);
+    RTCManager_setTimezone(liveCfg.tz);
+    applyLogSettingsLive_(liveCfg);
+    ButtonManager_setDebounceAll(liveCfg.debounceMs);
     //ConfigManager::debugDumpConfigFile();
 
     // Redirect back to GET with ok=1

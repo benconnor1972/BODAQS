@@ -4,6 +4,47 @@
 #include <math.h>
 
 #include "SensorRegistry.h"
+#include "BoardSelect.h"
+
+namespace {
+
+void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
+                         const char* instanceName,
+                         const ParamPack& params) {
+  p.name = instanceName ? instanceName : "as5600";
+
+  long li = 0;
+  bool b = false;
+  double d = 0.0;
+  String s;
+
+  if (params.getInt("pin", li))                    p.pin = (uint8_t)li;
+  if (params.getBool("invert", b))                 p.invert = b;
+  if (params.getFloat("ema_alpha", d))             p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
+  if (params.getInt("deadband", li))               p.deadbandCounts = (uint16_t)li;
+  if (params.getInt("counts_per_turn", li))        p.countsPerTurn = (uint16_t)li;
+  if (params.getInt("wrap_threshold_counts", li))  p.wrapThresholdCounts = (uint16_t)li;
+  if (params.getInt("sensor_zero_count", li))      p.sensorZeroCount = (int32_t)li;
+  if (params.getInt("sensor_full_count", li))      p.sensorFullCount = (int32_t)li;
+  if (params.getFloat("sensor_full_travel_mm", d)) p.sensorFullTravelMm = (float)d;
+  if (params.getInt("installed_zero_count", li))   p.installedZeroCount = (int32_t)li;
+  if (params.getBool("assume_turn0_at_start", b))  p.assumeTurn0AtStart = b;
+  if (params.getBool("include_raw", b))            p.includeRawColumn = b;
+  if (params.get("units_label", s))                s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+
+  long ain = -1;
+  if (params.getInt("ain", ain) && board::gBoard) {
+    const auto& bp = *board::gBoard;
+    if (ain >= 0 && ain < (long)bp.analog.count) {
+      const int pin = bp.analog.pins[(uint8_t)ain];
+      if (pin >= 0) {
+        p.pin = (uint8_t)pin;
+      }
+    }
+  }
+}
+
+} // namespace
 
 AS5600StringPotAnalog::AS5600StringPotAnalog(const Params& p)
   : AS5600StringPotSensorBase(p),
@@ -13,6 +54,18 @@ AS5600StringPotAnalog::AS5600StringPotAnalog(const Params& p)
 void AS5600StringPotAnalog::begin() {
   pinMode(m_pin, INPUT);
   onLoggingStart();
+}
+
+bool AS5600StringPotAnalog::reconfigureFromSpec(const SensorSpec& spec) {
+  if (spec.type != SensorType::AS5600StringPotAnalog) return false;
+
+  Params p;
+  loadParamsFromPack_(p, spec.name, spec.params);
+  applyBaseParams(p);
+  m_pin = p.pin;
+  pinMode(m_pin, INPUT);
+  onLoggingStart();
+  return true;
 }
 
 int AS5600StringPotAnalog::readWrappedCountsOnce() const {
@@ -43,26 +96,7 @@ const ParamDef* AS5600StringPotAnalog::paramDefs(size_t& count) {
 
 Sensor* AS5600StringPotAnalog::create(const char* instanceName, const ParamPack& params, bool mutedDefault) {
   Params p;
-  p.name = instanceName ? instanceName : "as5600";
-
-  long li = 0;
-  bool b = false;
-  double d = 0.0;
-  String s;
-
-  if (params.getInt("pin", li))                    p.pin = (uint8_t)li;
-  if (params.getBool("invert", b))                 p.invert = b;
-  if (params.getFloat("ema_alpha", d))             p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
-  if (params.getInt("deadband", li))               p.deadbandCounts = (uint16_t)li;
-  if (params.getInt("counts_per_turn", li))        p.countsPerTurn = (uint16_t)li;
-  if (params.getInt("wrap_threshold_counts", li))  p.wrapThresholdCounts = (uint16_t)li;
-  if (params.getInt("sensor_zero_count", li))      p.sensorZeroCount = (int32_t)li;
-  if (params.getInt("sensor_full_count", li))      p.sensorFullCount = (int32_t)li;
-  if (params.getFloat("sensor_full_travel_mm", d)) p.sensorFullTravelMm = (float)d;
-  if (params.getInt("installed_zero_count", li))   p.installedZeroCount = (int32_t)li;
-  if (params.getBool("assume_turn0_at_start", b))  p.assumeTurn0AtStart = b;
-  if (params.getBool("include_raw", b))            p.includeRawColumn = b;
-  if (params.get("units_label", s))                s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+  loadParamsFromPack_(p, instanceName, params);
 
   auto* obj = new AS5600StringPotAnalog(p);
   obj->setMuted(mutedDefault);

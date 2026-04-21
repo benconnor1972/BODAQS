@@ -10,7 +10,37 @@
 
 #define AS5600I2C_LOGW(...) LOGW_TAG("AS5600", __VA_ARGS__)
 
-namespace { static constexpr uint8_t kAs5600RawAngleReg = 0x0C; }
+namespace {
+
+static constexpr uint8_t kAs5600RawAngleReg = 0x0C;
+
+void loadParamsFromPack_(AS5600StringPotI2C::Params& p,
+                         const char* instanceName,
+                         const ParamPack& params) {
+  p.name = instanceName ? instanceName : "as5600_i2c";
+
+  long li = 0;
+  bool b = false;
+  double d = 0.0;
+  String s;
+
+  if (params.getInt("i2c_bus", li))                  p.busIndex = (li < 0) ? 0u : (uint8_t)li;
+  if (params.getInt("i2c_addr", li))                 p.i2cAddr = (li <= 0) ? 0x36u : (uint8_t)li;
+  if (params.getBool("invert", b))                   p.invert = b;
+  if (params.getFloat("ema_alpha", d))               p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
+  if (params.getInt("deadband", li))                 p.deadbandCounts = (uint16_t)li;
+  if (params.getInt("counts_per_turn", li))          p.countsPerTurn = (uint16_t)li;
+  if (params.getInt("wrap_threshold_counts", li))    p.wrapThresholdCounts = (uint16_t)li;
+  if (params.getInt("sensor_zero_count", li))        p.sensorZeroCount = (int32_t)li;
+  if (params.getInt("sensor_full_count", li))        p.sensorFullCount = (int32_t)li;
+  if (params.getFloat("sensor_full_travel_mm", d))   p.sensorFullTravelMm = (float)d;
+  if (params.getInt("installed_zero_count", li))     p.installedZeroCount = (int32_t)li;
+  if (params.getBool("assume_turn0_at_start", b))    p.assumeTurn0AtStart = b;
+  if (params.getBool("include_raw", b))              p.includeRawColumn = b;
+  if (params.get("units_label", s))                  s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+}
+
+} // namespace
 
 AS5600StringPotI2C::AS5600StringPotI2C(const Params& p)
   : AS5600StringPotSensorBase(p),
@@ -34,6 +64,18 @@ void AS5600StringPotI2C::begin() {
   }
 
   onLoggingStart();
+}
+
+bool AS5600StringPotI2C::reconfigureFromSpec(const SensorSpec& spec) {
+  if (spec.type != SensorType::AS5600StringPotI2C) return false;
+
+  Params p;
+  loadParamsFromPack_(p, spec.name, spec.params);
+  applyBaseParams(p);
+  m_busIndex = p.busIndex;
+  m_i2cAddr = p.i2cAddr ? p.i2cAddr : 0x36;
+  begin();
+  return true;
 }
 
 bool AS5600StringPotI2C::probe_() const {
@@ -137,27 +179,7 @@ const ParamDef* AS5600StringPotI2C::paramDefs(size_t& count) {
 
 Sensor* AS5600StringPotI2C::create(const char* instanceName, const ParamPack& params, bool mutedDefault) {
   Params p;
-  p.name = instanceName ? instanceName : "as5600_i2c";
-
-  long li = 0;
-  bool b = false;
-  double d = 0.0;
-  String s;
-
-  if (params.getInt("i2c_bus", li))                  p.busIndex = (li < 0) ? 0u : (uint8_t)li;
-  if (params.getInt("i2c_addr", li))                 p.i2cAddr = (li <= 0) ? 0x36u : (uint8_t)li;
-  if (params.getBool("invert", b))                   p.invert = b;
-  if (params.getFloat("ema_alpha", d))               p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
-  if (params.getInt("deadband", li))                 p.deadbandCounts = (uint16_t)li;
-  if (params.getInt("counts_per_turn", li))          p.countsPerTurn = (uint16_t)li;
-  if (params.getInt("wrap_threshold_counts", li))    p.wrapThresholdCounts = (uint16_t)li;
-  if (params.getInt("sensor_zero_count", li))        p.sensorZeroCount = (int32_t)li;
-  if (params.getInt("sensor_full_count", li))        p.sensorFullCount = (int32_t)li;
-  if (params.getFloat("sensor_full_travel_mm", d))   p.sensorFullTravelMm = (float)d;
-  if (params.getInt("installed_zero_count", li))     p.installedZeroCount = (int32_t)li;
-  if (params.getBool("assume_turn0_at_start", b))    p.assumeTurn0AtStart = b;
-  if (params.getBool("include_raw", b))              p.includeRawColumn = b;
-  if (params.get("units_label", s))                  s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+  loadParamsFromPack_(p, instanceName, params);
 
   auto* obj = new AS5600StringPotI2C(p);
   obj->setMuted(mutedDefault);

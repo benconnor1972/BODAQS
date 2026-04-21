@@ -6,6 +6,23 @@
 
 #include "ConfigManager.h"
 
+namespace {
+
+void writeColumnLabel_(const char* name, const char* units, char* out, size_t cap) {
+  if (!out || cap < 2) return;
+  out[0] = '\0';
+
+  String s = name ? String(name) : String();
+  if (units && units[0]) {
+    s += " [";
+    s += units;
+    s += "]";
+  }
+  s.toCharArray(out, cap);
+}
+
+} // namespace
+
 AS5600StringPotSensorBase::AS5600StringPotSensorBase(const BaseParams& p) {
   applyBaseParams(p);
 }
@@ -33,13 +50,9 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
   m_assumeTurn0AtStart = p.assumeTurn0AtStart;
   m_includeRaw = p.includeRawColumn;
 
-  if (p.unitsLabel[0]) {
-    strncpy(m_unitsLabel, p.unitsLabel, sizeof(m_unitsLabel) - 1);
-    m_unitsLabel[sizeof(m_unitsLabel) - 1] = '\0';
-  } else {
-    strcpy(m_unitsLabel, "mm");
-  }
-  setOutputUnitsLabel(m_unitsLabel);
+  strncpy(m_unitsLabel, p.unitsLabel, sizeof(m_unitsLabel) - 1);
+  m_unitsLabel[sizeof(m_unitsLabel) - 1] = '\0';
+  Sensor::setOutputUnitsLabel(m_unitsLabel);
   recomputeScale();
   resetTrackingState(m_assumeTurn0AtStart);
 }
@@ -163,16 +176,13 @@ void AS5600StringPotSensorBase::getColumnName(uint8_t idx, char* out, size_t cap
       String s = String(name()) + "_raw [counts]";
       s.toCharArray(out, cap);
     } else if (idx == 1) {
-      String s = String(name()) + " [mm]";
-      s.toCharArray(out, cap);
+      writeColumnLabel_(name(), m_unitsLabel, out, cap);
     }
     return;
   }
 
   if (idx == 0) {
-    const char* units = (m_outputUnitsLabel[0] ? m_outputUnitsLabel : "mm");
-    String s = String(name()) + " [" + units + "]";
-    s.toCharArray(out, cap);
+    writeColumnLabel_(name(), m_outputUnitsLabel, out, cap);
     return;
   }
 
@@ -335,9 +345,5 @@ void AS5600StringPotSensorBase::setIncludeRaw(bool b) {
 }
 
 void AS5600StringPotSensorBase::setOutputUnitsLabel(const char* u) {
-  if (!u) u = "";
-  strncpy(m_unitsLabel, u, sizeof(m_unitsLabel) - 1);
-  m_unitsLabel[sizeof(m_unitsLabel) - 1] = '\0';
-  strncpy(m_outputUnitsLabel, u, sizeof(m_outputUnitsLabel) - 1);
-  m_outputUnitsLabel[sizeof(m_outputUnitsLabel) - 1] = '\0';
+  Sensor::setOutputUnitsLabel(u);
 }

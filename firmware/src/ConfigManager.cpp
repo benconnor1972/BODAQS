@@ -9,6 +9,8 @@
 #include <ctype.h>
 #include <string.h>
 
+extern LoggerConfig g_cfg;
+
 #define CFG_LOGE(...) LOGE_TAG("CFG", __VA_ARGS__)
 #define CFG_LOGW(...) LOGW_TAG("CFG", __VA_ARGS__)
 #define CFG_LOGI(...) LOGI_TAG("CFG", __VA_ARGS__)
@@ -892,6 +894,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   }
 
   s_cfg = cfg;
+  g_cfg = s_cfg;
   return true;
 }
 

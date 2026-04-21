@@ -164,6 +164,10 @@ void ButtonActions::begin() {
   ButtonActions::registerButtons();
 }
 
+void ButtonActions::reloadBindingsFromConfig(const LoggerConfig& cfg) {
+  initBindingsFromConfig_(cfg);
+}
+
 
 static void touchMenuActivity_() {
   if (MenuSystem::isActive()) {

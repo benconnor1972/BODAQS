@@ -54,6 +54,7 @@ struct SmoothingConfig {
 
 struct LoggerConfig;
 struct Calibration;
+struct SensorSpec;
 
 class Sensor {
 public:
@@ -119,6 +120,10 @@ public:
   // Live raw access
   virtual bool    hasRawCounts()   const { return false; }
   virtual int32_t currentRawCounts() const { return 0; }
+
+  // Re-apply a saved sensor spec to the live instance when the concrete type
+  // is unchanged.
+  virtual bool reconfigureFromSpec(const SensorSpec&) { return false; }
 
   // -------- Output Transform integration --------
   void setSelectedTransformId(const String& id) {

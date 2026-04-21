@@ -434,7 +434,16 @@ class SessionNoteStore:
         custom_values: Optional[Mapping[str, Any]] = None,
         free_text_notes: Optional[str | None] = None,
         title: Optional[str | None] = None,
+        replace_values: bool = False,
     ) -> SessionNoteDocument:
+        updated_values = (
+            {str(k): v for k, v in dict(values or {}).items()}
+            if replace_values
+            else {
+                **dict(note.values),
+                **({str(k): v for k, v in dict(values).items()} if values else {}),
+            }
+        )
         updated = SessionNoteDocument(
             schema=note.schema,
             version=note.version,
@@ -444,10 +453,7 @@ class SessionNoteStore:
             template_id=note.template_id,
             template_version=note.template_version,
             title=note.title if title is None else title,
-            values={
-                **dict(note.values),
-                **({str(k): v for k, v in dict(values).items()} if values else {}),
-            },
+            values=updated_values,
             custom_values=(
                 dict(note.custom_values)
                 if custom_values is None
