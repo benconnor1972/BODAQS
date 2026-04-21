@@ -1,0 +1,27 @@
+{
+  "schema": "bodaqs.preprocess_profile",
+  "version": 1,
+  "profile_id": "suspension_default",
+  "description": "Default preprocessing profile for the combined preprocessing and suspension dashboard notebook.",
+  "config": {
+    "schema_path": "event schema/event_schema.yaml",
+    "strict": false,
+    "zeroing_enabled": false,
+    "zero_window_s": 0.4,
+    "zero_min_samples": 10,
+    "clip_0_1": false,
+    "butterworth_smoothing": [],
+    "butterworth_generate_residuals": false,
+    "active_signal_disp_col": "front_shock_dom_suspension [mm]",
+    "active_signal_vel_col": null,
+    "active_disp_thresh": 20.0,
+    "active_vel_thresh": 50.0,
+    "active_window": "500ms",
+    "active_padding": "1s",
+    "active_min_seg": "3s",
+    "normalize_ranges": {
+      "front_shock_dom_suspension [mm]": 170.0,
+      "rear_shock_dom_suspension [mm]": 150.0
+    }
+  }
+}
