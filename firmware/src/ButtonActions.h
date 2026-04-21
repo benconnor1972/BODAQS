@@ -13,6 +13,7 @@ namespace ButtonActions {
   // Provide config so we can read pins/debounce and register handlers
   void begin();
   void registerButtons();
+  void reloadBindingsFromConfig(const LoggerConfig& cfg);
 
   // ===========================================================================
   // Normal (default) handlers — matching ButtonManager callback signature

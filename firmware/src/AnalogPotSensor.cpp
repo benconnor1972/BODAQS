@@ -6,7 +6,58 @@
 #include "SensorRegistry.h"
 #include "Calibration.h"
 #include "ConfigManager.h"
+#include "BoardSelect.h"
 //#include "OutputTransforms.h"
+
+namespace {
+
+void writeColumnLabel_(const char* name, const char* units, char* out, size_t cap) {
+  if (!out || cap < 2) return;
+  out[0] = '\0';
+
+  String s = name ? String(name) : String();
+  if (units && units[0]) {
+    s += " [";
+    s += units;
+    s += "]";
+  }
+  s.toCharArray(out, cap);
+}
+
+void loadParamsFromPack_(AnalogPotSensor::Params& p,
+                         const char* instanceName,
+                         const ParamPack& params) {
+  p.name = instanceName ? instanceName : "pot";
+
+  long li = 0;
+  bool b = false;
+  double d = 0.0;
+  String s;
+
+  if (params.getBool("invert", b))                  p.invert = b;
+  if (params.getInt("pin", li))                     p.pin = (uint8_t)li;
+  if (params.getFloat("ema_alpha", d))              p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
+  if (params.getInt("deadband", li))                p.deadbandCounts = (uint16_t)li;
+  if (params.getInt("sensor_zero_count", li))       p.sensorZeroCount = (int32_t)li;
+  if (params.getInt("sensor_full_count", li))       p.sensorFullCount = (int32_t)li;
+  if (params.getFloat("sensor_full_travel_mm", d))  p.sensorFullTravelMm = (float)d;
+  if (params.getInt("installed_zero_count", li))    p.installedZeroCount = (int32_t)li;
+  if (params.getBool("include_raw", b))             p.includeRawColumn = b;
+  if (params.get("units_label", s))                 s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+
+  long ain = -1;
+  if (params.getInt("ain", ain) && board::gBoard) {
+    const auto& bp = *board::gBoard;
+    if (ain >= 0 && ain < (long)bp.analog.count) {
+      const int pin = bp.analog.pins[(uint8_t)ain];
+      if (pin >= 0) {
+        p.pin = (uint8_t)pin;
+      }
+    }
+  }
+}
+
+} // namespace
 
 // ---------- Ctors ----------
 AnalogPotSensor::AnalogPotSensor(const Params& p)
@@ -30,6 +81,16 @@ void AnalogPotSensor::applyConfig(const LoggerConfig&) {
   // no-op for now
 }
 
+bool AnalogPotSensor::reconfigureFromSpec(const SensorSpec& spec) {
+  if (spec.type != SensorType::AnalogPot) return false;
+
+  Params p;
+  loadParamsFromPack_(p, spec.name, spec.params);
+  applyParams(p);
+  pinMode(m_pin, INPUT);
+  return true;
+}
+
 // Convert user Params -> internal state
 void AnalogPotSensor::applyParams(const Params& p) {
   if (p.name && p.name[0]) {
@@ -47,6 +108,9 @@ void AnalogPotSensor::applyParams(const Params& p) {
   m_emaInit  = false;
 
   // geometry
+  sensor_zero_count_ = p.sensorZeroCount;
+  sensor_full_count_ = p.sensorFullCount;
+  sensor_full_travel_mm_ = p.sensorFullTravelMm;
   m_zero   = p.sensorZeroCount;
   m_full   = p.sensorFullCount;
   m_fullMm = p.sensorFullTravelMm;
@@ -72,6 +136,9 @@ void AnalogPotSensor::applyParams(const Params& p) {
   } else {
     m_unitsLabel[0] = '\0';
   }
+  Sensor::setOutputUnitsLabel(m_unitsLabel);
+
+  applyLinearScalePrecompute();
 }
 
 // ---------- RAW helpers ----------
@@ -323,17 +390,14 @@ void AnalogPotSensor::getColumnName(uint8_t col, char* out, size_t cap) const {
         return;
       }
       case OutputMode::LINEAR: {
-        String s = String(name()) + " [mm]";             // sensor-axis mm
-        s.toCharArray(out, cap);
+        writeColumnLabel_(name(), m_outputUnitsLabel, out, cap);
         return;
       }
       case OutputMode::POLY:
       case OutputMode::LUT: {
         // If you can access the selected transform’s outUnits, use them; else default to [mm]
-        const char* outUnits = "mm";
+        writeColumnLabel_(name(), m_outputUnitsLabel, out, cap);
         // (Optional) replace outUnits with transform.meta.outUnits if you have it here.
-        String s = String(name()) + " [" + outUnits + "]";
-        s.toCharArray(out, cap);
         return;
       }
       default: break;
@@ -394,31 +458,7 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
 
 Sensor* AnalogPotSensor::create(const char* instanceName, const ParamPack& params, bool mutedDefault) {
   Params p;
-  p.name = instanceName ? instanceName : "pot";
-
-  long li; bool b; double d; String s;
-
-  // Wiring / polarity
-  if (params.getBool("invert", b))        p.invert = b;
-  if (params.getInt("pin", li))           p.pin = (int8_t)li;
-
-
-  // Smoothing
-  if (params.getFloat("ema_alpha", d))   p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
-  if (params.getInt("deadband", li))     p.deadbandCounts   = (uint16_t)li;
-
-  // Anchors / geometry
-  if (params.getInt("sensor_zero_count", li))   p.sensorZeroCount        = (int32_t)li;
-  if (params.getInt("sensor_full_count", li))   p.sensorFullCount        = (int32_t)li;
-  if (params.getFloat("sensor_full_travel_mm", d)) p.sensorFullTravelMm  = (float)d;
-  if (params.getInt("installed_zero_count", li)) p.installedZeroCount    = (int32_t)li;
-
-
-  // Output policy
-  if (params.getBool("include_raw", b))  p.includeRawColumn = b;
-
-  // Units label
-  if (params.get("units_label", s))      s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+  loadParamsFromPack_(p, instanceName, params);
 
   auto* obj = new AnalogPotSensor(p);
   obj->setMuted(mutedDefault);
@@ -477,10 +517,5 @@ void AnalogPotSensor::setIncludeRaw(bool b) {
 void AnalogPotSensor::setOutputUnitsLabel(const char* u) {
   if (!u) u = "";
   // Keep the sensor’s explicit units label for LINEAR/non-RAW
-  strncpy(m_unitsLabel, u, sizeof(m_unitsLabel) - 1);
-  m_unitsLabel[sizeof(m_unitsLabel) - 1] = 0;
-
-  // Also mirror into the column header label that your CSV/UI uses
-  strncpy(m_outputUnitsLabel, u, sizeof(m_outputUnitsLabel) - 1);
-  m_outputUnitsLabel[sizeof(m_outputUnitsLabel) - 1] = 0;
+  Sensor::setOutputUnitsLabel(u);
 }

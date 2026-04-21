@@ -85,6 +85,7 @@ public:
   // Live UI hooks
   void setIncludeRaw(bool b) override;
   void setOutputUnitsLabel(const char* u) override;
+  bool reconfigureFromSpec(const SensorSpec& spec) override;
 
   // ---------- Schema & factory for registry ----------
   static const ParamDef* paramDefs(size_t& count);

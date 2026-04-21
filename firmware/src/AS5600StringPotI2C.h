@@ -15,6 +15,7 @@ public:
   explicit AS5600StringPotI2C(const Params& p);
 
   void begin() override;
+  bool reconfigureFromSpec(const SensorSpec& spec) override;
 
   static const ParamDef* paramDefs(size_t& count);
   static Sensor* create(const char* instanceName, const ParamPack& params, bool mutedDefault);

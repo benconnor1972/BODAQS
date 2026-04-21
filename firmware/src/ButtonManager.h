@@ -37,5 +37,6 @@ void ButtonManager_loop();
 void ButtonManager_setPollingEnabled(bool enabled);
 void ButtonManager_setPollIntervalMs(uint32_t ms);
 void ButtonManager_setPressActivityCallback(ButtonActivityCallback cb);
+void ButtonManager_setDebounceAll(unsigned long debounceDelay);
 
 #endif
