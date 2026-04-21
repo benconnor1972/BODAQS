@@ -1,6 +1,6 @@
 ---
 title: Setting up your environment locally
-description: How to install python and Jupyter Lab in a virtual environment
+description: How to install Python and the BODAQS analysis dependencies in a virtual environment
 sidebar:
   order: 0
 ---
@@ -8,36 +8,43 @@ import {Aside, Tabs, TabItem} from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
 import MiniAside from '@components/MiniAside.astro';
 
-The BODAQS analysis software uses an interactive computing platform called Jupyter Lab to process, analyze and present logger data. Jupyter Lab is widely used in science, engineering, finance and other quantitative disciplines. 
+The BODAQS analysis software uses an interactive computing platform called Jupyter Lab to process, analyze and present logger data. Jupyter Lab is widely used in science, engineering, finance and other quantitative disciplines.
 
 To use Jupyter Lab you will need to do some setting up on your computer. This will include:
+ - **Downloading the BODAQS analysis files** to a local folder on your computer
  - **Installing Python**. Python is a programming language that is good for data analysis. We need it because Jupyter Lab runs Python code, among its other capabilities.
- - **Creating a Python Virtual Environment**. This is a ring-fenced area of your computer where the BODAQS software runs. Having it in its own environment keeps it isolated from everything else on your computer so that nothing breaks anything else.
- - **Installing Jupyter Lab**. Jupyter Lab is the thing you interact with when using the software. Jupyter Lab allows you to access Notebooks, which is where the analysis happens.
- 
-To do these steps, you will need to use a command line interface like Powershell (on Windows) or xxx (on Mac). 
+ - **Creating a Python virtual environment**. This is a ring-fenced area of your computer where the BODAQS software runs. Having it in its own environment keeps it isolated from everything else on your computer so that nothing breaks anything else.
+ - **Installing the BODAQS dependencies**, including Jupyter Lab
+
+To do these steps, you will need to use a command line interface like PowerShell on Windows or Terminal on macOS.
 
 <MiniAside>
 	If you work in science, engineering, finance or some other area where numbers are a big deal, the notebook-style way of working may feel familiar to you. If you don't spend all of your time in front of a computer, it may have a bit of a learning curve.
 	
-	The reason we made the software this way is that it makes it quick and easy to try out new ideas. This is important if, like us, you start without a clear idea of where you are going to end up. It makes it easier for users to modify the functionality too.   
+	The reason we made the software this way is that it makes it quick and easy to try out new ideas. This is important if, like us, you start without a clear idea of where you are going to end up. It makes it easier for users to modify the functionality too.
 
-	This isn't the end state for the project. Ideally we would like to have a range of analysis tools available to suit different kinds of users. These might include a web application to display basic suspension metrics; a suite of Jupyter Lab notebooks for exploratory analysis, and other things besides. 
+	This isn't the end state for the project. Ideally we would like to have a range of analysis tools available to suit different kinds of users. These might include a web application to display basic suspension metrics; a suite of Jupyter Lab notebooks for exploratory analysis, and other things besides.
 
 </MiniAside>
 
+## Get the BODAQS analysis files
 
-## Installing python and pyenv
+Most users should download the latest BODAQS analysis release as a `.zip` file and extract it to a local folder such as `C:\Users\YourName\Documents\BODAQS` on Windows or `~/Documents/BODAQS` on macOS.
 
-macOS ships with a version of Python the operating system depends on. pyenv
-installs a completely separate Python alongside it — giving you full control
-without touching anything the system relies on. Even on Windows,
-it is still best practice to use pyenv to manage your Python versions, so you can keep the BODAQS
-environment separate from any other Python work you might be doing.
+You do not need Git to run the notebooks. Cloning the repo is still fine if you are contributing to development or want the latest in-progress version.
+
+<Aside type="tip" title="Extract the zip first">
+  Don't try to run the notebooks from inside the downloaded `.zip` file.
+  Extract the folder completely before continuing.
+</Aside>
+
+## Install Python
+
+BODAQS currently uses **Python 3.14.3**.
 
 <Tabs>
   <TabItem label="Mac">
-    <Aside type="caution" title="Hands off the macOS system python">
+    <Aside type="caution" title="Hands off the macOS system Python">
       Never modify or replace the Python at `/usr/bin/python3` on macOS, and avoid
       using `sudo` to install Python packages. That interpreter belongs to the
       operating system and breaking it is painful.
@@ -68,57 +75,55 @@ environment separate from any other Python work you might be doing.
     ```
   </TabItem>
   <TabItem label="Windows">
-    On Windows, use **pyenv-win**. Open PowerShell and run the installer:
+    Download Python 3.14.3 from the official Python website:
+
+    - https://www.python.org/downloads/windows/
+
+    Run the installer and make sure you tick:
+
+    - **Add python.exe to PATH**
+    - **Install launcher for all users** (recommended)
+
+    Then open a new PowerShell window and check that Python is available:
 
     ```powershell
-    Invoke-WebRequest -UseBasicParsing -Uri
-    "https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1"
-    -OutFile "./install-pyenv-win.ps1"; &"./install-pyenv-win.ps1"
+    python --version
+    pip --version
     ```
 
-    Close and reopen PowerShell, then install the Python version used by
-    BODAQS:
-
-    ```powershell
-    pyenv install 3.14.3
-    pyenv local 3.14.3
-    ```
+    If `python` is not recognised, close and reopen PowerShell. If that still
+    doesn't work, rerun the installer and make sure **Add python.exe to PATH**
+    was ticked.
   </TabItem>
 </Tabs>
 
 <MiniAside>
-  `pyenv local` writes a `.python-version` file to the current folder.
-  Any terminal opened in that folder will automatically use the right Python
-  version.
-
-  If you are running this setup guide from the BODAQS project root, a `.python-version` file is
-  already there with the correct version, so you can skip the `pyenv local` step.
+  On macOS, `pyenv` keeps the BODAQS Python separate from the system Python.
+  On Windows, this guide uses the standard Python installer because it is
+  simpler for most users.
 </MiniAside>
 
-## Installing JupyterLab
+## Create the virtual environment
 
-<Lede>
-  [JupyterLab](https://jupyter.org/) is an interactive notebook environment for running
-  scripts, visualising data, and writing documentation for the analysis.
+Open a terminal in the BODAQS folder you unzipped (or cloned), then create the
+virtual environment:
 
-  It's the primary interface for running the BODAQS analysis pipeline, and visualising sensor
-  signals. It ships as part of the project's dependency set — no extra installation needed beyond
-  the steps below.
-</Lede>
+<Tabs>
+  <TabItem label="Mac / Linux">
+    ```bash
+    cd /path/to/BODAQS
+    python -m venv .venv
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    cd C:\path\to\BODAQS
+    python -m venv .venv
+    ```
+  </TabItem>
+</Tabs>
 
-### Creating a virtual environment
-
-A virtual environment keeps the ~120 BODAQS packages isolated from your system
-Python so nothing conflicts. Make sure you've completed the Python and pyenv
-setup in the previous section before continuing.
-
-From the project root, create the environment:
-
-```bash
-python -m venv .venv
-```
-
-#### Activate the virtual environment
+### Activate the virtual environment
 
 <Tabs>
   <TabItem label="Mac / Linux">
@@ -127,41 +132,48 @@ python -m venv .venv
     ```
   </TabItem>
   <TabItem label="Windows">
-    ```bash
-    .venv\Scripts\activate
+    ```powershell
+    .\.venv\Scripts\Activate.ps1
     ```
   </TabItem>
 </Tabs>
 
+<Aside type="caution" title="If PowerShell blocks activation">
+  On some Windows systems, PowerShell will refuse to run the activation script
+  the first time. If that happens, run:
+
+  ```powershell
+  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+  ```
+
+  Then try:
+
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
+  ```
+</Aside>
+
 <MiniAside>
-  Once activated, your terminal prompt will show `(.venv)` at the start —
+  Once activated, your terminal prompt will show `(.venv)` at the start -
   that's your confirmation the environment is live.
 </MiniAside>
 
+### Upgrade pip
 
-#### The relationship between pyenv and venv
-pyenv and venv work together to give you a clean, controlled Python environment.
-They both work to keep your working environment separate from the system Python, but they do it in different ways:
-
-##### pyenv
-Manages multiple Python versions on your system. It allows you to switch between different Python
-versions easily, without affecting the system Python. When you run `pyenv local 3.14.3`,
-it creates a `.python-version` file that tells pyenv to use that specific version of Python whenever you're in that directory.
-
-##### venv
-Creates isolated Python environments for your projects. When you run `python -m venv .venv`,
-it creates a new directory called `.venv` (you can name this anything) that contains its own
-Python interpreter (usually a symlink to the currently active one), a `site-packages` directory
-for installed packages, and activation scripts for initialising the environment in your shell.
-This means you can install packages in this environment without polluting other projects or the system Python.
-
-### Installing the dependencies
-
-`requirements.txt` pins every BODAQS dependency — JupyterLab, pandas, numpy,
-scipy, plotly, and the interactive notebook widgets. Install them all with:
+With the virtual environment active, upgrade `pip`:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+```
+
+## Install the dependencies
+
+`requirements.txt` pins every BODAQS dependency, including JupyterLab,
+`ipykernel`, pandas, numpy, scipy, plotly, and the interactive notebook
+widgets. Install them all with:
+
+```bash
+python -m pip install -r requirements.txt
 ```
 
 <Aside>
@@ -169,3 +181,5 @@ pip install -r requirements.txt
   run. Subsequent installs are much faster because pip caches what it's already
   downloaded.
 </Aside>
+
+Once this finishes, continue to [Loading your data](/software-guide/loading-your-data/).
