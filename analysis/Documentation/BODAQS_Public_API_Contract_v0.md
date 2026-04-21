@@ -112,7 +112,12 @@ Load raw logger data into a canonical session.
 
 **Signature (conceptual):**
 ```python
-session = load_session(csv_path: str, *, timezone: Optional[str] = None)
+session = load_session(
+    csv_path: str,
+    *,
+    timezone: Optional[str] = None,
+    sidecar_path: Optional[str] = None,
+)
 ```
 
 **Returns:**  
@@ -122,6 +127,7 @@ session = load_session(csv_path: str, *, timezone: Optional[str] = None)
 - `session["df"]` is a pandas DataFrame
 - `session["df"]` contains `time_s`
 - Timestamp parsing is handled internally
+- When a logger sidecar is available, ingest may use it for delimiter, time-column, and metadata hints
 
 ---
 
@@ -273,10 +279,12 @@ results = run_macro(
     schema_path: str,
     *,
     normalize_ranges: Dict[str, float],
+    fit_import: Optional[dict[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
     timezone: Optional[str] = None,
+    sidecar_path: Optional[str] = None,
 )
 ```
 
@@ -294,6 +302,8 @@ results = run_macro(
 - No tuple returns
 - Stable keys in results dict
 - Fully validated session
+- When `fit_import` is enabled and a matching FIT file is resolved, the session may include
+  resampled GPS columns on `session["df"]` and raw secondary stream data under `session["stream_dfs"]`
 
 ---
 

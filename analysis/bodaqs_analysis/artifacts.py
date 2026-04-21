@@ -55,11 +55,23 @@ class ArtifactStore:
     def path_session_meta(self, run_id: str, session_id: str) -> Path:
         return self.session_dir(run_id, session_id) / "session" / "meta.json"
 
+    def path_session_stream_dir(self, run_id: str, session_id: str, stream_name: str) -> Path:
+        return self.session_dir(run_id, session_id) / "session" / "streams" / stream_name
+
+    def path_session_stream_df(self, run_id: str, session_id: str, stream_name: str) -> Path:
+        return self.path_session_stream_dir(run_id, session_id, stream_name) / "df.parquet"
+
+    def path_session_stream_meta(self, run_id: str, session_id: str, stream_name: str) -> Path:
+        return self.path_session_stream_dir(run_id, session_id, stream_name) / "meta.json"
+
     def path_session_annotations_dir(self, run_id: str, session_id: str) -> Path:
         return self.session_dir(run_id, session_id) / "annotations"
 
     def path_session_notes(self, run_id: str, session_id: str) -> Path:
         return self.path_session_annotations_dir(run_id, session_id) / "session_notes.json"
+
+    def path_session_aux_source_dir(self, run_id: str, session_id: str) -> Path:
+        return self.session_dir(run_id, session_id) / "source_aux"
 
     def path_library_dir(self) -> Path:
         return self.root / "library"
@@ -186,14 +198,45 @@ def save_session_artifacts(
     session_id: str,
     session_df: pd.DataFrame,
     session_meta: Mapping[str, Any],
+    secondary_stream_dfs: Optional[Mapping[str, pd.DataFrame]] = None,
+    secondary_stream_meta: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> None:
     store.write_df(store.path_session_df(run_id, session_id), session_df)
     store.write_json(store.path_session_meta(run_id, session_id), dict(session_meta))
 
+    for stream_name, stream_df in (secondary_stream_dfs or {}).items():
+        if not isinstance(stream_name, str) or not isinstance(stream_df, pd.DataFrame):
+            continue
+        store.write_df(store.path_session_stream_df(run_id, session_id, stream_name), stream_df)
+
+        stream_meta = {}
+        if isinstance(secondary_stream_meta, Mapping):
+            meta_obj = secondary_stream_meta.get(stream_name)
+            if isinstance(meta_obj, Mapping):
+                stream_meta = dict(meta_obj)
+        store.write_json(store.path_session_stream_meta(run_id, session_id, stream_name), stream_meta)
+
 def load_session_artifacts(store: ArtifactStore, *, run_id: str, session_id: str) -> Dict[str, Any]:
     df = store.read_df(store.path_session_df(run_id, session_id))
     meta = store.read_json(store.path_session_meta(run_id, session_id))
-    return {"df": df, "meta": meta}
+    out: Dict[str, Any] = {"df": df, "meta": meta}
+
+    streams_root = store.session_dir(run_id, session_id) / "session" / "streams"
+    if streams_root.exists():
+        stream_dfs: Dict[str, pd.DataFrame] = {}
+        stream_meta: Dict[str, Dict[str, Any]] = {}
+        for stream_dir in sorted(p for p in streams_root.iterdir() if p.is_dir()):
+            df_path = stream_dir / "df.parquet"
+            meta_path = stream_dir / "meta.json"
+            if df_path.exists():
+                stream_dfs[stream_dir.name] = store.read_df(df_path)
+            if meta_path.exists():
+                stream_meta[stream_dir.name] = store.read_json(meta_path)
+        if stream_dfs:
+            out["stream_dfs"] = stream_dfs
+        if stream_meta:
+            out["secondary_stream_meta"] = stream_meta
+    return out
 
 def write_run_manifest(
     store: ArtifactStore,
@@ -228,6 +271,7 @@ def write_session_manifest(
     description: str | None = None,
     contracts: Optional[Mapping[str, str]] = None,
     source: Optional[Mapping[str, Any]] = None,
+    aux_sources: Optional[list[Mapping[str, Any]]] = None,
     summary: Optional[Mapping[str, Any]] = None,
 ) -> None:
     obj: Dict[str, Any] = {
@@ -238,6 +282,8 @@ def write_session_manifest(
         obj["contracts"] = dict(contracts)
     if source:
         obj["source"] = dict(source)
+    if aux_sources:
+        obj["aux_sources"] = [dict(x) for x in aux_sources]
     if summary:
         obj["summary"] = dict(summary)
 
@@ -367,6 +413,71 @@ def copy_raw_csv_to_source(
     hash_path.write_text(sha256 + "\n", encoding="utf-8")
 
     return sha256
+
+
+def copy_aux_source_to_session(
+    *,
+    store,
+    run_id: str,
+    session_id: str,
+    source_path: Path | str,
+    dest_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Copy one auxiliary source file into the canonical source_aux/ directory and
+    return a manifest-ready provenance object.
+    """
+    src = Path(source_path)
+    if not src.exists():
+        raise FileNotFoundError(f"Auxiliary source file does not exist: {src}")
+
+    name = dest_name or src.name
+    dst = store.path_session_aux_source_dir(run_id, session_id) / name
+    store.ensure_dir(dst.parent)
+    shutil.copy2(src, dst)
+
+    sha256 = _sha256_file(dst)
+    dst.with_suffix(dst.suffix + ".sha256").write_text(sha256 + "\n", encoding="utf-8")
+
+    return {
+        "path": f"source_aux/{name}",
+        "sha256": sha256,
+        "filename": name,
+    }
+
+
+def copy_session_aux_sources(
+    *,
+    store,
+    run_id: str,
+    session_id: str,
+    aux_sources: Optional[list[Mapping[str, Any]]],
+) -> list[Dict[str, Any]]:
+    """
+    Copy session-level auxiliary sources such as FIT files into the canonical
+    artifact tree and return manifest-ready aux source entries.
+    """
+    out: list[Dict[str, Any]] = []
+
+    for entry in aux_sources or []:
+        if not isinstance(entry, Mapping):
+            continue
+        src_path = entry.get("path")
+        if not isinstance(src_path, str) or not src_path.strip():
+            continue
+
+        copied = copy_aux_source_to_session(
+            store=store,
+            run_id=run_id,
+            session_id=session_id,
+            source_path=src_path,
+            dest_name=entry.get("filename") if isinstance(entry.get("filename"), str) else None,
+        )
+        merged = dict(entry)
+        merged.update(copied)
+        out.append(merged)
+
+    return out
 
 def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
     """

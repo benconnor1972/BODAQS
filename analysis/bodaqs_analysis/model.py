@@ -31,8 +31,10 @@ class SessionMeta(TypedDict, total=False):
     channel_info: Dict[str, ChannelInfo]
     sample_rate_hz: float
     sample_rate_by_channel_hz: Dict[str, float]
+    streams: Dict[str, Dict[str, Any]]
     device: Dict[str, Any]
     notes: str
+    t0_datetime: object
 
 class SessionQC(TypedDict, total=False):
     time_monotonic: bool
@@ -51,6 +53,78 @@ class Session(TypedDict, total=False):
     qc: SessionQC
     df_raw: pd.DataFrame
     df: pd.DataFrame
+    stream_dfs: Dict[str, pd.DataFrame]
+
+
+def _validate_time_vector(
+    df: pd.DataFrame,
+    *,
+    time_col: str,
+    stream_name: str,
+    require_two_samples: bool,
+) -> np.ndarray:
+    if time_col in df.columns:
+        t = pd.to_numeric(df[time_col], errors="coerce").to_numpy(dtype=float)
+    elif getattr(df.index, "name", None) == time_col:
+        t = pd.to_numeric(df.index.to_series(), errors="coerce").to_numpy(dtype=float)
+    else:
+        raise ValueError(f"session stream '{stream_name}' missing required time column: {time_col}")
+    min_samples = 2 if require_two_samples else 1
+    if t.size < min_samples:
+        raise ValueError(
+            f"session stream '{stream_name}' time column '{time_col}' must contain at least {min_samples} sample(s)"
+        )
+    if not np.isfinite(t).all():
+        raise ValueError(f"session stream '{stream_name}' time column '{time_col}' contains non-finite values")
+    if np.any(np.diff(t) < 0):
+        raise ValueError(f"session stream '{stream_name}' time column '{time_col}' must be monotonic non-decreasing")
+    return t
+
+
+def _validate_stream_meta_entry(
+    stream_name: str,
+    stream_info: Dict[str, Any],
+    *,
+    df_stream: Optional[pd.DataFrame] = None,
+    require_uniform: bool = False,
+) -> None:
+    if not isinstance(stream_info, dict):
+        raise ValueError(f"session['meta']['streams']['{stream_name}'] must be a dict")
+
+    kind = stream_info.get("kind")
+    if kind not in {"uniform", "intermittent"}:
+        raise ValueError(
+            f"session['meta']['streams']['{stream_name}']['kind'] must be 'uniform' or 'intermittent'"
+        )
+    if require_uniform and kind != "uniform":
+        raise ValueError(f"session['meta']['streams']['{stream_name}'] must be a uniform stream")
+
+    time_col = stream_info.get("time_col")
+    if not isinstance(time_col, str) or not time_col.strip():
+        raise ValueError(f"session['meta']['streams']['{stream_name}'] missing required key: 'time_col'")
+
+    if kind == "uniform":
+        for k in ("sample_rate_hz", "dt_s", "jitter_frac"):
+            if k not in stream_info:
+                raise ValueError(f"session['meta']['streams']['{stream_name}'] missing required key: {k}")
+
+        dt_s = float(stream_info["dt_s"])
+        sr_hz = float(stream_info["sample_rate_hz"])
+        jitter_frac = float(stream_info["jitter_frac"])
+        if not np.isfinite(dt_s) or dt_s <= 0:
+            raise ValueError(f"session stream '{stream_name}' dt_s must be finite and > 0")
+        if not np.isfinite(sr_hz) or sr_hz <= 0:
+            raise ValueError(f"session stream '{stream_name}' sample_rate_hz must be finite and > 0")
+        if not np.isfinite(jitter_frac) or jitter_frac < 0:
+            raise ValueError(f"session stream '{stream_name}' jitter_frac must be finite and >= 0")
+
+    if df_stream is not None:
+        _validate_time_vector(
+            df_stream,
+            time_col=time_col,
+            stream_name=stream_name,
+            require_two_samples=(kind == "uniform"),
+        )
 
 def validate_session(session: Dict[str, Any], *, require_df: bool = True) -> None:
     """Lightweight validation for the Session contract (v0).
@@ -69,20 +143,6 @@ def validate_session(session: Dict[str, Any], *, require_df: bool = True) -> Non
             raise ValueError("session['df'] must be a pandas DataFrame")
         df = session["df"]
         
-        # Canonical time vector
-        if "time_s" in df.columns:
-            t = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(dtype=float)
-        else:
-            # time_s index path
-            t = pd.to_numeric(df.index.to_series(), errors="coerce").to_numpy(dtype=float)
-
-        if t.size < 2:
-            raise ValueError("time_s must contain at least two samples")
-        if not np.isfinite(t).all():
-            raise ValueError("time_s contains non-finite values")
-        if np.any(np.diff(t) < 0):
-            raise ValueError("time_s must be monotonic non-decreasing")
-
         # Time axis: either time_s col or index name time_s
         has_time_col = "time_s" in df.columns
         has_time_idx = getattr(df.index, "name", None) == "time_s"
@@ -102,21 +162,26 @@ def validate_session(session: Dict[str, Any], *, require_df: bool = True) -> Non
         if "primary" not in streams:
             raise ValueError("session['meta']['streams'] missing required stream: 'primary'")
 
-        primary = streams["primary"]
-        if not isinstance(primary, dict):
-            raise ValueError("session['meta']['streams']['primary'] must be a dict")
+        _validate_stream_meta_entry(
+            "primary",
+            streams["primary"],
+            df_stream=df,
+            require_uniform=True,
+        )
 
-        for k in ("kind", "time_col", "sample_rate_hz", "dt_s", "jitter_frac"):
-            if k not in primary:
-                raise ValueError(f"session['meta']['streams']['primary'] missing required key: {k}")
-
-        # Basic sanity on timebase numbers
-        dt_s = float(primary["dt_s"])
-        sr_hz = float(primary["sample_rate_hz"])
-        if not np.isfinite(dt_s) or dt_s <= 0:
-            raise ValueError("primary stream dt_s must be finite and > 0")
-        if not np.isfinite(sr_hz) or sr_hz <= 0:
-            raise ValueError("primary stream sample_rate_hz must be finite and > 0")
+        stream_dfs = session.get("stream_dfs")
+        stream_dfs_map = stream_dfs if isinstance(stream_dfs, dict) else {}
+        for stream_name, stream_info in streams.items():
+            if stream_name == "primary":
+                continue
+            df_stream = stream_dfs_map.get(stream_name)
+            if df_stream is not None and not isinstance(df_stream, pd.DataFrame):
+                raise ValueError(f"session['stream_dfs']['{stream_name}'] must be a pandas DataFrame")
+            _validate_stream_meta_entry(
+                str(stream_name),
+                stream_info,
+                df_stream=df_stream if isinstance(df_stream, pd.DataFrame) else None,
+            )
 
 def validate_signals_registry_shape(session: Dict[str, Any]) -> None:
     """

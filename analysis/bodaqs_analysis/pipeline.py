@@ -1,13 +1,19 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import pandas as pd
 import numpy as np
 import logging
 import os
 import re
 
-from .io_logger import load_logger_csv, parse_run_stats_footer
+from .io_logger import load_logger_csv_with_sidecar, parse_run_stats_footer
+from .io_fit import (
+    FIT_DEFAULT_FIELDS,
+    find_overlapping_fit_files,
+    load_fit_stream,
+    select_fit_candidate,
+)
 from .normalize import normalize_and_scale
 from .va import estimate_va, name_vel
 from .schema import load_event_schema
@@ -15,7 +21,8 @@ from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df, compute_metrics_from_segments
 from .model import validate_metrics_df
 from .model import validate_session
-from .timebase import register_stream_timebase, estimate_uniform_timebase
+from .timebase import register_stream_metadata, register_stream_timebase, estimate_uniform_timebase
+from .resample import resample_to_time_grid
 from .signal_standardize import (
     canonicalize_signal_names,
     rebuild_and_validate_signal_registry,
@@ -32,12 +39,193 @@ ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
 
 logger = logging.getLogger(__name__)
 
-def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
+_FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "fit_dir": None,
+    "field_allowlist": list(FIT_DEFAULT_FIELDS),
+    "ambiguity_policy": "require_binding",
+    "partial_overlap": "allow",
+    "persist_raw_stream": True,
+    "resample_to_primary": True,
+    "resample_method": "linear",
+    "raw_stream_name": "gps_fit",
+    "resampled_prefix": "gps_fit",
+    "bindings_path": None,
+}
+
+def _declared_time_columns(sidecar: Dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+
+    columns = sidecar.get("columns")
+    if isinstance(columns, dict):
+        for col_name, info in columns.items():
+            if isinstance(info, dict) and info.get("class") == "time":
+                out.add(str(col_name))
+
+    streams = sidecar.get("streams")
+    if isinstance(streams, dict):
+        for stream_info in streams.values():
+            if not isinstance(stream_info, dict):
+                continue
+            time_col = stream_info.get("time_col")
+            if isinstance(time_col, str) and time_col.strip():
+                out.add(time_col)
+
+    out.add("time_s")
+    return out
+
+
+def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    columns = sidecar.get("columns")
+    streams = sidecar.get("streams")
+    if not isinstance(columns, dict):
+        return out
+
+    for col_name, info in columns.items():
+        if not isinstance(info, dict):
+            continue
+        if info.get("class") != "signal":
+            continue
+
+        ch: Dict[str, Any] = {}
+        unit = info.get("unit")
+        if isinstance(unit, str) and unit.strip():
+            ch["unit"] = unit
+
+        sensor = info.get("sensor")
+        if isinstance(sensor, str) and sensor.strip():
+            ch["sensor"] = sensor
+
+        quantity = info.get("quantity")
+        if isinstance(quantity, str) and quantity.strip():
+            ch["role"] = quantity
+
+        source_columns = info.get("source_columns")
+        if isinstance(source_columns, list):
+            ch["source_columns"] = [str(x) for x in source_columns if isinstance(x, str)]
+
+        stream_name = info.get("stream")
+        if isinstance(stream_name, str) and isinstance(streams, dict):
+            stream_info = streams.get(stream_name)
+            if isinstance(stream_info, dict):
+                sample_rate_hz = stream_info.get("sample_rate_hz")
+                if sample_rate_hz is not None:
+                    try:
+                        ch["nominal_rate_hz"] = float(sample_rate_hz)
+                    except Exception:
+                        pass
+
+        out[str(col_name)] = ch
+
+    return out
+
+
+def _apply_sidecar_metadata(
+    session: Dict[str, Any],
+    *,
+    sidecar: Dict[str, Any],
+    sidecar_path: str,
+) -> None:
+    source = session.setdefault("source", {})
+    meta = session.setdefault("meta", {})
+    qc = session.setdefault("qc", {})
+    parse = qc.setdefault("parse", {})
+
+    source["sidecar_path"] = sidecar_path
+
+    contract = sidecar.get("contract")
+    if isinstance(contract, dict):
+        name = contract.get("name")
+        version = contract.get("version")
+        if isinstance(name, str) and isinstance(version, str):
+            meta["source_contract"] = {"name": name, "version": version}
+
+    declared_streams = sidecar.get("streams")
+    if isinstance(declared_streams, dict):
+        meta["declared_streams"] = declared_streams
+
+        primary_stream = declared_streams.get("primary")
+        if not isinstance(primary_stream, dict):
+            for stream_info in declared_streams.values():
+                if isinstance(stream_info, dict):
+                    primary_stream = stream_info
+                    break
+
+        if isinstance(primary_stream, dict):
+            time_col = primary_stream.get("time_col")
+            if isinstance(time_col, str) and time_col.strip():
+                parse["time_column_used"] = time_col
+            if primary_stream.get("type") == "uniform":
+                sample_rate_hz = primary_stream.get("sample_rate_hz")
+                if sample_rate_hz is not None:
+                    try:
+                        meta["sample_rate_hz"] = float(sample_rate_hz)
+                    except Exception:
+                        pass
+
+    session_meta = sidecar.get("session")
+    if isinstance(session_meta, dict):
+        started_at_local = session_meta.get("started_at_local")
+        if isinstance(started_at_local, str) and started_at_local.strip():
+            source["created_local"] = started_at_local
+            meta["t0_datetime"] = started_at_local
+
+        timezone = session_meta.get("timezone")
+        if isinstance(timezone, str) and timezone.strip() and not source.get("timezone"):
+            source["timezone"] = timezone
+
+        notes = session_meta.get("notes")
+        if notes is not None:
+            meta["notes"] = notes
+
+        source_session_id = session_meta.get("session_id")
+        if isinstance(source_session_id, str) and source_session_id.strip():
+            meta["source_session_id"] = source_session_id
+
+    provenance = sidecar.get("provenance")
+    if isinstance(provenance, dict):
+        device = meta.get("device")
+        if not isinstance(device, dict):
+            device = {}
+        for src_key, dst_key in (
+            ("logger_family", "logger_family"),
+            ("firmware_version", "firmware_version"),
+            ("generator", "generator"),
+            ("metadata_generated_at", "metadata_generated_at"),
+        ):
+            value = provenance.get(src_key)
+            if value is not None:
+                device[dst_key] = value
+        meta["device"] = device or None
+
+    channel_info = meta.setdefault("channel_info", {})
+    if not isinstance(channel_info, dict):
+        channel_info = {}
+        meta["channel_info"] = channel_info
+    channel_info.update(_build_channel_info_from_sidecar(sidecar))
+
+    parse["sidecar_used"] = True
+
+
+def load_session(
+    csv_path: str,
+    *,
+    timezone: Optional[str] = None,
+    sidecar_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """Load a CSV into a v0 Session dict (df_raw + initial qc/meta)."""
     p = Path(csv_path)
-    df_raw = load_logger_csv(str(p))
+    df_raw, sidecar, resolved_sidecar_path = load_logger_csv_with_sidecar(
+        str(p),
+        sidecar_path=sidecar_path,
+    )
 
     stats = parse_run_stats_footer(str(p))
+    excluded_time_columns = {"sample_id", "time_s", "clock", "Clock", "Time"}
+    if isinstance(sidecar, dict):
+        excluded_time_columns |= _declared_time_columns(sidecar)
+
     session: Dict[str, Any] = {
         "session_id": p.stem,
         "source": {
@@ -46,7 +234,7 @@ def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, 
             "timezone": timezone,
         },
         "meta": {
-            "channels": [c for c in df_raw.columns if c not in ("sample_id","time_s","clock","Clock","Time")],
+            "channels": [c for c in df_raw.columns if c not in excluded_time_columns],
             "channel_info": {},  # can be enriched later
             "sample_rate_hz": None,
             "sample_rate_by_channel_hz": None,
@@ -75,9 +263,16 @@ def load_session(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, 
         "df_raw": df_raw,
         "df": df_raw.copy(),
     }
+    if isinstance(sidecar, dict) and isinstance(resolved_sidecar_path, str):
+        _apply_sidecar_metadata(session, sidecar=sidecar, sidecar_path=resolved_sidecar_path)
     return session
 
-def load_and_canonicalize(csv_path: str, *, timezone: Optional[str] = None) -> Dict[str, Any]:
+def load_and_canonicalize(
+    csv_path: str,
+    *,
+    timezone: Optional[str] = None,
+    sidecar_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Step 1 helper for notebooks/UI:
       - load session
@@ -85,7 +280,7 @@ def load_and_canonicalize(csv_path: str, *, timezone: Optional[str] = None) -> D
       - build signals registry (so we can list displacement signals)
     Does NOT require normalize_ranges.
     """
-    session = load_session(csv_path, timezone=timezone)
+    session = load_session(csv_path, timezone=timezone, sidecar_path=sidecar_path)
 
     # Infer units from column headers like "... [mm]"
     df = session["df"]
@@ -108,6 +303,261 @@ def load_and_canonicalize(csv_path: str, *, timezone: Optional[str] = None) -> D
 
     # Populate session["meta"]["signals"] with quantity="disp"/"vel"/... etc.
     session = build_signals_registry(session, strict=False)
+    return session
+
+
+def _append_qc_warning(session: Dict[str, Any], warning: str) -> None:
+    qc = session.setdefault("qc", {})
+    warnings = qc.setdefault("warnings", [])
+    if warning not in warnings:
+        warnings.append(warning)
+
+
+def _merge_channel_info(
+    session: Dict[str, Any],
+    channel_info: Mapping[str, Mapping[str, Any]],
+) -> None:
+    meta = session.setdefault("meta", {})
+    current = meta.setdefault("channel_info", {})
+    if not isinstance(current, dict):
+        current = {}
+        meta["channel_info"] = current
+    for col, info in channel_info.items():
+        if not isinstance(col, str):
+            continue
+        existing = current.get(col)
+        if isinstance(existing, dict):
+            merged = dict(existing)
+            merged.update(dict(info))
+            current[col] = merged
+        else:
+            current[col] = dict(info)
+
+
+def _normalized_fit_import_config(fit_import: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    cfg = dict(_FIT_IMPORT_DEFAULTS)
+    if isinstance(fit_import, Mapping):
+        cfg.update(dict(fit_import))
+    return cfg
+
+
+def _session_absolute_bounds(session: Dict[str, Any]) -> Optional[tuple[pd.Timestamp, pd.Timestamp]]:
+    meta = session.get("meta", {})
+    source = session.get("source", {})
+
+    anchor = None
+    if isinstance(meta, dict):
+        anchor = meta.get("t0_datetime")
+    if anchor is None and isinstance(source, dict):
+        anchor = source.get("created_local")
+    if not isinstance(anchor, str) or not anchor.strip():
+        return None
+
+    df = session.get("df")
+    if not isinstance(df, pd.DataFrame):
+        return None
+    if "time_s" not in df.columns:
+        return None
+
+    t = pd.to_numeric(df["time_s"], errors="coerce").dropna()
+    if t.empty:
+        return None
+
+    start = pd.Timestamp(anchor)
+    end = start + pd.to_timedelta(float(t.max()), unit="s")
+    return start, end
+
+
+def _resample_fit_columns_onto_primary(
+    session: Dict[str, Any],
+    *,
+    fit_df: pd.DataFrame,
+    fit_meta: Mapping[str, Any],
+    method: str,
+) -> None:
+    df = session.get("df")
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError("session['df'] must be a DataFrame before FIT resampling")
+    if "time_s" not in df.columns:
+        raise ValueError("session['df'] missing required time_s column for FIT resampling")
+
+    columns = [
+        c
+        for c in fit_meta.get("resample_columns", [])
+        if isinstance(c, str) and c in fit_df.columns
+    ]
+    if not columns:
+        return
+
+    target_time_s = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(dtype=float)
+    if len(fit_df.index) >= 2:
+        resampled_df, rs_meta = resample_to_time_grid(
+            fit_df,
+            src_time_col="time_s",
+            target_time_s=target_time_s,
+            columns=columns,
+            method=method,
+            allow_extrapolation=False,
+        )
+    else:
+        resampled_df = pd.DataFrame({"time_s": target_time_s})
+        for col in columns:
+            resampled_df[col] = np.nan
+        rs_meta = {
+            "method": method,
+            "src_time_col": "time_s",
+            "target_time_col": "time_s",
+            "allow_extrapolation": False,
+            "src_time_min": None,
+            "src_time_max": None,
+            "n_target": int(len(target_time_s)),
+            "columns": list(columns),
+        }
+        _append_qc_warning(session, "fit_import_resample_skipped_too_few_samples")
+
+    for col in columns:
+        df[col] = resampled_df[col].to_numpy()
+
+    qc = session.setdefault("qc", {})
+    resampling = qc.setdefault("resampling", [])
+    resampling.append({"stream": str(fit_meta.get("stream_name", "gps_fit")), **rs_meta})
+
+    transforms = qc.setdefault("transforms", {})
+    transforms["resampled"] = {
+        "applied": True,
+        "target_rate_hz": session.get("meta", {}).get("sample_rate_hz"),
+        "method": method,
+    }
+
+    _merge_channel_info(session, fit_meta.get("channel_info", {}))
+
+
+def attach_fit_stream(
+    session: Dict[str, Any],
+    *,
+    fit_df: pd.DataFrame,
+    fit_meta: Mapping[str, Any],
+    stream_name: str = "gps_fit",
+) -> Dict[str, Any]:
+    stream_dfs = session.setdefault("stream_dfs", {})
+    if not isinstance(stream_dfs, dict):
+        stream_dfs = {}
+        session["stream_dfs"] = stream_dfs
+    stream_dfs[stream_name] = fit_df
+
+    register_stream_metadata(
+        session,
+        stream_name=stream_name,
+        kind="intermittent",
+        time_col="time_s",
+        notes="Garmin FIT navigation stream",
+    )
+
+    meta = session.setdefault("meta", {})
+    fit_streams = meta.setdefault("secondary_streams", {})
+    if not isinstance(fit_streams, dict):
+        fit_streams = {}
+        meta["secondary_streams"] = fit_streams
+    fit_streams[stream_name] = dict(fit_meta)
+
+    source = session.setdefault("source", {})
+    aux_sources = source.setdefault("aux_sources", [])
+    if not isinstance(aux_sources, list):
+        aux_sources = []
+        source["aux_sources"] = aux_sources
+    aux_sources[:] = [x for x in aux_sources if not (isinstance(x, dict) and x.get("stream_name") == stream_name)]
+    aux_sources.append(
+        {
+            "kind": "fit",
+            "stream_name": stream_name,
+            "path": fit_meta.get("path"),
+            "filename": fit_meta.get("filename"),
+            "sha256": fit_meta.get("fit_sha256"),
+        }
+    )
+    return session
+
+
+def enrich_session_with_fit(
+    session: Dict[str, Any],
+    *,
+    fit_import: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    cfg = _normalized_fit_import_config(fit_import)
+    if not bool(cfg.get("enabled")):
+        return session
+
+    fit_dir = cfg.get("fit_dir")
+    if not isinstance(fit_dir, str) or not fit_dir.strip():
+        raise ValueError("fit_import.enabled=True requires fit_import.fit_dir")
+
+    bounds = _session_absolute_bounds(session)
+    if bounds is None:
+        _append_qc_warning(session, "fit_import_skipped_missing_absolute_time_anchor")
+        return session
+
+    session_start, session_end = bounds
+    candidates = find_overlapping_fit_files(
+        fit_dir=fit_dir,
+        session_start_datetime=session_start.isoformat(),
+        session_end_datetime=session_end.isoformat(),
+        field_allowlist=cfg.get("field_allowlist"),
+        partial_overlap=str(cfg.get("partial_overlap", "allow")),
+    )
+    if not candidates:
+        _append_qc_warning(session, "fit_import_no_overlapping_files")
+        return session
+
+    source = session.get("source", {})
+    selected = select_fit_candidate(
+        session_id=session.get("session_id"),
+        csv_path=source.get("path") if isinstance(source, dict) else None,
+        csv_sha256=source.get("sha256") if isinstance(source, dict) else None,
+        candidates=candidates,
+        ambiguity_policy=str(cfg.get("ambiguity_policy", "require_binding")),
+        bindings_path=cfg.get("bindings_path"),
+    )
+    if selected is None:
+        _append_qc_warning(session, "fit_import_no_selected_file")
+        return session
+
+    stream_name = str(cfg.get("raw_stream_name") or "gps_fit")
+    fit_df, fit_meta = load_fit_stream(
+        selected["path"],
+        session_start_datetime=session_start.isoformat(),
+        field_allowlist=cfg.get("field_allowlist"),
+    )
+    fit_meta = dict(fit_meta)
+    fit_meta["stream_name"] = stream_name
+    fit_meta["match"] = {
+        "overlap_s": float(selected.get("overlap_s", 0.0)),
+        "overlap_start_datetime": selected.get("overlap_start_datetime"),
+        "overlap_end_datetime": selected.get("overlap_end_datetime"),
+        "ambiguity_policy": cfg.get("ambiguity_policy"),
+    }
+
+    if bool(cfg.get("persist_raw_stream", True)):
+        attach_fit_stream(session, fit_df=fit_df, fit_meta=fit_meta, stream_name=stream_name)
+
+    if bool(cfg.get("resample_to_primary", True)):
+        _resample_fit_columns_onto_primary(
+            session,
+            fit_df=fit_df,
+            fit_meta=fit_meta,
+            method=str(cfg.get("resample_method", "linear")),
+        )
+
+    qc = session.setdefault("qc", {})
+    fit_qc = qc.setdefault("fit_import", {})
+    fit_qc.update(
+        {
+            "enabled": True,
+            "selected_file": fit_meta.get("filename"),
+            "stream_name": stream_name,
+            "overlap_s": float(selected.get("overlap_s", 0.0)),
+            "partial_overlap": str(cfg.get("partial_overlap", "allow")),
+        }
+    )
     return session
     
 def _build_active_mask_from_time_s(
@@ -274,13 +724,18 @@ def preprocess_session(session: Dict[str, Any],
         } or None,
     }
 
+    meta = session.setdefault("meta", {})
+    sample_rate_hint_hz = sample_rate_hz
+    if sample_rate_hint_hz is None:
+        sample_rate_hint_hz = meta.get("sample_rate_hz")
+
     # ---------------- Resolve canonical preprocessing sample-rate ----------------
     # Use the same source for all preprocessing transforms (explicit sample_rate_hz
     # if provided, else inferred from canonical time_s).
     tb = estimate_uniform_timebase(
         df2,
         time_col="time_s",
-        sample_rate_hz=sample_rate_hz,
+        sample_rate_hz=sample_rate_hint_hz,
     )
     preprocess_sample_rate_hz = float(tb.sample_rate_hz)
 
@@ -398,9 +853,8 @@ def preprocess_session(session: Dict[str, Any],
     }
 
     # ---------------- Meta ----------------
-    meta = session.setdefault("meta", {})
-    if sample_rate_hz is not None:
-        meta["sample_rate_hz"] = float(sample_rate_hz)
+    if sample_rate_hint_hz is not None:
+        meta["sample_rate_hz"] = float(sample_rate_hint_hz)
 
     # ---------------- Timebase / streams meta (v0) ----------------
     # For now, your analysis df is a single "primary" stream.
@@ -427,6 +881,8 @@ def run_macro(
     csv_path: str,
     schema_path: str,
     *,
+    sidecar_path: Optional[str] = None,
+    fit_import: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
     zero_window_s: float = 1,
     zero_min_samples: int = 10,
@@ -451,8 +907,12 @@ def run_macro(
         When True, metrics computation enforces strict trigger/spec requirements (may raise).
         When False, missing trigger times (etc.) should propagate as NaN where supported.
     """
-    session = load_session(csv_path, timezone=timezone)
+    session = load_session(csv_path, timezone=timezone, sidecar_path=sidecar_path)
     logger.info("Session load complete: %s", csv_path)
+
+    session = enrich_session_with_fit(session, fit_import=fit_import)
+    if bool((fit_import or {}).get("enabled")):
+        logger.info("FIT enrichment step complete")
 
     session = preprocess_session(
         session,

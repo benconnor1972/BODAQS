@@ -12,6 +12,29 @@ import ipywidgets as W
 from ..va import name_vel
 from ..preprocess_filters import normalize_butterworth_smoothing_configs
 
+_FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "fit_dir": "Garmin/FIT",
+    "field_allowlist": [
+        "position_lat",
+        "position_long",
+        "altitude",
+        "enhanced_altitude",
+        "speed",
+        "enhanced_speed",
+        "distance",
+        "grade",
+        "heading",
+    ],
+    "ambiguity_policy": "require_binding",
+    "partial_overlap": "allow",
+    "persist_raw_stream": True,
+    "resample_to_primary": True,
+    "resample_method": "linear",
+    "raw_stream_name": "gps_fit",
+    "bindings_path": "analysis/config/fit_bindings_v1.json",
+}
+
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
     try:
@@ -35,6 +58,7 @@ def _safe_int(v: Any, default: int = 0) -> int:
 class PreprocessDefaults:
     schema_path: str = r"event schema\event_schema.yaml"
     ingestion_mode: str = "tolerant"  # "tolerant" or "strict"
+    fit_import: Optional[Dict[str, Any]] = None
 
     zeroing_enabled: bool = False
     zero_window_s: float = 0.4
@@ -75,6 +99,7 @@ class PreprocessControls:
         self.sessions_by_id = dict(sessions_by_id)
         self.defaults = defaults or PreprocessDefaults()
         self.default_ranges = default_ranges or {}
+        self._fit_defaults = self._normalize_fit_defaults(self.defaults.fit_import)
 
         # ---- Widgets ----
         self._out = W.Output(layout=W.Layout(border="1px solid #ddd", padding="8px"))
@@ -95,6 +120,58 @@ class PreprocessControls:
             options=sorted(self.sessions_by_id.keys()),
             description="Preview session",
             layout=W.Layout(width="400px"),
+        )
+
+        # FIT import
+        self.w_fit_enabled = W.Checkbox(
+            value=bool(self._fit_defaults["enabled"]),
+            description="Enable FIT import",
+        )
+        self.w_fit_dir = W.Text(
+            value=str(self._fit_defaults["fit_dir"]),
+            description="FIT dir",
+            layout=W.Layout(width="100%"),
+        )
+        self.w_fit_bindings_path = W.Text(
+            value=str(self._fit_defaults["bindings_path"]),
+            description="Bindings",
+            layout=W.Layout(width="100%"),
+        )
+        self.w_fit_field_allowlist = W.Textarea(
+            value=json.dumps(list(self._fit_defaults["field_allowlist"]), indent=2),
+            description="Fields",
+            layout=W.Layout(width="100%", height="130px"),
+        )
+        self.w_fit_partial_overlap = W.Dropdown(
+            options=["allow", "reject"],
+            value=str(self._fit_defaults["partial_overlap"]),
+            description="Overlap",
+            layout=W.Layout(width="260px"),
+        )
+        self.w_fit_ambiguity_policy = W.Dropdown(
+            options=["require_binding", "largest_overlap", "latest_start"],
+            value=str(self._fit_defaults["ambiguity_policy"]),
+            description="Multi-match",
+            layout=W.Layout(width="320px"),
+        )
+        self.w_fit_persist_raw_stream = W.Checkbox(
+            value=bool(self._fit_defaults["persist_raw_stream"]),
+            description="Persist raw stream",
+        )
+        self.w_fit_resample_to_primary = W.Checkbox(
+            value=bool(self._fit_defaults["resample_to_primary"]),
+            description="Resample to primary",
+        )
+        self.w_fit_resample_method = W.Dropdown(
+            options=["linear"],
+            value=str(self._fit_defaults["resample_method"]),
+            description="Method",
+            layout=W.Layout(width="220px"),
+        )
+        self.w_fit_raw_stream_name = W.Text(
+            value=str(self._fit_defaults["raw_stream_name"]),
+            description="Stream name",
+            layout=W.Layout(width="320px"),
         )
 
         # Displacement selection
@@ -167,6 +244,17 @@ class PreprocessControls:
             W.HBox([self.w_mode, self.w_preview_session]),
         ])
 
+        sec_fit = W.VBox([
+            self.w_fit_enabled,
+            self.w_fit_dir,
+            self.w_fit_bindings_path,
+            W.HBox([self.w_fit_partial_overlap, self.w_fit_ambiguity_policy]),
+            W.HBox([self.w_fit_persist_raw_stream, self.w_fit_resample_to_primary]),
+            W.HBox([self.w_fit_resample_method, self.w_fit_raw_stream_name]),
+            W.HTML("<b>FIT field allowlist</b> (JSON/Python list of Garmin record fields)"),
+            self.w_fit_field_allowlist,
+        ])
+
         sec_norm = W.VBox([
             W.HTML("<b>Displacement signals</b> (select which to normalise / derive VA)"),
             self.w_disp_select,
@@ -202,13 +290,14 @@ class PreprocessControls:
             self._out,
         ])
 
-        acc = W.Accordion(children=[sec_schema, sec_norm, sec_zero, sec_active, sec_misc, sec_actions])
+        acc = W.Accordion(children=[sec_schema, sec_fit, sec_norm, sec_zero, sec_active, sec_misc, sec_actions])
         acc.set_title(0, "Schema & Mode")
-        acc.set_title(1, "Displacements & Normalisation")
-        acc.set_title(2, "Zeroing")
-        acc.set_title(3, "Activity Mask")
-        acc.set_title(4, "Clipping, Smoothing & Notes")
-        acc.set_title(5, "Actions")
+        acc.set_title(1, "FIT Import")
+        acc.set_title(2, "Displacements & Normalisation")
+        acc.set_title(3, "Zeroing")
+        acc.set_title(4, "Activity Mask")
+        acc.set_title(5, "Clipping, Smoothing & Notes")
+        acc.set_title(6, "Actions")
         acc.selected_index = 0
         return acc
 
@@ -217,8 +306,8 @@ class PreprocessControls:
         return W.Box(layout=W.Layout(width="100%"))
 
     def _set_grid_in_section(self, grid: W.Widget) -> None:
-        # Replace the placeholder (the 4th child of section 1 VBox)
-        sec_norm: W.VBox = self.ui.children[1]  # Displacements & Normalisation section
+        # Replace the placeholder (the 4th child of section 2 VBox)
+        sec_norm: W.VBox = self.ui.children[2]  # Displacements & Normalisation section
         children = list(sec_norm.children)
         # children layout: HTML, SelectMultiple, HTML, <placeholder>
         if len(children) >= 4:
@@ -287,6 +376,20 @@ class PreprocessControls:
         mode = self.w_mode.value
         if mode not in ("tolerant", "strict"):
             errors.append("Mode must be 'tolerant' or 'strict'.")
+
+        if self.w_fit_enabled.value:
+            if not (self.w_fit_dir.value or "").strip():
+                errors.append("FIT import is enabled but FIT dir is blank.")
+            if self.w_fit_ambiguity_policy.value == "require_binding" and not (self.w_fit_bindings_path.value or "").strip():
+                errors.append("FIT ambiguity policy 'require_binding' requires a bindings path.")
+            if not (self.w_fit_raw_stream_name.value or "").strip():
+                errors.append("FIT raw stream name must not be blank.")
+            try:
+                fit_fields = self._parse_fit_field_allowlist()
+                if not fit_fields:
+                    warnings.append("FIT import is enabled but field allowlist is empty.")
+            except Exception as e:
+                errors.append(f"FIT field allowlist is invalid: {e}")
 
         disp_selected = list(self.w_disp_select.value or ())
         if not disp_selected:
@@ -366,6 +469,7 @@ class PreprocessControls:
         cfg = dict(
             schema_path=(self.w_schema_path.value or "").strip(),
             strict=(self.w_mode.value == "strict"),
+            fit_import=self._build_fit_import_config(),
 
             zeroing_enabled=bool(self.w_zero_enabled.value),
             zero_window_s=float(self.w_zero_window_s.value),
@@ -390,6 +494,51 @@ class PreprocessControls:
         )
 
         return cfg
+
+    def _normalize_fit_defaults(self, fit_import: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        cfg = dict(_FIT_IMPORT_DEFAULTS)
+        if isinstance(fit_import, dict):
+            cfg.update(dict(fit_import))
+        return cfg
+
+    def _parse_fit_field_allowlist(self) -> List[str]:
+        text = (self.w_fit_field_allowlist.value or "").strip()
+        if not text:
+            return []
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                raw = ast.literal_eval(text)
+            except Exception as e:
+                raise ValueError(
+                    "Expected JSON (or Python-literal) list of strings like "
+                    "[\"speed\", \"position_lat\"]"
+                ) from e
+
+        if not isinstance(raw, list):
+            raise ValueError("Expected a list of field names")
+
+        out = []
+        for item in raw:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("FIT field allowlist entries must be non-empty strings")
+            out.append(item.strip())
+        return out
+
+    def _build_fit_import_config(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.w_fit_enabled.value),
+            "fit_dir": (self.w_fit_dir.value or "").strip(),
+            "field_allowlist": self._parse_fit_field_allowlist(),
+            "ambiguity_policy": str(self.w_fit_ambiguity_policy.value),
+            "partial_overlap": str(self.w_fit_partial_overlap.value),
+            "persist_raw_stream": bool(self.w_fit_persist_raw_stream.value),
+            "resample_to_primary": bool(self.w_fit_resample_to_primary.value),
+            "resample_method": str(self.w_fit_resample_method.value),
+            "raw_stream_name": (self.w_fit_raw_stream_name.value or "").strip(),
+            "bindings_path": ((self.w_fit_bindings_path.value or "").strip() or None),
+        }
 
     def _parse_butterworth_smoothing_configs(self) -> List[Dict[str, Any]]:
         text = (self.w_bw_smoothing.value or "").strip()

@@ -16,6 +16,7 @@ The profile is intended to support:
 - fewer interactive setup steps before results are shown
 - explicit, reviewable configuration that can be stored alongside analysis code
 - later formalization of named preprocessing presets
+- optional Garmin FIT import policy for GPS enrichment during preprocessing
 
 This contract is intentionally narrow:
 
@@ -33,6 +34,7 @@ This contract is intentionally narrow:
 The profile captures parameters that are logically part of `run_macro(...)` preprocessing and event extraction, including:
 
 - event schema selection
+- optional FIT import policy and field selection
 - zeroing and normalization behavior
 - optional Butterworth smoothing behavior
 - activity-mask signal and threshold settings
@@ -49,6 +51,7 @@ The following are notebook/runtime concerns and are explicitly **out of scope** 
 - SHA cache location and processed-file detection policy
 - whether to prompt for run or session descriptions
 - timezone label or other run-labeling policy
+- the per-session user choice required when multiple overlapping FIT files exist
 
 ### 2.3 Relationship to other contracts
 
@@ -146,9 +149,22 @@ class ButterworthSmoothingConfigV1(TypedDict):
     cutoff_hz: float
     order: int
 
+class FitImportConfigV1(TypedDict, total=False):
+    enabled: bool
+    fit_dir: str
+    field_allowlist: list[str]
+    ambiguity_policy: str
+    partial_overlap: str
+    persist_raw_stream: bool
+    resample_to_primary: bool
+    resample_method: str
+    raw_stream_name: str
+    bindings_path: str | None
+
 class PreprocessRunConfigV1(TypedDict, total=False):
     schema_path: str
     strict: bool
+    fit_import: FitImportConfigV1 | None
     zeroing_enabled: bool
     zero_window_s: float
     zero_min_samples: int
@@ -193,6 +209,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 | field | type | meaning |
 |---|---|---|
 | `active_signal_vel_col` | string or `null` | Explicit velocity signal to use for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
+| `fit_import` | object or `null` | Optional Garmin FIT import policy block; when absent or `null`, FIT import is disabled |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
 
 ### 6.4 Config-field rules
@@ -203,7 +220,46 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - Values in `normalize_ranges` must be numeric and greater than zero.
 - `butterworth_smoothing` may be empty.
 - If `active_signal_disp_col` is `null`, `active_signal_vel_col` should also be `null`.
+- When `fit_import` is present, `fit_import.enabled=True` requires a non-empty `fit_dir`.
+- `fit_import.field_allowlist` should contain Garmin record-field names such as `speed` or `position_lat`.
+- `fit_import.ambiguity_policy` should default to `require_binding` when user choice is required for multi-match sessions.
 - Consumers may ignore unknown config fields that they do not support.
+
+### 6.5 `fit_import` block
+
+When present, `fit_import` has the shape:
+
+```json
+{
+  "enabled": true,
+  "fit_dir": "Garmin/FIT",
+  "field_allowlist": [
+    "position_lat",
+    "position_long",
+    "altitude",
+    "enhanced_altitude",
+    "speed",
+    "enhanced_speed",
+    "distance",
+    "grade",
+    "heading"
+  ],
+  "ambiguity_policy": "require_binding",
+  "partial_overlap": "allow",
+  "persist_raw_stream": true,
+  "resample_to_primary": true,
+  "resample_method": "linear",
+  "raw_stream_name": "gps_fit",
+  "bindings_path": "analysis/config/fit_bindings_v1.json"
+}
+```
+
+Rules:
+
+- `fit_dir` is part of the reusable preprocess policy for FIT discovery.
+- `bindings_path` points at a separate session-binding manifest used only when multiple overlapping FIT files exist.
+- `partial_overlap: "allow"` means incomplete GPS coverage is acceptable as long as there is some overlap.
+- `persist_raw_stream` and `resample_to_primary` may both be `true`; that is the recommended current implementation pattern.
 
 ---
 
@@ -258,6 +314,28 @@ That behavior should be treated as the current implementation detail for v1 auth
   "config": {
     "schema_path": "event schema/event_schema.yaml",
     "strict": false,
+    "fit_import": {
+      "enabled": false,
+      "fit_dir": "Garmin/FIT",
+      "field_allowlist": [
+        "position_lat",
+        "position_long",
+        "altitude",
+        "enhanced_altitude",
+        "speed",
+        "enhanced_speed",
+        "distance",
+        "grade",
+        "heading"
+      ],
+      "ambiguity_policy": "require_binding",
+      "partial_overlap": "allow",
+      "persist_raw_stream": true,
+      "resample_to_primary": true,
+      "resample_method": "linear",
+      "raw_stream_name": "gps_fit",
+      "bindings_path": "analysis/config/fit_bindings_v1.json"
+    },
     "zeroing_enabled": false,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,

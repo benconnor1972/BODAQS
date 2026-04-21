@@ -6,6 +6,28 @@
   "config": {
     "schema_path": "event schema/event_schema.yaml",
     "strict": false,
+    "fit_import": {
+      "enabled": false,
+      "fit_dir": "Garmin/FIT",
+      "field_allowlist": [
+        "position_lat",
+        "position_long",
+        "altitude",
+        "enhanced_altitude",
+        "speed",
+        "enhanced_speed",
+        "distance",
+        "grade",
+        "heading"
+      ],
+      "ambiguity_policy": "require_binding",
+      "partial_overlap": "allow",
+      "persist_raw_stream": true,
+      "resample_to_primary": true,
+      "resample_method": "linear",
+      "raw_stream_name": "gps_fit",
+      "bindings_path": "analysis/config/fit_bindings_v1.json"
+    },
     "zeroing_enabled": false,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,

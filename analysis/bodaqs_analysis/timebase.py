@@ -80,6 +80,62 @@ def ensure_session_streams_meta(session: Dict[str, Any]) -> Dict[str, Any]:
     return meta.setdefault("streams", {})
 
 
+def register_stream_metadata(
+    session: Dict[str, Any],
+    *,
+    stream_name: str,
+    kind: str,
+    time_col: str,
+    sample_rate_hz: Optional[float] = None,
+    dt_s: Optional[float] = None,
+    jitter_frac: Optional[float] = None,
+    notes: Optional[str] = None,
+    jitter_tol_frac: float = 0.05,
+) -> Dict[str, Any]:
+    """
+    Store generic per-stream metadata in session['meta']['streams'][stream_name].
+
+    Supported kinds:
+      - "uniform": requires sample_rate_hz, dt_s, jitter_frac
+      - "intermittent": requires only kind + time_col
+    """
+    if kind not in {"uniform", "intermittent"}:
+        raise ValueError(f"Unsupported stream kind: {kind}")
+    if not isinstance(time_col, str) or not time_col.strip():
+        raise ValueError("time_col must be a non-empty string")
+
+    entry: Dict[str, Any] = {
+        "kind": kind,
+        "time_col": time_col,
+    }
+
+    if kind == "uniform":
+        if sample_rate_hz is None or dt_s is None or jitter_frac is None:
+            raise ValueError("Uniform streams require sample_rate_hz, dt_s, and jitter_frac")
+        entry["sample_rate_hz"] = float(sample_rate_hz)
+        entry["dt_s"] = float(dt_s)
+        entry["jitter_frac"] = float(jitter_frac)
+
+    if notes is not None:
+        entry["notes"] = str(notes)
+
+    streams = ensure_session_streams_meta(session)
+    streams[stream_name] = entry
+
+    if kind == "uniform" and float(entry["jitter_frac"]) > float(jitter_tol_frac):
+        qc = session.setdefault("qc", {})
+        time_qc = qc.setdefault("time", {})
+        warnings = time_qc.setdefault("warnings", [])
+        warnings.append({
+            "stream": stream_name,
+            "issue": "high_jitter",
+            "jitter_frac": float(entry["jitter_frac"]),
+            "tol_frac": float(jitter_tol_frac),
+        })
+
+    return entry
+
+
 def register_stream_timebase(
     session: Dict[str, Any],
     *,
@@ -94,18 +150,14 @@ def register_stream_timebase(
     Also writes QC warning if jitter is high.
     """
     tb = estimate_uniform_timebase(df_stream, time_col=time_col, sample_rate_hz=sample_rate_hz)
-
-    streams = ensure_session_streams_meta(session)
-    streams[stream_name] = tb.as_dict()
-
-    qc = session.setdefault("qc", {})
-    time_qc = qc.setdefault("time", {})
-    warnings = time_qc.setdefault("warnings", [])
-    if tb.jitter_frac > float(jitter_tol_frac):
-        warnings.append({
-            "stream": stream_name,
-            "issue": "high_jitter",
-            "jitter_frac": float(tb.jitter_frac),
-            "tol_frac": float(jitter_tol_frac),
-        })
+    register_stream_metadata(
+        session,
+        stream_name=stream_name,
+        kind=tb.kind,
+        time_col=tb.time_col,
+        sample_rate_hz=tb.sample_rate_hz,
+        dt_s=tb.dt_s,
+        jitter_frac=tb.jitter_frac,
+        jitter_tol_frac=jitter_tol_frac,
+    )
     return tb

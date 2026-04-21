@@ -26,6 +26,7 @@ analysis/jupyter notebook
 analysis_old/
 analysis/old/
 analysis/tests/*
+!analysis/tests/test_logger_sidecar.py
 analysis/documentation/old versions/*
 analysis/event schema/old versions/*
 firmware/libraries/*

@@ -30,6 +30,7 @@ session = {
     "qc": dict,
     "df_raw": pandas.DataFrame,
     "df": pandas.DataFrame,
+    "stream_dfs": dict[str, pandas.DataFrame],  # optional raw secondary streams
 }
 ```
 
@@ -52,6 +53,7 @@ source = {
     "filename": str,             # basename only
     "created_local": datetime | None,
     "timezone": str | None,      # e.g. "Australia/Perth" or "AWST"
+    "sidecar_path": str | None,  # optional logger metadata sidecar used during ingest
 }
 ```
 
@@ -69,10 +71,14 @@ meta = {
     # Optional convenience summary (may be derived from streams["primary"])
     "sample_rate_hz": float | None,              # session-wide estimate if meaningful
     "sample_rate_by_channel_hz": dict[str, float] | None,
+    "t0_datetime": datetime | str | None,        # optional absolute session start anchor
 
     # NEW (v0+): per-stream timebase metadata (required when df present)
     # At minimum, streams["primary"] describes the timebase of session["df"].
     "streams": dict[str, dict],
+
+    # Optional raw ingest declarations from logger sidecar metadata.
+    "declared_streams": dict[str, dict] | None,
 
     "device": dict | None,       # firmware / hardware metadata if available
     "notes": str | None,
@@ -96,26 +102,27 @@ meta["channel_info"][channel] = {
 
 ### meta.streams (Per-Stream Timebase Metadata)
 
-This structure supports **multiple sensors with different (uniform) sample rates**.
+This structure supports **multiple sensors with different timebases**.
 
-A **stream** is a time series with its own time column (usually `time_s`) and its own dt.
+A **stream** is a time series with its own time column (usually `time_s`) and its own timing behavior.
 In v0, `session["df"]` is the canonical **analysis dataframe**, and its timebase is recorded as
 `meta["streams"]["primary"]`.
 
 ```python
 meta["streams"][stream_name] = {
-    "kind": "uniform",          # v0: uniform sampling
+    "kind": "uniform" | "intermittent",
     "time_col": str,            # e.g. "time_s"
-    "sample_rate_hz": float,    # estimated or declared
-    "dt_s": float,              # 1 / sample_rate_hz
-    "jitter_frac": float,       # std(dt) / median(dt) from time deltas
+    "sample_rate_hz": float,    # required for uniform streams
+    "dt_s": float,              # required for uniform streams
+    "jitter_frac": float,       # required for uniform streams
 }
 ```
 
 **Contract notes:**
 - `meta["streams"]` must be present (non-empty) when `session["df"]` is present.
-- `meta["streams"]["primary"]` must exist and describe the timebase of `session["df"]`.
+- `meta["streams"]["primary"]` must exist, be `kind == "uniform"`, and describe the timebase of `session["df"]`.
 - There is **no requirement** that all streams share the same dt.
+- Secondary streams may be `kind == "intermittent"` when stored separately in `session["stream_dfs"]`.
 - When secondary sensor metrics are computed in the future, those sensors may be **resampled onto the trigger grid**
   (Option A), and the resampling method/provenance should be recorded in `qc`.
 

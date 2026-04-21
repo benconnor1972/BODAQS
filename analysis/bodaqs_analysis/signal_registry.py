@@ -81,6 +81,8 @@ def build_signals_registry(
         "rear_shock",
         "front_fork",
         "rear_fork",
+        "gps_fit",
+        "gps",
     )
 
     def _infer_sensor_id_from_base(base: Optional[str]) -> Optional[str]:
@@ -122,6 +124,20 @@ def build_signals_registry(
             return "acc"
         if b.endswith("_norm"):
             return "disp_norm"
+
+        # GPS/navigation field hints
+        if b.endswith("position_latitude") or b.endswith("position_longitude"):
+            return "position"
+        if b.endswith("heading"):
+            return "heading"
+        if b.endswith("grade"):
+            return "grade"
+        if b.endswith("speed"):
+            return "speed"
+        if b.endswith("distance"):
+            return "distance"
+        if b.endswith("altitude"):
+            return "altitude"
 
         ops_l = [str(o).lower() for o in (ops or [])]
 

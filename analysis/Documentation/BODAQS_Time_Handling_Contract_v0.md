@@ -1,14 +1,14 @@
 # BODAQS Time Handling Contract v0 (Option A: Trigger Grid)
 
 **Status:** Draft (v0)  
-**Scope:** Uniformly-sampled sensors with potentially different sample rates. Intermittent sensors are out of scope for v0.
+**Scope:** A uniform primary analysis grid with optional secondary streams. Secondary streams may be uniform or intermittent.
 
 ---
 
 ## Goals
 
 1. Provide a **canonical time axis** for event detection and metric computation.
-2. Support **multiple sensors with different (uniform) sample rates**.
+2. Support **multiple sensors with different sample rates**.
 3. Enable computing metrics on **non-triggering sensors** by **resampling them onto the trigger grid**.
 4. Make all time decisions **explicit, validated, and recorded** in session metadata/QC.
 
@@ -19,10 +19,11 @@
 ### Stream
 A stream is a sensor-provided time series with:
 - its own time column (typically `time_s`)
-- a uniform sample rate (dt approximately constant)
 - one or more signal columns
 
-Streams may have different sample rates.
+Streams may be:
+- `uniform`: dt is approximately constant and `sample_rate_hz` / `dt_s` can be recorded
+- `intermittent`: timestamps are monotonic but sample intervals may be irregular or sparse
 
 ### Trigger grid (Option A)
 For each event type, the **primary grid** is the timebase of the **triggering stream/signal**.
@@ -45,12 +46,14 @@ The event’s grid is defined by the trigger stream’s `time_s`.
 ## dt (sample period) Rules
 
 ### Per-stream dt
-Each stream records:
+Uniform streams record:
 - `sample_rate_hz`
 - `dt_s = 1/sample_rate_hz`
 - a **jitter fraction** computed from time deltas
 
-A stream is considered “uniform enough” if jitter is below a configurable tolerance (default 5%).
+A uniform stream is considered “uniform enough” if jitter is below a configurable tolerance (default 5%).
+
+Intermittent streams record only their `time_col` and stream kind unless richer metadata is available.
 
 ### No global dt requirement
 There is **no requirement** that all streams share the same dt.
@@ -99,6 +102,10 @@ session["meta"]["streams"] = {
     "dt_s": 0.01,
     "jitter_frac": 0.002,
   },
+  "<secondary_stream_name>": {
+    "kind": "intermittent",
+    "time_col": "time_s",
+  },
   ...
 }
 ```
@@ -113,12 +120,12 @@ For each stream listed in `session["meta"]["streams"]`:
 
 1. `time_col` exists
 2. time is finite and monotonic non-decreasing
-3. dt can be estimated (at least one positive delta)
-4. jitter is recorded; if jitter exceeds tolerance, set a QC warning
+3. if `kind == "uniform"`, dt can be estimated (at least one positive delta)
+4. if `kind == "uniform"`, jitter is recorded; if jitter exceeds tolerance, set a QC warning
 
 ---
 
 ## Notes / Evolution
 
 - A future version may introduce a session-wide “master grid” (Option B).
-- Intermittent/event-driven sensors may be handled via per-event local timebases in later versions.
+- Intermittent/event-driven sensors may later gain richer stream-local or per-event timebase metadata.
