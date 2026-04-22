@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
@@ -75,9 +76,19 @@ def run_preprocess(csv_bytes: bytes, config: PreprocessConfig, filename: str = "
     events = events_df.to_dict("records") if events_df is not None and not events_df.empty else []
     metrics = metrics_df.to_dict("records") if metrics_df is not None and not metrics_df.empty else []
 
-    # Ensure all event/metric values are JSON-serializable (numpy scalars → Python native)
-    events = json.loads(json.dumps(events, default=str))
-    metrics = json.loads(json.dumps(metrics, default=str))
+    # Ensure all event/metric values are JSON-serializable (numpy scalars → Python native,
+    # NaN/Inf → None so FastAPI's strict JSON encoder doesn't reject them)
+    def _sanitize(obj: Any) -> Any:
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return None
+        if isinstance(obj, list):
+            return [_sanitize(v) for v in obj]
+        if isinstance(obj, dict):
+            return {k: _sanitize(v) for k, v in obj.items()}
+        return obj
+
+    events = json.loads(json.dumps(_sanitize(events), default=str))
+    metrics = json.loads(json.dumps(_sanitize(metrics), default=str))
 
     return {
         "session_id": str(session["session_id"]),
