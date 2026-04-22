@@ -7,7 +7,7 @@ This directory contains the application layer that sits on top of the existing `
 ```
 webapp.bodaqs.net/
   api/       FastAPI backend — stateless compute engine
-  webapp/    SvelteKit frontend — runs entirely in the browser
+  frontend/  SvelteKit frontend — runs entirely in the browser
 ```
 
 The backend wraps `bodaqs_analysis.pipeline.run_macro()` and exposes it as an HTTP endpoint. The frontend compresses CSVs before upload, stores processed artifacts in IndexedDB, and lets users export their data as a portable ZIP bundle.
@@ -57,7 +57,7 @@ curl http://localhost:8000/health
 ### 2 — Frontend
 
 ```bash
-cd webapp.bodaqs.net/webapp
+cd webapp.bodaqs.net/frontend
 npm install
 npm run dev
 ```
@@ -97,7 +97,7 @@ The frontend compresses files with `CompressionStream('gzip')` before upload.
 pytest
 
 # Frontend unit tests
-cd webapp.bodaqs.net/webapp
+cd webapp.bodaqs.net/frontend
 npx vitest run
 ```
 
