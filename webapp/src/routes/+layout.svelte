@@ -8,4 +8,12 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-{@render children()}
+<nav>
+	<a href="/">Library</a>
+	<a href="/preprocess">Preprocess</a>
+	<a href="/transfer">Export / Import</a>
+</nav>
+
+<main>
+	{@render children()}
+</main>
