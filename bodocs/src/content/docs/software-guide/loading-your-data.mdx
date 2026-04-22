@@ -4,19 +4,145 @@ description: How to start JupyterLab and open the BODAQS analysis notebooks.
 sidebar:
   order: 2
 ---
+import {Aside, Tabs, TabItem} from '@astrojs/starlight/components';
+
+## How BODAQS processes data
+
+BODAQS separates **data ingestion** from **data exploration**.
+
+You normally begin with one or more raw logger CSV files. Those raw files are
+then preprocessed into an on-disk artifact library that the notebooks can
+share.
+
+At a high level, the flow is:
+
+1. Raw logger CSV files are selected and preprocessed. Preprocessing involves:
+2. Each processed file becomes a **session**.
+3. Sessions are written into a batch **run** under `analysis/artifacts/`.
+4. Each session stores the raw data, processed dataframe, session metadata, detected
+   events, and derived metrics.
+5. Other notebooks then read those artifacts to produce visualizations. Each log file only needs to be processed once.
+
+The notebooks  work together. One notebook can create the
+artifacts, another can add descriptions or notes, and another can build charts
+and dashboards from the same processed sessions.
+
+## Two notebook workflows
+
+Here are two recommended ways to work with the analysis notebooks:
+
+### 1. Simple single-notebook workflow
+
+This workflow uses `bodaqs_auto_preprocess_simple_suspension_metrics.ipynb`
+
+This notebook looks for new raw logger files, preprocesses them, writes the
+artifacts, and then opens the simple suspension metrics dashboard over the
+processed sessions. The user simply drops their new log files in a directory, runs the notebook and looks at the results, which comprise various histograms and metrics often used in MTB suspension analysis. 
+
+### 2. Multi-notebook workflow
+
+This is a more flexible workflow that gives the user more control over preprocessing and gives access to library management functionality and a wider selection of analysis tools. The main notebooks used are:
+
+- `bodaqs_batch_preprocessing_pipeline.ipynb` to import and preprocess raw logger CSV files and create analysis artifacts, with full control of preprocessing settings
+- `bodaqs_library_manager.ipynb` to add descriptions and notes, and create and manage 'aggregations'
+- `bodaqs_simple_suspension_metrics.ipynb` to view the simple suspension dashboard (per the simple workflow)
+- `bodaqs_widget_test_notebook.ipynb` to explore the processed data with a broader set of analysis widgets.
 
 ## Starting JupyterLab
 
-With your [virtual environment active](/software-guide/#activate-the-virtual-environment) and dependencies installed, start
-JupyterLab from the project root:
+With your [virtual environment active](/software-guide/#activate-the-virtual-environment)
+and dependencies installed, open a terminal in the BODAQS folder and start
+JupyterLab:
 
-```bash
-jupyter lab
-```
+<Tabs>
+  <TabItem label="Mac / Linux">
+    ```bash
+    cd /path/to/BODAQS
+    source .venv/bin/activate
+    python -m jupyter lab --notebook-dir=analysis
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    cd C:\path\to\BODAQS
+    .\.venv\Scripts\Activate.ps1
+    python -m jupyter lab --notebook-dir=analysis
+    ```
+  </TabItem>
+</Tabs>
 
-JupyterLab will open automatically in your default browser at
-`http://localhost:8888`. The terminal window is running the server that the
-browser connects to.
+JupyterLab should open automatically in your default browser. If it doesn't,
+copy the `http://localhost:8888/...` address shown in the terminal into your
+browser.
 
+<Aside>
+  The `--notebook-dir=analysis` option opens JupyterLab directly in the
+  BODAQS analysis folder, where the notebooks, event schema, and artifacts
+  live.
+</Aside>
 
-{/*TODO, how to actually use the dang thing*/ }
+## Choosing your starting notebook
+
+If you want the simpler all-in-one path, start with:
+
+- `bodaqs_auto_preprocess_simple_suspension_metrics.ipynb`
+
+If you want the more extensive multi-notebook path, start with:
+
+- `bodaqs_batch_preprocessing_pipeline.ipynb`
+
+Then continue with:
+
+- `bodaqs_library_manager.ipynb`
+- `bodaqs_simple_suspension_metrics.ipynb`
+- `bodaqs_widget_test_notebook.ipynb`
+
+<Aside type="tip" title="If you're new to notebooks">
+  A notebook is made up of **cells**. Some cells contain explanatory text,
+  while others contain Python code. You can run one cell at a time, and the
+  output usually appears directly underneath that cell.
+
+  The **kernel** is the live Python process running in the background. When you
+  run a code cell, the kernel executes it.
+
+  Data and variables created in one code cell stay in the kernel's memory and
+  can be used by later cells. That means the order you run cells in matters. If
+  you skip around, a later cell may fail because an earlier one has not been
+  run yet.
+
+  Restarting the kernel clears that in-memory state, but it does not delete
+  files written to disk. In BODAQS, processed sessions and metrics are
+  persisted under `analysis/artifacts/`, so they remain available after the
+  kernel is restarted.
+
+  If you are unsure where to begin, the safest option is usually to open the
+  notebook and run it from top to bottom.
+</Aside>
+
+## Running a notebook
+
+1. Double-click the notebook in the left-hand file browser.
+2. If JupyterLab asks you to choose a kernel, select the Python environment from your `.venv`. It may appear as `Python 3`, `Python (BODAQS)`, or `BODAQS (.venv)`.
+3. To run the whole notebook from top to bottom, choose **Run -> Run All Cells**.
+4. To work through the notebook one cell at a time, click a cell and press **Shift+Enter**.
+
+## Typical workflow
+
+When you come back later, these are the commands you usually need:
+
+<Tabs>
+  <TabItem label="Mac / Linux">
+    ```bash
+    cd /path/to/BODAQS
+    source .venv/bin/activate
+    python -m jupyter lab --notebook-dir=analysis
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    cd C:\path\to\BODAQS
+    .\.venv\Scripts\Activate.ps1
+    python -m jupyter lab --notebook-dir=analysis
+    ```
+  </TabItem>
+</Tabs>
