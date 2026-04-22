@@ -544,28 +544,12 @@ def make_session_window_browser_widget_for_loader(
 
         trace.on_click(_on_click, append=False)
 
-    def _apply_all_traces(df_: pd.DataFrame):
+    def _apply_all_traces(df_: pd.DataFrame, *, preserve_current_window: bool = True):
         if df_ is None or len(df_) == 0:
             with fig.batch_update():
                 fig.data = ()
                 fig.layout.shapes = ()
             return
-
-        prev_range = None
-        try:
-            r = fig.layout.xaxis.range
-            if r is not None and len(r) == 2 and r[0] is not None and r[1] is not None:
-                prev_range = (float(r[0]), float(r[1]))
-        except Exception:
-            prev_range = None
-        if prev_range is None:
-            try:
-                t_full = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
-                t_full = t_full[np.isfinite(t_full)]
-                if t_full.size:
-                    prev_range = (float(t_full.min()), float(t_full.max()))
-            except Exception:
-                prev_range = None
 
         # Full-session extent (used to pin rangeslider to full session)
         full_range = None
@@ -576,6 +560,17 @@ def make_session_window_browser_widget_for_loader(
                 full_range = (float(t_full2.min()), float(t_full2.max()))
         except Exception:
             full_range = None
+
+        prev_range = None
+        if preserve_current_window:
+            try:
+                r = fig.layout.xaxis.range
+                if r is not None and len(r) == 2 and r[0] is not None and r[1] is not None:
+                    prev_range = (float(r[0]), float(r[1]))
+            except Exception:
+                prev_range = None
+        if prev_range is None:
+            prev_range = full_range
 
 
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
@@ -653,14 +648,16 @@ def make_session_window_browser_widget_for_loader(
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
         state["detail_y_range"] = compute_detail_y_range(df_, sel)
 
-        _apply_all_traces(df_)
-
         snap = _selection_snapshot()
+        session_changed = snap.get("session_key") != str(session_key)
         df_time = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
         df_time = df_time[np.isfinite(df_time)]
         default_window = None
         if df_time.size:
             default_window = (float(df_time.min()), float(df_time.max()))
+
+        _apply_all_traces(df_, preserve_current_window=not session_changed)
+
         if snap.get("session_key") != str(session_key):
             _set_selection(
                 session_key=str(session_key),
@@ -1057,26 +1054,32 @@ def make_session_window_browser_widget_for_loader(
 
     plot_row = W.VBox([fig], layout=W.Layout(width="100%"))
 
-    root = W.VBox([top_controls_row, plot_row, bottom_row],
+    root = W.VBox([top_controls_row, bottom_row, plot_row],
                   layout=W.Layout(gap="10px", width="100%"))
 
-    def _force_plotly_resize(delay_ms: int = 150):
+    def _force_plotly_resize(*, delays_ms: Optional[List[int]] = None) -> None:
+        delays = [75, 250, 750] if delays_ms is None else [int(x) for x in delays_ms]
         display(Javascript(f"""
-        setTimeout(function() {{
-            try {{
-                const plots = document.querySelectorAll('.js-plotly-plot');
-                plots.forEach((gd) => {{
-                    if (window.Plotly) {{
+        (function() {{
+            const delays = {delays!r};
+            const resizeAll = function() {{
+                try {{
+                    const plots = document.querySelectorAll('.js-plotly-plot');
+                    plots.forEach((gd) => {{
+                        if (!window.Plotly) {{
+                            return;
+                        }}
                         Plotly.relayout(gd, {{'xaxis.rangeslider.visible': true}});
                         if (Plotly.Plots && Plotly.Plots.resize) {{
                             Plotly.Plots.resize(gd);
                         }}
-                    }}
-                }});
-            }} catch (e) {{
-                console.warn("plotly resize failed", e);
-            }}
-        }}, {int(delay_ms)});
+                    }});
+                }} catch (e) {{
+                    console.warn("plotly resize failed", e);
+                }}
+            }};
+            delays.forEach((delay) => setTimeout(resizeAll, delay));
+        }})();
         """))
 
     def refresh() -> None:
@@ -1086,7 +1089,7 @@ def make_session_window_browser_widget_for_loader(
 
     if auto_display:
         display(root)
-        _force_plotly_resize(600)
+        _force_plotly_resize(delays_ms=[150, 450, 900])
 
     return {
         "root": root,
@@ -1105,6 +1108,7 @@ def make_session_window_browser_widget_for_loader(
             "bookmark_comment": w_bm_comment,
             "bookmark_list": w_bm_list,
         },
+        "post_display": lambda: _force_plotly_resize(),
     }
 
 
@@ -1189,6 +1193,9 @@ def make_session_window_browser_rebuilder(
             root = h.get("root") or h.get("ui")
             if root is not None:
                 display(root)
+            post_display = h.get("post_display")
+            if callable(post_display):
+                post_display()
 
     rebuild()
     return {"out": out, "rebuild": rebuild, "state": state}

@@ -5,7 +5,6 @@ from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-from plotly.colors import sample_colorscale
 
 _LAT_COLS = ("gps_fit_position_latitude_dom_world [deg]",)
 _LON_COLS = ("gps_fit_position_longitude_dom_world [deg]",)
@@ -19,6 +18,14 @@ _SPEED_COLS = (
 )
 _DISTANCE_COLS = ("gps_fit_distance_dom_world [m]",)
 _DEFAULT_ROUTE_COLOR = "#2563eb"
+_DEFAULT_SPEED_BIN_EDGES_KMH = (0.0, 10.0, 20.0, 30.0, 40.0)
+_DEFAULT_SPEED_BIN_COLORS = (
+    "#22c55e",
+    "#84cc16",
+    "#facc15",
+    "#fb923c",
+    "#ef4444",
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +52,7 @@ class LineRun:
     label: str
     times_s: tuple[float, ...]
     altitudes_m: tuple[float, ...]
+    speeds_mps: tuple[float, ...]
     coordinates: tuple[tuple[float, float], ...]
     point_count: int
     segment_count: int
@@ -290,42 +298,27 @@ def build_speed_color_bins(
     if arr.size == 0:
         return []
 
-    n_bins = max(1, int(n_bins))
-    vmin = float(np.nanmin(arr))
-    vmax = float(np.nanmax(arr))
-    if not np.isfinite(vmin) or not np.isfinite(vmax):
-        return []
-
-    if vmin == vmax:
-        colors = sample_colorscale(colorscale, [0.5])
-        return [
-            SpeedColorBin(
-                idx=0,
-                lower_mps=vmin,
-                upper_mps=vmax,
-                color=str(colors[0]),
-                label=f"{vmin:.1f} m/s",
-            )
-        ]
-
-    colors = sample_colorscale(
-        colorscale,
-        [i / max(1, n_bins - 1) for i in range(n_bins)],
-    )
-    edges = np.linspace(vmin, vmax, num=n_bins + 1, dtype=float)
+    edges_kmh = tuple(float(x) for x in _DEFAULT_SPEED_BIN_EDGES_KMH)
+    n_bins = len(edges_kmh)
+    colors = tuple(str(x) for x in _DEFAULT_SPEED_BIN_COLORS)
     out: list[SpeedColorBin] = []
     for idx in range(n_bins):
-        lo = float(edges[idx])
-        hi = float(edges[idx + 1])
-        inclusive_hi = idx == (n_bins - 1)
-        hi_label = hi if inclusive_hi else hi
+        lo_kmh = float(edges_kmh[idx])
+        lo = lo_kmh / 3.6
+        if idx == (n_bins - 1):
+            hi = float(np.inf)
+            label = f"{int(lo_kmh)}+ km/h"
+        else:
+            hi_kmh = float(edges_kmh[idx + 1])
+            hi = hi_kmh / 3.6
+            label = f"{int(lo_kmh)}-{int(hi_kmh)} km/h"
         out.append(
             SpeedColorBin(
                 idx=idx,
                 lower_mps=lo,
                 upper_mps=hi,
-                color=str(colors[idx]),
-                label=f"{lo:.1f}-{hi_label:.1f} m/s",
+                color=colors[idx],
+                label=label,
             )
         )
     return out
@@ -335,6 +328,8 @@ def _color_bin_index(value: float, bins: Sequence[SpeedColorBin]) -> Optional[in
     if not np.isfinite(value) or not bins:
         return None
     value_f = float(value)
+    if value_f < float(bins[0].lower_mps):
+        return 0
     for idx, item in enumerate(bins):
         is_last = idx == (len(bins) - 1)
         in_bin = (
@@ -386,6 +381,7 @@ def build_line_runs_from_segments(
                 "label": label,
                 "times_s": [],
                 "altitudes_m": [],
+                "speeds_mps": [],
                 "coordinates": [],
                 "segment_count": 0,
             }
@@ -393,10 +389,12 @@ def build_line_runs_from_segments(
         elif bucket["times_s"]:
             bucket["times_s"].append(np.nan)
             bucket["altitudes_m"].append(np.nan)
+            bucket["speeds_mps"].append(np.nan)
             bucket["coordinates"].append((np.nan, np.nan))
 
         bucket["times_s"].extend([t0, t1])
         bucket["altitudes_m"].extend([a0, a1])
+        bucket["speeds_mps"].extend([speed_value, speed_value])
         bucket["coordinates"].extend([p0, p1])
         bucket["segment_count"] += 1
 
@@ -408,6 +406,7 @@ def build_line_runs_from_segments(
                 label=str(bucket["label"]),
                 times_s=tuple(float(x) if np.isfinite(x) else np.nan for x in bucket["times_s"]),
                 altitudes_m=tuple(float(x) if np.isfinite(x) else np.nan for x in bucket["altitudes_m"]),
+                speeds_mps=tuple(float(x) if np.isfinite(x) else np.nan for x in bucket["speeds_mps"]),
                 coordinates=tuple(
                     (
                         float(lat) if np.isfinite(lat) else np.nan,

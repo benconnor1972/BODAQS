@@ -81,9 +81,12 @@ def make_session_gps_dashboard(
     shared_selection = selection_model or make_session_time_selection()
     session_browser_kwargs = dict(session_browser_kwargs or {})
     gps_browser_kwargs = dict(gps_browser_kwargs or {})
+    gps_browser_kwargs.setdefault("show_session_control", False)
 
     session_out = W.Output()
     gps_out = W.Output()
+    session_out.layout = W.Layout(width="100%", margin="0", padding="0")
+    gps_out.layout = W.Layout(width="100%", margin="0", padding="0")
 
     session_browser = make_session_window_browser_rebuilder(
         sel=sel,
@@ -102,7 +105,6 @@ def make_session_gps_dashboard(
         [
             W.HTML("<h3 style='margin:0;'>Session Browser</h3>"),
             session_out,
-            W.HTML("<h3 style='margin:0;'>GPS Browser</h3>"),
             gps_out,
         ],
         layout=W.Layout(width="100%"),

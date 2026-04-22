@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from IPython.display import clear_output, display
-from ipyleaflet import CircleMarker, GeoJSON, LayersControl, Map, basemap_to_tiles, basemaps
+from ipyleaflet import CircleMarker, LayerGroup, LayersControl, Map, Polyline, basemap_to_tiles, basemaps
 
 from bodaqs_analysis.widgets.contracts import (
     RebuilderHandle,
@@ -33,7 +33,7 @@ from bodaqs_analysis.widgets.time_selection import SessionTimeSelection, make_se
 
 _GPS_BROWSER_SOURCE = "gps_browser"
 _DEFAULT_ROUTE_COLOR = "#2563eb"
-_WINDOW_HIGHLIGHT_COLOR = "#f59e0b"
+_INACTIVE_ROUTE_COLOR = "#9ca3af"
 _POINT_COLOR = "#111827"
 _POINT_FILL_COLOR = "#f59e0b"
 
@@ -64,48 +64,45 @@ def _speed_legend_html(bins: Sequence[SpeedColorBin]) -> str:
     return "".join(bits)
 
 
-def _route_geojson_from_runs(
+def _split_run_coordinates(run: LineRun) -> list[list[tuple[float, float]]]:
+    lines: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    for lat, lon in run.coordinates:
+        if np.isfinite(lat) and np.isfinite(lon):
+            current.append((float(lat), float(lon)))
+            continue
+        if len(current) >= 2:
+            lines.append(current)
+        current = []
+    if len(current) >= 2:
+        lines.append(current)
+    return lines
+
+
+def _make_polyline_group(
     runs: Sequence[LineRun],
     *,
     weight: int,
     opacity: float,
     default_color: str,
-) -> dict[str, Any]:
-    features: list[dict[str, Any]] = []
+) -> LayerGroup:
+    layers: list[Polyline] = []
     for run in runs:
-        lines: list[list[list[float]]] = []
-        current: list[list[float]] = []
-        for lat, lon in run.coordinates:
-            if np.isfinite(lat) and np.isfinite(lon):
-                current.append([float(lon), float(lat)])
-                continue
-            if len(current) >= 2:
-                lines.append(current)
-            current = []
-        if len(current) >= 2:
-            lines.append(current)
+        lines = _split_run_coordinates(run)
         if not lines:
             continue
         color = str(run.color or default_color)
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": (
-                    {"type": "LineString", "coordinates": lines[0]}
-                    if len(lines) == 1
-                    else {"type": "MultiLineString", "coordinates": lines}
-                ),
-                "properties": {
-                    "label": str(run.label),
-                    "style": {
-                        "color": color,
-                        "weight": int(weight),
-                        "opacity": float(opacity),
-                    },
-                },
-            }
-        )
-    return {"type": "FeatureCollection", "features": features}
+        for line in lines:
+            layers.append(
+                Polyline(
+                    locations=line,
+                    color=color,
+                    weight=int(weight),
+                    opacity=float(opacity),
+                    fill=False,
+                )
+            )
+    return LayerGroup(layers=tuple(layers))
 
 
 def _window_shapes(*, t0_s: Optional[float], t1_s: Optional[float], selected_time_s: Optional[float]) -> list[dict[str, Any]]:
@@ -144,6 +141,28 @@ def _window_shapes(*, t0_s: Optional[float], t1_s: Optional[float], selected_tim
     return shapes
 
 
+def _window_covers_full_extent(
+    *,
+    t0_s: Optional[float],
+    t1_s: Optional[float],
+    full_t0_s: Optional[float],
+    full_t1_s: Optional[float],
+) -> bool:
+    if (
+        t0_s is None
+        or t1_s is None
+        or full_t0_s is None
+        or full_t1_s is None
+    ):
+        return False
+    a = float(min(t0_s, t1_s))
+    b = float(max(t0_s, t1_s))
+    fa = float(min(full_t0_s, full_t1_s))
+    fb = float(max(full_t0_s, full_t1_s))
+    tol = max(1e-9, 1e-6 * max(1.0, abs(fb - fa)))
+    return a <= (fa + tol) and b >= (fb - tol)
+
+
 def _fallback_center_from_bounds(bounds: Sequence[Sequence[float]]) -> Optional[tuple[float, float]]:
     try:
         lat0, lon0 = bounds[0]
@@ -175,26 +194,6 @@ def _fallback_zoom_from_bounds(bounds: Sequence[Sequence[float]]) -> Optional[in
     return int(np.clip(zoom, 2, 18))
 
 
-def _make_geojson_layer(
-    *,
-    data: Mapping[str, Any],
-    color: str,
-    weight: int,
-    opacity: float,
-    hover_weight: Optional[int] = None,
-    hover_opacity: Optional[float] = None,
-) -> GeoJSON:
-    return GeoJSON(
-        data=dict(data),
-        style={"color": str(color), "weight": int(weight), "opacity": float(opacity)},
-        hover_style={
-            "weight": int(hover_weight if hover_weight is not None else weight),
-            "opacity": float(hover_opacity if hover_opacity is not None else opacity),
-        },
-        style_callback=lambda feature: dict(feature.get("properties", {}).get("style") or {}),
-    )
-
-
 def make_gps_browser_widget_for_loader(
     *,
     session_keys: Sequence[str],
@@ -202,6 +201,7 @@ def make_gps_browser_widget_for_loader(
     selection_model: Optional[SessionTimeSelection] = None,
     preferred_stream_name: str = "gps_fit",
     time_col: str = "time_s",
+    show_session_control: bool = True,
     map_height_px: int = 420,
     chart_height_px: int = 300,
     auto_display: bool = False,
@@ -215,11 +215,23 @@ def make_gps_browser_widget_for_loader(
     w_session = W.Dropdown(options=keys, value=keys[0], description="Session", layout=W.Layout(width="360px"))
     w_basemap = W.Dropdown(
         options=list(_BASEMAP_OPTIONS.keys()),
-        value="Light",
+        value="OpenStreetMap",
         description="Basemap",
         layout=W.Layout(width="240px"),
     )
+    w_map_height = W.IntSlider(
+        value=int(map_height_px),
+        min=240,
+        max=900,
+        step=20,
+        description="Map height",
+        readout=True,
+        continuous_update=False,
+        layout=W.Layout(width="260px"),
+    )
     w_color_by_speed = W.Checkbox(value=True, description="Color by speed")
+    if not show_session_control:
+        w_session.layout.display = "none"
     w_status = W.HTML("")
     w_speed_legend = W.HTML("")
     w_source = W.HTML("")
@@ -228,15 +240,34 @@ def make_gps_browser_widget_for_loader(
     fig.layout = go.Layout(
         height=chart_height_px,
         margin=dict(l=55, r=20, t=20, b=70),
-        xaxis=dict(title="time (s)", showgrid=True),
-        yaxis=dict(title="altitude (m)", showgrid=True),
-        hovermode="x unified",
+        xaxis=dict(
+            title="time (s)",
+            showgrid=True,
+            rangeslider=dict(visible=False),
+            showline=True,
+            mirror=True,
+            linecolor="#9ca3af",
+            linewidth=1,
+        ),
+        yaxis=dict(
+            title="altitude (m)",
+            showgrid=True,
+            showline=True,
+            mirror=True,
+            linecolor="#9ca3af",
+            linewidth=1,
+        ),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        template="none",
+        hovermode="closest",
         showlegend=True,
         legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.25, yanchor="top"),
         uirevision="gps_browser_keep",
     )
     fig.layout.xaxis.uirevision = "gps_browser_keep"
     fig.layout.yaxis.uirevision = "gps_browser_keep"
+    fig.update_xaxes(rangeslider_visible=False)
 
     map_widget = Map(center=(0.0, 0.0), zoom=2, scroll_wheel_zoom=True, layout=W.Layout(width="100%", height=f"{map_height_px}px"))
     base_layer = basemap_to_tiles(_BASEMAP_OPTIONS[str(w_basemap.value)])
@@ -246,20 +277,8 @@ def make_gps_browser_widget_for_loader(
     else:
         map_widget.add(base_layer)
 
-    route_layer = _make_geojson_layer(
-        data=_empty_geojson(),
-        color=_DEFAULT_ROUTE_COLOR,
-        weight=4,
-        opacity=0.9,
-        hover_weight=6,
-        hover_opacity=1.0,
-    )
-    window_layer = _make_geojson_layer(
-        data=_empty_geojson(),
-        color=_WINDOW_HIGHLIGHT_COLOR,
-        weight=6,
-        opacity=1.0,
-    )
+    route_layer = _make_polyline_group((), weight=4, opacity=0.9, default_color=_DEFAULT_ROUTE_COLOR)
+    window_layer = _make_polyline_group((), weight=6, opacity=1.0, default_color=_DEFAULT_ROUTE_COLOR)
     point_marker = CircleMarker(
         location=(0.0, 0.0),
         radius=0,
@@ -284,6 +303,7 @@ def make_gps_browser_widget_for_loader(
         "point_marker": point_marker,
         "updating": False,
         "selection_sync_active": False,
+        "show_session_control": bool(show_session_control),
     }
 
     def _selection_snapshot() -> dict[str, Any]:
@@ -328,31 +348,38 @@ def make_gps_browser_widget_for_loader(
     def _set_status(msg: str) -> None:
         w_status.value = f"<span style='color:#666;'>{msg}</span>"
 
-    def _replace_geojson_layer(
+    def _replace_map_layer(
         key: str,
         *,
-        data: Mapping[str, Any],
+        layer: Any,
+    ) -> Any:
+        old_layer = state.get(key)
+        if old_layer is None:
+            map_widget.add(layer)
+        else:
+            map_widget.substitute(old_layer, layer)
+        state[key] = layer
+        return layer
+
+    def _set_map_height(height_px: int) -> None:
+        value = int(np.clip(int(height_px), int(w_map_height.min), int(w_map_height.max)))
+        map_widget.layout.height = f"{value}px"
+
+    def _replace_route_group(
+        key: str,
+        *,
+        runs: Sequence[LineRun],
         color: str,
         weight: int,
         opacity: float,
-        hover_weight: Optional[int] = None,
-        hover_opacity: Optional[float] = None,
-    ) -> GeoJSON:
-        new_layer = _make_geojson_layer(
-            data=data,
-            color=color,
+    ) -> LayerGroup:
+        new_layer = _make_polyline_group(
+            runs,
             weight=weight,
             opacity=opacity,
-            hover_weight=hover_weight,
-            hover_opacity=hover_opacity,
+            default_color=color,
         )
-        old_layer = state.get(key)
-        if old_layer is None:
-            map_widget.add(new_layer)
-        else:
-            map_widget.substitute(old_layer, new_layer)
-        state[key] = new_layer
-        return new_layer
+        return _replace_map_layer(key, layer=new_layer)
 
     def _clear_visuals(msg: str) -> None:
         with fig.batch_update():
@@ -363,19 +390,17 @@ def make_gps_browser_widget_for_loader(
                 fig.layout.xaxis.range = None
             finally:
                 state["selection_sync_active"] = False
-        _replace_geojson_layer(
+        _replace_route_group(
             "route_layer",
-            data=_empty_geojson(),
-            color=_DEFAULT_ROUTE_COLOR,
+            runs=(),
+            color=_INACTIVE_ROUTE_COLOR,
             weight=4,
             opacity=0.9,
-            hover_weight=6,
-            hover_opacity=1.0,
         )
-        _replace_geojson_layer(
+        _replace_route_group(
             "window_layer",
-            data=_empty_geojson(),
-            color=_WINDOW_HIGHLIGHT_COLOR,
+            runs=(),
+            color=_DEFAULT_ROUTE_COLOR,
             weight=6,
             opacity=1.0,
         )
@@ -429,6 +454,11 @@ def make_gps_browser_widget_for_loader(
                 current_window = (float(t0), float(t1))
 
         has_altitude_trace = False
+        full_window = None
+        route_time = pd.to_numeric(route_df["time_s"], errors="coerce").to_numpy(dtype=float)
+        route_time = route_time[np.isfinite(route_time)]
+        if route_time.size:
+            full_window = (float(np.min(route_time)), float(np.max(route_time)))
         with fig.batch_update():
             fig.data = ()
             shown_labels: set[str] = set()
@@ -440,11 +470,15 @@ def make_gps_browser_widget_for_loader(
                 has_altitude_trace = True
                 showlegend = str(run.label) not in shown_labels
                 shown_labels.add(str(run.label))
+                speed_mps = np.asarray(run.speeds_mps, dtype=float)
+                speed_kph = speed_mps * 3.6
                 trace = go.Scatter(
                     x=x,
                     y=alt,
                     mode="lines",
-                    line=dict(color=str(run.color), width=2),
+                    line=dict(color=str(run.color), width=2.8),
+                    customdata=speed_kph,
+                    hovertemplate="time: %{x:.1f}s<br>speed: %{customdata:.1f} km/h<extra></extra>",
                     name=str(run.label),
                     showlegend=bool(color_by_speed and showlegend),
                 )
@@ -464,14 +498,27 @@ def make_gps_browser_widget_for_loader(
                         marker=dict(size=9, color=_POINT_FILL_COLOR, line=dict(color=_POINT_COLOR, width=2)),
                         name="selected point",
                         showlegend=False,
+                        hoverinfo="skip",
                     )
                 )
 
+            rect_window = current_window
+            if current_window is not None and full_window is not None:
+                if _window_covers_full_extent(
+                    t0_s=current_window[0],
+                    t1_s=current_window[1],
+                    full_t0_s=full_window[0],
+                    full_t1_s=full_window[1],
+                ):
+                    rect_window = None
             fig.layout.shapes = _window_shapes(
-                t0_s=None if current_window is None else current_window[0],
-                t1_s=None if current_window is None else current_window[1],
+                t0_s=None if rect_window is None else rect_window[0],
+                t1_s=None if rect_window is None else rect_window[1],
                 selected_time_s=selected_time if current.get("session_key") == str(w_session.value) else None,
             )
+            fig.layout.xaxis.rangeslider.visible = False
+            fig.layout.plot_bgcolor = "#ffffff"
+            fig.layout.paper_bgcolor = "#ffffff"
 
             state["selection_sync_active"] = True
             try:
@@ -495,78 +542,65 @@ def make_gps_browser_widget_for_loader(
         gps_view = state.get("gps_view")
         segment_df = state.get("segment_df")
         if not isinstance(gps_view, GPSViewData) or gps_view.route_df.empty:
-            _replace_geojson_layer(
+            _replace_route_group(
                 "route_layer",
-                data=_empty_geojson(),
-                color=_DEFAULT_ROUTE_COLOR,
+                runs=(),
+                color=_INACTIVE_ROUTE_COLOR,
                 weight=4,
                 opacity=0.9,
-                hover_weight=6,
-                hover_opacity=1.0,
             )
-            _replace_geojson_layer(
+            _replace_route_group(
                 "window_layer",
-                data=_empty_geojson(),
-                color=_WINDOW_HIGHLIGHT_COLOR,
+                runs=(),
+                color=_DEFAULT_ROUTE_COLOR,
                 weight=6,
                 opacity=1.0,
             )
             point_marker.radius = 0
             return
 
-        runs, _bins = build_line_runs_from_segments(
+        route_runs, _ = build_line_runs_from_segments(
             segment_df,
-            color_by_speed=bool(w_color_by_speed.value),
-            default_color=_DEFAULT_ROUTE_COLOR,
+            color_by_speed=False,
+            default_color=_INACTIVE_ROUTE_COLOR,
         )
-        _replace_geojson_layer(
+        _replace_route_group(
             "route_layer",
-            data=_route_geojson_from_runs(
-                runs,
-                weight=4,
-                opacity=0.9,
-                default_color=_DEFAULT_ROUTE_COLOR,
-            ),
-            color=_DEFAULT_ROUTE_COLOR,
+            runs=route_runs,
+            color=_INACTIVE_ROUTE_COLOR,
             weight=4,
-            opacity=0.9,
-            hover_weight=6,
-            hover_opacity=1.0,
+            opacity=0.75,
         )
 
         current = _selection_snapshot()
+        active_segments = segment_df
         if current.get("session_key") == str(w_session.value):
-            subset = subset_segments_by_window(
+            candidate = subset_segments_by_window(
                 segment_df,
                 t0_s=current.get("window_t0_s"),
                 t1_s=current.get("window_t1_s"),
             )
-        else:
-            subset = pd.DataFrame()
+            if not candidate.empty:
+                active_segments = candidate
 
-        if subset.empty:
-            _replace_geojson_layer(
+        if active_segments.empty:
+            _replace_route_group(
                 "window_layer",
-                data=_empty_geojson(),
-                color=_WINDOW_HIGHLIGHT_COLOR,
+                runs=(),
+                color=_DEFAULT_ROUTE_COLOR,
                 weight=6,
                 opacity=1.0,
             )
         else:
             window_runs, _ = build_line_runs_from_segments(
-                subset,
-                color_by_speed=False,
-                default_color=_WINDOW_HIGHLIGHT_COLOR,
+                active_segments,
+                color_by_speed=bool(w_color_by_speed.value),
+                default_color=_DEFAULT_ROUTE_COLOR,
             )
-            _replace_geojson_layer(
+            _replace_route_group(
                 "window_layer",
-                data=_route_geojson_from_runs(
-                    window_runs,
-                    weight=6,
-                    opacity=1.0,
-                    default_color=_WINDOW_HIGHLIGHT_COLOR,
-                ),
-                color=_WINDOW_HIGHLIGHT_COLOR,
+                runs=window_runs,
+                color=_DEFAULT_ROUTE_COLOR,
                 weight=6,
                 opacity=1.0,
             )
@@ -647,6 +681,11 @@ def make_gps_browser_widget_for_loader(
     def _on_basemap_change(*_args: Any) -> None:
         _apply_basemap()
 
+    def _on_map_height_change(change: Mapping[str, Any]) -> None:
+        if change.get("new") is None:
+            return
+        _set_map_height(int(change["new"]))
+
     def _on_style_change(*_args: Any) -> None:
         _refresh_selection_overlays()
 
@@ -689,12 +728,16 @@ def make_gps_browser_widget_for_loader(
 
     w_session.observe(_on_session_change, names="value")
     w_basemap.observe(_on_basemap_change, names="value")
+    w_map_height.observe(_on_map_height_change, names="value")
     w_color_by_speed.observe(_on_style_change, names="value")
     fig.layout.on_change(_on_altitude_range_change, ("xaxis", "range"))
     for trait_name in ("session_key", "window_t0_s", "window_t1_s", "selected_time_s"):
         selection.observe(_on_selection_model_change, names=trait_name)
 
-    controls = W.HBox([w_session, w_basemap, w_color_by_speed])
+    controls_children = [w_basemap, w_map_height, w_color_by_speed]
+    if show_session_control:
+        controls_children.insert(0, w_session)
+    controls = W.HBox(controls_children)
     map_box = W.VBox([W.HTML("<b>Route map</b>"), map_widget], layout=W.Layout(width="50%"))
     chart_box = W.VBox([W.HTML("<b>Altitude over time</b>"), fig], layout=W.Layout(width="50%"))
     root = W.VBox(
@@ -709,6 +752,7 @@ def make_gps_browser_widget_for_loader(
     )
 
     _load_session(str(w_session.value), fit_bounds_to_route=True)
+    _set_map_height(int(w_map_height.value))
 
     if auto_display:
         display(root)
@@ -720,6 +764,7 @@ def make_gps_browser_widget_for_loader(
         "controls": {
             "session": w_session,
             "basemap": w_basemap,
+            "map_height": w_map_height,
             "color_by_speed": w_color_by_speed,
         },
         "selection_model": selection,
