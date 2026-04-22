@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bodaqs-analysis"
+version = "0.1.0"
+description = "BODAQS suspension telemetry analysis library"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bodaqs_analysis*"]
