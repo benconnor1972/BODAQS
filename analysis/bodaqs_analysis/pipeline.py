@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import pandas as pd
@@ -35,6 +36,9 @@ from .preprocess_filters import (
 )
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
+_FILENAME_STEM_DATETIME_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})(?:$|[^0-9].*)"
+)
 ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
 
 logger = logging.getLogger(__name__)
@@ -208,6 +212,67 @@ def _apply_sidecar_metadata(
     parse["sidecar_used"] = True
 
 
+def _infer_time_anchor_from_filename_stem(
+    csv_path: str | Path,
+    *,
+    timezone: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    match = _FILENAME_STEM_DATETIME_RE.match(Path(csv_path).stem)
+    if match is None:
+        return None, None
+
+    base_ts = pd.Timestamp(
+        f"{match.group('date')}T{match.group('time').replace('-', ':')}"
+    )
+    tz_source: Optional[str] = None
+
+    if isinstance(timezone, str) and timezone.strip():
+        try:
+            return base_ts.tz_localize(timezone.strip()).isoformat(), "explicit_timezone"
+        except Exception:
+            tz_source = "local_machine_timezone"
+
+    local_tzinfo = datetime.now().astimezone().tzinfo
+    if local_tzinfo is not None:
+        return base_ts.tz_localize(local_tzinfo).isoformat(), (tz_source or "local_machine_timezone")
+
+    return base_ts.isoformat(), "naive_no_timezone"
+
+
+def _apply_filename_stem_time_anchor(
+    session: Dict[str, Any],
+    *,
+    csv_path: str | Path,
+) -> None:
+    source = session.setdefault("source", {})
+    meta = session.setdefault("meta", {})
+    qc = session.setdefault("qc", {})
+    parse = qc.setdefault("parse", {})
+
+    existing_anchor = None
+    if isinstance(meta, dict):
+        existing_anchor = meta.get("t0_datetime")
+    if existing_anchor is None and isinstance(source, dict):
+        existing_anchor = source.get("created_local")
+    if isinstance(existing_anchor, str) and existing_anchor.strip():
+        return
+
+    timezone = source.get("timezone") if isinstance(source, dict) else None
+    anchor, tz_source = _infer_time_anchor_from_filename_stem(csv_path, timezone=timezone)
+    if not isinstance(anchor, str) or not anchor.strip():
+        return
+
+    source["created_local"] = anchor
+    meta["t0_datetime"] = anchor
+    parse["time_anchor_source"] = "filename_stem"
+    parse["time_anchor_timezone_source"] = tz_source
+
+    if tz_source == "local_machine_timezone":
+        _append_qc_warning(session, "filename_stem_time_anchor_used_local_machine_timezone")
+    elif tz_source == "naive_no_timezone":
+        _append_qc_warning(session, "filename_stem_time_anchor_used_without_timezone")
+
+
 def load_session(
     csv_path: str,
     *,
@@ -265,6 +330,7 @@ def load_session(
     }
     if isinstance(sidecar, dict) and isinstance(resolved_sidecar_path, str):
         _apply_sidecar_metadata(session, sidecar=sidecar, sidecar_path=resolved_sidecar_path)
+    _apply_filename_stem_time_anchor(session, csv_path=p)
     return session
 
 def load_and_canonicalize(

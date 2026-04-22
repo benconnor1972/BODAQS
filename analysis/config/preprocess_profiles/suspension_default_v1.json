@@ -7,7 +7,7 @@
     "schema_path": "event schema/event_schema.yaml",
     "strict": false,
     "fit_import": {
-      "enabled": false,
+      "enabled": true,
       "fit_dir": "Garmin/FIT",
       "field_allowlist": [
         "position_lat",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 import ast
 import json
@@ -132,6 +133,12 @@ class PreprocessControls:
             description="FIT dir",
             layout=W.Layout(width="100%"),
         )
+        self.b_fit_dir_browse = W.Button(
+            description="Browse...",
+            icon="folder-open",
+            button_style="",
+            layout=W.Layout(width="110px"),
+        )
         self.w_fit_bindings_path = W.Text(
             value=str(self._fit_defaults["bindings_path"]),
             description="Bindings",
@@ -228,6 +235,7 @@ class PreprocessControls:
         # Wire handlers
         self.w_disp_select.observe(self._on_disp_selection_changed, names="value")
         self.w_active_disp_col.observe(self._on_active_disp_changed, names="value")
+        self.b_fit_dir_browse.on_click(lambda _: self._on_fit_dir_browse())
         self.b_validate.on_click(lambda _: self.validate(print_to_output=True))
         self.b_build.on_click(lambda _: self._print_config())
 
@@ -246,7 +254,7 @@ class PreprocessControls:
 
         sec_fit = W.VBox([
             self.w_fit_enabled,
-            self.w_fit_dir,
+            W.HBox([self.w_fit_dir, self.b_fit_dir_browse]),
             self.w_fit_bindings_path,
             W.HBox([self.w_fit_partial_overlap, self.w_fit_ambiguity_policy]),
             W.HBox([self.w_fit_persist_raw_stream, self.w_fit_resample_to_primary]),
@@ -363,6 +371,22 @@ class PreprocessControls:
 
     def _on_active_disp_changed(self, change: Dict[str, Any]) -> None:
         self.w_active_vel_label.value = self._derived_vel_label()
+
+    def _on_fit_dir_browse(self) -> None:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        current = (self.w_fit_dir.value or "").strip()
+        start_dir = current if current and Path(current).exists() else str(Path.cwd())
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        chosen = filedialog.askdirectory(title="Select FIT directory", initialdir=start_dir)
+        root.destroy()
+
+        if chosen:
+            self.w_fit_dir.value = chosen
 
     # ---------- Validation / config ----------
     def validate(self, *, print_to_output: bool = False) -> Tuple[List[str], List[str]]:

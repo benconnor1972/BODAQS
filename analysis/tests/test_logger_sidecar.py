@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -10,7 +11,12 @@ from bodaqs_analysis.artifacts import (
     load_session_artifacts,
     save_session_artifacts,
 )
-from bodaqs_analysis.io_fit import load_fit_bindings, select_fit_candidate, upsert_fit_binding
+from bodaqs_analysis.io_fit import (
+    find_overlapping_fit_files,
+    load_fit_bindings,
+    select_fit_candidate,
+    upsert_fit_binding,
+)
 from bodaqs_analysis.model import validate_session
 from bodaqs_analysis.pipeline import enrich_session_with_fit, load_session, preprocess_session
 from bodaqs_analysis.timebase import register_stream_metadata
@@ -96,6 +102,22 @@ def _write_csv_and_sidecar(tmp_path):
     return csv_path, sidecar_path
 
 
+def _write_csv_only(tmp_path, name: str = "session.csv"):
+    csv_path = tmp_path / name
+    csv_path.write_text(
+        "\n".join(
+            [
+                "time_s,front_shock_dom_suspension [mm],rear_shock_dom_suspension [mm],mark",
+                "0.00,10.0,20.0,0",
+                "0.03,11.0,21.0,1",
+                "0.06,12.0,22.0,0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return csv_path
+
+
 def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
     csv_path, sidecar_path = _write_csv_and_sidecar(tmp_path)
 
@@ -110,6 +132,27 @@ def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["sensor"] == "rear_shock"
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["role"] == "disp"
     assert session["meta"]["device"]["firmware_version"] == "1.2.3"
+
+
+def test_load_session_uses_filename_stem_anchor_without_sidecar(tmp_path):
+    csv_path = _write_csv_only(tmp_path, name="2026-02-19_08-35-11.CSV")
+
+    session = load_session(str(csv_path), timezone="Australia/Perth")
+
+    assert session["source"]["created_local"] == "2026-02-19T08:35:11+08:00"
+    assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
+    assert session["qc"]["parse"]["time_anchor_source"] == "filename_stem"
+    assert session["qc"]["parse"]["time_anchor_timezone_source"] == "explicit_timezone"
+    assert session["qc"]["warnings"] == []
+
+
+def test_load_session_uses_filename_stem_anchor_with_suffix(tmp_path):
+    csv_path = _write_csv_only(tmp_path, name="2026-02-19_08-35-11_slackline.CSV")
+
+    session = load_session(str(csv_path), timezone="Australia/Perth")
+
+    assert session["source"]["created_local"] == "2026-02-19T08:35:11+08:00"
+    assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
 
 
 def test_preprocess_session_uses_declared_sidecar_sample_rate(tmp_path):
@@ -227,6 +270,32 @@ def test_select_fit_candidate_requires_binding_when_multiple_overlap(tmp_path):
     )
 
     assert selected["filename"] == "ride_b.fit"
+
+
+def test_find_overlapping_fit_files_deduplicates_case_variants(tmp_path, monkeypatch):
+    fit_path = tmp_path / "ride.fit"
+    fit_path.write_bytes(b"fit-binary-placeholder")
+
+    monkeypatch.setattr(
+        "bodaqs_analysis.io_fit.inspect_fit_file",
+        lambda path, field_allowlist=None: {
+            "path": str(path),
+            "filename": Path(path).name,
+            "start_datetime": "2026-02-19T00:35:11+00:00",
+            "end_datetime": "2026-02-19T00:45:11+00:00",
+            "available_fields": ["enhanced_speed"],
+            "field_units": {"enhanced_speed": "m/s"},
+        },
+    )
+
+    candidates = find_overlapping_fit_files(
+        fit_dir=tmp_path,
+        session_start_datetime="2026-02-19T00:36:00+00:00",
+        session_end_datetime="2026-02-19T00:37:00+00:00",
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["filename"] == "ride.fit"
 
 
 def test_enrich_session_with_fit_adds_raw_stream_and_resampled_columns(tmp_path, monkeypatch):

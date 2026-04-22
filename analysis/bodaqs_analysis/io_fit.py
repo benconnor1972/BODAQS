@@ -245,8 +245,20 @@ def find_overlapping_fit_files(
         raise ValueError("session_end_datetime must be >= session_start_datetime")
 
     candidates: list[dict[str, Any]] = []
+    fit_paths: list[Path] = []
+    seen_paths: set[str] = set()
 
     for path in sorted(root.glob("*.fit")) + sorted(root.glob("*.FIT")):
+        try:
+            key = str(path.resolve()).lower()
+        except Exception:
+            key = str(path).replace("\\", "/").lower()
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        fit_paths.append(path)
+
+    for path in fit_paths:
         summary = inspect_fit_file(path, field_allowlist=field_allowlist)
         fit_start = _coerce_timestamp(summary["start_datetime"])
         fit_end = _coerce_timestamp(summary["end_datetime"])
