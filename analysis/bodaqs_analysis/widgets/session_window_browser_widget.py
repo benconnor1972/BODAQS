@@ -61,6 +61,7 @@ from bodaqs_analysis.widgets.session_window_plot import (
     event_color_for_pair,
     init_session_window_figure,
 )
+from bodaqs_analysis.widgets.time_selection import SessionTimeSelection, make_session_time_selection
 
 EVENT_SIGNAL_COL = "signal_col"  # required by events table contract
 
@@ -134,6 +135,7 @@ def make_session_window_browser_widget_for_loader(
     event_type_col: str = SCHEMA_ID_COL,
     trigger_time_col: str = "trigger_time_s",
     time_col: str = "time_s",
+    selection_model: Optional[SessionTimeSelection] = None,
     # perf
     detail_max_points: int = 8000,
     auto_display: bool = False,
@@ -225,6 +227,8 @@ def make_session_window_browser_widget_for_loader(
         "fig": None,
         # marks
         "mark_col": "mark",
+        "selection_model": selection_model or make_session_time_selection(),
+        "selection_sync_active": False,
     }
 
     # stable mark styling
@@ -477,27 +481,75 @@ def make_session_window_browser_widget_for_loader(
             )
         )
 
-    def _apply_all_traces(df_: pd.DataFrame):
+    def _selection_snapshot() -> dict[str, Any]:
+        selection = state.get("selection_model")
+        return selection.snapshot() if isinstance(selection, SessionTimeSelection) else {}
+
+    def _set_selection(
+        *,
+        session_key: Optional[str] = None,
+        window: Optional[Tuple[Optional[float], Optional[float]]] = None,
+        selected_time_s: Any = None,
+        set_selected_time: bool = False,
+    ) -> None:
+        selection = state.get("selection_model")
+        if not isinstance(selection, SessionTimeSelection):
+            return
+        state["selection_sync_active"] = True
+        try:
+            selection.update_state(
+                session_key=session_key,
+                window_t0_s=None if window is None else window[0],
+                window_t1_s=None if window is None else window[1],
+                selected_time_s=selected_time_s,
+                set_selected_time=set_selected_time,
+                source="session_window_browser",
+            )
+        finally:
+            state["selection_sync_active"] = False
+
+    def _apply_selection_shapes() -> None:
+        snap = _selection_snapshot()
+        selected_time = snap.get("selected_time_s") if snap.get("session_key") == str(w_session.value) else None
+        shapes = []
+        if selected_time is not None and np.isfinite(float(selected_time)):
+            x = float(selected_time)
+            shapes.append(
+                {
+                    "type": "line",
+                    "xref": "x",
+                    "yref": "paper",
+                    "x0": x,
+                    "x1": x,
+                    "y0": 0.0,
+                    "y1": 1.0,
+                    "line": {"color": "#f59e0b", "width": 2},
+                }
+            )
+        fig.layout.shapes = tuple(shapes)
+
+    def _attach_point_pick_callback(trace: go.Scatter) -> None:
+        def _on_click(this_trace: go.Scatter, points: Any, _state: Any) -> None:
+            if not points.point_inds:
+                return
+            idx = int(points.point_inds[0])
+            if idx < 0 or idx >= len(this_trace.x):
+                return
+            try:
+                picked_t = float(this_trace.x[idx])
+            except Exception:
+                return
+            _set_selection(session_key=str(w_session.value), selected_time_s=picked_t, set_selected_time=True)
+            _apply_selection_shapes()
+
+        trace.on_click(_on_click, append=False)
+
+    def _apply_all_traces(df_: pd.DataFrame, *, preserve_current_window: bool = True):
         if df_ is None or len(df_) == 0:
             with fig.batch_update():
                 fig.data = ()
+                fig.layout.shapes = ()
             return
-
-        prev_range = None
-        try:
-            r = fig.layout.xaxis.range
-            if r is not None and len(r) == 2 and r[0] is not None and r[1] is not None:
-                prev_range = (float(r[0]), float(r[1]))
-        except Exception:
-            prev_range = None
-        if prev_range is None:
-            try:
-                t_full = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
-                t_full = t_full[np.isfinite(t_full)]
-                if t_full.size:
-                    prev_range = (float(t_full.min()), float(t_full.max()))
-            except Exception:
-                prev_range = None
 
         # Full-session extent (used to pin rangeslider to full session)
         full_range = None
@@ -508,6 +560,17 @@ def make_session_window_browser_widget_for_loader(
                 full_range = (float(t_full2.min()), float(t_full2.max()))
         except Exception:
             full_range = None
+
+        prev_range = None
+        if preserve_current_window:
+            try:
+                r = fig.layout.xaxis.range
+                if r is not None and len(r) == 2 and r[0] is not None and r[1] is not None:
+                    prev_range = (float(r[0]), float(r[1]))
+            except Exception:
+                prev_range = None
+        if prev_range is None:
+            prev_range = full_range
 
 
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
@@ -535,6 +598,7 @@ def make_session_window_browser_widget_for_loader(
                         showlegend=True,
                     )
                 )
+                _attach_point_pick_callback(fig.data[-1])
 
             yr = state.get("detail_y_range")
             if yr is not None:
@@ -559,6 +623,8 @@ def make_session_window_browser_widget_for_loader(
                 if hasattr(fig.layout.xaxis, "rangeslider") and fig.layout.xaxis.rangeslider is not None:
                     fig.layout.xaxis.rangeslider.range = [fa, fb]
 
+            _apply_selection_shapes()
+
     # ---------------- session refresh ----------------
 
     def _refresh_all_for_session(session_key: str):
@@ -582,7 +648,25 @@ def make_session_window_browser_widget_for_loader(
         sel = tuple(map(str, _coerce_list(w_detail_signals.value)))
         state["detail_y_range"] = compute_detail_y_range(df_, sel)
 
-        _apply_all_traces(df_)
+        snap = _selection_snapshot()
+        session_changed = snap.get("session_key") != str(session_key)
+        df_time = _to_numeric_series(df_, time_col).to_numpy(dtype=float)
+        df_time = df_time[np.isfinite(df_time)]
+        default_window = None
+        if df_time.size:
+            default_window = (float(df_time.min()), float(df_time.max()))
+
+        _apply_all_traces(df_, preserve_current_window=not session_changed)
+
+        if snap.get("session_key") != str(session_key):
+            _set_selection(
+                session_key=str(session_key),
+                window=default_window,
+                selected_time_s=None,
+                set_selected_time=True,
+            )
+        elif snap.get("window_t0_s") is None or snap.get("window_t1_s") is None:
+            _set_selection(session_key=str(session_key), window=default_window)
 
         _rebuild_bookmark_list()  # refresh list on session change
 
@@ -612,6 +696,58 @@ def make_session_window_browser_widget_for_loader(
     w_session.observe(_on_session_change, names="value")
     for w in (w_detail_signals, w_detail_autodown, w_event_types, w_show_marks):
         w.observe(_on_controls_change, names="value")
+
+    def _on_xaxis_range_change(_layout: Any, xrange: Any) -> None:
+        if state["selection_sync_active"]:
+            return
+        if xrange is None or len(xrange) != 2 or xrange[0] is None or xrange[1] is None:
+            t0, t1 = _get_current_window()
+        else:
+            try:
+                t0, t1 = float(xrange[0]), float(xrange[1])
+            except Exception:
+                return
+        _set_selection(session_key=str(w_session.value), window=(t0, t1))
+
+    fig.layout.on_change(_on_xaxis_range_change, ("xaxis", "range"))
+
+    def _on_selection_model_change(change: Dict[str, Any]) -> None:
+        if state["selection_sync_active"]:
+            return
+        owner = change.get("owner")
+        source = str(getattr(owner, "source", "") or "")
+        if source == "session_window_browser":
+            return
+
+        selection = state.get("selection_model")
+        if not isinstance(selection, SessionTimeSelection):
+            return
+
+        target_session = selection.session_key
+        if isinstance(target_session, str) and target_session in set(map(str, w_session.options)) and target_session != str(w_session.value):
+            state["updating"] = True
+            try:
+                w_session.value = target_session
+            finally:
+                state["updating"] = False
+            _refresh_all_for_session(str(w_session.value))
+            return
+
+        if selection.session_key == str(w_session.value):
+            t0 = selection.window_t0_s
+            t1 = selection.window_t1_s
+            if t0 is not None and t1 is not None:
+                state["selection_sync_active"] = True
+                try:
+                    fig.layout.xaxis.range = [float(t0), float(t1)]
+                finally:
+                    state["selection_sync_active"] = False
+            _apply_selection_shapes()
+
+    selection = state.get("selection_model")
+    if isinstance(selection, SessionTimeSelection):
+        for trait_name in ("session_key", "window_t0_s", "window_t1_s", "selected_time_s"):
+            selection.observe(_on_selection_model_change, names=trait_name)
 
     # ---------------- bookmarks (persisted) ----------------
 
@@ -918,26 +1054,32 @@ def make_session_window_browser_widget_for_loader(
 
     plot_row = W.VBox([fig], layout=W.Layout(width="100%"))
 
-    root = W.VBox([top_controls_row, plot_row, bottom_row],
+    root = W.VBox([top_controls_row, bottom_row, plot_row],
                   layout=W.Layout(gap="10px", width="100%"))
 
-    def _force_plotly_resize(delay_ms: int = 150):
+    def _force_plotly_resize(*, delays_ms: Optional[List[int]] = None) -> None:
+        delays = [75, 250, 750] if delays_ms is None else [int(x) for x in delays_ms]
         display(Javascript(f"""
-        setTimeout(function() {{
-            try {{
-                const plots = document.querySelectorAll('.js-plotly-plot');
-                plots.forEach((gd) => {{
-                    if (window.Plotly) {{
+        (function() {{
+            const delays = {delays!r};
+            const resizeAll = function() {{
+                try {{
+                    const plots = document.querySelectorAll('.js-plotly-plot');
+                    plots.forEach((gd) => {{
+                        if (!window.Plotly) {{
+                            return;
+                        }}
                         Plotly.relayout(gd, {{'xaxis.rangeslider.visible': true}});
                         if (Plotly.Plots && Plotly.Plots.resize) {{
                             Plotly.Plots.resize(gd);
                         }}
-                    }}
-                }});
-            }} catch (e) {{
-                console.warn("plotly resize failed", e);
-            }}
-        }}, {int(delay_ms)});
+                    }});
+                }} catch (e) {{
+                    console.warn("plotly resize failed", e);
+                }}
+            }};
+            delays.forEach((delay) => setTimeout(resizeAll, delay));
+        }})();
         """))
 
     def refresh() -> None:
@@ -947,12 +1089,13 @@ def make_session_window_browser_widget_for_loader(
 
     if auto_display:
         display(root)
-        _force_plotly_resize(600)
+        _force_plotly_resize(delays_ms=[150, 450, 900])
 
     return {
         "root": root,
         "state": state,
         "fig": fig,
+        "selection_model": state.get("selection_model"),
         "bookmark_store": bm_store,
         "refresh": refresh,
         "controls": {
@@ -965,6 +1108,7 @@ def make_session_window_browser_widget_for_loader(
             "bookmark_comment": w_bm_comment,
             "bookmark_list": w_bm_list,
         },
+        "post_display": lambda: _force_plotly_resize(),
     }
 
 
@@ -978,6 +1122,7 @@ def make_session_window_browser_rebuilder(
     event_type_col: str = SCHEMA_ID_COL,
     trigger_time_col: str = "trigger_time_s",
     time_col: str = "time_s",
+    selection_model: Optional[SessionTimeSelection] = None,
     detail_max_points: int = 8000,
 ) -> RebuilderHandle:
     """
@@ -986,7 +1131,7 @@ def make_session_window_browser_rebuilder(
     if out is None:
         out = W.Output()
 
-    state: Dict[str, Any] = {"handles": None}
+    state: Dict[str, Any] = {"handles": None, "selection_model": selection_model or make_session_time_selection()}
 
     def rebuild() -> None:
         from bodaqs_analysis.widgets.loaders import (
@@ -1040,6 +1185,7 @@ def make_session_window_browser_rebuilder(
                 event_type_col=event_type_col,
                 trigger_time_col=trigger_time_col,
                 time_col=time_col,
+                selection_model=state["selection_model"],
                 detail_max_points=detail_max_points,
                 auto_display=False,
             )
@@ -1047,6 +1193,9 @@ def make_session_window_browser_rebuilder(
             root = h.get("root") or h.get("ui")
             if root is not None:
                 display(root)
+            post_display = h.get("post_display")
+            if callable(post_display):
+                post_display()
 
     rebuild()
     return {"out": out, "rebuild": rebuild, "state": state}

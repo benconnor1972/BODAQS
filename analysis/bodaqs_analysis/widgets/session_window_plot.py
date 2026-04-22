@@ -13,16 +13,30 @@ import plotly.graph_objects as go
 def init_session_window_figure(fig: go.FigureWidget) -> None:
     fig.layout = go.Layout(
         height=520,
-        margin=dict(l=55, r=20, t=20, b=90),
+        margin=dict(l=55, r=20, t=20, b=130),
         xaxis=dict(
             title="time (s)",
-            rangeslider=dict(visible=True),
+            rangeslider=dict(
+                visible=True,
+                thickness=0.105,
+                bgcolor="#d1d5db",
+            ),
             showgrid=True,
+            showline=True,
+            mirror=True,
+            linecolor="#9ca3af",
+            linewidth=1,
         ),
         yaxis=dict(
             title="value",
             showgrid=True,
+            showline=True,
+            mirror=True,
+            linecolor="#9ca3af",
+            linewidth=1,
         ),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -39,11 +53,11 @@ def init_session_window_figure(fig: go.FigureWidget) -> None:
             orientation="h",
             x=0.5,
             xanchor="center",
-            y=-0.5,
+            y=-0.24,
             yanchor="top",
             yref="paper",
         ),
-        margin=dict(l=55, r=20, t=20, b=200),
+        margin=dict(l=55, r=20, t=20, b=130),
     )
 
     fig.layout.uirevision = "keep"

@@ -84,6 +84,10 @@ pipeline.log               # optional
         df.parquet             # canonical session dataframe
         meta.json              # session metadata
         qc.parquet             # optional QC tables
+        streams/
+          <stream_name>/
+            df.parquet         # optional raw secondary stream dataframe
+            meta.json          # optional secondary stream metadata
 
       registry/
         signals.json            # snapshot of signal registry
@@ -230,6 +234,14 @@ artifacts/runs/<run_id>/sessions/<session_id>/manifest.json
     "path": "source/input.csv",
     "sha256": "..."
   },
+  "aux_sources": [
+    {
+      "kind": "fit",
+      "path": "source_aux/gps_fit.fit",
+      "sha256": "...",
+      "stream_name": "gps_fit"
+    }
+  ],
   "summary": {
     "n_rows": 123456,
     "t_start_s": 0.0,
@@ -277,6 +289,12 @@ Code and widgets may assume the following paths exist if the artifact is present
 
   ```
   runs/<run_id>/sessions/<session_id>/session/meta.json
+  ```
+
+* Secondary raw stream dataframe
+
+  ```
+  runs/<run_id>/sessions/<session_id>/session/streams/<stream_name>/df.parquet
   ```
 
 * Session annotations / canonical notes (optional)

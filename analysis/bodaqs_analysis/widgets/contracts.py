@@ -65,11 +65,13 @@ class SessionSelection(TypedDict):
     session_id: str
 
 
-class SessionArtifacts(TypedDict):
+class SessionArtifacts(TypedDict, total=False):
     """Minimal per-session artifact payload used by widgets."""
 
     df: pd.DataFrame
     meta: Dict[str, Any]
+    stream_dfs: Dict[str, pd.DataFrame]
+    secondary_stream_meta: Dict[str, Dict[str, Any]]
 
 
 @dataclass(frozen=True)
