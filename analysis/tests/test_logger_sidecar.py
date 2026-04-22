@@ -15,6 +15,7 @@ from bodaqs_analysis.model import validate_session
 from bodaqs_analysis.pipeline import enrich_session_with_fit, load_session, preprocess_session
 from bodaqs_analysis.timebase import register_stream_metadata
 from bodaqs_analysis.ui.fit_bindings_editor import build_fit_candidate_summary
+from bodaqs_analysis.ui.preprocess_file_selector import PreprocessLogSelector
 from bodaqs_analysis.ui.preprocess_controls import PreprocessControls, PreprocessDefaults
 
 
@@ -465,3 +466,23 @@ def test_build_fit_candidate_summary_marks_ambiguous_sessions(monkeypatch):
     assert summary.loc[0, "session_id"] == "session_001"
     assert summary.loc[0, "status"] == "ambiguous"
     assert summary.loc[0, "n_candidates"] == 2
+
+
+def test_preprocess_log_selector_imports_without_ipydatagrid(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text("time_s,value\n0.0,1.0\n", encoding="utf-8")
+
+    selector = PreprocessLogSelector(
+        artifacts_dir=tmp_path / "artifacts",
+        state_file=tmp_path / ".last_dir.json",
+        sha_cache_file=tmp_path / ".sha_cache.json",
+        include_lowercase_csv=True,
+    )
+    selector.w_dir.value = str(tmp_path)
+    selector.refresh()
+
+    selector.w_files.value = (str(csv_path.resolve()),)
+    selected = selector.get_selected_files()
+
+    assert len(selected) == 1
+    assert selected[0] == csv_path.resolve()

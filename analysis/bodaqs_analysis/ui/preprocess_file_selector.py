@@ -9,7 +9,14 @@ import time
 
 import ipywidgets as W
 import pandas as pd
-from ipydatagrid import DataGrid, TextRenderer
+
+try:
+    from ipydatagrid import DataGrid, TextRenderer
+    _HAS_IPYDATAGRID = True
+except ImportError:  # optional richer grid widget
+    DataGrid = None
+    TextRenderer = None
+    _HAS_IPYDATAGRID = False
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -161,41 +168,48 @@ class PreprocessLogSelector:
         self.b_select_all = W.Button(description="Select all visible", icon="check", button_style="")
         self.b_clear = W.Button(description="Clear selection", icon="times", button_style="")
 
-        self.grid = DataGrid(
-            self._visible_df,
-            selection_mode="row",
-            header_visibility="column",
-            base_column_size=128,
-            base_row_size=30,
-            layout=W.Layout(width="100%", height=f"{max_list_height_px}px"),
-            auto_fit_columns=False,
-            column_widths={
-                self._COL_FILE: 360,
-                self._COL_SIZE: 110,
-                self._COL_MODIFIED: 170,
-                self._COL_STATUS: 120,
-            },
-            default_renderer=TextRenderer(
-                font="13px Segoe UI, Tahoma, Arial, sans-serif",
-                vertical_alignment="center",
-                background_color="#ffffff",
-            ),
-            header_renderer=TextRenderer(
-                font="600 12px Segoe UI, Tahoma, Arial, sans-serif",
-                vertical_alignment="center",
-                background_color="#f5f7fa",
-            ),
-            grid_style={
-                "background_color": "#ffffff",
-                "grid_line_color": "#e5e7eb",
-                "header_background_color": "#f5f7fa",
-                "header_grid_line_color": "#d9dde3",
-                "selection_fill_color": "rgba(156, 163, 175, 0.18)",
-                "selection_border_color": "#9ca3af",
-                "header_selection_fill_color": "rgba(156, 163, 175, 0.18)",
-                "header_selection_border_color": "#9ca3af",
-            },
-        )
+        if _HAS_IPYDATAGRID:
+            self.grid = DataGrid(
+                self._visible_df,
+                selection_mode="row",
+                header_visibility="column",
+                base_column_size=128,
+                base_row_size=30,
+                layout=W.Layout(width="100%", height=f"{max_list_height_px}px"),
+                auto_fit_columns=False,
+                column_widths={
+                    self._COL_FILE: 360,
+                    self._COL_SIZE: 110,
+                    self._COL_MODIFIED: 170,
+                    self._COL_STATUS: 120,
+                },
+                default_renderer=TextRenderer(
+                    font="13px Segoe UI, Tahoma, Arial, sans-serif",
+                    vertical_alignment="center",
+                    background_color="#ffffff",
+                ),
+                header_renderer=TextRenderer(
+                    font="600 12px Segoe UI, Tahoma, Arial, sans-serif",
+                    vertical_alignment="center",
+                    background_color="#f5f7fa",
+                ),
+                grid_style={
+                    "background_color": "#ffffff",
+                    "grid_line_color": "#e5e7eb",
+                    "header_background_color": "#f5f7fa",
+                    "header_grid_line_color": "#d9dde3",
+                    "selection_fill_color": "rgba(156, 163, 175, 0.18)",
+                    "selection_border_color": "#9ca3af",
+                    "header_selection_fill_color": "rgba(156, 163, 175, 0.18)",
+                    "header_selection_border_color": "#9ca3af",
+                },
+            )
+        else:
+            self.grid = W.SelectMultiple(
+                options=(),
+                description="Files",
+                layout=W.Layout(width="100%", height=f"{max_list_height_px}px"),
+            )
         self.w_files = _GridSelectionShim(self)
 
         self.w_status = W.HTML("")
@@ -221,6 +235,14 @@ class PreprocessLogSelector:
         self.refresh()
 
     def get_selected_files(self) -> List[Path]:
+        if not _HAS_IPYDATAGRID:
+            selected = {
+                str(x)
+                for x in getattr(self.grid, "value", ())
+                if isinstance(x, str) and x
+            }
+            return sorted(Path(x).resolve() for x in selected)
+
         selected: List[Path] = []
         visible_df = self.grid.get_visible_data()
         seen: Set[str] = set()
@@ -246,6 +268,10 @@ class PreprocessLogSelector:
         return sorted(selected)
 
     def select_all_visible(self) -> None:
+        if not _HAS_IPYDATAGRID:
+            self.grid.value = tuple(self._visible_option_labels)
+            return
+
         visible_df = self.grid.get_visible_data()
         self.grid.clear_selection()
         if visible_df.empty:
@@ -255,7 +281,10 @@ class PreprocessLogSelector:
         self.grid.select(0, 0, last_row, last_col, clear_mode="all")
 
     def clear_selection(self) -> None:
-        self.grid.clear_selection()
+        if _HAS_IPYDATAGRID:
+            self.grid.clear_selection()
+        else:
+            self.grid.value = ()
 
     def refresh(self) -> None:
         previously_selected = {str(p.resolve()) for p in self.get_selected_files()}
@@ -320,6 +349,8 @@ class PreprocessLogSelector:
             else:
                 print(f"Scanned: {self._dir}")
                 print(f"Artifacts dir: {self.artifacts_dir}  (processed sha entries: {len(self._processed_sha)})")
+                if not _HAS_IPYDATAGRID:
+                    print("ipydatagrid not installed; using basic file list selector.")
                 if n_hash_misses:
                     print(f"Hashed {n_hash_misses} file(s) (cache misses) in {t1 - t0:.2f}s")
                 else:
@@ -395,10 +426,30 @@ class PreprocessLogSelector:
         df = pd.DataFrame.from_records(records, columns=self._empty_table_df().columns)
         df.index = pd.RangeIndex(start=0, stop=len(df), step=1)
         self._visible_df = df
-        self.grid.data = df
-        self.grid.clear_selection()
+        if _HAS_IPYDATAGRID:
+            self.grid.data = df
+            self.grid.clear_selection()
+        else:
+            options = []
+            for idx, row in enumerate(rows):
+                label = row.file_name
+                suffix = []
+                if self.show_size and row.size_kb:
+                    suffix.append(f"{row.size_kb} KB")
+                if self.show_mtime and row.modified_label:
+                    suffix.append(row.modified_label)
+                suffix.append(row.processed_label)
+                options.append((f"{label}  |  {' | '.join(suffix)}", str(row.path.resolve())))
+            self.grid.options = tuple(options)
+            self.grid.value = ()
 
     def _restore_selection(self, selected_paths: Set[str]) -> None:
+        if not _HAS_IPYDATAGRID:
+            self.grid.value = tuple(
+                label for label in self._visible_option_labels if label in selected_paths
+            )
+            return
+
         if not selected_paths:
             return
 
@@ -418,6 +469,13 @@ class PreprocessLogSelector:
             self.grid.select(row_pos, 0, row_pos, last_col, clear_mode="none")
 
     def _set_selected_from_option_labels(self, labels: Sequence[str]) -> None:
+        if not _HAS_IPYDATAGRID:
+            label_set = set(labels)
+            self.grid.value = tuple(
+                label for label in self._visible_option_labels if label in label_set
+            )
+            return
+
         visible_df = self.grid.get_visible_data()
         label_set = set(labels)
         matching_rows: List[int] = []
