@@ -12,12 +12,12 @@
     error?: string;
   }
 
-  let files: FileEntry[] = [];
-  let runId = makeRunId();
-  let schemaYaml = '';
-  let normalizeRangesRaw = '{"front_shock_dom_suspension [mm]": 170, "rear_shock_dom_suspension [mm]": 150}';
-  let zeroingEnabled = false;
-  let running = false;
+  let files: FileEntry[] = $state([]);
+  let runId = $state(makeRunId());
+  let schemaYaml = $state('');
+  let normalizeRangesRaw = $state('{"front_shock_dom_suspension [mm]": 170, "rear_shock_dom_suspension [mm]": 150}');
+  let zeroingEnabled = $state(false);
+  let running = $state(false);
 
   async function hashFile(file: File): Promise<string> {
     const buf = await file.arrayBuffer();
@@ -112,8 +112,9 @@
 </div>
 
 <hr />
-
-<input type="file" accept=".CSV,.csv" multiple on:change={onFilePick} />
+<form>
+<input type="file" accept=".CSV,.csv" multiple onchange={onFilePick} />
+</form>
 
 {#if files.length > 0}
   <table>
@@ -136,7 +137,7 @@
     </tbody>
   </table>
 
-  <button on:click={processAll} disabled={running}>
+  <button onclick={processAll} disabled={running}>
     {running ? 'Processing…' : `Process ${files.filter((f) => f.status === 'pending').length} file(s)`}
   </button>
 {/if}

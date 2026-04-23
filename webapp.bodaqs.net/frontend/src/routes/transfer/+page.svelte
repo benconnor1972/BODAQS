@@ -4,7 +4,7 @@
   import { previewZip, importSelectedRuns, type ZipRunPreview } from '$lib/zip/import';
 
   // --- Export ---
-  let exportSelected = new Set<string>();
+  let exportSelected = $state(new Set<string>());
 
   function toggleExport(runId: string) {
     if (exportSelected.has(runId)) {
@@ -22,10 +22,10 @@
   }
 
   // --- Import ---
-  let importPreviews: ZipRunPreview[] = [];
-  let importFile: File | null = null;
-  let importSelected = new Set<string>();
-  let importResult: { imported: number; skipped: number } | null = null;
+  let importPreviews: ZipRunPreview[] = $state([]);
+  let importFile: File | null = $state(null);
+  let importSelected = $state(new Set<string>());
+  let importResult: { imported: number; skipped: number } | null = $state(null);
 
   async function onImportFilePick(e: Event) {
     const input = e.target as HTMLInputElement;
