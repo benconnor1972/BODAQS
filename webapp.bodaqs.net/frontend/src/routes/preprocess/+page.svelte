@@ -98,7 +98,7 @@
 <div>
   <label>
     <span>Normalize ranges (JSON)</span>
-    <input type="text" bind:value={normalizeRangesRaw} />
+    <textarea bind:value={normalizeRangesRaw}></textarea>
   </label>
 </div>
 
