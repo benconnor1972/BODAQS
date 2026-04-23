@@ -63,13 +63,13 @@
         <input
           type="checkbox"
           checked={exportSelected.has(run.run_id)}
-          on:change={() => toggleExport(run.run_id)}
+          onchange={() => toggleExport(run.run_id)}
         />
         {run.run_id} — {run.description || 'No description'} ({run.session_ids.length} session(s))
       </label>
     {/each}
     <br />
-    <button on:click={doExport} disabled={exportSelected.size === 0}>
+    <button onclick={doExport} disabled={exportSelected.size === 0}>
       Export {exportSelected.size} run(s)
     </button>
   {/if}
@@ -77,7 +77,7 @@
 
 <section>
   <h2>Import</h2>
-  <input type="file" accept=".zip" on:change={onImportFilePick} />
+  <input type="file" accept=".zip" onchange={onImportFilePick} />
 
   {#if importPreviews.length > 0}
     <p>Select runs to import:</p>
@@ -86,14 +86,14 @@
         <input
           type="checkbox"
           checked={importSelected.has(preview.run_id)}
-          on:change={() => toggleImport(preview.run_id)}
+          onchange={() => toggleImport(preview.run_id)}
         />
         {preview.run_id} — {preview.description || 'No description'}
         ({preview.session_ids.length} session(s), ~{preview.estimated_size_mb} MB)
       </label>
     {/each}
     <br />
-    <button on:click={doImport} disabled={importSelected.size === 0}>
+    <button onclick={doImport} disabled={importSelected.size === 0}>
       Import {importSelected.size} run(s)
     </button>
   {/if}
