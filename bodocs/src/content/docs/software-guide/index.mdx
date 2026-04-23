@@ -1,5 +1,5 @@
 ---
-title: Setting up your environment locally
+title: Setting up your environment
 description: How to install Python and the BODAQS analysis dependencies in a virtual environment
 sidebar:
   order: 0
@@ -12,14 +12,14 @@ The BODAQS analysis software uses an interactive computing platform called Jupyt
 
 To use Jupyter Lab you will need to do some setting up on your computer. This will include:
  - **Downloading the BODAQS analysis files** to a local folder on your computer
- - **Installing Python**. Python is a programming language that is good for data analysis. We need it because Jupyter Lab runs Python code, among its other capabilities.
+ - **Installing Python**. Python is a programming language that is used for data analysis. We need it because Jupyter Lab runs Python code, among its other capabilities.
  - **Creating a Python virtual environment**. This is a ring-fenced area of your computer where the BODAQS software runs. Having it in its own environment keeps it isolated from everything else on your computer so that nothing breaks anything else.
- - **Installing the BODAQS dependencies**, including Jupyter Lab
+ - **Installing the BODAQS dependencies**, including Jupyter Lab. These are additional software packages that BODAQS uses.
 
 To do these steps, you will need to use a command line interface like PowerShell on Windows or Terminal on macOS.
 
 <MiniAside>
-	If you work in science, engineering, finance or some other area where numbers are a big deal, the notebook-style way of working may feel familiar to you. If you don't spend all of your time in front of a computer, it may have a bit of a learning curve.
+	If you work in science, engineering, finance or some other area where numbers are a big deal, the notebook-style way of working may feel familiar to you. If you don't spend all of your time in front of a computer, you may have a bit of a learning curve.
 	
 	The reason we made the software this way is that it makes it quick and easy to try out new ideas. This is important if, like us, you start without a clear idea of where you are going to end up. It makes it easier for users to modify the functionality too.
 
@@ -30,6 +30,8 @@ To do these steps, you will need to use a command line interface like PowerShell
 ## Get the BODAQS analysis files
 
 Most users should download the latest BODAQS analysis release as a `.zip` file and extract it to a local folder such as `C:\Users\YourName\Documents\BODAQS` on Windows or `~/Documents/BODAQS` on macOS.
+
+Go to the 'releases' page in the BODAQS github repository [here](https://github.com/benconnor1972/BODAQS/releases) and download the latest analysis package.
 
 You do not need Git to run the notebooks. Cloning the repo is still fine if you are contributing to development or want the latest in-progress version.
 

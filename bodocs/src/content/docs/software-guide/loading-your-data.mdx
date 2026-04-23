@@ -33,7 +33,7 @@ Here are two recommended ways to work with the analysis notebooks:
 
 ### 1. Simple single-notebook workflow
 
-This workflow uses `bodaqs_auto_preprocess_simple_suspension_metrics.ipynb`
+This workflow uses `bodaqs_one_step_suspension_metrics.ipynb`
 
 This notebook looks for new raw logger files, preprocesses them, writes the
 artifacts, and then opens the simple suspension metrics dashboard over the
@@ -43,10 +43,10 @@ processed sessions. The user simply drops their new log files in a directory, ru
 
 This is a more flexible workflow that gives the user more control over preprocessing and gives access to library management functionality and a wider selection of analysis tools. The main notebooks used are:
 
-- `bodaqs_batch_preprocessing_pipeline.ipynb` to import and preprocess raw logger CSV files and create analysis artifacts, with full control of preprocessing settings
+- `bodaqs_batch_preprocessor.ipynb` to import and preprocess raw logger CSV files and create analysis artifacts, with full control of preprocessing settings
 - `bodaqs_library_manager.ipynb` to add descriptions and notes, and create and manage 'aggregations'
-- `bodaqs_simple_suspension_metrics.ipynb` to view the simple suspension dashboard (per the simple workflow)
-- `bodaqs_widget_test_notebook.ipynb` to explore the processed data with a broader set of analysis widgets.
+- `bodaqs_data_explorer.ipynb` to explore the processed data with a broader set of analysis widgets.
+- `bodaqs_session_browser.ipynb` to examine time-series data directly against a GPS map.
 
 ## Starting JupyterLab
 
@@ -85,17 +85,16 @@ browser.
 
 If you want the simpler all-in-one path, start with:
 
-- `bodaqs_auto_preprocess_simple_suspension_metrics.ipynb`
+- `bodaqs_one_step_suspension_metrics.ipynb`
 
 If you want the more extensive multi-notebook path, start with:
 
-- `bodaqs_batch_preprocessing_pipeline.ipynb`
+- `bodaqs_batch_preprocessor.ipynb`
 
 Then continue with:
 
 - `bodaqs_library_manager.ipynb`
-- `bodaqs_simple_suspension_metrics.ipynb`
-- `bodaqs_widget_test_notebook.ipynb`
+- `bodaqs_data_explorer.ipynb`
 
 <Aside type="tip" title="If you're new to notebooks">
   A notebook is made up of **cells**. Some cells contain explanatory text,
@@ -113,10 +112,10 @@ Then continue with:
   Restarting the kernel clears that in-memory state, but it does not delete
   files written to disk. In BODAQS, processed sessions and metrics are
   persisted under `analysis/artifacts/`, so they remain available after the
-  kernel is restarted.
+  kernel is restarted. Restarting the kernel is a cure-all if Jupyter Lab crashes or freezes up.
 
-  If you are unsure where to begin, the safest option is usually to open the
-  notebook and run it from top to bottom.
+  The safest option is usually to open the
+  notebook and run the cells sequentially from top to bottom.
 </Aside>
 
 ## Running a notebook
