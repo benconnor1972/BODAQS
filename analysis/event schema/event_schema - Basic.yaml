@@ -145,15 +145,15 @@ events:
     value: 0.0
     base_trigger: compression_end
     search:
-      min_delay_s: 0.05
-      max_delay_s: 0.8
+      min_delay_s: -0.8
+      max_delay_s: -0.02
       direction: backward
-    dir: falling
+    dir: rising
     debounce:
-      gap_s: 0.8
+      gap_s: 0.02
       prefer_key: t0_index
       prefer_abs: false
-      prefer_max: false
+      prefer_max: true
   preconditions:
   - within_s:
     - -0.01
@@ -301,60 +301,93 @@ events:
         prefer: *id003
       - role: disp_norm
         prefer: *id004
-- id: jump_landing
-  label: compression events with a preceding period <0.05
+- id: Jump
+  label: Jump with airtime >= 0.2s
   sensors:
     - rear_shock
     - front_shock
   trigger:
-    id: compression_end
+    id: topout_start
     type: simple_threshold_crossing
-    signal: vel
-    value: 0.0
+    signal: disp_norm
+    value: 0.05
     dir: falling
     hysteresis: 0
     distance_s: 0.015
     edge_ignore_s: 1
     debounce:
       gap_s: 0.3
-      prefer_key: disp
+      prefer_key: t0_index
       prefer_abs: false
-      prefer_max: true
+      prefer_max: false
+  secondary_triggers:
+  - id: max_compression
+    type: local_extrema
+    signal: disp
+    kind: max
+    prominence: 5
+    base_trigger: topout_start
+    search:
+      min_delay_s: 0.2
+      max_delay_s: 5.0
+    debounce:
+      gap_s: 0.3
+      prefer_key: t0_index
+      prefer_abs: false
+      prefer_max: false
+  - id: topout_end
+    type: simple_threshold_crossing
+    signal: disp_norm
+    value: 0.05
+    dir: rising
+    hysteresis: 0
+    distance_s: 0.015
+    edge_ignore_s: 1
+    base_trigger: topout_start
+    search:
+      min_delay_s: 0.2
+      max_delay_s: 5.0
+    debounce:
+      gap_s: 0.3
+      prefer_key: t0_index
+      prefer_abs: false
+      prefer_max: false
   preconditions:
   - within_s:
-    - -0.5
     - 0.0
+    - 0.2
     all_of:
-    - type: peak
+    - type: range
       signal: disp_norm
-      kind: min
-      cmp: '<'
-      value: 0.05
+      max: 0.05
   window:
-    pre_s: 0.8
-    post_s: 0.2
+    pre_s: 0.2
+    post_s: 0.8
     align: trigger
   metrics:
-    - type: peak
-      signal: disp
-      kind: max
-    - type: peak
-      signal: disp
-      kind: min
-    - type: peak
-      signal: acc
-      kind: max
-    - type: peak
-      signal: acc
-      kind: min
+    - type: interval_stats
+      signal: vel
+      start_trigger: topout_end
+      end_trigger: max_compression
+      ops:
+      - mean
+      - max
+      min_delay_s: 0.02
+      return_debug: true
+    - type: trigger_delta
+      start_trigger: topout_start
+      end_trigger: topout_end
+      quantity: seconds
+      id: airtime_n
+      return_debug: true
   tags:
     - kinematics
     - compression
   segment_defaults:
     anchor: trigger_time_s
     window:
-      pre_s: 0.8
-      post_s: 0.2
+      pre_s: 0.2
+      post_s: 0.8
     roles:
       - role: disp
         prefer: *id001
