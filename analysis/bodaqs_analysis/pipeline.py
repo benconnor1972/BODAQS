@@ -29,6 +29,7 @@ from .signal_standardize import (
     rebuild_and_validate_signal_registry,
 )
 from .signal_registry import build_signals_registry
+from .sensor_aliases import canonical_sensor_id
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
     apply_butterworth_smoothing,
@@ -99,7 +100,7 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
 
         sensor = info.get("sensor")
         if isinstance(sensor, str) and sensor.strip():
-            ch["sensor"] = sensor
+            ch["sensor"] = canonical_sensor_id(sensor)
 
         quantity = info.get("quantity")
         if isinstance(quantity, str) and quantity.strip():

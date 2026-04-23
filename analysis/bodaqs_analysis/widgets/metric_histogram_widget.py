@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
+from bodaqs_analysis.sensor_aliases import canonical_sensor_id
 from bodaqs_analysis.widgets.contracts import (
     ArtifactStoreLike,
     ENTITY_KEY_COL,
@@ -260,7 +261,7 @@ def _make_widget_from_viz_df_consumer(
             clear_output(wait=True)
 
             sel_sessions = list(map(str, w_sessions.value or ()))
-            sel_sensors = list(map(str, w_sensors.value or ()))
+            sel_sensors = [canonical_sensor_id(s) for s in (w_sensors.value or ()) if canonical_sensor_id(s)]
 
             if not sel_sessions:
                 print("Select at least one session.")
@@ -272,7 +273,7 @@ def _make_widget_from_viz_df_consumer(
             base = viz_df[
                 (viz_df[event_type_col].astype(str) == str(w_event.value))
                 & (viz_df[scope_entity_col].astype(str).isin(sel_sessions))
-                & (viz_df["_sensor"].astype(str).isin(sel_sensors))
+                & (viz_df["_sensor"].map(canonical_sensor_id).isin(sel_sensors))
             ]
 
             series: List[Tuple[str, np.ndarray]] = []
@@ -281,7 +282,7 @@ def _make_widget_from_viz_df_consumer(
                 for s in sel_sensors:
                     sub = base[
                         (base[scope_entity_col].astype(str) == sk)
-                        & (base["_sensor"].astype(str) == s)
+                        & (base["_sensor"].map(canonical_sensor_id) == s)
                     ]
                     series.append((f"{sk} | {s}", _vals(sub)))
 

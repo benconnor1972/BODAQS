@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
+from bodaqs_analysis.sensor_aliases import sensors_match
 from bodaqs_analysis.segment import extract_segments, SegmentRequest, WindowSpec, RoleSpec
 from bodaqs_analysis.widgets.loaders import (
     load_all_events_for_selected,
@@ -160,7 +161,6 @@ def _registry_has_semantic(
         return False
 
     quantity, unit, kind, opk = semantic
-    sensor_s = str(sensor)
     unit_s = str(unit or "")
     kind_s = str(kind or "")
     opk_s = str(opk or "")
@@ -168,7 +168,7 @@ def _registry_has_semantic(
     for info in registry.values():
         if not isinstance(info, Mapping):
             continue
-        if str(info.get("sensor", "")) != sensor_s:
+        if not sensors_match(info.get("sensor"), sensor):
             continue
         if str(info.get("quantity", "")).strip() != str(quantity):
             continue
@@ -196,7 +196,6 @@ def _registry_columns_for_semantic(
         return []
 
     quantity, unit, kind, opk = semantic
-    sensor_s = str(sensor)
     unit_s = str(unit or "")
     kind_s = str(kind or "")
     opk_s = str(opk or "")
@@ -205,7 +204,7 @@ def _registry_columns_for_semantic(
     for col, info in registry.items():
         if not isinstance(col, str) or not isinstance(info, Mapping):
             continue
-        if str(info.get("sensor", "")) != sensor_s:
+        if not sensors_match(info.get("sensor"), sensor):
             continue
         if str(info.get("quantity", "")).strip() != str(quantity):
             continue

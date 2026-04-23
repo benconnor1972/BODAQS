@@ -8,8 +8,20 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
-from bodaqs_analysis.widgets.contracts import entity_snapshot_from_handle
-from bodaqs_analysis.widgets.loaders import load_all_events_for_entities, make_session_loader
+from bodaqs_analysis.sensor_aliases import canonical_sensor_id, sensor_matches_side
+from bodaqs_analysis.widgets.contracts import SCHEMA_ID_COL, entity_snapshot_from_handle
+from bodaqs_analysis.widgets.loaders import (
+    load_all_events_for_entities,
+    load_all_metrics_for_entities,
+    make_session_loader,
+)
+from bodaqs_analysis.widgets.metric_scatter_widget import (
+    build_metric_scatter_series,
+    filter_metric_scatter_base_df,
+    format_metric_scatter_line,
+    plot_metric_scatter_series,
+    prepare_metric_scatter_consumer_data,
+)
 from bodaqs_analysis.widgets.session_selector import attach_refresh
 
 
@@ -67,6 +79,10 @@ def _signal_root_key(col: str) -> str:
     return head
 
 
+def _signal_or_sensor_matches_side(col: str, sensor: Any, side: str) -> bool:
+    return sensor_matches_side(sensor, side) or sensor_matches_side(col, side)
+
+
 def _norm_candidates_for_side(signals: Mapping[str, Mapping[str, Any]], side: str) -> list[str]:
     side_l = str(side).strip().lower()
     candidates: list[tuple[tuple[int, int, int, int], str]] = []
@@ -84,9 +100,8 @@ def _norm_candidates_for_side(signals: Mapping[str, Mapping[str, Any]], side: st
             continue
 
         col_s = str(col)
-        col_l = col_s.lower()
-        sensor = str(info.get("sensor") or "").strip().lower()
-        if side_l not in col_l and side_l not in sensor:
+        sensor = info.get("sensor")
+        if not _signal_or_sensor_matches_side(col_s, sensor, side_l):
             continue
 
         quantity = str(info.get("quantity") or "").strip().lower()
@@ -94,7 +109,7 @@ def _norm_candidates_for_side(signals: Mapping[str, Mapping[str, Any]], side: st
         score = (
             1 if quantity == "disp_norm" else 0,
             1 if unit == "1" else 0,
-            1 if sensor.startswith(f"{side_l}_") else 0,
+            1 if sensor_matches_side(sensor, side_l) else 0,
             1 if "zeroed" in ops else 0,
         )
         candidates.append((score, col_s))
@@ -116,9 +131,8 @@ def _mm_candidates_for_side(signals: Mapping[str, Mapping[str, Any]], side: str)
             continue
 
         col_s = str(col)
-        col_l = col_s.lower()
-        sensor = str(info.get("sensor") or "").strip().lower()
-        if side_l not in col_l and side_l not in sensor:
+        sensor = info.get("sensor")
+        if not _signal_or_sensor_matches_side(col_s, sensor, side_l):
             continue
 
         quantity = str(info.get("quantity") or "").strip().lower()
@@ -130,7 +144,7 @@ def _mm_candidates_for_side(signals: Mapping[str, Mapping[str, Any]], side: str)
         has_filtered_ops = any(op == "diff" or op.startswith("butterworth_") for op in ops)
         score = (
             1 if quantity == "disp" else 0,
-            1 if sensor.startswith(f"{side_l}_") else 0,
+            1 if sensor_matches_side(sensor, side_l) else 0,
             1 if not has_filtered_ops else 0,
             1 if ops == [] else 0,
             1 if "zeroed" in ops else 0,
@@ -153,7 +167,7 @@ def _match_mm_for_norm(
         return None
 
     side_l = str(side).strip().lower()
-    norm_sensor = str(norm_info.get("sensor") or "").strip().lower()
+    norm_sensor = canonical_sensor_id(norm_info.get("sensor"))
     norm_root = _signal_root_key(norm_col)
     norm_ops = _signal_ops(norm_info)
     target_ops = [op for op in norm_ops if op != "norm"]
@@ -168,9 +182,8 @@ def _match_mm_for_norm(
             continue
 
         col_s = str(col)
-        col_l = col_s.lower()
-        sensor = str(info.get("sensor") or "").strip().lower()
-        if side_l not in col_l and side_l not in sensor:
+        sensor = info.get("sensor")
+        if not _signal_or_sensor_matches_side(col_s, sensor, side_l):
             continue
         if str(info.get("unit") or "").strip().lower() != "mm":
             continue
@@ -180,7 +193,7 @@ def _match_mm_for_norm(
         ops = _signal_ops(info)
         has_filtered_ops = any(op == "diff" or op.startswith("butterworth_") for op in ops)
         score = (
-            1 if sensor and sensor == norm_sensor else 0,
+            1 if canonical_sensor_id(sensor) and canonical_sensor_id(sensor) == norm_sensor else 0,
             1 if ops == target_ops else 0,
             1 if _signal_root_key(col_s) == norm_root else 0,
             1 if not has_filtered_ops else 0,
@@ -348,8 +361,8 @@ def _velocity_candidates_for_side(signals: Mapping[str, Mapping[str, Any]], side
 
         col_s = str(col)
         col_l = col_s.lower()
-        sensor = str(info.get("sensor") or "").strip().lower()
-        if side_l not in col_l and side_l not in sensor:
+        sensor = info.get("sensor")
+        if not _signal_or_sensor_matches_side(col_s, sensor, side_l):
             continue
 
         quantity = str(info.get("quantity") or "").strip().lower()
@@ -360,7 +373,7 @@ def _velocity_candidates_for_side(signals: Mapping[str, Mapping[str, Any]], side
         score = (
             1 if quantity == "vel" else 0,
             1 if unit == "mm/s" else 0,
-            1 if sensor.startswith(f"{side_l}_") else 0,
+            1 if sensor_matches_side(sensor, side_l) else 0,
             1 if "_vel_" in col_l or col_l.endswith("_vel") else 0,
         )
         candidates.append((score, col_s))
@@ -432,12 +445,11 @@ def _velocity_hist_proportions(vals: np.ndarray, *, bins: int, x_abs_limit: floa
 
 
 def _event_side_mask(events_df: pd.DataFrame, side: str) -> pd.Series:
-    side_l = str(side).strip().lower()
     if events_df is None or events_df.empty:
         return pd.Series(dtype=bool)
-    sensor_s = events_df["sensor"].astype(str).str.lower() if "sensor" in events_df.columns else pd.Series("", index=events_df.index, dtype="object")
-    signal_s = events_df["signal_col"].astype(str).str.lower() if "signal_col" in events_df.columns else pd.Series("", index=events_df.index, dtype="object")
-    return sensor_s.str.contains(side_l, na=False) | signal_s.str.contains(side_l, na=False)
+    sensor_s = events_df["sensor"] if "sensor" in events_df.columns else pd.Series("", index=events_df.index, dtype="object")
+    signal_s = events_df["signal_col"] if "signal_col" in events_df.columns else pd.Series("", index=events_df.index, dtype="object")
+    return sensor_s.map(lambda v: sensor_matches_side(v, side)) | signal_s.map(lambda v: sensor_matches_side(v, side))
 
 
 def _event_schema_id_series(events_df: pd.DataFrame) -> pd.Series:
@@ -539,6 +551,203 @@ def _events_summary_html(summaries: list[dict[str, Any]]) -> str:
         for _, row in counts_df.iterrows():
             parts.append(f"<div style='margin-left:12px'>{str(row['Event'])}: {int(row['Count'])}</div>")
     return "".join(parts)
+
+
+def _make_metric_scatter_tile(
+    *,
+    sel: Mapping[str, Any],
+    title: str,
+    event_type: str,
+    sensor: str,
+    x_metric: str,
+    y_metric: str,
+    session_desc_cache: dict[str, str],
+    overlay_fit_cache: dict[str, list[dict[str, Any]]] | None = None,
+    overlay_self_key: str | None = None,
+    overlay_other_key: str | None = None,
+) -> TileHandle:
+    out = W.Output(layout=W.Layout(border="1px solid #d9d9d9", padding="8px", width="100%"))
+    state: dict[str, Any] = {}
+
+    def rebuild() -> None:
+        snapshot = entity_snapshot_from_handle(sel)
+        selected_entities = list(snapshot.selected_entities)
+        with out:
+            clear_output(wait=True)
+            display(W.HTML(f"<h3 style='margin:0 0 8px 0;'>{title}</h3>"))
+            if not selected_entities:
+                print("No entities selected.")
+                return
+
+            key_to_ref = dict(snapshot.key_to_ref)
+            session_loader = make_session_loader(store=sel["store"], key_to_ref=key_to_ref)
+            events_df = load_all_events_for_entities(sel["store"], snapshot=snapshot)
+            metrics_df = load_all_metrics_for_entities(sel["store"], snapshot=snapshot)
+            try:
+                scatter_data = prepare_metric_scatter_consumer_data(
+                    events_df=events_df,
+                    metrics_df=metrics_df,
+                    session_keys=list(map(str, snapshot.expanded_session_keys)),
+                    session_loader=session_loader,
+                    schema=None,
+                    event_type_col=SCHEMA_ID_COL,
+                    registry_policy="union",
+                    require_schema=False,
+                )
+            except Exception as exc:
+                print(str(exc))
+                return
+
+            if str(event_type) not in set(map(str, scatter_data["event_types"])):
+                print(f"No events found for {event_type!r} in the current selection.")
+                return
+            if str(sensor) not in set(map(str, scatter_data["sensors"])):
+                print(f"No sensor resolved as {sensor!r} in the current selection.")
+                return
+            if str(x_metric) not in set(map(str, scatter_data["metrics"])):
+                print(f"Metric {x_metric!r} is not available in the current selection.")
+                return
+            if str(y_metric) not in set(map(str, scatter_data["metrics"])):
+                print(f"Metric {y_metric!r} is not available in the current selection.")
+                return
+
+            entity_keys = [str(entity.entity_key) for entity in selected_entities]
+            entity_labels = {
+                str(entity.entity_key): _preferred_entity_label(snapshot, entity, sel["store"], session_desc_cache)
+                for entity in selected_entities
+            }
+            base = filter_metric_scatter_base_df(
+                viz_df=scatter_data["viz_df"],
+                event_type_col=SCHEMA_ID_COL,
+                scope_entity_col=str(scatter_data["scope_entity_col"]),
+                event_value=event_type,
+                entity_values=entity_keys,
+                sensor_values=[sensor],
+            )
+            if len(base) == 0:
+                print(f"No rows after filtering for event={event_type!r} and sensor={sensor!r}.")
+                return
+
+            series = build_metric_scatter_series(
+                viz_df=scatter_data["viz_df"],
+                event_type_col=SCHEMA_ID_COL,
+                scope_entity_col=str(scatter_data["scope_entity_col"]),
+                event_value=event_type,
+                entity_values=entity_keys,
+                sensor_values=[sensor],
+                x_metric=x_metric,
+                y_metric=y_metric,
+                series_labeler=lambda entity_key, _sensor: entity_labels.get(entity_key, entity_key),
+            )
+
+            fig, ax = plt.subplots(figsize=(4.8, 2.52))
+            results = plot_metric_scatter_series(
+                ax,
+                series,
+                alpha=0.6,
+                size=18,
+                grid=True,
+                equal_axes=False,
+                diag_line=False,
+                regression=True,
+            )
+            ax.set_title("")
+            ax.set_xlabel(x_metric)
+            ax.set_ylabel(y_metric)
+
+            if overlay_fit_cache is not None and overlay_self_key:
+                overlay_fit_cache[str(overlay_self_key)] = [
+                    {"label": result.label, "fit": result.fit}
+                    for result in results
+                    if result.fit is not None
+                ]
+
+            overlay_palette = ["#d95f02", "#1b9e77", "#7570b3", "#e7298a"]
+            overlay_results = []
+            if overlay_fit_cache is not None and overlay_other_key:
+                overlay_results = list(overlay_fit_cache.get(str(overlay_other_key), []))
+            if overlay_results:
+                xlo, xhi = ax.get_xlim()
+                for idx, overlay in enumerate(overlay_results):
+                    fit = overlay.get("fit")
+                    if fit is None:
+                        continue
+                    xs = np.array([xlo, xhi], dtype=float)
+                    ys = float(fit.slope) * xs + float(fit.intercept)
+                    ax.plot(
+                        xs,
+                        ys,
+                        linestyle="--",
+                        linewidth=1.8,
+                        alpha=0.95,
+                        color=overlay_palette[idx % len(overlay_palette)],
+                    )
+
+            chart_out = W.Output(layout=W.Layout(width="60%"))
+            with chart_out:
+                plt.show()
+
+            metric_lines = [
+                (
+                    "<div style='font-size:1.1em;font-weight:600;'>"
+                    f"{event_type} | {sensor}"
+                    "</div>"
+                )
+            ]
+            show_entity_labels = len(selected_entities) > 1
+            stats_by_label: dict[str, dict[str, Any]] = {}
+            for result in results:
+                fit = result.fit
+                stats_by_label[result.label] = {
+                    "n": int(result.n),
+                    "equation": (format_metric_scatter_line(fit) if fit is not None else None),
+                    "r_squared": (float(fit.r_squared) if fit is not None else np.nan),
+                }
+                label_prefix = f"<b>{result.label}</b><br>" if show_entity_labels else ""
+                if result.n <= 0:
+                    metric_lines.append(
+                        "<div style='margin-top:8px'>"
+                        f"{label_prefix}"
+                        "n: 0<br>"
+                        "Regression: n/a<br>"
+                        "R^2: n/a"
+                        "</div>"
+                    )
+                    continue
+                if fit is None:
+                    metric_lines.append(
+                        "<div style='margin-top:8px'>"
+                        f"{label_prefix}"
+                        f"n: {result.n}<br>"
+                        "Regression: n/a (need >=2 points)<br>"
+                        "R^2: n/a"
+                        "</div>"
+                    )
+                    continue
+                metric_lines.append(
+                    "<div style='margin-top:8px'>"
+                    f"{label_prefix}"
+                    f"n: {result.n}<br>"
+                    f"Regression: {format_metric_scatter_line(fit)}<br>"
+                    f"R^2: {fit.r_squared:.6g}"
+                    "</div>"
+                )
+
+            metrics_html = W.HTML("".join(metric_lines), layout=W.Layout(width="40%"))
+            display(
+                W.HBox(
+                    [chart_out, metrics_html],
+                    layout=W.Layout(
+                        width="100%",
+                        align_items="flex-start",
+                        justify_content="space-between",
+                    ),
+                )
+            )
+            state["scatter_data"] = scatter_data
+            state["stats"] = stats_by_label
+
+    return {"out": out, "rebuild": rebuild, "state": state}
 
 def _make_displacement_tile(
     *,
@@ -953,6 +1162,8 @@ def make_simple_suspension_metrics_dashboard(
     session_desc_cache: dict[str, str] = {}
     row1_shared_y: dict[str, float] = {}
     row2_shared_y: dict[str, float] = {}
+    compression_overlay_fits: dict[str, list[dict[str, Any]]] = {}
+    rebound_overlay_fits: dict[str, list[dict[str, Any]]] = {}
 
     w_show_engineering = W.Checkbox(
         value=False,
@@ -1017,11 +1228,61 @@ def make_simple_suspension_metrics_dashboard(
         title="Rear Suspension: Events",
         session_desc_cache=session_desc_cache,
     )
+    front_comp_scatter = _make_metric_scatter_tile(
+        sel=sel,
+        title="Front Suspension: Compressions >25%",
+        event_type="compressions_all>25",
+        sensor="front_shock",
+        x_metric="m_peak_disp_max",
+        y_metric="m_interval_vel_max",
+        session_desc_cache=session_desc_cache,
+        overlay_fit_cache=compression_overlay_fits,
+        overlay_self_key="front",
+        overlay_other_key="rear",
+    )
+    rear_comp_scatter = _make_metric_scatter_tile(
+        sel=sel,
+        title="Rear Suspension: Compressions >25%",
+        event_type="compressions_all>25",
+        sensor="rear_shock",
+        x_metric="m_peak_disp_max",
+        y_metric="m_interval_vel_max",
+        session_desc_cache=session_desc_cache,
+        overlay_fit_cache=compression_overlay_fits,
+        overlay_self_key="rear",
+        overlay_other_key="front",
+    )
+    front_rebound_scatter = _make_metric_scatter_tile(
+        sel=sel,
+        title="Front Suspension: Rebounds >25%",
+        event_type="rebounds_all>25",
+        sensor="front_shock",
+        x_metric="m_peak_disp_max",
+        y_metric="m_interval_vel_min",
+        session_desc_cache=session_desc_cache,
+        overlay_fit_cache=rebound_overlay_fits,
+        overlay_self_key="front",
+        overlay_other_key="rear",
+    )
+    rear_rebound_scatter = _make_metric_scatter_tile(
+        sel=sel,
+        title="Rear Suspension: Rebounds >25%",
+        event_type="rebounds_all>25",
+        sensor="rear_shock",
+        x_metric="m_peak_disp_max",
+        y_metric="m_interval_vel_min",
+        session_desc_cache=session_desc_cache,
+        overlay_fit_cache=rebound_overlay_fits,
+        overlay_self_key="rear",
+        overlay_other_key="front",
+    )
 
     rows = {
         "displacement": _make_two_column_row(front_disp["out"], rear_disp["out"]),
         "velocity": _make_two_column_row(front_vel["out"], rear_vel["out"]),
         "events": _make_two_column_row(front_evt["out"], rear_evt["out"]),
+        "compression_scatter": _make_two_column_row(front_comp_scatter["out"], rear_comp_scatter["out"]),
+        "rebound_scatter": _make_two_column_row(front_rebound_scatter["out"], rear_rebound_scatter["out"]),
     }
 
     root = W.VBox(
@@ -1030,6 +1291,8 @@ def make_simple_suspension_metrics_dashboard(
             rows["displacement"],
             rows["velocity"],
             rows["events"],
+            rows["compression_scatter"],
+            rows["rebound_scatter"],
         ],
         layout=W.Layout(width="100%", gap="12px"),
     )
@@ -1047,6 +1310,16 @@ def make_simple_suspension_metrics_dashboard(
 
         front_evt["rebuild"]()
         rear_evt["rebuild"]()
+
+        compression_overlay_fits.clear()
+        front_comp_scatter["rebuild"]()
+        rear_comp_scatter["rebuild"]()
+        front_comp_scatter["rebuild"]()
+
+        rebound_overlay_fits.clear()
+        front_rebound_scatter["rebuild"]()
+        rear_rebound_scatter["rebuild"]()
+        front_rebound_scatter["rebuild"]()
 
     def _on_show_engineering_change(*_: Any) -> None:
         refresh()
@@ -1076,11 +1349,17 @@ def make_simple_suspension_metrics_dashboard(
             "rear_velocity": rear_vel,
             "front_events": front_evt,
             "rear_events": rear_evt,
+            "front_compression_scatter": front_comp_scatter,
+            "rear_compression_scatter": rear_comp_scatter,
+            "front_rebound_scatter": front_rebound_scatter,
+            "rear_rebound_scatter": rear_rebound_scatter,
         },
         "state": {
             "row1_shared_y": row1_shared_y,
             "row2_shared_y": row2_shared_y,
             "session_desc_cache": session_desc_cache,
+            "compression_overlay_fits": compression_overlay_fits,
+            "rebound_overlay_fits": rebound_overlay_fits,
         },
         "refresh": refresh,
         "detach": detach,

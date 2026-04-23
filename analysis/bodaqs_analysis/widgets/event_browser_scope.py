@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
+from bodaqs_analysis.sensor_aliases import canonical_sensor_id
 from bodaqs_analysis.widgets.contracts import RegistryPolicy
 from bodaqs_analysis.widgets.registry_scope import apply_registry_policy_to_registries
 
@@ -71,6 +72,7 @@ def build_schema_sensor_maps(
             sensor = sensor.strip() if isinstance(sensor, str) else ""
             if not sensor:
                 continue
+            sensor = canonical_sensor_id(sensor)
 
             if isinstance(role, str) and role.strip():
                 m[role.strip()] = sensor
@@ -140,13 +142,13 @@ def resolve_sensor_for_row(
     if isinstance(m, Mapping):
         s = m.get(tok)
         if isinstance(s, str) and s.strip():
-            return s.strip()
+            return canonical_sensor_id(s)
 
     info = reg.get(tok)
     if isinstance(info, Mapping):
         s2 = info.get("sensor")
         if isinstance(s2, str) and s2.strip():
-            return s2.strip()
+            return canonical_sensor_id(s2)
     return ""
 
 
@@ -193,7 +195,7 @@ def filter_events(
     if selected_event_type:
         sub = sub[sub[config.event_type_col].astype(str) == str(selected_event_type)].copy()
 
-    sensors = tuple(s.strip() for s in map(str, selected_sensors or ()) if s and str(s).strip())
+    sensors = tuple(canonical_sensor_id(s) for s in selected_sensors or () if canonical_sensor_id(s))
     if not sensors:
         return sub
 

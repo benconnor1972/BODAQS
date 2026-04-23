@@ -18,7 +18,7 @@ The analysis pipeline maintains a canonical signal registry at:
 
 The registry maps **dataframe columns** → semantic metadata, including (at minimum):
 
-- `sensor` (e.g. `rear_shock`, `front_shock`)
+- `sensor` (e.g. `rear_shock`, `front_shock`; accepted aliases include `shock` -> `rear_shock` and `fork` -> `front_shock`)
 - `quantity` (e.g. `disp`, `vel`, `acc`, `raw`)
 - `unit` (e.g. `mm`, `mm/s`, `mm/s^2`, `counts`)
 - `kind` (e.g. `""` engineered, `raw`, `qc`)
@@ -52,7 +52,7 @@ Each entry in `events` is an object with (common fields):
 
 - `id` (string, stable key used in `events_df["schema_id"]`)
 - `label` (string, human-readable)
-- `sensors` (list[str], e.g. `["rear_shock", "front_shock"]`)
+- `sensors` (list[str], e.g. `["rear_shock", "front_shock"]`; `shock` and `fork` are accepted aliases and normalize to the canonical ids)
 - `trigger` (definition of primary trigger)
 - `preconditions` (optional constraints)
 - `window` (time window defaults for detection)

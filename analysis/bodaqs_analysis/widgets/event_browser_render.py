@@ -7,19 +7,22 @@ from typing import Sequence
 
 import numpy as np
 
+from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+
 
 def choose_active_sensor(
     *,
     inferred_sensor: str | None,
     selected_sensors: Sequence[str],
 ) -> str | None:
-    sel = tuple(s.strip() for s in map(str, selected_sensors or ()) if s and str(s).strip())
+    sel = tuple(canonical_sensor_id(s) for s in selected_sensors or () if canonical_sensor_id(s))
+    inferred = canonical_sensor_id(inferred_sensor) if inferred_sensor else ""
     if not sel:
-        return inferred_sensor
+        return inferred or inferred_sensor
     if len(sel) == 1:
         return sel[0]
-    if inferred_sensor and inferred_sensor in sel:
-        return inferred_sensor
+    if inferred and inferred in sel:
+        return inferred
     return sel[0]
 
 

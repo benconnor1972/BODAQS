@@ -9,6 +9,7 @@ import numpy as np
 
 from .signalname import parse_signal_name, SignalNameError, SignalNameParts
 from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
+from .sensor_aliases import canonical_sensor_from_text, canonical_sensor_id, normalize_sensor_token
 
 
 # Columns that are not "signals" but may be numeric and should be tolerated.
@@ -79,8 +80,6 @@ def build_signals_registry(
     KNOWN_SENSOR_PREFIXES = (
         "front_shock",
         "rear_shock",
-        "front_fork",
-        "rear_fork",
         "gps_fit",
         "gps",
     )
@@ -88,13 +87,16 @@ def build_signals_registry(
     def _infer_sensor_id_from_base(base: Optional[str]) -> Optional[str]:
         if not base or not isinstance(base, str):
             return None
-        b = base.strip()
+        sensor = canonical_sensor_from_text(base)
+        if sensor:
+            return sensor
+        b = normalize_sensor_token(base)
         for pref in KNOWN_SENSOR_PREFIXES:
             if b == pref or b.startswith(pref + "_"):
-                return pref
+                return canonical_sensor_id(pref)
         # Conservative fallback: first token only (better than nothing, but not magic)
         tok = b.split("_", 1)[0].strip()
-        return tok or None
+        return canonical_sensor_id(tok) or None
 
     def _infer_quantity_from_parts(base: Optional[str], kind: str, unit: Optional[str], ops: Optional[Iterable[str]] = None) ->Optional[str]:
         """
