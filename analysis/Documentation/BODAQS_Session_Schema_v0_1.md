@@ -99,6 +99,9 @@ meta["channel_info"][channel] = {
 }
 ```
 
+Suspension sensors should be stored with canonical ids `front_shock` and `rear_shock`.
+During analysis ingest/resolution, `fork` is accepted as an alias for `front_shock`, and `shock` is accepted as an alias for `rear_shock`.
+
 
 ### meta.streams (Per-Stream Timebase Metadata)
 

@@ -357,6 +357,8 @@ That behavior should be treated as the current implementation detail for v1 auth
 }
 ```
 
+Suspension examples use canonical signal names. On ingest and sensor resolution, analysis accepts `fork` as an alias for `front_shock` and `shock` as an alias for `rear_shock`; persisted profile keys should still refer to the canonical post-canonicalization dataframe columns.
+
 ---
 
 ## 10. Consumer behavior

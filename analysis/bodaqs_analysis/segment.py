@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import logging
 
+from .sensor_aliases import canonical_sensor_id
+
 logger = logging.getLogger(__name__)
 
 AnchorField = Literal[
@@ -435,7 +437,8 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
             return tuple(_norm_op_token(p) for p in s.split("|") if p)
         return (_norm_op_token(s),)
 
-    pref_sensor = _norm_str(_get_pref(prefer, "sensor"))
+    pref_sensor_raw = _norm_str(_get_pref(prefer, "sensor"))
+    pref_sensor = canonical_sensor_id(pref_sensor_raw) if pref_sensor_raw else None
     pref_quantity = _norm_str(_get_pref(prefer, "quantity"))
     pref_kind = _norm_kind(_get_pref(prefer, "kind"))
     pref_unit = _norm_unit(_get_pref(prefer, "unit"))
@@ -446,7 +449,7 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
     # This prevents schema role anchors (prefer.sensor) from accidentally pinning
     # roles to the wrong sensor across multi-sensor events.
     if event_sensor:
-        pref_sensor = _norm_str(event_sensor)
+        pref_sensor = canonical_sensor_id(event_sensor)
 
     if pref_quantity is None and isinstance(role, str) and role.strip():
         pref_quantity = role.strip()
@@ -458,7 +461,8 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
         if not isinstance(info, dict):
             continue
 
-        sensor = _norm_str(info.get("sensor"))
+        sensor_raw = _norm_str(info.get("sensor"))
+        sensor = canonical_sensor_id(sensor_raw) if sensor_raw else None
         quantity = _norm_str(info.get("quantity"))
         kind = _norm_kind(info.get("kind"))
         unit = _norm_unit(info.get("unit"))

@@ -71,6 +71,7 @@ tags: list[string]
 segment_defaults: SegmentDefaults  
 
 Each EventDef expands per sensor.
+Suspension schemas should prefer canonical `front_shock` and `rear_shock`; analysis also accepts `fork` as an alias for `front_shock` and `shock` as an alias for `rear_shock`.
 
 ---
 
@@ -1461,6 +1462,8 @@ Thus:
 
 rear_shock event resolves to rear_shock signals  
 front_shock event resolves to front_shock signals  
+
+The canonical ids remain `rear_shock` and `front_shock`, but `shock` and `fork` are accepted as aliases during resolution.
 
 Schemas remain sensor-agnostic.
 

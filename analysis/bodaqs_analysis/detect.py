@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .model import validate_events_df
 from .metrics import extract_metrics_df  # contract: metrics live in metrics.py
+from .sensor_aliases import canonical_sensor_id
 
 import math
 import numpy as np
@@ -133,8 +134,9 @@ def _resolve_search_window(trig: dict, t: np.ndarray, base_t0_sec: float | None)
 
 def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = None) -> dict:
     out: dict[str, str] = {}
+    sensor_key = canonical_sensor_id(sensor)
     signals = meta.get("signals") if isinstance(meta, dict) else None
-    if not isinstance(signals, dict) or not signals:
+    if not sensor_key or not isinstance(signals, dict) or not signals:
         return out
 
     def _find_col(pred):
@@ -145,7 +147,7 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
 
     # Engineered displacement for this sensor
     disp_col = _find_col(
-        lambda c, info: info.get("sensor") == sensor
+        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
         and info.get("quantity") == "disp"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm"
@@ -155,7 +157,7 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
 
     # Velocity & acceleration (registry knows these too)
     vel_col = _find_col(
-        lambda c, info: info.get("sensor") == sensor
+        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
         and info.get("quantity") == "vel"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm/s"
@@ -164,7 +166,7 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
         out["vel"] = vel_col
 
     acc_col = _find_col(
-        lambda c, info: info.get("sensor") == sensor
+        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
         and info.get("quantity") == "acc"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm/s^2"
@@ -180,7 +182,7 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
     # Normalised displacement role name "disp_norm"
     # Prefer zeroed+norm if present, else allow plain norm.
     norm_col = _find_col(
-        lambda c, info: info.get("sensor") == sensor
+        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
         and info.get("quantity") in ("disp_norm", "disp")   # allow older registries
         and info.get("kind", "") == ""
         and info.get("unit") == "1"
@@ -188,7 +190,7 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
     )
     if not norm_col:
         norm_col = _find_col(
-            lambda c, info: info.get("sensor") == sensor
+            lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
             and info.get("quantity") in ("disp_norm", "disp")
             and info.get("kind", "") == ""
             and info.get("unit") == "1"
@@ -199,7 +201,7 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
 
     # Zeroed displacement (optional): any displacement with 'zeroed' in op_chain
     zeroed_col = _find_col(
-        lambda c, info: info.get("sensor") == sensor
+        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
         and info.get("quantity") == "disp"
         and info.get("kind", "") == ""
         and info.get("unit") == "mm"
@@ -210,7 +212,7 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
 
     # Raw counts (optional)
     raw_col = _find_col(
-        lambda c, info: info.get("sensor") == sensor
+        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
         and info.get("quantity") == "raw"
         and info.get("kind") == "raw"
         and info.get("unit") == "counts"

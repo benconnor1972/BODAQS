@@ -8,6 +8,7 @@ import pandas as pd
 
 from .signalname import parse_signal_name, format_signal_name, SignalNameError, SignalNameParts
 from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
+from .sensor_aliases import canonicalize_signal_base
 
 
 # Legacy suffix -> op token
@@ -107,22 +108,33 @@ def normalize_legacy_columns(
             parts = parse_signal_name(col_str, spec=spec)
             # Optionally inject domain/unit if missing (conservative: only if explicitly provided)
             updated = parts
-
-            if updated.domain is None and parts.base in domain_by_base:
+            canonical_base = canonicalize_signal_base(parts.base)
+            if canonical_base != parts.base:
                 updated = SignalNameParts(
-                    base=updated.base,
+                    base=canonical_base,
                     kind=updated.kind,
-                    domain=domain_by_base[updated.base],
+                    domain=updated.domain,
                     unit=updated.unit,
                     ops=updated.ops,
                 )
 
-            if updated.unit is None and updated.kind == "" and updated.base in units_by_base:
+            domain_hint = domain_by_base.get(updated.base, domain_by_base.get(parts.base))
+            if updated.domain is None and domain_hint is not None:
+                updated = SignalNameParts(
+                    base=updated.base,
+                    kind=updated.kind,
+                    domain=domain_hint,
+                    unit=updated.unit,
+                    ops=updated.ops,
+                )
+
+            unit_hint = units_by_base.get(updated.base, units_by_base.get(parts.base, units_by_base.get(col_str)))
+            if updated.unit is None and updated.kind == "" and unit_hint is not None:
                 updated = SignalNameParts(
                     base=updated.base,
                     kind=updated.kind,
                     domain=updated.domain,
-                    unit=units_by_base[updated.base],
+                    unit=unit_hint,
                     ops=updated.ops,
                 )
 
@@ -140,7 +152,7 @@ def normalize_legacy_columns(
 
         # 2a) Handle raw columns missing unit: '<base>_raw' -> '<base>_raw [counts]'
         if col_str.endswith("_raw"):
-            base = col_str[:-4]
+            base = canonicalize_signal_base(col_str[:-4])
             parts = SignalNameParts(base=base, kind="raw", domain=domain_by_base.get(base), unit=RAW_UNIT_DEFAULT, ops=())
             new_name = format_signal_name(parts, spec=spec)
             rename_map[col_str] = new_name
@@ -149,6 +161,7 @@ def normalize_legacy_columns(
 
         # 2b) Handle engineered with legacy suffix after unit: 'X [u]_zeroed' -> 'X [u]_op_zeroed'
         base, unit, suffix = _split_unit_and_suffix(col_str)
+        base = canonicalize_signal_base(base)
         if unit is not None and suffix:
             # if suffix matches a legacy op suffix, translate it into ops
             # also support chained legacy like '_zeroed_norm' by iterative peeling
@@ -176,8 +189,8 @@ def normalize_legacy_columns(
         # 2c) Engineered missing unit: only if units_by_base provides it.
         # Example: 'rear_shock' -> 'rear_shock [mm]'
         if col_str in units_by_base:
-            base = col_str
-            unit = units_by_base[base]
+            base = canonicalize_signal_base(col_str)
+            unit = units_by_base[col_str]
             dom = domain_by_base.get(base)
             parts = SignalNameParts(base=base, kind="", domain=dom, unit=unit, ops=())
             new_name = format_signal_name(parts, spec=spec)

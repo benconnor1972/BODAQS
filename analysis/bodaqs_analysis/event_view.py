@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from .sensor_aliases import canonical_sensor_id, sensors_match
+
 def _require_data():
     if "EVENTS_DF" not in globals() or not isinstance(EVENTS_DF, pd.DataFrame) or EVENTS_DF.empty:
         raise RuntimeError("EVENTS_DF is missing or empty. Run detection first.")
@@ -45,6 +47,7 @@ def _resolve_inputs_for_row(row: pd.Series, schema: Dict[str, Any]) -> Dict[str,
     sensor = row.get("sensor")
     if not sensor:
         return {}
+    sensor = canonical_sensor_id(sensor)
 
     naming = schema.get("naming", {}) or {}
     suffixes = naming.get("suffixes", {}) or {}
@@ -60,7 +63,7 @@ def _find_series_col(schema: Dict[str, Any], *, kind: str, base_sensor: Optional
             continue
         if base_sensor:
             base = s.get("base") or {}
-            if base.get("sensor") != base_sensor:
+            if not sensors_match(base.get("sensor"), base_sensor):
                 continue
         col = s.get("column")
         if col:

@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
+from bodaqs_analysis.sensor_aliases import canonical_sensor_id
 from bodaqs_analysis.widgets.contracts import RegistryPolicy, SessionLoader
 from bodaqs_analysis.widgets.registry_scope import (
     apply_registry_policy_to_registries,
@@ -103,7 +104,7 @@ def _build_schema_sensor_maps(
             sensor = info.get("sensor")
             if not isinstance(sensor, str) or not sensor.strip():
                 continue
-            sensor = sensor.strip()
+            sensor = canonical_sensor_id(sensor)
 
             if isinstance(role, str) and role.strip():
                 m[role.strip()] = sensor
@@ -132,13 +133,13 @@ def _resolve_sensor(
     if isinstance(m, Mapping):
         s = m.get(tok)
         if isinstance(s, str) and s.strip():
-            return s.strip()
+            return canonical_sensor_id(s)
 
     info = registry.get(tok)
     if isinstance(info, Mapping):
         s2 = info.get("sensor")
         if isinstance(s2, str) and s2.strip():
-            return s2.strip()
+            return canonical_sensor_id(s2)
     return ""
 
 

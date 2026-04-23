@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from bodaqs_analysis.sensor_aliases import sensors_match
+
 
 SemanticKey = tuple[str, str, str, str]  # (quantity, unit, kind, op_chain_key)
 
@@ -39,7 +41,7 @@ def registry_signal_options_for_sensor(
     for _col, info in registry.items():
         if not isinstance(info, Mapping):
             continue
-        if str(info.get("sensor", "")) != str(sensor):
+        if not sensors_match(info.get("sensor"), sensor):
             continue
 
         kind = str(info.get("kind") or "").strip()
