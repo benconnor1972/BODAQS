@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { db } from '../db/dexie';
-import { libraryStore } from '../stores/library';
+import { libraryStore } from '../stores/library.svelte';
 
 export interface ZipRunPreview {
   run_id: string;

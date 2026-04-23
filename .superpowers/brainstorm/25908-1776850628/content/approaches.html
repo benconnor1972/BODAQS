@@ -1,0 +1,96 @@
+<h2>Three Architecture Approaches</h2>
+<p class="subtitle">Stateless Python API + local-first browser storage — pick your frontend stack and coupling style</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>SvelteKit + FastAPI <span style="font-size:0.75em;color:#22c55e;font-weight:600">★ Recommended</span></h3>
+      <p style="margin-bottom:10px">Clean reactive stores map directly to the notebook widget pattern. Lightest runtime, best suited for data-heavy reactive UIs.</p>
+      <div style="font-family:monospace;font-size:0.8em;background:#1e1e2e;color:#cdd6f4;border-radius:6px;padding:10px;margin-bottom:10px">
+        <div style="color:#89b4fa">Browser (SvelteKit)</div>
+        <div style="padding-left:12px;color:#a6e3a1">Svelte stores ↔ Dexie.js (IndexedDB)</div>
+        <div style="padding-left:12px;color:#a6e3a1">Plotly.js / ECharts charts</div>
+        <div style="padding-left:12px;color:#f38ba8">ZIP export/import</div>
+        <div style="color:#89b4fa;margin-top:6px">Python (FastAPI)</div>
+        <div style="padding-left:12px;color:#a6e3a1">POST /preprocess → returns events+metrics JSON</div>
+        <div style="padding-left:12px;color:#a6e3a1">POST /validate-schema → schema lint</div>
+        <div style="padding-left:12px;color:#cba6f7">bodaqs_analysis unchanged as library</div>
+      </div>
+      <div class="pros-cons" style="font-size:0.85em">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Smallest runtime bundle (~5kb base)</li>
+          <li>Reactive stores ≈ existing widget contracts</li>
+          <li>First-class TypeScript + great tooling</li>
+          <li>SvelteKit routing suits multi-page app</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Smaller ecosystem than Vue/React</li>
+          <li>Less off-the-shelf UI component libraries</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Vue 3 + FastAPI</h3>
+      <p style="margin-bottom:10px">Composition API + Pinia stores. Rich component ecosystem including data grids, tabs, and form controls that mirror the existing ipywidgets UI closely.</p>
+      <div style="font-family:monospace;font-size:0.8em;background:#1e1e2e;color:#cdd6f4;border-radius:6px;padding:10px;margin-bottom:10px">
+        <div style="color:#89b4fa">Browser (Vue 3 + Pinia)</div>
+        <div style="padding-left:12px;color:#a6e3a1">Pinia stores ↔ Dexie.js (IndexedDB)</div>
+        <div style="padding-left:12px;color:#a6e3a1">ECharts (vue-echarts) charts</div>
+        <div style="padding-left:12px;color:#f38ba8">ZIP export/import</div>
+        <div style="color:#89b4fa;margin-top:6px">Python (FastAPI)</div>
+        <div style="padding-left:12px;color:#cba6f7">Same stateless API surface as A</div>
+      </div>
+      <div class="pros-cons" style="font-size:0.85em">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Largest component library ecosystem</li>
+          <li>PrimeVue / Naive UI for data grids/tables</li>
+          <li>Strong corporate backing (Evan You)</li>
+          <li>Gradual learning curve</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Heavier runtime than Svelte</li>
+          <li>More boilerplate for reactive data flows</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Preact + FastAPI</h3>
+      <p style="margin-bottom:10px">Minimal React-compatible layer. Best if bundle size is the primary concern or if the team already knows React patterns.</p>
+      <div style="font-family:monospace;font-size:0.8em;background:#1e1e2e;color:#cdd6f4;border-radius:6px;padding:10px;margin-bottom:10px">
+        <div style="color:#89b4fa">Browser (Preact + Signals)</div>
+        <div style="padding-left:12px;color:#a6e3a1">@preact/signals ↔ Dexie.js</div>
+        <div style="padding-left:12px;color:#a6e3a1">Plotly.js / uPlot charts</div>
+        <div style="padding-left:12px;color:#f38ba8">ZIP export/import</div>
+        <div style="color:#89b4fa;margin-top:6px">Python (FastAPI)</div>
+        <div style="padding-left:12px;color:#cba6f7">Same stateless API surface as A</div>
+      </div>
+      <div class="pros-cons" style="font-size:0.85em">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>~3kb runtime, fastest initial load</li>
+          <li>React ecosystem compatibility</li>
+          <li>@preact/signals is elegant for reactive data</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Less opinionated — more architectural decisions on you</li>
+          <li>Fewer data-grid/table components than Vue</li>
+          <li>Smaller community than React or Vue</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:20px;padding:12px 16px;background:#1e1e2e;border-radius:8px;border-left:3px solid #cba6f7;font-size:0.9em;color:#cdd6f4">
+  <strong style="color:#cba6f7">Common to all three:</strong> FastAPI backend is a pure stateless compute engine — no DB, no auth, no file storage. The <code>bodaqs_analysis</code> Python library plugs straight in. All session/artifact data lives in the browser (IndexedDB + localStorage) and is exportable as a ZIP.
+</div>

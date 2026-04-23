@@ -1,0 +1,105 @@
+<h2>Pages — Notebook to Route Mapping</h2>
+<p class="subtitle">Each notebook maps to one primary route. Shared state flows through Svelte stores.</p>
+
+<div style="display:flex;flex-direction:column;gap:10px;margin:16px 0">
+
+  <!-- Row 1: Library Manager -->
+  <div style="display:grid;grid-template-columns:200px 40px 1fr;gap:0;align-items:center">
+    <div style="background:#181825;border-radius:6px;padding:10px 12px;border:1px solid #45475a;font-size:0.8em">
+      <div style="color:#6c7086;font-size:0.75em;margin-bottom:2px">NOTEBOOK</div>
+      <div style="color:#cba6f7;font-weight:600">BODAQS_library_manager</div>
+      <div style="color:#6c7086;font-size:0.75em;margin-top:4px">Browse runs, edit descriptions,<br>manage aggregations</div>
+    </div>
+    <div style="text-align:center;color:#45475a;font-size:1.2em">→</div>
+    <div style="background:#1e1e2e;border-radius:6px;padding:10px 12px;border:1px solid #313244">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+        <code style="color:#f38ba8;font-size:0.88em">/</code>
+        <span style="color:#cdd6f4;font-weight:600;font-size:0.88em">Library</span>
+      </div>
+      <div style="font-size:0.78em;color:#6c7086;line-height:1.6">Run/session browser with filter + sort. Inline description editing. Aggregation management. Select entities → <code>selectionStore</code> → navigate to dashboard.</div>
+    </div>
+  </div>
+
+  <!-- Row 2: Preprocess -->
+  <div style="display:grid;grid-template-columns:200px 40px 1fr;gap:0;align-items:center">
+    <div style="background:#181825;border-radius:6px;padding:10px 12px;border:1px solid #45475a;font-size:0.8em">
+      <div style="color:#6c7086;font-size:0.75em;margin-bottom:2px">NOTEBOOKS</div>
+      <div style="color:#cba6f7;font-weight:600">batch_preprocessing_pipeline<br>auto_preprocess</div>
+      <div style="color:#6c7086;font-size:0.75em;margin-top:4px">CSV upload, profile config,<br>SHA dedup, run_macro</div>
+    </div>
+    <div style="text-align:center;color:#45475a;font-size:1.2em">→</div>
+    <div style="background:#1e1e2e;border-radius:6px;padding:10px 12px;border:1px solid #313244">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+        <code style="color:#f38ba8;font-size:0.88em">/preprocess</code>
+        <span style="color:#cdd6f4;font-weight:600;font-size:0.88em">Preprocess</span>
+      </div>
+      <div style="font-size:0.78em;color:#6c7086;line-height:1.6">File picker + SHA dedup. Profile selector (named profiles in localStorage). Per-file progress. Gzip upload → binary response. Writes artifacts to IndexedDB on completion. Run description prompt inline.</div>
+    </div>
+  </div>
+
+  <!-- Row 3: Metrics Dashboard -->
+  <div style="display:grid;grid-template-columns:200px 40px 1fr;gap:0;align-items:center">
+    <div style="background:#181825;border-radius:6px;padding:10px 12px;border:1px solid #45475a;font-size:0.8em">
+      <div style="color:#6c7086;font-size:0.75em;margin-bottom:2px">NOTEBOOKS</div>
+      <div style="color:#cba6f7;font-weight:600">simple_suspension_metrics<br>…_persisted_scope</div>
+      <div style="color:#6c7086;font-size:0.75em;margin-top:4px">Histograms, scatter plots,<br>mm toggle, multi-session</div>
+    </div>
+    <div style="text-align:center;color:#45475a;font-size:1.2em">→</div>
+    <div style="background:#1e1e2e;border-radius:6px;padding:10px 12px;border:1px solid #313244">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+        <code style="color:#f38ba8;font-size:0.88em">/dashboard</code>
+        <span style="color:#cdd6f4;font-weight:600;font-size:0.88em">Metrics Dashboard</span>
+      </div>
+      <div style="font-size:0.78em;color:#6c7086;line-height:1.6">Reads <code>selectionStore</code> (sessions + aggregations). Histograms + scatter charts from events/metrics tables in IndexedDB. Engineering units toggle (mm / normalised). Selection persists across page navigation.</div>
+    </div>
+  </div>
+
+  <!-- Row 4: Session Window Browser -->
+  <div style="display:grid;grid-template-columns:200px 40px 1fr;gap:0;align-items:center">
+    <div style="background:#181825;border-radius:6px;padding:10px 12px;border:1px solid #45475a;font-size:0.8em">
+      <div style="color:#6c7086;font-size:0.75em;margin-bottom:2px">NOTEBOOK</div>
+      <div style="color:#cba6f7;font-weight:600">session_test_notebook</div>
+      <div style="color:#6c7086;font-size:0.75em;margin-top:4px">Time-series browser,<br>event annotations</div>
+    </div>
+    <div style="text-align:center;color:#45475a;font-size:1.2em">→</div>
+    <div style="background:#1e1e2e;border-radius:6px;padding:10px 12px;border:1px solid #313244">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+        <code style="color:#f38ba8;font-size:0.88em">/session/[id]</code>
+        <span style="color:#cdd6f4;font-weight:600;font-size:0.88em">Session Browser</span>
+      </div>
+      <div style="font-size:0.78em;color:#6c7086;line-height:1.6">Lazy-loads signal Float32Arrays from IndexedDB on open. Zoomable time-series (Plotly.js). Event markers overlaid. Window bookmarks. Clicking an event → jumps to that window.</div>
+    </div>
+  </div>
+
+  <!-- Row 5: Schema Harness -->
+  <div style="display:grid;grid-template-columns:200px 40px 1fr;gap:0;align-items:center">
+    <div style="background:#181825;border-radius:6px;padding:10px 12px;border:1px solid #45475a;font-size:0.8em">
+      <div style="color:#6c7086;font-size:0.75em;margin-bottom:2px">NOTEBOOK</div>
+      <div style="color:#cba6f7;font-weight:600">event_schema_test_harness</div>
+      <div style="color:#6c7086;font-size:0.75em;margin-top:4px">YAML editor, single CSV,<br>event preview</div>
+    </div>
+    <div style="text-align:center;color:#45475a;font-size:1.2em">→</div>
+    <div style="background:#1e1e2e;border-radius:6px;padding:10px 12px;border:1px solid #313244">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+        <code style="color:#f38ba8;font-size:0.88em">/schema</code>
+        <span style="color:#cdd6f4;font-weight:600;font-size:0.88em">Schema Editor</span>
+        <span style="font-size:0.75em;color:#6c7086">(dev/power-user tool)</span>
+      </div>
+      <div style="font-size:0.78em;color:#6c7086;line-height:1.6">YAML editor (CodeMirror). Upload a single test CSV → <code>POST /api/validate-schema</code> → live event preview table. Save schema to localStorage. Iterate without affecting the main library.</div>
+    </div>
+  </div>
+
+</div>
+
+<div style="background:#1e1e2e;border-radius:8px;padding:12px 16px;border:1px solid #313244;margin-top:8px">
+  <div style="color:#fab387;font-weight:600;font-size:0.85em;margin-bottom:8px">Shared infrastructure across all pages</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.78em;color:#cdd6f4">
+    <div><span style="color:#a6e3a1">selectionStore</span><br><span style="color:#6c7086">Persisted to localStorage. Drives dashboard + session browser reactively.</span></div>
+    <div><span style="color:#a6e3a1">libraryStore</span><br><span style="color:#6c7086">Run/session index from localStorage. Updated after each preprocess job.</span></div>
+    <div><span style="color:#a6e3a1">Global nav</span><br><span style="color:#6c7086">Library → Preprocess → Dashboard → Session → Schema. Current selection always visible.</span></div>
+  </div>
+</div>
+
+<div style="margin-top:10px;padding:10px 14px;background:#1e1e2e;border-radius:6px;border-left:3px solid #89b4fa;font-size:0.82em;color:#cdd6f4">
+  <strong style="color:#89b4fa">Does this page structure look right?</strong> Anything missing, or any notebook behaviour that should work differently as a web page?
+</div>

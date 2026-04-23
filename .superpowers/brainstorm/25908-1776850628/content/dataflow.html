@@ -1,0 +1,89 @@
+<h2>Data Flow</h2>
+<p class="subtitle">From raw CSV upload to rendered charts — every step and where data lives</p>
+
+<div style="display:flex;flex-direction:column;gap:4px;margin:16px 0">
+
+  <!-- Step 1 -->
+  <div style="display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:start">
+    <div style="width:28px;height:28px;border-radius:50%;background:#89b4fa;color:#1e1e2e;font-weight:700;font-size:0.85em;display:flex;align-items:center;justify-content:center;margin-top:2px">1</div>
+    <div style="background:#1e1e2e;border-radius:8px;padding:12px 14px;border:1px solid #313244">
+      <div style="color:#89b4fa;font-weight:600;font-size:0.88em;margin-bottom:4px">User selects CSV files + picks/configures a preprocess profile</div>
+      <div style="font-size:0.8em;color:#cdd6f4">On <code>/preprocess</code> page. Profile config (normalize ranges, butterworth params, schema path) lives in <span style="color:#fab387">localStorage</span> as a named profile — same structure as the existing <code>suspension_default_v1.json</code>. SHA-256 dedup check runs client-side against the library index to skip already-processed files.</div>
+    </div>
+  </div>
+
+  <div style="padding-left:14px;color:#45475a;font-size:1.1em">↓</div>
+
+  <!-- Step 2 -->
+  <div style="display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:start">
+    <div style="width:28px;height:28px;border-radius:50%;background:#a6e3a1;color:#1e1e2e;font-weight:700;font-size:0.85em;display:flex;align-items:center;justify-content:center;margin-top:2px">2</div>
+    <div style="background:#1e1e2e;border-radius:8px;padding:12px 14px;border:1px solid #313244">
+      <div style="color:#a6e3a1;font-weight:600;font-size:0.88em;margin-bottom:4px">POST /api/preprocess — multipart: CSV file + profile JSON</div>
+      <div style="font-size:0.8em;color:#cdd6f4;margin-bottom:8px">FastAPI endpoint streams the uploaded file into memory, calls <code>run_macro()</code>, returns a structured JSON response. <strong style="color:#f38ba8">No disk writes on the server.</strong></div>
+      <div style="font-family:monospace;font-size:0.75em;background:#181825;border-radius:6px;padding:10px;color:#cdd6f4">
+        <div style="color:#6c7086">// Response shape</div>
+        <div>{</div>
+        <div style="padding-left:12px"><span style="color:#a6e3a1">"session_id"</span>: "2026-02-20_08-34-26",</div>
+        <div style="padding-left:12px"><span style="color:#a6e3a1">"meta"</span>: { signals, sample_rate_hz, ... },</div>
+        <div style="padding-left:12px"><span style="color:#a6e3a1">"signals"</span>: { "time_s": [...], "front_shock_dom_suspension [mm]": [...] },</div>
+        <div style="padding-left:12px"><span style="color:#a6e3a1">"events"</span>: [ { schema_id, event_type, t_start, t_end, ... } ],</div>
+        <div style="padding-left:12px"><span style="color:#a6e3a1">"metrics"</span>: [ { schema_id, event_type, metric_name, value, ... } ],</div>
+        <div style="padding-left:12px"><span style="color:#a6e3a1">"source_sha256"</span>: "abc123..."</div>
+        <div>}</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="padding-left:14px;color:#45475a;font-size:1.1em">↓</div>
+
+  <!-- Step 3 -->
+  <div style="display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:start">
+    <div style="width:28px;height:28px;border-radius:50%;background:#cba6f7;color:#1e1e2e;font-weight:700;font-size:0.85em;display:flex;align-items:center;justify-content:center;margin-top:2px">3</div>
+    <div style="background:#1e1e2e;border-radius:8px;padding:12px 14px;border:1px solid #313244">
+      <div style="color:#cba6f7;font-weight:600;font-size:0.88em;margin-bottom:4px">Browser writes artifacts into IndexedDB (Dexie.js)</div>
+      <div style="font-size:0.8em;color:#cdd6f4;margin-bottom:8px">Three Dexie tables, written in a single transaction:</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:0.78em">
+        <div style="background:#181825;border-radius:6px;padding:8px;border:1px solid #45475a">
+          <div style="color:#fab387;font-weight:600;margin-bottom:4px">sessions</div>
+          <div style="color:#cdd6f4;line-height:1.6">session_key (PK)<br>run_id, session_id<br>manifest JSON<br>signals_meta</div>
+        </div>
+        <div style="background:#181825;border-radius:6px;padding:8px;border:1px solid #45475a">
+          <div style="color:#fab387;font-weight:600;margin-bottom:4px">signals</div>
+          <div style="color:#cdd6f4;line-height:1.6">session_key (PK)<br>column names<br>data: Float32Array<br>(typed arrays, compact)</div>
+        </div>
+        <div style="background:#181825;border-radius:6px;padding:8px;border:1px solid #45475a">
+          <div style="color:#fab387;font-weight:600;margin-bottom:4px">events / metrics</div>
+          <div style="color:#cdd6f4;line-height:1.6">session_key (index)<br>schema_id<br>rows as JSON array</div>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:0.78em;color:#6c7086">Library index (run list, session list, SHA set) updated in <span style="color:#fab387">localStorage</span>. Svelte <code>libraryStore</code> reacts automatically.</div>
+    </div>
+  </div>
+
+  <div style="padding-left:14px;color:#45475a;font-size:1.1em">↓</div>
+
+  <!-- Step 4 -->
+  <div style="display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:start">
+    <div style="width:28px;height:28px;border-radius:50%;background:#f38ba8;color:#1e1e2e;font-weight:700;font-size:0.85em;display:flex;align-items:center;justify-content:center;margin-top:2px">4</div>
+    <div style="background:#1e1e2e;border-radius:8px;padding:12px 14px;border:1px solid #313244">
+      <div style="color:#f38ba8;font-weight:600;font-size:0.88em;margin-bottom:4px">User navigates to session / selects entities for comparison</div>
+      <div style="font-size:0.8em;color:#cdd6f4"><code>selectionStore</code> holds the active entity set (mirrors the existing <code>entity_scope</code> widget). Pages derive their data reactively from the store — charts re-render when selection changes. Signal data is lazy-loaded from IndexedDB only when a session window is opened.</div>
+    </div>
+  </div>
+
+  <div style="padding-left:14px;color:#45475a;font-size:1.1em">↓</div>
+
+  <!-- Step 5 -->
+  <div style="display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:start">
+    <div style="width:28px;height:28px;border-radius:50%;background:#fab387;color:#1e1e2e;font-weight:700;font-size:0.85em;display:flex;align-items:center;justify-content:center;margin-top:2px">5</div>
+    <div style="background:#1e1e2e;border-radius:8px;padding:12px 14px;border:1px solid #313244">
+      <div style="color:#fab387;font-weight:600;font-size:0.88em;margin-bottom:4px">Export: browser serialises IndexedDB → bodaqs-library-export.zip</div>
+      <div style="font-size:0.8em;color:#cdd6f4">ZIP structure mirrors existing artifact folder layout — importable into notebooks. Import does the reverse: unzip → write into Dexie → rebuild library index. A second user can receive the ZIP and import it to view the same sessions.</div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:4px;padding:10px 14px;background:#1e1e2e;border-radius:6px;border-left:3px solid #a6e3a1;font-size:0.82em;color:#cdd6f4">
+  <strong style="color:#a6e3a1">Key feasibility note:</strong> The signal data for 18 sessions at ~50k rows × 6 columns ≈ ~22MB as Float32Arrays in IndexedDB — well within browser limits (typically 50–500MB quota). Events + metrics are tiny (&lt;1MB total). The main performance risk is the initial <code>POST /api/preprocess</code> round-trip for large CSV files — a progress indicator and chunked upload handling will be important.
+</div>

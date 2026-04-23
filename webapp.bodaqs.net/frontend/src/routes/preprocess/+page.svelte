@@ -1,7 +1,7 @@
 <script lang="ts">
   import { preprocessCsv, type PreprocessConfig } from '$lib/api/preprocess';
   import { storePreprocessResult } from '$lib/db/artifacts';
-  import { libraryStore } from '$lib/stores/library';
+  import { libraryStore } from '$lib/stores/library.svelte';
   import { makeRunId } from '$lib/utils/run-id';
 
   type FileStatus = 'pending' | 'duplicate' | 'uploading' | 'done' | 'error';
@@ -33,7 +33,7 @@
     files = await Promise.all(
       picked.map(async (f) => {
         const sha = await hashFile(f);
-        const isDup = $libraryStore.some((r) => r.sha_set.includes(sha));
+        const isDup = libraryStore.runs.some((r) => r.sha_set.includes(sha));
         const status: FileStatus = isDup ? 'duplicate' : 'pending';
         return { file: f, status, sha };
       })
@@ -64,7 +64,6 @@
     for (const entry of files) {
       if (entry.status === 'duplicate') continue;
       entry.status = 'uploading';
-      files = [...files];
       try {
         const result = await preprocessCsv(entry.file, config);
         await storePreprocessResult(runId, result);
@@ -74,7 +73,6 @@
         entry.status = 'error';
         entry.error = String(err);
       }
-      files = [...files];
     }
     running = false;
   }

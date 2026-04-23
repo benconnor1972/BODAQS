@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { libraryStore } from '$lib/stores/library';
+  import { libraryStore } from '$lib/stores/library.svelte';
   import { exportRunsToZip, downloadBlob } from '$lib/zip/export';
   import { previewZip, importSelectedRuns, type ZipRunPreview } from '$lib/zip/import';
 
@@ -16,7 +16,7 @@
   }
 
   async function doExport() {
-    const runs = $libraryStore.filter((r) => exportSelected.has(r.run_id));
+    const runs = libraryStore.runs.filter((r) => exportSelected.has(r.run_id));
     const blob = await exportRunsToZip(runs);
     downloadBlob(blob, `bodaqs-export-${new Date().toISOString().slice(0, 10)}.zip`);
   }
@@ -55,10 +55,10 @@
 
 <section>
   <h2>Export</h2>
-  {#if $libraryStore.length === 0}
+  {#if libraryStore.runs.length === 0}
     <p>No runs to export.</p>
   {:else}
-    {#each $libraryStore as run}
+    {#each libraryStore.runs as run}
       <label>
         <input
           type="checkbox"

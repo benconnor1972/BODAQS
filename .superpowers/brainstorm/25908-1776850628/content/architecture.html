@@ -1,0 +1,112 @@
+<h2>System Architecture</h2>
+<p class="subtitle">SvelteKit frontend · Stateless FastAPI backend · Local-first browser storage</p>
+
+<div style="display:grid;grid-template-columns:1fr 80px 1fr;gap:0;align-items:stretch;margin:20px 0">
+
+  <!-- Browser column -->
+  <div style="background:#1e1e2e;border-radius:10px;padding:16px;border:1px solid #313244">
+    <div style="color:#89b4fa;font-weight:700;font-size:0.9em;margin-bottom:12px;text-transform:uppercase;letter-spacing:0.05em">Browser (SvelteKit)</div>
+
+    <div style="background:#181825;border-radius:6px;padding:10px;margin-bottom:8px;border:1px solid #45475a">
+      <div style="color:#cba6f7;font-size:0.8em;font-weight:600;margin-bottom:6px">Pages / Routes</div>
+      <div style="font-size:0.78em;color:#cdd6f4;line-height:1.8">
+        <div><span style="color:#f38ba8">/</span> Library — browse runs &amp; sessions</div>
+        <div><span style="color:#f38ba8">/preprocess</span> CSV upload + profile config</div>
+        <div><span style="color:#f38ba8">/session/[id]</span> Metrics dashboard</div>
+        <div><span style="color:#f38ba8">/session/[id]/browse</span> Window browser</div>
+        <div><span style="color:#f38ba8">/schema</span> Schema editor / test harness</div>
+      </div>
+    </div>
+
+    <div style="background:#181825;border-radius:6px;padding:10px;margin-bottom:8px;border:1px solid #45475a">
+      <div style="color:#cba6f7;font-size:0.8em;font-weight:600;margin-bottom:6px">Svelte Stores</div>
+      <div style="font-size:0.78em;color:#cdd6f4;line-height:1.8">
+        <div><span style="color:#a6e3a1">libraryStore</span> — run/session index</div>
+        <div><span style="color:#a6e3a1">selectionStore</span> — active entities</div>
+        <div><span style="color:#a6e3a1">profileStore</span> — preprocess config</div>
+        <div><span style="color:#a6e3a1">schemaStore</span> — event schema YAML</div>
+      </div>
+    </div>
+
+    <div style="background:#181825;border-radius:6px;padding:10px;margin-bottom:8px;border:1px solid #45475a">
+      <div style="color:#cba6f7;font-size:0.8em;font-weight:600;margin-bottom:6px">Browser Storage</div>
+      <div style="font-size:0.78em;color:#cdd6f4;line-height:1.8">
+        <div><span style="color:#fab387">localStorage</span> — library index, profiles</div>
+        <div><span style="color:#fab387">IndexedDB (Dexie.js)</span></div>
+        <div style="padding-left:12px">runs / sessions / manifests</div>
+        <div style="padding-left:12px">events &amp; metrics tables</div>
+        <div style="padding-left:12px">signal data (as typed arrays)</div>
+      </div>
+    </div>
+
+    <div style="background:#181825;border-radius:6px;padding:10px;border:1px solid #45475a">
+      <div style="color:#cba6f7;font-size:0.8em;font-weight:600;margin-bottom:6px">Charts &amp; Viz</div>
+      <div style="font-size:0.78em;color:#cdd6f4;line-height:1.8">
+        <div>Plotly.js — time-series, histograms</div>
+        <div>ECharts — scatter / metric charts</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow column -->
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:8px">
+    <div style="text-align:center;font-size:0.72em;color:#6c7086">CSV upload</div>
+    <div style="font-size:1.4em;color:#89b4fa">→</div>
+    <div style="font-size:1.4em;color:#a6e3a1">←</div>
+    <div style="text-align:center;font-size:0.72em;color:#6c7086">artifacts JSON</div>
+    <div style="height:20px"></div>
+    <div style="font-size:1.4em;color:#cba6f7">↕</div>
+    <div style="text-align:center;font-size:0.72em;color:#6c7086">schema lint</div>
+  </div>
+
+  <!-- Python column -->
+  <div style="background:#1e1e2e;border-radius:10px;padding:16px;border:1px solid #313244">
+    <div style="color:#a6e3a1;font-weight:700;font-size:0.9em;margin-bottom:12px;text-transform:uppercase;letter-spacing:0.05em">Python (FastAPI) — Stateless</div>
+
+    <div style="background:#181825;border-radius:6px;padding:10px;margin-bottom:8px;border:1px solid #45475a">
+      <div style="color:#cba6f7;font-size:0.8em;font-weight:600;margin-bottom:6px">API Endpoints</div>
+      <div style="font-size:0.78em;color:#cdd6f4;line-height:1.8">
+        <div><span style="color:#a6e3a1">POST /api/preprocess</span></div>
+        <div style="padding-left:12px;color:#6c7086">CSV + profile → artifacts JSON</div>
+        <div><span style="color:#a6e3a1">POST /api/validate-schema</span></div>
+        <div style="padding-left:12px;color:#6c7086">YAML → lint errors / event preview</div>
+        <div><span style="color:#a6e3a1">POST /api/aggregate</span></div>
+        <div style="padding-left:12px;color:#6c7086">session keys → aggregated metrics</div>
+      </div>
+    </div>
+
+    <div style="background:#181825;border-radius:6px;padding:10px;margin-bottom:8px;border:1px solid #45475a">
+      <div style="color:#cba6f7;font-size:0.8em;font-weight:600;margin-bottom:6px">bodaqs_analysis library</div>
+      <div style="font-size:0.78em;color:#cdd6f4;line-height:1.8">
+        <div>pipeline.run_macro()</div>
+        <div>schema.load_event_schema()</div>
+        <div>detect.detect_events_from_schema()</div>
+        <div>metrics.extract_metrics_df()</div>
+        <div style="color:#6c7086;margin-top:4px">← unchanged, used as library</div>
+      </div>
+    </div>
+
+    <div style="background:#181825;border-radius:6px;padding:10px;border:1px solid #45475a">
+      <div style="color:#cba6f7;font-size:0.8em;font-weight:600;margin-bottom:4px">No persistence</div>
+      <div style="font-size:0.78em;color:#6c7086;line-height:1.6">
+        No DB. No disk writes.<br>
+        Request in → response out.<br>
+        Can run as serverless function<br>or a local process.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Export row -->
+<div style="background:#1e1e2e;border-radius:8px;padding:12px 16px;border:1px solid #313244;display:flex;align-items:center;gap:16px">
+  <div style="color:#fab387;font-weight:600;font-size:0.85em;white-space:nowrap">ZIP Export / Import</div>
+  <div style="color:#6c7086;font-size:0.8em">
+    Browser serialises IndexedDB + localStorage → <code style="color:#cdd6f4">bodaqs-library-export.zip</code> containing
+    <code style="color:#cdd6f4">runs/</code>, <code style="color:#cdd6f4">sessions/</code>, <code style="color:#cdd6f4">events/</code>, <code style="color:#cdd6f4">metrics/</code>, <code style="color:#cdd6f4">library-index.json</code>.
+    Mirrors the existing artifact folder structure — compatible with the current notebook tooling.
+  </div>
+</div>
+
+<div style="margin-top:12px;padding:10px 14px;background:#1e1e2e;border-radius:6px;border-left:3px solid #89b4fa;font-size:0.82em;color:#cdd6f4">
+  <strong style="color:#89b4fa">Does this overall shape look right?</strong> Next I'll walk through the data flow step by step (CSV upload → preprocessing → storage → charts), then the page-by-page breakdown.
+</div>

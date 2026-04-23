@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { db } from '../db/dexie';
-import type { LibraryRun } from '../stores/library';
+import type { LibraryRun } from '../stores/library.svelte';
 
 function float32ToBase64(arr: Float32Array): string {
   const bytes = new Uint8Array(arr.buffer);
