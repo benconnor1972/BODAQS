@@ -1,0 +1,30 @@
+# BODAQS analysis environment
+# Direct dependencies used by analysis package code, notebooks, widgets, and tests.
+# This intentionally omits transitive Jupyter/runtime packages pulled in by pip.
+
+# Core data processing
+numpy==2.4.2
+pandas==2.3.3
+scipy==1.17.1
+PyYAML==6.0.3
+fastparquet==2025.12.0
+
+# Notebook/runtime support
+ipykernel==7.2.0
+jupyterlab==4.5.4
+IPython==9.10.0
+ipywidgets==8.1.8
+traitlets==5.14.3
+anywidget==0.9.21
+
+# Visualisation and interactive widgets
+matplotlib==3.10.8
+plotly==6.5.2
+ipydatagrid==1.4.0
+ipyleaflet==0.20.0
+
+# Optional feature support exercised by package code/tests
+fitparse==1.2.0
+
+# Tests
+pytest==9.0.3
