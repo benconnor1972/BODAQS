@@ -123,7 +123,7 @@
       </tr>
     </thead>
     <tbody>
-      {#each files as entry}
+      {#each files as entry(entry.sha)}
         <tr>
           <td>{entry.file.name}</td>
           <td>

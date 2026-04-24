@@ -1,7 +1,8 @@
 <script lang="ts">
-	import favicon from '$lib/assets/favicon.svg';
+import favicon from "$lib/assets/favicon.svg";
+import { resolve } from '$app/paths';
 
-	let { children } = $props();
+let { children } = $props();
 </script>
 
 <svelte:head>
@@ -9,9 +10,9 @@
 </svelte:head>
 
 <nav>
-	<a href="/">Library</a>
-	<a href="/preprocess">Preprocess</a>
-	<a href="/transfer">Export / Import</a>
+	<a href={resolve("/")}>Library</a>
+	<a href={resolve("/preprocess")}>Preprocess</a>
+	<a href={resolve("/transfer")}>Export / Import</a>
 </nav>
 
 <main>

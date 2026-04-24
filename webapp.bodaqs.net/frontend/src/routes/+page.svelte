@@ -1,17 +1,22 @@
 <script lang="ts">
-	import { libraryStore } from '$lib/stores/library.svelte';
+  import { libraryStore } from "$lib/stores/library.svelte";
+  import { resolve } from '$app/paths';
 </script>
 
 <h1>Library</h1>
 
 {#if libraryStore.runs.length === 0}
-	<p>No runs yet. <a href="/preprocess">Preprocess some CSV files</a> to get started.</p>
+  <p>
+    No runs yet. <a
+      href={resolve("/preprocess")}>Preprocess some CSV files</a
+    > to get started.
+  </p>
 {:else}
-	{#each libraryStore.runs as run}
-		<section>
-			<h2>{run.run_id}</h2>
-			<p>{run.description || 'No description'}</p>
-			<p>{run.session_ids.length} session(s)</p>
-		</section>
-	{/each}
+  {#each libraryStore.runs as run(run.run_id)}
+    <section >
+      <h2>{run.run_id}</h2>
+      <p>{run.description || "No description"}</p>
+      <p>{run.session_ids.length} session(s)</p>
+    </section>
+  {/each}
 {/if}
