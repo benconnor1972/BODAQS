@@ -1,4 +1,4 @@
-import { removePreprocessResult } from "$lib/db/artifacts.ts";
+import { removePreprocessResult } from "$lib/db/artifacts";
 
 export interface LibraryRun {
   run_id: string;

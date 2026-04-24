@@ -31,11 +31,11 @@ export interface PreprocessResponse {
   source_sha256: string;
 }
 
-async function compressGzip(data: Uint8Array): Promise<Uint8Array> {
-  const stream = new CompressionStream('gzip');
+async function compressGzip(data: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+  const stream = new CompressionStream("gzip");
   const writer = stream.writable.getWriter();
-  writer.write(data);
-  writer.close();
+  await writer.write(data);
+  await writer.close();
   const chunks: Uint8Array[] = [];
   const reader = stream.readable.getReader();
   while (true) {
@@ -61,14 +61,14 @@ export async function preprocessCsv(
   const compressed = await compressGzip(rawBytes);
 
   const form = new FormData();
-  form.append('csv_file', new Blob([compressed], { type: 'application/gzip' }), file.name + '.gz');
-  form.append('config_json', JSON.stringify(config));
+  form.append("csv_file", new Blob([compressed], { type: "application/gzip" }), file.name + ".gz");
+  form.append("config_json", JSON.stringify(config));
 
-  const apiBase = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
-  const resp = await fetch(`${apiBase}/api/preprocess`, { method: 'POST', body: form });
+  const apiBase = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+  const resp = await fetch(`${apiBase}/api/preprocess`, { method: "POST", body: form });
 
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({})) as Record<string, unknown>;
+    const err = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
     throw new Error(String(err.detail ?? `Server error ${resp.status}`));
   }
   return resp.json() as Promise<PreprocessResponse>;
