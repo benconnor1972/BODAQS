@@ -6,15 +6,15 @@ let { children } = $props();
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
+<link rel="icon" href={favicon} />
 </svelte:head>
 
 <nav>
-	<a href={resolve("/")}>Library</a>
-	<a href={resolve("/preprocess")}>Preprocess</a>
-	<a href={resolve("/transfer")}>Export / Import</a>
+  <a href={resolve("/")}>Library</a> |
+  <a href={resolve("/preprocess")}>Preprocess</a> |
+  <a href={resolve("/transfer")}>Export / Import</a>
 </nav>
 
 <main>
-	{@render children()}
+  {@render children()}
 </main>
