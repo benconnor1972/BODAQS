@@ -1,3 +1,5 @@
+import { removePreprocessResult } from "$lib/db/artifacts.ts";
+
 export interface LibraryRun {
   run_id: string;
   description: string;
@@ -6,19 +8,19 @@ export interface LibraryRun {
   sha_set: string[];
 }
 
-const STORAGE_KEY = 'bodaqs_library';
+const STORAGE_KEY = "bodaqs_library";
 
 function load(): LibraryRun[] {
-  if (typeof localStorage === 'undefined') return [];
+  if (typeof localStorage === "undefined") return [];
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as LibraryRun[];
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as LibraryRun[];
   } catch {
     return [];
   }
 }
 
 function save(runs: LibraryRun[]): void {
-  if (typeof localStorage !== 'undefined') {
+  if (typeof localStorage !== "undefined") {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(runs));
   }
 }
@@ -42,10 +44,10 @@ class LibraryStore {
     } else {
       this.#runs.push({
         run_id: runId,
-        description: '',
+        description: "",
         created_at: new Date().toISOString(),
         session_ids: sessionId ? [sessionId] : [],
-        sha_set: sha256 ? [sha256] : [],
+        sha_set: sha256 ? [sha256] : []
       });
     }
     save(this.#runs);
@@ -59,6 +61,19 @@ class LibraryStore {
     const run = this.#runs.find((r) => r.run_id === runId);
     if (run) run.description = description;
     save(this.#runs);
+  }
+
+  async clear() {
+    for (const run of this.#runs) {
+      await removePreprocessResult(run.run_id);
+    }
+
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      this.#runs = [];
+    } catch (e) {
+      console.error(e);
+    }
   }
 }
 

@@ -1,9 +1,7 @@
-import { db } from './dexie';
-import type { PreprocessResponse } from '../api/preprocess';
+import { db } from "./dexie";
+import type { PreprocessResponse } from "../api/preprocess";
 
-export function decodeSignalColumns(
-  response: PreprocessResponse
-): Record<string, Float32Array> {
+export function decodeSignalColumns(response: PreprocessResponse): Record<string, Float32Array> {
   const result: Record<string, Float32Array> = {};
   for (const [col, b64] of Object.entries(response.signals.columns)) {
     const binary = atob(b64);
@@ -15,13 +13,10 @@ export function decodeSignalColumns(
   return result;
 }
 
-export async function storePreprocessResult(
-  runId: string,
-  response: PreprocessResponse
-): Promise<void> {
+export const storePreprocessResult = async (runId: string, response: PreprocessResponse) => {
   const sessionKey = `${runId}::${response.session_id}`;
 
-  await db.transaction('rw', [db.sessions, db.signals, db.events, db.metrics], async () => {
+  await db.transaction("rw", [db.sessions, db.signals, db.events, db.metrics], async () => {
     await db.sessions.put({
       session_key: sessionKey,
       run_id: runId,
@@ -29,13 +24,13 @@ export async function storePreprocessResult(
       manifest: { meta: response.meta, source_sha256: response.source_sha256 },
       signals_meta: {
         column_names: response.signals.column_names,
-        n_rows: response.signals.n_rows,
-      },
+        n_rows: response.signals.n_rows
+      }
     });
 
     await db.signals.put({
       session_key: sessionKey,
-      columns: decodeSignalColumns(response),
+      columns: decodeSignalColumns(response)
     });
 
     const schemaIds = [...new Set(response.events.map((e) => String(e.schema_id)))];
@@ -43,13 +38,25 @@ export async function storePreprocessResult(
       await db.events.put({
         session_key: sessionKey,
         schema_id: schemaId,
-        rows: response.events.filter((e) => String(e.schema_id) === schemaId),
+        rows: response.events.filter((e) => String(e.schema_id) === schemaId)
       });
       await db.metrics.put({
         session_key: sessionKey,
         schema_id: schemaId,
-        rows: response.metrics.filter((m) => String(m.schema_id) === schemaId),
+        rows: response.metrics.filter((m) => String(m.schema_id) === schemaId)
       });
     }
   });
-}
+};
+
+export const removePreprocessResult = async (runId: string) => {
+  await db.transaction("rw", [db.sessions, db.signals, db.events, db.metrics], async () => {
+    const sessionKeys = await db.sessions.where("run_id").equals(runId).primaryKeys();
+    if (sessionKeys.length === 0) return;
+
+    await db.sessions.bulkDelete(sessionKeys);
+    await db.signals.bulkDelete(sessionKeys);
+    await db.events.where("session_key").anyOf(sessionKeys).delete();
+    await db.metrics.where("session_key").anyOf(sessionKeys).delete();
+  });
+};
