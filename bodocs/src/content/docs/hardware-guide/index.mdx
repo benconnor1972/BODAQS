@@ -24,15 +24,44 @@ Some parts are optional or have budget and premium options.
 ## Printed circuit board
 The printed circuit board (PCB) is custom-designed for this project. It is obtained by ordering it from a PCB fabricator or from someone else who has already done so.
 
-{/* TODO */}
-[Details to come – ordering a PCB directly]
+#### Obtaining the PCB fabrication files
 
-{/* TODO */}
-[Details to come – ordering a PCB from bodaqs.net]
+Go to the 'releases' page in the BODAQS github repository [here](https://github.com/benconnor1972/BODAQS/hardware/releases) and download the latest PCB fabrication package. The package contains all the files you need to order an assembled PCB from JLCPCB.
+
+#### Ordering PCBs on JLCPCB
+
+<Flag src="/src/assets/pics/hardware_1.png" alt="hardware_1">
+First, [create an account](https://passport.jlcpcb.com/#/login) at JLCPCB (or log in if you already have an account). Then Select 'order now' from the top right of the [home screen](jlcpcb.com).
+</Flag>
+
+<Flag src="/src/assets/pics/hardware_2.png" alt="hardware_2">
+Select "Add gerber file" and navigate to the *_fab.zip file in the fabrication files package. When the file has uploaded, a picture of the PCB should appear in the box.
+</Flag>
+
+<Flag src="/src/assets/pics/hardware_3.png" alt="hardware_3">
+Scroll down to the bottom of the page, leaving the other settings unchanged. Click the 'PCB Assembly' slider ON. A set of new options should appear below. Leave these unchanged and click 'next'.
+
+A picture of the PCB should appear. Click 'next'.
+</Flag>
+
+<Flag src="/src/assets/pics/hardware_4.png" alt="hardware_4">
+Select "Add BOM file" and navigate to the *_BOM.csv file in the fabrication files package. Select "Add CPL file" and navigate to the *-top-pos.csv file in the fabrication files package. Click 'process BOM and CPL'.
+</Flag>
+
+<Flag src="/src/assets/pics/hardware_5.png" alt="hardware_5">
+You will be presented with the Bill of Materials and Component Placements. Click 'next' on each page.
+</Flag>
+
+<Flag src="/src/assets/pics/hardware_6.png" alt="hardware_6">
+Review the quote and select an appropriate product description (this is needed for shipping paperwork). Research/Education/DIY/Entertainment => DIY hobby circuit board is a good option. Select 'save to cart'.
+
+Select 'secure checkout' and complete checkout details.
+
+</Flag>
 
 <Aside title={'Ordering tips'}>
- - If you order directly, consider pooling with your friends. The per-unit price and freight cost falls quickly for more than one unit
-  - If you order directly, consider tipping bodaqs.net Ordering from me is a premium option as stocking, handling, postage etc takes time and I’m only one person.
+ - If you order directly, consider pooling with your friends. The per-unit price and freight cost falls quickly for more than one unit.
+ - In the future, we may set up a storefront to allow you to order the PCB and other components directly. We don't intend to do this until the hardware design is stable. Note also that ordering from the storefront will be a premium option: stocking, handling, postage etc take time. If you're after the lowest price, sourcing the parts yourself is likely to be the cheapest option.
 </Aside>
 
 ## Electronic parts
