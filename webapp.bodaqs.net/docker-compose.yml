@@ -1,8 +1,10 @@
 services:
   api:
     build:
-      context: ..
-      dockerfile: webapp.bodaqs.net/api/Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
+      additional_contexts:
+        analysis: ../analysis
     ports:
       - "8000:8000"
     volumes:
@@ -11,9 +13,13 @@ services:
 
   frontend:
     build:
-      context: frontend
+      context: ./frontend
     ports:
-      - "5173:5173"
+      - target: 5173
+        host_ip: 127.0.0.1
+        published: 5173
+        protocol: tcp
+        mode: host
     environment:
       VITE_API_BASE: http://localhost:8000
     volumes:

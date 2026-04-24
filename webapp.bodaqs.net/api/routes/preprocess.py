@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 import gzip
-
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-
 from api.schemas.preprocess import PreprocessConfig
 from api.services.preprocess_service import run_preprocess
 

@@ -2,9 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy analysis only to run the editable install; the compose mount overlays it at runtime
-COPY analysis/ ./analysis/
-COPY webapp.bodaqs.net/api/requirements.txt ./api/requirements.txt
+COPY api/requirements.txt ./api/requirements.txt
+COPY --from=analysis . ./analysis/
 RUN pip install --no-cache-dir -r api/requirements.txt -e ./analysis/
 # api/ source is mounted at runtime — not copied here
 
