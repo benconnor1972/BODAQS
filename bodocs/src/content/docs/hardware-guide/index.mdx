@@ -130,18 +130,40 @@ These need to match the connectors. It is easiest to buy these as sealed cable t
 ##  3D printed parts
 The logger case is 3d printed and comprises four parts: a top and bottom part and two end pieces. The case can be printed on any modern 3D printer.
 
-If you have a 3D printer, or know someone who does, you can print the parts yourself. Otherwise you can almost certainly find a local business that will print the parts for you. If you are ordering PCBs from JLCPCB or PCBway you could consider having them printed by the vendor at the same time.
+If you have a 3D printer, or know someone who does, you can print the parts yourself. Otherwise you can almost certainly find a local business that will print the parts for you. 
 
-<Aside title="Optional">
-  There are two variants of the case design. One is designed to be fixed closed using brass heat-set inserts in the lower half of the case. This is cosmetically superior, but requires you to have the inserts. The alternative is to use standard 3mm hex nuts. This works just as well but doesn't look quite so tidy.
-  Variants of the case end pieces are available should you not wish to install the full set of connectors.
-</Aside>
+All the print files are available [here](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/Prototype%20E-F). (The Fusion CAD model of the case is in the 'f3z' directory). 
+
+### Parts required
+
+You will need the following printed parts:
+ - **A base** (the lower half of the case). There are two variants of the base design. `base.stl` is designed to be fixed closed using brass heat-set inserts in the lower half of the case. This is cosmetically superior, but requires you to have the inserts. `base_nuts.stl`is to use standard 3mm hex nuts. This works just as well but doesn't look quite so tidy.
+ - **A lid** (the upper half of the case): `lid.stl`.
+ - **A top end piece** (the end of the box that faces forward). This piece can mount up to four M8 connectors. The normal configuration is: two analog inputs, one I2C input, and one connector for a handlebar-mounted switch.`Top end.stl` Variations are available with one, two or three connectors `Top end_*_connectors.stl`
+ - **A bottom end piece** (the end of the box that faces backward). This piece can mount up to two M8 connectors and contains the opening for USB-C connection to the logger. The normal configuration is two analog inputs.`Bottom end.stl` A variation is available with one connectors `Top end_1_connector.stl`
+ - **A plug** to go in the USB connection hole. `plug.stl`. If you don't wish to use this, tape also works.
 
 ### Notes on 3d printing the parts:
-- Recommended material: PETG. Virtually any material will work as the mechanical stresses on the case are low. However the design contains some small flexures that, if printed in a brittle material and cycled often, will probably break.
-- Preferred print orientation for the case top and bottom is vertical with supports. This will ensure that the flexures are not compromised by layer lines.
-{/* TODO */}
-The design files and STLs are available here [link to be added] and ready-to-print plates for BambuLab printers are here [link to be added]
+**Recommended material:** PETG or PCTG, with or without carbon or glass fill. Virtually any material will work as the mechanical stresses on the case are low. If you are confident the logger will not be exposed to high temperatures, black carbon-filled PLA looks awesome. The plug is best printed in TPU, if you have it available.
+
+**Print orientation:** for the case top and bottom, flat on their largest faces, with supports enabled. The print lid requires support for the cutouts in the front face, and for the screw holes. Everything else prints well without supports.
+
+**Support settings:** tree-style supports work well. If you are a more advanced 3D printer user, the cutout areas benefit from using an interface layer of dissimilar material (PLA for PETG and vice versa), along with the following support settings: 
+ - Top z distance: 0
+ - Top interface layers: 2
+ - Top interface spacing: 0
+ - Interface pattern: rectilinear
+
+
+<Flag src="/src/assets/pics/print-case.png" alt="print-case">
+**Printing cases with inlaid logo:** If you have access to a multi-color 3D printer and your slicer software supports it, the easiest way to do so is to import the parts as STEP files directly into your slicer (the STEP files are in the 'STEP' directory). Once the files are imported, assign the logo inlays with the colors of your choice. The official BODAQS colors are teal for the spring and either white or black for the bar, depending on the background.
+</Flag>
+
+<Flag src="/src/assets/pics/print-plate.png" alt="print-plate">
+**BambuLab-format project files** are also available in the '3mf' directory. `all parts - one material.3mf` has all the parts on a single plate - delete the base and ends variants you don't need. `all parts - three colors.3mf` is the same but has alternate filament colors assigned to the logo inlays. 
+</Flag>
+
+
 
 ### Sensors
 <Flag src="/src/assets/pics/linear_pots.png" alt="Linear Potentiometers">
