@@ -73,6 +73,10 @@ def build_signals_registry(
         raise ValueError("session['df'] must be a pandas DataFrame")
 
     ns_cols = set(non_signal_columns or DEFAULT_NON_SIGNAL_COLUMNS)
+    meta = session.get("meta") if isinstance(session.get("meta"), dict) else {}
+    channel_info = meta.get("channel_info") if isinstance(meta, dict) else {}
+    if not isinstance(channel_info, dict):
+        channel_info = {}
 
     # ---- helpers -------------------------------------------------
 
@@ -158,6 +162,69 @@ def build_signals_registry(
             return "disp_norm"
 
         return None
+
+    def _registry_unit_from_channel_info(value: Any) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        unit = value.strip()
+        if unit.lower() in {"norm", "normalized", "normalised", "unitless"}:
+            return "1"
+        return unit
+
+    def _apply_channel_info_hints(col: str, info: Dict[str, Any]) -> Dict[str, Any]:
+        hints = channel_info.get(col)
+        if not isinstance(hints, dict):
+            return info
+
+        merged = dict(info)
+        unit = _registry_unit_from_channel_info(hints.get("unit"))
+        if unit is not None:
+            merged["unit"] = unit
+
+        domain = hints.get("domain")
+        if isinstance(domain, str) and domain.strip():
+            merged["domain"] = domain.strip()
+
+        sensor = hints.get("sensor")
+        if isinstance(sensor, str) and sensor.strip():
+            merged["sensor"] = canonical_sensor_id(sensor)
+
+        quantity = hints.get("quantity", hints.get("role"))
+        if isinstance(quantity, str) and quantity.strip():
+            merged["quantity"] = quantity.strip()
+            if quantity.strip() == "raw":
+                merged["kind"] = "raw"
+
+        for key in ("sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
+            if key in hints:
+                merged[key] = hints[key]
+
+        return merged
+
+    def _info_from_channel_info(col: str, s: pd.Series) -> Optional[Dict[str, Any]]:
+        hints = channel_info.get(col)
+        if not isinstance(hints, dict):
+            return None
+
+        quantity = hints.get("quantity", hints.get("role"))
+        quantity = quantity.strip() if isinstance(quantity, str) else None
+        unit = _registry_unit_from_channel_info(hints.get("unit"))
+        domain = hints.get("domain")
+        sensor = hints.get("sensor")
+
+        info: Dict[str, Any] = {
+            "kind": "raw" if quantity == "raw" else ("qc" if _is_boolish_series(s) else ""),
+            "unit": unit,
+            "domain": domain.strip() if isinstance(domain, str) and domain.strip() else None,
+            "op_chain": [],
+            "sensor": canonical_sensor_id(sensor) if isinstance(sensor, str) and sensor.strip() else None,
+            "quantity": quantity,
+            "notes": "semantics supplied by logger sidecar",
+        }
+        for key in ("sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
+            if key in hints:
+                info[key] = hints[key]
+        return info
     # ---- build ----------------------------------------------------
     signals: Dict[str, Dict[str, Any]] = {}
 
@@ -203,9 +270,15 @@ def build_signals_registry(
                 info["unit"] = RAW_UNIT_DEFAULT
                 info["notes"] = "raw column missing unit; defaulted to [counts]"
 
+            info = _apply_channel_info_hints(str(col), info)
             signals[str(col)] = info
 
         except SignalNameError as e:
+            sidecar_info = _info_from_channel_info(str(col), s)
+            if sidecar_info is not None:
+                signals[str(col)] = sidecar_info
+                continue
+
             if strict:
                 raise
 

@@ -1,25 +1,19 @@
 {
   "contract": {
     "name": "mtb_logger_timeseries",
-    "version": "0.2.0"
+    "version": "0.2.0",
+    "sidecar_kind": "generic"
   },
   "data_file": {
-    "path": "example_from_loggercfg_16.csv",
     "delimiter": ",",
     "header": true
-  },
-  "session": {
-    "session_id": "example_from_loggercfg_16",
-    "started_at_local": "2026-04-25T12:00:00+08:00",
-    "timezone": "AWST-8",
-    "notes": "Example sidecar generated from loggercfg (16).txt for preprocessing development."
   },
   "streams": {
     "primary": {
       "type": "uniform",
-      "time_column": "timestamp_ms",
-      "time_encoding": "epoch_ms",
-      "time_unit": "ms",
+      "time_column": "timestamp",
+      "time_encoding": "local_time",
+      "time_unit": "time_of_day",
       "time_anchor": "unix_epoch_utc",
       "sample_rate_hz": 1000.0
     }
@@ -177,11 +171,11 @@
   },
   "provenance": {
     "logger_family": "BODAQS",
-    "source_config": "c:/Users/Ben Connor/Downloads/loggercfg (16).txt",
+    "source_config": "loggercfg (16).txt",
     "metadata_generated_at": "2026-04-25T12:00:00+08:00",
-    "generator": "manual example sidecar for preprocessing development",
+    "generator": "manual generic sidecar example for preprocessing development",
     "assumptions": [
-      "The runtime CSV filename, row count, hash, and exact session start time were not available; placeholder values are used where needed.",
+      "This is a generic fallback sidecar, so it intentionally does not include a runtime CSV filename, row count, hash, session id, or exact session start time.",
       "Current firmware header generation is assumed: sample_id,timestamp_ms,Fork [mm],Shock [mm],String pot [mm],String pot_raw [counts],mark.",
       "sensor0, sensor1, and sensor2 are assumed active because muted=false; sensor3 is omitted because muted=true.",
       "timestamp_mode=fast is represented as epoch_ms anchored to the Unix epoch in UTC.",

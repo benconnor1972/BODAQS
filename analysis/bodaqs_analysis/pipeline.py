@@ -44,6 +44,8 @@ ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
 
 logger = logging.getLogger(__name__)
 
+_SIDECAR_BINDING_KEY = "_bodaqs_sidecar_binding"
+
 _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "fit_dir": None,
@@ -60,21 +62,29 @@ _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
 
 def _declared_time_columns(sidecar: Dict[str, Any]) -> set[str]:
     out: set[str] = set()
+    binding = sidecar.get(_SIDECAR_BINDING_KEY)
+    bound_columns = binding.get("columns", {}) if isinstance(binding, dict) else {}
 
     columns = sidecar.get("columns")
     if isinstance(columns, dict):
         for col_name, info in columns.items():
             if isinstance(info, dict) and info.get("class") == "time":
                 out.add(str(col_name))
+                bound = bound_columns.get(str(col_name))
+                if isinstance(bound, dict) and isinstance(bound.get("dataframe_column"), str):
+                    out.add(bound["dataframe_column"])
 
     streams = sidecar.get("streams")
     if isinstance(streams, dict):
         for stream_info in streams.values():
             if not isinstance(stream_info, dict):
                 continue
-            time_col = stream_info.get("time_col")
+            time_col = stream_info.get("time_column", stream_info.get("time_col"))
             if isinstance(time_col, str) and time_col.strip():
                 out.add(time_col)
+                bound = bound_columns.get(time_col)
+                if isinstance(bound, dict) and isinstance(bound.get("dataframe_column"), str):
+                    out.add(bound["dataframe_column"])
 
     out.add("time_s")
     return out
@@ -84,6 +94,8 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
     out: Dict[str, Dict[str, Any]] = {}
     columns = sidecar.get("columns")
     streams = sidecar.get("streams")
+    binding = sidecar.get(_SIDECAR_BINDING_KEY)
+    bound_columns = binding.get("columns", {}) if isinstance(binding, dict) else {}
     if not isinstance(columns, dict):
         return out
 
@@ -93,10 +105,15 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         if info.get("class") != "signal":
             continue
 
+        bound = bound_columns.get(str(col_name))
+        dataframe_col = bound.get("dataframe_column") if isinstance(bound, dict) else str(col_name)
+        if not isinstance(dataframe_col, str) or not dataframe_col.strip():
+            dataframe_col = str(col_name)
+
         ch: Dict[str, Any] = {}
         unit = info.get("unit")
         if isinstance(unit, str) and unit.strip():
-            ch["unit"] = unit
+            ch["unit"] = "1" if unit.strip().lower() in {"norm", "normalized", "normalised", "unitless"} else unit
 
         sensor = info.get("sensor")
         if isinstance(sensor, str) and sensor.strip():
@@ -105,10 +122,23 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         quantity = info.get("quantity")
         if isinstance(quantity, str) and quantity.strip():
             ch["role"] = quantity
+            ch["quantity"] = quantity
+
+        domain = info.get("domain")
+        if isinstance(domain, str) and domain.strip():
+            ch["domain"] = domain
 
         source_columns = info.get("source_columns")
         if isinstance(source_columns, list):
             ch["source_columns"] = [str(x) for x in source_columns if isinstance(x, str)]
+
+        calibration_ref = info.get("calibration_ref")
+        if isinstance(calibration_ref, str) and calibration_ref.strip():
+            ch["calibration_ref"] = calibration_ref
+
+        transform_chain = info.get("transform_chain")
+        if isinstance(transform_chain, list):
+            ch["transform_chain"] = [str(x) for x in transform_chain if isinstance(x, str)]
 
         stream_name = info.get("stream")
         if isinstance(stream_name, str) and isinstance(streams, dict):
@@ -121,7 +151,12 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
                     except Exception:
                         pass
 
-        out[str(col_name)] = ch
+        ch["sidecar_column_id"] = str(col_name)
+        if isinstance(bound, dict):
+            ch["csv_column"] = bound.get("physical_column_label")
+            ch["csv_ref"] = bound.get("csv_ref")
+
+        out[dataframe_col] = ch
 
     return out
 
@@ -138,6 +173,22 @@ def _apply_sidecar_metadata(
     parse = qc.setdefault("parse", {})
 
     source["sidecar_path"] = sidecar_path
+    binding = sidecar.get(_SIDECAR_BINDING_KEY)
+    if isinstance(binding, dict):
+        sidecar_kind = binding.get("sidecar_kind")
+        if isinstance(sidecar_kind, str) and sidecar_kind.strip():
+            source["sidecar_kind"] = sidecar_kind
+            parse["sidecar_kind"] = sidecar_kind
+        parse["sidecar_column_bindings"] = binding.get("columns", {})
+        missing_optional = binding.get("missing_optional_columns")
+        if isinstance(missing_optional, list):
+            parse["sidecar_missing_optional_columns"] = list(missing_optional)
+        skipped_unknown = binding.get("skipped_unknown_columns")
+        if isinstance(skipped_unknown, list):
+            parse["sidecar_skipped_unknown_columns"] = list(skipped_unknown)
+        for warning in binding.get("warnings", []):
+            if isinstance(warning, str) and warning.strip():
+                _append_qc_warning(session, warning)
 
     contract = sidecar.get("contract")
     if isinstance(contract, dict):
@@ -158,9 +209,13 @@ def _apply_sidecar_metadata(
                     break
 
         if isinstance(primary_stream, dict):
-            time_col = primary_stream.get("time_col")
+            time_col = primary_stream.get("time_column", primary_stream.get("time_col"))
             if isinstance(time_col, str) and time_col.strip():
                 parse["time_column_used"] = time_col
+                if isinstance(binding, dict):
+                    bound = binding.get("columns", {}).get(time_col)
+                    if isinstance(bound, dict) and isinstance(bound.get("dataframe_column"), str):
+                        parse["time_dataframe_column_used"] = bound["dataframe_column"]
             if primary_stream.get("type") == "uniform":
                 sample_rate_hz = primary_stream.get("sample_rate_hz")
                 if sample_rate_hz is not None:
@@ -279,12 +334,14 @@ def load_session(
     *,
     timezone: Optional[str] = None,
     sidecar_path: Optional[str] = None,
+    generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
 ) -> Dict[str, Any]:
     """Load a CSV into a v0 Session dict (df_raw + initial qc/meta)."""
     p = Path(csv_path)
     df_raw, sidecar, resolved_sidecar_path = load_logger_csv_with_sidecar(
         str(p),
         sidecar_path=sidecar_path,
+        generic_sidecar_paths=generic_sidecar_paths,
     )
 
     stats = parse_run_stats_footer(str(p))
@@ -339,6 +396,7 @@ def load_and_canonicalize(
     *,
     timezone: Optional[str] = None,
     sidecar_path: Optional[str] = None,
+    generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
 ) -> Dict[str, Any]:
     """
     Step 1 helper for notebooks/UI:
@@ -347,7 +405,12 @@ def load_and_canonicalize(
       - build signals registry (so we can list displacement signals)
     Does NOT require normalize_ranges.
     """
-    session = load_session(csv_path, timezone=timezone, sidecar_path=sidecar_path)
+    session = load_session(
+        csv_path,
+        timezone=timezone,
+        sidecar_path=sidecar_path,
+        generic_sidecar_paths=generic_sidecar_paths,
+    )
 
     # Infer units from column headers like "... [mm]"
     df = session["df"]
@@ -949,6 +1012,7 @@ def run_macro(
     schema_path: str,
     *,
     sidecar_path: Optional[str] = None,
+    generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
     fit_import: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
     zero_window_s: float = 1,
@@ -974,7 +1038,12 @@ def run_macro(
         When True, metrics computation enforces strict trigger/spec requirements (may raise).
         When False, missing trigger times (etc.) should propagate as NaN where supported.
     """
-    session = load_session(csv_path, timezone=timezone, sidecar_path=sidecar_path)
+    session = load_session(
+        csv_path,
+        timezone=timezone,
+        sidecar_path=sidecar_path,
+        generic_sidecar_paths=generic_sidecar_paths,
+    )
     logger.info("Session load complete: %s", csv_path)
 
     session = enrich_session_with_fit(session, fit_import=fit_import)

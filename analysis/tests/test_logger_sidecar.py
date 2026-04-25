@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -118,6 +119,71 @@ def _write_csv_only(tmp_path, name: str = "session.csv"):
     return csv_path
 
 
+def _write_generic_sidecar(
+    tmp_path,
+    *,
+    name: str = "generic_sidecar.json",
+    header: bool = True,
+    include_optional_shock: bool = True,
+):
+    columns = {
+        "timestamp_ms": {
+            "csv_ref": {"by": "header", "header": "timestamp_ms"} if header else {"by": "index", "index": 0},
+            "class": "time",
+            "dtype": "uint64",
+            "stream": "primary",
+            "unit": "ms",
+        },
+        "fork_travel_mm": {
+            "csv_ref": {"by": "header", "header": "Fork [mm]"} if header else {"by": "index", "index": 1},
+            "class": "signal",
+            "dtype": "float64",
+            "stream": "primary",
+            "sensor": "fork",
+            "quantity": "disp",
+            "domain": "suspension",
+            "unit": "mm",
+        },
+    }
+    if include_optional_shock:
+        columns["shock_travel_mm"] = {
+            "csv_ref": {"by": "header", "header": "Shock [mm]"} if header else {"by": "index", "index": 2},
+            "class": "signal",
+            "dtype": "float64",
+            "stream": "primary",
+            "sensor": "shock",
+            "quantity": "disp",
+            "domain": "suspension",
+            "unit": "mm",
+            "required": False,
+        }
+
+    sidecar = {
+        "contract": {
+            "name": "mtb_logger_timeseries",
+            "version": "0.2.0",
+            "sidecar_kind": "generic",
+        },
+        "data_file": {
+            "delimiter": ",",
+            "header": header,
+        },
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "timestamp_ms",
+                "time_encoding": "epoch_ms",
+                "time_unit": "ms",
+                "sample_rate_hz": 1000.0,
+            }
+        },
+        "columns": columns,
+    }
+    sidecar_path = tmp_path / name
+    sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+    return sidecar_path
+
+
 def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
     csv_path, sidecar_path = _write_csv_and_sidecar(tmp_path)
 
@@ -132,6 +198,163 @@ def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["sensor"] == "rear_shock"
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["role"] == "disp"
     assert session["meta"]["device"]["firmware_version"] == "1.2.3"
+
+
+def test_session_sidecar_requires_every_physical_csv_column(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "timestamp_ms,Fork [mm],extra_voltage",
+                "1000,10.0,3.7",
+                "1001,11.0,3.8",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sidecar = {
+        "contract": {
+            "name": "mtb_logger_timeseries",
+            "version": "0.2.0",
+            "sidecar_kind": "session",
+        },
+        "data_file": {"delimiter": ",", "header": True},
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "timestamp_ms",
+                "time_encoding": "epoch_ms",
+                "time_unit": "ms",
+            }
+        },
+        "columns": {
+            "timestamp_ms": {
+                "csv_ref": {"by": "header", "header": "timestamp_ms"},
+                "class": "time",
+                "dtype": "uint64",
+                "stream": "primary",
+                "unit": "ms",
+            },
+            "fork_travel_mm": {
+                "csv_ref": {"by": "header", "header": "Fork [mm]"},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "fork",
+                "quantity": "disp",
+                "domain": "suspension",
+                "unit": "mm",
+            },
+        },
+    }
+    (tmp_path / "session.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not describe every CSV column"):
+        load_session(str(csv_path))
+
+
+def test_load_session_uses_single_generic_sidecar_permissively(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "timestamp_ms,Fork [mm],rear_shock_dom_suspension [mm]",
+                "1000,10.0,20.0",
+                "1001,11.0,21.0",
+                "1002,12.0,22.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    generic_sidecar = _write_generic_sidecar(tmp_path)
+
+    session = load_session(str(csv_path), generic_sidecar_paths=[generic_sidecar])
+
+    assert session["source"]["sidecar_path"] == str(generic_sidecar)
+    assert session["source"]["sidecar_kind"] == "generic"
+    assert "front_shock_dom_suspension [mm]" in session["df"].columns
+    assert "rear_shock_dom_suspension [mm]" not in session["df"].columns
+    assert "sidecar_optional_column_missing:shock_travel_mm" in session["qc"]["warnings"]
+    assert "sidecar_unknown_csv_column_skipped:rear_shock_dom_suspension [mm]" in session["qc"]["warnings"]
+    assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["sensor"] == "front_shock"
+    assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["role"] == "disp"
+
+
+def test_load_session_logs_sidecar_selection_and_column_binding(tmp_path, caplog):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "timestamp_ms,Fork [mm],extra_voltage",
+                "1000,10.0,3.7",
+                "1001,11.0,3.8",
+                "1002,12.0,3.9",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    generic_sidecar = _write_generic_sidecar(
+        tmp_path,
+        include_optional_shock=False,
+    )
+
+    caplog.set_level(logging.INFO, logger="bodaqs_analysis.io_logger")
+
+    load_session(str(csv_path), generic_sidecar_paths=[generic_sidecar])
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Logger same-stem sidecar not found" in msg for msg in messages)
+    assert any("Logger generic sidecar found" in msg for msg in messages)
+    assert any("csv_column='timestamp_ms'" in msg and "matched sidecar" in msg for msg in messages)
+    assert any("csv_column='Fork [mm]'" in msg and "matched sidecar" in msg for msg in messages)
+    assert any("csv_column='extra_voltage'" in msg and "no sidecar match" in msg for msg in messages)
+
+
+def test_multiple_generic_sidecars_require_explicit_selection(tmp_path):
+    csv_path = _write_csv_only(tmp_path)
+    first = _write_generic_sidecar(tmp_path, name="generic_a.json")
+    second = _write_generic_sidecar(tmp_path, name="generic_b.json")
+
+    with pytest.raises(ValueError, match="Multiple generic sidecars"):
+        load_session(str(csv_path), generic_sidecar_paths=[first, second])
+
+
+def test_configured_missing_generic_sidecar_does_not_fall_back_to_header_parsing(tmp_path):
+    csv_path = _write_csv_only(tmp_path)
+    missing_sidecar = tmp_path / "missing_generic_sidecar.json"
+
+    with pytest.raises(FileNotFoundError, match="No usable generic sidecar"):
+        load_session(str(csv_path), generic_sidecar_paths=[missing_sidecar])
+
+
+def test_generic_sidecar_supports_headerless_csv_by_column_index(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "1000,10.0,999",
+                "1001,11.0,998",
+                "1002,12.0,997",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    generic_sidecar = _write_generic_sidecar(
+        tmp_path,
+        header=False,
+        include_optional_shock=False,
+    )
+
+    session = load_session(str(csv_path), generic_sidecar_paths=[generic_sidecar])
+
+    assert "front_shock_dom_suspension [mm]" in session["df"].columns
+    assert 2 not in session["df"].columns
+    assert "sidecar_unknown_csv_column_skipped:2" in session["qc"]["warnings"]
+    assert session["qc"]["parse"]["sidecar_column_bindings"]["fork_travel_mm"]["csv_ref"] == {
+        "by": "index",
+        "index": 1,
+    }
 
 
 def test_load_session_uses_filename_stem_anchor_without_sidecar(tmp_path):
