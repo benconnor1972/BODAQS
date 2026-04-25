@@ -42,6 +42,9 @@ export default defineConfig({
         }, {
           label: 'Software guide',
           autogenerate: {directory: 'software-guide'},
+        }, {
+          label: 'User guide',
+          autogenerate: {directory: 'user-guide'},
         },
       ],
     }),

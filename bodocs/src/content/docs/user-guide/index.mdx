@@ -9,26 +9,13 @@ import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
 
 <Lede>
-  This guide explains the BODAQS data logger from an operator's point of view.
-  It covers the display, menu system, logging controls, event marks, calibration,
-  and the everyday checks you are likely to make before and after a ride or test.
+  You interact with the BODAQS data logger using a keypad and small display on the device. Optionally, you can connect a handlebar-mounted switch to make on-bike interaction more convenient. To download files or do detailed configuration, the device connects to WiFi and you access it from a web browser. 
 </Lede>
 
-<Aside type="note" title="About controls">
-  This page deliberately describes actions, not physical button bindings. Your
-  logger's configuration provides the usual actions: move up, move down, go back,
-  open/select, mark an event, start or stop logging, toggle the web interface,
-  and sleep. The standard bindings in `loggercfg.txt` are assumed to be
-  representative.
-</Aside>
 
 ## Display overview
 
-BODAQS uses a small OLED display for status, menu navigation, and short
-confirmation messages.
-
-When the menu is not open, the display shows the idle/status screen. This is the
-normal screen to expect before and after a logging run.
+The logger's display shows current logger status and supports configuring and calibrating the logger through a menu system. The display shows the idle/status screen unless the menu is open.
 
 <Aside type="tip" title="Photo needed">
   Add a photo of the idle/status screen showing sample rate and active channel
@@ -37,13 +24,12 @@ normal screen to expect before and after a logging run.
 
 The idle/status screen shows:
 
-- The current status at the top of the display, such as ready, logging, or Wi-Fi state.
-- The active sample rate, for example `500 Hz`.
-- The number of active channels.
-- A footer line when available, typically used for time/status information.
+- In the top row, the current status. When not logging, this row shows the WiFi state.
+- The sample rate.
+- The number of active sensor channels.
+- In the bottom row, the time and battery charge state.
 
-While logging is active, the main idle information blinks periodically. This gives
-you a visible indication that the logger is recording.
+When logging is active, the main idle information blinks periodically providing visible indication that the logger is recording. (If you are using the bar switch, the LED on the switch is also on to indicate logging).
 
 Short messages appear in the middle of the screen after actions such as starting
 a log, stopping a log, marking an event, saving calibration, or encountering an
@@ -58,12 +44,12 @@ wakes it back to normal brightness.
 
 ## Navigation model
 
-The user interface is built around a simple menu model:
+The user interface uses a simple menu model:
 
 - Move up and down to change the highlighted row.
-- Open or select the highlighted row to enter a submenu or apply an action.
-- Go back to return to the previous screen.
-- Leaving the top-level menu returns to the idle/status screen.
+- Select or navigate right on the highlighted row to enter a submenu or apply an action.
+- Navigate left to return to the previous screen.
+- Navigate right from the idle/status screen to enter the menu. Navigate left from the top-level menu to return to the idle/status screen.
 
 The selected row is shown with a leading `>` marker.
 
@@ -79,19 +65,17 @@ reopen the menu and continue from the top-level screen.
 
 ## Logging
 
-Logging is the main operating mode of the data logger. When logging starts,
-BODAQS creates a new log file on the SD card and begins recording samples from
-the active sensors.
+Logging is of course the main function of the data logger. When logging starts,
+the logger creates a new log file on the SD card and begins recording samples from
+the active sensors at the set sample rate.
 
 <CardGrid>
   <Card title="Starting a log" icon="play">
-    Starting a log stops Wi-Fi and the web server if they are running, uses the
-    current sample rate, and records with the current sensor configuration and
-    calibration. The logger shows `Log start` if the run starts successfully.
+    Start logging by pressing the 'sel' (middle) button on the logger when in the idle scree. Starting logging will stop WiFi and the web server if they are running. The logger shows `Log start` if the run starts successfully. If you are using the bar switch, a long press will toggle logging on.
   </Card>
   <Card title="Stopping a log" icon="stop">
     Stopping a log stops sampling, closes the current log file, restores normal
-    controls, and shows a `Log stop` confirmation.
+    controls, and shows a `Log stop` confirmation. If WiFi was active when the log was started, the logger will attempt to restore the connection. If you are using the bar switch, a long press will toggle logging off.
   </Card>
 </CardGrid>
 
@@ -101,21 +85,17 @@ the active sensors.
 
 ## Marking events
 
-During a logging run, the operator can mark an event. A mark is written into the
-log stream so the event can be found later during analysis.
+When logging is active, the user can mark an event of interest. A mark is written into the
+log stream so the event can be found later during analysis. Typical uses might include:
 
-Use event marks for moments such as:
+- Beginning or ending a test section
+- A trail feature of interest
+- Noting unusual or interesting bike behaviour during a run.
 
-- Beginning a test section.
-- Hitting a trail feature.
-- Changing setup or riding condition.
-- Noting an unusual event during a run.
+The display shows `Marked` when a mark is logged.
 
-When a mark is accepted, the display shows `Marked`.
-
-<Aside type="caution" title="Marks require an active log">
-  Marks are only recorded while logging is active. Mark actions outside a logging
-  run do not add anything to a log file.
+<Aside type="caution" title="Requires bar switch">
+  Marks are logged by a short press of the bar switch, if you have one. For safety reasons you cannot log marks using the logger keypad.
 </Aside>
 
 <Aside type="tip" title="Photo needed">
@@ -124,47 +104,51 @@ When a mark is accepted, the display shows `Marked`.
 
 ## Main menu
 
-The main menu contains the primary on-device settings and actions.
+The main menu provides access to on-device settings and actions.
 
 <Aside type="tip" title="Photo needed">
   Add a photo of the main menu top-level list.
 </Aside>
 
-Current top-level items are:
+The top-level items are:
 
-- `WiFi: ON`, `WiFi: OFF`, or `WiFi: CONNECTING`
-- `Mute sensors`
-- `Sample rate: <rate> Hz`
-- `Calibration`
-- `Sleep`
-- `Reset time`
-- `Restart`
+- `WiFi: ON`, `WiFi: OFF`, or `WiFi: CONNECTING`: toggles WiFi on and off
+- `Mute sensors`: allows activation and deactivation of sensors
+- `Sample rate: <rate> Hz`: sets the logger sample rate
+- `Calibration`: runs calibration actions for sensors.
+- `Sleep`: powers the logger down.
+- `Reset time`: forces a re-sync of the real-time clock (RTC)
+- `Restart`: re-boots the logger.
 
-### Wi-Fi and web interface
+#### WiFi and web interface
 
-The Wi-Fi menu item starts or stops Wi-Fi and the web interface.
+Selecting or navigating right from the WiFi menu item starts or stops WiFi and the web interface. If using the bar switch, a double press on the switch will also toggle WiFi on or off.
 
-When Wi-Fi is off, selecting the row starts a connection attempt. The display
+When WiFi is off, selecting the row starts a connection attempt. The display
 changes to `WiFi: CONNECTING` while the logger tries to connect. If the
 connection succeeds and the web server starts, the row changes to `WiFi: ON`.
 
-When Wi-Fi is on, selecting the row stops the web server and disables Wi-Fi. The
+When WiFi is on, selecting the row stops the web server and disables WiFi. The
 row changes back to `WiFi: OFF`.
+
+The idle screen shows WiFi status in the top row, including the name of the network and the logger's IP address. 
 
 <Aside type="tip" title="Photo needed">
   Add a photo of the main menu showing `WiFi: CONNECTING`.
 </Aside>
-
+<Aside type="tip" title="Network selection">
+  The logger allows configuration of up to 5 WiFi networks. When connecting, it will prioritise the most network it was connected to, so long as it has sufficient signal.
+</Aside>
 <Aside type="caution" title="Logging has priority">
-  Wi-Fi and logging are interlocked. The logger will not start the web server
-  while logging is active. If Wi-Fi is running when logging starts, it is stopped
+  WiFi and logging are interlocked. The logger will not start the web server
+  while logging is active. If WiFi is running when logging starts, it is stopped
   so that sampling has priority.
 </Aside>
 
-If Wi-Fi cannot start, the display shows a short failure message such as
+If WiFi cannot start, the display shows a short failure message such as
 `WiFi fail` or `WiFi timeout`.
 
-### Mute sensors
+#### Mute sensors
 
 The `Mute sensors` menu opens a list of configured sensors. This screen lets you
 enable or mute individual sensor channels without editing the configuration file.
@@ -182,7 +166,7 @@ Selecting a sensor toggles it between muted and active:
 
 The display shows a short `Muted` or `Unmuted` confirmation after the change.
 
-### Sample rate
+#### Sample rate
 
 The `Sample rate` menu opens a list of supported sample rates.
 
@@ -190,30 +174,14 @@ The `Sample rate` menu opens a list of supported sample rates.
   Add a photo of the sample rate picker.
 </Aside>
 
-Supported rates are:
-
-- `10 Hz`
-- `20 Hz`
-- `50 Hz`
-- `100 Hz`
-- `200 Hz`
-- `500 Hz`
-- `1000 Hz`
-
-The current rate is shown with `[*]`. Other available rates are shown with `[ ]`.
+Supported rates range from 10Hz to 1000Hz. The current rate is shown with `[*]`. Other available rates are shown with `[ ]`.
 
 Select a rate to apply it. The logger saves the new rate and returns to the main
 menu after showing a confirmation such as `Rate: 500 Hz`.
 
-<Aside type="caution" title="Stop logging first">
-  The sample rate cannot be changed while logging is active. Stop the current
-  log before changing it.
-</Aside>
+#### Calibration
 
-### Calibration
-
-The `Calibration` menu is used to set zero and range values for sensors that
-support on-device calibration.
+The `Calibration` menu exposes calibration helpers that are specific to the type of sensor. For linear motion-type sensors, `ZERO` and `RANGE` calibration methods are supported.
 
 <Aside type="tip" title="Photo needed">
   Add a photo of the calibration sensor list.
@@ -229,7 +197,7 @@ sensor name and the calibration operations available for that sensor:
 
 Select a sensor to open its calibration detail screen.
 
-#### Zero calibration
+##### Zero calibration
 
 Zero calibration captures the sensor's current raw position and saves it as the
 installed zero point.
@@ -250,7 +218,13 @@ Typical zero calibration workflow:
 After a zero capture, the display briefly shows the captured raw count. Saving
 writes the new calibration to the logger configuration.
 
-#### Range calibration
+<Aside type="caution" title="Do I need to zero?">
+Having an accurately-set zero point is only necessary if you are applying output transformations in the logger - for example, if you are measuring shock movement and want the logger to output wheel movement. If you are not applying a transformation (say, for a fork) or you intend to do the transformation in the analysis software, the zero point can be detected automatically in the analysis software.
+
+More on this topic in [link to transformations]
+</Aside>
+
+##### Range calibration
 
 Range calibration captures the sensor's travel range between a start position
 and a finish position.
@@ -278,40 +252,38 @@ Saving a range calibration writes the range values to the logger configuration.
 For sensors where direction matters, the logger also updates the sensor's
 inversion setting based on the captured start and finish positions.
 
+<Aside type="caution" title="Range calibration definitely needed">
+Range calibration is important because it lets the logger translate sensor output into real-world units (like mm of travel). It should only have to be done once per sensor and can be done with the sensor off the bike - no letting air out or removing springs. Rejoice!
+</Aside>
+
 ### Sleep
 
-The `Sleep` menu item puts the logger into sleep mode.
+The `Sleep` menu item puts the logger into sleep mode. Use sleep when you want to conserve battery without fully disconnecting power. The logger will wake up when 'sel' is pressed.
 
-Use sleep when you want to conserve battery without fully disconnecting power.
-The exact wake behavior depends on the hardware build.
+A long press on the nav-left button from the idle screen will also put the logger to sleep.
 
 <Aside type="tip" title="Photo needed">
   Add a photo of the main menu with `Sleep` selected.
 </Aside>
 
-### Reset time
+<Aside type="caution" title="Proto-E funny">
+One of the foibles of the Proto-E PCB design is that the analog rail's power supply is connected directly to the battery and is always on. If you leave the logger unattended for long enough, it will completely drain (and thereby kill) the battery. This is what is known as 'not good design' and is fixed in Proto-F and later PCBs. The work-around is to leave your logger plugged in to a charger when not in use.
+</Aside>
 
-The `Reset time` menu item forces a time sync using Wi-Fi.
+#### Reset time
 
-Use this when:
+The `Reset time` menu item forces a time sync using WiFi.
 
-- The logger has lost valid time.
-- Log filenames or timestamps appear incorrect.
-- The logger has been powered off long enough that time should be checked.
+When the logger boots, it attempts to connect to WiFi to set its internal real-time clock. If it cannot find a network connection, the clock status will remain `not set`. If this occurs, you can force a sync once you have WiFi access.
 
 <Aside type="tip" title="Photo needed">
   Add a photo of the main menu showing `Time: SYNCING`.
 </Aside>
 
-<Aside type="caution" title="Stop logging first">
-  Time reset cannot run while logging is active. Stop logging before resetting
-  time.
-</Aside>
-
 If the sync starts, the menu row changes to `Time: SYNCING`. If the sync fails,
 the display shows `Time sync fail`.
 
-### Restart
+#### Restart
 
 The `Restart` menu item restarts the firmware.
 
@@ -322,71 +294,4 @@ state. Restart is blocked while logging is active, so stop the current log first
   Add a photo of the `Restarting...` confirmation message.
 </Aside>
 
-## Common workflows
-
-### Before a ride or test
-
-1. Power on the logger.
-2. Confirm the idle screen shows the expected sample rate.
-3. Confirm the active channel count is correct.
-4. Open `Mute sensors` if you need to enable or mute channels.
-5. Open `Sample rate` if you need a different logging rate.
-6. Use `Reset time` if time is invalid or has not been synced recently.
-7. Start logging when ready.
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of a ready-to-log idle screen.
-</Aside>
-
-### During a run
-
-1. Leave the logger on the idle/status screen.
-2. Confirm the display indicates logging is active.
-3. Mark events at important moments.
-4. Avoid opening Wi-Fi or changing settings during the run.
-
-### After a run
-
-1. Stop logging.
-2. Wait for the stop confirmation.
-3. Turn on Wi-Fi if you want to use the web interface.
-4. Download or inspect the log files as needed.
-5. Put the logger to sleep if it will not be used again soon.
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of Wi-Fi enabled after logging has stopped.
-</Aside>
-
-## Messages and what they mean
-
-Common display messages include:
-
-| Message | Meaning |
-| --- | --- |
-| `Log start` | Logging started successfully. |
-| `Log start failed` | Logging could not start. |
-| `Log stop` | Logging stopped and the file was closed. |
-| `Marked` | An event mark was recorded in the current log. |
-| `Busy/logging` | The requested action cannot run while logging is active. |
-| `Stop logging first` | Stop the current log before using this action. |
-| `WiFi: CONNECTING` | The logger is attempting to connect to Wi-Fi. |
-| `WiFi fail` | Wi-Fi connected, but the web server did not start. |
-| `WiFi timeout` | The connection attempt took too long. |
-| `Time: SYNCING` | The logger is attempting to update its clock. |
-| `Time sync fail` | The clock sync attempt failed. |
-| `Muted` | The selected sensor was muted. |
-| `Unmuted` | The selected sensor was re-enabled. |
-| `Zero saved` | Zero calibration was saved. |
-| `Range saved` | Range calibration was saved. |
-| `Save failed` or `Save fail` | Calibration could not be saved. |
-| `Restarting...` | The logger is restarting. |
-
-## Notes for operators
-
-- Logging has priority over Wi-Fi and configuration changes.
-- Stop logging before changing sample rate, resetting time, restarting, or using the web interface.
-- Check the active channel count before a run, especially after muting or unmuting sensors.
-- Recalibrate sensors after installation changes, mechanical changes, or sensor replacement.
-- Use event marks generously during testing; they make later analysis much easier.
-- If the menu closes by itself, it has timed out due to inactivity. Reopen it and continue.
 
