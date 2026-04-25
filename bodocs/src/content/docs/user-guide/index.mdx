@@ -7,6 +7,8 @@ sidebar:
 
 import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
+import Flag from '@components/Flag.astro';
+
 
 <Lede>
   You interact with the BODAQS data logger using a keypad and small display on the device. Optionally, you can connect a handlebar-mounted switch to make on-bike interaction more convenient. To download files or do detailed configuration, the device connects to WiFi and you access it from a web browser. 
@@ -17,11 +19,7 @@ import Lede from '@components/Lede.astro';
 
 The logger's display shows current logger status and supports configuring and calibrating the logger through a menu system. The display shows the idle/status screen unless the menu is open.
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the idle/status screen showing sample rate and active channel
-  count.
-</Aside>
-
+<Flag src="/src/assets/pics/idle.png" alt="idle">
 The idle/status screen shows:
 
 - In the top row, the current status. When not logging, this row shows the WiFi state.
@@ -30,22 +28,24 @@ The idle/status screen shows:
 - In the bottom row, the time and battery charge state.
 
 When logging is active, the main idle information blinks periodically providing visible indication that the logger is recording. (If you are using the bar switch, the LED on the switch is also on to indicate logging).
+</Flag>
 
+<Flag src="/src/assets/pics/logstart.png" alt="logstart">
 Short messages appear in the middle of the screen after actions such as starting
 a log, stopping a log, marking an event, saving calibration, or encountering an
 error.
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of a confirmation message after starting or stopping a log.
-</Aside>
-
 The OLED dims after a period of inactivity to save power. Using the controls
 wakes it back to normal brightness.
+</Flag>
+
+
 
 ## Navigation model
 
-The user interface uses a simple menu model:
 
+<Flag src="/src/assets/pics/mainmenu.png" alt="mainmenu">
+The user interface uses a simple menu model:
 - Move up and down to change the highlighted row.
 - Select or navigate right on the highlighted row to enter a submenu or apply an action.
 - Navigate left to return to the previous screen.
@@ -53,15 +53,15 @@ The user interface uses a simple menu model:
 
 The selected row is shown with a leading `>` marker.
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the main menu with one row selected.
-</Aside>
-
 If a menu has more rows than can fit on the display, the visible list scrolls as
 you move through it.
 
 The menu closes automatically after a period of inactivity. If that happens,
 reopen the menu and continue from the top-level screen.
+</Flag>
+
+
+
 
 ## Logging
 
@@ -71,17 +71,13 @@ the active sensors at the set sample rate.
 
 <CardGrid>
   <Card title="Starting a log" icon="play">
-    Start logging by pressing the 'sel' (middle) button on the logger when in the idle scree. Starting logging will stop WiFi and the web server if they are running. The logger shows `Log start` if the run starts successfully. If you are using the bar switch, a long press will toggle logging on.
+    **Start logging by pressing the 'sel' (middle) button** on the logger when in the idle scree. Starting logging will stop WiFi and the web server if they are running. The logger shows `Log start` if the run starts successfully. If you are using the bar switch, a long press will toggle logging on.
   </Card>
   <Card title="Stopping a log" icon="stop">
-    Stopping a log stops sampling, closes the current log file, restores normal
+    **Pressing the 'sel' button again stops stops logging**, closes the current log file, restores normal
     controls, and shows a `Log stop` confirmation. If WiFi was active when the log was started, the logger will attempt to restore the connection. If you are using the bar switch, a long press will toggle logging off.
   </Card>
 </CardGrid>
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of the idle/status screen while logging is active.
-</Aside>
 
 ## Marking events
 
@@ -98,19 +94,12 @@ The display shows `Marked` when a mark is logged.
   Marks are logged by a short press of the bar switch, if you have one. For safety reasons you cannot log marks using the logger keypad.
 </Aside>
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the `Marked` confirmation message.
-</Aside>
-
 ## Main menu
 
-The main menu provides access to on-device settings and actions.
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the main menu top-level list.
-</Aside>
 
-The top-level items are:
+<Flag src="/src/assets/pics/mainmenu.png" alt="mainmenu">
+The main menu provides access to on-device settings and actions. The top-level items are:
 
 - `WiFi: ON`, `WiFi: OFF`, or `WiFi: CONNECTING`: toggles WiFi on and off
 - `Mute sensors`: allows activation and deactivation of sensors
@@ -119,9 +108,12 @@ The top-level items are:
 - `Sleep`: powers the logger down.
 - `Reset time`: forces a re-sync of the real-time clock (RTC)
 - `Restart`: re-boots the logger.
+</Flag>
+
 
 #### WiFi and web interface
 
+<Flag src="/src/assets/pics/connecting.png" alt="connecting">
 Selecting or navigating right from the WiFi menu item starts or stops WiFi and the web interface. If using the bar switch, a double press on the switch will also toggle WiFi on or off.
 
 When WiFi is off, selecting the row starts a connection attempt. The display
@@ -130,12 +122,13 @@ connection succeeds and the web server starts, the row changes to `WiFi: ON`.
 
 When WiFi is on, selecting the row stops the web server and disables WiFi. The
 row changes back to `WiFi: OFF`.
+</Flag>
 
+<Flag src="/src/assets/pics/wifiip.png" alt="wifiip">
 The idle screen shows WiFi status in the top row, including the name of the network and the logger's IP address. 
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the main menu showing `WiFi: CONNECTING`.
-</Aside>
+</Flag>
+
 <Aside type="tip" title="Network selection">
   The logger allows configuration of up to 5 WiFi networks. When connecting, it will prioritise the most network it was connected to, so long as it has sufficient signal.
 </Aside>
@@ -150,12 +143,9 @@ If WiFi cannot start, the display shows a short failure message such as
 
 #### Mute sensors
 
+<Flag src="/src/assets/pics/mute.png" alt="mute">
 The `Mute sensors` menu opens a list of configured sensors. This screen lets you
 enable or mute individual sensor channels without editing the configuration file.
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of the sensors on/off screen.
-</Aside>
 
 Each sensor appears by name. Muted sensors show `[M]` beside the name.
 
@@ -165,27 +155,25 @@ Selecting a sensor toggles it between muted and active:
 - Active sensors are included in the channel count and log data.
 
 The display shows a short `Muted` or `Unmuted` confirmation after the change.
+</Flag>
+
 
 #### Sample rate
 
+<Flag src="/src/assets/pics/samplerate.png" alt="samplerate">
 The `Sample rate` menu opens a list of supported sample rates.
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of the sample rate picker.
-</Aside>
 
 Supported rates range from 10Hz to 1000Hz. The current rate is shown with `[*]`. Other available rates are shown with `[ ]`.
 
 Select a rate to apply it. The logger saves the new rate and returns to the main
 menu after showing a confirmation such as `Rate: 500 Hz`.
+</Flag>
+
 
 #### Calibration
 
+<Flag src="/src/assets/pics/calibration.png" alt="calibration">
 The `Calibration` menu exposes calibration helpers that are specific to the type of sensor. For linear motion-type sensors, `ZERO` and `RANGE` calibration methods are supported.
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of the calibration sensor list.
-</Aside>
 
 The first calibration screen lists the configured sensors. Each row shows the
 sensor name and the calibration operations available for that sensor:
@@ -196,34 +184,9 @@ sensor name and the calibration operations available for that sensor:
 - `[none]` means the sensor does not currently expose on-device calibration actions.
 
 Select a sensor to open its calibration detail screen.
+</Flag>
 
-##### Zero calibration
-
-Zero calibration captures the sensor's current raw position and saves it as the
-installed zero point.
-
-Typical zero calibration workflow:
-
-1. Put the sensor or suspension component at the desired zero/reference position.
-2. Open `Calibration`.
-3. Select the sensor.
-4. Select `Zero`.
-5. Check the captured count shown on the display.
-6. Select `Save` to keep the value, or `Cancel` to discard it.
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of the calibration detail screen showing `Zero`.
-</Aside>
-
-After a zero capture, the display briefly shows the captured raw count. Saving
-writes the new calibration to the logger configuration.
-
-<Aside type="caution" title="Do I need to zero?">
-Having an accurately-set zero point is only necessary if you are applying output transformations in the logger - for example, if you are measuring shock movement and want the logger to output wheel movement. If you are not applying a transformation (say, for a fork) or you intend to do the transformation in the analysis software, the zero point can be detected automatically in the analysis software.
-
-More on this topic in [link to transformations]
-</Aside>
-
+<Flag src="/src/assets/pics/rangestart.png" alt="rangestart">
 ##### Range calibration
 
 Range calibration captures the sensor's travel range between a start position
@@ -239,10 +202,9 @@ Typical range calibration workflow:
 6. Select `Finish RANGE`.
 7. Check the captured count shown on the display.
 8. Select `Save` to keep the range, or `Cancel` to discard it.
+</Flag>
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the active range calibration screen showing live counts.
-</Aside>
+<Flag src="/src/assets/pics/rangefinish.png" alt="rangefinish">
 
 While range calibration is active, the display shows live raw counts at the
 bottom of the screen. This helps confirm that the sensor is moving and that the
@@ -255,16 +217,39 @@ inversion setting based on the captured start and finish positions.
 <Aside type="caution" title="Range calibration definitely needed">
 Range calibration is important because it lets the logger translate sensor output into real-world units (like mm of travel). It should only have to be done once per sensor and can be done with the sensor off the bike - no letting air out or removing springs. Rejoice!
 </Aside>
+</Flag>
+
+<Flag src="" alt="">
+##### Zero calibration
+
+Zero calibration captures the sensor's current raw position and saves it as the
+installed zero point.
+
+Typical zero calibration workflow:
+
+1. Put the sensor or suspension component at the desired zero/reference position.
+2. Open `Calibration`.
+3. Select the sensor.
+4. Select `Zero`.
+5. Check the captured count shown on the display.
+6. Select `Save` to keep the value, or `Cancel` to discard it.
+
+
+After a zero capture, the display briefly shows the captured raw count. Saving
+writes the new calibration to the logger configuration.
+
+<Aside type="caution" title="Do I need to zero?">
+Having an accurately-set zero point is only necessary if you are applying output transformations in the logger - for example, if you are measuring shock movement and want the logger to output wheel movement. If you are not applying a transformation (say, for a fork) or you intend to do the transformation in the analysis software, the zero point can be detected automatically in the analysis software.
+
+More on this topic in [link to transformations]
+</Aside>
+</Flag>
 
 ### Sleep
 
 The `Sleep` menu item puts the logger into sleep mode. Use sleep when you want to conserve battery without fully disconnecting power. The logger will wake up when 'sel' is pressed.
 
 A long press on the nav-left button from the idle screen will also put the logger to sleep.
-
-<Aside type="tip" title="Photo needed">
-  Add a photo of the main menu with `Sleep` selected.
-</Aside>
 
 <Aside type="caution" title="Proto-E funny">
 One of the foibles of the Proto-E PCB design is that the analog rail's power supply is connected directly to the battery and is always on. If you leave the logger unattended for long enough, it will completely drain (and thereby kill) the battery. This is what is known as 'not good design' and is fixed in Proto-F and later PCBs. The work-around is to leave your logger plugged in to a charger when not in use.
@@ -276,10 +261,6 @@ The `Reset time` menu item forces a time sync using WiFi.
 
 When the logger boots, it attempts to connect to WiFi to set its internal real-time clock. If it cannot find a network connection, the clock status will remain `not set`. If this occurs, you can force a sync once you have WiFi access.
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the main menu showing `Time: SYNCING`.
-</Aside>
-
 If the sync starts, the menu row changes to `Time: SYNCING`. If the sync fails,
 the display shows `Time sync fail`.
 
@@ -290,8 +271,5 @@ The `Restart` menu item restarts the firmware.
 Use restart after configuration changes or if the logger is in an unexpected
 state. Restart is blocked while logging is active, so stop the current log first.
 
-<Aside type="tip" title="Photo needed">
-  Add a photo of the `Restarting...` confirmation message.
-</Aside>
 
 
