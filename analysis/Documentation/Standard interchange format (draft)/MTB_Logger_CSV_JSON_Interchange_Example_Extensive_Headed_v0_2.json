@@ -1,0 +1,189 @@
+{
+  "contract": {
+    "name": "mtb_logger_timeseries",
+    "version": "0.2.0"
+  },
+  "data_file": {
+    "path": "example_extensive.csv",
+    "delimiter": ",",
+    "header": true,
+    "row_count": 3
+  },
+  "session": {
+    "session_id": "example_extensive_headed",
+    "started_at_local": "2026-02-19T08:35:11+08:00",
+    "timezone": "Australia/Perth"
+  },
+  "streams": {
+    "primary": {
+      "type": "uniform",
+      "time_column": "time",
+      "time_unit": "s",
+      "sample_rate_hz": 500.0,
+      "jitter_frac": 1e-05
+    }
+  },
+  "sensors": {
+    "rear_shock": {
+      "type": "analog_potentiometer",
+      "domain": "suspension",
+      "raw_unit": "counts",
+      "calibration": {
+        "type": "linear",
+        "input_unit": "counts",
+        "output_unit": "deg",
+        "installed_zero_count": 160,
+        "sensor_zero_count": 12,
+        "sensor_full_count": 4095,
+        "sensor_full_travel": 78.0,
+        "invert": false
+      }
+    }
+  },
+  "transforms": {
+    "wheel_travel_from_shock_deg_v1": {
+      "type": "lut",
+      "input_unit": "deg",
+      "output_unit": "mm",
+      "description": "Rear wheel travel derived from rear shock angular displacement",
+      "interpolation": "linear",
+      "extrapolation": "clamp",
+      "lut": [
+        {
+          "input": 0.0,
+          "output": 0.0
+        },
+        {
+          "input": 10.0,
+          "output": 18.5
+        },
+        {
+          "input": 20.0,
+          "output": 37.8
+        },
+        {
+          "input": 30.0,
+          "output": 58.2
+        },
+        {
+          "input": 40.0,
+          "output": 79.6
+        },
+        {
+          "input": 50.0,
+          "output": 101.9
+        },
+        {
+          "input": 60.0,
+          "output": 124.8
+        },
+        {
+          "input": 70.0,
+          "output": 148.1
+        },
+        {
+          "input": 78.0,
+          "output": 166.0
+        }
+      ]
+    }
+  },
+  "columns": {
+    "sample_id": {
+      "csv_ref": {
+        "by": "header",
+        "header": "sample_id"
+      },
+      "class": "index",
+      "dtype": "uint32"
+    },
+    "time": {
+      "csv_ref": {
+        "by": "header",
+        "header": "time_s"
+      },
+      "class": "time",
+      "dtype": "float64",
+      "stream": "primary",
+      "unit": "s"
+    },
+    "rear_shock_raw": {
+      "csv_ref": {
+        "by": "header",
+        "header": "rear_shock_raw [counts]"
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "rear_shock",
+      "quantity": "raw",
+      "domain": "suspension",
+      "unit": "counts"
+    },
+    "rear_shock_sensor_travel": {
+      "csv_ref": {
+        "by": "header",
+        "header": "rear_shock_sensor_travel [deg]"
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "rear_shock",
+      "quantity": "ang_disp",
+      "domain": "suspension",
+      "unit": "deg",
+      "source_columns": [
+        "rear_shock_raw"
+      ],
+      "calibration_ref": "rear_shock",
+      "transform_chain": []
+    },
+    "rear_wheel_travel": {
+      "csv_ref": {
+        "by": "header",
+        "header": "rear_wheel_travel [mm]"
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "rear_shock",
+      "quantity": "disp",
+      "domain": "wheel",
+      "unit": "mm",
+      "source_columns": [
+        "rear_shock_sensor_travel"
+      ],
+      "calibration_ref": "rear_shock",
+      "transform_chain": [
+        "wheel_travel_from_shock_deg_v1"
+      ]
+    },
+    "mark": {
+      "csv_ref": {
+        "by": "header",
+        "header": "mark"
+      },
+      "class": "event_flag",
+      "dtype": "bool",
+      "stream": "primary"
+    }
+  },
+  "qc": {
+    "warnings": [],
+    "time": {
+      "monotonic": true,
+      "repaired": false
+    },
+    "firmware_stats": {
+      "samples_dropped": 0,
+      "flush_count": 5,
+      "flush_max_ms": 12.0,
+      "flush_avg_ms": 4.8
+    }
+  },
+  "provenance": {
+    "logger_family": "BODAQS",
+    "firmware_version": "unknown",
+    "metadata_generated_at": "2026-04-25T12:00:00+08:00"
+  }
+}

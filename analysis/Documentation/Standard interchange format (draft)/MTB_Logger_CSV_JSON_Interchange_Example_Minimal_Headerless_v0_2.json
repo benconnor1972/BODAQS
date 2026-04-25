@@ -1,0 +1,42 @@
+{
+  "contract": {
+    "name": "mtb_logger_timeseries",
+    "version": "0.2.0"
+  },
+  "data_file": {
+    "header": false
+  },
+  "session": {
+    "session_id": "example_minimal_headerless"
+  },
+  "streams": {
+    "primary": {
+      "type": "uniform",
+      "time_column": "time",
+      "time_unit": "s"
+    }
+  },
+  "columns": {
+    "time": {
+      "csv_ref": {
+        "by": "index",
+        "index": 0
+      },
+      "class": "time",
+      "dtype": "float64",
+      "stream": "primary",
+      "unit": "s"
+    },
+    "rear_shock_raw": {
+      "csv_ref": {
+        "by": "index",
+        "index": 1
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "quantity": "raw",
+      "unit": "counts"
+    }
+  }
+}
