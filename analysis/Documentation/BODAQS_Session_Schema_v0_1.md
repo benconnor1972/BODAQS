@@ -53,7 +53,8 @@ source = {
     "filename": str,             # basename only
     "created_local": datetime | None,
     "timezone": str | None,      # e.g. "Australia/Perth" or "AWST"
-    "sidecar_path": str | None,  # optional logger metadata sidecar used during ingest
+    "log_metadata_path": str | None,  # optional logger log metadata used during ingest
+    "sidecar_path": str | None,  # deprecated alias for log_metadata_path
 }
 ```
 
@@ -77,7 +78,7 @@ meta = {
     # At minimum, streams["primary"] describes the timebase of session["df"].
     "streams": dict[str, dict],
 
-    # Optional raw ingest declarations from logger sidecar metadata.
+    # Optional raw ingest declarations from logger log metadata.
     "declared_streams": dict[str, dict] | None,
 
     "device": dict | None,       # firmware / hardware metadata if available

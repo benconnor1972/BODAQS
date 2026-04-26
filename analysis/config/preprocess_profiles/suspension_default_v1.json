@@ -28,6 +28,11 @@
       "raw_stream_name": "gps_fit",
       "bindings_path": "analysis/config/fit_bindings_v1.json"
     },
+    "generic_log_metadata_paths": [
+      "analysis/config/log_metadata_examples/current_logger_config_fast_timestamp_log_metadata.json"
+    ],
+    "bike_profile_path": "analysis/config/bike_profiles/example_enduro_bike_v1.json",
+    "bike_profile_id": "example_enduro_bike",
     "zeroing_enabled": false,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
@@ -40,10 +45,6 @@
     "active_vel_thresh": 50.0,
     "active_window": "500ms",
     "active_padding": "1s",
-    "active_min_seg": "3s",
-    "normalize_ranges": {
-      "front_shock_dom_suspension [mm]": 170.0,
-      "rear_shock_dom_suspension [mm]": 150.0
-    }
+    "active_min_seg": "3s"
   }
 }

@@ -9,9 +9,9 @@ Scope: Common interchange contract for MTB logger session outputs
 This document proposes a simple interchange contract for mountain bike data logger outputs using:
 
 - one CSV file for time-series samples
-- one JSON sidecar for semantics, calibration, transforms, quality-control information, and provenance
+- one JSON log metadata file for semantics, calibration, transforms, quality-control information, and provenance
 
-The goal is to make downstream analysis tooling independent of logger-specific knowledge. A consumer should be able to interpret the CSV using only the sidecar JSON and the contract defined here.
+The goal is to make downstream analysis tooling independent of logger-specific knowledge. A consumer should be able to interpret the CSV using only the log metadata JSON and the contract defined here.
 
 ## 2. Design goals
 
@@ -27,6 +27,15 @@ The goal is to make downstream analysis tooling independent of logger-specific k
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY in this document are to be interpreted as normative requirements.
 
+## 3.1 Naming note
+
+Earlier drafts and some code paths used the term `sidecar` for this JSON file.
+This described the file relationship rather than its function. The preferred
+user-facing term is now **log metadata**.
+
+The `contract.sidecar_kind` field is retained in v0.2 for compatibility. A
+future breaking revision may rename it to `log_metadata_kind`.
+
 ## 4. File pair
 
 A session consists of a pair of files sharing a common base name.
@@ -39,12 +48,12 @@ Example:
 The CSV contains samples.
 The JSON contains metadata.
 
-The preferred producer-generated form is a session sidecar: a JSON file that
+The preferred producer-generated form is session log metadata: a JSON file that
 shares a base name with one specific CSV file.
 
-Consumers MAY also support generic sidecars. A generic sidecar is a reusable
+Consumers MAY also support generic log metadata. Generic log metadata is a reusable
 metadata template selected by local policy or by the user when no matching
-session sidecar is available. Generic sidecars are useful for existing loggers
+session log metadata is available. Generic log metadata is useful for existing loggers
 that do not yet emit per-log sidecars.
 
 ## 5. Core principles
@@ -55,13 +64,13 @@ that do not yet emit per-log sidecars.
 - Each column definition contains an explicit CSV locator.
 - Each stream has exactly one canonical time column.
 - Time columns declare an explicit encoding so consumers can derive a canonical elapsed-time axis.
-- A session sidecar describes one concrete CSV and should cover it strictly.
-- A generic sidecar describes a reusable binding template and may cover only a subset of a CSV.
+- Session log metadata describes one concrete CSV and should cover it strictly.
+- Generic log metadata describes a reusable binding template and may cover only a subset of a CSV.
 - The minimal valid JSON should be easy to produce even for simple loggers.
 
 ## 6. Top-level JSON object
 
-The JSON sidecar is a single object with the following top-level keys.
+The JSON log metadata file is a single object with the following top-level keys.
 
 Required:
 
@@ -103,7 +112,7 @@ Constraints:
 Recommended values:
 - `name`: `mtb_logger_timeseries`
 - `version`: `0.2.0`
-- `sidecar_kind`: `session` for logger-emitted same-stem sidecars, `generic` for reusable fallback sidecars
+- `sidecar_kind`: `session` for logger-emitted same-stem log metadata, `generic` for reusable fallback log metadata
 
 ### 7.2 `data_file`
 

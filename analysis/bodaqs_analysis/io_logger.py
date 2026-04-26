@@ -11,46 +11,61 @@ from .sensor_aliases import canonical_sensor_id, normalize_sensor_token
 from .signalname import SignalNameParts, format_signal_name, SignalNameError
 
 
+_LOG_METADATA_BINDING_KEY = "_bodaqs_log_metadata_binding"
 _SIDECAR_BINDING_KEY = "_bodaqs_sidecar_binding"
 logger = logging.getLogger(__name__)
 
 
-def infer_sidecar_path(path: str) -> Optional[str]:
+def infer_log_metadata_path(path: str) -> Optional[str]:
     """
-    Return a same-stem JSON sidecar path when present.
+    Return a same-stem JSON log metadata path when present.
     """
     candidate = Path(path).with_suffix(".json")
     return str(candidate) if candidate.exists() else None
 
 
-def load_logger_sidecar(path: str) -> dict[str, Any]:
+def infer_sidecar_path(path: str) -> Optional[str]:
     """
-    Load and lightly validate a logger sidecar JSON document.
+    Backward-compatible alias for infer_log_metadata_path().
+    """
+    return infer_log_metadata_path(path)
+
+
+def load_logger_log_metadata(path: str) -> dict[str, Any]:
+    """
+    Load and lightly validate a logger log metadata JSON document.
     """
     p = Path(path)
     obj = json.loads(p.read_text(encoding="utf-8"))
 
     if not isinstance(obj, dict):
-        raise ValueError(f"Logger sidecar must contain a JSON object: {path}")
+        raise ValueError(f"Logger log metadata must contain a JSON object: {path}")
 
     contract = obj.get("contract")
     if not isinstance(contract, dict):
-        raise ValueError(f"Logger sidecar missing required object 'contract': {path}")
+        raise ValueError(f"Logger log metadata missing required object 'contract': {path}")
 
     if not isinstance(contract.get("name"), str) or not contract["name"].strip():
-        raise ValueError(f"Logger sidecar missing required string 'contract.name': {path}")
+        raise ValueError(f"Logger log metadata missing required string 'contract.name': {path}")
     if not isinstance(contract.get("version"), str) or not contract["version"].strip():
-        raise ValueError(f"Logger sidecar missing required string 'contract.version': {path}")
+        raise ValueError(f"Logger log metadata missing required string 'contract.version': {path}")
 
     streams = obj.get("streams")
     if not isinstance(streams, dict) or not streams:
-        raise ValueError(f"Logger sidecar missing required non-empty object 'streams': {path}")
+        raise ValueError(f"Logger log metadata missing required non-empty object 'streams': {path}")
 
     columns = obj.get("columns")
     if not isinstance(columns, dict) or not columns:
-        raise ValueError(f"Logger sidecar missing required non-empty object 'columns': {path}")
+        raise ValueError(f"Logger log metadata missing required non-empty object 'columns': {path}")
 
     return obj
+
+
+def load_logger_sidecar(path: str) -> dict[str, Any]:
+    """
+    Backward-compatible alias for load_logger_log_metadata().
+    """
+    return load_logger_log_metadata(path)
 
 
 def _select_primary_stream(sidecar: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -66,6 +81,20 @@ def _select_primary_stream(sidecar: dict[str, Any]) -> tuple[str, dict[str, Any]
             return str(stream_name), stream_info
 
     raise ValueError("Logger sidecar does not contain a usable stream definition")
+
+
+def _metadata_binding(log_metadata: dict[str, Any]) -> dict[str, Any] | None:
+    binding = log_metadata.get(_LOG_METADATA_BINDING_KEY)
+    if isinstance(binding, dict):
+        return binding
+    binding = log_metadata.get(_SIDECAR_BINDING_KEY)
+    return binding if isinstance(binding, dict) else None
+
+
+def _store_metadata_binding(log_metadata: dict[str, Any], binding: dict[str, Any]) -> None:
+    log_metadata[_LOG_METADATA_BINDING_KEY] = binding
+    # Transitional alias for existing consumers/tests.
+    log_metadata[_SIDECAR_BINDING_KEY] = binding
 
 
 def _sidecar_contract_kind(
@@ -110,52 +139,79 @@ def _expand_generic_sidecar_paths(paths: Optional[Sequence[str | Path]]) -> list
     return deduped
 
 
+def _expand_generic_log_metadata_paths(paths: Optional[Sequence[str | Path]]) -> list[str]:
+    """
+    Expand configured generic log metadata files/directories.
+
+    Backward-compatible implementation: generic log metadata is still identified
+    by contract.sidecar_kind == "generic" until the interchange contract is
+    revised to use log_metadata_kind.
+    """
+    return _expand_generic_sidecar_paths(paths)
+
+
+def _select_log_metadata_path(
+    csv_path: str | Path,
+    *,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
+) -> tuple[Optional[str], bool]:
+    if log_metadata_path is not None:
+        logger.info("Logger log metadata explicitly selected: %s", log_metadata_path)
+        return str(log_metadata_path), False
+
+    same_stem = infer_log_metadata_path(str(csv_path))
+    if same_stem is not None:
+        logger.info("Logger same-stem log metadata found: csv=%s log_metadata=%s", csv_path, same_stem)
+        logger.info("Logger generic log metadata search skipped because same-stem log metadata was found")
+        return same_stem, False
+
+    expected_same_stem = Path(csv_path).with_suffix(".json")
+    logger.info("Logger same-stem log metadata not found: expected=%s", expected_same_stem)
+
+    generic_search_configured = generic_log_metadata_paths is not None
+
+    if generic_search_configured:
+        logger.info("Logger generic log metadata search path(s): %s", [str(p) for p in generic_log_metadata_paths])
+    else:
+        logger.info("Logger generic log metadata search not configured")
+
+    generic_candidates = _expand_generic_log_metadata_paths(generic_log_metadata_paths)
+    if not generic_candidates:
+        if generic_search_configured:
+            configured = ", ".join(str(p) for p in generic_log_metadata_paths)
+            logger.info("Logger generic log metadata search found no usable candidates: %s", configured)
+            raise FileNotFoundError(
+                "No usable generic log metadata found from configured generic_log_metadata_paths: "
+                + configured
+            )
+        logger.info("Logger generic log metadata not found; falling back to legacy header parsing")
+        return None, False
+    if len(generic_candidates) > 1:
+        joined = ", ".join(generic_candidates)
+        logger.info("Logger generic log metadata search found multiple candidates: %s", joined)
+        raise ValueError(
+            "Multiple generic log metadata files are available; select one explicitly "
+            f"with log_metadata_path or pass a single generic_log_metadata_paths entry: {joined}"
+        )
+    logger.info("Logger generic log metadata found: %s", generic_candidates[0])
+    return generic_candidates[0], True
+
+
 def _select_sidecar_path(
     csv_path: str | Path,
     *,
     sidecar_path: Optional[str | Path] = None,
     generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
 ) -> tuple[Optional[str], bool]:
-    if sidecar_path is not None:
-        logger.info("Logger sidecar explicitly selected: %s", sidecar_path)
-        return str(sidecar_path), False
-
-    same_stem = infer_sidecar_path(str(csv_path))
-    if same_stem is not None:
-        logger.info("Logger same-stem sidecar found: csv=%s sidecar=%s", csv_path, same_stem)
-        logger.info("Logger generic sidecar search skipped because a same-stem sidecar was found")
-        return same_stem, False
-
-    expected_same_stem = Path(csv_path).with_suffix(".json")
-    logger.info("Logger same-stem sidecar not found: expected=%s", expected_same_stem)
-
-    generic_search_configured = generic_sidecar_paths is not None
-
-    if generic_search_configured:
-        logger.info("Logger generic sidecar search path(s): %s", [str(p) for p in generic_sidecar_paths])
-    else:
-        logger.info("Logger generic sidecar search not configured")
-
-    generic_candidates = _expand_generic_sidecar_paths(generic_sidecar_paths)
-    if not generic_candidates:
-        if generic_search_configured:
-            configured = ", ".join(str(p) for p in generic_sidecar_paths)
-            logger.info("Logger generic sidecar search found no usable candidates: %s", configured)
-            raise FileNotFoundError(
-                "No usable generic sidecar found from configured generic_sidecar_paths: "
-                + configured
-            )
-        logger.info("Logger generic sidecar not found; falling back to legacy header parsing")
-        return None, False
-    if len(generic_candidates) > 1:
-        joined = ", ".join(generic_candidates)
-        logger.info("Logger generic sidecar search found multiple candidates: %s", joined)
-        raise ValueError(
-            "Multiple generic sidecars are available; select one explicitly "
-            f"with sidecar_path or pass a single generic_sidecar_paths entry: {joined}"
-        )
-    logger.info("Logger generic sidecar found: %s", generic_candidates[0])
-    return generic_candidates[0], True
+    """
+    Backward-compatible alias for _select_log_metadata_path().
+    """
+    return _select_log_metadata_path(
+        csv_path,
+        log_metadata_path=sidecar_path,
+        generic_log_metadata_paths=generic_sidecar_paths,
+    )
 
 
 def _data_file_header(sidecar: Optional[dict[str, Any]]) -> Optional[bool]:
@@ -325,7 +381,7 @@ def _bind_sidecar_columns(
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     columns = sidecar.get("columns")
     if not isinstance(columns, dict):
-        raise ValueError(f"Logger sidecar missing required non-empty object 'columns': {sidecar_path}")
+        raise ValueError(f"Logger log metadata missing required non-empty object 'columns': {sidecar_path}")
 
     stream_time_columns = _stream_time_column_ids(sidecar)
     resolved: dict[str, dict[str, Any]] = {}
@@ -352,7 +408,7 @@ def _bind_sidecar_columns(
             if required:
                 missing_required.append(column_id)
                 logger.info(
-                    "Logger sidecar required column missing: sidecar_column_id=%s csv_ref=%s",
+                    "Logger log metadata required column missing: metadata_column_id=%s csv_ref=%s",
                     column_id,
                     csv_ref,
                 )
@@ -360,7 +416,7 @@ def _bind_sidecar_columns(
                 missing_optional.append(column_id)
                 warnings.append(f"sidecar_optional_column_missing:{column_id}")
                 logger.info(
-                    "Logger sidecar optional column missing: sidecar_column_id=%s csv_ref=%s",
+                    "Logger log metadata optional column missing: metadata_column_id=%s csv_ref=%s",
                     column_id,
                     csv_ref,
                 )
@@ -381,25 +437,25 @@ def _bind_sidecar_columns(
 
     if missing_required:
         raise ValueError(
-            "Logger sidecar required column(s) not present in CSV: "
+            "Logger log metadata required column(s) not present in CSV: "
             + ", ".join(missing_required)
         )
 
     if len(selected_physical) != len(set(selected_physical)):
         duplicates = [str(x) for x in selected_physical if selected_physical.count(x) > 1]
-        raise ValueError(f"Logger sidecar resolves multiple entries to the same CSV column: {sorted(set(duplicates))}")
+        raise ValueError(f"Logger log metadata resolves multiple entries to the same CSV column: {sorted(set(duplicates))}")
 
     output_names = list(rename_map.values())
     if len(output_names) != len(set(output_names)):
         duplicates = [x for x in output_names if output_names.count(x) > 1]
-        raise ValueError(f"Logger sidecar would create duplicate dataframe columns: {sorted(set(duplicates))}")
+        raise ValueError(f"Logger log metadata would create duplicate dataframe columns: {sorted(set(duplicates))}")
 
     resolved_by_physical = {bound["physical_column"]: bound for bound in resolved.values()}
     for physical in df.columns:
         bound = resolved_by_physical.get(physical)
         if isinstance(bound, dict):
             logger.info(
-                "Logger CSV column matched sidecar: csv_column=%r sidecar_column_id=%s dataframe_column=%s class=%s",
+                "Logger CSV column matched log metadata: csv_column=%r metadata_column_id=%s dataframe_column=%s class=%s",
                 str(physical),
                 bound.get("column_id"),
                 bound.get("dataframe_column"),
@@ -408,7 +464,7 @@ def _bind_sidecar_columns(
         else:
             action = "error" if sidecar_kind == "session" else "skip"
             logger.info(
-                "Logger CSV column has no sidecar match: csv_column=%r sidecar_kind=%s action=%s",
+                "Logger CSV column has no log metadata match: csv_column=%r log_metadata_kind=%s action=%s",
                 str(physical),
                 sidecar_kind,
                 action,
@@ -418,7 +474,7 @@ def _bind_sidecar_columns(
     skipped_unknown = [str(c) for c in df.columns if c not in resolved_physical]
     if sidecar_kind == "session" and skipped_unknown:
         raise ValueError(
-            "Session sidecar does not describe every CSV column; unknown column(s): "
+            "Session log metadata does not describe every CSV column; unknown column(s): "
             + ", ".join(skipped_unknown)
         )
 
@@ -428,7 +484,9 @@ def _bind_sidecar_columns(
 
     selected_df = df.loc[:, selected_physical].rename(columns=rename_map, copy=True)
     binding = {
+        "log_metadata_path": sidecar_path,
         "sidecar_path": sidecar_path,
+        "log_metadata_kind": sidecar_kind,
         "sidecar_kind": sidecar_kind,
         "columns": resolved,
         "missing_optional_columns": missing_optional,
@@ -439,7 +497,7 @@ def _bind_sidecar_columns(
 
 
 def _sidecar_time_hints(sidecar: dict[str, Any]) -> list[dict[str, Any]]:
-    binding = sidecar.get(_SIDECAR_BINDING_KEY)
+    binding = _metadata_binding(sidecar)
     bindings = binding.get("columns", {}) if isinstance(binding, dict) else {}
     streams = sidecar.get("streams")
     if not isinstance(streams, dict):
@@ -706,30 +764,57 @@ def _canonicalize_loaded_logger_df(
     return df
 
 
-def load_logger_csv_with_sidecar(
+def _resolve_log_metadata_aliases(
+    *,
+    log_metadata_path: Optional[str | Path],
+    generic_log_metadata_paths: Optional[Sequence[str | Path]],
+    sidecar_path: Optional[str | Path],
+    generic_sidecar_paths: Optional[Sequence[str | Path]],
+) -> tuple[Optional[str | Path], Optional[Sequence[str | Path]]]:
+    if log_metadata_path is not None and sidecar_path is not None:
+        raise ValueError("Use either log_metadata_path or sidecar_path, not both")
+    if generic_log_metadata_paths is not None and generic_sidecar_paths is not None:
+        raise ValueError("Use either generic_log_metadata_paths or generic_sidecar_paths, not both")
+    return (
+        log_metadata_path if log_metadata_path is not None else sidecar_path,
+        generic_log_metadata_paths if generic_log_metadata_paths is not None else generic_sidecar_paths,
+    )
+
+
+def load_logger_csv_with_log_metadata(
     path: str,
     *,
-    sidecar_path: Optional[str] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
+    sidecar_path: Optional[str | Path] = None,
     generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
 ) -> tuple[pd.DataFrame, Optional[dict[str, Any]], Optional[str]]:
     """
     Load a logger CSV and, when available, a same-stem, explicitly supplied,
-    or single generic fallback JSON sidecar that can provide CSV binding,
+    or single generic fallback JSON log metadata file that can provide CSV binding,
     delimiter/time-column hints, and session metadata.
+
+    sidecar_path and generic_sidecar_paths are accepted as deprecated aliases.
     """
-    resolved_sidecar, selected_as_generic = _select_sidecar_path(
-        path,
+    resolved_log_metadata_arg, generic_log_metadata_args = _resolve_log_metadata_aliases(
+        log_metadata_path=log_metadata_path,
+        generic_log_metadata_paths=generic_log_metadata_paths,
         sidecar_path=sidecar_path,
         generic_sidecar_paths=generic_sidecar_paths,
+    )
+    resolved_sidecar, selected_as_generic = _select_log_metadata_path(
+        path,
+        log_metadata_path=resolved_log_metadata_arg,
+        generic_log_metadata_paths=generic_log_metadata_args,
     )
     sidecar: Optional[dict[str, Any]] = None
     preferred_time_hints: list[dict[str, Any]] = []
 
     if resolved_sidecar is not None:
-        sidecar = load_logger_sidecar(resolved_sidecar)
+        sidecar = load_logger_log_metadata(resolved_sidecar)
         sidecar_kind = _sidecar_contract_kind(sidecar, selected_as_generic=selected_as_generic)
         logger.info(
-            "Logger sidecar loaded: path=%s sidecar_kind=%s selected_as_generic=%s",
+            "Logger log metadata loaded: path=%s log_metadata_kind=%s selected_as_generic=%s",
             resolved_sidecar,
             sidecar_kind,
             selected_as_generic,
@@ -745,7 +830,7 @@ def load_logger_csv_with_sidecar(
             sidecar_path=str(resolved_sidecar),
             sidecar_kind=sidecar_kind,
         )
-        sidecar[_SIDECAR_BINDING_KEY] = binding
+        _store_metadata_binding(sidecar, binding)
         preferred_time_hints = _sidecar_time_hints(sidecar)
         df = _canonicalize_loaded_logger_df(
             bound_df,
@@ -760,6 +845,22 @@ def load_logger_csv_with_sidecar(
         )
 
     return df, sidecar, resolved_sidecar
+
+
+def load_logger_csv_with_sidecar(
+    path: str,
+    *,
+    sidecar_path: Optional[str | Path] = None,
+    generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
+) -> tuple[pd.DataFrame, Optional[dict[str, Any]], Optional[str]]:
+    """
+    Backward-compatible alias for load_logger_csv_with_log_metadata().
+    """
+    return load_logger_csv_with_log_metadata(
+        path,
+        sidecar_path=sidecar_path,
+        generic_sidecar_paths=generic_sidecar_paths,
+    )
 
 
 # --- Footer stats parsing (logger-provided QC) ---

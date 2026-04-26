@@ -17,6 +17,7 @@ The profile is intended to support:
 - explicit, reviewable configuration that can be stored alongside analysis code
 - later formalization of named preprocessing presets
 - optional Garmin FIT import policy for GPS enrichment during preprocessing
+- optional references to generic log metadata and bike-profile artifacts
 
 This contract is intentionally narrow:
 
@@ -35,10 +36,11 @@ The profile captures parameters that are logically part of `run_macro(...)` prep
 
 - event schema selection
 - optional FIT import policy and field selection
-- zeroing and normalization behavior
+- optional generic log metadata fallback selection
+- optional bike profile selection
+- zeroing and normalization policy
 - optional Butterworth smoothing behavior
 - activity-mask signal and threshold settings
-- normalization ranges
 - strict vs tolerant ingestion mode
 
 ### 2.2 What the profile does not control
@@ -52,6 +54,7 @@ The following are notebook/runtime concerns and are explicitly **out of scope** 
 - whether to prompt for run or session descriptions
 - timezone label or other run-labeling policy
 - the per-session user choice required when multiple overlapping FIT files exist
+- the contents of referenced bike profiles
 
 ### 2.3 Relationship to other contracts
 
@@ -60,6 +63,7 @@ This contract depends on, or should be read alongside:
 - `analysis/documentation/BODAQS_analysis_artifacts_specification_v0_2.md`
 - `analysis/documentation/BODAQS_event_schema_specification_v0_1_2.md`
 - `analysis/documentation/BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`
+- `analysis/documentation/BODAQS_Bike_Profile_Contract_v0_draft.md`
 
 The profile does not replace those contracts. It points at them.
 
@@ -165,6 +169,9 @@ class PreprocessRunConfigV1(TypedDict, total=False):
     schema_path: str
     strict: bool
     fit_import: FitImportConfigV1 | None
+    generic_log_metadata_paths: list[str]
+    bike_profile_path: str | None
+    bike_profile_id: str | None
     zeroing_enabled: bool
     zero_window_s: float
     zero_min_samples: int
@@ -178,7 +185,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
     active_window: str
     active_padding: str
     active_min_seg: str
-    normalize_ranges: dict[str, float]
+    normalize_ranges: dict[str, float]  # deprecated transitional compatibility
     sample_rate_hz: float | None
 ```
 
@@ -202,7 +209,6 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 | `active_window` | string | Rolling-softening window, for example `500ms` |
 | `active_padding` | string | Padding added to merged active regions, for example `1s` |
 | `active_min_seg` | string | Minimum active segment duration, for example `3s` |
-| `normalize_ranges` | object | Mapping from canonical displacement signal name to full-range value |
 
 ### 6.3 Optional config fields
 
@@ -211,13 +217,21 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 | `active_signal_vel_col` | string or `null` | Explicit velocity signal to use for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
 | `fit_import` | object or `null` | Optional Garmin FIT import policy block; when absent or `null`, FIT import is disabled |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
+| `generic_log_metadata_paths` | array | Optional list of reusable log metadata fallback files/directories |
+| `bike_profile_path` | string or `null` | Optional path to a bike profile JSON document |
+| `bike_profile_id` | string or `null` | Optional bike profile identifier used for UI matching or future lookup |
+| `normalize_ranges` | object | Deprecated transitional override for legacy callers that still provide canonical-column range maps; canonical range data belongs in the referenced bike profile |
 
 ### 6.4 Config-field rules
 
 - `schema_path` must resolve to an event schema YAML understood by the event schema loader.
-- `normalize_ranges` must be a non-empty object.
-- Keys in `normalize_ranges` should be canonical displacement signal names, not raw logger column names.
-- Values in `normalize_ranges` must be numeric and greater than zero.
+- `generic_log_metadata_paths`, when present, must resolve to exactly one usable generic log metadata file in non-interactive runs.
+- `bike_profile_path`, when present, should resolve to a `bodaqs.bike_profile` JSON document.
+- `bike_profile_id`, when present, should match the selected bike profile's `bike_profile_id`.
+- Normalization ranges should be derived from the selected bike profile's semantic `normalization_ranges` declarations.
+- `normalize_ranges`, if present, is a deprecated transitional field for compatibility with legacy callers that have not yet migrated to bike-profile range resolution.
+- Values in `normalize_ranges`, if present, must be numeric and greater than zero.
+- Keys in `normalize_ranges`, if present, should be canonical displacement signal names, not raw logger column names.
 - `butterworth_smoothing` may be empty.
 - If `active_signal_disp_col` is `null`, `active_signal_vel_col` should also be `null`.
 - When `fit_import` is present, `fit_import.enabled=True` requires a non-empty `fit_dir`.
@@ -336,6 +350,11 @@ That behavior should be treated as the current implementation detail for v1 auth
       "raw_stream_name": "gps_fit",
       "bindings_path": "analysis/config/fit_bindings_v1.json"
     },
+    "generic_log_metadata_paths": [
+      "analysis/config/log_metadata_examples/current_logger_config_fast_timestamp_log_metadata.json"
+    ],
+    "bike_profile_path": "analysis/config/bike_profiles/example_enduro_bike_v1.json",
+    "bike_profile_id": "example_enduro_bike",
     "zeroing_enabled": false,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
@@ -348,16 +367,14 @@ That behavior should be treated as the current implementation detail for v1 auth
     "active_vel_thresh": 50.0,
     "active_window": "500ms",
     "active_padding": "1s",
-    "active_min_seg": "3s",
-    "normalize_ranges": {
-      "front_shock_dom_suspension [mm]": 170.0,
-      "rear_shock_dom_suspension [mm]": 150.0
-    }
+    "active_min_seg": "3s"
   }
 }
 ```
 
-Suspension examples use canonical signal names. On ingest and sensor resolution, analysis accepts `fork` as an alias for `front_shock` and `shock` as an alias for `rear_shock`; persisted profile keys should still refer to the canonical post-canonicalization dataframe columns.
+Activity-signal examples use canonical signal names because the current activity-mask API still expects dataframe columns. Normalization ranges are intentionally not embedded in this profile example; they are bike/setup facts and should be resolved from the referenced bike profile.
+
+Compatibility note: existing callers may still supply a legacy `normalize_ranges` map. New profile-authored workflows should prefer `bike_profile_path`, allowing the pipeline to resolve normalization ranges from bike-profile signal semantics.
 
 ---
 
@@ -377,7 +394,8 @@ Consumers should fail fast on:
 - unsupported profile version
 - missing required fields
 - invalid Butterworth config entries
-- empty or invalid `normalize_ranges`
+- unresolved required bike profile or normalization range semantics
+- invalid legacy `normalize_ranges`, if supplied
 - unresolved `schema_path`
 
 ---
@@ -386,7 +404,7 @@ Consumers should fail fast on:
 
 1. `zero_min_samples` is part of the profile shape for compatibility with existing UI/config concepts, but the current preprocessing implementation does not yet honor it during zeroing. In the current codebase it is effectively a reserved field.
 2. There is no explicit `active_enabled` flag in v1. The current profile shape assumes an activity-mask configuration is always present. A cleaner enable/disable contract may be added in a later version.
-3. The profile assumes the target log set is homogeneous enough that one normalization-range map and one activity-mask signal selection are valid for every file being processed.
+3. The profile assumes the target log set is homogeneous enough that one selected bike profile and one activity-mask signal selection are valid for every file being processed.
 4. This contract does not yet define profile discovery, cataloging, inheritance, or profile-composition behavior.
 
 ---

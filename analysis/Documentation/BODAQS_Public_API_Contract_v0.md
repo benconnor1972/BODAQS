@@ -116,7 +116,7 @@ session = load_session(
     csv_path: str,
     *,
     timezone: Optional[str] = None,
-    sidecar_path: Optional[str] = None,
+    log_metadata_path: Optional[str] = None,
 )
 ```
 
@@ -127,7 +127,7 @@ session = load_session(
 - `session["df"]` is a pandas DataFrame
 - `session["df"]` contains `time_s`
 - Timestamp parsing is handled internally
-- When a logger sidecar is available, ingest may use it for delimiter, time-column, and metadata hints
+- When logger log metadata is available, ingest may use it for delimiter, time-column, and metadata hints
 
 ---
 
@@ -211,7 +211,9 @@ Apply all standard preprocessing steps to a session.
 session = preprocess_session(
     session,
     *,
-    normalize_ranges: Dict[str, float],
+    normalize_ranges: Optional[Dict[str, float]] = None,
+    bike_profile_path: Optional[str | Path] = None,
+    bike_profile: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
@@ -226,6 +228,8 @@ session = preprocess_session(
 - `session["df"]` remains a DataFrame
 - `time_s` is preserved
 - QC and transform provenance are recorded under `session["qc"]`
+- Normalization ranges may be supplied directly as the legacy `normalize_ranges` map, or resolved
+  from a bike profile using semantic signal selectors.
 - When `butterworth_smoothing` is provided, additional append-only displacement variants are created
   using zero-phase SOS Butterworth filtering.
 - When `butterworth_generate_residuals=True`, each generated Butterworth series also emits an
@@ -278,15 +282,20 @@ results = run_macro(
     csv_path: str,
     schema_path: str,
     *,
-    normalize_ranges: Dict[str, float],
+    normalize_ranges: Optional[Dict[str, float]] = None,
+    bike_profile_path: Optional[str | Path] = None,
+    bike_profile: Optional[Mapping[str, Any]] = None,
     fit_import: Optional[dict[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
     timezone: Optional[str] = None,
-    sidecar_path: Optional[str] = None,
+    log_metadata_path: Optional[str] = None,
 )
 ```
+
+Callers should prefer `bike_profile_path` for new preprocessing workflows. `normalize_ranges`
+remains supported as a compatibility path for existing notebooks and scripts.
 
 **Returns:**
 ```python

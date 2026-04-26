@@ -189,6 +189,7 @@ def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
 
     session = load_session(str(csv_path))
 
+    assert session["source"]["log_metadata_path"] == str(sidecar_path)
     assert session["source"]["sidecar_path"] == str(sidecar_path)
     assert session["source"]["created_local"] == "2026-02-19T08:35:11+08:00"
     assert session["source"]["timezone"] == "Australia/Perth"
@@ -269,9 +270,11 @@ def test_load_session_uses_single_generic_sidecar_permissively(tmp_path):
     )
     generic_sidecar = _write_generic_sidecar(tmp_path)
 
-    session = load_session(str(csv_path), generic_sidecar_paths=[generic_sidecar])
+    session = load_session(str(csv_path), generic_log_metadata_paths=[generic_sidecar])
 
+    assert session["source"]["log_metadata_path"] == str(generic_sidecar)
     assert session["source"]["sidecar_path"] == str(generic_sidecar)
+    assert session["source"]["log_metadata_kind"] == "generic"
     assert session["source"]["sidecar_kind"] == "generic"
     assert "front_shock_dom_suspension [mm]" in session["df"].columns
     assert "rear_shock_dom_suspension [mm]" not in session["df"].columns
@@ -301,14 +304,14 @@ def test_load_session_logs_sidecar_selection_and_column_binding(tmp_path, caplog
 
     caplog.set_level(logging.INFO, logger="bodaqs_analysis.io_logger")
 
-    load_session(str(csv_path), generic_sidecar_paths=[generic_sidecar])
+    load_session(str(csv_path), generic_log_metadata_paths=[generic_sidecar])
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("Logger same-stem sidecar not found" in msg for msg in messages)
-    assert any("Logger generic sidecar found" in msg for msg in messages)
-    assert any("csv_column='timestamp_ms'" in msg and "matched sidecar" in msg for msg in messages)
-    assert any("csv_column='Fork [mm]'" in msg and "matched sidecar" in msg for msg in messages)
-    assert any("csv_column='extra_voltage'" in msg and "no sidecar match" in msg for msg in messages)
+    assert any("Logger same-stem log metadata not found" in msg for msg in messages)
+    assert any("Logger generic log metadata found" in msg for msg in messages)
+    assert any("csv_column='timestamp_ms'" in msg and "matched log metadata" in msg for msg in messages)
+    assert any("csv_column='Fork [mm]'" in msg and "matched log metadata" in msg for msg in messages)
+    assert any("csv_column='extra_voltage'" in msg and "no log metadata match" in msg for msg in messages)
 
 
 def test_multiple_generic_sidecars_require_explicit_selection(tmp_path):
@@ -316,16 +319,16 @@ def test_multiple_generic_sidecars_require_explicit_selection(tmp_path):
     first = _write_generic_sidecar(tmp_path, name="generic_a.json")
     second = _write_generic_sidecar(tmp_path, name="generic_b.json")
 
-    with pytest.raises(ValueError, match="Multiple generic sidecars"):
-        load_session(str(csv_path), generic_sidecar_paths=[first, second])
+    with pytest.raises(ValueError, match="Multiple generic log metadata"):
+        load_session(str(csv_path), generic_log_metadata_paths=[first, second])
 
 
 def test_configured_missing_generic_sidecar_does_not_fall_back_to_header_parsing(tmp_path):
     csv_path = _write_csv_only(tmp_path)
     missing_sidecar = tmp_path / "missing_generic_sidecar.json"
 
-    with pytest.raises(FileNotFoundError, match="No usable generic sidecar"):
-        load_session(str(csv_path), generic_sidecar_paths=[missing_sidecar])
+    with pytest.raises(FileNotFoundError, match="No usable generic log metadata"):
+        load_session(str(csv_path), generic_log_metadata_paths=[missing_sidecar])
 
 
 def test_generic_sidecar_supports_headerless_csv_by_column_index(tmp_path):
@@ -346,11 +349,15 @@ def test_generic_sidecar_supports_headerless_csv_by_column_index(tmp_path):
         include_optional_shock=False,
     )
 
-    session = load_session(str(csv_path), generic_sidecar_paths=[generic_sidecar])
+    session = load_session(str(csv_path), generic_log_metadata_paths=[generic_sidecar])
 
     assert "front_shock_dom_suspension [mm]" in session["df"].columns
     assert 2 not in session["df"].columns
     assert "sidecar_unknown_csv_column_skipped:2" in session["qc"]["warnings"]
+    assert session["qc"]["parse"]["log_metadata_column_bindings"]["fork_travel_mm"]["csv_ref"] == {
+        "by": "index",
+        "index": 1,
+    }
     assert session["qc"]["parse"]["sidecar_column_bindings"]["fork_travel_mm"]["csv_ref"] == {
         "by": "index",
         "index": 1,

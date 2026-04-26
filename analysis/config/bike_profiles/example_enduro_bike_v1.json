@@ -1,0 +1,190 @@
+{
+  "schema": "bodaqs.bike_profile",
+  "version": 1,
+  "bike_profile_id": "example_enduro_bike",
+  "display_name": "Example enduro bike",
+  "description": "Example bike profile showing normalization ranges and setup-specific transforms.",
+  "bike": {
+    "manufacturer": "Example",
+    "model": "Enduro",
+    "model_year": "2026",
+    "wheel_size": "29",
+    "notes": "Illustrative values only; replace before real analysis."
+  },
+  "setup": {
+    "setup_id": "default_suspension_setup",
+    "display_name": "Default suspension setup",
+    "notes": "Example setup for demonstrating bike-profile transforms."
+  },
+  "normalization_ranges": [
+    {
+      "id": "front_fork_travel_range",
+      "signal": {
+        "sensor": "front_shock",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": "mm"
+      },
+      "full_range": 170.0
+    },
+    {
+      "id": "rear_shock_travel_range",
+      "signal": {
+        "sensor": "rear_shock",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": "mm"
+      },
+      "full_range": 65.0
+    },
+    {
+      "id": "rear_wheel_travel_range",
+      "signal": {
+        "sensor": "rear_wheel",
+        "quantity": "disp",
+        "domain": "wheel",
+        "unit": "mm"
+      },
+      "full_range": 150.0
+    }
+  ],
+  "signal_transforms": [
+    {
+      "id": "rear_shock_to_rear_wheel_travel",
+      "description": "Example LUT converting rear shock travel to rear wheel travel.",
+      "enabled": true,
+      "input": {
+        "sensor": "rear_shock",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": "mm"
+      },
+      "output": {
+        "sensor": "rear_wheel",
+        "quantity": "disp",
+        "domain": "wheel",
+        "unit": "mm"
+      },
+      "method": "lut",
+      "interpolation": "linear",
+      "extrapolation": "linear",
+      "lut": [
+        {
+          "input": 0.0,
+          "output": 0.0
+        },
+        {
+          "input": 2.84,
+          "output": 10.0
+        },
+        {
+          "input": 5.75,
+          "output": 20.0
+        },
+        {
+          "input": 8.73,
+          "output": 30.0
+        },
+        {
+          "input": 11.77,
+          "output": 40.0
+        },
+        {
+          "input": 14.88,
+          "output": 50.0
+        },
+        {
+          "input": 18.05,
+          "output": 60.0
+        },
+        {
+          "input": 21.29,
+          "output": 70.0
+        },
+        {
+          "input": 24.59,
+          "output": 80.0
+        },
+        {
+          "input": 27.96,
+          "output": 90.0
+        },
+        {
+          "input": 31.38,
+          "output": 100.0
+        },
+        {
+          "input": 34.87,
+          "output": 110.0
+        },
+        {
+          "input": 38.41,
+          "output": 120.0
+        },
+        {
+          "input": 42.01,
+          "output": 130.0
+        },
+        {
+          "input": 45.66,
+          "output": 140.0
+        },
+        {
+          "input": 49.36,
+          "output": 150.0
+        },
+        {
+          "input": 53.1,
+          "output": 160.0
+        },
+        {
+          "input": 55.0,
+          "output": 165.0
+        }
+      ]
+    },
+    {
+      "id": "front_fork_to_front_wheel_travel",
+      "description": "Example polynomial identity transform for fork to front wheel travel.",
+      "enabled": false,
+      "input": {
+        "sensor": "front_shock",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": "mm"
+      },
+      "output": {
+        "sensor": "front_wheel",
+        "quantity": "disp",
+        "domain": "wheel",
+        "unit": "mm"
+      },
+      "method": "polynomial",
+      "polynomial": {
+        "coefficient_order": "ascending",
+        "coefficients": [
+          0.0,
+          1.0
+        ]
+      }
+    }
+  ],
+  "installed_sensors": [
+    {
+      "sensor": "front_shock",
+      "logger_channel": "sensor0",
+      "mount_location": "fork travel sensor",
+      "notes": "Example only."
+    },
+    {
+      "sensor": "rear_shock",
+      "logger_channel": "sensor1",
+      "mount_location": "shock body travel sensor",
+      "notes": "Example only."
+    }
+  ],
+  "provenance": {
+    "created_by": "manual example",
+    "created_at": "2026-04-26"
+  }
+}

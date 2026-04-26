@@ -8,7 +8,7 @@ import logging
 import os
 import re
 
-from .io_logger import load_logger_csv_with_sidecar, parse_run_stats_footer
+from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
 from .io_fit import (
     FIT_DEFAULT_FIELDS,
     find_overlapping_fit_files,
@@ -35,6 +35,7 @@ from .preprocess_filters import (
     apply_butterworth_smoothing,
     normalize_butterworth_smoothing_configs,
 )
+from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_DATETIME_RE = re.compile(
@@ -44,6 +45,7 @@ ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
 
 logger = logging.getLogger(__name__)
 
+_LOG_METADATA_BINDING_KEY = "_bodaqs_log_metadata_binding"
 _SIDECAR_BINDING_KEY = "_bodaqs_sidecar_binding"
 
 _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
@@ -60,9 +62,18 @@ _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
     "bindings_path": None,
 }
 
+
+def _metadata_binding(log_metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    binding = log_metadata.get(_LOG_METADATA_BINDING_KEY)
+    if isinstance(binding, dict):
+        return binding
+    binding = log_metadata.get(_SIDECAR_BINDING_KEY)
+    return binding if isinstance(binding, dict) else None
+
+
 def _declared_time_columns(sidecar: Dict[str, Any]) -> set[str]:
     out: set[str] = set()
-    binding = sidecar.get(_SIDECAR_BINDING_KEY)
+    binding = _metadata_binding(sidecar)
     bound_columns = binding.get("columns", {}) if isinstance(binding, dict) else {}
 
     columns = sidecar.get("columns")
@@ -94,7 +105,7 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
     out: Dict[str, Dict[str, Any]] = {}
     columns = sidecar.get("columns")
     streams = sidecar.get("streams")
-    binding = sidecar.get(_SIDECAR_BINDING_KEY)
+    binding = _metadata_binding(sidecar)
     bound_columns = binding.get("columns", {}) if isinstance(binding, dict) else {}
     if not isinstance(columns, dict):
         return out
@@ -151,6 +162,7 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
                     except Exception:
                         pass
 
+        ch["log_metadata_column_id"] = str(col_name)
         ch["sidecar_column_id"] = str(col_name)
         if isinstance(bound, dict):
             ch["csv_column"] = bound.get("physical_column_label")
@@ -161,43 +173,50 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
     return out
 
 
-def _apply_sidecar_metadata(
+def _apply_log_metadata(
     session: Dict[str, Any],
     *,
-    sidecar: Dict[str, Any],
-    sidecar_path: str,
+    log_metadata: Dict[str, Any],
+    log_metadata_path: str,
 ) -> None:
     source = session.setdefault("source", {})
     meta = session.setdefault("meta", {})
     qc = session.setdefault("qc", {})
     parse = qc.setdefault("parse", {})
 
-    source["sidecar_path"] = sidecar_path
-    binding = sidecar.get(_SIDECAR_BINDING_KEY)
+    source["log_metadata_path"] = log_metadata_path
+    # Transitional alias for existing consumers.
+    source["sidecar_path"] = log_metadata_path
+    binding = _metadata_binding(log_metadata)
     if isinstance(binding, dict):
-        sidecar_kind = binding.get("sidecar_kind")
-        if isinstance(sidecar_kind, str) and sidecar_kind.strip():
-            source["sidecar_kind"] = sidecar_kind
-            parse["sidecar_kind"] = sidecar_kind
+        log_metadata_kind = binding.get("log_metadata_kind", binding.get("sidecar_kind"))
+        if isinstance(log_metadata_kind, str) and log_metadata_kind.strip():
+            source["log_metadata_kind"] = log_metadata_kind
+            source["sidecar_kind"] = log_metadata_kind
+            parse["log_metadata_kind"] = log_metadata_kind
+            parse["sidecar_kind"] = log_metadata_kind
+        parse["log_metadata_column_bindings"] = binding.get("columns", {})
         parse["sidecar_column_bindings"] = binding.get("columns", {})
         missing_optional = binding.get("missing_optional_columns")
         if isinstance(missing_optional, list):
+            parse["log_metadata_missing_optional_columns"] = list(missing_optional)
             parse["sidecar_missing_optional_columns"] = list(missing_optional)
         skipped_unknown = binding.get("skipped_unknown_columns")
         if isinstance(skipped_unknown, list):
+            parse["log_metadata_skipped_unknown_columns"] = list(skipped_unknown)
             parse["sidecar_skipped_unknown_columns"] = list(skipped_unknown)
         for warning in binding.get("warnings", []):
             if isinstance(warning, str) and warning.strip():
                 _append_qc_warning(session, warning)
 
-    contract = sidecar.get("contract")
+    contract = log_metadata.get("contract")
     if isinstance(contract, dict):
         name = contract.get("name")
         version = contract.get("version")
         if isinstance(name, str) and isinstance(version, str):
             meta["source_contract"] = {"name": name, "version": version}
 
-    declared_streams = sidecar.get("streams")
+    declared_streams = log_metadata.get("streams")
     if isinstance(declared_streams, dict):
         meta["declared_streams"] = declared_streams
 
@@ -224,7 +243,7 @@ def _apply_sidecar_metadata(
                     except Exception:
                         pass
 
-    session_meta = sidecar.get("session")
+    session_meta = log_metadata.get("session")
     if isinstance(session_meta, dict):
         started_at_local = session_meta.get("started_at_local")
         if isinstance(started_at_local, str) and started_at_local.strip():
@@ -243,7 +262,7 @@ def _apply_sidecar_metadata(
         if isinstance(source_session_id, str) and source_session_id.strip():
             meta["source_session_id"] = source_session_id
 
-    provenance = sidecar.get("provenance")
+    provenance = log_metadata.get("provenance")
     if isinstance(provenance, dict):
         device = meta.get("device")
         if not isinstance(device, dict):
@@ -263,9 +282,22 @@ def _apply_sidecar_metadata(
     if not isinstance(channel_info, dict):
         channel_info = {}
         meta["channel_info"] = channel_info
-    channel_info.update(_build_channel_info_from_sidecar(sidecar))
+    channel_info.update(_build_channel_info_from_sidecar(log_metadata))
 
+    parse["log_metadata_used"] = True
     parse["sidecar_used"] = True
+
+
+def _apply_sidecar_metadata(
+    session: Dict[str, Any],
+    *,
+    sidecar: Dict[str, Any],
+    sidecar_path: str,
+) -> None:
+    """
+    Backward-compatible alias for _apply_log_metadata().
+    """
+    _apply_log_metadata(session, log_metadata=sidecar, log_metadata_path=sidecar_path)
 
 
 def _infer_time_anchor_from_filename_stem(
@@ -335,11 +367,15 @@ def load_session(
     timezone: Optional[str] = None,
     sidecar_path: Optional[str] = None,
     generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
 ) -> Dict[str, Any]:
     """Load a CSV into a v0 Session dict (df_raw + initial qc/meta)."""
     p = Path(csv_path)
-    df_raw, sidecar, resolved_sidecar_path = load_logger_csv_with_sidecar(
+    df_raw, sidecar, resolved_sidecar_path = load_logger_csv_with_log_metadata(
         str(p),
+        log_metadata_path=log_metadata_path,
+        generic_log_metadata_paths=generic_log_metadata_paths,
         sidecar_path=sidecar_path,
         generic_sidecar_paths=generic_sidecar_paths,
     )
@@ -387,7 +423,7 @@ def load_session(
         "df": df_raw.copy(),
     }
     if isinstance(sidecar, dict) and isinstance(resolved_sidecar_path, str):
-        _apply_sidecar_metadata(session, sidecar=sidecar, sidecar_path=resolved_sidecar_path)
+        _apply_log_metadata(session, log_metadata=sidecar, log_metadata_path=resolved_sidecar_path)
     _apply_filename_stem_time_anchor(session, csv_path=p)
     return session
 
@@ -397,6 +433,8 @@ def load_and_canonicalize(
     timezone: Optional[str] = None,
     sidecar_path: Optional[str] = None,
     generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
 ) -> Dict[str, Any]:
     """
     Step 1 helper for notebooks/UI:
@@ -408,6 +446,8 @@ def load_and_canonicalize(
     session = load_session(
         csv_path,
         timezone=timezone,
+        log_metadata_path=log_metadata_path,
+        generic_log_metadata_paths=generic_log_metadata_paths,
         sidecar_path=sidecar_path,
         generic_sidecar_paths=generic_sidecar_paths,
     )
@@ -759,7 +799,9 @@ def _build_active_mask_from_time_s(
 
 def preprocess_session(session: Dict[str, Any],
                        *,
-                       normalize_ranges: Dict[str, float],
+                       normalize_ranges: Optional[Dict[str, float]] = None,
+                       bike_profile: Optional[Mapping[str, Any]] = None,
+                       bike_profile_path: Optional[str | Path] = None,
                        sample_rate_hz: Optional[float] = None,
                        zeroing_enabled: bool = True,
                        zero_window_s: float = 1.0,
@@ -802,7 +844,31 @@ def preprocess_session(session: Dict[str, Any],
         units_by_base=units_by_col,
         domain_by_base=domain_by_base,
     )
-    df = session["df"]  
+    session = build_signals_registry(session, strict=False)
+    df = session["df"]
+
+    if bike_profile is None and bike_profile_path is not None:
+        bike_profile = load_bike_profile(bike_profile_path)
+
+    if bike_profile is not None:
+        session = apply_signal_transforms(
+            session,
+            bike_profile,
+            bike_profile_path=bike_profile_path,
+        )
+        session = build_signals_registry(session, strict=False)
+        df = session["df"]
+
+    if normalize_ranges is None:
+        if bike_profile is None:
+            raise ValueError("preprocess_session requires either normalize_ranges or bike_profile_path")
+        normalize_ranges = resolve_normalization_ranges(
+            session,
+            bike_profile,
+            bike_profile_path=bike_profile_path,
+        )
+    else:
+        normalize_ranges = dict(normalize_ranges)
 
     # ---------------- Normalize / zero / scale ----------------
     df2, norm_meta = normalize_and_scale(
@@ -1013,19 +1079,23 @@ def run_macro(
     *,
     sidecar_path: Optional[str] = None,
     generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
     fit_import: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
     zero_window_s: float = 1,
     zero_min_samples: int = 10,
     clip_0_1: bool = False,
-    active_signal_disp_col: [str] = None,
-    active_signal_vel_col: [str] = None,
+    active_signal_disp_col: Optional[str] = None,
+    active_signal_vel_col: Optional[str] = None,
     active_disp_thresh: float = 20,
     active_vel_thresh: float = 50,
     active_window: str = "500ms",
     active_padding: str = "1s",
     active_min_seg: str = "3s",
-    normalize_ranges: Dict[str, float],
+    normalize_ranges: Optional[Dict[str, float]] = None,
+    bike_profile_path: Optional[str | Path] = None,
+    bike_profile: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
@@ -1041,6 +1111,8 @@ def run_macro(
     session = load_session(
         csv_path,
         timezone=timezone,
+        log_metadata_path=log_metadata_path,
+        generic_log_metadata_paths=generic_log_metadata_paths,
         sidecar_path=sidecar_path,
         generic_sidecar_paths=generic_sidecar_paths,
     )
@@ -1065,6 +1137,8 @@ def run_macro(
         active_window=active_window,
         active_padding=active_padding,
         active_min_seg=active_min_seg,
+        bike_profile=bike_profile,
+        bike_profile_path=bike_profile_path,
         butterworth_smoothing=butterworth_smoothing,
         butterworth_generate_residuals=butterworth_generate_residuals,
     )

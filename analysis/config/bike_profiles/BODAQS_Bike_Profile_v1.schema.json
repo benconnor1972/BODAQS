@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/schemas/bodaqs_bike_profile_v1.schema.json",
+  "title": "BODAQS Bike Profile v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "bike_profile_id",
+    "display_name"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "const": "bodaqs.bike_profile"
+    },
+    "version": {
+      "const": 1
+    },
+    "bike_profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "bike": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "normalization_ranges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/normalization_range"
+      }
+    },
+    "signal_transforms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/signal_transform"
+      }
+    },
+    "installed_sensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "normalization_range": {
+      "type": "object",
+      "required": [
+        "id",
+        "signal",
+        "full_range"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signal": {
+          "$ref": "#/$defs/signal_semantics"
+        },
+        "full_range": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "signal_semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sensor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "minProperties": 1
+    },
+    "lut_point": {
+      "type": "object",
+      "required": [
+        "input",
+        "output"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        }
+      }
+    },
+    "polynomial": {
+      "type": "object",
+      "required": [
+        "coefficients"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "coefficients": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "number"
+          }
+        },
+        "coefficient_order": {
+          "type": "string",
+          "enum": [
+            "ascending",
+            "descending"
+          ]
+        },
+        "input_offset": {
+          "type": "number"
+        },
+        "input_scale": {
+          "type": "number"
+        },
+        "output_offset": {
+          "type": "number"
+        }
+      }
+    },
+    "signal_transform": {
+      "type": "object",
+      "required": [
+        "id",
+        "input",
+        "output",
+        "method"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "input": {
+          "$ref": "#/$defs/signal_semantics"
+        },
+        "output": {
+          "$ref": "#/$defs/signal_semantics"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "lut",
+            "polynomial"
+          ]
+        },
+        "interpolation": {
+          "type": "string",
+          "enum": [
+            "linear",
+            "nearest"
+          ]
+        },
+        "extrapolation": {
+          "type": "string",
+          "enum": [
+            "clamp",
+            "linear",
+            "error"
+          ]
+        },
+        "lut": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/lut_point"
+          }
+        },
+        "polynomial": {
+          "$ref": "#/$defs/polynomial"
+        }
+      }
+    }
+  }
+}

@@ -195,7 +195,7 @@ def build_signals_registry(
             if quantity.strip() == "raw":
                 merged["kind"] = "raw"
 
-        for key in ("sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
+        for key in ("log_metadata_column_id", "sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
             if key in hints:
                 merged[key] = hints[key]
 
@@ -219,9 +219,9 @@ def build_signals_registry(
             "op_chain": [],
             "sensor": canonical_sensor_id(sensor) if isinstance(sensor, str) and sensor.strip() else None,
             "quantity": quantity,
-            "notes": "semantics supplied by logger sidecar",
+            "notes": "semantics supplied by logger log metadata",
         }
-        for key in ("sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
+        for key in ("log_metadata_column_id", "sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
             if key in hints:
                 info[key] = hints[key]
         return info

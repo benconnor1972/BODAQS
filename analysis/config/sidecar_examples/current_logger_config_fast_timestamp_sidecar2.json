@@ -1,0 +1,186 @@
+{
+  "contract": {
+    "name": "mtb_logger_timeseries",
+    "version": "0.2.0",
+    "sidecar_kind": "generic"
+  },
+  "data_file": {
+    "delimiter": ",",
+    "header": true
+  },
+  "streams": {
+    "primary": {
+      "type": "uniform",
+      "time_column": "timestamp_ms",
+      "time_encoding": "epoch_ms",
+      "time_unit": "ms",
+      "time_anchor": "unix_epoch_utc",
+      "sample_rate_hz": 1000.0
+    }
+  },
+  "sensors": {
+    "fork": {
+      "source_config": "sensor0",
+      "name": "Fork",
+      "type": "analog_pot",
+      "domain": "suspension",
+      "raw_unit": "counts",
+      "calibration": {
+        "type": "linear",
+        "input_unit": "counts",
+        "output_unit": "mm",
+        "installed_zero_count": 4095,
+        "sensor_zero_count": 0,
+        "sensor_full_count": 4095,
+        "sensor_full_travel": 203.0,
+        "invert": false
+      }
+    },
+    "shock": {
+      "source_config": "sensor1",
+      "name": "Shock",
+      "type": "analog_pot",
+      "domain": "suspension",
+      "raw_unit": "counts",
+      "calibration": {
+        "type": "linear",
+        "input_unit": "counts",
+        "output_unit": "mm",
+        "installed_zero_count": 0,
+        "sensor_zero_count": 0,
+        "sensor_full_count": 4095,
+        "sensor_full_travel": 78.0,
+        "invert": false
+      }
+    },
+    "string_pot": {
+      "source_config": "sensor2",
+      "name": "String pot",
+      "type": "as5600_string_pot_analog",
+      "domain": "suspension",
+      "raw_unit": "counts",
+      "tracking": {
+        "counts_per_turn": 4096,
+        "wrap_threshold_counts": 2000,
+        "assume_turn0_at_start": true
+      },
+      "calibration": {
+        "type": "linear",
+        "input_unit": "counts",
+        "output_unit": "mm",
+        "installed_zero_count": 2488,
+        "sensor_zero_count": 3654,
+        "sensor_full_count": -6825,
+        "sensor_full_travel": 203.0,
+        "invert": true
+      }
+    }
+  },
+  "columns": {
+    "sample_id": {
+      "csv_ref": {
+        "by": "header",
+        "header": "sample_id"
+      },
+      "class": "index",
+      "dtype": "uint32"
+    },
+    "timestamp_ms": {
+      "csv_ref": {
+        "by": "header",
+        "header": "timestamp_ms"
+      },
+      "class": "time",
+      "dtype": "uint64",
+      "stream": "primary",
+      "unit": "ms"
+    },
+    "fork_travel_mm": {
+      "csv_ref": {
+        "by": "header",
+        "header": "Fork [mm]"
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "fork",
+      "quantity": "disp",
+      "domain": "suspension",
+      "unit": "mm",
+      "calibration_ref": "fork",
+      "transform_chain": []
+    },
+    "shock_travel_mm": {
+      "csv_ref": {
+        "by": "header",
+        "header": "Shock [mm]"
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "shock",
+      "quantity": "disp",
+      "domain": "suspension",
+      "unit": "mm",
+      "calibration_ref": "shock",
+      "transform_chain": []
+    },
+    "string_pot_travel_mm": {
+      "csv_ref": {
+        "by": "header",
+        "header": "String pot [mm]"
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "string_pot",
+      "quantity": "disp",
+      "domain": "suspension",
+      "unit": "mm",
+      "calibration_ref": "string_pot",
+      "transform_chain": [],
+      "notes": "Linear output derived internally from unwrapped AS5600 counts."
+    },
+    "string_pot_raw_counts": {
+      "csv_ref": {
+        "by": "header",
+        "header": "String pot_raw [counts]"
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "string_pot",
+      "quantity": "raw",
+      "domain": "suspension",
+      "unit": "counts",
+      "raw_representation": "wrapped_counts"
+    },
+    "mark": {
+      "csv_ref": {
+        "by": "header",
+        "header": "mark"
+      },
+      "class": "event_flag",
+      "dtype": "bool",
+      "stream": "primary",
+      "meaning": "user mark"
+    }
+  },
+  "qc": {
+    "warnings": []
+  },
+  "provenance": {
+    "logger_family": "BODAQS",
+    "source_config": "loggercfg (16).txt",
+    "metadata_generated_at": "2026-04-25T12:00:00+08:00",
+    "generator": "manual generic sidecar example for preprocessing development",
+    "assumptions": [
+      "This is a generic fallback sidecar, so it intentionally does not include a runtime CSV filename, row count, hash, session id, or exact session start time.",
+      "Current firmware header generation is assumed: sample_id,timestamp_ms,Fork [mm],Shock [mm],String pot [mm],String pot_raw [counts],mark.",
+      "sensor0, sensor1, and sensor2 are assumed active because muted=false; sensor3 is omitted because muted=true.",
+      "timestamp_mode=fast is represented as epoch_ms anchored to the Unix epoch in UTC.",
+      "Fork, Shock, and String pot are interpreted as displacement signals because they have linear output_mode, mm units, and non-unity sensor_full_travel_mm values.",
+      "All selected output_id values are identity and all active sensors use output_mode=LINEAR, so no transform registry entries are included."
+    ]
+  }
+}
