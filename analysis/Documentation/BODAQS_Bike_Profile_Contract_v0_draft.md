@@ -237,7 +237,8 @@ Rules:
 - `id` MUST be unique within the bike profile.
 - `enabled`, if omitted, SHOULD be interpreted as `true`.
 - `method` MUST be one of `lut` or `polynomial`.
-- A transform SHOULD be applied after log metadata binding and before velocity/acceleration calculation.
+- A transform SHOULD be applied after log metadata binding and after any configured zeroing of the input signal.
+- A transform SHOULD be applied before normalization, velocity/acceleration calculation, and event detection.
 - If the transform output signal already exists in the dataframe, consumers SHOULD keep the existing column, skip the bike-profile transform, and record a warning/provenance note rather than overwriting data.
 
 ### 8.2 Signal Selector

@@ -15,7 +15,7 @@ from .io_fit import (
     load_fit_stream,
     select_fit_candidate,
 )
-from .normalize import normalize_and_scale
+from .normalize import scale_signal_columns, zero_signal_columns
 from .va import estimate_va, name_vel
 from .schema import load_event_schema
 from .detect import detect_events_from_schema
@@ -36,6 +36,7 @@ from .preprocess_filters import (
     normalize_butterworth_smoothing_configs,
 )
 from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
+from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_DATETIME_RE = re.compile(
@@ -797,8 +798,39 @@ def _build_active_mask_from_time_s(
     keep = pd.Series(keep_td.to_numpy(dtype=bool), index=df.index, name=ACTIVE_MASK_COL)
     return keep
 
+
+def _validated_preprocess_config_copy(config: Mapping[str, Any]) -> Dict[str, Any]:
+    validate_preprocess_config(config)
+    return dict(config)
+
+
+def _coerce_run_macro_config(
+    *,
+    preprocess_profile_path: Optional[str | Path],
+    preprocess_profile: Optional[Mapping[str, Any]],
+    preprocess_config: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    provided = [
+        preprocess_profile_path is not None,
+        preprocess_profile is not None,
+        preprocess_config is not None,
+    ]
+    if sum(provided) > 1:
+        raise ValueError(
+            "Use only one of preprocess_profile_path, preprocess_profile, or preprocess_config"
+        )
+    if preprocess_profile_path is not None:
+        return load_preprocess_config(preprocess_profile_path)
+    if preprocess_profile is not None:
+        return preprocess_config_from_profile(preprocess_profile)
+    if preprocess_config is not None:
+        return _validated_preprocess_config_copy(preprocess_config)
+    return None
+
+
 def preprocess_session(session: Dict[str, Any],
                        *,
+                       preprocess_config: Optional[Mapping[str, Any]] = None,
                        normalize_ranges: Optional[Dict[str, float]] = None,
                        bike_profile: Optional[Mapping[str, Any]] = None,
                        bike_profile_path: Optional[str | Path] = None,
@@ -821,6 +853,27 @@ def preprocess_session(session: Dict[str, Any],
                        va_poly_order: int = 3) -> Dict[str, Any]:
     
     """Normalize, zero + compute velocity/acceleration."""
+    if preprocess_config is not None:
+        cfg = _validated_preprocess_config_copy(preprocess_config)
+        normalize_ranges = normalize_ranges if normalize_ranges is not None else cfg.get("normalize_ranges")
+        bike_profile_path = bike_profile_path if bike_profile_path is not None else cfg.get("bike_profile_path")
+        sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
+        zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
+        zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
+        zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
+        clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
+        active_signal_disp_col = cfg.get("active_signal_disp_col", active_signal_disp_col)
+        active_signal_vel_col = cfg.get("active_signal_vel_col", active_signal_vel_col)
+        active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
+        active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
+        active_window = str(cfg.get("active_window", active_window))
+        active_padding = str(cfg.get("active_padding", active_padding))
+        active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
+        butterworth_generate_residuals = bool(
+            cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
+        )
+
     df = session["df"].copy()
 
     # QC: ensure structure exists early
@@ -850,18 +903,66 @@ def preprocess_session(session: Dict[str, Any],
     if bike_profile is None and bike_profile_path is not None:
         bike_profile = load_bike_profile(bike_profile_path)
 
+    if normalize_ranges is None and bike_profile is None:
+        raise ValueError("preprocess_session requires either normalize_ranges or bike_profile_path")
+
+    # ---------------- Zero physical signal columns before bike-profile transforms ----------------
+    if normalize_ranges is None:
+        zero_ranges = resolve_normalization_ranges(
+            session,
+            bike_profile,
+            bike_profile_path=bike_profile_path,
+            require_at_least_one=False,
+            record=False,
+            warn_unmatched=False,
+        )
+    else:
+        zero_ranges = dict(normalize_ranges)
+
+    df2, zero_meta = zero_signal_columns(
+        df,
+        zero_ranges,
+        zeroing_enabled=zeroing_enabled,
+        zero_window_s=zero_window_s,
+        min_samples_abs_min=zero_min_samples,
+        return_meta=True,
+    )
+    zero_per_column = zero_meta.get("per_column", [])
+    zeroed_columns_for_norm = {
+        str(r.get("column"))
+        for r in zero_per_column
+        if r.get("status") == "ok" and (r.get("zeroing") or {}).get("enabled", False)
+    }
+    session["df"] = df2
+
     if bike_profile is not None:
         session = apply_signal_transforms(
             session,
             bike_profile,
             bike_profile_path=bike_profile_path,
         )
+        generated_transform_records = [
+            r
+            for r in (
+                (session.get("qc") or {})
+                .get("transforms", {})
+                .get("bike_profile_signal_transforms", {})
+                .get("generated", [])
+            )
+            if isinstance(r, Mapping)
+        ]
+        generated_zeroed_transform_columns = {
+            str(r.get("output_column"))
+            for r in generated_transform_records
+            if r.get("output_column") is not None
+            and str(r.get("input_column")) in zeroed_columns_for_norm
+        }
+        if zeroing_enabled:
+            zeroed_columns_for_norm.update(generated_zeroed_transform_columns)
         session = build_signals_registry(session, strict=False)
-        df = session["df"]
+        df2 = session["df"]
 
     if normalize_ranges is None:
-        if bike_profile is None:
-            raise ValueError("preprocess_session requires either normalize_ranges or bike_profile_path")
         normalize_ranges = resolve_normalization_ranges(
             session,
             bike_profile,
@@ -870,16 +971,15 @@ def preprocess_session(session: Dict[str, Any],
     else:
         normalize_ranges = dict(normalize_ranges)
 
-    # ---------------- Normalize / zero / scale ----------------
-    df2, norm_meta = normalize_and_scale(
-        df,
+    # ---------------- Scale after transformations ----------------
+    df2, scale_meta = scale_signal_columns(
+        df2,
         normalize_ranges,
-        zeroing_enabled=zeroing_enabled,
-        zero_window_s=zero_window_s,
         clip_0_1=clip_0_1,
-        return_meta=True,        
+        zeroed_columns=sorted(zeroed_columns_for_norm),
+        return_meta=True,
     )
-    per_column = norm_meta.get("per_column",[])
+    per_column = scale_meta.get("per_column", [])
     session["df"] = df2
 
     # Update QC transforms from report
@@ -887,7 +987,7 @@ def preprocess_session(session: Dict[str, Any],
     by_channel = {}
     methods = set()
     
-    for r in per_column:
+    for r in zero_per_column:
         if r.get("status") != "ok":
             continue
         z = r.get("zeroing") or {}
@@ -1075,8 +1175,11 @@ def preprocess_session(session: Dict[str, Any],
      
 def run_macro(
     csv_path: str,
-    schema_path: str,
+    schema_path: Optional[str | Path] = None,
     *,
+    preprocess_profile_path: Optional[str | Path] = None,
+    preprocess_profile: Optional[Mapping[str, Any]] = None,
+    preprocess_config: Optional[Mapping[str, Any]] = None,
     sidecar_path: Optional[str] = None,
     generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
     log_metadata_path: Optional[str | Path] = None,
@@ -1104,10 +1207,49 @@ def run_macro(
 ) -> Dict[str, Any]:
     """Convenience macro pipeline: load -> preprocess -> detect -> segment -> metrics.
 
+    New callers should prefer preprocess_config or preprocess_profile_path. The
+    individual preprocessing keyword arguments remain for compatibility.
+
     strict:
         When True, metrics computation enforces strict trigger/spec requirements (may raise).
         When False, missing trigger times (etc.) should propagate as NaN where supported.
     """
+    cfg = _coerce_run_macro_config(
+        preprocess_profile_path=preprocess_profile_path,
+        preprocess_profile=preprocess_profile,
+        preprocess_config=preprocess_config,
+    )
+    if cfg is not None:
+        schema_path = schema_path if schema_path is not None else cfg.get("schema_path")
+        generic_log_metadata_paths = (
+            generic_log_metadata_paths
+            if generic_log_metadata_paths is not None
+            else cfg.get("generic_log_metadata_paths")
+        )
+        fit_import = fit_import if fit_import is not None else cfg.get("fit_import")
+        normalize_ranges = normalize_ranges if normalize_ranges is not None else cfg.get("normalize_ranges")
+        bike_profile_path = bike_profile_path if bike_profile_path is not None else cfg.get("bike_profile_path")
+        sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
+        zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
+        zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
+        zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
+        clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
+        active_signal_disp_col = cfg.get("active_signal_disp_col", active_signal_disp_col)
+        active_signal_vel_col = cfg.get("active_signal_vel_col", active_signal_vel_col)
+        active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
+        active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
+        active_window = str(cfg.get("active_window", active_window))
+        active_padding = str(cfg.get("active_padding", active_padding))
+        active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
+        butterworth_generate_residuals = bool(
+            cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
+        )
+        strict = bool(cfg.get("strict", strict))
+
+    if schema_path is None:
+        raise ValueError("run_macro requires schema_path or preprocess_config['schema_path']")
+
     session = load_session(
         csv_path,
         timezone=timezone,
@@ -1124,6 +1266,7 @@ def run_macro(
 
     session = preprocess_session(
         session,
+        preprocess_config=cfg,
         normalize_ranges=normalize_ranges,
         sample_rate_hz=sample_rate_hz,
         zeroing_enabled=zeroing_enabled,

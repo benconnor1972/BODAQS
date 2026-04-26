@@ -162,8 +162,11 @@ All preprocessing operations are recorded here.
 
 #### Zeroing (in-place)
 
-Zeroing modifies the base channel **in-place**.  
-No `*_zeroed` columns are created.
+Zeroing modifies the selected physical channel values **in-place** in the
+preprocessed dataframe. Raw input values remain available in the raw session
+payload. Separate physical `*_op_zeroed` columns are not created by the standard
+preprocessing pipeline, although downstream generated columns may encode
+zeroing in their operation chain, for example `[1]_op_zeroed_norm`.
 
 ```python
 "zeroed": {

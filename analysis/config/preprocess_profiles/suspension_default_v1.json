@@ -29,9 +29,9 @@
       "bindings_path": "analysis/config/fit_bindings_v1.json"
     },
     "generic_log_metadata_paths": [
-      "analysis/config/log_metadata_examples/current_logger_config_fast_timestamp_log_metadata.json"
+      "config/log_metadata_examples/current_logger_config_fast_timestamp_log_metadata.json"
     ],
-    "bike_profile_path": "analysis/config/bike_profiles/example_enduro_bike_v1.json",
+    "bike_profile_path": "config/bike_profiles/example_enduro_bike_v1.json",
     "bike_profile_id": "example_enduro_bike",
     "zeroing_enabled": false,
     "zero_window_s": 0.4,

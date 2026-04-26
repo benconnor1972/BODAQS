@@ -103,7 +103,9 @@ The root `version` field identifies the profile-document contract version, not t
 
 ### 4.3 Pipeline config payload
 
-The root `config` object contains the fields that notebook code maps into `run_macro(...)` arguments.
+The root `config` object is the preferred public payload passed to `run_macro(..., preprocess_config=config)`.
+
+Legacy notebook code may still unpack the same fields into individual `run_macro(...)` arguments, but new callers should pass the config object intact.
 
 ---
 
@@ -197,9 +199,9 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 |---|---|---|
 | `schema_path` | string | Path to the event schema YAML |
 | `strict` | boolean | `True` for strict ingestion/metrics behavior, `False` for tolerant behavior |
-| `zeroing_enabled` | boolean | Enable zeroing during normalization |
+| `zeroing_enabled` | boolean | Enable zeroing before bike-profile signal transforms |
 | `zero_window_s` | number | Window length in seconds for zero-offset estimation |
-| `zero_min_samples` | integer | Reserved compatibility field; see limitation note below |
+| `zero_min_samples` | integer | Minimum samples required for zero-offset estimation |
 | `clip_0_1` | boolean | Clip normalized channels to `[0, 1]` |
 | `butterworth_smoothing` | array | Sequence of zero or more Butterworth filter configs |
 | `butterworth_generate_residuals` | boolean | Whether residual series should be generated when smoothing is enabled |
@@ -232,6 +234,8 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - `normalize_ranges`, if present, is a deprecated transitional field for compatibility with legacy callers that have not yet migrated to bike-profile range resolution.
 - Values in `normalize_ranges`, if present, must be numeric and greater than zero.
 - Keys in `normalize_ranges`, if present, should be canonical displacement signal names, not raw logger column names.
+- If `zeroing_enabled` is true, zeroing is applied to resolved physical displacement signals before bike-profile signal transforms are evaluated.
+- Normalized `[1]` outputs are generated after bike-profile signal transforms, so generated signals can be normalized from the same bike profile.
 - `butterworth_smoothing` may be empty.
 - If `active_signal_disp_col` is `null`, `active_signal_vel_col` should also be `null`.
 - When `fit_import` is present, `fit_import.enabled=True` requires a non-empty `fit_dir`.
@@ -315,9 +319,42 @@ Path resolution policy is consumer-defined.
 
 That behavior should be treated as the current implementation detail for v1 authorship. Profile authors should therefore choose relative paths that are valid from the notebook working directory used in practice.
 
+Public API consumers that need deterministic path handling outside notebooks should call `resolve_preprocess_config_paths(config, base_dir=...)` before passing the config to `run_macro(...)`.
+
 ---
 
-## 9. Example document
+## 9. Profile authoring utilities
+
+The analysis package provides utility functions so notebooks and scripts do not
+need to hand-roll preprocess profile JSON:
+
+```python
+config = default_preprocess_config(**overrides)
+profile = make_preprocess_profile("suspension_default", config=config)
+save_preprocess_profile(profile, "config/preprocess_profiles/suspension_default_v1.json")
+profiles = discover_preprocess_profiles("config/preprocess_profiles")
+```
+
+Notebook users can also use the widget editor:
+
+```python
+from bodaqs_analysis.ui import make_preprocess_profile_editor
+
+editor = make_preprocess_profile_editor(
+    profile_path="config/preprocess_profiles/suspension_default_v1.json"
+)
+display(editor.ui)
+
+profile = editor.get_profile()
+config = editor.get_config()
+```
+
+The editor is a convenience layer over this contract. The JSON document it saves
+must still validate as a normal `bodaqs.preprocess_profile` document.
+
+---
+
+## 10. Example document
 
 ```json
 {
@@ -351,9 +388,9 @@ That behavior should be treated as the current implementation detail for v1 auth
       "bindings_path": "analysis/config/fit_bindings_v1.json"
     },
     "generic_log_metadata_paths": [
-      "analysis/config/log_metadata_examples/current_logger_config_fast_timestamp_log_metadata.json"
+      "config/log_metadata_examples/current_logger_config_fast_timestamp_log_metadata.json"
     ],
-    "bike_profile_path": "analysis/config/bike_profiles/example_enduro_bike_v1.json",
+    "bike_profile_path": "config/bike_profiles/example_enduro_bike_v1.json",
     "bike_profile_id": "example_enduro_bike",
     "zeroing_enabled": false,
     "zero_window_s": 0.4,
@@ -378,7 +415,7 @@ Compatibility note: existing callers may still supply a legacy `normalize_ranges
 
 ---
 
-## 10. Consumer behavior
+## 11. Consumer behavior
 
 Consumers implementing this contract should:
 
@@ -400,16 +437,15 @@ Consumers should fail fast on:
 
 ---
 
-## 11. Current limitations and open issues
+## 12. Current limitations and open issues
 
-1. `zero_min_samples` is part of the profile shape for compatibility with existing UI/config concepts, but the current preprocessing implementation does not yet honor it during zeroing. In the current codebase it is effectively a reserved field.
-2. There is no explicit `active_enabled` flag in v1. The current profile shape assumes an activity-mask configuration is always present. A cleaner enable/disable contract may be added in a later version.
-3. The profile assumes the target log set is homogeneous enough that one selected bike profile and one activity-mask signal selection are valid for every file being processed.
-4. This contract does not yet define profile discovery, cataloging, inheritance, or profile-composition behavior.
+1. There is no explicit `active_enabled` flag in v1. The current profile shape assumes an activity-mask configuration is always present. A cleaner enable/disable contract may be added in a later version.
+2. The profile assumes the target log set is homogeneous enough that one selected bike profile and one activity-mask signal selection are valid for every file being processed.
+3. This contract does not yet define profile discovery, cataloging, inheritance, or profile-composition behavior.
 
 ---
 
-## 12. Suggested future evolution
+## 13. Suggested future evolution
 
 Likely v2 candidates:
 

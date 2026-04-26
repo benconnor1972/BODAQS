@@ -325,11 +325,13 @@ def resolve_normalization_ranges(
     *,
     bike_profile_path: Optional[str | Path] = None,
     require_at_least_one: bool = True,
+    record: bool = True,
+    warn_unmatched: bool = True,
 ) -> Dict[str, float]:
     """
     Resolve semantic bike-profile normalization ranges to the legacy column map.
 
-    Returns the dict currently consumed by ``normalize_and_scale``:
+    Returns the dict consumed by the preprocessing zeroing/scaling steps:
     ``{canonical_dataframe_column: full_range}``.
     """
     validate_bike_profile(bike_profile, path=bike_profile_path)
@@ -360,15 +362,16 @@ def resolve_normalization_ranges(
         ]
 
         if not matches:
-            warning = f"bike_profile_normalization_range_unmatched:{range_id}"
-            warnings.append(warning)
-            logger.info(
-                "Bike profile normalization range did not match a session signal: "
-                "bike_profile_id=%s range_id=%s selector=%s",
-                bike_profile.get("bike_profile_id"),
-                range_id,
-                dict(selector),
-            )
+            if warn_unmatched:
+                warning = f"bike_profile_normalization_range_unmatched:{range_id}"
+                warnings.append(warning)
+                logger.info(
+                    "Bike profile normalization range did not match a session signal: "
+                    "bike_profile_id=%s range_id=%s selector=%s",
+                    bike_profile.get("bike_profile_id"),
+                    range_id,
+                    dict(selector),
+                )
             continue
 
         if len(matches) > 1:
@@ -408,13 +411,14 @@ def resolve_normalization_ranges(
             f"bike_profile_id={bike_profile.get('bike_profile_id')!r}"
         )
 
-    _record_resolution(
-        session,
-        bike_profile=bike_profile,
-        bike_profile_path=bike_profile_path,
-        resolved_records=resolved_records,
-        warnings=warnings,
-    )
+    if record:
+        _record_resolution(
+            session,
+            bike_profile=bike_profile,
+            bike_profile_path=bike_profile_path,
+            resolved_records=resolved_records,
+            warnings=warnings,
+        )
     return resolved
 
 

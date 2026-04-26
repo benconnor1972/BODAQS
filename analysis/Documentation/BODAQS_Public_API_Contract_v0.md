@@ -105,7 +105,42 @@ Any tuple returned without opt-in is a contract violation.
 
 ## 4. Public Functions (v0)
 
-### 4.1 `load_session()`
+### 4.1 Preprocess Profile Helpers
+
+**Purpose:**  
+Load and validate persisted preprocessing configuration.
+
+**Signatures:**
+```python
+config = default_preprocess_config(**overrides)
+profile = make_preprocess_profile(profile_id: str, config=config, ...)
+profile = load_preprocess_profile(path: str | Path)
+config = load_preprocess_config(path: str | Path)
+config = preprocess_config_from_profile(profile: Mapping[str, Any])
+config = resolve_preprocess_config_paths(config, base_dir=path)
+path = save_preprocess_profile(profile, path: str | Path)
+records = discover_preprocess_profiles(directory: str | Path)
+```
+
+**Returns:**
+- `default_preprocess_config(...)`: a validated default config payload
+- `make_preprocess_profile(...)`: a validated full profile document
+- `load_preprocess_profile(...)`: the full profile document
+- `load_preprocess_config(...)`: the validated `profile["config"]` payload
+- `resolve_preprocess_config_paths(...)`: a copy of the config with path-like fields resolved
+- `save_preprocess_profile(...)`: the path written
+- `discover_preprocess_profiles(...)`: lightweight profile records for menus/editors
+
+**Guarantees:**
+- No tuple returns
+- Unexpected profile schema/version raises `ValueError`
+- Missing required config fields raise `ValueError`
+- New callers can pass the returned config directly to `run_macro(..., preprocess_config=config)`
+- Scripts and notebook UIs can create/edit/save profiles without duplicating JSON-shaping logic
+
+---
+
+### 4.2 `load_session()`
 
 **Purpose:**  
 Load raw logger data into a canonical session.
@@ -131,7 +166,7 @@ session = load_session(
 
 ---
 
-### 4.2 `load_event_schema()`
+### 4.3 `load_event_schema()`
 
 **Purpose:**  
 Load an event detection schema from YAML.
@@ -152,10 +187,10 @@ schema, meta = load_event_schema(path: str, return_meta=True)
 
 ---
 
-### 4.3 `normalize_and_scale()`
+### 4.4 `normalize_and_scale()`
 
 **Purpose:**  
-Apply in-place zeroing (optional) and scaling to selected columns.
+Legacy convenience helper for applying optional zeroing and scaling to selected columns.
 
 **Signature (conceptual):**
 ```python
@@ -164,9 +199,11 @@ df, meta = normalize_and_scale(df, ranges, ..., return_meta=True)
 ```
 
 **Behavior:**
-- Zeroing is applied **in-place** to base columns when enabled
-- `<col>_norm` columns are always created for scaled outputs
-- No `*_zeroed` columns are produced (v0 policy)
+- Returns a new DataFrame; the input frame is not modified.
+- If zeroing is enabled, explicit `<col>_op_zeroed` physical columns are created.
+- Normalized outputs are always created from the selected normalization source.
+- If the normalization source is zeroed, output names encode both operations, for example `<col> [1]_op_zeroed_norm`.
+- For full preprocessing runs, callers should prefer `preprocess_session()`, which applies zeroing before bike-profile transforms and normalization after bike-profile transforms.
 
 **Returns:**
 - Default: `DataFrame`
@@ -179,7 +216,7 @@ df, meta = normalize_and_scale(df, ranges, ..., return_meta=True)
 
 ---
 
-### 4.4 `estimate_va_from_zeroed()`
+### 4.5 `estimate_va_from_zeroed()`
 
 **Purpose:**  
 Compute velocity and acceleration via Savitzky–Golay differentiation.
@@ -201,7 +238,7 @@ df, meta = estimate_va_from_zeroed(df, ..., return_meta=True)
 
 ---
 
-### 4.5 `preprocess_session()`
+### 4.6 `preprocess_session()`
 
 **Purpose:**  
 Apply all standard preprocessing steps to a session.
@@ -211,6 +248,7 @@ Apply all standard preprocessing steps to a session.
 session = preprocess_session(
     session,
     *,
+    preprocess_config: Optional[Mapping[str, Any]] = None,
     normalize_ranges: Optional[Dict[str, float]] = None,
     bike_profile_path: Optional[str | Path] = None,
     bike_profile: Optional[Mapping[str, Any]] = None,
@@ -228,8 +266,11 @@ session = preprocess_session(
 - `session["df"]` remains a DataFrame
 - `time_s` is preserved
 - QC and transform provenance are recorded under `session["qc"]`
+- New callers may pass a single `preprocess_config` payload instead of unpacking individual preprocessing fields.
 - Normalization ranges may be supplied directly as the legacy `normalize_ranges` map, or resolved
   from a bike profile using semantic signal selectors.
+- If zeroing is enabled, physical displacement columns are zeroed before bike-profile signal transforms are applied.
+- Normalized `[1]` outputs are generated after bike-profile signal transforms have been applied.
 - When `butterworth_smoothing` is provided, additional append-only displacement variants are created
   using zero-phase SOS Butterworth filtering.
 - When `butterworth_generate_residuals=True`, each generated Butterworth series also emits an
@@ -237,7 +278,7 @@ session = preprocess_session(
 
 ---
 
-### 4.6 `detect_events_from_schema()`
+### 4.7 `detect_events_from_schema()`
 
 **Purpose:**  
 Detect events based on a schema definition.
@@ -256,7 +297,7 @@ events_df = detect_events_from_schema(df, schema)
 
 ---
 
-### 4.7 `extract_metrics_df()`
+### 4.8 `extract_metrics_df()`
 
 **Purpose:**  
 Extract per-event metrics into a flat table.
@@ -271,7 +312,7 @@ metrics_df = extract_metrics_df(events_df)
 
 ---
 
-### 4.8 `run_macro()`
+### 4.9 `run_macro()`
 
 **Purpose:**  
 Run the full analysis pipeline in one call.
@@ -280,8 +321,11 @@ Run the full analysis pipeline in one call.
 ```python
 results = run_macro(
     csv_path: str,
-    schema_path: str,
+    schema_path: Optional[str | Path] = None,
     *,
+    preprocess_profile_path: Optional[str | Path] = None,
+    preprocess_profile: Optional[Mapping[str, Any]] = None,
+    preprocess_config: Optional[Mapping[str, Any]] = None,
     normalize_ranges: Optional[Dict[str, float]] = None,
     bike_profile_path: Optional[str | Path] = None,
     bike_profile: Optional[Mapping[str, Any]] = None,
@@ -294,8 +338,15 @@ results = run_macro(
 )
 ```
 
-Callers should prefer `bike_profile_path` for new preprocessing workflows. `normalize_ranges`
-remains supported as a compatibility path for existing notebooks and scripts.
+Preferred new-call pattern:
+
+```python
+config = load_preprocess_config("config/preprocess_profiles/suspension_default_v1.json")
+results = run_macro("ride.csv", preprocess_config=config)
+```
+
+Callers should prefer `preprocess_config` or `preprocess_profile_path` for new workflows.
+Individual keyword arguments, including legacy `normalize_ranges`, remain supported as a compatibility path for existing notebooks and scripts.
 
 **Returns:**
 ```python

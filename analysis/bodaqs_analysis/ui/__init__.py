@@ -6,9 +6,12 @@ except ImportError:  # optional notebook UI deps may be unavailable in lightweig
     make_library_manager = None
 
 from .fit_bindings_editor import make_fit_bindings_editor
+from .preprocess_profile_editor import PreprocessProfileEditor, make_preprocess_profile_editor
 
 __all__ = [
     "make_aggregation_library_manager",
     "make_library_manager",
     "make_fit_bindings_editor",
+    "PreprocessProfileEditor",
+    "make_preprocess_profile_editor",
 ]

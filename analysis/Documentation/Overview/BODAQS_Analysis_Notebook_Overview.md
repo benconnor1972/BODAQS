@@ -94,20 +94,16 @@ Semantic enrichment is a priority area for development / refinement. Current int
   - [`BODAQS_Session_Schema_v0_1.md`](../BODAQS_Session_Schema_v0_1.md)
   - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](../BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
 
-### Step 3. Collect preprocessing and event-detection configuration
+### Step 3. Load or edit preprocessing profile
 
-- **Inputs:** the discovered displacement channels plus user-entered configuration:
-  - directory path for the event schema
-  - normalization ranges for displacement sensors
-  - zeroing settings
-  - activity-mask settings
-  - clipping and smoothing settings
-  - ingestion mode
-  - whether to prompt for run and session descriptions on ingestion
-- **Outputs:** a validated config dict suitable for `run_macro(...)`.
-- **Persisted artifacts:** none.
+- **Inputs:** a persisted preprocess profile selected by `PREPROCESS_PROFILE_PATH`.
+- **Editable settings:** event schema path, generic log metadata paths, bike profile path, FIT import policy, zeroing, activity-mask settings, clipping, smoothing, ingestion mode, and whether to prompt for run/session descriptions.
+- **Outputs:** a validated preprocess profile and its nested config payload, suitable for `run_macro(..., preprocess_config=cfg)`.
+- **Persisted artifacts:** a saved `bodaqs.preprocess_profile` JSON document when the user saves changes from the profile editor.
 - **Contracts / documentation:**
   - [`BODAQS_Public_API_Contract_v0.md`](../BODAQS_Public_API_Contract_v0.md)
+  - [`BODAQS_Preprocess_Profile_Contract_v0_draft.md`](../BODAQS_Preprocess_Profile_Contract_v0_draft.md)
+  - [`BODAQS_Bike_Profile_Contract_v0_draft.md`](../BODAQS_Bike_Profile_Contract_v0_draft.md)
   - [`BODAQS_event_schema_specification_v0_1_2.md`](../BODAQS_event_schema_specification_v0_1_2.md)
   - [`BODAQS_Time_Handling_Contract_v0.md`](../BODAQS_Time_Handling_Contract_v0.md)
 

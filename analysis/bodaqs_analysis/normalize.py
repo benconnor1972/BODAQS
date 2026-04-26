@@ -18,7 +18,7 @@ def _set_unit(col: str, unit: str) -> str:
 def _name_zeroed_norm(col: str) -> str:
     # Unitless result, and encode both ops explicitly
     base_u1 = _set_unit(col, "1")
-    return f"{base_u1}_op_zeroed_op_norm"
+    return f"{base_u1}_op_zeroed_norm"
 
 def _find_time_col(frame: pd.DataFrame):
     for c in TIME_COL_CANDIDATES:
@@ -78,7 +78,7 @@ def _name_norm(col: str) -> str:
 
     Examples:
       - base -> 'front_shock_dom_suspension [1]_op_norm'
-      - zeroed -> 'front_shock_dom_suspension [1]_op_zeroed_op_norm'   (encodes both ops)
+      - zeroed -> 'front_shock_dom_suspension [1]_op_zeroed_norm'   (encodes both ops)
     """
     parts = parse_signal_name(col, spec=DEFAULT_SPEC)
     if parts.kind != "":
@@ -132,6 +132,212 @@ def _min_window_avg_offset(seg_df: pd.DataFrame, value_col: str, t_s: np.ndarray
         "n_samples": int(best_j - best_i + 1),
     }
 
+def _zeroing_context(
+    frame: pd.DataFrame,
+    *,
+    time_col_candidates: Sequence[str],
+    zero_window_s: float,
+    min_samples_abs_min: int,
+) -> Tuple[Optional[str], np.ndarray, float, int]:
+    # Configure time candidates for helper (your _find_time_col uses a global)
+    global TIME_COL_CANDIDATES
+    TIME_COL_CANDIDATES = list(time_col_candidates)
+
+    tcol = _find_time_col(frame)
+    t_s = _ensure_time_seconds(frame, tcol)
+    dt_est = _median_dt_seconds(np.asarray(t_s, dtype=float))
+    dt_fallback = 0.01
+    dt_use = dt_est if np.isfinite(dt_est) and dt_est > 0 else dt_fallback
+    min_samples = max(int(min_samples_abs_min), int(np.ceil(zero_window_s / dt_use)))
+    return tcol, np.asarray(t_s, dtype=float), float(dt_use), int(min_samples)
+
+
+def zero_signal_columns(
+    df: pd.DataFrame,
+    ranges: Dict[str, float],
+    *,
+    time_col_candidates: Sequence[str] = TIME_COL_CANDIDATES_DEFAULT,
+    zeroing_enabled: bool = True,
+    zero_window_s: float = 0.4,
+    zero_per_segment: bool = False,
+    segment_col: str = "segment_id",
+    min_samples_abs_min: int = 10,
+    use_median_window: bool = True,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, Any]]]:
+    """
+    Apply zeroing to selected physical signal columns before downstream transforms.
+
+    This helper intentionally updates the selected base columns in the returned
+    frame rather than creating separate ``*_op_zeroed`` physical columns. The
+    preprocessing pipeline preserves the raw input in ``df_raw`` and records the
+    zeroing provenance in QC.
+    """
+    frame = df.copy()
+    tcol, t_s, dt_use, min_samples = _zeroing_context(
+        frame,
+        time_col_candidates=time_col_candidates,
+        zero_window_s=zero_window_s,
+        min_samples_abs_min=min_samples_abs_min,
+    )
+
+    per_column: List[Dict[str, Any]] = []
+    use_segments = bool(zero_per_segment and segment_col in frame.columns)
+    segments = frame[segment_col].unique().tolist() if use_segments else [None]
+
+    for col in ranges.keys():
+        if col not in frame.columns:
+            per_column.append({"column": col, "status": "missing"})
+            continue
+
+        s = pd.to_numeric(frame[col], errors="coerce")
+        if s.dropna().empty:
+            per_column.append({"column": col, "status": "non_numeric_or_empty"})
+            continue
+
+        meta: Dict[str, Any] = {}
+        offset: float = 0.0
+        segment_offsets: Optional[Dict[Any, float]] = None
+
+        if not zeroing_enabled:
+            zeroed = s.astype(float)
+            meta = {"method": "zeroing_disabled"}
+        elif not use_segments:
+            info = _min_window_avg_offset(
+                frame, col, t_s, zero_window_s,
+                use_median_window, min_samples
+            )
+            if info is None:
+                offset = float(s.dropna().iloc[0])
+                meta = {"method": "fallback_first_value", "offset": offset}
+            else:
+                offset = float(info["offset"])
+                meta = {"method": "min_window_avg", **info}
+
+            zeroed = (s - offset).astype(float)
+        else:
+            segment_offsets = {}
+            zeroed = pd.Series(np.nan, index=frame.index, dtype=float)
+
+            for seg in segments:
+                mask = frame[segment_col] == seg
+                seg_df = frame.loc[mask]
+                seg_t = t_s[mask.to_numpy()]
+
+                info = _min_window_avg_offset(
+                    seg_df, col, seg_t, zero_window_s,
+                    use_median_window, min_samples
+                )
+                if info is None:
+                    off = float(s.loc[mask].dropna().iloc[0]) if s.loc[mask].dropna().size else 0.0
+                else:
+                    off = float(info["offset"])
+                segment_offsets[seg] = off
+                zeroed.loc[mask] = s.loc[mask] - off
+
+            meta = {"method": "per_segment"}
+
+        if zeroing_enabled:
+            frame.loc[:, col] = zeroed
+
+        rec: Dict[str, Any] = {
+            "column": col,
+            "status": "ok",
+            "zeroing": {
+                "enabled": bool(zeroing_enabled),
+                "per_segment": bool(use_segments),
+                "method": meta.get("method") if isinstance(meta, dict) else None,
+                "window_s": float(zero_window_s),
+                "use_median_window": bool(use_median_window),
+                "min_samples": int(min_samples),
+                "mode": "in_place",
+            },
+            "meta": meta,
+        }
+
+        if not zeroing_enabled:
+            rec["zeroing"]["offset"] = 0.0
+        elif not use_segments:
+            rec["zeroing"]["offset"] = float(offset)
+        else:
+            rec["zeroing"]["segment_offsets"] = segment_offsets
+
+        per_column.append(rec)
+
+    if not return_meta:
+        return frame
+
+    meta_out: Dict[str, Any] = {
+        "per_column": per_column,
+        "time_col": tcol,
+        "dt_s": float(dt_use),
+        "zero_window_s": float(zero_window_s),
+        "zero_per_segment": bool(use_segments),
+        "segment_col": segment_col if use_segments else None,
+        "min_samples": int(min_samples),
+    }
+    return frame, meta_out
+
+
+def scale_signal_columns(
+    df: pd.DataFrame,
+    ranges: Dict[str, float],
+    *,
+    clip_0_1: bool = False,
+    zeroed_columns: Optional[Sequence[str]] = None,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, Any]]]:
+    """
+    Create dimensionless normalized outputs for selected physical signal columns.
+
+    ``zeroed_columns`` names columns whose current values are already zeroed.
+    Their normalized output names encode both operations, for example
+    ``rear_shock [1]_op_zeroed_norm``.
+    """
+    frame = df.copy()
+    zeroed_set = {str(c) for c in (zeroed_columns or [])}
+    per_column: List[Dict[str, Any]] = []
+
+    for col, full_range in ranges.items():
+        if col not in frame.columns:
+            per_column.append({"column": col, "status": "missing"})
+            continue
+
+        s = pd.to_numeric(frame[col], errors="coerce")
+        if s.dropna().empty:
+            per_column.append({"column": col, "status": "non_numeric_or_empty"})
+            continue
+
+        norm_source_name = _name_zeroed(col) if str(col) in zeroed_set else col
+        norm_col = _name_norm(norm_source_name)
+
+        rng = float(full_range) if full_range else np.nan
+        if np.isfinite(rng) and rng > 0:
+            normed = s.astype(float) / rng
+        else:
+            normed = np.nan
+
+        if clip_0_1:
+            normed = normed.clip(0.0, 1.0)
+
+        frame.loc[:, norm_col] = normed
+        per_column.append(
+            {
+                "column": col,
+                "status": "ok",
+                "full_range": float(full_range),
+                "clip_0_1": bool(clip_0_1),
+                "norm_col": norm_col,
+                "source_column": col,
+                "source_zeroed": str(col) in zeroed_set,
+            }
+        )
+
+    if not return_meta:
+        return frame
+
+    return frame, {"per_column": per_column}
+
 def normalize_and_scale(
     df: pd.DataFrame,
     ranges: Dict[str, float],
@@ -148,15 +354,15 @@ def normalize_and_scale(
     return_meta: bool = False,
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, Any]]]:
     """
-    Zero (in-place, optional) and scale selected columns.
+    Legacy convenience helper that zeroes (optional) and scales selected columns.
 
     Public contract:
     - Returns a DataFrame by default.
-    - If return_report=True, returns (new_df, meta).
+    - If return_meta=True, returns (new_df, meta).
     - meta contains per-column zeroing/scaling details and timebase info used for windowing.
     - For each col in `ranges` (if present & numeric):
         - If zeroing_enabled: writes <col>_op_zeroed
-        - Writes <base>_norm [1]
+        - Writes a dimensionless normalized output column
     """
     frame = df.copy()
 
