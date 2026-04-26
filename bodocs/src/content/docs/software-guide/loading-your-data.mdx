@@ -37,7 +37,7 @@ This workflow uses `bodaqs_one_step_suspension_metrics.ipynb`
 
 This notebook looks for new raw logger files, preprocesses them, writes the
 artifacts, and then opens the simple suspension metrics dashboard over the
-processed sessions. The user simply drops their new log files in a directory, runs the notebook and looks at the results, which comprise various histograms and metrics often used in MTB suspension analysis. 
+processed sessions. The user simply drops their new log files in a directory, runs the notebook and looks at the results, which comprise various histograms and metrics often used in MTB suspension analysis.
 
 ### 2. Multi-notebook workflow
 
@@ -55,19 +55,20 @@ and dependencies installed, open a terminal in the BODAQS folder and start
 JupyterLab:
 
 <Tabs>
-  <TabItem label="Mac / Linux">
-    ```bash
-    cd /path/to/BODAQS
-    source .venv/bin/activate
-    python -m jupyter lab --notebook-dir=analysis
-    ```
-  </TabItem>
+
   <TabItem label="Windows">
     ```powershell
     cd C:\path\to\BODAQS
     .\.venv\Scripts\Activate.ps1
     python -m jupyter lab --notebook-dir=analysis
     ```
+  </TabItem>
+  <TabItem label="Mac / Linux">
+  ```bash
+  cd /path/to/BODAQS
+  source .venv/bin/activate
+  python -m jupyter lab --notebook-dir=analysis
+  ```
   </TabItem>
 </Tabs>
 
@@ -130,17 +131,18 @@ Then continue with:
 When you come back later, these are the commands you usually need:
 
 <Tabs>
-  <TabItem label="Mac / Linux">
-    ```bash
-    cd /path/to/BODAQS
-    source .venv/bin/activate
-    python -m jupyter lab --notebook-dir=analysis
-    ```
-  </TabItem>
+
   <TabItem label="Windows">
     ```powershell
     cd C:\path\to\BODAQS
     .\.venv\Scripts\Activate.ps1
+    python -m jupyter lab --notebook-dir=analysis
+    ```
+  </TabItem>
+  <TabItem label="Mac / Linux">
+    ```bash
+    cd /path/to/BODAQS
+    source .venv/bin/activate
     python -m jupyter lab --notebook-dir=analysis
     ```
   </TabItem>

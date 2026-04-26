@@ -20,7 +20,7 @@ To do these steps, you will need to use a command line interface like PowerShell
 
 <MiniAside>
 	If you work in science, engineering, finance or some other area where numbers are a big deal, the notebook-style way of working may feel familiar to you. If you don't spend all of your time in front of a computer, you may have a bit of a learning curve.
-	
+
 	The reason we made the software this way is that it makes it quick and easy to try out new ideas. This is important if, like us, you start without a clear idea of where you are going to end up. It makes it easier for users to modify the functionality too.
 
 	This isn't the end state for the project. Ideally we would like to have a range of analysis tools available to suit different kinds of users. These might include a web application to display basic suspension metrics; a suite of Jupyter Lab notebooks for exploratory analysis, and other things besides.
@@ -45,6 +45,27 @@ You do not need Git to run the notebooks. Cloning the repo is still fine if you 
 BODAQS currently uses **Python 3.14.3**.
 
 <Tabs>
+  <TabItem label="Windows">
+    Download Python 3.14.3 from the official Python website:
+
+    - https://www.python.org/downloads/windows/
+
+    Run the installer and make sure you tick:
+
+    - **Add python.exe to PATH**
+    - **Install launcher for all users** (recommended)
+
+    Then open a new PowerShell window and check that Python is available:
+
+    ```powershell
+    python --version
+    pip --version
+    ```
+
+    If `python` is not recognised, close and reopen PowerShell. If that still
+    doesn't work, rerun the installer and make sure **Add python.exe to PATH**
+    was ticked.
+  </TabItem>
   <TabItem label="Mac">
     <Aside type="caution" title="Hands off the macOS system Python">
       Never modify or replace the Python at `/usr/bin/python3` on macOS, and avoid
@@ -76,27 +97,6 @@ BODAQS currently uses **Python 3.14.3**.
     pyenv local 3.14.3
     ```
   </TabItem>
-  <TabItem label="Windows">
-    Download Python 3.14.3 from the official Python website:
-
-    - https://www.python.org/downloads/windows/
-
-    Run the installer and make sure you tick:
-
-    - **Add python.exe to PATH**
-    - **Install launcher for all users** (recommended)
-
-    Then open a new PowerShell window and check that Python is available:
-
-    ```powershell
-    python --version
-    pip --version
-    ```
-
-    If `python` is not recognised, close and reopen PowerShell. If that still
-    doesn't work, rerun the installer and make sure **Add python.exe to PATH**
-    was ticked.
-  </TabItem>
 </Tabs>
 
 <MiniAside>
@@ -111,31 +111,33 @@ Open a terminal in the BODAQS folder you unzipped (or cloned), then create the
 virtual environment:
 
 <Tabs>
-  <TabItem label="Mac / Linux">
-    ```bash
-    cd /path/to/BODAQS
-    python -m venv .venv
-    ```
-  </TabItem>
+
   <TabItem label="Windows">
     ```powershell
     cd C:\path\to\BODAQS
     python -m venv .venv
     ```
   </TabItem>
+  <TabItem label="Mac / Linux">
+  ```bash
+  cd /path/to/BODAQS
+  python -m venv .venv
+  ```
+</TabItem>
 </Tabs>
 
 ### Activate the virtual environment
 
 <Tabs>
-  <TabItem label="Mac / Linux">
-    ```bash
-    source .venv/bin/activate
-    ```
-  </TabItem>
+
   <TabItem label="Windows">
     ```powershell
     .\.venv\Scripts\Activate.ps1
+    ```
+  </TabItem>
+  <TabItem label="Mac / Linux">
+    ```bash
+    source .venv/bin/activate
     ```
   </TabItem>
 </Tabs>
