@@ -169,17 +169,18 @@ def _select_log_metadata_path(
     expected_same_stem = Path(csv_path).with_suffix(".json")
     logger.info("Logger same-stem log metadata not found: expected=%s", expected_same_stem)
 
-    generic_search_configured = generic_log_metadata_paths is not None
+    configured_generic_paths = list(generic_log_metadata_paths or [])
+    generic_search_configured = bool(configured_generic_paths)
 
     if generic_search_configured:
-        logger.info("Logger generic log metadata search path(s): %s", [str(p) for p in generic_log_metadata_paths])
+        logger.info("Logger generic log metadata search path(s): %s", [str(p) for p in configured_generic_paths])
     else:
         logger.info("Logger generic log metadata search not configured")
 
-    generic_candidates = _expand_generic_log_metadata_paths(generic_log_metadata_paths)
+    generic_candidates = _expand_generic_log_metadata_paths(configured_generic_paths)
     if not generic_candidates:
         if generic_search_configured:
-            configured = ", ".join(str(p) for p in generic_log_metadata_paths)
+            configured = ", ".join(str(p) for p in configured_generic_paths)
             logger.info("Logger generic log metadata search found no usable candidates: %s", configured)
             raise FileNotFoundError(
                 "No usable generic log metadata found from configured generic_log_metadata_paths: "

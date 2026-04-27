@@ -223,13 +223,19 @@ class PreprocessLogSelector:
 
         self.ui = W.VBox(
             [
+                W.HTML("<h3 style='margin: 16px 0 6px 0'>Log Selection</h3>"),
+                W.HTML(
+                    "<p style='margin:0 0 10px 0;color:#555;line-height:1.35;white-space:normal'>"
+                    "Choose the logger CSV files to process. Files already present in the artifact library are hidden by default."
+                    "</p>"
+                ),
                 W.HBox([self.w_dir, self.b_browse, self.b_refresh]),
                 W.HBox([self.w_show_processed, self.b_select_all, self.b_clear]),
                 self.grid,
                 self.w_status,
                 self.w_out,
             ],
-            layout=W.Layout(width="100%"),
+            layout=W.Layout(width="100%", min_width="0", overflow="hidden"),
         )
 
         self.refresh()

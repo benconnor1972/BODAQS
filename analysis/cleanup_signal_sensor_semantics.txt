@@ -1,0 +1,41 @@
+BODAQS analysis cleanup note: sensor semantics
+
+Intent
+------
+The current analysis semantics use `sensor` for several related but distinct
+ideas:
+
+- the physical logger sensor or channel identity
+- a signal role such as fork, shock, or wheel travel
+- front/rear disambiguation for suspension and wheel signals
+- a canonical column-name stem used by older analysis code
+
+This has worked while the project has focused on fork and shock travel, but it
+is starting to blur responsibilities now that bike profiles describe
+bike/setup-specific transforms and normalization ranges.
+
+Direction
+---------
+Introduce `end` as the preferred semantic for front/rear bike location:
+
+- `end: "front"`
+- `end: "rear"`
+
+Bike-profile selectors should prefer `end` plus `domain`, `quantity`, and
+`unit` for front/rear suspension and wheel signals. For example:
+
+  end=rear, domain=suspension, quantity=disp, unit=mm
+
+The existing `sensor` field should remain supported for compatibility and for
+cases where the logger/source identity is genuinely useful, but over time it
+should become less important for bike-profile resolution.
+
+Cleanup work still to consider
+------------------------------
+- Decide whether `sensor` should eventually mean only logger/source identity.
+- Decide whether canonical output column stems should remain `front_shock` and
+  `rear_shock`, or move toward role names such as `front_suspension`.
+- Update downstream UI language where `sensor` really means signal group,
+  bike end, or event source.
+- Keep accepting old `sensor` selectors until example data, notebooks, and
+  saved artifacts have fully moved to `end`.

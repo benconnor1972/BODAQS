@@ -116,6 +116,7 @@
       "dtype": "float64",
       "stream": "primary",
       "sensor": "rear_shock",
+      "end": "rear",
       "quantity": "raw",
       "domain": "suspension",
       "unit": "counts"
@@ -129,6 +130,7 @@
       "dtype": "float64",
       "stream": "primary",
       "sensor": "rear_shock",
+      "end": "rear",
       "quantity": "ang_disp",
       "domain": "suspension",
       "unit": "deg",
@@ -147,6 +149,7 @@
       "dtype": "float64",
       "stream": "primary",
       "sensor": "rear_shock",
+      "end": "rear",
       "quantity": "disp",
       "domain": "wheel",
       "unit": "mm",

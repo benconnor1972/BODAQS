@@ -17,7 +17,6 @@ The profile is intended to support:
 - explicit, reviewable configuration that can be stored alongside analysis code
 - later formalization of named preprocessing presets
 - optional Garmin FIT import policy for GPS enrichment during preprocessing
-- optional references to generic log metadata and bike-profile artifacts
 
 This contract is intentionally narrow:
 
@@ -25,6 +24,7 @@ This contract is intentionally narrow:
 - it does not define log discovery rules
 - it does not define artifact layout
 - it does not define user-prompt behavior for run/session descriptions
+- it does not bind a run to local files such as log metadata, bike profiles, FIT directories, or FIT binding manifests
 
 ---
 
@@ -36,9 +36,7 @@ The profile captures parameters that are logically part of `run_macro(...)` prep
 
 - event schema selection
 - optional FIT import policy and field selection
-- optional generic log metadata fallback selection
-- optional bike profile selection
-- zeroing and normalization policy
+- zeroing and normalization-output policy
 - optional Butterworth smoothing behavior
 - activity-mask signal and threshold settings
 - strict vs tolerant ingestion mode
@@ -50,6 +48,10 @@ The following are notebook/runtime concerns and are explicitly **out of scope** 
 - the log directory to scan
 - the artifacts root directory
 - CSV filename/glob rules
+- generic log metadata selection for the current log batch
+- bike profile selection for the current log batch
+- FIT source directory selection
+- FIT binding-manifest selection
 - SHA cache location and processed-file detection policy
 - whether to prompt for run or session descriptions
 - timezone label or other run-labeling policy
@@ -66,6 +68,11 @@ This contract depends on, or should be read alongside:
 - `analysis/documentation/BODAQS_Bike_Profile_Contract_v0_draft.md`
 
 The profile does not replace those contracts. It points at them.
+
+The preprocess profile deliberately does not point at a log metadata document or
+a bike profile. Those documents are selected by the notebook, CLI, or other
+run-level orchestration layer because they describe the concrete logger output
+and bike/setup used for the current batch, not the reusable preprocessing policy.
 
 ---
 
@@ -155,9 +162,15 @@ class ButterworthSmoothingConfigV1(TypedDict):
     cutoff_hz: float
     order: int
 
+class SignalSelectorConfigV1(TypedDict, total=False):
+    end: str
+    sensor: str
+    quantity: str
+    domain: str
+    unit: str
+
 class FitImportConfigV1(TypedDict, total=False):
     enabled: bool
-    fit_dir: str
     field_allowlist: list[str]
     ambiguity_policy: str
     partial_overlap: str
@@ -165,29 +178,24 @@ class FitImportConfigV1(TypedDict, total=False):
     resample_to_primary: bool
     resample_method: str
     raw_stream_name: str
-    bindings_path: str | None
 
 class PreprocessRunConfigV1(TypedDict, total=False):
     schema_path: str
     strict: bool
     fit_import: FitImportConfigV1 | None
-    generic_log_metadata_paths: list[str]
-    bike_profile_path: str | None
-    bike_profile_id: str | None
     zeroing_enabled: bool
     zero_window_s: float
     zero_min_samples: int
     clip_0_1: bool
     butterworth_smoothing: list[ButterworthSmoothingConfigV1]
     butterworth_generate_residuals: bool
-    active_signal_disp_col: str | None
-    active_signal_vel_col: str | None
+    active_signal_disp_selector: SignalSelectorConfigV1 | None
+    active_signal_vel_selector: SignalSelectorConfigV1 | None
     active_disp_thresh: float
     active_vel_thresh: float
     active_window: str
     active_padding: str
     active_min_seg: str
-    normalize_ranges: dict[str, float]  # deprecated transitional compatibility
     sample_rate_hz: float | None
 ```
 
@@ -205,7 +213,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 | `clip_0_1` | boolean | Clip normalized channels to `[0, 1]` |
 | `butterworth_smoothing` | array | Sequence of zero or more Butterworth filter configs |
 | `butterworth_generate_residuals` | boolean | Whether residual series should be generated when smoothing is enabled |
-| `active_signal_disp_col` | string or `null` | Canonical displacement signal used for activity-mask derivation |
+| `active_signal_disp_selector` | object or `null` | Semantic selector for the displacement signal used for activity-mask derivation |
 | `active_disp_thresh` | number | Activity-mask displacement threshold |
 | `active_vel_thresh` | number | Activity-mask velocity threshold |
 | `active_window` | string | Rolling-softening window, for example `500ms` |
@@ -216,32 +224,26 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 
 | field | type | meaning |
 |---|---|---|
-| `active_signal_vel_col` | string or `null` | Explicit velocity signal to use for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
+| `active_signal_vel_selector` | object or `null` | Semantic selector for the velocity signal used for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
 | `fit_import` | object or `null` | Optional Garmin FIT import policy block; when absent or `null`, FIT import is disabled |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
-| `generic_log_metadata_paths` | array | Optional list of reusable log metadata fallback files/directories |
-| `bike_profile_path` | string or `null` | Optional path to a bike profile JSON document |
-| `bike_profile_id` | string or `null` | Optional bike profile identifier used for UI matching or future lookup |
-| `normalize_ranges` | object | Deprecated transitional override for legacy callers that still provide canonical-column range maps; canonical range data belongs in the referenced bike profile |
 
 ### 6.4 Config-field rules
 
 - `schema_path` must resolve to an event schema YAML understood by the event schema loader.
-- `generic_log_metadata_paths`, when present, must resolve to exactly one usable generic log metadata file in non-interactive runs.
-- `bike_profile_path`, when present, should resolve to a `bodaqs.bike_profile` JSON document.
-- `bike_profile_id`, when present, should match the selected bike profile's `bike_profile_id`.
 - Normalization ranges should be derived from the selected bike profile's semantic `normalization_ranges` declarations.
-- `normalize_ranges`, if present, is a deprecated transitional field for compatibility with legacy callers that have not yet migrated to bike-profile range resolution.
-- Values in `normalize_ranges`, if present, must be numeric and greater than zero.
-- Keys in `normalize_ranges`, if present, should be canonical displacement signal names, not raw logger column names.
 - If `zeroing_enabled` is true, zeroing is applied to resolved physical displacement signals before bike-profile signal transforms are evaluated.
 - Normalized `[1]` outputs are generated after bike-profile signal transforms, so generated signals can be normalized from the same bike profile.
 - `butterworth_smoothing` may be empty.
-- If `active_signal_disp_col` is `null`, `active_signal_vel_col` should also be `null`.
-- When `fit_import` is present, `fit_import.enabled=True` requires a non-empty `fit_dir`.
+- `active_signal_disp_selector` and `active_signal_vel_selector` use the same semantic selector fields as bike-profile normalization ranges and transforms.
+- Recommended default activity-mask selectors target rear suspension displacement and velocity: `{"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"}` and `{"end": "rear", "quantity": "vel", "domain": "suspension", "unit": "mm/s"}`.
+- If `active_signal_disp_selector` is `null`, `active_signal_vel_selector` should also be `null`.
+- If `active_signal_vel_selector` is absent or `null`, consumers may derive the companion velocity signal from the resolved displacement signal.
 - `fit_import.field_allowlist` should contain Garmin record-field names such as `speed` or `position_lat`.
 - `fit_import.ambiguity_policy` should default to `require_binding` when user choice is required for multi-match sessions.
+- If `fit_import.enabled` is true, the FIT source directory and optional binding manifest must be supplied by the run-level caller.
 - Consumers may ignore unknown config fields that they do not support.
+- Consumers should reject runtime binding fields such as `generic_log_metadata_paths`, `bike_profile_path`, `bike_profile_id`, `normalize_ranges`, `prompt_for_descriptions`, `fit_import.fit_dir`, or `fit_import.bindings_path` if they appear inside a persisted preprocess profile.
 
 ### 6.5 `fit_import` block
 
@@ -250,7 +252,6 @@ When present, `fit_import` has the shape:
 ```json
 {
   "enabled": true,
-  "fit_dir": "Garmin/FIT",
   "field_allowlist": [
     "position_lat",
     "position_long",
@@ -267,15 +268,14 @@ When present, `fit_import` has the shape:
   "persist_raw_stream": true,
   "resample_to_primary": true,
   "resample_method": "linear",
-  "raw_stream_name": "gps_fit",
-  "bindings_path": "analysis/config/fit_bindings_v1.json"
+  "raw_stream_name": "gps_fit"
 }
 ```
 
 Rules:
 
-- `fit_dir` is part of the reusable preprocess policy for FIT discovery.
-- `bindings_path` points at a separate session-binding manifest used only when multiple overlapping FIT files exist.
+- The profile describes FIT import behavior, not where local FIT files are stored.
+- `fit_dir` and `bindings_path` are run-level inputs and must not be persisted inside the preprocess profile.
 - `partial_overlap: "allow"` means incomplete GPS coverage is acceptable as long as there is some overlap.
 - `persist_raw_stream` and `resample_to_primary` may both be `true`; that is the recommended current implementation pattern.
 
@@ -302,9 +302,43 @@ The generated filter-operation tag is derived by code and is **not** part of the
 
 ---
 
-## 8. Path and resolution semantics
+## 8. Signal selector contract
 
-### 8.1 `schema_path`
+Signal selectors identify a signal by meaning rather than by dataframe column name.
+
+Each selector may contain any of:
+
+```json
+{
+  "end": "rear",
+  "quantity": "disp",
+  "domain": "suspension",
+  "unit": "mm"
+}
+```
+
+Supported selector fields:
+
+| field | meaning |
+|---|---|
+| `end` | Bike end or location class, usually `front` or `rear` |
+| `sensor` | Legacy/specific sensor identifier; supported for compatibility but less preferred for bike-level concepts |
+| `quantity` | Measured or derived quantity, for example `disp` or `vel` |
+| `domain` | Physical domain, for example `suspension` or `wheel` |
+| `unit` | Signal unit, for example `mm` or `mm/s` |
+
+Rules:
+
+- A selector must be `null` or a non-empty object.
+- Selectors should use `end` rather than a specific `sensor` where the choice is a bike/setup concept.
+- Consumers should reject selectors that match more than one signal in a session.
+- Consumers may treat a selector that matches no signal as a disabled activity mask for that run, provided this is recorded in QC or warnings.
+
+---
+
+## 9. Path and resolution semantics
+
+### 9.1 `schema_path`
 
 `schema_path` is stored as a string.
 
@@ -323,7 +357,7 @@ Public API consumers that need deterministic path handling outside notebooks sho
 
 ---
 
-## 9. Profile authoring utilities
+## 10. Profile authoring utilities
 
 The analysis package provides utility functions so notebooks and scripts do not
 need to hand-roll preprocess profile JSON:
@@ -354,7 +388,7 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
 
 ---
 
-## 10. Example document
+## 11. Example document
 
 ```json
 {
@@ -367,7 +401,6 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
     "strict": false,
     "fit_import": {
       "enabled": false,
-      "fit_dir": "Garmin/FIT",
       "field_allowlist": [
         "position_lat",
         "position_long",
@@ -384,22 +417,26 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
       "persist_raw_stream": true,
       "resample_to_primary": true,
       "resample_method": "linear",
-      "raw_stream_name": "gps_fit",
-      "bindings_path": "analysis/config/fit_bindings_v1.json"
+      "raw_stream_name": "gps_fit"
     },
-    "generic_log_metadata_paths": [
-      "config/log_metadata_examples/current_logger_config_fast_timestamp_log_metadata.json"
-    ],
-    "bike_profile_path": "config/bike_profiles/example_enduro_bike_v1.json",
-    "bike_profile_id": "example_enduro_bike",
     "zeroing_enabled": false,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": false,
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": false,
-    "active_signal_disp_col": "front_shock_dom_suspension [mm]",
-    "active_signal_vel_col": null,
+    "active_signal_disp_selector": {
+      "end": "rear",
+      "quantity": "disp",
+      "domain": "suspension",
+      "unit": "mm"
+    },
+    "active_signal_vel_selector": {
+      "end": "rear",
+      "quantity": "vel",
+      "domain": "suspension",
+      "unit": "mm/s"
+    },
     "active_disp_thresh": 20.0,
     "active_vel_thresh": 50.0,
     "active_window": "500ms",
@@ -409,13 +446,11 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
 }
 ```
 
-Activity-signal examples use canonical signal names because the current activity-mask API still expects dataframe columns. Normalization ranges are intentionally not embedded in this profile example; they are bike/setup facts and should be resolved from the referenced bike profile.
-
-Compatibility note: existing callers may still supply a legacy `normalize_ranges` map. New profile-authored workflows should prefer `bike_profile_path`, allowing the pipeline to resolve normalization ranges from bike-profile signal semantics.
+Normalization ranges are intentionally not embedded in this profile example; they are bike/setup facts and should be resolved from the run-selected bike profile.
 
 ---
 
-## 11. Consumer behavior
+## 12. Consumer behavior
 
 Consumers implementing this contract should:
 
@@ -431,21 +466,20 @@ Consumers should fail fast on:
 - unsupported profile version
 - missing required fields
 - invalid Butterworth config entries
-- unresolved required bike profile or normalization range semantics
-- invalid legacy `normalize_ranges`, if supplied
+- runtime binding fields embedded in the profile
 - unresolved `schema_path`
 
 ---
 
-## 12. Current limitations and open issues
+## 13. Current limitations and open issues
 
 1. There is no explicit `active_enabled` flag in v1. The current profile shape assumes an activity-mask configuration is always present. A cleaner enable/disable contract may be added in a later version.
-2. The profile assumes the target log set is homogeneous enough that one selected bike profile and one activity-mask signal selection are valid for every file being processed.
+2. The profile assumes the target log set is homogeneous enough that one activity-mask signal selection is valid for every file being processed.
 3. This contract does not yet define profile discovery, cataloging, inheritance, or profile-composition behavior.
 
 ---
 
-## 13. Suggested future evolution
+## 14. Suggested future evolution
 
 Likely v2 candidates:
 

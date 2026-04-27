@@ -21,6 +21,7 @@ import pandas as pd
 from IPython.display import clear_output, display
 
 from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+from bodaqs_analysis.signal_selectors import selector_matches_signal
 from bodaqs_analysis.widgets.contracts import (
     ArtifactStoreLike,
     ENTITY_KEY_COL,
@@ -46,6 +47,7 @@ from bodaqs_analysis.widgets.loaders import (
     make_session_loader,
 )
 from bodaqs_analysis.widgets.metric_widget_data import (
+    assign_signal_semantics_columns,
     assign_sensor_column,
     build_metric_viz_df,
     registry_maps_for_sessions,
@@ -139,6 +141,16 @@ def prepare_metric_scatter_consumer_data(
         registries_by_session=registries_by_session,
         schema_maps_by_session=schema_maps_by_session,
     )
+    semantics_df = assign_signal_semantics_columns(
+        viz_df=viz_df,
+        session_key_col=session_key_col,
+        signal_col=signal_col,
+        registries_by_session=registries_by_session,
+    )
+    for col in ("_end", "_domain", "_quantity", "_unit"):
+        viz_df[col] = semantics_df[col]
+    registry_sensor = semantics_df["_sensor"].astype(str)
+    viz_df["_sensor"] = viz_df["_sensor"].where(viz_df["_sensor"].astype(str).str.len() > 0, registry_sensor)
 
     if viz_df["_sensor"].astype(str).str.len().sum() == 0:
         ex = viz_df[[session_key_col, schema_id_col, signal_col]].drop_duplicates().head(8)
@@ -180,6 +192,19 @@ def prepare_metric_scatter_consumer_data(
     }
 
 
+def _row_matches_signal_selector(row: pd.Series, selector: Mapping[str, Any]) -> bool:
+    return selector_matches_signal(
+        {
+            "sensor": row.get("_sensor"),
+            "end": row.get("_end"),
+            "domain": row.get("_domain"),
+            "quantity": row.get("_quantity"),
+            "unit": row.get("_unit"),
+        },
+        selector,
+    )
+
+
 def filter_metric_scatter_base_df(
     *,
     viz_df: pd.DataFrame,
@@ -187,17 +212,26 @@ def filter_metric_scatter_base_df(
     scope_entity_col: str,
     event_value: object,
     entity_values: Sequence[str],
-    sensor_values: Sequence[str],
+    sensor_values: Sequence[str] = (),
+    signal_selectors: Sequence[Mapping[str, Any]] | None = None,
 ) -> pd.DataFrame:
     sel_entities = [str(v) for v in entity_values if str(v).strip()]
     sel_sensors = [canonical_sensor_id(v) for v in sensor_values if canonical_sensor_id(v)]
-    if not sel_entities or not sel_sensors or event_value is None:
+    selectors = [dict(s) for s in (signal_selectors or []) if isinstance(s, Mapping) and s]
+    if not sel_entities or event_value is None:
         return viz_df.iloc[0:0].copy()
-    return viz_df[
+    base = viz_df[
         (viz_df[event_type_col].astype(str) == str(event_value))
         & (viz_df[scope_entity_col].astype(str).isin(sel_entities))
-        & (viz_df["_sensor"].map(canonical_sensor_id).isin(sel_sensors))
     ].copy()
+    if selectors:
+        mask = pd.Series(False, index=base.index)
+        for selector in selectors:
+            mask |= base.apply(lambda row: _row_matches_signal_selector(row, selector), axis=1)
+        return base.loc[mask].copy()
+    if not sel_sensors:
+        return viz_df.iloc[0:0].copy()
+    return base[base["_sensor"].map(canonical_sensor_id).isin(sel_sensors)].copy()
 
 
 def metric_scatter_sensor_options(
@@ -276,10 +310,11 @@ def build_metric_scatter_series(
     scope_entity_col: str,
     event_value: object,
     entity_values: Sequence[str],
-    sensor_values: Sequence[str],
+    sensor_values: Sequence[str] = (),
     x_metric: object,
     y_metric: object,
     series_labeler: Callable[[str, str], str] | None = None,
+    signal_selectors: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[MetricScatterSeries]:
     base = filter_metric_scatter_base_df(
         viz_df=viz_df,
@@ -288,20 +323,34 @@ def build_metric_scatter_series(
         event_value=event_value,
         entity_values=entity_values,
         sensor_values=sensor_values,
+        signal_selectors=signal_selectors,
     )
     sel_entities = [str(v) for v in entity_values if str(v).strip()]
     sel_sensors = [canonical_sensor_id(v) for v in sensor_values if canonical_sensor_id(v)]
+    selectors = [dict(s) for s in (signal_selectors or []) if isinstance(s, Mapping) and s]
 
     series: list[MetricScatterSeries] = []
-    for entity in sel_entities:
-        for sensor in sel_sensors:
-            sub = base[
-                (base[scope_entity_col].astype(str) == entity)
-                & (base["_sensor"].map(canonical_sensor_id) == sensor)
-            ]
-            x, y = coerce_metric_scatter_xy(sub, x_metric=x_metric, y_metric=y_metric)
-            label = series_labeler(entity, sensor) if callable(series_labeler) else f"{entity} | {sensor}"
-            series.append(MetricScatterSeries(label=label, x=x, y=y))
+    if selectors:
+        for entity in sel_entities:
+            entity_base = base[base[scope_entity_col].astype(str) == entity]
+            for idx, selector in enumerate(selectors):
+                selector_key = str(selector.get("end") or selector.get("sensor") or f"selector_{idx + 1}")
+                sub = entity_base[
+                    entity_base.apply(lambda row: _row_matches_signal_selector(row, selector), axis=1)
+                ]
+                x, y = coerce_metric_scatter_xy(sub, x_metric=x_metric, y_metric=y_metric)
+                label = series_labeler(entity, selector_key) if callable(series_labeler) else f"{entity} | {selector_key}"
+                series.append(MetricScatterSeries(label=label, x=x, y=y))
+    else:
+        for entity in sel_entities:
+            for sensor in sel_sensors:
+                sub = base[
+                    (base[scope_entity_col].astype(str) == entity)
+                    & (base["_sensor"].map(canonical_sensor_id) == sensor)
+                ]
+                x, y = coerce_metric_scatter_xy(sub, x_metric=x_metric, y_metric=y_metric)
+                label = series_labeler(entity, sensor) if callable(series_labeler) else f"{entity} | {sensor}"
+                series.append(MetricScatterSeries(label=label, x=x, y=y))
     return series
 
 

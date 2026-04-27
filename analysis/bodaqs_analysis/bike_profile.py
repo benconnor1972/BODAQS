@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-from .sensor_aliases import canonical_sensor_id, normalize_sensor_token, sensors_match
+from .sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor, normalize_sensor_token, sensors_match
 from .signal_registry import build_signals_registry
 from .signalname import SignalNameParts, format_signal_name
 
@@ -502,7 +502,10 @@ def _evaluate_polynomial(values: np.ndarray, transform: Mapping[str, Any]) -> np
 
 def _output_column_name(output_semantics: Mapping[str, Any], *, fallback: str) -> str:
     sensor = output_semantics.get("sensor")
-    sensor_token = normalize_sensor_token(canonical_sensor_id(sensor)) or normalize_sensor_token(fallback) or "signal"
+    sensor_token = normalize_sensor_token(canonical_sensor_id(sensor))
+    if not sensor_token:
+        sensor_token = _default_sensor_token_from_end_and_domain(output_semantics)
+    sensor_token = sensor_token or normalize_sensor_token(fallback) or "signal"
 
     quantity = output_semantics.get("quantity")
     quantity_token = normalize_sensor_token(quantity)
@@ -535,10 +538,23 @@ def _channel_info_for_output(
         "source_columns": [input_col],
         "transform_chain": [transform_id],
     }
-    for key in ("sensor", "quantity", "domain", "unit"):
+    for key in ("sensor", "end", "quantity", "domain", "unit"):
         value = output_semantics.get(key)
         if isinstance(value, str) and value.strip():
-            info[key] = canonical_sensor_id(value) if key == "sensor" else value.strip()
+            if key == "sensor":
+                info[key] = canonical_sensor_id(value)
+            elif key == "end":
+                info[key] = canonical_end(value) or value.strip()
+            else:
+                info[key] = value.strip()
+    if "end" not in info:
+        inferred_end = end_from_sensor(info.get("sensor"))
+        if inferred_end:
+            info["end"] = inferred_end
+    if "sensor" not in info:
+        inferred_sensor = _default_sensor_token_from_end_and_domain(output_semantics)
+        if inferred_sensor:
+            info["sensor"] = canonical_sensor_id(inferred_sensor)
     if "quantity" in info:
         info["role"] = info["quantity"]
     return info
@@ -658,7 +674,7 @@ def _record_transform_application(
 
 
 def _matches_selector(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
-    for key in ("sensor", "quantity", "domain", "unit"):
+    for key in ("sensor", "end", "quantity", "domain", "unit"):
         expected = selector.get(key)
         if expected is None or (isinstance(expected, str) and not expected.strip()):
             continue
@@ -666,6 +682,9 @@ def _matches_selector(signal_info: Mapping[str, Any], selector: Mapping[str, Any
         actual = signal_info.get(key)
         if key == "sensor":
             if not _sensor_matches(actual, expected):
+                return False
+        elif key == "end":
+            if not _end_matches(signal_info, expected):
                 return False
         elif key == "unit":
             if _clean_unit(actual) != _clean_unit(expected):
@@ -683,6 +702,26 @@ def _sensor_matches(actual: Any, expected: Any) -> bool:
     if sensors_match(actual_canonical, expected_canonical):
         return True
     return normalize_sensor_token(actual_canonical) == normalize_sensor_token(expected_canonical)
+
+
+def _end_matches(signal_info: Mapping[str, Any], expected: Any) -> bool:
+    expected_end = canonical_end(expected) or end_from_sensor(expected)
+    actual_end = canonical_end(signal_info.get("end")) or end_from_sensor(signal_info.get("sensor"))
+    return bool(expected_end and actual_end and expected_end == actual_end)
+
+
+def _default_sensor_token_from_end_and_domain(output_semantics: Mapping[str, Any]) -> str:
+    end = canonical_end(output_semantics.get("end"))
+    domain = normalize_sensor_token(output_semantics.get("domain"))
+    if not end:
+        return ""
+    if domain == "wheel":
+        return f"{end}_wheel"
+    if domain == "suspension":
+        return "front_shock" if end == "front" else "rear_shock"
+    if domain:
+        return f"{end}_{domain}"
+    return end
 
 
 def _clean_unit(value: Any) -> str:

@@ -67,10 +67,11 @@ Notebook: [`bodaqs_batch_preprocessing_pipeline.ipynb`](../../bodaqs_batch_prepr
 
 This is the main batch ingestion and preprocessing notebook. It turns one or more raw logger CSV files into canonical BODAQS session, event, and metric artifacts that downstream notebooks can consume.
 
-### Step 1. Select input CSV files
+### Step 1. Set runtime paths and select input CSV files
 
-- **Inputs:** a directory of raw logger CSV files and the existing `analysis/artifacts/` tree so that previously processed logger files can be identified.
-- **Outputs:** the selected file list (`CSV_FILES`) and a visible file-selection UI.
+- **Inputs:** local runtime settings from the notebook widget, a directory of raw logger CSV files, and the selected artifacts tree so that previously processed logger files can be identified.
+- **Runtime settings:** preprocess profile path, artifacts directory, generic log metadata paths, bike profile path, optional FIT paths, run timezone label, and description-prompt behavior.
+- **Outputs:** the selected file list (`CSV_FILES`) and visible runtime-settings / file-selection UIs.
 - **Persisted artifacts:** no canonical analysis artifacts yet. The selector does update local helper files:
   - `.bodaqs_preprocess_last_dir.json`
   - `.bodaqs_preprocess_sha_cache.json`
@@ -97,9 +98,10 @@ Semantic enrichment is a priority area for development / refinement. Current int
 ### Step 3. Load or edit preprocessing profile
 
 - **Inputs:** a persisted preprocess profile selected by `PREPROCESS_PROFILE_PATH`.
-- **Editable settings:** event schema path, generic log metadata paths, bike profile path, FIT import policy, zeroing, activity-mask settings, clipping, smoothing, ingestion mode, and whether to prompt for run/session descriptions.
+- **Editable settings:** event schema path, FIT import behavior, zeroing, activity-mask settings, clipping, smoothing, and ingestion mode.
 - **Outputs:** a validated preprocess profile and its nested config payload, suitable for `run_macro(..., preprocess_config=cfg)`.
 - **Persisted artifacts:** a saved `bodaqs.preprocess_profile` JSON document when the user saves changes from the profile editor.
+- **Runtime bindings:** generic log metadata path(s), bike profile path, FIT source directory, FIT binding manifest, and description-prompt behavior are supplied by the notebook parameter cell because they depend on the local install or the current log batch.
 - **Contracts / documentation:**
   - [`BODAQS_Public_API_Contract_v0.md`](../BODAQS_Public_API_Contract_v0.md)
   - [`BODAQS_Preprocess_Profile_Contract_v0_draft.md`](../BODAQS_Preprocess_Profile_Contract_v0_draft.md)
@@ -109,7 +111,7 @@ Semantic enrichment is a priority area for development / refinement. Current int
 
 ### Step 4. Run the macro pipeline for each selected session
 
-- **Inputs:** one CSV file plus the validated preprocessing config and event schema.
+- **Inputs:** one CSV file, the validated preprocessing config, run-level generic log metadata path(s), the selected bike profile, optional FIT source/binding paths, and the event schema.
 - **Outputs:** the `run_macro(...)` result per session, including:
   - `session`
   - `schema`

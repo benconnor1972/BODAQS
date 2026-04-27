@@ -56,6 +56,28 @@ metadata template selected by local policy or by the user when no matching
 session log metadata is available. Generic log metadata is useful for existing loggers
 that do not yet emit per-log sidecars.
 
+### 4.1 Log Metadata Selection
+
+This contract defines the structure and meaning of a log metadata document. It
+does not require one universal discovery or storage policy for generic log
+metadata.
+
+Recommended consumer selection order:
+
+1. Use an explicitly selected session log metadata file, if supplied by the user or caller.
+2. Otherwise, use same-stem session log metadata beside the CSV, if present.
+3. Otherwise, use an explicitly selected generic log metadata file, if supplied by run-level ingestion configuration.
+4. Otherwise, consumers MAY search configured generic log metadata directories or file lists.
+5. If more than one generic candidate is available, non-interactive consumers SHOULD fail or ask the user to choose rather than silently selecting the first candidate.
+6. If no log metadata is available, consumers MAY fall back to legacy header parsing or other local heuristics.
+
+Generic log metadata selection is normally an ingestion/run concern because it
+must match the concrete logger output format for the CSV being loaded. A
+preprocessing profile SHOULD NOT own a generic log metadata path; reusable
+analysis presets can outlive, and be reused across, several logger output
+formats. Notebooks, CLIs, or other run-level orchestration layers should pass
+generic log metadata paths explicitly when they are needed.
+
 ## 5. Core principles
 
 - The CSV is the authoritative source of sampled values.
@@ -303,6 +325,7 @@ Required for `class: "signal"`:
 
 Optional signal fields:
 - `sensor`
+- `end`
 - `domain`
 - `source_columns`
 - `calibration_ref`
@@ -346,6 +369,8 @@ Constraints:
 Interpretation rules:
 - `quantity: "raw"` identifies raw signal columns
 - engineered signals use any non-`raw` quantity, for example `disp`, `ang_disp`, `vel`, `acc`
+- `end`, when present, identifies front/rear bike location and SHOULD be one of `front` or `rear`
+- for front/rear suspension and wheel signals, `end` is preferred for bike-level semantic matching; `sensor` may still identify the logger/source sensor or a legacy semantic alias
 - `transform_chain` contains ordered transform ids
 - `calibration_ref` identifies the sensor calibration used to derive a signal
 - `source_columns` contains column ids, not CSV headers

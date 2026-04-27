@@ -72,6 +72,7 @@ def _write_csv_and_sidecar(tmp_path):
                 "dtype": "float64",
                 "stream": "primary",
                 "sensor": "front_shock",
+                "end": "front",
                 "quantity": "disp",
                 "domain": "suspension",
                 "unit": "mm",
@@ -82,6 +83,7 @@ def _write_csv_and_sidecar(tmp_path):
                 "dtype": "float64",
                 "stream": "primary",
                 "sensor": "rear_shock",
+                "end": "rear",
                 "quantity": "disp",
                 "domain": "suspension",
                 "unit": "mm",
@@ -140,6 +142,7 @@ def _write_generic_sidecar(
             "dtype": "float64",
             "stream": "primary",
             "sensor": "fork",
+            "end": "front",
             "quantity": "disp",
             "domain": "suspension",
             "unit": "mm",
@@ -152,6 +155,7 @@ def _write_generic_sidecar(
             "dtype": "float64",
             "stream": "primary",
             "sensor": "shock",
+            "end": "rear",
             "quantity": "disp",
             "domain": "suspension",
             "unit": "mm",
@@ -197,6 +201,7 @@ def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
     assert session["meta"]["notes"] == "test sidecar"
     assert session["meta"]["sample_rate_hz"] == 40.0
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["sensor"] == "rear_shock"
+    assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["end"] == "rear"
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["role"] == "disp"
     assert session["meta"]["device"]["firmware_version"] == "1.2.3"
 
@@ -281,6 +286,7 @@ def test_load_session_uses_single_generic_sidecar_permissively(tmp_path):
     assert "sidecar_optional_column_missing:shock_travel_mm" in session["qc"]["warnings"]
     assert "sidecar_unknown_csv_column_skipped:rear_shock_dom_suspension [mm]" in session["qc"]["warnings"]
     assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["sensor"] == "front_shock"
+    assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["end"] == "front"
     assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["role"] == "disp"
 
 
@@ -329,6 +335,15 @@ def test_configured_missing_generic_sidecar_does_not_fall_back_to_header_parsing
 
     with pytest.raises(FileNotFoundError, match="No usable generic log metadata"):
         load_session(str(csv_path), generic_log_metadata_paths=[missing_sidecar])
+
+
+def test_empty_generic_log_metadata_paths_falls_back_to_header_parsing(tmp_path):
+    csv_path = _write_csv_only(tmp_path)
+
+    session = load_session(str(csv_path), generic_log_metadata_paths=[])
+
+    assert session["source"].get("log_metadata_path") is None
+    assert "time_s" in session["df"].columns
 
 
 def test_generic_sidecar_supports_headerless_csv_by_column_index(tmp_path):

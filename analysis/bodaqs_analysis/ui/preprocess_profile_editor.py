@@ -52,6 +52,14 @@ def _optional_text(value: Any) -> Optional[str]:
     return text or None
 
 
+def _parse_optional_json_object(text: str, *, field_name: str) -> Optional[Dict[str, Any]]:
+    raw_text = (text or "").strip()
+    if not raw_text:
+        return None
+    raw = _parse_json_or_literal(raw_text, expected=dict, field_name=field_name)
+    return dict(raw) if raw else None
+
+
 def _fit_defaults(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     defaults = copy.deepcopy(DEFAULT_PREPROCESS_PROFILE_CONFIG["fit_import"])
     if isinstance(raw, Mapping):
@@ -64,13 +72,25 @@ def _set_dropdown_value(widget: W.Dropdown, value: Any, fallback: str) -> None:
     widget.value = str(value) if str(value) in allowed else fallback
 
 
+def _stretch_layout(**kwargs: Any) -> W.Layout:
+    return W.Layout(width="auto", flex="1 1 auto", min_width="0", **kwargs)
+
+
+def _full_width_layout(**kwargs: Any) -> W.Layout:
+    return W.Layout(width="100%", min_width="0", **kwargs)
+
+
+def _row(children: List[W.Widget]) -> W.HBox:
+    return W.HBox(children, layout=W.Layout(width="100%", min_width="0", overflow="hidden"))
+
+
 class PreprocessProfileEditor:
     """
     Notebook-friendly editor for persisted BODAQS preprocess profiles.
 
-    The editor is profile-first: it loads, validates, and saves full
-    ``bodaqs.preprocess_profile`` JSON documents, while still exposing the
-    nested ``config`` payload used by ``run_macro(..., preprocess_config=...)``.
+    The editor deliberately covers reusable processing policy only. Runtime
+    binding choices such as log metadata, bike profile, log directories, FIT
+    directories, and artifact roots should be supplied by the notebook/run layer.
     """
 
     def __init__(
@@ -85,8 +105,10 @@ class PreprocessProfileEditor:
 
         self.profiles_dir = Path(profiles_dir)
         self.current_profile_path: Optional[Path] = Path(profile_path) if profile_path is not None else None
+
         if profile_path is not None:
             initial_profile = load_preprocess_profile(profile_path)
+            self.profiles_dir = Path(profile_path).parent
         elif profile is not None:
             validate_preprocess_profile(profile)
             initial_profile = copy.deepcopy(dict(profile))
@@ -99,43 +121,36 @@ class PreprocessProfileEditor:
 
         self._out = W.Output(layout=W.Layout(border="1px solid #ddd", padding="8px"))
 
-        # Profile metadata
-        self.w_profile_path = W.Text(
-            value=str(self.current_profile_path or preprocess_profile_path("new_preprocess_profile", directory=self.profiles_dir)),
-            description="Profile path",
-            layout=W.Layout(width="100%"),
+        # Profile identity/storage
+        self.w_profile_dir = W.Text(
+            value=str(self.profiles_dir),
+            description="Directory",
+            layout=_stretch_layout(),
         )
-        self.w_profile_id = W.Text(description="Profile id", layout=W.Layout(width="420px"))
-        self.w_description = W.Textarea(description="Description", layout=W.Layout(width="100%", height="80px"))
-
-        # Discovery
-        self.w_discovered_profiles = W.Dropdown(
-            options=self._profile_options(),
-            description="Existing",
-            layout=W.Layout(width="100%"),
+        self.b_profile_dir = W.Button(description="Browse...", icon="folder-open", layout=W.Layout(width="120px"))
+        self.w_profile_id = W.Combobox(
+            options=self._profile_id_options(),
+            ensure_option=False,
+            description="Profile id",
+            placeholder="choose or type a profile id",
+            layout=_stretch_layout(),
         )
         self.b_refresh = W.Button(description="Refresh", icon="refresh")
         self.b_load = W.Button(description="Load", icon="folder-open")
-
-        # Core config
-        self.w_schema_path = W.Text(description="Schema path", layout=W.Layout(width="100%"))
-        self.w_strict = W.Checkbox(description="Strict mode")
-        self.w_generic_log_metadata_paths = W.Textarea(
-            description="Log metadata",
-            layout=W.Layout(width="100%", height="90px"),
+        self.w_save_filename = W.Text(
+            description="Save file",
+            placeholder="profile_filename_v1.json",
+            layout=_stretch_layout(),
         )
-        self.w_bike_profile_path = W.Text(description="Bike profile", layout=W.Layout(width="100%"))
-        self.w_bike_profile_id = W.Text(description="Bike id", layout=W.Layout(width="420px"))
+        self.w_description = W.Textarea(description="Description", layout=_full_width_layout(height="80px"))
 
-        # Legacy fallback
-        self.w_use_legacy_ranges = W.Checkbox(description="Use legacy normalize_ranges")
-        self.w_legacy_ranges = W.Textarea(description="Ranges", layout=W.Layout(width="100%", height="100px"))
+        # Core preprocessing config
+        self.w_schema_path = W.Text(description="Schema path", layout=_full_width_layout())
+        self.w_strict = W.Checkbox(description="Strict mode")
 
-        # FIT import
+        # FIT import policy. Paths are deliberately not profile fields.
         self.w_fit_enabled = W.Checkbox(description="Enable FIT import")
-        self.w_fit_dir = W.Text(description="FIT dir", layout=W.Layout(width="100%"))
-        self.w_fit_bindings_path = W.Text(description="Bindings", layout=W.Layout(width="100%"))
-        self.w_fit_field_allowlist = W.Textarea(description="Fields", layout=W.Layout(width="100%", height="120px"))
+        self.w_fit_field_allowlist = W.Textarea(description="Fields", layout=_full_width_layout(height="120px"))
         self.w_fit_ambiguity_policy = W.Dropdown(
             options=["require_binding", "largest_overlap", "latest_start"],
             description="Multi-match",
@@ -151,126 +166,142 @@ class PreprocessProfileEditor:
         self.w_fit_resample_method = W.Dropdown(options=["linear"], description="Method", layout=W.Layout(width="220px"))
         self.w_fit_raw_stream_name = W.Text(description="Stream", layout=W.Layout(width="320px"))
 
-        # Preprocessing policy
+        # Signal processing policy
         self.w_zero_enabled = W.Checkbox(description="Enable zeroing")
         self.w_zero_window_s = W.FloatText(description="Window (s)")
         self.w_zero_min_samples = W.IntText(description="Min samples")
         self.w_clip_0_1 = W.Checkbox(description="Clip normalized channels to [0, 1]")
-        self.w_bw_smoothing = W.Textarea(description="Smoothing", layout=W.Layout(width="100%", height="100px"))
+        self.w_bw_smoothing = W.Textarea(description="Smoothing", layout=_full_width_layout(height="100px"))
         self.w_bw_generate_residuals = W.Checkbox(description="Generate residual series")
 
         # Activity mask
         self.w_active_enabled = W.Checkbox(description="Enable activity mask")
-        self.w_active_disp_col = W.Text(description="Disp signal", layout=W.Layout(width="100%"))
-        self.w_active_vel_col = W.Text(description="Vel signal", layout=W.Layout(width="100%"))
+        self.w_active_disp_selector = W.Textarea(
+            description="Disp selector",
+            layout=_full_width_layout(height="92px"),
+        )
+        self.w_active_vel_selector = W.Textarea(
+            description="Vel selector",
+            layout=_full_width_layout(height="92px"),
+        )
         self.w_active_disp_thresh = W.FloatText(description="Disp thresh")
         self.w_active_vel_thresh = W.FloatText(description="Vel thresh")
         self.w_active_window = W.Text(description="Window", layout=W.Layout(width="220px"))
         self.w_active_padding = W.Text(description="Padding", layout=W.Layout(width="220px"))
         self.w_active_min_seg = W.Text(description="Min segment", layout=W.Layout(width="220px"))
 
-        # Notebook convenience
-        self.w_prompt_desc = W.Checkbox(description="Prompt for descriptions")
-
         # Actions
         self.b_validate = W.Button(description="Validate", button_style="info", icon="check")
         self.b_save = W.Button(description="Save", button_style="success", icon="save")
-        self.b_save_as_conventional = W.Button(description="Use conventional path", icon="magic")
 
+        self.b_profile_dir.on_click(lambda _: self._browse_profile_dir())
         self.b_refresh.on_click(lambda _: self.refresh_profile_list())
         self.b_load.on_click(lambda _: self._load_selected_profile())
         self.b_validate.on_click(lambda _: self.validate(print_to_output=True))
         self.b_save.on_click(lambda _: self._save_clicked())
-        self.b_save_as_conventional.on_click(lambda _: self._set_conventional_path())
 
         self.ui = self._build_ui()
         self.set_profile(initial_profile, path=self.current_profile_path)
 
-    def _profile_options(self) -> List[Tuple[str, str]]:
-        records = discover_preprocess_profiles(self.profiles_dir, include_invalid=True)
-        options: List[Tuple[str, str]] = [("(choose a profile)", "")]
-        for rec in records:
-            label = str(rec.get("profile_id") or Path(str(rec.get("path"))).name)
-            if not rec.get("valid"):
-                label = f"{label} (invalid)"
-            options.append((label, str(rec.get("path") or "")))
-        return options
+    def _profile_records(self) -> List[Dict[str, Any]]:
+        return discover_preprocess_profiles(Path(self.w_profile_dir.value or self.profiles_dir), include_invalid=False)
+
+    def _profile_id_options(self) -> List[str]:
+        return [str(rec["profile_id"]) for rec in self._profile_records() if rec.get("profile_id")]
+
+    def _profile_path_for_id(self, profile_id: str) -> Path:
+        for rec in self._profile_records():
+            if rec.get("profile_id") == profile_id:
+                return Path(str(rec["path"]))
+        return preprocess_profile_path(profile_id, directory=Path(self.w_profile_dir.value or self.profiles_dir))
+
+    def _section(self, title: str, help_text: str, children: List[W.Widget]) -> W.VBox:
+        return W.VBox(
+            [
+                W.HTML(f"<h3 style='margin: 16px 0 6px 0'>{title}</h3>"),
+                W.HTML(
+                    "<p style='margin:0 0 10px 0;color:#555;line-height:1.35;white-space:normal'>"
+                    f"{help_text}"
+                    "</p>"
+                ),
+                *children,
+            ],
+            layout=W.Layout(width="100%", min_width="0", overflow="hidden"),
+        )
 
     def _build_ui(self) -> W.VBox:
-        sec_profile = W.VBox(
-            [
-                W.HBox([self.w_discovered_profiles, self.b_refresh, self.b_load]),
-                self.w_profile_path,
-                W.HBox([self.w_profile_id, self.b_save_as_conventional]),
-                self.w_description,
-            ]
-        )
-        sec_core = W.VBox(
-            [
-                self.w_schema_path,
-                self.w_strict,
-                W.HTML("<b>Generic log metadata paths</b> (JSON list)"),
-                self.w_generic_log_metadata_paths,
-                self.w_bike_profile_path,
-                self.w_bike_profile_id,
-            ]
-        )
-        sec_legacy = W.VBox(
-            [
-                self.w_use_legacy_ranges,
-                W.HTML("<b>Legacy normalize_ranges</b> (JSON object; only used when enabled)"),
-                self.w_legacy_ranges,
-            ]
-        )
-        sec_fit = W.VBox(
-            [
-                self.w_fit_enabled,
-                self.w_fit_dir,
-                self.w_fit_bindings_path,
-                W.HBox([self.w_fit_partial_overlap, self.w_fit_ambiguity_policy]),
-                W.HBox([self.w_fit_persist_raw_stream, self.w_fit_resample_to_primary]),
-                W.HBox([self.w_fit_resample_method, self.w_fit_raw_stream_name]),
-                W.HTML("<b>FIT field allowlist</b> (JSON list)"),
-                self.w_fit_field_allowlist,
-            ]
-        )
-        sec_preprocess = W.VBox(
-            [
-                self.w_zero_enabled,
-                W.HBox([self.w_zero_window_s, self.w_zero_min_samples]),
-                self.w_clip_0_1,
-                W.HTML("<b>Butterworth smoothing</b> (JSON list of dicts)"),
-                self.w_bw_smoothing,
-                self.w_bw_generate_residuals,
-            ]
-        )
-        sec_active = W.VBox(
-            [
-                self.w_active_enabled,
-                self.w_active_disp_col,
-                self.w_active_vel_col,
-                W.HBox([self.w_active_disp_thresh, self.w_active_vel_thresh]),
-                W.HBox([self.w_active_window, self.w_active_padding, self.w_active_min_seg]),
-            ]
-        )
-        sec_actions = W.VBox([self.w_prompt_desc, W.HBox([self.b_validate, self.b_save]), self._out])
-
-        acc = W.Accordion(children=[sec_profile, sec_core, sec_legacy, sec_fit, sec_preprocess, sec_active, sec_actions])
-        acc.set_title(0, "Profile")
-        acc.set_title(1, "Log Metadata & Bike")
-        acc.set_title(2, "Legacy Ranges")
-        acc.set_title(3, "FIT Import")
-        acc.set_title(4, "Zeroing, Scaling & Smoothing")
-        acc.set_title(5, "Activity Mask")
-        acc.set_title(6, "Actions")
-        acc.selected_index = 0
-        return W.VBox([acc])
+        sections = [
+            self._section(
+                "Profile",
+                "Choose which reusable preprocessing profile you are editing, and where it should be saved. The profile ID is the stable logical name; the save filename lets you save a copy or variant.",
+                [
+                    _row([self.w_profile_dir, self.b_profile_dir]),
+                    _row([self.w_profile_id, self.b_refresh, self.b_load]),
+                    self.w_description,
+                ],
+            ),
+            self._section(
+                "Event Schema",
+                "Select the event schema used by the macro pipeline and choose whether ingestion should be strict or tolerant.",
+                [
+                    self.w_schema_path,
+                    self.w_strict,
+                ],
+            ),
+            self._section(
+                "FIT Import Policy",
+                "Control how optional Garmin FIT data is handled if the notebook provides FIT source paths at run time.",
+                [
+                    W.HTML(
+                        "<p style='margin:0;color:#555'>FIT directory and binding-file paths are run/notebook inputs, not profile fields.</p>"
+                    ),
+                    self.w_fit_enabled,
+                    _row([self.w_fit_partial_overlap, self.w_fit_ambiguity_policy]),
+                    _row([self.w_fit_persist_raw_stream, self.w_fit_resample_to_primary]),
+                    _row([self.w_fit_resample_method, self.w_fit_raw_stream_name]),
+                    W.HTML("<b>FIT field allowlist</b> (JSON list)"),
+                    self.w_fit_field_allowlist,
+                ],
+            ),
+            self._section(
+                "Zeroing, Scaling & Smoothing",
+                "Set preprocessing operations applied to logger signals before event detection and metric extraction.",
+                [
+                    self.w_zero_enabled,
+                    _row([self.w_zero_window_s, self.w_zero_min_samples]),
+                    self.w_clip_0_1,
+                    W.HTML("<b>Butterworth smoothing</b> (JSON list of dicts)"),
+                    self.w_bw_smoothing,
+                    self.w_bw_generate_residuals,
+                ],
+            ),
+            self._section(
+                "Activity Mask",
+                "Choose the semantic displacement and velocity signals used to decide which parts of a session are active enough to analyse.",
+                [
+                    self.w_active_enabled,
+                    self.w_active_disp_selector,
+                    self.w_active_vel_selector,
+                    _row([self.w_active_disp_thresh, self.w_active_vel_thresh]),
+                    _row([self.w_active_window, self.w_active_padding, self.w_active_min_seg]),
+                ],
+            ),
+            self._section(
+                "Actions",
+                "Validate the current settings or write the profile JSON to the selected directory and filename.",
+                [
+                    _row([self.w_save_filename, self.b_validate, self.b_save]),
+                    self._out,
+                ],
+            ),
+        ]
+        return W.VBox(sections, layout=W.Layout(width="100%", min_width="0", overflow="hidden"))
 
     def refresh_profile_list(self) -> None:
-        current = self.w_discovered_profiles.value
-        self.w_discovered_profiles.options = self._profile_options()
-        values = [v for _, v in self.w_discovered_profiles.options]
-        self.w_discovered_profiles.value = current if current in values else ""
+        current = self.w_profile_id.value
+        self.profiles_dir = Path(self.w_profile_dir.value or self.profiles_dir)
+        self.w_profile_id.options = self._profile_id_options()
+        self.w_profile_id.value = current
 
     def set_profile(self, profile: Mapping[str, Any], *, path: Optional[str | Path] = None) -> None:
         validate_preprocess_profile(profile, path=path)
@@ -279,23 +310,23 @@ class PreprocessProfileEditor:
 
         self.current_profile_path = Path(path) if path is not None else self.current_profile_path
         if path is not None:
-            self.w_profile_path.value = str(path)
+            self.w_profile_dir.value = str(Path(path).parent)
+            self.w_save_filename.value = Path(path).name
+            self.profiles_dir = Path(path).parent
+            self.w_profile_id.options = self._profile_id_options()
+        elif not _optional_text(self.w_save_filename.value):
+            self.w_save_filename.value = preprocess_profile_path(
+                str(profile.get("profile_id") or "new_preprocess_profile"),
+                directory="",
+            ).name
+
         self.w_profile_id.value = str(profile.get("profile_id") or "")
         self.w_description.value = str(profile.get("description") or "")
 
         self.w_schema_path.value = str(cfg.get("schema_path") or "")
         self.w_strict.value = bool(cfg.get("strict", False))
-        self.w_generic_log_metadata_paths.value = _json_text(cfg.get("generic_log_metadata_paths") or [])
-        self.w_bike_profile_path.value = str(cfg.get("bike_profile_path") or "")
-        self.w_bike_profile_id.value = str(cfg.get("bike_profile_id") or "")
-
-        legacy_ranges = cfg.get("normalize_ranges")
-        self.w_use_legacy_ranges.value = isinstance(legacy_ranges, Mapping)
-        self.w_legacy_ranges.value = _json_text(legacy_ranges or {})
 
         self.w_fit_enabled.value = bool(fit.get("enabled", False))
-        self.w_fit_dir.value = str(fit.get("fit_dir") or "")
-        self.w_fit_bindings_path.value = str(fit.get("bindings_path") or "")
         self.w_fit_field_allowlist.value = _json_text(fit.get("field_allowlist") or [])
         _set_dropdown_value(self.w_fit_ambiguity_policy, fit.get("ambiguity_policy") or "require_binding", "require_binding")
         _set_dropdown_value(self.w_fit_partial_overlap, fit.get("partial_overlap") or "allow", "allow")
@@ -311,16 +342,14 @@ class PreprocessProfileEditor:
         self.w_bw_smoothing.value = _json_text(cfg.get("butterworth_smoothing") or [])
         self.w_bw_generate_residuals.value = bool(cfg.get("butterworth_generate_residuals", False))
 
-        self.w_active_enabled.value = cfg.get("active_signal_disp_col") is not None
-        self.w_active_disp_col.value = str(cfg.get("active_signal_disp_col") or "")
-        self.w_active_vel_col.value = str(cfg.get("active_signal_vel_col") or "")
+        self.w_active_enabled.value = cfg.get("active_signal_disp_selector") is not None
+        self.w_active_disp_selector.value = _json_text(cfg.get("active_signal_disp_selector") or {})
+        self.w_active_vel_selector.value = _json_text(cfg.get("active_signal_vel_selector") or {})
         self.w_active_disp_thresh.value = float(cfg.get("active_disp_thresh", 20.0))
         self.w_active_vel_thresh.value = float(cfg.get("active_vel_thresh", 50.0))
         self.w_active_window.value = str(cfg.get("active_window") or "500ms")
         self.w_active_padding.value = str(cfg.get("active_padding") or "1s")
         self.w_active_min_seg.value = str(cfg.get("active_min_seg") or "3s")
-
-        self.w_prompt_desc.value = bool(cfg.get("prompt_for_descriptions", True))
 
     def load_profile(self, path: str | Path) -> Dict[str, Any]:
         profile = load_preprocess_profile(path)
@@ -328,11 +357,6 @@ class PreprocessProfileEditor:
         return profile
 
     def get_config(self) -> Dict[str, Any]:
-        generic_paths = _parse_json_or_literal(
-            self.w_generic_log_metadata_paths.value,
-            expected=list,
-            field_name="generic_log_metadata_paths",
-        )
         fields = _parse_json_or_literal(
             self.w_fit_field_allowlist.value,
             expected=list,
@@ -350,7 +374,6 @@ class PreprocessProfileEditor:
             "strict": bool(self.w_strict.value),
             "fit_import": {
                 "enabled": bool(self.w_fit_enabled.value),
-                "fit_dir": str(self.w_fit_dir.value or "").strip(),
                 "field_allowlist": [str(x).strip() for x in fields if str(x).strip()],
                 "ambiguity_policy": str(self.w_fit_ambiguity_policy.value),
                 "partial_overlap": str(self.w_fit_partial_overlap.value),
@@ -358,11 +381,7 @@ class PreprocessProfileEditor:
                 "resample_to_primary": bool(self.w_fit_resample_to_primary.value),
                 "resample_method": str(self.w_fit_resample_method.value),
                 "raw_stream_name": str(self.w_fit_raw_stream_name.value or "").strip(),
-                "bindings_path": _optional_text(self.w_fit_bindings_path.value),
             },
-            "generic_log_metadata_paths": [str(x).strip() for x in generic_paths if str(x).strip()],
-            "bike_profile_path": _optional_text(self.w_bike_profile_path.value),
-            "bike_profile_id": _optional_text(self.w_bike_profile_id.value),
             "zeroing_enabled": bool(self.w_zero_enabled.value),
             "zero_window_s": float(self.w_zero_window_s.value),
             "zero_min_samples": int(self.w_zero_min_samples.value),
@@ -372,28 +391,24 @@ class PreprocessProfileEditor:
                 for cfg in bw_normalized
             ],
             "butterworth_generate_residuals": bool(self.w_bw_generate_residuals.value),
-            "active_signal_disp_col": _optional_text(self.w_active_disp_col.value) if self.w_active_enabled.value else None,
-            "active_signal_vel_col": _optional_text(self.w_active_vel_col.value) if self.w_active_enabled.value else None,
+            "active_signal_disp_selector": _parse_optional_json_object(
+                self.w_active_disp_selector.value,
+                field_name="active_signal_disp_selector",
+            )
+            if self.w_active_enabled.value
+            else None,
+            "active_signal_vel_selector": _parse_optional_json_object(
+                self.w_active_vel_selector.value,
+                field_name="active_signal_vel_selector",
+            )
+            if self.w_active_enabled.value
+            else None,
             "active_disp_thresh": float(self.w_active_disp_thresh.value),
             "active_vel_thresh": float(self.w_active_vel_thresh.value),
             "active_window": str(self.w_active_window.value or "").strip(),
             "active_padding": str(self.w_active_padding.value or "").strip(),
             "active_min_seg": str(self.w_active_min_seg.value or "").strip(),
-            "prompt_for_descriptions": bool(self.w_prompt_desc.value),
         }
-
-        if self.w_use_legacy_ranges.value:
-            ranges = _parse_json_or_literal(
-                self.w_legacy_ranges.value,
-                expected=dict,
-                field_name="normalize_ranges",
-            )
-            config["normalize_ranges"] = {str(k): float(v) for k, v in ranges.items()}
-
-        # Drop a null bike profile if legacy ranges are being used. Otherwise
-        # validation will correctly require a bike profile path.
-        if config["bike_profile_path"] is None and self.w_use_legacy_ranges.value:
-            config.pop("bike_profile_path", None)
 
         validate_preprocess_config(config)
         return config
@@ -415,12 +430,8 @@ class PreprocessProfileEditor:
         except Exception as exc:
             errors.append(str(exc))
 
-        if self.w_fit_enabled.value and not _optional_text(self.w_fit_dir.value):
-            errors.append("FIT import is enabled but FIT dir is blank.")
-        if not self.w_use_legacy_ranges.value and not _optional_text(self.w_bike_profile_path.value):
-            errors.append("Bike profile path is blank and legacy ranges are disabled.")
-        if self.w_use_legacy_ranges.value:
-            warnings.append("Legacy normalize_ranges are enabled; prefer a bike profile for new workflows.")
+        if self.w_fit_enabled.value:
+            warnings.append("FIT import is enabled; remember to provide FIT_DIR and FIT_BINDINGS_PATH at run time.")
 
         if print_to_output:
             with self._out:
@@ -440,22 +451,35 @@ class PreprocessProfileEditor:
 
     def save_profile(self, path: Optional[str | Path] = None, *, overwrite: bool = True) -> Path:
         profile = self.get_profile()
-        out_path = Path(path or self.w_profile_path.value)
+        out_path = Path(path) if path is not None else self._save_path_for_profile(profile["profile_id"])
         saved = save_preprocess_profile(profile, out_path, overwrite=overwrite)
         self.current_profile_path = saved
-        self.w_profile_path.value = str(saved)
+        self.w_profile_dir.value = str(saved.parent)
+        self.w_save_filename.value = saved.name
         self.refresh_profile_list()
         return saved
 
+    def _save_path_for_profile(self, profile_id: str) -> Path:
+        filename = _optional_text(self.w_save_filename.value)
+        if filename is None:
+            filename = preprocess_profile_path(profile_id, directory="").name
+            self.w_save_filename.value = filename
+
+        path = Path(filename)
+        if path.is_absolute():
+            return path
+        return Path(self.w_profile_dir.value or self.profiles_dir) / path
+
     def _load_selected_profile(self) -> None:
-        selected = _optional_text(self.w_discovered_profiles.value)
-        if not selected:
+        profile_id = _optional_text(self.w_profile_id.value)
+        if not profile_id:
             return
         with self._out:
             self._out.clear_output()
             try:
-                self.load_profile(selected)
-                print(f"Loaded profile: {selected}")
+                path = self._profile_path_for_id(profile_id)
+                self.load_profile(path)
+                print(f"Loaded profile: {path}")
             except Exception as exc:
                 print(f"Could not load profile: {exc}")
 
@@ -468,11 +492,22 @@ class PreprocessProfileEditor:
             except Exception as exc:
                 print(f"Could not save profile: {exc}")
 
-    def _set_conventional_path(self) -> None:
-        profile_id = _optional_text(self.w_profile_id.value)
-        if not profile_id:
-            return
-        self.w_profile_path.value = str(preprocess_profile_path(profile_id, directory=self.profiles_dir))
+    def _browse_profile_dir(self) -> None:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        current = _optional_text(self.w_profile_dir.value)
+        start_dir = current if current and Path(current).exists() else str(Path.cwd())
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        chosen = filedialog.askdirectory(title="Select preprocess profile directory", initialdir=start_dir)
+        root.destroy()
+
+        if chosen:
+            self.w_profile_dir.value = chosen
+            self.refresh_profile_list()
 
 
 def make_preprocess_profile_editor(

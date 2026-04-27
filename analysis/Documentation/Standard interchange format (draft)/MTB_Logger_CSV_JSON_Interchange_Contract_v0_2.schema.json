@@ -390,6 +390,13 @@
         "sensor": {
           "type": "string"
         },
+        "end": {
+          "type": "string",
+          "enum": [
+            "front",
+            "rear"
+          ]
+        },
         "quantity": {
           "type": "string"
         },

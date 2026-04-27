@@ -62,6 +62,11 @@ Each `SignalInfo` MUST contain the following keys:
   - Optional, but **highly recommended** when the same physical quantity can exist in multiple frames/domains.
   - Examples: `"sensor"`, `"wheel"`, `"bike"`, `"world"`.
 
+- `end`: `"front" | "rear" | None`
+  - Optional, but **highly recommended** for front/rear bike signals.
+  - Use this to distinguish front and rear suspension or wheel signals without
+    relying on logger-specific sensor identifiers.
+
 - `op_chain`: `list[str]`
   - List of analysis-side operation tokens applied to produce this column (possibly empty).
   - Examples: `["zeroed"]`, `["zeroed", "norm"]`, `["zeroed", "Butterworth_3Hz_4Order"]`, `["zeroed", "diff"]`.
@@ -74,6 +79,11 @@ Residual naming note:
 
 - `source`: `list[str]`
   - Parent column name(s) this column derives from (especially for `_op_*` or derived velocity/acceleration channels).
+
+- `sensor`: `str | None`
+  - Logical or source sensor identifier retained for compatibility and display.
+  - For front/rear bike-location matching, prefer `end` plus `domain`,
+    `quantity`, and `unit`.
 
 - `notes`: `str`
   - Free text diagnostics or hints.
@@ -94,7 +104,7 @@ This minimum registry is compatible with the column grammar in **Signal naming &
 When resolving schema roles (e.g. `disp`, `vel`, `acc`) to columns, downstream code SHOULD use the registry to:
 
 1. Filter candidates by `kind` (usually engineered `""`),
-2. Filter by `unit` and `domain` as required by the schema,
+2. Filter by `unit`, `domain`, and `end` as required by the schema,
 3. Prefer “cleaner” stages using `op_chain` (policy-defined ranking),
 4. Fall back deterministically and emit actionable diagnostics if no match exists.
 

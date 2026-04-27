@@ -1,10 +1,10 @@
 {
   "schema": "bodaqs.preprocess_profile",
   "version": 1,
-  "profile_id": "suspension_default",
+  "profile_id": "Bens R&D v1",
   "description": "Default preprocessing profile for the combined preprocessing and suspension dashboard notebook.",
   "config": {
-    "schema_path": "event schema/event_schema.yaml",
+    "schema_path": "event schema/event_schema - Basic.yaml",
     "strict": false,
     "fit_import": {
       "enabled": true,
@@ -26,12 +26,19 @@
       "resample_method": "linear",
       "raw_stream_name": "gps_fit"
     },
-    "zeroing_enabled": false,
+    "zeroing_enabled": true,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": false,
-    "butterworth_smoothing": [],
-    "butterworth_generate_residuals": false,
+    "butterworth_smoothing": [
+		{"cutoff_hz": 2, "order": 4}, 
+		{"cutoff_hz": 5, "order": 4}, 
+		{"cutoff_hz": 10, "order": 4}, 
+		{"cutoff_hz": 20, "order": 4}, 
+		{"cutoff_hz": 50, "order": 4}, 
+		{"cutoff_hz": 100, "order": 4} 
+	],
+    "butterworth_generate_residuals": true,
     "active_signal_disp_selector": {
       "end": "rear",
       "quantity": "disp",

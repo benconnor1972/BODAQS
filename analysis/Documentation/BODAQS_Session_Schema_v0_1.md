@@ -93,15 +93,19 @@ Keyed by canonical base channel name:
 ```python
 meta["channel_info"][channel] = {
     "unit": str | None,              # e.g. "mm", "g", "deg/s", "V"
-    "sensor": str | None,            # logical grouping (e.g. "rear_shock", "imu")
+    "sensor": str | None,            # source/logical grouping (e.g. "rear_shock", "imu")
+    "end": str | None,               # bike end/location, usually "front" or "rear"
     "role": str | None,              # e.g. "position", "accel", "gyro"
     "nominal_rate_hz": float | None, # if known from firmware/config
     "source_columns": list[str],     # raw CSV columns used (optional)
 }
 ```
 
-Suspension sensors should be stored with canonical ids `front_shock` and `rear_shock`.
-During analysis ingest/resolution, `fork` is accepted as an alias for `front_shock`, and `shock` is accepted as an alias for `rear_shock`.
+For front/rear suspension and wheel signals, `end` is the preferred semantic for
+bike-location matching. `sensor` remains available for logger/source identity,
+legacy canonical column stems, and display grouping. During analysis
+ingest/resolution, `fork` is accepted as an alias for `front_shock`, and
+`shock` is accepted as an alias for `rear_shock`.
 
 
 ### meta.streams (Per-Stream Timebase Metadata)

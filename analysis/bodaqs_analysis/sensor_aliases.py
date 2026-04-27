@@ -16,8 +16,18 @@ _SENSOR_ALIASES: dict[str, str] = {
     "rear_shock": "rear_shock",
     "rear_fork": "rear_shock",
     "shock": "rear_shock",
+    "front_wheel": "front_wheel",
+    "rear_wheel": "rear_wheel",
 }
 _ALIASES_BY_LENGTH = tuple(sorted(_SENSOR_ALIASES, key=len, reverse=True))
+_END_ALIASES: dict[str, str] = {
+    "front": "front",
+    "f": "front",
+    "fore": "front",
+    "rear": "rear",
+    "r": "rear",
+    "back": "rear",
+}
 
 
 def normalize_sensor_token(value: Any) -> str:
@@ -80,7 +90,15 @@ def sensors_match(left: Any, right: Any) -> bool:
     return bool(left_key and right_key and normalize_sensor_token(left_key) == normalize_sensor_token(right_key))
 
 
-def sensor_side(value: Any) -> str:
+def canonical_end(value: Any) -> str:
+    """Canonicalize a bike-end/location token to ``front``/``rear`` when possible."""
+    key = normalize_sensor_token(value)
+    if not key:
+        return ""
+    return _END_ALIASES.get(key, "")
+
+
+def end_from_sensor(value: Any) -> str:
     """Return ``front``/``rear`` for known suspension sensor ids or signal names."""
     sensor = canonical_sensor_from_text(value) or canonical_sensor_id(value)
     if sensor.startswith("front_"):
@@ -90,9 +108,18 @@ def sensor_side(value: Any) -> str:
     return ""
 
 
+def ends_match(left: Any, right: Any) -> bool:
+    """Alias-aware equality for bike ends."""
+    left_key = canonical_end(left) or end_from_sensor(left)
+    right_key = canonical_end(right) or end_from_sensor(right)
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def sensor_side(value: Any) -> str:
+    """Return ``front``/``rear`` for known suspension sensor ids or signal names."""
+    return end_from_sensor(value)
+
+
 def sensor_matches_side(value: Any, side: Any) -> bool:
     """Return True when a sensor id or signal name belongs to the requested side."""
-    side_key = normalize_sensor_token(side)
-    if side_key not in {"front", "rear"}:
-        return False
-    return sensor_side(value) == side_key
+    return ends_match(value, side)

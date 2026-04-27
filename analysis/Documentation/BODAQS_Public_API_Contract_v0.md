@@ -137,6 +137,7 @@ records = discover_preprocess_profiles(directory: str | Path)
 - Missing required config fields raise `ValueError`
 - New callers can pass the returned config directly to `run_macro(..., preprocess_config=config)`
 - Scripts and notebook UIs can create/edit/save profiles without duplicating JSON-shaping logic
+- Persisted preprocess profiles contain reusable processing policy only; run-specific bindings such as log metadata paths, bike profile paths, FIT directories, and FIT binding manifests are supplied separately by the caller.
 
 ---
 
@@ -152,6 +153,7 @@ session = load_session(
     *,
     timezone: Optional[str] = None,
     log_metadata_path: Optional[str] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
 )
 ```
 
@@ -163,6 +165,7 @@ session = load_session(
 - `session["df"]` contains `time_s`
 - Timestamp parsing is handled internally
 - When logger log metadata is available, ingest may use it for delimiter, time-column, and metadata hints
+- Generic log metadata paths are a run-level fallback and are not loaded from the preprocess profile.
 
 ---
 
@@ -255,6 +258,8 @@ session = preprocess_session(
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
+    active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+    active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
     ...
 )
 ```
@@ -267,8 +272,10 @@ session = preprocess_session(
 - `time_s` is preserved
 - QC and transform provenance are recorded under `session["qc"]`
 - New callers may pass a single `preprocess_config` payload instead of unpacking individual preprocessing fields.
-- Normalization ranges may be supplied directly as the legacy `normalize_ranges` map, or resolved
+- Normalization ranges may be supplied directly as a runtime `normalize_ranges` map, or resolved
   from a bike profile using semantic signal selectors.
+- Persisted preprocess profiles select activity-mask signals by semantic selectors, not dataframe
+  column names. Runtime column-name overrides remain available for scripts that need them.
 - If zeroing is enabled, physical displacement columns are zeroed before bike-profile signal transforms are applied.
 - Normalized `[1]` outputs are generated after bike-profile signal transforms have been applied.
 - When `butterworth_smoothing` is provided, additional append-only displacement variants are created
@@ -333,8 +340,11 @@ results = run_macro(
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
+    active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+    active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
     timezone: Optional[str] = None,
     log_metadata_path: Optional[str] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
 )
 ```
 
@@ -342,11 +352,21 @@ Preferred new-call pattern:
 
 ```python
 config = load_preprocess_config("config/preprocess_profiles/suspension_default_v1.json")
-results = run_macro("ride.csv", preprocess_config=config)
+fit_import = dict(config.get("fit_import") or {})
+if fit_import.get("enabled"):
+    fit_import["fit_dir"] = "Garmin/FIT"
+    fit_import["bindings_path"] = "config/fit_bindings_v1.json"
+
+results = run_macro(
+    "ride.csv",
+    preprocess_config=config,
+    generic_log_metadata_paths=["config/log_metadata_examples/current_logger_config_hr_timestamp_log_metadata.json"],
+    bike_profile_path="config/bike_profiles/example_enduro_bike_v1.json",
+    fit_import=fit_import,
+)
 ```
 
-Callers should prefer `preprocess_config` or `preprocess_profile_path` for new workflows.
-Individual keyword arguments, including legacy `normalize_ranges`, remain supported as a compatibility path for existing notebooks and scripts.
+Callers should prefer `preprocess_config` or `preprocess_profile_path` for reusable preprocessing policy in new workflows. Local/run-specific inputs such as log metadata selection, bike profile selection, FIT source directory, and FIT binding manifest are passed as explicit run-level arguments rather than persisted inside the preprocess profile.
 
 **Returns:**
 ```python

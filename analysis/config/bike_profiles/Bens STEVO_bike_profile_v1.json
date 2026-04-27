@@ -1,15 +1,15 @@
 {
   "schema": "bodaqs.bike_profile",
   "version": 1,
-  "bike_profile_id": "Bens_STEVO",
-  "display_name": "Ben's STEVO",
-  "description": "Ben's Stumpjumper Evo with custom link and 170mm fork.",
+  "bike_profile_id": "example_enduro_bike",
+  "display_name": "Example enduro bike",
+  "description": "Example bike profile showing normalization ranges and setup-specific transforms.",
   "bike": {
-    "manufacturer": "Specialized",
-    "model": "Stumpjumper Evo",
-    "model_year": "2022",
-    "wheel_size": "Mixed",
-    "notes": "Includes multiple Butterworth series"
+    "manufacturer": "Example",
+    "model": "Enduro",
+    "model_year": "2026",
+    "wheel_size": "29",
+    "notes": "Illustrative values only; replace before real analysis."
   },
   "setup": {
     "setup_id": "default_suspension_setup",
@@ -22,7 +22,7 @@
       "signal": {
         "end": "front",
         "quantity": "disp",
-        "domain": "wheel",
+        "domain": "suspension",
         "unit": "mm"
       },
       "full_range": 170.0
@@ -35,7 +35,7 @@
         "domain": "suspension",
         "unit": "mm"
       },
-      "full_range": 55.0
+      "full_range": 65.0
     },
     {
       "id": "rear_wheel_travel_range",
@@ -51,7 +51,7 @@
   "signal_transforms": [
     {
       "id": "rear_shock_to_rear_wheel_travel",
-      "description": "LUT converting rear shock travel to rear wheel travel.",
+      "description": "Example LUT converting rear shock travel to rear wheel travel.",
       "enabled": true,
       "input": {
         "end": "rear",
@@ -142,6 +142,31 @@
           "output": 165.0
         }
       ]
+    },
+    {
+      "id": "front_fork_to_front_wheel_travel",
+      "description": "Example polynomial identity transform for fork to front wheel travel.",
+      "enabled": false,
+      "input": {
+        "end": "front",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": "mm"
+      },
+      "output": {
+        "end": "front",
+        "quantity": "disp",
+        "domain": "wheel",
+        "unit": "mm"
+      },
+      "method": "polynomial",
+      "polynomial": {
+        "coefficient_order": "ascending",
+        "coefficients": [
+          0.0,
+          1.0
+        ]
+      }
     }
   ],
   "installed_sensors": [
@@ -159,7 +184,7 @@
     }
   ],
   "provenance": {
-    "created_by": "Ben C",
-    "created_at": "2026-04-27"
+    "created_by": "manual example",
+    "created_at": "2026-04-26"
   }
 }

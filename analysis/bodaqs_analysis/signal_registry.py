@@ -9,7 +9,7 @@ import numpy as np
 
 from .signalname import parse_signal_name, SignalNameError, SignalNameParts
 from .signalspec import SignalSpec, DEFAULT_SPEC, RAW_UNIT_DEFAULT
-from .sensor_aliases import canonical_sensor_from_text, canonical_sensor_id, normalize_sensor_token
+from .sensor_aliases import canonical_end, canonical_sensor_from_text, canonical_sensor_id, end_from_sensor, normalize_sensor_token
 
 
 # Columns that are not "signals" but may be numeric and should be tolerated.
@@ -61,6 +61,7 @@ def build_signals_registry(
 
     Adds semantic fields used by Option 1 resolution:
       - sensor: sensor_id such as 'rear_shock', 'front_shock' (or None)
+      - end: bike end/location such as 'front' or 'rear' (or None)
       - quantity: 'disp' | 'vel' | 'acc' | 'disp_norm' | 'raw' (or None)
     """
     if "df" not in session:
@@ -84,6 +85,8 @@ def build_signals_registry(
     KNOWN_SENSOR_PREFIXES = (
         "front_shock",
         "rear_shock",
+        "front_wheel",
+        "rear_wheel",
         "gps_fit",
         "gps",
     )
@@ -189,6 +192,12 @@ def build_signals_registry(
         if isinstance(sensor, str) and sensor.strip():
             merged["sensor"] = canonical_sensor_id(sensor)
 
+        end = hints.get("end")
+        end_value = canonical_end(end) if isinstance(end, str) and end.strip() else ""
+        inferred_end = end_from_sensor(merged.get("sensor"))
+        if end_value or inferred_end:
+            merged["end"] = end_value or inferred_end
+
         quantity = hints.get("quantity", hints.get("role"))
         if isinstance(quantity, str) and quantity.strip():
             merged["quantity"] = quantity.strip()
@@ -211,13 +220,17 @@ def build_signals_registry(
         unit = _registry_unit_from_channel_info(hints.get("unit"))
         domain = hints.get("domain")
         sensor = hints.get("sensor")
+        end = hints.get("end")
+        sensor_id = canonical_sensor_id(sensor) if isinstance(sensor, str) and sensor.strip() else None
+        end_value = canonical_end(end) if isinstance(end, str) and end.strip() else ""
 
         info: Dict[str, Any] = {
             "kind": "raw" if quantity == "raw" else ("qc" if _is_boolish_series(s) else ""),
             "unit": unit,
             "domain": domain.strip() if isinstance(domain, str) and domain.strip() else None,
             "op_chain": [],
-            "sensor": canonical_sensor_id(sensor) if isinstance(sensor, str) and sensor.strip() else None,
+            "sensor": sensor_id,
+            "end": end_value or end_from_sensor(sensor_id) or None,
             "quantity": quantity,
             "notes": "semantics supplied by logger log metadata",
         }
@@ -258,6 +271,7 @@ def build_signals_registry(
                 "domain": domain,             # string or None
                 "op_chain": ops,              # list[str]
                 "sensor": sensor_id,          # e.g. rear_shock
+                "end": end_from_sensor(sensor_id) or None,
                 "quantity": quantity,         # disp / vel / acc / disp_norm / raw
             }
 
@@ -289,6 +303,7 @@ def build_signals_registry(
                 "domain": None,
                 "op_chain": [],
                 "sensor": None,
+                "end": None,
                 "quantity": None,
                 "notes": f"unparsed numeric column; needs normalization: {e}",
             }

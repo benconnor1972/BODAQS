@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+from bodaqs_analysis.sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
 from bodaqs_analysis.widgets.contracts import RegistryPolicy, SessionLoader
 from bodaqs_analysis.widgets.registry_scope import (
     apply_registry_policy_to_registries,
@@ -143,6 +143,19 @@ def _resolve_sensor(
     return ""
 
 
+def _resolve_signal_info(
+    *,
+    registry: Mapping[str, Mapping[str, Any]],
+    token_val: object,
+) -> Mapping[str, Any]:
+    tok = str(token_val) if token_val is not None else ""
+    tok = tok.strip()
+    if not tok:
+        return {}
+    info = registry.get(tok)
+    return info if isinstance(info, Mapping) else {}
+
+
 def registry_maps_for_sessions(
     *,
     session_keys: Sequence[str],
@@ -208,4 +221,32 @@ def assign_sensor_column(
         ],
         index=viz_df.index,
     )
+
+
+def assign_signal_semantics_columns(
+    *,
+    viz_df: pd.DataFrame,
+    session_key_col: str,
+    signal_col: str,
+    registries_by_session: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> pd.DataFrame:
+    """Return semantic columns resolved from each event row's signal token."""
+
+    records: list[dict[str, str]] = []
+    for sk, tok in zip(viz_df[session_key_col].astype(str), viz_df[signal_col].astype(str)):
+        reg = registries_by_session.get(str(sk), {})
+        info = _resolve_signal_info(registry=reg, token_val=tok)
+        sensor = str(info.get("sensor") or "").strip()
+        end = canonical_end(info.get("end")) or end_from_sensor(sensor) or end_from_sensor(tok)
+        records.append(
+            {
+                "_sensor": canonical_sensor_id(sensor) if sensor else "",
+                "_end": end,
+                "_domain": str(info.get("domain") or "").strip(),
+                "_quantity": str(info.get("quantity") or "").strip(),
+                "_unit": str(info.get("unit") or "").strip(),
+            }
+        )
+
+    return pd.DataFrame.from_records(records, index=viz_df.index)
 

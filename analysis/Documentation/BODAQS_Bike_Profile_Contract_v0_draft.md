@@ -168,7 +168,7 @@ Example:
   {
     "id": "front_fork_travel_range",
     "signal": {
-      "sensor": "front_shock",
+      "end": "front",
       "quantity": "disp",
       "domain": "suspension",
       "unit": "mm"
@@ -178,7 +178,7 @@ Example:
   {
     "id": "rear_shock_travel_range",
     "signal": {
-      "sensor": "rear_shock",
+      "end": "rear",
       "quantity": "disp",
       "domain": "suspension",
       "unit": "mm"
@@ -193,6 +193,8 @@ Rules:
 - `id` MUST be unique within `normalization_ranges`.
 - `signal` MUST identify the physical signal by semantics.
 - `signal` SHOULD be specific enough to resolve exactly one signal.
+- For front/rear suspension and wheel signals, `end` plus `domain`,
+  `quantity`, and `unit` is preferred over sensor-specific identifiers.
 - Sensor aliases MAY be canonicalized before matching, using the same rules as signal selectors.
 - `full_range` MUST be a finite number greater than zero.
 - These ranges are bike/setup facts, not logger facts.
@@ -247,6 +249,7 @@ A signal selector identifies an input signal by semantics.
 
 Supported selector fields:
 
+- `end`
 - `sensor`
 - `quantity`
 - `domain`
@@ -256,7 +259,7 @@ Example:
 
 ```json
 {
-  "sensor": "rear_shock",
+  "end": "rear",
   "quantity": "disp",
   "domain": "suspension",
   "unit": "mm"
@@ -266,7 +269,12 @@ Example:
 Rules:
 
 - Selectors SHOULD be specific enough to resolve exactly one input signal.
+- `end`, when present, SHOULD be one of `front` or `rear`.
+- `end` is the preferred way to distinguish front and rear bike locations.
+  This keeps bike-profile matching independent of logger-specific sensor IDs.
 - Sensor values are semantic sensor identifiers. Consumers MAY canonicalize known aliases, for example `fork` to `front_shock` and `shock` to `rear_shock`, before matching.
+- `sensor` remains supported for compatibility and for cases where a specific
+  logger/source sensor identity is genuinely needed.
 - If a selector resolves zero signals, consumers SHOULD warn and skip the transform unless the transform is required by local policy.
 - If a selector resolves multiple signals, consumers SHOULD fail or ask the user to choose.
 
@@ -279,7 +287,7 @@ Example:
 
 ```json
 {
-  "sensor": "rear_wheel",
+  "end": "rear",
   "quantity": "disp",
   "domain": "wheel",
   "unit": "mm"
@@ -287,7 +295,10 @@ Example:
 ```
 
 Consumers SHOULD derive the output dataframe column name from these semantics
-using the canonical BODAQS signal naming rules.
+using the canonical BODAQS signal naming rules. For compatibility with existing
+analysis code, consumers MAY derive a legacy-compatible sensor-like column stem
+from `end` and `domain`, for example `end=rear, domain=wheel` to
+`rear_wheel`.
 
 ### 8.4 LUT Transform
 
@@ -380,7 +391,7 @@ A bike profile is structurally valid if:
     {
       "id": "front_fork_travel_range",
       "signal": {
-        "sensor": "front_shock",
+        "end": "front",
         "quantity": "disp",
         "domain": "suspension",
         "unit": "mm"
@@ -390,7 +401,7 @@ A bike profile is structurally valid if:
     {
       "id": "rear_shock_travel_range",
       "signal": {
-        "sensor": "rear_shock",
+        "end": "rear",
         "quantity": "disp",
         "domain": "suspension",
         "unit": "mm"

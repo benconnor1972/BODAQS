@@ -29,7 +29,7 @@ from .signal_standardize import (
     rebuild_and_validate_signal_registry,
 )
 from .signal_registry import build_signals_registry
-from .sensor_aliases import canonical_sensor_id
+from .signal_selectors import resolve_signal_selector
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
     apply_butterworth_smoothing,
@@ -37,6 +37,7 @@ from .preprocess_filters import (
 )
 from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
 from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
+from .sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_DATETIME_RE = re.compile(
@@ -130,6 +131,12 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         sensor = info.get("sensor")
         if isinstance(sensor, str) and sensor.strip():
             ch["sensor"] = canonical_sensor_id(sensor)
+
+        end = info.get("end")
+        canonical = canonical_end(end) if isinstance(end, str) and end.strip() else ""
+        inferred = end_from_sensor(ch.get("sensor") or sensor)
+        if canonical or inferred:
+            ch["end"] = canonical or inferred
 
         quantity = info.get("quantity")
         if isinstance(quantity, str) and quantity.strip():
@@ -841,6 +848,8 @@ def preprocess_session(session: Dict[str, Any],
                        clip_0_1: bool = False,
                        active_signal_disp_col: Optional[str] = None,
                        active_signal_vel_col: Optional[str] = None,
+                       active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+                       active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
                        active_disp_thresh: float = 20,
                        active_vel_thresh: float = 50,
                        active_window: str = "500ms",
@@ -855,15 +864,13 @@ def preprocess_session(session: Dict[str, Any],
     """Normalize, zero + compute velocity/acceleration."""
     if preprocess_config is not None:
         cfg = _validated_preprocess_config_copy(preprocess_config)
-        normalize_ranges = normalize_ranges if normalize_ranges is not None else cfg.get("normalize_ranges")
-        bike_profile_path = bike_profile_path if bike_profile_path is not None else cfg.get("bike_profile_path")
         sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
         zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
         zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
         zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
         clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
-        active_signal_disp_col = cfg.get("active_signal_disp_col", active_signal_disp_col)
-        active_signal_vel_col = cfg.get("active_signal_vel_col", active_signal_vel_col)
+        active_signal_disp_selector = cfg.get("active_signal_disp_selector", active_signal_disp_selector)
+        active_signal_vel_selector = cfg.get("active_signal_vel_selector", active_signal_vel_selector)
         active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
         active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
         active_window = str(cfg.get("active_window", active_window))
@@ -970,6 +977,13 @@ def preprocess_session(session: Dict[str, Any],
         )
     else:
         normalize_ranges = dict(normalize_ranges)
+
+    if active_signal_disp_col is None and active_signal_disp_selector is not None:
+        active_signal_disp_col = resolve_signal_selector(
+            session,
+            active_signal_disp_selector,
+            purpose="activity displacement",
+        )
 
     # ---------------- Scale after transformations ----------------
     df2, scale_meta = scale_signal_columns(
@@ -1099,11 +1113,19 @@ def preprocess_session(session: Dict[str, Any],
         return_meta=True,            # <-- opt-in diagnostics
     )
     session["df"] = df3
+    session = build_signals_registry(session, strict=False)
 
     # ---------------- Activity mask (QC; non-destructive) ----------------
     # Derive companion columns from ACTIVE_SIGNAL_BASE
     # Assumes your VA naming convention appends "_vel" to the signal column name.
     # Adjust vel_col derivation if your VA uses a different convention.
+
+    if active_signal_vel_col is None and active_signal_vel_selector is not None:
+        active_signal_vel_col = resolve_signal_selector(
+            session,
+            active_signal_vel_selector,
+            purpose="activity velocity",
+        )
 
     # If user specified only displacement for activity mask, derive the velocity name
     if active_signal_disp_col and not active_signal_vel_col:
@@ -1131,6 +1153,8 @@ def preprocess_session(session: Dict[str, Any],
         "mask_col": ACTIVE_MASK_COL,
         "disp_col": active_signal_disp_col,
         "vel_col": active_signal_vel_col,
+        "disp_selector": dict(active_signal_disp_selector) if isinstance(active_signal_disp_selector, Mapping) else None,
+        "vel_selector": dict(active_signal_vel_selector) if isinstance(active_signal_vel_selector, Mapping) else None,
         "disp_thresh": float(active_disp_thresh),
         "vel_thresh": float(active_vel_thresh),
         "window": str(active_window),
@@ -1199,6 +1223,8 @@ def run_macro(
     normalize_ranges: Optional[Dict[str, float]] = None,
     bike_profile_path: Optional[str | Path] = None,
     bike_profile: Optional[Mapping[str, Any]] = None,
+    active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+    active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
@@ -1221,21 +1247,14 @@ def run_macro(
     )
     if cfg is not None:
         schema_path = schema_path if schema_path is not None else cfg.get("schema_path")
-        generic_log_metadata_paths = (
-            generic_log_metadata_paths
-            if generic_log_metadata_paths is not None
-            else cfg.get("generic_log_metadata_paths")
-        )
         fit_import = fit_import if fit_import is not None else cfg.get("fit_import")
-        normalize_ranges = normalize_ranges if normalize_ranges is not None else cfg.get("normalize_ranges")
-        bike_profile_path = bike_profile_path if bike_profile_path is not None else cfg.get("bike_profile_path")
         sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
         zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
         zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
         zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
         clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
-        active_signal_disp_col = cfg.get("active_signal_disp_col", active_signal_disp_col)
-        active_signal_vel_col = cfg.get("active_signal_vel_col", active_signal_vel_col)
+        active_signal_disp_selector = cfg.get("active_signal_disp_selector", active_signal_disp_selector)
+        active_signal_vel_selector = cfg.get("active_signal_vel_selector", active_signal_vel_selector)
         active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
         active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
         active_window = str(cfg.get("active_window", active_window))
@@ -1275,6 +1294,8 @@ def run_macro(
         clip_0_1=clip_0_1,
         active_signal_disp_col=active_signal_disp_col,
         active_signal_vel_col=active_signal_vel_col,
+        active_signal_disp_selector=active_signal_disp_selector,
+        active_signal_vel_selector=active_signal_vel_selector,
         active_disp_thresh=active_disp_thresh,
         active_vel_thresh=active_vel_thresh,
         active_window=active_window,
