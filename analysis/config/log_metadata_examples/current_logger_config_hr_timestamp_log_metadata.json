@@ -23,7 +23,7 @@
       "source_config": "sensor0",
       "name": "Front_fork",
       "type": "analog_pot",
-      "domain": "suspension",
+      "domain": "wheel",
       "raw_unit": "counts",
       "calibration": {
         "type": "linear",
@@ -84,7 +84,7 @@
       "sensor": "front_shock",
       "end": "front",
       "quantity": "disp",
-      "domain": "suspension",
+      "domain": "wheel",
       "unit": "mm",
       "calibration_ref": "Front_fork",
       "transform_chain": []

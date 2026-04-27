@@ -140,10 +140,37 @@ def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = No
         return out
 
     def _find_col(pred):
-        for col, info in signals.items():
-            if isinstance(info, dict) and pred(col, info):
-                return col
-        return None
+        candidates = [
+            (str(col), info)
+            for col, info in signals.items()
+            if isinstance(info, dict) and pred(str(col), info)
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=_event_input_candidate_score, reverse=True)
+        return candidates[0][0]
+
+    def _event_input_candidate_score(col_info):
+        col, info = col_info
+        ops = info.get("op_chain") or []
+        if not isinstance(ops, (list, tuple)):
+            ops = [ops] if ops else []
+        role = str(info.get("processing_role") or "").strip().lower()
+        score = 0
+        if role == "primary_analysis":
+            score += 100
+        elif role == "secondary_analysis":
+            score += 20
+        if info.get("sensor") is not None:
+            score += 2
+        if info.get("quantity") is not None:
+            score += 2
+        if info.get("unit") is not None:
+            score += 1
+        # Without an explicit analysis role, preserve the old "cleanest signal" tendency.
+        if role != "primary_analysis":
+            score -= len(ops)
+        return (score, str(col))
 
     # Engineered displacement for this sensor
     disp_col = _find_col(

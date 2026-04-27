@@ -30,6 +30,32 @@
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": false,
+    "motion_derivation": {
+      "enabled": false,
+      "sources": [
+        {
+          "id": "rear_wheel",
+          "selector": {
+            "end": "rear",
+            "quantity": "disp",
+            "domain": "wheel",
+            "unit": "mm"
+          }
+        }
+      ],
+      "primary": {
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "velocity_sg_window_ms": 20.0,
+        "acceleration_sg_window_ms": 40.0,
+        "sg_polyorder": 3,
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4
+      },
+      "secondary": []
+    },
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": false,
     "active_signal_disp_selector": {

@@ -256,6 +256,7 @@ session = preprocess_session(
     bike_profile_path: Optional[str | Path] = None,
     bike_profile: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
+    motion_derivation: Optional[Mapping[str, Any]] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
     active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
@@ -276,8 +277,17 @@ session = preprocess_session(
   from a bike profile using semantic signal selectors.
 - Persisted preprocess profiles select activity-mask signals by semantic selectors, not dataframe
   column names. Runtime column-name overrides remain available for scripts that need them.
+- Persisted preprocess profiles may include a `motion_derivation` block describing
+  analysis-channel filtering and VA derivation policy. When enabled, preprocessing
+  generates primary/secondary filtered displacement, velocity, and acceleration
+  channels before normalization and activity-mask resolution.
+- Generated analysis channels may carry registry provenance such as `processing_role`,
+  `motion_source_id`, `motion_profile_id`, and structured `derivation` metadata. Semantic
+  selectors may use these fields to request a primary analysis channel explicitly.
 - If zeroing is enabled, physical displacement columns are zeroed before bike-profile signal transforms are applied.
 - Normalized `[1]` outputs are generated after bike-profile signal transforms have been applied.
+- When motion derivation is enabled, generated displacement analysis channels are also
+  normalized using the full range of their source displacement signal.
 - When `butterworth_smoothing` is provided, additional append-only displacement variants are created
   using zero-phase SOS Butterworth filtering.
 - When `butterworth_generate_residuals=True`, each generated Butterworth series also emits an
@@ -338,6 +348,7 @@ results = run_macro(
     bike_profile: Optional[Mapping[str, Any]] = None,
     fit_import: Optional[dict[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
+    motion_derivation: Optional[Mapping[str, Any]] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
     active_signal_disp_selector: Optional[Mapping[str, Any]] = None,

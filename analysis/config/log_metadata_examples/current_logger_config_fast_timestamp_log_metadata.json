@@ -23,7 +23,7 @@
       "source_config": "sensor0",
       "name": "Fork",
       "type": "analog_pot",
-      "domain": "suspension",
+      "domain": "wheel",
       "raw_unit": "counts",
       "calibration": {
         "type": "linear",

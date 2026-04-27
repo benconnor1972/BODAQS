@@ -204,9 +204,23 @@ def build_signals_registry(
             if quantity.strip() == "raw":
                 merged["kind"] = "raw"
 
-        for key in ("log_metadata_column_id", "sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
+        for key in (
+            "log_metadata_column_id",
+            "sidecar_column_id",
+            "source_columns",
+            "source",
+            "calibration_ref",
+            "transform_chain",
+            "processing_role",
+            "motion_source_id",
+            "motion_profile_id",
+            "derivation",
+        ):
             if key in hints:
                 merged[key] = hints[key]
+
+        if "op_chain" in hints and isinstance(hints["op_chain"], list):
+            merged["op_chain"] = list(hints["op_chain"])
 
         return merged
 
@@ -234,9 +248,22 @@ def build_signals_registry(
             "quantity": quantity,
             "notes": "semantics supplied by logger log metadata",
         }
-        for key in ("log_metadata_column_id", "sidecar_column_id", "source_columns", "calibration_ref", "transform_chain"):
+        for key in (
+            "log_metadata_column_id",
+            "sidecar_column_id",
+            "source_columns",
+            "source",
+            "calibration_ref",
+            "transform_chain",
+            "processing_role",
+            "motion_source_id",
+            "motion_profile_id",
+            "derivation",
+        ):
             if key in hints:
                 info[key] = hints[key]
+        if "op_chain" in hints and isinstance(hints["op_chain"], list):
+            info["op_chain"] = list(hints["op_chain"])
         return info
     # ---- build ----------------------------------------------------
     signals: Dict[str, Dict[str, Any]] = {}

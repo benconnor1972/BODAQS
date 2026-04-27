@@ -80,6 +80,32 @@ Residual naming note:
 - `source`: `list[str]`
   - Parent column name(s) this column derives from (especially for `_op_*` or derived velocity/acceleration channels).
 
+- `source_columns`: `list[str]`
+  - Alias used by some generators for parent column names. Consumers should
+    prefer `source` when both are present, but may accept either.
+
+- `processing_role`: `str`
+  - Analysis role assigned by preprocessing. Recommended values include
+    `"primary_analysis"` and `"secondary_analysis"`.
+  - Use this when a session contains multiple valid semantic matches for the
+    same physical quantity, such as raw transformed rear-wheel displacement and
+    a filtered primary analysis rear-wheel displacement.
+
+- `motion_source_id`: `str`
+  - Identifier of the `motion_derivation.sources[]` entry that produced this
+    signal.
+
+- `motion_profile_id`: `str`
+  - Identifier of the motion-derivation profile that produced this signal.
+  - The primary profile should use `"primary"`; secondary profiles should use
+    their configured `id`.
+
+- `derivation`: `dict`
+  - Structured provenance describing how the signal was generated. For
+    motion-derived channels this should include the source column, displacement
+    low-pass settings, S-G materialized window settings, and final derivative
+    low-pass settings.
+
 - `sensor`: `str | None`
   - Logical or source sensor identifier retained for compatibility and display.
   - For front/rear bike-location matching, prefer `end` plus `domain`,
@@ -105,8 +131,11 @@ When resolving schema roles (e.g. `disp`, `vel`, `acc`) to columns, downstream c
 
 1. Filter candidates by `kind` (usually engineered `""`),
 2. Filter by `unit`, `domain`, and `end` as required by the schema,
-3. Prefer “cleaner” stages using `op_chain` (policy-defined ranking),
-4. Fall back deterministically and emit actionable diagnostics if no match exists.
+3. Prefer a requested `processing_role` when supplied, especially
+   `"primary_analysis"` for standard metrics/event detection,
+4. Prefer “cleaner” stages using `op_chain` when no explicit role is supplied
+   (policy-defined ranking),
+5. Fall back deterministically and emit actionable diagnostics if no match exists.
 
 This document does **not** define the ranking policy; it defines the minimum metadata required for any reasonable policy to operate.
 

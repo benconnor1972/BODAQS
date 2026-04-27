@@ -35,6 +35,7 @@ from .preprocess_filters import (
     apply_butterworth_smoothing,
     normalize_butterworth_smoothing_configs,
 )
+from .motion_derivation import derive_motion_channels
 from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
 from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
 from .sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
@@ -512,6 +513,111 @@ def _merge_channel_info(
             current[col] = dict(info)
 
 
+def _motion_normalization_ranges(
+    motion_meta: Mapping[str, Any],
+    normalize_ranges: Mapping[str, float],
+) -> Dict[str, float]:
+    """Return normalization ranges for generated motion displacement channels."""
+    out: Dict[str, float] = {}
+    generated = motion_meta.get("generated", [])
+    if not isinstance(generated, Sequence) or isinstance(generated, (str, bytes)):
+        return out
+
+    for rec in generated:
+        if not isinstance(rec, Mapping):
+            continue
+        if rec.get("quantity") != "disp":
+            continue
+        output_col = rec.get("output_col")
+        source_col = rec.get("source_col")
+        if not isinstance(output_col, str) or not isinstance(source_col, str):
+            continue
+        if source_col in normalize_ranges:
+            out[output_col] = float(normalize_ranges[source_col])
+    return out
+
+
+def _motion_zeroed_columns(
+    motion_meta: Mapping[str, Any],
+    zeroed_columns: set[str],
+) -> set[str]:
+    """Propagate in-place zeroing provenance to generated motion displacement outputs."""
+    out: set[str] = set()
+    generated = motion_meta.get("generated", [])
+    if not isinstance(generated, Sequence) or isinstance(generated, (str, bytes)):
+        return out
+
+    for rec in generated:
+        if not isinstance(rec, Mapping):
+            continue
+        if rec.get("quantity") != "disp":
+            continue
+        output_col = rec.get("output_col")
+        source_col = rec.get("source_col")
+        if isinstance(output_col, str) and isinstance(source_col, str) and source_col in zeroed_columns:
+            out.add(output_col)
+    return out
+
+
+def _channel_info_for_scaled_outputs(
+    session: Mapping[str, Any],
+    scale_meta: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Preserve analysis-role provenance on normalized outputs."""
+    signals = ((session.get("meta") or {}).get("signals") or {})
+    if not isinstance(signals, Mapping):
+        signals = {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    per_column = scale_meta.get("per_column", [])
+    if not isinstance(per_column, Sequence) or isinstance(per_column, (str, bytes)):
+        return out
+
+    passthrough_keys = (
+        "sensor",
+        "end",
+        "domain",
+        "processing_role",
+        "motion_source_id",
+        "motion_profile_id",
+    )
+    for rec in per_column:
+        if not isinstance(rec, Mapping) or rec.get("status") != "ok":
+            continue
+        norm_col = rec.get("norm_col")
+        source_col = rec.get("source_column", rec.get("column"))
+        if not isinstance(norm_col, str) or not isinstance(source_col, str):
+            continue
+
+        source_info = signals.get(source_col)
+        if not isinstance(source_info, Mapping):
+            continue
+
+        info: Dict[str, Any] = {
+            "unit": "1",
+            "quantity": "disp_norm",
+            "source": [source_col],
+            "source_columns": [source_col],
+            "derivation": {
+                "method": "normalization",
+                "source_col": source_col,
+                "full_range": rec.get("full_range"),
+                "clip_0_1": bool(rec.get("clip_0_1", False)),
+            },
+        }
+        for key in passthrough_keys:
+            value = source_info.get(key)
+            if value is not None:
+                info[key] = value
+
+        source_derivation = source_info.get("derivation")
+        if isinstance(source_derivation, Mapping):
+            info["derivation"]["source_derivation"] = dict(source_derivation)
+
+        out[norm_col] = info
+    return out
+
+
 def _normalized_fit_import_config(fit_import: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     cfg = dict(_FIT_IMPORT_DEFAULTS)
     if isinstance(fit_import, Mapping):
@@ -857,9 +963,11 @@ def preprocess_session(session: Dict[str, Any],
                        active_min_seg: str = "3s",
                        butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
                        butterworth_generate_residuals: bool = False,
+                       motion_derivation: Optional[Mapping[str, Any]] = None,
                        va_cols: Optional[Sequence[str]] = None,
                        va_window_points: int = 11,
-                       va_poly_order: int = 3) -> Dict[str, Any]:
+                       va_poly_order: int = 3,
+                       strict: bool = True) -> Dict[str, Any]:
     
     """Normalize, zero + compute velocity/acceleration."""
     if preprocess_config is not None:
@@ -876,10 +984,12 @@ def preprocess_session(session: Dict[str, Any],
         active_window = str(cfg.get("active_window", active_window))
         active_padding = str(cfg.get("active_padding", active_padding))
         active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        motion_derivation = cfg.get("motion_derivation", motion_derivation)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
             cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
         )
+        strict = bool(cfg.get("strict", strict))
 
     df = session["df"].copy()
 
@@ -977,6 +1087,55 @@ def preprocess_session(session: Dict[str, Any],
         )
     else:
         normalize_ranges = dict(normalize_ranges)
+    normalize_ranges_for_scale = dict(normalize_ranges)
+
+    meta = session.setdefault("meta", {})
+    sample_rate_hint_hz = sample_rate_hz
+    if sample_rate_hint_hz is None:
+        sample_rate_hint_hz = meta.get("sample_rate_hz")
+
+    # ---------------- Resolve canonical preprocessing sample-rate ----------------
+    # Use the same source for all preprocessing transforms (explicit sample_rate_hz
+    # if provided, else inferred from canonical time_s).
+    tb = estimate_uniform_timebase(
+        df2,
+        time_col="time_s",
+        sample_rate_hz=sample_rate_hint_hz,
+    )
+    preprocess_sample_rate_hz = float(tb.sample_rate_hz)
+
+    # ---------------- Motion analysis channels ----------------
+    motion_meta: Dict[str, Any] = {
+        "enabled": bool((motion_derivation or {}).get("enabled", False))
+        if isinstance(motion_derivation, Mapping)
+        else False,
+        "generated": [],
+        "skipped": [],
+        "warnings": [],
+        "sample_rate_hz": preprocess_sample_rate_hz,
+        "generated_channel_info": {},
+    }
+    if motion_meta["enabled"]:
+        df2, motion_meta = derive_motion_channels(
+            session,
+            motion_derivation,
+            sample_rate_hz=preprocess_sample_rate_hz,
+            strict=bool(strict),
+        )
+        session["df"] = df2
+        _merge_channel_info(
+            session,
+            motion_meta.get("generated_channel_info", {})
+            if isinstance(motion_meta.get("generated_channel_info"), Mapping)
+            else {},
+        )
+        for warning in motion_meta.get("warnings", []):
+            _append_qc_warning(session, str(warning))
+
+        zeroed_columns_for_norm.update(_motion_zeroed_columns(motion_meta, zeroed_columns_for_norm))
+        normalize_ranges_for_scale.update(_motion_normalization_ranges(motion_meta, normalize_ranges))
+        session = build_signals_registry(session, strict=False)
+        df2 = session["df"]
 
     if active_signal_disp_col is None and active_signal_disp_selector is not None:
         active_signal_disp_col = resolve_signal_selector(
@@ -988,13 +1147,16 @@ def preprocess_session(session: Dict[str, Any],
     # ---------------- Scale after transformations ----------------
     df2, scale_meta = scale_signal_columns(
         df2,
-        normalize_ranges,
+        normalize_ranges_for_scale,
         clip_0_1=clip_0_1,
         zeroed_columns=sorted(zeroed_columns_for_norm),
         return_meta=True,
     )
     per_column = scale_meta.get("per_column", [])
     session["df"] = df2
+    scaled_channel_info = _channel_info_for_scaled_outputs(session, scale_meta)
+    if scaled_channel_info:
+        _merge_channel_info(session, scaled_channel_info)
 
     # Update QC transforms from report
     # (report entries may be missing/empty depending on input columns)
@@ -1034,20 +1196,20 @@ def preprocess_session(session: Dict[str, Any],
         } or None,
     }
 
-    meta = session.setdefault("meta", {})
-    sample_rate_hint_hz = sample_rate_hz
-    if sample_rate_hint_hz is None:
-        sample_rate_hint_hz = meta.get("sample_rate_hz")
-
-    # ---------------- Resolve canonical preprocessing sample-rate ----------------
-    # Use the same source for all preprocessing transforms (explicit sample_rate_hz
-    # if provided, else inferred from canonical time_s).
-    tb = estimate_uniform_timebase(
-        df2,
-        time_col="time_s",
-        sample_rate_hz=sample_rate_hint_hz,
-    )
-    preprocess_sample_rate_hz = float(tb.sample_rate_hz)
+    transforms["motion_derivation"] = {
+        "applied": bool(motion_meta.get("generated")),
+        "enabled": bool(motion_meta.get("enabled", False)),
+        "method": "butterworth_savgol_butterworth" if motion_meta.get("enabled") else None,
+        "sample_rate_hz": float(preprocess_sample_rate_hz),
+        "generated_columns": [
+            str(g.get("output_col"))
+            for g in motion_meta.get("generated", [])
+            if isinstance(g, Mapping) and g.get("output_col") is not None
+        ],
+        "n_generated": int(len(motion_meta.get("generated", []))),
+        "n_skipped": int(len(motion_meta.get("skipped", []))),
+        "warnings": [str(w) for w in motion_meta.get("warnings", [])],
+    }
 
     # ---------------- Optional offline Butterworth smoothing ----------------
     bw_configs = normalize_butterworth_smoothing_configs(butterworth_smoothing)
@@ -1228,6 +1390,7 @@ def run_macro(
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
+    motion_derivation: Optional[Mapping[str, Any]] = None,
     timezone: Optional[str] = None,
     strict: bool = True,
 ) -> Dict[str, Any]:
@@ -1260,6 +1423,7 @@ def run_macro(
         active_window = str(cfg.get("active_window", active_window))
         active_padding = str(cfg.get("active_padding", active_padding))
         active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        motion_derivation = cfg.get("motion_derivation", motion_derivation)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
             cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
@@ -1303,8 +1467,10 @@ def run_macro(
         active_min_seg=active_min_seg,
         bike_profile=bike_profile,
         bike_profile_path=bike_profile_path,
+        motion_derivation=motion_derivation,
         butterworth_smoothing=butterworth_smoothing,
         butterworth_generate_residuals=butterworth_generate_residuals,
+        strict=strict,
     )
     logger.info("Session pre-process complete")
 

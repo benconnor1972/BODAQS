@@ -38,6 +38,32 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": False,
+    "motion_derivation": {
+        "enabled": False,
+        "sources": [
+            {
+                "id": "rear_wheel",
+                "selector": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+            }
+        ],
+        "primary": {
+            "displacement_lowpass_hz": 80.0,
+            "displacement_lowpass_order": 4,
+            "velocity_sg_window_ms": 20.0,
+            "acceleration_sg_window_ms": 40.0,
+            "sg_polyorder": 3,
+            "velocity_lowpass_hz": 60.0,
+            "velocity_lowpass_order": 4,
+            "acceleration_lowpass_hz": 30.0,
+            "acceleration_lowpass_order": 4,
+        },
+        "secondary": [],
+    },
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": False,
     "active_signal_disp_selector": {
@@ -293,6 +319,7 @@ def validate_preprocess_config(config: Mapping[str, Any], *, label: str = "") ->
         raise ValueError(f"Preprocess config 'butterworth_smoothing' must be a list{label}")
     if not isinstance(config.get("butterworth_generate_residuals"), bool):
         raise ValueError(f"Preprocess config 'butterworth_generate_residuals' must be boolean{label}")
+    _validate_motion_derivation(config.get("motion_derivation"), label=label)
 
     for key in ("zero_window_s", "active_disp_thresh", "active_vel_thresh"):
         _require_number(config, key, label=label)
@@ -373,6 +400,111 @@ def _require_int(config: Mapping[str, Any], key: str, *, label: str) -> None:
         raise ValueError(f"Preprocess config {key!r} must be an integer{label}") from None
 
 
+def _require_positive_number(config: Mapping[str, Any], key: str, *, label: str) -> None:
+    _require_number(config, key, label=label)
+    try:
+        value = float(config.get(key))
+    except (TypeError, ValueError):
+        raise ValueError(f"Preprocess config {key!r} must be numeric{label}") from None
+    if value <= 0:
+        raise ValueError(f"Preprocess config {key!r} must be > 0{label}")
+
+
+def _require_positive_int(config: Mapping[str, Any], key: str, *, label: str) -> None:
+    _require_int(config, key, label=label)
+    try:
+        value = int(config.get(key))
+    except (TypeError, ValueError):
+        raise ValueError(f"Preprocess config {key!r} must be an integer{label}") from None
+    if value <= 0:
+        raise ValueError(f"Preprocess config {key!r} must be a positive integer{label}")
+
+
+def _validate_motion_derivation(value: Any, *, label: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Preprocess config 'motion_derivation' must be object or null{label}")
+
+    enabled = value.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"Preprocess config 'motion_derivation.enabled' must be boolean{label}")
+
+    sources = value.get("sources", [])
+    if not isinstance(sources, list):
+        raise ValueError(f"Preprocess config 'motion_derivation.sources' must be a list{label}")
+    if enabled and not sources:
+        raise ValueError(f"Preprocess config 'motion_derivation.sources' must not be empty when enabled{label}")
+    seen_source_ids: set[str] = set()
+    for idx, source in enumerate(sources):
+        if not isinstance(source, Mapping):
+            raise ValueError(f"Preprocess config 'motion_derivation.sources[{idx}]' must be an object{label}")
+        source_id = source.get("id")
+        if not _nonempty_str(source_id):
+            raise ValueError(f"Preprocess config 'motion_derivation.sources[{idx}].id' must be a non-empty string{label}")
+        if str(source_id) in seen_source_ids:
+            raise ValueError(f"Duplicate motion derivation source id{label}: {source_id!r}")
+        seen_source_ids.add(str(source_id))
+        _validate_signal_selector(
+            source.get("selector"),
+            key=f"motion_derivation.sources[{idx}].selector",
+            label=label,
+            required=True,
+        )
+
+    primary = value.get("primary")
+    if enabled and not isinstance(primary, Mapping):
+        raise ValueError(f"Preprocess config 'motion_derivation.primary' must be an object when enabled{label}")
+    if isinstance(primary, Mapping):
+        _validate_motion_profile(primary, key="motion_derivation.primary", label=label, require_id=False)
+
+    secondary = value.get("secondary", [])
+    if not isinstance(secondary, list):
+        raise ValueError(f"Preprocess config 'motion_derivation.secondary' must be a list{label}")
+    seen_secondary_ids: set[str] = set()
+    for idx, profile in enumerate(secondary):
+        if not isinstance(profile, Mapping):
+            raise ValueError(f"Preprocess config 'motion_derivation.secondary[{idx}]' must be an object{label}")
+        profile_id = profile.get("id")
+        if not _nonempty_str(profile_id):
+            raise ValueError(
+                f"Preprocess config 'motion_derivation.secondary[{idx}].id' must be a non-empty string{label}"
+            )
+        if str(profile_id) in seen_secondary_ids:
+            raise ValueError(f"Duplicate motion derivation secondary profile id{label}: {profile_id!r}")
+        seen_secondary_ids.add(str(profile_id))
+        _validate_motion_profile(
+            profile,
+            key=f"motion_derivation.secondary[{idx}]",
+            label=label,
+            require_id=True,
+        )
+
+
+def _validate_motion_profile(profile: Mapping[str, Any], *, key: str, label: str, require_id: bool) -> None:
+    if require_id and not _nonempty_str(profile.get("id")):
+        raise ValueError(f"Preprocess config {key!r}.id must be a non-empty string{label}")
+
+    required_positive_numbers = (
+        "displacement_lowpass_hz",
+        "velocity_sg_window_ms",
+        "acceleration_sg_window_ms",
+        "velocity_lowpass_hz",
+        "acceleration_lowpass_hz",
+    )
+    required_positive_ints = (
+        "displacement_lowpass_order",
+        "sg_polyorder",
+        "velocity_lowpass_order",
+        "acceleration_lowpass_order",
+    )
+
+    for field in required_positive_numbers:
+        _require_positive_number(profile, field, label=f"{label} ({key})")
+    for field in required_positive_ints:
+        _require_positive_int(profile, field, label=f"{label} ({key})")
+
+
 def _validate_signal_selector(value: Any, *, key: str, label: str, required: bool) -> None:
     if value is None:
         if required:
@@ -383,7 +515,16 @@ def _validate_signal_selector(value: Any, *, key: str, label: str, required: boo
     if not value:
         raise ValueError(f"Preprocess config {key!r} must not be empty when enabled{label}")
     for field, field_value in value.items():
-        if field not in {"end", "sensor", "quantity", "domain", "unit"}:
+        if field not in {
+            "end",
+            "sensor",
+            "quantity",
+            "domain",
+            "unit",
+            "processing_role",
+            "motion_source_id",
+            "motion_profile_id",
+        }:
             raise ValueError(f"Preprocess config {key!r} has unsupported selector field {field!r}{label}")
         if not _nonempty_str(field_value):
             raise ValueError(f"Preprocess config {key!r}.{field!s} must be a non-empty string{label}")

@@ -67,6 +67,13 @@ def _fit_defaults(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     return defaults
 
 
+def _motion_defaults(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    defaults = copy.deepcopy(DEFAULT_PREPROCESS_PROFILE_CONFIG["motion_derivation"])
+    if isinstance(raw, Mapping):
+        defaults.update(copy.deepcopy(dict(raw)))
+    return defaults
+
+
 def _set_dropdown_value(widget: W.Dropdown, value: Any, fallback: str) -> None:
     allowed = [item[1] if isinstance(item, tuple) else item for item in widget.options]
     widget.value = str(value) if str(value) in allowed else fallback
@@ -171,6 +178,10 @@ class PreprocessProfileEditor:
         self.w_zero_window_s = W.FloatText(description="Window (s)")
         self.w_zero_min_samples = W.IntText(description="Min samples")
         self.w_clip_0_1 = W.Checkbox(description="Clip normalized channels to [0, 1]")
+        self.w_motion_enabled = W.Checkbox(description="Enable motion derivation")
+        self.w_motion_sources = W.Textarea(description="Sources", layout=_full_width_layout(height="110px"))
+        self.w_motion_primary = W.Textarea(description="Primary", layout=_full_width_layout(height="155px"))
+        self.w_motion_secondary = W.Textarea(description="Secondary", layout=_full_width_layout(height="100px"))
         self.w_bw_smoothing = W.Textarea(description="Smoothing", layout=_full_width_layout(height="100px"))
         self.w_bw_generate_residuals = W.Checkbox(description="Generate residual series")
 
@@ -270,6 +281,18 @@ class PreprocessProfileEditor:
                     self.w_zero_enabled,
                     _row([self.w_zero_window_s, self.w_zero_min_samples]),
                     self.w_clip_0_1,
+                    W.HTML("<b>Motion derivation</b>"),
+                    W.HTML(
+                        "<p style='margin:0;color:#555'>Generate primary/secondary filtered displacement, "
+                        "velocity, and acceleration channels from selected displacement sources.</p>"
+                    ),
+                    self.w_motion_enabled,
+                    W.HTML("<b>Motion sources</b> (JSON list of source selectors)"),
+                    self.w_motion_sources,
+                    W.HTML("<b>Primary motion profile</b> (JSON object)"),
+                    self.w_motion_primary,
+                    W.HTML("<b>Secondary motion profiles</b> (JSON list)"),
+                    self.w_motion_secondary,
                     W.HTML("<b>Butterworth smoothing</b> (JSON list of dicts)"),
                     self.w_bw_smoothing,
                     self.w_bw_generate_residuals,
@@ -307,6 +330,7 @@ class PreprocessProfileEditor:
         validate_preprocess_profile(profile, path=path)
         cfg = preprocess_config_from_profile(profile)
         fit = _fit_defaults(cfg.get("fit_import"))
+        motion = _motion_defaults(cfg.get("motion_derivation"))
 
         self.current_profile_path = Path(path) if path is not None else self.current_profile_path
         if path is not None:
@@ -339,6 +363,10 @@ class PreprocessProfileEditor:
         self.w_zero_window_s.value = float(cfg.get("zero_window_s", 0.4))
         self.w_zero_min_samples.value = int(cfg.get("zero_min_samples", 10))
         self.w_clip_0_1.value = bool(cfg.get("clip_0_1", False))
+        self.w_motion_enabled.value = bool(motion.get("enabled", False))
+        self.w_motion_sources.value = _json_text(motion.get("sources") or [])
+        self.w_motion_primary.value = _json_text(motion.get("primary") or {})
+        self.w_motion_secondary.value = _json_text(motion.get("secondary") or [])
         self.w_bw_smoothing.value = _json_text(cfg.get("butterworth_smoothing") or [])
         self.w_bw_generate_residuals.value = bool(cfg.get("butterworth_generate_residuals", False))
 
@@ -368,6 +396,27 @@ class PreprocessProfileEditor:
             field_name="butterworth_smoothing",
         )
         bw_normalized = normalize_butterworth_smoothing_configs(bw_raw)
+        motion_sources = _parse_json_or_literal(
+            self.w_motion_sources.value,
+            expected=list,
+            field_name="motion_derivation.sources",
+        )
+        motion_primary = _parse_json_or_literal(
+            self.w_motion_primary.value,
+            expected=dict,
+            field_name="motion_derivation.primary",
+        )
+        motion_secondary = _parse_json_or_literal(
+            self.w_motion_secondary.value,
+            expected=list,
+            field_name="motion_derivation.secondary",
+        )
+        motion_derivation = {
+            "enabled": bool(self.w_motion_enabled.value),
+            "sources": motion_sources,
+            "primary": motion_primary,
+            "secondary": motion_secondary,
+        }
 
         config: Dict[str, Any] = {
             "schema_path": str(self.w_schema_path.value or "").strip(),
@@ -386,6 +435,7 @@ class PreprocessProfileEditor:
             "zero_window_s": float(self.w_zero_window_s.value),
             "zero_min_samples": int(self.w_zero_min_samples.value),
             "clip_0_1": bool(self.w_clip_0_1.value),
+            "motion_derivation": motion_derivation,
             "butterworth_smoothing": [
                 {"cutoff_hz": float(cfg.cutoff_hz), "order": int(cfg.order)}
                 for cfg in bw_normalized

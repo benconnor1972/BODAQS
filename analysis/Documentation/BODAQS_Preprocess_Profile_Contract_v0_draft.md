@@ -37,7 +37,8 @@ The profile captures parameters that are logically part of `run_macro(...)` prep
 - event schema selection
 - optional FIT import policy and field selection
 - zeroing and normalization-output policy
-- optional Butterworth smoothing behavior
+- motion-derivation policy for analysis displacement, velocity, and acceleration channels
+- legacy optional Butterworth smoothing behavior
 - activity-mask signal and threshold settings
 - strict vs tolerant ingestion mode
 
@@ -168,6 +169,9 @@ class SignalSelectorConfigV1(TypedDict, total=False):
     quantity: str
     domain: str
     unit: str
+    processing_role: str
+    motion_source_id: str
+    motion_profile_id: str
 
 class FitImportConfigV1(TypedDict, total=False):
     enabled: bool
@@ -179,6 +183,28 @@ class FitImportConfigV1(TypedDict, total=False):
     resample_method: str
     raw_stream_name: str
 
+class MotionDerivationSourceConfigV1(TypedDict):
+    id: str
+    selector: SignalSelectorConfigV1
+
+class MotionDerivationProfileConfigV1(TypedDict, total=False):
+    id: str
+    displacement_lowpass_hz: float
+    displacement_lowpass_order: int
+    velocity_sg_window_ms: float
+    acceleration_sg_window_ms: float
+    sg_polyorder: int
+    velocity_lowpass_hz: float
+    velocity_lowpass_order: int
+    acceleration_lowpass_hz: float
+    acceleration_lowpass_order: int
+
+class MotionDerivationConfigV1(TypedDict, total=False):
+    enabled: bool
+    sources: list[MotionDerivationSourceConfigV1]
+    primary: MotionDerivationProfileConfigV1
+    secondary: list[MotionDerivationProfileConfigV1]
+
 class PreprocessRunConfigV1(TypedDict, total=False):
     schema_path: str
     strict: bool
@@ -187,6 +213,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
     zero_window_s: float
     zero_min_samples: int
     clip_0_1: bool
+    motion_derivation: MotionDerivationConfigV1 | None
     butterworth_smoothing: list[ButterworthSmoothingConfigV1]
     butterworth_generate_residuals: bool
     active_signal_disp_selector: SignalSelectorConfigV1 | None
@@ -226,6 +253,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 |---|---|---|
 | `active_signal_vel_selector` | object or `null` | Semantic selector for the velocity signal used for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
 | `fit_import` | object or `null` | Optional Garmin FIT import policy block; when absent or `null`, FIT import is disabled |
+| `motion_derivation` | object or `null` | Optional policy for generating primary and secondary filtered displacement/velocity/acceleration channels |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
 
 ### 6.4 Config-field rules
@@ -234,7 +262,10 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - Normalization ranges should be derived from the selected bike profile's semantic `normalization_ranges` declarations.
 - If `zeroing_enabled` is true, zeroing is applied to resolved physical displacement signals before bike-profile signal transforms are evaluated.
 - Normalized `[1]` outputs are generated after bike-profile signal transforms, so generated signals can be normalized from the same bike profile.
+- `motion_derivation` is optional in v1 so older profiles can still be read. New profiles SHOULD include it, even when `enabled` is `false`.
+- When `motion_derivation.enabled` is `true`, the preprocessing pipeline generates the configured motion-analysis channels after zeroing and bike-profile transforms, and before normalization, activity-mask resolution, event detection, and metrics.
 - `butterworth_smoothing` may be empty.
+- `butterworth_smoothing` is the legacy append-only displacement smoothing policy. It is retained in v1 for current pipeline compatibility and is expected to be superseded by `motion_derivation`.
 - `active_signal_disp_selector` and `active_signal_vel_selector` use the same semantic selector fields as bike-profile normalization ranges and transforms.
 - Recommended default activity-mask selectors target rear suspension displacement and velocity: `{"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"}` and `{"end": "rear", "quantity": "vel", "domain": "suspension", "unit": "mm/s"}`.
 - If `active_signal_disp_selector` is `null`, `active_signal_vel_selector` should also be `null`.
@@ -281,7 +312,100 @@ Rules:
 
 ---
 
-## 7. Butterworth smoothing config contract
+## 7. Motion derivation config contract
+
+`motion_derivation` describes how the pipeline should create analysis-ready
+displacement, velocity, and acceleration channels from semantically selected
+displacement sources.
+
+It is intentionally expressed in physical/analytical units:
+
+- Butterworth filter cutoffs are specified in `Hz`
+- Savitzky-Golay windows are specified in milliseconds
+- polynomial order and filter order are dimensionless integers
+
+The sample rate is used only at runtime to materialize filter coefficients and
+sample-count windows.
+
+### 7.1 Canonical shape
+
+```json
+{
+  "enabled": true,
+  "sources": [
+    {
+      "id": "rear_wheel",
+      "selector": {
+        "end": "rear",
+        "quantity": "disp",
+        "domain": "wheel",
+        "unit": "mm"
+      }
+    }
+  ],
+  "primary": {
+    "displacement_lowpass_hz": 80.0,
+    "displacement_lowpass_order": 4,
+    "velocity_sg_window_ms": 20.0,
+    "acceleration_sg_window_ms": 40.0,
+    "sg_polyorder": 3,
+    "velocity_lowpass_hz": 60.0,
+    "velocity_lowpass_order": 4,
+    "acceleration_lowpass_hz": 30.0,
+    "acceleration_lowpass_order": 4
+  },
+  "secondary": [
+    {
+      "id": "low_bandwidth",
+      "displacement_lowpass_hz": 20.0,
+      "displacement_lowpass_order": 4,
+      "velocity_sg_window_ms": 50.0,
+      "acceleration_sg_window_ms": 80.0,
+      "sg_polyorder": 3,
+      "velocity_lowpass_hz": 15.0,
+      "velocity_lowpass_order": 4,
+      "acceleration_lowpass_hz": 10.0,
+      "acceleration_lowpass_order": 4
+    }
+  ]
+}
+```
+
+### 7.2 Field rules
+
+- `enabled` is boolean. If omitted, consumers should treat motion derivation as disabled.
+- `sources` is a list of semantic displacement sources. It must be non-empty when `enabled` is `true`.
+- Each source `id` must be unique within the block.
+- Each source `selector` must be a non-empty signal selector and should identify an engineered physical displacement signal, usually `quantity: "disp"` and `unit: "mm"`.
+- `primary` defines the main analysis series. When `enabled` is `true`, `primary` is required.
+- `secondary` is optional and contains named lower-bandwidth or alternative analysis variants.
+- Each secondary profile must have a unique `id`.
+- All low-pass cutoffs and S-G windows must be numeric and greater than zero.
+- All filter orders and `sg_polyorder` must be positive integers.
+- Runtime consumers must check sample-rate feasibility before applying filters. Cutoffs must be below Nyquist, and implementations may apply a stricter practical limit.
+- A generated primary analysis channel should not overwrite the raw or transformed displacement source; it should be an additional signal with clear provenance.
+
+### 7.3 Intended runtime ordering
+
+When implemented by the pipeline, motion derivation should occur after zeroing
+and bike-profile transforms, but before normalization and event detection:
+
+```text
+raw displacement
+-> zero physical displacement
+-> apply bike-profile transforms
+-> low-pass selected displacement source
+-> derive velocity/acceleration with Savitzky-Golay
+-> apply final velocity/acceleration low-pass filters
+-> normalize selected analysis displacement channels
+-> event detection and metrics
+```
+
+This ordering means that normalized `[1]` displacement channels used for event
+thresholds can represent the filtered primary analysis displacement rather than
+the unfiltered source.
+
+## 8. Legacy Butterworth smoothing config contract
 
 Each entry in `butterworth_smoothing` must have the shape:
 
@@ -300,9 +424,12 @@ Rules:
 
 The generated filter-operation tag is derived by code and is **not** part of the stored profile contract.
 
+This block is retained for current pipeline compatibility. New profile authors
+should prefer `motion_derivation` for analysis-channel bandwidth policy.
+
 ---
 
-## 8. Signal selector contract
+## 9. Signal selector contract
 
 Signal selectors identify a signal by meaning rather than by dataframe column name.
 
@@ -326,19 +453,23 @@ Supported selector fields:
 | `quantity` | Measured or derived quantity, for example `disp` or `vel` |
 | `domain` | Physical domain, for example `suspension` or `wheel` |
 | `unit` | Signal unit, for example `mm` or `mm/s` |
+| `processing_role` | Analysis role, for example `primary_analysis` or `secondary_analysis` |
+| `motion_source_id` | Optional source id from `motion_derivation.sources[]` |
+| `motion_profile_id` | Optional motion profile id, for example `primary` or a secondary profile id |
 
 Rules:
 
 - A selector must be `null` or a non-empty object.
 - Selectors should use `end` rather than a specific `sensor` where the choice is a bike/setup concept.
+- Selectors may include `processing_role` when the caller needs the primary filtered analysis signal rather than any semantically compatible source.
 - Consumers should reject selectors that match more than one signal in a session.
 - Consumers may treat a selector that matches no signal as a disabled activity mask for that run, provided this is recorded in QC or warnings.
 
 ---
 
-## 9. Path and resolution semantics
+## 10. Path and resolution semantics
 
-### 9.1 `schema_path`
+### 10.1 `schema_path`
 
 `schema_path` is stored as a string.
 
@@ -357,7 +488,7 @@ Public API consumers that need deterministic path handling outside notebooks sho
 
 ---
 
-## 10. Profile authoring utilities
+## 11. Profile authoring utilities
 
 The analysis package provides utility functions so notebooks and scripts do not
 need to hand-roll preprocess profile JSON:
@@ -388,7 +519,7 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
 
 ---
 
-## 11. Example document
+## 12. Example document
 
 ```json
 {
@@ -423,6 +554,32 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": false,
+    "motion_derivation": {
+      "enabled": false,
+      "sources": [
+        {
+          "id": "rear_wheel",
+          "selector": {
+            "end": "rear",
+            "quantity": "disp",
+            "domain": "wheel",
+            "unit": "mm"
+          }
+        }
+      ],
+      "primary": {
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "velocity_sg_window_ms": 20.0,
+        "acceleration_sg_window_ms": 40.0,
+        "sg_polyorder": 3,
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4
+      },
+      "secondary": []
+    },
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": false,
     "active_signal_disp_selector": {
@@ -450,7 +607,7 @@ Normalization ranges are intentionally not embedded in this profile example; the
 
 ---
 
-## 12. Consumer behavior
+## 13. Consumer behavior
 
 Consumers implementing this contract should:
 
@@ -471,7 +628,7 @@ Consumers should fail fast on:
 
 ---
 
-## 13. Current limitations and open issues
+## 14. Current limitations and open issues
 
 1. There is no explicit `active_enabled` flag in v1. The current profile shape assumes an activity-mask configuration is always present. A cleaner enable/disable contract may be added in a later version.
 2. The profile assumes the target log set is homogeneous enough that one activity-mask signal selection is valid for every file being processed.
@@ -479,7 +636,7 @@ Consumers should fail fast on:
 
 ---
 
-## 14. Suggested future evolution
+## 15. Suggested future evolution
 
 Likely v2 candidates:
 

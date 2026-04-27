@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import logging
 
-from .sensor_aliases import canonical_sensor_id
+from .sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
 
 logger = logging.getLogger(__name__)
 
@@ -442,6 +442,12 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
     pref_quantity = _norm_str(_get_pref(prefer, "quantity"))
     pref_kind = _norm_kind(_get_pref(prefer, "kind"))
     pref_unit = _norm_unit(_get_pref(prefer, "unit"))
+    pref_domain = _norm_str(_get_pref(prefer, "domain"))
+    pref_end_raw = _norm_str(_get_pref(prefer, "end"))
+    pref_end = (canonical_end(pref_end_raw) or end_from_sensor(pref_end_raw)) if pref_end_raw else None
+    pref_processing_role = _norm_str(_get_pref(prefer, "processing_role"))
+    pref_motion_source_id = _norm_str(_get_pref(prefer, "motion_source_id"))
+    pref_motion_profile_id = _norm_str(_get_pref(prefer, "motion_profile_id"))
     pref_has_op_chain = _has_pref_key(prefer, "op_chain")
     pref_op_chain = _norm_op_chain(_get_pref(prefer, "op_chain"))
 
@@ -466,16 +472,31 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
         quantity = _norm_str(info.get("quantity"))
         kind = _norm_kind(info.get("kind"))
         unit = _norm_unit(info.get("unit"))
+        domain = _norm_str(info.get("domain"))
+        actual_end = canonical_end(info.get("end")) or end_from_sensor(info.get("sensor"))
+        processing_role = _norm_str(info.get("processing_role"))
+        motion_source_id = _norm_str(info.get("motion_source_id"))
+        motion_profile_id = _norm_str(info.get("motion_profile_id"))
         op_chain = _norm_op_chain(info.get("op_chain"))
 
 
         if pref_sensor is not None and sensor != pref_sensor:
+            continue
+        if pref_end is not None and actual_end != pref_end:
             continue
         if pref_quantity is not None and quantity != pref_quantity:
             continue
         if pref_kind and kind != pref_kind:
             continue
         if pref_unit is not None and unit != pref_unit:
+            continue
+        if pref_domain is not None and domain != pref_domain:
+            continue
+        if pref_processing_role is not None and processing_role != pref_processing_role:
+            continue
+        if pref_motion_source_id is not None and motion_source_id != pref_motion_source_id:
+            continue
+        if pref_motion_profile_id is not None and motion_profile_id != pref_motion_profile_id:
             continue
         # prefer.op_chain present and non-empty means "these ops must be present".
         # prefer.op_chain explicitly [] means "base/no-op signal only".
@@ -511,6 +532,11 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
             score += 1
         if (info.get("kind") or "") != "":
             score += 1
+        role = str(info.get("processing_role") or "").strip().lower()
+        if role == "primary_analysis":
+            score += 100
+        elif role == "secondary_analysis":
+            score += 20
         # Prefer cleaner (fewer-op) variants unless schema explicitly asks for ops.
         if pref_op_chain:
             # Fewer extras beyond requested ops wins.

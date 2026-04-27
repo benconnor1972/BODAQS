@@ -11,12 +11,30 @@ from bodaqs_analysis.sensor_aliases import canonical_end, canonical_sensor_id, e
 logger = logging.getLogger(__name__)
 
 
-SIGNAL_SELECTOR_FIELDS = {"sensor", "end", "quantity", "domain", "unit"}
+SIGNAL_SELECTOR_FIELDS = {
+    "sensor",
+    "end",
+    "quantity",
+    "domain",
+    "unit",
+    "processing_role",
+    "motion_source_id",
+    "motion_profile_id",
+}
 
 
 def selector_matches_signal(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
     """Return True when a signal-registry entry satisfies a semantic selector."""
-    for key in ("sensor", "end", "quantity", "domain", "unit"):
+    for key in (
+        "sensor",
+        "end",
+        "quantity",
+        "domain",
+        "unit",
+        "processing_role",
+        "motion_source_id",
+        "motion_profile_id",
+    ):
         expected = selector.get(key)
         if expected is None or (isinstance(expected, str) and not expected.strip()):
             continue

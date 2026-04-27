@@ -72,6 +72,15 @@ def _signal_ops(info: Mapping[str, Any]) -> list[str]:
     return [str(raw_ops).strip().lower()] if str(raw_ops).strip() else []
 
 
+def _processing_role_score(info: Mapping[str, Any]) -> int:
+    role = str(info.get("processing_role") or "").strip().lower()
+    if role == "primary_analysis":
+        return 2
+    if role == "secondary_analysis":
+        return 1
+    return 0
+
+
 def _signal_root_key(col: str) -> str:
     col_s = str(col).strip().lower()
     head = col_s.split("_op_", 1)[0]
@@ -129,6 +138,7 @@ def _norm_candidates_for_selector(
         quantity = str(info.get("quantity") or "").strip().lower()
         unit = str(info.get("unit") or "").strip().lower()
         score = (
+            _processing_role_score(info),
             1 if quantity == "disp_norm" else 0,
             1 if unit == "1" else 0,
             1 if _signal_matches_selector(info, col_s, selector) else 0,
@@ -161,6 +171,7 @@ def _mm_candidates_for_selector(
         ops = _signal_ops(info)
         has_filtered_ops = any(op == "diff" or op.startswith("butterworth_") for op in ops)
         score = (
+            _processing_role_score(info),
             1 if quantity == "disp" else 0,
             1 if _signal_matches_selector(info, col_s, selector) else 0,
             1 if not has_filtered_ops else 0,
@@ -205,6 +216,7 @@ def _match_mm_for_norm(
         ops = _signal_ops(info)
         has_filtered_ops = any(op == "diff" or op.startswith("butterworth_") for op in ops)
         score = (
+            _processing_role_score(info),
             1 if canonical_sensor_id(sensor) and canonical_sensor_id(sensor) == norm_sensor else 0,
             1 if ops == target_ops else 0,
             1 if _signal_root_key(col_s) == norm_root else 0,
@@ -381,6 +393,7 @@ def _velocity_candidates_for_selector(
         unit = str(info.get("unit") or "").strip().lower()
 
         score = (
+            _processing_role_score(info),
             1 if quantity == "vel" else 0,
             1 if unit == "mm/s" else 0,
             1 if _signal_matches_selector(info, col_s, selector) else 0,

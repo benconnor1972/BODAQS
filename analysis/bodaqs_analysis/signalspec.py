@@ -28,6 +28,7 @@ DEFAULT_SPEC = SignalSpec(
     }),
     allowed_op_patterns=(
         re.compile(r"^Butterworth_[0-9]+(?:p[0-9]+)?Hz_[1-9][0-9]*Order$"),
+        re.compile(r"^Savgol[0-9]+(?:p[0-9]+)?ms[1-9][0-9]*Poly$"),
     ),
 )
 

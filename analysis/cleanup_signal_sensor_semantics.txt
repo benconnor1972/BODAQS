@@ -39,3 +39,8 @@ Cleanup work still to consider
   bike end, or event source.
 - Keep accepting old `sensor` selectors until example data, notebooks, and
   saved artifacts have fully moved to `end`.
+- Revisit event schema binding. Event detection still expands events by schema
+  `sensor` and then prefers primary-analysis channels within that sensor. If we
+  want events to bind by full semantics (for example rear wheel rather than rear
+  shock), the event schema contract and resolver need an explicit semantic
+  selector path rather than relying on sensor identity.
