@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from bodaqs_analysis.sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
+from bodaqs_analysis.sensor_aliases import canonical_end
 from bodaqs_analysis.widgets.contracts import RegistryPolicy, SessionLoader
 from bodaqs_analysis.widgets.registry_scope import (
     apply_registry_policy_to_registries,
@@ -101,10 +101,9 @@ def _build_schema_sensor_maps(
             info = registry_obj.get(sigcol)
             if not isinstance(info, Mapping):
                 continue
-            sensor = info.get("sensor")
-            if not isinstance(sensor, str) or not sensor.strip():
+            sensor = canonical_end(info.get("end"))
+            if not sensor:
                 continue
-            sensor = canonical_sensor_id(sensor)
 
             if isinstance(role, str) and role.strip():
                 m[role.strip()] = sensor
@@ -133,13 +132,11 @@ def _resolve_sensor(
     if isinstance(m, Mapping):
         s = m.get(tok)
         if isinstance(s, str) and s.strip():
-            return canonical_sensor_id(s)
+            return canonical_end(s)
 
     info = registry.get(tok)
     if isinstance(info, Mapping):
-        s2 = info.get("sensor")
-        if isinstance(s2, str) and s2.strip():
-            return canonical_sensor_id(s2)
+        return canonical_end(info.get("end"))
     return ""
 
 
@@ -168,7 +165,7 @@ def registry_maps_for_sessions(
         session_loader=session_loader,
     )
     if not registries:
-        raise ValueError("No session registries available for sensor resolution")
+        raise ValueError("No session registries available for event-context resolution")
 
     nonempty = [sk for sk, r in registries.items() if r]
     if not nonempty:
@@ -236,11 +233,10 @@ def assign_signal_semantics_columns(
     for sk, tok in zip(viz_df[session_key_col].astype(str), viz_df[signal_col].astype(str)):
         reg = registries_by_session.get(str(sk), {})
         info = _resolve_signal_info(registry=reg, token_val=tok)
-        sensor = str(info.get("sensor") or "").strip()
-        end = canonical_end(info.get("end")) or end_from_sensor(sensor) or end_from_sensor(tok)
+        end = canonical_end(info.get("end"))
         records.append(
             {
-                "_sensor": canonical_sensor_id(sensor) if sensor else "",
+                "_sensor": end,
                 "_end": end,
                 "_domain": str(info.get("domain") or "").strip(),
                 "_quantity": str(info.get("quantity") or "").strip(),

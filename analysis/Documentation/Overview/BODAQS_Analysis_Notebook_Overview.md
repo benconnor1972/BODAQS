@@ -85,8 +85,8 @@ This is the main batch ingestion and preprocessing notebook. It turns one or mor
   - `session["meta"]["signals"]`
   - the union of detected displacement channels (`disp_cols_all`)
   - optional reporting of unclassified numeric columns
-- **"Canonicalize"** here means making a best-effort rename-and-enrich pass over dataframe column names. In the current implementation it infers units from existing headers such as `[...]`, applies a conservative domain hint that maps `front_shock` and `rear_shock` bases into the `suspension` domain, accepts `fork` as an alias for `front_shock` and `shock` as an alias for `rear_shock`, and uses a small set of legacy rewrite rules such as converting `_zeroed` suffixes into canonical `_op_zeroed`, converting `<base>_raw` into `<base>_raw [counts]`, and adding units only when an explicit hint is available. Columns that still do not parse are left in place and flagged for later attention. 
-This step also creates the **signal registry:** `session["meta"]["signals"]` is a per-session dictionary keyed by the exact dataframe column names in `session["df"]`. For each numeric signal column it records compact semantics such as `kind`, `unit`, `domain`, `op_chain`, inferred `sensor`, and inferred `quantity`, so later stages can resolve the meaning of a column without relying on ad hoc string matching in each notebook.
+- **"Canonicalize"** here means making a best-effort rename-and-enrich pass over dataframe column names. In the current implementation it infers units from existing headers such as `[...]`, applies conservative domain hints where explicit metadata is available, and uses a small set of legacy rewrite rules such as converting `_zeroed` suffixes into canonical `_op_zeroed`, converting `<base>_raw` into `<base>_raw [counts]`, and adding units only when an explicit hint is available. Columns that still do not parse are left in place and flagged for later attention. 
+This step also creates the **signal registry:** `session["meta"]["signals"]` is a per-session dictionary keyed by the exact dataframe column names in `session["df"]`. For each numeric signal column it records compact semantics such as `kind`, `unit`, `domain`, `end`, `quantity`, `processing_role`, and `op_chain`, so later stages can resolve the meaning of a column without relying on ad hoc string matching in each notebook.
 
 Semantic enrichment is a priority area for development / refinement. Current intention is to have header parsing / hard-code rules as a fall-back only, with a local translation table or a sidecar file from the logger being the primary source of signal semantics.
 
@@ -99,7 +99,7 @@ Semantic enrichment is a priority area for development / refinement. Current int
 
 - **Inputs:** a persisted preprocess profile selected by `PREPROCESS_PROFILE_PATH`.
 - **Editable settings:** event schema path, FIT import behavior, zeroing, activity-mask settings, clipping, smoothing, and ingestion mode.
-- **Outputs:** a validated preprocess profile and its nested config payload, suitable for `run_macro(..., preprocess_config=cfg)`.
+- **Outputs:** a validated preprocess profile and its nested config payload, suitable for `preprocess_session(..., preprocess_config=cfg)`.
 - **Persisted artifacts:** a saved `bodaqs.preprocess_profile` JSON document when the user saves changes from the profile editor.
 - **Runtime bindings:** generic log metadata path(s), bike profile path, FIT source directory, FIT binding manifest, and description-prompt behavior are supplied by the notebook parameter cell because they depend on the local install or the current log batch.
 - **Contracts / documentation:**
@@ -112,7 +112,7 @@ Semantic enrichment is a priority area for development / refinement. Current int
 ### Step 4. Run the macro pipeline for each selected session
 
 - **Inputs:** one CSV file, the validated preprocessing config, run-level generic log metadata path(s), the selected bike profile, optional FIT source/binding paths, and the event schema.
-- **Outputs:** the `run_macro(...)` result per session, including:
+- **Outputs:** the `preprocess_session(...)` result per session, including:
   - `session`
   - `schema`
   - `events`
@@ -317,7 +317,7 @@ This cell can be omitted without affecting the functioning of the remainder of t
 ### Step 4. Exercise the event browser widget
 
 - **Inputs:** the current selector scope, selected-session events, selected-session metrics, the schema definition, and per-session `df/meta`.
-- **Outputs:** an interactive event inspection surface that joins event rows to metrics where possible and resolves sensor semantics through the schema and signal registry.
+- **Outputs:** an interactive event inspection surface that joins event rows to metrics where possible and resolves signal semantics through the schema and signal registry.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
   - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
@@ -327,7 +327,7 @@ This cell can be omitted without affecting the functioning of the remainder of t
 ### Step 5. Exercise the metric scatter and metric histogram widgets
 
 - **Inputs:** selected-session event tables, selected-session metric tables, the shared schema, and per-session registries resolved via the session loader.
-- **Outputs:** interactive metric comparison views across entities, event types, and sensors.
+- **Outputs:** interactive metric comparison views across entities, event types, and ends/event contexts.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
   - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)

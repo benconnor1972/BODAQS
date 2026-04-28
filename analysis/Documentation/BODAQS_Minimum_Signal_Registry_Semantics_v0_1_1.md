@@ -70,6 +70,8 @@ Each `SignalInfo` MUST contain the following keys:
 - `op_chain`: `list[str]`
   - List of analysis-side operation tokens applied to produce this column (possibly empty).
   - Examples: `["zeroed"]`, `["zeroed", "norm"]`, `["zeroed", "Butterworth_3Hz_4Order"]`, `["zeroed", "diff"]`.
+  - Primary analysis motion channels should keep full provenance here rather
+    than in their dataframe column names.
 
 Residual naming note:
 - Columns ending with `_op_Butterworth_<x>Hz_<y>Order_resid` are interpreted as residual outputs.
@@ -107,9 +109,9 @@ Residual naming note:
     low-pass settings.
 
 - `sensor`: `str | None`
-  - Logical or source sensor identifier retained for compatibility and display.
-  - For front/rear bike-location matching, prefer `end` plus `domain`,
-    `quantity`, and `unit`.
+  - Logger/source sensor identifier, if supplied by log metadata.
+  - This is not an analysis selector field. For front/rear bike-location
+    matching, use `end` plus `domain`, `quantity`, and `unit`.
 
 - `notes`: `str`
   - Free text diagnostics or hints.
@@ -121,6 +123,9 @@ Residual naming note:
 This minimum registry is compatible with the column grammar in **Signal naming & units spec (v0.2)**:
 
 - `kind`, `domain`, `unit`, and `op_chain` should be directly parseable from the column name when the name is canonical.
+- Primary motion-derived column names may intentionally omit operation tokens,
+  for example `rear_wheel_disp_dom_wheel [mm]`; the registry remains the source
+  of filter provenance via `op_chain` and `derivation`.
 - The registry is still required even if names are canonical, because the registry is the **API surface** used by resolution logic.
 
 ---

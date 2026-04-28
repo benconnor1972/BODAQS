@@ -84,8 +84,21 @@ def _name_norm(col: str) -> str:
     if parts.kind != "":
         raise ValueError(f"norm expects engineered signal (kind=''), got {col!r}")
 
-    # Keep base unchanged -> quantity remains 'disp'
-    # Append 'norm' to ops (preserving any existing ops like 'zeroed')
+    # Semantic motion-analysis displacement columns use explicit quantity stems
+    # (e.g. rear_wheel_disp). Keep their normalized primary names compact.
+    if parts.base.endswith("_disp") and not parts.ops:
+        return format_signal_name(
+            SignalNameParts(
+                base=f"{parts.base}_norm",
+                kind="",
+                domain=parts.domain,
+                unit="1",
+                ops=(),
+            ),
+            spec=DEFAULT_SPEC,
+        )
+
+    # Legacy/non-primary names keep the provenance suffix.
     return format_signal_name(
         SignalNameParts(
             base=parts.base,

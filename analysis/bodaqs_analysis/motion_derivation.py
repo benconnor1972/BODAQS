@@ -169,12 +169,16 @@ def derive_motion_channels(
         if source_col not in out.columns:
             skipped.append({"source_id": source_id, "source_col": source_col, "reason": "source_column_missing"})
             continue
+        source_info = ((session.get("meta") or {}).get("signals") or {}).get(source_col)
+        if not isinstance(source_info, Mapping):
+            source_info = {}
 
         for profile_id, profile, role in profiles:
             try:
                 profile_result = _derive_profile_for_source(
                     out,
                     source_col=source_col,
+                    source_info=source_info,
                     source_id=source_id,
                     profile_id=profile_id,
                     role=role,
@@ -231,6 +235,7 @@ def _derive_profile_for_source(
     df: pd.DataFrame,
     *,
     source_col: str,
+    source_info: Mapping[str, Any],
     source_id: str,
     profile_id: str,
     role: str,
@@ -318,27 +323,12 @@ def _derive_profile_for_source(
         arr[nan_mask] = np.nan
 
     source_ops = tuple(source_parts.ops)
-    disp_col = _format_derived_col(
-        source_parts,
-        base=source_parts.base,
-        unit="mm",
-        ops=source_ops + (disp_bw_tag,),
-        spec=spec,
-    )
-    vel_col = _format_derived_col(
-        source_parts,
-        base=f"{source_parts.base}_vel",
-        unit="mm/s",
-        ops=source_ops + (disp_bw_tag, vel_sg_tag, vel_bw_tag),
-        spec=spec,
-    )
-    acc_col = _format_derived_col(
-        source_parts,
-        base=f"{source_parts.base}_acc",
-        unit="mm/s^2",
-        ops=source_ops + (disp_bw_tag, acc_sg_tag, acc_bw_tag),
-        spec=spec,
-    )
+    semantic_base = _semantic_motion_base(source_parts, source_info)
+    output_domain = str(source_info.get("domain") or source_parts.domain or "").strip() or source_parts.domain
+    suffix = "" if role == "primary_analysis" else _secondary_profile_suffix(profile, disp_cutoff)
+    disp_col = _format_motion_col(semantic_base, "disp", "mm", output_domain, suffix=suffix, spec=spec)
+    vel_col = _format_motion_col(semantic_base, "vel", "mm/s", output_domain, suffix=suffix, spec=spec)
+    acc_col = _format_motion_col(semantic_base, "acc", "mm/s^2", output_domain, suffix=suffix, spec=spec)
 
     generated: List[Dict[str, Any]] = []
     channel_info: Dict[str, Dict[str, Any]] = {}
@@ -360,7 +350,7 @@ def _derive_profile_for_source(
         )
         channel_info[output_col] = {
             "unit": unit,
-            "domain": source_parts.domain,
+            "domain": output_domain,
             "quantity": quantity,
             "source": [source_col],
             "source_columns": [source_col],
@@ -381,6 +371,10 @@ def _derive_profile_for_source(
                 "acceleration_lowpass_order": int(acc_order),
             },
         }
+        for key in ("end",):
+            value = source_info.get(key)
+            if isinstance(value, str) and value.strip():
+                channel_info[output_col][key] = value.strip()
 
     return {
         "series": {
@@ -394,24 +388,60 @@ def _derive_profile_for_source(
     }
 
 
-def _format_derived_col(
-    source_parts: SignalNameParts,
-    *,
-    base: str,
+def _semantic_motion_base(source_parts: SignalNameParts, source_info: Mapping[str, Any]) -> str:
+    end = str(source_info.get("end") or "").strip().lower()
+    domain = str(source_info.get("domain") or source_parts.domain or "").strip().lower()
+    if end and domain:
+        return _safe_name_token(f"{end}_{domain}")
+    if domain:
+        return _safe_name_token(f"{source_parts.base}_{domain}")
+    return _safe_name_token(source_parts.base)
+
+
+def _format_motion_col(
+    semantic_base: str,
+    quantity: str,
     unit: str,
-    ops: Sequence[str],
+    domain: Optional[str],
+    *,
+    suffix: str,
     spec: SignalSpec,
 ) -> str:
+    base = f"{semantic_base}_{quantity}"
+    if suffix:
+        base = f"{base}_{suffix}"
     return format_signal_name(
         SignalNameParts(
             base=base,
             kind="",
-            domain=source_parts.domain,
+            domain=domain,
             unit=unit,
-            ops=tuple(ops),
+            ops=(),
         ),
         spec=spec,
     )
+
+
+def _secondary_profile_suffix(profile: Mapping[str, Any], displacement_lowpass_hz: float) -> str:
+    explicit = str(profile.get("series_suffix") or "").strip()
+    if explicit:
+        return _safe_name_token(explicit)
+    return f"lp{_format_decimal_token(displacement_lowpass_hz)}hz"
+
+
+def _safe_name_token(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    out = []
+    previous_underscore = False
+    for ch in text:
+        if ch.isalnum():
+            out.append(ch)
+            previous_underscore = False
+        else:
+            if not previous_underscore:
+                out.append("_")
+            previous_underscore = True
+    return "".join(out).strip("_") or "signal"
 
 
 def _savgol_derivative(

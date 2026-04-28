@@ -370,7 +370,9 @@ Interpretation rules:
 - `quantity: "raw"` identifies raw signal columns
 - engineered signals use any non-`raw` quantity, for example `disp`, `ang_disp`, `vel`, `acc`
 - `end`, when present, identifies front/rear bike location and SHOULD be one of `front` or `rear`
-- for front/rear suspension and wheel signals, `end` is preferred for bike-level semantic matching; `sensor` may still identify the logger/source sensor or a legacy semantic alias
+- for front/rear suspension and wheel signals, `end` is used for bike-level
+  semantic matching; `sensor` identifies only the logger/source sensor when
+  supplied
 - `transform_chain` contains ordered transform ids
 - `calibration_ref` identifies the sensor calibration used to derive a signal
 - `source_columns` contains column ids, not CSV headers

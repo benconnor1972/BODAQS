@@ -517,7 +517,6 @@ def _validate_signal_selector(value: Any, *, key: str, label: str, required: boo
     for field, field_value in value.items():
         if field not in {
             "end",
-            "sensor",
             "quantity",
             "domain",
             "unit",

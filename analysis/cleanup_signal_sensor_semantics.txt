@@ -26,21 +26,30 @@ Bike-profile selectors should prefer `end` plus `domain`, `quantity`, and
 
   end=rear, domain=suspension, quantity=disp, unit=mm
 
-The existing `sensor` field should remain supported for compatibility and for
-cases where the logger/source identity is genuinely useful, but over time it
-should become less important for bike-profile resolution.
+The existing `sensor` field should now be treated as logger/source identity
+only. It is no longer a semantic selector field for event detection,
+segmentation, bike-profile matching, or primary-analysis signal selection. If a
+legacy logger uses names such as `fork` or `shock`, handle that with an
+appropriate log-metadata generic rather than analysis-time aliasing.
 
 Cleanup work still to consider
 ------------------------------
-- Decide whether `sensor` should eventually mean only logger/source identity.
-- Decide whether canonical output column stems should remain `front_shock` and
-  `rear_shock`, or move toward role names such as `front_suspension`.
-- Update downstream UI language where `sensor` really means signal group,
-  bike end, or event source.
-- Keep accepting old `sensor` selectors until example data, notebooks, and
-  saved artifacts have fully moved to `end`.
-- Revisit event schema binding. Event detection still expands events by schema
-  `sensor` and then prefers primary-analysis channels within that sensor. If we
-  want events to bind by full semantics (for example rear wheel rather than rear
-  shock), the event schema contract and resolver need an explicit semantic
-  selector path rather than relying on sensor identity.
+- Audit remaining display/internal names that still say "sensor" where the
+  value is now an end/context. Several public widget control names are preserved
+  internally for API stability, but user-facing labels should say "Ends" or
+  "event context".
+- Decide whether old packaged snapshots under `analysis/packages/` should be
+  regenerated or left as historical artifacts.
+- Keep the log-metadata `sensors` block as logger/source calibration metadata;
+  do not use it for analysis-side semantic matching.
+
+Completed direction
+-------------------
+- Event detection now requires semantic `inputs`; legacy sensor expansion has
+  been removed from the active detector.
+- Segment role resolution binds by semantic event context (`end`, `domain`)
+  rather than inferred sensor.
+- Primary motion-derived outputs use semantic stems such as
+  `rear_wheel_disp`, `rear_wheel_vel`, and `rear_wheel_acc`.
+- Secondary motion-derived outputs use compact profile suffixes such as
+  `_lp5hz`, or an explicit profile `series_suffix` when provided.

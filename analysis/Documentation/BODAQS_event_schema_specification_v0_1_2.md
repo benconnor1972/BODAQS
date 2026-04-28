@@ -3,9 +3,10 @@
 This document specifies the YAML schema used by the BODAQS analysis pipeline to define event detection,
 segmentation defaults, and metric extraction.
 
-This update introduces **registry-first, no-fallback** segment role definitions (Option B):
-`segment_defaults.roles` must be expressed in **dict form** with a `prefer` selector that is **sensor-relative**
-(i.e., the sensor is bound from the event instance / anchor signal, not hard-coded in the schema).
+This update uses **registry-first, no-fallback** event and segment role
+definitions. Event `inputs` and `segment_defaults.roles[].prefer` are semantic
+selectors, usually constrained by `end`, `domain`, `quantity`, `unit`, and
+`processing_role`.
 
 ---
 
@@ -18,7 +19,8 @@ The analysis pipeline maintains a canonical signal registry at:
 
 The registry maps **dataframe columns** → semantic metadata, including (at minimum):
 
-- `sensor` (e.g. `rear_shock`, `front_shock`; accepted aliases include `shock` -> `rear_shock` and `fork` -> `front_shock`)
+- `end` (usually `front` or `rear`)
+- `domain` (for example `suspension` or `wheel`)
 - `quantity` (e.g. `disp`, `vel`, `acc`, `raw`)
 - `unit` (e.g. `mm`, `mm/s`, `mm/s^2`, `counts`)
 - `kind` (e.g. `""` engineered, `raw`, `qc`)
@@ -26,10 +28,12 @@ The registry maps **dataframe columns** → semantic metadata, including (at min
 
 All downstream components must resolve signals **via the registry**. No suffix-guessing or fallback concatenation.
 
-### 1.2 Events are expanded per sensor
-An event definition can list multiple sensors. During event detection, each event is expanded into one row per sensor.
-Event rows are expected to include an anchor signal column (commonly `signal_col`) that identifies the sensor for that
-event instance.
+### 1.2 Events are expanded per semantic context
+Event definitions use semantic `inputs` and, when needed, `expand` to produce
+one event instance per declared context such as `end: rear` and `end: front`.
+
+Event rows include an anchor signal column (commonly `signal_col`) that
+identifies the resolved trigger signal for that event instance.
 
 ---
 
@@ -52,13 +56,120 @@ Each entry in `events` is an object with (common fields):
 
 - `id` (string, stable key used in `events_df["schema_id"]`)
 - `label` (string, human-readable)
-- `sensors` (list[str], e.g. `["rear_shock", "front_shock"]`; `shock` and `fork` are accepted aliases and normalize to the canonical ids)
+- `inputs` (object, preferred for new schemas): role names mapped to semantic signal selectors
+- `expand` (object, optional): selector fields expanded into multiple semantic event instances
 - `trigger` (definition of primary trigger)
 - `preconditions` (optional constraints)
 - `window` (time window defaults for detection)
 - `metrics` (metric definitions)
 - `tags` (optional)
 - `segment_defaults` (defaults used by `extract_segments` / segment viewer)
+
+### 3.1 Semantic event inputs
+
+New event schemas SHOULD define the concrete signal roles they need in an
+`inputs` block. Each key is the role name used later by `trigger.signal`,
+preconditions, secondary triggers, metrics, and segment defaults. Each value is
+a semantic selector matched against `session["meta"]["signals"]`.
+
+Example:
+
+```yaml
+events:
+  - id: rear_wheel_compressions
+    label: rear wheel compression events
+    inputs:
+      disp:
+        end: rear
+        domain: wheel
+        quantity: disp
+        unit: mm
+        processing_role: primary_analysis
+      vel:
+        end: rear
+        domain: wheel
+        quantity: vel
+        unit: mm/s
+        processing_role: primary_analysis
+      disp_norm:
+        end: rear
+        domain: wheel
+        quantity: disp_norm
+        unit: "1"
+        processing_role: primary_analysis
+    trigger:
+      id: compression_end
+      type: simple_threshold_crossing
+      signal: vel
+      value: 0.0
+      dir: falling
+```
+
+Supported selector fields are:
+
+- `end`
+- `domain`
+- `quantity`
+- `unit`
+- `processing_role`
+- `motion_source_id`
+- `motion_profile_id`
+- `kind`
+- `op_chain`
+
+Resolution rules:
+
+1. Detection resolves input role selectors directly. Events without `inputs`
+   are invalid in the active implementation.
+2. Each input role must resolve to exactly one registry signal.
+3. Zero matches mean the event instance is skipped for that session.
+4. Multiple matches are treated as an ambiguous schema/setup error.
+5. `trigger.signal`, precondition `signal`, metric `signal`, and secondary
+   trigger `signal` values refer to input role names, not dataframe columns.
+
+
+### 3.2 Semantic event expansion
+
+When one event definition should run against multiple semantic contexts, use
+`expand` rather than duplicating the event block or making an input selector
+match multiple signals.
+
+Example:
+
+```yaml
+events:
+  - id: compressions_all>25
+    expand:
+      end: [rear, front]
+    inputs:
+      disp:
+        domain: wheel
+        quantity: disp
+        unit: mm
+        processing_role: primary_analysis
+      vel:
+        domain: wheel
+        quantity: vel
+        unit: mm/s
+        processing_role: primary_analysis
+```
+
+Expansion rules:
+
+1. `expand` keys use the same field names as semantic input selectors.
+2. Each value may be a scalar or a list. Lists produce one event instance per
+   value.
+3. Expansion values are injected into every `inputs` selector unless that
+   selector already defines the same field.
+4. After injection, each input role must still resolve to exactly one signal.
+5. Expansion is intentionally separate from selector matching: a selector should
+   not resolve to multiple dataframe columns.
+
+The bundled `event_schema - Basic.yaml` uses this v0.1.2 `inputs` form from
+schema file version `6` onward, and uses `expand.end: [rear, front]` from
+schema file version `7` onward. It keeps the historical event ids such as
+`compressions_all>25` and `rebounds_all>25` while moving signal binding away
+from shock/fork sensor expansion.
 
 ---
 
@@ -100,19 +211,20 @@ Each role entry MUST include a `prefer` block with at least:
 - `quantity`
 - `unit`
 
-`sensor` MAY be omitted; 
-- The sensor is bound from the **event instance** (via its anchor signal / `signal_col` and the registry).
-- This avoids duplicating role lists per sensor and keeps schemas sensor-agnostic.
+Roles may also specify `end`, `domain`, and `processing_role` when needed for
+deterministic binding.
 
 ### 4.3 Resolution rules (Option B)
 
 When extracting segments for a specific event row:
 
-1. Determine the event sensor from the anchor signal column (e.g. `signal_col`) via `meta["signals"][signal_col]["sensor"]`.
+1. Determine the event semantic context from schema expansion and the anchor
+   signal column registry entry.
 2. For each RoleDef, resolve the dataframe column by matching registry entries on:
-   - the event sensor (bound at runtime)
+   - the event semantic context, usually `end` and `domain`
    - `prefer.quantity`
-   - and any optional `prefer` fields (`unit`, `kind`, `op_chain`)
+   - and any optional `prefer` fields (`unit`, `kind`, `processing_role`,
+     `op_chain`)
 3. Resolution must be **deterministic**:
    - 0 matches → error (missing signal)
    - >1 matches → error (ambiguous signal)
@@ -222,19 +334,20 @@ trigger metadata as a fake signal role.
 
 ---
 
-## Appendix: Sensor-Bound Signal Resolution Model
+## Appendix: Semantic-Context Signal Resolution Model
 
 ### Overview
 
 Event detection, segmentation, and metrics in BODAQS operate on **roles** (e.g. `disp`, `vel`, `disp_norm`) rather than directly referencing DataFrame column names.
 
-This appendix defines the **sensor-bound resolution model** used to map schema roles to concrete signal columns in the analysis DataFrame.
+This appendix defines the **semantic-context resolution model** used to map schema roles to concrete signal columns in the analysis DataFrame.
 
 ---
 
 ### Core Design Principle
 
-**Signal roles are resolved relative to the sensor that triggered the event.**
+**Signal roles are resolved relative to explicit event semantics such as `end`
+and `domain`.**
 
 In other words:
 
@@ -244,17 +357,19 @@ This avoids ambiguity when multiple sensors produce signals with identical physi
 
 ---
 
-### Event Sensor Binding
+### Event Context Binding
 
 Each detected event row MUST identify a *primary signal column* (`signal_col`) that caused the trigger.
 
-From this column, the system derives the **event sensor context** using the signal registry:
+From this column, and from any schema `expand` block, the system derives the
+**event semantic context** using the signal registry:
 
 ```text
-event sensor := meta.signals[signal_col].sensor
+event context := schema expansion fields and meta.signals[signal_col]
 ```
 
-All subsequent role resolution for that event is performed **within this sensor context**.
+All subsequent role resolution for that event is performed **within this
+semantic context**.
 
 ---
 
@@ -262,18 +377,22 @@ All subsequent role resolution for that event is performed **within this sensor 
 
 For each event row and each requested role:
 
-1. **Determine the bound sensor**
+1. **Determine the bound semantic context**
 
-   * If the role explicitly specifies `prefer.sensor`, that value is used.
-   * Otherwise, the sensor is inherited from the event’s primary trigger signal.
+   * If the role explicitly specifies `prefer.end` or `prefer.domain`, those
+     values are used.
+   * Otherwise, compatible fields are inherited from the event expansion context
+     and the event primary trigger signal registry entry.
 
 2. **Match against the signal registry**
 
    * Candidate signals are filtered by:
 
-     * `sensor`
+     * `end`
+     * `domain`
      * `quantity`
      * `unit`
+     * `processing_role`
      * `op_chain` (if specified)
      * `kind` (engineered vs raw vs qc)
 
@@ -286,7 +405,7 @@ For each event row and each requested role:
 
    * The resolved column name is recorded for that event row.
 
-This resolution is performed **per event row**, allowing different events in the same session to bind to different sensors without ambiguity.
+This resolution is performed **per event row**, allowing different events in the same session to bind to different semantic contexts without ambiguity.
 
 ---
 
@@ -309,8 +428,9 @@ Example:
 
 The following fields are OPTIONAL:
 
-* `prefer.sensor`
-  (omitted when the role should bind to the event’s sensor)
+* `prefer.end`
+* `prefer.domain`
+* `prefer.processing_role`
 * `prefer.op_chain`
   (may be empty if no specific operations are required)
 
@@ -325,7 +445,9 @@ In these cases:
 * `role` is a semantic label
 * `prefer.quantity` identifies the physical quantity (e.g. `disp`)
 * `prefer.unit` identifies the resulting unit (e.g. `"1"` for dimensionless)
-* `prefer.op_chain` encodes the transformation sequence
+* `prefer.op_chain` encodes the transformation sequence when the schema needs
+  to require a specific operation chain. Primary analysis columns may omit
+  operation tokens from the dataframe name; provenance remains in the registry.
 
 Example:
 
@@ -361,10 +483,10 @@ This ensures:
 
 ### Rationale
 
-This sensor-bound resolution model:
+This semantic-context resolution model:
 
-* Eliminates ambiguity in multi-sensor datasets
-* Allows a single schema to apply across sensors
+* Eliminates ambiguity in multi-signal datasets
+* Allows a single schema to apply across front/rear or other contexts
 * Decouples schemas from column naming conventions
 * Scales naturally to additional sensors and derived signals
 

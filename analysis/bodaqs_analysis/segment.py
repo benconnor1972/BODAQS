@@ -2,7 +2,7 @@
 BODAQS Segment Extractor (skeleton)
 
 This version includes:
-- Option B sensor binding per event row (bind from each event row's signal_col via the registry)
+- Semantic binding per event row (bind from each event row's signal_col via the registry)
 - op_chain token normalization inside the resolver: 'op_zeroed' == 'zeroed', etc.
 """
 
@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import logging
 
-from .sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
+from .sensor_aliases import canonical_end
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +328,7 @@ def _resolve_roles_to_columns_per_eventrow(
     if events_df is None or len(events_df) == 0:
         return out
     if "signal_col" not in events_df.columns:
-        raise ValueError("events_df missing required 'signal_col' for Option B sensor binding")
+        raise ValueError("events_df missing required 'signal_col' for semantic role binding")
 
     for i, ev in events_df.iterrows():
         role_to_col: Dict[str, str] = {}
@@ -340,30 +340,14 @@ def _resolve_roles_to_columns_per_eventrow(
             if include_primary:
                 role_to_col["primary"] = sigcol
 
-        event_sensor = None
+        event_context: Dict[str, str] = {}
         if isinstance(sigcol, str):
             info = meta_signals.get(sigcol)
             if isinstance(info, dict):
-                s = info.get("sensor", None)
-                if isinstance(s, str) and s.strip():
-                    event_sensor = s.strip()
-
-            # Fallback: if registry doesn't have this exact column key,
-            # derive sensor from the canonical name (base token before _vel/_acc/_raw etc).
-            if event_sensor is None:
-                try:
-                    from .signalname import parse_signal_name
-                    parts = parse_signal_name(sigcol)
-                    base = parts.base  # e.g. "front_shock_vel"
-                    if base.endswith("_vel"):
-                        base = base[:-4]
-                    elif base.endswith("_acc"):
-                        base = base[:-4]
-                    elif base.endswith("_raw"):
-                        base = base[:-4]
-                    event_sensor = base
-                except Exception:
-                    event_sensor = None
+                for key in ("end", "domain"):
+                    value = info.get(key)
+                    if isinstance(value, str) and value.strip():
+                        event_context[key] = value.strip()
 
 
         for rs in roles:
@@ -372,12 +356,13 @@ def _resolve_roles_to_columns_per_eventrow(
                 rs.role,
                 rs.prefer,
                 primary_signal_col=primary_col,
-                event_sensor=event_sensor,
+                event_context=event_context,
             )
             if col is None:
                 raise ValueError(
                     f"Could not resolve role {rs.role!r} for event_row={int(i)} "
-                    f"(schema_id={ev.get('schema_id')!r}, signal_col={sigcol!r}, bound_sensor={event_sensor!r}) "
+                    f"(schema_id={ev.get('schema_id')!r}, signal_col={sigcol!r}, "
+                    f"event_context={event_context!r}) "
                     f"via meta['signals']"
                 )
             if col not in df_cols:
@@ -389,7 +374,7 @@ def _resolve_roles_to_columns_per_eventrow(
     return out
 
 
-def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *, event_sensor=None):
+def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *, event_context=None):
     """Registry-first role resolution with op_chain normalization."""
 
     def _get_pref(p, k, default=None):
@@ -437,25 +422,23 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
             return tuple(_norm_op_token(p) for p in s.split("|") if p)
         return (_norm_op_token(s),)
 
-    pref_sensor_raw = _norm_str(_get_pref(prefer, "sensor"))
-    pref_sensor = canonical_sensor_id(pref_sensor_raw) if pref_sensor_raw else None
     pref_quantity = _norm_str(_get_pref(prefer, "quantity"))
     pref_kind = _norm_kind(_get_pref(prefer, "kind"))
     pref_unit = _norm_unit(_get_pref(prefer, "unit"))
     pref_domain = _norm_str(_get_pref(prefer, "domain"))
     pref_end_raw = _norm_str(_get_pref(prefer, "end"))
-    pref_end = (canonical_end(pref_end_raw) or end_from_sensor(pref_end_raw)) if pref_end_raw else None
+    pref_end = canonical_end(pref_end_raw) if pref_end_raw else None
     pref_processing_role = _norm_str(_get_pref(prefer, "processing_role"))
     pref_motion_source_id = _norm_str(_get_pref(prefer, "motion_source_id"))
     pref_motion_profile_id = _norm_str(_get_pref(prefer, "motion_profile_id"))
     pref_has_op_chain = _has_pref_key(prefer, "op_chain")
     pref_op_chain = _norm_op_chain(_get_pref(prefer, "op_chain"))
 
-    # Option B binding: if we know the sensor for this event row, it must win.
-    # This prevents schema role anchors (prefer.sensor) from accidentally pinning
-    # roles to the wrong sensor across multi-sensor events.
-    if event_sensor:
-        pref_sensor = canonical_sensor_id(event_sensor)
+    event_context = event_context if isinstance(event_context, Mapping) else {}
+    if pref_end is None:
+        pref_end = canonical_end(event_context.get("end")) or None
+    if pref_domain is None:
+        pref_domain = _norm_str(event_context.get("domain"))
 
     if pref_quantity is None and isinstance(role, str) and role.strip():
         pref_quantity = role.strip()
@@ -467,21 +450,16 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
         if not isinstance(info, dict):
             continue
 
-        sensor_raw = _norm_str(info.get("sensor"))
-        sensor = canonical_sensor_id(sensor_raw) if sensor_raw else None
         quantity = _norm_str(info.get("quantity"))
         kind = _norm_kind(info.get("kind"))
         unit = _norm_unit(info.get("unit"))
         domain = _norm_str(info.get("domain"))
-        actual_end = canonical_end(info.get("end")) or end_from_sensor(info.get("sensor"))
+        actual_end = canonical_end(info.get("end"))
         processing_role = _norm_str(info.get("processing_role"))
         motion_source_id = _norm_str(info.get("motion_source_id"))
         motion_profile_id = _norm_str(info.get("motion_profile_id"))
         op_chain = _norm_op_chain(info.get("op_chain"))
 
-
-        if pref_sensor is not None and sensor != pref_sensor:
-            continue
         if pref_end is not None and actual_end != pref_end:
             continue
         if pref_quantity is not None and quantity != pref_quantity:
@@ -511,8 +489,8 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
 
         candidates.append((col, info))
 
-    logger.debug("role=%r pref_sensor=%r pref_quantity=%r pref_unit=%r pref_kind=%r pref_op_chain=%r",
-                 role, pref_sensor, pref_quantity, pref_unit, pref_kind, pref_op_chain)
+    logger.debug("role=%r pref_end=%r pref_domain=%r pref_quantity=%r pref_unit=%r pref_kind=%r pref_op_chain=%r",
+                 role, pref_end, pref_domain, pref_quantity, pref_unit, pref_kind, pref_op_chain)
                  
     if not candidates:
         if isinstance(role, str) and role.strip().lower() == "primary" and primary_signal_col:
@@ -524,8 +502,6 @@ def _pick_column_for_role(meta_signals, role, prefer, primary_signal_col=None, *
         score = 0
         op_chain = _norm_op_chain(info.get("op_chain"))
         op_len = len(op_chain)
-        if info.get("sensor") is not None:
-            score += 2
         if info.get("quantity") is not None:
             score += 2
         if info.get("unit") is not None:

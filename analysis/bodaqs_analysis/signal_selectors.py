@@ -6,13 +6,12 @@ import logging
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from bodaqs_analysis.sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
+from bodaqs_analysis.sensor_aliases import canonical_end
 
 logger = logging.getLogger(__name__)
 
 
 SIGNAL_SELECTOR_FIELDS = {
-    "sensor",
     "end",
     "quantity",
     "domain",
@@ -26,7 +25,6 @@ SIGNAL_SELECTOR_FIELDS = {
 def selector_matches_signal(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
     """Return True when a signal-registry entry satisfies a semantic selector."""
     for key in (
-        "sensor",
         "end",
         "quantity",
         "domain",
@@ -40,12 +38,9 @@ def selector_matches_signal(signal_info: Mapping[str, Any], selector: Mapping[st
             continue
 
         actual = signal_info.get(key)
-        if key == "sensor":
-            if canonical_sensor_id(actual) != canonical_sensor_id(expected):
-                return False
-        elif key == "end":
-            expected_end = canonical_end(expected) or end_from_sensor(expected)
-            actual_end = canonical_end(actual) or end_from_sensor(signal_info.get("sensor"))
+        if key == "end":
+            expected_end = canonical_end(expected)
+            actual_end = canonical_end(actual)
             if not expected_end or expected_end != actual_end:
                 return False
         elif key == "unit":

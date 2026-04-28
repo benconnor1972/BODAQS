@@ -4,8 +4,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from .sensor_aliases import canonical_sensor_id, sensors_match
-
 def _require_data():
     if "EVENTS_DF" not in globals() or not isinstance(EVENTS_DF, pd.DataFrame) or EVENTS_DF.empty:
         raise RuntimeError("EVENTS_DF is missing or empty. Run detection first.")
@@ -41,30 +39,23 @@ def _schema_event_block(event_id: str, schema: Dict[str, Any]) -> Dict[str, Any]
 
 def _resolve_inputs_for_row(row: pd.Series, schema: Dict[str, Any]) -> Dict[str, str]:
     """
-    Resolve {disp: col, vel: col, acc: col, ...} using suffix-only mode.
-    Detector uses the same logic (_resolve_inputs_for_sensor).
+    Best-effort legacy viewer resolver.
+
+    The active detector resolves semantic inputs before emitting event rows. This
+    old plotting helper only knows the trigger `signal_col`, so it can expose the
+    trigger role but cannot reconstruct the full input map.
     """
-    sensor = row.get("sensor")
-    if not sensor:
-        return {}
-    sensor = canonical_sensor_id(sensor)
-
-    naming = schema.get("naming", {}) or {}
-    suffixes = naming.get("suffixes", {}) or {}
-    if not suffixes:
-        return {}
-
-    return {kind: f"{sensor}{suf}" for kind, suf in suffixes.items()}
+    signal = row.get("signal")
+    signal_col = row.get("signal_col")
+    if isinstance(signal, str) and signal and isinstance(signal_col, str) and signal_col:
+        return {signal: signal_col}
+    return {}
 
 def _find_series_col(schema: Dict[str, Any], *, kind: str, base_sensor: Optional[str] = None) -> Optional[str]:
     """Optional helper used elsewhere; left unchanged but not used by plotter."""
     for s in schema.get("series", []):
         if s.get("kind") != kind:
             continue
-        if base_sensor:
-            base = s.get("base") or {}
-            if not sensors_match(base.get("sensor"), base_sensor):
-                continue
         col = s.get("column")
         if col:
             return col
@@ -115,7 +106,7 @@ def plot_event(*,
                height_per_ax: float = DEFAULT_HEIGHT_PER_AX,
                save_path: Optional[str] = None):
     """
-    Plot displacement, velocity, acceleration for the event's sensor, aligned at t=0 (trigger).
+    Plot available trigger-role data for an event, aligned at t=0 (trigger).
     """
     EVENTS, DF, SCHEMA = _require_data()
     row = _get_event_row(EVENTS, event_id=event_id, occurrence=occurrence, row_index=row_index)
@@ -200,7 +191,7 @@ def plot_event(*,
 
     axes[-1].set_xlabel("Time relative to event t0 (s)")
     fig.suptitle(
-        f"{row['event_id']}  |  sensor={row.get('sensor','?')}  |  t0={row['t0_time']:.3f}s  "
+        f"{row['event_id']}  |  context={(row.get('meta') or {}).get('event_context','?') if isinstance(row.get('meta'), dict) else '?'}  |  t0={row['t0_time']:.3f}s  "
         f"pre={row['win_pre_s']}s post={row['win_post_s']}s",
         y=0.98
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from bodaqs_analysis.sensor_aliases import sensors_match
+from bodaqs_analysis.sensor_aliases import canonical_end
 
 
 SemanticKey = tuple[str, str, str, str]  # (quantity, unit, kind, op_chain_key)
@@ -19,19 +19,21 @@ def op_chain_key(op_chain: Any) -> str:
     return str(op_chain)
 
 
-def registry_signal_options_for_sensor(
+def registry_signal_options_for_context(
     *,
     registry: Mapping[str, Mapping[str, Any]],
-    sensor: str | None,
+    end: str | None,
     drop_kinds: Sequence[str] = ("qc",),
+    primary_only: bool = False,
 ) -> list[tuple[str, SemanticKey]]:
     """
-    Build semantic signal options for one sensor from registry entries.
+    Build semantic signal options for one event context from registry entries.
 
     Returns SelectMultiple-friendly pairs: (label, semantic_key)
     where semantic_key=(quantity, unit, kind, op_chain_key).
     """
-    if not sensor:
+    end_key = canonical_end(end)
+    if not end_key:
         return []
 
     opts: list[tuple[str, SemanticKey]] = []
@@ -41,7 +43,9 @@ def registry_signal_options_for_sensor(
     for _col, info in registry.items():
         if not isinstance(info, Mapping):
             continue
-        if not sensors_match(info.get("sensor"), sensor):
+        if canonical_end(info.get("end")) != end_key:
+            continue
+        if primary_only and str(info.get("processing_role") or "").strip().lower() != "primary_analysis":
             continue
 
         kind = str(info.get("kind") or "").strip()
@@ -75,7 +79,7 @@ def role_spec_from_semantic_tuple(
     RoleSpecCls: Any,
     *,
     role: str,
-    sensor: str | None,
+    end: str | None,
     semantic: SemanticKey,
 ) -> Any:
     """
@@ -84,7 +88,7 @@ def role_spec_from_semantic_tuple(
     quantity, unit, kind, opk = semantic
     op_chain = [p for p in opk.split("|") if p] if opk else []
     prefer = {
-        "sensor": sensor,
+        "end": canonical_end(end) or end,
         "quantity": quantity,
         "unit": (unit or None),
         "kind": (kind or None),

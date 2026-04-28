@@ -17,7 +17,7 @@ The BODAQS public API provides a stable interface for:
 - Applying normalization, zeroing, and derived-signal transforms
 - Detecting events from schema definitions
 - Extracting metrics from detected events
-- Running the full analysis pipeline via a single macro call
+- Running the full analysis pipeline via a single high-level preprocessing call
 
 ### Out of scope
 - Internal helper functions
@@ -105,6 +105,32 @@ Any tuple returned without opt-in is a contract violation.
 
 ## 4. Public Functions (v0)
 
+### 4.0 High-Level API Shape
+
+`preprocess_session(...)` is the single preferred high-level entry point for
+notebook, script, UI, and future CLI workflows. It accepts either:
+
+- a logger CSV path, or
+- an existing session dictionary
+
+`preprocess_session(...)` owns the complete run-level pipeline:
+
+```text
+load/canonicalize -> zero -> bike transforms -> motion derivation/filtering
+-> normalization -> activity masking -> event detection -> metric extraction
+```
+
+Event detection runs when an event schema is supplied and `include_events=True`.
+Metric extraction runs when events are available and `include_metrics=True`.
+The return value is always a results dictionary with stable top-level keys.
+
+Lower-level functions such as `load_session(...)`, `detect_events_from_schema(...)`,
+and `extract_metrics_df(...)` remain public for advanced workflows, tests, and
+debugging. They are not the preferred route for standard user-facing analysis.
+
+The former notebook-era `run_macro(...)` entry point has been removed from the
+active public API. Callers should use `preprocess_session(...)` instead.
+
 ### 4.1 Preprocess Profile Helpers
 
 **Purpose:**  
@@ -135,7 +161,7 @@ records = discover_preprocess_profiles(directory: str | Path)
 - No tuple returns
 - Unexpected profile schema/version raises `ValueError`
 - Missing required config fields raise `ValueError`
-- New callers can pass the returned config directly to `run_macro(..., preprocess_config=config)`
+- New callers can pass the returned config directly to `preprocess_session(..., preprocess_config=config)`
 - Scripts and notebook UIs can create/edit/save profiles without duplicating JSON-shaping logic
 - Persisted preprocess profiles contain reusable processing policy only; run-specific bindings such as log metadata paths, bike profile paths, FIT directories, and FIT binding manifests are supplied separately by the caller.
 
@@ -222,7 +248,12 @@ df, meta = normalize_and_scale(df, ranges, ..., return_meta=True)
 ### 4.5 `estimate_va_from_zeroed()`
 
 **Purpose:**  
-Compute velocity and acceleration via Savitzky–Golay differentiation.
+Compute velocity and acceleration via Savitzky-Golay differentiation.
+
+This is a lower-level compatibility helper. Standard preprocessing should use
+the `motion_derivation` pipeline, which combines displacement filtering,
+Savitzky-Golay differentiation, and post-derivative bandwidth filtering in one
+provenance-recorded preprocessing step.
 
 **Signature (conceptual):**
 ```python
@@ -244,14 +275,20 @@ df, meta = estimate_va_from_zeroed(df, ..., return_meta=True)
 ### 4.6 `preprocess_session()`
 
 **Purpose:**  
-Apply all standard preprocessing steps to a session.
+Run the standard BODAQS preprocessing pipeline for one session or CSV.
 
 **Signature:**
 ```python
-session = preprocess_session(
-    session,
+results = preprocess_session(
+    session_or_path,
+    schema_path: Optional[str | Path] = None,
     *,
+    preprocess_profile_path: Optional[str | Path] = None,
+    preprocess_profile: Optional[Mapping[str, Any]] = None,
     preprocess_config: Optional[Mapping[str, Any]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
+    fit_import: Optional[Mapping[str, Any]] = None,
     normalize_ranges: Optional[Dict[str, float]] = None,
     bike_profile_path: Optional[str | Path] = None,
     bike_profile: Optional[Mapping[str, Any]] = None,
@@ -261,15 +298,25 @@ session = preprocess_session(
     butterworth_generate_residuals: bool = False,
     active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
     active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
+    include_events: bool = True,
+    include_metrics: bool = True,
     ...
 )
 ```
 
 **Returns:**  
-- `session: Dict[str, Any]`
+```python
+{
+    "session": session,
+    "schema": schema,
+    "events": events_df,
+    "segments": bundles_by_schema_id,
+    "metrics": metrics_df,
+}
+```
 
 **Guarantees:**
-- `session["df"]` remains a DataFrame
+- `results["session"]["df"]` remains a DataFrame
 - `time_s` is preserved
 - QC and transform provenance are recorded under `session["qc"]`
 - New callers may pass a single `preprocess_config` payload instead of unpacking individual preprocessing fields.
@@ -292,6 +339,32 @@ session = preprocess_session(
   using zero-phase SOS Butterworth filtering.
 - When `butterworth_generate_residuals=True`, each generated Butterworth series also emits an
   append-only residual series named `<butterworth_series>_resid`.
+- If no schema is supplied, or event detection is disabled, `schema` is `None` and `events`, `segments`, and `metrics` are empty containers.
+- If a schema is supplied and `include_events=True`, event detection runs automatically.
+- If events are available and `include_metrics=True`, segment extraction and metric calculation run automatically.
+- When `fit_import` is enabled and a matching FIT file is resolved, the session may include
+  resampled GPS columns on `session["df"]` and raw secondary stream data under `session["stream_dfs"]`.
+
+Example high-level call pattern:
+
+```python
+config = load_preprocess_config("config/preprocess_profiles/suspension_default_v1.json")
+fit_import = dict(config.get("fit_import") or {})
+if fit_import.get("enabled"):
+    fit_import["fit_dir"] = "Garmin/FIT"
+    fit_import["bindings_path"] = "config/fit_bindings_v1.json"
+
+results = preprocess_session(
+    "ride.csv",
+    preprocess_config=config,
+    schema_path="event_schema/event_schema - Basic.yaml",
+    generic_log_metadata_paths=["config/log_metadata_examples/current_logger_config_hr_timestamp_log_metadata.json"],
+    bike_profile_path="config/bike_profiles/example_enduro_bike_v1.json",
+    fit_import=fit_import,
+)
+```
+
+Callers should prefer `preprocess_config` or `preprocess_profile_path` for reusable preprocessing policy in new workflows. Local/run-specific inputs such as log metadata selection, bike profile selection, FIT source directory, and FIT binding manifest are passed as explicit run-level arguments rather than persisted inside the preprocess profile.
 
 ---
 
@@ -326,75 +399,6 @@ metrics_df = extract_metrics_df(events_df)
 
 **Returns:**
 - `metrics_df: DataFrame`
-
----
-
-### 4.9 `run_macro()`
-
-**Purpose:**  
-Run the full analysis pipeline in one call.
-
-**Signature:**
-```python
-results = run_macro(
-    csv_path: str,
-    schema_path: Optional[str | Path] = None,
-    *,
-    preprocess_profile_path: Optional[str | Path] = None,
-    preprocess_profile: Optional[Mapping[str, Any]] = None,
-    preprocess_config: Optional[Mapping[str, Any]] = None,
-    normalize_ranges: Optional[Dict[str, float]] = None,
-    bike_profile_path: Optional[str | Path] = None,
-    bike_profile: Optional[Mapping[str, Any]] = None,
-    fit_import: Optional[dict[str, Any]] = None,
-    sample_rate_hz: Optional[float] = None,
-    motion_derivation: Optional[Mapping[str, Any]] = None,
-    butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
-    butterworth_generate_residuals: bool = False,
-    active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
-    active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
-    timezone: Optional[str] = None,
-    log_metadata_path: Optional[str] = None,
-    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
-)
-```
-
-Preferred new-call pattern:
-
-```python
-config = load_preprocess_config("config/preprocess_profiles/suspension_default_v1.json")
-fit_import = dict(config.get("fit_import") or {})
-if fit_import.get("enabled"):
-    fit_import["fit_dir"] = "Garmin/FIT"
-    fit_import["bindings_path"] = "config/fit_bindings_v1.json"
-
-results = run_macro(
-    "ride.csv",
-    preprocess_config=config,
-    generic_log_metadata_paths=["config/log_metadata_examples/current_logger_config_hr_timestamp_log_metadata.json"],
-    bike_profile_path="config/bike_profiles/example_enduro_bike_v1.json",
-    fit_import=fit_import,
-)
-```
-
-Callers should prefer `preprocess_config` or `preprocess_profile_path` for reusable preprocessing policy in new workflows. Local/run-specific inputs such as log metadata selection, bike profile selection, FIT source directory, and FIT binding manifest are passed as explicit run-level arguments rather than persisted inside the preprocess profile.
-
-**Returns:**
-```python
-{
-    "session": session,
-    "schema": schema,
-    "events": events_df,
-    "metrics": metrics_df,
-}
-```
-
-**Guarantees:**
-- No tuple returns
-- Stable keys in results dict
-- Fully validated session
-- When `fit_import` is enabled and a matching FIT file is resolved, the session may include
-  resampled GPS columns on `session["df"]` and raw secondary stream data under `session["stream_dfs"]`
 
 ---
 

@@ -281,13 +281,13 @@ def test_load_session_uses_single_generic_sidecar_permissively(tmp_path):
     assert session["source"]["sidecar_path"] == str(generic_sidecar)
     assert session["source"]["log_metadata_kind"] == "generic"
     assert session["source"]["sidecar_kind"] == "generic"
-    assert "front_shock_dom_suspension [mm]" in session["df"].columns
+    assert "front_suspension_disp_dom_suspension [mm]" in session["df"].columns
     assert "rear_shock_dom_suspension [mm]" not in session["df"].columns
     assert "sidecar_optional_column_missing:shock_travel_mm" in session["qc"]["warnings"]
     assert "sidecar_unknown_csv_column_skipped:rear_shock_dom_suspension [mm]" in session["qc"]["warnings"]
-    assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["sensor"] == "front_shock"
-    assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["end"] == "front"
-    assert session["meta"]["channel_info"]["front_shock_dom_suspension [mm]"]["role"] == "disp"
+    assert session["meta"]["channel_info"]["front_suspension_disp_dom_suspension [mm]"]["sensor"] == "fork"
+    assert session["meta"]["channel_info"]["front_suspension_disp_dom_suspension [mm]"]["end"] == "front"
+    assert session["meta"]["channel_info"]["front_suspension_disp_dom_suspension [mm]"]["role"] == "disp"
 
 
 def test_load_session_logs_sidecar_selection_and_column_binding(tmp_path, caplog):
@@ -366,7 +366,7 @@ def test_generic_sidecar_supports_headerless_csv_by_column_index(tmp_path):
 
     session = load_session(str(csv_path), generic_log_metadata_paths=[generic_sidecar])
 
-    assert "front_shock_dom_suspension [mm]" in session["df"].columns
+    assert "front_suspension_disp_dom_suspension [mm]" in session["df"].columns
     assert 2 not in session["df"].columns
     assert "sidecar_unknown_csv_column_skipped:2" in session["qc"]["warnings"]
     assert session["qc"]["parse"]["log_metadata_column_bindings"]["fork_travel_mm"]["csv_ref"] == {
@@ -411,7 +411,7 @@ def test_preprocess_session_uses_declared_sidecar_sample_rate(tmp_path):
             "rear_shock_dom_suspension [mm]": 150.0,
         },
         zeroing_enabled=False,
-    )
+    )["session"]
 
     primary = out["meta"]["streams"]["primary"]
     assert primary["sample_rate_hz"] == 40.0

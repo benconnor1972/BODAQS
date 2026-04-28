@@ -32,7 +32,7 @@ This contract is intentionally narrow:
 
 ### 2.1 What the profile controls
 
-The profile captures parameters that are logically part of `run_macro(...)` preprocessing and event extraction, including:
+The profile captures parameters that are logically part of the high-level preprocessing call, including:
 
 - event schema selection
 - optional FIT import policy and field selection
@@ -111,9 +111,11 @@ The root `version` field identifies the profile-document contract version, not t
 
 ### 4.3 Pipeline config payload
 
-The root `config` object is the preferred public payload passed to `run_macro(..., preprocess_config=config)`.
+The root `config` object is the preferred public payload passed to the high-level preprocessing call.
 
-Legacy notebook code may still unpack the same fields into individual `run_macro(...)` arguments, but new callers should pass the config object intact.
+Callers should pass it to `preprocess_session(..., preprocess_config=config)`.
+
+Notebook code may still unpack the same fields into individual function arguments when helpful, but new callers should pass the config object intact.
 
 ---
 
@@ -357,6 +359,7 @@ sample-count windows.
   "secondary": [
     {
       "id": "low_bandwidth",
+      "series_suffix": "lp20hz",
       "displacement_lowpass_hz": 20.0,
       "displacement_lowpass_order": 4,
       "velocity_sg_window_ms": 50.0,
@@ -380,10 +383,22 @@ sample-count windows.
 - `primary` defines the main analysis series. When `enabled` is `true`, `primary` is required.
 - `secondary` is optional and contains named lower-bandwidth or alternative analysis variants.
 - Each secondary profile must have a unique `id`.
+- Each secondary profile MAY include `series_suffix`. If omitted, consumers
+  should generate a compact suffix from the displacement low-pass cutoff, for
+  example `lp5hz` or `lp2p5hz`.
 - All low-pass cutoffs and S-G windows must be numeric and greater than zero.
 - All filter orders and `sg_polyorder` must be positive integers.
 - Runtime consumers must check sample-rate feasibility before applying filters. Cutoffs must be below Nyquist, and implementations may apply a stricter practical limit.
 - A generated primary analysis channel should not overwrite the raw or transformed displacement source; it should be an additional signal with clear provenance.
+- Primary analysis columns SHOULD use semantic stems without operation-chain
+  suffixes, for example `rear_wheel_disp_dom_wheel [mm]`,
+  `rear_wheel_vel_dom_wheel [mm/s]`, and
+  `rear_wheel_acc_dom_wheel [mm/s^2]`.
+- Secondary analysis columns SHOULD use the same semantic stems plus the compact
+  profile suffix, for example `rear_wheel_disp_lp5hz_dom_wheel [mm]`.
+- Full filter and derivation provenance belongs in the signal registry
+  (`op_chain`, `derivation`, `motion_source_id`, and `motion_profile_id`), not
+  in primary column names.
 
 ### 7.3 Intended runtime ordering
 
@@ -449,7 +464,6 @@ Supported selector fields:
 | field | meaning |
 |---|---|
 | `end` | Bike end or location class, usually `front` or `rear` |
-| `sensor` | Legacy/specific sensor identifier; supported for compatibility but less preferred for bike-level concepts |
 | `quantity` | Measured or derived quantity, for example `disp` or `vel` |
 | `domain` | Physical domain, for example `suspension` or `wheel` |
 | `unit` | Signal unit, for example `mm` or `mm/s` |
@@ -460,7 +474,9 @@ Supported selector fields:
 Rules:
 
 - A selector must be `null` or a non-empty object.
-- Selectors should use `end` rather than a specific `sensor` where the choice is a bike/setup concept.
+- Selectors must use semantic fields such as `end`, `domain`, `quantity`,
+  `unit`, and `processing_role`. Logger/source `sensor` ids are not analysis
+  selector fields.
 - Selectors may include `processing_role` when the caller needs the primary filtered analysis signal rather than any semantically compatible source.
 - Consumers should reject selectors that match more than one signal in a session.
 - Consumers may treat a selector that matches no signal as a disabled activity mask for that run, provided this is recorded in QC or warnings.
@@ -484,7 +500,7 @@ Path resolution policy is consumer-defined.
 
 That behavior should be treated as the current implementation detail for v1 authorship. Profile authors should therefore choose relative paths that are valid from the notebook working directory used in practice.
 
-Public API consumers that need deterministic path handling outside notebooks should call `resolve_preprocess_config_paths(config, base_dir=...)` before passing the config to `run_macro(...)`.
+Public API consumers that need deterministic path handling outside notebooks should call `resolve_preprocess_config_paths(config, base_dir=...)` before passing the config to the high-level preprocessing call.
 
 ---
 

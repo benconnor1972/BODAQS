@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
-from bodaqs_analysis.sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor, sensor_matches_side
+from bodaqs_analysis.sensor_aliases import canonical_end
 from bodaqs_analysis.signal_selectors import selector_matches_signal
 from bodaqs_analysis.widgets.contracts import SCHEMA_ID_COL, entity_snapshot_from_handle
 from bodaqs_analysis.widgets.loaders import (
@@ -89,13 +89,9 @@ def _signal_root_key(col: str) -> str:
     return head
 
 
-def _signal_or_sensor_matches_side(col: str, sensor: Any, side: str) -> bool:
-    return sensor_matches_side(sensor, side) or sensor_matches_side(col, side)
-
-
 def _signal_info_matches_end(info: Mapping[str, Any], col: str, end: str) -> bool:
-    actual = canonical_end(info.get("end")) or end_from_sensor(info.get("sensor")) or end_from_sensor(col)
-    expected = canonical_end(end) or end_from_sensor(end)
+    actual = canonical_end(info.get("end"))
+    expected = canonical_end(end)
     return bool(actual and expected and actual == expected)
 
 
@@ -108,10 +104,7 @@ def _selector_with(selector: Mapping[str, Any] | None, **overrides: Any) -> dict
 
 
 def _signal_matches_selector(info: Mapping[str, Any], col: str, selector: Mapping[str, Any]) -> bool:
-    enriched = dict(info)
-    if not enriched.get("end"):
-        enriched["end"] = end_from_sensor(enriched.get("sensor")) or end_from_sensor(col)
-    return selector_matches_signal(enriched, selector)
+    return selector_matches_signal(dict(info), selector)
 
 
 def _norm_candidates_for_selector(
@@ -196,7 +189,6 @@ def _match_mm_for_norm(
         return None
 
     mm_selector = _selector_with(selector, quantity="disp", unit="mm")
-    norm_sensor = canonical_sensor_id(norm_info.get("sensor"))
     norm_root = _signal_root_key(norm_col)
     norm_ops = _signal_ops(norm_info)
     target_ops = [op for op in norm_ops if op != "norm"]
@@ -209,7 +201,6 @@ def _match_mm_for_norm(
             continue
 
         col_s = str(col)
-        sensor = info.get("sensor")
         if not _signal_matches_selector(info, col_s, mm_selector):
             continue
 
@@ -217,7 +208,6 @@ def _match_mm_for_norm(
         has_filtered_ops = any(op == "diff" or op.startswith("butterworth_") for op in ops)
         score = (
             _processing_role_score(info),
-            1 if canonical_sensor_id(sensor) and canonical_sensor_id(sensor) == norm_sensor else 0,
             1 if ops == target_ops else 0,
             1 if _signal_root_key(col_s) == norm_root else 0,
             1 if not has_filtered_ops else 0,
@@ -471,12 +461,18 @@ def _event_side_mask(events_df: pd.DataFrame, side: str) -> pd.Series:
     if events_df is None or events_df.empty:
         return pd.Series(dtype=bool)
     end_s = events_df["end"] if "end" in events_df.columns else pd.Series("", index=events_df.index, dtype="object")
-    sensor_s = events_df["sensor"] if "sensor" in events_df.columns else pd.Series("", index=events_df.index, dtype="object")
-    signal_s = events_df["signal_col"] if "signal_col" in events_df.columns else pd.Series("", index=events_df.index, dtype="object")
-    return (
-        end_s.map(lambda v: bool(canonical_end(v) and canonical_end(v) == canonical_end(side)))
-        | sensor_s.map(lambda v: sensor_matches_side(v, side))
-        | signal_s.map(lambda v: sensor_matches_side(v, side))
+    meta_s = events_df["meta"] if "meta" in events_df.columns else pd.Series({}, index=events_df.index, dtype="object")
+    expected = canonical_end(side)
+
+    def _meta_end(value: Any) -> str:
+        if isinstance(value, Mapping):
+            expansion = value.get("input_expansion")
+            if isinstance(expansion, Mapping):
+                return canonical_end(expansion.get("end"))
+        return ""
+
+    return end_s.map(lambda v: bool(canonical_end(v) and canonical_end(v) == expected)) | meta_s.map(
+        lambda v: bool(_meta_end(v) and _meta_end(v) == expected)
     )
 
 
@@ -638,7 +634,7 @@ def _make_metric_scatter_tile(
                 return
             if signal_selector is None:
                 if not sensor or str(sensor) not in set(map(str, scatter_data["sensors"])):
-                    print(f"No sensor resolved as {sensor!r} in the current selection.")
+                    print(f"No end/context resolved as {sensor!r} in the current selection.")
                     return
 
             entity_keys = [str(entity.entity_key) for entity in selected_entities]

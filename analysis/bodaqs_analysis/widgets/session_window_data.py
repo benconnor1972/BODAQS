@@ -101,6 +101,15 @@ def _infer_signal_cols_from_registry(session: Mapping[str, Any]) -> list[str]:
     return cols
 
 
+def _filter_primary_analysis_cols(cols: Sequence[str], registry: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    return [
+        str(c)
+        for c in cols
+        if isinstance(registry.get(str(c)), Mapping)
+        and str(registry[str(c)].get("processing_role") or "").strip().lower() == "primary_analysis"
+    ]
+
+
 def _filter_numeric_cols(df: pd.DataFrame, cols: Sequence[str], *, time_col: str) -> list[str]:
     out = []
     for c in cols:
@@ -152,6 +161,7 @@ def derive_signal_options(
     prev_detail: Sequence[str],
     time_col: str,
     preferred_unit: str = "mm",
+    primary_only: bool = False,
 ) -> SignalOptionsResult:
     df_ = session["df"]
     meta = (session or {}).get("meta") or {}
@@ -161,6 +171,8 @@ def derive_signal_options(
     registry_cols = _infer_signal_cols_from_registry(session)
     if not registry_cols:
         registry_cols = [c for c in df_.columns if isinstance(c, str)]
+    if primary_only:
+        registry_cols = _filter_primary_analysis_cols(registry_cols, registry)
 
     numeric_cols = _filter_numeric_cols(df_, registry_cols, time_col=time_col)
     if not numeric_cols:

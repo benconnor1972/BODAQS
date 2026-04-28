@@ -1,5 +1,5 @@
-specification: 0.1.1
-version: '5'
+specification: 0.1.2
+version: '7'
 naming:
   suffixes:
     disp: ' [mm]'
@@ -16,384 +16,322 @@ defaults:
     prefer_abs: false
     prefer_max: false
 series:
-- id: mark
-  kind: trigger
-  source: system:mark
-  column: mark
-  edge: rising
+  - id: mark
+    kind: trigger
+    source: system:mark
+    column: mark
+    edge: rising
 events:
-- id: rebounds_all>25
-  label: rebound events with max normalized displacement >0.25
-  sensors:
-    - rear_shock
-    - front_shock
-  trigger:
-    id: rebound_start
-    type: simple_threshold_crossing
-    signal: vel
-    value: 0.0
-    dir: falling
-    hysteresis: 0
-    distance_s: 0.015
-    edge_ignore_s: 1
-    debounce:
-      gap_s: 0.3
-      prefer_key: disp
-      prefer_abs: false
-      prefer_max: true
-  secondary_triggers:
-  - id: rebound_end
-    type: simple_threshold_crossing
-    signal: vel
-    value: 0.0
-    base_trigger: rebound_start
-    search:
-      min_delay_s: 0.05
-      max_delay_s: 0.8
-      direction: forward
-    dir: rising
-    debounce:
-      gap_s: 0.8
-      prefer_key: t0_index
-      prefer_abs: false
-      prefer_max: false
-  preconditions:
-  - within_s:
-    - -0.01
-    - 0.01
-    all_of:
-    - type: peak
-      signal: disp_norm
-      kind: max
-      cmp: '>'
-      value: 0.25
-  window:
-    pre_s: 0.2
-    post_s: 0.8
-    align: trigger
-  metrics:
-    - type: interval_stats
+  - id: rebounds_all>25
+    label: wheel rebound events with max normalized displacement >0.25
+    expand: &front_rear_wheel_expansion
+      end:
+        - rear
+        - front
+    inputs: &wheel_primary_inputs
+      disp:
+        domain: wheel
+        quantity: disp
+        unit: mm
+        processing_role: primary_analysis
+      vel:
+        domain: wheel
+        quantity: vel
+        unit: mm/s
+        processing_role: primary_analysis
+      acc:
+        domain: wheel
+        quantity: acc
+        unit: mm/s^2
+        processing_role: primary_analysis
+      disp_norm:
+        domain: wheel
+        quantity: disp_norm
+        unit: "1"
+        processing_role: primary_analysis
+    trigger: &rebound_trigger
+      id: rebound_start
+      type: simple_threshold_crossing
       signal: vel
-      start_trigger: rebound_start
-      end_trigger: rebound_end
-      ops:
-      - mean
-      - max
-      - min
-      polarity: neg_to_pos
-      smooth_ms: 20
-      min_delay_s: 0.02
-      return_debug: true
-    - type: peak
-      signal: disp
-      kind: max
-    - type: peak
-      signal: disp
-      kind: min
-  tags:
-    - kinematics
-    - rebound
-  segment_defaults:
-    anchor: trigger_time_s
-    window:
+      value: 0.0
+      dir: falling
+      hysteresis: 0
+      distance_s: 0.015
+      edge_ignore_s: 1
+      debounce:
+        gap_s: 0.3
+        prefer_key: disp
+        prefer_abs: false
+        prefer_max: true
+    secondary_triggers: &rebound_secondary_triggers
+      - id: rebound_end
+        type: simple_threshold_crossing
+        signal: vel
+        value: 0.0
+        base_trigger: rebound_start
+        search:
+          min_delay_s: 0.05
+          max_delay_s: 0.8
+          direction: forward
+        dir: rising
+        debounce:
+          gap_s: 0.8
+          prefer_key: t0_index
+          prefer_abs: false
+          prefer_max: false
+    preconditions: &travel_25_preconditions
+      - within_s:
+          - -0.01
+          - 0.01
+        all_of:
+          - type: peak
+            signal: disp_norm
+            kind: max
+            cmp: '>'
+            value: 0.25
+    window: &rebound_window
       pre_s: 0.2
       post_s: 0.8
-    roles:
-      - role: disp
-        prefer: &id001
-          quantity: disp
-          unit: mm
-          op_chain: []
-      - role: vel
-        prefer: &id002
-          quantity: vel
-          unit: mm/s
-          op_chain: []
-      - role: acc
-        prefer: &id003
-          quantity: acc
-          unit: mm/s^2
-          op_chain: []
-      - role: disp_norm
-        prefer: &id004
-          quantity: disp_norm
-          unit: "1"
-          op_chain: [norm]
-- id: compressions_all>25
-  label: all compression events >25% normalised displacement
-  sensors:
-    - rear_shock
-    - front_shock
-  trigger:
-    id: compression_end
-    type: simple_threshold_crossing
-    signal: vel
-    value: 0.0
-    dir: falling
-    hysteresis: 0
-    distance_s: 0.015
-    edge_ignore_s: 1
-    debounce:
-      gap_s: 0.3
-      prefer_key: disp
-      prefer_abs: false
-      prefer_max: true
-  secondary_triggers:
-  - id: compression_start
-    type: simple_threshold_crossing
-    signal: vel
-    value: 0.0
-    base_trigger: compression_end
-    search:
-      min_delay_s: -0.8
-      max_delay_s: -0.02
-      direction: backward
-    dir: rising
-    debounce:
-      gap_s: 0.02
-      prefer_key: t0_index
-      prefer_abs: false
-      prefer_max: true
-  preconditions:
-  - within_s:
-    - -0.01
-    - 0.01
-    all_of:
-    - type: peak
-      signal: disp_norm
-      kind: max
-      cmp: '>'
-      value: 0.25
-  window:
-    pre_s: 0.8
-    post_s: 0.2
-    align: trigger
-  metrics:
-    - type: interval_stats
+      align: trigger
+    metrics: &rebound_metrics
+      - type: interval_stats
+        signal: vel
+        start_trigger: rebound_start
+        end_trigger: rebound_end
+        ops:
+          - mean
+          - max
+          - min
+        polarity: neg_to_pos
+        smooth_ms: 20
+        min_delay_s: 0.02
+        return_debug: true
+      - type: peak
+        signal: disp
+        kind: max
+      - type: peak
+        signal: disp
+        kind: min
+    tags:
+      - kinematics
+      - rebound
+    segment_defaults: &rebound_segment_defaults
+      anchor: trigger_time_s
+      window:
+        pre_s: 0.2
+        post_s: 0.8
+      roles: &primary_analysis_roles
+        - role: disp
+          prefer: &primary_disp_role
+            quantity: disp
+            unit: mm
+            processing_role: primary_analysis
+        - role: vel
+          prefer: &primary_vel_role
+            quantity: vel
+            unit: mm/s
+            processing_role: primary_analysis
+        - role: acc
+          prefer: &primary_acc_role
+            quantity: acc
+            unit: mm/s^2
+            processing_role: primary_analysis
+        - role: disp_norm
+          prefer: &primary_disp_norm_role
+            quantity: disp_norm
+            unit: "1"
+            processing_role: primary_analysis
+
+  - id: compressions_all>25
+    label: wheel compression events with max normalized displacement >0.25
+    expand: *front_rear_wheel_expansion
+    inputs: *wheel_primary_inputs
+    trigger: &compression_trigger
+      id: compression_end
+      type: simple_threshold_crossing
       signal: vel
-      start_trigger: compression_start
-      end_trigger: compression_end
-      ops:
-      - mean
-      - max
-      - min
-      polarity: pos_to_neg
-      smooth_ms: 20
-      min_delay_s: 0.02
-      return_debug: true
-    - type: peak
-      signal: disp
-      kind: max
-    - type: peak
-      signal: disp
-      kind: min
-    - type: peak
-      signal: acc
-      kind: max
-    - type: peak
-      signal: acc
-      kind: min
-  tags:
-    - kinematics
-    - compression
-  segment_defaults:
-    anchor: trigger_time_s
-    window:
+      value: 0.0
+      dir: falling
+      hysteresis: 0
+      distance_s: 0.015
+      edge_ignore_s: 1
+      debounce:
+        gap_s: 0.3
+        prefer_key: disp
+        prefer_abs: false
+        prefer_max: true
+    secondary_triggers: &compression_secondary_triggers
+      - id: compression_start
+        type: simple_threshold_crossing
+        signal: vel
+        value: 0.0
+        base_trigger: compression_end
+        search:
+          min_delay_s: -0.8
+          max_delay_s: -0.02
+          direction: backward
+        dir: rising
+        debounce:
+          gap_s: 0.02
+          prefer_key: t0_index
+          prefer_abs: false
+          prefer_max: true
+    preconditions: *travel_25_preconditions
+    window: &compression_window
       pre_s: 0.8
       post_s: 0.2
-    roles:
-      - role: disp
-        prefer: *id001
-      - role: vel
-        prefer: *id002
-      - role: acc
-        prefer: *id003
-      - role: disp_norm
-        prefer: *id004
-- id: bottom_out
-  label: compression events with max normalized displacement >0.98
-  sensors:
-    - rear_shock
-    - front_shock
-  trigger:
-    id: compression_end
-    type: simple_threshold_crossing
-    signal: vel
-    value: 0.0
-    dir: falling
-    hysteresis: 0
-    distance_s: 0.015
-    edge_ignore_s: 1
-    debounce:
-      gap_s: 0.3
-      prefer_key: disp
-      prefer_abs: false
-      prefer_max: true
-  secondary_triggers:
-  - id: compression_start
-    type: simple_threshold_crossing
-    signal: vel
-    value: 0.0
-    base_trigger: compression_end
-    search:
-      min_delay_s: 0.05
-      max_delay_s: 0.8
-      direction: backward
-    dir: falling
-    debounce:
-      gap_s: 0.8
-      prefer_key: t0_index
-      prefer_abs: false
-      prefer_max: false
-  preconditions:
-  - within_s:
-    - -0.01
-    - 0.01
-    all_of:
-    - type: peak
+      align: trigger
+    metrics: &compression_metrics
+      - type: interval_stats
+        signal: vel
+        start_trigger: compression_start
+        end_trigger: compression_end
+        ops:
+          - mean
+          - max
+          - min
+        polarity: pos_to_neg
+        smooth_ms: 20
+        min_delay_s: 0.02
+        return_debug: true
+      - type: peak
+        signal: disp
+        kind: max
+      - type: peak
+        signal: disp
+        kind: min
+      - type: peak
+        signal: acc
+        kind: max
+      - type: peak
+        signal: acc
+        kind: min
+    tags:
+      - kinematics
+      - compression
+    segment_defaults: &compression_segment_defaults
+      anchor: trigger_time_s
+      window:
+        pre_s: 0.8
+        post_s: 0.2
+      roles: *primary_analysis_roles
+
+  - id: bottom_out
+    label: wheel compression events with max normalized displacement >0.98
+    expand: *front_rear_wheel_expansion
+    inputs: *wheel_primary_inputs
+    trigger: *compression_trigger
+    secondary_triggers: &bottom_out_secondary_triggers
+      - id: compression_start
+        type: simple_threshold_crossing
+        signal: vel
+        value: 0.0
+        base_trigger: compression_end
+        search:
+          min_delay_s: 0.05
+          max_delay_s: 0.8
+          direction: backward
+        dir: falling
+        debounce:
+          gap_s: 0.8
+          prefer_key: t0_index
+          prefer_abs: false
+          prefer_max: false
+    preconditions: &travel_98_preconditions
+      - within_s:
+          - -0.01
+          - 0.01
+        all_of:
+          - type: peak
+            signal: disp_norm
+            kind: max
+            cmp: '>'
+            value: 0.98
+    window: *compression_window
+    metrics: *compression_metrics
+    tags:
+      - kinematics
+      - compression
+      - bottom_out
+    segment_defaults: *compression_segment_defaults
+
+  - id: Jump
+    label: wheel jump with airtime >= 0.2s
+    expand: *front_rear_wheel_expansion
+    inputs: *wheel_primary_inputs
+    trigger: &jump_trigger
+      id: topout_start
+      type: simple_threshold_crossing
       signal: disp_norm
-      kind: max
-      cmp: '>'
-      value: 0.98
-  window:
-    pre_s: 0.8
-    post_s: 0.2
-    align: trigger
-  metrics:
-    - type: interval_stats
-      signal: vel
-      start_trigger: compression_start
-      end_trigger: compression_end
-      ops:
-      - mean
-      - max
-      - min
-      polarity: pos_to_neg
-      smooth_ms: 20
-      min_delay_s: 0.02
-      return_debug: true
-    - type: peak
-      signal: disp
-      kind: max
-    - type: peak
-      signal: disp
-      kind: min
-    - type: peak
-      signal: acc
-      kind: max
-    - type: peak
-      signal: acc
-      kind: min
-  tags:
-    - kinematics
-    - compression
-  segment_defaults:
-    anchor: trigger_time_s
-    window:
-      pre_s: 0.8
-      post_s: 0.2
-    roles:
-      - role: disp
-        prefer: *id001
-      - role: vel
-        prefer: *id002
-      - role: acc
-        prefer: *id003
-      - role: disp_norm
-        prefer: *id004
-- id: Jump
-  label: Jump with airtime >= 0.2s
-  sensors:
-    - rear_shock
-    - front_shock
-  trigger:
-    id: topout_start
-    type: simple_threshold_crossing
-    signal: disp_norm
-    value: 0.05
-    dir: falling
-    hysteresis: 0
-    distance_s: 0.015
-    edge_ignore_s: 1
-    debounce:
-      gap_s: 0.3
-      prefer_key: t0_index
-      prefer_abs: false
-      prefer_max: false
-  secondary_triggers:
-  - id: max_compression
-    type: local_extrema
-    signal: disp
-    kind: max
-    prominence: 5
-    base_trigger: topout_start
-    search:
-      min_delay_s: 0.2
-      max_delay_s: 5.0
-    debounce:
-      gap_s: 0.3
-      prefer_key: t0_index
-      prefer_abs: false
-      prefer_max: false
-  - id: topout_end
-    type: simple_threshold_crossing
-    signal: disp_norm
-    value: 0.05
-    dir: rising
-    hysteresis: 0
-    distance_s: 0.015
-    edge_ignore_s: 1
-    base_trigger: topout_start
-    search:
-      min_delay_s: 0.2
-      max_delay_s: 5.0
-    debounce:
-      gap_s: 0.3
-      prefer_key: t0_index
-      prefer_abs: false
-      prefer_max: false
-  preconditions:
-  - within_s:
-    - 0.0
-    - 0.2
-    all_of:
-    - type: range
-      signal: disp_norm
-      max: 0.05
-  window:
-    pre_s: 0.2
-    post_s: 0.8
-    align: trigger
-  metrics:
-    - type: interval_stats
-      signal: vel
-      start_trigger: topout_end
-      end_trigger: max_compression
-      ops:
-      - mean
-      - max
-      min_delay_s: 0.02
-      return_debug: true
-    - type: trigger_delta
-      start_trigger: topout_start
-      end_trigger: topout_end
-      quantity: seconds
-      id: airtime_n
-      return_debug: true
-  tags:
-    - kinematics
-    - compression
-  segment_defaults:
-    anchor: trigger_time_s
-    window:
-      pre_s: 0.2
-      post_s: 0.8
-    roles:
-      - role: disp
-        prefer: *id001
-      - role: vel
-        prefer: *id002
-      - role: acc
-        prefer: *id003
-      - role: disp_norm
-        prefer: *id004
+      value: 0.05
+      dir: falling
+      hysteresis: 0
+      distance_s: 0.015
+      edge_ignore_s: 1
+      debounce:
+        gap_s: 0.3
+        prefer_key: t0_index
+        prefer_abs: false
+        prefer_max: false
+    secondary_triggers: &jump_secondary_triggers
+      - id: max_compression
+        type: local_extrema
+        signal: disp
+        kind: max
+        prominence: 5
+        base_trigger: topout_start
+        search:
+          min_delay_s: 0.2
+          max_delay_s: 5.0
+        debounce:
+          gap_s: 0.3
+          prefer_key: t0_index
+          prefer_abs: false
+          prefer_max: false
+      - id: topout_end
+        type: simple_threshold_crossing
+        signal: disp_norm
+        value: 0.05
+        dir: rising
+        hysteresis: 0
+        distance_s: 0.015
+        edge_ignore_s: 1
+        base_trigger: topout_start
+        search:
+          min_delay_s: 0.2
+          max_delay_s: 5.0
+        debounce:
+          gap_s: 0.3
+          prefer_key: t0_index
+          prefer_abs: false
+          prefer_max: false
+    preconditions: &jump_preconditions
+      - within_s:
+          - 0.0
+          - 0.2
+        all_of:
+          - type: range
+            signal: disp_norm
+            max: 0.05
+    window: *rebound_window
+    metrics: &jump_metrics
+      - type: interval_stats
+        signal: vel
+        start_trigger: topout_end
+        end_trigger: max_compression
+        ops:
+          - mean
+          - max
+        min_delay_s: 0.02
+        return_debug: true
+      - type: trigger_delta
+        start_trigger: topout_start
+        end_trigger: topout_end
+        quantity: seconds
+        id: airtime_n
+        return_debug: true
+    tags:
+      - kinematics
+      - compression
+      - jump
+    segment_defaults: *rebound_segment_defaults

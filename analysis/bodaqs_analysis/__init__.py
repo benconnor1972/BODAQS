@@ -1,4 +1,4 @@
-from .pipeline import run_macro, preprocess_session
+from .pipeline import preprocess_session
 from .normalize import normalize_and_scale
 from .va import estimate_va
 from .schema import load_event_schema

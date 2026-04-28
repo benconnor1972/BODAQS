@@ -7,7 +7,7 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from .sensor_aliases import canonical_sensor_id, normalize_sensor_token
+from .sensor_aliases import canonical_end, canonical_sensor_id, normalize_sensor_token
 from .signalname import SignalNameParts, format_signal_name, SignalNameError
 
 
@@ -305,19 +305,22 @@ def _safe_signal_token(value: Any, fallback: str) -> str:
 
 
 def _analysis_signal_column_name(column_id: str, info: dict[str, Any]) -> str:
-    sensor = info.get("sensor")
-    sensor_id = canonical_sensor_id(sensor) if isinstance(sensor, str) else ""
-    sensor_token = _safe_signal_token(sensor_id, column_id)
+    end = canonical_end(info.get("end"))
+    domain_token = normalize_sensor_token(info.get("domain")) if isinstance(info.get("domain"), str) else ""
+    if end and domain_token:
+        base_token = f"{end}_{domain_token}"
+    else:
+        sensor = info.get("sensor")
+        sensor_id = canonical_sensor_id(sensor) if isinstance(sensor, str) else ""
+        base_token = _safe_signal_token(sensor_id, column_id)
 
     quantity = info.get("quantity")
     quantity_token = normalize_sensor_token(quantity) if isinstance(quantity, str) else ""
 
-    if quantity_token in {"", "disp", "raw"}:
-        base = sensor_token
-    elif quantity_token in {"vel", "acc"}:
-        base = f"{sensor_token}_{quantity_token}"
+    if quantity_token in {"", "raw"}:
+        base = base_token
     else:
-        base = f"{sensor_token}_{quantity_token}"
+        base = f"{base_token}_{quantity_token}"
 
     kind = "raw" if quantity_token == "raw" else ""
     domain = info.get("domain") if isinstance(info.get("domain"), str) and info.get("domain").strip() else None

@@ -38,7 +38,7 @@ from .preprocess_filters import (
 from .motion_derivation import derive_motion_channels
 from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
 from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
-from .sensor_aliases import canonical_end, canonical_sensor_id, end_from_sensor
+from .sensor_aliases import canonical_end, canonical_sensor_id
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_DATETIME_RE = re.compile(
@@ -135,9 +135,8 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
 
         end = info.get("end")
         canonical = canonical_end(end) if isinstance(end, str) and end.strip() else ""
-        inferred = end_from_sensor(ch.get("sensor") or sensor)
-        if canonical or inferred:
-            ch["end"] = canonical or inferred
+        if canonical:
+            ch["end"] = canonical
 
         quantity = info.get("quantity")
         if isinstance(quantity, str) and quantity.strip():
@@ -917,7 +916,7 @@ def _validated_preprocess_config_copy(config: Mapping[str, Any]) -> Dict[str, An
     return dict(config)
 
 
-def _coerce_run_macro_config(
+def _coerce_preprocess_config(
     *,
     preprocess_profile_path: Optional[str | Path],
     preprocess_profile: Optional[Mapping[str, Any]],
@@ -941,35 +940,35 @@ def _coerce_run_macro_config(
     return None
 
 
-def preprocess_session(session: Dict[str, Any],
-                       *,
-                       preprocess_config: Optional[Mapping[str, Any]] = None,
-                       normalize_ranges: Optional[Dict[str, float]] = None,
-                       bike_profile: Optional[Mapping[str, Any]] = None,
-                       bike_profile_path: Optional[str | Path] = None,
-                       sample_rate_hz: Optional[float] = None,
-                       zeroing_enabled: bool = True,
-                       zero_window_s: float = 1.0,
-                       zero_min_samples: int = 10,
-                       clip_0_1: bool = False,
-                       active_signal_disp_col: Optional[str] = None,
-                       active_signal_vel_col: Optional[str] = None,
-                       active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
-                       active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
-                       active_disp_thresh: float = 20,
-                       active_vel_thresh: float = 50,
-                       active_window: str = "500ms",
-                       active_padding: str = "1s",
-                       active_min_seg: str = "3s",
-                       butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
-                       butterworth_generate_residuals: bool = False,
-                       motion_derivation: Optional[Mapping[str, Any]] = None,
-                       va_cols: Optional[Sequence[str]] = None,
-                       va_window_points: int = 11,
-                       va_poly_order: int = 3,
-                       strict: bool = True) -> Dict[str, Any]:
+def _preprocess_loaded_session(session: Dict[str, Any],
+                               *,
+                               preprocess_config: Optional[Mapping[str, Any]] = None,
+                               normalize_ranges: Optional[Dict[str, float]] = None,
+                               bike_profile: Optional[Mapping[str, Any]] = None,
+                               bike_profile_path: Optional[str | Path] = None,
+                               sample_rate_hz: Optional[float] = None,
+                               zeroing_enabled: bool = True,
+                               zero_window_s: float = 1.0,
+                               zero_min_samples: int = 10,
+                               clip_0_1: bool = False,
+                               active_signal_disp_col: Optional[str] = None,
+                               active_signal_vel_col: Optional[str] = None,
+                               active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+                               active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
+                               active_disp_thresh: float = 20,
+                               active_vel_thresh: float = 50,
+                               active_window: str = "500ms",
+                               active_padding: str = "1s",
+                               active_min_seg: str = "3s",
+                               butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
+                               butterworth_generate_residuals: bool = False,
+                               motion_derivation: Optional[Mapping[str, Any]] = None,
+                               va_cols: Optional[Sequence[str]] = None,
+                               va_window_points: int = 11,
+                               va_poly_order: int = 3,
+                               strict: bool = True) -> Dict[str, Any]:
     
-    """Normalize, zero + compute velocity/acceleration."""
+    """Apply preprocessing to an already-loaded session."""
     if preprocess_config is not None:
         cfg = _validated_preprocess_config_copy(preprocess_config)
         sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
@@ -1021,7 +1020,7 @@ def preprocess_session(session: Dict[str, Any],
         bike_profile = load_bike_profile(bike_profile_path)
 
     if normalize_ranges is None and bike_profile is None:
-        raise ValueError("preprocess_session requires either normalize_ranges or bike_profile_path")
+        raise ValueError("preprocessing requires either normalize_ranges or bike_profile_path")
 
     # ---------------- Zero physical signal columns before bike-profile transforms ----------------
     if normalize_ranges is None:
@@ -1359,8 +1358,8 @@ def preprocess_session(session: Dict[str, Any],
     return session
 
      
-def run_macro(
-    csv_path: str,
+def preprocess_session(
+    session_or_path: str | Path | Mapping[str, Any],
     schema_path: Optional[str | Path] = None,
     *,
     preprocess_profile_path: Optional[str | Path] = None,
@@ -1392,18 +1391,25 @@ def run_macro(
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
     timezone: Optional[str] = None,
+    include_events: bool = True,
+    include_metrics: bool = True,
     strict: bool = True,
 ) -> Dict[str, Any]:
-    """Convenience macro pipeline: load -> preprocess -> detect -> segment -> metrics.
+    """Run the standard BODAQS preprocessing pipeline for one session or CSV.
 
-    New callers should prefer preprocess_config or preprocess_profile_path. The
-    individual preprocessing keyword arguments remain for compatibility.
+    ``session_or_path`` may be an existing session dict or a logger CSV path.
+    The return value is always a results dictionary with stable top-level keys:
+    ``session``, ``schema``, ``events``, ``segments``, and ``metrics``.
 
-    strict:
+    If an event schema is supplied directly or through ``preprocess_config``,
+    event detection runs by default. Metrics run when events are enabled unless
+    ``include_metrics`` is false.
+
+    ``strict``:
         When True, metrics computation enforces strict trigger/spec requirements (may raise).
         When False, missing trigger times (etc.) should propagate as NaN where supported.
     """
-    cfg = _coerce_run_macro_config(
+    cfg = _coerce_preprocess_config(
         preprocess_profile_path=preprocess_profile_path,
         preprocess_profile=preprocess_profile,
         preprocess_config=preprocess_config,
@@ -1430,24 +1436,34 @@ def run_macro(
         )
         strict = bool(cfg.get("strict", strict))
 
-    if schema_path is None:
-        raise ValueError("run_macro requires schema_path or preprocess_config['schema_path']")
+    if isinstance(schema_path, str) and not schema_path.strip():
+        schema_path = None
 
-    session = load_session(
-        csv_path,
-        timezone=timezone,
-        log_metadata_path=log_metadata_path,
-        generic_log_metadata_paths=generic_log_metadata_paths,
-        sidecar_path=sidecar_path,
-        generic_sidecar_paths=generic_sidecar_paths,
-    )
-    logger.info("Session load complete: %s", csv_path)
+    csv_path: Optional[str | Path] = None
+    if isinstance(session_or_path, Mapping):
+        session = dict(session_or_path)
+        source = session.get("source") if isinstance(session.get("source"), dict) else {}
+        source_path = source.get("path") if isinstance(source, dict) else None
+        if isinstance(source_path, (str, Path)):
+            csv_path = source_path
+        logger.info("Using existing session for preprocessing")
+    else:
+        csv_path = session_or_path
+        session = load_session(
+            str(csv_path),
+            timezone=timezone,
+            log_metadata_path=log_metadata_path,
+            generic_log_metadata_paths=generic_log_metadata_paths,
+            sidecar_path=sidecar_path,
+            generic_sidecar_paths=generic_sidecar_paths,
+        )
+        logger.info("Session load complete: %s", csv_path)
 
     session = enrich_session_with_fit(session, fit_import=fit_import)
     if bool((fit_import or {}).get("enabled")):
         logger.info("FIT enrichment step complete")
 
-    session = preprocess_session(
+    session = _preprocess_loaded_session(
         session,
         preprocess_config=cfg,
         normalize_ranges=normalize_ranges,
@@ -1511,40 +1527,45 @@ def run_macro(
     if not isinstance(meta, dict):
         raise ValueError("session['meta'] must be a dict")
 
-    # Standardized session_id: CSV filename stem (no extension)
-    sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
+    # Standardized session_id: CSV filename stem where a source path is available.
+    if csv_path is not None:
+        sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
+    else:
+        sid = str(session.get("session_id") or meta.get("session_id") or "session")
     session["session_id"] = sid
     meta["session_id"] = sid
 
-    schema = load_event_schema(schema_path)
-    logger.info("Schema load complete")
+    schema = load_event_schema(schema_path) if schema_path is not None and include_events else None
+    if schema is not None:
+        logger.info("Schema load complete")
 
-    events_df = detect_events_from_schema(
-        session["df"],
-        schema,
-        meta=session["meta"],
-    )
+    events_df = pd.DataFrame()
+    if schema is not None and include_events:
+        events_df = detect_events_from_schema(
+            session["df"],
+            schema,
+            meta=session["meta"],
+        )
 
-    # debug
-    logger.info("Event detection complete")
-    logger.info("events rows: %d", len(events_df))
+        logger.info("Event detection complete")
+        logger.info("events rows: %d", len(events_df))
 
-    if isinstance(events_df, pd.DataFrame):
-        if "event_name" in events_df.columns:
-            logger.debug(
-                "event_name unique: %s",
-                sorted(events_df["event_name"].dropna().unique().tolist()),
-            )
-        else:
-            logger.debug("events_df has no 'event_name' column; columns=%s", list(events_df.columns))
+        if isinstance(events_df, pd.DataFrame):
+            if "event_name" in events_df.columns:
+                logger.debug(
+                    "event_name unique: %s",
+                    sorted(events_df["event_name"].dropna().unique().tolist()),
+                )
+            else:
+                logger.debug("events_df has no 'event_name' column; columns=%s", list(events_df.columns))
 
-        if "schema_id" in events_df.columns:
-            logger.debug(
-                "schema_id unique: %s",
-                sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()),
-            )
-        else:
-            logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
+            if "schema_id" in events_df.columns:
+                logger.debug(
+                    "schema_id unique: %s",
+                    sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()),
+                )
+            else:
+                logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
 
 
     # Segment extraction (one schema event per call in v0)
@@ -1552,17 +1573,24 @@ def run_macro(
         isinstance(events_df, pd.DataFrame) and ("schema_id" in events_df.columns)
     ) else []
 
-    defined_sids = sorted([str(e.get("id")) for e in (schema.get("events") or []) if isinstance(e, dict) and e.get("id")])
+    defined_sids = sorted(
+        [
+            str(e.get("id"))
+            for e in ((schema or {}).get("events") or [])
+            if isinstance(e, dict) and e.get("id")
+        ]
+    )
     missing = [sid for sid in defined_sids if sid not in set(detected_sids)]
     if missing:
         logger.info("Schema events with zero detections this run: %s", missing)
 
-    logger.info("Running segment extraction for detected schema events: %s", detected_sids)
+    if schema is not None and include_metrics:
+        logger.info("Running segment extraction for detected schema events: %s", detected_sids)
 
     bundles_by_schema_id: dict[str, dict] = {}
     metrics_parts: list[pd.DataFrame] = []
 
-    for sid in detected_sids:
+    for sid in (detected_sids if schema is not None and include_metrics else []):
         # (Optional but nice) pre-filter for clarity + earlier logging
         events_sel = events_df[events_df["schema_id"].astype(str) == str(sid)]
         if events_sel.empty:
@@ -1608,8 +1636,9 @@ def run_macro(
 
     metrics_df = pd.concat(metrics_parts, ignore_index=True) if metrics_parts else pd.DataFrame()
 
-    validate_metrics_df(metrics_df, events_df=events_df)
-    logger.info("Metrics validation complete")
+    if schema is not None and include_metrics:
+        validate_metrics_df(metrics_df, events_df=events_df)
+        logger.info("Metrics validation complete")
 
     return {
         "session": session,

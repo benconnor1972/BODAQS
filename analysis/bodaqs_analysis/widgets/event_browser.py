@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
-from bodaqs_analysis.sensor_aliases import sensors_match
+from bodaqs_analysis.sensor_aliases import canonical_end
 from bodaqs_analysis.segment import extract_segments, SegmentRequest, WindowSpec, RoleSpec
 from bodaqs_analysis.widgets.loaders import (
     load_all_events_for_selected,
@@ -46,12 +46,12 @@ from bodaqs_analysis.widgets.event_browser_scope import (
     ScopeResolution,
     filter_events,
     get_registry_from_session_meta,
-    infer_event_sensor,
+    infer_event_context,
     rebuild_scope_resolution,
-    resolve_sensor_for_row,
+    resolve_context_for_row,
 )
 from bodaqs_analysis.widgets.event_semantics import (
-    registry_signal_options_for_sensor,
+    registry_signal_options_for_context,
     role_spec_from_semantic_tuple,
 )
 
@@ -157,7 +157,8 @@ def _registry_has_semantic(
     sensor: str | None,
     semantic: tuple[str, str, str, str],
 ) -> bool:
-    if not sensor:
+    end = canonical_end(sensor)
+    if not end:
         return False
 
     quantity, unit, kind, opk = semantic
@@ -168,7 +169,7 @@ def _registry_has_semantic(
     for info in registry.values():
         if not isinstance(info, Mapping):
             continue
-        if not sensors_match(info.get("sensor"), sensor):
+        if canonical_end(info.get("end")) != end:
             continue
         if str(info.get("quantity", "")).strip() != str(quantity):
             continue
@@ -192,7 +193,8 @@ def _registry_columns_for_semantic(
     sensor: str | None,
     semantic: tuple[str, str, str, str],
 ) -> list[str]:
-    if not sensor:
+    end = canonical_end(sensor)
+    if not end:
         return []
 
     quantity, unit, kind, opk = semantic
@@ -204,7 +206,7 @@ def _registry_columns_for_semantic(
     for col, info in registry.items():
         if not isinstance(col, str) or not isinstance(info, Mapping):
             continue
-        if not sensors_match(info.get("sensor"), sensor):
+        if canonical_end(info.get("end")) != end:
             continue
         if str(info.get("quantity", "")).strip() != str(quantity):
             continue
@@ -251,7 +253,7 @@ def _extract_series_for_selected_roles(
                 role_spec_from_semantic_tuple(
                     RoleSpec,
                     role=role_name,
-                    sensor=sensor_name,
+                    end=sensor_name,
                     semantic=semantic,
                 )
             ],
@@ -407,11 +409,11 @@ def make_event_browser_widget_for_loader(
     w_pre = W.FloatText(value=float(default_pre_s), description="Pre (s):", layout=W.Layout(width="160px"))
     w_post = W.FloatText(value=float(default_post_s), description="Post (s):", layout=W.Layout(width="160px"))
 
-    # Sensor + signals are derived from the registry
+    # End/context + signals are derived from the registry
     w_sensor = W.Dropdown(
         options=[],              # populated by _rebuild_sensor_options
         value=None,
-        description="Sensors:",
+        description="Ends:",
         layout=W.Layout(width="380px"),
     )
 
@@ -422,9 +424,10 @@ def make_event_browser_widget_for_loader(
         description="",
         layout=W.Layout(width="380px", height="140px"),
     )
+    w_primary_only = W.Checkbox(value=True, description="Primary signals only")
 
     w_show_secondary = W.Checkbox(value=True, description="Sec. triggers")
-    w_show_all_sensors = W.Checkbox(value=False, description="Show all sensors")
+    w_show_all_sensors = W.Checkbox(value=False, description="Show all ends")
     w_show_grid = W.Checkbox(value=True, description="Grid")
     w_show_metrics = W.Checkbox(value=False, description="Show metrics")
     w_show_stats = W.Checkbox(value=False, description="Stats")
@@ -453,7 +456,7 @@ def make_event_browser_widget_for_loader(
         return get_registry_from_session_meta(session)
 
     # ----------------------------
-    # Schema-mediated sensor resolver (session-aware)
+    # Schema-mediated semantic-context resolver (session-aware)
     # ----------------------------
     scope_config = ScopeConfig(
         session_key_col=session_key_col,
@@ -478,7 +481,7 @@ def make_event_browser_widget_for_loader(
         schema_id_val: object,
         token_val: object,
     ) -> str:
-        return resolve_sensor_for_row(
+        return resolve_context_for_row(
             session_key=session_key,
             schema_id_val=schema_id_val,
             token_val=token_val,
@@ -486,7 +489,7 @@ def make_event_browser_widget_for_loader(
         )
 
     def _infer_event_sensor_for_row(ev_row: pd.Series) -> Optional[str]:
-        return infer_event_sensor(
+        return infer_event_context(
             ev_row=ev_row,
             candidate_token_cols=("signal_col", "anchor_col", "primary_col"),
             config=scope_config,
@@ -519,7 +522,7 @@ def make_event_browser_widget_for_loader(
             _update_nav_buttons()
             return
 
-        # scope-only (no event type / sensor filtering here)
+        # scope-only (no event type / end filtering here)
         etypes = build_event_type_options(
             events_df=events_viz_df,
             scope_sessions=list(scope),
@@ -649,7 +652,11 @@ def make_event_browser_widget_for_loader(
         # --- Remember current selection (before we replace options) ---
         prev = tuple(w_signals.value) if w_signals.value is not None else ()
 
-        opts = registry_signal_options_for_sensor(registry=registry, sensor=active_sensor)
+        opts = registry_signal_options_for_context(
+            registry=registry,
+            end=active_sensor,
+            primary_only=bool(w_primary_only.value),
+        )
         w_signals.options = opts
         avail = {key for (_, key) in opts}
 
@@ -719,7 +726,7 @@ def make_event_browser_widget_for_loader(
 
             registry = get_registry_from_session_meta(session)
 
-            # Determine active sensor for the event
+            # Determine active semantic context for the event
             inferred = _infer_event_sensor_for_row(ev_row) if ev_row is not None else None
 
             selected_sensor = str(w_sensor.value).strip() if w_sensor.value else ""
@@ -875,7 +882,7 @@ def make_event_browser_widget_for_loader(
 
                 title_sensor = sensor or ""
                 if bool(w_show_all_sensors.value):
-                    title_sensor = "all sensors"
+                    title_sensor = "all ends"
                 ax.set_title(
                     f"Event browser - {event_session_id} | {ev_row[et_col]} | {ev_row['event_id']} | {title_sensor}".strip()
                 )
@@ -924,9 +931,9 @@ def make_event_browser_widget_for_loader(
                         print("  event_type_col:", et_col)
                         print("  event type:", ev_row.get(et_col))
                         print("  event signal_col:", ev_row.get("signal_col"))
-                        print("  inferred sensor:", inferred)
-                        print("  sensor used:", sensor)
-                        print("  plotting sensors:", sensors_to_plot)
+                        print("  inferred end:", inferred)
+                        print("  end used:", sensor)
+                        print("  plotting ends:", sensors_to_plot)
                         print("  selected signals:", list(_coerce_list(w_signals.value)))
                         print("\nResolved spec:")
                         print("  role_to_col:", spec.get("role_to_col"))
@@ -939,6 +946,7 @@ def make_event_browser_widget_for_loader(
     w_event.observe(_rebuild_signals_only, names="value")
     w_sensor.observe(_rebuild_events, names="value")
     w_sensor.observe(_rebuild_signals_only, names="value")
+    w_primary_only.observe(_rebuild_signals_only, names="value")
 
 
     for w in (
@@ -946,6 +954,7 @@ def make_event_browser_widget_for_loader(
         w_pre,
         w_post,
         w_signals,
+        w_primary_only,
         w_show_secondary,
         w_show_all_sensors,
         w_show_grid,
@@ -961,7 +970,7 @@ def make_event_browser_widget_for_loader(
             W.HBox([W.VBox([sessions_label, w_sessions]), W.VBox([dummy_label, w_event_type, w_sensor])]),
             W.HBox([W.VBox([event_label, w_event]), W.VBox([dummy_label,W.HBox([w_prev, w_next])])]),
 
-            W.HBox([W.VBox([signals_label, w_signals]),W.VBox([dummy_label, W.HBox([w_pre, w_post]), W.HBox([w_show_secondary, w_show_all_sensors]), W.HBox([w_show_grid, w_show_metrics]), W.HBox([w_show_stats, w_show_resolve])])]),
+            W.HBox([W.VBox([signals_label, w_primary_only, w_signals]),W.VBox([dummy_label, W.HBox([w_pre, w_post]), W.HBox([w_show_secondary, w_show_all_sensors]), W.HBox([w_show_grid, w_show_metrics]), W.HBox([w_show_stats, w_show_resolve])])]),
             out,
         ]
     )
@@ -984,6 +993,7 @@ def make_event_browser_widget_for_loader(
             "sensor": w_sensor,
             "event": w_event,
             "signals": w_signals,
+            "primary_only": w_primary_only,
             "show_all_sensors": w_show_all_sensors,
             "show_metrics": w_show_metrics,
         },

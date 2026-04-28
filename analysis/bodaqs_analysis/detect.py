@@ -1,15 +1,19 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .model import validate_events_df
 from .metrics import extract_metrics_df  # contract: metrics live in metrics.py
-from .sensor_aliases import canonical_sensor_id
+from .signal_selectors import SIGNAL_SELECTOR_FIELDS, selector_matches_signal
 
+import copy
+import itertools
 import math
 import numpy as np
 import pandas as pd
 import logging
 
 logger = logging.getLogger(__name__)
+
+_EVENT_INPUT_SELECTOR_FIELDS = SIGNAL_SELECTOR_FIELDS | {"kind", "op_chain"}
 
 
 # Optional SciPy peak finding
@@ -132,139 +136,186 @@ def _resolve_search_window(trig: dict, t: np.ndarray, base_t0_sec: float | None)
     i1 = int(np.searchsorted(t, end_sec,   side="right"))
     return _clip_bounds(n, i0, i1)
 
-def _resolve_inputs_for_sensor(sensor: str, schema: dict, meta: dict | None = None) -> dict:
-    out: dict[str, str] = {}
-    sensor_key = canonical_sensor_id(sensor)
-    signals = meta.get("signals") if isinstance(meta, dict) else None
-    if not sensor_key or not isinstance(signals, dict) or not signals:
-        return out
-
-    def _find_col(pred):
-        candidates = [
-            (str(col), info)
-            for col, info in signals.items()
-            if isinstance(info, dict) and pred(str(col), info)
-        ]
-        if not candidates:
-            return None
-        candidates.sort(key=_event_input_candidate_score, reverse=True)
-        return candidates[0][0]
-
-    def _event_input_candidate_score(col_info):
-        col, info = col_info
-        ops = info.get("op_chain") or []
-        if not isinstance(ops, (list, tuple)):
-            ops = [ops] if ops else []
-        role = str(info.get("processing_role") or "").strip().lower()
-        score = 0
-        if role == "primary_analysis":
-            score += 100
-        elif role == "secondary_analysis":
-            score += 20
-        if info.get("sensor") is not None:
-            score += 2
-        if info.get("quantity") is not None:
-            score += 2
-        if info.get("unit") is not None:
-            score += 1
-        # Without an explicit analysis role, preserve the old "cleanest signal" tendency.
-        if role != "primary_analysis":
-            score -= len(ops)
-        return (score, str(col))
-
-    # Engineered displacement for this sensor
-    disp_col = _find_col(
-        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
-        and info.get("quantity") == "disp"
-        and info.get("kind", "") == ""
-        and info.get("unit") == "mm"
-    )
-    if disp_col:
-        out["disp"] = disp_col
-
-    # Velocity & acceleration (registry knows these too)
-    vel_col = _find_col(
-        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
-        and info.get("quantity") == "vel"
-        and info.get("kind", "") == ""
-        and info.get("unit") == "mm/s"
-    )
-    if vel_col:
-        out["vel"] = vel_col
-
-    acc_col = _find_col(
-        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
-        and info.get("quantity") == "acc"
-        and info.get("kind", "") == ""
-        and info.get("unit") == "mm/s^2"
-    )
-    if acc_col:
-        out["acc"] = acc_col
-
-    # Helper: subset op matching
-    def _has_ops(info: dict, required) -> bool:
-        ops = info.get("op_chain") or []
-        return set(required).issubset(set(ops))
-
-    # Normalised displacement role name "disp_norm"
-    # Prefer zeroed+norm if present, else allow plain norm.
-    norm_col = _find_col(
-        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
-        and info.get("quantity") in ("disp_norm", "disp")   # allow older registries
-        and info.get("kind", "") == ""
-        and info.get("unit") == "1"
-        and _has_ops(info, ("zeroed", "norm"))
-    )
-    if not norm_col:
-        norm_col = _find_col(
-            lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
-            and info.get("quantity") in ("disp_norm", "disp")
-            and info.get("kind", "") == ""
-            and info.get("unit") == "1"
-            and _has_ops(info, ("norm",))
-        )
-    if norm_col:
-        out["disp_norm"] = norm_col
-
-    # Zeroed displacement (optional): any displacement with 'zeroed' in op_chain
-    zeroed_col = _find_col(
-        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
-        and info.get("quantity") == "disp"
-        and info.get("kind", "") == ""
-        and info.get("unit") == "mm"
-        and _has_ops(info, ("zeroed",))
-    )
-    if zeroed_col:
-        out["disp_zeroed"] = zeroed_col
-
-    # Raw counts (optional)
-    raw_col = _find_col(
-        lambda c, info: canonical_sensor_id(info.get("sensor")) == sensor_key
-        and info.get("quantity") == "raw"
-        and info.get("kind") == "raw"
-        and info.get("unit") == "counts"
-    )
-    if raw_col:
-        out["raw"] = raw_col
-
-    return out
+def _event_has_semantic_inputs(ev: Mapping[str, Any]) -> bool:
+    inputs = ev.get("inputs")
+    if not isinstance(inputs, Mapping) or not inputs:
+        return False
+    return all(isinstance(v, Mapping) for v in inputs.values())
 
 
-def _expand_event_by_sensors(ev: dict, schema: dict) -> list[dict]:
-    """
-    Turn one (multi-sensor) event into a list of per-sensor events,
-    each with an explicit 'sensor'. Suffix-only: we no longer support
-    legacy single-sensor events without 'sensors'.
-    """
-    sensors = ev.get("sensors") or []
-    if not sensors:
-        raise KeyError(f"Event '{ev.get('id','?')}' missing 'sensors' in suffix-only schema.")
-    out = []
-    for s in sensors:
-        ev2 = dict(ev)
-        ev2["sensor"] = s
+def _expand_event_instances(ev: dict, schema: dict) -> list[dict]:
+    """Expand semantic-input events by declared context."""
+    if not _event_has_semantic_inputs(ev):
+        raise ValueError(f"Event {ev.get('id', '?')!r}: events must define semantic inputs")
+    return _expand_semantic_event_instances(ev)
+
+
+def _expand_semantic_event_instances(ev: Mapping[str, Any]) -> list[dict]:
+    expand = ev.get("expand")
+    if expand is None:
+        return [dict(ev)]
+    if not isinstance(expand, Mapping):
+        raise ValueError(f"Event {ev.get('id', '?')!r}: expand must be an object")
+
+    unknown = sorted(str(k) for k in expand.keys() if str(k) not in _EVENT_INPUT_SELECTOR_FIELDS)
+    if unknown:
+        raise ValueError(f"Event {ev.get('id', '?')!r}: expand has unsupported field(s): {unknown}")
+
+    keys: list[str] = []
+    value_lists: list[list[Any]] = []
+    for key, raw_values in expand.items():
+        key_s = str(key)
+        values = list(raw_values) if isinstance(raw_values, (list, tuple, set)) else [raw_values]
+        values = [value for value in values if value is not None and str(value).strip()]
+        if not values:
+            raise ValueError(f"Event {ev.get('id', '?')!r}: expand.{key_s} must contain at least one value")
+        keys.append(key_s)
+        value_lists.append(values)
+
+    out: list[dict] = []
+    for values in itertools.product(*value_lists):
+        context = dict(zip(keys, values))
+        ev2 = copy.deepcopy(dict(ev))
+        ev2.pop("expand", None)
+        ev2["_expansion"] = context
+        ev2["inputs"] = _inputs_with_expansion_context(ev.get("inputs") or {}, context, event_id=str(ev.get("id", "?")))
         out.append(ev2)
     return out
+
+
+def _inputs_with_expansion_context(
+    inputs: Mapping[str, Any],
+    context: Mapping[str, Any],
+    *,
+    event_id: str,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for role, raw_selector in inputs.items():
+        role_name = str(role).strip()
+        if not role_name:
+            raise ValueError(f"Event {event_id!r}: inputs contains an empty role name")
+        if not isinstance(raw_selector, Mapping):
+            raise ValueError(f"Event {event_id!r}: inputs.{role_name} must be a semantic selector object")
+
+        if "selector" in raw_selector:
+            wrapped = dict(raw_selector)
+            selector = dict(raw_selector.get("selector") or {})
+            for key, value in context.items():
+                selector.setdefault(str(key), value)
+            wrapped["selector"] = selector
+            out[role_name] = wrapped
+        else:
+            selector = dict(raw_selector)
+            for key, value in context.items():
+                selector.setdefault(str(key), value)
+            out[role_name] = selector
+    return out
+
+
+def _resolve_inputs_for_event(ev: Mapping[str, Any], schema: dict, meta: dict | None = None) -> dict:
+    """Resolve an event's role inputs using semantic selectors."""
+    if not _event_has_semantic_inputs(ev):
+        raise ValueError(f"Event {ev.get('id', '?')!r}: events must define semantic inputs")
+    return _resolve_inputs_from_event_inputs(ev.get("inputs") or {}, meta=meta, event_id=str(ev.get("id", "?")))
+
+
+def _resolve_inputs_from_event_inputs(
+    inputs: Mapping[str, Any],
+    *,
+    meta: dict | None = None,
+    event_id: str = "?",
+) -> dict[str, str]:
+    signals = meta.get("signals") if isinstance(meta, dict) else None
+    if not isinstance(signals, Mapping) or not signals:
+        raise KeyError(f"Event {event_id!r}: semantic inputs require meta.signals")
+
+    resolved: dict[str, str] = {}
+    for role, raw_selector in inputs.items():
+        role_name = str(role).strip()
+        if not role_name:
+            raise ValueError(f"Event {event_id!r}: inputs contains an empty role name")
+        selector = _event_input_selector(raw_selector, event_id=event_id, role=role_name)
+        matches = [
+            str(col)
+            for col, info in signals.items()
+            if isinstance(info, Mapping) and _event_input_matches_signal(info, selector)
+        ]
+        if not matches:
+            raise KeyError(
+                f"Event {event_id!r}: input role {role_name!r} selector did not match any signal: "
+                f"selector={selector!r}"
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Event {event_id!r}: input role {role_name!r} selector matched multiple signals: "
+                f"selector={selector!r} matches={matches}"
+            )
+        resolved[role_name] = matches[0]
+    return resolved
+
+
+def _event_input_selector(raw_selector: Any, *, event_id: str, role: str) -> dict[str, Any]:
+    if not isinstance(raw_selector, Mapping):
+        raise ValueError(f"Event {event_id!r}: inputs.{role} must be a semantic selector object")
+
+    if "selector" in raw_selector:
+        selector = raw_selector.get("selector")
+        if not isinstance(selector, Mapping):
+            raise ValueError(f"Event {event_id!r}: inputs.{role}.selector must be an object")
+        raw = dict(selector)
+    else:
+        raw = dict(raw_selector)
+
+    unknown = sorted(str(k) for k in raw.keys() if str(k) not in _EVENT_INPUT_SELECTOR_FIELDS)
+    if unknown:
+        raise ValueError(f"Event {event_id!r}: inputs.{role} has unsupported selector field(s): {unknown}")
+    if not raw:
+        raise ValueError(f"Event {event_id!r}: inputs.{role} selector must not be empty")
+    return {str(k): v for k, v in raw.items()}
+
+
+def _event_input_matches_signal(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
+    if not selector_matches_signal(signal_info, selector):
+        return False
+
+    expected_kind = selector.get("kind")
+    if expected_kind is not None and str(signal_info.get("kind") or "").strip() != str(expected_kind).strip():
+        return False
+
+    if "op_chain" in selector:
+        expected_ops = _norm_op_chain(selector.get("op_chain"))
+        actual_ops = _norm_op_chain(signal_info.get("op_chain"))
+        if expected_ops:
+            if not set(expected_ops).issubset(set(actual_ops)):
+                return False
+        elif actual_ops:
+            return False
+
+    return True
+
+
+def _norm_op_chain(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(v).strip() for v in value if str(v).strip())
+    text = str(value).strip()
+    if not text:
+        return ()
+    if "|" in text:
+        return tuple(part.strip() for part in text.split("|") if part.strip())
+    return (text,)
+
+
+def _event_context_label(ev: Mapping[str, Any]) -> str:
+    context = ev.get("_expansion")
+    if isinstance(context, Mapping) and context:
+        parts = [f"{k}={v}" for k, v in sorted(context.items()) if str(v).strip()]
+        if parts:
+            if len(parts) == 1:
+                return str(next(iter(context.values()))).strip()
+            return ",".join(parts)
+    return "semantic"
 
 def _validate_event_series_with_map(ev: dict, df: pd.DataFrame, inputs_map: dict):
     """
@@ -1215,9 +1266,9 @@ def detect_events_from_schema(
     for ev in raw_events:
         if event_ids and ev.get("id") not in set(event_ids):
             continue  # filter early by id if requested
-        expanded.extend(_expand_event_by_sensors(ev, schema))
+        expanded.extend(_expand_event_instances(ev, schema))
 
-    events = expanded  # concrete events with explicit 'sensor'
+    events = expanded  # concrete semantic event instances
 
     if event_ids:
         keep = set(event_ids)
@@ -1230,7 +1281,7 @@ def detect_events_from_schema(
 
     # Contract: event_id must be unique per *instance*.
     # We'll generate event_id as "{schema_id}:{occurrence_index}" per contract recommendation.
-    # Keying by schema_id + sensor keeps occurrences stable across sensor-expanded events.
+    # Keying by schema_id + semantic context keeps occurrences stable across expanded events.
     occurrence_ctr: dict[tuple[str, str], int] = {}
 
     for ev in events:
@@ -1243,7 +1294,6 @@ def detect_events_from_schema(
                 )
                 continue
 
-        sensor = ev.get("sensor")
         trig   = ev.get("trigger", {}) or {}
         ttype  = trig.get("type")
         primary_id = trig.get("id") or "primary"
@@ -1261,7 +1311,18 @@ def detect_events_from_schema(
         primary_pref_abs = trig_deb.get("prefer_abs", def_debounce_abs)
         primary_pref_max = trig_deb.get("prefer_max", def_debounce_max)
         
-        inputs_map = _resolve_inputs_for_sensor(sensor, schema, meta=meta)
+        try:
+            inputs_map = _resolve_inputs_for_event(ev, schema, meta=meta)
+        except KeyError as exc:
+            logger.warning(
+                "%s(%s): skipping unavailable event input binding: %s",
+                ev_id,
+                _event_context_label(ev),
+                exc,
+            )
+            continue
+
+        event_context = _event_context_label(ev)
 
         # Quick sanity on trigger series
         sig = (ev.get("trigger") or {}).get("signal")
@@ -1272,7 +1333,7 @@ def detect_events_from_schema(
                 logger.warn(
                     "%s(%s): trigger series %r is all non-finite",
                     ev_id,
-                    sensor,
+                    event_context,
                     col,
                 )
             else:
@@ -1281,7 +1342,7 @@ def detect_events_from_schema(
                     logger.warn(
                         "%s(%s): trigger %r is flat (min=max=%g)",
                         ev_id,
-                        sensor,
+                        event_context,
                         col,
                         vmin,
                     )
@@ -1290,23 +1351,22 @@ def detect_events_from_schema(
             logger.warn(
                 "%s(%s): missing trigger series for signal=%r → inputs[%r]=%r",
                 ev_id,
-                sensor,
+                event_context,
                 sig,
                 sig,
                 col,
             )
 
         # ---- Validate against the resolved inputs map ----
-        # Some schema events are expanded over multiple sensors. If a sensor is not
-        # present in this session (for example muted in firmware), skip just that
-        # sensor-expanded event instance and continue processing the others.
+        # Some schema events are expanded over multiple semantic contexts. If a
+        # context is not present in this session, skip just that event instance.
         try:
             _validate_event_series_with_map(ev, df, inputs_map)
         except KeyError as exc:
             logger.warning(
-                "%s(%s): skipping unavailable sensor-expanded event: %s",
+                "%s(%s): skipping unavailable event input binding: %s",
                 ev_id,
-                sensor,
+                event_context,
                 exc,
             )
             continue
@@ -1361,7 +1421,7 @@ def detect_events_from_schema(
         logger.debug(
             "%s(%s): raw candidates=%d",
             ev_id,
-            sensor,
+            event_context,
             len(cands),
         )
 
@@ -1380,7 +1440,7 @@ def detect_events_from_schema(
             "%s(%s): after debounce=%d "
             "(gap=%ss, prefer_key=%r, prefer_abs=%s)",
             ev_id,
-            sensor,
+            event_context,
             len(cands),
             debounce_s,
             effective_prefer_key,
@@ -1413,7 +1473,7 @@ def detect_events_from_schema(
             # ---- CONDITIONS ----
             if not _apply_conditions(df, dt, ev_resolved, t0_idx, inputs_map):
                 rej["conditions"] += 1
-                logger.debug("%s(%s): candidate t0_idx=%d failed conditions", ev_id, sensor, t0_idx)
+                logger.debug("%s(%s): candidate t0_idx=%d failed conditions", ev_id, event_context, t0_idx)
                 continue
             kept += 1
 
@@ -1557,11 +1617,11 @@ def detect_events_from_schema(
             # Convert your internal [start_idx:end_idx) slicing to inclusive end_idx for contract
             end_idx_incl = int(max(start_idx, end_idx - 1))
 
-            # event_id: unique per detected instance (Option B): "{schema_id}:{sensor}:{occurrence_index}"
-            key = (schema_id, str(sensor))
+            # event_id: unique per detected instance: "{schema_id}:{context}:{occurrence_index}"
+            key = (schema_id, str(event_context))
             occ = occurrence_ctr.get(key, 0)
             occurrence_ctr[key] = occ + 1
-            event_instance_id = f"{schema_id}:{sensor}:{occ}"
+            event_instance_id = f"{schema_id}:{event_context}:{occ}"
 
             # QC / optional fields
             qc_flags = []
@@ -1599,7 +1659,8 @@ def detect_events_from_schema(
                 "qc_flags": qc_flags or None,
                 "score": c.get("trigger_strength", None),
                 "meta": {
-                    "sensor": sensor,
+                    "event_context": event_context,
+                    "input_expansion": dict(ev.get("_expansion") or {}) or None,
                     "trigger_type": ttype,
                     "window": {"pre_s": float(pre_s), "post_s": float(post_s), "align": str(align)},
                     "edge_clip": bool(edge_clip),
@@ -1639,8 +1700,8 @@ def detect_events_from_schema(
             rows.append(row)
             rej["saved"] += 1
             logger.debug("%s(%s): candidates=%d kept_after_conditions=%d rows_total=%d",
-             ev_id, sensor, len(cands), kept, len(rows))
-        logger.debug("%s(%s): after loop: cands=%d kept=%d saved=%d rejected=%r", ev_id, sensor, len(cands), kept, rej["saved"], rej)
+             ev_id, event_context, len(cands), kept, len(rows))
+        logger.debug("%s(%s): after loop: cands=%d kept=%d saved=%d rejected=%r", ev_id, event_context, len(cands), kept, rej["saved"], rej)
 
     EVENTS_DF = pd.DataFrame(rows)
     # Inject session_id
@@ -1670,7 +1731,7 @@ def detect_events_from_schema(
 
     globals()["EVENTS_DF"] = EVENTS_DF
     logger.info(
-        "Built EVENTS_DF with %d rows from %d schema event(s) → %d sensor-expanded event(s)",
+        "Built EVENTS_DF with %d rows from %d schema event(s) → %d semantic event instance(s)",
         len(EVENTS_DF),
         len(raw_events),
         len(events),

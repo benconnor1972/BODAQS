@@ -103,9 +103,9 @@ meta["channel_info"][channel] = {
 
 For front/rear suspension and wheel signals, `end` is the preferred semantic for
 bike-location matching. `sensor` remains available for logger/source identity,
-legacy canonical column stems, and display grouping. During analysis
-ingest/resolution, `fork` is accepted as an alias for `front_shock`, and
-`shock` is accepted as an alias for `rear_shock`.
+legacy canonical column stems, and display grouping. Analysis-side semantic
+resolution does not alias `fork`/`shock`; legacy naming should be resolved via
+log metadata before preprocessing.
 
 
 ### meta.streams (Per-Stream Timebase Metadata)
