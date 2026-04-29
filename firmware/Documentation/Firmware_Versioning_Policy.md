@@ -13,6 +13,7 @@ BODAQS firmware versions should follow `MAJOR.MINOR.PATCH`.
 - Increase `MAJOR` for breaking changes to the external contract described here.
 - Increase `MINOR` for backward-compatible additions or new capabilities.
 - Increase `PATCH` for bug fixes and internal improvements that preserve the external contract.
+- The on-device About menu reports the compile-time `BODAQS_FW_VERSION`, currently supplied by `platformio.ini` build flags.
 
 This policy is intended to be practical for a small evolving firmware project:
 
@@ -39,10 +40,9 @@ Current observed behaviour in firmware:
 - Human timestamps are currently written as local time-of-day `HH:MM:SS.mmm`.
 - Fast timestamps are currently written as integer epoch milliseconds.
 - `sample_id` is currently zero-based within each log.
-- The logger may append a footer block delimited by:
-  - `# run_stats_begin`
-  - `# run_stats_end`
-  with key/value lines such as `samples_dropped`, `queue_max`, and `flush_count`.
+- Logger run statistics such as `samples_dropped`, `queue_max`, and
+  `flush_count` are written to the same-stem JSON metadata file under
+  `qc.run_stats`.
 
 For semver purposes, the public contract includes:
 
@@ -52,7 +52,7 @@ For semver purposes, the public contract includes:
 - meaning of `mark`
 - meaning of `sample_id`
 - filename convention for log files
-- footer marker names and the fact that footer lines are comment-prefixed
+- JSON metadata structure for logger QC/run statistics
 
 Recommended stability rule:
 
@@ -232,7 +232,7 @@ The analysis package already consumes logger outputs directly. In current code a
 - `sample_id`
 - `mark`
 - unit-bearing signal headers such as `[mm]` and `[counts]`
-- the optional `run_stats` footer block
+- optional logger QC/run statistics in JSON metadata
 
 For semver purposes:
 
@@ -282,7 +282,8 @@ Examples:
 - Adding support for a new sensor type while keeping existing sensor types unchanged.
 - Adding support for a new board profile.
 - Adding a new optional config key with a safe default.
-- Adding a new optional footer statistic inside the existing `run_stats` block.
+- Adding a new optional logger QC statistic inside the existing JSON metadata
+  `qc.run_stats` block.
 - Adding a new route or API endpoint without changing existing routes.
 - Adding a new menu item without repurposing existing controls.
 - Adding an optional log column only when a user explicitly enables a new feature or adds a new sensor.
@@ -370,7 +371,7 @@ If yes:
 ## 7. Concrete Examples
 
 - Breaking change to log format: renaming `rear_shock_raw [counts]` to `rear_shock_counts` is `MAJOR`.
-- Adding an optional field/column: adding a new footer key `sd_backend=sdmmc` inside the existing `run_stats` block is `MINOR`.
+- Adding an optional field/column: adding a new key such as `sd_backend=sdmmc` inside the existing metadata `qc.run_stats` block is `MINOR`.
 - Changing button behaviour: changing the default mark-button double-click from web toggle to restart is `MAJOR`.
 - Adding support for new sensors: adding a supported `imu_6dof` sensor type with new optional config keys is `MINOR`.
 - Dropping support for a hardware variant: removing `ThingPlus_A` support is `MAJOR`.

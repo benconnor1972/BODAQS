@@ -42,8 +42,6 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
     m_name[sizeof(m_name) - 1] = '\0';
   }
 
-  m_alpha = fmaxf(0.0f, fminf(1.0f, float(p.emaAlphaPermille) / 1000.0f));
-  m_deadband = p.deadbandCounts;
   m_countsPerTurn = (p.countsPerTurn >= 2) ? p.countsPerTurn : 4096;
 
   uint16_t defaultThreshold = uint16_t(m_countsPerTurn / 2);
@@ -66,7 +64,7 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
   copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);
   copyField_(m_primaryDomain, sizeof(m_primaryDomain), p.primaryDomain);
   copyField_(m_primaryQuantity, sizeof(m_primaryQuantity), p.primaryQuantity);
-  copyField_(m_rawDomain, sizeof(m_rawDomain), p.rawDomain);
+  copyField_(m_rawDomain, sizeof(m_rawDomain), p.primaryDomain);
 
   recomputeScale();
   resetTrackingState(m_assumeTurn0AtStart);
@@ -77,8 +75,6 @@ void AS5600StringPotSensorBase::resetTrackingState(bool assumeTurnZero) {
   m_lastWrappedRaw = 0;
   m_turnIndex = assumeTurnZero ? 0 : 0;
   m_lastUnwrappedRaw = 0;
-  m_emaInit = false;
-  m_ema = 0.0f;
 }
 
 void AS5600StringPotSensorBase::recomputeScale() {
@@ -144,26 +140,10 @@ int32_t AS5600StringPotSensorBase::updateUnwrappedFromWrapped_(int wrapped) cons
   return m_lastUnwrappedRaw;
 }
 
-int32_t AS5600StringPotSensorBase::updateUnwrappedEma_(int32_t raw) const {
-  if (!m_emaInit) {
-    m_ema = float(raw);
-    m_emaInit = true;
-    return raw;
-  }
-
-  if (fabsf(m_ema - float(raw)) < float(m_deadband)) {
-    return int32_t(lroundf(m_ema));
-  }
-
-  m_ema = m_alpha * float(raw) + (1.0f - m_alpha) * m_ema;
-  return int32_t(lroundf(m_ema));
-}
-
 AS5600StringPotSensorBase::SampleState AS5600StringPotSensorBase::captureSample_() const {
   SampleState s;
   s.wrappedRaw = normalizeWrapped_(readWrappedCountsOnce());
   s.unwrappedRaw = updateUnwrappedFromWrapped_(s.wrappedRaw);
-  s.unwrappedSmoothed = updateUnwrappedEma_(s.unwrappedRaw);
   return s;
 }
 
@@ -314,7 +294,7 @@ void AS5600StringPotSensorBase::sampleValues(float* out, uint8_t max) {
   if (!out || max == 0 || m_muted) return;
 
   const SampleState sample = captureSample_();
-  const float linearMm = countsToMm_(sample.unwrappedSmoothed);
+  const float linearMm = countsToMm_(sample.unwrappedRaw);
   float primary = 0.0f;
 
   switch (m_mode) {
@@ -442,23 +422,6 @@ CalibrationState AS5600StringPotSensorBase::calibration() const {
 bool AS5600StringPotSensorBase::setCalibration(const CalibrationState& s) {
   (void)s;
   return false;
-}
-
-SmoothingConfig AS5600StringPotSensorBase::smoothing() const {
-  SmoothingConfig sc;
-  sc.emaAlpha = m_alpha;
-  sc.deadband = float(m_deadband);
-  sc.emaWarmStart = true;
-  return sc;
-}
-
-void AS5600StringPotSensorBase::setSmoothing(const SmoothingConfig& s) {
-  float a = s.emaAlpha;
-  if (a < 0.0f) a = 0.0f;
-  if (a > 1.0f) a = 1.0f;
-  m_alpha = a;
-  m_deadband = (s.deadband < 0.0f) ? 0u : uint16_t(lroundf(s.deadband));
-  if (m_alpha >= 0.9999f) m_emaInit = false;
 }
 
 void AS5600StringPotSensorBase::setIncludeRaw(bool b) {

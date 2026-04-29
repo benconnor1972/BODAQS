@@ -8,7 +8,7 @@ namespace ButtonActions { enum ActionId : uint8_t; }
 
 namespace MenuSystem {
 
-  enum class State : uint8_t { Inactive, Main, SensorsList, RatePicker, CalibSensors, CalibDetail };
+  enum class State : uint8_t { Inactive, Main, SensorsList, RatePicker, CalibSensors, CalibDetail, About };
   enum class Dir   : uint8_t { Left, Right, Up, Down, Enter };
 
   void begin(const LoggerConfig* cfg);

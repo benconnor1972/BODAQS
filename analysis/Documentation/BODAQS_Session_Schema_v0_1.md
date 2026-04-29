@@ -214,7 +214,8 @@ zeroing in their operation chain, for example `[1]_op_zeroed_norm`.
 
 ### firmware_stats (Logger-Provided QC)
 
-Captured from end-of-file footer stats when available.
+Captured from logger JSON metadata `qc.run_stats` when available. Legacy
+end-of-file footer stats are still parsed for older logs.
 
 ```python
 "firmware_stats": {

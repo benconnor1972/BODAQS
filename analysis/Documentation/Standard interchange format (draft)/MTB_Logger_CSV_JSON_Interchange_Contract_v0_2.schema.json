@@ -125,7 +125,7 @@
             }
           }
         },
-        "firmware_stats": {
+        "run_stats": {
           "type": "object",
           "additionalProperties": true
         }

@@ -352,7 +352,6 @@ void registerFileRoutes(WebServer& srv) {
               "})();"
               "</script>");
 
-    html += F("<p><a href='/'>Home</a></p>");
     html += htmlFooter();
 
     srv.send(200, F("text/html"), html);

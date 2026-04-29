@@ -12,6 +12,7 @@
 #include "ConfigManager.h"
 #include "BoardProfile.h"
 #include "DebugLog.h"
+#include <string.h>
 
 #define PWR_LOGI(...) LOGI_TAG("PWR", __VA_ARGS__)
 #define PWR_LOGW(...) LOGW_TAG("PWR", __VA_ARGS__)
@@ -36,6 +37,8 @@ static uint32_t g_lastActivityMs = 0;
 static int8_t g_analogRailEnablePin = -1;
 static bool   g_analogRailActiveHigh = true;
 static bool   g_analogRailEnabled = false;
+static gpio_num_t g_enterWakePin = GPIO_NUM_NC;
+static bool       g_enterWakeActiveLow = true;
 
 static bool hasAnalogRailEnable_()
 {
@@ -198,9 +201,16 @@ void PowerManager::sleepOnEnterEXT0()
 {
   preSleep_();
 
-  // ENTER on GPIO13, active-low. ext0 wake only supports a single RTC IO pin.
-  constexpr gpio_num_t WAKE_PIN = GPIO_NUM_21;
-  constexpr int WAKE_LEVEL = 0; // wake when pin is low
+  if (g_enterWakePin == GPIO_NUM_NC) {
+    PWR_LOGW("No nav_enter wake pin configured; refusing deep sleep\n");
+    DisplayManager::setStatusLine("Wake pin missing");
+    delay(1200);
+    return;
+  }
+
+  // ext0 wake only supports a single RTC IO pin.
+  const gpio_num_t WAKE_PIN = g_enterWakePin;
+  const int WAKE_LEVEL = g_enterWakeActiveLow ? 0 : 1;
 
   // Configure pin for RTC use and pullups so it doesn't float
   rtc_gpio_deinit(WAKE_PIN);
@@ -213,7 +223,9 @@ void PowerManager::sleepOnEnterEXT0()
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_ext0_wakeup(WAKE_PIN, WAKE_LEVEL);
 
-  PWR_LOGI("Deep sleep (EXT0 on GPIO13, wake on LOW)...\n");
+  PWR_LOGI("Deep sleep (EXT0 on nav_enter GPIO%d, wake on %s)...\n",
+           (int)WAKE_PIN,
+           g_enterWakeActiveLow ? "LOW" : "HIGH");
   delay(50);
 
   esp_deep_sleep_start();
@@ -262,6 +274,26 @@ void PowerManager::begin(const board::BoardProfile& board)
 {
   g_analogRailEnablePin = board.analog.enable_pin;
   g_analogRailActiveHigh = board.analog.enable_active_high;
+  g_enterWakePin = GPIO_NUM_NC;
+  g_enterWakeActiveLow = true;
+
+  for (uint8_t i = 0; i < board.buttons.count; ++i) {
+    const board::ButtonHW& btn = board.buttons.btn[i];
+    if (!btn.present || btn.pin < 0) continue;
+    if (strcmp(btn.id, "nav_enter") == 0) {
+      g_enterWakePin = (gpio_num_t)btn.pin;
+      g_enterWakeActiveLow = btn.active_low;
+      break;
+    }
+  }
+
+  if (g_enterWakePin != GPIO_NUM_NC) {
+    PWR_LOGI("Deep-sleep wake button nav_enter GPIO%d active_%s\n",
+             (int)g_enterWakePin,
+             g_enterWakeActiveLow ? "low" : "high");
+  } else {
+    PWR_LOGW("nav_enter button not present in board profile; deep sleep disabled\n");
+  }
 
   if (hasAnalogRailEnable_()) {
     pinMode((uint8_t)g_analogRailEnablePin, OUTPUT);

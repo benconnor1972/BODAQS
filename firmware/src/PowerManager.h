@@ -8,7 +8,7 @@ namespace PowerManager {
 
   void begin(const board::BoardProfile& board);
 
-  // Sleep; wake when ENTER (GPIO13) is pressed (active-LOW -> wake level 0).
+  // Sleep; wake when the board-profile `nav_enter` button is pressed.
   void sleepOnEnterEXT0();
   void noteActivity();
   void loop();

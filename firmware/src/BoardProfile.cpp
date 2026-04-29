@@ -20,7 +20,7 @@ static SPIProfile MakeSPI(bool present, int8_t sck, int8_t miso, int8_t mosi,
 }
 
 static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
-  .name = "SparkFun ESP32 Thing Plus S3 on BODAQS 4 Proto D",
+  .name = "BODAQS 4D",
 
   .storage = {
     .type = StorageType::SDMMC,
@@ -101,7 +101,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
 static const BoardProfile THING_PLUS_S3_BODAQS_4_D_UART_I2C1 = [] {
   BoardProfile p = THING_PLUS_S3_BODAQS_4_D;
-  p.name = "SparkFun ESP32 Thing Plus S3 on BODAQS 4 Proto D (UART TX/RX as I2C1)";
+  p.name = "BODAQS 4D (UART as I2C1)";
   p.i2c[1] = {
     .present = true,
     .sda = TX,
@@ -114,7 +114,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D_UART_I2C1 = [] {
 
 static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   BoardProfile p = THING_PLUS_S3_BODAQS_4_D;
-  p.name = "SparkFun ESP32 Thing Plus S3 on BODAQS 4F";
+  p.name = "BODAQS 4F";
 
   p.buttons.btn[0] = ButtonHW{ "nav_up",    true, 6,  1, true, true };
   p.buttons.btn[1] = ButtonHW{ "nav_down",  true, 5,  1, true, true };

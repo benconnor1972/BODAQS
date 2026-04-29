@@ -44,8 +44,6 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   String s;
 
   if (params.getInt("pin", li))                     p.pin = (uint8_t)li;
-  if (params.getFloat("ema_alpha", d))              p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
-  if (params.getInt("deadband", li))                p.deadbandCounts = (uint16_t)li;
   if (params.getInt("sensor_zero_count", li))       p.sensorZeroCount = (int32_t)li;
   if (params.getInt("sensor_full_count", li))       p.sensorFullCount = (int32_t)li;
   if (params.getFloat("sensor_full_travel_mm", d))  p.sensorFullTravelMm = (float)d;
@@ -55,7 +53,6 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   if (params.get("end", s))                         s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
   if (params.get("primary_domain", s))              s.toCharArray(p.primaryDomain, sizeof(p.primaryDomain));
   if (params.get("primary_quantity", s))            s.toCharArray(p.primaryQuantity, sizeof(p.primaryQuantity));
-  if (params.get("raw_domain", s))                  s.toCharArray(p.rawDomain, sizeof(p.rawDomain));
 
   long ain = -1;
   if (params.getInt("ain", ain) && board::gBoard) {
@@ -85,7 +82,6 @@ AnalogPotSensor::AnalogPotSensor(const char* nm, const Params& p) {
 
 void AnalogPotSensor::begin() {
   pinMode(m_pin, INPUT);
-  m_emaInit = false;
 }
 
 // Satisfy vtable: we don't apply anything from LoggerConfig yet for this sensor
@@ -112,11 +108,6 @@ void AnalogPotSensor::applyParams(const Params& p) {
 
   // wiring / polarity
   m_pin    = p.pin;
-
-  // smoothing
-  m_alpha    = fmaxf(0.0f, fminf(1.0f, float(p.emaAlphaPermille) / 1000.0f));
-  m_deadband = p.deadbandCounts;
-  m_emaInit  = false;
 
   // geometry
   sensor_zero_count_ = p.sensorZeroCount;
@@ -153,7 +144,7 @@ void AnalogPotSensor::applyParams(const Params& p) {
   copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);
   copyField_(m_primaryDomain, sizeof(m_primaryDomain), p.primaryDomain);
   copyField_(m_primaryQuantity, sizeof(m_primaryQuantity), p.primaryQuantity);
-  copyField_(m_rawDomain, sizeof(m_rawDomain), p.rawDomain);
+  copyField_(m_rawDomain, sizeof(m_rawDomain), p.primaryDomain);
 
   applyLinearScalePrecompute();
 }
@@ -164,19 +155,6 @@ int AnalogPotSensor::readOnce() const {
   return raw;
 }
 
-int AnalogPotSensor::updateEma(int raw) {
-  if (!m_emaInit) {
-    m_ema = float(raw);
-    m_emaInit = true;
-    return int(lroundf(m_ema));
-  }
-  if (fabsf(m_ema - float(raw)) < float(m_deadband)) {
-    return int(lroundf(m_ema));
-  }
-  m_ema = m_alpha * float(raw) + (1.0f - m_alpha) * m_ema;
-  return int(lroundf(m_ema));
-}
-
 // ---------- Sampling ----------
 static inline float lin_from_counts(int x, int zero, float invSpan, float fullMm) {
   if (invSpan == 0.0f) return 0.0f;
@@ -185,17 +163,16 @@ static inline float lin_from_counts(int x, int zero, float invSpan, float fullMm
   return norm * scale;
 }
 
-void AnalogPotSensor::sample(float& selectedOut, int& smoothedRawOut) {
-  if (m_muted) { selectedOut = 0.0f; smoothedRawOut = 0; return; }
+void AnalogPotSensor::sample(float& selectedOut, int& rawOut) {
+  if (m_muted) { selectedOut = 0.0f; rawOut = 0; return; }
 
-  // 1) read & smooth (as you already do)
-  const int raw      = readOnce();
-  const int smoothed = updateEma(raw);
-  smoothedRawOut     = smoothed;
+  // 1) read raw counts directly. Sample-time smoothing has been retired.
+  const int raw = readOnce();
+  rawOut = raw;
 
   // 2) RAW path
   if (m_mode == OutputMode::RAW) {
-    selectedOut = float(smoothed);
+    selectedOut = float(raw);
     return;
   }
 
@@ -205,7 +182,7 @@ void AnalogPotSensor::sample(float& selectedOut, int& smoothedRawOut) {
     selectedOut = 0.0f;
     return;
   }
-  double x_mm_sensor = (double(smoothed) - double(installed_zero_count_)) / k;
+  double x_mm_sensor = (double(raw) - double(installed_zero_count_)) / k;
   // Apply polarity in real-units space. This preserves raw ADC counts.
   if (m_invert) x_mm_sensor = -x_mm_sensor;
 
@@ -253,24 +230,6 @@ void AnalogPotSensor::setOutputMode(OutputMode m) {
   m_mode = m;
 }
 
-
-// ---------- Smoothing ----------
-SmoothingConfig AnalogPotSensor::smoothing() const {
-  SmoothingConfig sc;
-  sc.emaAlpha     = m_alpha;
-  sc.deadband     = float(m_deadband);
-  sc.emaWarmStart = true;
-  return sc;
-}
-
-void AnalogPotSensor::setSmoothing(const SmoothingConfig& s) {
-  float a = s.emaAlpha;
-  if (a < 0.0f) a = 0.0f;
-  if (a > 1.0f) a = 1.0f;
-  m_alpha    = a;
-  m_deadband = (s.deadband < 0.0f) ? 0u : uint16_t(lroundf(s.deadband));
-  if (m_alpha >= 0.9999f) m_emaInit = false; // next sample seeds EMA
-}
 
 // ---------- Calibration ----------
 bool AnalogPotSensor::setCalibration(const CalibrationState& state) {
@@ -519,10 +478,6 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
     // Wiring
     {"ain",            ParamType::Int,   "-1",   "-1",  "7",   nullptr, "Analog input ordinal (AIN0..). -1=use pin"},
 
-    // RAW smoothing
-    {"ema_alpha",      ParamType::Float, "0.2",  "0",   "1",    nullptr, "EMA alpha [0..1]"},
-    {"deadband",       ParamType::Int,   "0",    "0",   "4095", nullptr, "Deadband (counts)"},
-
     // Anchors / geometry
     {"sensor_zero_count",     ParamType::Int,   "0",    nullptr,nullptr,nullptr,"Counts at sensor 0 position"},
     {"sensor_full_count",     ParamType::Int,   "4095", nullptr,nullptr,nullptr,"Counts at sensor full scale position"},
@@ -536,7 +491,6 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
     {"end",            ParamType::Enum,  "",     nullptr,nullptr,"front,rear", "Optional semantic end for log metadata"},
     {"primary_domain", ParamType::Enum,  "",     nullptr,nullptr,"wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
     {"primary_quantity",ParamType::Enum, "",     nullptr,nullptr,"disp,ang_disp,force,pressure,temp,voltage,norm", "Optional semantic quantity for primary output"},
-    {"raw_domain",     ParamType::Enum,  "",     nullptr,nullptr,"wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for raw counts"},
 
   };
 

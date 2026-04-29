@@ -615,55 +615,6 @@ void StorageManager_stopLog() {
   }
 
 
-  // --- append footer line with samplesDropped ---
-  // --- NEW: append run stats footer (backend-safe) ---
-  if (logIsOpen() && !isSynBikeRawFormat_()) {
-      char line[160];
-
-      // Ensure any staged data is on disk before the footer
-      logFlushInternal();
-
-      int n;
-
-      n = snprintf(line, sizeof(line), "# run_stats_begin\n");
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# samples_dropped=%lu\n",
-                   (unsigned long)s_samplesDropped);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# queue_max=%u\n", (unsigned)s_qMax);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# queue_depth=%u\n", (unsigned)s_qCap);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# flush_count=%lu\n",
-                   (unsigned long)s_flushCount);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# flush_max_ms=%lu\n",
-                   (unsigned long)s_flushMaxMs);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      double avgFlush = s_flushCount ? (double)s_flushTotalMs / (double)s_flushCount : 0.0;
-      n = snprintf(line, sizeof(line), "# flush_avg_ms=%.2f\n", avgFlush);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# flush_total_ms=%llu\n",
-                   (unsigned long long)s_flushTotalMs);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# buffer_size=%u\n", (unsigned)bufferSize);
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      n = snprintf(line, sizeof(line), "# run_stats_end\n");
-      if (n > 0) { logWriteInternal(line, (size_t)n); }
-
-      logFlushInternal();
-  }
-
-
   logFileMMC.close();
 
   if (s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
@@ -678,6 +629,13 @@ void StorageManager_stopLog() {
     metaCtx.sampleRateHz = (uint16_t)sampleRateHz;
     metaCtx.humanReadableTime = RTCManager_isHumanReadable();
     metaCtx.logFormat = s_activeLogFormat;
+    metaCtx.samplesDropped = s_samplesDropped;
+    metaCtx.queueMax = s_qMax;
+    metaCtx.queueDepth = s_qCap;
+    metaCtx.flushCount = s_flushCount;
+    metaCtx.flushMaxMs = s_flushMaxMs;
+    metaCtx.flushTotalMs = s_flushTotalMs;
+    metaCtx.bufferSize = bufferSize;
 
     String metadata;
     if (LogMetadataWriter_build(metaCtx, metadata)) {

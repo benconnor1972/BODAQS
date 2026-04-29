@@ -74,6 +74,28 @@ def _metadata_binding(log_metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return binding if isinstance(binding, dict) else None
 
 
+def _firmware_stats_from_log_metadata(log_metadata: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(log_metadata, Mapping):
+        return None
+    qc = log_metadata.get("qc")
+    if not isinstance(qc, Mapping):
+        return None
+    run_stats = qc.get("run_stats")
+    if not isinstance(run_stats, Mapping) or not run_stats:
+        return None
+    return dict(run_stats)
+
+
+def _firmware_dropped_sample_count(stats: Any) -> int:
+    if not isinstance(stats, Mapping):
+        return 0
+    value = stats.get("samples_dropped", stats.get("samplesDropped", 0))
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _declared_time_columns(sidecar: Dict[str, Any]) -> set[str]:
     out: set[str] = set()
     binding = _metadata_binding(sidecar)
@@ -388,7 +410,7 @@ def load_session(
         generic_sidecar_paths=generic_sidecar_paths,
     )
 
-    stats = parse_run_stats_footer(str(p))
+    stats = _firmware_stats_from_log_metadata(sidecar) or parse_run_stats_footer(str(p))
     excluded_time_columns = {"sample_id", "time_s", "clock", "Clock", "Time"}
     if isinstance(sidecar, dict):
         excluded_time_columns |= _declared_time_columns(sidecar)
@@ -432,6 +454,7 @@ def load_session(
     }
     if isinstance(sidecar, dict) and isinstance(resolved_sidecar_path, str):
         _apply_log_metadata(session, log_metadata=sidecar, log_metadata_path=resolved_sidecar_path)
+    _warn_on_firmware_dropped_samples(session)
     _apply_filename_stem_time_anchor(session, csv_path=p)
     return session
 
@@ -489,6 +512,20 @@ def _append_qc_warning(session: Dict[str, Any], warning: str) -> None:
     warnings = qc.setdefault("warnings", [])
     if warning not in warnings:
         warnings.append(warning)
+
+
+def _warn_on_firmware_dropped_samples(session: Dict[str, Any]) -> None:
+    stats = session.get("qc", {}).get("firmware_stats")
+    dropped = _firmware_dropped_sample_count(stats)
+    if dropped <= 0:
+        return
+    csv_path = session.get("source", {}).get("path")
+    logger.warning(
+        "Logger firmware reported dropped samples: samples_dropped=%s csv=%s",
+        dropped,
+        csv_path,
+    )
+    _append_qc_warning(session, f"firmware_samples_dropped:{dropped}")
 
 
 def _merge_channel_info(

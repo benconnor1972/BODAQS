@@ -15,10 +15,6 @@ public:
     // Wiring
     uint8_t  pin = -1;
 
-    // RAW smoothing (EMA + deadband)
-    uint16_t emaAlphaPermille = 1;   // 0..1000 => 0..1
-    uint16_t deadbandCounts   = 0;   // absolute counts
-
     // Geometry / anchors (counts)
     int32_t  sensorZeroCount  = 0;
     int32_t  sensorFullCount  = 4095;
@@ -38,7 +34,6 @@ public:
     char     semanticEnd[16] = "";
     char     primaryDomain[24] = "";
     char     primaryQuantity[24] = "";
-    char     rawDomain[24] = "";
   };
 
   explicit AnalogPotSensor(const Params& p);
@@ -87,9 +82,6 @@ public:
   bool setCalibration(const CalibrationState& s) override;
   bool supportsCalibration() const override { return true; }
 
-  // RAW smoothing
-  SmoothingConfig smoothing() const override;
-  void setSmoothing(const SmoothingConfig& s) override;
   // Live UI hooks
   void setIncludeRaw(bool b) override;
   void setOutputUnitsLabel(const char* u) override;
@@ -102,8 +94,7 @@ public:
 private:
   void  applyParams(const Params& p);
   int   readOnce() const;
-  int   updateEma(int raw);
-  void  sample(float& selectedOut, int& smoothedRawOut);
+  void  sample(float& selectedOut, int& rawOut);
   float normalize_(int counts) const;   // 0..1 after zero/full + invert + clamp
   float applyTransform_(float xNorm) const; // identity / LUT / POLY (all expect 0..1)
 
@@ -139,12 +130,6 @@ private:
   // Wiring / behavior
   uint8_t  m_pin = 36;
   bool     m_invert = false;
-
-  // Smoothing
-  float    m_alpha = 0.2f;      // 0..1
-  uint16_t m_deadband = 0;      // counts
-  bool     m_emaInit = false;
-  float    m_ema = 0.0f;
 
   // Geometry (legacy, used by existing code paths)
   int32_t  m_zero = 0;

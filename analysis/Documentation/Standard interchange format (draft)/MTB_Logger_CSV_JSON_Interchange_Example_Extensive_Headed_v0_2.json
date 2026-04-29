@@ -177,7 +177,7 @@
       "monotonic": true,
       "repaired": false
     },
-    "firmware_stats": {
+    "run_stats": {
       "samples_dropped": 0,
       "flush_count": 5,
       "flush_max_ms": 12.0,

@@ -32,6 +32,8 @@ struct ButtonBindingDef {
 };
 
 struct LoggerConfig {
+  char     loggerName[32]   = "BODAQS";
+
   // sampling / time
   uint16_t sampleRateHz     = 100;
   bool     timestampHuman   = true;
@@ -116,6 +118,8 @@ class ConfigManager {
     static bool saveSensorParamByName(const char* sensorName, const char* key, const String& value);
     static bool saveSensorParamByIndex(uint8_t index, const char* key, const String& value);
     static bool setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp);
+    static bool appendSensor(SensorType type, const char* name);
+    static bool deleteSensorByIndex(uint8_t index);
 
     static void debugDumpConfigFile();
 

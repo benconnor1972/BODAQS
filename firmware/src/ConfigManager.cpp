@@ -81,6 +81,14 @@ namespace {
     // (`sensor_full_count < sensor_zero_count`) and is no longer persisted.
     if (strcasecmp(key, "invert") == 0) return false;
 
+    // Sample-time smoothing has been retired. Legacy keys are tolerated on
+    // load but are not written back.
+    if (strcasecmp(key, "ema_alpha") == 0 || strcasecmp(key, "deadband") == 0) return false;
+
+    // RAW columns now inherit the primary semantic domain. Legacy raw_domain
+    // entries are tolerated on load but are not written back.
+    if (strcasecmp(key, "raw_domain") == 0) return false;
+
     // `pin` is a legacy fallback for analog sensors. When `ain` is present,
     // the physical GPIO is board-derived and `pin` becomes redundant noise.
     if (strcasecmp(key, "pin") == 0) {
@@ -110,6 +118,40 @@ namespace {
   static String typeKeyForSave(SensorType t) {
     const char* key = SensorRegistry::typeKey(t);
     return (key && key[0]) ? String(key) : String("unknown");
+  }
+
+  static void seedParamDefaults_(SensorType type, ParamStore& store) {
+    store.clear();
+    const SensorTypeInfo* ti = SensorRegistry::lookup(type);
+    if (!ti || !ti->paramDefs) return;
+
+    size_t defCount = 0;
+    const ParamDef* defs = ti->paramDefs(defCount);
+    if (!defs) return;
+
+    for (size_t d = 0; d < defCount && store.count < ParamStore::MAX; ++d) {
+      const ParamDef& pd = defs[d];
+      if (!pd.key || !*pd.key) continue;
+      if (strcasecmp(pd.key, "ema_alpha") == 0 || strcasecmp(pd.key, "deadband") == 0) continue;
+      if (strcasecmp(pd.key, "output_mode") == 0) {
+        store.set(pd.key, "0");
+      } else if (pd.def) {
+        store.set(pd.key, pd.def);
+      }
+    }
+  }
+
+  static void syncConfigSensorsFromStores_() {
+    s_cfg.sensorN = (g_specCount <= MAX_SENSORS) ? g_specCount : MAX_SENSORS;
+    for (uint8_t i = 0; i < s_cfg.sensorN; ++i) {
+      g_specs[i].params.bind(&g_stores[i]);
+      s_cfg.sensors[i] = g_specs[i];
+      s_cfg.sensors[i].params.bind(&g_stores[i]);
+    }
+    for (uint8_t i = s_cfg.sensorN; i < MAX_SENSORS; ++i) {
+      s_cfg.sensors[i] = SensorSpec{};
+    }
+    g_cfg = s_cfg;
   }
 
 
@@ -444,6 +486,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   }
 
   // ---- globals ----
+  if (keyEquals(key, "logger_name"))    { copyStrBounded(val, cfg.loggerName, sizeof(cfg.loggerName)); return true; }
   if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=(uint16_t)v; return true; }
   if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
   if (keyEquals(key, "omit_metadata")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.omitMetadata = b; return true; }
@@ -822,6 +865,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
   // ---------------- Global ----------------
   line("# global");
+  kv("logger_name", cfg.loggerName);
   kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
   kv("log_format", ConfigManager::logFormatKey(cfg.logFormat));
   kv_bool("omit_metadata", cfg.omitMetadata);
@@ -953,6 +997,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
 void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("[CFG] --- current config ---\n");
+  LOGI("loggerName=%s\n", cfg.loggerName);
   LOGI("sampleRateHz=%u\n", cfg.sampleRateHz);
   LOGI("logFormat=%s\n", ConfigManager::logFormatKey(cfg.logFormat));
   LOGI("omitMetadata=%s\n", cfg.omitMetadata ? "true" : "false");
@@ -1285,6 +1330,49 @@ bool ConfigManager::setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp) 
   // copy name safely
   copyStrBounded(sp.name, g_specs[index].name, sizeof(g_specs[index].name));
   g_specs[index].mutedDefault = sp.mutedDefault;
+  return true;
+}
+
+bool ConfigManager::appendSensor(SensorType type, const char* name) {
+  if (g_specCount >= MAX_SENSORS) return false;
+  if (!SensorRegistry::lookup(type)) return false;
+
+  const uint8_t idx = g_specCount;
+  SensorSpec& sp = g_specs[idx];
+  memset(&sp, 0, sizeof(sp));
+  sp.type = type;
+  sp.mutedDefault = false;
+  copyStrBounded((name && *name) ? name : "sensor", sp.name, sizeof(sp.name));
+  seedParamDefaults_(type, g_stores[idx]);
+  sp.params.bind(&g_stores[idx]);
+  g_cals[idx] = Calibration{};
+  g_calAllowed[idx] = 0xFF;
+  g_specCount = idx + 1;
+  syncConfigSensorsFromStores_();
+  return true;
+}
+
+bool ConfigManager::deleteSensorByIndex(uint8_t index) {
+  if (index >= g_specCount) return false;
+
+  for (uint8_t i = index; i + 1 < g_specCount; ++i) {
+    g_specs[i] = g_specs[i + 1];
+    g_stores[i] = g_stores[i + 1];
+    g_cals[i] = g_cals[i + 1];
+    g_calAllowed[i] = g_calAllowed[i + 1];
+    g_specs[i].params.bind(&g_stores[i]);
+  }
+
+  --g_specCount;
+  if (g_specCount < MAX_SENSORS) {
+    g_specs[g_specCount] = SensorSpec{};
+    g_stores[g_specCount].clear();
+    g_specs[g_specCount].params.bind(&g_stores[g_specCount]);
+    g_cals[g_specCount] = Calibration{};
+    g_calAllowed[g_specCount] = 0xFF;
+  }
+
+  syncConfigSensorsFromStores_();
   return true;
 }
 

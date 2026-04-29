@@ -59,6 +59,15 @@ void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint32_t value,
   out += '\n';
 }
 
+void appendKeyUInt64_(String& out, uint8_t depth, const char* key, uint64_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%llu", (unsigned long long)value);
+  out += buf;
+  if (comma) out += ',';
+  out += '\n';
+}
+
 void appendKeyInt_(String& out, uint8_t depth, const char* key, int32_t value, bool comma = true) {
   appendKey_(out, depth, key);
   out += String(value);
@@ -89,6 +98,22 @@ void appendCsvRefByIndex_(String& out, uint8_t depth, uint8_t index) {
 
 bool hasText_(const char* s) {
   return s && *s;
+}
+
+void appendRunStats_(String& out, uint8_t depth, const LogMetadataContext& ctx, bool comma = true) {
+  appendKey_(out, depth, "run_stats");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "samples_dropped", ctx.samplesDropped);
+  appendKeyUInt_(out, depth + 1, "queue_max", ctx.queueMax);
+  appendKeyUInt_(out, depth + 1, "queue_depth", ctx.queueDepth);
+  appendKeyUInt_(out, depth + 1, "flush_count", ctx.flushCount);
+  appendKeyUInt_(out, depth + 1, "flush_max_ms", ctx.flushMaxMs);
+  const float avgFlush = ctx.flushCount ? (float)((double)ctx.flushTotalMs / (double)ctx.flushCount) : 0.0f;
+  appendKeyFloat_(out, depth + 1, "flush_avg_ms", avgFlush);
+  appendKeyUInt64_(out, depth + 1, "flush_total_ms", ctx.flushTotalMs);
+  appendKeyUInt_(out, depth + 1, "buffer_size", ctx.bufferSize, false);
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
 }
 
 void makeUniqueColumnId_(const SensorColumnDescriptor* cols,
@@ -336,7 +361,9 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
   out += F("},\n");
 
   appendKey_(out, 1, "qc");
-  out += F("{ \"warnings\": [");
+  out += F("{\n");
+  appendIndent_(out, 2);
+  out += F("\"warnings\": [");
   bool wroteWarning = false;
   if (!bindings.front.available) {
     appendJsonString_(out, "syn_bike_front_raw_not_available");
@@ -346,7 +373,10 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
     if (wroteWarning) out += F(", ");
     appendJsonString_(out, "syn_bike_rear_raw_not_available");
   }
-  out += F("] },\n");
+  out += F("],\n");
+  appendRunStats_(out, 2, ctx, false);
+  appendIndent_(out, 1);
+  out += F("},\n");
 
   appendKey_(out, 1, "provenance");
   out += F("{\n");
@@ -495,7 +525,12 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   out += F("},\n");
 
   appendKey_(out, 1, "qc");
-  out += F("{ \"warnings\": [] },\n");
+  out += F("{\n");
+  appendIndent_(out, 2);
+  out += F("\"warnings\": [],\n");
+  appendRunStats_(out, 2, ctx, false);
+  appendIndent_(out, 1);
+  out += F("},\n");
 
   appendKey_(out, 1, "provenance");
   out += F("{\n");

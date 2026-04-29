@@ -13,6 +13,7 @@
 #include "CalCapture.h"
 #include "ButtonActions.h"
 #include "WiFiManager.h"
+#include "FirmwareInfo.h"
 #include "DebugLog.h"
 #include <WiFi.h>
 #include "RTCManager.h"
@@ -32,6 +33,7 @@ static const char* stateName(MenuSystem::State s) {
     case MenuSystem::State::RatePicker:  return "RatePicker";
     case MenuSystem::State::CalibSensors:return "CalibSensors";
     case MenuSystem::State::CalibDetail: return "CalibDetail";
+    case MenuSystem::State::About:       return "About";
     default: return "?";
   }
 }
@@ -63,9 +65,10 @@ namespace {
     Calibration,
     Sleep,
     ResetTime,
-    Restart
+    Restart,
+    About
   };
-  static inline uint8_t mainItemCount_() { return 7; }
+  static inline uint8_t mainItemCount_() { return 8; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -117,6 +120,7 @@ namespace {
   static void redraw_();
   static void drawCalibSensors_();
   static void drawCalibDetail_();
+  static void drawAbout_();
   static void toggleSelectedSensor_();
   static void showCalibrationCaptureToast_(const char* label, int32_t counts);
   static RangeCapture s_rangeCap;   // <--- ADD THIS LINE
@@ -165,6 +169,8 @@ namespace {
         return "Reset time";
       case MainItem::Restart:
         return "Restart";
+      case MainItem::About:
+        return "About";
       default:
         return "?";
     }
@@ -196,6 +202,9 @@ namespace {
       const int y = 12 + row * 10;   // note: row, not i
       UI::oledText(0, y, line);
     }
+
+    if (s_mainTop > 0) UI::oledText(118, 0, "^");
+    if ((uint8_t)(s_mainTop + MAIN_VISIBLE_ROWS) < N) UI::oledText(118, 54, "v");
 
     DisplayManager::present();
   }
@@ -310,6 +319,14 @@ namespace {
         delay(150);
         RTCManager_invalidateInternalTime();
         esp_restart(); // does not return
+        break;
+      }
+
+      case MainItem::About: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        s_state = State::About;
+        drawAbout_();
         break;
       }
     }
@@ -431,6 +448,23 @@ namespace {
     DisplayManager::present();
   }
 
+  static String truncateForOled_(const String& text, uint8_t maxChars) {
+    if (text.length() <= maxChars) return text;
+    if (maxChars <= 1) return text.substring(0, maxChars);
+    return text.substring(0, maxChars - 1) + String("~");
+  }
+
+  static void drawAbout_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+    UI::clear(UI::TARGET_OLED);
+    UI::oledText(0, 0, "About");
+    UI::oledText(0, 12, String("FW: ") + FirmwareInfo::version());
+    UI::oledText(0, 24, truncateForOled_(String("Board: ") + FirmwareInfo::boardName(), 21));
+    UI::oledText(0, 36, truncateForOled_(String("Built: ") + FirmwareInfo::buildDateTime(), 21));
+    UI::oledText(0, 54, "Left = back");
+    DisplayManager::present();
+  }
+
   static void redraw_() {
     switch (s_state) {
       case State::Main:         drawMain_();         break;
@@ -438,6 +472,7 @@ namespace {
       case State::RatePicker:   drawRatePicker_();   break;
       case State::CalibSensors: drawCalibSensors_(); break;
       case State::CalibDetail:  drawCalibDetail_();  break;
+      case State::About:        drawAbout_();        break;
       default: break;
     }
   }
@@ -954,6 +989,14 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       }
       break;
     }
+
+    case State::About:
+      if (d == Dir::Left) {
+        s_state = State::Main;
+        drawMain_();
+        return;
+      }
+      break;
 
     default: break;
   }

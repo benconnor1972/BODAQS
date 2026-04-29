@@ -206,7 +206,8 @@ Added optional per-sensor semantic parameters:
 - `end`
 - `primary_domain`
 - `primary_quantity`
-- `raw_domain`
+- `raw_domain` was removed from user-facing configuration; RAW columns now
+  inherit the primary semantic domain.
 
 These fields do not affect CSV output. They are consumed only by the runtime
 descriptor layer so the later JSON writer does not need to infer semantics from
@@ -222,8 +223,8 @@ the CSV when logging stops.
 
 Current behaviour:
 
-- metadata is written at log close, after queued samples, buffered CSV data, and
-  the run-stats footer have been flushed
+- metadata is written at log close, after queued samples and buffered CSV data
+  have been flushed
 - the user-facing stop message is shown before the blocking close/write path, so
   the UI acknowledges stop promptly even when metadata generation takes time
 - metadata generation can be disabled with the global config key

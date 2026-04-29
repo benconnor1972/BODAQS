@@ -319,31 +319,6 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
 
     }
 
-    // 5) Smoothing (EMA alpha + deadband), if present
-    {
-      SmoothingConfig sm = s->smoothing();
-
-      // ema_alpha expects a double& from ParamPack
-      double fa = 0.0;
-      if (sp.params.getFloat("ema_alpha", fa)) {
-        sm.emaAlpha = (float)fa;
-      }
-
-      // deadband: try float first, then fall back to int
-      double dbf = 0.0;
-      if (sp.params.getFloat("deadband", dbf)) {
-        sm.deadband = (float)dbf;
-      } else {
-        long dbi = 0;
-        if (sp.params.getInt("deadband", dbi)) {
-          sm.deadband = (float)dbi;
-        }
-      }
-
-      s->setSmoothing(sm);
-    }
-
-
     // Register with SensorManager (takes ownership, per your contract)
     SensorManager::registerSensor(s);
 

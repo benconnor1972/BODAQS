@@ -1,4 +1,6 @@
 #include "HtmlUtil.h"
+#include "ConfigManager.h"
+#include <WiFi.h>
 
 namespace HtmlUtil {
   void emitEnumOptions(String& html, const char* choicesCsv, const String& current) {
@@ -31,10 +33,14 @@ namespace HtmlUtil {
     String s = F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
     s += F("<meta name='viewport' content='width=device-width, initial-scale=1'>");
     s += "<title>" + title + "</title>";
-    s += s += F("<style>"
+    s += F("<style>"
         /* page */
         "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
           "font-size:14px;line-height:1.35;color:#333;margin:20px}"
+        ".titlebar{font-size:2em;font-weight:700;margin:0 0 .15em 0}"
+        ".netbar{font-size:1em;color:#555;margin:0 0 .8em 0}"
+        ".topnav{margin:10px 0 14px 0;padding:8px 10px;background:#f3f3f3;border-radius:8px}"
+        ".topnav a{margin-right:12px}"
         "h2{margin-top:1.6em;padding-bottom:.2em;border-bottom:1px solid #ccc;font-size:1.1em}"
 
         /* containers */
@@ -109,6 +115,29 @@ namespace HtmlUtil {
         "});";
 
     s += F("</head><body>");
+
+    String loggerName = ConfigManager::get().loggerName;
+    loggerName.trim();
+    if (!loggerName.length()) loggerName = F("BODAQS");
+
+    String ssid = WiFi.SSID();
+    ssid.trim();
+    if (WiFi.status() != WL_CONNECTED || !ssid.length()) ssid = F("not connected");
+    String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("-");
+
+    s += F("<div class='titlebar'>BODAQS data logger: ");
+    s += htmlEscape(loggerName);
+    s += F("</div>");
+    s += F("<div class='netbar'>Network: ");
+    s += htmlEscape(ssid);
+    s += F(" &nbsp; IP: ");
+    s += htmlEscape(ip);
+    s += F("</div>");
+    s += F("<div class='topnav'>");
+    s += F("<a href='/files'>Files</a>");
+    s += F("<a href='/config'>General</a>");
+    s += F("<a href='/config/sensors'>Sensors</a>");
+    s += F("</div>");
     return s;
   }
 

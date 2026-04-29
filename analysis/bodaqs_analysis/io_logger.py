@@ -891,13 +891,13 @@ def load_logger_csv_with_sidecar(
     )
 
 
-# --- Footer stats parsing (logger-provided QC) ---
+# --- Legacy footer stats parsing (logger-provided QC) ---
 _RUN_STATS_BEGIN_RE = re.compile(r"^\s*#\s*run_stats_begin\s*$", re.IGNORECASE)
 _RUN_STATS_END_RE   = re.compile(r"^\s*#\s*run_stats_end\s*$", re.IGNORECASE)
 _KV_RE = re.compile(r"^\s*#\s*([A-Za-z0-9_\-]+)\s*=\s*(.*?)\s*$")
 
 def parse_run_stats_footer(path: str) -> dict:
-    """Parse optional end-of-file run stats emitted by the logger.
+    """Parse legacy optional end-of-file run stats emitted by older firmware.
 
     Expected format (example):
         # run_stats_begin

@@ -98,6 +98,46 @@ static Sensor* findLiveSensorByName_(const char* name) {
   return nullptr;
 }
 
+static bool parseSensorTypeKey_(String text, SensorType& out) {
+  text.trim();
+  if (text.equalsIgnoreCase("analog_pot") || text.equalsIgnoreCase("pot")) {
+    out = SensorType::AnalogPot;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5600_string_pot_analog") || text.equalsIgnoreCase("as5600_pot_analog")) {
+    out = SensorType::AS5600StringPotAnalog;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5600_string_pot_i2c") || text.equalsIgnoreCase("as5600_pot_i2c")) {
+    out = SensorType::AS5600StringPotI2C;
+    return true;
+  }
+  return false;
+}
+
+static const char* defaultNamePrefix_(SensorType type) {
+  switch (type) {
+    case SensorType::AnalogPot: return "analog";
+    case SensorType::AS5600StringPotAnalog: return "as5600a";
+    case SensorType::AS5600StringPotI2C: return "as5600i";
+    default: return "sensor";
+  }
+}
+
+static String uniqueSensorName_(SensorType type, String proposed) {
+  proposed.trim();
+  if (proposed.length() > 15) proposed = proposed.substring(0, 15);
+  if (proposed.length() && ConfigManager::findSensorByName(proposed.c_str()) < 0) return proposed;
+
+  const String prefix = defaultNamePrefix_(type);
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    String candidate = prefix + String((int)i);
+    if (candidate.length() > 15) candidate = candidate.substring(0, 15);
+    if (ConfigManager::findSensorByName(candidate.c_str()) < 0) return candidate;
+  }
+  return String("sensor");
+}
+
 static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const SensorSpec& sp) {
   Sensor* live = findLiveSensorByName_(lookupName);
   if (!live && lookupName && strcmp(lookupName, sp.name) != 0) {
@@ -144,30 +184,6 @@ static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const Sens
   return true;
 }
 
-static void appendTopNav(String& html, const char* active) {
-  auto a = [&](const char* href, const char* label, bool bold=false){
-    html += "<a href='"; html += href; html += "' style='margin-right:12px;";
-    if (bold) html += "font-weight:700;";
-    html += "'>";
-    html += label;
-    html += "</a>";
-  };
-
-  html += "<div style='margin:10px 0 14px 0; padding:8px 10px; background:#f3f3f3; border-radius:8px;'>";
-
-  // Home / Files
-  a("/", "Home");
-  a("/files", "Files");  // change if your files route differs
-
-  html += "<span style='margin:0 10px; color:#888;'>|</span>";
-
-  // Config pages
-  a("/config",         "General",  strcmp(active, "/config")==0);
-  a("/config/sensors", "Sensors",  strcmp(active, "/config/sensors")==0);
-  html += "</div>";
-}
-
-
 using namespace HtmlUtil;
 
 void registerConfigRoutes(WebServer& srv) {
@@ -185,9 +201,6 @@ void registerConfigRoutes(WebServer& srv) {
     const String dis  = locked ? F(" disabled") : F("");
 
     String html = htmlHeader(F("Config"));
-
-    appendTopNav(html, "/config");
-    html += F("<hr>");
 
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
@@ -231,6 +244,10 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<input type='hidden' name='submit' value='globals'>"); //Hidden input
 
     html += F("<fieldset><legend>General</legend>");
+    html += F("<label>Logger name: </label><input type='text' name='logger_name' maxlength='31' value='");
+    html += htmlEscape(String(cfg.loggerName));
+    html += F("'"); html += dis; html += F("><br>");
+
     html += F("<label>Sample rate (Hz): </label><input type='number' name='sample_rate_hz' min='1' max='2000' value='");
     html += String(cfg.sampleRateHz);
     html += F("'"); html += dis; html += F("><br>");
@@ -440,8 +457,14 @@ void registerConfigRoutes(WebServer& srv) {
 
     String html = htmlHeader(F("Sensors"));
 
-    appendTopNav(html, "/config/sensors");
-    html += F("<hr>");
+    if (srv.hasArg("ok")) {
+      html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
+    }
+    if (srv.hasArg("reboot")) {
+      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
+                "Sensor add/delete changes are saved. Restart the logger to rebuild the live sensor set."
+                "</p>");
+    }
 
     html += F("<form method='POST' action='/config/sensors'>");
 
@@ -563,6 +586,9 @@ void registerConfigRoutes(WebServer& srv) {
         html += ">Apply Type</button>";
         html += "<small>Reloads fields for the selected type, prunes incompatible params, and takes effect after reboot.</small></div>";
 
+        emitParamRow("i2c_bus", "I2C bus");
+        emitParamRow("i2c_addr", "I2C address");
+
         // Board-aware Analog Input selector (AIN ordinal)
         {
           const ParamDef* pd = findDef("ain");
@@ -660,6 +686,12 @@ void registerConfigRoutes(WebServer& srv) {
         emitParamRow("sensor_full_travel_mm", "Sensor full travel (mm)");
         emitParamRow("units_label", "Units label");
 
+        // ---- Usage ----
+        html += F("<h4>Usage</h4>");
+        emitParamRow("end", "End");
+        emitParamRow("primary_domain", "Primary domain");
+        emitParamRow("primary_quantity", "Primary quantity");
+
         // Transform picker (per sensor)
         {
           // use live sensor to preselect
@@ -705,25 +737,23 @@ void registerConfigRoutes(WebServer& srv) {
         }
         emitParamRow("sensor_zero_count", "Sensor count at zero travel");
         emitParamRow("sensor_full_count", "Sensor count at full travel");
+        emitParamRow("installed_zero_count", "Installed zero count");
 
         // ---- Wrapping ----
-        html += F("<h4>Wrapping</h4>");
-        emitParamRow("counts_per_turn", "Counts per turn");
-        emitParamRow("wrap_threshold_counts", "Wrap threshold (counts)");
-        emitParamRow("assume_turn0_at_start", "Assume turn 0 at log start");
-
-        // ---- Smoothing ----
-        html += F("<h4>Smoothing</h4>");
-        emitParamRow("ema_alpha", "EMA alpha");
-        emitParamRow("deadband",  "Deadband");
+        if (findDef("counts_per_turn") || findDef("wrap_threshold_counts") || findDef("assume_turn0_at_start")) {
+          html += F("<h4>Wrapping</h4>");
+          emitParamRow("counts_per_turn", "Counts per turn");
+          emitParamRow("wrap_threshold_counts", "Wrap threshold (counts)");
+          emitParamRow("assume_turn0_at_start", "Assume turn 0 at log start");
+        }
 
         // (Optional) render remaining params under "Other"
         const char* shown[] = {
-          "ain","muted",
+          "ain","muted","i2c_bus","i2c_addr",
           "output_mode","include_raw","sensor_full_travel_mm","units_label",
-          "cal_allowed","sensor_zero_count","sensor_full_count",
-          "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start",
-          "ema_alpha","deadband"
+          "end","primary_domain","primary_quantity","raw_domain",
+          "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count",
+          "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start"
         };
         auto isShown = [&](const char* key)->bool{
           for (size_t k=0;k<sizeof(shown)/sizeof(shown[0]);++k){
@@ -778,9 +808,45 @@ void registerConfigRoutes(WebServer& srv) {
           delay(0);
         }
 
+        html += "<div class='row'><label>Remove</label><button type='submit' name='delete_sensor_idx' value='";
+        html += String(i);
+        html += "'";
+        if (locked) html += " disabled";
+        html += ">Delete this sensor</button>";
+        html += "<small>Removes the sensor from logger config only; transform files are left in place.</small></div>";
+
         html += F("</fieldset>");
         delay(0);
       }
+
+    html += F("<fieldset><legend>New sensor</legend>");
+    html += F("<div class='row'><label>Type</label><select name='add_sensor_type'");
+    html += dis;
+    html += F(">");
+    const SensorType addTypeChoices[] = {
+      SensorType::AnalogPot,
+      SensorType::AS5600StringPotAnalog,
+      SensorType::AS5600StringPotI2C,
+    };
+    for (const auto typeChoice : addTypeChoices) {
+      const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
+      if (!tiChoice) continue;
+      const char* key = SensorRegistry::typeKey(typeChoice);
+      const char* label = SensorRegistry::typeLabel(typeChoice);
+      html += F("<option value='");
+      html += htmlEscape(String(key ? key : "unknown"));
+      html += F("'>");
+      html += htmlEscape(String(label ? label : "Unknown Sensor"));
+      html += F("</option>");
+    }
+    html += F("</select></div>");
+    html += F("<div class='row'><label>Name</label><input type='text' name='add_sensor_name' maxlength='15' placeholder='optional'");
+    html += dis;
+    html += F("><small>Leave blank to auto-name.</small></div>");
+    html += F("<p><button type='submit' name='add_sensor' value='1'");
+    html += dis;
+    html += F(">Add Sensor</button></p>");
+    html += F("</fieldset>");
 
     
 
@@ -853,6 +919,38 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     LoggerConfig tmp = ConfigManager::get();
+
+    if (srv.hasArg("delete_sensor_idx")) {
+      const int idx = srv.arg("delete_sensor_idx").toInt();
+      if (idx < 0 || idx >= (int)ConfigManager::sensorCount()) {
+        srv.send(400, F("text/plain"), F("Invalid sensor index"));
+        return;
+      }
+      if (!ConfigManager::deleteSensorByIndex((uint8_t)idx) || !ConfigManager::save(ConfigManager::get())) {
+        srv.send(500, F("text/plain"), F("Failed to delete sensor"));
+        return;
+      }
+      srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1");
+      srv.send(303, F("text/plain"), F("Sensor deleted"));
+      return;
+    }
+
+    if (srv.hasArg("add_sensor")) {
+      SensorType newType = SensorType::AnalogPot;
+      if (srv.hasArg("add_sensor_type")) {
+        (void)parseSensorTypeKey_(srv.arg("add_sensor_type"), newType);
+      }
+      const String uniqueName = uniqueSensorName_(newType, srv.hasArg("add_sensor_name") ? srv.arg("add_sensor_name") : String());
+      if (!ConfigManager::appendSensor(newType, uniqueName.c_str()) || !ConfigManager::save(ConfigManager::get())) {
+        srv.send(500, F("text/plain"), F("Failed to add sensor"));
+        return;
+      }
+      const int newIdx = (int)ConfigManager::sensorCount() - 1;
+      srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1#sensor-" + String(newIdx));
+      srv.send(303, F("text/plain"), F("Sensor added"));
+      return;
+    }
+
     int applyTypeIdx = -1;
     if (srv.hasArg("apply_type_idx")) {
       applyTypeIdx = srv.arg("apply_type_idx").toInt();
@@ -893,13 +991,7 @@ void registerConfigRoutes(WebServer& srv) {
         if (getArgLast("type", v)) {
           v.trim();
           if (v.length()) {
-            if (v.equalsIgnoreCase("analog_pot") || v.equalsIgnoreCase("pot")) {
-              sp.type = SensorType::AnalogPot;
-            } else if (v.equalsIgnoreCase("as5600_string_pot_analog") || v.equalsIgnoreCase("as5600_pot_analog")) {
-              sp.type = SensorType::AS5600StringPotAnalog;
-            } else if (v.equalsIgnoreCase("as5600_string_pot_i2c") || v.equalsIgnoreCase("as5600_pot_i2c")) {
-              sp.type = SensorType::AS5600StringPotI2C;
-            }
+            (void)parseSensorTypeKey_(v, sp.type);
           }
         }
         typeChanged = (sp.type != oldType);
@@ -948,6 +1040,14 @@ void registerConfigRoutes(WebServer& srv) {
       // ---- Board-aware analog input binding (AIN ordinal) ----
       {
         String v;
+        if (getArgLast("i2c_bus", v)) {
+          v.trim();
+          sp.params.setInt("i2c_bus", v.toInt());
+        }
+        if (getArgLast("i2c_addr", v)) {
+          v.trim();
+          sp.params.setInt("i2c_addr", v.toInt());
+        }
         if (getArgLast("ain", v)) {
           v.trim();
           long ain = v.toInt();
@@ -1005,6 +1105,9 @@ void registerConfigRoutes(WebServer& srv) {
         { bool inc = false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
         if (getArgLast("sensor_full_travel_mm", v)) { double f = v.toFloat(); sp.params.setFloat("sensor_full_travel_mm", (float)f); }
         if (getArgLast("units_label", v)) { sp.params.set("units_label", v); }
+        if (getArgLast("end", v)) { v.trim(); sp.params.set("end", v); }
+        if (getArgLast("primary_domain", v)) { v.trim(); sp.params.set("primary_domain", v); }
+        if (getArgLast("primary_quantity", v)) { v.trim(); sp.params.set("primary_quantity", v); }
 
         sp.params.setBool("__om_changed", omChanged);
         sp.params.setBool("__id_changed", idChanged);
@@ -1031,13 +1134,7 @@ void registerConfigRoutes(WebServer& srv) {
         }
         if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
         if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
-      }
-
-      // Smoothing
-      {
-        String v;
-        if (getArgLast("ema_alpha", v)) { double f = v.toFloat(); sp.params.setFloat("ema_alpha", (float)f); }
-        if (getArgLast("deadband", v))  { long   i = v.toInt();  sp.params.setInt("deadband", (long)i); }
+        if (getArgLast("installed_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("installed_zero_count", vi); }
       }
 
       // Wrapping
@@ -1059,12 +1156,14 @@ void registerConfigRoutes(WebServer& srv) {
         if (pkey.equalsIgnoreCase("name") || pkey.equalsIgnoreCase("muted") ||
             pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
             pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
+            pkey.equalsIgnoreCase("end") || pkey.equalsIgnoreCase("primary_domain") ||
+            pkey.equalsIgnoreCase("primary_quantity") || pkey.equalsIgnoreCase("raw_domain") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
-            pkey.equalsIgnoreCase("sensor_full_count") ||
+            pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("installed_zero_count") ||
             pkey.equalsIgnoreCase("counts_per_turn") || pkey.equalsIgnoreCase("wrap_threshold_counts") ||
             pkey.equalsIgnoreCase("assume_turn0_at_start") ||
-            pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
-            pkey.equalsIgnoreCase("ain")) {
+            pkey.equalsIgnoreCase("ain") || pkey.equalsIgnoreCase("i2c_bus") ||
+            pkey.equalsIgnoreCase("i2c_addr")) {
           continue;
         }
 
@@ -1139,6 +1238,12 @@ void registerConfigRoutes(WebServer& srv) {
     LoggerConfig tmp = ConfigManager::get();
 
     // ---------- GLOBALS ----------
+    if (srv.hasArg("logger_name")) {
+      String loggerName = srv.arg("logger_name");
+      loggerName.trim();
+      loggerName.toCharArray(tmp.loggerName, sizeof(tmp.loggerName));
+    }
+
     if (srv.hasArg("sample_rate_hz")) {
       uint16_t hz = (uint16_t)srv.arg("sample_rate_hz").toInt();
       tmp.sampleRateHz = hz;

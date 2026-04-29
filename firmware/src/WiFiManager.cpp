@@ -209,12 +209,11 @@ static const char* firstNonEmptyHost_(const String& s1, const String& s2, const 
 }
 
 static void logRtcSyncNetworkDiag_(const char* ntpHost) {
-  LOGD_TAG("RTC", "RTC sync net: local=%s gateway=%s subnet=%s dns1=%s dns2=%s\n",
+  LOGD_TAG("RTC", "RTC sync net: local=%s gateway=%s subnet=%s dns1=%s\n",
            WiFi.localIP().toString().c_str(),
            WiFi.gatewayIP().toString().c_str(),
            WiFi.subnetMask().toString().c_str(),
-           WiFi.dnsIP(0).toString().c_str(),
-           WiFi.dnsIP(1).toString().c_str());
+           WiFi.dnsIP(0).toString().c_str());
 
   if (!ntpHost || !*ntpHost) {
     LOGD_TAG("RTC", "RTC sync DNS: no NTP hostname configured\n");

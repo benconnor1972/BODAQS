@@ -399,13 +399,17 @@ Purpose:
 Optional fields:
 - `warnings`: array
 - `time`: object
-- `firmware_stats`: object
+- `run_stats`: object
 
 Suggested `time` fields:
 - `monotonic`: boolean
 - `repaired`: boolean
 
 No fixed vocabulary is required for `warnings` in v0.2.
+
+Logger firmware should put runtime QC counters such as `samples_dropped`,
+`queue_max`, and `flush_count` in `qc.run_stats` rather than appending them to
+the CSV data file.
 
 ### 7.9 `provenance`
 

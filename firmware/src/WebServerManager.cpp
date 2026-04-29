@@ -241,33 +241,8 @@ void WebServerManager::setupRoutes() {
 
 void WebServerManager::handleRoot() {
   noteHttpActivity_();
-  String html = htmlHeader("ESP32 Logger");
-
-  html += F("<h1>ESP32 Data Logger</h1>");
-
-  // Status
-  html += F("<p>Status: ");
-  if (g_isLogging && g_isLogging())       html += F("<b>LOGGING</b>");
-  else if (g_running)                     html += F("<b>SERVER RUNNING</b>");
-  else                                    html += F("<b>IDLE</b>");
-  html += F("</p>");
-
-  // WiFi / IP
-  html += F("<p>WiFi: ");
-  html += WiFi.localIP().toString();
-  html += F("</p>");
-
-  // Quick links
-  html += F("<h2>Links</h2>");
-  html += F("<ul>");
-  html += F("<li><a href=\"/files\">Browse SD Card</a></li>");
-  html += F("<li><a href=\"/config\">Config (General)</a></li>");
-  html += F("<li><a href=\"/config/sensors\">Config (Sensors)</a></li>");
-  html += F("<li><a href=\"/config/buttons\">Config (Buttons)</a></li>");
-  html += F("</ul>");
-
-  html += htmlFooter();
-  g_server->send(200, "text/html", html);
+  g_server->sendHeader(F("Location"), F("/files"));
+  g_server->send(303, "text/plain", "Files");
 }
 
 void WebServerManager::handleNotFound() {
@@ -277,7 +252,7 @@ void WebServerManager::handleNotFound() {
   html += F("<h2>Not found</h2><p>The requested URL <code>");
   html += htmlEscape(g_server->uri());
   html += F("</code> was not found.</p>");
-  html += F("<p><a href='/'>Home</a> &nbsp; <a href='/config'>Config</a> &nbsp; <a href='/files'>Files</a></p>");
+  html += F("<p><a href='/files'>Files</a> &nbsp; <a href='/config'>General</a> &nbsp; <a href='/config/sensors'>Sensors</a></p>");
   html += htmlFooter();
 
   g_server->send(404, "text/html", html);

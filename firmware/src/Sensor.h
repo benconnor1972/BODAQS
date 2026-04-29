@@ -90,13 +90,6 @@ struct SensorMetadataDescriptor {
   bool assumeTurn0AtStart = false;
 };
 
-// -------- RAW smoothing config (pre-transform) --------
-struct SmoothingConfig {
-  float emaAlpha    = 1.0f;  // 1.0 => disabled
-  float deadband    = 0.0f;
-  bool  emaWarmStart = true;
-};
-
 struct LoggerConfig;
 struct Calibration;
 struct SensorSpec;
@@ -144,10 +137,6 @@ public:
   virtual CalibrationState calibration() const { return CalibrationState{}; }
   virtual bool setCalibration(const CalibrationState&) { return false; }
   virtual bool supportsCalibration() const { return false; }
-
-  // ----- RAW smoothing (pre-transform) -----
-  virtual SmoothingConfig smoothing() const { return SmoothingConfig{}; }
-  virtual void setSmoothing(const SmoothingConfig&) {}
 
   // ----- User calibration overlay (ZERO / RANGE) -----
   virtual bool        userCalibrationEnabled() const { return false; }
