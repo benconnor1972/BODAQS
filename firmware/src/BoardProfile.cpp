@@ -80,7 +80,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
     .count = 4,
 
     .adc_max = 4095,
-    .vref = 3.3f
+    .vref = 3.3f,
+    .attenuation = AdcAttenuation::Db11
   },
 
   .i2c = {
@@ -136,6 +137,38 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D_UART_I2C1 = [] {
     .hz  = 400000
   };
   p.i2c_count = 2;
+  return p;
+}();
+
+// -----------------------------------------------------------------------------
+// Board: SparkFun ESP32 Thing Plus S3 on BODAQS 4F
+// Same as BODAQS 4 Proto D except for keypad and dual-I2C pinout.
+// -----------------------------------------------------------------------------
+static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
+  BoardProfile p = THING_PLUS_S3_BODAQS_4_D;
+  p.name = "SparkFun ESP32 Thing Plus S3 on BODAQS 4F";
+
+  p.buttons.btn[0] = ButtonHW{ "nav_up",    true, 6,  1, true, true };
+  p.buttons.btn[1] = ButtonHW{ "nav_down",  true, 5,  1, true, true };
+  p.buttons.btn[2] = ButtonHW{ "nav_left",  true, 7,  1, true, true };
+  p.buttons.btn[3] = ButtonHW{ "nav_right", true, 21, 1, true, true };
+  p.buttons.btn[4] = ButtonHW{ "nav_enter", true, 4,  0, true, true };
+
+  p.i2c[0] = {
+    .present = true,
+    .sda = 8,
+    .scl = 9,
+    .hz  = 400000
+  };
+  p.i2c[1] = {
+    .present = true,
+    .sda = 14,
+    .scl = 16,
+    .hz  = 400000
+  };
+  p.i2c_count = 2;
+  p.analog.attenuation = AdcAttenuation::Db6;
+
   return p;
 }();
 
@@ -202,7 +235,8 @@ static const BoardProfile THING_PLUS_A = {
     .count = 2,
 
     .adc_max = 4095,
-    .vref = 3.3f
+    .vref = 3.3f,
+    .attenuation = AdcAttenuation::Db11
   },
 
   .i2c = {
@@ -249,6 +283,7 @@ const BoardProfile& GetBoardProfile(BoardID id) {
   switch (id) {
     case BoardID::ThingPlusS3_BODAQS_4_D:   return THING_PLUS_S3_BODAQS_4_D;
     case BoardID::ThingPlusS3_BODAQS_4_D_UartI2C1: return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
+    case BoardID::ThingPlusS3_BODAQS_4_F: return THING_PLUS_S3_BODAQS_4_F;
     case BoardID::ThingPlus_A: return THING_PLUS_A;
     default:                          return THING_PLUS_S3_BODAQS_4_D;
   }
@@ -259,6 +294,7 @@ const BoardProfile& GetBoardProfileByName(const char* name) {
 
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D.name) == 0)   return THING_PLUS_S3_BODAQS_4_D;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D_UART_I2C1.name) == 0) return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
+  if (strcmp(name, THING_PLUS_S3_BODAQS_4_F.name) == 0) return THING_PLUS_S3_BODAQS_4_F;
   if (strcmp(name, THING_PLUS_A.name) == 0) return THING_PLUS_A;
 
   return THING_PLUS_S3_BODAQS_4_D;

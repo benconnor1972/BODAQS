@@ -12,6 +12,7 @@ static constexpr uint8_t BOARD_MAX_I2C_BUSES = 2;
 enum class BoardID : uint8_t {
   ThingPlusS3_BODAQS_4_D = 0,
   ThingPlusS3_BODAQS_4_D_UartI2C1,
+  ThingPlusS3_BODAQS_4_F,
   ThingPlus_A,
   // Add more here...
 };
@@ -19,6 +20,7 @@ enum class BoardID : uint8_t {
 enum class StorageType : uint8_t { None, SPI_SdFat, SDMMC };
 enum class DisplayType : uint8_t { None, OLED_SSD1306 };
 enum class FuelGaugeType : uint8_t { None, MAX17048, Other };
+enum class AdcAttenuation : uint8_t { Db0 = 0, Db2p5, Db6, Db11 };
 enum class ButtonID : uint8_t { BTN0=0, BTN1, BTN2, BTN3, BTN4, BTN5, Count };
 enum class ButtonMode : uint8_t {Interrupt = 0, Poll = 1 };
 
@@ -99,6 +101,7 @@ struct AnalogInputsProfile {
   // Optional hints
   uint16_t adc_max = 4095;
   float vref = 3.3f;
+  AdcAttenuation attenuation = AdcAttenuation::Db11;
 };
 
 struct IndicatorsProfile {
