@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <SdFat.h>
 #include <stdint.h>
 #include "SensorTypes.h"   // owns SensorType + SensorSpec
 #include "Calibration.h"
@@ -93,7 +92,7 @@ struct LoggerConfig {
 
 class ConfigManager {
   public:
-    static void begin(SdFs* sdRef, const char* filename);
+    static void begin(const char* filename);
 
     // Wi-Fi config accessors (read-only)
     static bool hasConfiguredNetworks();

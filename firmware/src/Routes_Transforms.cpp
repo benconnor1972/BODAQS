@@ -1,7 +1,6 @@
 #include "Routes_Transforms.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <SdFat.h>
 #include "SD_MMC.h"   // for SD_MMC backend
 
 #include "HtmlUtil.h"
@@ -16,13 +15,6 @@
 using namespace HtmlUtil;
 
 #define XFORM_LOGE(...) LOGE_TAG("XFORM", __VA_ARGS__)
-
-// --- tiny SD helper ---
-static bool ensureSd_(SdFs*& out) {
-  out = WebServerManager::sd();
-  if (!out) { XFORM_LOGE("SdFs* is null\n"); return false; }
-  return true;
-}
 
 // Normalize ID and label helpers
 static String stemOf_(const char* name) {
@@ -48,34 +40,6 @@ static String baseName_(const String& path) {
   return path;
 }
 
-static void addTransformsFromDir_(SdFs* sd, const char* dirPath, JsonArray outArr) {
-  if (!sd) return;
-  SdFile dir;
-  if (!dir.open(dirPath)) return;
-
-  dir.rewind();
-  SdFile entry;
-  char name[128];
-  while (entry.openNext(&dir, O_READ)) {
-    if (entry.isHidden() || entry.isSubDir()) { entry.close(); continue; }
-    entry.getName(name, sizeof(name));
-    // Skip obviously non-transform files
-    String lower(name); lower.toLowerCase();
-    if (!(lower.endsWith(".lut") || lower.endsWith(".csv") || lower.endsWith(".poly")
-          || lower.endsWith(".cfg") || lower.endsWith(".json"))) {
-      entry.close(); continue;
-    }
-    JsonObject o = outArr.createNestedObject();
-    o["id"]    = stemOf_(name);
-    o["label"] = stemOf_(name);
-    o["type"]  = typeForSuffix_(name);
-    entry.close();
-    delay(0);
-  }
-  dir.close();
-}
-
-// SD_MMC backend: same logic as addTransformsFromDir_ but using SD_MMC FS
 static void addTransformsFromDirMMC_(const char* dirPath, JsonArray outArr) {
   File dir = SD_MMC.open(dirPath);
   if (!dir || !dir.isDirectory()) {
@@ -117,11 +81,7 @@ static void addTransformsFromDirMMC_(const char* dirPath, JsonArray outArr) {
 }
 
 static void addTransformsFromDirAny_(const char* dirPath, JsonArray outArr) {
-  if (SdFs* sd = WebServerManager::sd()) {
-    addTransformsFromDir_(sd, dirPath, outArr);      // SPI/SdFat
-  } else {
-    addTransformsFromDirMMC_(dirPath, outArr);       // SD_MMC
-  }
+  addTransformsFromDirMMC_(dirPath, outArr);
 }
 
 static void noteHttpActivity_() {
@@ -145,14 +105,8 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
 
   const String sensor = srv.arg("sensor");
 
-  // Ensure registry is loaded for this sensor (prefer SdFat if available)
-  SdFs* sd = WebServerManager::sd();
-  if (sd) {
-    gTransforms.loadForSensor(sensor, *sd);
-  } else {
-    // fallback: FS-style backend (SD_MMC)
-    gTransforms.loadForSensor(sensor, SD_MMC);
-  }
+  // Ensure registry is loaded for this sensor.
+  gTransforms.loadForSensor(sensor, SD_MMC);
 
   DynamicJsonDocument doc(8192);
   JsonArray items = doc.createNestedArray("items");

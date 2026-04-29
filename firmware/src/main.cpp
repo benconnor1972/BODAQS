@@ -32,7 +32,6 @@
 
 #include "FS.h"
 #include "SD_MMC.h"
-#include <SdFat.h>
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 #define BOOT_LOGW(...) LOGW_TAG("BOOT", __VA_ARGS__)
@@ -167,8 +166,6 @@ static void applyLogSettings_(const LoggerConfig& cfg) {
 
 LoggerConfig g_cfg;  
 TransformRegistry gTransforms;
-SdFs*  gSd = nullptr;     // stays for SPI SdFat backend
-fs::FS* gFs = nullptr;    // NEW: active filesystem for SDMMC (and could be used for SPI too if you want)
 
 using namespace board;
 
@@ -202,7 +199,6 @@ void setup() {
   static uint32_t g_sampleCounter = 0;
 
   StorageManager_begin(*gBoard);           
-  gSd = StorageManager_getSd();      
 
   applyLogSettings_(g_cfg);
 
@@ -218,7 +214,7 @@ void setup() {
 
   IndicatorManager::begin(*board::gBoard);
 
-  ConfigManager::begin(StorageManager_getSd(), "/config/loggercfg.txt");
+  ConfigManager::begin("/config/loggercfg.txt");
 
 
   if (!ConfigManager::load(g_cfg)) {
@@ -270,7 +266,7 @@ void setup() {
 
   BOOT_LOGI("SETUP: F storagemanager_getSD\n");
 
-  WebServerManager::begin(StorageManager_getSd(), isLoggingPredicate);
+  WebServerManager::begin(isLoggingPredicate);
     BOOT_LOGI("SETUP: F done\n");
 
   // Choose RTC

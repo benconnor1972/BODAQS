@@ -48,11 +48,6 @@ static void reloadTransformsForSensor_(const char* sensorName) {
 
   if (SD_MMC.cardType() != CARD_NONE) {
     gTransforms.loadForSensor(sensorName, SD_MMC);
-    return;
-  }
-
-  if (SdFs* sd = StorageManager_getSd()) {
-    gTransforms.loadForSensor(sensorName, *sd);
   }
 }
 

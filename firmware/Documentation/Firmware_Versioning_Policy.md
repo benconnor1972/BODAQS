@@ -208,14 +208,14 @@ Current observed behaviour in firmware:
 - Board profiles currently include:
   - `ThingPlusS3_BODAQS_4_D`
   - `ThingPlusS3_BODAQS_4_D_UartI2C1`
-  - `ThingPlus_A`
+  - `ThingPlusS3_BODAQS_4_F`
 - Supported sensor families currently include:
   - `analog_pot`
   - `as5600_string_pot_analog`
   - `as5600_string_pot_i2c`
 - Analog sensors may rely on `ain` ordinal mapping through the active `BoardProfile`.
 - AS5600 I2C sensors rely on `i2c_bus` and `i2c_addr`.
-- Storage backends currently support SDMMC and SPI.
+- Storage currently supports SDMMC only; the old SPI/SdFat prototype backend has been retired.
 
 For semver purposes, the public contract includes:
 

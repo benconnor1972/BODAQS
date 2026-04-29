@@ -2,7 +2,6 @@
 #define STORAGE_MANAGER_H
 
 #include <Arduino.h>
-#include <SdFat.h>
 #include "SD_MMC.h"
 #include "BoardProfile.h"   // make sure this is available
 
@@ -29,8 +28,4 @@ extern volatile bool g_sdWriteSinceLastSample;
 extern bool g_sdTrackEnabled;
 
 
-// Give other modules access to the already-initialized SdFs instance
-// NOTE: Only valid when using the SPI_SDFAT backend; returns nullptr in SDIO_SDMMC mode.
-SdFs* StorageManager_getSd();
-extern SdFs* gSd;
 #endif

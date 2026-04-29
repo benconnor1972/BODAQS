@@ -2,7 +2,7 @@
 #include <WebServer.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <SdFat.h>
+#include "SD_MMC.h"
 #include "WebServerManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
@@ -27,19 +27,14 @@ using namespace HtmlUtil;
 
 // gTransforms is defined in esp32_data_logger.ino (non-static there)
 extern TransformRegistry gTransforms;
-static SdFs*g_sd = nullptr;                     // defined in esp32_data_logger.ino: SdFs* gSd = nullptr;
 
 // --- Module state ---
 static WebServer* g_server = nullptr;
 static WebServerManager::IsLoggingFn g_isLogging = nullptr;
 static bool g_running = false;
-SdFs* WebServerManager::sd() { return g_sd; }
 
 // Pointer to the live config struct
 static LoggerConfig* g_cfgPtr = nullptr;
-
-// -------------------- fwd decls --------------------
-static bool ensureSd();
 
 static CalModeMask parseCalAllowedCSV_(const String& csv);
 
@@ -75,18 +70,8 @@ static void noteHttpActivity_() {
 }
 
 
-// -------------------- helpers --------------------
-static bool ensureSd() {
-  if (!g_sd) {
-    WS_LOGW("ensureSd: no SdFs* provided (call begin(StorageManager_getSd(), ...) first)\n");
-    return false;
-  }
-  return true; // StorageManager owns begin()
-}
-
 // -------------------- public API --------------------
-void WebServerManager::begin(SdFs* sdRef, IsLoggingFn isLogging) {
-  g_sd        = sdRef;
+void WebServerManager::begin(IsLoggingFn isLogging) {
   g_isLogging = isLogging;
 }
 
@@ -98,7 +83,7 @@ void WebServerManager::setStaConfig(const String& ssid, const String& password) 
 } //no-op. legacy
 
 bool WebServerManager::canStart() {
-  // Only block while logging; do NOT require SdFs here.
+  // Only block while logging; storage is owned by StorageManager.
   if (g_isLogging && g_isLogging()) {
     return false;
   }
@@ -217,7 +202,7 @@ void WebServerManager::setupRoutes() {
     out += F(",\"ip\":\""); out += WiFi.localIP().toString(); out += F("\"");
     out += F(",\"running\":"); out += g_running ? F("true") : F("false");
     out += F(",\"canStart\":"); out += canStart() ? F("true") : F("false");
-    out += F(",\"sd\":"); out += (g_sd ? F("true") : F("false"));
+    out += F(",\"sdmmc\":"); out += (SD_MMC.cardType() != CARD_NONE ? F("true") : F("false"));
   #ifdef ESP32
     out += F(",\"heap\":"); out += String((int)ESP.getFreeHeap());
   #endif

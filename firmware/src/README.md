@@ -14,7 +14,7 @@ Developed mainly for mountain bike use.
 ## Hardware
 
 - **ESP32** (Arduino core 3.3.0 tested) - SparkFun ESP32 Thing Plus dev board
-- **MicroSD** via SPI
+- **MicroSD** via ESP32 SDMMC
 - **Buttons**
 - **0.96" monochrome OLED display**
 - **Sensors** starting with potentiometers on ADC pins (configurable)
@@ -39,7 +39,7 @@ This document summarizes the major modules in the project, what each one is resp
 **Purpose:** Load/save the logger’s global settings and the list of **SensorSpec**s from `loggercfg.txt`. It also owns a per‑sensor key/value store backing the **ParamPack** interface used by sensor code.
 
 **Key responsibilities**
-- `begin(SdFs*, filename)` — wire to shared SD object and file name.
+- `begin(filename)` - set the config file path. Storage access is handled through `StorageManager`.
 - `load(LoggerConfig&)` / `save(const LoggerConfig&)` — merge text file with defaults and persist changes.
 - Manage **SensorSpec** array (type, name, mutedDefault, ParamPack for per-sensor params).
 - Simple string‑backed **ParamStore** (arrays `keys[]`/`vals[]`, bounded sizes) with case‑insensitive lookups.
@@ -106,16 +106,15 @@ This document summarizes the major modules in the project, what each one is resp
 
 ## `StorageManager`
 
-**Purpose:** Single owner of the `SdFat` instance and log file lifecycle; provides sample interval/buffer knobs.
+**Purpose:** Single owner of SDMMC startup and log file lifecycle; provides sample interval/buffer knobs.
 
 **Common APIs**
-- `StorageManager_begin(csPin)`
-- `StorageManager_getSd()` (shared SdFat* used by Config/Web)
+- `StorageManager_begin(boardProfile)`
 - `StorageManager_setSampleRate(hz)` / `StorageManager_getSampleIntervalMs()`
 - `StorageManager_setBufferSize(bytes)`
 
 **Notes**
-- `sd.begin()` and error handling live here.
+- `SD_MMC.begin()` and error handling live here.
 - A small smoke test may create `TEST.TXT` during setup.
 
 ---

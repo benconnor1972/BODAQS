@@ -5,7 +5,6 @@
 #include "LogMetadataWriter.h"
 
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
-#include "SPI.h"
 #include "DebugTrace.h"
 #include "DebugLog.h"
 #include <math.h>
@@ -18,29 +17,15 @@
 #define ROW_LOGD(...)  LOGD_TAG("ROW", __VA_ARGS__)
 #define DRAIN_LOGD(...) LOGD_TAG("DRAIN", __VA_ARGS__)
 
-// If you use SD_MMC and SdFat, include the right headers here as you already do elsewhere:
-// #include "SD_MMC.h"
-// #include "SdFat.h"
-
 extern LoggerConfig g_cfg;   // declared in your .ino
 
-// Storage backend selection now comes from the active board profile.
-// No more hard-coded enum/constexpr.
 static const board::StorageProfile* s_storage = nullptr;
-static const board::SPIProfile*     s_spi     = nullptr;
 static const board::LoggerPerfProfile* s_perf = nullptr;
-
-static inline bool isSpiBackend() {
-  return s_storage && (s_storage->type == board::StorageType::SPI_SdFat);
-}
 
 static inline bool isSdmmcBackend() {
   return s_storage && (s_storage->type == board::StorageType::SDMMC);
 }
 
-
-static SdFat sd;
-static FsFile logFile;
 static File logFileMMC;
 
 static char* buffer = nullptr;
@@ -196,56 +181,31 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
 volatile bool g_sdWriteSinceLastSample = false;  // true if any SD flush since last logged row
 bool g_sdTrackEnabled = true;                    // can be toggled off if desired
 
-SdFat* StorageManager_getSd() {
-  return isSpiBackend() ? &sd : nullptr;   // if s_sd is the SdFs instance used by SPI backend
-  // or: return gSd;
-}
-
-
 static bool logIsOpen() {
-    if (isSpiBackend()) {
-        return (bool)logFile;
-    } else {
-        return (bool)logFileMMC;
-    }
+    return (bool)logFileMMC;
 }
 
 static void logCloseInternal() {
-    if (isSpiBackend()) {
-        logFile.close();
-    } else {
-        logFileMMC.close();
-    }
+    logFileMMC.close();
 }
 
 static size_t logWriteInternal(const void* data, size_t len) {
     uint32_t t0 = millis();
-    if (isSpiBackend()) {
-        return logFile.write(data, len);
-    } else {
-        return logFileMMC.write((const uint8_t*)data, len);
-    }
+    size_t written = logFileMMC.write((const uint8_t*)data, len);
     uint32_t dt = millis() - t0;
     if (dt > 200) {
       SD_LOGD("logWriteInternal len=%u dt=%lu ms bufIndex=%u loggingActive=%d\n",
               (unsigned)len, (unsigned long)dt, (unsigned)bufferIndex, (int)loggingActive);
     }
+    return written;
 }
 
 static void logPrintlnInternal(const char* s) {
-    if (isSpiBackend()) {
-        logFile.println(s);
-    } else {
-        logFileMMC.println(s);
-    }
+    logFileMMC.println(s);
 }
 
 static void logFlushInternal() {
-    if (isSpiBackend()) {
-        logFile.flush();
-    } else {
-        logFileMMC.flush();
-    }
+    logFileMMC.flush();
 }
 
 static bool dequeueSample(SampleRow &out) {
@@ -287,42 +247,23 @@ static bool dequeueSample(SampleRow &out) {
 
 bool StorageManager_loadTextFile(const char* path, String& out) {
     out = "";
+    if (!path || !*path) return false;
 
-    if (isSpiBackend()) {
-        // SPI / SdFat backend
-        FsFile f = sd.open(path, O_RDONLY);
-        if (!f) {
-            STOR_LOGW("loadTextFile: SPI open failed for %s\n", path);
-            return false;
-        }
-
-        while (f.available()) {
-            int c = f.read();
-            if (c < 0) break;
-            out += (char)c;
-        }
-        f.close();
-        STOR_LOGD("loadTextFile: SPI read OK, bytes=%u\n", (unsigned)out.length());
-        return true;
-
-    } else {
-        // SDIO / SD_MMC backend
-        String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
-        File f = SD_MMC.open(absPath.c_str(), FILE_READ);
-        if (!f) {
-            STOR_LOGW("loadTextFile: SD_MMC open failed for %s\n", path);
-            return false;
-        }
-
-        while (f.available()) {
-            int c = f.read();
-            if (c < 0) break;
-            out += (char)c;
-        }
-        f.close();
-        STOR_LOGD("loadTextFile: SD_MMC read OK, bytes=%u\n", (unsigned)out.length());
-        return true;
+    String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
+    File f = SD_MMC.open(absPath.c_str(), FILE_READ);
+    if (!f) {
+        STOR_LOGW("loadTextFile: SD_MMC open failed for %s\n", path);
+        return false;
     }
+
+    while (f.available()) {
+        int c = f.read();
+        if (c < 0) break;
+        out += (char)c;
+    }
+    f.close();
+    STOR_LOGD("loadTextFile: SD_MMC read OK, bytes=%u\n", (unsigned)out.length());
+    return true;
 }
 
 bool StorageManager_saveTextFile(const char* path, const String& data) {
@@ -331,27 +272,6 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   const char* cstr = data.c_str();
   const size_t len = data.length();
 
-  if (isSpiBackend()) {
-    // -------- SPI / SdFat backend --------
-    FsFile f = sd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
-    if (!f) {
-      STOR_LOGW("saveTextFile: SPI open failed for %s\n", path);
-      return false;
-    }
-
-    size_t written = f.write((const uint8_t*)cstr, len);
-    f.flush();
-    f.close();
-
-    if (written != len) {
-      STOR_LOGW("saveTextFile: SPI short write (%u/%u)\n",
-                (unsigned)written, (unsigned)len);
-      return false;
-    }
-    return true;
-  }
-
-  // -------- SDMMC backend (SD_MMC / FS) --------
   // Normalize to absolute path (SD_MMC expects paths like "/config.txt")
   String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
 
@@ -390,54 +310,12 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
 
 void StorageManager_begin(const board::BoardProfile& bp) {
   s_storage = &bp.storage;
-  s_spi     = &bp.spi;
   s_perf    = &bp.perf;
 
   // 1) Apply perf knobs early
   if (s_perf) {
     allocQueue(s_perf->queue_depth);
     StorageManager_setBufferSize(s_perf->ring_buffer_bytes);
-  }
-
-  if (isSpiBackend()) {
-    STOR_LOGI("begin: starting SPI (SdFat)\n");
-
-    const int csPin = s_storage->cs;
-    if (csPin < 0) {
-      STOR_LOGE("SPI backend selected but storage.cs is not set\n");
-      return;
-    }
-
-    pinMode(csPin, OUTPUT);
-    digitalWrite(csPin, HIGH);
-    SPI.end();
-    delay(1);
-
-    // Use SPIProfile pins if present, else fall back to common defaults
-    const int sck  = (s_spi && s_spi->sck  >= 0) ? s_spi->sck  : 18;
-    const int miso = (s_spi && s_spi->miso >= 0) ? s_spi->miso : 19;
-    const int mosi = (s_spi && s_spi->mosi >= 0) ? s_spi->mosi : 23;
-
-    SPI.begin(sck, miso, mosi, csPin);
-
-    // Use storage.spi_hz if set
-    const uint32_t hz = (s_storage->spi_hz != 0) ? s_storage->spi_hz : 20000000;
-    SdSpiConfig cfg(csPin, DEDICATED_SPI, hz);
-
-    if (!sd.begin(cfg)) {
-      STOR_LOGW("sd.begin failed, err=0x%02X data=0x%02X\n",
-                sd.sdErrorCode(), sd.sdErrorData());
-
-      SdSpiConfig slowCfg(csPin, SHARED_SPI, SD_SCK_MHZ(4));
-      if (!sd.begin(slowCfg)) {
-        STOR_LOGE("retry slow failed, err=0x%02X data=0x%02X\n",
-                  sd.sdErrorCode(), sd.sdErrorData());
-        return;
-      }
-    }
-
-    STOR_LOGI("SD init OK (SPI_SDFAT).\n");
-    return;
   }
 
   if (isSdmmcBackend()) {
@@ -451,7 +329,6 @@ void StorageManager_begin(const board::BoardProfile& bp) {
 
     if (clk < 0 || cmd < 0 || d0 < 0) {
       STOR_LOGE("SDMMC backend selected but sdmmc_clk/cmd/d0 not set\n");
-      gSd = nullptr;
       return;
     }
 
@@ -464,7 +341,6 @@ void StorageManager_begin(const board::BoardProfile& bp) {
       const int d3 = s_storage->sdmmc_d3;
       if (d1 < 0 || d2 < 0 || d3 < 0) {
         STOR_LOGE("SDMMC 4-bit selected but d1/d2/d3 not set\n");
-        gSd = nullptr;
         return;
       }
       SD_MMC.setPins(clk, cmd, d0, d1, d2, d3);
@@ -475,7 +351,6 @@ void StorageManager_begin(const board::BoardProfile& bp) {
 
     if (!ok) {
       STOR_LOGE("SD_MMC.begin FAILED, returning\n");
-      gSd = nullptr;
       return;
     }
 
@@ -483,7 +358,6 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     if (cardType == CARD_NONE) {
       STOR_LOGW("No SD card attached (cardType=CARD_NONE)\n");
       SD_MMC.end();
-      gSd = nullptr;
       return;
     }
 
@@ -492,10 +366,6 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
     STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
 
-    // ---- IMPORTANT: publish the active filesystem handle ----
-    gSd = nullptr;   // <-- SdFat pointer remains null in SDMMC mode (by design)
-
-    // Optional debug aid: inspect active filesystem handles here if needed.
     STOR_LOGI("SD_MMC.begin OK.\n");
     return;
   }
@@ -537,73 +407,6 @@ static String make83Name(const String &dtString) {
 
     name += ".CSV";  // extension
     return name;
-}
-
-// Reserve e.g. 64 MiB as a single contiguous extent
-// (tune via config; must be multiple of 32 KiB for FAT32 cluster alignment)
-static bool preallocate(FsFile& f, uint32_t mib) {
-  uint64_t bytes = (uint64_t)mib * 1024ULL * 1024ULL;
-  // Round up to 32 KiB multiple (common FAT32 cluster)
-  const uint32_t cluster = 32 * 1024;
-  bytes = ((bytes + cluster - 1) / cluster) * cluster;
-
-  if (!f.preAllocate(bytes)) {
-    STOR_LOGW("preAllocate failed; continuing without it.\n");
-    return false;
-  }
-  // Start logical length at 0 but keep space reserved
-  if (!f.truncate(0)) {
-    STOR_LOGW("truncate(0) after preAllocate failed.\n");
-    return false;
-  }
-  STOR_LOGI("Pre-allocated %lu MiB contiguous.\n", (unsigned long)mib);
-  return true;
-}
-
-static bool openNewLogFile_SPI(const String& longName) {
-  logFile.close();
-  s_currentLogPath = "";
-
-  // 1) Long name
-  logFile = sd.open(longName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
-  if (!logFile) {
-    STOR_LOGW("SPI: long name failed, trying 8.3...\n");
-
-    // 2) 8.3 short name
-    String shortName = make83Name(longName);
-    STOR_LOGI("SPI: 8.3 candidate: %s\n", shortName.c_str());
-
-    logFile = sd.open(shortName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
-    if (!logFile) {
-      STOR_LOGW("SPI: 8.3 failed, trying LOGnnnn.CSV...\n");
-
-      char fallback[20];
-      for (int i = 1; i < 10000; i++) {
-        snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
-        if (!sd.exists(fallback)) {
-          logFile = sd.open(fallback, O_WRONLY | O_CREAT | O_EXCL);
-          if (logFile) {
-            STOR_LOGI("SPI: Using fallback: %s\n", fallback);
-            s_currentLogPath = fallback;
-            break;
-          }
-        }
-      }
-      if (!logFile) {
-        STOR_LOGE("SPI: No available filename; giving up.\n");
-        return false;
-      }
-    } else {
-      STOR_LOGI("SPI: Using 8.3: %s\n", shortName.c_str());
-      s_currentLogPath = shortName;
-    }
-  } else {
-    s_currentLogPath = longName;
-  }
-
-  // Preallocate only on SdFat backend
-  preallocate(logFile, /*mib=*/64);
-  return true;
 }
 
 static bool openNewLogFile_SDMMC(const String& longName) {
@@ -664,7 +467,7 @@ static bool openNewLogFile_SDMMC(const String& longName) {
 static void startLog() {
   if (loggingActive) return;
   const uint32_t totalT0 = millis();
-  const char* backendName = isSpiBackend() ? "SPI" : "SD_MMC";
+  const char* backendName = "SD_MMC";
 
   // Reset non-blocking sample queue
   s_qHead = s_qTail = s_qCount = 0;
@@ -698,48 +501,25 @@ static void startLog() {
   uint32_t openMs = 0;
   const uint32_t openT0 = millis();
 
-  if (isSpiBackend()) {
-    // -------- SPI + SdFat path --------
-    logFile.close();  // harmless if not open
+  String path = "/";
+  path += filename;
 
-    ok = openNewLogFile_SPI(filename);  // handles long name, 8.3, fallback
-    openMs = millis() - openT0;
-    if (!ok) {
-      STOR_LOGE("No available filename; giving up. filenameMs=%lu openMs=%lu totalMs=%lu backend=%s rtcValid=%d\n",
-                (unsigned long)filenameMs,
-                (unsigned long)openMs,
-                (unsigned long)(millis() - totalT0),
-                backendName,
-                rtcValid ? 1 : 0);
-      return;
-    }
+  STOR_LOGI("SD_MMC path = %s\n", path.c_str());
 
-  } else {
-    // -------- SDMMC (SD_MMC) path --------
-    // openNewLogFile_SDMMC expects an absolute path
-    String path = "/";
-    path += filename;
-
-    STOR_LOGI("SD_MMC path = %s\n", path.c_str());
-
-    ok = openNewLogFile_SDMMC(path);
-    openMs = millis() - openT0;
-    if (!ok) {
-      TRACE("[Storage] startLog: SD_MMC open failed");
-      STOR_LOGE("startLog: SD_MMC open failed. filenameMs=%lu openMs=%lu totalMs=%lu backend=%s rtcValid=%d\n",
-                (unsigned long)filenameMs,
-                (unsigned long)openMs,
-                (unsigned long)(millis() - totalT0),
-                backendName,
-                rtcValid ? 1 : 0);
-      return;
-    }
-
-    TRACE("openNewLogFile_SDMMC success");
-
-    // NOTE: openNewLogFile_SDMMC already truncates/creates appropriately.
-    // No need for logFileMMC.seek(0) here unless you specifically want it.
+  ok = openNewLogFile_SDMMC(path);
+  openMs = millis() - openT0;
+  if (!ok) {
+    TRACE("[Storage] startLog: SD_MMC open failed");
+    STOR_LOGE("startLog: SD_MMC open failed. filenameMs=%lu openMs=%lu totalMs=%lu backend=%s rtcValid=%d\n",
+              (unsigned long)filenameMs,
+              (unsigned long)openMs,
+              (unsigned long)(millis() - totalT0),
+              backendName,
+              rtcValid ? 1 : 0);
+    return;
   }
+
+  TRACE("openNewLogFile_SDMMC success");
 
   if (s_currentLogPath.length()) {
     s_currentSessionId = stemFromPath_(s_currentLogPath);
@@ -774,13 +554,8 @@ static void startLog() {
   refreshValueColumnTypes_();
 
   const uint32_t flushT0 = millis();
-  if (isSpiBackend()) {
-    logFile.println(header);
-    logFile.flush();
-  } else {
-    logFileMMC.println(header);
-    logFileMMC.flush();
-  }
+  logFileMMC.println(header);
+  logFileMMC.flush();
   const uint32_t flushMs = millis() - flushT0;
   loggingActive = true;
   TRACE("[Storage] Log file opened successfully.");
@@ -812,11 +587,7 @@ void StorageManager_stopLog() {
   }
 
   if (bufferIndex > 0) {
-    if (isSpiBackend()) {
-      logFile.write(buffer, bufferIndex);
-    } else {
-      logFileMMC.write((const uint8_t*)buffer, bufferIndex);
-    }
+    logFileMMC.write((const uint8_t*)buffer, bufferIndex);
     bufferIndex = 0;
   }
 
@@ -870,12 +641,7 @@ void StorageManager_stopLog() {
   }
 
 
-    
-  if (isSpiBackend()) {
-    logFile.close();
-  } else {
-    logFileMMC.close();
-  }
+  logFileMMC.close();
 
   if (s_currentLogPath.length()) {
     const String generatedAtLocal = isoLocalFromFilenameTimestamp_(RTCManager_getDateTimeString());
@@ -1008,7 +774,7 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     // (we only ever flush BETWEEN lines, never mid-row).
     if (buffer && (bufferIndex + len > bufferSize)) {
         if (bufferIndex > 0) {
-            logWriteInternal(buffer, bufferIndex); // SPI or SD_MMC
+            logWriteInternal(buffer, bufferIndex);
             bufferIndex = 0;
         }
     }

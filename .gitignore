@@ -50,3 +50,4 @@ _autosave-*
 **/*-backups/
 To do/~$To do list.xlsx
 *.lck
+analysis/exports/

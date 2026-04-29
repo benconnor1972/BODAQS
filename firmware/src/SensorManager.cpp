@@ -191,16 +191,11 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
-    XFORM_LOGI("about to load transforms for '%s'\n", sp.name);
-    XFORM_LOGD("gSd ptr=%p\n", (void*)gSd);
-
     // Preload any transforms on disk for this sensor
     if (SD_MMC.cardType() != CARD_NONE) {
       gTransforms.loadForSensor(sp.name, SD_MMC);   // fs::FS&
-    } else if (gSd) {
-      gTransforms.loadForSensor(sp.name, *gSd);     // SdFs& (SPI backend)
     } else {
-      XFORM_LOGW("no SD backend available -> skipping transform load\n");
+      XFORM_LOGW("SD_MMC not available -> skipping transform load\n");
     }
 
     {

@@ -22,7 +22,6 @@ namespace {
 
   //constexpr uint8_t MAX_SENSORS = 8;     // single definition
 
-  static SdFs*     g_sd = nullptr;
   static char       g_cfgName[32] = "loggercfg";
   static SensorSpec g_specs[MAX_SENSORS];
   static ParamStore g_stores[MAX_SENSORS];
@@ -101,19 +100,6 @@ namespace {
     }
     return SensorType::AnalogPot;
   }
-
-  // simple line reader for SdFat
-//  static bool readLine(FsFile& f, char* buf, size_t cap) {
-//    size_t n = 0; int c;
-//    while (n < cap - 1 && (c = f.read()) >= 0) {
-//      if (c == '\r') continue;
-//      if (c == '\n') break;
-//      buf[n++] = (char)c;
-//    }
-//    if (n == 0 && c < 0) return false;
-//    buf[n] = '\0';
-//    return true;
-//  }
 
   // Convert a SensorType to a config-safe key like "analog_pot"
   static String typeKeyForSave(SensorType t) {
@@ -225,10 +211,7 @@ static void copyStrBoundedC_(const char* src, char* dst, size_t dstsz) {
   dst[dstsz - 1] = '\0';
 }
 
-void ConfigManager::begin(SdFs* sdRef, const char* filename) {
-  // IMPORTANT: ConfigManager must not retain a SdFat pointer in SDMMC mode.
-  // StorageManager_getSd() returns nullptr when SDIO_SDMMC is active.
-  g_sd = sdRef;
+void ConfigManager::begin(const char* filename) {
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
 
   g_specCount = 0;
