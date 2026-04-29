@@ -7,6 +7,22 @@
 struct LoggerConfig;
 
 namespace SensorManager {
+  struct SynBikeRawColumnBinding {
+    bool available = false;
+    uint16_t valueIndex = 0;
+    bool invert = false;
+    char sensorName[16] = {0};
+    char csvHeader[96] = {0};
+    char end[16] = {0};
+    char domain[24] = {0};
+    char source[24] = {0};
+  };
+
+  struct SynBikeRawBindings {
+    SynBikeRawColumnBinding front;
+    SynBikeRawColumnBinding rear;
+  };
+
   // lifecycle
   void begin(const LoggerConfig* cfg);
   void buildSensorsFromConfig(const LoggerConfig& cfg);
@@ -34,6 +50,7 @@ namespace SensorManager {
   uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut);
   uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut);
   uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut);
+  bool resolveSynBikeRawBindings(SynBikeRawBindings& out);
 
   // debug
   void debugDump(const char* tag);

@@ -176,6 +176,7 @@
           "enum": [
             "s",
             "ms",
+            "sample",
             "time_of_day"
           ]
         },
@@ -184,6 +185,7 @@
           "enum": [
             "elapsed_s",
             "epoch_ms",
+            "sample_index",
             "local_time"
           ]
         },

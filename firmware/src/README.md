@@ -52,6 +52,7 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Notes/Gotchas**
 - `save()` writes **all** config keys (globals + sensors) deterministically.
+- `log_format` controls the top-level CSV layout. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index.
 - Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
 - File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `invert`, `ema_alpha_permille`, `deadband_counts`, `zero_count`, `full_count`, `full_travel_mm`.
 - File format keys used by AS5600 string-pot sensors include `counts_per_turn`, `wrap_threshold_counts`, `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`, and `assume_turn0_at_start`.
@@ -116,6 +117,8 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Notes**
 - `SD_MMC.begin()` and error handling live here.
+- `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and `mark`, with a header and run-stat footer.
+- `syn_bike_raw` logs headerless rows as `sample_id,front_raw,rear_raw,lat,long,speed`; GPS fields are blank for now and run-stat footers are suppressed for third-party compatibility.
 - A small smoke test may create `TEST.TXT` during setup.
 
 ---

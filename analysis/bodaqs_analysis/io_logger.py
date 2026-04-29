@@ -526,6 +526,7 @@ def _sidecar_time_hints(sidecar: dict[str, Any]) -> list[dict[str, Any]]:
                 "stream": str(stream_name),
                 "encoding": stream_info.get("time_encoding"),
                 "unit": unit,
+                "sample_rate_hz": stream_info.get("sample_rate_hz"),
             }
         )
     return hints
@@ -681,7 +682,7 @@ def _canonicalize_loaded_logger_df(
         time_source_col = col
 
     def _use_preferred(hint: dict[str, Any]) -> None:
-        nonlocal time_s
+        nonlocal df, time_s, time_source_col
         col = hint.get("column")
         if col not in df.columns or time_s is not None:
             return
@@ -689,6 +690,29 @@ def _canonicalize_loaded_logger_df(
         encoding = hint.get("encoding")
         unit = hint.get("unit")
         scale: Optional[str] = None
+        if encoding == "sample_index" or unit == "sample":
+            sample_rate_hz = hint.get("sample_rate_hz")
+            if sample_rate_hz is None:
+                logger.warning("Sample-index time column %r has no sample_rate_hz hint", col)
+                return
+            try:
+                sr = float(sample_rate_hz)
+            except (TypeError, ValueError):
+                logger.warning("Sample-index time column %r has invalid sample_rate_hz=%r", col, sample_rate_hz)
+                return
+            if not np.isfinite(sr) or sr <= 0:
+                logger.warning("Sample-index time column %r has non-positive sample_rate_hz=%r", col, sample_rate_hz)
+                return
+
+            series = pd.to_numeric(df[col], errors="coerce")
+            mask = series.notna()
+            if not mask.any():
+                return
+            df = df.loc[mask].copy()
+            sample_index = series.loc[mask].astype(np.float64)
+            time_s = ((sample_index - float(sample_index.iloc[0])) / sr).to_numpy(dtype=np.float64)
+            time_source_col = col
+            return
         if encoding == "epoch_ms" or unit == "ms":
             scale = "ms"
         elif encoding == "elapsed_s" or unit == "s":
@@ -762,7 +786,7 @@ def _canonicalize_loaded_logger_df(
         )
 
     # Drop NaNs and deduplicate by canonical time
-    df = df.dropna().drop_duplicates(subset="time_s", keep="first").reset_index(drop=True)
+    df = df.dropna(subset=["time_s"]).drop_duplicates(subset="time_s", keep="first").reset_index(drop=True)
     df = df[df["time_s"].diff().fillna(0) > 0]  # keep monotonic time
 
     return df

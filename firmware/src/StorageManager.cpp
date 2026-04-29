@@ -5,6 +5,7 @@
 #include "LogMetadataWriter.h"
 
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
+#include "BoardSelect.h"
 #include "DebugTrace.h"
 #include "DebugLog.h"
 #include <math.h>
@@ -42,6 +43,8 @@ static String s_currentLogPath;
 static String s_currentSessionId;
 static String s_logStartedAtLocal;
 static uint32_t s_rowsWritten = 0;
+static LogFormat s_activeLogFormat = LogFormat::BodaqsStandard;
+static SensorManager::SynBikeRawBindings s_synBikeRawBindings;
 
 static uint32_t s_flushCount    = 0;
 static uint32_t s_flushMaxMs    = 0;
@@ -79,6 +82,10 @@ static uint16_t   s_qCap = 0;
 static inline bool queueEmpty() { return s_qCount == 0; }
 static inline bool queueFull()  { return (s_qCap != 0) && (s_qCount >= s_qCap); }
 static void refreshValueColumnTypes_();
+
+static bool isSynBikeRawFormat_() {
+  return s_activeLogFormat == LogFormat::SynBikeRaw;
+}
 
 static String isoLocalFromFilenameTimestamp_(const String& s) {
   if (s.length() < 19) return String();
@@ -479,6 +486,8 @@ static void startLog() {
   s_currentLogPath = "";
   s_currentSessionId = "";
   s_logStartedAtLocal = "";
+  s_activeLogFormat = ConfigManager::get().logFormat;
+  s_synBikeRawBindings = SensorManager::SynBikeRawBindings{};
 
   const bool rtcValid = RTCManager_hasValidTime();
   const uint32_t filenameT0 = millis();
@@ -525,38 +534,52 @@ static void startLog() {
     s_currentSessionId = stemFromPath_(s_currentLogPath);
   }
 
-  // --- Build header (shared for both backends) ---
-  //SensorManager::debugDump("startLog-beforeHeader");
-
-  char header[256];
   const uint32_t headerT0 = millis();
-  TRACE("Entering sensormanager::buildheader");
-  SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
-  TRACE("Finished sensormanager::buildheader");
-  const uint32_t headerMs = millis() - headerT0;
+  uint32_t flushMs = 0;
+  uint32_t headerMs = 0;
 
-  // ---- NEW: prepend sample_id column ----
-  const char* idPrefix = "sample_id,";
-  const size_t idLen   = strlen(idPrefix);
-  const size_t hLen    = strlen(header);
-
-  if (idLen + hLen + 1 < sizeof(header)) {   // +1 for terminating '\0'
-    // Move existing header forward to make room for "sample_id,"
-    memmove(header + idLen, header, hLen + 1);  // include '\0'
-    // Copy the prefix at the start
-    memcpy(header, idPrefix, idLen);
+  if (isSynBikeRawFormat_()) {
+    (void)SensorManager::resolveSynBikeRawBindings(s_synBikeRawBindings);
+    if (!s_synBikeRawBindings.front.available) {
+      STOR_LOGW("syn.bike raw format: no front wheel/suspension raw column found; emitting blank front column\n");
+    }
+    if (!s_synBikeRawBindings.rear.available) {
+      STOR_LOGW("syn.bike raw format: no rear wheel/suspension raw column found; emitting blank rear column\n");
+    }
+    headerMs = millis() - headerT0;
   } else {
-    // If this ever happens, we ran out of header buffer space
-    STOR_LOGW("Warning: header buffer too small for sample_id prefix\n");
+    // --- Build header (shared for both backends) ---
+    //SensorManager::debugDump("startLog-beforeHeader");
+
+    char header[256];
+    TRACE("Entering sensormanager::buildheader");
+    SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
+    TRACE("Finished sensormanager::buildheader");
+    headerMs = millis() - headerT0;
+
+    // ---- NEW: prepend sample_id column ----
+    const char* idPrefix = "sample_id,";
+    const size_t idLen   = strlen(idPrefix);
+    const size_t hLen    = strlen(header);
+
+    if (idLen + hLen + 1 < sizeof(header)) {   // +1 for terminating '\0'
+      // Move existing header forward to make room for "sample_id,"
+      memmove(header + idLen, header, hLen + 1);  // include '\0'
+      // Copy the prefix at the start
+      memcpy(header, idPrefix, idLen);
+    } else {
+      // If this ever happens, we ran out of header buffer space
+      STOR_LOGW("Warning: header buffer too small for sample_id prefix\n");
+    }
+
+    STOR_LOGI("Header: %s\n", header);
+    refreshValueColumnTypes_();
+
+    const uint32_t flushT0 = millis();
+    logFileMMC.println(header);
+    logFileMMC.flush();
+    flushMs = millis() - flushT0;
   }
-
-  STOR_LOGI("Header: %s\n", header);
-  refreshValueColumnTypes_();
-
-  const uint32_t flushT0 = millis();
-  logFileMMC.println(header);
-  logFileMMC.flush();
-  const uint32_t flushMs = millis() - flushT0;
   loggingActive = true;
   TRACE("[Storage] Log file opened successfully.");
   STOR_LOGI("startLog timing: filename=%lu ms open=%lu ms header=%lu ms firstFlush=%lu ms total=%lu ms backend=%s rtcValid=%d\n",
@@ -594,7 +617,7 @@ void StorageManager_stopLog() {
 
   // --- append footer line with samplesDropped ---
   // --- NEW: append run stats footer (backend-safe) ---
-  if (logIsOpen()) {
+  if (logIsOpen() && !isSynBikeRawFormat_()) {
       char line[160];
 
       // Ensure any staged data is on disk before the footer
@@ -654,6 +677,7 @@ void StorageManager_stopLog() {
     metaCtx.rowCount = s_rowsWritten;
     metaCtx.sampleRateHz = (uint16_t)sampleRateHz;
     metaCtx.humanReadableTime = RTCManager_isHumanReadable();
+    metaCtx.logFormat = s_activeLogFormat;
 
     String metadata;
     if (LogMetadataWriter_build(metaCtx, metadata)) {
@@ -695,10 +719,77 @@ void StorageManager_setCustomHeader(const char* csv) {
 
 // Dynamic CSV logging: one FULL row per call, matching header
 // Columns: [timestamp, sensor values..., mark]
+static uint32_t formatRawForExport_(float raw, bool invert) {
+    const uint32_t rawInt = (raw <= 0.0f) ? 0UL : (uint32_t)lroundf(raw);
+    if (!invert) return rawInt;
+
+    const uint32_t maxRaw = (board::gBoard && board::gBoard->analog.adc_max)
+                              ? (uint32_t)board::gBoard->analog.adc_max
+                              : 4095UL;
+    return (rawInt >= maxRaw) ? 0UL : (maxRaw - rawInt);
+}
+
+static void appendSynBikeRawValue_(char* line,
+                                   size_t lineSize,
+                                   int& off,
+                                   const float* values,
+                                   uint16_t nValues,
+                                   const SensorManager::SynBikeRawColumnBinding& binding) {
+    if (!binding.available || binding.valueIndex >= nValues || !values) {
+        int n = snprintf(line + off, lineSize - (size_t)off, ",");
+        if (n > 0 && off + n < (int)lineSize) off += n;
+        return;
+    }
+
+    const uint32_t raw = formatRawForExport_(values[binding.valueIndex], binding.invert);
+    int n = snprintf(line + off, lineSize - (size_t)off, ",%lu", (unsigned long)raw);
+    if (n > 0 && off + n < (int)lineSize) off += n;
+}
+
+static void StorageManager_logCsvSynBikeRaw_(uint32_t sample_id, const float* values, uint16_t nValues) {
+    if (!logIsOpen()) {
+        STOR_LOGW("logCsvSynBikeRaw: file not open\n");
+        return;
+    }
+
+    char line[128];
+    int off = snprintf(line, sizeof(line), "%lu", (unsigned long)sample_id);
+    if (off <= 0 || off >= (int)sizeof(line)) return;
+
+    appendSynBikeRawValue_(line, sizeof(line), off, values, nValues, s_synBikeRawBindings.front);
+    appendSynBikeRawValue_(line, sizeof(line), off, values, nValues, s_synBikeRawBindings.rear);
+
+    int n = snprintf(line + off, sizeof(line) - (size_t)off, ",,,\n");
+    if (n <= 0 || off + n >= (int)sizeof(line)) return;
+    off += n;
+
+    const size_t len = (size_t)off;
+    if (buffer && (bufferIndex + len > bufferSize)) {
+        if (bufferIndex > 0) {
+            logWriteInternal(buffer, bufferIndex);
+            bufferIndex = 0;
+        }
+    }
+
+    if (!buffer || len > bufferSize) {
+        logWriteInternal(line, len);
+        ++s_rowsWritten;
+        return;
+    }
+
+    memcpy(&buffer[bufferIndex], line, len);
+    bufferIndex += len;
+    ++s_rowsWritten;
+}
+
 void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t nValues, bool mark)
 {
     if (!logIsOpen()) {
         STOR_LOGW("logCsvDynamic: file not open\n");
+        return;
+    }
+    if (isSynBikeRawFormat_()) {
+        StorageManager_logCsvSynBikeRaw_(sample_id, values, nValues);
         return;
     }
     if (nValues == 0 || !values) return;
@@ -736,8 +827,7 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     for (uint16_t i = 0; i < nValues; ++i) {
         int n = 0;
         if (i < SM_MAX_DYNAMIC_COLS && s_valueColumnIsRaw[i]) {
-            const float raw = values[i];
-            const uint32_t rawInt = (raw <= 0.0f) ? 0UL : (uint32_t)lroundf(raw);
+            const uint32_t rawInt = formatRawForExport_(values[i], false);
             n = snprintf(line + off,
                          sizeof(line) - (size_t)off,
                          ",%lu",

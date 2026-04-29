@@ -197,11 +197,12 @@ Optional per stream:
 Constraints:
 - `type` MUST be one of `uniform` or `intermittent`
 - `time_column` MUST be a string naming a column id present in `columns`
-- `time_encoding`, if present, MUST be one of `elapsed_s`, `epoch_ms`, or `local_time`
+- `time_encoding`, if present, MUST be one of `elapsed_s`, `epoch_ms`, `sample_index`, or `local_time`
 - if `time_encoding` is omitted and `time_unit` is `s`, consumers MAY interpret the stream as `elapsed_s`
 - producers SHOULD provide `time_encoding`
 - `elapsed_s` streams MUST use `time_unit: "s"`
 - `epoch_ms` streams MUST use `time_unit: "ms"`
+- `sample_index` streams MUST use `time_unit: "sample"` and provide `sample_rate_hz`
 - `local_time` streams MUST use `time_unit: "time_of_day"`
 - `local_time` streams SHOULD provide `time_format`
 - `local_time` streams SHOULD use `time_format: "HH:MM:SS.mmm"` when matching current BODAQS firmware output
@@ -215,6 +216,7 @@ Time encoding interpretation:
 
 - `elapsed_s`: numeric seconds from session start
 - `epoch_ms`: numeric milliseconds since the Unix epoch in UTC
+- `sample_index`: integer sample index; elapsed seconds are `(sample_index - first_sample_index) / sample_rate_hz`
 - `local_time`: local time-of-day text anchored by session date and timezone metadata
 
 Consumers SHOULD derive a canonical elapsed-time axis during preprocessing.

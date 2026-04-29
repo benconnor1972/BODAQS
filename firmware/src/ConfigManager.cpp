@@ -281,6 +281,39 @@ static String fmtIPv4(const uint8_t ip[4]) {
   return String(buf);
 }
 
+const char* ConfigManager::logFormatKey(LogFormat format) {
+  switch (format) {
+    case LogFormat::SynBikeRaw: return "syn_bike_raw";
+    case LogFormat::BodaqsStandard:
+    default: return "bodaqs_standard";
+  }
+}
+
+const char* ConfigManager::logFormatLabel(LogFormat format) {
+  switch (format) {
+    case LogFormat::SynBikeRaw: return "syn.bike raw";
+    case LogFormat::BodaqsStandard:
+    default: return "BODAQS standard";
+  }
+}
+
+bool ConfigManager::parseLogFormat(const char* text, LogFormat& out) {
+  if (!text || !*text) return false;
+  if (keyEquals(text, "bodaqs_standard") ||
+      keyEquals(text, "standard") ||
+      keyEquals(text, "bodaqs")) {
+    out = LogFormat::BodaqsStandard;
+    return true;
+  }
+  if (keyEquals(text, "syn_bike_raw") ||
+      keyEquals(text, "syn.bike_raw") ||
+      keyEquals(text, "synbike_raw")) {
+    out = LogFormat::SynBikeRaw;
+    return true;
+  }
+  return false;
+}
+
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   // snap to allowed list (or closest)
@@ -381,6 +414,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
 
   // ---- globals ----
   if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=(uint16_t)v; return true; }
+  if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
@@ -755,6 +789,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   // ---------------- Global ----------------
   line("# global");
   kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
+  kv("log_format", ConfigManager::logFormatKey(cfg.logFormat));
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
   kv("ntp_servers", cfg.ntpServers);
@@ -886,6 +921,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("[CFG] --- current config ---\n");
   LOGI("sampleRateHz=%u\n", cfg.sampleRateHz);
+  LOGI("logFormat=%s\n", ConfigManager::logFormatKey(cfg.logFormat));
   LOGI("timestampHuman=%s\n", cfg.timestampHuman ? "true" : "false");
   LOGI("tz=%s\n", cfg.tz);
   LOGI("debounceMs=%u\n", cfg.debounceMs);

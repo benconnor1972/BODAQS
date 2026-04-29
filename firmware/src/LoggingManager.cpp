@@ -300,7 +300,8 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
   int idx = Rates::indexOf(hz);
   if (idx < 0) return;
   ConfigManager::setSampleRateHz(hz);        // update + persist
-  s_intervalMs = clampDiv_(1000, hz);
+  StorageManager_setSampleRate(hz);          // apply to the live logging cadence
+  s_intervalMs = StorageManager_getSampleIntervalMs();
 
   // realign to grid to avoid jitter: next sample at now + interval
   uint32_t now = millis();

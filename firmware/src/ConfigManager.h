@@ -13,6 +13,11 @@ enum PotMode : uint8_t {
   POT_MODE_MM   = 2
 };
 
+enum class LogFormat : uint8_t {
+  BodaqsStandard = 0,
+  SynBikeRaw = 1
+};
+
 struct SensorSpec; 
 
 // ----------------- Button + binding config -----------------
@@ -30,6 +35,7 @@ struct LoggerConfig {
   // sampling / time
   uint16_t sampleRateHz     = 100;
   bool     timestampHuman   = true;
+  LogFormat logFormat       = LogFormat::BodaqsStandard;
   char     tz[64]           = "UTC";
   char     ntpServers[128]  = "";
   char     timeCheckUrl[96] = "";
@@ -146,6 +152,9 @@ class ConfigManager {
     static bool    getSensorSpec(uint8_t i, SensorSpec& out);   // copy-out by index
     static int8_t  findSensorByName(const char* name);          // -1 if not found
     static void setSampleRateHz(uint16_t hz, bool persist = true);
+    static const char* logFormatKey(LogFormat format);
+    static const char* logFormatLabel(LogFormat format);
+    static bool parseLogFormat(const char* text, LogFormat& out);
 
     // line parser (public so tests or tooling can reuse)
     static bool parseLine(char* line, LoggerConfig& cfg);

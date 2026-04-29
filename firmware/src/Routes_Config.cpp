@@ -213,6 +213,14 @@ void registerConfigRoutes(WebServer& srv) {
     html += String(cfg.sampleRateHz);
     html += F("'"); html += dis; html += F("><br>");
 
+    html += F("<label>Log format: </label>");
+    html += F("<label><input type='radio' name='log_format' value='bodaqs_standard'");
+    if (cfg.logFormat == LogFormat::BodaqsStandard) html += F(" checked");
+    html += dis; html += F("> BODAQS standard</label> ");
+    html += F("<label><input type='radio' name='log_format' value='syn_bike_raw'");
+    if (cfg.logFormat == LogFormat::SynBikeRaw) html += F(" checked");
+    html += dis; html += F("> syn.bike raw</label><br>");
+
     html += F("<label>Timestamp mode: </label><select name='timestamp_mode'");
     html += dis; html += F("><option value='human'");
     if (cfg.timestampHuman) html += F(" selected");
@@ -1268,6 +1276,15 @@ void registerConfigRoutes(WebServer& srv) {
       const String tsm = srv.arg("timestamp_mode");
       if      (tsm == "human") tmp.timestampHuman = true;
       else if (tsm == "fast")  tmp.timestampHuman = false;
+    }
+
+    if (srv.hasArg("log_format")) {
+      LogFormat fmt;
+      String v = srv.arg("log_format");
+      v.trim();
+      if (ConfigManager::parseLogFormat(v.c_str(), fmt)) {
+        tmp.logFormat = fmt;
+      }
     }
 
     if (srv.hasArg("tz")) {

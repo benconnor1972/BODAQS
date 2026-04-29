@@ -80,6 +80,13 @@ void appendCsvRefByHeader_(String& out, uint8_t depth, const char* header) {
   out += F(" },\n");
 }
 
+void appendCsvRefByIndex_(String& out, uint8_t depth, uint8_t index) {
+  appendKey_(out, depth, "csv_ref");
+  out += F("{ \"by\": \"index\", \"index\": ");
+  out += String((unsigned)index);
+  out += F(" },\n");
+}
+
 bool hasText_(const char* s) {
   return s && *s;
 }
@@ -199,6 +206,163 @@ String localStartedAtFromSessionId_(const char* sessionId) {
   return s;
 }
 
+void appendSynBikeRawColumn_(String& out,
+                             const char* key,
+                             uint8_t index,
+                             const char* end,
+                             const SensorManager::SynBikeRawColumnBinding& binding,
+                             bool comma) {
+  appendIndent_(out, 2);
+  appendJsonString_(out, key);
+  out += F(": {\n");
+  appendCsvRefByIndex_(out, 3, index);
+  appendKeyString_(out, 3, "class", "signal");
+  appendKeyString_(out, 3, "dtype", "uint32");
+  appendKeyString_(out, 3, "stream", "primary");
+  if (binding.available && hasText_(binding.sensorName)) appendKeyString_(out, 3, "sensor", binding.sensorName);
+  appendKeyString_(out, 3, "end", end);
+  appendKeyString_(out, 3, "quantity", "raw");
+  if (binding.available && hasText_(binding.domain)) appendKeyString_(out, 3, "domain", binding.domain);
+  appendKeyString_(out, 3, "unit", "counts");
+  appendKey_(out, 3, "transform_chain");
+  out += F("[],\n");
+  appendKeyString_(out, 3, "raw_representation",
+                   binding.available && hasText_(binding.source) ? binding.source : "unavailable");
+  if (binding.invert) appendKeyBool_(out, 3, "inverted_for_export", true);
+  appendKeyBool_(out, 3, "required", false, false);
+  appendIndent_(out, 2);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendSynBikeBlankFloatColumn_(String& out,
+                                    const char* key,
+                                    uint8_t index,
+                                    const char* quantity,
+                                    bool comma) {
+  appendIndent_(out, 2);
+  appendJsonString_(out, key);
+  out += F(": {\n");
+  appendCsvRefByIndex_(out, 3, index);
+  appendKeyString_(out, 3, "class", "signal");
+  appendKeyString_(out, 3, "dtype", "float64");
+  appendKeyString_(out, 3, "stream", "primary");
+  appendKeyString_(out, 3, "quantity", quantity);
+  appendKeyString_(out, 3, "unit", "");
+  appendKeyString_(out, 3, "notes", "Reserved for syn.bike GPS field; firmware currently emits blank values.");
+  appendKeyBool_(out, 3, "required", false, false);
+  appendIndent_(out, 2);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
+  SensorManager::SynBikeRawBindings bindings;
+  (void)SensorManager::resolveSynBikeRawBindings(bindings);
+
+  const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
+  SensorMetadataDescriptor* sensors = sensorCount ? new SensorMetadataDescriptor[sensorCount] : nullptr;
+  if (sensorCount && !sensors) return false;
+  const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
+  String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
+
+  out.reserve(2048 + (sensorsWritten * 520));
+  out += F("{\n");
+
+  appendKey_(out, 1, "contract");
+  out += F("{\n");
+  appendKeyString_(out, 2, "name", "mtb_logger_timeseries");
+  appendKeyString_(out, 2, "version", "0.2.0");
+  appendKeyString_(out, 2, "sidecar_kind", "session", false);
+  appendIndent_(out, 1);
+  out += F("},\n");
+
+  appendKey_(out, 1, "data_file");
+  out += F("{\n");
+  appendKeyString_(out, 2, "path", ctx.csvPath);
+  appendKeyString_(out, 2, "delimiter", ",");
+  appendKeyBool_(out, 2, "header", false);
+  appendKeyUInt_(out, 2, "row_count", ctx.rowCount, false);
+  appendIndent_(out, 1);
+  out += F("},\n");
+
+  appendKey_(out, 1, "session");
+  out += F("{\n");
+  appendKeyString_(out, 2, "session_id", ctx.sessionId);
+  if (startedAt.length()) appendKeyString_(out, 2, "started_at_local", startedAt.c_str());
+  if (hasText_(ctx.timezone)) appendKeyString_(out, 2, "timezone", ctx.timezone);
+  appendKeyString_(out, 2, "notes", "CSV emitted in syn.bike raw import format.", false);
+  appendIndent_(out, 1);
+  out += F("},\n");
+
+  appendKey_(out, 1, "streams");
+  out += F("{\n");
+  appendIndent_(out, 2);
+  out += F("\"primary\": {\n");
+  appendKeyString_(out, 3, "type", "uniform");
+  appendKeyString_(out, 3, "time_column", "sample_id");
+  appendKeyString_(out, 3, "time_encoding", "sample_index");
+  appendKeyString_(out, 3, "time_unit", "sample");
+  appendKeyUInt_(out, 3, "sample_rate_hz", ctx.sampleRateHz, false);
+  appendIndent_(out, 2);
+  out += F("}\n");
+  appendIndent_(out, 1);
+  out += F("},\n");
+
+  appendKey_(out, 1, "sensors");
+  out += F("{\n");
+  for (uint16_t i = 0; i < sensorsWritten; ++i) {
+    appendSensor_(out, sensors[i], i + 1 < sensorsWritten);
+  }
+  appendIndent_(out, 1);
+  out += F("},\n");
+
+  appendKey_(out, 1, "columns");
+  out += F("{\n");
+  appendIndent_(out, 2);
+  out += F("\"sample_id\": {\n");
+  appendCsvRefByIndex_(out, 3, 0);
+  appendKeyString_(out, 3, "class", "time");
+  appendKeyString_(out, 3, "dtype", "uint32");
+  appendKeyString_(out, 3, "stream", "primary");
+  appendKeyString_(out, 3, "unit", "sample", false);
+  appendIndent_(out, 2);
+  out += F("},\n");
+
+  appendSynBikeRawColumn_(out, "front_raw", 1, "front", bindings.front, true);
+  appendSynBikeRawColumn_(out, "rear_raw", 2, "rear", bindings.rear, true);
+  appendSynBikeBlankFloatColumn_(out, "lat", 3, "latitude", true);
+  appendSynBikeBlankFloatColumn_(out, "long", 4, "longitude", true);
+  appendSynBikeBlankFloatColumn_(out, "speed", 5, "speed", false);
+  appendIndent_(out, 1);
+  out += F("},\n");
+
+  appendKey_(out, 1, "qc");
+  out += F("{ \"warnings\": [");
+  bool wroteWarning = false;
+  if (!bindings.front.available) {
+    appendJsonString_(out, "syn_bike_front_raw_not_available");
+    wroteWarning = true;
+  }
+  if (!bindings.rear.available) {
+    if (wroteWarning) out += F(", ");
+    appendJsonString_(out, "syn_bike_rear_raw_not_available");
+  }
+  out += F("] },\n");
+
+  appendKey_(out, 1, "provenance");
+  out += F("{\n");
+  appendKeyString_(out, 2, "logger_family", "BODAQS");
+  appendKeyString_(out, 2, "generator", "BODAQS firmware log metadata writer");
+  appendKeyString_(out, 2, "log_format", ConfigManager::logFormatKey(LogFormat::SynBikeRaw));
+  if (hasText_(ctx.generatedAtLocal)) appendKeyString_(out, 2, "metadata_generated_at", ctx.generatedAtLocal, false);
+  else appendKeyString_(out, 2, "metadata_generated_at", "", false);
+  appendIndent_(out, 1);
+  out += F("}\n");
+
+  out += F("}\n");
+  delete[] sensors;
+  return true;
+}
+
 } // namespace
 
 String LogMetadataWriter_metadataPathForCsv(const char* csvPath) {
@@ -214,6 +378,9 @@ String LogMetadataWriter_metadataPathForCsv(const char* csvPath) {
 
 bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   out = "";
+  if (ctx.logFormat == LogFormat::SynBikeRaw) {
+    return buildSynBikeRawMetadata_(ctx, out);
+  }
 
   const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
   const uint16_t columnCount = SensorManager::describeSensorColumns(nullptr, 0);

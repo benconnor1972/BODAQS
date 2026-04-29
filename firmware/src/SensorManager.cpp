@@ -556,6 +556,76 @@ uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut) {
   return total;
 }
 
+namespace {
+int synBikeDomainScore_(const char* domain) {
+  if (!domain) return 0;
+  if (strcasecmp(domain, "wheel") == 0) return 2;
+  if (strcasecmp(domain, "suspension") == 0) return 1;
+  return 0;
+}
+
+void copyField_(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  size_t n = strlen(src);
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+void maybeSelectSynBikeRaw_(SynBikeRawColumnBinding& slot,
+                            int& slotScore,
+                            const SensorColumnDescriptor& desc,
+                            const SensorMetadataDescriptor& sensor,
+                            uint16_t valueIndex) {
+  if (!desc.raw) return;
+  if (strcasecmp(desc.quantity, "raw") != 0) return;
+  if (strcasecmp(desc.source, "unwrapped_raw_counts") == 0) return;
+
+  const int score = synBikeDomainScore_(desc.domain);
+  if (score <= 0 || score <= slotScore) return;
+
+  slot.available = true;
+  slot.valueIndex = valueIndex;
+  slot.invert = sensor.invert;
+  copyField_(slot.sensorName, sizeof(slot.sensorName), desc.sensorName);
+  copyField_(slot.csvHeader, sizeof(slot.csvHeader), desc.csvHeader);
+  copyField_(slot.end, sizeof(slot.end), desc.end);
+  copyField_(slot.domain, sizeof(slot.domain), desc.domain);
+  copyField_(slot.source, sizeof(slot.source), desc.source);
+  slotScore = score;
+}
+} // namespace
+
+bool resolveSynBikeRawBindings(SynBikeRawBindings& out) {
+  out = SynBikeRawBindings{};
+
+  int frontScore = 0;
+  int rearScore = 0;
+  uint16_t valueIndex = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    SensorMetadataDescriptor sensorMeta;
+    (void)s->describeSensorMetadata(sensorMeta);
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i, ++valueIndex) {
+      SensorColumnDescriptor desc;
+      if (!s->describeColumn(i, desc)) continue;
+
+      if (strcasecmp(desc.end, "front") == 0) {
+        maybeSelectSynBikeRaw_(out.front, frontScore, desc, sensorMeta, valueIndex);
+      } else if (strcasecmp(desc.end, "rear") == 0) {
+        maybeSelectSynBikeRaw_(out.rear, rearScore, desc, sensorMeta, valueIndex);
+      }
+    }
+  }
+
+  return out.front.available || out.rear.available;
+}
+
 
 void debugDump(const char* tag) {
   const uint8_t kSlots = MAX_SENSORS;
