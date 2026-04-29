@@ -124,14 +124,14 @@ keeping notebook-facing constructors stable:
   - shared histogram/CDF plotting and summary/trimmed-quantile helpers
   - used by both signal and metric histogram widgets
 - `analysis/bodaqs_analysis/widgets/metric_widget_data.py`
-  - shared metric widget data prep: events/metrics join, schema/registry sensor resolution
+  - shared metric widget data prep: events/metrics join, schema/registry event-context resolution
   - used by metric histogram and metric scatter widgets
 - `analysis/bodaqs_analysis/widgets/signal_histogram_scope.py`
   - signal-universe resolution and per-signal sample extraction for signal histogram
 - `analysis/bodaqs_analysis/widgets/event_browser_scope.py`
   - scope-level registry/schema resolution and event filtering
 - `analysis/bodaqs_analysis/widgets/event_browser_options.py`
-  - event/sensor option generation + event label parse/build
+  - event/end option generation + event label parse/build
 - `analysis/bodaqs_analysis/widgets/event_browser_render.py`
   - event-browser rendering-specific helpers
 - `analysis/bodaqs_analysis/widgets/event_semantics.py`

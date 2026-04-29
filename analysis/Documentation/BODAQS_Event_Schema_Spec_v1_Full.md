@@ -8,7 +8,7 @@ Signals, registry entries, roles, event instances, and SegmentBundles form the c
  - Signals are numeric time series in the session dataframe.  
  - Registry entries provide semantic metadata, allowing roles to be resolved from signals.  
  - Roles are schema-level semantic references that are resolved dynamically.  
- - Event instances are per-sensor detected occurrences of schema-defined events.  
+ - Event instances are per-semantic-context detected occurrences of schema-defined events.  
  = SegmentBundles hold aligned data  slices.
 
 ---
@@ -25,7 +25,8 @@ raw → canonicalized → registry → detection → segmentation → metrics
 
 ### 1.3 Registry-First Semantics
 
-Resolution matches sensor, quantity, unit, kind, and op_chain.  
+Resolution matches semantic selector fields such as `end`, `domain`,
+`quantity`, `unit`, `processing_role`, `kind`, and `op_chain`.  
 Semantic roles should not be parsed from signal names.
 
 Derived signals retain transformation lineage via op_chain.
@@ -34,7 +35,14 @@ Derived signals retain transformation lineage via op_chain.
 
 ### 1.4 Event Expansion
 
-Each event definition expands into one instance per sensor at runtime.
+New schemas should expand by semantic context using `expand`, for example
+`expand.end: [rear, front]`. Expansion values are injected into each
+`inputs` selector before role resolution, producing one deterministic event
+instance per expanded context.
+
+Schemas without `inputs` are invalid in the active implementation. Older
+source/sensor-expanded schemas must be migrated to semantic `inputs` plus optional
+`expand`.
 
 ---
 
@@ -60,7 +68,8 @@ Ambiguity or missing semantics produce hard failures. The system is intended to 
 
 id: string  
 label: string  
-sensors: list[string]  
+inputs: map[role, SignalSelector]  
+expand: map[selector_field, scalar | list] | null  
 trigger: TriggerDef  
 secondary_triggers: list[TriggerDef]  
 preconditions: list[ConditionBlock]  
@@ -70,8 +79,73 @@ metrics: list[MetricDef]
 tags: list[string]  
 segment_defaults: SegmentDefaults  
 
-Each EventDef expands per sensor.
-Suspension schemas should prefer canonical `front_shock` and `rear_shock`; analysis also accepts `fork` as an alias for `front_shock` and `shock` as an alias for `rear_shock`.
+New EventDefs should define `inputs` and optionally `expand`. `trigger.signal`,
+condition `signal`, metric `signal`, and secondary trigger `signal` refer to
+input role names, not dataframe columns.
+
+EventDefs must define `inputs`. The active detector does not resolve events by
+logger/source sensor id.
+
+### 2.1.1 Semantic Inputs
+
+`inputs` binds each schema role to a semantic signal selector resolved against
+`session["meta"]["signals"]`.
+
+```yaml
+inputs:
+  disp:
+    end: rear
+    domain: wheel
+    quantity: disp
+    unit: mm
+    processing_role: primary_analysis
+  vel:
+    end: rear
+    domain: wheel
+    quantity: vel
+    unit: mm/s
+    processing_role: primary_analysis
+```
+
+Supported selector fields are `end`, `domain`, `quantity`, `unit`,
+`processing_role`, `motion_source_id`, `motion_profile_id`, `kind`, and
+`op_chain`.
+
+Each input role MUST resolve to exactly one signal. Zero matches skip that
+event instance for the current session. Multiple matches are ambiguous and are
+treated as a schema/setup error.
+
+### 2.1.2 Semantic Expansion
+
+`expand` avoids duplicating otherwise identical front/rear or similar event
+definitions.
+
+```yaml
+expand:
+  end: [rear, front]
+inputs:
+  disp:
+    domain: wheel
+    quantity: disp
+    unit: mm
+    processing_role: primary_analysis
+  vel:
+    domain: wheel
+    quantity: vel
+    unit: mm/s
+    processing_role: primary_analysis
+```
+
+Expansion rules:
+
+1. Expansion keys use selector field names.
+2. Scalar values produce one instance; list values produce one instance per
+   value.
+3. Expansion values are injected into every input selector unless that selector
+   already specifies the same field.
+4. Each expanded input role must still resolve to exactly one signal.
+5. Do not use a multi-value selector to match multiple dataframe columns;
+   multiplicity belongs in `expand`.
 
 ---
 
@@ -1355,7 +1429,7 @@ Segment extraction:
 
 • aligns signal data around event anchors  
 • resolves semantic roles into concrete signals  
-• enforces deterministic sensor binding  
+• enforces deterministic semantic-context binding  
 • produces reproducible waveform arrays  
 
 All metrics operate exclusively on extracted segments.
@@ -1406,7 +1480,9 @@ segment_defaults:
         unit: string | null
         kind: string | null
         op_chain: list[string] | null
-        sensor: string | null
+        end: string | null
+        domain: string | null
+        processing_role: string | null
 
 ---
 
@@ -1439,9 +1515,9 @@ All samples in this interval are included in the segment grid.
 
 ## 9.6 Registry-First Role Resolution
 
-Each RoleSpec is resolved by matching registry entries against:
+Each RoleSpec is resolved by matching registry entries against semantic fields:
 
-(sensor, quantity, unit, kind, op_chain)
+(`end`, `domain`, `quantity`, `unit`, `processing_role`, `kind`, `op_chain`)
 
 Resolution rules:
 
@@ -1452,20 +1528,21 @@ Resolution rules:
 
 ---
 
-## 9.7 Per-Event Sensor Binding
+## 9.7 Per-Event Semantic Context Binding
 
 Role resolution occurs per event instance.
 
-The event's triggering signal determines its bound sensor.
+For schemas with `inputs`, role resolution is semantic-input based. Expansion
+context such as `end: rear` is injected into the role selectors before
+resolution, so a rear-expanded event resolves to rear signals and a
+front-expanded event resolves to front signals.
 
-Thus:
+Logger/source `sensor` ids are not semantic binding fields in the active
+implementation. If a legacy logger emits ambiguous names such as `fork` or
+`shock`, that should be handled by log metadata before event detection.
 
-rear_shock event resolves to rear_shock signals  
-front_shock event resolves to front_shock signals  
-
-The canonical ids remain `rear_shock` and `front_shock`, but `shock` and `fork` are accepted as aliases during resolution.
-
-Schemas remain sensor-agnostic.
+Schemas using `expand` remain compact and semantic-context agnostic, for
+example one event definition can expand over `end: [rear, front]`.
 
 ---
 
@@ -2009,8 +2086,25 @@ Each walkthrough follows the same structure:
 
 ```yaml
 id: top_out
-label: rebound events with min normalized displacement <= 0.02
-sensors: [rear_shock, front_shock]
+label: wheel rebound events with min normalized displacement <= 0.02
+expand:
+  end: [rear, front]
+inputs:
+  disp:
+    domain: wheel
+    quantity: disp
+    unit: mm
+    processing_role: primary_analysis
+  vel:
+    domain: wheel
+    quantity: vel
+    unit: mm/s
+    processing_role: primary_analysis
+  disp_norm:
+    domain: wheel
+    quantity: disp_norm
+    unit: "1"
+    processing_role: primary_analysis
 
 trigger:
   id: rebound_end
@@ -2057,7 +2151,8 @@ metrics:
 
 Velocity zero-crossings in the rising direction identify rebound_end events.
 
-Each sensor resolves its own vel signal via the registry.
+The event expands once for `end: rear` and once for `end: front`. Each expanded
+instance resolves its own `vel` input via the registry.
 
 ---
 
@@ -2083,7 +2178,8 @@ Segments are extracted around trigger_time_s:
 
 [start - 0.8 s , start + 0.2 s]
 
-Roles disp, vel, acc are bound per sensor.
+Roles `disp`, `vel`, and any additional segment roles are bound through the
+expanded semantic inputs or compatible role selectors.
 
 ---
 
@@ -2102,7 +2198,13 @@ Results yield mean rebound velocity and peak dynamics.
 ```yaml
 id: impact
 label: high acceleration spike
-sensors: [rear_shock]
+inputs:
+  acc:
+    end: rear
+    domain: wheel
+    quantity: acc
+    unit: mm/s^2
+    processing_role: primary_analysis
 
 trigger:
   type: local_extrema
@@ -2140,7 +2242,13 @@ Peak acceleration and post-impact oscillation metrics are computed.
 ```yaml
 id: compression_to_rebound
 label: velocity regime transition
-sensors: [rear_shock]
+inputs:
+  vel:
+    end: rear
+    domain: wheel
+    quantity: vel
+    unit: mm/s
+    processing_role: primary_analysis
 
 trigger:
   type: phased_threshold_crossing
@@ -2245,7 +2353,7 @@ Cause:
 • multiple registry entries matching prefer spec  
 
 Fix:
-• specify unit, op_chain, or sensor explicitly  
+• specify `end`, `domain`, `unit`, `processing_role`, or `op_chain` explicitly  
 
 ---
 
@@ -2291,9 +2399,11 @@ Fix:
 
 Verify:
 
-• sensor  
+• end  
+• domain  
 • quantity  
 • unit  
+• processing_role  
 • op_chain  
 
 Ensure no ambiguity exists.
@@ -2432,9 +2542,9 @@ Use roles such as:
 
 disp, vel, acc, disp_norm, raw
 
-Avoid sensor-specific naming in schema logic.
+Avoid source/sensor-specific naming in schema logic.
 
-Let registry binding handle sensor resolution.
+Let registry binding handle semantic-context resolution.
 
 ---
 

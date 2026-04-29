@@ -43,6 +43,19 @@ def registry_signal_cols(session: Mapping[str, Any]) -> list[str]:
     return cols
 
 
+def _primary_analysis_signal_cols(session: Mapping[str, Any], cols: list[str]) -> list[str]:
+    meta = session.get("meta") or {}
+    signals = meta.get("signals")
+    if not isinstance(signals, Mapping):
+        return []
+    return [
+        c
+        for c in cols
+        if isinstance(signals.get(c), Mapping)
+        and str(signals[c].get("processing_role") or "").strip().lower() == "primary_analysis"
+    ]
+
+
 def signal_values(
     df: pd.DataFrame,
     col: str,
@@ -69,6 +82,7 @@ def resolve_scope_signal_options(
     scope_sessions: list[str],
     get_session: Callable[[str], Mapping[str, Any]],
     registry_policy: RegistryPolicy,
+    primary_only: bool = False,
 ) -> ScopeSignalResolution:
     session_signal_cols: dict[str, list[str]] = {}
     registry_by_session: dict[str, Mapping[str, Mapping[str, Any]]] = {}
@@ -79,7 +93,10 @@ def resolve_scope_signal_options(
         reg = meta.get("signals")
         reg = reg if isinstance(reg, dict) else {}
         registry_by_session[str(sid)] = reg
-        session_signal_cols[str(sid)] = list(registry_signal_cols(sess))
+        cols = list(registry_signal_cols(sess))
+        if primary_only:
+            cols = _primary_analysis_signal_cols(sess, cols)
+        session_signal_cols[str(sid)] = cols
 
     signals = compute_signal_universe(
         session_ids=scope_sessions,

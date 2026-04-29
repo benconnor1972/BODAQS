@@ -7,7 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
-from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+from bodaqs_analysis.sensor_aliases import canonical_end
 
 
 def choose_active_sensor(
@@ -15,8 +15,8 @@ def choose_active_sensor(
     inferred_sensor: str | None,
     selected_sensors: Sequence[str],
 ) -> str | None:
-    sel = tuple(canonical_sensor_id(s) for s in selected_sensors or () if canonical_sensor_id(s))
-    inferred = canonical_sensor_id(inferred_sensor) if inferred_sensor else ""
+    sel = tuple(canonical_end(s) for s in selected_sensors or () if canonical_end(s))
+    inferred = canonical_end(inferred_sensor) if inferred_sensor else ""
     if not sel:
         return inferred or inferred_sensor
     if len(sel) == 1:

@@ -2,10 +2,13 @@
 #include <stdint.h>
 
 class TwoWire;
+namespace board { struct BoardProfile; }
 
 namespace PowerManager {
 
-  // Sleep; wake when ENTER (GPIO13) is pressed (active-LOW -> wake level 0).
+  void begin(const board::BoardProfile& board);
+
+  // Sleep; wake when the board-profile `nav_enter` button is pressed.
   void sleepOnEnterEXT0();
   void noteActivity();
   void loop();
@@ -26,5 +29,11 @@ namespace PowerManager {
   bool  fuelGaugeOk();
   float batterySocPercent();   // 0..100 (approx)
   float batteryVoltage();      // volts
+  bool  batteryLow();
+
+  // ---------------- Analog rail control ----------------
+  void setAnalogRailEnabled(bool enabled);
+  bool analogRailEnabled();
+  bool canStartLogging();
 
 } // namespace PowerManager

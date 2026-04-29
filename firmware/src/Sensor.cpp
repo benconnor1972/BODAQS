@@ -6,6 +6,29 @@
 
 #define XFORM_LOGD(...) LOGD_TAG("XFORM", __VA_ARGS__)
 
+namespace {
+
+void copyField_(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  size_t n = strlen(src);
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+const char* outputModeName_(OutputMode m) {
+  switch (m) {
+    case OutputMode::RAW:    return "raw";
+    case OutputMode::LINEAR: return "linear";
+    case OutputMode::POLY:   return "poly";
+    case OutputMode::LUT:    return "lut";
+    default:                 return "unknown";
+  }
+}
+
+} // namespace
+
 void Sensor::attachTransform(const TransformRegistry& reg) {
   const String sensorId = String(name()); // folder key: /cal/<name>/
   const bool selectedIsIdentity = (m_selectedTransformId == "identity");
@@ -80,4 +103,48 @@ void Sensor::setOutputUnitsLabel(const char* u) {
   memcpy(m_outputUnitsLabel, u, n);
   m_outputUnitsLabel[n] = '\0';
   onUnitsLabelChanged();   // optional hook
+}
+
+bool Sensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
+  if (idx >= columnCount()) return false;
+
+  out = SensorColumnDescriptor{};
+  getColumnName(idx, out.csvHeader, sizeof(out.csvHeader));
+  copyField_(out.sensorName, sizeof(out.sensorName), name());
+  copyField_(out.columnId, sizeof(out.columnId), out.csvHeader);
+  copyField_(out.unit, sizeof(out.unit), unitsLabel());
+  copyField_(out.source, sizeof(out.source), idx == 0 ? "primary" : "secondary");
+  copyField_(out.notes, sizeof(out.notes), "semantic metadata not configured");
+  out.outputMode = outputMode();
+  out.primary = (idx == 0);
+  out.raw = (outputMode() == OutputMode::RAW && idx == 0);
+  out.calibrated = (outputMode() != OutputMode::RAW);
+  out.transformed = (outputMode() == OutputMode::POLY || outputMode() == OutputMode::LUT);
+
+  if (out.raw) {
+    copyField_(out.quantity, sizeof(out.quantity), "raw");
+    copyField_(out.unit, sizeof(out.unit), "counts");
+    copyField_(out.source, sizeof(out.source), "raw_counts");
+  }
+
+  if (out.transformed && selectedTransformId().length()) {
+    selectedTransformId().toCharArray(out.transformChain, sizeof(out.transformChain));
+  }
+
+  if (!out.unit[0]) {
+    copyField_(out.unit, sizeof(out.unit), outputModeName_(out.outputMode));
+  }
+
+  return true;
+}
+
+bool Sensor::describeSensorMetadata(SensorMetadataDescriptor& out) const {
+  out = SensorMetadataDescriptor{};
+  copyField_(out.sensorId, sizeof(out.sensorId), name());
+  copyField_(out.name, sizeof(out.name), name());
+  copyField_(out.type, sizeof(out.type), label());
+  copyField_(out.rawUnit, sizeof(out.rawUnit), "counts");
+  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), unitsLabel());
+  out.hasCalibration = supportsCalibration();
+  return true;
 }

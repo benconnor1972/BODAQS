@@ -8,9 +8,6 @@ class AS5600StringPotSensorBase : public Sensor {
 public:
   struct BaseParams {
     const char* name = nullptr;
-    bool     invert = false;
-    uint16_t emaAlphaPermille = 1000;
-    uint16_t deadbandCounts = 0;
     uint16_t countsPerTurn = 4096;
     uint16_t wrapThresholdCounts = 2048;
     int32_t  sensorZeroCount = 0;
@@ -20,6 +17,9 @@ public:
     bool     assumeTurn0AtStart = true;
     bool     includeRawColumn = true;
     char     unitsLabel[48] = "mm";
+    char     semanticEnd[16] = "";
+    char     primaryDomain[24] = "";
+    char     primaryQuantity[24] = "";
   };
 
   explicit AS5600StringPotSensorBase(const BaseParams& p);
@@ -35,6 +35,8 @@ public:
   uint8_t columnCount() const override;
   void getColumnName(uint8_t idx, char* out, size_t cap) const override;
   void sampleValues(float* out, uint8_t max) override;
+  bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const override;
+  bool describeSensorMetadata(SensorMetadataDescriptor& out) const override;
 
   const char* name() const override { return m_name; }
 
@@ -58,8 +60,6 @@ public:
   CalibrationState calibration() const override;
   bool setCalibration(const CalibrationState& s) override;
 
-  SmoothingConfig smoothing() const override;
-  void setSmoothing(const SmoothingConfig& s) override;
   void setIncludeRaw(bool b) override;
   void setOutputUnitsLabel(const char* u) override;
 
@@ -74,7 +74,6 @@ private:
   struct SampleState {
     int wrappedRaw = 0;
     int32_t unwrappedRaw = 0;
-    int32_t unwrappedSmoothed = 0;
   };
 
   struct CalState {
@@ -89,10 +88,11 @@ private:
   int normalizeWrapped_(int wrapped) const;
   int32_t initialUnwrappedFromWrapped_(int wrapped) const;
   int32_t updateUnwrappedFromWrapped_(int wrapped) const;
-  int32_t updateUnwrappedEma_(int32_t raw) const;
   SampleState captureSample_() const;
   float countsToMm_(int32_t counts) const;
-  bool rawColumnEnabled_() const;
+  bool isWrappedRawColumn_(uint8_t idx) const;
+  bool isUnwrappedRawColumn_(uint8_t idx) const;
+  bool isLinearSecondaryColumn_(uint8_t idx) const;
 
 private:
   CalState cal_;
@@ -105,14 +105,15 @@ private:
 
   char    m_name[16] = "as5600";
   char    m_unitsLabel[48] = "mm";
+  char    m_semanticEnd[16] = "";
+  char    m_primaryDomain[24] = "";
+  char    m_primaryQuantity[24] = "";
+  char    m_rawDomain[24] = "";
 
   bool     m_invert = false;
   uint16_t m_countsPerTurn = 4096;
   uint16_t m_wrapThreshold = 2048;
   bool     m_assumeTurn0AtStart = true;
-
-  float    m_alpha = 1.0f;
-  uint16_t m_deadband = 0;
 
   CalMask  m_allowedMask = (CalMask)(CAL_ZERO | CAL_RANGE);
   bool     m_muted = false;
@@ -121,6 +122,4 @@ private:
   mutable int     m_lastWrappedRaw = 0;
   mutable int32_t m_turnIndex = 0;
   mutable int32_t m_lastUnwrappedRaw = 0;
-  mutable bool    m_emaInit = false;
-  mutable float   m_ema = 0.0f;
 };

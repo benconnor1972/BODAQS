@@ -82,7 +82,7 @@ class PreprocessDefaults:
 class PreprocessControls:
     """
     Builds an Accordion UI for Step 2 parameters and produces a validated config dict
-    suitable for calling run_macro(...).
+    suitable for calling preprocess_session(...).
 
     - disp_cols_all: list of canonical displacement column names (quantity == "disp")
     - sessions_by_id: dict of sessions from Step 1 (used for session selector only)
@@ -483,7 +483,7 @@ class PreprocessControls:
 
     def get_config(self) -> Dict[str, Any]:
         """
-        Returns a dict ready to be splatted into run_macro(...).
+        Returns a dict ready to be passed to preprocess_session(...).
         This does NOT include csv_path; that stays in the notebook loop.
         """
         disp_selected = list(self.w_disp_select.value or ())

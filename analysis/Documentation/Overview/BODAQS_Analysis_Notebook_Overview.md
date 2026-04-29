@@ -67,10 +67,11 @@ Notebook: [`bodaqs_batch_preprocessing_pipeline.ipynb`](../../bodaqs_batch_prepr
 
 This is the main batch ingestion and preprocessing notebook. It turns one or more raw logger CSV files into canonical BODAQS session, event, and metric artifacts that downstream notebooks can consume.
 
-### Step 1. Select input CSV files
+### Step 1. Set runtime paths and select input CSV files
 
-- **Inputs:** a directory of raw logger CSV files and the existing `analysis/artifacts/` tree so that previously processed logger files can be identified.
-- **Outputs:** the selected file list (`CSV_FILES`) and a visible file-selection UI.
+- **Inputs:** local runtime settings from the notebook widget, a directory of raw logger CSV files, and the selected artifacts tree so that previously processed logger files can be identified.
+- **Runtime settings:** preprocess profile path, artifacts directory, generic log metadata paths, bike profile path, optional FIT paths, run timezone label, and description-prompt behavior.
+- **Outputs:** the selected file list (`CSV_FILES`) and visible runtime-settings / file-selection UIs.
 - **Persisted artifacts:** no canonical analysis artifacts yet. The selector does update local helper files:
   - `.bodaqs_preprocess_last_dir.json`
   - `.bodaqs_preprocess_sha_cache.json`
@@ -84,8 +85,8 @@ This is the main batch ingestion and preprocessing notebook. It turns one or mor
   - `session["meta"]["signals"]`
   - the union of detected displacement channels (`disp_cols_all`)
   - optional reporting of unclassified numeric columns
-- **"Canonicalize"** here means making a best-effort rename-and-enrich pass over dataframe column names. In the current implementation it infers units from existing headers such as `[...]`, applies a conservative domain hint that maps `front_shock` and `rear_shock` bases into the `suspension` domain, accepts `fork` as an alias for `front_shock` and `shock` as an alias for `rear_shock`, and uses a small set of legacy rewrite rules such as converting `_zeroed` suffixes into canonical `_op_zeroed`, converting `<base>_raw` into `<base>_raw [counts]`, and adding units only when an explicit hint is available. Columns that still do not parse are left in place and flagged for later attention. 
-This step also creates the **signal registry:** `session["meta"]["signals"]` is a per-session dictionary keyed by the exact dataframe column names in `session["df"]`. For each numeric signal column it records compact semantics such as `kind`, `unit`, `domain`, `op_chain`, inferred `sensor`, and inferred `quantity`, so later stages can resolve the meaning of a column without relying on ad hoc string matching in each notebook.
+- **"Canonicalize"** here means making a best-effort rename-and-enrich pass over dataframe column names. In the current implementation it infers units from existing headers such as `[...]`, applies conservative domain hints where explicit metadata is available, and uses a small set of legacy rewrite rules such as converting `_zeroed` suffixes into canonical `_op_zeroed`, converting `<base>_raw` into `<base>_raw [counts]`, and adding units only when an explicit hint is available. Columns that still do not parse are left in place and flagged for later attention. 
+This step also creates the **signal registry:** `session["meta"]["signals"]` is a per-session dictionary keyed by the exact dataframe column names in `session["df"]`. For each numeric signal column it records compact semantics such as `kind`, `unit`, `domain`, `end`, `quantity`, `processing_role`, and `op_chain`, so later stages can resolve the meaning of a column without relying on ad hoc string matching in each notebook.
 
 Semantic enrichment is a priority area for development / refinement. Current intention is to have header parsing / hard-code rules as a fall-back only, with a local translation table or a sidecar file from the logger being the primary source of signal semantics.
 
@@ -94,27 +95,24 @@ Semantic enrichment is a priority area for development / refinement. Current int
   - [`BODAQS_Session_Schema_v0_1.md`](../BODAQS_Session_Schema_v0_1.md)
   - [`BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`](../BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md)
 
-### Step 3. Collect preprocessing and event-detection configuration
+### Step 3. Load or edit preprocessing profile
 
-- **Inputs:** the discovered displacement channels plus user-entered configuration:
-  - directory path for the event schema
-  - normalization ranges for displacement sensors
-  - zeroing settings
-  - activity-mask settings
-  - clipping and smoothing settings
-  - ingestion mode
-  - whether to prompt for run and session descriptions on ingestion
-- **Outputs:** a validated config dict suitable for `run_macro(...)`.
-- **Persisted artifacts:** none.
+- **Inputs:** a persisted preprocess profile selected by `PREPROCESS_PROFILE_PATH`.
+- **Editable settings:** event schema path, FIT import behavior, zeroing, activity-mask settings, clipping, smoothing, and ingestion mode.
+- **Outputs:** a validated preprocess profile and its nested config payload, suitable for `preprocess_session(..., preprocess_config=cfg)`.
+- **Persisted artifacts:** a saved `bodaqs.preprocess_profile` JSON document when the user saves changes from the profile editor.
+- **Runtime bindings:** generic log metadata path(s), bike profile path, FIT source directory, FIT binding manifest, and description-prompt behavior are supplied by the notebook parameter cell because they depend on the local install or the current log batch.
 - **Contracts / documentation:**
   - [`BODAQS_Public_API_Contract_v0.md`](../BODAQS_Public_API_Contract_v0.md)
+  - [`BODAQS_Preprocess_Profile_Contract_v0_draft.md`](../BODAQS_Preprocess_Profile_Contract_v0_draft.md)
+  - [`BODAQS_Bike_Profile_Contract_v0_draft.md`](../BODAQS_Bike_Profile_Contract_v0_draft.md)
   - [`BODAQS_event_schema_specification_v0_1_2.md`](../BODAQS_event_schema_specification_v0_1_2.md)
   - [`BODAQS_Time_Handling_Contract_v0.md`](../BODAQS_Time_Handling_Contract_v0.md)
 
 ### Step 4. Run the macro pipeline for each selected session
 
-- **Inputs:** one CSV file plus the validated preprocessing config and event schema.
-- **Outputs:** the `run_macro(...)` result per session, including:
+- **Inputs:** one CSV file, the validated preprocessing config, run-level generic log metadata path(s), the selected bike profile, optional FIT source/binding paths, and the event schema.
+- **Outputs:** the `preprocess_session(...)` result per session, including:
   - `session`
   - `schema`
   - `events`
@@ -319,7 +317,7 @@ This cell can be omitted without affecting the functioning of the remainder of t
 ### Step 4. Exercise the event browser widget
 
 - **Inputs:** the current selector scope, selected-session events, selected-session metrics, the schema definition, and per-session `df/meta`.
-- **Outputs:** an interactive event inspection surface that joins event rows to metrics where possible and resolves sensor semantics through the schema and signal registry.
+- **Outputs:** an interactive event inspection surface that joins event rows to metrics where possible and resolves signal semantics through the schema and signal registry.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
   - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../BODAQS_Event_Table_Contract_v0_1_3_draft.md)
@@ -329,7 +327,7 @@ This cell can be omitted without affecting the functioning of the remainder of t
 ### Step 5. Exercise the metric scatter and metric histogram widgets
 
 - **Inputs:** selected-session event tables, selected-session metric tables, the shared schema, and per-session registries resolved via the session loader.
-- **Outputs:** interactive metric comparison views across entities, event types, and sensors.
+- **Outputs:** interactive metric comparison views across entities, event types, and ends/event contexts.
 - **Persisted artifacts:** none.
 - **Contracts / documentation:**
   - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../BODAQS_Metrics_Table_Contract_v0_2.md)

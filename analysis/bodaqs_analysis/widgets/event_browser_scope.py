@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Scope and sensor-resolution helpers for the event browser widget."""
+"""Scope and semantic-context helpers for the event browser widget."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
-from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+from bodaqs_analysis.sensor_aliases import canonical_end
 from bodaqs_analysis.widgets.contracts import RegistryPolicy
 from bodaqs_analysis.widgets.registry_scope import apply_registry_policy_to_registries
 
@@ -36,7 +36,7 @@ def get_registry_from_session_meta(session: Mapping[str, Any]) -> dict[str, Mapp
     return sigs
 
 
-def build_schema_sensor_maps(
+def build_schema_context_maps(
     schema_obj: Mapping[str, Any],
     registry_obj: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, str]]:
@@ -68,15 +68,13 @@ def build_schema_sensor_maps(
             info = registry_obj.get(sigcol)
             if not isinstance(info, Mapping):
                 continue
-            sensor = info.get("sensor")
-            sensor = sensor.strip() if isinstance(sensor, str) else ""
-            if not sensor:
+            end = canonical_end(info.get("end"))
+            if not end:
                 continue
-            sensor = canonical_sensor_id(sensor)
 
             if isinstance(role, str) and role.strip():
-                m[role.strip()] = sensor
-            m[sigcol] = sensor
+                m[role.strip()] = end
+            m[sigcol] = end
 
         if m:
             out[sid_s] = m
@@ -113,7 +111,7 @@ def rebuild_scope_resolution(
 
     schema_maps_by_session: dict[str, dict[str, dict[str, str]]] = {}
     for sk, reg in registries_by_session.items():
-        schema_maps_by_session[sk] = build_schema_sensor_maps(schema, reg)
+        schema_maps_by_session[sk] = build_schema_context_maps(schema, reg)
 
     return ScopeResolution(
         registries_by_session=registries_by_session,
@@ -122,7 +120,7 @@ def rebuild_scope_resolution(
     )
 
 
-def resolve_sensor_for_row(
+def resolve_context_for_row(
     *,
     session_key: object,
     schema_id_val: object,
@@ -142,17 +140,15 @@ def resolve_sensor_for_row(
     if isinstance(m, Mapping):
         s = m.get(tok)
         if isinstance(s, str) and s.strip():
-            return canonical_sensor_id(s)
+            return canonical_end(s)
 
     info = reg.get(tok)
     if isinstance(info, Mapping):
-        s2 = info.get("sensor")
-        if isinstance(s2, str) and s2.strip():
-            return canonical_sensor_id(s2)
+        return canonical_end(info.get("end"))
     return ""
 
 
-def infer_event_sensor(
+def infer_event_context(
     *,
     ev_row: pd.Series,
     candidate_token_cols: Sequence[str],
@@ -166,7 +162,7 @@ def infer_event_sensor(
     schema_id_val = ev_row.get(config.event_type_col, None)
     for col in candidate_token_cols:
         tok = ev_row.get(col, None)
-        s = resolve_sensor_for_row(
+        s = resolve_context_for_row(
             session_key=sk,
             schema_id_val=schema_id_val,
             token_val=tok,
@@ -195,14 +191,14 @@ def filter_events(
     if selected_event_type:
         sub = sub[sub[config.event_type_col].astype(str) == str(selected_event_type)].copy()
 
-    sensors = tuple(canonical_sensor_id(s) for s in selected_sensors or () if canonical_sensor_id(s))
+    sensors = tuple(canonical_end(s) for s in selected_sensors or () if canonical_end(s))
     if not sensors:
         return sub
 
     sel_set = set(sensors)
     mask = []
     for _, r in sub.iterrows():
-        s = resolve_sensor_for_row(
+        s = resolve_context_for_row(
             session_key=r.get(config.session_key_col),
             schema_id_val=r.get(config.event_type_col),
             token_val=r.get(config.signal_col),

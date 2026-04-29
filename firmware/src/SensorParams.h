@@ -48,7 +48,7 @@ enum class ParamType : uint8_t { Bool, Int, Float, String, Enum };
 // A single parameter description.
 // All numbers are text so we don't pull in std lib parsing here.
 struct ParamDef {
-  const char* key;      // "pin", "invert", "mode", ...
+  const char* key;      // "pin", "mode", ...
   ParamType   type;
   const char* def;      // default value as text (e.g. "36", "false", "norm")
   const char* minv;     // optional min  (nullptr if N/A)

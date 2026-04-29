@@ -14,7 +14,7 @@ Developed mainly for mountain bike use.
 ## Hardware
 
 - **ESP32** (Arduino core 3.3.0 tested) - SparkFun ESP32 Thing Plus dev board
-- **MicroSD** via SPI
+- **MicroSD** via ESP32 SDMMC
 - **Buttons**
 - **0.96" monochrome OLED display**
 - **Sensors** starting with potentiometers on ADC pins (configurable)
@@ -39,7 +39,7 @@ This document summarizes the major modules in the project, what each one is resp
 **Purpose:** Load/save the logger’s global settings and the list of **SensorSpec**s from `loggercfg.txt`. It also owns a per‑sensor key/value store backing the **ParamPack** interface used by sensor code.
 
 **Key responsibilities**
-- `begin(SdFs*, filename)` — wire to shared SD object and file name.
+- `begin(filename)` - set the config file path. Storage access is handled through `StorageManager`.
 - `load(LoggerConfig&)` / `save(const LoggerConfig&)` — merge text file with defaults and persist changes.
 - Manage **SensorSpec** array (type, name, mutedDefault, ParamPack for per-sensor params).
 - Simple string‑backed **ParamStore** (arrays `keys[]`/`vals[]`, bounded sizes) with case‑insensitive lookups.
@@ -52,8 +52,12 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Notes/Gotchas**
 - `save()` writes **all** config keys (globals + sensors) deterministically.
+- `logger_name` is the human-readable alias shown in the web UI title bar.
+- `log_format` controls the top-level CSV layout. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index.
+- `omit_metadata=false` keeps the default behaviour of writing a same-stem JSON log metadata file at log close. Set `true` to skip metadata generation.
+- Idle timeout config is saved in minutes (`auto_sleep_idle_min`, `wifi_idle_timeout_min`). Legacy `_ms` keys are still accepted on load for migration.
 - Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
-- File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `invert`, `ema_alpha_permille`, `deadband_counts`, `zero_count`, `full_count`, `full_travel_mm`.
+- File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `zero_count`, `full_count`, `full_travel_mm`.
 - File format keys used by AS5600 string-pot sensors include `counts_per_turn`, `wrap_threshold_counts`, `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`, and `assume_turn0_at_start`.
 
 ---
@@ -80,11 +84,12 @@ This document summarizes the major modules in the project, what each one is resp
 **Purpose:** Acquire analog position and report one or more columns depending on mode and configuration.
 
 **Key params (from ParamPack)**
-- `pin` (ADC pin), `mode` (`raw`/`norm`/`mm`), `include_raw` (bool), `invert` (bool),
-- `ema_alpha_permille` (smoothing), `deadband_counts`, `zero_count`, `full_count`, `full_travel_mm`.
+- `pin` (ADC pin), `mode` (`raw`/`norm`/`mm`), `include_raw` (bool),
+- `zero_count`, `full_count`, `full_travel_mm`.
 
 **Notes**
 - Produces normalized and/or raw columns; column names include the sensor `name` (e.g. `pot1_norm`).
+- Measurement direction is derived from calibration endpoints. If the full-travel count is below the zero-travel count, the firmware treats the signal as inverted.
 - Honors **muted** state via `SensorManager` (muted sensors still tick but are skipped in log output).
 
 ## `AS5600StringPotSensorBase` / `AS5600StringPotAnalog`
@@ -95,10 +100,11 @@ This document summarizes the major modules in the project, what each one is resp
 - `ain` / `pin`
 - `counts_per_turn`, `wrap_threshold_counts`, `assume_turn0_at_start`
 - `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`
-- `invert`, `ema_alpha`, `deadband`, `output_mode`, `include_raw`
+- `output_mode`, `include_raw`
 
 **Notes**
 - `RAW` mode reports wrapped counts as the primary column.
+- When `include_raw=true`, the logger appends wrapped raw counts and unwrapped raw counts. The unwrapped raw metadata includes `unwrap` in its transform chain.
 - `LINEAR` mode reports unwrapped mm using the calibrated unwrapped span.
 - The sensor resets its unwrap tracker to turn 0 at each logging start when `assume_turn0_at_start=true`.
 
@@ -106,16 +112,17 @@ This document summarizes the major modules in the project, what each one is resp
 
 ## `StorageManager`
 
-**Purpose:** Single owner of the `SdFat` instance and log file lifecycle; provides sample interval/buffer knobs.
+**Purpose:** Single owner of SDMMC startup and log file lifecycle; provides sample interval/buffer knobs.
 
 **Common APIs**
-- `StorageManager_begin(csPin)`
-- `StorageManager_getSd()` (shared SdFat* used by Config/Web)
+- `StorageManager_begin(boardProfile)`
 - `StorageManager_setSampleRate(hz)` / `StorageManager_getSampleIntervalMs()`
 - `StorageManager_setBufferSize(bytes)`
 
 **Notes**
-- `sd.begin()` and error handling live here.
+- `SD_MMC.begin()` and error handling live here.
+- `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and `mark`, with a header. Run statistics are written to the same-stem JSON metadata file under `qc.run_stats`.
+- `syn_bike_raw` logs headerless rows as `sample_id,front_raw,rear_raw,lat,long,speed`; GPS fields are blank for now and no CSV footer is emitted for third-party compatibility.
 - A small smoke test may create `TEST.TXT` during setup.
 
 ---
@@ -150,9 +157,11 @@ This document summarizes the major modules in the project, what each one is resp
 **Purpose:** Lightweight HTTP UI for status, SD file browsing, and editing **all** configuration (globals + sensors).
 
 **Routes**
-- `/` status; `/files` with `download` and `delete` actions.
+- `/` redirects to `/files`; `/files` is the landing page and supports SD browsing, upload, download, and delete actions.
 - `/config` (GET) displays editable globals and sensor sections.
 - `/config` (POST) updates globals and rewrites `loggercfg.txt` with all keys; also rewrites each sensor’s block.
+- `/config/sensors` can add or remove sensor config blocks. Removing a sensor rewrites config only; transform directories/files are left in place. Restart the logger after adding/removing sensors so the live sensor set is rebuilt.
+- All HTML pages share a title/navigation header showing `BODAQS data logger: <logger_name>`, the active network, and IP address.
 
 **Interlocks**
 - `canStart()` returns false while logging is active; `ButtonActions` also blocks starting logging while Wi‑Fi/web is running.
@@ -230,6 +239,8 @@ ButtonActions::registerButtons();  // reads pins & debounce from config
   - Left goes back; closing returns the OLED to `DisplayManager` by calling `UI::setModal(false)` internally.
 
 **Notes**
+- The final main-menu item is `About`; it shows firmware version, active board profile, and build timestamp.
+- Firmware version text comes from the compile-time `BODAQS_FW_VERSION` define, with fallback defaults in `FirmwareInfo.h`.
 - Calls `UI::setModal(true)` on open and `UI::setModal(false)` on close so normal telemetry rendering pauses while the menu is visible.
 - Uses `ConfigManager::sensorCount()`/`getSensorSpec()` to render names; relies on `SensorManager` for the **live** mute state.
 
@@ -261,7 +272,7 @@ void DBG_IMPL(DebugLevel lvl, const char* fmt, ...);
 
 ## Configuration Keys (globals)
 
-- `sample_rate_hz`, `timestamp_mode` (`human|fast`), `tz`
+- `logger_name`, `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format`, `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
 - `debounce_ms`
 - Button pins: `web_button_pin`, `log_button_pin`, `mark_button_pin`, `nav_up_pin`, `nav_down_pin`, `nav_left_pin`, `nav_right_pin`, `nav_enter_pin`
 - Network/time: `wifi_ssid`, `wifi_password`, `ntp_servers`, `time_check_url`
@@ -276,9 +287,6 @@ sensorN.muted=true|false
 sensorN.pin=34
 sensorN.mode=raw|norm|mm
 sensorN.include_raw=true|false
-sensorN.invert=true|false
-sensorN.ema_alpha_permille=200
-sensorN.deadband_counts=0
 sensorN.zero_count=0
 sensorN.full_count=4095
 sensorN.full_travel_mm=0

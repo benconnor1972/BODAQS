@@ -53,7 +53,8 @@ source = {
     "filename": str,             # basename only
     "created_local": datetime | None,
     "timezone": str | None,      # e.g. "Australia/Perth" or "AWST"
-    "sidecar_path": str | None,  # optional logger metadata sidecar used during ingest
+    "log_metadata_path": str | None,  # optional logger log metadata used during ingest
+    "sidecar_path": str | None,  # deprecated alias for log_metadata_path
 }
 ```
 
@@ -77,7 +78,7 @@ meta = {
     # At minimum, streams["primary"] describes the timebase of session["df"].
     "streams": dict[str, dict],
 
-    # Optional raw ingest declarations from logger sidecar metadata.
+    # Optional raw ingest declarations from logger log metadata.
     "declared_streams": dict[str, dict] | None,
 
     "device": dict | None,       # firmware / hardware metadata if available
@@ -92,15 +93,19 @@ Keyed by canonical base channel name:
 ```python
 meta["channel_info"][channel] = {
     "unit": str | None,              # e.g. "mm", "g", "deg/s", "V"
-    "sensor": str | None,            # logical grouping (e.g. "rear_shock", "imu")
+    "sensor": str | None,            # source/logical grouping (e.g. "rear_shock", "imu")
+    "end": str | None,               # bike end/location, usually "front" or "rear"
     "role": str | None,              # e.g. "position", "accel", "gyro"
     "nominal_rate_hz": float | None, # if known from firmware/config
     "source_columns": list[str],     # raw CSV columns used (optional)
 }
 ```
 
-Suspension sensors should be stored with canonical ids `front_shock` and `rear_shock`.
-During analysis ingest/resolution, `fork` is accepted as an alias for `front_shock`, and `shock` is accepted as an alias for `rear_shock`.
+For front/rear suspension and wheel signals, `end` is the preferred semantic for
+bike-location matching. `sensor` remains available for logger/source identity,
+legacy canonical column stems, and display grouping. Analysis-side semantic
+resolution does not alias `fork`/`shock`; legacy naming should be resolved via
+log metadata before preprocessing.
 
 
 ### meta.streams (Per-Stream Timebase Metadata)
@@ -161,8 +166,11 @@ All preprocessing operations are recorded here.
 
 #### Zeroing (in-place)
 
-Zeroing modifies the base channel **in-place**.  
-No `*_zeroed` columns are created.
+Zeroing modifies the selected physical channel values **in-place** in the
+preprocessed dataframe. Raw input values remain available in the raw session
+payload. Separate physical `*_op_zeroed` columns are not created by the standard
+preprocessing pipeline, although downstream generated columns may encode
+zeroing in their operation chain, for example `[1]_op_zeroed_norm`.
 
 ```python
 "zeroed": {
@@ -206,7 +214,8 @@ No `*_zeroed` columns are created.
 
 ### firmware_stats (Logger-Provided QC)
 
-Captured from end-of-file footer stats when available.
+Captured from logger JSON metadata `qc.run_stats` when available. Legacy
+end-of-file footer stats are still parsed for older logs.
 
 ```python
 "firmware_stats": {

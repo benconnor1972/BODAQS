@@ -8,14 +8,14 @@ import logging
 import os
 import re
 
-from .io_logger import load_logger_csv_with_sidecar, parse_run_stats_footer
+from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
 from .io_fit import (
     FIT_DEFAULT_FIELDS,
     find_overlapping_fit_files,
     load_fit_stream,
     select_fit_candidate,
 )
-from .normalize import normalize_and_scale
+from .normalize import scale_signal_columns, zero_signal_columns
 from .va import estimate_va, name_vel
 from .schema import load_event_schema
 from .detect import detect_events_from_schema
@@ -29,12 +29,16 @@ from .signal_standardize import (
     rebuild_and_validate_signal_registry,
 )
 from .signal_registry import build_signals_registry
-from .sensor_aliases import canonical_sensor_id
+from .signal_selectors import resolve_signal_selector
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
     apply_butterworth_smoothing,
     normalize_butterworth_smoothing_configs,
 )
+from .motion_derivation import derive_motion_channels
+from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
+from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
+from .sensor_aliases import canonical_end, canonical_sensor_id
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_DATETIME_RE = re.compile(
@@ -43,6 +47,9 @@ _FILENAME_STEM_DATETIME_RE = re.compile(
 ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
 
 logger = logging.getLogger(__name__)
+
+_LOG_METADATA_BINDING_KEY = "_bodaqs_log_metadata_binding"
+_SIDECAR_BINDING_KEY = "_bodaqs_sidecar_binding"
 
 _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
@@ -58,23 +65,62 @@ _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
     "bindings_path": None,
 }
 
+
+def _metadata_binding(log_metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    binding = log_metadata.get(_LOG_METADATA_BINDING_KEY)
+    if isinstance(binding, dict):
+        return binding
+    binding = log_metadata.get(_SIDECAR_BINDING_KEY)
+    return binding if isinstance(binding, dict) else None
+
+
+def _firmware_stats_from_log_metadata(log_metadata: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(log_metadata, Mapping):
+        return None
+    qc = log_metadata.get("qc")
+    if not isinstance(qc, Mapping):
+        return None
+    run_stats = qc.get("run_stats")
+    if not isinstance(run_stats, Mapping) or not run_stats:
+        return None
+    return dict(run_stats)
+
+
+def _firmware_dropped_sample_count(stats: Any) -> int:
+    if not isinstance(stats, Mapping):
+        return 0
+    value = stats.get("samples_dropped", stats.get("samplesDropped", 0))
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _declared_time_columns(sidecar: Dict[str, Any]) -> set[str]:
     out: set[str] = set()
+    binding = _metadata_binding(sidecar)
+    bound_columns = binding.get("columns", {}) if isinstance(binding, dict) else {}
 
     columns = sidecar.get("columns")
     if isinstance(columns, dict):
         for col_name, info in columns.items():
             if isinstance(info, dict) and info.get("class") == "time":
                 out.add(str(col_name))
+                bound = bound_columns.get(str(col_name))
+                if isinstance(bound, dict) and isinstance(bound.get("dataframe_column"), str):
+                    out.add(bound["dataframe_column"])
 
     streams = sidecar.get("streams")
     if isinstance(streams, dict):
         for stream_info in streams.values():
             if not isinstance(stream_info, dict):
                 continue
-            time_col = stream_info.get("time_col")
+            time_col = stream_info.get("time_column", stream_info.get("time_col"))
             if isinstance(time_col, str) and time_col.strip():
                 out.add(time_col)
+                bound = bound_columns.get(time_col)
+                if isinstance(bound, dict) and isinstance(bound.get("dataframe_column"), str):
+                    out.add(bound["dataframe_column"])
 
     out.add("time_s")
     return out
@@ -84,6 +130,8 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
     out: Dict[str, Dict[str, Any]] = {}
     columns = sidecar.get("columns")
     streams = sidecar.get("streams")
+    binding = _metadata_binding(sidecar)
+    bound_columns = binding.get("columns", {}) if isinstance(binding, dict) else {}
     if not isinstance(columns, dict):
         return out
 
@@ -93,22 +141,45 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         if info.get("class") != "signal":
             continue
 
+        bound = bound_columns.get(str(col_name))
+        dataframe_col = bound.get("dataframe_column") if isinstance(bound, dict) else str(col_name)
+        if not isinstance(dataframe_col, str) or not dataframe_col.strip():
+            dataframe_col = str(col_name)
+
         ch: Dict[str, Any] = {}
         unit = info.get("unit")
         if isinstance(unit, str) and unit.strip():
-            ch["unit"] = unit
+            ch["unit"] = "1" if unit.strip().lower() in {"norm", "normalized", "normalised", "unitless"} else unit
 
         sensor = info.get("sensor")
         if isinstance(sensor, str) and sensor.strip():
             ch["sensor"] = canonical_sensor_id(sensor)
 
+        end = info.get("end")
+        canonical = canonical_end(end) if isinstance(end, str) and end.strip() else ""
+        if canonical:
+            ch["end"] = canonical
+
         quantity = info.get("quantity")
         if isinstance(quantity, str) and quantity.strip():
             ch["role"] = quantity
+            ch["quantity"] = quantity
+
+        domain = info.get("domain")
+        if isinstance(domain, str) and domain.strip():
+            ch["domain"] = domain
 
         source_columns = info.get("source_columns")
         if isinstance(source_columns, list):
             ch["source_columns"] = [str(x) for x in source_columns if isinstance(x, str)]
+
+        calibration_ref = info.get("calibration_ref")
+        if isinstance(calibration_ref, str) and calibration_ref.strip():
+            ch["calibration_ref"] = calibration_ref
+
+        transform_chain = info.get("transform_chain")
+        if isinstance(transform_chain, list):
+            ch["transform_chain"] = [str(x) for x in transform_chain if isinstance(x, str)]
 
         stream_name = info.get("stream")
         if isinstance(stream_name, str) and isinstance(streams, dict):
@@ -121,32 +192,61 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
                     except Exception:
                         pass
 
-        out[str(col_name)] = ch
+        ch["log_metadata_column_id"] = str(col_name)
+        ch["sidecar_column_id"] = str(col_name)
+        if isinstance(bound, dict):
+            ch["csv_column"] = bound.get("physical_column_label")
+            ch["csv_ref"] = bound.get("csv_ref")
+
+        out[dataframe_col] = ch
 
     return out
 
 
-def _apply_sidecar_metadata(
+def _apply_log_metadata(
     session: Dict[str, Any],
     *,
-    sidecar: Dict[str, Any],
-    sidecar_path: str,
+    log_metadata: Dict[str, Any],
+    log_metadata_path: str,
 ) -> None:
     source = session.setdefault("source", {})
     meta = session.setdefault("meta", {})
     qc = session.setdefault("qc", {})
     parse = qc.setdefault("parse", {})
 
-    source["sidecar_path"] = sidecar_path
+    source["log_metadata_path"] = log_metadata_path
+    # Transitional alias for existing consumers.
+    source["sidecar_path"] = log_metadata_path
+    binding = _metadata_binding(log_metadata)
+    if isinstance(binding, dict):
+        log_metadata_kind = binding.get("log_metadata_kind", binding.get("sidecar_kind"))
+        if isinstance(log_metadata_kind, str) and log_metadata_kind.strip():
+            source["log_metadata_kind"] = log_metadata_kind
+            source["sidecar_kind"] = log_metadata_kind
+            parse["log_metadata_kind"] = log_metadata_kind
+            parse["sidecar_kind"] = log_metadata_kind
+        parse["log_metadata_column_bindings"] = binding.get("columns", {})
+        parse["sidecar_column_bindings"] = binding.get("columns", {})
+        missing_optional = binding.get("missing_optional_columns")
+        if isinstance(missing_optional, list):
+            parse["log_metadata_missing_optional_columns"] = list(missing_optional)
+            parse["sidecar_missing_optional_columns"] = list(missing_optional)
+        skipped_unknown = binding.get("skipped_unknown_columns")
+        if isinstance(skipped_unknown, list):
+            parse["log_metadata_skipped_unknown_columns"] = list(skipped_unknown)
+            parse["sidecar_skipped_unknown_columns"] = list(skipped_unknown)
+        for warning in binding.get("warnings", []):
+            if isinstance(warning, str) and warning.strip():
+                _append_qc_warning(session, warning)
 
-    contract = sidecar.get("contract")
+    contract = log_metadata.get("contract")
     if isinstance(contract, dict):
         name = contract.get("name")
         version = contract.get("version")
         if isinstance(name, str) and isinstance(version, str):
             meta["source_contract"] = {"name": name, "version": version}
 
-    declared_streams = sidecar.get("streams")
+    declared_streams = log_metadata.get("streams")
     if isinstance(declared_streams, dict):
         meta["declared_streams"] = declared_streams
 
@@ -158,9 +258,13 @@ def _apply_sidecar_metadata(
                     break
 
         if isinstance(primary_stream, dict):
-            time_col = primary_stream.get("time_col")
+            time_col = primary_stream.get("time_column", primary_stream.get("time_col"))
             if isinstance(time_col, str) and time_col.strip():
                 parse["time_column_used"] = time_col
+                if isinstance(binding, dict):
+                    bound = binding.get("columns", {}).get(time_col)
+                    if isinstance(bound, dict) and isinstance(bound.get("dataframe_column"), str):
+                        parse["time_dataframe_column_used"] = bound["dataframe_column"]
             if primary_stream.get("type") == "uniform":
                 sample_rate_hz = primary_stream.get("sample_rate_hz")
                 if sample_rate_hz is not None:
@@ -169,7 +273,7 @@ def _apply_sidecar_metadata(
                     except Exception:
                         pass
 
-    session_meta = sidecar.get("session")
+    session_meta = log_metadata.get("session")
     if isinstance(session_meta, dict):
         started_at_local = session_meta.get("started_at_local")
         if isinstance(started_at_local, str) and started_at_local.strip():
@@ -188,7 +292,7 @@ def _apply_sidecar_metadata(
         if isinstance(source_session_id, str) and source_session_id.strip():
             meta["source_session_id"] = source_session_id
 
-    provenance = sidecar.get("provenance")
+    provenance = log_metadata.get("provenance")
     if isinstance(provenance, dict):
         device = meta.get("device")
         if not isinstance(device, dict):
@@ -208,9 +312,22 @@ def _apply_sidecar_metadata(
     if not isinstance(channel_info, dict):
         channel_info = {}
         meta["channel_info"] = channel_info
-    channel_info.update(_build_channel_info_from_sidecar(sidecar))
+    channel_info.update(_build_channel_info_from_sidecar(log_metadata))
 
+    parse["log_metadata_used"] = True
     parse["sidecar_used"] = True
+
+
+def _apply_sidecar_metadata(
+    session: Dict[str, Any],
+    *,
+    sidecar: Dict[str, Any],
+    sidecar_path: str,
+) -> None:
+    """
+    Backward-compatible alias for _apply_log_metadata().
+    """
+    _apply_log_metadata(session, log_metadata=sidecar, log_metadata_path=sidecar_path)
 
 
 def _infer_time_anchor_from_filename_stem(
@@ -279,15 +396,21 @@ def load_session(
     *,
     timezone: Optional[str] = None,
     sidecar_path: Optional[str] = None,
+    generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
 ) -> Dict[str, Any]:
     """Load a CSV into a v0 Session dict (df_raw + initial qc/meta)."""
     p = Path(csv_path)
-    df_raw, sidecar, resolved_sidecar_path = load_logger_csv_with_sidecar(
+    df_raw, sidecar, resolved_sidecar_path = load_logger_csv_with_log_metadata(
         str(p),
+        log_metadata_path=log_metadata_path,
+        generic_log_metadata_paths=generic_log_metadata_paths,
         sidecar_path=sidecar_path,
+        generic_sidecar_paths=generic_sidecar_paths,
     )
 
-    stats = parse_run_stats_footer(str(p))
+    stats = _firmware_stats_from_log_metadata(sidecar) or parse_run_stats_footer(str(p))
     excluded_time_columns = {"sample_id", "time_s", "clock", "Clock", "Time"}
     if isinstance(sidecar, dict):
         excluded_time_columns |= _declared_time_columns(sidecar)
@@ -330,7 +453,8 @@ def load_session(
         "df": df_raw.copy(),
     }
     if isinstance(sidecar, dict) and isinstance(resolved_sidecar_path, str):
-        _apply_sidecar_metadata(session, sidecar=sidecar, sidecar_path=resolved_sidecar_path)
+        _apply_log_metadata(session, log_metadata=sidecar, log_metadata_path=resolved_sidecar_path)
+    _warn_on_firmware_dropped_samples(session)
     _apply_filename_stem_time_anchor(session, csv_path=p)
     return session
 
@@ -339,6 +463,9 @@ def load_and_canonicalize(
     *,
     timezone: Optional[str] = None,
     sidecar_path: Optional[str] = None,
+    generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
 ) -> Dict[str, Any]:
     """
     Step 1 helper for notebooks/UI:
@@ -347,7 +474,14 @@ def load_and_canonicalize(
       - build signals registry (so we can list displacement signals)
     Does NOT require normalize_ranges.
     """
-    session = load_session(csv_path, timezone=timezone, sidecar_path=sidecar_path)
+    session = load_session(
+        csv_path,
+        timezone=timezone,
+        log_metadata_path=log_metadata_path,
+        generic_log_metadata_paths=generic_log_metadata_paths,
+        sidecar_path=sidecar_path,
+        generic_sidecar_paths=generic_sidecar_paths,
+    )
 
     # Infer units from column headers like "... [mm]"
     df = session["df"]
@@ -380,6 +514,20 @@ def _append_qc_warning(session: Dict[str, Any], warning: str) -> None:
         warnings.append(warning)
 
 
+def _warn_on_firmware_dropped_samples(session: Dict[str, Any]) -> None:
+    stats = session.get("qc", {}).get("firmware_stats")
+    dropped = _firmware_dropped_sample_count(stats)
+    if dropped <= 0:
+        return
+    csv_path = session.get("source", {}).get("path")
+    logger.warning(
+        "Logger firmware reported dropped samples: samples_dropped=%s csv=%s",
+        dropped,
+        csv_path,
+    )
+    _append_qc_warning(session, f"firmware_samples_dropped:{dropped}")
+
+
 def _merge_channel_info(
     session: Dict[str, Any],
     channel_info: Mapping[str, Mapping[str, Any]],
@@ -399,6 +547,111 @@ def _merge_channel_info(
             current[col] = merged
         else:
             current[col] = dict(info)
+
+
+def _motion_normalization_ranges(
+    motion_meta: Mapping[str, Any],
+    normalize_ranges: Mapping[str, float],
+) -> Dict[str, float]:
+    """Return normalization ranges for generated motion displacement channels."""
+    out: Dict[str, float] = {}
+    generated = motion_meta.get("generated", [])
+    if not isinstance(generated, Sequence) or isinstance(generated, (str, bytes)):
+        return out
+
+    for rec in generated:
+        if not isinstance(rec, Mapping):
+            continue
+        if rec.get("quantity") != "disp":
+            continue
+        output_col = rec.get("output_col")
+        source_col = rec.get("source_col")
+        if not isinstance(output_col, str) or not isinstance(source_col, str):
+            continue
+        if source_col in normalize_ranges:
+            out[output_col] = float(normalize_ranges[source_col])
+    return out
+
+
+def _motion_zeroed_columns(
+    motion_meta: Mapping[str, Any],
+    zeroed_columns: set[str],
+) -> set[str]:
+    """Propagate in-place zeroing provenance to generated motion displacement outputs."""
+    out: set[str] = set()
+    generated = motion_meta.get("generated", [])
+    if not isinstance(generated, Sequence) or isinstance(generated, (str, bytes)):
+        return out
+
+    for rec in generated:
+        if not isinstance(rec, Mapping):
+            continue
+        if rec.get("quantity") != "disp":
+            continue
+        output_col = rec.get("output_col")
+        source_col = rec.get("source_col")
+        if isinstance(output_col, str) and isinstance(source_col, str) and source_col in zeroed_columns:
+            out.add(output_col)
+    return out
+
+
+def _channel_info_for_scaled_outputs(
+    session: Mapping[str, Any],
+    scale_meta: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Preserve analysis-role provenance on normalized outputs."""
+    signals = ((session.get("meta") or {}).get("signals") or {})
+    if not isinstance(signals, Mapping):
+        signals = {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    per_column = scale_meta.get("per_column", [])
+    if not isinstance(per_column, Sequence) or isinstance(per_column, (str, bytes)):
+        return out
+
+    passthrough_keys = (
+        "sensor",
+        "end",
+        "domain",
+        "processing_role",
+        "motion_source_id",
+        "motion_profile_id",
+    )
+    for rec in per_column:
+        if not isinstance(rec, Mapping) or rec.get("status") != "ok":
+            continue
+        norm_col = rec.get("norm_col")
+        source_col = rec.get("source_column", rec.get("column"))
+        if not isinstance(norm_col, str) or not isinstance(source_col, str):
+            continue
+
+        source_info = signals.get(source_col)
+        if not isinstance(source_info, Mapping):
+            continue
+
+        info: Dict[str, Any] = {
+            "unit": "1",
+            "quantity": "disp_norm",
+            "source": [source_col],
+            "source_columns": [source_col],
+            "derivation": {
+                "method": "normalization",
+                "source_col": source_col,
+                "full_range": rec.get("full_range"),
+                "clip_0_1": bool(rec.get("clip_0_1", False)),
+            },
+        }
+        for key in passthrough_keys:
+            value = source_info.get(key)
+            if value is not None:
+                info[key] = value
+
+        source_derivation = source_info.get("derivation")
+        if isinstance(source_derivation, Mapping):
+            info["derivation"]["source_derivation"] = dict(source_derivation)
+
+        out[norm_col] = info
+    return out
 
 
 def _normalized_fit_import_config(fit_import: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -694,28 +947,86 @@ def _build_active_mask_from_time_s(
     keep = pd.Series(keep_td.to_numpy(dtype=bool), index=df.index, name=ACTIVE_MASK_COL)
     return keep
 
-def preprocess_session(session: Dict[str, Any],
-                       *,
-                       normalize_ranges: Dict[str, float],
-                       sample_rate_hz: Optional[float] = None,
-                       zeroing_enabled: bool = True,
-                       zero_window_s: float = 1.0,
-                       zero_min_samples: int = 10,
-                       clip_0_1: bool = False,
-                       active_signal_disp_col: Optional[str] = None,
-                       active_signal_vel_col: Optional[str] = None,
-                       active_disp_thresh: float = 20,
-                       active_vel_thresh: float = 50,
-                       active_window: str = "500ms",
-                       active_padding: str = "1s",
-                       active_min_seg: str = "3s",
-                       butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
-                       butterworth_generate_residuals: bool = False,
-                       va_cols: Optional[Sequence[str]] = None,
-                       va_window_points: int = 11,
-                       va_poly_order: int = 3) -> Dict[str, Any]:
+
+def _validated_preprocess_config_copy(config: Mapping[str, Any]) -> Dict[str, Any]:
+    validate_preprocess_config(config)
+    return dict(config)
+
+
+def _coerce_preprocess_config(
+    *,
+    preprocess_profile_path: Optional[str | Path],
+    preprocess_profile: Optional[Mapping[str, Any]],
+    preprocess_config: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    provided = [
+        preprocess_profile_path is not None,
+        preprocess_profile is not None,
+        preprocess_config is not None,
+    ]
+    if sum(provided) > 1:
+        raise ValueError(
+            "Use only one of preprocess_profile_path, preprocess_profile, or preprocess_config"
+        )
+    if preprocess_profile_path is not None:
+        return load_preprocess_config(preprocess_profile_path)
+    if preprocess_profile is not None:
+        return preprocess_config_from_profile(preprocess_profile)
+    if preprocess_config is not None:
+        return _validated_preprocess_config_copy(preprocess_config)
+    return None
+
+
+def _preprocess_loaded_session(session: Dict[str, Any],
+                               *,
+                               preprocess_config: Optional[Mapping[str, Any]] = None,
+                               normalize_ranges: Optional[Dict[str, float]] = None,
+                               bike_profile: Optional[Mapping[str, Any]] = None,
+                               bike_profile_path: Optional[str | Path] = None,
+                               sample_rate_hz: Optional[float] = None,
+                               zeroing_enabled: bool = True,
+                               zero_window_s: float = 1.0,
+                               zero_min_samples: int = 10,
+                               clip_0_1: bool = False,
+                               active_signal_disp_col: Optional[str] = None,
+                               active_signal_vel_col: Optional[str] = None,
+                               active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+                               active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
+                               active_disp_thresh: float = 20,
+                               active_vel_thresh: float = 50,
+                               active_window: str = "500ms",
+                               active_padding: str = "1s",
+                               active_min_seg: str = "3s",
+                               butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
+                               butterworth_generate_residuals: bool = False,
+                               motion_derivation: Optional[Mapping[str, Any]] = None,
+                               va_cols: Optional[Sequence[str]] = None,
+                               va_window_points: int = 11,
+                               va_poly_order: int = 3,
+                               strict: bool = True) -> Dict[str, Any]:
     
-    """Normalize, zero + compute velocity/acceleration."""
+    """Apply preprocessing to an already-loaded session."""
+    if preprocess_config is not None:
+        cfg = _validated_preprocess_config_copy(preprocess_config)
+        sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
+        zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
+        zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
+        zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
+        clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
+        active_signal_disp_selector = cfg.get("active_signal_disp_selector", active_signal_disp_selector)
+        active_signal_vel_selector = cfg.get("active_signal_vel_selector", active_signal_vel_selector)
+        active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
+        active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
+        active_window = str(cfg.get("active_window", active_window))
+        active_padding = str(cfg.get("active_padding", active_padding))
+        active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        motion_derivation = cfg.get("motion_derivation", motion_derivation)
+        butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
+        butterworth_generate_residuals = bool(
+            cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
+        )
+        strict = bool(cfg.get("strict", strict))
+
     df = session["df"].copy()
 
     # QC: ensure structure exists early
@@ -739,26 +1050,156 @@ def preprocess_session(session: Dict[str, Any],
         units_by_base=units_by_col,
         domain_by_base=domain_by_base,
     )
-    df = session["df"]  
+    session = build_signals_registry(session, strict=False)
+    df = session["df"]
 
-    # ---------------- Normalize / zero / scale ----------------
-    df2, norm_meta = normalize_and_scale(
+    if bike_profile is None and bike_profile_path is not None:
+        bike_profile = load_bike_profile(bike_profile_path)
+
+    if normalize_ranges is None and bike_profile is None:
+        raise ValueError("preprocessing requires either normalize_ranges or bike_profile_path")
+
+    # ---------------- Zero physical signal columns before bike-profile transforms ----------------
+    if normalize_ranges is None:
+        zero_ranges = resolve_normalization_ranges(
+            session,
+            bike_profile,
+            bike_profile_path=bike_profile_path,
+            require_at_least_one=False,
+            record=False,
+            warn_unmatched=False,
+        )
+    else:
+        zero_ranges = dict(normalize_ranges)
+
+    df2, zero_meta = zero_signal_columns(
         df,
-        normalize_ranges,
+        zero_ranges,
         zeroing_enabled=zeroing_enabled,
         zero_window_s=zero_window_s,
-        clip_0_1=clip_0_1,
-        return_meta=True,        
+        min_samples_abs_min=zero_min_samples,
+        return_meta=True,
     )
-    per_column = norm_meta.get("per_column",[])
+    zero_per_column = zero_meta.get("per_column", [])
+    zeroed_columns_for_norm = {
+        str(r.get("column"))
+        for r in zero_per_column
+        if r.get("status") == "ok" and (r.get("zeroing") or {}).get("enabled", False)
+    }
     session["df"] = df2
+
+    if bike_profile is not None:
+        session = apply_signal_transforms(
+            session,
+            bike_profile,
+            bike_profile_path=bike_profile_path,
+        )
+        generated_transform_records = [
+            r
+            for r in (
+                (session.get("qc") or {})
+                .get("transforms", {})
+                .get("bike_profile_signal_transforms", {})
+                .get("generated", [])
+            )
+            if isinstance(r, Mapping)
+        ]
+        generated_zeroed_transform_columns = {
+            str(r.get("output_column"))
+            for r in generated_transform_records
+            if r.get("output_column") is not None
+            and str(r.get("input_column")) in zeroed_columns_for_norm
+        }
+        if zeroing_enabled:
+            zeroed_columns_for_norm.update(generated_zeroed_transform_columns)
+        session = build_signals_registry(session, strict=False)
+        df2 = session["df"]
+
+    if normalize_ranges is None:
+        normalize_ranges = resolve_normalization_ranges(
+            session,
+            bike_profile,
+            bike_profile_path=bike_profile_path,
+        )
+    else:
+        normalize_ranges = dict(normalize_ranges)
+    normalize_ranges_for_scale = dict(normalize_ranges)
+
+    meta = session.setdefault("meta", {})
+    sample_rate_hint_hz = sample_rate_hz
+    if sample_rate_hint_hz is None:
+        sample_rate_hint_hz = meta.get("sample_rate_hz")
+
+    # ---------------- Resolve canonical preprocessing sample-rate ----------------
+    # Use the same source for all preprocessing transforms (explicit sample_rate_hz
+    # if provided, else inferred from canonical time_s).
+    tb = estimate_uniform_timebase(
+        df2,
+        time_col="time_s",
+        sample_rate_hz=sample_rate_hint_hz,
+    )
+    preprocess_sample_rate_hz = float(tb.sample_rate_hz)
+
+    # ---------------- Motion analysis channels ----------------
+    motion_meta: Dict[str, Any] = {
+        "enabled": bool((motion_derivation or {}).get("enabled", False))
+        if isinstance(motion_derivation, Mapping)
+        else False,
+        "generated": [],
+        "skipped": [],
+        "warnings": [],
+        "sample_rate_hz": preprocess_sample_rate_hz,
+        "generated_channel_info": {},
+    }
+    if motion_meta["enabled"]:
+        df2, motion_meta = derive_motion_channels(
+            session,
+            motion_derivation,
+            sample_rate_hz=preprocess_sample_rate_hz,
+            strict=bool(strict),
+        )
+        session["df"] = df2
+        _merge_channel_info(
+            session,
+            motion_meta.get("generated_channel_info", {})
+            if isinstance(motion_meta.get("generated_channel_info"), Mapping)
+            else {},
+        )
+        for warning in motion_meta.get("warnings", []):
+            _append_qc_warning(session, str(warning))
+
+        zeroed_columns_for_norm.update(_motion_zeroed_columns(motion_meta, zeroed_columns_for_norm))
+        normalize_ranges_for_scale.update(_motion_normalization_ranges(motion_meta, normalize_ranges))
+        session = build_signals_registry(session, strict=False)
+        df2 = session["df"]
+
+    if active_signal_disp_col is None and active_signal_disp_selector is not None:
+        active_signal_disp_col = resolve_signal_selector(
+            session,
+            active_signal_disp_selector,
+            purpose="activity displacement",
+        )
+
+    # ---------------- Scale after transformations ----------------
+    df2, scale_meta = scale_signal_columns(
+        df2,
+        normalize_ranges_for_scale,
+        clip_0_1=clip_0_1,
+        zeroed_columns=sorted(zeroed_columns_for_norm),
+        return_meta=True,
+    )
+    per_column = scale_meta.get("per_column", [])
+    session["df"] = df2
+    scaled_channel_info = _channel_info_for_scaled_outputs(session, scale_meta)
+    if scaled_channel_info:
+        _merge_channel_info(session, scaled_channel_info)
 
     # Update QC transforms from report
     # (report entries may be missing/empty depending on input columns)
     by_channel = {}
     methods = set()
     
-    for r in per_column:
+    for r in zero_per_column:
         if r.get("status") != "ok":
             continue
         z = r.get("zeroing") or {}
@@ -791,20 +1232,20 @@ def preprocess_session(session: Dict[str, Any],
         } or None,
     }
 
-    meta = session.setdefault("meta", {})
-    sample_rate_hint_hz = sample_rate_hz
-    if sample_rate_hint_hz is None:
-        sample_rate_hint_hz = meta.get("sample_rate_hz")
-
-    # ---------------- Resolve canonical preprocessing sample-rate ----------------
-    # Use the same source for all preprocessing transforms (explicit sample_rate_hz
-    # if provided, else inferred from canonical time_s).
-    tb = estimate_uniform_timebase(
-        df2,
-        time_col="time_s",
-        sample_rate_hz=sample_rate_hint_hz,
-    )
-    preprocess_sample_rate_hz = float(tb.sample_rate_hz)
+    transforms["motion_derivation"] = {
+        "applied": bool(motion_meta.get("generated")),
+        "enabled": bool(motion_meta.get("enabled", False)),
+        "method": "butterworth_savgol_butterworth" if motion_meta.get("enabled") else None,
+        "sample_rate_hz": float(preprocess_sample_rate_hz),
+        "generated_columns": [
+            str(g.get("output_col"))
+            for g in motion_meta.get("generated", [])
+            if isinstance(g, Mapping) and g.get("output_col") is not None
+        ],
+        "n_generated": int(len(motion_meta.get("generated", []))),
+        "n_skipped": int(len(motion_meta.get("skipped", []))),
+        "warnings": [str(w) for w in motion_meta.get("warnings", [])],
+    }
 
     # ---------------- Optional offline Butterworth smoothing ----------------
     bw_configs = normalize_butterworth_smoothing_configs(butterworth_smoothing)
@@ -870,11 +1311,19 @@ def preprocess_session(session: Dict[str, Any],
         return_meta=True,            # <-- opt-in diagnostics
     )
     session["df"] = df3
+    session = build_signals_registry(session, strict=False)
 
     # ---------------- Activity mask (QC; non-destructive) ----------------
     # Derive companion columns from ACTIVE_SIGNAL_BASE
     # Assumes your VA naming convention appends "_vel" to the signal column name.
     # Adjust vel_col derivation if your VA uses a different convention.
+
+    if active_signal_vel_col is None and active_signal_vel_selector is not None:
+        active_signal_vel_col = resolve_signal_selector(
+            session,
+            active_signal_vel_selector,
+            purpose="activity velocity",
+        )
 
     # If user specified only displacement for activity mask, derive the velocity name
     if active_signal_disp_col and not active_signal_vel_col:
@@ -902,6 +1351,8 @@ def preprocess_session(session: Dict[str, Any],
         "mask_col": ACTIVE_MASK_COL,
         "disp_col": active_signal_disp_col,
         "vel_col": active_signal_vel_col,
+        "disp_selector": dict(active_signal_disp_selector) if isinstance(active_signal_disp_selector, Mapping) else None,
+        "vel_selector": dict(active_signal_vel_selector) if isinstance(active_signal_vel_selector, Mapping) else None,
         "disp_thresh": float(active_disp_thresh),
         "vel_thresh": float(active_vel_thresh),
         "window": str(active_window),
@@ -944,45 +1395,114 @@ def preprocess_session(session: Dict[str, Any],
     return session
 
      
-def run_macro(
-    csv_path: str,
-    schema_path: str,
+def preprocess_session(
+    session_or_path: str | Path | Mapping[str, Any],
+    schema_path: Optional[str | Path] = None,
     *,
+    preprocess_profile_path: Optional[str | Path] = None,
+    preprocess_profile: Optional[Mapping[str, Any]] = None,
+    preprocess_config: Optional[Mapping[str, Any]] = None,
     sidecar_path: Optional[str] = None,
+    generic_sidecar_paths: Optional[Sequence[str | Path]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
     fit_import: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
     zero_window_s: float = 1,
     zero_min_samples: int = 10,
     clip_0_1: bool = False,
-    active_signal_disp_col: [str] = None,
-    active_signal_vel_col: [str] = None,
+    active_signal_disp_col: Optional[str] = None,
+    active_signal_vel_col: Optional[str] = None,
     active_disp_thresh: float = 20,
     active_vel_thresh: float = 50,
     active_window: str = "500ms",
     active_padding: str = "1s",
     active_min_seg: str = "3s",
-    normalize_ranges: Dict[str, float],
+    normalize_ranges: Optional[Dict[str, float]] = None,
+    bike_profile_path: Optional[str | Path] = None,
+    bike_profile: Optional[Mapping[str, Any]] = None,
+    active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+    active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
+    motion_derivation: Optional[Mapping[str, Any]] = None,
     timezone: Optional[str] = None,
+    include_events: bool = True,
+    include_metrics: bool = True,
     strict: bool = True,
 ) -> Dict[str, Any]:
-    """Convenience macro pipeline: load -> preprocess -> detect -> segment -> metrics.
+    """Run the standard BODAQS preprocessing pipeline for one session or CSV.
 
-    strict:
+    ``session_or_path`` may be an existing session dict or a logger CSV path.
+    The return value is always a results dictionary with stable top-level keys:
+    ``session``, ``schema``, ``events``, ``segments``, and ``metrics``.
+
+    If an event schema is supplied directly or through ``preprocess_config``,
+    event detection runs by default. Metrics run when events are enabled unless
+    ``include_metrics`` is false.
+
+    ``strict``:
         When True, metrics computation enforces strict trigger/spec requirements (may raise).
         When False, missing trigger times (etc.) should propagate as NaN where supported.
     """
-    session = load_session(csv_path, timezone=timezone, sidecar_path=sidecar_path)
-    logger.info("Session load complete: %s", csv_path)
+    cfg = _coerce_preprocess_config(
+        preprocess_profile_path=preprocess_profile_path,
+        preprocess_profile=preprocess_profile,
+        preprocess_config=preprocess_config,
+    )
+    if cfg is not None:
+        schema_path = schema_path if schema_path is not None else cfg.get("schema_path")
+        fit_import = fit_import if fit_import is not None else cfg.get("fit_import")
+        sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
+        zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
+        zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
+        zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
+        clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
+        active_signal_disp_selector = cfg.get("active_signal_disp_selector", active_signal_disp_selector)
+        active_signal_vel_selector = cfg.get("active_signal_vel_selector", active_signal_vel_selector)
+        active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
+        active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
+        active_window = str(cfg.get("active_window", active_window))
+        active_padding = str(cfg.get("active_padding", active_padding))
+        active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        motion_derivation = cfg.get("motion_derivation", motion_derivation)
+        butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
+        butterworth_generate_residuals = bool(
+            cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
+        )
+        strict = bool(cfg.get("strict", strict))
+
+    if isinstance(schema_path, str) and not schema_path.strip():
+        schema_path = None
+
+    csv_path: Optional[str | Path] = None
+    if isinstance(session_or_path, Mapping):
+        session = dict(session_or_path)
+        source = session.get("source") if isinstance(session.get("source"), dict) else {}
+        source_path = source.get("path") if isinstance(source, dict) else None
+        if isinstance(source_path, (str, Path)):
+            csv_path = source_path
+        logger.info("Using existing session for preprocessing")
+    else:
+        csv_path = session_or_path
+        session = load_session(
+            str(csv_path),
+            timezone=timezone,
+            log_metadata_path=log_metadata_path,
+            generic_log_metadata_paths=generic_log_metadata_paths,
+            sidecar_path=sidecar_path,
+            generic_sidecar_paths=generic_sidecar_paths,
+        )
+        logger.info("Session load complete: %s", csv_path)
 
     session = enrich_session_with_fit(session, fit_import=fit_import)
     if bool((fit_import or {}).get("enabled")):
         logger.info("FIT enrichment step complete")
 
-    session = preprocess_session(
+    session = _preprocess_loaded_session(
         session,
+        preprocess_config=cfg,
         normalize_ranges=normalize_ranges,
         sample_rate_hz=sample_rate_hz,
         zeroing_enabled=zeroing_enabled,
@@ -991,13 +1511,19 @@ def run_macro(
         clip_0_1=clip_0_1,
         active_signal_disp_col=active_signal_disp_col,
         active_signal_vel_col=active_signal_vel_col,
+        active_signal_disp_selector=active_signal_disp_selector,
+        active_signal_vel_selector=active_signal_vel_selector,
         active_disp_thresh=active_disp_thresh,
         active_vel_thresh=active_vel_thresh,
         active_window=active_window,
         active_padding=active_padding,
         active_min_seg=active_min_seg,
+        bike_profile=bike_profile,
+        bike_profile_path=bike_profile_path,
+        motion_derivation=motion_derivation,
         butterworth_smoothing=butterworth_smoothing,
         butterworth_generate_residuals=butterworth_generate_residuals,
+        strict=strict,
     )
     logger.info("Session pre-process complete")
 
@@ -1038,40 +1564,45 @@ def run_macro(
     if not isinstance(meta, dict):
         raise ValueError("session['meta'] must be a dict")
 
-    # Standardized session_id: CSV filename stem (no extension)
-    sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
+    # Standardized session_id: CSV filename stem where a source path is available.
+    if csv_path is not None:
+        sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
+    else:
+        sid = str(session.get("session_id") or meta.get("session_id") or "session")
     session["session_id"] = sid
     meta["session_id"] = sid
 
-    schema = load_event_schema(schema_path)
-    logger.info("Schema load complete")
+    schema = load_event_schema(schema_path) if schema_path is not None and include_events else None
+    if schema is not None:
+        logger.info("Schema load complete")
 
-    events_df = detect_events_from_schema(
-        session["df"],
-        schema,
-        meta=session["meta"],
-    )
+    events_df = pd.DataFrame()
+    if schema is not None and include_events:
+        events_df = detect_events_from_schema(
+            session["df"],
+            schema,
+            meta=session["meta"],
+        )
 
-    # debug
-    logger.info("Event detection complete")
-    logger.info("events rows: %d", len(events_df))
+        logger.info("Event detection complete")
+        logger.info("events rows: %d", len(events_df))
 
-    if isinstance(events_df, pd.DataFrame):
-        if "event_name" in events_df.columns:
-            logger.debug(
-                "event_name unique: %s",
-                sorted(events_df["event_name"].dropna().unique().tolist()),
-            )
-        else:
-            logger.debug("events_df has no 'event_name' column; columns=%s", list(events_df.columns))
+        if isinstance(events_df, pd.DataFrame):
+            if "event_name" in events_df.columns:
+                logger.debug(
+                    "event_name unique: %s",
+                    sorted(events_df["event_name"].dropna().unique().tolist()),
+                )
+            else:
+                logger.debug("events_df has no 'event_name' column; columns=%s", list(events_df.columns))
 
-        if "schema_id" in events_df.columns:
-            logger.debug(
-                "schema_id unique: %s",
-                sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()),
-            )
-        else:
-            logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
+            if "schema_id" in events_df.columns:
+                logger.debug(
+                    "schema_id unique: %s",
+                    sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()),
+                )
+            else:
+                logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
 
 
     # Segment extraction (one schema event per call in v0)
@@ -1079,17 +1610,24 @@ def run_macro(
         isinstance(events_df, pd.DataFrame) and ("schema_id" in events_df.columns)
     ) else []
 
-    defined_sids = sorted([str(e.get("id")) for e in (schema.get("events") or []) if isinstance(e, dict) and e.get("id")])
+    defined_sids = sorted(
+        [
+            str(e.get("id"))
+            for e in ((schema or {}).get("events") or [])
+            if isinstance(e, dict) and e.get("id")
+        ]
+    )
     missing = [sid for sid in defined_sids if sid not in set(detected_sids)]
     if missing:
         logger.info("Schema events with zero detections this run: %s", missing)
 
-    logger.info("Running segment extraction for detected schema events: %s", detected_sids)
+    if schema is not None and include_metrics:
+        logger.info("Running segment extraction for detected schema events: %s", detected_sids)
 
     bundles_by_schema_id: dict[str, dict] = {}
     metrics_parts: list[pd.DataFrame] = []
 
-    for sid in detected_sids:
+    for sid in (detected_sids if schema is not None and include_metrics else []):
         # (Optional but nice) pre-filter for clarity + earlier logging
         events_sel = events_df[events_df["schema_id"].astype(str) == str(sid)]
         if events_sel.empty:
@@ -1135,8 +1673,9 @@ def run_macro(
 
     metrics_df = pd.concat(metrics_parts, ignore_index=True) if metrics_parts else pd.DataFrame()
 
-    validate_metrics_df(metrics_df, events_df=events_df)
-    logger.info("Metrics validation complete")
+    if schema is not None and include_metrics:
+        validate_metrics_df(metrics_df, events_df=events_df)
+        logger.info("Metrics validation complete")
 
     return {
         "session": session,

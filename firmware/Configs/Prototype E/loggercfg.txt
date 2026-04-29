@@ -1,4 +1,5 @@
 # global
+logger_name=Prototype E
 sample_rate_hz=500
 timestamp_mode=human
 tz=AWST-8 #your timezone, in this format
@@ -58,7 +59,6 @@ wifi0.ip= #<your static ip address, if you want one>
 wifi0.gateway= #<your gateway.
 wifi0.subnet= #<your subnet mask>
 wifi0.dns1=192.168.1.1
-wifi0.dns2=0.0.0.0
 
 wifi1.ssid= #<your next ssid>
 wifi1.password= #<your next password>
@@ -70,7 +70,6 @@ wifi1.ip= #<your next static ip address, if you want one>
 wifi1.gateway= #<your next gateway>
 wifi1.subnet= #<your next subnet mask>
 wifi1.dns1=192.168.1.1
-wifi1.dns2=0.0.0.0
 
 # generally leave these alone
 ui_target=1
@@ -88,9 +87,6 @@ sensor0.type=analog_pot
 sensor0.name=front_shock
 sensor0.muted=false
 sensor0.ain=1
-sensor0.invert=true
-sensor0.ema_alpha=1.000000
-sensor0.deadband=0
 sensor0.sensor_zero_count=0
 sensor0.sensor_full_count=4095
 sensor0.sensor_full_travel_mm=203.000000
@@ -106,9 +102,6 @@ sensor1.type=analog_pot
 sensor1.name=rear_shock
 sensor1.muted=false
 sensor1.ain=3
-sensor1.invert=true
-sensor1.ema_alpha=1.000000
-sensor1.deadband=0
 sensor1.sensor_zero_count=0
 sensor1.sensor_full_count=4095
 sensor1.sensor_full_travel_mm=78.000000

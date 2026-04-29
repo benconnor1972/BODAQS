@@ -1,7 +1,6 @@
 #include "Routes_Files.h"
 #include <Arduino.h>
 #include <time.h>
-#include <SdFat.h>
 #include "SD_MMC.h"   // for SD_MMC backend
 
 #include "HtmlUtil.h"
@@ -13,15 +12,6 @@
 using namespace HtmlUtil;
 
 #define FILES_LOGE(...) LOGE_TAG("FILES", __VA_ARGS__)
-
-static bool ensureSd_(SdFs*& out) {
-  out = WebServerManager::sd();
-  if (!out) {
-    FILES_LOGE("SdFat* is null (call WebServerManager::begin first)\n");
-    return false;
-  }
-  return true;
-}
 
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
@@ -177,64 +167,6 @@ static String makeZipName_() {
 }
 
 
-static void listDir_(SdFat* sd, const String& dir, String& html) {
-  SdFile d;
-  if (!d.open(dir.c_str())) { html += F("<p>Failed to open directory.</p>"); return; }
-
-  SdFile e;
-  char name[128];
-
-  // --- Folders first ---
-  d.rewind();
-  while (e.openNext(&d, O_READ)) {
-    if (!e.isSubDir()) { e.close(); continue; }
-    e.getName(name, sizeof(name));
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) { e.close(); continue; }
-
-    html += F("<tr><td></td><td>📁 <a href=\"/files?path=");
-    html += htmlEscape(urlEncodeQueryValue_(normDir(dir) + String(name) + "/"));
-    html += F("\">");
-    html += htmlEscape(String(name));
-    html += F("</a></td><td>-</td><td>"
-              "<a class='delete' href=\"/rmdir?path=");
-    html += htmlEscape(urlEncodeQueryValue_(normDir(dir) + String(name) + "/"));
-    html += F("\">Remove</a>"
-              "</td></tr>");
-
-    e.close();
-    delay(0);
-  }
-
-  // --- Files ---
-  d.rewind();
-  while (e.openNext(&d, O_READ)) {
-    if (e.isSubDir()) { e.close(); continue; }
-    e.getName(name, sizeof(name));
-    const uint32_t sz = e.fileSize();
-
-    const String full = normDir(dir) + String(name);
-    html += F("<tr><td><input type='checkbox' class='filecb' name='path' value='");
-    html += htmlEscape(urlEncodeQueryValue_(full));
-    html += F("'></td><td>");
-    html += htmlEscape(String(name));
-    html += F("</td><td>");
-    html += prettySize_(sz);
-    html += F("</td><td>"
-              "<a class='download' href=\"/download?path=");
-    html += htmlEscape(urlEncodeQueryValue_(full));
-    html += F("\">Download</a> "
-              "<a class='delete' href=\"/delete?path=");
-    html += htmlEscape(urlEncodeQueryValue_(full));
-    html += F("\">Delete</a></td></tr>");
-
-    e.close();
-    delay(0);
-  }
-
-  d.close();
-}
-
-// SD_MMC version of directory listing (same HTML as listDir_ for SdFat) (same HTML as listDir_ for SdFat)
 static void listDirMMC_(const String& dir, String& html) {
   const String openDir = dirOpenPath_(dir);
   File d = SD_MMC.open(openDir.c_str());
@@ -346,10 +278,6 @@ void registerFileRoutes(WebServer& srv) {
     auto& srv = *S;
     noteHttpActivity_();
 
-    // Determine backend: if WebServerManager::sd() is non-null, we're on SPI/SdFat.
-    SdFat* sd = WebServerManager::sd();
-    const bool useSpi = (sd != nullptr);
-
     String path = srv.hasArg("path") ? srv.arg("path") : "/";
     if (!safeRelPath(path)) { srv.send(400, F("text/plain"), F("Bad path")); return; }
     const String dir = normDir(path);
@@ -401,11 +329,7 @@ void registerFileRoutes(WebServer& srv) {
               "<th style='width:40px'><input type='checkbox' id='sel_all'></th>"
               "<th>Name</th><th>Size</th><th>Action</th>"
               "</tr>");
-    if (useSpi) {
-      listDir_(sd, dir, html);
-    } else {
-      listDirMMC_(dir, html);
-    }
+    listDirMMC_(dir, html);
     html += F("</table></form>");
     html += F("<iframe name='zipframe' style='display:none'></iframe>");
 
@@ -422,13 +346,12 @@ void registerFileRoutes(WebServer& srv) {
               "if(selAll){selAll.addEventListener('change',()=>{cbs().forEach(cb=>cb.checked=selAll.checked); refresh();});}"
               "document.addEventListener('change',(e)=>{if(e.target && e.target.classList && e.target.classList.contains('filecb')){"
               "const all=cbs(); if(selAll){ selAll.checked = all.length && all.every(cb=>cb.checked); } refresh(); }});"
-              "btnDl.addEventListener('click',async()=>{btnDl.disabled=true; if(btnZip) btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true;const status=document.getElementById('dl_status');const paths=cbs().filter(cb=>cb.checked).map(cb=>cb.value);if(!paths.length){refresh(); if(selAll) selAll.disabled=false; return;}if(status) status.textContent='Starting...';for(let i=0;i<paths.length;i++){const p=paths[i];const name=(p.split('/').pop()||p);if(status) status.textContent=`Fetching ${i+1}/${paths.length}: ${name}`;try{const url='/download?path='+encodeURIComponent(p);const resp=await fetch(url,{cache:'no-store'});if(!resp.ok) throw new Error('HTTP '+resp.status);const cd=resp.headers.get('Content-Disposition')||'';let fn=name;const mm=/filename\s*=\s*\"?([^\";]+)\"?/i.exec(cd);if(mm && mm[1]) fn=mm[1];const blob=await resp.blob();const a=document.createElement('a');const obj=URL.createObjectURL(blob);a.href=obj; a.download=fn; a.style.display='none';document.body.appendChild(a); a.click();setTimeout(()=>{URL.revokeObjectURL(obj); a.remove();},1500);}catch(err){console.error('Download failed for',p,err);if(status) status.textContent=`Failed: ${name}`;break;}await new Promise(r=>setTimeout(r,300));}if(status && !status.textContent.startsWith('Failed')) status.textContent='Done';refresh(); if(selAll) selAll.disabled=false;});"
+              "btnDl.addEventListener('click',async()=>{btnDl.disabled=true; if(btnZip) btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true;const status=document.getElementById('dl_status');const paths=cbs().filter(cb=>cb.checked).map(cb=>cb.value);if(!paths.length){refresh(); if(selAll) selAll.disabled=false; return;}if(status) status.textContent='Starting...';for(let i=0;i<paths.length;i++){const p=paths[i];const name=(p.split('/').pop()||p);if(status) status.textContent=`Fetching ${i+1}/${paths.length}: ${name}`;try{const url='/download?path='+encodeURIComponent(p);const resp=await fetch(url,{cache:'no-store'});if(!resp.ok) throw new Error('HTTP '+resp.status);const cd=resp.headers.get('Content-Disposition')||'';let fn=name;const mm=/filename\\s*=\\s*\"?([^\";]+)\"?/i.exec(cd);if(mm && mm[1]) fn=mm[1];const blob=await resp.blob();const a=document.createElement('a');const obj=URL.createObjectURL(blob);a.href=obj; a.download=fn; a.style.display='none';document.body.appendChild(a); a.click();setTimeout(()=>{URL.revokeObjectURL(obj); a.remove();},1500);}catch(err){console.error('Download failed for',p,err);if(status) status.textContent=`Failed: ${name}`;break;}await new Promise(r=>setTimeout(r,300));}if(status && !status.textContent.startsWith('Failed')) status.textContent='Done';refresh(); if(selAll) selAll.disabled=false;});"
               "if(btnZip){btnZip.addEventListener('click',()=>{btnDl.disabled=true; btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true; const prevAction=form.action; const prevTarget=form.target; form.action='/download_zip'; form.target='zipframe'; form.submit(); form.action=prevAction; form.target=prevTarget; setTimeout(()=>{refresh(); if(selAll) selAll.disabled=false;},500);});}btnDel.addEventListener('click',()=>{form.action='/delete_multi'; form.submit();});"
               "refresh();"
               "})();"
               "</script>");
 
-    html += F("<p><a href='/'>Home</a></p>");
     html += htmlFooter();
 
     srv.send(200, F("text/html"), html);
@@ -439,9 +362,6 @@ void registerFileRoutes(WebServer& srv) {
 S->on("/download", HTTP_GET, [S](){
   auto& srv = *S;
   noteHttpActivity_();
-
-  SdFat* sd = WebServerManager::sd();
-  bool useSpi = (sd != nullptr);
 
   if (!srv.hasArg("path")) {
     srv.send(400, F("text/plain"), F("Missing 'path'"));
@@ -467,33 +387,18 @@ S->on("/download", HTTP_GET, [S](){
   static uint8_t buf[2048];
   int32_t n;
 
-  if (useSpi) {
-    SdFile f;
-    if (!f.open(path.c_str(), O_READ)) {
-      srv.send(404, F("text/plain"), F("Not found"));
-      return;
-    }
-    srv.send(200, ctype, "");
-    while ((n = f.read(buf, sizeof(buf))) > 0) {
-      srv.sendContent_P((const char*)buf, n);
-      delay(0);
-    }
-    f.close();
-    ok = true;
-  } else {
-    File f = SD_MMC.open(path.c_str(), FILE_READ);
-    if (!f) {
-      srv.send(404, F("text/plain"), F("Not found"));
-      return;
-    }
-    srv.send(200, ctype, "");
-    while ((n = f.read(buf, sizeof(buf))) > 0) {
-      srv.sendContent_P((const char*)buf, n);
-      delay(0);
-    }
-    f.close();
-    ok = true;
+  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  if (!f) {
+    srv.send(404, F("text/plain"), F("Not found"));
+    return;
   }
+  srv.send(200, ctype, "");
+  while ((n = f.read(buf, sizeof(buf))) > 0) {
+    srv.sendContent_P((const char*)buf, n);
+    delay(0);
+  }
+  f.close();
+  ok = true;
 
   if (ok) {
     srv.sendContent(""); // end chunked
@@ -505,9 +410,6 @@ S->on("/download", HTTP_GET, [S](){
 S->on("/delete", HTTP_GET, [S](){
   auto& srv = *S;
   noteHttpActivity_();
-
-  SdFat* sd = WebServerManager::sd();
-  bool useSpi = (sd != nullptr);
 
   if (!srv.hasArg("path")) {
     srv.send(400, F("text/plain"), F("Missing 'path'"));
@@ -523,13 +425,8 @@ S->on("/delete", HTTP_GET, [S](){
   bool exists = false;
   bool removed = false;
 
-  if (useSpi) {
-    exists = sd->exists(path.c_str());
-    if (exists) removed = sd->remove(path.c_str());
-  } else {
-    exists = SD_MMC.exists(path.c_str());
-    if (exists) removed = SD_MMC.remove(path.c_str());
-  }
+  exists = SD_MMC.exists(path.c_str());
+  if (exists) removed = SD_MMC.remove(path.c_str());
 
   if (!exists) {
     srv.send(404, F("text/plain"), F("Not found"));
@@ -634,9 +531,6 @@ S->on("/delete_multi", HTTP_POST, [S](){
   auto& srv = *S;
   noteHttpActivity_();
 
-  SdFat* sd = WebServerManager::sd();
-  const bool useSpi = (sd != nullptr);
-
   String dir = srv.hasArg("dir") ? srv.arg("dir") : "/";
   if (!safeRelPath(dir)) { dir = "/"; }
   dir = normDir(dir);
@@ -711,13 +605,8 @@ S->on("/delete_multi", HTTP_POST, [S](){
     bool exists = false;
     bool removed = false;
 
-    if (useSpi) {
-      exists = sd->exists(p.c_str());
-      if (exists) removed = sd->remove(p.c_str());
-    } else {
-      exists = SD_MMC.exists(p.c_str());
-      if (exists) removed = SD_MMC.remove(p.c_str());
-    }
+    exists = SD_MMC.exists(p.c_str());
+    if (exists) removed = SD_MMC.remove(p.c_str());
 
     html += F("<tr><td><code>");
     html += htmlEscape(p);
@@ -758,9 +647,6 @@ S->on("/delete_multi", HTTP_POST, [S](){
   S->on("/download_zip", HTTP_POST, [S](){
     auto& srv = *S;
     noteHttpActivity_();
-
-    SdFat* sd = WebServerManager::sd();
-    const bool useSpi = (sd != nullptr);
 
     String dir = srv.hasArg("dir") ? srv.arg("dir") : "/";
     if (!safeRelPath(dir)) { dir = "/"; }
@@ -844,30 +730,16 @@ S->on("/delete_multi", HTTP_POST, [S](){
       uint32_t crc = 0;
       uint32_t size = 0;
 
-      if (useSpi) {
-        SdFile f;
-        if (f.open(fullPath.c_str(), O_READ)) {
-          int32_t n;
-          while ((n = f.read(buf, sizeof(buf))) > 0) {
-            crc = crc32_update_(crc, buf, (size_t)n);
-            size += (uint32_t)n;
-            zipWrite_(srv, buf, (size_t)n, bytesWritten);
-            delay(0);
-          }
-          f.close();
+      File f = SD_MMC.open(fullPath.c_str(), FILE_READ);
+      if (f) {
+        int32_t n;
+        while ((n = f.read(buf, sizeof(buf))) > 0) {
+          crc = crc32_update_(crc, buf, (size_t)n);
+          size += (uint32_t)n;
+          zipWrite_(srv, buf, (size_t)n, bytesWritten);
+          delay(0);
         }
-      } else {
-        File f = SD_MMC.open(fullPath.c_str(), FILE_READ);
-        if (f) {
-          int32_t n;
-          while ((n = f.read(buf, sizeof(buf))) > 0) {
-            crc = crc32_update_(crc, buf, (size_t)n);
-            size += (uint32_t)n;
-            zipWrite_(srv, buf, (size_t)n, bytesWritten);
-            delay(0);
-          }
-          f.close();
-        }
+        f.close();
       }
 
       meta[i].crc = crc;
@@ -923,9 +795,6 @@ S->on("/rmdir", HTTP_GET, [S](){
   auto& srv = *S;
   noteHttpActivity_();
 
-  SdFat* sd = WebServerManager::sd();
-  bool useSpi = (sd != nullptr);
-
   if (!srv.hasArg("path")) { srv.send(400, F("text/plain"), F("Missing 'path'")); return; }
 
   String p = srv.arg("path");
@@ -953,36 +822,20 @@ S->on("/rmdir", HTTP_GET, [S](){
   bool empty = true;
   bool existsDir = false;
 
-  if (useSpi) {
-    SdFile d;
-    if (!d.open(p.c_str())) {
-      srv.send(404, F("text/plain"), F("Not found"));
-      return;
-    }
-    existsDir = true;
-    SdFile e;
-    while (e.openNext(&d, O_READ)) {
-      e.close();
-      empty = false;
-      break;
-    }
-    d.close();
-  } else {
-    const String openPath = dirOpenPath_(p);
-    File d = SD_MMC.open(openPath.c_str());
-    if (!d || !d.isDirectory()) {
-      if (d) d.close();
-      srv.send(404, F("text/plain"), F("Not found"));
-      return;
-    }
-    existsDir = true;
-    File e = d.openNextFile();
-    if (e) {
-      e.close();
-      empty = false;
-    }
-    d.close();
+  const String openPath = dirOpenPath_(p);
+  File d = SD_MMC.open(openPath.c_str());
+  if (!d || !d.isDirectory()) {
+    if (d) d.close();
+    srv.send(404, F("text/plain"), F("Not found"));
+    return;
   }
+  existsDir = true;
+  File e = d.openNextFile();
+  if (e) {
+    e.close();
+    empty = false;
+  }
+  d.close();
 
   if (!existsDir) {
     srv.send(404, F("text/plain"), F("Not found"));
@@ -993,12 +846,7 @@ S->on("/rmdir", HTTP_GET, [S](){
     return;
   }
 
-  bool ok = false;
-  if (useSpi) {
-    ok = sd->rmdir(p.c_str());
-  } else {
-    ok = SD_MMC.rmdir(p.c_str());
-  }
+  bool ok = SD_MMC.rmdir(p.c_str());
 
   if (!ok) {
     srv.send(500, F("text/plain"), F("rmdir failed"));
@@ -1014,9 +862,6 @@ S->on("/mkdir", HTTP_POST, [S](){
   auto& srv = *S;
   noteHttpActivity_();
 
-  SdFat* sd = WebServerManager::sd();
-  bool useSpi = (sd != nullptr);
-
   const String base = srv.hasArg("path") ? srv.arg("path") : "/";
   const String name = srv.hasArg("name") ? srv.arg("name") : "";
 
@@ -1028,12 +873,7 @@ S->on("/mkdir", HTTP_POST, [S](){
 
   const String full = normDir(base) + name + "/";
 
-  bool ok = false;
-  if (useSpi) {
-    ok = sd->mkdir(full.c_str());
-  } else {
-    ok = SD_MMC.mkdir(full.c_str());
-  }
+  bool ok = SD_MMC.mkdir(full.c_str());
 
   if (!ok) {
     srv.send(500, F("text/plain"), F("mkdir failed"));
@@ -1050,9 +890,6 @@ S->on("/rmdir", HTTP_POST, [S](){
   auto& srv = *S;
   noteHttpActivity_();
 
-  SdFat* sd = WebServerManager::sd();
-  bool useSpi = (sd != nullptr);
-
   String p = srv.hasArg("path") ? srv.arg("path") : "/";
   p = normDir(p);
   if (!safeRelPath(p)) { srv.send(400, F("text/plain"), F("Bad path")); return; }
@@ -1060,26 +897,17 @@ S->on("/rmdir", HTTP_POST, [S](){
   bool empty = true;
   bool existsDir = false;
 
-  if (useSpi) {
-    SdFile d;
-    if (!d.open(p.c_str())) { srv.send(404, F("text/plain"), F("Not found")); return; }
-    existsDir = true;
-    SdFile e; 
-    while (e.openNext(&d, O_READ)) { e.close(); empty = false; break; }
-    d.close();
-  } else {
-    const String openPath = dirOpenPath_(p);
-    File d = SD_MMC.open(openPath.c_str());
-    if (!d || !d.isDirectory()) {
-      if (d) d.close();
-      srv.send(404, F("text/plain"), F("Not found"));
-      return;
-    }
-    existsDir = true;
-    File e = d.openNextFile();
-    if (e) { e.close(); empty = false; }
-    d.close();
+  const String openPath = dirOpenPath_(p);
+  File d = SD_MMC.open(openPath.c_str());
+  if (!d || !d.isDirectory()) {
+    if (d) d.close();
+    srv.send(404, F("text/plain"), F("Not found"));
+    return;
   }
+  existsDir = true;
+  File e = d.openNextFile();
+  if (e) { e.close(); empty = false; }
+  d.close();
 
   if (!existsDir) {
     srv.send(404, F("text/plain"), F("Not found"));
@@ -1090,12 +918,7 @@ S->on("/rmdir", HTTP_POST, [S](){
     return;
   }
 
-  bool ok = false;
-  if (useSpi) {
-    ok = sd->rmdir(p.c_str());
-  } else {
-    ok = SD_MMC.rmdir(p.c_str());
-  }
+  bool ok = SD_MMC.rmdir(p.c_str());
 
   if (!ok) {
     srv.send(500, F("text/plain"), F("rmdir failed"));
@@ -1123,12 +946,7 @@ S->on("/rmdir", HTTP_POST, [S](){
       auto& srv = *S;
       noteHttpActivity_();
 
-      // Decide backend once per upload
-      SdFat* sd = WebServerManager::sd();
-      static bool useSpi = false;
-
       HTTPUpload& up = srv.upload();
-      static SdFile outSpi;
       static File   outMMC;
       static String targetDir;
 
@@ -1141,56 +959,27 @@ S->on("/rmdir", HTTP_POST, [S](){
         }
 
         const String full = normDir(targetDir) + String(up.filename.c_str());
-        useSpi = (sd != nullptr);
-
-        if (useSpi) {
-          if (!outSpi.open(full.c_str(), O_WRITE | O_CREAT | O_TRUNC)) {
-            FILES_LOGE("upload: SPI open failed\n");
-            up.status = UPLOAD_FILE_ABORTED;
-            return;
-          }
-        } else {
-          outMMC = SD_MMC.open(full.c_str(), FILE_WRITE);
-          if (!outMMC) {
-            FILES_LOGE("upload: SD_MMC open failed\n");
-            up.status = UPLOAD_FILE_ABORTED;
-            return;
-          }
+        outMMC = SD_MMC.open(full.c_str(), FILE_WRITE);
+        if (!outMMC) {
+          FILES_LOGE("upload: SD_MMC open failed\n");
+          up.status = UPLOAD_FILE_ABORTED;
+          return;
         }
       }
       else if (up.status == UPLOAD_FILE_WRITE) {
         if (up.currentSize) {
-          if (useSpi) {
-            if (outSpi.isOpen()) {
-              outSpi.write(up.buf, up.currentSize);
-            }
-          } else {
-            if (outMMC) {
-              outMMC.write(up.buf, up.currentSize);
-            }
+          if (outMMC) {
+            outMMC.write(up.buf, up.currentSize);
           }
         }
       }
       else if (up.status == UPLOAD_FILE_END) {
-        if (useSpi) {
-          if (outSpi.isOpen()) {
-            outSpi.close();
-          }
-        } else {
-          if (outMMC) {
-            outMMC.close();
-          }
+        if (outMMC) {
+          outMMC.close();
         }
       }
       else if (up.status == UPLOAD_FILE_ABORTED) {
-        if (useSpi) {
-          if (outSpi.isOpen()) {
-            outSpi.close();
-            // Optional: remove partial file here if you like
-            // SdFat can't easily remove by open handle; you’d need
-            // to track the full path separately.
-          }
-        } else {
+        {
           if (outMMC) {
             outMMC.close();
             // Optional: SD_MMC.remove((normDir(targetDir)+up.filename).c_str());

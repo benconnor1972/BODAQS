@@ -21,7 +21,7 @@ Requires:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -181,6 +181,7 @@ def make_session_window_browser_widget_for_loader(
 
     detail_title = W.HTML("Detail signals")
     w_detail_signals = W.SelectMultiple(options=[], value=(), description="", rows=8, layout=W.Layout(width="380px"))
+    w_primary_only = W.Checkbox(value=True, description="Primary signals only", layout=W.Layout(width="220px"))
     w_detail_autodown = W.Checkbox(value=True, description="Auto downsample detail", layout=W.Layout(width="220px"))
 
     # Bookmark controls (persisted)
@@ -273,6 +274,7 @@ def make_session_window_browser_widget_for_loader(
             prev_detail=prev_detail,
             time_col=time_col,
             preferred_unit="mm",
+            primary_only=bool(w_primary_only.value),
         )
 
         state["_registry"] = result.registry
@@ -697,6 +699,18 @@ def make_session_window_browser_widget_for_loader(
     for w in (w_detail_signals, w_detail_autodown, w_event_types, w_show_marks):
         w.observe(_on_controls_change, names="value")
 
+    def _on_primary_only_change(*_):
+        if state["updating"]:
+            return
+        sess = state.get("session")
+        df_ = state.get("df")
+        if not isinstance(sess, Mapping) or df_ is None:
+            return
+        _rebuild_signal_dropdowns(sess)
+        _on_controls_change()
+
+    w_primary_only.observe(_on_primary_only_change, names="value")
+
     def _on_xaxis_range_change(_layout: Any, xrange: Any) -> None:
         if state["selection_sync_active"]:
             return
@@ -1030,7 +1044,10 @@ def make_session_window_browser_widget_for_loader(
         layout=W.Layout(gap="40px", align_items="flex-start", justify_content="space-between", width="1200px"),
     )
 
-    detail_box = W.VBox([detail_title, w_detail_signals, w_detail_autodown], layout=W.Layout(gap="6px", width="520px"))
+    detail_box = W.VBox(
+        [detail_title, w_primary_only, w_detail_signals, w_detail_autodown],
+        layout=W.Layout(gap="6px", width="520px"),
+    )
 
     events_box = W.VBox(
         [event_types_title, event_types_hint, w_event_types, w_show_marks],
@@ -1103,6 +1120,7 @@ def make_session_window_browser_widget_for_loader(
             "event_types": w_event_types,
             "show_marks": w_show_marks,
             "detail_signals": w_detail_signals,
+            "primary_only": w_primary_only,
             "detail_autodown": w_detail_autodown,
             "bookmark_name": w_bm_name,
             "bookmark_comment": w_bm_comment,

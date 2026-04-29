@@ -1,4 +1,9 @@
-"""Sensor-name alias helpers used across analysis widgets and pipelines."""
+"""Sensor/source-name helpers used across analysis widgets and pipelines.
+
+These helpers intentionally do not maintain semantic aliases.  If a logger uses
+legacy names such as ``fork`` or ``shock``, map those to explicit semantics in
+log metadata rather than relying on analysis-time alias collapse.
+"""
 
 from __future__ import annotations
 
@@ -9,15 +14,10 @@ from typing import Any
 _SEP_RE = re.compile(r"[\s\-]+")
 _UNDERSCORE_RE = re.compile(r"_+")
 
-_SENSOR_ALIASES: dict[str, str] = {
-    "front_shock": "front_shock",
-    "front_fork": "front_shock",
-    "fork": "front_shock",
-    "rear_shock": "rear_shock",
-    "rear_fork": "rear_shock",
-    "shock": "rear_shock",
+_END_ALIASES: dict[str, str] = {
+    "front": "front",
+    "rear": "rear",
 }
-_ALIASES_BY_LENGTH = tuple(sorted(_SENSOR_ALIASES, key=len, reverse=True))
 
 
 def normalize_sensor_token(value: Any) -> str:
@@ -33,54 +33,47 @@ def normalize_sensor_token(value: Any) -> str:
 
 
 def canonical_sensor_id(sensor: Any) -> str:
-    """
-    Canonicalize a sensor id.
-
-    Suspension aliases intentionally collapse to the existing canonical ids:
-    ``fork`` -> ``front_shock`` and ``shock`` -> ``rear_shock``.
-    Unknown sensors are returned stripped and otherwise unchanged.
-    """
+    """Return a normalized source/sensor id without applying semantic aliases."""
     key = normalize_sensor_token(sensor)
     if not key:
         return ""
-    return _SENSOR_ALIASES.get(key, str(sensor).strip())
+    return key
 
 
 def canonical_sensor_from_text(value: Any) -> str:
-    """Infer a canonical sensor id from a sensor id or sensor-prefixed signal name."""
+    """Infer a source/sensor id from a sensor-prefixed signal name."""
     key = normalize_sensor_token(value)
     if not key:
         return ""
-    for alias in _ALIASES_BY_LENGTH:
-        if key == alias or key.startswith(alias + "_"):
-            return _SENSOR_ALIASES[alias]
+    for prefix in ("front_shock", "rear_shock", "front_wheel", "rear_wheel", "gps_fit", "gps"):
+        if key == prefix or key.startswith(prefix + "_"):
+            return prefix
     return ""
 
 
 def canonicalize_signal_base(base: Any) -> str:
-    """Replace a leading suspension sensor alias in a signal base with its canonical id."""
+    """Normalize whitespace/separators in a signal base without aliasing it."""
     if base is None:
         return ""
-    key = normalize_sensor_token(base)
-    if not key:
-        return str(base).strip()
-    for alias in _ALIASES_BY_LENGTH:
-        if key == alias:
-            return _SENSOR_ALIASES[alias]
-        prefix = alias + "_"
-        if key.startswith(prefix):
-            return _SENSOR_ALIASES[alias] + key[len(alias):]
-    return str(base).strip()
+    return normalize_sensor_token(base) or str(base).strip()
 
 
 def sensors_match(left: Any, right: Any) -> bool:
-    """Alias-aware equality for sensor ids."""
+    """Normalized equality for source/sensor ids."""
     left_key = canonical_sensor_id(left)
     right_key = canonical_sensor_id(right)
-    return bool(left_key and right_key and normalize_sensor_token(left_key) == normalize_sensor_token(right_key))
+    return bool(left_key and right_key and left_key == right_key)
 
 
-def sensor_side(value: Any) -> str:
+def canonical_end(value: Any) -> str:
+    """Accept only explicit bike-end/location tokens ``front`` or ``rear``."""
+    key = normalize_sensor_token(value)
+    if not key:
+        return ""
+    return _END_ALIASES.get(key, "")
+
+
+def end_from_sensor(value: Any) -> str:
     """Return ``front``/``rear`` for known suspension sensor ids or signal names."""
     sensor = canonical_sensor_from_text(value) or canonical_sensor_id(value)
     if sensor.startswith("front_"):
@@ -90,9 +83,18 @@ def sensor_side(value: Any) -> str:
     return ""
 
 
+def ends_match(left: Any, right: Any) -> bool:
+    """Equality for explicit bike ends."""
+    left_key = canonical_end(left) or end_from_sensor(left)
+    right_key = canonical_end(right) or end_from_sensor(right)
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def sensor_side(value: Any) -> str:
+    """Return ``front``/``rear`` for known suspension sensor ids or signal names."""
+    return end_from_sensor(value)
+
+
 def sensor_matches_side(value: Any, side: Any) -> bool:
-    """Return True when a sensor id or signal name belongs to the requested side."""
-    side_key = normalize_sensor_token(side)
-    if side_key not in {"front", "rear"}:
-        return False
-    return sensor_side(value) == side_key
+    """Return True when a source id or signal name has the requested explicit end."""
+    return ends_match(value, side)

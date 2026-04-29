@@ -1,0 +1,105 @@
+{
+  "id": "rear_shock_to_rear_wheel_travel",
+  "description": "Rear shock travel to rear wheel travel LUT converted from firmware-style wheel_mm.lut.csv.",
+  "enabled": true,
+  "input": {
+    "sensor": "rear_shock",
+    "quantity": "disp",
+    "domain": "suspension",
+    "unit": "mm"
+  },
+  "output": {
+    "sensor": "rear_wheel",
+    "quantity": "disp",
+    "domain": "wheel",
+    "unit": "mm"
+  },
+  "method": "lut",
+  "interpolation": "linear",
+  "extrapolation": "linear",
+  "lut": [
+    {
+      "input": 0.0,
+      "output": 0.0
+    },
+    {
+      "input": 2.84,
+      "output": 10.0
+    },
+    {
+      "input": 5.75,
+      "output": 20.0
+    },
+    {
+      "input": 8.73,
+      "output": 30.0
+    },
+    {
+      "input": 11.77,
+      "output": 40.0
+    },
+    {
+      "input": 14.88,
+      "output": 50.0
+    },
+    {
+      "input": 18.05,
+      "output": 60.0
+    },
+    {
+      "input": 21.29,
+      "output": 70.0
+    },
+    {
+      "input": 24.59,
+      "output": 80.0
+    },
+    {
+      "input": 27.96,
+      "output": 90.0
+    },
+    {
+      "input": 31.38,
+      "output": 100.0
+    },
+    {
+      "input": 34.87,
+      "output": 110.0
+    },
+    {
+      "input": 38.41,
+      "output": 120.0
+    },
+    {
+      "input": 42.01,
+      "output": 130.0
+    },
+    {
+      "input": 45.66,
+      "output": 140.0
+    },
+    {
+      "input": 49.36,
+      "output": 150.0
+    },
+    {
+      "input": 53.1,
+      "output": 160.0
+    },
+    {
+      "input": 55.0,
+      "output": 165.0
+    }
+  ],
+  "provenance": {
+    "source_format": "firmware_lut_csv",
+    "source_filename": "wheel_mm.lut (4).csv",
+    "source_metadata": {
+      "id": "wheel_mm",
+      "label": "rear wheel travel",
+      "in_units": "shock_mm",
+      "out_units": "wheel_mm",
+      "extrapolation": "linear"
+    }
+  }
+}

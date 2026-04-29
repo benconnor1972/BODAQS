@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <SdFat.h>
 #include <stdint.h>
 #include "SensorTypes.h"   // owns SensorType + SensorSpec
 #include "Calibration.h"
@@ -12,6 +11,11 @@ enum PotMode : uint8_t {
   POT_MODE_RAW  = 0,
   POT_MODE_NORM = 1,
   POT_MODE_MM   = 2
+};
+
+enum class LogFormat : uint8_t {
+  BodaqsStandard = 0,
+  SynBikeRaw = 1
 };
 
 struct SensorSpec; 
@@ -28,9 +32,13 @@ struct ButtonBindingDef {
 };
 
 struct LoggerConfig {
+  char     loggerName[32]   = "BODAQS";
+
   // sampling / time
   uint16_t sampleRateHz     = 100;
   bool     timestampHuman   = true;
+  LogFormat logFormat       = LogFormat::BodaqsStandard;
+  bool     omitMetadata     = false;
   char     tz[64]           = "UTC";
   char     ntpServers[128]  = "";
   char     timeCheckUrl[96] = "";
@@ -71,7 +79,6 @@ struct LoggerConfig {
     uint8_t gateway[4] = {0,0,0,0};
     uint8_t subnet[4]  = {0,0,0,0};
     uint8_t dns1[4]    = {0,0,0,0};
-    uint8_t dns2[4]    = {0,0,0,0};
   };
 
   uint8_t   wifiNetworkCount = 0;   // normalized after load()
@@ -93,7 +100,7 @@ struct LoggerConfig {
 
 class ConfigManager {
   public:
-    static void begin(SdFs* sdRef, const char* filename);
+    static void begin(const char* filename);
 
     // Wi-Fi config accessors (read-only)
     static bool hasConfiguredNetworks();
@@ -111,6 +118,8 @@ class ConfigManager {
     static bool saveSensorParamByName(const char* sensorName, const char* key, const String& value);
     static bool saveSensorParamByIndex(uint8_t index, const char* key, const String& value);
     static bool setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp);
+    static bool appendSensor(SensorType type, const char* name);
+    static bool deleteSensorByIndex(uint8_t index);
 
     static void debugDumpConfigFile();
 
@@ -147,6 +156,9 @@ class ConfigManager {
     static bool    getSensorSpec(uint8_t i, SensorSpec& out);   // copy-out by index
     static int8_t  findSensorByName(const char* name);          // -1 if not found
     static void setSampleRateHz(uint16_t hz, bool persist = true);
+    static const char* logFormatKey(LogFormat format);
+    static const char* logFormatLabel(LogFormat format);
+    static bool parseLogFormat(const char* text, LogFormat& out);
 
     // line parser (public so tests or tooling can reuse)
     static bool parseLine(char* line, LoggerConfig& cfg);

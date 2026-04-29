@@ -11,6 +11,15 @@
 
 namespace {
 
+void copyField_(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  size_t n = strlen(src);
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 void writeColumnLabel_(const char* name, const char* units, char* out, size_t cap) {
   if (!out || cap < 2) return;
   out[0] = '\0';
@@ -34,16 +43,16 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   double d = 0.0;
   String s;
 
-  if (params.getBool("invert", b))                  p.invert = b;
   if (params.getInt("pin", li))                     p.pin = (uint8_t)li;
-  if (params.getFloat("ema_alpha", d))              p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
-  if (params.getInt("deadband", li))                p.deadbandCounts = (uint16_t)li;
   if (params.getInt("sensor_zero_count", li))       p.sensorZeroCount = (int32_t)li;
   if (params.getInt("sensor_full_count", li))       p.sensorFullCount = (int32_t)li;
   if (params.getFloat("sensor_full_travel_mm", d))  p.sensorFullTravelMm = (float)d;
   if (params.getInt("installed_zero_count", li))    p.installedZeroCount = (int32_t)li;
   if (params.getBool("include_raw", b))             p.includeRawColumn = b;
   if (params.get("units_label", s))                 s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+  if (params.get("end", s))                         s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
+  if (params.get("primary_domain", s))              s.toCharArray(p.primaryDomain, sizeof(p.primaryDomain));
+  if (params.get("primary_quantity", s))            s.toCharArray(p.primaryQuantity, sizeof(p.primaryQuantity));
 
   long ain = -1;
   if (params.getInt("ain", ain) && board::gBoard) {
@@ -73,7 +82,6 @@ AnalogPotSensor::AnalogPotSensor(const char* nm, const Params& p) {
 
 void AnalogPotSensor::begin() {
   pinMode(m_pin, INPUT);
-  m_emaInit = false;
 }
 
 // Satisfy vtable: we don't apply anything from LoggerConfig yet for this sensor
@@ -100,16 +108,11 @@ void AnalogPotSensor::applyParams(const Params& p) {
 
   // wiring / polarity
   m_pin    = p.pin;
-  m_invert = p.invert;
-
-  // smoothing
-  m_alpha    = fmaxf(0.0f, fminf(1.0f, float(p.emaAlphaPermille) / 1000.0f));
-  m_deadband = p.deadbandCounts;
-  m_emaInit  = false;
 
   // geometry
   sensor_zero_count_ = p.sensorZeroCount;
   sensor_full_count_ = p.sensorFullCount;
+  m_invert = (sensor_full_count_ < sensor_zero_count_);
   sensor_full_travel_mm_ = p.sensorFullTravelMm;
   m_zero   = p.sensorZeroCount;
   m_full   = p.sensorFullCount;
@@ -138,6 +141,11 @@ void AnalogPotSensor::applyParams(const Params& p) {
   }
   Sensor::setOutputUnitsLabel(m_unitsLabel);
 
+  copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);
+  copyField_(m_primaryDomain, sizeof(m_primaryDomain), p.primaryDomain);
+  copyField_(m_primaryQuantity, sizeof(m_primaryQuantity), p.primaryQuantity);
+  copyField_(m_rawDomain, sizeof(m_rawDomain), p.primaryDomain);
+
   applyLinearScalePrecompute();
 }
 
@@ -145,19 +153,6 @@ void AnalogPotSensor::applyParams(const Params& p) {
 int AnalogPotSensor::readOnce() const {
   int raw = analogRead(m_pin);
   return raw;
-}
-
-int AnalogPotSensor::updateEma(int raw) {
-  if (!m_emaInit) {
-    m_ema = float(raw);
-    m_emaInit = true;
-    return int(lroundf(m_ema));
-  }
-  if (fabsf(m_ema - float(raw)) < float(m_deadband)) {
-    return int(lroundf(m_ema));
-  }
-  m_ema = m_alpha * float(raw) + (1.0f - m_alpha) * m_ema;
-  return int(lroundf(m_ema));
 }
 
 // ---------- Sampling ----------
@@ -168,17 +163,16 @@ static inline float lin_from_counts(int x, int zero, float invSpan, float fullMm
   return norm * scale;
 }
 
-void AnalogPotSensor::sample(float& selectedOut, int& smoothedRawOut) {
-  if (m_muted) { selectedOut = 0.0f; smoothedRawOut = 0; return; }
+void AnalogPotSensor::sample(float& selectedOut, int& rawOut) {
+  if (m_muted) { selectedOut = 0.0f; rawOut = 0; return; }
 
-  // 1) read & smooth (as you already do)
-  const int raw      = readOnce();
-  const int smoothed = updateEma(raw);
-  smoothedRawOut     = smoothed;
+  // 1) read raw counts directly. Sample-time smoothing has been retired.
+  const int raw = readOnce();
+  rawOut = raw;
 
   // 2) RAW path
   if (m_mode == OutputMode::RAW) {
-    selectedOut = float(smoothed);
+    selectedOut = float(raw);
     return;
   }
 
@@ -188,7 +182,7 @@ void AnalogPotSensor::sample(float& selectedOut, int& smoothedRawOut) {
     selectedOut = 0.0f;
     return;
   }
-  double x_mm_sensor = (double(smoothed) - double(installed_zero_count_)) / k;
+  double x_mm_sensor = (double(raw) - double(installed_zero_count_)) / k;
   // Apply polarity in real-units space. This preserves raw ADC counts.
   if (m_invert) x_mm_sensor = -x_mm_sensor;
 
@@ -236,24 +230,6 @@ void AnalogPotSensor::setOutputMode(OutputMode m) {
   m_mode = m;
 }
 
-
-// ---------- Smoothing ----------
-SmoothingConfig AnalogPotSensor::smoothing() const {
-  SmoothingConfig sc;
-  sc.emaAlpha     = m_alpha;
-  sc.deadband     = float(m_deadband);
-  sc.emaWarmStart = true;
-  return sc;
-}
-
-void AnalogPotSensor::setSmoothing(const SmoothingConfig& s) {
-  float a = s.emaAlpha;
-  if (a < 0.0f) a = 0.0f;
-  if (a > 1.0f) a = 1.0f;
-  m_alpha    = a;
-  m_deadband = (s.deadband < 0.0f) ? 0u : uint16_t(lroundf(s.deadband));
-  if (m_alpha >= 0.9999f) m_emaInit = false; // next sample seeds EMA
-}
 
 // ---------- Calibration ----------
 bool AnalogPotSensor::setCalibration(const CalibrationState& state) {
@@ -341,7 +317,6 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
       const char* sname = this->name();
       ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
       ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
-      ConfigManager::saveSensorParamByName(sname, "invert", autoInvert ? "true" : "false");
 
     }
   }
@@ -412,6 +387,75 @@ void AnalogPotSensor::getColumnName(uint8_t col, char* out, size_t cap) const {
   }
 }
 
+bool AnalogPotSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
+  if (idx >= columnCount()) return false;
+  if (!Sensor::describeColumn(idx, out)) return false;
+
+  copyField_(out.sensorName, sizeof(out.sensorName), name());
+  out.outputMode = m_mode;
+  out.required = true;
+  out.primary = (idx == 0);
+  out.raw = (m_mode == OutputMode::RAW) || (idx == 1 && m_includeRaw);
+  out.calibrated = !out.raw || (idx == 0 && m_mode != OutputMode::RAW);
+  out.transformed = (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
+
+  copyField_(out.end, sizeof(out.end), m_semanticEnd);
+  copyField_(out.domain, sizeof(out.domain), out.raw ? m_rawDomain : m_primaryDomain);
+  if (!out.domain[0]) copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+
+  if (out.raw) {
+    copyField_(out.quantity, sizeof(out.quantity), "raw");
+    copyField_(out.unit, sizeof(out.unit), "counts");
+    copyField_(out.source, sizeof(out.source), "raw_counts");
+    out.calibrated = false;
+  } else {
+    copyField_(out.quantity, sizeof(out.quantity), m_primaryQuantity);
+    copyField_(out.unit, sizeof(out.unit), m_outputUnitsLabel);
+    copyField_(out.source, sizeof(out.source), out.transformed ? "transformed" : "linear_calibrated");
+    copyField_(out.calibrationId, sizeof(out.calibrationId), "linear");
+  }
+
+  if (out.transformed && selectedTransformId().length()) {
+    selectedTransformId().toCharArray(out.transformChain, sizeof(out.transformChain));
+  }
+
+  if (out.end[0] && out.domain[0] && out.quantity[0]) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_%s_%s",
+             out.end, out.domain, out.quantity);
+  } else if (out.quantity[0]) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_%s", name(), out.quantity);
+  }
+
+  if (!out.quantity[0]) {
+    copyField_(out.notes, sizeof(out.notes), "missing semantic quantity");
+  } else if (!out.end[0] || !out.domain[0]) {
+    copyField_(out.notes, sizeof(out.notes), "partial semantic metadata");
+  } else {
+    out.notes[0] = '\0';
+  }
+
+  return true;
+}
+
+bool AnalogPotSensor::describeSensorMetadata(SensorMetadataDescriptor& out) const {
+  out = SensorMetadataDescriptor{};
+  copyField_(out.sensorId, sizeof(out.sensorId), name());
+  copyField_(out.name, sizeof(out.name), name());
+  copyField_(out.type, sizeof(out.type), "analog_pot");
+  copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+  copyField_(out.rawUnit, sizeof(out.rawUnit), "counts");
+  copyField_(out.calibrationType, sizeof(out.calibrationType), "linear");
+  copyField_(out.calibrationInputUnit, sizeof(out.calibrationInputUnit), "counts");
+  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), m_outputUnitsLabel);
+  out.installedZeroCount = installed_zero_count_;
+  out.sensorZeroCount = sensor_zero_count_;
+  out.sensorFullCount = sensor_full_count_;
+  out.sensorFullTravel = sensor_full_travel_mm_;
+  out.invert = m_invert;
+  out.hasCalibration = true;
+  return true;
+}
+
 
 
 void AnalogPotSensor::sampleValues(float* out, uint8_t max) {
@@ -433,11 +477,6 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     // Wiring
     {"ain",            ParamType::Int,   "-1",   "-1",  "7",   nullptr, "Analog input ordinal (AIN0..). -1=use pin"},
-    {"invert",         ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Invert readings (set automatically during range calibration - override not recommended)"},
-
-    // RAW smoothing
-    {"ema_alpha",      ParamType::Float, "0.2",  "0",   "1",    nullptr, "EMA alpha [0..1]"},
-    {"deadband",       ParamType::Int,   "0",    "0",   "4095", nullptr, "Deadband (counts)"},
 
     // Anchors / geometry
     {"sensor_zero_count",     ParamType::Int,   "0",    nullptr,nullptr,nullptr,"Counts at sensor 0 position"},
@@ -449,6 +488,9 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
     {"output_mode", ParamType::Enum,"RAW,LINEAR,POLY,LUT", nullptr,nullptr,nullptr, "Output method: RAW, scaled (LINEAR) or transformed (POLY/LUT)."},
     {"include_raw",    ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Append RAW column after primary"},
     {"units_label",    ParamType::String,"",     nullptr,nullptr,nullptr,"Units suffix for non RAW output (e.g., mm, deg, N, norm)"},
+    {"end",            ParamType::Enum,  "",     nullptr,nullptr,"front,rear", "Optional semantic end for log metadata"},
+    {"primary_domain", ParamType::Enum,  "",     nullptr,nullptr,"wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
+    {"primary_quantity",ParamType::Enum, "",     nullptr,nullptr,"disp,ang_disp,force,pressure,temp,voltage,norm", "Optional semantic quantity for primary output"},
 
   };
 
