@@ -168,6 +168,9 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   };
   p.i2c_count = 2;
   p.analog.attenuation = AdcAttenuation::Db6;
+  p.analog.enable_pin = 42;
+  p.analog.enable_active_high = true;
+  p.analog.enable_default_on = true;
 
   return p;
 }();

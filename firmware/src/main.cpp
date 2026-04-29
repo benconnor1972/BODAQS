@@ -182,6 +182,7 @@ void setup() {
       BOOT_LOGE("FATAL: Board not selected\n");
       while (true) delay(1000);
     }
+    PowerManager::begin(*gBoard);
     configureBoardAnalogInputs_();
     DumpActiveBoardButtons();
 

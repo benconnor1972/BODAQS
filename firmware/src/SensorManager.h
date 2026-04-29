@@ -31,9 +31,13 @@ namespace SensorManager {
   uint16_t dynamicColumnCount();
   void buildHeader(char* out, size_t n, bool humanTs);
   void sampleValues(float* out, uint16_t maxOut, uint16_t& written);
+  uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut);
+  uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut);
+  uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut);
 
   // debug
   void debugDump(const char* tag);
+  void debugDumpColumnMetadata(const char* tag);
 };
 
 #endif // SENSORS_SENSOR_MANAGER_H

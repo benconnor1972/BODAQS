@@ -24,7 +24,6 @@ static uint8_t s_oledLevel    = UI::LVL_INFO;
 
 static uint32_t s_nextWifiUiCheckMs = 0;
 String   s_lastWifiSummary;
-static constexpr float LOW_BATTERY_WARN_V = 3.30f;
 
 static String makeWifiSummary_() {
   auto st = WiFiManager::status();
@@ -63,12 +62,12 @@ static bool makeLowBatteryWarning_(String& out) {
     return false;
   }
 
-  const float vbat = PowerManager::batteryVoltage();
-  if (vbat <= 0.0f || vbat >= LOW_BATTERY_WARN_V) {
+  if (!PowerManager::batteryLow()) {
     out = "";
     return false;
   }
 
+  const float vbat = PowerManager::batteryVoltage();
   char buf[24];
   snprintf(buf, sizeof(buf), "LOW BAT: %.2fV", (double)vbat);
   out = buf;

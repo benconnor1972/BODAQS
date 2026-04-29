@@ -20,6 +20,10 @@ public:
     bool     assumeTurn0AtStart = true;
     bool     includeRawColumn = true;
     char     unitsLabel[48] = "mm";
+    char     semanticEnd[16] = "";
+    char     primaryDomain[24] = "";
+    char     primaryQuantity[24] = "";
+    char     rawDomain[24] = "";
   };
 
   explicit AS5600StringPotSensorBase(const BaseParams& p);
@@ -35,6 +39,8 @@ public:
   uint8_t columnCount() const override;
   void getColumnName(uint8_t idx, char* out, size_t cap) const override;
   void sampleValues(float* out, uint8_t max) override;
+  bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const override;
+  bool describeSensorMetadata(SensorMetadataDescriptor& out) const override;
 
   const char* name() const override { return m_name; }
 
@@ -105,6 +111,10 @@ private:
 
   char    m_name[16] = "as5600";
   char    m_unitsLabel[48] = "mm";
+  char    m_semanticEnd[16] = "";
+  char    m_primaryDomain[24] = "";
+  char    m_primaryQuantity[24] = "";
+  char    m_rawDomain[24] = "";
 
   bool     m_invert = false;
   uint16_t m_countsPerTurn = 4096;

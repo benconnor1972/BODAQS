@@ -203,6 +203,13 @@ bool LoggingManager::start() {
   TRACE("enter start()");
   const uint32_t startT0 = millis();
 
+  if (!PowerManager::canStartLogging()) {
+    UI::toast("Batt Low", 1500, 2);
+    UI::status("Batt Low");
+    LOGGING_LOGW("start refused: battery low or analog rail unavailable\n");
+    return false;
+  }
+
   // Pick up any sample-rate changes that were applied while logging was idle.
   s_intervalMs = StorageManager_getSampleIntervalMs();
   s_lastSample = 0;

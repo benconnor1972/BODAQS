@@ -495,6 +495,72 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     }
 }
 
+uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut) {
+  uint16_t total = 0;
+  uint16_t written = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i) {
+      SensorColumnDescriptor desc;
+      if (!s->describeColumn(i, desc)) continue;
+
+      if (out && written < maxOut) {
+        out[written] = desc;
+        ++written;
+      }
+      ++total;
+    }
+  }
+
+  return total;
+}
+
+uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut) {
+  uint16_t total = 0;
+  uint16_t written = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    SensorMetadataDescriptor desc;
+    if (!s->describeSensorMetadata(desc)) continue;
+
+    if (out && written < maxOut) {
+      out[written] = desc;
+      ++written;
+    }
+    ++total;
+  }
+
+  return total;
+}
+
+uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut) {
+  uint16_t total = 0;
+  uint16_t written = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i) {
+      SensorColumnDescriptor desc;
+      if (!s->describeColumn(i, desc)) continue;
+
+      if (out && written < maxOut) {
+        out[written] = desc.raw;
+        ++written;
+      }
+      ++total;
+    }
+  }
+
+  return total;
+}
+
 
 void debugDump(const char* tag) {
   const uint8_t kSlots = MAX_SENSORS;
@@ -511,6 +577,35 @@ void debugDump(const char* tag) {
     if (cols) s->getColumnName(0, firstCol, sizeof(firstCol));
     LOGI("  slot=%u muted=%d cols=%u firstCol='%s'\n",
          (unsigned)i, (int)s->muted(), (unsigned)cols, firstCol);
+  }
+}
+
+void debugDumpColumnMetadata(const char* tag) {
+  SM_LOGI("%s: sensor column metadata\n", tag ? tag : "metadata");
+
+  uint16_t logicalIndex = 0;
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i) {
+      SensorColumnDescriptor d;
+      if (!s->describeColumn(i, d)) continue;
+
+      LOGI("  col=%u sensor='%s' header='%s' id='%s' end='%s' domain='%s' quantity='%s' unit='%s' source='%s' transform='%s' notes='%s'\n",
+           (unsigned)logicalIndex,
+           d.sensorName,
+           d.csvHeader,
+           d.columnId,
+           d.end,
+           d.domain,
+           d.quantity,
+           d.unit,
+           d.source,
+           d.transformChain,
+           d.notes);
+      ++logicalIndex;
+    }
   }
 }
 

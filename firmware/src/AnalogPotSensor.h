@@ -33,6 +33,13 @@ public:
 
     // Short suffix used in CSV for LINEAR output (e.g., "mm","deg","N","norm")
     char     unitsLabel[48] = "";
+
+    // Optional signal semantics for generated log metadata. These do not affect
+    // CSV output; they describe the primary engineered column when present.
+    char     semanticEnd[16] = "";
+    char     primaryDomain[24] = "";
+    char     primaryQuantity[24] = "";
+    char     rawDomain[24] = "";
   };
 
   explicit AnalogPotSensor(const Params& p);
@@ -50,6 +57,8 @@ public:
   uint8_t columnCount() const override;
   void getColumnName(uint8_t idx, char* out, size_t cap) const override;
   void sampleValues(float* out, uint8_t max) override;
+  bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const override;
+  bool describeSensorMetadata(SensorMetadataDescriptor& out) const override;
   int32_t installedZeroCount() const { return installed_zero_count_; }
 
   const char* name() const { return m_name; }
@@ -123,6 +132,10 @@ private:
   // Identity / presentation
   char   m_name[16] = "pot";
   char   m_unitsLabel[48] = "";
+  char   m_semanticEnd[16] = "";
+  char   m_primaryDomain[24] = "";
+  char   m_primaryQuantity[24] = "";
+  char   m_rawDomain[24] = "";
 
   // Wiring / behavior
   uint8_t  m_pin = 36;

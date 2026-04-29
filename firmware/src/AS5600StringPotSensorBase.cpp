@@ -8,6 +8,15 @@
 
 namespace {
 
+void copyField_(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  size_t n = strlen(src);
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 void writeColumnLabel_(const char* name, const char* units, char* out, size_t cap) {
   if (!out || cap < 2) return;
   out[0] = '\0';
@@ -53,6 +62,12 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
   strncpy(m_unitsLabel, p.unitsLabel, sizeof(m_unitsLabel) - 1);
   m_unitsLabel[sizeof(m_unitsLabel) - 1] = '\0';
   Sensor::setOutputUnitsLabel(m_unitsLabel);
+
+  copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);
+  copyField_(m_primaryDomain, sizeof(m_primaryDomain), p.primaryDomain);
+  copyField_(m_primaryQuantity, sizeof(m_primaryQuantity), p.primaryQuantity);
+  copyField_(m_rawDomain, sizeof(m_rawDomain), p.rawDomain);
+
   recomputeScale();
   resetTrackingState(m_assumeTurn0AtStart);
 }
@@ -190,6 +205,83 @@ void AS5600StringPotSensorBase::getColumnName(uint8_t idx, char* out, size_t cap
     String s = String(name()) + "_raw [counts]";
     s.toCharArray(out, cap);
   }
+}
+
+bool AS5600StringPotSensorBase::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
+  if (idx >= columnCount()) return false;
+  if (!Sensor::describeColumn(idx, out)) return false;
+
+  const bool wrappedRaw = (m_mode == OutputMode::RAW && idx == 0) ||
+                          (m_mode != OutputMode::RAW && idx == 1 && m_includeRaw);
+  const bool linearSecondary = (m_mode == OutputMode::RAW && idx == 1);
+
+  copyField_(out.sensorName, sizeof(out.sensorName), name());
+  out.outputMode = m_mode;
+  out.required = true;
+  out.primary = (idx == 0);
+  out.raw = wrappedRaw;
+  out.calibrated = !wrappedRaw;
+  out.transformed = (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
+
+  copyField_(out.end, sizeof(out.end), m_semanticEnd);
+  copyField_(out.domain, sizeof(out.domain), wrappedRaw ? m_rawDomain : m_primaryDomain);
+  if (!out.domain[0]) copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+
+  if (wrappedRaw) {
+    copyField_(out.quantity, sizeof(out.quantity), "raw");
+    copyField_(out.unit, sizeof(out.unit), "counts");
+    copyField_(out.source, sizeof(out.source), "wrapped_raw_counts");
+  } else {
+    copyField_(out.quantity, sizeof(out.quantity), m_primaryQuantity);
+    copyField_(out.unit, sizeof(out.unit), m_outputUnitsLabel);
+    copyField_(out.source, sizeof(out.source),
+               linearSecondary ? "linearized" : (out.transformed ? "transformed" : "linear_calibrated"));
+    copyField_(out.calibrationId, sizeof(out.calibrationId), "linear_unwrapped");
+  }
+
+  if (out.transformed && selectedTransformId().length()) {
+    selectedTransformId().toCharArray(out.transformChain, sizeof(out.transformChain));
+  }
+
+  if (out.end[0] && out.domain[0] && out.quantity[0]) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_%s_%s",
+             out.end, out.domain, out.quantity);
+  } else if (out.quantity[0]) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_%s", name(), out.quantity);
+  }
+
+  if (!out.quantity[0]) {
+    copyField_(out.notes, sizeof(out.notes), "missing semantic quantity");
+  } else if (!out.end[0] || !out.domain[0]) {
+    copyField_(out.notes, sizeof(out.notes), "partial semantic metadata");
+  } else {
+    out.notes[0] = '\0';
+  }
+
+  return true;
+}
+
+bool AS5600StringPotSensorBase::describeSensorMetadata(SensorMetadataDescriptor& out) const {
+  out = SensorMetadataDescriptor{};
+  copyField_(out.sensorId, sizeof(out.sensorId), name());
+  copyField_(out.name, sizeof(out.name), name());
+  copyField_(out.type, sizeof(out.type), "as5600_string_pot");
+  copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+  copyField_(out.rawUnit, sizeof(out.rawUnit), "counts");
+  copyField_(out.calibrationType, sizeof(out.calibrationType), "linear");
+  copyField_(out.calibrationInputUnit, sizeof(out.calibrationInputUnit), "counts");
+  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), m_outputUnitsLabel);
+  out.installedZeroCount = installed_zero_count_;
+  out.sensorZeroCount = sensor_zero_count_;
+  out.sensorFullCount = sensor_full_count_;
+  out.sensorFullTravel = sensor_full_travel_mm_;
+  out.invert = m_invert;
+  out.hasCalibration = true;
+  out.hasTracking = true;
+  out.countsPerTurn = m_countsPerTurn;
+  out.wrapThresholdCounts = m_wrapThreshold;
+  out.assumeTurn0AtStart = m_assumeTurn0AtStart;
+  return true;
 }
 
 void AS5600StringPotSensorBase::sampleValues(float* out, uint8_t max) {

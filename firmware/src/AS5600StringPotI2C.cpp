@@ -38,6 +38,10 @@ void loadParamsFromPack_(AS5600StringPotI2C::Params& p,
   if (params.getBool("assume_turn0_at_start", b))    p.assumeTurn0AtStart = b;
   if (params.getBool("include_raw", b))              p.includeRawColumn = b;
   if (params.get("units_label", s))                  s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+  if (params.get("end", s))                          s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
+  if (params.get("primary_domain", s))               s.toCharArray(p.primaryDomain, sizeof(p.primaryDomain));
+  if (params.get("primary_quantity", s))             s.toCharArray(p.primaryQuantity, sizeof(p.primaryQuantity));
+  if (params.get("raw_domain", s))                   s.toCharArray(p.rawDomain, sizeof(p.rawDomain));
 }
 
 } // namespace
@@ -171,6 +175,10 @@ const ParamDef* AS5600StringPotI2C::paramDefs(size_t& count) {
     {"output_mode",          ParamType::Enum,  "RAW,LINEAR,POLY,LUT", nullptr, nullptr, nullptr, "Output method: wrapped RAW, linear mm, or transformed mm"},
     {"include_raw",          ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Append wrapped RAW column after primary"},
     {"units_label",          ParamType::String,"mm",    nullptr, nullptr, nullptr, "Units suffix for LINEAR output"},
+    {"end",                  ParamType::Enum,  "",      nullptr, nullptr, "front,rear", "Optional semantic end for log metadata"},
+    {"primary_domain",       ParamType::Enum,  "",      nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
+    {"primary_quantity",     ParamType::Enum,  "",      nullptr, nullptr, "disp,ang_disp,force,pressure,temp,voltage,norm", "Optional semantic quantity for primary output"},
+    {"raw_domain",           ParamType::Enum,  "",      nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for raw counts"},
   };
 
   count = sizeof(defs) / sizeof(defs[0]);

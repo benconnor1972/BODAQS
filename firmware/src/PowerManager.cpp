@@ -10,9 +10,13 @@
 #include "StorageManager.h"    // if you have a flush/close; otherwise remove
 #include "I2CManager.h"
 #include "ConfigManager.h"
+#include "BoardProfile.h"
 #include "DebugLog.h"
 
 #define PWR_LOGI(...) LOGI_TAG("PWR", __VA_ARGS__)
+#define PWR_LOGW(...) LOGW_TAG("PWR", __VA_ARGS__)
+
+static constexpr float LOW_BATTERY_WARN_V = 3.30f;
 
 // ---------------- Existing CPU-freq logic ----------------
 static uint32_t g_prevCpuFreqMhz = 240;    // default / compile-time expectation
@@ -27,6 +31,43 @@ static float    g_fgSocPct   = 0.0f;
 static float    g_fgVbat     = 0.0f;
 static uint32_t g_fgLastPoll = 0;
 static uint32_t g_lastActivityMs = 0;
+
+// ---------------- Analog rail state ----------------
+static int8_t g_analogRailEnablePin = -1;
+static bool   g_analogRailActiveHigh = true;
+static bool   g_analogRailEnabled = false;
+
+static bool hasAnalogRailEnable_()
+{
+  return g_analogRailEnablePin >= 0;
+}
+
+static void applyAnalogRailPin_(bool enabled)
+{
+  if (!hasAnalogRailEnable_()) {
+    g_analogRailEnabled = enabled;
+    return;
+  }
+
+  const uint8_t level = (enabled == g_analogRailActiveHigh) ? HIGH : LOW;
+  digitalWrite((uint8_t)g_analogRailEnablePin, level);
+  g_analogRailEnabled = enabled;
+}
+
+static bool batteryLowCached_()
+{
+  return g_fgOk && g_fgVbat > 0.0f && g_fgVbat < LOW_BATTERY_WARN_V;
+}
+
+static void updateAnalogRailForBattery_()
+{
+  if (batteryLowCached_()) {
+    if (g_analogRailEnabled) {
+      PWR_LOGW("Battery low %.3f V; disabling analog rail\n", (double)g_fgVbat);
+    }
+    applyAnalogRailPin_(false);
+  }
+}
 
 static TwoWire* fuelWire_()
 {
@@ -143,6 +184,7 @@ static void preSleep_() {
   }
 
   WebServerManager::stop();   // safe even if not started
+  applyAnalogRailPin_(false);
 
   // Small UX: say good night and blank the OLED
   DisplayManager::setStatusLine("Sleeping...");
@@ -216,6 +258,23 @@ void PowerManager::restoreCpuFreqAfterLogging() {
 
 // ---------------- Fuel gauge public API ----------------
 
+void PowerManager::begin(const board::BoardProfile& board)
+{
+  g_analogRailEnablePin = board.analog.enable_pin;
+  g_analogRailActiveHigh = board.analog.enable_active_high;
+
+  if (hasAnalogRailEnable_()) {
+    pinMode((uint8_t)g_analogRailEnablePin, OUTPUT);
+    applyAnalogRailPin_(board.analog.enable_default_on);
+    PWR_LOGI("Analog rail enable GPIO%d active_%s default=%s\n",
+             (int)g_analogRailEnablePin,
+             g_analogRailActiveHigh ? "high" : "low",
+             board.analog.enable_default_on ? "on" : "off");
+  } else {
+    g_analogRailEnabled = true;
+  }
+}
+
 void PowerManager::fuelGaugeBegin(uint8_t i2c_addr, TwoWire* wire)
 {
   g_fgAddr = i2c_addr ? i2c_addr : 0x36;
@@ -224,6 +283,7 @@ void PowerManager::fuelGaugeBegin(uint8_t i2c_addr, TwoWire* wire)
   g_fgOk   = false;
   g_fgDetected = false;
   fuelGaugeInitIfNeeded_();
+  updateAnalogRailForBattery_();
 }
 
 void PowerManager::fuelGaugeLoop()
@@ -241,6 +301,7 @@ void PowerManager::fuelGaugeLoop()
   if (g_fgOk) {
     g_fgVbat = v;
     g_fgSocPct = s;
+    updateAnalogRailForBattery_();
   }
 }
 
@@ -260,4 +321,35 @@ float PowerManager::batteryVoltage()
 {
   fuelGaugeInitIfNeeded_();
   return g_fgVbat;
+}
+
+bool PowerManager::batteryLow()
+{
+  fuelGaugeInitIfNeeded_();
+  return batteryLowCached_();
+}
+
+void PowerManager::setAnalogRailEnabled(bool enabled)
+{
+  applyAnalogRailPin_(enabled);
+}
+
+bool PowerManager::analogRailEnabled()
+{
+  return g_analogRailEnabled;
+}
+
+bool PowerManager::canStartLogging()
+{
+  fuelGaugeInitIfNeeded_();
+  if (batteryLowCached_()) {
+    applyAnalogRailPin_(false);
+    return false;
+  }
+
+  if (!g_analogRailEnabled) {
+    applyAnalogRailPin_(true);
+    delay(5);
+  }
+  return true;
 }

@@ -11,6 +11,15 @@
 
 namespace {
 
+void copyField_(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  size_t n = strlen(src);
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 void writeColumnLabel_(const char* name, const char* units, char* out, size_t cap) {
   if (!out || cap < 2) return;
   out[0] = '\0';
@@ -44,6 +53,10 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   if (params.getInt("installed_zero_count", li))    p.installedZeroCount = (int32_t)li;
   if (params.getBool("include_raw", b))             p.includeRawColumn = b;
   if (params.get("units_label", s))                 s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+  if (params.get("end", s))                         s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
+  if (params.get("primary_domain", s))              s.toCharArray(p.primaryDomain, sizeof(p.primaryDomain));
+  if (params.get("primary_quantity", s))            s.toCharArray(p.primaryQuantity, sizeof(p.primaryQuantity));
+  if (params.get("raw_domain", s))                  s.toCharArray(p.rawDomain, sizeof(p.rawDomain));
 
   long ain = -1;
   if (params.getInt("ain", ain) && board::gBoard) {
@@ -137,6 +150,11 @@ void AnalogPotSensor::applyParams(const Params& p) {
     m_unitsLabel[0] = '\0';
   }
   Sensor::setOutputUnitsLabel(m_unitsLabel);
+
+  copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);
+  copyField_(m_primaryDomain, sizeof(m_primaryDomain), p.primaryDomain);
+  copyField_(m_primaryQuantity, sizeof(m_primaryQuantity), p.primaryQuantity);
+  copyField_(m_rawDomain, sizeof(m_rawDomain), p.rawDomain);
 
   applyLinearScalePrecompute();
 }
@@ -412,6 +430,75 @@ void AnalogPotSensor::getColumnName(uint8_t col, char* out, size_t cap) const {
   }
 }
 
+bool AnalogPotSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
+  if (idx >= columnCount()) return false;
+  if (!Sensor::describeColumn(idx, out)) return false;
+
+  copyField_(out.sensorName, sizeof(out.sensorName), name());
+  out.outputMode = m_mode;
+  out.required = true;
+  out.primary = (idx == 0);
+  out.raw = (m_mode == OutputMode::RAW) || (idx == 1 && m_includeRaw);
+  out.calibrated = !out.raw || (idx == 0 && m_mode != OutputMode::RAW);
+  out.transformed = (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
+
+  copyField_(out.end, sizeof(out.end), m_semanticEnd);
+  copyField_(out.domain, sizeof(out.domain), out.raw ? m_rawDomain : m_primaryDomain);
+  if (!out.domain[0]) copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+
+  if (out.raw) {
+    copyField_(out.quantity, sizeof(out.quantity), "raw");
+    copyField_(out.unit, sizeof(out.unit), "counts");
+    copyField_(out.source, sizeof(out.source), "raw_counts");
+    out.calibrated = false;
+  } else {
+    copyField_(out.quantity, sizeof(out.quantity), m_primaryQuantity);
+    copyField_(out.unit, sizeof(out.unit), m_outputUnitsLabel);
+    copyField_(out.source, sizeof(out.source), out.transformed ? "transformed" : "linear_calibrated");
+    copyField_(out.calibrationId, sizeof(out.calibrationId), "linear");
+  }
+
+  if (out.transformed && selectedTransformId().length()) {
+    selectedTransformId().toCharArray(out.transformChain, sizeof(out.transformChain));
+  }
+
+  if (out.end[0] && out.domain[0] && out.quantity[0]) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_%s_%s",
+             out.end, out.domain, out.quantity);
+  } else if (out.quantity[0]) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_%s", name(), out.quantity);
+  }
+
+  if (!out.quantity[0]) {
+    copyField_(out.notes, sizeof(out.notes), "missing semantic quantity");
+  } else if (!out.end[0] || !out.domain[0]) {
+    copyField_(out.notes, sizeof(out.notes), "partial semantic metadata");
+  } else {
+    out.notes[0] = '\0';
+  }
+
+  return true;
+}
+
+bool AnalogPotSensor::describeSensorMetadata(SensorMetadataDescriptor& out) const {
+  out = SensorMetadataDescriptor{};
+  copyField_(out.sensorId, sizeof(out.sensorId), name());
+  copyField_(out.name, sizeof(out.name), name());
+  copyField_(out.type, sizeof(out.type), "analog_pot");
+  copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+  copyField_(out.rawUnit, sizeof(out.rawUnit), "counts");
+  copyField_(out.calibrationType, sizeof(out.calibrationType), "linear");
+  copyField_(out.calibrationInputUnit, sizeof(out.calibrationInputUnit), "counts");
+  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), m_outputUnitsLabel);
+  out.installedZeroCount = installed_zero_count_;
+  out.sensorZeroCount = sensor_zero_count_;
+  out.sensorFullCount = sensor_full_count_;
+  out.sensorFullTravel = sensor_full_travel_mm_;
+  out.invert = m_invert;
+  out.hasCalibration = true;
+  return true;
+}
+
 
 
 void AnalogPotSensor::sampleValues(float* out, uint8_t max) {
@@ -449,6 +536,10 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
     {"output_mode", ParamType::Enum,"RAW,LINEAR,POLY,LUT", nullptr,nullptr,nullptr, "Output method: RAW, scaled (LINEAR) or transformed (POLY/LUT)."},
     {"include_raw",    ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Append RAW column after primary"},
     {"units_label",    ParamType::String,"",     nullptr,nullptr,nullptr,"Units suffix for non RAW output (e.g., mm, deg, N, norm)"},
+    {"end",            ParamType::Enum,  "",     nullptr,nullptr,"front,rear", "Optional semantic end for log metadata"},
+    {"primary_domain", ParamType::Enum,  "",     nullptr,nullptr,"wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
+    {"primary_quantity",ParamType::Enum, "",     nullptr,nullptr,"disp,ang_disp,force,pressure,temp,voltage,norm", "Optional semantic quantity for primary output"},
+    {"raw_domain",     ParamType::Enum,  "",     nullptr,nullptr,"wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for raw counts"},
 
   };
 

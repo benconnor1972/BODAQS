@@ -26,6 +26,7 @@ static time_t baseEpoch = 0;
 static unsigned long lastSyncMs = 0;
 static bool useHumanReadableTimestamps = false;
 static TwoWire* s_externalRtcWire = nullptr;
+static char s_timezone_[64] = "UTC";
 static constexpr size_t kMaxSntpServerNameLen_ = 128;
 static char s_sntpServerNames_[3][kMaxSntpServerNameLen_] = {{0}, {0}, {0}};
 static const char* kBuiltinHttpTimeUrls_[] = {
@@ -307,9 +308,14 @@ bool RTCManager_hasValidTime() {
 
 void RTCManager_setTimezone(const char* tz) {
   const char* applied = (tz && *tz) ? tz : "UTC";
+  snprintf(s_timezone_, sizeof(s_timezone_), "%s", applied);
   setenv("TZ", applied, 1);
   tzset();
   RTC_LOGD("Timezone applied: '%s'\n", applied);
+}
+
+const char* RTCManager_getTimezone() {
+  return s_timezone_;
 }
 
 bool RTCManager_waitForSNTP(uint32_t timeout_ms) {

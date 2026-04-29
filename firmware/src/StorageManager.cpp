@@ -2,11 +2,13 @@
 #include "RTCManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
+#include "LogMetadataWriter.h"
 
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
 #include "SPI.h"
 #include "DebugTrace.h"
 #include "DebugLog.h"
+#include <math.h>
 
 #define STOR_LOGE(...) LOGE_TAG("Storage", __VA_ARGS__)
 #define STOR_LOGW(...) LOGW_TAG("Storage", __VA_ARGS__)
@@ -51,6 +53,10 @@ static unsigned long sampleIntervalMs = 1000;
 static bool loggingActive = false;
 
 static char s_customHeader[160] = {0};
+static String s_currentLogPath;
+static String s_currentSessionId;
+static String s_logStartedAtLocal;
+static uint32_t s_rowsWritten = 0;
 
 static uint32_t s_flushCount    = 0;
 static uint32_t s_flushMaxMs    = 0;
@@ -60,6 +66,7 @@ static uint64_t s_flushTotalMs  = 0;
 // --- Sample row queue for non-blocking sampling ---
 // Must match LoggingManager's float values[32] size.
 constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
+static bool s_valueColumnIsRaw[SM_MAX_DYNAMIC_COLS] = {false};
 
 struct SampleRow {
   uint32_t sample_id = 0;
@@ -86,6 +93,24 @@ static uint16_t   s_qCap = 0;
 
 static inline bool queueEmpty() { return s_qCount == 0; }
 static inline bool queueFull()  { return (s_qCap != 0) && (s_qCount >= s_qCap); }
+static void refreshValueColumnTypes_();
+
+static String isoLocalFromFilenameTimestamp_(const String& s) {
+  if (s.length() < 19) return String();
+  String out = s.substring(0, 19);
+  out.replace("_", "T");
+  out.setCharAt(13, ':');
+  out.setCharAt(16, ':');
+  return out;
+}
+
+static String stemFromPath_(const String& path) {
+  const int slash = path.lastIndexOf('/');
+  const int dot = path.lastIndexOf('.');
+  const int start = slash >= 0 ? slash + 1 : 0;
+  const int end = (dot > start) ? dot : path.length();
+  return path.substring(start, end);
+}
 
 static void allocQueue(uint16_t depth) {
   if (depth < 4) depth = 4;
@@ -537,6 +562,7 @@ static bool preallocate(FsFile& f, uint32_t mib) {
 
 static bool openNewLogFile_SPI(const String& longName) {
   logFile.close();
+  s_currentLogPath = "";
 
   // 1) Long name
   logFile = sd.open(longName.c_str(), O_WRONLY | O_CREAT | O_EXCL);
@@ -558,6 +584,7 @@ static bool openNewLogFile_SPI(const String& longName) {
           logFile = sd.open(fallback, O_WRONLY | O_CREAT | O_EXCL);
           if (logFile) {
             STOR_LOGI("SPI: Using fallback: %s\n", fallback);
+            s_currentLogPath = fallback;
             break;
           }
         }
@@ -568,7 +595,10 @@ static bool openNewLogFile_SPI(const String& longName) {
       }
     } else {
       STOR_LOGI("SPI: Using 8.3: %s\n", shortName.c_str());
+      s_currentLogPath = shortName;
     }
+  } else {
+    s_currentLogPath = longName;
   }
 
   // Preallocate only on SdFat backend
@@ -578,6 +608,7 @@ static bool openNewLogFile_SPI(const String& longName) {
 
 static bool openNewLogFile_SDMMC(const String& longName) {
   logFileMMC.close();
+  s_currentLogPath = "";
 
   // Helper lambda for "exclusive" create style.
   auto tryCreate = [](const String& name, File& out) -> bool {
@@ -599,6 +630,7 @@ static bool openNewLogFile_SDMMC(const String& longName) {
   // 1) Long name
   if (tryCreate(longName, logFileMMC)) {
     STOR_LOGI("SD_MMC: Using long filename: %s\n", longName.c_str());
+    s_currentLogPath = longName;
     return true;
   }
 
@@ -609,6 +641,7 @@ static bool openNewLogFile_SDMMC(const String& longName) {
 
   if (tryCreate(shortName, logFileMMC)) {
     STOR_LOGI("SD_MMC: Using 8.3: %s\n", shortName.c_str());
+    s_currentLogPath = shortName;
     return true;
   }
 
@@ -619,6 +652,7 @@ static bool openNewLogFile_SDMMC(const String& longName) {
     snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
     if (tryCreate(String(fallback), logFileMMC)) {
       STOR_LOGI("SD_MMC: Using fallback: %s\n", fallback);
+      s_currentLogPath = fallback;
       return true;
     }
   }
@@ -638,14 +672,20 @@ static void startLog() {
   s_flushCount = 0;
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
+  s_rowsWritten = 0;
+  s_currentLogPath = "";
+  s_currentSessionId = "";
+  s_logStartedAtLocal = "";
 
   const bool rtcValid = RTCManager_hasValidTime();
   const uint32_t filenameT0 = millis();
   String filename = RTCManager_getDateTimeString();
+  s_logStartedAtLocal = isoLocalFromFilenameTimestamp_(filename);
   const uint32_t filenameMs = millis() - filenameT0;
   filename.replace(":", "-");
   filename.replace(" ", "_");
   filename += ".CSV";
+  s_currentSessionId = filename.substring(0, filename.length() - 4);
 
   if (!rtcValid) {
     STOR_LOGW("startLog: RTC invalid, using fallback filename '%s'\n", filename.c_str());
@@ -701,6 +741,10 @@ static void startLog() {
     // No need for logFileMMC.seek(0) here unless you specifically want it.
   }
 
+  if (s_currentLogPath.length()) {
+    s_currentSessionId = stemFromPath_(s_currentLogPath);
+  }
+
   // --- Build header (shared for both backends) ---
   //SensorManager::debugDump("startLog-beforeHeader");
 
@@ -727,6 +771,7 @@ static void startLog() {
   }
 
   STOR_LOGI("Header: %s\n", header);
+  refreshValueColumnTypes_();
 
   const uint32_t flushT0 = millis();
   if (isSpiBackend()) {
@@ -832,6 +877,31 @@ void StorageManager_stopLog() {
     logFileMMC.close();
   }
 
+  if (s_currentLogPath.length()) {
+    const String generatedAtLocal = isoLocalFromFilenameTimestamp_(RTCManager_getDateTimeString());
+    LogMetadataContext metaCtx;
+    metaCtx.csvPath = s_currentLogPath.c_str();
+    metaCtx.sessionId = s_currentSessionId.c_str();
+    metaCtx.startedAtLocal = s_logStartedAtLocal.c_str();
+    metaCtx.timezone = RTCManager_getTimezone();
+    metaCtx.generatedAtLocal = generatedAtLocal.c_str();
+    metaCtx.rowCount = s_rowsWritten;
+    metaCtx.sampleRateHz = (uint16_t)sampleRateHz;
+    metaCtx.humanReadableTime = RTCManager_isHumanReadable();
+
+    String metadata;
+    if (LogMetadataWriter_build(metaCtx, metadata)) {
+      const String metadataPath = LogMetadataWriter_metadataPathForCsv(s_currentLogPath.c_str());
+      if (StorageManager_saveTextFile(metadataPath.c_str(), metadata)) {
+        STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
+      } else {
+        STOR_LOGW("Failed to write log metadata: %s\n", metadataPath.c_str());
+      }
+    } else {
+      STOR_LOGW("Failed to build log metadata for %s\n", s_currentLogPath.c_str());
+    }
+  }
+
   loggingActive = false;
   STOR_LOGI("samplesDropped=%lu\n", (unsigned long)s_samplesDropped);
   STOR_LOGI("flushCount=%lu maxFlushMs=%lu avgFlushMs=%.2f\n",
@@ -898,10 +968,20 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
 
     // Sensor values (comma-separated, fixed precision)
     for (uint16_t i = 0; i < nValues; ++i) {
-        int n = snprintf(line + off,
+        int n = 0;
+        if (i < SM_MAX_DYNAMIC_COLS && s_valueColumnIsRaw[i]) {
+            const float raw = values[i];
+            const uint32_t rawInt = (raw <= 0.0f) ? 0UL : (uint32_t)lroundf(raw);
+            n = snprintf(line + off,
+                         sizeof(line) - (size_t)off,
+                         ",%lu",
+                         (unsigned long)rawInt);
+        } else {
+            n = snprintf(line + off,
                          sizeof(line) - (size_t)off,
                          ",%.6f",
                          (double)values[i]);
+        }
         if (n <= 0 || off + n >= (int)sizeof(line)) {
             return; // overflow guard
         }
@@ -936,14 +1016,25 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     // If the line is larger than the staging buffer, write it directly (rare)
     if (!buffer || len > bufferSize) {
         logWriteInternal(line, len);
+        ++s_rowsWritten;
         return;
     }
 
     // 3) Copy the whole line into the staging buffer
     memcpy(&buffer[bufferIndex], line, len);
     bufferIndex += len;
+    ++s_rowsWritten;
 
     // 4) No per-line flush here; periodic flush handled in StorageManager_loop()
+}
+
+static void refreshValueColumnTypes_()
+{
+  for (uint16_t i = 0; i < SM_MAX_DYNAMIC_COLS; ++i) {
+    s_valueColumnIsRaw[i] = false;
+  }
+
+  (void)SensorManager::describeSensorColumnRawFlags(s_valueColumnIsRaw, SM_MAX_DYNAMIC_COLS);
 }
 
 

@@ -1,6 +1,6 @@
 # Sidecar Metadata Generation Task
 
-Status: Deferred implementation task
+Status: In progress
 
 This document captures the firmware work needed for BODAQS to emit a JSON
 sidecar file alongside each CSV log. The sidecar is intended to provide signal
@@ -184,6 +184,68 @@ travel.
    metadata generation time.
 10. Add validation or debug logging that reports when a valid sidecar cannot be
     generated because required semantic metadata is missing.
+
+## 5.1 First Runtime Metadata Milestone
+
+The first implementation slice adds a runtime sensor-column descriptor layer,
+without writing JSON yet.
+
+Added firmware interfaces:
+
+- `SensorColumnDescriptor`
+- `Sensor::describeColumn(...)`
+- `SensorManager::describeSensorColumns(...)`
+- `SensorManager::debugDumpColumnMetadata(...)`
+
+The descriptor API mirrors the existing `columnCount()` / `getColumnName()` /
+`sampleValues()` model, so later log metadata generation can enumerate emitted
+sensor columns in the same order as the CSV header.
+
+Added optional per-sensor semantic parameters:
+
+- `end`
+- `primary_domain`
+- `primary_quantity`
+- `raw_domain`
+
+These fields do not affect CSV output. They are consumed only by the runtime
+descriptor layer so the later JSON writer does not need to infer semantics from
+sensor names or CSV headers. Existing configs that omit these fields continue to
+work; descriptors will include notes such as `missing semantic quantity` or
+`partial semantic metadata` where appropriate.
+
+## 5.2 Initial Log Metadata Writer
+
+The second implementation slice adds `LogMetadataWriter`, which builds the v0.2
+JSON log metadata document from the runtime descriptors and writes it next to
+the CSV when logging stops.
+
+Current behaviour:
+
+- metadata is written at log close, after queued samples, buffered CSV data, and
+  the run-stats footer have been flushed
+- the metadata file uses the same stem as the actual CSV filename selected by
+  the storage backend
+- the writer emits `contract`, `data_file`, `session`, `streams`, `sensors`,
+  `columns`, `qc`, and `provenance`
+- `sample_id`, the active time column, sensor columns, and `mark` are all
+  represented in `columns`
+- sensor-level calibration metadata is emitted where the concrete sensor exposes
+  it
+- local time-of-day logs are described with `time_encoding: "local_time"` and
+  fast timestamp logs are described with `time_encoding: "epoch_ms"`
+
+Known limitations of this first writer:
+
+- generated local timestamps include the logger's configured POSIX timezone
+  string, but do not yet include a resolved UTC offset in `started_at_local`
+- transform payloads are not embedded; transformed columns record only the
+  selected transform id in `transform_chain`
+- semantic completeness depends on the optional per-sensor semantic config
+  fields being populated
+- the metadata document is built in memory as a `String` at log close; if this
+  becomes too large for future high-channel loggers, replace it with a streaming
+  writer
 
 ## 6. Non-Goals For The First Implementation
 

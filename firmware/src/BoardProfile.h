@@ -98,6 +98,13 @@ struct AnalogInputsProfile {
   int8_t pins[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
   uint8_t count = 0;
 
+  // Optional switched analog rail control.
+  // When present, firmware drives this to the default-on state at boot,
+  // and disables it before sleep or when battery voltage is too low to log.
+  int8_t enable_pin = -1;
+  bool enable_active_high = true;
+  bool enable_default_on = true;
+
   // Optional hints
   uint16_t adc_max = 4095;
   float vref = 3.3f;
