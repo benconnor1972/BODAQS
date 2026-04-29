@@ -1,6 +1,8 @@
 #include "Routes_Config.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "HtmlUtil.h"
@@ -13,8 +15,6 @@
 #include "PowerManager.h"
 #include "WebServerManager.h"  // for canStart()
 #include "StorageManager.h"
-#include "ButtonActions.h"
-#include "ButtonBindingTable.h"
 #include "ButtonManager.h"
 #include "BoardSelect.h" 
 #include "TransformRegistry.h"
@@ -28,6 +28,30 @@ static String fmtIPv4(const uint8_t a[4]) {
   snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
            a[0], a[1], a[2], a[3]);
   return String(buf);
+}
+
+static String minutesStringFromMs_(uint32_t ms) {
+  if (ms == 0) return String("0");
+  String s((double)ms / 60000.0, 3);
+  while (s.endsWith("0")) s.remove(s.length() - 1);
+  if (s.endsWith(".")) s.remove(s.length() - 1);
+  return s;
+}
+
+static bool parseMinutesToMs_(const String& text, uint32_t& out) {
+  String s = text;
+  s.trim();
+  if (!s.length()) return false;
+  char* end = nullptr;
+  const double minutes = strtod(s.c_str(), &end);
+  if (end == s.c_str()) return false;
+  while (end && *end && isspace((unsigned char)*end)) ++end;
+  if (end && *end) return false;
+  if (minutes < 0.0) return false;
+  double ms = minutes * 60000.0;
+  if (ms > 4294967295.0) ms = 4294967295.0;
+  out = (uint32_t)(ms + 0.5);
+  return true;
 }
 
 static void noteHttpActivity_() {
@@ -140,8 +164,6 @@ static void appendTopNav(String& html, const char* active) {
   // Config pages
   a("/config",         "General",  strcmp(active, "/config")==0);
   a("/config/sensors", "Sensors",  strcmp(active, "/config/sensors")==0);
-  a("/config/buttons", "Buttons",  strcmp(active, "/config/buttons")==0);
-
   html += "</div>";
 }
 
@@ -221,6 +243,10 @@ void registerConfigRoutes(WebServer& srv) {
     if (cfg.logFormat == LogFormat::SynBikeRaw) html += F(" checked");
     html += dis; html += F("> syn.bike raw</label><br>");
 
+    html += F("<label><input type='checkbox' name='omit_metadata' value='true'");
+    if (cfg.omitMetadata) html += F(" checked");
+    html += dis; html += F("> Omit log metadata JSON</label><br>");
+
     html += F("<label>Timestamp mode: </label><select name='timestamp_mode'");
     html += dis; html += F("><option value='human'");
     if (cfg.timestampHuman) html += F(" selected");
@@ -236,12 +262,12 @@ void registerConfigRoutes(WebServer& srv) {
     html += String(cfg.debounceMs);
     html += F("'"); html += dis; html += F("><br>");
 
-    html += F("<label>Auto-sleep idle (ms): </label><input type='number' name='auto_sleep_idle_ms' min='0' max='4294967295' value='");
-    html += String((unsigned long)cfg.autoSleepIdleMs);
+    html += F("<label>Auto-sleep idle (min): </label><input type='number' name='auto_sleep_idle_min' min='0' step='0.1' value='");
+    html += minutesStringFromMs_(cfg.autoSleepIdleMs);
     html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
 
-    html += F("<label>Wi-Fi idle timeout (ms): </label><input type='number' name='wifi_idle_timeout_ms' min='0' max='4294967295' value='");
-    html += String((unsigned long)cfg.wifiIdleTimeoutMs);
+    html += F("<label>Wi-Fi idle timeout (min): </label><input type='number' name='wifi_idle_timeout_min' min='0' step='0.1' value='");
+    html += minutesStringFromMs_(cfg.wifiIdleTimeoutMs);
     html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
 
     html += F("<label>Log level: </label><select name='log_level'");
@@ -392,7 +418,6 @@ void registerConfigRoutes(WebServer& srv) {
       addIpField("gateway", cfg.wifi[i].gateway, "Gateway");
       addIpField("subnet",  cfg.wifi[i].subnet,  "Subnet");
       addIpField("dns1",    cfg.wifi[i].dns1,    "DNS 1");
-      addIpField("dns2",    cfg.wifi[i].dns2,    "DNS 2");
 
       html += F("</fieldset>");
     }
@@ -680,7 +705,6 @@ void registerConfigRoutes(WebServer& srv) {
         }
         emitParamRow("sensor_zero_count", "Sensor count at zero travel");
         emitParamRow("sensor_full_count", "Sensor count at full travel");
-        emitParamRow("invert", "Invert measurement direction");
 
         // ---- Wrapping ----
         html += F("<h4>Wrapping</h4>");
@@ -697,7 +721,7 @@ void registerConfigRoutes(WebServer& srv) {
         const char* shown[] = {
           "ain","muted",
           "output_mode","include_raw","sensor_full_travel_mm","units_label",
-          "cal_allowed","sensor_zero_count","sensor_full_count","invert",
+          "cal_allowed","sensor_zero_count","sensor_full_count",
           "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start",
           "ema_alpha","deadband"
         };
@@ -817,77 +841,6 @@ void registerConfigRoutes(WebServer& srv) {
     html += htmlFooter();
     srv.send(200, F("text/html"), html);
   });
-
-  // -------------------- GET /config/buttons --------------------
-  S->on("/config/buttons", HTTP_GET, [S](){
-    auto& srv = *S;
-    noteHttpActivity_();
-
-    const LoggerConfig& cfg = ConfigManager::get();
-    const bool locked = !WebServerManager::canStart();
-    const String dis  = locked ? F(" disabled") : F("");
-
-    String html = htmlHeader(F("Buttons"));
-
-    appendTopNav(html, "/config/buttons");
-    html += F("<hr>");
-
-
-    html += F("<form method='POST' action='/config/buttons'>");
-
-    // ---------- Button bindings (new) ----------
-    html += F("<fieldset><legend>Button bindings (new)</legend>");
-    html += F("<p><small>Each row maps a (button ID, event) pair to an action. "
-              "Events: pressed, released, click, double_click, held. "
-              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter, menu_select, sleep.</small></p>");
-
-    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-      const ButtonBindingDef& bd = (i < cfg.buttonBindingCount) ? cfg.buttonBindings[i] : ButtonBindingDef{};
-
-      html += F("<div class='row'>");
-      html += F("<label>Binding ");
-      html += String(i);
-      html += F("</label>");
-
-      // buttonId
-      html += F("<input type='text' size='10' placeholder='button id' name='binding");
-      html += String(i);
-      html += F(".button' value='");
-      html += htmlEscape(String(bd.buttonId));
-      html += F("'");
-      html += dis;
-      html += F("> ");
-
-      // event
-      html += F("<input type='text' size='10' placeholder='event' name='binding");
-      html += String(i);
-      html += F(".event' value='");
-      html += htmlEscape(String(bd.event));
-      html += F("'");
-      html += dis;
-      html += F("> ");
-
-      // action
-      html += F("<input type='text' size='20' placeholder='action' name='binding");
-      html += String(i);
-      html += F(".action' value='");
-      html += htmlEscape(String(bd.action));
-      html += F("'");
-      html += dis;
-      html += F(">");
-
-      html += F("</div>");
-    }
-    html += F("</fieldset>");
-
-
-    html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
-    html += F("</form>");
-
-    html += htmlFooter();
-    srv.send(200, F("text/html"), html);
-  });
-  
 
   // -------------------- POST /config/sensors --------------------
   S->on("/config/sensors", HTTP_POST, [S](){
@@ -1078,7 +1031,6 @@ void registerConfigRoutes(WebServer& srv) {
         }
         if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
         if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
-        { bool inv=false; if (getBoolLast("invert", inv)) sp.params.setBool("invert", inv); }
       }
 
       // Smoothing
@@ -1108,7 +1060,7 @@ void registerConfigRoutes(WebServer& srv) {
             pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
             pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
-            pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("invert") ||
+            pkey.equalsIgnoreCase("sensor_full_count") ||
             pkey.equalsIgnoreCase("counts_per_turn") || pkey.equalsIgnoreCase("wrap_threshold_counts") ||
             pkey.equalsIgnoreCase("assume_turn0_at_start") ||
             pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
@@ -1165,86 +1117,6 @@ void registerConfigRoutes(WebServer& srv) {
     srv.send(303, F("text/plain"), F("Saved"));
   });
 
-  // -------------------- POST /config/buttons --------------------
-  S->on("/config/buttons", HTTP_POST, [S](){
-    auto& srv = *S;
-    noteHttpActivity_();
-
-    if (!WebServerManager::canStart()) {
-      srv.send(423, F("text/plain"), F("Locked while logging"));
-      return;
-    }
-
-    LoggerConfig tmp = ConfigManager::get();
-
-    // Clear existing bindings
-    tmp.buttonBindingCount = 0;
-    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-      tmp.buttonBindings[i].buttonId[0] = '\0';
-      tmp.buttonBindings[i].event[0]    = '\0';
-      tmp.buttonBindings[i].action[0]   = '\0';
-    }
-
-    auto getArgLast = [&](const char* key, String& out) -> bool {
-      bool found = false;
-      const int ac = srv.args();
-      for (int ai = 0; ai < ac; ++ai) {
-        if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; }
-      }
-      return found;
-    };
-
-    uint8_t newBindingCount = 0;
-
-    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-      char keyBtn[28], keyEvt[28], keyAct[28];
-      snprintf(keyBtn, sizeof(keyBtn), "binding%u.button", (unsigned)i);
-      snprintf(keyEvt, sizeof(keyEvt), "binding%u.event",  (unsigned)i);
-      snprintf(keyAct, sizeof(keyAct), "binding%u.action", (unsigned)i);
-
-      String button, ev, act;
-
-      bool hb = getArgLast(keyBtn, button);
-      bool he = getArgLast(keyEvt, ev);
-      bool ha = getArgLast(keyAct, act);
-      if (!(hb || he || ha)) continue;
-
-      button.trim(); ev.trim(); act.trim();
-
-      if (!button.length() && !ev.length() && !act.length()) continue;
-
-      ButtonBindingDef bd{};
-
-      if (button.length() >= (int)sizeof(bd.buttonId))
-        button = button.substring(0, sizeof(bd.buttonId) - 1);
-      button.toCharArray(bd.buttonId, sizeof(bd.buttonId));
-
-      if (ev.length() >= (int)sizeof(bd.event))
-        ev = ev.substring(0, sizeof(bd.event) - 1);
-      ev.toCharArray(bd.event, sizeof(bd.event));
-
-      if (act.length() >= (int)sizeof(bd.action))
-        act = act.substring(0, sizeof(bd.action) - 1);
-      act.toCharArray(bd.action, sizeof(bd.action));
-
-      if (newBindingCount < MAX_BUTTON_BINDINGS) {
-        tmp.buttonBindings[newBindingCount++] = bd;
-      }
-    }
-
-    tmp.buttonBindingCount = newBindingCount;
-
-    if (!ConfigManager::save(tmp)) {
-      srv.send(500, F("text/plain"), F("Failed to save config"));
-      return;
-    }
-    ButtonActions::reloadBindingsFromConfig(ConfigManager::get());
-    ButtonBindingTable::initFromConfig(ConfigManager::get());
-    srv.sendHeader("Location", "/config/buttons?ok=1");
-    srv.send(303, F("text/plain"), F("Saved"));
-  });
-
-
   // -------------------- POST /config --------------------
   S->on("/config", HTTP_POST, [S](){
     auto& srv = *S;
@@ -1286,6 +1158,8 @@ void registerConfigRoutes(WebServer& srv) {
         tmp.logFormat = fmt;
       }
     }
+
+    tmp.omitMetadata = srv.hasArg("omit_metadata");
 
     if (srv.hasArg("tz")) {
       String tz = srv.arg("tz"); tz.trim();
@@ -1374,7 +1248,7 @@ void registerConfigRoutes(WebServer& srv) {
           }
         }
 
-        // ip/gateway/subnet/dns1/dns2
+        // ip/gateway/subnet/dns1
         auto parseIpInline = [](const String& s, uint8_t out[4])->bool{
           int a,b,c,d;
           if (sscanf(s.c_str(), "%d.%d.%d.%d", &a,&b,&c,&d) != 4) return false;
@@ -1396,7 +1270,6 @@ void registerConfigRoutes(WebServer& srv) {
         setIpIfPresent(String("wifi")+i+".gateway", tmp.wifi[i].gateway);
         setIpIfPresent(String("wifi")+i+".subnet",  tmp.wifi[i].subnet);
         setIpIfPresent(String("wifi")+i+".dns1",    tmp.wifi[i].dns1);
-        setIpIfPresent(String("wifi")+i+".dns2",    tmp.wifi[i].dns2);
 
         // ---- static IP validation (only if enabled) ----
         auto isZero4 = [](const uint8_t a[4])->bool{
@@ -1433,8 +1306,17 @@ void registerConfigRoutes(WebServer& srv) {
       auto setBool= [&](const char* name, bool& field){ if (!srv.hasArg(name)) return; String s=srv.arg(name); s.trim(); s.toLowerCase(); field=(s=="1"||s=="true"||s=="on"||s=="yes"); };
 
       setU16("debounce_ms",    tmp.debounceMs);
-      setU32("auto_sleep_idle_ms", tmp.autoSleepIdleMs);
-      setU32("wifi_idle_timeout_ms", tmp.wifiIdleTimeoutMs);
+      uint32_t timeoutMs = 0;
+      if (srv.hasArg("auto_sleep_idle_min") && parseMinutesToMs_(srv.arg("auto_sleep_idle_min"), timeoutMs)) {
+        tmp.autoSleepIdleMs = timeoutMs;
+      } else {
+        setU32("auto_sleep_idle_ms", tmp.autoSleepIdleMs);
+      }
+      if (srv.hasArg("wifi_idle_timeout_min") && parseMinutesToMs_(srv.arg("wifi_idle_timeout_min"), timeoutMs)) {
+        tmp.wifiIdleTimeoutMs = timeoutMs;
+      } else {
+        setU32("wifi_idle_timeout_ms", tmp.wifiIdleTimeoutMs);
+      }
     }
 
     // ---------- Persist full config ----------

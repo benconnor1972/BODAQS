@@ -43,7 +43,6 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   double d = 0.0;
   String s;
 
-  if (params.getBool("invert", b))                  p.invert = b;
   if (params.getInt("pin", li))                     p.pin = (uint8_t)li;
   if (params.getFloat("ema_alpha", d))              p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
   if (params.getInt("deadband", li))                p.deadbandCounts = (uint16_t)li;
@@ -113,7 +112,6 @@ void AnalogPotSensor::applyParams(const Params& p) {
 
   // wiring / polarity
   m_pin    = p.pin;
-  m_invert = p.invert;
 
   // smoothing
   m_alpha    = fmaxf(0.0f, fminf(1.0f, float(p.emaAlphaPermille) / 1000.0f));
@@ -123,6 +121,7 @@ void AnalogPotSensor::applyParams(const Params& p) {
   // geometry
   sensor_zero_count_ = p.sensorZeroCount;
   sensor_full_count_ = p.sensorFullCount;
+  m_invert = (sensor_full_count_ < sensor_zero_count_);
   sensor_full_travel_mm_ = p.sensorFullTravelMm;
   m_zero   = p.sensorZeroCount;
   m_full   = p.sensorFullCount;
@@ -359,7 +358,6 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
       const char* sname = this->name();
       ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
       ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
-      ConfigManager::saveSensorParamByName(sname, "invert", autoInvert ? "true" : "false");
 
     }
   }
@@ -520,7 +518,6 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     // Wiring
     {"ain",            ParamType::Int,   "-1",   "-1",  "7",   nullptr, "Analog input ordinal (AIN0..). -1=use pin"},
-    {"invert",         ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Invert readings (set automatically during range calibration - override not recommended)"},
 
     // RAW smoothing
     {"ema_alpha",      ParamType::Float, "0.2",  "0",   "1",    nullptr, "EMA alpha [0..1]"},

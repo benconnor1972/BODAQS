@@ -12,9 +12,8 @@ public:
   struct Params {
     const char* name = nullptr;
 
-    // Wiring / polarity
+    // Wiring
     uint8_t  pin = -1;
-    bool     invert = false;
 
     // RAW smoothing (EMA + deadband)
     uint16_t emaAlphaPermille = 1;   // 0..1000 => 0..1

@@ -151,7 +151,7 @@ unit-explicit form:
 - full count
 - installed zero count
 - full travel in output units
-- invert flag where applicable
+- derived inversion where applicable, based on calibrated sensor endpoints
 
 This may require sensor classes to carry slightly richer metadata than they do
 today. In particular, firmware should not rely on a display `units_label` alone
@@ -224,6 +224,11 @@ Current behaviour:
 
 - metadata is written at log close, after queued samples, buffered CSV data, and
   the run-stats footer have been flushed
+- the user-facing stop message is shown before the blocking close/write path, so
+  the UI acknowledges stop promptly even when metadata generation takes time
+- metadata generation can be disabled with the global config key
+  `omit_metadata=true`; the default is `false`, which preserves same-stem JSON
+  generation
 - the metadata file uses the same stem as the actual CSV filename selected by
   the storage backend
 - the writer emits `contract`, `data_file`, `session`, `streams`, `sensors`,
@@ -243,9 +248,9 @@ Known limitations of this first writer:
   selected transform id in `transform_chain`
 - semantic completeness depends on the optional per-sensor semantic config
   fields being populated
-- the metadata document is built in memory as a `String` at log close; if this
-  becomes too large for future high-channel loggers, replace it with a streaming
-  writer
+- the metadata document is built in memory as a `String` at log close when
+  `omit_metadata=false`; if this becomes too large for future high-channel
+  loggers, replace it with a streaming writer
 
 ## 6. Non-Goals For The First Implementation
 

@@ -579,13 +579,7 @@ namespace {
 
           case CalUiPhase::RangeFinished:
             if (s_calOptSel == 0) {
-              const bool invert = (s_rangeCap.finish < s_rangeCap.start);
               if (s->finishCalibration(true)) {
-                SensorSpec sp;
-                if (ConfigManager::getSensorSpec(s_calSel, sp)) {
-                  ConfigManager::saveSensorParamByName(sp.name, "invert", invert ? "true" : "false");
-                }
-
                 UI::toastModal("Range saved", 2000, 1);
                 deferUiFor(2000);
                 s_calUiPhase = CalUiPhase::Idle;

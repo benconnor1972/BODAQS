@@ -8,7 +8,6 @@ class AS5600StringPotSensorBase : public Sensor {
 public:
   struct BaseParams {
     const char* name = nullptr;
-    bool     invert = false;
     uint16_t emaAlphaPermille = 1000;
     uint16_t deadbandCounts = 0;
     uint16_t countsPerTurn = 4096;

@@ -19,7 +19,6 @@ void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
   String s;
 
   if (params.getInt("pin", li))                    p.pin = (uint8_t)li;
-  if (params.getBool("invert", b))                 p.invert = b;
   if (params.getFloat("ema_alpha", d))             p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
   if (params.getInt("deadband", li))               p.deadbandCounts = (uint16_t)li;
   if (params.getInt("counts_per_turn", li))        p.countsPerTurn = (uint16_t)li;
@@ -79,7 +78,6 @@ int AS5600StringPotAnalog::readWrappedCountsOnce() const {
 const ParamDef* AS5600StringPotAnalog::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     {"ain",                   ParamType::Int,   "-1",    "-1",   "7",    nullptr, "Analog input ordinal (AIN0..). -1=use pin"},
-    {"invert",                ParamType::Bool,  "false", nullptr, nullptr, nullptr, "Invert measurement direction"},
     {"ema_alpha",             ParamType::Float, "0.2",   "0",    "1",    nullptr, "EMA alpha [0..1]"},
     {"deadband",              ParamType::Int,   "0",     "0",    "4095", nullptr, "Deadband on unwrapped counts"},
     {"counts_per_turn",       ParamType::Int,   "4096",  "2",    "32767", nullptr, "Wrapped counts per AS5600 turn"},

@@ -53,8 +53,10 @@ This document summarizes the major modules in the project, what each one is resp
 **Notes/Gotchas**
 - `save()` writes **all** config keys (globals + sensors) deterministically.
 - `log_format` controls the top-level CSV layout. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index.
+- `omit_metadata=false` keeps the default behaviour of writing a same-stem JSON log metadata file at log close. Set `true` to skip metadata generation.
+- Idle timeout config is saved in minutes (`auto_sleep_idle_min`, `wifi_idle_timeout_min`). Legacy `_ms` keys are still accepted on load for migration.
 - Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
-- File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `invert`, `ema_alpha_permille`, `deadband_counts`, `zero_count`, `full_count`, `full_travel_mm`.
+- File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `ema_alpha_permille`, `deadband_counts`, `zero_count`, `full_count`, `full_travel_mm`.
 - File format keys used by AS5600 string-pot sensors include `counts_per_turn`, `wrap_threshold_counts`, `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`, and `assume_turn0_at_start`.
 
 ---
@@ -81,11 +83,12 @@ This document summarizes the major modules in the project, what each one is resp
 **Purpose:** Acquire analog position and report one or more columns depending on mode and configuration.
 
 **Key params (from ParamPack)**
-- `pin` (ADC pin), `mode` (`raw`/`norm`/`mm`), `include_raw` (bool), `invert` (bool),
+- `pin` (ADC pin), `mode` (`raw`/`norm`/`mm`), `include_raw` (bool),
 - `ema_alpha_permille` (smoothing), `deadband_counts`, `zero_count`, `full_count`, `full_travel_mm`.
 
 **Notes**
 - Produces normalized and/or raw columns; column names include the sensor `name` (e.g. `pot1_norm`).
+- Measurement direction is derived from calibration endpoints. If the full-travel count is below the zero-travel count, the firmware treats the signal as inverted.
 - Honors **muted** state via `SensorManager` (muted sensors still tick but are skipped in log output).
 
 ## `AS5600StringPotSensorBase` / `AS5600StringPotAnalog`
@@ -96,7 +99,7 @@ This document summarizes the major modules in the project, what each one is resp
 - `ain` / `pin`
 - `counts_per_turn`, `wrap_threshold_counts`, `assume_turn0_at_start`
 - `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`
-- `invert`, `ema_alpha`, `deadband`, `output_mode`, `include_raw`
+- `ema_alpha`, `deadband`, `output_mode`, `include_raw`
 
 **Notes**
 - `RAW` mode reports wrapped counts as the primary column.
@@ -264,7 +267,7 @@ void DBG_IMPL(DebugLevel lvl, const char* fmt, ...);
 
 ## Configuration Keys (globals)
 
-- `sample_rate_hz`, `timestamp_mode` (`human|fast`), `tz`
+- `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format`, `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
 - `debounce_ms`
 - Button pins: `web_button_pin`, `log_button_pin`, `mark_button_pin`, `nav_up_pin`, `nav_down_pin`, `nav_left_pin`, `nav_right_pin`, `nav_enter_pin`
 - Network/time: `wifi_ssid`, `wifi_password`, `ntp_servers`, `time_check_url`
@@ -279,7 +282,6 @@ sensorN.muted=true|false
 sensorN.pin=34
 sensorN.mode=raw|norm|mm
 sensorN.include_raw=true|false
-sensorN.invert=true|false
 sensorN.ema_alpha_permille=200
 sensorN.deadband_counts=0
 sensorN.zero_count=0

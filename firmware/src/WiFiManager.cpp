@@ -890,13 +890,11 @@ void WiFiManager::selectAndConnect_() {
     IPAddress gw = ipFrom(nets[chosenIndex].gateway);
     IPAddress sn = ipFrom(nets[chosenIndex].subnet);
     IPAddress d1 = ipFrom(nets[chosenIndex].dns1);
-    IPAddress d2 = ipFrom(nets[chosenIndex].dns2);
 
     // Sensible fallback: if DNS1 unset, use gateway
     if (d1 == IPAddress(0, 0, 0, 0)) d1 = gw;
 
-    // Use 4-arg if you don't want dns2, or 5-arg if your core supports it
-    WiFi.config(ip, gw, sn, d1, d2);
+    WiFi.config(ip, gw, sn, d1);
   } else {
     // IMPORTANT: revert to DHCP when switching away from a static network
     WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);

@@ -36,6 +36,7 @@ struct LoggerConfig {
   uint16_t sampleRateHz     = 100;
   bool     timestampHuman   = true;
   LogFormat logFormat       = LogFormat::BodaqsStandard;
+  bool     omitMetadata     = false;
   char     tz[64]           = "UTC";
   char     ntpServers[128]  = "";
   char     timeCheckUrl[96] = "";
@@ -76,7 +77,6 @@ struct LoggerConfig {
     uint8_t gateway[4] = {0,0,0,0};
     uint8_t subnet[4]  = {0,0,0,0};
     uint8_t dns1[4]    = {0,0,0,0};
-    uint8_t dns2[4]    = {0,0,0,0};
   };
 
   uint8_t   wifiNetworkCount = 0;   // normalized after load()

@@ -666,7 +666,7 @@ void StorageManager_stopLog() {
 
   logFileMMC.close();
 
-  if (s_currentLogPath.length()) {
+  if (s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     const String generatedAtLocal = isoLocalFromFilenameTimestamp_(RTCManager_getDateTimeString());
     LogMetadataContext metaCtx;
     metaCtx.csvPath = s_currentLogPath.c_str();
@@ -690,6 +690,8 @@ void StorageManager_stopLog() {
     } else {
       STOR_LOGW("Failed to build log metadata for %s\n", s_currentLogPath.c_str());
     }
+  } else if (s_currentLogPath.length()) {
+    STOR_LOGI("Log metadata omitted by config\n");
   }
 
   loggingActive = false;

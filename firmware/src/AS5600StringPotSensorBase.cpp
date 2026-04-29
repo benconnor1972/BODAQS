@@ -42,7 +42,6 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
     m_name[sizeof(m_name) - 1] = '\0';
   }
 
-  m_invert = p.invert;
   m_alpha = fmaxf(0.0f, fminf(1.0f, float(p.emaAlphaPermille) / 1000.0f));
   m_deadband = p.deadbandCounts;
   m_countsPerTurn = (p.countsPerTurn >= 2) ? p.countsPerTurn : 4096;
@@ -54,6 +53,7 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
 
   sensor_zero_count_ = p.sensorZeroCount;
   sensor_full_count_ = p.sensorFullCount;
+  m_invert = (sensor_full_count_ < sensor_zero_count_);
   installed_zero_count_ = p.installedZeroCount;
   sensor_full_travel_mm_ = p.sensorFullTravelMm;
   m_assumeTurn0AtStart = p.assumeTurn0AtStart;
@@ -416,7 +416,6 @@ bool AS5600StringPotSensorBase::finishCalibration(bool persist) {
       const char* sname = name();
       ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
       ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
-      ConfigManager::saveSensorParamByName(sname, "invert", m_invert ? "true" : "false");
     }
   }
 

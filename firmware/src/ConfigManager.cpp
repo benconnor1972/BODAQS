@@ -7,6 +7,7 @@
 #include "StorageManager.h"
 #include "DebugLog.h"
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern LoggerConfig g_cfg;
@@ -75,6 +76,10 @@ namespace {
 
   static bool shouldPersistSensorKey_(uint8_t idx, const char* key) {
     if (!key || !*key || idx >= g_specCount) return false;
+
+    // Polarity is derived from the labelled calibration endpoints
+    // (`sensor_full_count < sensor_zero_count`) and is no longer persisted.
+    if (strcasecmp(key, "invert") == 0) return false;
 
     // `pin` is a legacy fallback for analog sensors. When `ain` is present,
     // the physical GPIO is board-derived and `pin` becomes redundant noise.
@@ -281,6 +286,32 @@ static String fmtIPv4(const uint8_t ip[4]) {
   return String(buf);
 }
 
+static bool parseMinutesToMs_(const char* v, uint32_t& out) {
+  if (!v) return false;
+  while (*v && isspace((unsigned char)*v)) ++v;
+  if (!*v) return false;
+
+  char* end = nullptr;
+  const double minutes = strtod(v, &end);
+  if (end == v) return false;
+  while (end && *end && isspace((unsigned char)*end)) ++end;
+  if (end && *end) return false;
+  if (minutes < 0.0) return false;
+
+  double ms = minutes * 60000.0;
+  if (ms > 4294967295.0) ms = 4294967295.0;
+  out = (uint32_t)(ms + 0.5);
+  return true;
+}
+
+static String minutesStringFromMs_(uint32_t ms) {
+  if (ms == 0) return String("0");
+  String s((double)ms / 60000.0, 3);
+  while (s.endsWith("0")) s.remove(s.length() - 1);
+  if (s.endsWith(".")) s.remove(s.length() - 1);
+  return s;
+}
+
 const char* ConfigManager::logFormatKey(LogFormat format) {
   switch (format) {
     case LogFormat::SynBikeRaw: return "syn_bike_raw";
@@ -415,9 +446,12 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   // ---- globals ----
   if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=(uint16_t)v; return true; }
   if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
+  if (keyEquals(key, "omit_metadata")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.omitMetadata = b; return true; }
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
+  if (keyEquals(key, "auto_sleep_idle_min")) { uint32_t ms; if (parseMinutesToMs_(val, ms)) cfg.autoSleepIdleMs = ms; return true; }
+  if (keyEquals(key, "wifi_idle_timeout_min")) { uint32_t ms; if (parseMinutesToMs_(val, ms)) cfg.wifiIdleTimeoutMs = ms; return true; }
   if (keyEquals(key, "auto_sleep_idle_ms")) { cfg.autoSleepIdleMs = (uint32_t)strtoul(val, nullptr, 10); return true; }
   if (keyEquals(key, "wifi_idle_timeout_ms")) { cfg.wifiIdleTimeoutMs = (uint32_t)strtoul(val, nullptr, 10); return true; }
   if (keyEquals(key, "log_level")) {
@@ -483,7 +517,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
     if (!strcasecmp(sub, "gateway")) { setIPv4OrZero_(val, w.gateway); return true; }
     if (!strcasecmp(sub, "subnet"))  { setIPv4OrZero_(val, w.subnet);  return true; }
     if (!strcasecmp(sub, "dns1"))    { setIPv4OrZero_(val, w.dns1);    return true; }
-    if (!strcasecmp(sub, "dns2"))    { setIPv4OrZero_(val, w.dns2);    return true; }
+    if (!strcasecmp(sub, "dns2"))    { return true; }
     return true;
   }
 
@@ -790,13 +824,14 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   line("# global");
   kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
   kv("log_format", ConfigManager::logFormatKey(cfg.logFormat));
+  kv_bool("omit_metadata", cfg.omitMetadata);
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
   kv("ntp_servers", cfg.ntpServers);
   kv("time_check_url", cfg.timeCheckUrl);
   kv_u("debounce_ms", (unsigned)cfg.debounceMs);
-  kv_u("auto_sleep_idle_ms", (unsigned)cfg.autoSleepIdleMs);
-  kv_u("wifi_idle_timeout_ms", (unsigned)cfg.wifiIdleTimeoutMs);
+  kv("auto_sleep_idle_min", minutesStringFromMs_(cfg.autoSleepIdleMs).c_str());
+  kv("wifi_idle_timeout_min", minutesStringFromMs_(cfg.wifiIdleTimeoutMs).c_str());
   kv("log_level", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
   line("");
 
@@ -847,18 +882,16 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
       snprintf(out, 16, "%u.%u.%u.%u", a[0], a[1], a[2], a[3]);
     };
 
-    char ipStr[16], gwStr[16], snStr[16], d1Str[16], d2Str[16];
+    char ipStr[16], gwStr[16], snStr[16], d1Str[16];
     fmtIPv4(w.ip,      ipStr);
     fmtIPv4(w.gateway, gwStr);
     fmtIPv4(w.subnet,  snStr);
     fmtIPv4(w.dns1,    d1Str);
-    fmtIPv4(w.dns2,    d2Str);
 
     kv_indexed("wifi", i, "ip",      ipStr);
     kv_indexed("wifi", i, "gateway", gwStr);
     kv_indexed("wifi", i, "subnet",  snStr);
     kv_indexed("wifi", i, "dns1",    d1Str);
-    kv_indexed("wifi", i, "dns2",    d2Str);
   }
 
 
@@ -922,6 +955,7 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("[CFG] --- current config ---\n");
   LOGI("sampleRateHz=%u\n", cfg.sampleRateHz);
   LOGI("logFormat=%s\n", ConfigManager::logFormatKey(cfg.logFormat));
+  LOGI("omitMetadata=%s\n", cfg.omitMetadata ? "true" : "false");
   LOGI("timestampHuman=%s\n", cfg.timestampHuman ? "true" : "false");
   LOGI("tz=%s\n", cfg.tz);
   LOGI("debounceMs=%u\n", cfg.debounceMs);
