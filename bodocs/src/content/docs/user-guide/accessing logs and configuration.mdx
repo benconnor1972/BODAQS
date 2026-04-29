@@ -1,10 +1,276 @@
 ---
 title: Accessing logs and configuration
+description: How to start the BODAQS web interface, download log files, and edit logger configuration from a browser.
 
 sidebar:
   order: 2
 ---
-## Accessing log files
+
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+
+<Lede>
+  The BODAQS logger has a small web interface for downloading log files and
+  editing configuration. You start it from the logger menu, then connect to it
+  from a browser on the same WiFi network.
+</Lede>
+
+## Before you start
+
+The web interface is intended for setup, file transfer, and checking the logger
+between runs. It is not used while the logger is actively recording.
+
+<Aside type="caution" title="Logging has priority">
+  The logger will not start the web server while logging is active. If the web
+  server is running and you start a log, WiFi and the web server are stopped so
+  sampling has priority.
+</Aside>
+
+You will need:
+
+- A configured WiFi network that the logger can join.
+- A phone, tablet, or computer connected to the same network.
+- The logger powered on and not logging.
+
+## Starting the web interface
+
+<Steps>
+  1. Open the logger main menu from the idle screen.
+  2. Select the `WiFi` menu item.
+  3. Wait while the display shows `WiFi: CONNECTING`.
+  4. When the connection succeeds, the display changes to `WiFi: ON`.
+  5. Note the network name and IP address shown on the idle screen.
+</Steps>
+
+Open a browser on the same network and enter the logger IP address, for example:
+
+```text
+http://192.168.1.42/
+```
+
+The root page redirects to the file browser. You can also go directly to:
+
+```text
+http://192.168.1.42/files
+```
+
+<Aside type="tip" title="Finding the logger">
+  The logger's idle screen shows the WiFi network and IP address while WiFi is
+  on. If the page does not load, check that your computer or phone is on the
+  same network as the logger.
+</Aside>
+
+Every web page has the same header:
+
+- `BODAQS data logger: <logger name>`
+- the connected network and IP address
+- navigation links for `Files`, `General`, and `Sensors`
+
+The logger name is editable from the General configuration page.
+
+## Files page
+
+The `Files` page is the home page of the web interface. It lets you browse the
+SD card, download log files, upload files, create folders, and remove files or
+folders.
+
+Typical files produced by the logger are:
+
+- `.CSV` log files containing time-series data.
+- `.json` log metadata files with column semantics, run statistics, and other
+  metadata.
+
+<CardGrid>
+  <Card title="Download logs" icon="download">
+    Select one or more files with the checkboxes, then choose `Download selected`
+    or `Download ZIP`.
+  </Card>
+  <Card title="Manage the SD card" icon="folder">
+    Use folder links and breadcrumbs to navigate. You can create folders, upload
+    files, delete selected files, or remove empty folders.
+  </Card>
+</CardGrid>
+
+### Downloading one or more files
+
+To download logs:
+
+1. Open the `Files` page.
+2. Browse to the folder containing the log files.
+3. Tick the files you want.
+4. Select `Download selected` to download each file individually, or `Download ZIP`
+   to package them together.
+
+For BODAQS analysis, keep the `.CSV` file and its same-stem `.json` metadata
+file together. For example:
+
+```text
+2026-04-30_10-15-22.CSV
+2026-04-30_10-15-22.json
+```
+
+<Aside type="tip" title="Keep metadata with the CSV">
+  The JSON metadata file tells the analysis software what the CSV columns mean.
+  If you move or copy logs manually, copy the CSV and JSON together.
+</Aside>
+
+### Uploading files
+
+The upload control is useful for restoring configuration files or putting
+supporting files onto the SD card. Choose one or more local files, then select
+`Upload`.
+
+### Deleting files
+
+Tick one or more files and select `Delete selected`. For folders, use the folder
+remove action shown on the file list.
+
+<Aside type="caution" title="Deletion is permanent">
+  Deleting from the web interface removes files from the logger SD card. Download
+  anything you want to keep before deleting it.
+</Aside>
+
 ## General configuration
+
+Open `General` from the navigation bar to edit logger-wide settings. Changes are
+written to the logger configuration file when you press `Save`.
+
+The General page includes:
+
+- `Logger name`: the human-readable alias shown in the web page title bar.
+- `Sample rate`: the logging sample rate in Hz.
+- `Log format`: the output CSV format.
+- `Omit log metadata JSON`: disables generation of the same-stem JSON metadata file.
+- `Timestamp mode`: human-readable time or fast integer timestamps.
+- `Timezone`: the timezone rule used by the logger.
+- `Debounce`: button debounce time.
+- `Auto-sleep idle`: idle time before the logger goes to sleep.
+- `Wi-Fi idle timeout`: idle time before WiFi is stopped.
+- `Log level`: firmware diagnostic logging level.
+
+<Aside type="caution" title="Metadata is recommended">
+  Leave `Omit log metadata JSON` unchecked unless you have a specific reason to
+  disable metadata. The metadata file is what allows analysis software to
+  understand the CSV without logger-specific assumptions.
+</Aside>
+
+### Network and time settings
+
+The same page also includes network and time settings:
+
+- Whether WiFi should be enabled by default.
+- Whether WiFi may be auto-enabled to set the real-time clock.
+- NTP servers used for time sync.
+- Up to five WiFi network slots.
+- Optional minimum RSSI and BSSID pinning for each network.
+- Optional static IP settings.
+
+The logger tries configured networks in priority order, with some preference for
+the most recently successful network when available.
+
+<Aside type="tip" title="Static IPs">
+  Most users should use DHCP and leave static IP disabled. Static IP settings are
+  useful only if you deliberately want the logger to use a fixed address on a
+  known network.
+</Aside>
+
+After saving network settings, you may need to stop and restart WiFi from the
+logger menu before the new connection settings are used.
+
 ## Sensor configuration
+
+Open `Sensors` from the navigation bar to edit the logger's configured sensors.
+The page lists existing sensors first, followed by a `New sensor` block at the
+bottom.
+
+Each sensor has several sections.
+
+### Basic
+
+The Basic section contains the sensor name and type. Depending on the sensor
+type, it may also contain:
+
+- Analog input selection, shown as `AIN<n> (GPIO<pin>)`.
+- I2C bus and I2C address.
+- Whether the sensor is muted by default.
+
+Changing a sensor type reloads the available fields for that sensor. Adding or
+deleting sensors saves the configuration, but the live sensor set is rebuilt on
+restart.
+
+<Aside type="caution" title="Restart after add/delete">
+  If you add or delete a sensor, restart the logger before relying on the live
+  logging output. The web page will remind you when a restart is needed.
+</Aside>
+
+### Output
+
+The Output section controls what the logger writes for that sensor:
+
+- `Output mode`: raw counts, linear calibrated output, polynomial transform, or LUT transform.
+- `Include raw column`: adds raw count columns alongside the primary output.
+- `Sensor full travel`: the real-world full travel used for linear scaling.
+- `Units label`: the units shown for linear output.
+- `Output transform`: the selected polynomial or lookup-table transform, where applicable.
+
+### Usage
+
+The Usage section describes what the signal means. These fields are written into
+the JSON metadata and used by analysis software.
+
+Typical fields are:
+
+- `End`: for example `front` or `rear`.
+- `Primary domain`: for example `wheel` or `suspension`.
+- `Primary quantity`: for example `disp` for displacement.
+
+Raw columns inherit the primary domain automatically.
+
+### Calibration
+
+The Calibration section contains count values and installed zero information
+used by the sensor model.
+
+Typical fields include:
+
+- Calibration methods available for the sensor.
+- Sensor count at zero travel.
+- Sensor count at full travel.
+- Installed zero count.
+
+The on-device calibration workflow can update some of these fields, but the web
+page is useful for inspection and manual correction.
+
+### Wrapping
+
+Wrapping fields are shown only for string-pot sensors that can produce wrapped
+magnetic encoder counts. These settings describe how wrapped counts are
+unwrapped into continuous raw position.
+
+### Removing a sensor
+
+The remove button is at the bottom of each sensor block. Removing a sensor
+removes it from the logger configuration only.
+
+<Aside type="note" title="Transform files are left in place">
+  Deleting a sensor from the web page does not delete transform files or
+  transform folders from the SD card. If you no longer need those files, remove
+  them manually from the Files page.
+</Aside>
+
 ## Button configuration
+
+Button bindings are not currently edited through the web interface. If you need
+to change button actions, edit the logger configuration text file directly.
+
+This is deliberate: the web UI focuses on common operational settings, while
+button bindings are relatively low-level and easier to review safely as text.
+
+## When the page is locked
+
+Some controls may be disabled while logging or while the logger is otherwise
+busy. Stop logging before editing configuration.
+
+After changing settings, use the relevant `Save` button before leaving the page.
+If a page reports that a restart is required, restart the logger before assuming
+the change has taken effect.
