@@ -173,7 +173,7 @@ const ParamDef* AS5600StringPotI2C::paramDefs(size_t& count) {
     {"installed_zero_count", ParamType::Int,   "0",     nullptr, nullptr, nullptr, "Installed zero point in unwrapped counts"},
     {"assume_turn0_at_start",ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Reset unwrap state to turn 0 at each logging start"},
     {"output_mode",          ParamType::Enum,  "RAW,LINEAR,POLY,LUT", nullptr, nullptr, nullptr, "Output method: wrapped RAW, linear mm, or transformed mm"},
-    {"include_raw",          ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Append wrapped RAW column after primary"},
+    {"include_raw",          ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Append wrapped and unwrapped RAW columns"},
     {"units_label",          ParamType::String,"mm",    nullptr, nullptr, nullptr, "Units suffix for LINEAR output"},
     {"end",                  ParamType::Enum,  "",      nullptr, nullptr, "front,rear", "Optional semantic end for log metadata"},
     {"primary_domain",       ParamType::Enum,  "",      nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},

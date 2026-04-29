@@ -98,7 +98,9 @@ private:
   int32_t updateUnwrappedEma_(int32_t raw) const;
   SampleState captureSample_() const;
   float countsToMm_(int32_t counts) const;
-  bool rawColumnEnabled_() const;
+  bool isWrappedRawColumn_(uint8_t idx) const;
+  bool isUnwrappedRawColumn_(uint8_t idx) const;
+  bool isLinearSecondaryColumn_(uint8_t idx) const;
 
 private:
   CalState cal_;

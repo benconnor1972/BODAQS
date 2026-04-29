@@ -99,6 +99,7 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Notes**
 - `RAW` mode reports wrapped counts as the primary column.
+- When `include_raw=true`, the logger appends wrapped raw counts and unwrapped raw counts. The unwrapped raw metadata includes `unwrap` in its transform chain.
 - `LINEAR` mode reports unwrapped mm using the calibrated unwrapped span.
 - The sensor resets its unwrap tracker to turn 0 at each logging start when `assume_turn0_at_start=true`.
 

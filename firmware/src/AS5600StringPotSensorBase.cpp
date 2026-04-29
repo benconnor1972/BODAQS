@@ -174,36 +174,56 @@ float AS5600StringPotSensorBase::countsToMm_(int32_t counts) const {
   return float(mm);
 }
 
-bool AS5600StringPotSensorBase::rawColumnEnabled_() const {
-  return (m_mode == OutputMode::RAW) ? true : m_includeRaw;
+uint8_t AS5600StringPotSensorBase::columnCount() const {
+  uint8_t count = 1;
+  if (m_mode == OutputMode::RAW) {
+    ++count; // Preserve the existing linear secondary column in RAW mode.
+  } else if (m_includeRaw) {
+    ++count; // Existing wrapped raw column.
+  }
+  if (m_includeRaw) {
+    ++count; // New unwrapped raw column.
+  }
+  return count;
 }
 
-uint8_t AS5600StringPotSensorBase::columnCount() const {
-  return rawColumnEnabled_() ? 2 : 1;
+bool AS5600StringPotSensorBase::isWrappedRawColumn_(uint8_t idx) const {
+  return (m_mode == OutputMode::RAW && idx == 0) ||
+         (m_mode != OutputMode::RAW && m_includeRaw && idx == 1);
+}
+
+bool AS5600StringPotSensorBase::isLinearSecondaryColumn_(uint8_t idx) const {
+  return (m_mode == OutputMode::RAW && idx == 1);
+}
+
+bool AS5600StringPotSensorBase::isUnwrappedRawColumn_(uint8_t idx) const {
+  if (!m_includeRaw) return false;
+  return idx == 2;
 }
 
 void AS5600StringPotSensorBase::getColumnName(uint8_t idx, char* out, size_t cap) const {
   if (!out || cap < 2) return;
   out[0] = '\0';
 
-  if (m_mode == OutputMode::RAW) {
-    if (idx == 0) {
-      String s = String(name()) + "_raw [counts]";
-      s.toCharArray(out, cap);
-    } else if (idx == 1) {
-      writeColumnLabel_(name(), m_unitsLabel, out, cap);
-    }
+  if (isWrappedRawColumn_(idx)) {
+    String s = String(name()) + "_raw [counts]";
+    s.toCharArray(out, cap);
+    return;
+  }
+
+  if (isLinearSecondaryColumn_(idx)) {
+    writeColumnLabel_(name(), m_unitsLabel, out, cap);
+    return;
+  }
+
+  if (isUnwrappedRawColumn_(idx)) {
+    String s = String(name()) + "_unwrapped_raw [counts]";
+    s.toCharArray(out, cap);
     return;
   }
 
   if (idx == 0) {
     writeColumnLabel_(name(), m_outputUnitsLabel, out, cap);
-    return;
-  }
-
-  if (idx == 1 && m_includeRaw) {
-    String s = String(name()) + "_raw [counts]";
-    s.toCharArray(out, cap);
   }
 }
 
@@ -211,26 +231,31 @@ bool AS5600StringPotSensorBase::describeColumn(uint8_t idx, SensorColumnDescript
   if (idx >= columnCount()) return false;
   if (!Sensor::describeColumn(idx, out)) return false;
 
-  const bool wrappedRaw = (m_mode == OutputMode::RAW && idx == 0) ||
-                          (m_mode != OutputMode::RAW && idx == 1 && m_includeRaw);
-  const bool linearSecondary = (m_mode == OutputMode::RAW && idx == 1);
+  const bool wrappedRaw = isWrappedRawColumn_(idx);
+  const bool unwrappedRaw = isUnwrappedRawColumn_(idx);
+  const bool rawColumn = wrappedRaw || unwrappedRaw;
+  const bool linearSecondary = isLinearSecondaryColumn_(idx);
 
   copyField_(out.sensorName, sizeof(out.sensorName), name());
   out.outputMode = m_mode;
   out.required = true;
   out.primary = (idx == 0);
-  out.raw = wrappedRaw;
-  out.calibrated = !wrappedRaw;
+  out.raw = rawColumn;
+  out.calibrated = !rawColumn;
   out.transformed = (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
 
   copyField_(out.end, sizeof(out.end), m_semanticEnd);
-  copyField_(out.domain, sizeof(out.domain), wrappedRaw ? m_rawDomain : m_primaryDomain);
+  copyField_(out.domain, sizeof(out.domain), rawColumn ? m_rawDomain : m_primaryDomain);
   if (!out.domain[0]) copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
 
-  if (wrappedRaw) {
+  if (rawColumn) {
     copyField_(out.quantity, sizeof(out.quantity), "raw");
     copyField_(out.unit, sizeof(out.unit), "counts");
-    copyField_(out.source, sizeof(out.source), "wrapped_raw_counts");
+    copyField_(out.source, sizeof(out.source),
+               unwrappedRaw ? "unwrapped_raw_counts" : "wrapped_raw_counts");
+    if (unwrappedRaw) {
+      copyField_(out.transformChain, sizeof(out.transformChain), "unwrap");
+    }
   } else {
     copyField_(out.quantity, sizeof(out.quantity), m_primaryQuantity);
     copyField_(out.unit, sizeof(out.unit), m_outputUnitsLabel);
@@ -244,10 +269,11 @@ bool AS5600StringPotSensorBase::describeColumn(uint8_t idx, SensorColumnDescript
   }
 
   if (out.end[0] && out.domain[0] && out.quantity[0]) {
-    snprintf(out.columnId, sizeof(out.columnId), "%s_%s_%s",
+    snprintf(out.columnId, sizeof(out.columnId), unwrappedRaw ? "%s_%s_%s_unwrapped" : "%s_%s_%s",
              out.end, out.domain, out.quantity);
   } else if (out.quantity[0]) {
-    snprintf(out.columnId, sizeof(out.columnId), "%s_%s", name(), out.quantity);
+    snprintf(out.columnId, sizeof(out.columnId), unwrappedRaw ? "%s_%s_unwrapped" : "%s_%s",
+             name(), out.quantity);
   }
 
   if (!out.quantity[0]) {
@@ -309,9 +335,13 @@ void AS5600StringPotSensorBase::sampleValues(float* out, uint8_t max) {
 
   uint8_t w = 0;
   out[w++] = primary;
-  if (w < max && rawColumnEnabled_()) {
-    const float secondary = (m_mode == OutputMode::RAW) ? linearMm : float(sample.wrappedRaw);
-    out[w++] = secondary;
+  if (m_mode == OutputMode::RAW && w < max) {
+    out[w++] = linearMm;
+  } else if (m_includeRaw && w < max) {
+    out[w++] = float(sample.wrappedRaw);
+  }
+  if (m_includeRaw && w < max) {
+    out[w++] = float(sample.unwrappedRaw);
   }
 }
 
