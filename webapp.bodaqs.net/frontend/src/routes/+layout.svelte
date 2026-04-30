@@ -1,11 +1,27 @@
 <script lang="ts">
-	import favicon from '$lib/assets/favicon.svg';
+	import type { Snippet } from 'svelte';
 
-	let { children } = $props();
+	let { children }: { children: Snippet } = $props();
 </script>
 
-<svelte:head>
-	<link rel="icon" href={favicon} />
-</svelte:head>
+<nav>
+	<a href="/">Library</a>
+	<a href="/upload">Upload</a>
+	<a href="/transfer">Transfer</a>
+</nav>
 
-{@render children()}
+<main>
+	{@render children()}
+</main>
+
+<style>
+	nav {
+		display: flex;
+		gap: 1rem;
+		padding: 0.75rem 1rem;
+		border-bottom: 1px solid #e5e7eb;
+	}
+	main {
+		padding: 1rem;
+	}
+</style>
