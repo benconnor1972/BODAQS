@@ -1,0 +1,70 @@
+{
+  "contract": {
+    "name": "mtb_logger_timeseries",
+    "version": "0.2.0",
+    "sidecar_kind": "generic"
+  },
+  "data_file": {
+    "delimiter": ",",
+    "header": true
+  },
+  "streams": {
+    "primary": {
+      "type": "uniform",
+      "time_column": "timestamp",
+      "time_encoding": "local_time",
+      "time_unit": "time_of_day",
+      "time_format": "HH:MM:SS.mmm",
+      "sample_rate_hz": 1000.0
+    }
+  },
+  "columns": {
+    "sample_id": {
+      "csv_ref": { "by": "header", "header": "sample_id" },
+      "class": "index",
+      "dtype": "uint32"
+    },
+    "timestamp": {
+      "csv_ref": { "by": "header", "header": "timestamp" },
+      "class": "time",
+      "dtype": "string",
+      "stream": "primary",
+      "unit": "time_of_day"
+    },
+    "fork_travel_mm": {
+      "csv_ref": { "by": "header", "header": "front_shock [mm]" },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "end": "front",
+      "quantity": "disp",
+      "domain": "suspension",
+      "unit": "mm",
+      "transform_chain": []
+    },
+    "shock_travel_mm": {
+      "csv_ref": { "by": "header", "header": "rear_shock [mm]" },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "end": "rear",
+      "quantity": "disp",
+      "domain": "suspension",
+      "unit": "mm",
+      "transform_chain": []
+    },
+    "mark": {
+      "csv_ref": { "by": "header", "header": "mark" },
+      "class": "event_flag",
+      "dtype": "bool",
+      "stream": "primary",
+      "meaning": "user mark"
+    }
+  },
+  "qc": { "warnings": [] },
+  "provenance": {
+    "logger_family": "BODAQS",
+    "generator": "test fixture sidecar",
+    "notes": "Declares front/rear signals as domain=suspension so the test bike profile and default preprocess profile selectors match."
+  }
+}
