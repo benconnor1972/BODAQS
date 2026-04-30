@@ -263,6 +263,8 @@ No full E2E (Playwright) in v1.
 - Reject `POST /api/preprocess` with HTTP 422 if any required file is missing (`csv_file`, `bike_profile_json`, `sidecar_json`, `event_schema_yaml`)
 - If `preprocess_profile_json` is not supplied, the service layer loads the bundled default profile from `api/bodaqs_api/default_preprocess_profile.json`
 - Ignore `schema_path` inside the preprocess profile — the event schema always comes from the uploaded `event_schema_yaml` file
+- Force `fit_import.enabled = false` in any preprocess profile (user-supplied or bundled default) — the web API has no access to a FIT file directory
+- The event schema YAML must use the `inputs:` selector format (spec 0.1.2+); the older `sensors:` list format is not supported by the current event detection code
 - Block the upload form submit button until all four required files are selected (frontend guard matches backend constraint)
 - Clean up temp files after each request
 - Include `warnings` array in every response (never silently swallow pipeline warnings)

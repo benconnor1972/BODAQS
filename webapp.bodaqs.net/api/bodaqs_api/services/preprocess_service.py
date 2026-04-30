@@ -109,6 +109,26 @@ def _collect_warnings(result: dict[str, Any]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Profile sanitisation
+# ---------------------------------------------------------------------------
+
+def _disable_fit_import(profile: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of the profile with fit_import.enabled forced to False.
+
+    The web API has no access to a FIT file directory, so FIT import must
+    always be disabled regardless of what a user-supplied profile requests.
+    A warning is NOT added here — the pipeline simply skips FIT enrichment
+    when enabled=False, which is the correct silent behaviour.
+    """
+    import copy
+    profile = copy.deepcopy(profile)
+    fit_import = profile.get("config", {}).get("fit_import")
+    if isinstance(fit_import, dict) and fit_import.get("enabled"):
+        profile["config"]["fit_import"]["enabled"] = False
+    return profile
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -149,6 +169,7 @@ def run_preprocess(
         if preprocess_profile_bytes is not None
         else _load_default_profile()
     )
+    preprocess_profile = _disable_fit_import(preprocess_profile)
     validate_preprocess_profile(preprocess_profile)
 
     with tempfile.TemporaryDirectory() as tmpdir:
