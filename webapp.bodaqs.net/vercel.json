@@ -1,0 +1,13 @@
+{
+  "buildCommand": "cd frontend && npm run build",
+  "outputDirectory": "frontend/.vercel/output",
+  "functions": {
+    "api/index.py": {
+      "runtime": "python3.12"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/(.*)", "destination": "/" }
+  ]
+}
