@@ -275,10 +275,6 @@ void registerConfigRoutes(WebServer& srv) {
     html += htmlEscape(String(cfg.tz));
     html += F("'"); html += dis; html += F("><br>");
     
-    html += F("<label>Debounce (ms): </label><input type='number' name='debounce_ms' min='0' max='1000' value='");
-    html += String(cfg.debounceMs);
-    html += F("'"); html += dis; html += F("><br>");
-
     html += F("<label>Auto-sleep idle (min): </label><input type='number' name='auto_sleep_idle_min' min='0' step='0.1' value='");
     html += minutesStringFromMs_(cfg.autoSleepIdleMs);
     html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
@@ -287,24 +283,6 @@ void registerConfigRoutes(WebServer& srv) {
     html += minutesStringFromMs_(cfg.wifiIdleTimeoutMs);
     html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
 
-    html += F("<label>Log level: </label><select name='log_level'");
-    html += dis; html += F(">");
-    {
-      const char* selectedLevel = (cfg.logLevelOverride == 0xFF)
-                                    ? "default"
-                                    : Log_levelName((LogLevel)cfg.logLevelOverride);
-      const char* levelOptions[] = {"default", "error", "warn", "info", "debug", "trace"};
-      for (const char* option : levelOptions) {
-        html += F("<option value='");
-        html += option;
-        html += F("'");
-        if (String(selectedLevel) == option) html += F(" selected");
-        html += F(">");
-        html += option;
-        html += F("</option>");
-      }
-    }
-    html += F("</select><br>");
     html += F("</fieldset>");
 
     // ---------- Wi-Fi (multi-network) ----------
@@ -686,12 +664,6 @@ void registerConfigRoutes(WebServer& srv) {
         emitParamRow("sensor_full_travel_mm", "Sensor full travel (mm)");
         emitParamRow("units_label", "Units label");
 
-        // ---- Usage ----
-        html += F("<h4>Usage</h4>");
-        emitParamRow("end", "End");
-        emitParamRow("primary_domain", "Primary domain");
-        emitParamRow("primary_quantity", "Primary quantity");
-
         // Transform picker (per sensor)
         {
           // use live sensor to preselect
@@ -714,6 +686,12 @@ void registerConfigRoutes(WebServer& srv) {
           html += F("<button class='reload'"); if (locked) html += F(" disabled"); html += F(">Reload</button> ");
           html += F("<span class='status' style='margin-left:8px;color:#060'></span></div>");
         }
+
+        // ---- Usage ----
+        html += F("<h4>Usage</h4>");
+        emitParamRow("end", "End");
+        emitParamRow("primary_domain", "Primary domain");
+        emitParamRow("primary_quantity", "Primary quantity");
 
         // ---- Calibration ----
         html += F("<h4>Calibration</h4>");
