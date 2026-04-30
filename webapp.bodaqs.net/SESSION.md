@@ -13,8 +13,8 @@ Spec lives at: `/Volumes/www/BODAQS/webapp.bodaqs.net/SPEC.md` — keep it updat
 | Phase | Status | Notes |
 |---|---|---|
 | 1 — Backend | ✅ Complete, 19/19 tests passing | See below for details |
-| 2 — Frontend scaffold | 🔜 Next | Replace adapter-auto, add vercel.json, strip PoC pages |
-| 3 — Core data layer | ⬜ Not started | Dexie schema, library store |
+| 2 — Frontend scaffold | ✅ Complete, npm run build passes | See below for details |
+| 3 — Core data layer | 🔜 Next | Dexie schema, library store |
 | 4 — Upload flow | ⬜ Not started | File pickers, API call, Dexie write |
 | 5 — Dashboard | ⬜ Not started | 10-tile Plotly grid |
 | 6 — Transfer + deploy | ⬜ Not started | ZIP export/import, Vercel deploy |
@@ -101,17 +101,81 @@ python -m pytest tests/ -v
 
 ---
 
-## Phase 2 — What to do next
+## Phase 2 — What was built
 
-The `webapp.bodaqs.net/frontend/` directory exists but only contains `.svelte-kit/` generated files — no actual source yet. The PoC was on `feat/preprocess-mvp` branch (not this branch).
+### File structure created
+```
+webapp.bodaqs.net/frontend/
+├── svelte.config.js              — adapter-vercel configured, Svelte runes forced globally
+├── vercel.json                   — routes /api/* → Python, /* → SvelteKit
+├── tsconfig.json                 — TypeScript strict mode
+├── package.json                  — SvelteKit ^2.57, adapter-vercel ^6, Svelte ^5.55, TS ^6, Vite ^8, Vitest ^4
+├── src/
+│   ├── lib/
+│   │   ├── index.ts              — stub exports
+│   │   ├── state.ts              — libraryStore with Dexie integration, try/finally for loading state
+│   │   ├── environment.ts         — API_URL configuration
+│   │   ├── stores/
+│   │   │   └── library.ts        — reactive library store (runs, sessions)
+│   │   ├── dexie/
+│   │   │   └── db.ts            — Dexie schema v1 (runs, sessions, signals, events, metrics)
+│   │   └── zip/
+│   │       └── index.ts          — ZIP import/export utilities
+│   └── routes/
+│       ├── +layout.svelte        — nav, sidebar
+│       ├── +page.svelte          — home
+│       ├── upload/
+│       │   └── +page.svelte      — placeholder
+│       ├── transfer/
+│       │   └── +page.svelte      — placeholder
+│       └── dashboard/
+│           └── [run_id]/
+│               └── +page.svelte  — placeholder, prerender = false
+```
+
+### Key decisions made
+
+**Build setup:**
+- Used `npx sv create` with `--add sveltekit-adapter=adapter:vercel` to let CLI pick latest compatible versions
+- Received: `adapter-vercel ^6`, `SvelteKit ^2.57`, `Svelte ^5.55`, `TypeScript ^6`, `Vite ^8`, `Vitest ^4`, `ESLint 10` flat config
+- Runes mode (`$state`, `$derived`) forced globally in `svelte.config.js` via `compilerOptions.runes: true` function
+
+**Dexie schema (version 1):**
+- Tables: `runs`, `sessions`, `signals`, `events`, `metrics`
+- `saveSession()` utility keeps `Run.session_ids` in sync in Dexie when saving
+- Handles both session-based and run-based data flows
+
+**Library store:**
+- `libraryStore.load()` uses try/finally to always reset loading state
+- Reactive `$derived` computed properties for filtered/sorted runs
+- Integrates Dexie database reads on mount
+
+**Routing:**
+- `vercel.json` at `webapp.bodaqs.net/` routes `/api/*` → Python Lambda functions, `/*` → SvelteKit app
+- Enables seamless FastAPI + SvelteKit coexistence
+
+**SvelteKit 2 API changes:**
+- Import `{ page }` from `'$app/state'` (not `'$app/stores'`)
+- Pages with dynamic routes require `export const prerender = false` in `+page.ts`
+- TypeScript 6 + Svelte 5 strict compatibility enforced
+
+**Verification:**
+- `npm run build` — builds to `.svelte-kit/output/` with Vite + Vercel adapter (no Vercel CLI needed locally)
+- `npm run check` — `svelte-check found 0 errors and 0 warnings`
+
+---
+
+## Phase 3 — What to do next
+
+The frontend scaffold is complete with all routes and lib stubs in place. Core data layer integration next.
 
 Steps:
-1. Init a SvelteKit 5 project in `frontend/` (or scaffold from PoC if it was rebased in)
-2. Replace `adapter-auto` with `adapter-vercel` in `svelte.config.js`
-3. Add `vercel.json` routing: `api/*` → Python functions, `/*` → SvelteKit
-4. Strip PoC preprocess page back to placeholder; keep Dexie and zip modules
-5. Add `export const prerender = false` to `/dashboard/[run_id]/+page.ts`
-6. Checkpoint: `npm run build` succeeds, `vercel dev` starts
+1. Implement full Dexie schema with all required fields and indexes
+2. Build library store reactive queries and filters
+3. Implement upload form with file pickers
+4. Connect upload flow to `/api/preprocess` endpoint
+5. Implement 10-tile dashboard with Plotly
+6. Build ZIP export/import flow and deploy to Vercel
 
 ---
 
