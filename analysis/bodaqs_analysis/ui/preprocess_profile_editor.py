@@ -178,6 +178,9 @@ class PreprocessProfileEditor:
         self.w_zero_window_s = W.FloatText(description="Window (s)")
         self.w_zero_min_samples = W.IntText(description="Min samples")
         self.w_clip_0_1 = W.Checkbox(description="Clip normalized channels to [0, 1]")
+        self.w_ignore_on_logger_transformations = W.Checkbox(
+            description="Ignore on-logger transformations"
+        )
         self.w_motion_enabled = W.Checkbox(description="Enable motion derivation")
         self.w_motion_sources = W.Textarea(description="Sources", layout=_full_width_layout(height="110px"))
         self.w_motion_primary = W.Textarea(description="Primary", layout=_full_width_layout(height="155px"))
@@ -281,6 +284,7 @@ class PreprocessProfileEditor:
                     self.w_zero_enabled,
                     _row([self.w_zero_window_s, self.w_zero_min_samples]),
                     self.w_clip_0_1,
+                    self.w_ignore_on_logger_transformations,
                     W.HTML("<b>Motion derivation</b>"),
                     W.HTML(
                         "<p style='margin:0;color:#555'>Generate primary/secondary filtered displacement, "
@@ -363,6 +367,9 @@ class PreprocessProfileEditor:
         self.w_zero_window_s.value = float(cfg.get("zero_window_s", 0.4))
         self.w_zero_min_samples.value = int(cfg.get("zero_min_samples", 10))
         self.w_clip_0_1.value = bool(cfg.get("clip_0_1", False))
+        self.w_ignore_on_logger_transformations.value = bool(
+            cfg.get("ignore_on_logger_transformations", False)
+        )
         self.w_motion_enabled.value = bool(motion.get("enabled", False))
         self.w_motion_sources.value = _json_text(motion.get("sources") or [])
         self.w_motion_primary.value = _json_text(motion.get("primary") or {})
@@ -435,6 +442,7 @@ class PreprocessProfileEditor:
             "zero_window_s": float(self.w_zero_window_s.value),
             "zero_min_samples": int(self.w_zero_min_samples.value),
             "clip_0_1": bool(self.w_clip_0_1.value),
+            "ignore_on_logger_transformations": bool(self.w_ignore_on_logger_transformations.value),
             "motion_derivation": motion_derivation,
             "butterworth_smoothing": [
                 {"cutoff_hz": float(cfg.cutoff_hz), "order": int(cfg.order)}

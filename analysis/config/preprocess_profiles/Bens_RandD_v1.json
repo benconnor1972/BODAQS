@@ -30,6 +30,7 @@
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": false,
+    "ignore_on_logger_transformations": false,
     "motion_derivation": {
       "enabled": true,
       "sources": [

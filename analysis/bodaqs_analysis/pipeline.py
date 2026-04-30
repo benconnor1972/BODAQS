@@ -181,6 +181,8 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         if isinstance(transform_chain, list):
             ch["transform_chain"] = [str(x) for x in transform_chain if isinstance(x, str)]
 
+        ch["origin"] = "logger"
+
         stream_name = info.get("stream")
         if isinstance(stream_name, str) and isinstance(streams, dict):
             stream_info = streams.get(stream_name)
@@ -997,6 +999,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
                                active_window: str = "500ms",
                                active_padding: str = "1s",
                                active_min_seg: str = "3s",
+                               ignore_on_logger_transformations: bool = False,
                                butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
                                butterworth_generate_residuals: bool = False,
                                motion_derivation: Optional[Mapping[str, Any]] = None,
@@ -1020,6 +1023,9 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         active_window = str(cfg.get("active_window", active_window))
         active_padding = str(cfg.get("active_padding", active_padding))
         active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        ignore_on_logger_transformations = bool(
+            cfg.get("ignore_on_logger_transformations", ignore_on_logger_transformations)
+        )
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
@@ -1032,6 +1038,10 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     # QC: ensure structure exists early
     qc = session.setdefault("qc", {})
     transforms = qc.setdefault("transforms", {})
+    logger.info(
+        "On-logger transformation policy: ignore_on_logger_transformations=%s",
+        bool(ignore_on_logger_transformations),
+    )
 
     # ---------------- Signals: canonicalize names early (no dependency on normalize_ranges) ----------------
     units_by_col: Dict[str, str] = {}
@@ -1093,6 +1103,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
             session,
             bike_profile,
             bike_profile_path=bike_profile_path,
+            output_conflict_policy="prefer_analysis" if ignore_on_logger_transformations else "prefer_existing",
         )
         generated_transform_records = [
             r
@@ -1157,6 +1168,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
             motion_derivation,
             sample_rate_hz=preprocess_sample_rate_hz,
             strict=bool(strict),
+            overwrite_existing_primary=bool(ignore_on_logger_transformations),
         )
         session["df"] = df2
         _merge_channel_info(
@@ -1245,6 +1257,9 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         "n_generated": int(len(motion_meta.get("generated", []))),
         "n_skipped": int(len(motion_meta.get("skipped", []))),
         "warnings": [str(w) for w in motion_meta.get("warnings", [])],
+    }
+    transforms["logger_transform_policy"] = {
+        "ignore_on_logger_transformations": bool(ignore_on_logger_transformations),
     }
 
     # ---------------- Optional offline Butterworth smoothing ----------------
@@ -1424,6 +1439,7 @@ def preprocess_session(
     active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
     active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
+    ignore_on_logger_transformations: bool = False,
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
@@ -1466,6 +1482,9 @@ def preprocess_session(
         active_window = str(cfg.get("active_window", active_window))
         active_padding = str(cfg.get("active_padding", active_padding))
         active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        ignore_on_logger_transformations = bool(
+            cfg.get("ignore_on_logger_transformations", ignore_on_logger_transformations)
+        )
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
@@ -1518,6 +1537,7 @@ def preprocess_session(
         active_window=active_window,
         active_padding=active_padding,
         active_min_seg=active_min_seg,
+        ignore_on_logger_transformations=ignore_on_logger_transformations,
         bike_profile=bike_profile,
         bike_profile_path=bike_profile_path,
         motion_derivation=motion_derivation,

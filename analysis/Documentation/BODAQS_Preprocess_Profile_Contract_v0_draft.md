@@ -215,6 +215,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
     zero_window_s: float
     zero_min_samples: int
     clip_0_1: bool
+    ignore_on_logger_transformations: bool
     motion_derivation: MotionDerivationConfigV1 | None
     butterworth_smoothing: list[ButterworthSmoothingConfigV1]
     butterworth_generate_residuals: bool
@@ -255,6 +256,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 |---|---|---|
 | `active_signal_vel_selector` | object or `null` | Semantic selector for the velocity signal used for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
 | `fit_import` | object or `null` | Optional Garmin FIT import policy block; when absent or `null`, FIT import is disabled |
+| `ignore_on_logger_transformations` | boolean | If true, analysis-side bike-profile transforms supersede logger-originated signals with equivalent semantics |
 | `motion_derivation` | object or `null` | Optional policy for generating primary and secondary filtered displacement/velocity/acceleration channels |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
 
@@ -264,6 +266,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - Normalization ranges should be derived from the selected bike profile's semantic `normalization_ranges` declarations.
 - If `zeroing_enabled` is true, zeroing is applied to resolved physical displacement signals before bike-profile signal transforms are evaluated.
 - Normalized `[1]` outputs are generated after bike-profile signal transforms, so generated signals can be normalized from the same bike profile.
+- If `ignore_on_logger_transformations` is true, logger-originated displacement signals that have the same semantics as an analysis-side bike-profile transform are retained in the dataframe but excluded from semantic selection, and the analysis-generated signal is preferred. If false or absent, existing logger-originated signals are kept and equivalent bike-profile transforms are skipped.
 - `motion_derivation` is optional in v1 so older profiles can still be read. New profiles SHOULD include it, even when `enabled` is `false`.
 - When `motion_derivation.enabled` is `true`, the preprocessing pipeline generates the configured motion-analysis channels after zeroing and bike-profile transforms, and before normalization, activity-mask resolution, event detection, and metrics.
 - `butterworth_smoothing` may be empty.
@@ -570,6 +573,7 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": false,
+    "ignore_on_logger_transformations": false,
     "motion_derivation": {
       "enabled": false,
       "sources": [

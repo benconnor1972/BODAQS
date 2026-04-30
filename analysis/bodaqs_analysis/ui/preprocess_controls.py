@@ -66,6 +66,7 @@ class PreprocessDefaults:
     zero_min_samples: int = 10
 
     clip_0_1: bool = False
+    ignore_on_logger_transformations: bool = False
     butterworth_smoothing: Optional[List[Dict[str, Any]]] = None
     butterworth_generate_residuals: bool = False
 
@@ -216,6 +217,10 @@ class PreprocessControls:
 
         # Clipping & prompting
         self.w_clip_0_1 = W.Checkbox(value=self.defaults.clip_0_1, description="Clip to [0, 1]")
+        self.w_ignore_on_logger_transformations = W.Checkbox(
+            value=self.defaults.ignore_on_logger_transformations,
+            description="Ignore on-logger transformations",
+        )
         self.w_bw_smoothing = W.Textarea(
             value=json.dumps(self.defaults.butterworth_smoothing or [], indent=2),
             description="Configs",
@@ -287,6 +292,7 @@ class PreprocessControls:
 
         sec_misc = W.VBox([
             self.w_clip_0_1,
+            self.w_ignore_on_logger_transformations,
             W.HTML("<b>Offline Butterworth smoothing</b> (JSON/Python list of dicts)"),
             self.w_bw_smoothing,
             self.w_bw_generate_residuals,
@@ -500,6 +506,7 @@ class PreprocessControls:
             zero_min_samples=int(self.w_zero_min_samples.value),
 
             clip_0_1=bool(self.w_clip_0_1.value),
+            ignore_on_logger_transformations=bool(self.w_ignore_on_logger_transformations.value),
             butterworth_smoothing=self._parse_butterworth_smoothing_configs(),
             butterworth_generate_residuals=bool(self.w_bw_generate_residuals.value),
 

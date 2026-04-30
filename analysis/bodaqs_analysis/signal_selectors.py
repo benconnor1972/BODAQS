@@ -24,6 +24,9 @@ SIGNAL_SELECTOR_FIELDS = {
 
 def selector_matches_signal(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
     """Return True when a signal-registry entry satisfies a semantic selector."""
+    if signal_info.get("semantic_selection_excluded"):
+        return False
+
     for key in (
         "end",
         "quantity",

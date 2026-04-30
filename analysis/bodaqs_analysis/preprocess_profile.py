@@ -38,6 +38,7 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": False,
+    "ignore_on_logger_transformations": False,
     "motion_derivation": {
         "enabled": False,
         "sources": [
@@ -315,6 +316,10 @@ def validate_preprocess_config(config: Mapping[str, Any], *, label: str = "") ->
         raise ValueError(f"Preprocess config 'zeroing_enabled' must be boolean{label}")
     if not isinstance(config.get("clip_0_1"), bool):
         raise ValueError(f"Preprocess config 'clip_0_1' must be boolean{label}")
+    if "ignore_on_logger_transformations" in config and not isinstance(
+        config.get("ignore_on_logger_transformations"), bool
+    ):
+        raise ValueError(f"Preprocess config 'ignore_on_logger_transformations' must be boolean{label}")
     if not isinstance(config.get("butterworth_smoothing"), list):
         raise ValueError(f"Preprocess config 'butterworth_smoothing' must be a list{label}")
     if not isinstance(config.get("butterworth_generate_residuals"), bool):

@@ -215,6 +215,9 @@ def build_signals_registry(
             "motion_source_id",
             "motion_profile_id",
             "derivation",
+            "origin",
+            "semantic_selection_excluded",
+            "semantic_selection_exclusion_reason",
         ):
             if key in hints:
                 merged[key] = hints[key]
@@ -259,6 +262,9 @@ def build_signals_registry(
             "motion_source_id",
             "motion_profile_id",
             "derivation",
+            "origin",
+            "semantic_selection_excluded",
+            "semantic_selection_exclusion_reason",
         ):
             if key in hints:
                 info[key] = hints[key]

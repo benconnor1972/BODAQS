@@ -293,6 +293,7 @@ results = preprocess_session(
     bike_profile_path: Optional[str | Path] = None,
     bike_profile: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
+    ignore_on_logger_transformations: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
     butterworth_smoothing: Optional[list[dict[str, float | int]]] = None,
     butterworth_generate_residuals: bool = False,
@@ -328,6 +329,9 @@ results = preprocess_session(
   analysis-channel filtering and VA derivation policy. When enabled, preprocessing
   generates primary/secondary filtered displacement, velocity, and acceleration
   channels before normalization and activity-mask resolution.
+- `ignore_on_logger_transformations=True` keeps logger-originated transformed
+  signals in the dataframe but lets bike-profile transforms and motion derivation
+  win when equivalent displacement semantics are available from analysis.
 - Generated analysis channels may carry registry provenance such as `processing_role`,
   `motion_source_id`, `motion_profile_id`, and structured `derivation` metadata. Semantic
   selectors may use these fields to request a primary analysis channel explicitly.

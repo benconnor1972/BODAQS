@@ -106,6 +106,7 @@ def derive_motion_channels(
     *,
     sample_rate_hz: float,
     strict: bool = True,
+    overwrite_existing_primary: bool = False,
     spec: SignalSpec = DEFAULT_SPEC,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
@@ -202,7 +203,26 @@ def derive_motion_channels(
 
             generated_by_col = {str(item.get("output_col")): item for item in profile_result["generated"]}
             for col, values in profile_result["series"].items():
+                generated_item = generated_by_col.get(str(col))
                 if col in out.columns:
+                    if (
+                        role == "primary_analysis"
+                        and isinstance(generated_item, Mapping)
+                        and generated_item.get("quantity") == "disp"
+                    ):
+                        if overwrite_existing_primary:
+                            out[col] = values
+                            collision_action = "overwritten"
+                        else:
+                            collision_action = "annotated_existing"
+                        info = dict(profile_result["channel_info"][col])
+                        if not overwrite_existing_primary:
+                            existing_info = ((session.get("meta") or {}).get("signals") or {}).get(col)
+                            if isinstance(existing_info, Mapping) and existing_info.get("origin") is not None:
+                                info["origin"] = existing_info.get("origin")
+                        generated_channel_info[col] = info
+                        generated.append({**dict(generated_item), "existing_output": collision_action})
+                        continue
                     skipped.append(
                         {
                             "source_id": source_id,
@@ -215,7 +235,6 @@ def derive_motion_channels(
                     continue
                 out[col] = values
                 generated_channel_info[col] = profile_result["channel_info"][col]
-                generated_item = generated_by_col.get(str(col))
                 if generated_item is not None:
                     generated.append(generated_item)
 
@@ -354,6 +373,7 @@ def _derive_profile_for_source(
             "quantity": quantity,
             "source": [source_col],
             "source_columns": [source_col],
+            "origin": "analysis",
             "processing_role": role,
             "motion_source_id": source_id,
             "motion_profile_id": profile_id,

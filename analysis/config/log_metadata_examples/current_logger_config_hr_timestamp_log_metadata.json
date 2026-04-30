@@ -19,9 +19,9 @@
     }
   },
   "sensors": {
-    "Front_fork": {
+    "front_shock": {
       "source_config": "sensor0",
-      "name": "Front_fork",
+      "name": "front_shock",
       "type": "analog_pot",
       "domain": "wheel",
       "raw_unit": "counts",
@@ -36,9 +36,9 @@
         "invert": false
       }
     },
-    "Rear_shock": {
+    "rear_shock": {
       "source_config": "sensor1",
-      "name": "Rear_shock",
+      "name": "rear_shock",
       "type": "analog_pot",
       "domain": "suspension",
       "raw_unit": "counts",
@@ -86,7 +86,7 @@
       "quantity": "disp",
       "domain": "wheel",
       "unit": "mm",
-      "calibration_ref": "Front_fork",
+      "calibration_ref": "front_shock",
       "transform_chain": []
     },
     "fork_raw_counts": {
@@ -102,7 +102,7 @@
       "quantity": "raw",
       "domain": "suspension",
       "unit": "counts",
-      "calibration_ref": "Front_fork"
+      "calibration_ref": "front_shock"
     },
     "shock_travel_mm": {
       "csv_ref": {
@@ -117,7 +117,7 @@
       "quantity": "disp",
       "domain": "wheel",
       "unit": "mm",
-      "calibration_ref": "Rear_shock",
+      "calibration_ref": "rear_shock",
       "transform_chain": []
     },
     "shock_raw_counts": {
@@ -133,7 +133,7 @@
       "quantity": "raw",
       "domain": "suspension",
       "unit": "counts",
-      "calibration_ref": "Rear_shock"
+      "calibration_ref": "rear_shock"
     },
     "mark": {
       "csv_ref": {

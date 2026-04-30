@@ -68,16 +68,16 @@ def apply_signal_transforms(
     bike_profile: Mapping[str, Any],
     *,
     bike_profile_path: Optional[str | Path] = None,
-    output_conflict_policy: str = "skip",
+    output_conflict_policy: str = "prefer_existing",
 ) -> Dict[str, Any]:
     """
     Apply enabled bike-profile signal transforms to ``session['df']``.
 
-    The default conflict policy is conservative: if the target output column
-    already exists, the transform is skipped and the existing column is kept.
+    The default conflict policy is conservative: if an equivalent output signal
+    already exists, the transform is skipped and the existing signal is kept.
     """
-    if output_conflict_policy != "skip":
-        raise ValueError("Only output_conflict_policy='skip' is currently supported")
+    if output_conflict_policy not in {"prefer_existing", "prefer_analysis"}:
+        raise ValueError("output_conflict_policy must be 'prefer_existing' or 'prefer_analysis'")
 
     validate_bike_profile(bike_profile, path=bike_profile_path)
     _ensure_signal_registry(session)
@@ -150,7 +150,7 @@ def apply_signal_transforms(
 
         input_col = matches[0]
         output_col = _output_column_name(output_semantics, fallback=transform_id)
-        if output_col in df.columns:
+        if output_col in df.columns and output_conflict_policy == "prefer_existing":
             warning = f"bike_profile_signal_transform_output_exists:{transform_id}:{output_col}"
             warnings.append(warning)
             skipped.append(
@@ -170,6 +170,63 @@ def apply_signal_transforms(
             )
             continue
 
+        output_semantic_matches = [
+            str(col)
+            for col, info in signals.items()
+            if isinstance(info, Mapping) and _matches_selector(info, output_semantics)
+        ]
+        if output_semantic_matches and output_conflict_policy == "prefer_existing":
+            warning = f"bike_profile_signal_transform_output_semantics_exists:{transform_id}"
+            warnings.append(warning)
+            skipped.append(
+                {
+                    "transform_id": transform_id,
+                    "reason": "output_semantics_exists",
+                    "input_column": input_col,
+                    "matching_output_columns": output_semantic_matches,
+                }
+            )
+            logger.info(
+                "Bike profile signal transform skipped because equivalent output semantics already exist: "
+                "bike_profile_id=%s transform_id=%s matches=%s",
+                bike_profile.get("bike_profile_id"),
+                transform_id,
+                output_semantic_matches,
+            )
+            continue
+
+        if output_semantic_matches and output_conflict_policy == "prefer_analysis":
+            for existing_col in output_semantic_matches:
+                existing_info = signals.get(existing_col)
+                if isinstance(existing_info, Mapping) and _is_logger_origin_signal(existing_info):
+                    _exclude_channel_from_semantic_selection(
+                        session,
+                        existing_col,
+                        reason=f"superseded_by_bike_profile_transform:{transform_id}",
+                    )
+
+        if output_col in df.columns and output_conflict_policy == "prefer_analysis":
+            existing_info = signals.get(output_col)
+            if not (isinstance(existing_info, Mapping) and _is_logger_origin_signal(existing_info)):
+                warning = f"bike_profile_signal_transform_output_exists:{transform_id}:{output_col}"
+                warnings.append(warning)
+                skipped.append(
+                    {
+                        "transform_id": transform_id,
+                        "reason": "output_exists",
+                        "input_column": input_col,
+                        "output_column": output_col,
+                    }
+                )
+                logger.info(
+                    "Bike profile signal transform skipped because non-logger output already exists: "
+                    "bike_profile_id=%s transform_id=%s output_column=%s",
+                    bike_profile.get("bike_profile_id"),
+                    transform_id,
+                    output_col,
+                )
+                continue
+
         values = pd.to_numeric(df[input_col], errors="coerce").to_numpy(dtype=float)
         df.loc[:, output_col] = _evaluate_transform(values, transform)
         _merge_channel_info(
@@ -187,6 +244,7 @@ def apply_signal_transforms(
                 "input_column": input_col,
                 "output_column": output_col,
                 "method": str(transform.get("method")),
+                "overwrote_existing_output": bool(output_col in output_semantic_matches),
             }
         )
         logger.info(
@@ -534,6 +592,7 @@ def _channel_info_for_output(
     info: dict[str, Any] = {
         "source_columns": [input_col],
         "transform_chain": [transform_id],
+        "origin": "analysis",
     }
     for key in ("end", "quantity", "domain", "unit"):
         value = output_semantics.get(key)
@@ -558,6 +617,21 @@ def _merge_channel_info(session: Dict[str, Any], column: str, info: Mapping[str,
     merged = dict(existing) if isinstance(existing, Mapping) else {}
     merged.update(dict(info))
     channel_info[column] = merged
+
+
+def _exclude_channel_from_semantic_selection(session: Dict[str, Any], column: str, *, reason: str) -> None:
+    _merge_channel_info(
+        session,
+        column,
+        {
+            "semantic_selection_excluded": True,
+            "semantic_selection_exclusion_reason": reason,
+        },
+    )
+
+
+def _is_logger_origin_signal(signal_info: Mapping[str, Any]) -> bool:
+    return str(signal_info.get("origin") or "").strip().lower() == "logger"
 
 
 def _ensure_signal_registry(session: Dict[str, Any]) -> None:
@@ -661,6 +735,9 @@ def _record_transform_application(
 
 
 def _matches_selector(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
+    if signal_info.get("semantic_selection_excluded"):
+        return False
+
     for key in ("end", "quantity", "domain", "unit"):
         expected = selector.get(key)
         if expected is None or (isinstance(expected, str) and not expected.strip()):

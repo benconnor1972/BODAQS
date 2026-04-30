@@ -108,6 +108,22 @@ Residual naming note:
     low-pass settings, S-G materialized window settings, and final derivative
     low-pass settings.
 
+- `origin`: `str`
+  - Broad producer of the signal metadata or values. Current values include
+    `"logger"` for signals supplied by log metadata and `"analysis"` for
+    analysis-generated signals.
+
+- `semantic_selection_excluded`: `bool`
+  - When true, semantic selectors should ignore this signal even though it
+    remains in the dataframe and registry for inspection.
+  - This is used when `ignore_on_logger_transformations` allows an
+    analysis-generated signal to supersede a logger-originated signal with
+    equivalent semantics.
+
+- `semantic_selection_exclusion_reason`: `str`
+  - Human-readable/provenance reason explaining why a signal was excluded from
+    semantic selector matching.
+
 - `sensor`: `str | None`
   - Logger/source sensor identifier, if supplied by log metadata.
   - This is not an analysis selector field. For front/rear bike-location
