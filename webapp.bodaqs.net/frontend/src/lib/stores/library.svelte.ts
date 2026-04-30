@@ -7,8 +7,11 @@ function createLibraryStore() {
 
 	async function load(): Promise<void> {
 		loading = true;
-		runs = await getAllRuns();
-		loading = false;
+		try {
+			runs = await getAllRuns();
+		} finally {
+			loading = false;
+		}
 	}
 
 	async function addRun(run: Run): Promise<void> {

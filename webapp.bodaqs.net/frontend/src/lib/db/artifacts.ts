@@ -15,6 +15,11 @@ export async function saveSession(run_id: string, response: PreprocessResponse):
 	};
 	await db.sessions.put(session);
 
+	const run = await db.runs.get(run_id);
+	if (run && !run.session_ids.includes(response.session_id)) {
+		await db.runs.update(run_id, { session_ids: [...run.session_ids, response.session_id] });
+	}
+
 	for (const [column_name, data] of Object.entries(response.signals.columns)) {
 		const row: SignalRow = { session_id: response.session_id, column_name, data };
 		await db.signals.put(row);
