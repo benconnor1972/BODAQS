@@ -121,15 +121,15 @@ def _norm_candidates_for_selector(
             continue
 
         ops = _signal_ops(info)
-        if "norm" not in ops:
+        quantity = str(info.get("quantity") or "").strip().lower()
+        unit = str(info.get("unit") or "").strip().lower()
+        if "norm" not in ops and not (quantity == "disp_norm" and unit == "1"):
             continue
 
         col_s = str(col)
         if not _signal_matches_selector(info, col_s, norm_selector):
             continue
 
-        quantity = str(info.get("quantity") or "").strip().lower()
-        unit = str(info.get("unit") or "").strip().lower()
         score = (
             _processing_role_score(info),
             1 if quantity == "disp_norm" else 0,

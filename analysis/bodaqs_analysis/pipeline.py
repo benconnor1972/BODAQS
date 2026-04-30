@@ -648,6 +648,17 @@ def _channel_info_for_scaled_outputs(
             if value is not None:
                 info[key] = value
 
+        source_ops = source_info.get("op_chain")
+        if isinstance(source_ops, (list, tuple)):
+            ops = [str(x).strip() for x in source_ops if str(x).strip()]
+        elif source_ops is not None and str(source_ops).strip():
+            ops = [str(source_ops).strip()]
+        else:
+            ops = []
+        if not any(str(op).strip().lower() == "norm" for op in ops):
+            ops.append("norm")
+        info["op_chain"] = ops
+
         source_derivation = source_info.get("derivation")
         if isinstance(source_derivation, Mapping):
             info["derivation"]["source_derivation"] = dict(source_derivation)
