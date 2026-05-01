@@ -1,13 +1,13 @@
 {
   "buildCommand": "cd frontend && npm run build",
+  "installCommand": "cd frontend && npm install && cd .. && ln -sfn ../../analysis/bodaqs_analysis api/bodaqs_analysis",
   "outputDirectory": "frontend/.vercel/output",
   "functions": {
     "api/index.py": {
-      "runtime": "python3.12"
+      "maxDuration": 30
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.py" },
-    { "source": "/(.*)", "destination": "/" }
+    { "source": "/api/:path*", "destination": "/api/index.py" }
   ]
 }

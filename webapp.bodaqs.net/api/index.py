@@ -1,0 +1,1 @@
+from bodaqs_api.main import app

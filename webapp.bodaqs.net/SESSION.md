@@ -1,5 +1,5 @@
 # BODAQS Webapp Session State
-*Last updated: 2026-05-01*
+*Last updated: 2026-05-01 (Vercel/local-dev setup session)*
 
 ## What we're building
 `webapp.bodaqs.net/` — a hosted SvelteKit 5 + FastAPI web app that replaces the Jupyter notebook workflow. Users upload logger files → backend runs preprocessing → frontend shows the 10-tile suspension dashboard → export/import as `.bodaqs.zip`.
@@ -18,6 +18,7 @@ Spec lives at: `/Volumes/www/BODAQS/webapp.bodaqs.net/SPEC.md` — keep it updat
 | 4 — Upload flow | ✅ Complete, 43/43 tests passing | See below for details |
 | 5 — Dashboard | ✅ Complete, 65/65 tests passing | See below for details |
 | 6 — Transfer + deploy | ✅ Complete (partial — transfer page only), 65/65 tests passing | ZIP export/import UI done, Vercel deploy out of scope |
+| Dev infrastructure | ✅ Complete | vercel.json fixed, local dev setup documented — see below |
 
 ---
 
@@ -257,6 +258,74 @@ Steps:
 4. Connect upload flow to `/api/preprocess` endpoint
 5. Implement 10-tile dashboard with Plotly
 6. Build ZIP export/import flow and deploy to Vercel
+
+---
+
+---
+
+## Dev infrastructure — What was set up
+
+### Problem
+`vercel dev` did not work out of the box due to multiple issues discovered and resolved iteratively.
+
+### Files changed
+```
+webapp.bodaqs.net/
+├── vercel.json               — fixed (see below)
+├── setup.sh                  — NEW: one-shot setup script for new checkouts
+├── .gitignore                — added api/bodaqs_analysis (generated symlink)
+├── api/
+│   ├── .python-version       — NEW: pins Python 3.12 for Vercel runtime
+│   └── bodaqs_analysis -> ../../analysis/bodaqs_analysis   — symlink (gitignored, created by setup.sh)
+└── frontend/
+    └── vite.config.ts        — added server.proxy: /api → http://localhost:8000
+```
+
+### vercel.json — final state
+```json
+{
+  "buildCommand": "cd frontend && npm run build",
+  "installCommand": "cd frontend && npm install && cd .. && ln -sfn ../../analysis/bodaqs_analysis api/bodaqs_analysis",
+  "outputDirectory": "frontend/.vercel/output",
+  "functions": {
+    "api/index.py": { "maxDuration": 30 }
+  },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index.py" }
+  ]
+}
+```
+
+### Issues resolved
+| Issue | Fix |
+|---|---|
+| `runtime: "python3.12"` not a valid runtime identifier | Removed `runtime` field; added `api/.python-version` instead |
+| `functions: {}` — "must have at least one property" | Used `{ "maxDuration": 30 }` |
+| `vercel dev` returned 404 for all `/api/*` | Root cause: CLI v53 does not emulate Python functions locally at all (`Resolved builders: ""`) |
+| Frontend hang "waiting for localhost" | `devCommand` passed `$PORT` to Vite but Vite ignored it; removed `devCommand` |
+| `bodaqs_analysis` not importable | Symlinked via `setup.sh`: `api/bodaqs_analysis → ../../analysis/bodaqs_analysis` |
+
+### Local development workflow
+`vercel dev` cannot run Python functions locally (CLI v53 limitation). Use two processes instead:
+
+```sh
+# First time only (or after fresh clone):
+cd webapp.bodaqs.net && ./setup.sh
+
+# terminal 1 — API on :8000
+cd webapp.bodaqs.net/api && uvicorn bodaqs_api.main:app --reload
+
+# terminal 2 — Frontend on :5173 (proxies /api → :8000 via vite.config.ts)
+cd webapp.bodaqs.net/frontend && npm run dev
+```
+
+Browse at `http://localhost:5173`. No CORS issues — Vite proxy is transparent.
+
+### Vercel project
+- Linked project: `webapp-bodaqs-net` (george-karbons-projects team)
+- Project root: assumed to be full BODAQS repo root (not `webapp.bodaqs.net/`) — **not yet confirmed in Vercel dashboard**
+- When confirmed: paths in `vercel.json` may need `webapp.bodaqs.net/` prefix (e.g. `functions: { "webapp.bodaqs.net/api/index.py": ... }`)
+- `installCommand` creates the symlink during Vercel build — works when repo root = Vercel root
 
 ---
 
