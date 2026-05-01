@@ -139,7 +139,7 @@ export function prepareMetricScatter(
 	for (const m of filtered) {
 		const xv = m[xKey];
 		const yv = m[yKey];
-		if (typeof xv === 'number' && xv !== null && typeof yv === 'number' && yv !== null) {
+		if (typeof xv === 'number' && typeof yv === 'number') {
 			x.push(xv);
 			y.push(yv);
 		}

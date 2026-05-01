@@ -99,6 +99,13 @@ describe('computeHistogram', () => {
 		const total = result.counts.reduce((a, b) => a + b, 0);
 		expect(total).toBe(3);
 	});
+
+	it('places value exactly at range max in the last bin', () => {
+		const data = new Float32Array([0, 5, 10]);
+		const result = computeHistogram(data, 2, [0, 10]);
+		expect(result.counts[0]).toBe(1); // 0 → bin 0
+		expect(result.counts[1]).toBe(2); // 5 and 10 → bin 1 (10 is clamped)
+	});
 });
 
 describe('prepareEventsBar', () => {
