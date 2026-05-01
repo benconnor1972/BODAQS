@@ -3,7 +3,8 @@ import { db } from '$lib/db/dexie';
 import type { EventRow, MetricRow, Run, Session, SignalRow } from '$lib/db/dexie';
 
 export async function importZip(file: File): Promise<{ imported: number; skipped: number }> {
-	const zip = await JSZip.loadAsync(file);
+	const arrayBuffer = await file.arrayBuffer();
+	const zip = await JSZip.loadAsync(arrayBuffer);
 	let imported = 0;
 	let skipped = 0;
 
