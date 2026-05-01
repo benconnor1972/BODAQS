@@ -62,7 +62,7 @@
 			a.href = url;
 			a.download = filename;
 			a.click();
-			URL.revokeObjectURL(url);
+			setTimeout(() => URL.revokeObjectURL(url), 60_000);
 			exportStatus = `Exported ${toExport.length} run${toExport.length === 1 ? '' : 's'}.`;
 		} catch (e) {
 			exportError = e instanceof Error ? e.message : 'Export failed.';
