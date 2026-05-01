@@ -7,6 +7,7 @@ sidebar:
 
 import Lede from '@components/Lede.astro';
 import {LinkCard} from '@astrojs/starlight/components';
+import Flag from '@components/Flag.astro';
 
 <Lede>
 BODAQS (Bicycle open data acquisition system) is an open-source, build-it-yourself data collection
@@ -66,16 +67,25 @@ If you're a tinkerer, engineer, developer, data scientist or uncategorised nerd,
 
 ## Enough of the pitch - where's this thing actually at?
 
-TL;DR: we've made a lot of progress and have a usable system, but we're not there yet.
+**TL;DR:** we've made a lot of progress and have a pretty usable system. It isn't there yet, but if you want to be a  beta tester, we're ready for you.
 
-As of April 2026 everything is pretty much at the 'beta testing' stage. The hardware works well within the limits of what we have tested and we think the user experience is pretty good. The analysis software is looking like an engineer's workbench rather than a polished consumer product. We have a long to-do list. But if you're interested, curious and not afraid of a soldering iron and a terminal window, we're ready for you.
+- The hardware works well within the limits of what we have tested and we think the user experience is pretty good. 
+- We're compatible with [data.syn.bike](https://data.syn.bike) so you can see your data presented usefully straight away.
+- We have [sourcing](/hardware-guide/), [building](/hardware-guide/building/), and [user](/user-guide/) guides.
+- We have published packages for the [hardware](https://github.com/benconnor1972/BODAQS/tree/main/hardware/releases) and the 3d printed [case](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/Prototype%20E-F)
 
-Our immediate priorities:
- - Getting a web-based analysis platform running so users can investigate their data without needing to install stuff on their computer
- - Publishing public APIs for the firmware and analysis software
- - Collecting feedback from our beta testers
- - Extending the range of supported sensors.
- 
+- We have a set of Jupyter Lab [analysis notebooks](https://github.com/benconnor1972/BODAQS/releases) for exploratory data analysis. The back end code is organised in Python modules and there is a documented [API](https://github.com/benconnor1972/BODAQS/blob/main/analysis/Documentation/BODAQS_Public_API_Contract_v0.md). 
+
+What we're working on:
+- Our own web-based analysis platform. This is going to take some time: there are already some great analysis and visualisation tools ([syn.bike](https://data.syn.bike) for example) so we'll stay prototyping in Jupyter Lab until we have something with a genuine and useful point of difference.
+- Extending the range of supported sensors. We've gone heavy (overkill?) on our software design to make integration of additional sensor types simple, so now is the time to cash in. Our first priorities are GPS and inertia-motion units. You can merge GPS data from Garmin files right now, but we want an onboard GPS option.
+- Collecting build feedback from our beta testers. We're looking for people who want to help with this!
+- Getting the system under some faster riders - in the end, we want to do *data analysis*, not just build hardware and software.
+
+<Flag src="/src/assets/pics/stringpot.jpg" alt="stringpot"> 
+We have a side project to design a low cost build-it-yourself string potentiometer too. We'll publish the design when it's been tested a bit more.
+</Flag>
+
 ---
 
 <LinkCard
