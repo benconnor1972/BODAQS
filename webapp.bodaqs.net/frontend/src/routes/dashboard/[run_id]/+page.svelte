@@ -1,5 +1,107 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { onMount } from 'svelte';
+	import { decodeSignalColumn } from '$lib/api/preprocess';
+	import {
+		getSessionsForRun,
+		getSignalsForSession,
+		getEventsForSession,
+		getMetricsForSession
+	} from '$lib/db/artifacts';
+	import type { Session } from '$lib/db/dexie';
+	import {
+		findDisplacementColumn,
+		findVelocityColumn,
+		prepareEventsBar,
+		prepareMetricScatter
+	} from '$lib/charts/prepare';
+	import DisplacementHistogram from '$lib/charts/DisplacementHistogram.svelte';
+	import VelocityHistogram from '$lib/charts/VelocityHistogram.svelte';
+	import EventsBar from '$lib/charts/EventsBar.svelte';
+	import MetricScatter from '$lib/charts/MetricScatter.svelte';
+
+	const run_id = $derived(page.params.run_id);
+
+	let sessions = $state<Session[]>([]);
+	let selectedSessionId = $state<string | null>(null);
+	let normalised = $state(true);
+	let loading = $state(false);
+	let error = $state<string | null>(null);
+
+	let signals = $state<Record<string, Float32Array>>({});
+	let events = $state<Record<string, unknown>[]>([]);
+	let metrics = $state<Record<string, unknown>[]>([]);
+	let columnNames = $state<string[]>([]);
+
+	onMount(async () => {
+		if (!run_id) return;
+		try {
+			const sessionList = await getSessionsForRun(run_id);
+			sessions = sessionList;
+			if (sessionList.length > 0) {
+				selectedSessionId = sessionList[0].id;
+			}
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load sessions.';
+		}
+	});
+
+	$effect(() => {
+		if (!selectedSessionId) return;
+		loadSession(selectedSessionId);
+	});
+
+	async function loadSession(session_id: string): Promise<void> {
+		loading = true;
+		error = null;
+		try {
+			const [signalRows, eventRows, metricRows] = await Promise.all([
+				getSignalsForSession(session_id),
+				getEventsForSession(session_id),
+				getMetricsForSession(session_id)
+			]);
+
+			const decoded: Record<string, Float32Array> = {};
+			for (const row of signalRows) {
+				decoded[row.column_name] = decodeSignalColumn(row.data);
+			}
+
+			signals = decoded;
+			columnNames = Object.keys(decoded);
+			events = eventRows.flatMap((r) => r.rows);
+			metrics = metricRows.flatMap((r) => r.rows);
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load session data.';
+		} finally {
+			loading = false;
+		}
+	}
+
+	let frontDispCol = $derived(findDisplacementColumn(columnNames, 'front', normalised));
+	let rearDispCol = $derived(findDisplacementColumn(columnNames, 'rear', normalised));
+	let frontVelCol = $derived(findVelocityColumn(columnNames, 'front'));
+	let rearVelCol = $derived(findVelocityColumn(columnNames, 'rear'));
+
+	let frontDispData = $derived(frontDispCol ? (signals[frontDispCol] ?? null) : null);
+	let rearDispData = $derived(rearDispCol ? (signals[rearDispCol] ?? null) : null);
+	let frontVelData = $derived(frontVelCol ? (signals[frontVelCol] ?? null) : null);
+	let rearVelData = $derived(rearVelCol ? (signals[rearVelCol] ?? null) : null);
+
+	let frontEventsBar = $derived(prepareEventsBar(events, 'front'));
+	let rearEventsBar = $derived(prepareEventsBar(events, 'rear'));
+
+	let frontCompScatter = $derived(
+		prepareMetricScatter(metrics, 'compression', 'front', 'm_peak_disp_max', 'm_interval_vel_max')
+	);
+	let rearCompScatter = $derived(
+		prepareMetricScatter(metrics, 'compression', 'rear', 'm_peak_disp_max', 'm_interval_vel_max')
+	);
+	let frontReboundScatter = $derived(
+		prepareMetricScatter(metrics, 'rebound', 'front', 'm_peak_disp_max', 'm_interval_vel_min')
+	);
+	let rearReboundScatter = $derived(
+		prepareMetricScatter(metrics, 'rebound', 'rear', 'm_peak_disp_max', 'm_interval_vel_min')
+	);
 </script>
 
 <svelte:head>
@@ -7,5 +109,95 @@
 </svelte:head>
 
 <h1>Dashboard</h1>
-<p>Run: {page.params.run_id}</p>
-<p>10-tile suspension dashboard coming in Phase 5.</p>
+
+{#if error}
+	<p role="alert">{error}</p>
+{/if}
+
+<div class="controls">
+	{#if sessions.length > 1}
+		<label>
+			Session
+			<select
+				value={selectedSessionId}
+				onchange={(e) => {
+					selectedSessionId = (e.target as HTMLSelectElement).value;
+				}}
+			>
+				{#each sessions as s (s.id)}
+					<option value={s.id}>{s.id}</option>
+				{/each}
+			</select>
+		</label>
+	{/if}
+
+	<label>
+		<input type="checkbox" bind:checked={normalised} />
+		Normalised (0–1)
+	</label>
+</div>
+
+{#if loading}
+	<p>Loading…</p>
+{:else}
+	<div class="grid">
+		<DisplacementHistogram
+			title="Front Suspension: Displacement"
+			data={frontDispData}
+			{normalised}
+		/>
+		<DisplacementHistogram
+			title="Rear Suspension: Displacement"
+			data={rearDispData}
+			{normalised}
+		/>
+
+		<VelocityHistogram title="Front Suspension: Velocity" data={frontVelData} />
+		<VelocityHistogram title="Rear Suspension: Velocity" data={rearVelData} />
+
+		<EventsBar title="Front Suspension: Events" data={frontEventsBar.labels.length > 0 ? frontEventsBar : null} />
+		<EventsBar title="Rear Suspension: Events" data={rearEventsBar.labels.length > 0 ? rearEventsBar : null} />
+
+		<MetricScatter
+			title="Front Suspension: Compressions >25%"
+			data={frontCompScatter.x.length > 0 ? frontCompScatter : null}
+			yLabel="Max velocity (mm/s)"
+		/>
+		<MetricScatter
+			title="Rear Suspension: Compressions >25%"
+			data={rearCompScatter.x.length > 0 ? rearCompScatter : null}
+			yLabel="Max velocity (mm/s)"
+		/>
+
+		<MetricScatter
+			title="Front Suspension: Rebounds >25%"
+			data={frontReboundScatter.x.length > 0 ? frontReboundScatter : null}
+			yLabel="Min velocity (mm/s)"
+		/>
+		<MetricScatter
+			title="Rear Suspension: Rebounds >25%"
+			data={rearReboundScatter.x.length > 0 ? rearReboundScatter : null}
+			yLabel="Min velocity (mm/s)"
+		/>
+	</div>
+{/if}
+
+<style>
+	.controls {
+		display: flex;
+		gap: 1.5rem;
+		align-items: center;
+		margin-bottom: 1rem;
+		flex-wrap: wrap;
+	}
+	.grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1rem;
+	}
+	@media (max-width: 700px) {
+		.grid {
+			grid-template-columns: 1fr;
+		}
+	}
+</style>

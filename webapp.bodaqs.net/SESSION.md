@@ -16,8 +16,8 @@ Spec lives at: `/Volumes/www/BODAQS/webapp.bodaqs.net/SPEC.md` — keep it updat
 | 2 — Frontend scaffold | ✅ Complete, npm run build passes | See below for details |
 | 3 — Core data layer | ✅ Complete, 23/23 tests passing | See below for details |
 | 4 — Upload flow | ✅ Complete, 43/43 tests passing | See below for details |
-| 5 — Dashboard | 🔜 Next | 10-tile Plotly grid |
-| 6 — Transfer + deploy | ⬜ Not started | ZIP export/import, Vercel deploy |
+| 5 — Dashboard | ✅ Complete, 65/65 tests passing | See below for details |
+| 6 — Transfer + deploy | 🔜 Next | ZIP export/import, Vercel deploy |
 
 ---
 
@@ -170,6 +170,35 @@ webapp.bodaqs.net/
 **Verification:**
 - `npm run build` — builds to `.svelte-kit/output/` with Vite + Vercel adapter (no Vercel CLI needed locally)
 - `npm run check` — `svelte-check found 0 errors and 0 warnings`
+
+---
+
+## Phase 5 — What was built
+
+### Files created/modified
+```
+frontend/src/lib/charts/
+├── prepare.ts                  — findDisplacementColumn, findVelocityColumn, computePercentileRange, computeHistogram, prepareEventsBar, prepareMetricScatter
+├── prepare.test.ts             — 22 tests: signal lookup, histogram, events bar, scatter
+├── DisplacementHistogram.svelte — Plotly bar histogram, 50 bins, 5–95th percentile trim, normalised/mm toggle
+├── VelocityHistogram.svelte    — Plotly bar histogram, 100 bins, ±2000 mm/s range
+├── EventsBar.svelte            — Plotly bar, event counts by name for front/rear
+├── MetricScatter.svelte        — Plotly scatter, compression/rebound metrics
+└── EmptyTile.svelte            — Muted placeholder shown when data is absent
+
+frontend/src/routes/dashboard/[run_id]/
+└── +page.svelte                — Full 10-tile dashboard: loads Dexie, session selector, unit toggle, 2-column CSS grid
+```
+
+### Key decisions made
+
+**Signal column matching:** `findDisplacementColumn` and `findVelocityColumn` use substring matching (`startsWith(end + '_')` + quantity/unit keywords). Robust to column name variations while the naming convention is preserved.
+
+**Histogram trimming:** Displacement tiles trim to [5th, 95th] percentile via `computePercentileRange`; velocity tiles clamp to ±2000 mm/s. Handled in chart components so prepare.ts stays testable without browser context.
+
+**Event/metric filtering:** Filtered by `signal_col.includes('front'/'rear')` for side, `event_name.includes('compression'/'rebound')` for event type. Matches actual pipeline event names (`'wheel compression events with max normalized displacement >0.25'`).
+
+**Missing tile:** Each chart component renders `EmptyTile` when data is null or empty — never an error state.
 
 ---
 
