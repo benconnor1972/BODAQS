@@ -14,7 +14,7 @@ Spec lives at: `/Volumes/www/BODAQS/webapp.bodaqs.net/SPEC.md` — keep it updat
 |---|---|---|
 | 1 — Backend | ✅ Complete, 19/19 tests passing | See below for details |
 | 2 — Frontend scaffold | ✅ Complete, npm run build passes | See below for details |
-| 3 — Core data layer | 🔜 Next | Dexie schema, library store |
+| 3 — Core data layer | ✅ Complete, 23/23 tests passing | See below for details |
 | 4 — Upload flow | ⬜ Not started | File pickers, API call, Dexie write |
 | 5 — Dashboard | ⬜ Not started | 10-tile Plotly grid |
 | 6 — Transfer + deploy | ⬜ Not started | ZIP export/import, Vercel deploy |
@@ -105,32 +105,40 @@ python -m pytest tests/ -v
 
 ### File structure created
 ```
-webapp.bodaqs.net/frontend/
-├── svelte.config.js              — adapter-vercel configured, Svelte runes forced globally
-├── vercel.json                   — routes /api/* → Python, /* → SvelteKit
-├── tsconfig.json                 — TypeScript strict mode
-├── package.json                  — SvelteKit ^2.57, adapter-vercel ^6, Svelte ^5.55, TS ^6, Vite ^8, Vitest ^4
-├── src/
-│   ├── lib/
-│   │   ├── index.ts              — stub exports
-│   │   ├── state.ts              — libraryStore with Dexie integration, try/finally for loading state
-│   │   ├── environment.ts         — API_URL configuration
-│   │   ├── stores/
-│   │   │   └── library.ts        — reactive library store (runs, sessions)
-│   │   ├── dexie/
-│   │   │   └── db.ts            — Dexie schema v1 (runs, sessions, signals, events, metrics)
-│   │   └── zip/
-│   │       └── index.ts          — ZIP import/export utilities
-│   └── routes/
-│       ├── +layout.svelte        — nav, sidebar
-│       ├── +page.svelte          — home
-│       ├── upload/
-│       │   └── +page.svelte      — placeholder
-│       ├── transfer/
-│       │   └── +page.svelte      — placeholder
-│       └── dashboard/
-│           └── [run_id]/
-│               └── +page.svelte  — placeholder, prerender = false
+webapp.bodaqs.net/
+├── vercel.json                     — routes /api/* → Python, /* → SvelteKit
+└── frontend/
+    ├── svelte.config.js            — adapter-vercel + runes mode forced globally
+    ├── vite.config.ts              — Vite 8 + vitest/config
+    ├── tsconfig.json               — strict TypeScript, extends .svelte-kit/tsconfig.json
+    ├── package.json                — SvelteKit ^2.57, adapter-vercel ^6, Svelte ^5.55, TS ^6, Vite ^8, Vitest ^4
+    ├── eslint.config.js            — ESLint 10 flat config
+    ├── .prettierrc                 — tabs, prettier-plugin-svelte
+    ├── src/
+    │   ├── app.html
+    │   ├── app.d.ts
+    │   ├── lib/
+    │   │   ├── api/
+    │   │   │   └── preprocess.ts  — SignalsPayload, PreprocessResponse, PreprocessFormData; postPreprocess(); decodeSignalColumn()
+    │   │   ├── db/
+    │   │   │   ├── dexie.ts       — BodaqsDB (Dexie 4), schema v1: runs/sessions/signals/events/metrics
+    │   │   │   └── artifacts.ts   — saveRun, saveSession (keeps session_ids in sync), getAllRuns, query helpers
+    │   │   ├── stores/
+    │   │   │   └── library.svelte.ts  — libraryStore ($state, try/finally on load)
+    │   │   └── zip/
+    │   │       ├── export.ts      — exportRuns() → Blob (JSZip)
+    │   │       └── import.ts      — importZip() → {imported, skipped}; skips by run_id
+    │   └── routes/
+    │       ├── +layout.svelte     — nav: Library / Upload / Transfer
+    │       ├── +page.svelte       — run library list (loads from Dexie via libraryStore)
+    │       ├── upload/
+    │       │   └── +page.svelte   — placeholder (Phase 4)
+    │       ├── dashboard/
+    │       │   └── [run_id]/
+    │       │       ├── +page.ts   — export const prerender = false
+    │       │       └── +page.svelte — placeholder (Phase 5)
+    │       └── transfer/
+    │           └── +page.svelte   — placeholder (Phase 6)
 ```
 
 ### Key decisions made
