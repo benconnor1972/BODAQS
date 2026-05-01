@@ -414,6 +414,19 @@ void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   }
 }
 
+void ConfigManager::setLogFormat(LogFormat format, bool persist) {
+  LoggerConfig cfg = ConfigManager::get();
+  if (cfg.logFormat == format) return;
+  cfg.logFormat = format;
+
+  if (persist) {
+    ConfigManager::save(cfg);
+  } else {
+    s_cfg = cfg;
+    g_cfg = s_cfg;
+  }
+}
+
 bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   // strip comments (# ...)
   char* hash = strchr(line, '#');
