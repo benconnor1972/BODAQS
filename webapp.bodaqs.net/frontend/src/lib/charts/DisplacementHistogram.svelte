@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import Plotly from 'plotly.js-dist-min';
 	import EmptyTile from './EmptyTile.svelte';
 	import { computeHistogram, computePercentileRange } from './prepare';
@@ -15,13 +14,14 @@
 
 	$effect(() => {
 		if (!container || !data || data.length === 0) return;
+		const el = container;
 
 		const range = computePercentileRange(data, 5, 95);
 		const { binEdges, counts } = computeHistogram(data, 50, range);
 		const xLabel = normalised ? 'Displacement (normalised)' : 'Displacement (mm)';
 
 		Plotly.newPlot(
-			container,
+			el,
 			[
 				{
 					x: binEdges.slice(0, -1),
@@ -42,12 +42,8 @@
 		);
 
 		return () => {
-			if (container) Plotly.purge(container);
+			Plotly.purge(el);
 		};
-	});
-
-	onDestroy(() => {
-		if (container) Plotly.purge(container);
 	});
 </script>
 

@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import Plotly from 'plotly.js-dist-min';
 	import EmptyTile from './EmptyTile.svelte';
 	import { computeHistogram } from './prepare';
@@ -14,12 +13,13 @@
 
 	$effect(() => {
 		if (!container || !data || data.length === 0) return;
+		const el = container;
 
 		const ABS_LIMIT = 2000;
 		const { binEdges, counts } = computeHistogram(data, 100, [-ABS_LIMIT, ABS_LIMIT]);
 
 		Plotly.newPlot(
-			container,
+			el,
 			[
 				{
 					x: binEdges.slice(0, -1),
@@ -40,12 +40,8 @@
 		);
 
 		return () => {
-			if (container) Plotly.purge(container);
+			Plotly.purge(el);
 		};
-	});
-
-	onDestroy(() => {
-		if (container) Plotly.purge(container);
 	});
 </script>
 

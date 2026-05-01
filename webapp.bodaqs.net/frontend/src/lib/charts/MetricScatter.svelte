@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import Plotly from 'plotly.js-dist-min';
 	import EmptyTile from './EmptyTile.svelte';
 	import type { ScatterData } from './prepare';
@@ -17,9 +16,10 @@
 
 	$effect(() => {
 		if (!container || !data || data.x.length === 0) return;
+		const el = container;
 
 		Plotly.newPlot(
-			container,
+			el,
 			[
 				{
 					x: data.x,
@@ -40,12 +40,8 @@
 		);
 
 		return () => {
-			if (container) Plotly.purge(container);
+			Plotly.purge(el);
 		};
-	});
-
-	onDestroy(() => {
-		if (container) Plotly.purge(container);
 	});
 </script>
 
