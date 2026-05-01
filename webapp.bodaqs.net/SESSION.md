@@ -17,7 +17,7 @@ Spec lives at: `/Volumes/www/BODAQS/webapp.bodaqs.net/SPEC.md` — keep it updat
 | 3 — Core data layer | ✅ Complete, 23/23 tests passing | See below for details |
 | 4 — Upload flow | ✅ Complete, 43/43 tests passing | See below for details |
 | 5 — Dashboard | ✅ Complete, 65/65 tests passing | See below for details |
-| 6 — Transfer + deploy | 🔜 Next | ZIP export/import, Vercel deploy |
+| 6 — Transfer + deploy | ✅ Complete (partial — transfer page only), 65/65 tests passing | ZIP export/import UI done, Vercel deploy out of scope |
 
 ---
 
@@ -170,6 +170,26 @@ webapp.bodaqs.net/
 **Verification:**
 - `npm run build` — builds to `.svelte-kit/output/` with Vite + Vercel adapter (no Vercel CLI needed locally)
 - `npm run check` — `svelte-check found 0 errors and 0 warnings`
+
+---
+
+## Phase 6 — What was built (partial — transfer page only)
+
+### Files modified
+```
+frontend/src/routes/transfer/
+└── +page.svelte  — ZIP export (run selector, download trigger) + ZIP import (file picker, imported/skipped report)
+```
+
+### Key decisions made
+
+**Export:** User selects runs via checkboxes, "Export selected" calls existing `exportRuns()` → browser download as `bodaqs-export-{YYYY-MM-DD}.bodaqs.zip`. Select All / None shortcuts included.
+
+**Import:** File picker + "Import" calls existing `importZip()` → reports "Imported N, skipped M". On success, run list reloads from Dexie so newly imported runs appear in the export list immediately.
+
+**No new lib code:** `lib/zip/export.ts` and `lib/zip/import.ts` were already complete and tested in Phase 3. The transfer page is pure UI wiring.
+
+**Deployment not included:** Vercel deploy setup is out of scope for this session.
 
 ---
 
