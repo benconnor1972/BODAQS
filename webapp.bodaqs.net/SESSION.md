@@ -15,8 +15,8 @@ Spec lives at: `/Volumes/www/BODAQS/webapp.bodaqs.net/SPEC.md` — keep it updat
 | 1 — Backend | ✅ Complete, 19/19 tests passing | See below for details |
 | 2 — Frontend scaffold | ✅ Complete, npm run build passes | See below for details |
 | 3 — Core data layer | ✅ Complete, 23/23 tests passing | See below for details |
-| 4 — Upload flow | ⬜ Not started | File pickers, API call, Dexie write |
-| 5 — Dashboard | ⬜ Not started | 10-tile Plotly grid |
+| 4 — Upload flow | ✅ Complete, 43/43 tests passing | See below for details |
+| 5 — Dashboard | 🔜 Next | 10-tile Plotly grid |
 | 6 — Transfer + deploy | ⬜ Not started | ZIP export/import, Vercel deploy |
 
 ---
@@ -170,6 +170,30 @@ webapp.bodaqs.net/
 **Verification:**
 - `npm run build` — builds to `.svelte-kit/output/` with Vite + Vercel adapter (no Vercel CLI needed locally)
 - `npm run check` — `svelte-check found 0 errors and 0 warnings`
+
+---
+
+## Phase 4 — What was built
+
+### Files created/modified
+```
+frontend/src/lib/upload/
+├── validate.ts        — UploadFiles type, MAX_CSV_BYTES (50 MB), validateUploadFiles(), isUploadReady()
+└── validate.test.ts   — 20 tests: extension checks, size limits, required field checks
+
+frontend/src/routes/upload/
+└── +page.svelte       — 5 file inputs, $state form, $derived ready flag, postPreprocess call, saveRun+saveSession, goto dashboard
+```
+
+### Key decisions made
+
+**Run ID strategy:** `crypto.randomUUID()` generated in browser before API call — avoids any server-side ID management. Run description derived from CSV filename stem.
+
+**Validation approach:** Pure `validate.ts` module (no browser/Dexie needed) makes unit testing straightforward. Extension checks guard against wrong file types; `isUploadReady` drives the disabled state so the button can never be clicked with missing required files.
+
+**Warnings:** Stored on `Session.warnings` in Dexie via `saveSession`. Not shown on upload page — Phase 5 dashboard will surface them.
+
+**No library store interaction:** Upload page calls `saveRun` + `saveSession` directly. The library page reloads from Dexie on mount, so navigating back to `/` will always show the new run.
 
 ---
 
