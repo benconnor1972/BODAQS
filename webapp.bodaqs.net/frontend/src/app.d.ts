@@ -10,4 +10,12 @@ declare global {
 	}
 }
 
+// plotly.js-dist-min ships the same API as plotly.js but without type declarations;
+// re-export from @types/plotly.js so strict TypeScript is satisfied.
+declare module 'plotly.js-dist-min' {
+	export * from 'plotly.js';
+	import Plotly from 'plotly.js';
+	export default Plotly;
+}
+
 export {};
