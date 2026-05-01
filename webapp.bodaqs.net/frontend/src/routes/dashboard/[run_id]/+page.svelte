@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
 	import { decodeSignalColumn } from '$lib/api/preprocess';
 	import {
 		getSessionsForRun,
@@ -33,17 +32,20 @@
 	let metrics = $state<Record<string, unknown>[]>([]);
 	let columnNames = $state<string[]>([]);
 
-	onMount(async () => {
-		if (!run_id) return;
-		try {
-			const sessionList = await getSessionsForRun(run_id);
-			sessions = sessionList;
-			if (sessionList.length > 0) {
-				selectedSessionId = sessionList[0].id;
-			}
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load sessions.';
-		}
+	$effect(() => {
+		const id = run_id;
+		if (!id) return;
+		sessions = [];
+		selectedSessionId = null;
+		error = null;
+		getSessionsForRun(id)
+			.then((list) => {
+				sessions = list;
+				if (list.length > 0) selectedSessionId = list[0].id;
+			})
+			.catch((e) => {
+				error = e instanceof Error ? e.message : 'Failed to load sessions.';
+			});
 	});
 
 	$effect(() => {
@@ -51,15 +53,24 @@
 		loadSession(selectedSessionId);
 	});
 
+	let loadGeneration = 0;
+
 	async function loadSession(session_id: string): Promise<void> {
+		const gen = ++loadGeneration;
 		loading = true;
 		error = null;
+		signals = {};
+		columnNames = [];
+		events = [];
+		metrics = [];
 		try {
 			const [signalRows, eventRows, metricRows] = await Promise.all([
 				getSignalsForSession(session_id),
 				getEventsForSession(session_id),
 				getMetricsForSession(session_id)
 			]);
+
+			if (gen !== loadGeneration) return;
 
 			const decoded: Record<string, Float32Array> = {};
 			for (const row of signalRows) {
@@ -71,9 +82,11 @@
 			events = eventRows.flatMap((r) => r.rows);
 			metrics = metricRows.flatMap((r) => r.rows);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load session data.';
+			if (gen === loadGeneration) {
+				error = e instanceof Error ? e.message : 'Failed to load session data.';
+			}
 		} finally {
-			loading = false;
+			if (gen === loadGeneration) loading = false;
 		}
 	}
 
@@ -102,6 +115,13 @@
 	let rearReboundScatter = $derived(
 		prepareMetricScatter(metrics, 'rebound', 'rear', 'm_peak_disp_max', 'm_interval_vel_min')
 	);
+
+	let frontEventsBarData = $derived(frontEventsBar.labels.length > 0 ? frontEventsBar : null);
+	let rearEventsBarData = $derived(rearEventsBar.labels.length > 0 ? rearEventsBar : null);
+	let frontCompData = $derived(frontCompScatter.x.length > 0 ? frontCompScatter : null);
+	let rearCompData = $derived(rearCompScatter.x.length > 0 ? rearCompScatter : null);
+	let frontReboundData = $derived(frontReboundScatter.x.length > 0 ? frontReboundScatter : null);
+	let rearReboundData = $derived(rearReboundScatter.x.length > 0 ? rearReboundScatter : null);
 </script>
 
 <svelte:head>
@@ -118,12 +138,7 @@
 	{#if sessions.length > 1}
 		<label>
 			Session
-			<select
-				value={selectedSessionId}
-				onchange={(e) => {
-					selectedSessionId = (e.target as HTMLSelectElement).value;
-				}}
-			>
+			<select bind:value={selectedSessionId}>
 				{#each sessions as s (s.id)}
 					<option value={s.id}>{s.id}</option>
 				{/each}
@@ -155,28 +170,28 @@
 		<VelocityHistogram title="Front Suspension: Velocity" data={frontVelData} />
 		<VelocityHistogram title="Rear Suspension: Velocity" data={rearVelData} />
 
-		<EventsBar title="Front Suspension: Events" data={frontEventsBar.labels.length > 0 ? frontEventsBar : null} />
-		<EventsBar title="Rear Suspension: Events" data={rearEventsBar.labels.length > 0 ? rearEventsBar : null} />
+		<EventsBar title="Front Suspension: Events" data={frontEventsBarData} />
+		<EventsBar title="Rear Suspension: Events" data={rearEventsBarData} />
 
 		<MetricScatter
 			title="Front Suspension: Compressions >25%"
-			data={frontCompScatter.x.length > 0 ? frontCompScatter : null}
+			data={frontCompData}
 			yLabel="Max velocity (mm/s)"
 		/>
 		<MetricScatter
 			title="Rear Suspension: Compressions >25%"
-			data={rearCompScatter.x.length > 0 ? rearCompScatter : null}
+			data={rearCompData}
 			yLabel="Max velocity (mm/s)"
 		/>
 
 		<MetricScatter
 			title="Front Suspension: Rebounds >25%"
-			data={frontReboundScatter.x.length > 0 ? frontReboundScatter : null}
+			data={frontReboundData}
 			yLabel="Min velocity (mm/s)"
 		/>
 		<MetricScatter
 			title="Rear Suspension: Rebounds >25%"
-			data={rearReboundScatter.x.length > 0 ? rearReboundScatter : null}
+			data={rearReboundData}
 			yLabel="Min velocity (mm/s)"
 		/>
 	</div>
