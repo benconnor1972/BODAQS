@@ -1,10 +1,56 @@
 ---
-title: <WIP> Analysis with syn.bike
+title: Analysis with syn.bike
 
 sidebar:
-  order: 4
+  order: 3
 ---
-## A
-## B
-## C
-## D
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+import Flag from '@components/Flag.astro';
+import Lightbox from '@components/Lightbox.astro';
+
+<Lede>
+**syn.bike** have a very nice [website](https://data.syn.bike) that can be used to visualize BODAQS data. If you don't have an appetite for Jupyter Lab notebooks, this is a great way to view your logs.
+</Lede>
+
+## Change your logger settings
+<Flag src="/src/assets/pics/logformat.jpg" alt="logformat">
+On the logger menu, navigate to `log format` and select `syn.bike raw` (this can also be done via the logger's web UI). 
+
+Now go log some data!
+
+</Flag>
+
+
+## Configuring data.syn.bike
+<Flag src="/src/assets/pics/synserver.png" alt="synserver">
+[data.syn.bike](https://data.syn.bike/) uses a small local executable to process log files. Download it from the 'settings' tab and place it in a suitable directory.
+
+Double-click the executable to run it - a terminal window should open and the website will give you a message to show that the processing server is connected. As you use data.syn.bike this terminal window will report what it is doing (if you're interested).
+
+Whenever you use data.syn.bike you will need to have it running
+</Flag>
+<Flag src="/src/assets/pics/synsetup.png" alt="synsetup">
+Next, go to the 'settings' tab and ensure the following settings are correct:
+- Front and rear sensor travels: These should be the full-range travel figures for your sensors, *not* your bike's suspension travel.
+- Log frequency: This should match the sample rate at which you collected your data.
+- Analog resolution: leave this at 12 bits.
+- Wheel diameter and number of speed sensor magnets: Not used. You can ignore these.
+- Invert analog data: ordinarily leave set to 'off'. If you have wired your sensors so their output is inverted, switch it.
+- Position lowpass filter and zero crossing noise threshold: Leave these at their default values.
+- Processing server location: set to `http://127.0.0.1:5079`
+</Flag>
+
+
+## Upload and examine your files
+<Flag src="/src/assets/pics/synoutputs.png" alt="synoutputs">
+Go to the 'analysis' tab.
+If you are measuring shock travel rather than rear wheel travel (as you almost certainly are), then you will need to supply leverage information. 
+
+If you have a leverage curve for your bike, then select 'curve data' and upload the curve in a CSV file. An example of the format is [here]. Otherwise select 'single value', divide your bike's rear wheel travel by its shock travel and enter the result in the box labelled 'average leverage'.
+
+Click in the 'file' box. Select the file you want to view. 
+
+The 'basic' and 'histogram' plots let you examine time-series and frequency distribution data on wheel travel and velocity. 
+</Flag>
+
