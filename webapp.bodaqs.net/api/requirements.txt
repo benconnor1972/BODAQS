@@ -4,10 +4,10 @@ pydantic==2.11.3
 uvicorn==0.34.2
 mangum==0.19.0
 
-# Analysis pipeline — editable install from monorepo root.
-# For Vercel deployment this will need to be packaged or installed via a build step.
-# Local dev: pip install -e /path/to/BODAQS/analysis
-# bodaqs-analysis is not on PyPI; see api/README or SPEC.md for deployment notes.
+# Analysis pipeline — installed from monorepo sibling directory.
+# pip resolves file: paths relative to the requirements.txt file location (api/).
+# ../../analysis from api/ == BODAQS/analysis/ (monorepo root).
+bodaqs-analysis @ file:../../analysis
 numpy
 pandas
 scipy

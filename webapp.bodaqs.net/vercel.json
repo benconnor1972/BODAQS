@@ -1,13 +1,14 @@
 {
-  "buildCommand": "cd frontend && npm run build",
-  "installCommand": "cd frontend && npm install && cd .. && ln -sfn ../../analysis/bodaqs_analysis api/bodaqs_analysis",
-  "outputDirectory": "frontend/.vercel/output",
-  "functions": {
-    "api/index.py": {
+  "experimentalServices": {
+    "frontend": {
+      "entrypoint": "frontend",
+      "framework": "sveltekit",
+      "routePrefix": "/"
+    },
+    "api": {
+      "entrypoint": "api/index.py",
+      "routePrefix": "/api",
       "maxDuration": 30
     }
-  },
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index.py" }
-  ]
+  }
 }
