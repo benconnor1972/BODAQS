@@ -11,13 +11,15 @@ import re
 from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
 from .io_fit import (
     FIT_DEFAULT_FIELDS,
+    find_overlapping_fit_candidates,
     find_overlapping_fit_files,
     load_fit_stream,
+    parse_fit_stream,
     select_fit_candidate,
 )
 from .normalize import scale_signal_columns, zero_signal_columns
 from .va import estimate_va, name_vel
-from .schema import load_event_schema
+from .schema import load_event_schema, parse_event_schema
 from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df, compute_metrics_from_segments
 from .model import validate_metrics_df
@@ -36,7 +38,7 @@ from .preprocess_filters import (
     normalize_butterworth_smoothing_configs,
 )
 from .motion_derivation import derive_motion_channels
-from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
+from .bike_profile import apply_signal_transforms, load_bike_profile, parse_bike_profile, resolve_normalization_ranges
 from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
 from .sensor_aliases import canonical_end, canonical_sensor_id
 
@@ -209,16 +211,17 @@ def _apply_log_metadata(
     session: Dict[str, Any],
     *,
     log_metadata: Dict[str, Any],
-    log_metadata_path: str,
+    log_metadata_path: Optional[str] = None,
 ) -> None:
     source = session.setdefault("source", {})
     meta = session.setdefault("meta", {})
     qc = session.setdefault("qc", {})
     parse = qc.setdefault("parse", {})
 
-    source["log_metadata_path"] = log_metadata_path
-    # Transitional alias for existing consumers.
-    source["sidecar_path"] = log_metadata_path
+    if isinstance(log_metadata_path, str) and log_metadata_path.strip():
+        source["log_metadata_path"] = log_metadata_path
+        # Transitional alias for existing consumers.
+        source["sidecar_path"] = log_metadata_path
     binding = _metadata_binding(log_metadata)
     if isinstance(binding, dict):
         log_metadata_kind = binding.get("log_metadata_kind", binding.get("sidecar_kind"))
@@ -324,7 +327,7 @@ def _apply_sidecar_metadata(
     session: Dict[str, Any],
     *,
     sidecar: Dict[str, Any],
-    sidecar_path: str,
+    sidecar_path: Optional[str] = None,
 ) -> None:
     """
     Backward-compatible alias for _apply_log_metadata().
@@ -413,15 +416,60 @@ def load_session(
     )
 
     stats = _firmware_stats_from_log_metadata(sidecar) or parse_run_stats_footer(str(p))
+    return build_session_from_dataframe(
+        df_raw,
+        session_id=p.stem,
+        source_path=p,
+        timezone=timezone,
+        log_metadata=sidecar,
+        log_metadata_path=resolved_sidecar_path,
+        firmware_stats=stats,
+    )
+
+
+def build_session_from_dataframe(
+    df_raw: pd.DataFrame,
+    *,
+    session_id: Optional[str] = None,
+    source_name: Optional[str] = None,
+    source_path: Optional[str | Path] = None,
+    timezone: Optional[str] = None,
+    log_metadata: Optional[Mapping[str, Any]] = None,
+    log_metadata_path: Optional[str | Path] = None,
+    firmware_stats: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a v0 Session dict from an already-loaded dataframe and optional metadata."""
+    if not isinstance(df_raw, pd.DataFrame):
+        raise TypeError("df_raw must be a pandas DataFrame")
+
+    source_ref = source_path if source_path is not None else source_name
+    resolved_source_name: Optional[str] = None
+    if source_name is not None:
+        resolved_source_name = Path(str(source_name)).name
+    elif source_path is not None:
+        resolved_source_name = Path(source_path).name
+
+    resolved_session_id = session_id
+    if not isinstance(resolved_session_id, str) or not resolved_session_id.strip():
+        if resolved_source_name:
+            resolved_session_id = Path(resolved_source_name).stem
+        else:
+            resolved_session_id = "session"
+
+    log_metadata_obj = dict(log_metadata) if isinstance(log_metadata, Mapping) else None
     excluded_time_columns = {"sample_id", "time_s", "clock", "Clock", "Time"}
-    if isinstance(sidecar, dict):
-        excluded_time_columns |= _declared_time_columns(sidecar)
+    if isinstance(log_metadata_obj, dict):
+        excluded_time_columns |= _declared_time_columns(log_metadata_obj)
+
+    stats: Optional[Dict[str, Any]] = None
+    if isinstance(firmware_stats, Mapping):
+        stats = dict(firmware_stats)
+    else:
+        stats = _firmware_stats_from_log_metadata(log_metadata_obj)
 
     session: Dict[str, Any] = {
-        "session_id": p.stem,
+        "session_id": resolved_session_id,
         "source": {
-            "path": str(p),
-            "filename": p.name,
             "timezone": timezone,
         },
         "meta": {
@@ -454,10 +502,19 @@ def load_session(
         "df_raw": df_raw,
         "df": df_raw.copy(),
     }
-    if isinstance(sidecar, dict) and isinstance(resolved_sidecar_path, str):
-        _apply_log_metadata(session, log_metadata=sidecar, log_metadata_path=resolved_sidecar_path)
+    if resolved_source_name is not None:
+        session["source"]["filename"] = resolved_source_name
+    if source_path is not None:
+        session["source"]["path"] = str(source_path)
+    if isinstance(log_metadata_obj, dict):
+        _apply_log_metadata(
+            session,
+            log_metadata=log_metadata_obj,
+            log_metadata_path=str(log_metadata_path) if log_metadata_path is not None else None,
+        )
     _warn_on_firmware_dropped_samples(session)
-    _apply_filename_stem_time_anchor(session, csv_path=p)
+    if source_ref is not None:
+        _apply_filename_stem_time_anchor(session, csv_path=source_ref)
     return session
 
 def load_and_canonicalize(
@@ -815,59 +872,107 @@ def enrich_session_with_fit(
     session: Dict[str, Any],
     *,
     fit_import: Optional[Mapping[str, Any]],
+    fit_stream: Optional[Mapping[str, Any]] = None,
+    fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
 ) -> Dict[str, Any]:
     cfg = _normalized_fit_import_config(fit_import)
     if not bool(cfg.get("enabled")):
         return session
 
-    fit_dir = cfg.get("fit_dir")
-    if not isinstance(fit_dir, str) or not fit_dir.strip():
-        raise ValueError("fit_import.enabled=True requires fit_import.fit_dir")
-
-    bounds = _session_absolute_bounds(session)
-    if bounds is None:
-        _append_qc_warning(session, "fit_import_skipped_missing_absolute_time_anchor")
-        return session
-
-    session_start, session_end = bounds
-    candidates = find_overlapping_fit_files(
-        fit_dir=fit_dir,
-        session_start_datetime=session_start.isoformat(),
-        session_end_datetime=session_end.isoformat(),
-        field_allowlist=cfg.get("field_allowlist"),
-        partial_overlap=str(cfg.get("partial_overlap", "allow")),
-    )
-    if not candidates:
-        _append_qc_warning(session, "fit_import_no_overlapping_files")
-        return session
-
-    source = session.get("source", {})
-    selected = select_fit_candidate(
-        session_id=session.get("session_id"),
-        csv_path=source.get("path") if isinstance(source, dict) else None,
-        csv_sha256=source.get("sha256") if isinstance(source, dict) else None,
-        candidates=candidates,
-        ambiguity_policy=str(cfg.get("ambiguity_policy", "require_binding")),
-        bindings_path=cfg.get("bindings_path"),
-    )
-    if selected is None:
-        _append_qc_warning(session, "fit_import_no_selected_file")
-        return session
-
     stream_name = str(cfg.get("raw_stream_name") or "gps_fit")
-    fit_df, fit_meta = load_fit_stream(
-        selected["path"],
-        session_start_datetime=session_start.isoformat(),
-        field_allowlist=cfg.get("field_allowlist"),
-    )
-    fit_meta = dict(fit_meta)
+    selected: Optional[Mapping[str, Any]] = None
+
+    if fit_stream is not None:
+        fit_df = fit_stream.get("df") if isinstance(fit_stream, Mapping) else None
+        fit_meta = fit_stream.get("meta") if isinstance(fit_stream, Mapping) else None
+        if not isinstance(fit_df, pd.DataFrame):
+            raise TypeError("fit_stream['df'] must be a pandas DataFrame")
+        if not isinstance(fit_meta, Mapping):
+            raise TypeError("fit_stream['meta'] must be a mapping")
+        fit_meta = dict(fit_meta)
+    else:
+        bounds = _session_absolute_bounds(session)
+        if bounds is None:
+            _append_qc_warning(session, "fit_import_skipped_missing_absolute_time_anchor")
+            return session
+
+        session_start, session_end = bounds
+        if fit_candidates is not None:
+            candidates = find_overlapping_fit_candidates(
+                fit_candidates,
+                session_start_datetime=session_start.isoformat(),
+                session_end_datetime=session_end.isoformat(),
+                partial_overlap=str(cfg.get("partial_overlap", "allow")),
+            )
+        else:
+            fit_dir = cfg.get("fit_dir")
+            if not isinstance(fit_dir, str) or not fit_dir.strip():
+                raise ValueError(
+                    "fit_import.enabled=True requires fit_import.fit_dir unless fit_stream or fit_candidates is provided"
+                )
+            candidates = find_overlapping_fit_files(
+                fit_dir=fit_dir,
+                session_start_datetime=session_start.isoformat(),
+                session_end_datetime=session_end.isoformat(),
+                field_allowlist=cfg.get("field_allowlist"),
+                partial_overlap=str(cfg.get("partial_overlap", "allow")),
+            )
+        if not candidates:
+            _append_qc_warning(session, "fit_import_no_overlapping_files")
+            return session
+
+        source = session.get("source", {})
+        selected = select_fit_candidate(
+            session_id=session.get("session_id"),
+            csv_path=source.get("path") if isinstance(source, dict) else None,
+            csv_sha256=source.get("sha256") if isinstance(source, dict) else None,
+            candidates=candidates,
+            ambiguity_policy=str(cfg.get("ambiguity_policy", "require_binding")),
+            bindings=fit_bindings,
+            bindings_path=cfg.get("bindings_path"),
+        )
+        if selected is None:
+            _append_qc_warning(session, "fit_import_no_selected_file")
+            return session
+
+        selected_stream = selected.get("fit_stream")
+        if isinstance(selected_stream, Mapping):
+            fit_df = selected_stream.get("df")
+            fit_meta = selected_stream.get("meta")
+            if not isinstance(fit_df, pd.DataFrame):
+                raise TypeError("selected fit candidate fit_stream['df'] must be a pandas DataFrame")
+            if not isinstance(fit_meta, Mapping):
+                raise TypeError("selected fit candidate fit_stream['meta'] must be a mapping")
+            fit_meta = dict(fit_meta)
+        elif "fit_input" in selected:
+            fit_df, fit_meta = parse_fit_stream(
+                selected["fit_input"],
+                session_start_datetime=session_start.isoformat(),
+                field_allowlist=cfg.get("field_allowlist"),
+                source_name=selected.get("filename"),
+            )
+            fit_meta = dict(fit_meta)
+        else:
+            fit_path = selected.get("path")
+            if not isinstance(fit_path, str) or not fit_path.strip():
+                raise ValueError(
+                    "Selected FIT candidate does not contain a usable path, fit_input, or fit_stream"
+                )
+            fit_df, fit_meta = load_fit_stream(
+                fit_path,
+                session_start_datetime=session_start.isoformat(),
+                field_allowlist=cfg.get("field_allowlist"),
+            )
+            fit_meta = dict(fit_meta)
+        fit_meta["match"] = {
+            "overlap_s": float(selected.get("overlap_s", 0.0)),
+            "overlap_start_datetime": selected.get("overlap_start_datetime"),
+            "overlap_end_datetime": selected.get("overlap_end_datetime"),
+            "ambiguity_policy": cfg.get("ambiguity_policy"),
+        }
+
     fit_meta["stream_name"] = stream_name
-    fit_meta["match"] = {
-        "overlap_s": float(selected.get("overlap_s", 0.0)),
-        "overlap_start_datetime": selected.get("overlap_start_datetime"),
-        "overlap_end_datetime": selected.get("overlap_end_datetime"),
-        "ambiguity_policy": cfg.get("ambiguity_policy"),
-    }
 
     if bool(cfg.get("persist_raw_stream", True)):
         attach_fit_stream(session, fit_df=fit_df, fit_meta=fit_meta, stream_name=stream_name)
@@ -887,7 +992,7 @@ def enrich_session_with_fit(
             "enabled": True,
             "selected_file": fit_meta.get("filename"),
             "stream_name": stream_name,
-            "overlap_s": float(selected.get("overlap_s", 0.0)),
+            "overlap_s": float(selected.get("overlap_s", 0.0)) if selected is not None else None,
             "partial_overlap": str(cfg.get("partial_overlap", "allow")),
         }
     )
@@ -1421,6 +1526,277 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     return session
 
      
+def preprocess_resolved(
+    session: Mapping[str, Any],
+    *,
+    schema: Optional[Mapping[str, Any] | str | bytes | Path] = None,
+    preprocess_profile: Optional[Mapping[str, Any]] = None,
+    preprocess_config: Optional[Mapping[str, Any]] = None,
+    fit_import: Optional[Mapping[str, Any]] = None,
+    fit_stream: Optional[Mapping[str, Any]] = None,
+    fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
+    zeroing_enabled: bool = True,
+    zero_window_s: float = 1,
+    zero_min_samples: int = 10,
+    clip_0_1: bool = False,
+    active_signal_disp_col: Optional[str] = None,
+    active_signal_vel_col: Optional[str] = None,
+    active_disp_thresh: float = 20,
+    active_vel_thresh: float = 50,
+    active_window: str = "500ms",
+    active_padding: str = "1s",
+    active_min_seg: str = "3s",
+    normalize_ranges: Optional[Dict[str, float]] = None,
+    bike_profile: Optional[Mapping[str, Any] | str | bytes | Path] = None,
+    bike_profile_path: Optional[str | Path] = None,
+    active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
+    active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
+    sample_rate_hz: Optional[float] = None,
+    ignore_on_logger_transformations: bool = False,
+    butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
+    butterworth_generate_residuals: bool = False,
+    motion_derivation: Optional[Mapping[str, Any]] = None,
+    include_events: bool = True,
+    include_metrics: bool = True,
+    strict: bool = True,
+) -> Dict[str, Any]:
+    """
+    Run preprocessing from already-resolved session/schema/profile content rather
+    than discovering local files.
+    """
+    if not isinstance(session, Mapping):
+        raise ValueError("preprocess_resolved expects an existing session mapping")
+
+    cfg = _coerce_preprocess_config(
+        preprocess_profile_path=None,
+        preprocess_profile=preprocess_profile,
+        preprocess_config=preprocess_config,
+    )
+    if cfg is not None:
+        fit_import = fit_import if fit_import is not None else cfg.get("fit_import")
+        sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
+        zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
+        zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
+        zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
+        clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
+        active_signal_disp_selector = cfg.get("active_signal_disp_selector", active_signal_disp_selector)
+        active_signal_vel_selector = cfg.get("active_signal_vel_selector", active_signal_vel_selector)
+        active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
+        active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
+        active_window = str(cfg.get("active_window", active_window))
+        active_padding = str(cfg.get("active_padding", active_padding))
+        active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
+        ignore_on_logger_transformations = bool(
+            cfg.get("ignore_on_logger_transformations", ignore_on_logger_transformations)
+        )
+        motion_derivation = cfg.get("motion_derivation", motion_derivation)
+        butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
+        butterworth_generate_residuals = bool(
+            cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
+        )
+        strict = bool(cfg.get("strict", strict))
+
+    resolved_schema: Optional[Dict[str, Any]] = None
+    if schema is not None and not (isinstance(schema, str) and not schema.strip()):
+        resolved_schema = parse_event_schema(schema)
+    elif include_events and isinstance(cfg, Mapping) and cfg.get("schema_path"):
+        raise ValueError(
+            "preprocess_resolved does not resolve schema_path from preprocess_config; "
+            "pass a loaded schema object/text/bytes explicitly"
+        )
+
+    resolved_bike_profile: Optional[Dict[str, Any]] = None
+    if bike_profile is not None:
+        resolved_bike_profile = parse_bike_profile(bike_profile)
+
+    session_obj = dict(session)
+    source = session_obj.get("source") if isinstance(session_obj.get("source"), dict) else {}
+    csv_path = source.get("path") if isinstance(source, dict) else None
+    logger.info("Using resolved session for preprocessing")
+
+    session_obj = enrich_session_with_fit(
+        session_obj,
+        fit_import=fit_import,
+        fit_stream=fit_stream,
+        fit_candidates=fit_candidates,
+        fit_bindings=fit_bindings,
+    )
+    if bool((fit_import or {}).get("enabled")):
+        logger.info("FIT enrichment step complete")
+
+    session_obj = _preprocess_loaded_session(
+        session_obj,
+        preprocess_config=cfg,
+        normalize_ranges=normalize_ranges,
+        sample_rate_hz=sample_rate_hz,
+        zeroing_enabled=zeroing_enabled,
+        zero_window_s=zero_window_s,
+        zero_min_samples=zero_min_samples,
+        clip_0_1=clip_0_1,
+        active_signal_disp_col=active_signal_disp_col,
+        active_signal_vel_col=active_signal_vel_col,
+        active_signal_disp_selector=active_signal_disp_selector,
+        active_signal_vel_selector=active_signal_vel_selector,
+        active_disp_thresh=active_disp_thresh,
+        active_vel_thresh=active_vel_thresh,
+        active_window=active_window,
+        active_padding=active_padding,
+        active_min_seg=active_min_seg,
+        ignore_on_logger_transformations=ignore_on_logger_transformations,
+        bike_profile=resolved_bike_profile,
+        bike_profile_path=bike_profile_path,
+        motion_derivation=motion_derivation,
+        butterworth_smoothing=butterworth_smoothing,
+        butterworth_generate_residuals=butterworth_generate_residuals,
+        strict=strict,
+    )
+    logger.info("Session pre-process complete")
+
+    t = session_obj["df"]["time_s"].to_numpy()
+    logger.debug("time_s start/end: %s .. %s", t[0], t[-1])
+    logger.debug(
+        "dt median/min/max: %s / %s / %s",
+        float(np.median(np.diff(t))),
+        float(np.min(np.diff(t))),
+        float(np.max(np.diff(t))),
+    )
+
+    sig = session_obj.get("meta", {}).get("signals", {})
+    logger.debug("signals entries: %d", len(sig))
+    for col, info in list(sig.items())[:10]:
+        logger.debug("%s -> %s", col, info)
+
+    kinds = {}
+    units = {}
+    for info in sig.values():
+        if isinstance(info, dict):
+            kinds[info.get("kind")] = kinds.get(info.get("kind"), 0) + 1
+            units[info.get("unit")] = units.get(info.get("unit"), 0) + 1
+    logger.debug("kind counts: %s", kinds)
+    logger.debug("unit counts: %s", units)
+
+    assert "df" in session_obj
+    assert "time_s" in session_obj["df"].columns
+    assert "signals" in session_obj.get("meta", {})
+
+    meta = session_obj.setdefault("meta", {})
+    if not isinstance(meta, dict):
+        raise ValueError("session['meta'] must be a dict")
+
+    if csv_path is not None:
+        sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
+    else:
+        sid = str(session_obj.get("session_id") or meta.get("session_id") or "session")
+    session_obj["session_id"] = sid
+    meta["session_id"] = sid
+
+    if resolved_schema is not None:
+        logger.info("Schema load complete")
+
+    events_df = pd.DataFrame()
+    if resolved_schema is not None and include_events:
+        events_df = detect_events_from_schema(
+            session_obj["df"],
+            resolved_schema,
+            meta=session_obj["meta"],
+        )
+
+        logger.info("Event detection complete")
+        logger.info("events rows: %d", len(events_df))
+
+        if isinstance(events_df, pd.DataFrame):
+            if "event_name" in events_df.columns:
+                logger.debug(
+                    "event_name unique: %s",
+                    sorted(events_df["event_name"].dropna().unique().tolist()),
+                )
+            else:
+                logger.debug("events_df has no 'event_name' column; columns=%s", list(events_df.columns))
+
+            if "schema_id" in events_df.columns:
+                logger.debug(
+                    "schema_id unique: %s",
+                    sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()),
+                )
+            else:
+                logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
+
+    detected_sids = sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()) if (
+        isinstance(events_df, pd.DataFrame) and ("schema_id" in events_df.columns)
+    ) else []
+
+    defined_sids = sorted(
+        [
+            str(e.get("id"))
+            for e in ((resolved_schema or {}).get("events") or [])
+            if isinstance(e, dict) and e.get("id")
+        ]
+    )
+    missing = [sid for sid in defined_sids if sid not in set(detected_sids)]
+    if missing:
+        logger.info("Schema events with zero detections this run: %s", missing)
+
+    if resolved_schema is not None and include_metrics:
+        logger.info("Running segment extraction for detected schema events: %s", detected_sids)
+
+    bundles_by_schema_id: dict[str, dict] = {}
+    metrics_parts: list[pd.DataFrame] = []
+
+    for sid in (detected_sids if resolved_schema is not None and include_metrics else []):
+        events_sel = events_df[events_df["schema_id"].astype(str) == str(sid)]
+        if events_sel.empty:
+            logger.info("No events for schema_id=%s; skipping.", sid)
+            continue
+
+        bundle = extract_segments(
+            df=session_obj["df"],
+            events=events_df,
+            meta=session_obj["meta"],
+            schema=resolved_schema,
+            request=SegmentRequest(schema_id=sid),
+        )
+        bundles_by_schema_id[sid] = bundle
+        logger.info("Segment extraction complete (schema_id=%s)", sid)
+
+        seg = bundle["segments"]
+        valid_n = int(seg["valid"].sum()) if "valid" in seg.columns else 0
+        total_n = len(seg)
+        logger.info("segments valid (schema_id=%s): %d/%d", sid, valid_n, total_n)
+
+        t2 = bundle["data"].get("t_rel_s")
+        logger.debug("t_rel_s type=%s shape=%s", type(t2), getattr(t2, "shape", None))
+        if isinstance(t2, np.ndarray):
+            logger.debug("t_rel_s[0][:10]=%s", t2[0][:10])
+            logger.debug("t_rel_s[0][-10:]=%s", t2[0][-10:])
+            d = np.diff(t2[0].astype(float))
+            logger.debug("diff stats: min=%s med=%s max=%s", np.nanmin(d), np.nanmedian(d), np.nanmax(d))
+            logger.debug("nonpositive diffs=%d", int(np.sum(d <= 0)))
+
+        metrics_i = compute_metrics_from_segments(bundle, schema=resolved_schema, strict=strict)
+        logger.info("Metrics calculation complete (schema_id=%s)", sid)
+
+        if "schema_id" not in metrics_i.columns:
+            metrics_i = metrics_i.copy()
+            metrics_i["schema_id"] = sid
+
+        metrics_parts.append(metrics_i)
+
+    metrics_df = pd.concat(metrics_parts, ignore_index=True) if metrics_parts else pd.DataFrame()
+
+    if resolved_schema is not None and include_metrics:
+        validate_metrics_df(metrics_df, events_df=events_df)
+        logger.info("Metrics validation complete")
+
+    return {
+        "session": session_obj,
+        "schema": resolved_schema,
+        "events": events_df,
+        "segments": bundles_by_schema_id,
+        "metrics": metrics_df,
+    }
+
+
 def preprocess_session(
     session_or_path: str | Path | Mapping[str, Any],
     schema_path: Optional[str | Path] = None,
@@ -1433,6 +1809,9 @@ def preprocess_session(
     log_metadata_path: Optional[str | Path] = None,
     generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
     fit_import: Optional[Mapping[str, Any]] = None,
+    fit_stream: Optional[Mapping[str, Any]] = None,
+    fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
     zeroing_enabled: bool = True,
     zero_window_s: float = 1,
     zero_min_samples: int = 10,
@@ -1459,20 +1838,7 @@ def preprocess_session(
     include_metrics: bool = True,
     strict: bool = True,
 ) -> Dict[str, Any]:
-    """Run the standard BODAQS preprocessing pipeline for one session or CSV.
-
-    ``session_or_path`` may be an existing session dict or a logger CSV path.
-    The return value is always a results dictionary with stable top-level keys:
-    ``session``, ``schema``, ``events``, ``segments``, and ``metrics``.
-
-    If an event schema is supplied directly or through ``preprocess_config``,
-    event detection runs by default. Metrics run when events are enabled unless
-    ``include_metrics`` is false.
-
-    ``strict``:
-        When True, metrics computation enforces strict trigger/spec requirements (may raise).
-        When False, missing trigger times (etc.) should propagate as NaN where supported.
-    """
+    """Run the standard BODAQS preprocessing pipeline for one session or CSV."""
     cfg = _coerce_preprocess_config(
         preprocess_profile_path=preprocess_profile_path,
         preprocess_profile=preprocess_profile,
@@ -1481,38 +1847,12 @@ def preprocess_session(
     if cfg is not None:
         schema_path = schema_path if schema_path is not None else cfg.get("schema_path")
         fit_import = fit_import if fit_import is not None else cfg.get("fit_import")
-        sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
-        zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
-        zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
-        zero_min_samples = int(cfg.get("zero_min_samples", zero_min_samples))
-        clip_0_1 = bool(cfg.get("clip_0_1", clip_0_1))
-        active_signal_disp_selector = cfg.get("active_signal_disp_selector", active_signal_disp_selector)
-        active_signal_vel_selector = cfg.get("active_signal_vel_selector", active_signal_vel_selector)
-        active_disp_thresh = float(cfg.get("active_disp_thresh", active_disp_thresh))
-        active_vel_thresh = float(cfg.get("active_vel_thresh", active_vel_thresh))
-        active_window = str(cfg.get("active_window", active_window))
-        active_padding = str(cfg.get("active_padding", active_padding))
-        active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
-        ignore_on_logger_transformations = bool(
-            cfg.get("ignore_on_logger_transformations", ignore_on_logger_transformations)
-        )
-        motion_derivation = cfg.get("motion_derivation", motion_derivation)
-        butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
-        butterworth_generate_residuals = bool(
-            cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
-        )
-        strict = bool(cfg.get("strict", strict))
 
     if isinstance(schema_path, str) and not schema_path.strip():
         schema_path = None
 
-    csv_path: Optional[str | Path] = None
     if isinstance(session_or_path, Mapping):
         session = dict(session_or_path)
-        source = session.get("source") if isinstance(session.get("source"), dict) else {}
-        source_path = source.get("path") if isinstance(source, dict) else None
-        if isinstance(source_path, (str, Path)):
-            csv_path = source_path
         logger.info("Using existing session for preprocessing")
     else:
         csv_path = session_or_path
@@ -1526,193 +1866,45 @@ def preprocess_session(
         )
         logger.info("Session load complete: %s", csv_path)
 
-    session = enrich_session_with_fit(session, fit_import=fit_import)
-    if bool((fit_import or {}).get("enabled")):
-        logger.info("FIT enrichment step complete")
+    resolved_schema = parse_event_schema(schema_path) if schema_path is not None else None
+    resolved_bike_profile = (
+        parse_bike_profile(bike_profile)
+        if bike_profile is not None
+        else (load_bike_profile(bike_profile_path) if bike_profile_path is not None else None)
+    )
 
-    session = _preprocess_loaded_session(
+    return preprocess_resolved(
         session,
+        schema=resolved_schema,
+        preprocess_profile=preprocess_profile,
         preprocess_config=cfg,
-        normalize_ranges=normalize_ranges,
-        sample_rate_hz=sample_rate_hz,
+        fit_import=fit_import,
+        fit_stream=fit_stream,
+        fit_candidates=fit_candidates,
+        fit_bindings=fit_bindings,
         zeroing_enabled=zeroing_enabled,
         zero_window_s=zero_window_s,
         zero_min_samples=zero_min_samples,
         clip_0_1=clip_0_1,
         active_signal_disp_col=active_signal_disp_col,
         active_signal_vel_col=active_signal_vel_col,
-        active_signal_disp_selector=active_signal_disp_selector,
-        active_signal_vel_selector=active_signal_vel_selector,
         active_disp_thresh=active_disp_thresh,
         active_vel_thresh=active_vel_thresh,
         active_window=active_window,
         active_padding=active_padding,
         active_min_seg=active_min_seg,
-        ignore_on_logger_transformations=ignore_on_logger_transformations,
-        bike_profile=bike_profile,
+        normalize_ranges=normalize_ranges,
+        bike_profile=resolved_bike_profile,
         bike_profile_path=bike_profile_path,
-        motion_derivation=motion_derivation,
+        active_signal_disp_selector=active_signal_disp_selector,
+        active_signal_vel_selector=active_signal_vel_selector,
+        sample_rate_hz=sample_rate_hz,
+        ignore_on_logger_transformations=ignore_on_logger_transformations,
         butterworth_smoothing=butterworth_smoothing,
         butterworth_generate_residuals=butterworth_generate_residuals,
+        motion_derivation=motion_derivation,
+        include_events=include_events,
+        include_metrics=include_metrics,
         strict=strict,
     )
-    logger.info("Session pre-process complete")
-
-    # debug
-    t = session["df"]["time_s"].to_numpy()
-    logger.debug("time_s start/end: %s .. %s", t[0], t[-1])
-    logger.debug(
-        "dt median/min/max: %s / %s / %s",
-        float(np.median(np.diff(t))),
-        float(np.min(np.diff(t))),
-        float(np.max(np.diff(t))),
-    )
-
-    # debug: inspect signal registry shape
-    sig = session.get("meta", {}).get("signals", {})
-    logger.debug("signals entries: %d", len(sig))
-
-    # show a few entries
-    for col, info in list(sig.items())[:10]:
-        logger.debug("%s -> %s", col, info)
-
-    # show kind/unit distribution
-    kinds = {}
-    units = {}
-    for info in sig.values():
-        if isinstance(info, dict):
-            kinds[info.get("kind")] = kinds.get(info.get("kind"), 0) + 1
-            units[info.get("unit")] = units.get(info.get("unit"), 0) + 1
-    logger.debug("kind counts: %s", kinds)
-    logger.debug("unit counts: %s", units)
-
-    # debug
-    assert "df" in session
-    assert "time_s" in session["df"].columns
-    assert "signals" in session.get("meta", {})
-
-    meta = session.setdefault("meta", {})
-    if not isinstance(meta, dict):
-        raise ValueError("session['meta'] must be a dict")
-
-    # Standardized session_id: CSV filename stem where a source path is available.
-    if csv_path is not None:
-        sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
-    else:
-        sid = str(session.get("session_id") or meta.get("session_id") or "session")
-    session["session_id"] = sid
-    meta["session_id"] = sid
-
-    schema = load_event_schema(schema_path) if schema_path is not None and include_events else None
-    if schema is not None:
-        logger.info("Schema load complete")
-
-    events_df = pd.DataFrame()
-    if schema is not None and include_events:
-        events_df = detect_events_from_schema(
-            session["df"],
-            schema,
-            meta=session["meta"],
-        )
-
-        logger.info("Event detection complete")
-        logger.info("events rows: %d", len(events_df))
-
-        if isinstance(events_df, pd.DataFrame):
-            if "event_name" in events_df.columns:
-                logger.debug(
-                    "event_name unique: %s",
-                    sorted(events_df["event_name"].dropna().unique().tolist()),
-                )
-            else:
-                logger.debug("events_df has no 'event_name' column; columns=%s", list(events_df.columns))
-
-            if "schema_id" in events_df.columns:
-                logger.debug(
-                    "schema_id unique: %s",
-                    sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()),
-                )
-            else:
-                logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
-
-
-    # Segment extraction (one schema event per call in v0)
-    detected_sids = sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()) if (
-        isinstance(events_df, pd.DataFrame) and ("schema_id" in events_df.columns)
-    ) else []
-
-    defined_sids = sorted(
-        [
-            str(e.get("id"))
-            for e in ((schema or {}).get("events") or [])
-            if isinstance(e, dict) and e.get("id")
-        ]
-    )
-    missing = [sid for sid in defined_sids if sid not in set(detected_sids)]
-    if missing:
-        logger.info("Schema events with zero detections this run: %s", missing)
-
-    if schema is not None and include_metrics:
-        logger.info("Running segment extraction for detected schema events: %s", detected_sids)
-
-    bundles_by_schema_id: dict[str, dict] = {}
-    metrics_parts: list[pd.DataFrame] = []
-
-    for sid in (detected_sids if schema is not None and include_metrics else []):
-        # (Optional but nice) pre-filter for clarity + earlier logging
-        events_sel = events_df[events_df["schema_id"].astype(str) == str(sid)]
-        if events_sel.empty:
-            logger.info("No events for schema_id=%s; skipping.", sid)
-            continue
-
-        bundle = extract_segments(
-            df=session["df"],
-            events=events_df,  # extract_segments will select internally; keep as-is
-            meta=session["meta"],
-            schema=schema,
-            request=SegmentRequest(schema_id=sid),
-        )
-        bundles_by_schema_id[sid] = bundle
-        logger.info("Segment extraction complete (schema_id=%s)", sid)
-
-        seg = bundle["segments"]
-        valid_n = int(seg["valid"].sum()) if "valid" in seg.columns else 0
-        total_n = len(seg)
-        logger.info("segments valid (schema_id=%s): %d/%d", sid, valid_n, total_n)
-
-        # debug
-        t2 = bundle["data"].get("t_rel_s")
-        logger.debug("t_rel_s type=%s shape=%s", type(t2), getattr(t2, "shape", None))
-        if isinstance(t2, np.ndarray):
-            logger.debug("t_rel_s[0][:10]=%s", t2[0][:10])
-            logger.debug("t_rel_s[0][-10:]=%s", t2[0][-10:])
-            d = np.diff(t2[0].astype(float))
-            logger.debug("diff stats: min=%s med=%s max=%s", np.nanmin(d), np.nanmedian(d), np.nanmax(d))
-            logger.debug("nonpositive diffs=%d", int(np.sum(d <= 0)))
-        # debug
-
-        # Metrics from SegmentBundle (per schema event)
-        metrics_i = compute_metrics_from_segments(bundle, schema=schema, strict=strict)
-        logger.info("Metrics calculation complete (schema_id=%s)", sid)
-
-        # Ensure schema_id is present for grouping/faceting downstream
-        if "schema_id" not in metrics_i.columns:
-            metrics_i = metrics_i.copy()
-            metrics_i["schema_id"] = sid
-
-        metrics_parts.append(metrics_i)
-
-    metrics_df = pd.concat(metrics_parts, ignore_index=True) if metrics_parts else pd.DataFrame()
-
-    if schema is not None and include_metrics:
-        validate_metrics_df(metrics_df, events_df=events_df)
-        logger.info("Metrics validation complete")
-
-    return {
-        "session": session,
-        "schema": schema,
-        "events": events_df,
-        "segments": bundles_by_schema_id,
-        "metrics": metrics_df,
-    }
 

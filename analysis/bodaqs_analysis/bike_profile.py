@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -21,17 +22,40 @@ BIKE_PROFILE_SCHEMA = "bodaqs.bike_profile"
 BIKE_PROFILE_VERSION = 1
 
 
+def parse_bike_profile(value: Mapping[str, Any] | str | bytes | Path) -> Dict[str, Any]:
+    """Parse and validate a bike profile from a mapping, JSON text/bytes, or a path."""
+    path: Optional[Path] = None
+
+    if isinstance(value, Mapping):
+        profile = copy.deepcopy(dict(value))
+    else:
+        if isinstance(value, Path):
+            path = value
+            text = path.read_text(encoding="utf-8")
+        elif isinstance(value, bytes):
+            text = value.decode("utf-8")
+        elif isinstance(value, str):
+            candidate = Path(value)
+            if candidate.exists():
+                path = candidate
+                text = candidate.read_text(encoding="utf-8")
+            else:
+                text = value
+        else:
+            raise TypeError("bike profile must be a mapping, JSON text/bytes, or a path")
+
+        profile = json.loads(text)
+
+    validate_bike_profile(profile, path=path)
+    return profile
+
+
 def load_bike_profile(path: str | Path) -> Dict[str, Any]:
     """Load and minimally validate a BODAQS bike profile JSON document."""
     profile_path = Path(path)
     if not profile_path.exists():
         raise FileNotFoundError(f"Bike profile not found: {profile_path}")
-
-    with profile_path.open("r", encoding="utf-8") as f:
-        profile = json.load(f)
-
-    validate_bike_profile(profile, path=profile_path)
-    return profile
+    return parse_bike_profile(profile_path)
 
 
 def validate_bike_profile(profile: Mapping[str, Any], *, path: Optional[str | Path] = None) -> None:

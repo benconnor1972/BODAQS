@@ -107,13 +107,21 @@ Any tuple returned without opt-in is a contract violation.
 
 ### 4.0 High-Level API Shape
 
-`preprocess_session(...)` is the single preferred high-level entry point for
-notebook, script, UI, and future CLI workflows. It accepts either:
+The public API now has two preferred high-level entry patterns:
+
+- `preprocess_resolved(...)` for backend, service, and content-first workflows
+- `preprocess_session(...)` for notebook/local convenience workflows
+
+`preprocess_session(...)` accepts either:
 
 - a logger CSV path, or
 - an existing session dictionary
 
-`preprocess_session(...)` owns the complete run-level pipeline:
+`preprocess_resolved(...)` accepts an already-built session plus already-resolved
+schema/profile/FIT inputs. This is the preferred path for remote execution,
+uploaded assets, and transport-agnostic orchestration layers.
+
+Both entry points own the complete run-level pipeline:
 
 ```text
 load/canonicalize -> zero -> bike transforms -> motion derivation/filtering
@@ -124,12 +132,16 @@ Event detection runs when an event schema is supplied and `include_events=True`.
 Metric extraction runs when events are available and `include_metrics=True`.
 The return value is always a results dictionary with stable top-level keys.
 
-Lower-level functions such as `load_session(...)`, `detect_events_from_schema(...)`,
-and `extract_metrics_df(...)` remain public for advanced workflows, tests, and
-debugging. They are not the preferred route for standard user-facing analysis.
+Lower-level functions such as `build_session_from_dataframe(...)`,
+`prepare_logger_dataframe(...)`, `load_session(...)`,
+`detect_events_from_schema(...)`, and `extract_metrics_df(...)` remain public for
+advanced workflows, tests, and debugging. For new backend integrations, callers
+should prefer these resolved-content helpers over path-first notebook
+convenience wrappers.
 
 The former notebook-era `run_macro(...)` entry point has been removed from the
-active public API. Callers should use `preprocess_session(...)` instead.
+active public API. Callers should use `preprocess_session(...)` or
+`preprocess_resolved(...)` instead.
 
 ### 4.1 Preprocess Profile Helpers
 
@@ -167,12 +179,26 @@ records = discover_preprocess_profiles(directory: str | Path)
 
 ---
 
-### 4.2 `load_session()`
+### 4.2 Session & Logger Input Helpers
 
 **Purpose:**  
-Load raw logger data into a canonical session.
+Support both content-first and path-first session construction.
 
-**Signature (conceptual):**
+**Resolved-content signatures (conceptual):**
+```python
+log_metadata = parse_logger_log_metadata(log_metadata_obj_or_text_or_bytes_or_path)
+df_prepared, log_metadata = prepare_logger_dataframe(
+    df_raw,
+    log_metadata=log_metadata,
+)
+session = build_session_from_dataframe(
+    df_prepared,
+    source_name="ride.csv",
+    log_metadata=log_metadata,
+)
+```
+
+**Path-convenience signature (conceptual):**
 ```python
 session = load_session(
     csv_path: str,
@@ -184,9 +210,15 @@ session = load_session(
 ```
 
 **Returns:**  
-- `session: Dict[str, Any]`
+- `parse_logger_log_metadata(...)`: parsed logger metadata object
+- `prepare_logger_dataframe(...)`: `(DataFrame, log_metadata_or_none)`
+- `build_session_from_dataframe(...)`: `session: Dict[str, Any]`
+- `load_session(...)`: `session: Dict[str, Any]`
 
 **Guarantees:**
+- `prepare_logger_dataframe(...)` canonicalizes `time_s`
+- `build_session_from_dataframe(...)` does not require a filesystem path
+- `load_session(...)` is the notebook/local wrapper that performs CSV and metadata path resolution
 - `session["df"]` is a pandas DataFrame
 - `session["df"]` contains `time_s`
 - Timestamp parsing is handled internally
@@ -195,24 +227,30 @@ session = load_session(
 
 ---
 
-### 4.3 `load_event_schema()`
+### 4.3 Schema & Bike-Profile Parsing
 
 **Purpose:**  
-Load an event detection schema from YAML.
+Allow callers to pass already-loaded schema/profile content directly.
 
-**Signature:**
+**Signatures:**
 ```python
+schema = parse_event_schema(schema_obj_or_text_or_bytes_or_path)
+schema, meta = parse_event_schema(schema_obj_or_text_or_bytes_or_path, return_meta=True)
+
 schema = load_event_schema(path: str)
 schema, meta = load_event_schema(path: str, return_meta=True)
+
+bike_profile = parse_bike_profile(profile_obj_or_text_or_bytes_or_path)
+bike_profile = load_bike_profile(path: str | Path)
 ```
 
 **Returns:**
-- Default: `schema: Dict[str, Any]`
-- With `return_meta=True`: `(schema, meta)`
+- `parse_event_schema(...)` / `load_event_schema(...)`: schema dict, plus optional meta
+- `parse_bike_profile(...)` / `load_bike_profile(...)`: bike profile dict
 
 **Meta contents (minimum):**
 - `sha256`: content hash
-- `source_path`: schema file path
+- `source_path`: schema file path when available, otherwise `None`
 
 ---
 
@@ -272,10 +310,66 @@ df, meta = estimate_va_from_zeroed(df, ..., return_meta=True)
 
 ---
 
-### 4.6 `preprocess_session()`
+### 4.6 High-Level Preprocessing
+
+#### `preprocess_resolved()`
+
+**Purpose:**  
+Run the standard BODAQS preprocessing pipeline from already-resolved inputs.
+
+**Signature (conceptual):**
+```python
+results = preprocess_resolved(
+    session,
+    *,
+    schema=None,
+    preprocess_profile=None,
+    preprocess_config=None,
+    fit_import=None,
+    fit_stream=None,
+    fit_candidates=None,
+    fit_bindings=None,
+    bike_profile=None,
+    normalize_ranges=None,
+    include_events=True,
+    include_metrics=True,
+    ...
+)
+```
+
+**Typical use:**
+```python
+schema = parse_event_schema(schema_text)
+bike_profile = parse_bike_profile(bike_profile_json)
+df_prepared, log_metadata = prepare_logger_dataframe(df_raw, log_metadata=log_metadata_obj)
+session = build_session_from_dataframe(df_prepared, source_name="ride.csv", log_metadata=log_metadata)
+
+results = preprocess_resolved(
+    session,
+    schema=schema,
+    preprocess_config=config,
+    bike_profile=bike_profile,
+    fit_candidates=fit_candidates,   # optional
+    fit_bindings=fit_bindings,       # optional
+)
+```
+
+**Guarantees:**
+- No filesystem path is required
+- `schema` must be supplied explicitly when events are enabled; `preprocess_resolved(...)`
+  does not follow `schema_path` embedded inside `preprocess_config`
+- `fit_stream`, `fit_candidates`, and `fit_bindings` allow remote/backend FIT import
+  without `fit_dir` or `bindings_path`
+
+#### `preprocess_session()`
 
 **Purpose:**  
 Run the standard BODAQS preprocessing pipeline for one session or CSV.
+
+This remains the preferred notebook/local convenience wrapper. It accepts
+path-based inputs such as `schema_path`, `log_metadata_path`,
+`bike_profile_path`, and optional FIT directory/bindings settings via
+`fit_import`.
 
 **Signature:**
 ```python
@@ -320,6 +414,8 @@ results = preprocess_session(
 - `results["session"]["df"]` remains a DataFrame
 - `time_s` is preserved
 - QC and transform provenance are recorded under `session["qc"]`
+- New backend callers should prefer `preprocess_resolved(...)`; `preprocess_session(...)`
+  remains the local/notebook compatibility surface
 - New callers may pass a single `preprocess_config` payload instead of unpacking individual preprocessing fields.
 - Normalization ranges may be supplied directly as a runtime `normalize_ranges` map, or resolved
   from a bike profile using semantic signal selectors.
@@ -349,7 +445,7 @@ results = preprocess_session(
 - When `fit_import` is enabled and a matching FIT file is resolved, the session may include
   resampled GPS columns on `session["df"]` and raw secondary stream data under `session["stream_dfs"]`.
 
-Example high-level call pattern:
+Example notebook/local call pattern:
 
 ```python
 config = load_preprocess_config("config/preprocess_profiles/suspension_default_v1.json")
@@ -372,7 +468,33 @@ Callers should prefer `preprocess_config` or `preprocess_profile_path` for reusa
 
 ---
 
-### 4.7 `detect_events_from_schema()`
+### 4.7 FIT Helpers
+
+**Purpose:**  
+Support pathless FIT parsing, summary inspection, overlap resolution, and binding resolution.
+
+**Signatures (conceptual):**
+```python
+summary = inspect_fit_stream(fit_input_or_path, field_allowlist=...)
+df_fit, fit_meta = parse_fit_stream(fit_input_or_path, session_start_datetime=...)
+bindings = parse_fit_bindings(bindings_obj_or_text_or_bytes_or_path)
+candidates = find_overlapping_fit_candidates(
+    summaries,
+    session_start_datetime=...,
+    session_end_datetime=...,
+)
+```
+
+**Guarantees:**
+- `inspect_fit_stream(...)` and `parse_fit_stream(...)` accept raw FIT bytes as well as paths
+- `find_overlapping_fit_candidates(...)` does not require a directory scan
+- `parse_fit_bindings(...)` accepts in-memory payloads as well as files
+- `find_overlapping_fit_files(...)`, `load_fit_bindings(...)`, and `upsert_fit_binding(...)`
+  remain public local/storage convenience wrappers
+
+---
+
+### 4.8 `detect_events_from_schema()`
 
 **Purpose:**  
 Detect events based on a schema definition.
@@ -391,7 +513,7 @@ events_df = detect_events_from_schema(df, schema)
 
 ---
 
-### 4.8 `extract_metrics_df()`
+### 4.9 `extract_metrics_df()`
 
 **Purpose:**  
 Extract per-event metrics into a flat table.

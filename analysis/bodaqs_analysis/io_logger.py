@@ -1,9 +1,10 @@
 from __future__ import annotations
+import copy
 import json
 import logging
 from pathlib import Path
 import re
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 import numpy as np
 import pandas as pd
 
@@ -31,34 +32,52 @@ def infer_sidecar_path(path: str) -> Optional[str]:
     return infer_log_metadata_path(path)
 
 
+def parse_logger_log_metadata(value: Mapping[str, Any] | str | bytes | Path) -> dict[str, Any]:
+    """
+    Parse and lightly validate a logger log metadata JSON document from a
+    mapping, JSON text, JSON bytes, or filesystem path.
+    """
+    source_label = "<in-memory log metadata>"
+    if isinstance(value, Path):
+        source_label = str(value)
+        obj = json.loads(value.read_text(encoding="utf-8"))
+    elif isinstance(value, bytes):
+        obj = json.loads(value.decode("utf-8"))
+    elif isinstance(value, str):
+        obj = json.loads(value)
+    elif isinstance(value, Mapping):
+        obj = copy.deepcopy(dict(value))
+    else:
+        raise TypeError("Logger log metadata must be provided as a mapping, JSON text, JSON bytes, or Path")
+
+    if not isinstance(obj, dict):
+        raise ValueError(f"Logger log metadata must contain a JSON object: {source_label}")
+
+    contract = obj.get("contract")
+    if not isinstance(contract, dict):
+        raise ValueError(f"Logger log metadata missing required object 'contract': {source_label}")
+
+    if not isinstance(contract.get("name"), str) or not contract["name"].strip():
+        raise ValueError(f"Logger log metadata missing required string 'contract.name': {source_label}")
+    if not isinstance(contract.get("version"), str) or not contract["version"].strip():
+        raise ValueError(f"Logger log metadata missing required string 'contract.version': {source_label}")
+
+    streams = obj.get("streams")
+    if not isinstance(streams, dict) or not streams:
+        raise ValueError(f"Logger log metadata missing required non-empty object 'streams': {source_label}")
+
+    columns = obj.get("columns")
+    if not isinstance(columns, dict) or not columns:
+        raise ValueError(f"Logger log metadata missing required non-empty object 'columns': {source_label}")
+
+    return obj
+
+
 def load_logger_log_metadata(path: str) -> dict[str, Any]:
     """
     Load and lightly validate a logger log metadata JSON document.
     """
-    p = Path(path)
-    obj = json.loads(p.read_text(encoding="utf-8"))
-
-    if not isinstance(obj, dict):
-        raise ValueError(f"Logger log metadata must contain a JSON object: {path}")
-
-    contract = obj.get("contract")
-    if not isinstance(contract, dict):
-        raise ValueError(f"Logger log metadata missing required object 'contract': {path}")
-
-    if not isinstance(contract.get("name"), str) or not contract["name"].strip():
-        raise ValueError(f"Logger log metadata missing required string 'contract.name': {path}")
-    if not isinstance(contract.get("version"), str) or not contract["version"].strip():
-        raise ValueError(f"Logger log metadata missing required string 'contract.version': {path}")
-
-    streams = obj.get("streams")
-    if not isinstance(streams, dict) or not streams:
-        raise ValueError(f"Logger log metadata missing required non-empty object 'streams': {path}")
-
-    columns = obj.get("columns")
-    if not isinstance(columns, dict) or not columns:
-        raise ValueError(f"Logger log metadata missing required non-empty object 'columns': {path}")
-
-    return obj
+    return parse_logger_log_metadata(Path(path))
 
 
 def load_logger_sidecar(path: str) -> dict[str, Any]:
@@ -380,12 +399,13 @@ def _bind_sidecar_columns(
     df: pd.DataFrame,
     sidecar: dict[str, Any],
     *,
-    sidecar_path: str,
+    sidecar_path: Optional[str],
     sidecar_kind: str,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    sidecar_label = sidecar_path or "<in-memory log metadata>"
     columns = sidecar.get("columns")
     if not isinstance(columns, dict):
-        raise ValueError(f"Logger log metadata missing required non-empty object 'columns': {sidecar_path}")
+        raise ValueError(f"Logger log metadata missing required non-empty object 'columns': {sidecar_label}")
 
     stream_time_columns = _stream_time_column_ids(sidecar)
     resolved: dict[str, dict[str, Any]] = {}
@@ -488,8 +508,6 @@ def _bind_sidecar_columns(
 
     selected_df = df.loc[:, selected_physical].rename(columns=rename_map, copy=True)
     binding = {
-        "log_metadata_path": sidecar_path,
-        "sidecar_path": sidecar_path,
         "log_metadata_kind": sidecar_kind,
         "sidecar_kind": sidecar_kind,
         "columns": resolved,
@@ -497,6 +515,9 @@ def _bind_sidecar_columns(
         "skipped_unknown_columns": skipped_unknown if sidecar_kind == "generic" else [],
         "warnings": warnings,
     }
+    if isinstance(sidecar_path, str) and sidecar_path.strip():
+        binding["log_metadata_path"] = sidecar_path
+        binding["sidecar_path"] = sidecar_path
     return selected_df, binding
 
 
@@ -609,14 +630,14 @@ def load_logger_csv(
         delimiter=delimiter,
         header=header,
     )
-    return _canonicalize_loaded_logger_df(
+    return canonicalize_logger_dataframe(
         df,
         preferred_time_cols=preferred_time_cols,
         preferred_time_hints=preferred_time_hints,
     )
 
 
-def _canonicalize_loaded_logger_df(
+def canonicalize_logger_dataframe(
     df: pd.DataFrame,
     *,
     preferred_time_cols: Optional[Sequence[Any]] = None,
@@ -792,6 +813,22 @@ def _canonicalize_loaded_logger_df(
     return df
 
 
+def _canonicalize_loaded_logger_df(
+    df: pd.DataFrame,
+    *,
+    preferred_time_cols: Optional[Sequence[Any]] = None,
+    preferred_time_hints: Optional[Sequence[dict[str, Any]]] = None,
+) -> pd.DataFrame:
+    """
+    Backward-compatible internal alias for canonicalize_logger_dataframe().
+    """
+    return canonicalize_logger_dataframe(
+        df,
+        preferred_time_cols=preferred_time_cols,
+        preferred_time_hints=preferred_time_hints,
+    )
+
+
 def _resolve_log_metadata_aliases(
     *,
     log_metadata_path: Optional[str | Path],
@@ -873,6 +910,48 @@ def load_logger_csv_with_log_metadata(
         )
 
     return df, sidecar, resolved_sidecar
+
+
+def prepare_logger_dataframe(
+    df: pd.DataFrame,
+    *,
+    log_metadata: Mapping[str, Any] | str | bytes | Path | None = None,
+    log_metadata_path: Optional[str | Path] = None,
+    selected_as_generic: bool = False,
+) -> tuple[pd.DataFrame, Optional[dict[str, Any]]]:
+    """
+    Prepare an already-loaded logger dataframe for the analysis pipeline.
+
+    This supports web/server callers that already have dataframe content in
+    memory and want to apply logger log-metadata binding without relying on
+    local file paths.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame")
+
+    if log_metadata is None:
+        return canonicalize_logger_dataframe(df), None
+
+    parsed_log_metadata_path: Optional[str] = None
+    if log_metadata_path is not None:
+        parsed_log_metadata_path = str(log_metadata_path)
+    elif isinstance(log_metadata, Path):
+        parsed_log_metadata_path = str(log_metadata)
+
+    sidecar = parse_logger_log_metadata(log_metadata)
+    sidecar_kind = _sidecar_contract_kind(sidecar, selected_as_generic=selected_as_generic)
+    bound_df, binding = _bind_sidecar_columns(
+        df,
+        sidecar,
+        sidecar_path=parsed_log_metadata_path,
+        sidecar_kind=sidecar_kind,
+    )
+    _store_metadata_binding(sidecar, binding)
+    prepared_df = canonicalize_logger_dataframe(
+        bound_df,
+        preferred_time_hints=_sidecar_time_hints(sidecar),
+    )
+    return prepared_df, sidecar
 
 
 def load_logger_csv_with_sidecar(

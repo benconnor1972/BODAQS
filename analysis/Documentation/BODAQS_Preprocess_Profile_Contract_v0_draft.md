@@ -117,6 +117,11 @@ Callers should pass it to `preprocess_session(..., preprocess_config=config)`.
 
 Notebook code may still unpack the same fields into individual function arguments when helpful, but new callers should pass the config object intact.
 
+For remote/backend integrations using `preprocess_resolved(...)`, the same
+config object is still valid, but transport-specific resources such as the event
+schema itself should be resolved by the caller and passed explicitly as loaded
+content rather than discovered by local filesystem path.
+
 ---
 
 ## 5. Root document contract
@@ -235,7 +240,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 
 | field | type | meaning |
 |---|---|---|
-| `schema_path` | string | Path to the event schema YAML |
+| `schema_path` | string | Path-like identifier for the event schema YAML used by notebook/local wrappers |
 | `strict` | boolean | `True` for strict ingestion/metrics behavior, `False` for tolerant behavior |
 | `zeroing_enabled` | boolean | Enable zeroing before bike-profile signal transforms |
 | `zero_window_s` | number | Window length in seconds for zero-offset estimation |
@@ -262,7 +267,8 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 
 ### 6.4 Config-field rules
 
-- `schema_path` must resolve to an event schema YAML understood by the event schema loader.
+- `schema_path` must resolve to an event schema YAML understood by the event schema loader when the caller is using notebook/local path-based wrappers such as `preprocess_session(...)`.
+- Content-first callers using `preprocess_resolved(...)` should treat `schema_path` as a stored schema reference only and resolve the actual schema content externally.
 - Normalization ranges should be derived from the selected bike profile's semantic `normalization_ranges` declarations.
 - If `zeroing_enabled` is true, zeroing is applied to resolved physical displacement signals before bike-profile signal transforms are evaluated.
 - Normalized `[1]` outputs are generated after bike-profile signal transforms, so generated signals can be normalized from the same bike profile.
@@ -280,6 +286,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - If `fit_import.enabled` is true, the FIT source directory and optional binding manifest must be supplied by the run-level caller.
 - Consumers may ignore unknown config fields that they do not support.
 - Consumers should reject runtime binding fields such as `generic_log_metadata_paths`, `bike_profile_path`, `bike_profile_id`, `normalize_ranges`, `prompt_for_descriptions`, `fit_import.fit_dir`, or `fit_import.bindings_path` if they appear inside a persisted preprocess profile.
+- Remote/backend integrations should not assume that `schema_path` is directly openable on the worker filesystem; it is a reusable schema reference for notebook/local orchestration, not a universal transport contract.
 
 ### 6.5 `fit_import` block
 

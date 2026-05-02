@@ -9,28 +9,49 @@
 ## Integration shape
 
 The web service should call the BODAQS Python modules directly rather than
-reimplementing preprocessing logic. For each uploaded or supplied log file, the
-service should call:
+reimplementing preprocessing logic. For remote or uploaded inputs, the preferred
+integration shape is the resolved-content API:
 
 ```python
-from bodaqs_analysis import load_preprocess_config, preprocess_session
+from bodaqs_analysis import (
+    build_session_from_dataframe,
+    load_preprocess_config,
+    parse_bike_profile,
+    parse_event_schema,
+    prepare_logger_dataframe,
+    preprocess_resolved,
+)
 
 config = load_preprocess_config(preprocess_profile_path)
+schema = parse_event_schema(event_schema_text)
+bike_profile = parse_bike_profile(bike_profile_json)
+df_prepared, log_metadata = prepare_logger_dataframe(
+    uploaded_df,
+    log_metadata=uploaded_log_metadata_json,  # optional
+)
+session = build_session_from_dataframe(
+    df_prepared,
+    source_name=uploaded_filename,
+    log_metadata=log_metadata,
+)
 
-results = preprocess_session(
-    log_csv_path,
+results = preprocess_resolved(
+    session,
     preprocess_config=config,
-    schema_path=event_schema_path,
-    bike_profile_path=bike_profile_path,
-    log_metadata_path=same_stem_log_metadata_path,          # optional
-    generic_log_metadata_paths=[generic_log_metadata_path], # fallback
+    schema=schema,
+    bike_profile=bike_profile,
+    fit_candidates=fit_candidates,   # optional
+    fit_bindings=fit_bindings,       # optional
 )
 ```
 
-`preprocess_session(...)` is the public all-in-one entry point. It loads the
-CSV, applies logger metadata, applies bike-profile transforms, runs filtering
-and motion derivation, normalizes signals, detects events, extracts segments,
-and computes metrics.
+`preprocess_resolved(...)` is the preferred backend/service entry point. It
+accepts already-resolved session/schema/profile/FIT content and avoids any
+assumption that the worker shares a local filesystem layout with the client.
+
+`preprocess_session(...)` remains available as the notebook/local convenience
+wrapper when the service intentionally stages files on disk and wants the older
+path-based behavior.
 
 ---
 
@@ -38,35 +59,46 @@ and computes metrics.
 
 For this integration case we expect to provide:
 
-- **Log CSV file(s):** one or more logger output files.
-- **Specific log metadata file:** optional same-stem JSON metadata for a log, for example `ride_001.csv` plus `ride_001.json`.
-- **Generic log metadata file:** fallback metadata describing a logger output format when no same-stem metadata exists.
-- **Event schema:** YAML event definitions used for event detection and metric extraction.
-- **Bike profile:** JSON bike/setup-specific parameters, including normalization ranges and bike-specific transforms.
+- **Log data:** one or more uploaded logger tables or CSV payloads.
+- **Specific log metadata:** optional log-specific JSON metadata payload.
+- **Generic log metadata:** optional fallback metadata describing a logger output format.
+- **Event schema:** YAML or already-parsed schema object used for event detection and metric extraction.
+- **Bike profile:** JSON or already-parsed bike/setup-specific parameters, including normalization ranges and bike-specific transforms.
 - **Preprocess profile:** JSON reusable preprocessing policy, including zeroing, motion derivation, activity-mask settings, strictness, and optional FIT import policy.
+- **FIT candidates/bindings:** optional precomputed FIT summaries, raw FIT content, or in-memory bindings used for GPS enrichment during preprocessing.
 
 Runtime/local paths are deliberately not embedded in the preprocess profile.
-The web service should resolve and pass paths explicitly.
+The web service should resolve uploaded assets into loaded objects, dataframes,
+or candidate metadata and pass those resolved inputs explicitly.
 
 ---
 
 ## Metadata resolution
 
-Recommended resolution order:
+Recommended resolution order for a backend using resolved-content APIs:
 
-1. If a same-stem log metadata file exists beside the CSV, pass it as `log_metadata_path`.
-2. Otherwise pass one selected generic metadata profile in `generic_log_metadata_paths`.
-3. If neither is available, the loader falls back to existing CSV/header parsing behavior where possible.
+1. If a log-specific metadata payload is available, pass it to `prepare_logger_dataframe(..., log_metadata=...)`.
+2. Otherwise pass one selected generic metadata payload.
+3. If neither is available, `prepare_logger_dataframe(...)` falls back to generic CSV/header parsing behavior where possible.
 
-If a generic metadata directory contains multiple possible profiles, the web
-layer should require a user or configuration choice before calling the pipeline.
-Do not silently try multiple generic profiles after one has been selected.
+If multiple possible generic metadata profiles are available, the web layer
+should require a user or configuration choice before calling the pipeline. Do
+not silently try multiple generic profiles after one has been selected.
+
+For FIT enrichment, the preferred backend pattern is:
+
+1. Inspect uploaded FIT assets with `inspect_fit_stream(...)` or equivalent cached summaries.
+2. Resolve overlaps with `find_overlapping_fit_candidates(...)`.
+3. Pass `fit_candidates`, `fit_bindings`, or a fully preloaded `fit_stream` to `preprocess_resolved(...)`.
+
+The older `fit_dir` and `bindings_path` pattern is still supported for notebook
+and local staging workflows, but it is not the preferred remote-service contract.
 
 ---
 
 ## Return value
 
-`preprocess_session(...)` always returns a dictionary:
+Both `preprocess_resolved(...)` and `preprocess_session(...)` return a dictionary:
 
 ```python
 {
@@ -107,25 +139,32 @@ logging at the application boundary.
 
 ## Batch pattern
 
-For a batch of logs, load the preprocess profile once and call
-`preprocess_session(...)` once per CSV:
+For a batch of uploaded logs, load the preprocess profile once and call
+`preprocess_resolved(...)` once per resolved session:
 
 ```python
 config = load_preprocess_config(preprocess_profile_path)
 
 batch_results = {}
-for csv_path in csv_paths:
-    log_metadata_path = find_same_stem_metadata(csv_path)
-    batch_results[str(csv_path)] = preprocess_session(
-        csv_path,
+for uploaded in uploaded_logs:
+    df_prepared, log_metadata = prepare_logger_dataframe(
+        uploaded.df,
+        log_metadata=uploaded.log_metadata,
+    )
+    session = build_session_from_dataframe(
+        df_prepared,
+        source_name=uploaded.filename,
+        log_metadata=log_metadata,
+    )
+    batch_results[uploaded.filename] = preprocess_resolved(
+        session,
         preprocess_config=config,
-        schema_path=event_schema_path,
-        bike_profile_path=bike_profile_path,
-        log_metadata_path=log_metadata_path,
-        generic_log_metadata_paths=[generic_log_metadata_path],
+        schema=schema,
+        bike_profile=bike_profile,
+        fit_candidates=uploaded.fit_candidates,
+        fit_bindings=uploaded.fit_bindings,
     )
 ```
 
-The service should record which artifact paths and versions were used for each
-processed log so outputs remain reproducible.
-
+The service should record which artifact paths, resource identifiers, and
+versions were used for each processed log so outputs remain reproducible.
