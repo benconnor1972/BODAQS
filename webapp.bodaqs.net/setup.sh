@@ -6,7 +6,7 @@ echo "Installing frontend dependencies..."
 cd frontend && npm install && cd ..
 
 echo "Installing API dependencies..."
-cd api && pip install -r requirements.txt && cd ..
+cd api && uv sync --group dev && cd ..
 
 echo ""
 echo "Done. Start all services with:"
