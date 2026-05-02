@@ -1,0 +1,14 @@
+[project]
+name = "bodaqs-analysis"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "pyyaml",
+    "fitparse",
+]
+
+[tool.setuptools.packages.find]
+include = ["bodaqs_analysis*"]

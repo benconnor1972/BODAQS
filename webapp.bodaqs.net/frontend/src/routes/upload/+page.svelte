@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import { resolve } from "$app/paths";
   import { postPreprocess } from "$lib/api/preprocess";
   import { saveRun, saveSession } from "$lib/db/artifacts";
   import { validateUploadFiles, isUploadReady } from "$lib/upload/validate";
@@ -51,7 +52,7 @@
       await saveRun(run);
       await saveSession(run_id, response);
 
-      goto(`/dashboard/${run_id}`);
+      goto(resolve(`/dashboard/${run_id}`));
     } catch (err) {
       apiError = err instanceof Error ? err.message : "Upload failed. Please try again.";
     } finally {
@@ -74,16 +75,18 @@
       Logger CSV *
       <input type="file" accept=".csv,.CSV" onchange={(e) => onFileChange("csv_file", e)} />
     </label>
-
+    <br />
     <label>
       Bike Profile JSON *
       <input type="file" accept=".json" onchange={(e) => onFileChange("bike_profile_json", e)} />
     </label>
+    <br />
 
     <label>
       Sidecar JSON *
       <input type="file" accept=".json" onchange={(e) => onFileChange("sidecar_json", e)} />
     </label>
+    <br />
 
     <label>
       Event Schema YAML *
@@ -109,8 +112,8 @@
   </fieldset>
 
   {#if validationErrors.length > 0}
-    <ul role="alert">
-      {#each validationErrors as error}
+    <ul>
+      {#each validationErrors as error (error)}
         <li>{error}</li>
       {/each}
     </ul>
