@@ -2,7 +2,7 @@
   "experimentalServices": {
     "frontend": {
       "entrypoint": "frontend",
-      "framework": "sveltekit",
+      "framework": "vite",
       "routePrefix": "/"
     },
     "api": {

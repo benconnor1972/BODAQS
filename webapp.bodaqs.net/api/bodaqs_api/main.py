@@ -21,9 +21,9 @@ app.add_middleware(
 )
 
 
-@app.get("/api/health")
+@app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-app.include_router(preprocess_router, prefix="/api")
+app.include_router(preprocess_router)

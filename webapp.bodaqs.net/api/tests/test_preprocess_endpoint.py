@@ -46,7 +46,7 @@ def test_preprocess_success(
     event_schema_bytes: bytes,
 ) -> None:
     response = client.post(
-        "/api/preprocess",
+        "/preprocess",
         files=_multipart(
             csv_bytes=csv_bytes,
             sidecar_bytes=sidecar_bytes,
@@ -72,7 +72,7 @@ def test_preprocess_with_explicit_profile(
     preprocess_profile_bytes: bytes,
 ) -> None:
     response = client.post(
-        "/api/preprocess",
+        "/preprocess",
         files=_multipart(
             csv_bytes=csv_bytes,
             sidecar_bytes=sidecar_bytes,
@@ -90,7 +90,7 @@ def test_preprocess_missing_csv_returns_422(
     event_schema_bytes: bytes,
 ) -> None:
     response = client.post(
-        "/api/preprocess",
+        "/preprocess",
         files={
             "sidecar_json": ("ride_sidecar.json", sidecar_bytes, "application/json"),
             "bike_profile_json": ("test_bike_profile.json", bike_profile_bytes, "application/json"),
@@ -106,7 +106,7 @@ def test_preprocess_missing_bike_profile_returns_422(
     event_schema_bytes: bytes,
 ) -> None:
     response = client.post(
-        "/api/preprocess",
+        "/preprocess",
         files={
             "csv_file": ("ride.csv", csv_bytes, "text/csv"),
             "sidecar_json": ("ride_sidecar.json", sidecar_bytes, "application/json"),
@@ -122,7 +122,7 @@ def test_preprocess_missing_sidecar_returns_422(
     event_schema_bytes: bytes,
 ) -> None:
     response = client.post(
-        "/api/preprocess",
+        "/preprocess",
         files={
             "csv_file": ("ride.csv", csv_bytes, "text/csv"),
             "bike_profile_json": ("test_bike_profile.json", bike_profile_bytes, "application/json"),
@@ -138,7 +138,7 @@ def test_preprocess_missing_schema_returns_422(
     bike_profile_bytes: bytes,
 ) -> None:
     response = client.post(
-        "/api/preprocess",
+        "/preprocess",
         files={
             "csv_file": ("ride.csv", csv_bytes, "text/csv"),
             "sidecar_json": ("ride_sidecar.json", sidecar_bytes, "application/json"),
@@ -154,7 +154,7 @@ def test_preprocess_invalid_bike_profile_returns_422_or_500(
     event_schema_bytes: bytes,
 ) -> None:
     response = client.post(
-        "/api/preprocess",
+        "/preprocess",
         files={
             "csv_file": ("ride.csv", csv_bytes, "text/csv"),
             "sidecar_json": ("ride_sidecar.json", sidecar_bytes, "application/json"),
