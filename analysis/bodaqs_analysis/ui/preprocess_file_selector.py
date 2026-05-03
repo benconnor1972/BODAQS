@@ -109,12 +109,8 @@ class _GridSelectionShim:
 
     @property
     def value(self) -> Tuple[str, ...]:
-        selected = {str(p.resolve()) for p in self._owner.get_selected_files()}
-        return tuple(
-            label
-            for label in self.options
-            if label in selected
-        )
+        selected = set(map(str, self._owner._selection_model.value or ()))
+        return tuple(label for label in self.options if label in selected)
 
     @value.setter
     def value(self, labels: Sequence[str]) -> None:
@@ -156,6 +152,8 @@ class PreprocessLogSelector:
         self._visible_df = self._empty_table_df()
         self._index_to_path: Dict[int, Path] = {}
         self._visible_option_labels: List[str] = []
+        self._syncing_grid_selection = False
+        self._syncing_hidden_selection = False
 
         self.w_dir = W.Text(
             value=self._state.last_dir or str(Path.cwd()),
@@ -210,6 +208,11 @@ class PreprocessLogSelector:
                 description="Files",
                 layout=W.Layout(width="100%", height=f"{max_list_height_px}px"),
             )
+        self._selection_model = W.SelectMultiple(
+            options=(),
+            value=(),
+            layout=W.Layout(display="none"),
+        )
         self.w_files = _GridSelectionShim(self)
 
         self.w_status = W.HTML("")
@@ -220,6 +223,11 @@ class PreprocessLogSelector:
         self.w_show_processed.observe(lambda _: self.refresh(), names="value")
         self.b_select_all.on_click(lambda _: self.select_all_visible())
         self.b_clear.on_click(lambda _: self.clear_selection())
+        if _HAS_IPYDATAGRID:
+            self.grid.observe(self._sync_hidden_from_grid, names="selections")
+        else:
+            self.grid.observe(self._sync_hidden_from_basic_selector, names="value")
+        self._selection_model.observe(self._sync_grid_from_hidden, names="value")
 
         self.ui = W.VBox(
             [
@@ -241,37 +249,12 @@ class PreprocessLogSelector:
         self.refresh()
 
     def get_selected_files(self) -> List[Path]:
-        if not _HAS_IPYDATAGRID:
-            selected = {
-                str(x)
-                for x in getattr(self.grid, "value", ())
-                if isinstance(x, str) and x
-            }
-            return sorted(Path(x).resolve() for x in selected)
-
-        selected: List[Path] = []
-        visible_df = self.grid.get_visible_data()
-        seen: Set[str] = set()
-
-        for rect in list(self.grid.selections or []):
-            row_start = int(rect.get("r1", -1))
-            row_end = int(rect.get("r2", -1))
-            if row_start < 0 or row_end < row_start:
-                continue
-
-            for row_idx in range(row_start, row_end + 1):
-                if row_idx < 0 or row_idx >= len(visible_df.index):
-                    continue
-                path = self._index_to_path.get(int(visible_df.index[row_idx]))
-                if path is None:
-                    continue
-                path_str = str(path.resolve())
-                if path_str in seen:
-                    continue
-                seen.add(path_str)
-                selected.append(path.resolve())
-
-        return sorted(selected)
+        selected = {
+            str(x)
+            for x in getattr(self._selection_model, "value", ())
+            if isinstance(x, str) and x
+        }
+        return sorted(Path(x).resolve() for x in selected)
 
     def select_all_visible(self) -> None:
         if not _HAS_IPYDATAGRID:
@@ -287,10 +270,7 @@ class PreprocessLogSelector:
         self.grid.select(0, 0, last_row, last_col, clear_mode="all")
 
     def clear_selection(self) -> None:
-        if _HAS_IPYDATAGRID:
-            self.grid.clear_selection()
-        else:
-            self.grid.value = ()
+        self._selection_model.value = ()
 
     def refresh(self) -> None:
         previously_selected = {str(p.resolve()) for p in self.get_selected_files()}
@@ -432,6 +412,7 @@ class PreprocessLogSelector:
         df = pd.DataFrame.from_records(records, columns=self._empty_table_df().columns)
         df.index = pd.RangeIndex(start=0, stop=len(df), step=1)
         self._visible_df = df
+        self._selection_model.options = tuple(self._visible_option_labels)
         if _HAS_IPYDATAGRID:
             self.grid.data = df
             self.grid.clear_selection()
@@ -475,29 +456,83 @@ class PreprocessLogSelector:
             self.grid.select(row_pos, 0, row_pos, last_col, clear_mode="none")
 
     def _set_selected_from_option_labels(self, labels: Sequence[str]) -> None:
-        if not _HAS_IPYDATAGRID:
-            label_set = set(labels)
-            self.grid.value = tuple(
-                label for label in self._visible_option_labels if label in label_set
-            )
-            return
-
-        visible_df = self.grid.get_visible_data()
         label_set = set(labels)
-        matching_rows: List[int] = []
+        self._selection_model.value = tuple(
+            label for label in self._visible_option_labels if label in label_set
+        )
 
-        for row_pos in range(len(visible_df.index)):
-            path = self._index_to_path.get(int(visible_df.index[row_pos]))
-            if path and str(path.resolve()) in label_set:
-                matching_rows.append(row_pos)
+    def _selected_labels_from_grid(self) -> Tuple[str, ...]:
+        if not _HAS_IPYDATAGRID:
+            return tuple(
+                str(x)
+                for x in getattr(self.grid, "value", ())
+                if isinstance(x, str) and x
+            )
 
-        self.grid.clear_selection()
-        if not matching_rows:
+        labels: List[str] = []
+        seen: Set[str] = set()
+        visible_df = self.grid.get_visible_data()
+        for rect in list(self.grid.selections or []):
+            row_start = int(rect.get("r1", -1))
+            row_end = int(rect.get("r2", -1))
+            if row_start < 0 or row_end < row_start:
+                continue
+            for row_pos in range(row_start, row_end + 1):
+                if row_pos < 0 or row_pos >= len(visible_df.index):
+                    continue
+                path = self._index_to_path.get(int(visible_df.index[row_pos]))
+                if path is None:
+                    continue
+                label = str(path.resolve())
+                if label in seen:
+                    continue
+                seen.add(label)
+                labels.append(label)
+        return tuple(labels)
+
+    def _sync_hidden_from_basic_selector(self, *_: Any) -> None:
+        if self._syncing_grid_selection:
             return
+        self._syncing_hidden_selection = True
+        try:
+            self._selection_model.value = self._selected_labels_from_grid()
+        finally:
+            self._syncing_hidden_selection = False
 
-        last_col = max(0, len(visible_df.columns) - 1)
-        for row_pos in matching_rows:
-            self.grid.select(row_pos, 0, row_pos, last_col, clear_mode="none")
+    def _sync_hidden_from_grid(self, *_: Any) -> None:
+        if self._syncing_grid_selection:
+            return
+        self._syncing_hidden_selection = True
+        try:
+            self._selection_model.value = self._selected_labels_from_grid()
+        finally:
+            self._syncing_hidden_selection = False
+
+    def _sync_grid_from_hidden(self, *_: Any) -> None:
+        if self._syncing_hidden_selection:
+            return
+        selected_labels = set(map(str, self._selection_model.value or ()))
+
+        self._syncing_grid_selection = True
+        try:
+            if not _HAS_IPYDATAGRID:
+                self.grid.value = tuple(
+                    label for label in self._visible_option_labels if label in selected_labels
+                )
+                return
+
+            visible_df = self.grid.get_visible_data()
+            self.grid.clear_selection()
+            if visible_df.empty or not selected_labels:
+                return
+
+            last_col = max(0, len(visible_df.columns) - 1)
+            for row_pos in range(len(visible_df.index)):
+                path = self._index_to_path.get(int(visible_df.index[row_pos]))
+                if path and str(path.resolve()) in selected_labels:
+                    self.grid.select(row_pos, 0, row_pos, last_col, clear_mode="none")
+        finally:
+            self._syncing_grid_selection = False
 
     def _cache_key(self, p: Path) -> str:
         try:

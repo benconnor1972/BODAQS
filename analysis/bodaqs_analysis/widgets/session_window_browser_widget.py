@@ -21,7 +21,7 @@ Requires:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -82,6 +82,52 @@ def _downsample_indices(n: int, max_points: int) -> np.ndarray:
     if max_points <= 0 or n <= max_points:
         return np.arange(n, dtype=int)
     return np.linspace(0, n - 1, num=int(max_points), dtype=int)
+
+
+def _downsample_indices_min_max(
+    df: pd.DataFrame,
+    *,
+    value_cols: Sequence[str],
+    max_points: int,
+) -> np.ndarray:
+    """
+    Downsample by keeping local extrema for the plotted signals.
+
+    This preserves narrow peaks much better than evenly spaced row selection.
+    The point budget is shared across selected columns, so selecting more
+    signals gives each signal fewer buckets but still keeps min/max extrema.
+    """
+    n = len(df)
+    if max_points <= 0 or n <= max_points:
+        return np.arange(n, dtype=int)
+    if max_points < 3:
+        return _downsample_indices(n, max_points)
+
+    cols = [str(c) for c in value_cols if str(c) in df.columns]
+    if not cols:
+        return _downsample_indices(n, max_points)
+
+    # Each bucket can contribute up to min+max for each selected signal.
+    bucket_count = max(1, (int(max_points) - 2) // max(1, 2 * len(cols)))
+    if bucket_count >= n:
+        return np.arange(n, dtype=int)
+
+    starts = np.linspace(0, n, num=bucket_count + 1, dtype=int)
+    kept: set[int] = {0, n - 1}
+    for start, stop in zip(starts[:-1], starts[1:]):
+        if stop <= start:
+            continue
+        for col in cols:
+            values = pd.to_numeric(df[col].iloc[start:stop], errors="coerce").to_numpy(dtype=float)
+            finite = np.isfinite(values)
+            if not finite.any():
+                continue
+            finite_positions = np.flatnonzero(finite)
+            finite_values = values[finite]
+            kept.add(int(start + finite_positions[int(np.argmin(finite_values))]))
+            kept.add(int(start + finite_positions[int(np.argmax(finite_values))]))
+
+    return np.asarray(sorted(kept), dtype=int)
 
 
 def _to_numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
@@ -580,7 +626,11 @@ def make_session_window_browser_widget_for_loader(
 
         df_plot = df_
         if w_detail_autodown.value and len(df_plot) > detail_max_points:
-            idx = _downsample_indices(len(df_plot), detail_max_points)
+            idx = _downsample_indices_min_max(
+                df_plot,
+                value_cols=sel,
+                max_points=detail_max_points,
+            )
             df_plot = df_plot.iloc[idx].copy()
 
         t = _to_numeric_series(df_plot, time_col).to_numpy(dtype=float)

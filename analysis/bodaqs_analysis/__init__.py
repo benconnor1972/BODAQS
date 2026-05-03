@@ -1,10 +1,12 @@
-from .pipeline import preprocess_session
+from .pipeline import build_session_from_dataframe, preprocess_resolved, preprocess_session
 from .normalize import normalize_and_scale
 from .va import estimate_va
-from .schema import load_event_schema
+from .schema import load_event_schema, parse_event_schema
 from .detect import detect_events_from_schema
 from .metrics import extract_metrics_df
-from .bike_profile import apply_signal_transforms, load_bike_profile, resolve_normalization_ranges
+from .bike_profile import apply_signal_transforms, load_bike_profile, parse_bike_profile, resolve_normalization_ranges
+from .io_logger import canonicalize_logger_dataframe, parse_logger_log_metadata, prepare_logger_dataframe
+from .io_fit import find_overlapping_fit_candidates, inspect_fit_stream, parse_fit_bindings, parse_fit_stream
 from .preprocess_profile import (
     default_preprocess_config,
     discover_preprocess_profiles,

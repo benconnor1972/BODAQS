@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -21,17 +22,40 @@ BIKE_PROFILE_SCHEMA = "bodaqs.bike_profile"
 BIKE_PROFILE_VERSION = 1
 
 
+def parse_bike_profile(value: Mapping[str, Any] | str | bytes | Path) -> Dict[str, Any]:
+    """Parse and validate a bike profile from a mapping, JSON text/bytes, or a path."""
+    path: Optional[Path] = None
+
+    if isinstance(value, Mapping):
+        profile = copy.deepcopy(dict(value))
+    else:
+        if isinstance(value, Path):
+            path = value
+            text = path.read_text(encoding="utf-8")
+        elif isinstance(value, bytes):
+            text = value.decode("utf-8")
+        elif isinstance(value, str):
+            candidate = Path(value)
+            if candidate.exists():
+                path = candidate
+                text = candidate.read_text(encoding="utf-8")
+            else:
+                text = value
+        else:
+            raise TypeError("bike profile must be a mapping, JSON text/bytes, or a path")
+
+        profile = json.loads(text)
+
+    validate_bike_profile(profile, path=path)
+    return profile
+
+
 def load_bike_profile(path: str | Path) -> Dict[str, Any]:
     """Load and minimally validate a BODAQS bike profile JSON document."""
     profile_path = Path(path)
     if not profile_path.exists():
         raise FileNotFoundError(f"Bike profile not found: {profile_path}")
-
-    with profile_path.open("r", encoding="utf-8") as f:
-        profile = json.load(f)
-
-    validate_bike_profile(profile, path=profile_path)
-    return profile
+    return parse_bike_profile(profile_path)
 
 
 def validate_bike_profile(profile: Mapping[str, Any], *, path: Optional[str | Path] = None) -> None:
@@ -74,7 +98,8 @@ def apply_signal_transforms(
     Apply enabled bike-profile signal transforms to ``session['df']``.
 
     The default conflict policy is conservative: if an equivalent output signal
-    already exists, the transform is skipped and the existing signal is kept.
+    already exists from the logger, the transform is skipped and the existing
+    signal is kept.
     """
     if output_conflict_policy not in {"prefer_existing", "prefer_analysis"}:
         raise ValueError("output_conflict_policy must be 'prefer_existing' or 'prefer_analysis'")
@@ -150,48 +175,33 @@ def apply_signal_transforms(
 
         input_col = matches[0]
         output_col = _output_column_name(output_semantics, fallback=transform_id)
-        if output_col in df.columns and output_conflict_policy == "prefer_existing":
-            warning = f"bike_profile_signal_transform_output_exists:{transform_id}:{output_col}"
-            warnings.append(warning)
-            skipped.append(
-                {
-                    "transform_id": transform_id,
-                    "reason": "output_exists",
-                    "input_column": input_col,
-                    "output_column": output_col,
-                }
-            )
-            logger.info(
-                "Bike profile signal transform skipped because output already exists: "
-                "bike_profile_id=%s transform_id=%s output_column=%s",
-                bike_profile.get("bike_profile_id"),
-                transform_id,
-                output_col,
-            )
-            continue
-
         output_semantic_matches = [
             str(col)
             for col, info in signals.items()
             if isinstance(info, Mapping) and _matches_selector(info, output_semantics)
         ]
-        if output_semantic_matches and output_conflict_policy == "prefer_existing":
-            warning = f"bike_profile_signal_transform_output_semantics_exists:{transform_id}"
+        logger_output_semantic_matches = [
+            col
+            for col in output_semantic_matches
+            if isinstance(signals.get(col), Mapping) and _is_logger_origin_signal(signals[col])
+        ]
+        if logger_output_semantic_matches and output_conflict_policy == "prefer_existing":
+            warning = f"bike_profile_signal_transform_logger_output_semantics_exists:{transform_id}"
             warnings.append(warning)
             skipped.append(
                 {
                     "transform_id": transform_id,
-                    "reason": "output_semantics_exists",
+                    "reason": "logger_output_semantics_exists",
                     "input_column": input_col,
-                    "matching_output_columns": output_semantic_matches,
+                    "matching_output_columns": logger_output_semantic_matches,
                 }
             )
             logger.info(
-                "Bike profile signal transform skipped because equivalent output semantics already exist: "
+                "Bike profile signal transform skipped because equivalent logger-originated output semantics already exist: "
                 "bike_profile_id=%s transform_id=%s matches=%s",
                 bike_profile.get("bike_profile_id"),
                 transform_id,
-                output_semantic_matches,
+                logger_output_semantic_matches,
             )
             continue
 
@@ -205,9 +215,14 @@ def apply_signal_transforms(
                         reason=f"superseded_by_bike_profile_transform:{transform_id}",
                     )
 
-        if output_col in df.columns and output_conflict_policy == "prefer_analysis":
+        if output_col in df.columns:
             existing_info = signals.get(output_col)
-            if not (isinstance(existing_info, Mapping) and _is_logger_origin_signal(existing_info)):
+            may_overwrite_logger = (
+                output_conflict_policy == "prefer_analysis"
+                and isinstance(existing_info, Mapping)
+                and _is_logger_origin_signal(existing_info)
+            )
+            if not may_overwrite_logger:
                 warning = f"bike_profile_signal_transform_output_exists:{transform_id}:{output_col}"
                 warnings.append(warning)
                 skipped.append(
@@ -219,7 +234,7 @@ def apply_signal_transforms(
                     }
                 )
                 logger.info(
-                    "Bike profile signal transform skipped because non-logger output already exists: "
+                    "Bike profile signal transform skipped because output column already exists and will not be overwritten: "
                     "bike_profile_id=%s transform_id=%s output_column=%s",
                     bike_profile.get("bike_profile_id"),
                     transform_id,

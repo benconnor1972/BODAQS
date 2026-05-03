@@ -38,7 +38,7 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": False,
-    "ignore_on_logger_transformations": False,
+    "prefer_postprocessing_transformations": False,
     "motion_derivation": {
         "enabled": False,
         "sources": [
@@ -123,8 +123,18 @@ def default_preprocess_config(**overrides: Any) -> Dict[str, Any]:
     """Return a validated default preprocess config payload with optional overrides."""
     config = copy.deepcopy(DEFAULT_PREPROCESS_PROFILE_CONFIG)
     config.update(overrides)
+    config = normalize_preprocess_config_keys(config)
     validate_preprocess_config(config)
     return config
+
+
+def normalize_preprocess_config_keys(config: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return a config copy using current field names."""
+    out = copy.deepcopy(dict(config))
+    if "prefer_postprocessing_transformations" not in out and "ignore_on_logger_transformations" in out:
+        out["prefer_postprocessing_transformations"] = bool(out["ignore_on_logger_transformations"])
+    out.pop("ignore_on_logger_transformations", None)
+    return out
 
 
 def make_preprocess_profile(
@@ -144,7 +154,7 @@ def make_preprocess_profile(
             f"(expected {PREPROCESS_PROFILE_VERSION})"
         )
 
-    cfg = copy.deepcopy(dict(config)) if config is not None else default_preprocess_config()
+    cfg = normalize_preprocess_config_keys(config) if config is not None else default_preprocess_config()
     validate_preprocess_config(cfg)
 
     profile: Dict[str, Any] = {
@@ -189,12 +199,14 @@ def save_preprocess_profile(
 ) -> Path:
     """Validate and save a preprocess profile JSON document."""
     validate_preprocess_profile(profile, path=path)
+    out_profile = copy.deepcopy(dict(profile))
+    out_profile["config"] = normalize_preprocess_config_keys(out_profile["config"])
     out_path = Path(path)
     if out_path.exists() and not overwrite:
         raise FileExistsError(f"Preprocess profile already exists: {out_path}")
     if create_dirs:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(dict(profile), indent=2) + "\n", encoding="utf-8")
+    out_path.write_text(json.dumps(out_profile, indent=2) + "\n", encoding="utf-8")
     return out_path
 
 
@@ -255,6 +267,7 @@ def load_preprocess_profile(path: str | Path) -> Dict[str, Any]:
         profile = json.load(f)
 
     validate_preprocess_profile(profile, path=profile_path)
+    profile["config"] = normalize_preprocess_config_keys(profile["config"])
     return profile
 
 
@@ -266,7 +279,7 @@ def load_preprocess_config(path: str | Path) -> Dict[str, Any]:
 def preprocess_config_from_profile(profile: Mapping[str, Any]) -> Dict[str, Any]:
     """Return a validated copy of ``profile['config']``."""
     validate_preprocess_profile(profile)
-    return copy.deepcopy(dict(profile["config"]))
+    return normalize_preprocess_config_keys(profile["config"])
 
 
 def validate_preprocess_profile(profile: Mapping[str, Any], *, path: Optional[str | Path] = None) -> None:
@@ -316,6 +329,10 @@ def validate_preprocess_config(config: Mapping[str, Any], *, label: str = "") ->
         raise ValueError(f"Preprocess config 'zeroing_enabled' must be boolean{label}")
     if not isinstance(config.get("clip_0_1"), bool):
         raise ValueError(f"Preprocess config 'clip_0_1' must be boolean{label}")
+    if "prefer_postprocessing_transformations" in config and not isinstance(
+        config.get("prefer_postprocessing_transformations"), bool
+    ):
+        raise ValueError(f"Preprocess config 'prefer_postprocessing_transformations' must be boolean{label}")
     if "ignore_on_logger_transformations" in config and not isinstance(
         config.get("ignore_on_logger_transformations"), bool
     ):

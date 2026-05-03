@@ -116,7 +116,7 @@ Residual naming note:
 - `semantic_selection_excluded`: `bool`
   - When true, semantic selectors should ignore this signal even though it
     remains in the dataframe and registry for inspection.
-  - This is used when `ignore_on_logger_transformations` allows an
+  - This is used when `prefer_postprocessing_transformations` allows an
     analysis-generated signal to supersede a logger-originated signal with
     equivalent semantics.
 

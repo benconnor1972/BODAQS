@@ -163,9 +163,15 @@ A **session note** is a structured, per-session annotation document stored along
 
 An **aggregation** is a saved, named group of sessions that downstream consumer notebooks can treat as one selectable entity. In addition to the member sessions, an aggregation stores policy flags describing how to handle differences in signal registries and event-schema coverage across those members.
 
-### Step 1. Build and browse the session catalog
+### Step 1. Choose artifact runtime settings
 
-- **Inputs:** the existing `analysis/artifacts/` tree and the available session-note templates under `analysis/templates/session_note_templates/`.
+- **Inputs:** the local artifact directory chosen in the runtime settings panel.
+- **Outputs:** a notebook-local `artifacts_dir` value used to construct the library manager.
+- **Persisted artifacts:** none. The setting is remembered locally for convenience, but is not part of the processed-session artifacts.
+
+### Step 2. Build and browse the session catalog
+
+- **Inputs:** the selected artifact tree and the available session-note templates under `analysis/templates/session_note_templates/`.
 - **Outputs:** a catalog of sessions with run metadata, session metadata, and a note catalog status.
 - **What the note catalog status means:** it summarizes whether the session has no saved note yet, has a note that can be cleanly projected into the flattened fields used for filtering and sorting, is missing the template needed to interpret that note, or has a mismatch between the stored note and the template version being projected.
 - **Persisted artifacts:** none.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
@@ -28,6 +29,10 @@ def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
         for chunk in iter(lambda: f.read(chunk_size), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _coerce_timestamp(value: Any) -> pd.Timestamp:
@@ -134,9 +139,9 @@ def _get_fitfile_class():
     return FitFile
 
 
-def _iter_fit_record_rows(path: str | Path) -> tuple[list[dict[str, Any]], dict[str, Optional[str]]]:
+def _iter_fit_record_rows_from_fileish(fileish: Any) -> tuple[list[dict[str, Any]], dict[str, Optional[str]]]:
     FitFile = _get_fitfile_class()
-    fit_file = FitFile(str(path))
+    fit_file = FitFile(fileish)
     rows: list[dict[str, Any]] = []
     field_units: dict[str, Optional[str]] = {}
 
@@ -152,6 +157,10 @@ def _iter_fit_record_rows(path: str | Path) -> tuple[list[dict[str, Any]], dict[
             rows.append(row)
 
     return rows, field_units
+
+
+def _iter_fit_record_rows(path: str | Path) -> tuple[list[dict[str, Any]], dict[str, Optional[str]]]:
+    return _iter_fit_record_rows_from_fileish(str(path))
 
 
 def _convert_fit_value(
@@ -227,6 +236,120 @@ def inspect_fit_file(
     }
 
 
+def inspect_fit_stream(
+    fit_input: str | Path | bytes | bytearray | memoryview,
+    *,
+    field_allowlist: Optional[Sequence[str]] = None,
+    source_name: Optional[str] = None,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]]
+    field_units: dict[str, Optional[str]]
+    fit_sha256: Optional[str] = None
+    path_text: Optional[str] = None
+    filename: Optional[str] = None
+
+    if isinstance(fit_input, Path):
+        rows, field_units = _iter_fit_record_rows(fit_input)
+        fit_sha256 = _sha256_file(fit_input)
+        path_text = str(fit_input)
+        filename = fit_input.name
+    elif isinstance(fit_input, str):
+        path = Path(fit_input)
+        rows, field_units = _iter_fit_record_rows(path)
+        fit_sha256 = _sha256_file(path)
+        path_text = str(path)
+        filename = path.name
+    elif isinstance(fit_input, (bytes, bytearray, memoryview)):
+        fit_bytes = bytes(fit_input)
+        rows, field_units = _iter_fit_record_rows_from_fileish(io.BytesIO(fit_bytes))
+        fit_sha256 = _sha256_bytes(fit_bytes)
+        if isinstance(source_name, str) and source_name.strip():
+            filename = Path(source_name).name
+    else:
+        raise TypeError("FIT input must be provided as a path or bytes-like object")
+
+    if not rows:
+        raise ValueError("FIT input does not contain any usable record timestamps")
+
+    allowed = {
+        _canonical_fit_field_name(x)
+        for x in (field_allowlist if field_allowlist is not None else FIT_DEFAULT_FIELDS)
+        if isinstance(x, str) and x.strip()
+    }
+
+    timestamps = [_coerce_timestamp(row["timestamp"]) for row in rows if row.get("timestamp") is not None]
+    if not timestamps:
+        raise ValueError("FIT input does not contain any usable record timestamps")
+
+    available_fields = sorted(
+        {
+            field_name
+            for row in rows
+            for field_name in row.keys()
+            if field_name != "timestamp" and (not allowed or field_name in allowed)
+        }
+    )
+
+    summary = {
+        "start_datetime": timestamps[0].isoformat(),
+        "end_datetime": timestamps[-1].isoformat(),
+        "available_fields": available_fields,
+        "field_units": {k: v for k, v in field_units.items() if k in available_fields},
+        "fit_sha256": fit_sha256,
+    }
+    if path_text is not None:
+        summary["path"] = path_text
+    if filename is not None:
+        summary["filename"] = filename
+    return summary
+
+
+def find_overlapping_fit_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    session_start_datetime: str,
+    session_end_datetime: str,
+    partial_overlap: str = "allow",
+) -> list[dict[str, Any]]:
+    session_start = _coerce_timestamp(session_start_datetime)
+    session_end = _coerce_timestamp(session_end_datetime)
+    if session_end < session_start:
+        raise ValueError("session_end_datetime must be >= session_start_datetime")
+
+    overlaps: list[dict[str, Any]] = []
+    for raw in candidates:
+        if not isinstance(raw, Mapping):
+            continue
+        summary = dict(raw)
+        start_value = summary.get("fit_start_datetime", summary.get("start_datetime"))
+        end_value = summary.get("fit_end_datetime", summary.get("end_datetime"))
+        if start_value is None or end_value is None:
+            continue
+
+        fit_start = _coerce_timestamp(start_value)
+        fit_end = _coerce_timestamp(end_value)
+        overlap_start = max(session_start, fit_start)
+        overlap_end = min(session_end, fit_end)
+        overlap_s = max(0.0, (overlap_end - overlap_start).total_seconds())
+
+        if partial_overlap == "reject":
+            is_match = fit_start <= session_start and fit_end >= session_end
+        else:
+            is_match = overlap_s > 0.0 or (session_start == session_end and fit_start <= session_start <= fit_end)
+
+        if not is_match:
+            continue
+
+        summary["fit_start_datetime"] = fit_start.isoformat()
+        summary["fit_end_datetime"] = fit_end.isoformat()
+        summary["overlap_start_datetime"] = overlap_start.isoformat()
+        summary["overlap_end_datetime"] = overlap_end.isoformat()
+        summary["overlap_s"] = overlap_s
+        overlaps.append(summary)
+
+    return overlaps
+
+
 def find_overlapping_fit_files(
     *,
     fit_dir: str | Path,
@@ -238,13 +361,6 @@ def find_overlapping_fit_files(
     root = Path(fit_dir)
     if not root.exists():
         return []
-
-    session_start = _coerce_timestamp(session_start_datetime)
-    session_end = _coerce_timestamp(session_end_datetime)
-    if session_end < session_start:
-        raise ValueError("session_end_datetime must be >= session_start_datetime")
-
-    candidates: list[dict[str, Any]] = []
     fit_paths: list[Path] = []
     seen_paths: set[str] = set()
 
@@ -258,47 +374,46 @@ def find_overlapping_fit_files(
         seen_paths.add(key)
         fit_paths.append(path)
 
+    summaries: list[dict[str, Any]] = []
     for path in fit_paths:
-        summary = inspect_fit_file(path, field_allowlist=field_allowlist)
-        fit_start = _coerce_timestamp(summary["start_datetime"])
-        fit_end = _coerce_timestamp(summary["end_datetime"])
+        summaries.append(inspect_fit_file(path, field_allowlist=field_allowlist))
 
-        overlap_start = max(session_start, fit_start)
-        overlap_end = min(session_end, fit_end)
-        overlap_s = max(0.0, (overlap_end - overlap_start).total_seconds())
-
-        if partial_overlap == "reject":
-            is_match = fit_start <= session_start and fit_end >= session_end
-        else:
-            is_match = overlap_s > 0.0 or (session_start == session_end and fit_start <= session_start <= fit_end)
-
-        if not is_match:
-            continue
-
-        summary["fit_start_datetime"] = summary.pop("start_datetime")
-        summary["fit_end_datetime"] = summary.pop("end_datetime")
-        summary["overlap_start_datetime"] = overlap_start.isoformat()
-        summary["overlap_end_datetime"] = overlap_end.isoformat()
-        summary["overlap_s"] = overlap_s
-        candidates.append(summary)
-
-    return candidates
+    return find_overlapping_fit_candidates(
+        summaries,
+        session_start_datetime=session_start_datetime,
+        session_end_datetime=session_end_datetime,
+        partial_overlap=partial_overlap,
+    )
 
 
-def load_fit_bindings(path: str | Path) -> list[dict[str, Any]]:
-    p = Path(path)
-    if not p.exists():
-        return []
+def parse_fit_bindings(value: Mapping[str, Any] | Sequence[Mapping[str, Any]] | str | bytes | Path) -> list[dict[str, Any]]:
+    if isinstance(value, Path):
+        if not value.exists():
+            return []
+        obj = json.loads(value.read_text(encoding="utf-8"))
+    elif isinstance(value, bytes):
+        obj = json.loads(value.decode("utf-8"))
+    elif isinstance(value, str):
+        obj = json.loads(value)
+    elif isinstance(value, Mapping):
+        obj = dict(value)
+    elif isinstance(value, Sequence):
+        return [dict(x) for x in value if isinstance(x, Mapping)]
+    else:
+        raise TypeError("FIT bindings must be provided as a mapping, list, JSON text/bytes, or Path")
 
-    obj = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(obj, dict):
         bindings = obj.get("bindings")
         if isinstance(bindings, list):
-            return [x for x in bindings if isinstance(x, dict)]
-        raise ValueError(f"FIT bindings file must contain a 'bindings' list: {path}")
+            return [dict(x) for x in bindings if isinstance(x, Mapping)]
+        raise ValueError("FIT bindings payload must contain a 'bindings' list")
     if isinstance(obj, list):
-        return [x for x in obj if isinstance(x, dict)]
-    raise ValueError(f"FIT bindings file must be a JSON object or list: {path}")
+        return [dict(x) for x in obj if isinstance(x, Mapping)]
+    raise ValueError("FIT bindings payload must be a JSON object or list")
+
+
+def load_fit_bindings(path: str | Path) -> list[dict[str, Any]]:
+    return parse_fit_bindings(Path(path))
 
 
 def write_fit_bindings(path: str | Path, bindings: Sequence[Mapping[str, Any]]) -> None:
@@ -324,6 +439,31 @@ def upsert_fit_binding(
     selected_at: Optional[str] = None,
 ) -> dict[str, Any]:
     bindings = load_fit_bindings(path) if Path(path).exists() else []
+    kept, replacement = upsert_fit_binding_records(
+        bindings,
+        session_id=session_id,
+        csv_path=csv_path,
+        csv_sha256=csv_sha256,
+        fit_file=fit_file,
+        fit_sha256=fit_sha256,
+        selected_by=selected_by,
+        selected_at=selected_at,
+    )
+    write_fit_bindings(path, kept)
+    return replacement
+
+
+def upsert_fit_binding_records(
+    bindings: Sequence[Mapping[str, Any]],
+    *,
+    session_id: Optional[str],
+    csv_path: Optional[str],
+    csv_sha256: Optional[str],
+    fit_file: str,
+    fit_sha256: Optional[str] = None,
+    selected_by: str = "user",
+    selected_at: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     replacement = {
         "session_id": session_id,
         "csv_path": csv_path,
@@ -337,8 +477,10 @@ def upsert_fit_binding(
     kept: list[dict[str, Any]] = []
     replaced = False
     for entry in bindings:
+        if not isinstance(entry, Mapping):
+            continue
         if _binding_matches_session(
-            entry,
+            dict(entry),
             session_id=session_id,
             csv_path=csv_path,
             csv_sha256=csv_sha256,
@@ -352,8 +494,7 @@ def upsert_fit_binding(
     if not replaced:
         kept.append(replacement)
 
-    write_fit_bindings(path, kept)
-    return replacement
+    return kept, replacement
 
 
 def _paths_match(lhs: str | Path | None, rhs: str | Path | None) -> bool:
@@ -403,6 +544,7 @@ def select_fit_candidate(
     csv_sha256: Optional[str],
     candidates: Sequence[dict[str, Any]],
     ambiguity_policy: str = "require_binding",
+    bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
     bindings_path: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     items = [dict(x) for x in candidates if isinstance(x, dict)]
@@ -419,17 +561,20 @@ def select_fit_candidate(
     if ambiguity_policy != "require_binding":
         raise ValueError(f"Unsupported FIT ambiguity_policy: {ambiguity_policy}")
 
-    if not bindings_path:
+    if bindings is not None and bindings_path is not None:
+        raise ValueError("Use either bindings or bindings_path, not both")
+
+    if bindings is None and not bindings_path:
         names = ", ".join(sorted(str(x.get("filename", x.get("path"))) for x in items))
         raise ValueError(
             "Multiple overlapping FIT files were found but no bindings file was provided. "
             f"Candidates: {names}"
         )
 
-    bindings = load_fit_bindings(bindings_path)
+    resolved_bindings = parse_fit_bindings(bindings) if bindings is not None else load_fit_bindings(bindings_path)
     matching_bindings = [
         entry
-        for entry in bindings
+        for entry in resolved_bindings
         if _binding_matches_session(
             entry,
             session_id=session_id,
@@ -451,11 +596,16 @@ def select_fit_candidate(
     fit_sha256 = binding.get("fit_sha256")
 
     for candidate in items:
-        if isinstance(fit_file, str) and _paths_match(candidate.get("path"), fit_file):
+        candidate_path = candidate.get("path")
+        candidate_filename = candidate.get("filename")
+        if isinstance(fit_file, str) and (
+            _paths_match(candidate_path, fit_file)
+            or (isinstance(candidate_filename, str) and Path(candidate_filename).name == Path(fit_file).name)
+        ):
             return candidate
         if isinstance(fit_sha256, str):
             sha = candidate.get("fit_sha256")
-            if not isinstance(sha, str):
+            if not isinstance(sha, str) and isinstance(candidate.get("path"), str):
                 sha = _sha256_file(Path(candidate["path"]))
                 candidate["fit_sha256"] = sha
             if sha == fit_sha256:
@@ -464,15 +614,38 @@ def select_fit_candidate(
     raise ValueError("A FIT binding was found, but it does not resolve to any overlapping candidate FIT file.")
 
 
-def load_fit_stream(
-    fit_path: str | Path,
+def parse_fit_stream(
+    fit_input: str | Path | bytes | bytearray | memoryview,
     *,
     session_start_datetime: str,
     field_allowlist: Optional[Sequence[str]] = None,
+    source_name: Optional[str] = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    rows, field_units = _iter_fit_record_rows(fit_path)
+    source_path: Optional[Path] = None
+    fit_sha256: Optional[str] = None
+    filename: Optional[str] = None
+
+    if isinstance(fit_input, Path):
+        source_path = fit_input
+        rows, field_units = _iter_fit_record_rows(source_path)
+        fit_sha256 = _sha256_file(source_path)
+        filename = source_path.name
+    elif isinstance(fit_input, str):
+        source_path = Path(fit_input)
+        rows, field_units = _iter_fit_record_rows(source_path)
+        fit_sha256 = _sha256_file(source_path)
+        filename = source_path.name
+    elif isinstance(fit_input, (bytes, bytearray, memoryview)):
+        fit_bytes = bytes(fit_input)
+        rows, field_units = _iter_fit_record_rows_from_fileish(io.BytesIO(fit_bytes))
+        fit_sha256 = _sha256_bytes(fit_bytes)
+        if isinstance(source_name, str) and source_name.strip():
+            filename = Path(source_name).name
+    else:
+        raise TypeError("FIT input must be provided as a path or bytes-like object")
+
     if not rows:
-        raise ValueError(f"FIT file does not contain any usable record messages: {fit_path}")
+        raise ValueError("FIT input does not contain any usable record messages")
 
     allowed = {
         _canonical_fit_field_name(x)
@@ -517,16 +690,13 @@ def load_fit_stream(
 
     df = pd.DataFrame(out_rows)
     if df.empty:
-        raise ValueError(f"FIT file did not yield any allowed numeric fields: {fit_path}")
+        raise ValueError("FIT input did not yield any allowed numeric fields")
 
     df = df.sort_values("time_s", kind="stable").reset_index(drop=True)
     df = df.loc[~df["time_s"].duplicated(keep="first")].reset_index(drop=True)
 
-    p = Path(fit_path)
     meta: dict[str, Any] = {
-        "path": str(p),
-        "filename": p.name,
-        "fit_sha256": _sha256_file(p),
+        "fit_sha256": fit_sha256,
         "stream_name": "gps_fit",
         "kind": "intermittent",
         "time_col": "time_s",
@@ -553,4 +723,21 @@ def load_fit_stream(
         "resample_columns": list(resample_columns),
         "channel_info": channel_info,
     }
+    if source_path is not None:
+        meta["path"] = str(source_path)
+    if filename is not None:
+        meta["filename"] = filename
     return df, meta
+
+
+def load_fit_stream(
+    fit_path: str | Path,
+    *,
+    session_start_datetime: str,
+    field_allowlist: Optional[Sequence[str]] = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    return parse_fit_stream(
+        fit_path,
+        session_start_datetime=session_start_datetime,
+        field_allowlist=field_allowlist,
+    )
