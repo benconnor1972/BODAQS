@@ -121,7 +121,27 @@ static bool shouldForceRtcSyncOnBoot_(esp_reset_reason_t resetReason,
 
 static bool shouldInvalidateRtcOnBoot_(esp_reset_reason_t resetReason,
                                        esp_sleep_wakeup_cause_t wakeCause) {
-  return resetReason == ESP_RST_DEEPSLEEP || wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED;
+  // Keep retained RTC time across deep-sleep wakes so the logger can continue
+  // to use the carried clock immediately, then force a background resync to
+  // correct any drift once Wi-Fi is available.
+  if (wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED || resetReason == ESP_RST_DEEPSLEEP) {
+    return false;
+  }
+
+  // Invalidate on suspicious warm-reset paths where retained system time is
+  // more likely to be stale or corrupted and there is no "sleep duration"
+  // context to bound the error.
+  switch (resetReason) {
+    case ESP_RST_SW:
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+    case ESP_RST_BROWNOUT:
+      return true;
+    default:
+      return false;
+  }
 }
 
 static void rememberConnectedNetwork_() {
