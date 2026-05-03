@@ -1,6 +1,8 @@
 #include "Routes_Config.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "HtmlUtil.h"
@@ -13,8 +15,6 @@
 #include "PowerManager.h"
 #include "WebServerManager.h"  // for canStart()
 #include "StorageManager.h"
-#include "ButtonActions.h"
-#include "ButtonBindingTable.h"
 #include "ButtonManager.h"
 #include "BoardSelect.h" 
 #include "TransformRegistry.h"
@@ -28,6 +28,30 @@ static String fmtIPv4(const uint8_t a[4]) {
   snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
            a[0], a[1], a[2], a[3]);
   return String(buf);
+}
+
+static String minutesStringFromMs_(uint32_t ms) {
+  if (ms == 0) return String("0");
+  String s((double)ms / 60000.0, 3);
+  while (s.endsWith("0")) s.remove(s.length() - 1);
+  if (s.endsWith(".")) s.remove(s.length() - 1);
+  return s;
+}
+
+static bool parseMinutesToMs_(const String& text, uint32_t& out) {
+  String s = text;
+  s.trim();
+  if (!s.length()) return false;
+  char* end = nullptr;
+  const double minutes = strtod(s.c_str(), &end);
+  if (end == s.c_str()) return false;
+  while (end && *end && isspace((unsigned char)*end)) ++end;
+  if (end && *end) return false;
+  if (minutes < 0.0) return false;
+  double ms = minutes * 60000.0;
+  if (ms > 4294967295.0) ms = 4294967295.0;
+  out = (uint32_t)(ms + 0.5);
+  return true;
 }
 
 static void noteHttpActivity_() {
@@ -48,11 +72,6 @@ static void reloadTransformsForSensor_(const char* sensorName) {
 
   if (SD_MMC.cardType() != CARD_NONE) {
     gTransforms.loadForSensor(sensorName, SD_MMC);
-    return;
-  }
-
-  if (SdFs* sd = StorageManager_getSd()) {
-    gTransforms.loadForSensor(sensorName, *sd);
   }
 }
 
@@ -77,6 +96,46 @@ static Sensor* findLiveSensorByName_(const char* name) {
     if (s && String(s->name()) == String(name)) return s;
   }
   return nullptr;
+}
+
+static bool parseSensorTypeKey_(String text, SensorType& out) {
+  text.trim();
+  if (text.equalsIgnoreCase("analog_pot") || text.equalsIgnoreCase("pot")) {
+    out = SensorType::AnalogPot;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5600_string_pot_analog") || text.equalsIgnoreCase("as5600_pot_analog")) {
+    out = SensorType::AS5600StringPotAnalog;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5600_string_pot_i2c") || text.equalsIgnoreCase("as5600_pot_i2c")) {
+    out = SensorType::AS5600StringPotI2C;
+    return true;
+  }
+  return false;
+}
+
+static const char* defaultNamePrefix_(SensorType type) {
+  switch (type) {
+    case SensorType::AnalogPot: return "analog";
+    case SensorType::AS5600StringPotAnalog: return "as5600a";
+    case SensorType::AS5600StringPotI2C: return "as5600i";
+    default: return "sensor";
+  }
+}
+
+static String uniqueSensorName_(SensorType type, String proposed) {
+  proposed.trim();
+  if (proposed.length() > 15) proposed = proposed.substring(0, 15);
+  if (proposed.length() && ConfigManager::findSensorByName(proposed.c_str()) < 0) return proposed;
+
+  const String prefix = defaultNamePrefix_(type);
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    String candidate = prefix + String((int)i);
+    if (candidate.length() > 15) candidate = candidate.substring(0, 15);
+    if (ConfigManager::findSensorByName(candidate.c_str()) < 0) return candidate;
+  }
+  return String("sensor");
 }
 
 static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const SensorSpec& sp) {
@@ -125,32 +184,6 @@ static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const Sens
   return true;
 }
 
-static void appendTopNav(String& html, const char* active) {
-  auto a = [&](const char* href, const char* label, bool bold=false){
-    html += "<a href='"; html += href; html += "' style='margin-right:12px;";
-    if (bold) html += "font-weight:700;";
-    html += "'>";
-    html += label;
-    html += "</a>";
-  };
-
-  html += "<div style='margin:10px 0 14px 0; padding:8px 10px; background:#f3f3f3; border-radius:8px;'>";
-
-  // Home / Files
-  a("/", "Home");
-  a("/files", "Files");  // change if your files route differs
-
-  html += "<span style='margin:0 10px; color:#888;'>|</span>";
-
-  // Config pages
-  a("/config",         "General",  strcmp(active, "/config")==0);
-  a("/config/sensors", "Sensors",  strcmp(active, "/config/sensors")==0);
-  a("/config/buttons", "Buttons",  strcmp(active, "/config/buttons")==0);
-
-  html += "</div>";
-}
-
-
 using namespace HtmlUtil;
 
 void registerConfigRoutes(WebServer& srv) {
@@ -168,9 +201,6 @@ void registerConfigRoutes(WebServer& srv) {
     const String dis  = locked ? F(" disabled") : F("");
 
     String html = htmlHeader(F("Config"));
-
-    appendTopNav(html, "/config");
-    html += F("<hr>");
 
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
@@ -214,9 +244,25 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<input type='hidden' name='submit' value='globals'>"); //Hidden input
 
     html += F("<fieldset><legend>General</legend>");
+    html += F("<label>Logger name: </label><input type='text' name='logger_name' maxlength='31' value='");
+    html += htmlEscape(String(cfg.loggerName));
+    html += F("'"); html += dis; html += F("><br>");
+
     html += F("<label>Sample rate (Hz): </label><input type='number' name='sample_rate_hz' min='1' max='2000' value='");
     html += String(cfg.sampleRateHz);
     html += F("'"); html += dis; html += F("><br>");
+
+    html += F("<label>Log format: </label>");
+    html += F("<label><input type='radio' name='log_format' value='bodaqs_standard'");
+    if (cfg.logFormat == LogFormat::BodaqsStandard) html += F(" checked");
+    html += dis; html += F("> BODAQS standard</label> ");
+    html += F("<label><input type='radio' name='log_format' value='syn_bike_raw'");
+    if (cfg.logFormat == LogFormat::SynBikeRaw) html += F(" checked");
+    html += dis; html += F("> syn.bike raw</label><br>");
+
+    html += F("<label><input type='checkbox' name='omit_metadata' value='true'");
+    if (cfg.omitMetadata) html += F(" checked");
+    html += dis; html += F("> Omit log metadata JSON</label><br>");
 
     html += F("<label>Timestamp mode: </label><select name='timestamp_mode'");
     html += dis; html += F("><option value='human'");
@@ -229,36 +275,14 @@ void registerConfigRoutes(WebServer& srv) {
     html += htmlEscape(String(cfg.tz));
     html += F("'"); html += dis; html += F("><br>");
     
-    html += F("<label>Debounce (ms): </label><input type='number' name='debounce_ms' min='0' max='1000' value='");
-    html += String(cfg.debounceMs);
-    html += F("'"); html += dis; html += F("><br>");
-
-    html += F("<label>Auto-sleep idle (ms): </label><input type='number' name='auto_sleep_idle_ms' min='0' max='4294967295' value='");
-    html += String((unsigned long)cfg.autoSleepIdleMs);
+    html += F("<label>Auto-sleep idle (min): </label><input type='number' name='auto_sleep_idle_min' min='0' step='0.1' value='");
+    html += minutesStringFromMs_(cfg.autoSleepIdleMs);
     html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
 
-    html += F("<label>Wi-Fi idle timeout (ms): </label><input type='number' name='wifi_idle_timeout_ms' min='0' max='4294967295' value='");
-    html += String((unsigned long)cfg.wifiIdleTimeoutMs);
+    html += F("<label>Wi-Fi idle timeout (min): </label><input type='number' name='wifi_idle_timeout_min' min='0' step='0.1' value='");
+    html += minutesStringFromMs_(cfg.wifiIdleTimeoutMs);
     html += F("'"); html += dis; html += F("><small>0 = disabled</small><br>");
 
-    html += F("<label>Log level: </label><select name='log_level'");
-    html += dis; html += F(">");
-    {
-      const char* selectedLevel = (cfg.logLevelOverride == 0xFF)
-                                    ? "default"
-                                    : Log_levelName((LogLevel)cfg.logLevelOverride);
-      const char* levelOptions[] = {"default", "error", "warn", "info", "debug", "trace"};
-      for (const char* option : levelOptions) {
-        html += F("<option value='");
-        html += option;
-        html += F("'");
-        if (String(selectedLevel) == option) html += F(" selected");
-        html += F(">");
-        html += option;
-        html += F("</option>");
-      }
-    }
-    html += F("</select><br>");
     html += F("</fieldset>");
 
     // ---------- Wi-Fi (multi-network) ----------
@@ -389,7 +413,6 @@ void registerConfigRoutes(WebServer& srv) {
       addIpField("gateway", cfg.wifi[i].gateway, "Gateway");
       addIpField("subnet",  cfg.wifi[i].subnet,  "Subnet");
       addIpField("dns1",    cfg.wifi[i].dns1,    "DNS 1");
-      addIpField("dns2",    cfg.wifi[i].dns2,    "DNS 2");
 
       html += F("</fieldset>");
     }
@@ -412,8 +435,14 @@ void registerConfigRoutes(WebServer& srv) {
 
     String html = htmlHeader(F("Sensors"));
 
-    appendTopNav(html, "/config/sensors");
-    html += F("<hr>");
+    if (srv.hasArg("ok")) {
+      html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
+    }
+    if (srv.hasArg("reboot")) {
+      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
+                "Sensor add/delete changes are saved. Restart the logger to rebuild the live sensor set."
+                "</p>");
+    }
 
     html += F("<form method='POST' action='/config/sensors'>");
 
@@ -535,6 +564,9 @@ void registerConfigRoutes(WebServer& srv) {
         html += ">Apply Type</button>";
         html += "<small>Reloads fields for the selected type, prunes incompatible params, and takes effect after reboot.</small></div>";
 
+        emitParamRow("i2c_bus", "I2C bus");
+        emitParamRow("i2c_addr", "I2C address");
+
         // Board-aware Analog Input selector (AIN ordinal)
         {
           const ParamDef* pd = findDef("ain");
@@ -655,6 +687,12 @@ void registerConfigRoutes(WebServer& srv) {
           html += F("<span class='status' style='margin-left:8px;color:#060'></span></div>");
         }
 
+        // ---- Usage ----
+        html += F("<h4>Usage</h4>");
+        emitParamRow("end", "End");
+        emitParamRow("primary_domain", "Primary domain");
+        emitParamRow("primary_quantity", "Primary quantity");
+
         // ---- Calibration ----
         html += F("<h4>Calibration</h4>");
         {
@@ -677,26 +715,23 @@ void registerConfigRoutes(WebServer& srv) {
         }
         emitParamRow("sensor_zero_count", "Sensor count at zero travel");
         emitParamRow("sensor_full_count", "Sensor count at full travel");
-        emitParamRow("invert", "Invert measurement direction");
+        emitParamRow("installed_zero_count", "Installed zero count");
 
         // ---- Wrapping ----
-        html += F("<h4>Wrapping</h4>");
-        emitParamRow("counts_per_turn", "Counts per turn");
-        emitParamRow("wrap_threshold_counts", "Wrap threshold (counts)");
-        emitParamRow("assume_turn0_at_start", "Assume turn 0 at log start");
-
-        // ---- Smoothing ----
-        html += F("<h4>Smoothing</h4>");
-        emitParamRow("ema_alpha", "EMA alpha");
-        emitParamRow("deadband",  "Deadband");
+        if (findDef("counts_per_turn") || findDef("wrap_threshold_counts") || findDef("assume_turn0_at_start")) {
+          html += F("<h4>Wrapping</h4>");
+          emitParamRow("counts_per_turn", "Counts per turn");
+          emitParamRow("wrap_threshold_counts", "Wrap threshold (counts)");
+          emitParamRow("assume_turn0_at_start", "Assume turn 0 at log start");
+        }
 
         // (Optional) render remaining params under "Other"
         const char* shown[] = {
-          "ain","muted",
+          "ain","muted","i2c_bus","i2c_addr",
           "output_mode","include_raw","sensor_full_travel_mm","units_label",
-          "cal_allowed","sensor_zero_count","sensor_full_count","invert",
-          "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start",
-          "ema_alpha","deadband"
+          "end","primary_domain","primary_quantity","raw_domain",
+          "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count",
+          "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start"
         };
         auto isShown = [&](const char* key)->bool{
           for (size_t k=0;k<sizeof(shown)/sizeof(shown[0]);++k){
@@ -751,9 +786,45 @@ void registerConfigRoutes(WebServer& srv) {
           delay(0);
         }
 
+        html += "<div class='row'><label>Remove</label><button type='submit' name='delete_sensor_idx' value='";
+        html += String(i);
+        html += "'";
+        if (locked) html += " disabled";
+        html += ">Delete this sensor</button>";
+        html += "<small>Removes the sensor from logger config only; transform files are left in place.</small></div>";
+
         html += F("</fieldset>");
         delay(0);
       }
+
+    html += F("<fieldset><legend>New sensor</legend>");
+    html += F("<div class='row'><label>Type</label><select name='add_sensor_type'");
+    html += dis;
+    html += F(">");
+    const SensorType addTypeChoices[] = {
+      SensorType::AnalogPot,
+      SensorType::AS5600StringPotAnalog,
+      SensorType::AS5600StringPotI2C,
+    };
+    for (const auto typeChoice : addTypeChoices) {
+      const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
+      if (!tiChoice) continue;
+      const char* key = SensorRegistry::typeKey(typeChoice);
+      const char* label = SensorRegistry::typeLabel(typeChoice);
+      html += F("<option value='");
+      html += htmlEscape(String(key ? key : "unknown"));
+      html += F("'>");
+      html += htmlEscape(String(label ? label : "Unknown Sensor"));
+      html += F("</option>");
+    }
+    html += F("</select></div>");
+    html += F("<div class='row'><label>Name</label><input type='text' name='add_sensor_name' maxlength='15' placeholder='optional'");
+    html += dis;
+    html += F("><small>Leave blank to auto-name.</small></div>");
+    html += F("<p><button type='submit' name='add_sensor' value='1'");
+    html += dis;
+    html += F(">Add Sensor</button></p>");
+    html += F("</fieldset>");
 
     
 
@@ -815,77 +886,6 @@ void registerConfigRoutes(WebServer& srv) {
     srv.send(200, F("text/html"), html);
   });
 
-  // -------------------- GET /config/buttons --------------------
-  S->on("/config/buttons", HTTP_GET, [S](){
-    auto& srv = *S;
-    noteHttpActivity_();
-
-    const LoggerConfig& cfg = ConfigManager::get();
-    const bool locked = !WebServerManager::canStart();
-    const String dis  = locked ? F(" disabled") : F("");
-
-    String html = htmlHeader(F("Buttons"));
-
-    appendTopNav(html, "/config/buttons");
-    html += F("<hr>");
-
-
-    html += F("<form method='POST' action='/config/buttons'>");
-
-    // ---------- Button bindings (new) ----------
-    html += F("<fieldset><legend>Button bindings (new)</legend>");
-    html += F("<p><small>Each row maps a (button ID, event) pair to an action. "
-              "Events: pressed, released, click, double_click, held. "
-              "Actions: logging_toggle, mark_event, web_toggle, menu_nav_up/down/left/right/enter, menu_select, sleep.</small></p>");
-
-    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-      const ButtonBindingDef& bd = (i < cfg.buttonBindingCount) ? cfg.buttonBindings[i] : ButtonBindingDef{};
-
-      html += F("<div class='row'>");
-      html += F("<label>Binding ");
-      html += String(i);
-      html += F("</label>");
-
-      // buttonId
-      html += F("<input type='text' size='10' placeholder='button id' name='binding");
-      html += String(i);
-      html += F(".button' value='");
-      html += htmlEscape(String(bd.buttonId));
-      html += F("'");
-      html += dis;
-      html += F("> ");
-
-      // event
-      html += F("<input type='text' size='10' placeholder='event' name='binding");
-      html += String(i);
-      html += F(".event' value='");
-      html += htmlEscape(String(bd.event));
-      html += F("'");
-      html += dis;
-      html += F("> ");
-
-      // action
-      html += F("<input type='text' size='20' placeholder='action' name='binding");
-      html += String(i);
-      html += F(".action' value='");
-      html += htmlEscape(String(bd.action));
-      html += F("'");
-      html += dis;
-      html += F(">");
-
-      html += F("</div>");
-    }
-    html += F("</fieldset>");
-
-
-    html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
-    html += F("</form>");
-
-    html += htmlFooter();
-    srv.send(200, F("text/html"), html);
-  });
-  
-
   // -------------------- POST /config/sensors --------------------
   S->on("/config/sensors", HTTP_POST, [S](){
     auto& srv = *S;
@@ -897,6 +897,38 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     LoggerConfig tmp = ConfigManager::get();
+
+    if (srv.hasArg("delete_sensor_idx")) {
+      const int idx = srv.arg("delete_sensor_idx").toInt();
+      if (idx < 0 || idx >= (int)ConfigManager::sensorCount()) {
+        srv.send(400, F("text/plain"), F("Invalid sensor index"));
+        return;
+      }
+      if (!ConfigManager::deleteSensorByIndex((uint8_t)idx) || !ConfigManager::save(ConfigManager::get())) {
+        srv.send(500, F("text/plain"), F("Failed to delete sensor"));
+        return;
+      }
+      srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1");
+      srv.send(303, F("text/plain"), F("Sensor deleted"));
+      return;
+    }
+
+    if (srv.hasArg("add_sensor")) {
+      SensorType newType = SensorType::AnalogPot;
+      if (srv.hasArg("add_sensor_type")) {
+        (void)parseSensorTypeKey_(srv.arg("add_sensor_type"), newType);
+      }
+      const String uniqueName = uniqueSensorName_(newType, srv.hasArg("add_sensor_name") ? srv.arg("add_sensor_name") : String());
+      if (!ConfigManager::appendSensor(newType, uniqueName.c_str()) || !ConfigManager::save(ConfigManager::get())) {
+        srv.send(500, F("text/plain"), F("Failed to add sensor"));
+        return;
+      }
+      const int newIdx = (int)ConfigManager::sensorCount() - 1;
+      srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1#sensor-" + String(newIdx));
+      srv.send(303, F("text/plain"), F("Sensor added"));
+      return;
+    }
+
     int applyTypeIdx = -1;
     if (srv.hasArg("apply_type_idx")) {
       applyTypeIdx = srv.arg("apply_type_idx").toInt();
@@ -937,13 +969,7 @@ void registerConfigRoutes(WebServer& srv) {
         if (getArgLast("type", v)) {
           v.trim();
           if (v.length()) {
-            if (v.equalsIgnoreCase("analog_pot") || v.equalsIgnoreCase("pot")) {
-              sp.type = SensorType::AnalogPot;
-            } else if (v.equalsIgnoreCase("as5600_string_pot_analog") || v.equalsIgnoreCase("as5600_pot_analog")) {
-              sp.type = SensorType::AS5600StringPotAnalog;
-            } else if (v.equalsIgnoreCase("as5600_string_pot_i2c") || v.equalsIgnoreCase("as5600_pot_i2c")) {
-              sp.type = SensorType::AS5600StringPotI2C;
-            }
+            (void)parseSensorTypeKey_(v, sp.type);
           }
         }
         typeChanged = (sp.type != oldType);
@@ -992,6 +1018,14 @@ void registerConfigRoutes(WebServer& srv) {
       // ---- Board-aware analog input binding (AIN ordinal) ----
       {
         String v;
+        if (getArgLast("i2c_bus", v)) {
+          v.trim();
+          sp.params.setInt("i2c_bus", v.toInt());
+        }
+        if (getArgLast("i2c_addr", v)) {
+          v.trim();
+          sp.params.setInt("i2c_addr", v.toInt());
+        }
         if (getArgLast("ain", v)) {
           v.trim();
           long ain = v.toInt();
@@ -1049,6 +1083,9 @@ void registerConfigRoutes(WebServer& srv) {
         { bool inc = false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
         if (getArgLast("sensor_full_travel_mm", v)) { double f = v.toFloat(); sp.params.setFloat("sensor_full_travel_mm", (float)f); }
         if (getArgLast("units_label", v)) { sp.params.set("units_label", v); }
+        if (getArgLast("end", v)) { v.trim(); sp.params.set("end", v); }
+        if (getArgLast("primary_domain", v)) { v.trim(); sp.params.set("primary_domain", v); }
+        if (getArgLast("primary_quantity", v)) { v.trim(); sp.params.set("primary_quantity", v); }
 
         sp.params.setBool("__om_changed", omChanged);
         sp.params.setBool("__id_changed", idChanged);
@@ -1075,14 +1112,7 @@ void registerConfigRoutes(WebServer& srv) {
         }
         if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
         if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
-        { bool inv=false; if (getBoolLast("invert", inv)) sp.params.setBool("invert", inv); }
-      }
-
-      // Smoothing
-      {
-        String v;
-        if (getArgLast("ema_alpha", v)) { double f = v.toFloat(); sp.params.setFloat("ema_alpha", (float)f); }
-        if (getArgLast("deadband", v))  { long   i = v.toInt();  sp.params.setInt("deadband", (long)i); }
+        if (getArgLast("installed_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("installed_zero_count", vi); }
       }
 
       // Wrapping
@@ -1104,12 +1134,14 @@ void registerConfigRoutes(WebServer& srv) {
         if (pkey.equalsIgnoreCase("name") || pkey.equalsIgnoreCase("muted") ||
             pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
             pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
+            pkey.equalsIgnoreCase("end") || pkey.equalsIgnoreCase("primary_domain") ||
+            pkey.equalsIgnoreCase("primary_quantity") || pkey.equalsIgnoreCase("raw_domain") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
-            pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("invert") ||
+            pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("installed_zero_count") ||
             pkey.equalsIgnoreCase("counts_per_turn") || pkey.equalsIgnoreCase("wrap_threshold_counts") ||
             pkey.equalsIgnoreCase("assume_turn0_at_start") ||
-            pkey.equalsIgnoreCase("ema_alpha")  || pkey.equalsIgnoreCase("deadband") ||
-            pkey.equalsIgnoreCase("ain")) {
+            pkey.equalsIgnoreCase("ain") || pkey.equalsIgnoreCase("i2c_bus") ||
+            pkey.equalsIgnoreCase("i2c_addr")) {
           continue;
         }
 
@@ -1162,86 +1194,6 @@ void registerConfigRoutes(WebServer& srv) {
     srv.send(303, F("text/plain"), F("Saved"));
   });
 
-  // -------------------- POST /config/buttons --------------------
-  S->on("/config/buttons", HTTP_POST, [S](){
-    auto& srv = *S;
-    noteHttpActivity_();
-
-    if (!WebServerManager::canStart()) {
-      srv.send(423, F("text/plain"), F("Locked while logging"));
-      return;
-    }
-
-    LoggerConfig tmp = ConfigManager::get();
-
-    // Clear existing bindings
-    tmp.buttonBindingCount = 0;
-    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-      tmp.buttonBindings[i].buttonId[0] = '\0';
-      tmp.buttonBindings[i].event[0]    = '\0';
-      tmp.buttonBindings[i].action[0]   = '\0';
-    }
-
-    auto getArgLast = [&](const char* key, String& out) -> bool {
-      bool found = false;
-      const int ac = srv.args();
-      for (int ai = 0; ai < ac; ++ai) {
-        if (srv.argName(ai) == key) { out = srv.arg(ai); found = true; }
-      }
-      return found;
-    };
-
-    uint8_t newBindingCount = 0;
-
-    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
-      char keyBtn[28], keyEvt[28], keyAct[28];
-      snprintf(keyBtn, sizeof(keyBtn), "binding%u.button", (unsigned)i);
-      snprintf(keyEvt, sizeof(keyEvt), "binding%u.event",  (unsigned)i);
-      snprintf(keyAct, sizeof(keyAct), "binding%u.action", (unsigned)i);
-
-      String button, ev, act;
-
-      bool hb = getArgLast(keyBtn, button);
-      bool he = getArgLast(keyEvt, ev);
-      bool ha = getArgLast(keyAct, act);
-      if (!(hb || he || ha)) continue;
-
-      button.trim(); ev.trim(); act.trim();
-
-      if (!button.length() && !ev.length() && !act.length()) continue;
-
-      ButtonBindingDef bd{};
-
-      if (button.length() >= (int)sizeof(bd.buttonId))
-        button = button.substring(0, sizeof(bd.buttonId) - 1);
-      button.toCharArray(bd.buttonId, sizeof(bd.buttonId));
-
-      if (ev.length() >= (int)sizeof(bd.event))
-        ev = ev.substring(0, sizeof(bd.event) - 1);
-      ev.toCharArray(bd.event, sizeof(bd.event));
-
-      if (act.length() >= (int)sizeof(bd.action))
-        act = act.substring(0, sizeof(bd.action) - 1);
-      act.toCharArray(bd.action, sizeof(bd.action));
-
-      if (newBindingCount < MAX_BUTTON_BINDINGS) {
-        tmp.buttonBindings[newBindingCount++] = bd;
-      }
-    }
-
-    tmp.buttonBindingCount = newBindingCount;
-
-    if (!ConfigManager::save(tmp)) {
-      srv.send(500, F("text/plain"), F("Failed to save config"));
-      return;
-    }
-    ButtonActions::reloadBindingsFromConfig(ConfigManager::get());
-    ButtonBindingTable::initFromConfig(ConfigManager::get());
-    srv.sendHeader("Location", "/config/buttons?ok=1");
-    srv.send(303, F("text/plain"), F("Saved"));
-  });
-
-
   // -------------------- POST /config --------------------
   S->on("/config", HTTP_POST, [S](){
     auto& srv = *S;
@@ -1264,6 +1216,12 @@ void registerConfigRoutes(WebServer& srv) {
     LoggerConfig tmp = ConfigManager::get();
 
     // ---------- GLOBALS ----------
+    if (srv.hasArg("logger_name")) {
+      String loggerName = srv.arg("logger_name");
+      loggerName.trim();
+      loggerName.toCharArray(tmp.loggerName, sizeof(tmp.loggerName));
+    }
+
     if (srv.hasArg("sample_rate_hz")) {
       uint16_t hz = (uint16_t)srv.arg("sample_rate_hz").toInt();
       tmp.sampleRateHz = hz;
@@ -1274,6 +1232,17 @@ void registerConfigRoutes(WebServer& srv) {
       if      (tsm == "human") tmp.timestampHuman = true;
       else if (tsm == "fast")  tmp.timestampHuman = false;
     }
+
+    if (srv.hasArg("log_format")) {
+      LogFormat fmt;
+      String v = srv.arg("log_format");
+      v.trim();
+      if (ConfigManager::parseLogFormat(v.c_str(), fmt)) {
+        tmp.logFormat = fmt;
+      }
+    }
+
+    tmp.omitMetadata = srv.hasArg("omit_metadata");
 
     if (srv.hasArg("tz")) {
       String tz = srv.arg("tz"); tz.trim();
@@ -1362,7 +1331,7 @@ void registerConfigRoutes(WebServer& srv) {
           }
         }
 
-        // ip/gateway/subnet/dns1/dns2
+        // ip/gateway/subnet/dns1
         auto parseIpInline = [](const String& s, uint8_t out[4])->bool{
           int a,b,c,d;
           if (sscanf(s.c_str(), "%d.%d.%d.%d", &a,&b,&c,&d) != 4) return false;
@@ -1384,7 +1353,6 @@ void registerConfigRoutes(WebServer& srv) {
         setIpIfPresent(String("wifi")+i+".gateway", tmp.wifi[i].gateway);
         setIpIfPresent(String("wifi")+i+".subnet",  tmp.wifi[i].subnet);
         setIpIfPresent(String("wifi")+i+".dns1",    tmp.wifi[i].dns1);
-        setIpIfPresent(String("wifi")+i+".dns2",    tmp.wifi[i].dns2);
 
         // ---- static IP validation (only if enabled) ----
         auto isZero4 = [](const uint8_t a[4])->bool{
@@ -1421,8 +1389,17 @@ void registerConfigRoutes(WebServer& srv) {
       auto setBool= [&](const char* name, bool& field){ if (!srv.hasArg(name)) return; String s=srv.arg(name); s.trim(); s.toLowerCase(); field=(s=="1"||s=="true"||s=="on"||s=="yes"); };
 
       setU16("debounce_ms",    tmp.debounceMs);
-      setU32("auto_sleep_idle_ms", tmp.autoSleepIdleMs);
-      setU32("wifi_idle_timeout_ms", tmp.wifiIdleTimeoutMs);
+      uint32_t timeoutMs = 0;
+      if (srv.hasArg("auto_sleep_idle_min") && parseMinutesToMs_(srv.arg("auto_sleep_idle_min"), timeoutMs)) {
+        tmp.autoSleepIdleMs = timeoutMs;
+      } else {
+        setU32("auto_sleep_idle_ms", tmp.autoSleepIdleMs);
+      }
+      if (srv.hasArg("wifi_idle_timeout_min") && parseMinutesToMs_(srv.arg("wifi_idle_timeout_min"), timeoutMs)) {
+        tmp.wifiIdleTimeoutMs = timeoutMs;
+      } else {
+        setU32("wifi_idle_timeout_ms", tmp.wifiIdleTimeoutMs);
+      }
     }
 
     // ---------- Persist full config ----------

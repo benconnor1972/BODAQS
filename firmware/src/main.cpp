@@ -32,7 +32,6 @@
 
 #include "FS.h"
 #include "SD_MMC.h"
-#include <SdFat.h>
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 #define BOOT_LOGW(...) LOGW_TAG("BOOT", __VA_ARGS__)
@@ -117,6 +116,45 @@ void onToggleLogging(ButtonEvent event);
 void onMarkEvent(ButtonEvent event);
 void onWebServerToggle(ButtonEvent event);
 
+static adc_attenuation_t adcAttenuationForBoard_(board::AdcAttenuation attenuation) {
+  switch (attenuation) {
+    case board::AdcAttenuation::Db0:   return ADC_0db;
+    case board::AdcAttenuation::Db2p5: return ADC_2_5db;
+    case board::AdcAttenuation::Db6:   return ADC_6db;
+    case board::AdcAttenuation::Db11:
+    default:                           return ADC_11db;
+  }
+}
+
+static const char* adcAttenuationLabel_(board::AdcAttenuation attenuation) {
+  switch (attenuation) {
+    case board::AdcAttenuation::Db0:   return "0dB";
+    case board::AdcAttenuation::Db2p5: return "2.5dB";
+    case board::AdcAttenuation::Db6:   return "6dB";
+    case board::AdcAttenuation::Db11:
+    default:                           return "11dB";
+  }
+}
+
+static void configureBoardAnalogInputs_() {
+  if (!board::gBoard) return;
+
+  const auto& analog = board::gBoard->analog;
+  analogReadResolution(12);
+
+  const adc_attenuation_t attenuation = adcAttenuationForBoard_(analog.attenuation);
+  for (uint8_t i = 0; i < analog.count; ++i) {
+    const int8_t pin = analog.pins[i];
+    if (pin < 0) continue;
+
+    analogSetPinAttenuation((uint8_t)pin, attenuation);
+    ADC_LOGD("AIN%u GPIO%02d attenuation=%s\n",
+             (unsigned)i,
+             (int)pin,
+             adcAttenuationLabel_(analog.attenuation));
+  }
+}
+
 static void applyLogSettings_(const LoggerConfig& cfg) {
   Log_setEnabled(true);
   Log_resetLevel();
@@ -128,8 +166,6 @@ static void applyLogSettings_(const LoggerConfig& cfg) {
 
 LoggerConfig g_cfg;  
 TransformRegistry gTransforms;
-SdFs*  gSd = nullptr;     // stays for SPI SdFat backend
-fs::FS* gFs = nullptr;    // NEW: active filesystem for SDMMC (and could be used for SPI too if you want)
 
 using namespace board;
 
@@ -139,6 +175,12 @@ void setup() {
   
     Serial.begin(115200);
     SelectBoard(BoardID::BODAQS_BOARD_PROFILE);
+    if (!gBoard) {
+      BOOT_LOGE("FATAL: Board not selected\n");
+      while (true) delay(1000);
+    }
+    PowerManager::begin(*gBoard);
+    configureBoardAnalogInputs_();
     DumpActiveBoardButtons();
 
     //Debug
@@ -152,18 +194,11 @@ void setup() {
     };
 
     dumpAdc("before WiFi");
-
-
-  if (!gBoard) {
-    BOOT_LOGE("FATAL: Board not selected\n");
-    while (true) delay(1000);
-  }
   
   //Buffer debug
   static uint32_t g_sampleCounter = 0;
 
   StorageManager_begin(*gBoard);           
-  gSd = StorageManager_getSd();      
 
   applyLogSettings_(g_cfg);
 
@@ -179,7 +214,7 @@ void setup() {
 
   IndicatorManager::begin(*board::gBoard);
 
-  ConfigManager::begin(StorageManager_getSd(), "/config/loggercfg.txt");
+  ConfigManager::begin("/config/loggercfg.txt");
 
 
   if (!ConfigManager::load(g_cfg)) {
@@ -231,7 +266,7 @@ void setup() {
 
   BOOT_LOGI("SETUP: F storagemanager_getSD\n");
 
-  WebServerManager::begin(StorageManager_getSd(), isLoggingPredicate);
+  WebServerManager::begin(isLoggingPredicate);
     BOOT_LOGI("SETUP: F done\n");
 
   // Choose RTC

@@ -21,7 +21,7 @@ Requires:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -82,6 +82,52 @@ def _downsample_indices(n: int, max_points: int) -> np.ndarray:
     if max_points <= 0 or n <= max_points:
         return np.arange(n, dtype=int)
     return np.linspace(0, n - 1, num=int(max_points), dtype=int)
+
+
+def _downsample_indices_min_max(
+    df: pd.DataFrame,
+    *,
+    value_cols: Sequence[str],
+    max_points: int,
+) -> np.ndarray:
+    """
+    Downsample by keeping local extrema for the plotted signals.
+
+    This preserves narrow peaks much better than evenly spaced row selection.
+    The point budget is shared across selected columns, so selecting more
+    signals gives each signal fewer buckets but still keeps min/max extrema.
+    """
+    n = len(df)
+    if max_points <= 0 or n <= max_points:
+        return np.arange(n, dtype=int)
+    if max_points < 3:
+        return _downsample_indices(n, max_points)
+
+    cols = [str(c) for c in value_cols if str(c) in df.columns]
+    if not cols:
+        return _downsample_indices(n, max_points)
+
+    # Each bucket can contribute up to min+max for each selected signal.
+    bucket_count = max(1, (int(max_points) - 2) // max(1, 2 * len(cols)))
+    if bucket_count >= n:
+        return np.arange(n, dtype=int)
+
+    starts = np.linspace(0, n, num=bucket_count + 1, dtype=int)
+    kept: set[int] = {0, n - 1}
+    for start, stop in zip(starts[:-1], starts[1:]):
+        if stop <= start:
+            continue
+        for col in cols:
+            values = pd.to_numeric(df[col].iloc[start:stop], errors="coerce").to_numpy(dtype=float)
+            finite = np.isfinite(values)
+            if not finite.any():
+                continue
+            finite_positions = np.flatnonzero(finite)
+            finite_values = values[finite]
+            kept.add(int(start + finite_positions[int(np.argmin(finite_values))]))
+            kept.add(int(start + finite_positions[int(np.argmax(finite_values))]))
+
+    return np.asarray(sorted(kept), dtype=int)
 
 
 def _to_numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
@@ -181,6 +227,7 @@ def make_session_window_browser_widget_for_loader(
 
     detail_title = W.HTML("Detail signals")
     w_detail_signals = W.SelectMultiple(options=[], value=(), description="", rows=8, layout=W.Layout(width="380px"))
+    w_primary_only = W.Checkbox(value=True, description="Primary signals only", layout=W.Layout(width="220px"))
     w_detail_autodown = W.Checkbox(value=True, description="Auto downsample detail", layout=W.Layout(width="220px"))
 
     # Bookmark controls (persisted)
@@ -273,6 +320,7 @@ def make_session_window_browser_widget_for_loader(
             prev_detail=prev_detail,
             time_col=time_col,
             preferred_unit="mm",
+            primary_only=bool(w_primary_only.value),
         )
 
         state["_registry"] = result.registry
@@ -578,7 +626,11 @@ def make_session_window_browser_widget_for_loader(
 
         df_plot = df_
         if w_detail_autodown.value and len(df_plot) > detail_max_points:
-            idx = _downsample_indices(len(df_plot), detail_max_points)
+            idx = _downsample_indices_min_max(
+                df_plot,
+                value_cols=sel,
+                max_points=detail_max_points,
+            )
             df_plot = df_plot.iloc[idx].copy()
 
         t = _to_numeric_series(df_plot, time_col).to_numpy(dtype=float)
@@ -696,6 +748,18 @@ def make_session_window_browser_widget_for_loader(
     w_session.observe(_on_session_change, names="value")
     for w in (w_detail_signals, w_detail_autodown, w_event_types, w_show_marks):
         w.observe(_on_controls_change, names="value")
+
+    def _on_primary_only_change(*_):
+        if state["updating"]:
+            return
+        sess = state.get("session")
+        df_ = state.get("df")
+        if not isinstance(sess, Mapping) or df_ is None:
+            return
+        _rebuild_signal_dropdowns(sess)
+        _on_controls_change()
+
+    w_primary_only.observe(_on_primary_only_change, names="value")
 
     def _on_xaxis_range_change(_layout: Any, xrange: Any) -> None:
         if state["selection_sync_active"]:
@@ -1030,7 +1094,10 @@ def make_session_window_browser_widget_for_loader(
         layout=W.Layout(gap="40px", align_items="flex-start", justify_content="space-between", width="1200px"),
     )
 
-    detail_box = W.VBox([detail_title, w_detail_signals, w_detail_autodown], layout=W.Layout(gap="6px", width="520px"))
+    detail_box = W.VBox(
+        [detail_title, w_primary_only, w_detail_signals, w_detail_autodown],
+        layout=W.Layout(gap="6px", width="520px"),
+    )
 
     events_box = W.VBox(
         [event_types_title, event_types_hint, w_event_types, w_show_marks],
@@ -1103,6 +1170,7 @@ def make_session_window_browser_widget_for_loader(
             "event_types": w_event_types,
             "show_marks": w_show_marks,
             "detail_signals": w_detail_signals,
+            "primary_only": w_primary_only,
             "detail_autodown": w_detail_autodown,
             "bookmark_name": w_bm_name,
             "bookmark_comment": w_bm_comment,

@@ -7,6 +7,7 @@
 #include "StorageManager.h"
 #include "DebugLog.h"
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern LoggerConfig g_cfg;
@@ -22,7 +23,6 @@ namespace {
 
   //constexpr uint8_t MAX_SENSORS = 8;     // single definition
 
-  static SdFs*     g_sd = nullptr;
   static char       g_cfgName[32] = "loggercfg";
   static SensorSpec g_specs[MAX_SENSORS];
   static ParamStore g_stores[MAX_SENSORS];
@@ -77,6 +77,18 @@ namespace {
   static bool shouldPersistSensorKey_(uint8_t idx, const char* key) {
     if (!key || !*key || idx >= g_specCount) return false;
 
+    // Polarity is derived from the labelled calibration endpoints
+    // (`sensor_full_count < sensor_zero_count`) and is no longer persisted.
+    if (strcasecmp(key, "invert") == 0) return false;
+
+    // Sample-time smoothing has been retired. Legacy keys are tolerated on
+    // load but are not written back.
+    if (strcasecmp(key, "ema_alpha") == 0 || strcasecmp(key, "deadband") == 0) return false;
+
+    // RAW columns now inherit the primary semantic domain. Legacy raw_domain
+    // entries are tolerated on load but are not written back.
+    if (strcasecmp(key, "raw_domain") == 0) return false;
+
     // `pin` is a legacy fallback for analog sensors. When `ain` is present,
     // the physical GPIO is board-derived and `pin` becomes redundant noise.
     if (strcasecmp(key, "pin") == 0) {
@@ -102,23 +114,44 @@ namespace {
     return SensorType::AnalogPot;
   }
 
-  // simple line reader for SdFat
-//  static bool readLine(FsFile& f, char* buf, size_t cap) {
-//    size_t n = 0; int c;
-//    while (n < cap - 1 && (c = f.read()) >= 0) {
-//      if (c == '\r') continue;
-//      if (c == '\n') break;
-//      buf[n++] = (char)c;
-//    }
-//    if (n == 0 && c < 0) return false;
-//    buf[n] = '\0';
-//    return true;
-//  }
-
   // Convert a SensorType to a config-safe key like "analog_pot"
   static String typeKeyForSave(SensorType t) {
     const char* key = SensorRegistry::typeKey(t);
     return (key && key[0]) ? String(key) : String("unknown");
+  }
+
+  static void seedParamDefaults_(SensorType type, ParamStore& store) {
+    store.clear();
+    const SensorTypeInfo* ti = SensorRegistry::lookup(type);
+    if (!ti || !ti->paramDefs) return;
+
+    size_t defCount = 0;
+    const ParamDef* defs = ti->paramDefs(defCount);
+    if (!defs) return;
+
+    for (size_t d = 0; d < defCount && store.count < ParamStore::MAX; ++d) {
+      const ParamDef& pd = defs[d];
+      if (!pd.key || !*pd.key) continue;
+      if (strcasecmp(pd.key, "ema_alpha") == 0 || strcasecmp(pd.key, "deadband") == 0) continue;
+      if (strcasecmp(pd.key, "output_mode") == 0) {
+        store.set(pd.key, "0");
+      } else if (pd.def) {
+        store.set(pd.key, pd.def);
+      }
+    }
+  }
+
+  static void syncConfigSensorsFromStores_() {
+    s_cfg.sensorN = (g_specCount <= MAX_SENSORS) ? g_specCount : MAX_SENSORS;
+    for (uint8_t i = 0; i < s_cfg.sensorN; ++i) {
+      g_specs[i].params.bind(&g_stores[i]);
+      s_cfg.sensors[i] = g_specs[i];
+      s_cfg.sensors[i].params.bind(&g_stores[i]);
+    }
+    for (uint8_t i = s_cfg.sensorN; i < MAX_SENSORS; ++i) {
+      s_cfg.sensors[i] = SensorSpec{};
+    }
+    g_cfg = s_cfg;
   }
 
 
@@ -225,10 +258,7 @@ static void copyStrBoundedC_(const char* src, char* dst, size_t dstsz) {
   dst[dstsz - 1] = '\0';
 }
 
-void ConfigManager::begin(SdFs* sdRef, const char* filename) {
-  // IMPORTANT: ConfigManager must not retain a SdFat pointer in SDMMC mode.
-  // StorageManager_getSd() returns nullptr when SDIO_SDMMC is active.
-  g_sd = sdRef;
+void ConfigManager::begin(const char* filename) {
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
 
   g_specCount = 0;
@@ -298,6 +328,65 @@ static String fmtIPv4(const uint8_t ip[4]) {
   return String(buf);
 }
 
+static bool parseMinutesToMs_(const char* v, uint32_t& out) {
+  if (!v) return false;
+  while (*v && isspace((unsigned char)*v)) ++v;
+  if (!*v) return false;
+
+  char* end = nullptr;
+  const double minutes = strtod(v, &end);
+  if (end == v) return false;
+  while (end && *end && isspace((unsigned char)*end)) ++end;
+  if (end && *end) return false;
+  if (minutes < 0.0) return false;
+
+  double ms = minutes * 60000.0;
+  if (ms > 4294967295.0) ms = 4294967295.0;
+  out = (uint32_t)(ms + 0.5);
+  return true;
+}
+
+static String minutesStringFromMs_(uint32_t ms) {
+  if (ms == 0) return String("0");
+  String s((double)ms / 60000.0, 3);
+  while (s.endsWith("0")) s.remove(s.length() - 1);
+  if (s.endsWith(".")) s.remove(s.length() - 1);
+  return s;
+}
+
+const char* ConfigManager::logFormatKey(LogFormat format) {
+  switch (format) {
+    case LogFormat::SynBikeRaw: return "syn_bike_raw";
+    case LogFormat::BodaqsStandard:
+    default: return "bodaqs_standard";
+  }
+}
+
+const char* ConfigManager::logFormatLabel(LogFormat format) {
+  switch (format) {
+    case LogFormat::SynBikeRaw: return "syn.bike raw";
+    case LogFormat::BodaqsStandard:
+    default: return "BODAQS standard";
+  }
+}
+
+bool ConfigManager::parseLogFormat(const char* text, LogFormat& out) {
+  if (!text || !*text) return false;
+  if (keyEquals(text, "bodaqs_standard") ||
+      keyEquals(text, "standard") ||
+      keyEquals(text, "bodaqs")) {
+    out = LogFormat::BodaqsStandard;
+    return true;
+  }
+  if (keyEquals(text, "syn_bike_raw") ||
+      keyEquals(text, "syn.bike_raw") ||
+      keyEquals(text, "synbike_raw")) {
+    out = LogFormat::SynBikeRaw;
+    return true;
+  }
+  return false;
+}
+
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   // snap to allowed list (or closest)
@@ -322,6 +411,19 @@ void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   } else {
     // If you have an in-memory setter to update “current” config, call it here.
     // e.g., ConfigManager::setCurrent(cfg);
+  }
+}
+
+void ConfigManager::setLogFormat(LogFormat format, bool persist) {
+  LoggerConfig cfg = ConfigManager::get();
+  if (cfg.logFormat == format) return;
+  cfg.logFormat = format;
+
+  if (persist) {
+    ConfigManager::save(cfg);
+  } else {
+    s_cfg = cfg;
+    g_cfg = s_cfg;
   }
 }
 
@@ -397,10 +499,15 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   }
 
   // ---- globals ----
+  if (keyEquals(key, "logger_name"))    { copyStrBounded(val, cfg.loggerName, sizeof(cfg.loggerName)); return true; }
   if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=(uint16_t)v; return true; }
+  if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
+  if (keyEquals(key, "omit_metadata")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.omitMetadata = b; return true; }
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
+  if (keyEquals(key, "auto_sleep_idle_min")) { uint32_t ms; if (parseMinutesToMs_(val, ms)) cfg.autoSleepIdleMs = ms; return true; }
+  if (keyEquals(key, "wifi_idle_timeout_min")) { uint32_t ms; if (parseMinutesToMs_(val, ms)) cfg.wifiIdleTimeoutMs = ms; return true; }
   if (keyEquals(key, "auto_sleep_idle_ms")) { cfg.autoSleepIdleMs = (uint32_t)strtoul(val, nullptr, 10); return true; }
   if (keyEquals(key, "wifi_idle_timeout_ms")) { cfg.wifiIdleTimeoutMs = (uint32_t)strtoul(val, nullptr, 10); return true; }
   if (keyEquals(key, "log_level")) {
@@ -466,7 +573,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
     if (!strcasecmp(sub, "gateway")) { setIPv4OrZero_(val, w.gateway); return true; }
     if (!strcasecmp(sub, "subnet"))  { setIPv4OrZero_(val, w.subnet);  return true; }
     if (!strcasecmp(sub, "dns1"))    { setIPv4OrZero_(val, w.dns1);    return true; }
-    if (!strcasecmp(sub, "dns2"))    { setIPv4OrZero_(val, w.dns2);    return true; }
+    if (!strcasecmp(sub, "dns2"))    { return true; }
     return true;
   }
 
@@ -771,14 +878,17 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
   // ---------------- Global ----------------
   line("# global");
+  kv("logger_name", cfg.loggerName);
   kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
+  kv("log_format", ConfigManager::logFormatKey(cfg.logFormat));
+  kv_bool("omit_metadata", cfg.omitMetadata);
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
   kv("ntp_servers", cfg.ntpServers);
   kv("time_check_url", cfg.timeCheckUrl);
   kv_u("debounce_ms", (unsigned)cfg.debounceMs);
-  kv_u("auto_sleep_idle_ms", (unsigned)cfg.autoSleepIdleMs);
-  kv_u("wifi_idle_timeout_ms", (unsigned)cfg.wifiIdleTimeoutMs);
+  kv("auto_sleep_idle_min", minutesStringFromMs_(cfg.autoSleepIdleMs).c_str());
+  kv("wifi_idle_timeout_min", minutesStringFromMs_(cfg.wifiIdleTimeoutMs).c_str());
   kv("log_level", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
   line("");
 
@@ -829,18 +939,16 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
       snprintf(out, 16, "%u.%u.%u.%u", a[0], a[1], a[2], a[3]);
     };
 
-    char ipStr[16], gwStr[16], snStr[16], d1Str[16], d2Str[16];
+    char ipStr[16], gwStr[16], snStr[16], d1Str[16];
     fmtIPv4(w.ip,      ipStr);
     fmtIPv4(w.gateway, gwStr);
     fmtIPv4(w.subnet,  snStr);
     fmtIPv4(w.dns1,    d1Str);
-    fmtIPv4(w.dns2,    d2Str);
 
     kv_indexed("wifi", i, "ip",      ipStr);
     kv_indexed("wifi", i, "gateway", gwStr);
     kv_indexed("wifi", i, "subnet",  snStr);
     kv_indexed("wifi", i, "dns1",    d1Str);
-    kv_indexed("wifi", i, "dns2",    d2Str);
   }
 
 
@@ -902,7 +1010,10 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
 void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("[CFG] --- current config ---\n");
+  LOGI("loggerName=%s\n", cfg.loggerName);
   LOGI("sampleRateHz=%u\n", cfg.sampleRateHz);
+  LOGI("logFormat=%s\n", ConfigManager::logFormatKey(cfg.logFormat));
+  LOGI("omitMetadata=%s\n", cfg.omitMetadata ? "true" : "false");
   LOGI("timestampHuman=%s\n", cfg.timestampHuman ? "true" : "false");
   LOGI("tz=%s\n", cfg.tz);
   LOGI("debounceMs=%u\n", cfg.debounceMs);
@@ -1232,6 +1343,49 @@ bool ConfigManager::setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp) 
   // copy name safely
   copyStrBounded(sp.name, g_specs[index].name, sizeof(g_specs[index].name));
   g_specs[index].mutedDefault = sp.mutedDefault;
+  return true;
+}
+
+bool ConfigManager::appendSensor(SensorType type, const char* name) {
+  if (g_specCount >= MAX_SENSORS) return false;
+  if (!SensorRegistry::lookup(type)) return false;
+
+  const uint8_t idx = g_specCount;
+  SensorSpec& sp = g_specs[idx];
+  memset(&sp, 0, sizeof(sp));
+  sp.type = type;
+  sp.mutedDefault = false;
+  copyStrBounded((name && *name) ? name : "sensor", sp.name, sizeof(sp.name));
+  seedParamDefaults_(type, g_stores[idx]);
+  sp.params.bind(&g_stores[idx]);
+  g_cals[idx] = Calibration{};
+  g_calAllowed[idx] = 0xFF;
+  g_specCount = idx + 1;
+  syncConfigSensorsFromStores_();
+  return true;
+}
+
+bool ConfigManager::deleteSensorByIndex(uint8_t index) {
+  if (index >= g_specCount) return false;
+
+  for (uint8_t i = index; i + 1 < g_specCount; ++i) {
+    g_specs[i] = g_specs[i + 1];
+    g_stores[i] = g_stores[i + 1];
+    g_cals[i] = g_cals[i + 1];
+    g_calAllowed[i] = g_calAllowed[i + 1];
+    g_specs[i].params.bind(&g_stores[i]);
+  }
+
+  --g_specCount;
+  if (g_specCount < MAX_SENSORS) {
+    g_specs[g_specCount] = SensorSpec{};
+    g_stores[g_specCount].clear();
+    g_specs[g_specCount].params.bind(&g_stores[g_specCount]);
+    g_cals[g_specCount] = Calibration{};
+    g_calAllowed[g_specCount] = 0xFF;
+  }
+
+  syncConfigSensorsFromStores_();
   return true;
 }
 

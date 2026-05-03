@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+from bodaqs_analysis.sensor_aliases import canonical_end
 from bodaqs_analysis.widgets.contracts import RegistryPolicy, SessionLoader
 from bodaqs_analysis.widgets.registry_scope import (
     apply_registry_policy_to_registries,
@@ -101,10 +101,9 @@ def _build_schema_sensor_maps(
             info = registry_obj.get(sigcol)
             if not isinstance(info, Mapping):
                 continue
-            sensor = info.get("sensor")
-            if not isinstance(sensor, str) or not sensor.strip():
+            sensor = canonical_end(info.get("end"))
+            if not sensor:
                 continue
-            sensor = canonical_sensor_id(sensor)
 
             if isinstance(role, str) and role.strip():
                 m[role.strip()] = sensor
@@ -133,14 +132,25 @@ def _resolve_sensor(
     if isinstance(m, Mapping):
         s = m.get(tok)
         if isinstance(s, str) and s.strip():
-            return canonical_sensor_id(s)
+            return canonical_end(s)
 
     info = registry.get(tok)
     if isinstance(info, Mapping):
-        s2 = info.get("sensor")
-        if isinstance(s2, str) and s2.strip():
-            return canonical_sensor_id(s2)
+        return canonical_end(info.get("end"))
     return ""
+
+
+def _resolve_signal_info(
+    *,
+    registry: Mapping[str, Mapping[str, Any]],
+    token_val: object,
+) -> Mapping[str, Any]:
+    tok = str(token_val) if token_val is not None else ""
+    tok = tok.strip()
+    if not tok:
+        return {}
+    info = registry.get(tok)
+    return info if isinstance(info, Mapping) else {}
 
 
 def registry_maps_for_sessions(
@@ -155,7 +165,7 @@ def registry_maps_for_sessions(
         session_loader=session_loader,
     )
     if not registries:
-        raise ValueError("No session registries available for sensor resolution")
+        raise ValueError("No session registries available for event-context resolution")
 
     nonempty = [sk for sk, r in registries.items() if r]
     if not nonempty:
@@ -208,4 +218,31 @@ def assign_sensor_column(
         ],
         index=viz_df.index,
     )
+
+
+def assign_signal_semantics_columns(
+    *,
+    viz_df: pd.DataFrame,
+    session_key_col: str,
+    signal_col: str,
+    registries_by_session: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> pd.DataFrame:
+    """Return semantic columns resolved from each event row's signal token."""
+
+    records: list[dict[str, str]] = []
+    for sk, tok in zip(viz_df[session_key_col].astype(str), viz_df[signal_col].astype(str)):
+        reg = registries_by_session.get(str(sk), {})
+        info = _resolve_signal_info(registry=reg, token_val=tok)
+        end = canonical_end(info.get("end"))
+        records.append(
+            {
+                "_sensor": end,
+                "_end": end,
+                "_domain": str(info.get("domain") or "").strip(),
+                "_quantity": str(info.get("quantity") or "").strip(),
+                "_unit": str(info.get("unit") or "").strip(),
+            }
+        )
+
+    return pd.DataFrame.from_records(records, index=viz_df.index)
 

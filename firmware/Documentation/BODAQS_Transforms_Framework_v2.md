@@ -142,7 +142,7 @@ Transforms are applied **after conversion to real-world units**.
 The sensor pipeline is:
 
 1. ADC read (raw counts)
-2. Optional smoothing (EMA, deadband)
+2. Raw sample value used directly; no sample-time smoothing is applied
 3. Zero offset and polarity handling
 4. Conversion to real-world units (e.g. mm)
 5. **Transform application**
@@ -152,7 +152,7 @@ The sensor pipeline is:
 
 - `RAW`
   - Bypasses transforms entirely
-  - Logs raw (smoothed) ADC counts
+  - Logs raw ADC counts
 - `LINEAR`
   - Logs real-world units without transform
 - `POLY` / `LUT`

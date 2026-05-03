@@ -19,9 +19,6 @@ void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
   String s;
 
   if (params.getInt("pin", li))                    p.pin = (uint8_t)li;
-  if (params.getBool("invert", b))                 p.invert = b;
-  if (params.getFloat("ema_alpha", d))             p.emaAlphaPermille = (uint16_t)lround(d * 1000.0);
-  if (params.getInt("deadband", li))               p.deadbandCounts = (uint16_t)li;
   if (params.getInt("counts_per_turn", li))        p.countsPerTurn = (uint16_t)li;
   if (params.getInt("wrap_threshold_counts", li))  p.wrapThresholdCounts = (uint16_t)li;
   if (params.getInt("sensor_zero_count", li))      p.sensorZeroCount = (int32_t)li;
@@ -31,6 +28,9 @@ void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
   if (params.getBool("assume_turn0_at_start", b))  p.assumeTurn0AtStart = b;
   if (params.getBool("include_raw", b))            p.includeRawColumn = b;
   if (params.get("units_label", s))                s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
+  if (params.get("end", s))                        s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
+  if (params.get("primary_domain", s))             s.toCharArray(p.primaryDomain, sizeof(p.primaryDomain));
+  if (params.get("primary_quantity", s))           s.toCharArray(p.primaryQuantity, sizeof(p.primaryQuantity));
 
   long ain = -1;
   if (params.getInt("ain", ain) && board::gBoard) {
@@ -75,9 +75,6 @@ int AS5600StringPotAnalog::readWrappedCountsOnce() const {
 const ParamDef* AS5600StringPotAnalog::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     {"ain",                   ParamType::Int,   "-1",    "-1",   "7",    nullptr, "Analog input ordinal (AIN0..). -1=use pin"},
-    {"invert",                ParamType::Bool,  "false", nullptr, nullptr, nullptr, "Invert measurement direction"},
-    {"ema_alpha",             ParamType::Float, "0.2",   "0",    "1",    nullptr, "EMA alpha [0..1]"},
-    {"deadband",              ParamType::Int,   "0",     "0",    "4095", nullptr, "Deadband on unwrapped counts"},
     {"counts_per_turn",       ParamType::Int,   "4096",  "2",    "32767", nullptr, "Wrapped counts per AS5600 turn"},
     {"wrap_threshold_counts", ParamType::Int,   "2048",  "1",    "32767", nullptr, "Delta threshold used to detect wrap crossings"},
     {"sensor_zero_count",     ParamType::Int,   "0",     nullptr, nullptr, nullptr, "Unwrapped counts at zero travel"},
@@ -86,8 +83,11 @@ const ParamDef* AS5600StringPotAnalog::paramDefs(size_t& count) {
     {"installed_zero_count",  ParamType::Int,   "0",     nullptr, nullptr, nullptr, "Installed zero point in unwrapped counts"},
     {"assume_turn0_at_start", ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Reset unwrap state to turn 0 at each logging start"},
     {"output_mode",           ParamType::Enum,  "RAW,LINEAR,POLY,LUT", nullptr, nullptr, nullptr, "Output method: wrapped RAW, linear mm, or transformed mm"},
-    {"include_raw",           ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Append wrapped RAW column after primary"},
+    {"include_raw",           ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Append wrapped and unwrapped RAW columns"},
     {"units_label",           ParamType::String,"mm",    nullptr, nullptr, nullptr, "Units suffix for LINEAR output"},
+    {"end",                   ParamType::Enum,  "",      nullptr, nullptr, "front,rear", "Optional semantic end for log metadata"},
+    {"primary_domain",        ParamType::Enum,  "",      nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
+    {"primary_quantity",      ParamType::Enum,  "",      nullptr, nullptr, "disp,ang_disp,force,pressure,temp,voltage,norm", "Optional semantic quantity for primary output"},
   };
 
   count = sizeof(defs) / sizeof(defs[0]);

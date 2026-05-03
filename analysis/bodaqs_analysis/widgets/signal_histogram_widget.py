@@ -108,6 +108,7 @@ def make_signal_histogram_widget_for_loader(
             scope_sessions=scope_sessions,
             get_session=_get_session,
             registry_policy=registry_policy,
+            primary_only=bool(w_primary_only.value),
         )
         return resolved.options, resolved.by_session
 
@@ -129,6 +130,7 @@ def make_signal_histogram_widget_for_loader(
         rows=min(8, max(3, len(entity_ids))),
         layout=W.Layout(width="450px"),
     )
+    w_primary_only = W.Checkbox(value=True, description="Primary signals only")
 
     w_bins = W.BoundedIntText(value=default_bins, min=1, max=max_bins, description="Bins:", layout=W.Layout(width="150px"))
     w_cdf = W.Checkbox(value=False, description="CDF")
@@ -358,6 +360,7 @@ def make_signal_histogram_widget_for_loader(
         w.observe(_render, names="value")
 
     w_sessions.observe(_on_scope_change, names="value")
+    w_primary_only.observe(_on_scope_change, names="value")
     w_show_metrics.observe(_toggle_trim_input, names="value")
 
     controls = W.VBox(
@@ -375,7 +378,7 @@ def make_signal_histogram_widget_for_loader(
             W.HBox(
                 [
                     W.VBox([sessions_label, w_sessions]),
-                    W.VBox([signals_label, w_signals]),
+                    W.VBox([signals_label, w_primary_only, w_signals]),
                 ]
             ),
         ]
@@ -402,6 +405,7 @@ def make_signal_histogram_widget_for_loader(
         "controls": {
             "sessions": w_sessions,
             "signals": w_signals,
+            "primary_only": w_primary_only,
             "bins": w_bins,
             "cdf": w_cdf,
             "normalize": w_norm,

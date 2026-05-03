@@ -12,13 +12,14 @@ static constexpr uint8_t BOARD_MAX_I2C_BUSES = 2;
 enum class BoardID : uint8_t {
   ThingPlusS3_BODAQS_4_D = 0,
   ThingPlusS3_BODAQS_4_D_UartI2C1,
-  ThingPlus_A,
+  ThingPlusS3_BODAQS_4_F,
   // Add more here...
 };
 
-enum class StorageType : uint8_t { None, SPI_SdFat, SDMMC };
+enum class StorageType : uint8_t { None, SDMMC };
 enum class DisplayType : uint8_t { None, OLED_SSD1306 };
 enum class FuelGaugeType : uint8_t { None, MAX17048, Other };
+enum class AdcAttenuation : uint8_t { Db0 = 0, Db2p5, Db6, Db11 };
 enum class ButtonID : uint8_t { BTN0=0, BTN1, BTN2, BTN3, BTN4, BTN5, Count };
 enum class ButtonMode : uint8_t {Interrupt = 0, Poll = 1 };
 
@@ -26,12 +27,6 @@ enum class ButtonMode : uint8_t {Interrupt = 0, Poll = 1 };
 
 struct StorageProfile {
   StorageType type = StorageType::None;
-
-  // SPI SD (SdFat-style) configuration
-  int8_t spi_host = 2;             // VSPI=2, HSPI=1 (your convention)
-  int8_t sck = -1, miso = -1, mosi = -1;
-  int8_t cs  = -1;
-  uint32_t spi_hz = 20000000;
 
   // SDMMC configuration
   bool sdmmc_1bit = true;          // if you use SD_MMC 1-bit mode
@@ -96,9 +91,17 @@ struct AnalogInputsProfile {
   int8_t pins[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
   uint8_t count = 0;
 
+  // Optional switched analog rail control.
+  // When present, firmware drives this to the default-on state at boot,
+  // and disables it before sleep or when battery voltage is too low to log.
+  int8_t enable_pin = -1;
+  bool enable_active_high = true;
+  bool enable_default_on = true;
+
   // Optional hints
   uint16_t adc_max = 4095;
   float vref = 3.3f;
+  AdcAttenuation attenuation = AdcAttenuation::Db11;
 };
 
 struct IndicatorsProfile {

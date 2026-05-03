@@ -13,6 +13,7 @@
 #include "CalCapture.h"
 #include "ButtonActions.h"
 #include "WiFiManager.h"
+#include "FirmwareInfo.h"
 #include "DebugLog.h"
 #include <WiFi.h>
 #include "RTCManager.h"
@@ -30,8 +31,10 @@ static const char* stateName(MenuSystem::State s) {
     case MenuSystem::State::Main:        return "Main";
     case MenuSystem::State::SensorsList: return "SensorsList";
     case MenuSystem::State::RatePicker:  return "RatePicker";
+    case MenuSystem::State::LogFormatPicker: return "LogFormatPicker";
     case MenuSystem::State::CalibSensors:return "CalibSensors";
     case MenuSystem::State::CalibDetail: return "CalibDetail";
+    case MenuSystem::State::About:       return "About";
     default: return "?";
   }
 }
@@ -61,11 +64,13 @@ namespace {
     SensorsToggle,
     SampleRate,
     Calibration,
+    LogFormat,
     Sleep,
     ResetTime,
-    Restart
+    Restart,
+    About
   };
-  static inline uint8_t mainItemCount_() { return 7; }
+  static inline uint8_t mainItemCount_() { return 9; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -114,9 +119,13 @@ namespace {
   static void drawRatePicker_();
   static void enterRatePicker_();
   static void applyRate_();
+  static void drawLogFormatPicker_();
+  static void enterLogFormatPicker_();
+  static void applyLogFormat_();
   static void redraw_();
   static void drawCalibSensors_();
   static void drawCalibDetail_();
+  static void drawAbout_();
   static void toggleSelectedSensor_();
   static void showCalibrationCaptureToast_(const char* label, int32_t counts);
   static RangeCapture s_rangeCap;   // <--- ADD THIS LINE
@@ -156,6 +165,8 @@ namespace {
       }
       case MainItem::Calibration:
         return "Calibration";
+      case MainItem::LogFormat:
+        return "Log format";
       case MainItem::Sleep:
         return "Sleep";
       case MainItem::ResetTime:
@@ -165,6 +176,8 @@ namespace {
         return "Reset time";
       case MainItem::Restart:
         return "Restart";
+      case MainItem::About:
+        return "About";
       default:
         return "?";
     }
@@ -196,6 +209,9 @@ namespace {
       const int y = 12 + row * 10;   // note: row, not i
       UI::oledText(0, y, line);
     }
+
+    if (s_mainTop > 0) UI::oledText(118, 0, "^");
+    if ((uint8_t)(s_mainTop + MAIN_VISIBLE_ROWS) < N) UI::oledText(118, 54, "v");
 
     DisplayManager::present();
   }
@@ -289,6 +305,13 @@ namespace {
         break;
       }
 
+      case MainItem::LogFormat: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        enterLogFormatPicker_();
+        break;
+      }
+
       case MainItem::Restart: {
         s_swallowEnterRelease = true;
         guardEnterRight();
@@ -310,6 +333,14 @@ namespace {
         delay(150);
         RTCManager_invalidateInternalTime();
         esp_restart(); // does not return
+        break;
+      }
+
+      case MainItem::About: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        s_state = State::About;
+        drawAbout_();
         break;
       }
     }
@@ -431,13 +462,32 @@ namespace {
     DisplayManager::present();
   }
 
+  static String truncateForOled_(const String& text, uint8_t maxChars) {
+    if (text.length() <= maxChars) return text;
+    if (maxChars <= 1) return text.substring(0, maxChars);
+    return text.substring(0, maxChars - 1) + String("~");
+  }
+
+  static void drawAbout_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+    UI::clear(UI::TARGET_OLED);
+    UI::oledText(0, 0, "About");
+    UI::oledText(0, 12, String("FW: ") + FirmwareInfo::version());
+    UI::oledText(0, 24, truncateForOled_(String("Board: ") + FirmwareInfo::boardName(), 21));
+    UI::oledText(0, 36, truncateForOled_(String("Built: ") + FirmwareInfo::buildDateTime(), 21));
+    UI::oledText(0, 54, "Left = back");
+    DisplayManager::present();
+  }
+
   static void redraw_() {
     switch (s_state) {
       case State::Main:         drawMain_();         break;
       case State::SensorsList:  drawSensors_();      break;
       case State::RatePicker:   drawRatePicker_();   break;
+      case State::LogFormatPicker: drawLogFormatPicker_(); break;
       case State::CalibSensors: drawCalibSensors_(); break;
       case State::CalibDetail:  drawCalibDetail_();  break;
+      case State::About:        drawAbout_();        break;
       default: break;
     }
   }
@@ -469,6 +519,10 @@ namespace {
 
       case State::RatePicker:
         applyRate_();
+        return true;
+
+      case State::LogFormatPicker:
+        applyLogFormat_();
         return true;
 
       case State::CalibSensors:
@@ -579,13 +633,7 @@ namespace {
 
           case CalUiPhase::RangeFinished:
             if (s_calOptSel == 0) {
-              const bool invert = (s_rangeCap.finish < s_rangeCap.start);
               if (s->finishCalibration(true)) {
-                SensorSpec sp;
-                if (ConfigManager::getSensorSpec(s_calSel, sp)) {
-                  ConfigManager::saveSensorParamByName(sp.name, "invert", invert ? "true" : "false");
-                }
-
                 UI::toastModal("Range saved", 2000, 1);
                 deferUiFor(2000);
                 s_calUiPhase = CalUiPhase::Idle;
@@ -630,6 +678,12 @@ namespace {
   }
 
   static uint8_t  s_rateIdx = 0;   // selection within Rates::kList
+  static uint8_t  s_logFormatIdx = 0;
+  static constexpr uint8_t kLogFormatCount = 2;
+  static constexpr LogFormat kLogFormatOptions[kLogFormatCount] = {
+    LogFormat::BodaqsStandard,
+    LogFormat::SynBikeRaw
+  };
 
   static void drawRatePicker_() {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;  // toast visible, skip repaint
@@ -687,6 +741,61 @@ namespace {
     uint16_t hz = Rates::kList[s_rateIdx];
     LoggingManager::setSampleRateHz(hz);
     UI::toastModal(String("Rate: ") + hz + " Hz", 2000, 1);
+    deferUiFor(2000);
+    s_state = State::Main;
+    drawMain_();
+  }
+
+  static void drawLogFormatPicker_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+    UI::clear(UI::TARGET_OLED);
+    drawHeader_("Log Format");
+
+    const LogFormat active = ConfigManager::get().logFormat;
+
+    int y = 12;
+    for (uint8_t i = 0; i < kLogFormatCount; ++i) {
+      const LogFormat option = kLogFormatOptions[i];
+      const bool isSel = (i == s_logFormatIdx);
+      const bool isActive = (option == active);
+
+      String line;
+      line.reserve(28);
+      line += isSel ? ">" : " ";
+      line += " ";
+      line += isActive ? "[*] " : "[ ] ";
+      line += ConfigManager::logFormatLabel(option);
+
+      UI::oledText(0, y, line);
+      y += 10;
+    }
+
+    DisplayManager::present();
+  }
+
+  static void enterLogFormatPicker_() {
+    const LogFormat cur = ConfigManager::get().logFormat;
+    s_logFormatIdx = 0;
+    for (uint8_t i = 0; i < kLogFormatCount; ++i) {
+      if (kLogFormatOptions[i] == cur) {
+        s_logFormatIdx = i;
+        break;
+      }
+    }
+    s_state = State::LogFormatPicker;
+    drawLogFormatPicker_();
+  }
+
+  static void applyLogFormat_() {
+    if (LoggingManager::isRunning()) {
+      UI::toastModal("Stop log", 2000, 1);
+      deferUiFor(2000);
+      return;
+    }
+
+    const LogFormat format = kLogFormatOptions[s_logFormatIdx];
+    ConfigManager::setLogFormat(format);
+    UI::toastModal(String("Format: ") + ConfigManager::logFormatLabel(format), 2000, 1);
     deferUiFor(2000);
     s_state = State::Main;
     drawMain_();
@@ -916,6 +1025,34 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       break;
     }
 
+    case State::LogFormatPicker: {
+      if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
+        s_state = State::Main;
+        drawMain_();
+        return;
+      }
+
+      if (ev == BUTTON_PRESSED) {
+        if (d == Dir::Up) {
+          if (s_logFormatIdx > 0) --s_logFormatIdx;
+          drawLogFormatPicker_();
+          return;
+        }
+        if (d == Dir::Down) {
+          if (s_logFormatIdx + 1 < kLogFormatCount) ++s_logFormatIdx;
+          drawLogFormatPicker_();
+          return;
+        }
+        if ((d == Dir::Enter || d == Dir::Right) && millis() >= s_enterGuardUntilMs) {
+          if (activateCurrentSelection_()) return;
+        }
+      }
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
+      }
+      break;
+    }
+
 
     case State::CalibSensors: {
       const uint8_t n = ConfigManager::sensorCount();
@@ -960,6 +1097,14 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       }
       break;
     }
+
+    case State::About:
+      if (d == Dir::Left) {
+        s_state = State::Main;
+        drawMain_();
+        return;
+      }
+      break;
 
     default: break;
   }

@@ -66,6 +66,7 @@ class PreprocessDefaults:
     zero_min_samples: int = 10
 
     clip_0_1: bool = False
+    prefer_postprocessing_transformations: bool = False
     butterworth_smoothing: Optional[List[Dict[str, Any]]] = None
     butterworth_generate_residuals: bool = False
 
@@ -82,7 +83,7 @@ class PreprocessDefaults:
 class PreprocessControls:
     """
     Builds an Accordion UI for Step 2 parameters and produces a validated config dict
-    suitable for calling run_macro(...).
+    suitable for calling preprocess_session(...).
 
     - disp_cols_all: list of canonical displacement column names (quantity == "disp")
     - sessions_by_id: dict of sessions from Step 1 (used for session selector only)
@@ -216,6 +217,10 @@ class PreprocessControls:
 
         # Clipping & prompting
         self.w_clip_0_1 = W.Checkbox(value=self.defaults.clip_0_1, description="Clip to [0, 1]")
+        self.w_prefer_postprocessing_transformations = W.Checkbox(
+            value=self.defaults.prefer_postprocessing_transformations,
+            description="Prefer post-processing transformations",
+        )
         self.w_bw_smoothing = W.Textarea(
             value=json.dumps(self.defaults.butterworth_smoothing or [], indent=2),
             description="Configs",
@@ -287,6 +292,7 @@ class PreprocessControls:
 
         sec_misc = W.VBox([
             self.w_clip_0_1,
+            self.w_prefer_postprocessing_transformations,
             W.HTML("<b>Offline Butterworth smoothing</b> (JSON/Python list of dicts)"),
             self.w_bw_smoothing,
             self.w_bw_generate_residuals,
@@ -483,7 +489,7 @@ class PreprocessControls:
 
     def get_config(self) -> Dict[str, Any]:
         """
-        Returns a dict ready to be splatted into run_macro(...).
+        Returns a dict ready to be passed to preprocess_session(...).
         This does NOT include csv_path; that stays in the notebook loop.
         """
         disp_selected = list(self.w_disp_select.value or ())
@@ -500,6 +506,7 @@ class PreprocessControls:
             zero_min_samples=int(self.w_zero_min_samples.value),
 
             clip_0_1=bool(self.w_clip_0_1.value),
+            prefer_postprocessing_transformations=bool(self.w_prefer_postprocessing_transformations.value),
             butterworth_smoothing=self._parse_butterworth_smoothing_configs(),
             butterworth_generate_residuals=bool(self.w_bw_generate_residuals.value),
 

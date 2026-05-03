@@ -20,7 +20,8 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
-from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+from bodaqs_analysis.sensor_aliases import canonical_end
+from bodaqs_analysis.signal_selectors import selector_matches_signal
 from bodaqs_analysis.widgets.contracts import (
     ArtifactStoreLike,
     ENTITY_KEY_COL,
@@ -46,6 +47,7 @@ from bodaqs_analysis.widgets.loaders import (
     make_session_loader,
 )
 from bodaqs_analysis.widgets.metric_widget_data import (
+    assign_signal_semantics_columns,
     assign_sensor_column,
     build_metric_viz_df,
     registry_maps_for_sessions,
@@ -105,7 +107,7 @@ def prepare_metric_scatter_consumer_data(
     if session_loader is None:
         raise ValueError("session_loader is required")
     if require_schema and (not isinstance(schema, Mapping) or not schema):
-        raise ValueError("schema is missing/empty (required for schema-mediated sensor resolution)")
+        raise ValueError("schema is missing/empty (required for schema-mediated event-context resolution)")
     validate_registry_policy(registry_policy)
     schema_obj = schema if isinstance(schema, Mapping) else {}
     viz_df, metric_cols = build_metric_viz_df(
@@ -139,11 +141,21 @@ def prepare_metric_scatter_consumer_data(
         registries_by_session=registries_by_session,
         schema_maps_by_session=schema_maps_by_session,
     )
+    semantics_df = assign_signal_semantics_columns(
+        viz_df=viz_df,
+        session_key_col=session_key_col,
+        signal_col=signal_col,
+        registries_by_session=registries_by_session,
+    )
+    for col in ("_end", "_domain", "_quantity", "_unit"):
+        viz_df[col] = semantics_df[col]
+    registry_sensor = semantics_df["_sensor"].astype(str)
+    viz_df["_sensor"] = viz_df["_sensor"].where(viz_df["_sensor"].astype(str).str.len() > 0, registry_sensor)
 
     if viz_df["_sensor"].astype(str).str.len().sum() == 0:
         ex = viz_df[[session_key_col, schema_id_col, signal_col]].drop_duplicates().head(8)
         logger.warning(
-            "metric_scatter: Could not resolve any sensors via schema+registry. "
+            "metric_scatter: Could not resolve any event contexts via schema+registry. "
             "Sample (session_key, schema_id, %s):\n%s",
             signal_col,
             ex.to_string(index=False),
@@ -163,7 +175,7 @@ def prepare_metric_scatter_consumer_data(
         raise ValueError("No metric columns found after join (expected 'm_' prefix)")
     if not sensors:
         raise ValueError(
-            "No sensors could be resolved via schema+registry (viz_df['_sensor'] is empty). "
+            "No event contexts could be resolved via schema+registry (viz_df['_sensor'] is empty). "
             "Check that schema triggers and selected-session registries are compatible."
         )
 
@@ -180,6 +192,18 @@ def prepare_metric_scatter_consumer_data(
     }
 
 
+def _row_matches_signal_selector(row: pd.Series, selector: Mapping[str, Any]) -> bool:
+    return selector_matches_signal(
+        {
+            "end": row.get("_end"),
+            "domain": row.get("_domain"),
+            "quantity": row.get("_quantity"),
+            "unit": row.get("_unit"),
+        },
+        selector,
+    )
+
+
 def filter_metric_scatter_base_df(
     *,
     viz_df: pd.DataFrame,
@@ -187,17 +211,26 @@ def filter_metric_scatter_base_df(
     scope_entity_col: str,
     event_value: object,
     entity_values: Sequence[str],
-    sensor_values: Sequence[str],
+    sensor_values: Sequence[str] = (),
+    signal_selectors: Sequence[Mapping[str, Any]] | None = None,
 ) -> pd.DataFrame:
     sel_entities = [str(v) for v in entity_values if str(v).strip()]
-    sel_sensors = [canonical_sensor_id(v) for v in sensor_values if canonical_sensor_id(v)]
-    if not sel_entities or not sel_sensors or event_value is None:
+    sel_sensors = [canonical_end(v) for v in sensor_values if canonical_end(v)]
+    selectors = [dict(s) for s in (signal_selectors or []) if isinstance(s, Mapping) and s]
+    if not sel_entities or event_value is None:
         return viz_df.iloc[0:0].copy()
-    return viz_df[
+    base = viz_df[
         (viz_df[event_type_col].astype(str) == str(event_value))
         & (viz_df[scope_entity_col].astype(str).isin(sel_entities))
-        & (viz_df["_sensor"].map(canonical_sensor_id).isin(sel_sensors))
     ].copy()
+    if selectors:
+        mask = pd.Series(False, index=base.index)
+        for selector in selectors:
+            mask |= base.apply(lambda row: _row_matches_signal_selector(row, selector), axis=1)
+        return base.loc[mask].copy()
+    if not sel_sensors:
+        return viz_df.iloc[0:0].copy()
+    return base[base["_sensor"].map(canonical_end).isin(sel_sensors)].copy()
 
 
 def metric_scatter_sensor_options(
@@ -276,10 +309,11 @@ def build_metric_scatter_series(
     scope_entity_col: str,
     event_value: object,
     entity_values: Sequence[str],
-    sensor_values: Sequence[str],
+    sensor_values: Sequence[str] = (),
     x_metric: object,
     y_metric: object,
     series_labeler: Callable[[str, str], str] | None = None,
+    signal_selectors: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[MetricScatterSeries]:
     base = filter_metric_scatter_base_df(
         viz_df=viz_df,
@@ -288,20 +322,34 @@ def build_metric_scatter_series(
         event_value=event_value,
         entity_values=entity_values,
         sensor_values=sensor_values,
+        signal_selectors=signal_selectors,
     )
     sel_entities = [str(v) for v in entity_values if str(v).strip()]
-    sel_sensors = [canonical_sensor_id(v) for v in sensor_values if canonical_sensor_id(v)]
+    sel_sensors = [canonical_end(v) for v in sensor_values if canonical_end(v)]
+    selectors = [dict(s) for s in (signal_selectors or []) if isinstance(s, Mapping) and s]
 
     series: list[MetricScatterSeries] = []
-    for entity in sel_entities:
-        for sensor in sel_sensors:
-            sub = base[
-                (base[scope_entity_col].astype(str) == entity)
-                & (base["_sensor"].map(canonical_sensor_id) == sensor)
-            ]
-            x, y = coerce_metric_scatter_xy(sub, x_metric=x_metric, y_metric=y_metric)
-            label = series_labeler(entity, sensor) if callable(series_labeler) else f"{entity} | {sensor}"
-            series.append(MetricScatterSeries(label=label, x=x, y=y))
+    if selectors:
+        for entity in sel_entities:
+            entity_base = base[base[scope_entity_col].astype(str) == entity]
+            for idx, selector in enumerate(selectors):
+                selector_key = str(selector.get("end") or f"selector_{idx + 1}")
+                sub = entity_base[
+                    entity_base.apply(lambda row: _row_matches_signal_selector(row, selector), axis=1)
+                ]
+                x, y = coerce_metric_scatter_xy(sub, x_metric=x_metric, y_metric=y_metric)
+                label = series_labeler(entity, selector_key) if callable(series_labeler) else f"{entity} | {selector_key}"
+                series.append(MetricScatterSeries(label=label, x=x, y=y))
+    else:
+        for entity in sel_entities:
+            for sensor in sel_sensors:
+                sub = base[
+                    (base[scope_entity_col].astype(str) == entity)
+                    & (base["_sensor"].map(canonical_end) == sensor)
+                ]
+                x, y = coerce_metric_scatter_xy(sub, x_metric=x_metric, y_metric=y_metric)
+                label = series_labeler(entity, sensor) if callable(series_labeler) else f"{entity} | {sensor}"
+                series.append(MetricScatterSeries(label=label, x=x, y=y))
     return series
 
 
@@ -431,14 +479,14 @@ def make_metric_scatter_widget_for_loader(
     Consumer-pattern metric scatter widget.
 
     Sensor resolution is schema-mediated:
-        event row -> (schema_id, signal_col token) -> schema triggers -> registry -> sensor
+        event row -> (schema_id, signal_col token) -> schema triggers -> registry -> end/context
     """
     if events_index_df is None or len(events_index_df) == 0:
         raise ValueError("events_index_df is empty")
     if not key_to_ref:
         raise ValueError("key_to_ref is empty")
     if not isinstance(schema, Mapping) or not schema:
-        raise ValueError("schema is missing/empty (required for schema-mediated sensor resolution)")
+        raise ValueError("schema is missing/empty (required for schema-mediated event-context resolution)")
     validate_registry_policy(registry_policy)
 
     require_cols(events_index_df, (session_key_col,), name="events_index_df")
@@ -527,7 +575,7 @@ def _make_widget_from_viz_df_consumer(
         layout=W.Layout(width="450px"),
     )
 
-    sensors_label = W.Label("Sensors:")
+    sensors_label = W.Label("Ends:")
     w_sensors = W.SelectMultiple(
         options=sensors,
         value=tuple(sensors[:1]),
@@ -621,7 +669,7 @@ def _make_widget_from_viz_df_consumer(
                 print("Select at least one entity.")
                 return
             if not sel_sensors:
-                print("Select at least one sensor.")
+                print("Select at least one end.")
                 return
 
             base = _filtered_base()
@@ -653,7 +701,7 @@ def _make_widget_from_viz_df_consumer(
 
             ax.set_title(
                 f"{w_y.value} vs {w_x.value}\n"
-                f"{event_type_col}={w_event.value} | entities=compare, sensors=compare"
+                f"{event_type_col}={w_event.value} | entities=compare, ends=compare"
             )
             ax.set_xlabel(str(w_x.value))
             ax.set_ylabel(str(w_y.value))

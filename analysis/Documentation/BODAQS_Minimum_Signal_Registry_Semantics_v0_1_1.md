@@ -62,9 +62,16 @@ Each `SignalInfo` MUST contain the following keys:
   - Optional, but **highly recommended** when the same physical quantity can exist in multiple frames/domains.
   - Examples: `"sensor"`, `"wheel"`, `"bike"`, `"world"`.
 
+- `end`: `"front" | "rear" | None`
+  - Optional, but **highly recommended** for front/rear bike signals.
+  - Use this to distinguish front and rear suspension or wheel signals without
+    relying on logger-specific sensor identifiers.
+
 - `op_chain`: `list[str]`
   - List of analysis-side operation tokens applied to produce this column (possibly empty).
   - Examples: `["zeroed"]`, `["zeroed", "norm"]`, `["zeroed", "Butterworth_3Hz_4Order"]`, `["zeroed", "diff"]`.
+  - Primary analysis motion channels should keep full provenance here rather
+    than in their dataframe column names.
 
 Residual naming note:
 - Columns ending with `_op_Butterworth_<x>Hz_<y>Order_resid` are interpreted as residual outputs.
@@ -74,6 +81,53 @@ Residual naming note:
 
 - `source`: `list[str]`
   - Parent column name(s) this column derives from (especially for `_op_*` or derived velocity/acceleration channels).
+
+- `source_columns`: `list[str]`
+  - Alias used by some generators for parent column names. Consumers should
+    prefer `source` when both are present, but may accept either.
+
+- `processing_role`: `str`
+  - Analysis role assigned by preprocessing. Recommended values include
+    `"primary_analysis"` and `"secondary_analysis"`.
+  - Use this when a session contains multiple valid semantic matches for the
+    same physical quantity, such as raw transformed rear-wheel displacement and
+    a filtered primary analysis rear-wheel displacement.
+
+- `motion_source_id`: `str`
+  - Identifier of the `motion_derivation.sources[]` entry that produced this
+    signal.
+
+- `motion_profile_id`: `str`
+  - Identifier of the motion-derivation profile that produced this signal.
+  - The primary profile should use `"primary"`; secondary profiles should use
+    their configured `id`.
+
+- `derivation`: `dict`
+  - Structured provenance describing how the signal was generated. For
+    motion-derived channels this should include the source column, displacement
+    low-pass settings, S-G materialized window settings, and final derivative
+    low-pass settings.
+
+- `origin`: `str`
+  - Broad producer of the signal metadata or values. Current values include
+    `"logger"` for signals supplied by log metadata and `"analysis"` for
+    analysis-generated signals.
+
+- `semantic_selection_excluded`: `bool`
+  - When true, semantic selectors should ignore this signal even though it
+    remains in the dataframe and registry for inspection.
+  - This is used when `prefer_postprocessing_transformations` allows an
+    analysis-generated signal to supersede a logger-originated signal with
+    equivalent semantics.
+
+- `semantic_selection_exclusion_reason`: `str`
+  - Human-readable/provenance reason explaining why a signal was excluded from
+    semantic selector matching.
+
+- `sensor`: `str | None`
+  - Logger/source sensor identifier, if supplied by log metadata.
+  - This is not an analysis selector field. For front/rear bike-location
+    matching, use `end` plus `domain`, `quantity`, and `unit`.
 
 - `notes`: `str`
   - Free text diagnostics or hints.
@@ -85,6 +139,9 @@ Residual naming note:
 This minimum registry is compatible with the column grammar in **Signal naming & units spec (v0.2)**:
 
 - `kind`, `domain`, `unit`, and `op_chain` should be directly parseable from the column name when the name is canonical.
+- Primary motion-derived column names may intentionally omit operation tokens,
+  for example `rear_wheel_disp_dom_wheel [mm]`; the registry remains the source
+  of filter provenance via `op_chain` and `derivation`.
 - The registry is still required even if names are canonical, because the registry is the **API surface** used by resolution logic.
 
 ---
@@ -94,9 +151,12 @@ This minimum registry is compatible with the column grammar in **Signal naming &
 When resolving schema roles (e.g. `disp`, `vel`, `acc`) to columns, downstream code SHOULD use the registry to:
 
 1. Filter candidates by `kind` (usually engineered `""`),
-2. Filter by `unit` and `domain` as required by the schema,
-3. Prefer “cleaner” stages using `op_chain` (policy-defined ranking),
-4. Fall back deterministically and emit actionable diagnostics if no match exists.
+2. Filter by `unit`, `domain`, and `end` as required by the schema,
+3. Prefer a requested `processing_role` when supplied, especially
+   `"primary_analysis"` for standard metrics/event detection,
+4. Prefer “cleaner” stages using `op_chain` when no explicit role is supplied
+   (policy-defined ranking),
+5. Fall back deterministically and emit actionable diagnostics if no match exists.
 
 This document does **not** define the ranking policy; it defines the minimum metadata required for any reasonable policy to operate.
 

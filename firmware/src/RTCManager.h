@@ -19,6 +19,7 @@ void RTCManager_begin(RTCSource source = RTC_INTERNAL, TwoWire* extRtcWire = nul
 
 // Apply POSIX TZ string for localtime()/timestamp formatting.
 void RTCManager_setTimezone(const char* tz);
+const char* RTCManager_getTimezone();
 
 // Call periodically to resync epoch once per second
 void RTCManager_loop();

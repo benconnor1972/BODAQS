@@ -55,17 +55,19 @@ This contract defines:
 Recommended format:
 
 ```
-{schema_id}:{sensor}:{occurrence_index}
+{schema_id}:{event_context}:{occurrence_index}
 ```
 
 Example:
 
 ```
-rebounds:rear_shock:3
+rebounds:rear:3
 ```
 
 Notes:
-- `occurrence_index` is zero-based per `(schema_id, sensor)`
+- The middle token is an event context label, usually the expanded `end` value
+  such as `rear` or `front`. Older artifacts may contain source/sensor labels.
+- `occurrence_index` is zero-based per `(schema_id, event_context)`
 - The **only hard requirement** is uniqueness within a session: `(session_id, event_id)` must be unique
 - Consumers **must not parse** `event_id` positionally; use explicit columns (`session_id`, `schema_id`, `signal_col`, ...)
 

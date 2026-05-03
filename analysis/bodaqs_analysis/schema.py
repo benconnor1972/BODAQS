@@ -1,21 +1,72 @@
 from __future__ import annotations
-import io
-from typing import Any, Dict, List, Tuple
+
+import copy
 import hashlib
-import os
+import io
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Union
+
+import pandas as pd
 import yaml
 
-def _read_file_bytes(path: str) -> bytes:
+
+def _read_file_bytes(path: str | Path) -> bytes:
     with open(path, "rb") as f:
         return f.read()
+
 
 def _sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
-from typing import Dict, Any, Tuple, Union
+
+def parse_event_schema(
+    value: Mapping[str, Any] | str | bytes | Path,
+    *,
+    return_meta: bool = False,
+) -> Union[Dict[str, Any], Tuple[Dict[str, Any], dict]]:
+    """
+    Parse an event schema from an already-loaded mapping, YAML text/bytes, or a
+    local filesystem path.
+    """
+    source_path: str | None = None
+
+    if isinstance(value, Mapping):
+        schema = copy.deepcopy(dict(value))
+        data_bytes = yaml.safe_dump(schema, sort_keys=False).encode("utf-8")
+    else:
+        if isinstance(value, Path):
+            source_path = str(value)
+            data_bytes = _read_file_bytes(value)
+        elif isinstance(value, bytes):
+            data_bytes = bytes(value)
+        elif isinstance(value, str):
+            candidate = Path(value)
+            if candidate.exists():
+                source_path = str(candidate)
+                data_bytes = _read_file_bytes(candidate)
+            else:
+                data_bytes = value.encode("utf-8")
+        else:
+            raise TypeError("event schema must be a mapping, YAML text/bytes, or a path")
+
+        schema = yaml.safe_load(io.BytesIO(data_bytes))
+
+    if not isinstance(schema, dict):
+        raise ValueError("Top-level YAML must be a mapping (dict).")
+
+    if not return_meta:
+        return schema
+
+    meta = {
+        "sha256": _sha256(data_bytes),
+        "source_path": source_path,
+    }
+    return schema, meta
+
 
 def load_event_schema(
-    path: str,
+    path: str | Path,
     *,
     return_meta: bool = False,
 ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], dict]]:
@@ -38,20 +89,7 @@ def load_event_schema(
         Only when return_meta=True. Meta contains diagnostics
         such as content hash.
     """
-    data_bytes = _read_file_bytes(path)
-    schema = yaml.safe_load(io.BytesIO(data_bytes))
-
-    if not isinstance(schema, dict):
-        raise ValueError("Top-level YAML must be a mapping (dict).")
-
-    if not return_meta:
-        return schema
-
-    meta = {
-        "sha256": _sha256(data_bytes),
-        "source_path": path,
-    }
-    return schema, meta
+    return parse_event_schema(Path(path), return_meta=return_meta)
 
 
 def _validate_debounce_block(prefix: str, deb: Any, issues: List[str]):

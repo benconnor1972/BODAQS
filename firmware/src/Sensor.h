@@ -45,11 +45,49 @@ struct OutputConfig {
   constexpr OutputConfig(OutputMode m, bool include) : primary(m), includeRaw(include) {}
 };
 
-// -------- RAW smoothing config (pre-transform) --------
-struct SmoothingConfig {
-  float emaAlpha    = 1.0f;  // 1.0 => disabled
-  float deadband    = 0.0f;
-  bool  emaWarmStart = true;
+// -------- Runtime description of an emitted CSV column --------
+//
+// This is deliberately a small fixed-size carrier so firmware can describe the
+// exact columns it is already emitting without heap-heavy metadata machinery.
+struct SensorColumnDescriptor {
+  char csvHeader[96] = {0};
+  char columnId[64] = {0};
+  char sensorName[16] = {0};
+  char end[16] = {0};       // e.g. "front", "rear"; empty when not configured
+  char domain[24] = {0};    // e.g. "wheel", "suspension"; empty when unknown
+  char quantity[24] = {0};  // e.g. "raw", "disp", "ang_disp"; empty when unknown
+  char unit[24] = {0};      // e.g. "counts", "mm", "deg"
+  char source[24] = {0};    // e.g. "primary", "raw_counts", "linearized"
+  char calibrationId[32] = {0};
+  char transformChain[64] = {0};
+  char notes[64] = {0};
+  OutputMode outputMode = OutputMode::RAW;
+  bool required = true;
+  bool primary = false;
+  bool raw = false;
+  bool calibrated = false;
+  bool transformed = false;
+};
+
+struct SensorMetadataDescriptor {
+  char sensorId[16] = {0};
+  char name[32] = {0};
+  char type[32] = {0};
+  char domain[24] = {0};
+  char rawUnit[16] = {"counts"};
+  char calibrationType[24] = {0};
+  char calibrationInputUnit[16] = {"counts"};
+  char calibrationOutputUnit[24] = {0};
+  int32_t installedZeroCount = 0;
+  int32_t sensorZeroCount = 0;
+  int32_t sensorFullCount = 0;
+  float sensorFullTravel = 0.0f;
+  bool invert = false;
+  bool hasCalibration = false;
+  bool hasTracking = false;
+  uint16_t countsPerTurn = 0;
+  uint16_t wrapThresholdCounts = 0;
+  bool assumeTurn0AtStart = false;
 };
 
 struct LoggerConfig;
@@ -81,6 +119,8 @@ public:
   virtual uint8_t columnCount() const = 0;
   virtual void getColumnName(uint8_t idx, char* out, size_t cap) const = 0;
   virtual void sampleValues(float* out, uint8_t max) = 0;
+  virtual bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const;
+  virtual bool describeSensorMetadata(SensorMetadataDescriptor& out) const;
 
   // UI labels
   virtual const char* label() const { return "Sensor"; }
@@ -97,10 +137,6 @@ public:
   virtual CalibrationState calibration() const { return CalibrationState{}; }
   virtual bool setCalibration(const CalibrationState&) { return false; }
   virtual bool supportsCalibration() const { return false; }
-
-  // ----- RAW smoothing (pre-transform) -----
-  virtual SmoothingConfig smoothing() const { return SmoothingConfig{}; }
-  virtual void setSmoothing(const SmoothingConfig&) {}
 
   // ----- User calibration overlay (ZERO / RANGE) -----
   virtual bool        userCalibrationEnabled() const { return false; }

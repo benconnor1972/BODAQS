@@ -191,16 +191,11 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
-    XFORM_LOGI("about to load transforms for '%s'\n", sp.name);
-    XFORM_LOGD("gSd ptr=%p\n", (void*)gSd);
-
     // Preload any transforms on disk for this sensor
     if (SD_MMC.cardType() != CARD_NONE) {
       gTransforms.loadForSensor(sp.name, SD_MMC);   // fs::FS&
-    } else if (gSd) {
-      gTransforms.loadForSensor(sp.name, *gSd);     // SdFs& (SPI backend)
     } else {
-      XFORM_LOGW("no SD backend available -> skipping transform load\n");
+      XFORM_LOGW("SD_MMC not available -> skipping transform load\n");
     }
 
     {
@@ -323,31 +318,6 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       }
 
     }
-
-    // 5) Smoothing (EMA alpha + deadband), if present
-    {
-      SmoothingConfig sm = s->smoothing();
-
-      // ema_alpha expects a double& from ParamPack
-      double fa = 0.0;
-      if (sp.params.getFloat("ema_alpha", fa)) {
-        sm.emaAlpha = (float)fa;
-      }
-
-      // deadband: try float first, then fall back to int
-      double dbf = 0.0;
-      if (sp.params.getFloat("deadband", dbf)) {
-        sm.deadband = (float)dbf;
-      } else {
-        long dbi = 0;
-        if (sp.params.getInt("deadband", dbi)) {
-          sm.deadband = (float)dbi;
-        }
-      }
-
-      s->setSmoothing(sm);
-    }
-
 
     // Register with SensorManager (takes ownership, per your contract)
     SensorManager::registerSensor(s);
@@ -495,6 +465,142 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     }
 }
 
+uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut) {
+  uint16_t total = 0;
+  uint16_t written = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i) {
+      SensorColumnDescriptor desc;
+      if (!s->describeColumn(i, desc)) continue;
+
+      if (out && written < maxOut) {
+        out[written] = desc;
+        ++written;
+      }
+      ++total;
+    }
+  }
+
+  return total;
+}
+
+uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut) {
+  uint16_t total = 0;
+  uint16_t written = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    SensorMetadataDescriptor desc;
+    if (!s->describeSensorMetadata(desc)) continue;
+
+    if (out && written < maxOut) {
+      out[written] = desc;
+      ++written;
+    }
+    ++total;
+  }
+
+  return total;
+}
+
+uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut) {
+  uint16_t total = 0;
+  uint16_t written = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i) {
+      SensorColumnDescriptor desc;
+      if (!s->describeColumn(i, desc)) continue;
+
+      if (out && written < maxOut) {
+        out[written] = desc.raw;
+        ++written;
+      }
+      ++total;
+    }
+  }
+
+  return total;
+}
+
+namespace {
+int synBikeDomainScore_(const char* domain) {
+  if (!domain) return 0;
+  if (strcasecmp(domain, "wheel") == 0) return 2;
+  if (strcasecmp(domain, "suspension") == 0) return 1;
+  return 0;
+}
+
+void copyField_(char* dst, size_t cap, const char* src) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  size_t n = strlen(src);
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+void maybeSelectSynBikeRaw_(SynBikeRawColumnBinding& slot,
+                            int& slotScore,
+                            const SensorColumnDescriptor& desc,
+                            const SensorMetadataDescriptor& sensor,
+                            uint16_t valueIndex) {
+  if (!desc.raw) return;
+  if (strcasecmp(desc.quantity, "raw") != 0) return;
+  if (strcasecmp(desc.source, "unwrapped_raw_counts") == 0) return;
+
+  const int score = synBikeDomainScore_(desc.domain);
+  if (score <= 0 || score <= slotScore) return;
+
+  slot.available = true;
+  slot.valueIndex = valueIndex;
+  slot.invert = sensor.invert;
+  copyField_(slot.sensorName, sizeof(slot.sensorName), desc.sensorName);
+  copyField_(slot.csvHeader, sizeof(slot.csvHeader), desc.csvHeader);
+  copyField_(slot.end, sizeof(slot.end), desc.end);
+  copyField_(slot.domain, sizeof(slot.domain), desc.domain);
+  copyField_(slot.source, sizeof(slot.source), desc.source);
+  slotScore = score;
+}
+} // namespace
+
+bool resolveSynBikeRawBindings(SynBikeRawBindings& out) {
+  out = SynBikeRawBindings{};
+
+  int frontScore = 0;
+  int rearScore = 0;
+  uint16_t valueIndex = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    SensorMetadataDescriptor sensorMeta;
+    (void)s->describeSensorMetadata(sensorMeta);
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i, ++valueIndex) {
+      SensorColumnDescriptor desc;
+      if (!s->describeColumn(i, desc)) continue;
+
+      if (strcasecmp(desc.end, "front") == 0) {
+        maybeSelectSynBikeRaw_(out.front, frontScore, desc, sensorMeta, valueIndex);
+      } else if (strcasecmp(desc.end, "rear") == 0) {
+        maybeSelectSynBikeRaw_(out.rear, rearScore, desc, sensorMeta, valueIndex);
+      }
+    }
+  }
+
+  return out.front.available || out.rear.available;
+}
+
 
 void debugDump(const char* tag) {
   const uint8_t kSlots = MAX_SENSORS;
@@ -511,6 +617,35 @@ void debugDump(const char* tag) {
     if (cols) s->getColumnName(0, firstCol, sizeof(firstCol));
     LOGI("  slot=%u muted=%d cols=%u firstCol='%s'\n",
          (unsigned)i, (int)s->muted(), (unsigned)cols, firstCol);
+  }
+}
+
+void debugDumpColumnMetadata(const char* tag) {
+  SM_LOGI("%s: sensor column metadata\n", tag ? tag : "metadata");
+
+  uint16_t logicalIndex = 0;
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i) {
+      SensorColumnDescriptor d;
+      if (!s->describeColumn(i, d)) continue;
+
+      LOGI("  col=%u sensor='%s' header='%s' id='%s' end='%s' domain='%s' quantity='%s' unit='%s' source='%s' transform='%s' notes='%s'\n",
+           (unsigned)logicalIndex,
+           d.sensorName,
+           d.csvHeader,
+           d.columnId,
+           d.end,
+           d.domain,
+           d.quantity,
+           d.unit,
+           d.source,
+           d.transformChain,
+           d.notes);
+      ++logicalIndex;
+    }
   }
 }
 

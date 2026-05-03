@@ -121,7 +121,27 @@ static bool shouldForceRtcSyncOnBoot_(esp_reset_reason_t resetReason,
 
 static bool shouldInvalidateRtcOnBoot_(esp_reset_reason_t resetReason,
                                        esp_sleep_wakeup_cause_t wakeCause) {
-  return resetReason == ESP_RST_DEEPSLEEP || wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED;
+  // Keep retained RTC time across deep-sleep wakes so the logger can continue
+  // to use the carried clock immediately, then force a background resync to
+  // correct any drift once Wi-Fi is available.
+  if (wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED || resetReason == ESP_RST_DEEPSLEEP) {
+    return false;
+  }
+
+  // Invalidate on suspicious warm-reset paths where retained system time is
+  // more likely to be stale or corrupted and there is no "sleep duration"
+  // context to bound the error.
+  switch (resetReason) {
+    case ESP_RST_SW:
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+    case ESP_RST_BROWNOUT:
+      return true;
+    default:
+      return false;
+  }
 }
 
 static void rememberConnectedNetwork_() {
@@ -209,12 +229,11 @@ static const char* firstNonEmptyHost_(const String& s1, const String& s2, const 
 }
 
 static void logRtcSyncNetworkDiag_(const char* ntpHost) {
-  LOGD_TAG("RTC", "RTC sync net: local=%s gateway=%s subnet=%s dns1=%s dns2=%s\n",
+  LOGD_TAG("RTC", "RTC sync net: local=%s gateway=%s subnet=%s dns1=%s\n",
            WiFi.localIP().toString().c_str(),
            WiFi.gatewayIP().toString().c_str(),
            WiFi.subnetMask().toString().c_str(),
-           WiFi.dnsIP(0).toString().c_str(),
-           WiFi.dnsIP(1).toString().c_str());
+           WiFi.dnsIP(0).toString().c_str());
 
   if (!ntpHost || !*ntpHost) {
     LOGD_TAG("RTC", "RTC sync DNS: no NTP hostname configured\n");
@@ -890,13 +909,11 @@ void WiFiManager::selectAndConnect_() {
     IPAddress gw = ipFrom(nets[chosenIndex].gateway);
     IPAddress sn = ipFrom(nets[chosenIndex].subnet);
     IPAddress d1 = ipFrom(nets[chosenIndex].dns1);
-    IPAddress d2 = ipFrom(nets[chosenIndex].dns2);
 
     // Sensible fallback: if DNS1 unset, use gateway
     if (d1 == IPAddress(0, 0, 0, 0)) d1 = gw;
 
-    // Use 4-arg if you don't want dns2, or 5-arg if your core supports it
-    WiFi.config(ip, gw, sn, d1, d2);
+    WiFi.config(ip, gw, sn, d1);
   } else {
     // IMPORTANT: revert to DHCP when switching away from a static network
     WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);

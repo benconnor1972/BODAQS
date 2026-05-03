@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
-from bodaqs_analysis.sensor_aliases import canonical_sensor_id
+from bodaqs_analysis.sensor_aliases import canonical_end
 from bodaqs_analysis.widgets.contracts import (
     ArtifactStoreLike,
     ENTITY_KEY_COL,
@@ -81,17 +81,17 @@ def make_metric_histogram_widget_for_loader(
     auto_display: bool = False,
 ) -> WidgetHandle:
     """
-    Consumer-pattern metric histogram widget (sensor-driven).
+    Consumer-pattern metric histogram widget (event-context-driven).
 
     Sensor resolution is schema-mediated:
-        event row -> (schema_id, token in signal_col) -> schema triggers -> canonical signal_col -> registry -> sensor
+        event row -> (schema_id, token in signal_col) -> schema triggers -> canonical signal_col -> registry -> end/context
     """
     if events_index_df is None or len(events_index_df) == 0:
         raise ValueError("events_index_df is empty")
     if not key_to_ref:
         raise ValueError("key_to_ref is empty")
     if not isinstance(schema, Mapping) or not schema:
-        raise ValueError("schema is missing/empty (required for schema-mediated sensor resolution)")
+        raise ValueError("schema is missing/empty (required for schema-mediated event-context resolution)")
     if session_loader is None:
         raise ValueError("session_loader is required")
     validate_registry_policy(registry_policy)
@@ -141,7 +141,7 @@ def make_metric_histogram_widget_for_loader(
     if viz_df["_sensor"].astype(str).str.len().sum() == 0:
         ex = viz_df[[session_key_col, schema_id_col, signal_col]].drop_duplicates().head(8)
         logger.warning(
-            "metric_histogram: Could not resolve any sensors via schema+registry. "
+            "metric_histogram: Could not resolve any event contexts via schema+registry. "
             "Sample (session_key, schema_id, %s):\n%s",
             signal_col,
             ex.to_string(index=False),
@@ -192,7 +192,7 @@ def _make_widget_from_viz_df_consumer(
         raise ValueError(f"No non-null values found in {event_type_col!r} after join")
     if not sensors:
         raise ValueError(
-            "No sensors could be resolved via schema+registry (viz_df['_sensor'] is empty). "
+            "No event contexts could be resolved via schema+registry (viz_df['_sensor'] is empty). "
             "Check that schema triggers and session registries are compatible."
         )
 
@@ -204,7 +204,7 @@ def _make_widget_from_viz_df_consumer(
         layout=W.Layout(width="450px"),
     )
 
-    lbl_sensors = W.Label("Sensors")
+    lbl_sensors = W.Label("Ends")
     w_sensors = W.SelectMultiple(
         options=sensors,
         value=tuple(sensors[:1]),
@@ -261,19 +261,19 @@ def _make_widget_from_viz_df_consumer(
             clear_output(wait=True)
 
             sel_sessions = list(map(str, w_sessions.value or ()))
-            sel_sensors = [canonical_sensor_id(s) for s in (w_sensors.value or ()) if canonical_sensor_id(s)]
+            sel_sensors = [canonical_end(s) for s in (w_sensors.value or ()) if canonical_end(s)]
 
             if not sel_sessions:
                 print("Select at least one session.")
                 return
             if not sel_sensors:
-                print("Select at least one sensor.")
+                print("Select at least one end.")
                 return
 
             base = viz_df[
                 (viz_df[event_type_col].astype(str) == str(w_event.value))
                 & (viz_df[scope_entity_col].astype(str).isin(sel_sessions))
-                & (viz_df["_sensor"].map(canonical_sensor_id).isin(sel_sensors))
+                & (viz_df["_sensor"].map(canonical_end).isin(sel_sensors))
             ]
 
             series: List[Tuple[str, np.ndarray]] = []
@@ -282,7 +282,7 @@ def _make_widget_from_viz_df_consumer(
                 for s in sel_sensors:
                     sub = base[
                         (base[scope_entity_col].astype(str) == sk)
-                        & (base["_sensor"].map(canonical_sensor_id) == s)
+                        & (base["_sensor"].map(canonical_end) == s)
                     ]
                     series.append((f"{sk} | {s}", _vals(sub)))
 
@@ -300,7 +300,7 @@ def _make_widget_from_viz_df_consumer(
 
             ax.set_title(
                 f"{w_metric.value} distribution\n"
-                f"{event_type_col}={w_event.value} | entities=compare, sensors=compare"
+                f"{event_type_col}={w_event.value} | entities=compare, ends=compare"
             )
             ax.set_xlabel(str(w_metric.value))
             ax.set_ylabel(
