@@ -206,6 +206,8 @@ def _blank_field_value(field: SessionNoteFieldDef) -> Any:
 def make_library_manager(
     *,
     artifacts_dir: str | Path = "artifacts",
+    selector: Mapping[str, Any] | None = None,
+    artifact_store: ArtifactStore | None = None,
     template_root: str | Path | None = None,
     aggregation_store: AggregationStore | None = None,
     projection_configs: Sequence[CatalogProjectionConfig] = (),
@@ -213,7 +215,11 @@ def make_library_manager(
     show_ids_default: bool = False,
     auto_display: bool = False,
 ) -> dict[str, Any]:
-    artifact_store = ArtifactStore(Path(artifacts_dir))
+    if artifact_store is None and selector is not None:
+        selector_store = selector.get("store") if isinstance(selector, Mapping) else None
+        if isinstance(selector_store, ArtifactStore):
+            artifact_store = selector_store
+    artifact_store = artifact_store or ArtifactStore(Path(artifacts_dir))
     template_store = SessionNoteTemplateStore(template_root)
     note_store = SessionNoteStore(store=artifact_store, template_store=template_store)
     agg_store = aggregation_store or make_default_aggregation_store(artifact_store=artifact_store)

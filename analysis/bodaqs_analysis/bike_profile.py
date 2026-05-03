@@ -98,7 +98,8 @@ def apply_signal_transforms(
     Apply enabled bike-profile signal transforms to ``session['df']``.
 
     The default conflict policy is conservative: if an equivalent output signal
-    already exists, the transform is skipped and the existing signal is kept.
+    already exists from the logger, the transform is skipped and the existing
+    signal is kept.
     """
     if output_conflict_policy not in {"prefer_existing", "prefer_analysis"}:
         raise ValueError("output_conflict_policy must be 'prefer_existing' or 'prefer_analysis'")
@@ -174,48 +175,33 @@ def apply_signal_transforms(
 
         input_col = matches[0]
         output_col = _output_column_name(output_semantics, fallback=transform_id)
-        if output_col in df.columns and output_conflict_policy == "prefer_existing":
-            warning = f"bike_profile_signal_transform_output_exists:{transform_id}:{output_col}"
-            warnings.append(warning)
-            skipped.append(
-                {
-                    "transform_id": transform_id,
-                    "reason": "output_exists",
-                    "input_column": input_col,
-                    "output_column": output_col,
-                }
-            )
-            logger.info(
-                "Bike profile signal transform skipped because output already exists: "
-                "bike_profile_id=%s transform_id=%s output_column=%s",
-                bike_profile.get("bike_profile_id"),
-                transform_id,
-                output_col,
-            )
-            continue
-
         output_semantic_matches = [
             str(col)
             for col, info in signals.items()
             if isinstance(info, Mapping) and _matches_selector(info, output_semantics)
         ]
-        if output_semantic_matches and output_conflict_policy == "prefer_existing":
-            warning = f"bike_profile_signal_transform_output_semantics_exists:{transform_id}"
+        logger_output_semantic_matches = [
+            col
+            for col in output_semantic_matches
+            if isinstance(signals.get(col), Mapping) and _is_logger_origin_signal(signals[col])
+        ]
+        if logger_output_semantic_matches and output_conflict_policy == "prefer_existing":
+            warning = f"bike_profile_signal_transform_logger_output_semantics_exists:{transform_id}"
             warnings.append(warning)
             skipped.append(
                 {
                     "transform_id": transform_id,
-                    "reason": "output_semantics_exists",
+                    "reason": "logger_output_semantics_exists",
                     "input_column": input_col,
-                    "matching_output_columns": output_semantic_matches,
+                    "matching_output_columns": logger_output_semantic_matches,
                 }
             )
             logger.info(
-                "Bike profile signal transform skipped because equivalent output semantics already exist: "
+                "Bike profile signal transform skipped because equivalent logger-originated output semantics already exist: "
                 "bike_profile_id=%s transform_id=%s matches=%s",
                 bike_profile.get("bike_profile_id"),
                 transform_id,
-                output_semantic_matches,
+                logger_output_semantic_matches,
             )
             continue
 
@@ -229,9 +215,14 @@ def apply_signal_transforms(
                         reason=f"superseded_by_bike_profile_transform:{transform_id}",
                     )
 
-        if output_col in df.columns and output_conflict_policy == "prefer_analysis":
+        if output_col in df.columns:
             existing_info = signals.get(output_col)
-            if not (isinstance(existing_info, Mapping) and _is_logger_origin_signal(existing_info)):
+            may_overwrite_logger = (
+                output_conflict_policy == "prefer_analysis"
+                and isinstance(existing_info, Mapping)
+                and _is_logger_origin_signal(existing_info)
+            )
+            if not may_overwrite_logger:
                 warning = f"bike_profile_signal_transform_output_exists:{transform_id}:{output_col}"
                 warnings.append(warning)
                 skipped.append(
@@ -243,7 +234,7 @@ def apply_signal_transforms(
                     }
                 )
                 logger.info(
-                    "Bike profile signal transform skipped because non-logger output already exists: "
+                    "Bike profile signal transform skipped because output column already exists and will not be overwritten: "
                     "bike_profile_id=%s transform_id=%s output_column=%s",
                     bike_profile.get("bike_profile_id"),
                     transform_id,

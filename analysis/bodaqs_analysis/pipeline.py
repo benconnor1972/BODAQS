@@ -132,10 +132,33 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
     out: Dict[str, Dict[str, Any]] = {}
     columns = sidecar.get("columns")
     streams = sidecar.get("streams")
+    sensors = sidecar.get("sensors")
     binding = _metadata_binding(sidecar)
     bound_columns = binding.get("columns", {}) if isinstance(binding, dict) else {}
     if not isinstance(columns, dict):
         return out
+    if not isinstance(sensors, Mapping):
+        sensors = {}
+
+    def _sensor_metadata_for_ref(ref: Any) -> tuple[Optional[str], Optional[Mapping[str, Any]]]:
+        if not isinstance(ref, str) or not ref.strip():
+            return None, None
+        ref_text = ref.strip()
+        direct = sensors.get(ref_text)
+        if isinstance(direct, Mapping):
+            return ref_text, direct
+
+        canonical_ref = canonical_sensor_id(ref_text)
+        for sensor_key, sensor_info in sensors.items():
+            if not isinstance(sensor_info, Mapping):
+                continue
+            candidates = [str(sensor_key)]
+            sensor_name = sensor_info.get("name")
+            if isinstance(sensor_name, str) and sensor_name.strip():
+                candidates.append(sensor_name)
+            if any(canonical_sensor_id(candidate) == canonical_ref for candidate in candidates):
+                return str(sensor_key), sensor_info
+        return None, None
 
     for col_name, info in columns.items():
         if not isinstance(info, dict):
@@ -178,6 +201,20 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         calibration_ref = info.get("calibration_ref")
         if isinstance(calibration_ref, str) and calibration_ref.strip():
             ch["calibration_ref"] = calibration_ref
+        direct_calibration = info.get("calibration")
+        if isinstance(direct_calibration, Mapping):
+            ch["calibration"] = dict(direct_calibration)
+
+        for ref in (calibration_ref, sensor):
+            matched_ref, sensor_info = _sensor_metadata_for_ref(ref)
+            if sensor_info is None:
+                continue
+            if "calibration_ref" not in ch and isinstance(matched_ref, str) and matched_ref.strip():
+                ch["calibration_ref"] = matched_ref
+            calibration = sensor_info.get("calibration")
+            if "calibration" not in ch and isinstance(calibration, Mapping):
+                ch["calibration"] = dict(calibration)
+            break
 
         transform_chain = info.get("transform_chain")
         if isinstance(transform_chain, list):
@@ -277,6 +314,10 @@ def _apply_log_metadata(
                         meta["sample_rate_hz"] = float(sample_rate_hz)
                     except Exception:
                         pass
+
+    declared_sensors = log_metadata.get("sensors")
+    if isinstance(declared_sensors, dict):
+        meta["declared_sensors"] = declared_sensors
 
     session_meta = log_metadata.get("session")
     if isinstance(session_meta, dict):
@@ -1115,7 +1156,8 @@ def _preprocess_loaded_session(session: Dict[str, Any],
                                active_window: str = "500ms",
                                active_padding: str = "1s",
                                active_min_seg: str = "3s",
-                               ignore_on_logger_transformations: bool = False,
+                               prefer_postprocessing_transformations: bool = False,
+                               ignore_on_logger_transformations: Optional[bool] = None,
                                butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
                                butterworth_generate_residuals: bool = False,
                                motion_derivation: Optional[Mapping[str, Any]] = None,
@@ -1139,9 +1181,10 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         active_window = str(cfg.get("active_window", active_window))
         active_padding = str(cfg.get("active_padding", active_padding))
         active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
-        ignore_on_logger_transformations = bool(
-            cfg.get("ignore_on_logger_transformations", ignore_on_logger_transformations)
-        )
+        if "prefer_postprocessing_transformations" in cfg:
+            prefer_postprocessing_transformations = bool(cfg.get("prefer_postprocessing_transformations"))
+        elif "ignore_on_logger_transformations" in cfg:
+            prefer_postprocessing_transformations = bool(cfg.get("ignore_on_logger_transformations"))
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
@@ -1149,14 +1192,17 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         )
         strict = bool(cfg.get("strict", strict))
 
+    if ignore_on_logger_transformations is not None:
+        prefer_postprocessing_transformations = bool(ignore_on_logger_transformations)
+
     df = session["df"].copy()
 
     # QC: ensure structure exists early
     qc = session.setdefault("qc", {})
     transforms = qc.setdefault("transforms", {})
     logger.info(
-        "On-logger transformation policy: ignore_on_logger_transformations=%s",
-        bool(ignore_on_logger_transformations),
+        "Post-processing transformation policy: prefer_postprocessing_transformations=%s",
+        bool(prefer_postprocessing_transformations),
     )
 
     # ---------------- Signals: canonicalize names early (no dependency on normalize_ranges) ----------------
@@ -1219,7 +1265,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
             session,
             bike_profile,
             bike_profile_path=bike_profile_path,
-            output_conflict_policy="prefer_analysis" if ignore_on_logger_transformations else "prefer_existing",
+            output_conflict_policy="prefer_analysis" if prefer_postprocessing_transformations else "prefer_existing",
         )
         generated_transform_records = [
             r
@@ -1284,7 +1330,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
             motion_derivation,
             sample_rate_hz=preprocess_sample_rate_hz,
             strict=bool(strict),
-            overwrite_existing_primary=bool(ignore_on_logger_transformations),
+            overwrite_existing_primary=bool(prefer_postprocessing_transformations),
         )
         session["df"] = df2
         _merge_channel_info(
@@ -1375,7 +1421,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         "warnings": [str(w) for w in motion_meta.get("warnings", [])],
     }
     transforms["logger_transform_policy"] = {
-        "ignore_on_logger_transformations": bool(ignore_on_logger_transformations),
+        "prefer_postprocessing_transformations": bool(prefer_postprocessing_transformations),
     }
 
     # ---------------- Optional offline Butterworth smoothing ----------------
@@ -1553,7 +1599,8 @@ def preprocess_resolved(
     active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
     active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
-    ignore_on_logger_transformations: bool = False,
+    prefer_postprocessing_transformations: bool = False,
+    ignore_on_logger_transformations: Optional[bool] = None,
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
@@ -1587,9 +1634,10 @@ def preprocess_resolved(
         active_window = str(cfg.get("active_window", active_window))
         active_padding = str(cfg.get("active_padding", active_padding))
         active_min_seg = str(cfg.get("active_min_seg", active_min_seg))
-        ignore_on_logger_transformations = bool(
-            cfg.get("ignore_on_logger_transformations", ignore_on_logger_transformations)
-        )
+        if "prefer_postprocessing_transformations" in cfg:
+            prefer_postprocessing_transformations = bool(cfg.get("prefer_postprocessing_transformations"))
+        elif "ignore_on_logger_transformations" in cfg:
+            prefer_postprocessing_transformations = bool(cfg.get("ignore_on_logger_transformations"))
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
@@ -1643,6 +1691,7 @@ def preprocess_resolved(
         active_window=active_window,
         active_padding=active_padding,
         active_min_seg=active_min_seg,
+        prefer_postprocessing_transformations=prefer_postprocessing_transformations,
         ignore_on_logger_transformations=ignore_on_logger_transformations,
         bike_profile=resolved_bike_profile,
         bike_profile_path=bike_profile_path,
@@ -1829,7 +1878,8 @@ def preprocess_session(
     active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
     active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
     sample_rate_hz: Optional[float] = None,
-    ignore_on_logger_transformations: bool = False,
+    prefer_postprocessing_transformations: bool = False,
+    ignore_on_logger_transformations: Optional[bool] = None,
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
@@ -1899,6 +1949,7 @@ def preprocess_session(
         active_signal_disp_selector=active_signal_disp_selector,
         active_signal_vel_selector=active_signal_vel_selector,
         sample_rate_hz=sample_rate_hz,
+        prefer_postprocessing_transformations=prefer_postprocessing_transformations,
         ignore_on_logger_transformations=ignore_on_logger_transformations,
         butterworth_smoothing=butterworth_smoothing,
         butterworth_generate_residuals=butterworth_generate_residuals,

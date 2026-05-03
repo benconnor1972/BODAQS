@@ -32,6 +32,7 @@ from bodaqs_analysis.pipeline import (
     preprocess_resolved,
     preprocess_session,
 )
+from bodaqs_analysis.signal_registry import build_signals_registry
 from bodaqs_analysis.timebase import register_stream_metadata
 from bodaqs_analysis.ui.fit_bindings_editor import build_fit_candidate_summary
 from bodaqs_analysis.ui.preprocess_file_selector import PreprocessLogSelector
@@ -216,6 +217,85 @@ def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["end"] == "rear"
     assert session["meta"]["channel_info"]["rear_shock_dom_suspension [mm]"]["role"] == "disp"
     assert session["meta"]["device"]["firmware_version"] == "1.2.3"
+
+
+def test_load_session_preserves_sensor_calibration_for_raw_signal_metadata(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "timestamp_ms,front_raw [counts]",
+                "1000,3700",
+                "1001,3690",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    log_metadata = {
+        "contract": {"name": "mtb_logger_timeseries", "version": "0.2.0"},
+        "data_file": {"delimiter": ",", "header": True},
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "timestamp_ms",
+                "time_encoding": "epoch_ms",
+                "time_unit": "ms",
+                "sample_rate_hz": 500.0,
+            }
+        },
+        "sensors": {
+            "front linear pot": {
+                "name": "front linear pot",
+                "type": "analog_pot",
+                "domain": "wheel",
+                "raw_unit": "counts",
+                "calibration": {
+                    "type": "linear",
+                    "input_unit": "counts",
+                    "output_unit": "mm",
+                    "installed_zero_count": 3766,
+                    "sensor_full_count": 4,
+                    "sensor_full_travel": 203.0,
+                    "invert": True,
+                },
+            }
+        },
+        "columns": {
+            "timestamp_ms": {
+                "csv_ref": {"by": "header", "header": "timestamp_ms"},
+                "class": "time",
+                "dtype": "uint64",
+                "stream": "primary",
+                "unit": "ms",
+            },
+            "front_wheel_raw": {
+                "csv_ref": {"by": "header", "header": "front_raw [counts]"},
+                "class": "signal",
+                "dtype": "uint32",
+                "stream": "primary",
+                "sensor": "front linear pot",
+                "end": "front",
+                "quantity": "raw",
+                "domain": "wheel",
+                "unit": "counts",
+            },
+        },
+    }
+    (tmp_path / "session.json").write_text(json.dumps(log_metadata, indent=2), encoding="utf-8")
+
+    session = load_session(str(csv_path))
+    raw_col = "front_wheel_raw_dom_wheel [counts]"
+    channel_info = session["meta"]["channel_info"][raw_col]
+
+    assert session["meta"]["declared_sensors"]["front linear pot"]["calibration"]["invert"] is True
+    assert channel_info["calibration_ref"] == "front linear pot"
+    assert channel_info["calibration"]["installed_zero_count"] == 3766
+    assert channel_info["calibration"]["sensor_full_count"] == 4
+
+    build_signals_registry(session)
+    signal_info = session["meta"]["signals"][raw_col]
+    assert signal_info["calibration"]["installed_zero_count"] == 3766
+    assert signal_info["calibration"]["sensor_full_count"] == 4
 
 
 def test_parse_logger_log_metadata_accepts_mapping_text_and_bytes(tmp_path):

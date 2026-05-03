@@ -1,9 +1,30 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import ipywidgets as W
+
+
+_DEFAULT_RUNTIME_SETTINGS_STATE_FILE = Path(".bodaqs_preprocess_runtime_settings.json")
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return default
+
+
+def _write_json(path: Path, data: Any) -> None:
+    try:
+        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        # Best-effort notebook convenience only.
+        pass
 
 
 def _optional_text(value: Any) -> Optional[str]:
@@ -51,6 +72,7 @@ class PreprocessRuntimeSettingsEditor:
     def __init__(
         self,
         *,
+        log_dir: Optional[str | Path] = None,
         preprocess_profile_path: str | Path = Path("config/preprocess_profiles/suspension_default_v1.json"),
         artifacts_dir: str | Path = Path("artifacts"),
         generic_log_metadata_paths: Optional[Sequence[str | Path]] = None,
@@ -59,8 +81,45 @@ class PreprocessRuntimeSettingsEditor:
         fit_bindings_path: Optional[str | Path] = Path("config/fit_bindings_v1.json"),
         prompt_for_descriptions: bool = True,
         run_tz_label: str = "AWST",
+        state_file: str | Path = _DEFAULT_RUNTIME_SETTINGS_STATE_FILE,
+        show_log_dir: bool = False,
+        show_preprocess_profile_path: bool = True,
+        show_artifacts_dir: bool = True,
+        show_generic_log_metadata: bool = True,
+        show_bike_profile_path: bool = True,
+        show_fit_inputs: bool = True,
+        show_prompt_for_descriptions: bool = True,
+        show_run_tz_label: bool = True,
     ) -> None:
         self._bound_log_selectors: List[Any] = []
+        self.state_file = Path(state_file)
+        self._syncing_state = False
+        self.show_log_dir = bool(show_log_dir)
+        self.show_preprocess_profile_path = bool(show_preprocess_profile_path)
+        self.show_artifacts_dir = bool(show_artifacts_dir)
+        self.show_generic_log_metadata = bool(show_generic_log_metadata)
+        self.show_bike_profile_path = bool(show_bike_profile_path)
+        self.show_fit_inputs = bool(show_fit_inputs)
+        self.show_prompt_for_descriptions = bool(show_prompt_for_descriptions)
+        self.show_run_tz_label = bool(show_run_tz_label)
+
+        persisted = self._normalize_state_payload(_read_json(self.state_file, {}))
+        log_dir = persisted.get("log_dir", log_dir)
+        preprocess_profile_path = persisted.get("preprocess_profile_path", preprocess_profile_path)
+        artifacts_dir = persisted.get("artifacts_dir", artifacts_dir)
+        generic_log_metadata_paths = persisted.get("generic_log_metadata_paths", generic_log_metadata_paths)
+        bike_profile_path = persisted.get("bike_profile_path", bike_profile_path)
+        fit_dir = persisted.get("fit_dir", fit_dir)
+        fit_bindings_path = persisted.get("fit_bindings_path", fit_bindings_path)
+        prompt_for_descriptions = persisted.get("prompt_for_descriptions", prompt_for_descriptions)
+        run_tz_label = persisted.get("run_tz_label", run_tz_label)
+
+        self.w_log_dir = W.Text(
+            value=str(log_dir) if log_dir is not None else "",
+            description="Log dir",
+            layout=_stretch_layout(),
+        )
+        self.b_log_dir_browse = W.Button(description="Browse...", icon="folder-open", layout=W.Layout(width="120px"))
 
         self.w_preprocess_profile_path = W.Text(
             value=str(preprocess_profile_path),
@@ -120,6 +179,7 @@ class PreprocessRuntimeSettingsEditor:
         self.b_validate = W.Button(description="Validate", button_style="info", icon="check")
         self._out = W.Output(layout=W.Layout(border="1px solid #ddd", padding="8px"))
 
+        self.b_log_dir_browse.on_click(lambda _: self._browse_dir(self.w_log_dir, "Select log directory"))
         self.b_profile_browse.on_click(lambda _: self._browse_file(self.w_preprocess_profile_path, "Select preprocess profile JSON"))
         self.b_artifacts_browse.on_click(lambda _: self._browse_dir(self.w_artifacts_dir, "Select artifacts directory"))
         self.b_add_log_metadata_file.on_click(lambda _: self._add_generic_log_metadata_file())
@@ -130,8 +190,10 @@ class PreprocessRuntimeSettingsEditor:
         self.b_fit_bindings_browse.on_click(lambda _: self._browse_file(self.w_fit_bindings_path, "Select FIT bindings JSON"))
         self.b_validate.on_click(lambda _: self.validate(print_to_output=True))
         self.w_artifacts_dir.observe(lambda _: self._sync_bound_log_selectors(), names="value")
+        self._observe_setting_widgets()
 
         self.ui = self._build_ui()
+        self._persist_state()
 
     def _section(self, title: str, help_text: str, children: List[W.Widget]) -> W.VBox:
         return W.VBox(
@@ -148,17 +210,28 @@ class PreprocessRuntimeSettingsEditor:
         )
 
     def _build_ui(self) -> W.VBox:
-        return W.VBox(
-            [
+        sections: List[W.Widget] = []
+
+        runtime_path_children: List[W.Widget] = []
+        if self.show_log_dir:
+            runtime_path_children.append(_row([self.w_log_dir, self.b_log_dir_browse]))
+        if self.show_preprocess_profile_path:
+            runtime_path_children.append(_row([self.w_preprocess_profile_path, self.b_profile_browse]))
+        if self.show_artifacts_dir:
+            runtime_path_children.append(_row([self.w_artifacts_dir, self.b_artifacts_browse]))
+        if self.show_bike_profile_path:
+            runtime_path_children.append(_row([self.w_bike_profile_path, self.b_bike_profile_browse]))
+        if runtime_path_children:
+            sections.append(
                 self._section(
                     "Runtime Paths",
-                    "Choose the local files and folders this notebook should use for this run. These values are not saved inside the preprocess profile.",
-                    [
-                        _row([self.w_preprocess_profile_path, self.b_profile_browse]),
-                        _row([self.w_artifacts_dir, self.b_artifacts_browse]),
-                        _row([self.w_bike_profile_path, self.b_bike_profile_browse]),
-                    ],
-                ),
+                    "Choose the local files and folders this notebook should use for this run. These values are not saved inside the preprocess profile. They are remembered locally for this notebook environment.",
+                    runtime_path_children,
+                )
+            )
+
+        if self.show_generic_log_metadata:
+            sections.append(
                 self._section(
                     "Logger Metadata",
                     "Select reusable generic log metadata fallbacks for logs that do not have same-stem metadata beside the CSV.",
@@ -166,7 +239,11 @@ class PreprocessRuntimeSettingsEditor:
                         self.w_generic_log_metadata_paths,
                         _row([self.b_add_log_metadata_file, self.b_add_log_metadata_dir, self.b_clear_log_metadata]),
                     ],
-                ),
+                )
+            )
+
+        if self.show_fit_inputs:
+            sections.append(
                 self._section(
                     "Optional FIT Inputs",
                     "Point to local Garmin FIT sources and the binding manifest used when more than one FIT file overlaps a logger session.",
@@ -174,23 +251,37 @@ class PreprocessRuntimeSettingsEditor:
                         _row([self.w_fit_dir, self.b_fit_dir_browse]),
                         _row([self.w_fit_bindings_path, self.b_fit_bindings_browse]),
                     ],
-                ),
+                )
+            )
+
+        run_behaviour_children: List[W.Widget] = []
+        if self.show_run_tz_label and self.show_prompt_for_descriptions:
+            run_behaviour_children.append(_row([self.w_run_tz_label, self.w_prompt_for_descriptions]))
+        elif self.show_run_tz_label:
+            run_behaviour_children.append(_row([self.w_run_tz_label]))
+        elif self.show_prompt_for_descriptions:
+            run_behaviour_children.append(_row([self.w_prompt_for_descriptions]))
+        run_behaviour_children.extend([_row([self.b_validate]), self._out])
+        if self.show_run_tz_label or self.show_prompt_for_descriptions:
+            sections.append(
                 self._section(
                     "Run Behaviour",
                     "Set local run labelling and whether the notebook should ask for free-text descriptions after writing artifacts.",
-                    [
-                        _row([self.w_run_tz_label, self.w_prompt_for_descriptions]),
-                        _row([self.b_validate]),
-                        self._out,
-                    ],
-                ),
-            ],
+                    run_behaviour_children,
+                )
+            )
+        else:
+            sections.append(W.VBox([_row([self.b_validate]), self._out], layout=W.Layout(width="100%", min_width="0")))
+
+        return W.VBox(
+            sections,
             layout=W.Layout(width="100%", min_width="0", overflow="hidden"),
         )
 
     def get_settings(self) -> Dict[str, Any]:
         """Return the current runtime settings as notebook-friendly values."""
         return {
+            "log_dir": _optional_path(self.w_log_dir.value),
             "preprocess_profile_path": Path(str(self.w_preprocess_profile_path.value).strip()),
             "artifacts_dir": Path(str(self.w_artifacts_dir.value).strip()),
             "generic_log_metadata_paths": _paths_from_text(self.w_generic_log_metadata_paths.value),
@@ -205,6 +296,13 @@ class PreprocessRuntimeSettingsEditor:
         errors: List[str] = []
         warnings: List[str] = []
         settings = self.get_settings()
+
+        log_dir = settings["log_dir"]
+        if self.show_log_dir:
+            if log_dir is None:
+                warnings.append("Log directory is blank.")
+            elif not log_dir.exists() or not log_dir.is_dir():
+                warnings.append(f"Log directory does not exist or is not a directory: {log_dir}")
 
         if not str(settings["preprocess_profile_path"]).strip():
             errors.append("Preprocess profile path is blank.")
@@ -273,6 +371,78 @@ class PreprocessRuntimeSettingsEditor:
         except Exception:
             # Best-effort convenience only; processing cells still read settings directly.
             pass
+
+    def _observe_setting_widgets(self) -> None:
+        for widget in (
+            self.w_log_dir,
+            self.w_preprocess_profile_path,
+            self.w_artifacts_dir,
+            self.w_generic_log_metadata_paths,
+            self.w_bike_profile_path,
+            self.w_fit_dir,
+            self.w_fit_bindings_path,
+            self.w_prompt_for_descriptions,
+            self.w_run_tz_label,
+        ):
+            widget.observe(self._on_settings_changed, names="value")
+
+    def _on_settings_changed(self, *_: Any) -> None:
+        if self._syncing_state:
+            return
+        self._persist_state()
+
+    def _state_payload(self) -> Dict[str, Any]:
+        settings = self.get_settings()
+        return {
+            "log_dir": str(settings["log_dir"]) if settings["log_dir"] is not None else None,
+            "preprocess_profile_path": str(settings["preprocess_profile_path"]),
+            "artifacts_dir": str(settings["artifacts_dir"]),
+            "generic_log_metadata_paths": (
+                [str(p) for p in settings["generic_log_metadata_paths"]]
+                if settings["generic_log_metadata_paths"]
+                else None
+            ),
+            "bike_profile_path": str(settings["bike_profile_path"]) if settings["bike_profile_path"] is not None else None,
+            "fit_dir": str(settings["fit_dir"]) if settings["fit_dir"] is not None else None,
+            "fit_bindings_path": (
+                str(settings["fit_bindings_path"]) if settings["fit_bindings_path"] is not None else None
+            ),
+            "prompt_for_descriptions": bool(settings["prompt_for_descriptions"]),
+            "run_tz_label": str(settings["run_tz_label"] or "AWST"),
+        }
+
+    def _persist_state(self) -> None:
+        _write_json(self.state_file, self._state_payload())
+
+    def _normalize_state_payload(self, payload: Any) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+
+        normalized: Dict[str, Any] = {}
+        text_keys = (
+            "log_dir",
+            "preprocess_profile_path",
+            "artifacts_dir",
+            "bike_profile_path",
+            "fit_dir",
+            "fit_bindings_path",
+            "run_tz_label",
+        )
+        for key in text_keys:
+            value = _optional_text(payload.get(key))
+            if value is not None:
+                normalized[key] = value
+
+        generic_paths = payload.get("generic_log_metadata_paths")
+        if isinstance(generic_paths, list):
+            cleaned = [str(Path(str(item).strip())) for item in generic_paths if _optional_text(item) is not None]
+            normalized["generic_log_metadata_paths"] = cleaned or None
+
+        prompt = payload.get("prompt_for_descriptions")
+        if isinstance(prompt, bool):
+            normalized["prompt_for_descriptions"] = prompt
+
+        return normalized
 
     def _browse_file(self, widget: W.Text, title: str) -> None:
         import tkinter as tk
