@@ -45,6 +45,9 @@ export default defineConfig({
         }, {
           label: 'User guide',
           autogenerate: {directory: 'user-guide'},
+        }, {
+          label: 'Archive',
+          autogenerate: {directory: 'archive'},
         },
       ],
     }),
