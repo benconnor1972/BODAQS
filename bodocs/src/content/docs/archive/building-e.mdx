@@ -1,8 +1,8 @@
 ---
-title: Building the logger
+title: Proto E build guide - deprecated
 
 sidebar:
-  order: 3
+  order: 1
 ---
 import {Aside} from '@astrojs/starlight/components';
 import Flag from '@components/Flag.astro';
@@ -17,7 +17,7 @@ import Lightbox from '@components/Lightbox.astro';
 ## Prepare the MicroSD card
  - Connect the MicroSD card to your computer and format it in FAT32.
  - Create a folder named 'config' in the card's root directory.
- - Download the config file [here](https://github.com/benconnor1972/BODAQS/tree/main/firmware/Configs/Prototype%20F) and place it in the config directory. 
+ - Download the config file here [insert hyperlink] and place it in the config directory.   {/* //TODO, insert hyperlink*/}
  - Open the config file in a text editor and add some wifi credentials.
  - Eject the MicroSD card. Install it in the MicroSD slot in the underside of the dev board.
 
@@ -125,7 +125,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   Using the suggested wire colors will make your life easier too.
 </Aside>
 
-<Flag src="/src/assets/pics/Connector-overview-F.png" alt="Connector overview">
+<Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
 
   **In this step you will be wiring the connectors to the PCB.**
   The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one
@@ -134,12 +134,13 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 </Flag>
 
 
-<Aside title="The UART and I2C1 connections">
-  In addition to analog and I2C0, the PCB breaks out a UART connection and an additional I2C bus. 
-  The I2C connection is not currently in use but in future  could be used to connect a GPS module. The second I2C bus may be useful for avoiding I2C address conflicts.
+<Aside title="The UART connection">
+  In addition to analog and I2C, the PCB breaks out a UART connection. This is not currently in use.
+  In future it could be used to connect a GPS module. The pins can also be re-assigned in firmware
+  to provide access to a second I2C bus, which may be useful for avoiding I2C address conflicts.
   (For example, the popular AS5600 magnetic rotary encoder has the same I2C address as the dev
-  board's on-board battery monitor, so any AS5600 sensors will need to be on the second I2C bus, or use an address translator IC).
-  
+  board's on-board battery monitor, so any AS5600 sensors will need to be on the second I2C bus).
+  Future revisions of the PCB will break out both I2C buses.
 </Aside>
 
 
@@ -152,7 +153,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   'Tin' the pins on the back of each connector with a small amount of solder
 </Flag>
 
-<Flag src="/src/assets/pics/Build-12.jpg" alt="Build-12">
+<Flag src="/src/assets/pics/Build-12E.png" alt="Build-12">
   **Prepare the hookup wires.** Cut and strip short sections of hookup wire for each connector in
   the recommended lengths. *Note the lengths are for the insulated portion of the wire*. Allow some
   extra to strip the ends.
@@ -162,23 +163,23 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 
 | Connector | Pin    | Cable length  |  Color       |
 |-----------|--------|---------------|--------------|
-| Analog 0  | All    | 22 mm         | Vcc=Red      |
-| Analog 1  | All    | 12 mm         | Gnd=Black    |
-| Analog 2  | All    | 25 mm         | Signal=Green |
-| Analog 3  | All    | 22 mm         |              |
+| Analog 1  | All    | 17 mm         | Vcc=Red      |
+| Analog 2  | All    | 20 mm         | Gnd=Black    |
+| Analog 3  | All    | 25 mm         | Signal=Green |
+| Analog 4  | All    | 17 mm         |              |
 
 | Connector | Pin    | Cable length  |  Color       |
 |-----------|--------|---------------|--------------|
-| Switch    | LED    | 20 mm         | Green        |
-|           | Mark   | 20 mm         | Yellow       |
-|           | Gnd    | 20 mm         | Black        |
-| I2C       | Gnd    | 17 mm         | Black        |
-|           | 3.3V   | 17 mm         | Red          |
-|           | SCL    | 17 mm         | Yellow       |
-|           | SDA    | 17 mm         | Blue         |
+| Switch    | LED    | 46 mm         | Green        |
+|           | Mark   | 48 mm         | Yellow       |
+|           | Gnd    | 50 mm         | Black        |
+| I2C       | Gnd    | 35 mm         | Black        |
+|           | 3.3V   | 33 mm         | Red          |
+|           | SCL    | 31 mm         | Yellow       |
+|           | SDA    | 31 mm         | Blue         |
 
 
-<Flag src="/src/assets/pics/Build-12AF.png" alt="Build-12">
+<Flag src="/src/assets/pics/Build-12AE.png" alt="Build-12">
   **Solder the wires to the connectors.** This is much easier if the connector pins and wire ends
   are tinned first. Use the soldering iron to heat the pin until the solder melts. Insert the wire
   end into the molten solder and withdraw the heat. Repeat for all wires.
@@ -192,22 +193,22 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   heat shrink.
 </Flag>
 
-<Flag src="/src/assets/pics/Connector-overview-F.png" alt="Connector overview">
-  **Solder the connectors to the PCB.** Solder the free ends of the wires into the PCB so they enter the PCB from the
-  top. Take care to ensure the wires are connected correctly as per the picture. Trim any
-  excess wire sticking through the bottom of the board.
+<Flag src="/src/assets/pics/Connector-overview.png" alt="Connector overview">
+  **Solder the connectors to the PCB.** Solder the free ends of the wires into the PCB from the
+  underside. Take care to ensure the wires are connected correctly as per the picture. Trim any
+  excess wire sticking through to the top of the board.
 
   <MiniAside type={"caution"} title="Handle with care">
     Handle the assembly with care. The wires are fragile and vulnerable to damage until the PCB and
     connectors are mounted in the case.
   </MiniAside>
 </Flag>
- <Lightbox src="/src/assets/pics/Build-15F.jpg" alt="Build-15"/>
+ <Lightbox src="/src/assets/pics/Build-15.jpg" alt="Build-15"/>
 
 ### Prepare the case
 <Flag src="/src/assets/pics/Build-17.jpg" alt="Build-17">
   **Remove support material** from the case using a craft knife. If printed in the recommended
-  orientation, the majority of support material will be for the shallow indent where the keypad
+  orientation, the majority of support material will be for the shallow indent where the kaypad
   sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since
   the keypad covers it, but it should be as flat as possible.
 
@@ -218,7 +219,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 
 ### Install the components
 
-<Flag src="/src/assets/pics/Build-16F.jpg" alt="Build-16">
+<Flag src="/src/assets/pics/Build-16.jpg" alt="Build-16">
   **Install the PCB and connectors**. Place the PCB into the lower half of the case, ensuring the
   right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the
   upper half of the case).
@@ -233,7 +234,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 <Flag src="/src/assets/pics/Build-19.jpg" alt="Build-19">
   **Install the battery**. The battery sits in the slot on the right-hand side of the case with the
   wires facing to the front of the case.
-  If necessary trim or extend the battery wires. The recommended wire length is 70 mm.
+  If necessary trim or extend the battery wires. The recommended wire length is [70?] mm.
   <MiniAside type={"caution"} >
     Check the battery polarity again
   </MiniAside>
@@ -273,7 +274,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   **Carefully close the case**. Take special care with the keypad ribbon connector. It can be bent,
   but minimise this if possible.
 
-  Secure the case with 4 M3x12 cap screws and tighten.
+  Secure the case with 4 x M3x12 cap screws and tighten.
 
 </Flag>
 <Aside title="Congratulations!" icon={"star"}>
@@ -289,3 +290,5 @@ The water-resistance of the logger can be dramatically improved with the judicio
  - Cut a 16mm x 28mm piece of clear plastic (an old visor is ideal) and silicone it into the recess in front of the OLED display.
  - Partially fill the gasket groove in the top half of the case with silicone. Carefully apply silicone to the groove (you can do this with a small syringe) and then form it to shape with this 3d-printed spatula tool.
 
+## Connecting and testing sensors
+[To come]

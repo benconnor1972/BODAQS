@@ -121,6 +121,10 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   p.buttons.btn[2] = ButtonHW{ "nav_left",  true, 7,  1, true, true };
   p.buttons.btn[3] = ButtonHW{ "nav_right", true, 21, 1, true, true };
   p.buttons.btn[4] = ButtonHW{ "nav_enter", true, 4,  0, true, true };
+  p.analog.pins[0] = 10;
+  p.analog.pins[1] = 18;
+  p.analog.pins[2] = 17;
+  p.analog.pins[3] = 15;
 
   p.i2c[0] = {
     .present = true,
