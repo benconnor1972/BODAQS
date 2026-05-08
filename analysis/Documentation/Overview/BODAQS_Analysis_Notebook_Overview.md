@@ -70,7 +70,7 @@ This is the main batch ingestion and preprocessing notebook. It turns one or mor
 ### Step 1. Set runtime paths and select input CSV files
 
 - **Inputs:** local runtime settings from the notebook widget, a directory of raw logger CSV files, and the selected artifacts tree so that previously processed logger files can be identified.
-- **Runtime settings:** preprocess profile path, artifacts directory, generic log metadata paths, bike profile path, optional FIT paths, run timezone label, and description-prompt behavior.
+- **Runtime settings:** preprocess profile path, artifacts directory, generic log metadata paths, logger timezone fallback, bike profile path, optional FIT paths, run timezone label, and description-prompt behavior.
 - **Outputs:** the selected file list (`CSV_FILES`) and visible runtime-settings / file-selection UIs.
 - **Persisted artifacts:** no canonical analysis artifacts yet. The selector does update local helper files:
   - `.bodaqs_preprocess_last_dir.json`

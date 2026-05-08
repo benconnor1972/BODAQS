@@ -33,6 +33,7 @@ session = build_session_from_dataframe(
     df_prepared,
     source_name=uploaded_filename,
     log_metadata=log_metadata,
+    timezone="Australia/Perth",  # fallback only; metadata wins if it declares a timezone
 )
 
 results = preprocess_resolved(
@@ -66,10 +67,17 @@ For this integration case we expect to provide:
 - **Bike profile:** JSON or already-parsed bike/setup-specific parameters, including normalization ranges and bike-specific transforms.
 - **Preprocess profile:** JSON reusable preprocessing policy, including zeroing, motion derivation, activity-mask settings, strictness, and optional FIT import policy.
 - **FIT candidates/bindings:** optional precomputed FIT summaries, raw FIT content, or in-memory bindings used for GPS enrichment during preprocessing.
+- **Logger timezone fallback:** optional IANA timezone used only when log metadata does not provide `session.started_at_local` or `session.timezone`.
 
 Runtime/local paths are deliberately not embedded in the preprocess profile.
 The web service should resolve uploaded assets into loaded objects, dataframes,
 or candidate metadata and pass those resolved inputs explicitly.
+
+For absolute-time matching such as FIT/GPS enrichment, the timezone precedence
+is: log metadata `started_at_local`, then log metadata `timezone`, then the
+caller-supplied fallback `timezone`, then the worker machine timezone as a last
+resort. The run artifact label, for example `"AWST"`, is only a label and
+should not be used as the timestamp interpretation timezone.
 
 ---
 

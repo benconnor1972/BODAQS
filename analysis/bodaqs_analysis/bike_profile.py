@@ -207,6 +207,8 @@ def apply_signal_transforms(
 
         if output_semantic_matches and output_conflict_policy == "prefer_analysis":
             for existing_col in output_semantic_matches:
+                if existing_col == output_col:
+                    continue
                 existing_info = signals.get(existing_col)
                 if isinstance(existing_info, Mapping) and _is_logger_origin_signal(existing_info):
                     _exclude_channel_from_semantic_selection(
@@ -579,7 +581,7 @@ def _output_column_name(output_semantics: Mapping[str, Any], *, fallback: str) -
 
     quantity = output_semantics.get("quantity")
     quantity_token = normalize_sensor_token(quantity)
-    if quantity_token in {"", "disp", "raw"}:
+    if quantity_token in {"", "raw"}:
         base = base_token
     else:
         base = f"{base_token}_{quantity_token}"

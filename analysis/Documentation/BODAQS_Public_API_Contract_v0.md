@@ -62,6 +62,19 @@ Any public function that consumes a DataFrame assumes `time_s` exists.
 
 Functions that load raw data (e.g. CSVs) must ensure `time_s` is created.
 
+Absolute time anchoring is separate from the canonical `time_s` axis. When a
+CSV filename or local time-of-day column needs a real-world timezone, the
+precedence is:
+
+1. `log_metadata.session.started_at_local`, if present
+2. `log_metadata.session.timezone`, if present
+3. the caller-supplied `timezone` fallback
+4. the local machine timezone as a last resort, with QC warning
+
+The caller-supplied `timezone` should be an IANA timezone such as
+`"Australia/Perth"`. It is not the same as the run artifact timezone label such
+as `"AWST"`.
+
 ---
 
 ## 3. Return & Diagnostics Conventions
@@ -223,6 +236,7 @@ session = load_session(
 - `session["df"]` contains `time_s`
 - Timestamp parsing is handled internally
 - When logger log metadata is available, ingest may use it for delimiter, time-column, and metadata hints
+- `timezone` is a fallback for filename/local-time anchoring only; log metadata timezone fields take precedence when present
 - Generic log metadata paths are a run-level fallback and are not loaded from the preprocess profile.
 
 ---
@@ -393,6 +407,7 @@ results = preprocess_session(
     butterworth_generate_residuals: bool = False,
     active_signal_disp_selector: Optional[Mapping[str, Any]] = None,
     active_signal_vel_selector: Optional[Mapping[str, Any]] = None,
+    timezone: Optional[str] = None,
     include_events: bool = True,
     include_metrics: bool = True,
     ...
@@ -430,6 +445,9 @@ results = preprocess_session(
   win when equivalent displacement semantics are available from analysis. When false,
   bike-profile transforms still run unless an equivalent logger-originated output
   signal already exists.
+- `timezone` is passed through to session loading as a fallback logger timezone
+  for filename/local-time anchoring. Same-stem log metadata remains authoritative
+  when it declares `session.started_at_local` or `session.timezone`.
 - Generated analysis channels may carry registry provenance such as `processing_role`,
   `motion_source_id`, `motion_profile_id`, and structured `derivation` metadata. Semantic
   selectors may use these fields to request a primary analysis channel explicitly.
@@ -470,7 +488,79 @@ Callers should prefer `preprocess_config` or `preprocess_profile_path` for reusa
 
 ---
 
-### 4.7 FIT Helpers
+### 4.7 External Format Exporters
+
+#### data.syn.bike
+
+**Purpose:**  
+Export a processed BODAQS session to the headerless CSV shape expected by
+data.syn.bike.
+
+The core exporter follows the same resolved-content pattern as preprocessing:
+it consumes an in-memory processed session and returns export tables plus
+metadata. Writing those tables to local files is a separate convenience helper.
+
+**Signatures:**
+```python
+config = default_data_syn_bike_export_config(**overrides)
+
+result = export_data_syn_bike_resolved(
+    session,
+    export_config=config,
+)
+
+write_result = write_data_syn_bike_exports(
+    result,
+    output_dir,
+    filename_template="{run_id}__{session_id}__{export_id}__data_syn_bike.csv",
+)
+```
+
+**Returns:**
+```python
+{
+    "format": "data_syn_bike",
+    "session_id": "...",
+    "run_id": "...",
+    "config": {...},
+    "exports": [
+        {
+            "export_id": "session" | "activity_001",
+            "dataframe": pandas.DataFrame,
+            "region": {
+                "start_row": int,
+                "end_row_exclusive": int,
+                "start_time_s": float | None,
+                "end_time_s": float | None,
+            },
+            "metadata": {...},
+        }
+    ],
+    "summary": {...},
+}
+```
+
+**Guarantees:**
+- `export_data_syn_bike_resolved(...)` performs no filesystem IO.
+- `write_data_syn_bike_exports(...)` writes headerless CSV files and returns the
+  paths written.
+- Front and rear raw channels are selected semantically, preferring wheel-domain
+  raw signals over suspension-domain raw signals when both are present.
+- Raw inversion is resolved independently for front and rear from signal/channel
+  calibration metadata, declared sensor calibration metadata, and optional
+  manual overrides.
+- Missing latitude, longitude, or speed columns are exported as blank fields.
+- `drop_inactive=True` omits rows marked inactive by `active_mask_qc`,
+  `inactive_mask_qc`, or `inactive_mask`.
+- `split_by_activity=True` emits one export table per contiguous active region.
+  If no activity mask is present, the full session is treated as active.
+- `time_format="sample_count"` emits unsigned-style sample counts. The
+  `sample_count_origin` option controls whether those counts preserve source
+  session row numbers or restart from zero for each emitted export.
+
+---
+
+### 4.8 FIT Helpers
 
 **Purpose:**  
 Support pathless FIT parsing, summary inspection, overlap resolution, and binding resolution.
@@ -496,7 +586,7 @@ candidates = find_overlapping_fit_candidates(
 
 ---
 
-### 4.8 `detect_events_from_schema()`
+### 4.9 `detect_events_from_schema()`
 
 **Purpose:**  
 Detect events based on a schema definition.
@@ -515,7 +605,7 @@ events_df = detect_events_from_schema(df, schema)
 
 ---
 
-### 4.9 `extract_metrics_df()`
+### 4.10 `extract_metrics_df()`
 
 **Purpose:**  
 Extract per-event metrics into a flat table.

@@ -548,6 +548,68 @@ def test_load_session_uses_filename_stem_anchor_with_suffix(tmp_path):
     assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
 
 
+def test_log_metadata_timezone_overrides_runtime_fallback_for_filename_anchor(tmp_path):
+    csv_path = _write_csv_only(tmp_path, name="2026-02-19_08-35-11.csv")
+    sidecar = {
+        "contract": {"name": "mtb_logger_timeseries", "version": "0.2.0"},
+        "session": {"timezone": "Australia/Perth"},
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "time_s",
+                "time_encoding": "elapsed_s",
+                "time_unit": "s",
+                "sample_rate_hz": 40.0,
+            }
+        },
+        "columns": {
+            "time_s": {
+                "csv_ref": {"by": "header", "header": "time_s"},
+                "class": "time",
+                "dtype": "float64",
+                "stream": "primary",
+                "unit": "s",
+            },
+            "front_shock": {
+                "csv_ref": {"by": "header", "header": "front_shock_dom_suspension [mm]"},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "end": "front",
+                "quantity": "disp",
+                "domain": "suspension",
+                "unit": "mm",
+            },
+            "rear_shock": {
+                "csv_ref": {"by": "header", "header": "rear_shock_dom_suspension [mm]"},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "end": "rear",
+                "quantity": "disp",
+                "domain": "suspension",
+                "unit": "mm",
+            },
+            "mark": {
+                "csv_ref": {"by": "header", "header": "mark"},
+                "class": "event_flag",
+                "dtype": "bool",
+                "stream": "primary",
+            },
+        },
+    }
+    (tmp_path / "2026-02-19_08-35-11.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+
+    session = load_session(str(csv_path), timezone="UTC")
+
+    assert session["source"]["timezone"] == "Australia/Perth"
+    assert session["source"]["timezone_source"] == "log_metadata"
+    assert session["source"]["created_local"] == "2026-02-19T08:35:11+08:00"
+    assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
+    assert session["qc"]["parse"]["runtime_timezone_fallback"] == "UTC"
+    assert session["qc"]["parse"]["runtime_timezone_overridden_by_log_metadata"] is True
+
+
 def test_preprocess_session_uses_declared_sidecar_sample_rate(tmp_path):
     csv_path, _ = _write_csv_and_sidecar(tmp_path)
     session = load_session(str(csv_path))

@@ -53,6 +53,12 @@ logger = logging.getLogger(__name__)
 _LOG_METADATA_BINDING_KEY = "_bodaqs_log_metadata_binding"
 _SIDECAR_BINDING_KEY = "_bodaqs_sidecar_binding"
 
+
+def _optional_nonempty_str(value: Any) -> Optional[str]:
+    text = "" if value is None else str(value).strip()
+    return text or None
+
+
 _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "fit_dir": None,
@@ -326,9 +332,14 @@ def _apply_log_metadata(
             source["created_local"] = started_at_local
             meta["t0_datetime"] = started_at_local
 
-        timezone = session_meta.get("timezone")
-        if isinstance(timezone, str) and timezone.strip() and not source.get("timezone"):
+        timezone = _optional_nonempty_str(session_meta.get("timezone"))
+        if timezone is not None:
+            previous_timezone = _optional_nonempty_str(source.get("timezone"))
+            if previous_timezone is not None and previous_timezone != timezone:
+                parse["runtime_timezone_fallback"] = previous_timezone
+                parse["runtime_timezone_overridden_by_log_metadata"] = True
             source["timezone"] = timezone
+            source["timezone_source"] = "log_metadata"
 
         notes = session_meta.get("notes")
         if notes is not None:
@@ -510,9 +521,7 @@ def build_session_from_dataframe(
 
     session: Dict[str, Any] = {
         "session_id": resolved_session_id,
-        "source": {
-            "timezone": timezone,
-        },
+        "source": {},
         "meta": {
             "channels": [c for c in df_raw.columns if c not in excluded_time_columns],
             "channel_info": {},  # can be enriched later
@@ -547,6 +556,10 @@ def build_session_from_dataframe(
         session["source"]["filename"] = resolved_source_name
     if source_path is not None:
         session["source"]["path"] = str(source_path)
+    runtime_timezone = _optional_nonempty_str(timezone)
+    if runtime_timezone is not None:
+        session["source"]["timezone"] = runtime_timezone
+        session["source"]["timezone_source"] = "runtime_fallback"
     if isinstance(log_metadata_obj, dict):
         _apply_log_metadata(
             session,
@@ -692,6 +705,27 @@ def _motion_zeroed_columns(
         source_col = rec.get("source_col")
         if isinstance(output_col, str) and isinstance(source_col, str) and source_col in zeroed_columns:
             out.add(output_col)
+    return out
+
+
+def _motion_legacy_va_suppressed_columns(motion_meta: Mapping[str, Any]) -> set[str]:
+    """Return displacement columns whose velocity/acceleration are owned by motion_derivation."""
+    out: set[str] = set()
+    generated = motion_meta.get("generated", [])
+    if not isinstance(generated, Sequence) or isinstance(generated, (str, bytes)):
+        return out
+
+    for rec in generated:
+        if not isinstance(rec, Mapping):
+            continue
+        if rec.get("quantity") != "disp":
+            continue
+        if rec.get("role") != "primary_analysis":
+            continue
+        for key in ("source_col", "output_col"):
+            value = rec.get(key)
+            if isinstance(value, str) and value.strip():
+                out.add(value)
     return out
 
 
@@ -1475,8 +1509,16 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     if va_cols is None:
         va_cols = list(normalize_ranges.keys())
 
+    motion_va_suppressed_cols = _motion_legacy_va_suppressed_columns(motion_meta)
+    if motion_va_suppressed_cols:
+        va_cols = [col for col in va_cols if str(col) not in motion_va_suppressed_cols]
+
     # Ensure VA is computed for the activity-mask displacement signal if provided
-    if active_signal_disp_col and (active_signal_disp_col not in set(va_cols)):
+    if (
+        active_signal_disp_col
+        and active_signal_disp_col not in motion_va_suppressed_cols
+        and active_signal_disp_col not in set(va_cols)
+    ):
         va_cols = list(va_cols) + [active_signal_disp_col]
 
     df3, va_meta = estimate_va(
