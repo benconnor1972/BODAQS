@@ -1,0 +1,89 @@
+{
+  "schema": "bodaqs.preprocess_profile",
+  "version": 1,
+  "profile_id": "suspension_default_dev",
+  "description": "Default preprocessing profile for the combined preprocessing and suspension dashboard notebook.",
+  "config": {
+    "schema_path": "event schema/event_schema - Basic.yaml",
+    "strict": false,
+    "fit_import": {
+      "enabled": true,
+      "field_allowlist": [
+        "position_lat",
+        "position_long",
+        "altitude",
+        "enhanced_altitude",
+        "speed",
+        "enhanced_speed",
+        "distance",
+        "grade",
+        "heading"
+      ],
+      "ambiguity_policy": "require_binding",
+      "partial_overlap": "allow",
+      "persist_raw_stream": true,
+      "resample_to_primary": true,
+      "resample_method": "linear",
+      "raw_stream_name": "gps_fit"
+    },
+    "zeroing_enabled": true,
+    "zero_window_s": 0.4,
+    "zero_min_samples": 10,
+    "clip_0_1": false,
+    "prefer_postprocessing_transformations": true,
+    "motion_derivation": {
+      "enabled": true,
+      "sources": [
+        {
+          "id": "rear_wheel",
+          "selector": {
+            "end": "rear",
+            "quantity": "disp",
+            "domain": "wheel",
+            "unit": "mm"
+          }
+        },
+        {
+          "id": "front_wheel",
+          "selector": {
+            "end": "front",
+            "quantity": "disp",
+            "domain": "wheel",
+            "unit": "mm"
+          }
+        }
+      ],
+      "primary": {
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "velocity_sg_window_ms": 20.0,
+        "acceleration_sg_window_ms": 40.0,
+        "sg_polyorder": 3,
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4
+      },
+      "secondary": []
+    },
+    "butterworth_smoothing": [],
+    "butterworth_generate_residuals": false,
+    "active_signal_disp_selector": {
+      "end": "rear",
+      "quantity": "disp",
+      "domain": "wheel",
+      "unit": "mm"
+    },
+    "active_signal_vel_selector": {
+      "end": "rear",
+      "quantity": "vel",
+      "domain": "wheel",
+      "unit": "mm/s"
+    },
+    "active_disp_thresh": 10.0,
+    "active_vel_thresh": 50.0,
+    "active_window": "3s",
+    "active_padding": "1s",
+    "active_min_seg": "20s"
+  }
+}

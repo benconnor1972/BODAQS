@@ -136,11 +136,11 @@ class PreprocessProfileEditor:
             layout=_stretch_layout(),
         )
         self.b_profile_dir = W.Button(description="Browse...", icon="folder-open", layout=W.Layout(width="120px"))
-        self.w_profile_id = W.Combobox(
+        self.w_profile_select = W.Combobox(
             options=self._profile_id_options(),
             ensure_option=False,
-            description="Profile id",
-            placeholder="choose or type a profile id",
+            description="Load profile",
+            placeholder="choose an existing profile id",
             layout=_stretch_layout(),
         )
         self.b_refresh = W.Button(description="Refresh", icon="refresh")
@@ -148,6 +148,11 @@ class PreprocessProfileEditor:
         self.w_save_filename = W.Text(
             description="Save file",
             placeholder="profile_filename_v1.json",
+            layout=_stretch_layout(),
+        )
+        self.w_profile_id = W.Text(
+            description="Profile ID",
+            placeholder="stable logical profile id stored inside the JSON",
             layout=_stretch_layout(),
         )
         self.w_description = W.Textarea(description="Description", layout=_full_width_layout(height="80px"))
@@ -248,10 +253,10 @@ class PreprocessProfileEditor:
         sections = [
             self._section(
                 "Profile",
-                "Choose which reusable preprocessing profile you are editing, and where it should be saved. The profile ID is the stable logical name; the save filename lets you save a copy or variant.",
+                "Choose a profile directory and optionally load an existing profile. The save filename and editable profile ID are set in the Actions section below.",
                 [
                     _row([self.w_profile_dir, self.b_profile_dir]),
-                    _row([self.w_profile_id, self.b_refresh, self.b_load]),
+                    _row([self.w_profile_select, self.b_refresh, self.b_load]),
                     self.w_description,
                 ],
             ),
@@ -316,9 +321,11 @@ class PreprocessProfileEditor:
             ),
             self._section(
                 "Actions",
-                "Validate the current settings or write the profile JSON to the selected directory and filename.",
+                "Validate the current settings or write the profile JSON to the selected directory. The save filename controls the file on disk; the profile ID is the stable logical name stored inside the JSON.",
                 [
-                    _row([self.w_save_filename, self.b_validate, self.b_save]),
+                    _row([self.w_save_filename]),
+                    _row([self.w_profile_id]),
+                    _row([self.b_validate, self.b_save]),
                     self._out,
                 ],
             ),
@@ -326,10 +333,10 @@ class PreprocessProfileEditor:
         return W.VBox(sections, layout=W.Layout(width="100%", min_width="0", overflow="hidden"))
 
     def refresh_profile_list(self) -> None:
-        current = self.w_profile_id.value
+        current = self.w_profile_select.value
         self.profiles_dir = Path(self.w_profile_dir.value or self.profiles_dir)
-        self.w_profile_id.options = self._profile_id_options()
-        self.w_profile_id.value = current
+        self.w_profile_select.options = self._profile_id_options()
+        self.w_profile_select.value = current
 
     def set_profile(self, profile: Mapping[str, Any], *, path: Optional[str | Path] = None) -> None:
         validate_preprocess_profile(profile, path=path)
@@ -342,14 +349,17 @@ class PreprocessProfileEditor:
             self.w_profile_dir.value = str(Path(path).parent)
             self.w_save_filename.value = Path(path).name
             self.profiles_dir = Path(path).parent
-            self.w_profile_id.options = self._profile_id_options()
+            self.w_profile_select.options = self._profile_id_options()
         elif not _optional_text(self.w_save_filename.value):
             self.w_save_filename.value = preprocess_profile_path(
                 str(profile.get("profile_id") or "new_preprocess_profile"),
                 directory="",
             ).name
 
-        self.w_profile_id.value = str(profile.get("profile_id") or "")
+        profile_id = str(profile.get("profile_id") or "")
+        self.w_profile_id.value = profile_id
+        if profile_id:
+            self.w_profile_select.value = profile_id
         self.w_description.value = str(profile.get("description") or "")
 
         self.w_schema_path.value = str(cfg.get("schema_path") or "")
@@ -517,6 +527,7 @@ class PreprocessProfileEditor:
         self.w_profile_dir.value = str(saved.parent)
         self.w_save_filename.value = saved.name
         self.refresh_profile_list()
+        self.w_profile_select.value = str(profile.get("profile_id") or "")
         return saved
 
     def _save_path_for_profile(self, profile_id: str) -> Path:
@@ -531,7 +542,7 @@ class PreprocessProfileEditor:
         return Path(self.w_profile_dir.value or self.profiles_dir) / path
 
     def _load_selected_profile(self) -> None:
-        profile_id = _optional_text(self.w_profile_id.value)
+        profile_id = _optional_text(self.w_profile_select.value)
         if not profile_id:
             return
         with self._out:

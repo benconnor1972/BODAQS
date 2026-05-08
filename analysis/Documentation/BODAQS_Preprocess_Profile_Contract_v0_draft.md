@@ -55,6 +55,7 @@ The following are notebook/runtime concerns and are explicitly **out of scope** 
 - FIT binding-manifest selection
 - SHA cache location and processed-file detection policy
 - whether to prompt for run or session descriptions
+- timezone fallback for logger-local timestamps
 - timezone label or other run-labeling policy
 - the per-session user choice required when multiple overlapping FIT files exist
 - the contents of referenced bike profiles

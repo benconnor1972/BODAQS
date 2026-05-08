@@ -81,11 +81,13 @@ class PreprocessRuntimeSettingsEditor:
         fit_bindings_path: Optional[str | Path] = Path("config/fit_bindings_v1.json"),
         prompt_for_descriptions: bool = True,
         run_tz_label: str = "AWST",
+        logger_timezone: Optional[str] = "Australia/Perth",
         state_file: str | Path = _DEFAULT_RUNTIME_SETTINGS_STATE_FILE,
         show_log_dir: bool = False,
         show_preprocess_profile_path: bool = True,
         show_artifacts_dir: bool = True,
         show_generic_log_metadata: bool = True,
+        show_logger_timezone: bool = True,
         show_bike_profile_path: bool = True,
         show_fit_inputs: bool = True,
         show_prompt_for_descriptions: bool = True,
@@ -98,6 +100,7 @@ class PreprocessRuntimeSettingsEditor:
         self.show_preprocess_profile_path = bool(show_preprocess_profile_path)
         self.show_artifacts_dir = bool(show_artifacts_dir)
         self.show_generic_log_metadata = bool(show_generic_log_metadata)
+        self.show_logger_timezone = bool(show_logger_timezone)
         self.show_bike_profile_path = bool(show_bike_profile_path)
         self.show_fit_inputs = bool(show_fit_inputs)
         self.show_prompt_for_descriptions = bool(show_prompt_for_descriptions)
@@ -113,6 +116,7 @@ class PreprocessRuntimeSettingsEditor:
         fit_bindings_path = persisted.get("fit_bindings_path", fit_bindings_path)
         prompt_for_descriptions = persisted.get("prompt_for_descriptions", prompt_for_descriptions)
         run_tz_label = persisted.get("run_tz_label", run_tz_label)
+        logger_timezone = persisted.get("logger_timezone", logger_timezone)
 
         self.w_log_dir = W.Text(
             value=str(log_dir) if log_dir is not None else "",
@@ -140,6 +144,12 @@ class PreprocessRuntimeSettingsEditor:
             description="Log metadata",
             placeholder="One generic log metadata file or directory per line. Leave blank for same-stem metadata/header parsing only.",
             layout=_full_width_layout(height="96px"),
+        )
+        self.w_logger_timezone = W.Text(
+            value=str(logger_timezone or ""),
+            description="Logger TZ",
+            placeholder="Fallback IANA timezone, e.g. Australia/Perth",
+            layout=_stretch_layout(),
         )
         self.b_add_log_metadata_file = W.Button(description="Add file", icon="file")
         self.b_add_log_metadata_dir = W.Button(description="Add dir", icon="folder-open")
@@ -230,15 +240,22 @@ class PreprocessRuntimeSettingsEditor:
                 )
             )
 
-        if self.show_generic_log_metadata:
-            sections.append(
-                self._section(
-                    "Logger Metadata",
-                    "Select reusable generic log metadata fallbacks for logs that do not have same-stem metadata beside the CSV.",
+        if self.show_generic_log_metadata or self.show_logger_timezone:
+            logger_metadata_children: List[W.Widget] = []
+            if self.show_logger_timezone:
+                logger_metadata_children.append(_row([self.w_logger_timezone]))
+            if self.show_generic_log_metadata:
+                logger_metadata_children.extend(
                     [
                         self.w_generic_log_metadata_paths,
                         _row([self.b_add_log_metadata_file, self.b_add_log_metadata_dir, self.b_clear_log_metadata]),
-                    ],
+                    ]
+                )
+            sections.append(
+                self._section(
+                    "Logger Metadata",
+                    "Select reusable generic log metadata fallbacks and the timezone to use only when a log does not declare one itself.",
+                    logger_metadata_children,
                 )
             )
 
@@ -290,6 +307,7 @@ class PreprocessRuntimeSettingsEditor:
             "fit_bindings_path": _optional_path(self.w_fit_bindings_path.value),
             "prompt_for_descriptions": bool(self.w_prompt_for_descriptions.value),
             "run_tz_label": str(self.w_run_tz_label.value or "").strip() or "AWST",
+            "logger_timezone": _optional_text(self.w_logger_timezone.value),
         }
 
     def validate(self, *, print_to_output: bool = False) -> tuple[List[str], List[str]]:
@@ -331,6 +349,18 @@ class PreprocessRuntimeSettingsEditor:
         fit_bindings_path = settings["fit_bindings_path"]
         if fit_bindings_path is not None and not fit_bindings_path.exists():
             warnings.append(f"FIT bindings path does not exist: {fit_bindings_path}")
+
+        logger_timezone = settings["logger_timezone"]
+        if self.show_logger_timezone:
+            if logger_timezone is None:
+                warnings.append("Logger timezone fallback is blank; filename-derived time anchors will use the local machine timezone if log metadata does not declare a timezone.")
+            else:
+                try:
+                    from zoneinfo import ZoneInfo
+
+                    ZoneInfo(logger_timezone)
+                except Exception:
+                    warnings.append(f"Logger timezone fallback is not a recognized IANA timezone: {logger_timezone}")
 
         if print_to_output:
             with self._out:
@@ -378,6 +408,7 @@ class PreprocessRuntimeSettingsEditor:
             self.w_preprocess_profile_path,
             self.w_artifacts_dir,
             self.w_generic_log_metadata_paths,
+            self.w_logger_timezone,
             self.w_bike_profile_path,
             self.w_fit_dir,
             self.w_fit_bindings_path,
@@ -409,6 +440,7 @@ class PreprocessRuntimeSettingsEditor:
             ),
             "prompt_for_descriptions": bool(settings["prompt_for_descriptions"]),
             "run_tz_label": str(settings["run_tz_label"] or "AWST"),
+            "logger_timezone": str(settings["logger_timezone"]) if settings["logger_timezone"] is not None else None,
         }
 
     def _persist_state(self) -> None:
@@ -427,6 +459,7 @@ class PreprocessRuntimeSettingsEditor:
             "fit_dir",
             "fit_bindings_path",
             "run_tz_label",
+            "logger_timezone",
         )
         for key in text_keys:
             value = _optional_text(payload.get(key))

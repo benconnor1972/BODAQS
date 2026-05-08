@@ -52,7 +52,8 @@ source = {
     "path": str,                 # full or relative input path
     "filename": str,             # basename only
     "created_local": datetime | None,
-    "timezone": str | None,      # e.g. "Australia/Perth" or "AWST"
+    "timezone": str | None,      # IANA timezone used for absolute anchoring, e.g. "Australia/Perth"
+    "timezone_source": str | None,  # e.g. "log_metadata" or "runtime_fallback"
     "log_metadata_path": str | None,  # optional logger log metadata used during ingest
     "sidecar_path": str | None,  # deprecated alias for log_metadata_path
 }

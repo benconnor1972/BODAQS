@@ -43,6 +43,21 @@ The event’s grid is defined by the trigger stream’s `time_s`.
 
 ---
 
+### Absolute session anchor
+
+`time_s` is relative. Any absolute time alignment, including FIT/GPS overlap
+matching, requires a session anchor. The preferred anchor order is:
+
+1. `log_metadata.session.started_at_local`
+2. `log_metadata.session.timezone` applied to a filename/local-time anchor
+3. a caller-supplied fallback logger timezone, such as `"Australia/Perth"`
+4. the local machine timezone as a last resort, with QC warning
+
+Short labels used in artifact names, such as `"AWST"`, are not timestamp
+interpretation timezones.
+
+---
+
 ## dt (sample period) Rules
 
 ### Per-stream dt
