@@ -102,14 +102,18 @@ bool WebServerManager::start() {
     return false;
   }
 
-  wl_status_t wl = WiFi.status();
-  WS_LOGD("start: WiFi.status()=%d (need %d=WL_CONNECTED)\n", (int)wl, (int)WL_CONNECTED);
-  if (wl != WL_CONNECTED) {
-    WS_LOGI("start: WiFi not connected; will retry from loop()\n");
+  auto st = WiFiManager::status();
+  WS_LOGD("start: WiFi state=%d mode=%s up=%d wl=%d\n",
+          (int)st.state,
+          ConfigManager::wifiModeKey(st.mode),
+          st.networkUp ? 1 : 0,
+          (int)st.wl);
+  if (!st.networkUp) {
+    WS_LOGI("start: network not ready; will retry from loop()\n");
     return false;
   }
 
-  IPAddress ip = WiFi.localIP();
+  IPAddress ip = WiFiManager::localAddress();
   WS_LOGI("start: starting on http://%s/\n", ip.toString().c_str());
 
   // Allocate server and wire routes if first time
@@ -121,7 +125,7 @@ bool WebServerManager::start() {
   g_server->begin();
   g_running = true;
 
-  WS_LOGI("start: listening http://%s/\n", WiFi.localIP().toString().c_str());
+  WS_LOGI("start: listening http://%s/\n", WiFiManager::localAddress().toString().c_str());
   return true;
 }
 
@@ -165,7 +169,7 @@ void WebServerManager::loop() {
     return;
   }
 
-  bool wifiUp = (WiFi.status() == WL_CONNECTED);
+  bool wifiUp = WiFiManager::isNetworkUp();
 
   if (wifiUp) {
     if (!g_running) start();  // will call begin(); should be idempotent
@@ -197,9 +201,12 @@ void WebServerManager::setupRoutes() {
     noteHttpActivity_();
     String out;
     out.reserve(256);
+    auto st = WiFiManager::status();
     out += F("{\"wifi\":");
-    out += String((int)WiFi.status());
-    out += F(",\"ip\":\""); out += WiFi.localIP().toString(); out += F("\"");
+    out += String((int)st.wl);
+    out += F(",\"mode\":\""); out += ConfigManager::wifiModeKey(st.mode); out += F("\"");
+    out += F(",\"networkUp\":"); out += st.networkUp ? F("true") : F("false");
+    out += F(",\"ip\":\""); out += st.ip; out += F("\"");
     out += F(",\"running\":"); out += g_running ? F("true") : F("false");
     out += F(",\"canStart\":"); out += canStart() ? F("true") : F("false");
     out += F(",\"sdmmc\":"); out += (SD_MMC.cardType() != CARD_NONE ? F("true") : F("false"));

@@ -32,6 +32,7 @@ static const char* stateName(MenuSystem::State s) {
     case MenuSystem::State::SensorsList: return "SensorsList";
     case MenuSystem::State::RatePicker:  return "RatePicker";
     case MenuSystem::State::LogFormatPicker: return "LogFormatPicker";
+    case MenuSystem::State::WiFiModePicker: return "WiFiModePicker";
     case MenuSystem::State::CalibSensors:return "CalibSensors";
     case MenuSystem::State::CalibDetail: return "CalibDetail";
     case MenuSystem::State::About:       return "About";
@@ -61,6 +62,7 @@ namespace {
 
   enum class MainItem : uint8_t {
     WebServerToggle = 0,
+    WiFiMode,
     SensorsToggle,
     SampleRate,
     Calibration,
@@ -70,7 +72,7 @@ namespace {
     Restart,
     About
   };
-  static inline uint8_t mainItemCount_() { return 9; }
+  static inline uint8_t mainItemCount_() { return 10; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -122,6 +124,9 @@ namespace {
   static void drawLogFormatPicker_();
   static void enterLogFormatPicker_();
   static void applyLogFormat_();
+  static void drawWiFiModePicker_();
+  static void enterWiFiModePicker_();
+  static void applyWiFiMode_();
   static void redraw_();
   static void drawCalibSensors_();
   static void drawCalibDetail_();
@@ -152,11 +157,14 @@ namespace {
     switch (mi) {
       case MainItem::WebServerToggle: {
         if (s_wsPending) {
-          return "WiFi: CONNECTING";
+          return "WiFi: STARTING";
         }
         bool on = WebServerManager::isRunning();
         return String("WiFi: ") + (on ? "ON" : "OFF");
       }
+      case MainItem::WiFiMode:
+        return String("WiFi mode: ") +
+               (ConfigManager::get().wifiMode == WiFiMode::AccessPoint ? "AP" : "STA");
       case MainItem::SensorsToggle:
         return "Mute sensors";
       case MainItem::SampleRate: {
@@ -248,6 +256,13 @@ namespace {
         WiFiManager::enable();
         WiFiManager::connectNow();
         WiFiManager::noteUserActivity();
+        break;
+      }
+
+      case MainItem::WiFiMode: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        enterWiFiModePicker_();
         break;
       }
 
@@ -485,6 +500,7 @@ namespace {
       case State::SensorsList:  drawSensors_();      break;
       case State::RatePicker:   drawRatePicker_();   break;
       case State::LogFormatPicker: drawLogFormatPicker_(); break;
+      case State::WiFiModePicker: drawWiFiModePicker_(); break;
       case State::CalibSensors: drawCalibSensors_(); break;
       case State::CalibDetail:  drawCalibDetail_();  break;
       case State::About:        drawAbout_();        break;
@@ -523,6 +539,10 @@ namespace {
 
       case State::LogFormatPicker:
         applyLogFormat_();
+        return true;
+
+      case State::WiFiModePicker:
+        applyWiFiMode_();
         return true;
 
       case State::CalibSensors:
@@ -679,10 +699,16 @@ namespace {
 
   static uint8_t  s_rateIdx = 0;   // selection within Rates::kList
   static uint8_t  s_logFormatIdx = 0;
+  static uint8_t  s_wifiModeIdx = 0;
   static constexpr uint8_t kLogFormatCount = 2;
   static constexpr LogFormat kLogFormatOptions[kLogFormatCount] = {
     LogFormat::BodaqsStandard,
     LogFormat::SynBikeRaw
+  };
+  static constexpr uint8_t kWiFiModeCount = 2;
+  static constexpr WiFiMode kWiFiModeOptions[kWiFiModeCount] = {
+    WiFiMode::Station,
+    WiFiMode::AccessPoint
   };
 
   static void drawRatePicker_() {
@@ -796,6 +822,78 @@ namespace {
     const LogFormat format = kLogFormatOptions[s_logFormatIdx];
     ConfigManager::setLogFormat(format);
     UI::toastModal(String("Format: ") + ConfigManager::logFormatLabel(format), 2000, 1);
+    deferUiFor(2000);
+    s_state = State::Main;
+    drawMain_();
+  }
+
+  static void drawWiFiModePicker_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+    UI::clear(UI::TARGET_OLED);
+    drawHeader_("WiFi Mode");
+
+    const WiFiMode active = ConfigManager::get().wifiMode;
+
+    int y = 12;
+    for (uint8_t i = 0; i < kWiFiModeCount; ++i) {
+      const WiFiMode option = kWiFiModeOptions[i];
+      const bool isSel = (i == s_wifiModeIdx);
+      const bool isActive = (option == active);
+
+      String line;
+      line.reserve(28);
+      line += isSel ? ">" : " ";
+      line += " ";
+      line += isActive ? "[*] " : "[ ] ";
+      line += ConfigManager::wifiModeLabel(option);
+
+      UI::oledText(0, y, line);
+      y += 10;
+    }
+
+    DisplayManager::present();
+  }
+
+  static void enterWiFiModePicker_() {
+    const WiFiMode cur = ConfigManager::get().wifiMode;
+    s_wifiModeIdx = 0;
+    for (uint8_t i = 0; i < kWiFiModeCount; ++i) {
+      if (kWiFiModeOptions[i] == cur) {
+        s_wifiModeIdx = i;
+        break;
+      }
+    }
+    s_state = State::WiFiModePicker;
+    drawWiFiModePicker_();
+  }
+
+  static void applyWiFiMode_() {
+    if (LoggingManager::isRunning()) {
+      UI::toastModal("Stop log", 2000, 1);
+      deferUiFor(2000);
+      return;
+    }
+
+    const WiFiMode mode = kWiFiModeOptions[s_wifiModeIdx];
+    const bool changed = (ConfigManager::get().wifiMode != mode);
+    const bool wifiWasActive = WiFiManager::isEnabled();
+    const bool serverWasRunning = WebServerManager::isRunning();
+
+    ConfigManager::setWifiMode(mode);
+
+    if (changed && wifiWasActive) {
+      WebServerManager::stop();
+      WiFiManager::disable();
+      WiFiManager::enable();
+      WiFiManager::connectNow();
+      WiFiManager::noteUserActivity();
+      s_wsPending = serverWasRunning;
+      if (s_wsPending) {
+        s_wsDeadlineMs = millis() + 20000;
+      }
+    }
+
+    UI::toastModal(String("Mode: ") + ConfigManager::wifiModeLabel(mode), 2000, 1);
     deferUiFor(2000);
     s_state = State::Main;
     drawMain_();
@@ -1053,6 +1151,33 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       break;
     }
 
+    case State::WiFiModePicker: {
+      if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
+        s_state = State::Main;
+        drawMain_();
+        return;
+      }
+
+      if (ev == BUTTON_PRESSED) {
+        if (d == Dir::Up) {
+          if (s_wifiModeIdx > 0) --s_wifiModeIdx;
+          drawWiFiModePicker_();
+          return;
+        }
+        if (d == Dir::Down) {
+          if (s_wifiModeIdx + 1 < kWiFiModeCount) ++s_wifiModeIdx;
+          drawWiFiModePicker_();
+          return;
+        }
+        if ((d == Dir::Enter || d == Dir::Right) && millis() >= s_enterGuardUntilMs) {
+          if (activateCurrentSelection_()) return;
+        }
+      }
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
+      }
+      break;
+    }
 
     case State::CalibSensors: {
       const uint8_t n = ConfigManager::sensorCount();
@@ -1136,7 +1261,7 @@ void MenuSystem::loop() {
   if (s_wsPending) {
     auto st = WiFiManager::status();
 
-      if (st.wl == WL_CONNECTED && st.state == WiFiMgrState::ONLINE) {
+      if (st.networkUp) {
         // We have a link: try to start the server once
         s_wsPending = false;
 

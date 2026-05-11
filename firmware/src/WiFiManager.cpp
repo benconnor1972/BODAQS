@@ -70,6 +70,15 @@ static const char* wifiModeName_(wifi_mode_t mode) {
   }
 }
 
+static bool wifiRadioIsAp_() {
+  const wifi_mode_t mode = WiFi.getMode();
+  return mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA;
+}
+
+static bool configuredWifiModeIsStation_() {
+  return ConfigManager::get().wifiMode == WiFiMode::Station;
+}
+
 static const char* resetReasonName_(esp_reset_reason_t reason) {
   switch (reason) {
     case ESP_RST_UNKNOWN:   return "UNKNOWN";
@@ -162,6 +171,7 @@ static void wifiDiag_(const char* reason) {
 static void keepStaIdle_(const char* reason) {
   wifiDiag_(reason);
   WiFi.scanDelete();
+  WiFi.softAPdisconnect(true);
   WiFi.disconnect(false, false);
   if (WiFi.getMode() != WIFI_STA && !WiFi.mode(WIFI_STA)) {
     WIFI_LOGW("keepStaIdle_: failed to enter WIFI_STA\n");
@@ -173,6 +183,7 @@ static void keepStaIdle_(const char* reason) {
 static void hardOff_(const char* reason) {
   wifiDiag_(reason);
   WiFi.scanDelete();
+  WiFi.softAPdisconnect(true);
   if (!WiFi.mode(WIFI_OFF)) {
     WIFI_LOGW("hardOff_: WiFi.mode(WIFI_OFF) failed\n");
   }
@@ -397,7 +408,7 @@ void WiFiManager::loop() {
   if (loggingGuard_()) {
     // Only do the teardown once, when we transition into "logging"
     if (s_state != WiFiMgrState::OFF) {
-      if (s_state == WiFiMgrState::ONLINE && s_onOffline) {
+      if ((s_state == WiFiMgrState::ONLINE || s_state == WiFiMgrState::AP_ONLINE) && s_onOffline) {
         s_onOffline();
       }
       shutdownRadio_();     // <-- actually power down radio/BT
@@ -409,7 +420,7 @@ void WiFiManager::loop() {
 
   // If WiFi link is already up, ensure our state reflects that.
   // This covers cases where we reconnected outside the CONNECTING path.
-  if (s_enabled && WiFi.status() == WL_CONNECTED) {
+  if (s_enabled && s_state != WiFiMgrState::AP_ONLINE && WiFi.status() == WL_CONNECTED) {
     if (s_state != WiFiMgrState::ONLINE) {
       s_currSsid = WiFi.SSID();
       s_currRssi = WiFi.RSSI();
@@ -523,6 +534,44 @@ void WiFiManager::loop() {
       }
       break;
     }
+
+    case WiFiMgrState::AP_ONLINE: {
+      if (!s_enabled) {
+        if (s_onOffline) s_onOffline();
+        hardOff_("disabled while ap online");
+        enterOff_();
+        s_linkDropDeadlineMs = 0;
+        notifyUi_();
+        break;
+      }
+
+      if (!wifiRadioIsAp_()) {
+        if (s_onOffline) s_onOffline();
+        enterIdle_();
+        s_linkDropDeadlineMs = 0;
+        notifyUi_();
+        break;
+      }
+
+      const uint32_t idleTimeoutMs = wifiIdleTimeoutMs_();
+      if (idleTimeoutMs == 0) {
+        noteIdleOffActivity_();
+        break;
+      }
+
+      if (s_idleOffLastActivityMs != 0 &&
+          (uint32_t)(millis() - s_idleOffLastActivityMs) >= idleTimeoutMs) {
+        if (s_onOffline) s_onOffline();
+        s_enabled = false;
+        hardOff_("ap idle timeout");
+        enterOff_();
+        s_idleOffLastActivityMs = 0;
+        s_linkDropDeadlineMs = 0;
+        clearIntent_();
+        notifyUi_();
+      }
+      break;
+    }
   }
 }
 
@@ -549,7 +598,7 @@ void WiFiManager::disable() {
   s_enabled = false;
 
   // Tell app we're going offline (only if we were actually online)
-  if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
+  if ((s_state == WiFiMgrState::ONLINE || s_state == WiFiMgrState::AP_ONLINE) && s_onOffline) s_onOffline();
 
   s_targetConfigIndex = -1;
   clearIntent_();
@@ -571,7 +620,24 @@ void WiFiManager::disable() {
 bool WiFiManager::isEnabled() { return s_enabled; }
 
 void WiFiManager::connectNow() {
+  if (ConfigManager::get().wifiMode == WiFiMode::AccessPoint) {
+    startAccessPoint_();
+    return;
+  }
+  connectStationNow_();
+}
+
+void WiFiManager::startConfiguredMode() {
+  connectNow();
+}
+
+void WiFiManager::connectStationNow_() {
   if (!s_enabled || loggingGuard_()) return;
+  if (!configuredNetworksExist_()) {
+    clearIntent_();
+    wifiDiag_("connectNow ignored: no configured station networks");
+    return;
+  }
   if (s_state == WiFiMgrState::SCANNING || s_state == WiFiMgrState::CONNECTING) {
     wifiDiag_("connectNow ignored: already busy");
     return;
@@ -580,6 +646,11 @@ void WiFiManager::connectNow() {
     noteUserActivity();
     wifiDiag_("connectNow ignored: already online");
     return;
+  }
+  if (s_state == WiFiMgrState::AP_ONLINE) {
+    if (s_onOffline) s_onOffline();
+    keepStaIdle_("station connect from ap");
+    enterIdle_();
   }
 
   s_haveIntentConnect = true;
@@ -599,7 +670,7 @@ void WiFiManager::connectNow() {
 }
 
 void WiFiManager::disconnect() {
-  if (s_state == WiFiMgrState::ONLINE && s_onOffline) s_onOffline();
+  if ((s_state == WiFiMgrState::ONLINE || s_state == WiFiMgrState::AP_ONLINE) && s_onOffline) s_onOffline();
   s_targetConfigIndex = -1;
   clearIntent_();
   s_idleOffLastActivityMs = 0;
@@ -618,6 +689,7 @@ void WiFiManager::shutdownRadio_() {
 void WiFiManager::maybeConnectForRTC() {
   const auto& cfg = ConfigManager::get();
   if (!cfg.wifiAutoTimeOnRtcInvalid) return;        // feature off in config
+  if (!configuredWifiModeIsStation_()) return;      // AP-only mode has no upstream NTP path
   if (!configuredNetworksExist_()) return;          // nowhere to connect
 
   bool haveValidTime = RTCManager_hasValidTime();
@@ -639,7 +711,7 @@ void WiFiManager::maybeConnectForRTC() {
   }
 
   enable();                         // radios on
-  s_haveIntentConnect = true;       // kick SCANNING → CONNECTING path
+  connectStationNow_();
   s_rtcSyncPending = true;          // remember why we’re doing this
   s_rtcSyncRetryAtMs = 0;
   s_rtcSyncAttempts = 0;
@@ -650,6 +722,7 @@ void WiFiManager::maybeConnectForRTC() {
 
 bool WiFiManager::forceRtcSync() {
   if (loggingGuard_()) return false;
+  if (!configuredWifiModeIsStation_()) return false;
   if (!configuredNetworksExist_()) return false;
   if (s_rtcSyncPending) {
     if (s_enabled) {
@@ -669,7 +742,7 @@ bool WiFiManager::forceRtcSync() {
   s_invalidateRtcOnBoot = false;
 
   enable();
-  connectNow();
+  connectStationNow_();
   if (s_enabled) {
     noteUserActivity();
   }
@@ -704,11 +777,45 @@ void WiFiManager::resumeAfterLogging() {
 WiFiStatus WiFiManager::status() {
   WiFiStatus st;
   st.state   = s_state;
+  st.mode    = (s_state == WiFiMgrState::AP_ONLINE) ? WiFiMode::AccessPoint : ConfigManager::get().wifiMode;
   st.wl      = WiFi.status();
   st.enabled = s_enabled;
-  st.ssid    = (s_state == WiFiMgrState::ONLINE) ? s_currSsid : "";
+  st.networkUp = isNetworkUp();
+  st.ssid    = st.networkUp ? networkName() : "";
+  st.ip      = st.networkUp ? localAddress().toString() : "";
   st.rssi    = (s_state == WiFiMgrState::ONLINE) ? s_currRssi : 0;
+  st.apClients = (s_state == WiFiMgrState::AP_ONLINE && wifiRadioIsAp_())
+                 ? (uint8_t)WiFi.softAPgetStationNum()
+                 : 0;
   return st;
+}
+
+bool WiFiManager::isNetworkUp() {
+  if (!s_enabled) return false;
+  if (s_state == WiFiMgrState::ONLINE) {
+    return WiFi.status() == WL_CONNECTED;
+  }
+  if (s_state == WiFiMgrState::AP_ONLINE) {
+    return wifiRadioIsAp_();
+  }
+  return false;
+}
+
+IPAddress WiFiManager::localAddress() {
+  if (s_state == WiFiMgrState::AP_ONLINE && wifiRadioIsAp_()) {
+    return WiFi.softAPIP();
+  }
+  return WiFi.localIP();
+}
+
+String WiFiManager::networkName() {
+  if (s_state == WiFiMgrState::AP_ONLINE && s_currSsid.length()) {
+    return s_currSsid;
+  }
+  if (s_state == WiFiMgrState::ONLINE && s_currSsid.length()) {
+    return s_currSsid;
+  }
+  return WiFi.SSID();
 }
 
 void WiFiManager::notifyUi_() {
@@ -727,6 +834,74 @@ void WiFiManager::enterOff_() {
 
 void WiFiManager::enterIdle_() {
   s_state = s_enabled ? WiFiMgrState::IDLE : WiFiMgrState::OFF;
+}
+
+void WiFiManager::startAccessPoint_() {
+  if (!s_enabled || loggingGuard_()) return;
+
+  if (s_state == WiFiMgrState::AP_ONLINE && wifiRadioIsAp_()) {
+    noteUserActivity();
+    wifiDiag_("startAccessPoint ignored: already online");
+    return;
+  }
+
+  if (s_state == WiFiMgrState::ONLINE && s_onOffline) {
+    s_onOffline();
+  }
+
+  clearIntent_();
+  s_targetConfigIndex = -1;
+  s_targetSsid = "";
+  s_targetBssidSet = false;
+  memset(s_targetBssid, 0, sizeof(s_targetBssid));
+  WiFi.scanDelete();
+  WiFi.disconnect(false, false);
+  WiFi.softAPdisconnect(true);
+
+  const auto& cfg = ConfigManager::get();
+  String ssid(cfg.wifiApSsid);
+  ssid.trim();
+  if (!ssid.length()) ssid = F("BODAQS");
+  if (ssid.length() > 31) ssid = ssid.substring(0, 31);
+
+  String password(cfg.wifiApPassword);
+  password.trim();
+  if (password.length() < 8 || password.length() > 63) {
+    WIFI_LOGW("AP password length invalid; using default\n");
+    password = F("bodaqslogger");
+  }
+
+  wifiDiag_("startAccessPoint");
+  if (!WiFi.mode(WIFI_AP)) {
+    WIFI_LOGE("startAccessPoint_: WiFi.mode(WIFI_AP) failed\n");
+    enterIdle_();
+    notifyUi_();
+    return;
+  }
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  btStop();
+
+  const bool ok = WiFi.softAP(ssid.c_str(), password.c_str());
+  if (!ok) {
+    WIFI_LOGE("startAccessPoint_: WiFi.softAP failed\n");
+    hardOff_("softAP failed");
+    enterIdle_();
+    notifyUi_();
+    return;
+  }
+
+  s_currSsid = ssid;
+  s_currRssi = 0;
+  s_state = WiFiMgrState::AP_ONLINE;
+  noteIdleOffActivity_();
+  s_linkDropDeadlineMs = 0;
+
+  WIFI_LOGI("AP started ssid='%s' ip=%s\n",
+            s_currSsid.c_str(),
+            WiFi.softAPIP().toString().c_str());
+  if (s_onOnline) s_onOnline();
+  notifyUi_();
 }
 
 void WiFiManager::startScan_() {
@@ -950,7 +1125,7 @@ void WiFiManager::clearIntent_() {
 }
 
 void WiFiManager::noteUserActivity() {
-  if (s_enabled && s_state == WiFiMgrState::ONLINE) {
+  if (s_enabled && (s_state == WiFiMgrState::ONLINE || s_state == WiFiMgrState::AP_ONLINE)) {
     noteIdleOffActivity_();
   }
 }

@@ -279,7 +279,7 @@ void setup() {
   BOOT_LOGI("SETUP: G Done\n");
 
   // Bring Wi-Fi up on boot only if the user asked for it by default
-  if (ConfigManager::hasConfiguredNetworks() && cfg.wifiEnabledDefault) {
+  if (cfg.wifiEnabledDefault) {
     WiFiManager::enable();
     WiFiManager::connectNow();   // one pass: scan → select → connect
     WiFiManager::maybeConnectForRTC();   

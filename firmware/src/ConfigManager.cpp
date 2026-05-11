@@ -387,6 +387,40 @@ bool ConfigManager::parseLogFormat(const char* text, LogFormat& out) {
   return false;
 }
 
+const char* ConfigManager::wifiModeKey(WiFiMode mode) {
+  switch (mode) {
+    case WiFiMode::AccessPoint: return "access_point";
+    case WiFiMode::Station:
+    default: return "station";
+  }
+}
+
+const char* ConfigManager::wifiModeLabel(WiFiMode mode) {
+  switch (mode) {
+    case WiFiMode::AccessPoint: return "Access point";
+    case WiFiMode::Station:
+    default: return "Station";
+  }
+}
+
+bool ConfigManager::parseWifiMode(const char* text, WiFiMode& out) {
+  if (!text || !*text) return false;
+  if (keyEquals(text, "station") ||
+      keyEquals(text, "sta") ||
+      keyEquals(text, "client")) {
+    out = WiFiMode::Station;
+    return true;
+  }
+  if (keyEquals(text, "access_point") ||
+      keyEquals(text, "access-point") ||
+      keyEquals(text, "accesspoint") ||
+      keyEquals(text, "ap")) {
+    out = WiFiMode::AccessPoint;
+    return true;
+  }
+  return false;
+}
+
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   // snap to allowed list (or closest)
@@ -418,6 +452,19 @@ void ConfigManager::setLogFormat(LogFormat format, bool persist) {
   LoggerConfig cfg = ConfigManager::get();
   if (cfg.logFormat == format) return;
   cfg.logFormat = format;
+
+  if (persist) {
+    ConfigManager::save(cfg);
+  } else {
+    s_cfg = cfg;
+    g_cfg = s_cfg;
+  }
+}
+
+void ConfigManager::setWifiMode(WiFiMode mode, bool persist) {
+  LoggerConfig cfg = ConfigManager::get();
+  if (cfg.wifiMode == mode) return;
+  cfg.wifiMode = mode;
 
   if (persist) {
     ConfigManager::save(cfg);
@@ -524,8 +571,11 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   }
 
     // ---- new-style WiFi globals ----
+  if (keyEquals(key, "wifi_mode")) { WiFiMode mode; if (ConfigManager::parseWifiMode(val, mode)) cfg.wifiMode = mode; return true; }
   if (keyEquals(key, "wifi_enabled_default")) {bool b; if (ConfigManager::parseBool(String(val), b)) cfg.wifiEnabledDefault = b; return true;  }
   if (keyEquals(key, "wifi_auto_time_on_rtc_invalid")) {bool b; if (ConfigManager::parseBool(String(val), b)) cfg.wifiAutoTimeOnRtcInvalid = b; return true;  }
+  if (keyEquals(key, "wifi_ap_ssid")) { copyStrBounded(val, cfg.wifiApSsid, sizeof(cfg.wifiApSsid)); return true; }
+  if (keyEquals(key, "wifi_ap_password")) { copyStrBounded(val, cfg.wifiApPassword, sizeof(cfg.wifiApPassword)); return true; }
   // advisory only; we'll recompute after load()
   if (keyEquals(key, "wifi_network_count")) {
     long v = strtol(val, nullptr, 10);
@@ -734,6 +784,22 @@ bool ConfigManager::load(LoggerConfig& cfg) {
     g_specs[i].params.bind(&g_stores[i]);
   }
 
+  // ---- Normalize AP Wi-Fi settings ----
+  {
+    String apSsid(cfg.wifiApSsid);
+    apSsid.trim();
+    if (!apSsid.length()) apSsid = F("BODAQS");
+    if (apSsid.length() > 31) apSsid = apSsid.substring(0, 31);
+    copyStrBounded(apSsid.c_str(), cfg.wifiApSsid, sizeof(cfg.wifiApSsid));
+
+    String apPassword(cfg.wifiApPassword);
+    apPassword.trim();
+    if (apPassword.length() < 8 || apPassword.length() > 63) {
+      apPassword = F("bodaqslogger");
+    }
+    copyStrBounded(apPassword.c_str(), cfg.wifiApPassword, sizeof(cfg.wifiApPassword));
+  }
+
   // ---- Normalize new-style WiFi block ----
   uint8_t count = 0;
   bool seen[5] = {false,false,false,false,false};
@@ -908,8 +974,11 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
 
   // ---------------- WiFi ----------------
+  kv("wifi_mode", ConfigManager::wifiModeKey(cfg.wifiMode));
   kv_bool("wifi_enabled_default", cfg.wifiEnabledDefault);
   kv_bool("wifi_auto_time_on_rtc_invalid", cfg.wifiAutoTimeOnRtcInvalid);
+  kv("wifi_ap_ssid", cfg.wifiApSsid);
+  kv("wifi_ap_password", cfg.wifiApPassword);
   kv_u("wifi_network_count", (unsigned)cfg.wifiNetworkCount);
 
   for (uint8_t i = 0; i < cfg.wifiNetworkCount; i++) {
@@ -1021,8 +1090,11 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("wifiIdleTimeoutMs=%lu\n", (unsigned long)cfg.wifiIdleTimeoutMs);
   LOGI("logLevel=%s\n", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
 
+  LOGI("wifiMode=%s\n", ConfigManager::wifiModeKey(cfg.wifiMode));
   LOGI("wifiEnabledDefault=%s\n", cfg.wifiEnabledDefault ? "true" : "false");
   LOGI("wifiAutoTimeOnRtcInvalid=%s\n", cfg.wifiAutoTimeOnRtcInvalid ? "true" : "false");
+  LOGI("wifiApSsid=%s\n", cfg.wifiApSsid);
+  LOGI("wifiApPassword=********\n");
   LOGI("wifiNetworkCount=%u\n", cfg.wifiNetworkCount);
   for (uint8_t i = 0; i < 5; ++i) {
     const auto& w = cfg.wifi[i];

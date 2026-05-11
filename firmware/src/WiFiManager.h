@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include "ConfigManager.h"
 
 // Forward-declared to avoid hard dependency. You’ll wire this from your .ino.
 typedef bool (*IsLoggingActiveFn)();
@@ -12,15 +13,20 @@ enum class WiFiMgrState : uint8_t {
   IDLE,        // enabled, waiting for user action or RTC need
   SCANNING,
   CONNECTING,
-  ONLINE
+  ONLINE,
+  AP_ONLINE
 };
 
 struct WiFiStatus {
   WiFiMgrState state;
+  WiFiMode     mode;
   wl_status_t  wl;
   String       ssid;
+  String       ip;
   int          rssi;   // dBm (WL_CONNECTED only; otherwise 0)
+  uint8_t      apClients;
   bool         enabled;
+  bool         networkUp;
 };
 
 class WiFiManager {
@@ -39,6 +45,7 @@ public:
   // “Do a connect now” — triggers scan + selection + connect (once).
   // Ignored if logging is active or Wi-Fi is disabled.
   static void connectNow();
+  static void startConfiguredMode();
 
   // Disconnect but keep enabled; returns to IDLE.
   static void disconnect();
@@ -51,6 +58,9 @@ public:
 
   // Simple status snapshot for Display/Web.
   static WiFiStatus status();
+  static bool isNetworkUp();
+  static IPAddress localAddress();
+  static String networkName();
 
   // Events (optional, set from .ino)
   typedef void (*OnOnlineFn)();         // called once when ONLINE (got IP)
@@ -69,6 +79,8 @@ private:
   // internals
   static void enterOff_();
   static void enterIdle_();
+  static void startAccessPoint_();
+  static void connectStationNow_();
   static void startScan_();
   static void selectAndConnect_();  
   static bool loggingGuard_();      // true if logging is active

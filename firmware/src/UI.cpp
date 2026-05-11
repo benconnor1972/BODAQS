@@ -28,15 +28,15 @@ String   s_lastWifiSummary;
 static String makeWifiSummary_() {
   auto st = WiFiManager::status();
 
-  if (st.wl == WL_CONNECTED) {
+  if (st.networkUp) {
     // Build the two strings we want to alternate between.
-    String ssid = st.ssid.length() ? st.ssid : WiFi.SSID();
+    String ssid = st.ssid.length() ? st.ssid : WiFiManager::networkName();
     if (!ssid.length()) ssid = "(connected)";
 
-    String ip = WiFi.localIP().toString();
+    String ip = st.ip.length() ? st.ip : WiFiManager::localAddress().toString();
     if (!ip.length() || ip == "0.0.0.0") ip = "(no ip)";
 
-    const String a = "WiFi: " + ssid;
+    const String a = (st.mode == WiFiMode::AccessPoint) ? ("AP: " + ssid) : ("WiFi: " + ssid);
     const String b = "IP: "   + ip;
 
     // Alternate once per second. Since UI::loop() already runs at 1 Hz,
@@ -52,6 +52,7 @@ static String makeWifiSummary_() {
     case WiFiMgrState::SCANNING:
     case WiFiMgrState::CONNECTING: return "WiFi: connecting";
     case WiFiMgrState::ONLINE:     return "WiFi: (up)";
+    case WiFiMgrState::AP_ONLINE:  return "AP: (up)";
   }
   return "WiFi: ?";
 }

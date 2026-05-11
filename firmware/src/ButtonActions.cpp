@@ -337,10 +337,10 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
     WiFiManager::enable();
   }
 
-  // If already connected, start the server immediately.
-  if (WiFi.status() == WL_CONNECTED) {
+  // If the selected Wi-Fi mode is already up, start the server immediately.
+  if (WiFiManager::isNetworkUp()) {
     if (WebServerManager::start()) {
-      UI::println(String("Web server at ") + WiFi.localIP().toString(),
+      UI::println(String("Web server at ") + WiFiManager::localAddress().toString(),
                   "WiFi on", UI::TARGET_BOTH, UI::LVL_INFO, 2000, 2);
       UI::status("WiFi on");
     } else {
@@ -351,9 +351,9 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
     return;
   }
 
-  // Not connected yet: kick async connect and show "starting..."
+  // Not up yet: start the configured Wi-Fi mode and show "starting..."
   WiFiManager::connectNow();
-  UI::println("Connecting WiFi...", "WiFi\nstarting", UI::TARGET_BOTH, UI::LVL_INFO, 1500, 2);
+  UI::println("Starting WiFi...", "WiFi\nstarting", UI::TARGET_BOTH, UI::LVL_INFO, 1500, 2);
   UI::status("WiFi...");
 }
 
