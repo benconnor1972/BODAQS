@@ -1,5 +1,6 @@
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
+#include "WiFiManager.h"
 #include <WiFi.h>
 
 namespace HtmlUtil {
@@ -120,15 +121,19 @@ namespace HtmlUtil {
     loggerName.trim();
     if (!loggerName.length()) loggerName = F("BODAQS");
 
-    String ssid = WiFi.SSID();
+    const auto wifiStatus = WiFiManager::status();
+    String ssid = wifiStatus.ssid;
     ssid.trim();
-    if (WiFi.status() != WL_CONNECTED || !ssid.length()) ssid = F("not connected");
-    String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("-");
+    if (!wifiStatus.networkUp || !ssid.length()) ssid = F("not connected");
+    String ip = wifiStatus.networkUp ? wifiStatus.ip : String("-");
+    String mode = ConfigManager::wifiModeLabel(wifiStatus.mode);
 
     s += F("<div class='titlebar'>BODAQS data logger: ");
     s += htmlEscape(loggerName);
     s += F("</div>");
     s += F("<div class='netbar'>Network: ");
+    s += htmlEscape(mode);
+    s += F(" / ");
     s += htmlEscape(ssid);
     s += F(" &nbsp; IP: ");
     s += htmlEscape(ip);

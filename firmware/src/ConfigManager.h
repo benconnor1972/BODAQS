@@ -18,6 +18,11 @@ enum class LogFormat : uint8_t {
   SynBikeRaw = 1
 };
 
+enum class WiFiMode : uint8_t {
+  Station = 0,
+  AccessPoint = 1
+};
+
 struct SensorSpec; 
 
 // ----------------- Button + binding config -----------------
@@ -62,8 +67,11 @@ struct LoggerConfig {
   char     wifiPassword[64] = "";
 
   // New-style WiFi config (multi-network)
+  WiFiMode wifiMode                = WiFiMode::Station;
   bool     wifiEnabledDefault       = false;  // Wi-Fi off by default (your preference)
   bool     wifiAutoTimeOnRtcInvalid = true;   // allow Wi-Fi to auto-enable only if RTC invalid
+  char     wifiApSsid[64]           = "BODAQS";
+  char     wifiApPassword[64]       = "bodaqslogger";
 
   struct WiFiEntry {
     char     ssid[64]     = "";
@@ -160,6 +168,10 @@ class ConfigManager {
     static const char* logFormatKey(LogFormat format);
     static const char* logFormatLabel(LogFormat format);
     static bool parseLogFormat(const char* text, LogFormat& out);
+    static void setWifiMode(WiFiMode mode, bool persist = true);
+    static const char* wifiModeKey(WiFiMode mode);
+    static const char* wifiModeLabel(WiFiMode mode);
+    static bool parseWifiMode(const char* text, WiFiMode& out);
 
     // line parser (public so tests or tooling can reuse)
     static bool parseLine(char* line, LoggerConfig& cfg);

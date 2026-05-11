@@ -296,6 +296,26 @@ void registerConfigRoutes(WebServer& srv) {
     if (locked) html += F(" disabled");
     html += F("></div>");
 
+    html += F("<div class='row'><label>Wi-Fi mode</label><select name='wifi_mode'");
+    if (locked) html += F(" disabled");
+    html += F("><option value='station'");
+    if (cfg.wifiMode == WiFiMode::Station) html += F(" selected");
+    html += F(">Station</option><option value='access_point'");
+    if (cfg.wifiMode == WiFiMode::AccessPoint) html += F(" selected");
+    html += F(">Access point</option></select></div>");
+
+    html += F("<div class='row'><label>AP SSID</label><input type='text' name='wifi_ap_ssid' maxlength='31' value='");
+    html += htmlEscape(String(cfg.wifiApSsid));
+    html += F("'");
+    if (locked) html += F(" disabled");
+    html += F("></div>");
+
+    html += F("<div class='row'><label>AP password</label><input type='password' name='wifi_ap_password' minlength='8' maxlength='63' value='");
+    html += htmlEscape(String(cfg.wifiApPassword));
+    html += F("'");
+    if (locked) html += F(" disabled");
+    html += F("><small>8-63 characters</small></div>");
+
     html += F("<div class='row'><label>Auto-enable for NTP if RTC invalid</label>");
     html += F("<input type='hidden' name='wifi_auto_time_on_rtc_invalid' value='false'>");
     html += F("<input type='checkbox' name='wifi_auto_time_on_rtc_invalid' value='true'");
@@ -1293,6 +1313,35 @@ void registerConfigRoutes(WebServer& srv) {
 
       setBoolIfPresent("wifi_enabled_default",          tmp.wifiEnabledDefault);
       setBoolIfPresent("wifi_auto_time_on_rtc_invalid", tmp.wifiAutoTimeOnRtcInvalid);
+
+      if (srv.hasArg("wifi_mode")) {
+        WiFiMode mode;
+        String modeText = srv.arg("wifi_mode");
+        modeText.trim();
+        if (ConfigManager::parseWifiMode(modeText.c_str(), mode)) {
+          tmp.wifiMode = mode;
+        }
+      }
+
+      if (srv.hasArg("wifi_ap_ssid")) {
+        String apSsid = srv.arg("wifi_ap_ssid");
+        apSsid.trim();
+        if (!apSsid.length()) apSsid = F("BODAQS");
+        if (apSsid.length() > 31) apSsid = apSsid.substring(0, 31);
+        apSsid.toCharArray(tmp.wifiApSsid, sizeof(tmp.wifiApSsid));
+      }
+
+      if (srv.hasArg("wifi_ap_password")) {
+        String apPassword = srv.arg("wifi_ap_password");
+        apPassword.trim();
+        if (!apPassword.length()) apPassword = F("bodaqslogger");
+        if (apPassword.length() < 8 || apPassword.length() > 63) {
+          srv.sendHeader("Location", "/config?err=wifi_ap_password_length");
+          srv.send(303, F("text/plain"), F("AP password must be 8-63 characters"));
+          return;
+        }
+        apPassword.toCharArray(tmp.wifiApPassword, sizeof(tmp.wifiApPassword));
+      }
 
       auto parseMacInline = [](const String& s, uint8_t out[6])->bool{
         int b[6];
