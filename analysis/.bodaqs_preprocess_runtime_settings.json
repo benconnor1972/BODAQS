@@ -1,14 +1,14 @@
 {
-  "artifacts_dir": "D:\\Dev\\BODAQS\\analysis\\artifacts",
-  "bike_profile_path": "D:\\Dev\\BODAQS\\analysis\\config\\bike_profiles\\Stumpjumper Evo 2021.json",
-  "fit_bindings_path": "config\\fit_bindings_v1.json",
-  "fit_dir": "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\GPS",
+  "artifacts_dir": "C:\\Users\\benco\\dev\\BODAQS\\analysis\\artifacts",
+  "bike_profile_path": "C:\\Users\\benco\\dev\\BODAQS\\analysis\\config\\bike_profiles\\Bens STEVO_bike_profile_v1.json",
+  "fit_bindings_path": "C:\\Users\\benco\\dev\\BODAQS\\analysis\\config\\fit_bindings_v1.json",
+  "fit_dir": "C:\\Users\\benco\\OneDrive\\Documents\\logs\\GPS",
   "generic_log_metadata_paths": [
     "config\\log_metadata_examples\\current_logger_config_hr_timestamp_log_metadata.json"
   ],
   "log_dir": "C:\\Users\\Ben Connor\\OneDrive\\Documents\\logs\\Test logs",
   "logger_timezone": "Australia/Perth",
-  "preprocess_profile_path": "D:\\Dev\\BODAQS\\analysis\\config\\preprocess_profiles\\suspension_default_v1.json",
+  "preprocess_profile_path": "C:\\Users\\benco\\dev\\BODAQS\\analysis\\config\\preprocess_profiles\\suspension_default_v1.json",
   "prompt_for_descriptions": false,
   "run_tz_label": "AWST"
 }

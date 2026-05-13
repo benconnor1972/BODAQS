@@ -11,7 +11,8 @@ fastparquet==2025.12.0
 
 # Notebook/runtime support
 ipykernel==7.2.0
-jupyterlab==4.5.4
+# Keep JupyterLab on a current 4.5.x patch to stay compatible with notebook 7.5.x.
+jupyterlab==4.5.7
 IPython==9.10.0
 ipywidgets==8.1.8
 traitlets==5.14.3

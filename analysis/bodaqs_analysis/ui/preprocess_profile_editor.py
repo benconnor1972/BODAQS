@@ -159,6 +159,7 @@ class PreprocessProfileEditor:
 
         # Core preprocessing config
         self.w_schema_path = W.Text(description="Schema path", layout=_full_width_layout())
+        self.b_schema_browse = W.Button(description="Browse...", icon="file", layout=W.Layout(width="120px"))
         self.w_strict = W.Checkbox(description="Strict mode")
 
         # FIT import policy. Paths are deliberately not profile fields.
@@ -215,6 +216,7 @@ class PreprocessProfileEditor:
         self.b_save = W.Button(description="Save", button_style="success", icon="save")
 
         self.b_profile_dir.on_click(lambda _: self._browse_profile_dir())
+        self.b_schema_browse.on_click(lambda _: self._browse_file(self.w_schema_path, "Select event schema YAML"))
         self.b_refresh.on_click(lambda _: self.refresh_profile_list())
         self.b_load.on_click(lambda _: self._load_selected_profile())
         self.b_validate.on_click(lambda _: self.validate(print_to_output=True))
@@ -264,7 +266,7 @@ class PreprocessProfileEditor:
                 "Event Schema",
                 "Select the event schema used by the macro pipeline and choose whether ingestion should be strict or tolerant.",
                 [
-                    self.w_schema_path,
+                    _row([self.w_schema_path, self.b_schema_browse]),
                     self.w_strict,
                 ],
             ),
@@ -579,6 +581,24 @@ class PreprocessProfileEditor:
         if chosen:
             self.w_profile_dir.value = chosen
             self.refresh_profile_list()
+
+    def _browse_file(self, widget: W.Text, title: str) -> None:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        current = _optional_text(widget.value)
+        start_dir = str(Path(current).parent) if current else str(Path.cwd())
+        if not Path(start_dir).exists():
+            start_dir = str(Path.cwd())
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        chosen = filedialog.askopenfilename(title=title, initialdir=start_dir)
+        root.destroy()
+
+        if chosen:
+            widget.value = chosen
 
 
 def make_preprocess_profile_editor(

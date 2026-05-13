@@ -4,7 +4,7 @@
   "profile_id": "suspension_default",
   "description": "Default preprocessing profile for the combined preprocessing and suspension dashboard notebook.",
   "config": {
-    "schema_path": "event schema/event_schema - Basic.yaml",
+    "schema_path": "C:\\Users\\benco\\dev\\BODAQS\\analysis\\event schema\\event_schema - Basic.yaml",
     "strict": false,
     "fit_import": {
       "enabled": true,
