@@ -1,0 +1,269 @@
+{
+  "schema": "bodaqs.session_notes.template",
+  "version": 1,
+  "template_id": "suspension_setup",
+  "template_version": "1.0",
+  "title": "Suspension setup",
+  "description": "Starter template for recording suspension setup and test-session context.",
+  "allow_custom_fields": true,
+  "custom_field_section": "Custom",
+  "fields": [
+    {
+      "field_id": "setup_variant",
+      "label": "Setup variant",
+      "field_type": "string",
+      "section": "Overview",
+      "default": "baseline",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "bike",
+      "label": "Bike",
+      "field_type": "string",
+      "section": "Overview",
+      "default": "",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rider",
+      "label": "Rider",
+      "field_type": "string",
+      "section": "Overview",
+      "default": "",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "fork",
+      "label": "Fork",
+      "field_type": "string",
+      "section": "Front",
+      "default": "Stock",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "shock",
+      "label": "Shock",
+      "field_type": "string",
+      "section": "Rear",
+      "default": "Stock",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "linkage",
+      "label": "Linkage",
+      "field_type": "string",
+      "section": "Rear",
+      "default": "Stock",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_air_pressure_psi",
+      "label": "Pressure",
+      "field_type": "float",
+      "section": "Front",
+      "unit": "psi",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_spring_rate_lb",
+      "label": "Spring rate",
+      "field_type": "float",
+      "section": "Front",
+      "unit": "lb",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_air_pressure_psi",
+      "label": "Pressure",
+      "field_type": "float",
+      "section": "Rear",
+      "unit": "psi",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_spring_rate_lb",
+      "label": "Spring rate",
+      "field_type": "float",
+      "section": "Rear",
+      "unit": "lb",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_tokens",
+      "label": "Tokens",
+      "field_type": "int",
+      "section": "Front",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_HBO",
+      "label": "HBO",
+      "field_type": "int",
+      "section": "Front",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_tokens",
+      "label": "Tokens",
+      "field_type": "int",
+      "section": "Rear",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_HBO",
+      "label": "HBO",
+      "field_type": "int",
+      "section": "Rear",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_LSR_clicks",
+      "label": "LSR",
+      "field_type": "int",
+      "section": "Front",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_LSR_clicks",
+      "label": "LSR",
+      "field_type": "int",
+      "section": "Rear",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_HSR_clicks",
+      "label": "HSR",
+      "field_type": "int",
+      "section": "Front",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_HSR_clicks",
+      "label": "HSR",
+      "field_type": "int",
+      "section": "Rear",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_LSC_clicks",
+      "label": "LSC",
+      "field_type": "int",
+      "section": "Front",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_LSC_clicks",
+      "label": "LSC",
+      "field_type": "int",
+      "section": "Rear",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_HSC_clicks",
+      "label": "HSC",
+      "field_type": "int",
+      "section": "Front",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_HSC_clicks",
+      "label": "HSC",
+      "field_type": "int",
+      "section": "Rear",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "front_sag_pct",
+      "label": "Sag %",
+      "field_type": "float",
+      "section": "Front",
+      "unit": "%",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_sag_pct",
+      "label": "Sag %",
+      "field_type": "float",
+      "section": "Rear",
+      "unit": "%",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "test_conditions",
+      "label": "Test conditions",
+      "field_type": "text",
+      "section": "Overview",
+      "project_to_catalog": false,
+      "sortable": false,
+      "filterable": false
+    },
+    {
+      "field_id": "front_tire_pressure_psi",
+      "label": "Tire PSI",
+      "field_type": "float",
+      "section": "Front",
+      "unit": "psi",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    },
+    {
+      "field_id": "rear_tire_pressure_psi",
+      "label": "Tire PSI",
+      "field_type": "float",
+      "section": "Rear",
+      "unit": "psi",
+      "project_to_catalog": true,
+      "sortable": true,
+      "filterable": true
+    }
+  ]
+}
