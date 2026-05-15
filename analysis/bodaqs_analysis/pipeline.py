@@ -41,6 +41,7 @@ from .motion_derivation import derive_motion_channels
 from .bike_profile import apply_signal_transforms, load_bike_profile, parse_bike_profile, resolve_normalization_ranges
 from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
 from .sensor_aliases import canonical_end, canonical_sensor_id
+from .signalname import SignalNameParts, format_signal_name
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_DATETIME_RE = re.compile(
@@ -662,6 +663,290 @@ def _merge_channel_info(
             current[col] = dict(info)
 
 
+def _canonical_unit_label(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    unit = value.strip()
+    if unit.lower() in {"norm", "normalized", "normalised", "unitless"}:
+        return "1"
+    return unit
+
+
+def _materialized_quantity_for_output_unit(unit: str) -> Optional[str]:
+    clean = _canonical_unit_label(unit)
+    if clean == "mm":
+        return "disp"
+    return None
+
+
+def _materialized_signal_name(
+    *,
+    sensor: Any,
+    end: Any,
+    domain: Any,
+    quantity: str,
+    unit: str,
+    fallback: str,
+) -> str:
+    sensor_token = canonical_sensor_id(sensor)
+    end_token = canonical_end(end)
+    domain_token = canonical_sensor_id(domain)
+    fallback_token = canonical_sensor_id(fallback) or "signal"
+
+    if end_token and domain_token:
+        base_token = f"{end_token}_{domain_token}"
+    elif end_token:
+        base_token = end_token
+    elif sensor_token:
+        base_token = sensor_token
+    else:
+        base_token = fallback_token
+
+    quantity_token = canonical_sensor_id(quantity)
+    if quantity_token and quantity_token != "raw":
+        base = f"{base_token}_{quantity_token}"
+        kind = ""
+    else:
+        base = base_token
+        kind = "raw" if quantity_token == "raw" else ""
+
+    return format_signal_name(
+        SignalNameParts(
+            base=base,
+            kind=kind,
+            domain=domain_token or None,
+            unit=_canonical_unit_label(unit) or None,
+            ops=(),
+        )
+    )
+
+
+def _signal_matches_semantics(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
+    if signal_info.get("semantic_selection_excluded"):
+        return False
+
+    for key in ("end", "quantity", "domain", "unit"):
+        expected = selector.get(key)
+        if expected is None or (isinstance(expected, str) and not expected.strip()):
+            continue
+
+        actual = signal_info.get(key)
+        if key == "end":
+            if canonical_end(actual) != canonical_end(expected):
+                return False
+        elif key == "unit":
+            if _canonical_unit_label(actual) != _canonical_unit_label(expected):
+                return False
+        else:
+            if canonical_sensor_id(actual) != canonical_sensor_id(expected):
+                return False
+
+    return True
+
+
+def _as_finite_float(value: Any) -> Optional[float]:
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    return out if np.isfinite(out) else None
+
+
+def _logger_linear_materialization_report() -> Dict[str, Any]:
+    return {
+        "applied": False,
+        "generated": [],
+        "skipped": [],
+        "warnings": [],
+    }
+
+
+def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str, Any]:
+    report = _logger_linear_materialization_report()
+
+    df = session.get("df")
+    meta = session.get("meta")
+    if not isinstance(df, pd.DataFrame) or not isinstance(meta, dict):
+        return report
+
+    signals = meta.get("signals")
+    if not isinstance(signals, Mapping):
+        return report
+
+    channel_info_updates: Dict[str, Dict[str, Any]] = {}
+    for column, info in signals.items():
+        if not isinstance(column, str) or not isinstance(info, Mapping):
+            continue
+        if column not in df.columns:
+            continue
+        if str(info.get("origin") or "").strip().lower() != "logger":
+            continue
+        if str(info.get("quantity") or "").strip().lower() != "raw":
+            continue
+        if _canonical_unit_label(info.get("unit")) != "counts":
+            continue
+
+        calibration = info.get("calibration")
+        if not isinstance(calibration, Mapping):
+            report["skipped"].append({"source_column": column, "reason": "missing_calibration"})
+            continue
+
+        calibration_type = str(calibration.get("type") or "linear").strip().lower()
+        if calibration_type != "linear":
+            report["skipped"].append(
+                {"source_column": column, "reason": "unsupported_calibration_type", "type": calibration_type}
+            )
+            continue
+
+        input_unit = _canonical_unit_label(calibration.get("input_unit")) or "counts"
+        if input_unit != "counts":
+            report["skipped"].append(
+                {"source_column": column, "reason": "unsupported_input_unit", "input_unit": input_unit}
+            )
+            continue
+
+        output_unit = _canonical_unit_label(calibration.get("output_unit"))
+        quantity = _materialized_quantity_for_output_unit(output_unit)
+        if quantity is None:
+            report["skipped"].append(
+                {"source_column": column, "reason": "unsupported_output_unit", "output_unit": output_unit}
+            )
+            continue
+
+        sensor_zero_count = _as_finite_float(calibration.get("sensor_zero_count"))
+        sensor_full_count = _as_finite_float(calibration.get("sensor_full_count"))
+        sensor_full_travel = _as_finite_float(calibration.get("sensor_full_travel"))
+        if sensor_zero_count is None or sensor_full_count is None or sensor_full_travel is None:
+            report["skipped"].append({"source_column": column, "reason": "incomplete_calibration"})
+            continue
+        if sensor_full_travel <= 0:
+            report["skipped"].append({"source_column": column, "reason": "non_positive_full_travel"})
+            continue
+
+        span_counts = sensor_full_count - sensor_zero_count
+        span_abs = abs(span_counts)
+        if span_abs == 0:
+            report["skipped"].append({"source_column": column, "reason": "zero_span_counts"})
+            continue
+
+        installed_zero_count = _as_finite_float(calibration.get("installed_zero_count"))
+        zero_reference = installed_zero_count if installed_zero_count is not None else sensor_zero_count
+        zero_reference_source = "installed_zero_count" if installed_zero_count is not None else "sensor_zero_count"
+        invert = calibration.get("invert")
+        invert_flag = bool(invert) if isinstance(invert, bool) else bool(sensor_full_count < sensor_zero_count)
+
+        selector = {
+            "end": info.get("end"),
+            "quantity": quantity,
+            "domain": info.get("domain"),
+            "unit": output_unit,
+        }
+
+        existing_matches = [
+            str(existing_col)
+            for existing_col, existing_info in signals.items()
+            if isinstance(existing_info, Mapping)
+            and str(existing_col) != column
+            and _signal_matches_semantics(existing_info, selector)
+        ]
+        generated_matches = [
+            str(rec.get("output_column"))
+            for rec in report["generated"]
+            if isinstance(rec, Mapping)
+            and _signal_matches_semantics(
+                {
+                    "end": rec.get("end"),
+                    "quantity": rec.get("quantity"),
+                    "domain": rec.get("domain"),
+                    "unit": rec.get("unit"),
+                },
+                selector,
+            )
+        ]
+        if existing_matches or generated_matches:
+            report["skipped"].append(
+                {
+                    "source_column": column,
+                    "reason": "output_semantics_exists",
+                    "matching_output_columns": existing_matches + generated_matches,
+                }
+            )
+            continue
+
+        output_column = _materialized_signal_name(
+            sensor=info.get("sensor"),
+            end=info.get("end"),
+            domain=info.get("domain"),
+            quantity=quantity,
+            unit=output_unit,
+            fallback=column,
+        )
+        if output_column in df.columns:
+            report["skipped"].append(
+                {
+                    "source_column": column,
+                    "reason": "output_column_exists",
+                    "output_column": output_column,
+                }
+            )
+            continue
+
+        counts_per_output_unit = span_abs / sensor_full_travel
+        values = pd.to_numeric(df[column], errors="coerce").astype(float)
+        materialized = (values - zero_reference) / counts_per_output_unit
+        if invert_flag:
+            materialized = -materialized
+        df.loc[:, output_column] = materialized
+
+        channel_info_updates[output_column] = {
+            "unit": output_unit,
+            "sensor": info.get("sensor"),
+            "end": info.get("end"),
+            "role": quantity,
+            "quantity": quantity,
+            "domain": info.get("domain"),
+            "source": [column],
+            "source_columns": [column],
+            "calibration_ref": info.get("calibration_ref"),
+            "calibration": dict(calibration),
+            "origin": "analysis",
+            "derivation": {
+                "method": "logger_linear_calibration",
+                "source_col": column,
+                "counts_per_output_unit": float(counts_per_output_unit),
+                "output_unit": output_unit,
+                "zero_reference": float(zero_reference),
+                "zero_reference_source": zero_reference_source,
+                "invert": invert_flag,
+            },
+        }
+        if "nominal_rate_hz" in info:
+            channel_info_updates[output_column]["nominal_rate_hz"] = info.get("nominal_rate_hz")
+
+        report["generated"].append(
+            {
+                "source_column": column,
+                "output_column": output_column,
+                "sensor": info.get("sensor"),
+                "end": info.get("end"),
+                "domain": info.get("domain"),
+                "quantity": quantity,
+                "unit": output_unit,
+                "counts_per_output_unit": float(counts_per_output_unit),
+                "zero_reference": float(zero_reference),
+                "zero_reference_source": zero_reference_source,
+                "invert": invert_flag,
+            }
+        )
+
+    if channel_info_updates:
+        session["df"] = df
+        _merge_channel_info(session, channel_info_updates)
+        report["applied"] = True
+
+    return report
+
+
 def _motion_normalization_ranges(
     motion_meta: Mapping[str, Any],
     normalize_ranges: Mapping[str, float],
@@ -1257,6 +1542,10 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         domain_by_base=domain_by_base,
     )
     session = build_signals_registry(session, strict=False)
+    logger_calibration_meta = _materialize_logger_linear_calibrations(session)
+    transforms["logger_calibration"] = logger_calibration_meta
+    if logger_calibration_meta.get("applied"):
+        session = build_signals_registry(session, strict=False)
     df = session["df"]
 
     if bike_profile is None and bike_profile_path is not None:

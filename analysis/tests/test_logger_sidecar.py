@@ -201,6 +201,134 @@ def _write_generic_sidecar(
     return sidecar_path
 
 
+def _write_syn_bike_raw_sidecar_with_linear_calibration(
+    tmp_path,
+    *,
+    name: str = "syn_bike_raw_sidecar.json",
+):
+    sidecar = {
+        "contract": {
+            "name": "mtb_logger_timeseries",
+            "version": "0.2.0",
+            "sidecar_kind": "generic",
+        },
+        "data_file": {
+            "delimiter": ",",
+            "header": False,
+        },
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "sample_id",
+                "time_encoding": "sample_index",
+                "time_unit": "sample",
+                "sample_rate_hz": 100.0,
+            }
+        },
+        "sensors": {
+            "front_shock": {
+                "name": "front_shock",
+                "type": "analog_pot",
+                "domain": "wheel",
+                "raw_unit": "counts",
+                "calibration": {
+                    "type": "linear",
+                    "input_unit": "counts",
+                    "output_unit": "mm",
+                    "installed_zero_count": 3500,
+                    "sensor_zero_count": 4095,
+                    "sensor_full_count": 0,
+                    "sensor_full_travel": 170.0,
+                    "invert": True,
+                },
+            },
+            "rear_shock": {
+                "name": "rear_shock",
+                "type": "analog_pot",
+                "domain": "suspension",
+                "raw_unit": "counts",
+                "calibration": {
+                    "type": "linear",
+                    "input_unit": "counts",
+                    "output_unit": "mm",
+                    "installed_zero_count": 3000,
+                    "sensor_zero_count": 4095,
+                    "sensor_full_count": 0,
+                    "sensor_full_travel": 55.0,
+                    "invert": True,
+                },
+            },
+        },
+        "columns": {
+            "sample_id": {
+                "csv_ref": {"by": "index", "index": 0},
+                "class": "time",
+                "dtype": "uint32",
+                "stream": "primary",
+                "unit": "sample",
+            },
+            "front_raw": {
+                "csv_ref": {"by": "index", "index": 1},
+                "class": "signal",
+                "dtype": "uint32",
+                "stream": "primary",
+                "sensor": "front_shock",
+                "end": "front",
+                "quantity": "raw",
+                "domain": "wheel",
+                "unit": "counts",
+            },
+            "rear_raw": {
+                "csv_ref": {"by": "index", "index": 2},
+                "class": "signal",
+                "dtype": "uint32",
+                "stream": "primary",
+                "sensor": "rear_shock",
+                "end": "rear",
+                "quantity": "raw",
+                "domain": "suspension",
+                "unit": "counts",
+            },
+            "lat": {
+                "csv_ref": {"by": "index", "index": 3},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "gps_position",
+                "quantity": "latitude",
+                "domain": "world",
+                "unit": "deg",
+                "required": False,
+            },
+            "long": {
+                "csv_ref": {"by": "index", "index": 4},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "gps_position",
+                "quantity": "longitude",
+                "domain": "world",
+                "unit": "deg",
+                "required": False,
+            },
+            "speed": {
+                "csv_ref": {"by": "index", "index": 5},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "gps",
+                "quantity": "speed",
+                "domain": "world",
+                "unit": "m/s",
+                "required": False,
+            },
+        },
+    }
+    sidecar_path = tmp_path / name
+    sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+    return sidecar_path
+
+
 def test_load_session_auto_uses_same_stem_sidecar(tmp_path):
     csv_path, sidecar_path = _write_csv_and_sidecar(tmp_path)
 
@@ -524,6 +652,91 @@ def test_generic_sidecar_supports_headerless_csv_by_column_index(tmp_path):
     assert session["qc"]["parse"]["sidecar_column_bindings"]["fork_travel_mm"]["csv_ref"] == {
         "by": "index",
         "index": 1,
+    }
+
+
+def test_repo_syn_bike_generic_log_metadata_loads_headerless_syn_bike_csv(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "0,3700,1800,,,",
+                "1,3698,1802,,,",
+                "2,3695,1805,,,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    generic_sidecar = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "log_metadata_examples"
+        / "syn_bike_raw_generic_log_metadata.json"
+    )
+
+    session = load_session(str(csv_path), generic_log_metadata_paths=[generic_sidecar])
+
+    assert session["source"]["log_metadata_path"] == str(generic_sidecar)
+    assert session["source"]["log_metadata_kind"] == "generic"
+    assert session["meta"]["sample_rate_hz"] == 100.0
+    assert np.isclose(float(session["df"]["time_s"].iloc[-1]), 0.02)
+    np.testing.assert_allclose(np.diff(session["df"]["time_s"].to_numpy()), [0.01])
+    assert "front_wheel_raw_dom_wheel [counts]" in session["df"].columns
+    assert "rear_suspension_raw_dom_suspension [counts]" in session["df"].columns
+    assert session["meta"]["channel_info"]["front_wheel_raw_dom_wheel [counts]"]["sensor"] == "front_shock"
+    assert session["meta"]["channel_info"]["rear_suspension_raw_dom_suspension [counts]"]["sensor"] == "rear_shock"
+
+
+def test_preprocess_session_materializes_linear_logger_displacement_for_bike_profile(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "0,3500,3000,,,",
+                "1,3400,2800,,,",
+                "2,3300,2600,,,",
+                "3,3200,2400,,,",
+                "4,3100,2200,,,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    sidecar = _write_syn_bike_raw_sidecar_with_linear_calibration(tmp_path)
+    bike_profile_path = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "bike_profiles"
+        / "Stumpjumper Evo 2021.json"
+    )
+
+    result = preprocess_session(
+        str(csv_path),
+        generic_log_metadata_paths=[sidecar],
+        bike_profile_path=str(bike_profile_path),
+        fit_import={"enabled": False},
+        zeroing_enabled=False,
+        include_events=False,
+        include_metrics=False,
+        strict=False,
+    )
+
+    session = result["session"]
+    df = session["df"]
+    generated = session["qc"]["transforms"]["logger_calibration"]["generated"]
+
+    assert "front_wheel_disp_dom_wheel [mm]" in df.columns
+    assert "rear_suspension_disp_dom_suspension [mm]" in df.columns
+    assert "rear_wheel_disp_dom_wheel [mm]" in df.columns
+    assert len(generated) == 2
+    assert {item["output_column"] for item in generated} == {
+        "front_wheel_disp_dom_wheel [mm]",
+        "rear_suspension_disp_dom_suspension [mm]",
+    }
+    resolved_ranges = session["qc"]["bike_profile"]["normalization_ranges"]
+    assert {item["column"]: item["full_range"] for item in resolved_ranges} == {
+        "front_wheel_disp_dom_wheel [mm]": 170.0,
+        "rear_suspension_disp_dom_suspension [mm]": 55.0,
+        "rear_wheel_disp_dom_wheel [mm]": 150.0,
     }
 
 
