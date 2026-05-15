@@ -1,6 +1,0 @@
-9bf9aab34441621d794360ca427cbddc3d62f38a7950f8790696bb3d7986769f  bodaqs-logger-v0.2.0-4E-bootloader.bin
-cddffee5f3ef6d2c029a869997c8b76116a048fa3ea8826b03c1a57b44c56987  bodaqs-logger-v0.2.0-4E-firmware.bin
-6a88d59601a83a16a19a08114b59d338324b8dec267d8b43e5d61ad56ec92102  bodaqs-logger-v0.2.0-4E-partitions.bin
-9bf9aab34441621d794360ca427cbddc3d62f38a7950f8790696bb3d7986769f  bodaqs-logger-v0.2.0-4F-bootloader.bin
-027359f8bd8a8e4e87a73fd028022ef943a31603f428e92347bcf36ce68d1f85  bodaqs-logger-v0.2.0-4F-firmware.bin
-6a88d59601a83a16a19a08114b59d338324b8dec267d8b43e5d61ad56ec92102  bodaqs-logger-v0.2.0-4F-partitions.bin

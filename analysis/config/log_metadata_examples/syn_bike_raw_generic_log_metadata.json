@@ -1,0 +1,167 @@
+{
+  "contract": {
+    "name": "mtb_logger_timeseries",
+    "version": "0.2.0",
+    "sidecar_kind": "generic"
+  },
+  "data_file": {
+    "delimiter": ",",
+    "header": false
+  },
+  "streams": {
+    "primary": {
+      "type": "uniform",
+      "time_column": "sample_id",
+      "time_encoding": "sample_index",
+      "time_unit": "sample",
+      "sample_rate_hz": 100.0
+    }
+  },
+  "sensors": {
+    "front_shock": {
+      "name": "front_shock",
+      "type": "generic_raw_channel",
+      "domain": "suspension",
+      "raw_unit": "counts",
+      "calibration": {
+        "type": "linear",
+        "input_unit": "counts",
+        "output_unit": "mm",
+        "installed_zero_count": 3500,
+        "sensor_zero_count": 4095,
+        "sensor_full_count": 0,
+        "sensor_full_travel": 170.0,
+        "invert": true
+      }
+    },
+    "rear_shock": {
+      "name": "rear_shock",
+      "type": "generic_raw_channel",
+      "domain": "suspension",
+      "raw_unit": "counts",
+      "calibration": {
+        "type": "linear",
+        "input_unit": "counts",
+        "output_unit": "mm",
+        "installed_zero_count": 3000,
+        "sensor_zero_count": 4095,
+        "sensor_full_count": 0,
+        "sensor_full_travel": 55.0,
+        "invert": true
+      }
+    },
+    "gps_position": {
+      "name": "gps_position",
+      "type": "gps_position",
+      "domain": "world"
+    },
+    "gps": {
+      "name": "gps",
+      "type": "gps_speed",
+      "domain": "world"
+    }
+  },
+  "columns": {
+    "sample_id": {
+      "csv_ref": {
+        "by": "index",
+        "index": 0
+      },
+      "class": "time",
+      "dtype": "uint32",
+      "stream": "primary",
+      "unit": "sample"
+    },
+    "front_raw": {
+      "csv_ref": {
+        "by": "index",
+        "index": 1
+      },
+      "class": "signal",
+      "dtype": "uint32",
+      "stream": "primary",
+      "sensor": "front_shock",
+      "end": "front",
+      "quantity": "raw",
+      "domain": "wheel",
+      "unit": "counts",
+      "raw_representation": "raw_counts"
+    },
+    "rear_raw": {
+      "csv_ref": {
+        "by": "index",
+        "index": 2
+      },
+      "class": "signal",
+      "dtype": "uint32",
+      "stream": "primary",
+      "sensor": "rear_shock",
+      "end": "rear",
+      "quantity": "raw",
+      "domain": "suspension",
+      "unit": "counts",
+      "raw_representation": "raw_counts"
+    },
+    "lat": {
+      "csv_ref": {
+        "by": "index",
+        "index": 3
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "gps_position",
+      "quantity": "latitude",
+      "domain": "world",
+      "unit": "deg",
+      "required": false,
+      "notes": "Reserved for syn.bike GPS field; current BODAQS firmware emits blank values."
+    },
+    "long": {
+      "csv_ref": {
+        "by": "index",
+        "index": 4
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "gps_position",
+      "quantity": "longitude",
+      "domain": "world",
+      "unit": "deg",
+      "required": false,
+      "notes": "Reserved for syn.bike GPS field; current BODAQS firmware emits blank values."
+    },
+    "speed": {
+      "csv_ref": {
+        "by": "index",
+        "index": 5
+      },
+      "class": "signal",
+      "dtype": "float64",
+      "stream": "primary",
+      "sensor": "gps",
+      "quantity": "speed",
+      "domain": "world",
+      "unit": "m/s",
+      "required": false,
+      "notes": "Reserved for syn.bike GPS field; current BODAQS firmware emits blank values."
+    }
+  },
+  "qc": {
+    "warnings": []
+  },
+  "provenance": {
+    "logger_family": "BODAQS",
+    "log_format": "syn_bike_raw",
+    "generator": "manual generic log metadata example for preprocessing development",
+    "assumptions": [
+      "This is a generic fallback sidecar, so it intentionally does not include a runtime CSV filename, row count, hash, session id, or exact session start time.",
+      "BODAQS syn_bike_raw CSV is assumed to be headerless with six columns in this order: sample_id,front_raw,rear_raw,lat,long,speed.",
+      "Elapsed time is derived from sample_id using the assumed sample_rate_hz. Update streams.primary.sample_rate_hz if the logger was configured differently; the firmware default is 100 Hz.",
+      "The generic fallback interprets front_raw and rear_raw as front and rear suspension raw-count channels. Prefer same-stem session metadata when available because the firmware can emit more specific sensor and domain bindings.",
+      "The front and rear linear calibration values in this example are illustrative placeholders only. Replace them with logger-specific calibration values before using the file for real displacement analysis.",
+      "Current BODAQS firmware reserves the GPS fields and emits blank lat/long/speed values in syn_bike_raw logs."
+    ]
+  }
+}
