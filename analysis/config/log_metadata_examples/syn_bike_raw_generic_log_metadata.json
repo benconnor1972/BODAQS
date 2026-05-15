@@ -30,7 +30,7 @@
         "installed_zero_count": 3500,
         "sensor_zero_count": 4095,
         "sensor_full_count": 0,
-        "sensor_full_travel": 170.0,
+        "sensor_full_travel": 203.0,
         "invert": true
       }
     },
@@ -46,7 +46,7 @@
         "installed_zero_count": 3000,
         "sensor_zero_count": 4095,
         "sensor_full_count": 0,
-        "sensor_full_travel": 55.0,
+        "sensor_full_travel": 78.0,
         "invert": true
       }
     },
