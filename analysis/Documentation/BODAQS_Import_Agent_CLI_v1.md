@@ -1,0 +1,251 @@
+# BODAQS Import Agent CLI (v1)
+
+**Status:** Initial implementation  
+**Scope:** Windows-first packaged CLI for local archive import into the existing BODAQS artifact library
+
+---
+
+## 1. Summary
+
+The BODAQS Import Agent CLI watches one or more **import sources** and imports
+session archives into a canonical BODAQS artifact library using the existing
+analysis pipeline.
+
+Version 1 is intentionally narrow:
+
+- local-first only
+- packaged CLI first
+- Windows-first deployment target
+- one archive = one session
+- no FIT enrichment
+- no generic log-metadata fallback
+- existing artifact contract preserved
+
+---
+
+## 2. Import Source Layout
+
+Each watched source is a directory containing:
+
+```text
+<source_root>/
+  import_source.json
+  preprocess_profile.json
+  bike_profile.json
+  inbox/
+  done/
+  failed/
+  staging/
+```
+
+Relative paths in `import_source.json` resolve relative to that file.
+
+Multiple sources may target the same central artifact library.
+
+---
+
+## 3. Archive Contract
+
+Each archive must contain exactly two files at the archive root:
+
+- one `.csv`
+- one `.json`
+
+The two files must share the same basename, for example:
+
+```text
+2026-05-16_10-00-00.CSV
+2026-05-16_10-00-00.json
+```
+
+Version 1 rejects:
+
+- nested archive members
+- archives with multiple CSV files
+- archives with multiple JSON files
+- archives where the CSV and JSON stems do not match
+
+The `.json` is passed to preprocessing as the explicit session log metadata
+file. There is no generic fallback selection in this workflow.
+
+---
+
+## 4. CLI Commands
+
+The CLI accepts either:
+
+- a source directory containing `import_source.json`, or
+- a direct path to `import_source.json`
+
+### Validate
+
+```powershell
+python analysis\bodaqs_import_agent_cli.py validate C:\BODAQS\SourceA
+```
+
+Checks:
+
+- source config schema/version
+- preprocess profile existence and validity
+- bike profile existence and validity
+- runtime directory presence
+
+### Once
+
+```powershell
+python analysis\bodaqs_import_agent_cli.py once C:\BODAQS\SourceA C:\BODAQS\SourceB
+```
+
+Behavior:
+
+1. scan each source inbox
+2. defer archives younger than `settle_time_s`
+3. move ready archives into `staging/`
+4. validate the archive contract
+5. extract the session pair to a temporary staging folder
+6. run `preprocess_session(...)`
+7. write canonical artifacts
+8. move successful archives to `done/`
+9. move failed archives to `failed/`
+
+### Watch
+
+```powershell
+python analysis\bodaqs_import_agent_cli.py watch C:\BODAQS\SourceA C:\BODAQS\SourceB
+```
+
+Behavior:
+
+- repeatedly scans each source using its configured `poll_interval_s`
+- uses the same import flow as `once`
+
+---
+
+## 5. Idempotency Model
+
+The importer tracks state per artifact library under:
+
+```text
+artifacts/library/import_agent_state_v1.json
+```
+
+It uses two identities:
+
+### Raw session identity
+
+Derived from:
+
+- CSV content hash
+- session JSON content hash
+
+### Processing key
+
+Derived from:
+
+- raw session identity
+- preprocess profile hash
+- bike profile hash
+- include-events / include-metrics settings
+- logger timezone fallback
+
+This means:
+
+- the same archive dropped twice is skipped after the first successful import
+- the same session re-zipped with identical CSV/JSON content is also skipped
+- the same session can be re-imported if the preprocess or bike profile changes
+
+---
+
+## 6. Artifact Output
+
+The import agent writes the existing artifact contract:
+
+- `runs/<run_id>/manifest.json`
+- `runs/<run_id>/sessions/<session_id>/manifest.json`
+- `runs/<run_id>/sessions/<session_id>/source/input.csv`
+- `runs/<run_id>/sessions/<session_id>/session/df.parquet`
+- `runs/<run_id>/sessions/<session_id>/session/meta.json`
+- optional event and metric partitions when enabled
+
+Version 1 uses **one run per imported session**.
+
+The session manifest `source` block includes import provenance such as:
+
+- import source id
+- import source config path
+- original archive filename
+- original archive SHA-256
+- archive member names
+- raw session identity
+- processing key
+
+---
+
+## 7. Locking
+
+Each artifact library uses a best-effort single-writer lock:
+
+```text
+artifacts/library/import_agent.lock
+```
+
+This prevents two import processes from writing into the same library at once.
+
+---
+
+## 8. Windows Packaging
+
+The CLI entry script for packaging is:
+
+```text
+analysis/bodaqs_import_agent_cli.py
+```
+
+Recommended first packaging workflow:
+
+1. build on Windows
+2. test a one-folder bundle first
+3. switch to one-file only after validation
+
+The repository spec file targets a one-folder console build and excludes
+notebook, plotting, and test-only modules that are not needed by the CLI.
+
+Example PyInstaller command:
+
+```powershell
+pyinstaller --noconfirm --clean --name bodaqs-import analysis\bodaqs_import_agent_cli.py
+```
+
+One-folder is the safer first target for scientific Python dependencies because
+it is easier to debug than one-file extraction behavior.
+
+Repository-local Windows build helper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File analysis\build_import_agent.ps1
+```
+
+Build output:
+
+```text
+analysis/dist/pyinstaller/bodaqs-import/bodaqs-import.exe
+```
+
+Optional first-time install of PyInstaller into the repo virtual environment:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File analysis\build_import_agent.ps1 -InstallPyInstaller
+```
+
+---
+
+## 9. Example `import_source.json`
+
+See:
+
+```text
+analysis/config/import_source_examples/example_import_source.json
+```
+
+That example is intended to be copied into a real source folder and edited in
+place.

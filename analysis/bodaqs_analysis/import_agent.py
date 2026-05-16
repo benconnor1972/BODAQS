@@ -1,0 +1,1035 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+import shutil
+import socket
+import tempfile
+import time
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
+
+import pandas as pd
+
+from .artifacts import (
+    ArtifactStore,
+    copy_raw_csv_to_source,
+    ensure_run_is_new,
+    ensure_session_is_new,
+    make_run_id,
+    save_session_artifacts,
+    write_events_partitioned_by_schema_id,
+    write_metrics_partitioned_by_schema_id,
+    write_run_manifest,
+    write_session_manifest,
+)
+from .bike_profile import load_bike_profile
+from .pipeline import preprocess_session
+from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
+
+
+IMPORT_SOURCE_SCHEMA = "bodaqs.import_source"
+IMPORT_SOURCE_VERSION = 1
+IMPORT_AGENT_STATE_SCHEMA = "bodaqs.import_agent_state"
+IMPORT_AGENT_STATE_VERSION = 1
+DEFAULT_ARCHIVE_PATTERNS = ("*.zip",)
+
+logger = logging.getLogger(__name__)
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    text = "" if value is None else str(value).strip()
+    return text or None
+
+
+def _safe_float(value: Any, *, field_name: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be numeric") from None
+    if number < 0:
+        raise ValueError(f"{field_name} must be >= 0")
+    return number
+
+
+def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_jsonable(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return default
+
+
+def _write_json_atomic(path: Path, obj: Mapping[str, Any]) -> None:
+    _ensure_dir(path.parent)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _path_key(path: Path) -> str:
+    try:
+        return str(path.resolve()).lower()
+    except Exception:
+        return str(path).replace("\\", "/").lower()
+
+
+def _resolve_source_path(path_or_dir: str | Path) -> Path:
+    p = Path(path_or_dir).expanduser()
+    if p.is_dir():
+        return (p / "import_source.json").resolve()
+    return p.resolve()
+
+
+def _resolve_relative_path(value: str | Path, *, base_dir: Path) -> Path:
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _move_to_dir_unique(src: Path, dst_dir: Path) -> Path:
+    _ensure_dir(dst_dir)
+    candidate = dst_dir / src.name
+    if not candidate.exists():
+        src.replace(candidate)
+        return candidate
+
+    stem = candidate.stem
+    suffix = candidate.suffix
+    for idx in range(1, 10000):
+        alt = dst_dir / f"{stem}_{idx:02d}{suffix}"
+        if alt.exists():
+            continue
+        src.replace(alt)
+        return alt
+    raise FileExistsError(f"Could not find a unique destination for {src} in {dst_dir}")
+
+
+class ImportAgentLock:
+    """
+    Best-effort single-writer lock per artifact library.
+    """
+
+    def __init__(self, path: Path, *, stale_after_s: float = 12 * 60 * 60) -> None:
+        self.path = path
+        self.stale_after_s = float(stale_after_s)
+        self._held = False
+
+    def acquire(self) -> None:
+        _ensure_dir(self.path.parent)
+        payload = {
+            "schema": "bodaqs.import_agent.lock",
+            "created_at": _utcnow_iso(),
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+        }
+
+        while True:
+            try:
+                fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2, sort_keys=True)
+                self._held = True
+                return
+            except FileExistsError:
+                if not self._clear_if_stale():
+                    existing = _read_json(self.path, {})
+                    raise FileExistsError(
+                        "Import agent output library is locked by another process: "
+                        f"{self.path} ({existing})"
+                    ) from None
+
+    def _clear_if_stale(self) -> bool:
+        if self.stale_after_s <= 0 or not self.path.exists():
+            return False
+        try:
+            age_s = time.time() - self.path.stat().st_mtime
+        except OSError:
+            return False
+        if age_s < self.stale_after_s:
+            return False
+        try:
+            self.path.unlink()
+            logger.warning("Removed stale import-agent lock: %s", self.path)
+            return True
+        except OSError:
+            return False
+
+    def release(self) -> None:
+        if not self._held:
+            return
+        try:
+            if self.path.exists():
+                self.path.unlink()
+        finally:
+            self._held = False
+
+    def __enter__(self) -> "ImportAgentLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.release()
+
+
+class ImportAgentState:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.data: dict[str, Any] = {
+            "schema": IMPORT_AGENT_STATE_SCHEMA,
+            "version": IMPORT_AGENT_STATE_VERSION,
+            "updated_at": _utcnow_iso(),
+            "records": {},
+        }
+        self.load()
+
+    def load(self) -> None:
+        obj = _read_json(self.path, self.data)
+        if not isinstance(obj, dict):
+            return
+        if obj.get("schema") != IMPORT_AGENT_STATE_SCHEMA:
+            return
+        if int(obj.get("version", -1)) != IMPORT_AGENT_STATE_VERSION:
+            return
+        records = obj.get("records")
+        self.data = {
+            "schema": IMPORT_AGENT_STATE_SCHEMA,
+            "version": IMPORT_AGENT_STATE_VERSION,
+            "updated_at": str(obj.get("updated_at") or _utcnow_iso()),
+            "records": records if isinstance(records, dict) else {},
+        }
+
+    def save(self) -> None:
+        self.data["updated_at"] = _utcnow_iso()
+        _write_json_atomic(self.path, self.data)
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        records = self.data.get("records")
+        if not isinstance(records, dict):
+            return None
+        record = records.get(key)
+        return dict(record) if isinstance(record, dict) else None
+
+    def upsert(self, key: str, record: Mapping[str, Any]) -> None:
+        records = self.data.setdefault("records", {})
+        if not isinstance(records, dict):
+            raise ValueError("Import agent state records store is corrupted")
+        records[key] = dict(record)
+        self.save()
+
+
+@dataclass(frozen=True)
+class ImportSourceConfig:
+    config_path: Path
+    source_root: Path
+    source_id: str
+    artifacts_dir: Path
+    preprocess_profile_path: Path
+    bike_profile_path: Path
+    inbox_dir: Path
+    done_dir: Path
+    failed_dir: Path
+    staging_dir: Path
+    archive_patterns: tuple[str, ...] = DEFAULT_ARCHIVE_PATTERNS
+    logger_timezone: Optional[str] = None
+    run_tz_label: str = "AWST"
+    poll_interval_s: float = 5.0
+    settle_time_s: float = 15.0
+    include_events: bool = True
+    include_metrics: bool = True
+    description: Optional[str] = None
+    force_reprocess: bool = False
+    max_archives_per_scan: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not self.source_id.strip():
+            raise ValueError("Import source config must include a non-empty source_id")
+        if not self.archive_patterns:
+            raise ValueError("Import source config must include at least one archive pattern")
+        if self.include_metrics and not self.include_events:
+            raise ValueError("include_metrics=True requires include_events=True")
+        if self.max_archives_per_scan is not None and int(self.max_archives_per_scan) <= 0:
+            raise ValueError("max_archives_per_scan must be > 0 when provided")
+
+
+@dataclass(frozen=True)
+class SessionArchiveContract:
+    csv_member_name: str
+    log_metadata_member_name: str
+    session_stem: str
+    csv_sha256: str
+    log_metadata_sha256: str
+
+
+@dataclass(frozen=True)
+class ImportArchiveCandidate:
+    source: ImportSourceConfig
+    inbox_archive_path: Path
+    claimed_archive_path: Path
+    archive_name: str
+    archive_sha256: str
+    archive_size_bytes: int
+    archive_mtime_ns: int
+    contract: SessionArchiveContract
+    raw_session_identity: str
+    processing_key: str
+
+
+def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
+    config_path = _resolve_source_path(path_or_dir)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Import source config not found: {config_path}")
+
+    obj = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(obj, dict):
+        raise ValueError("Import source config must be a JSON object")
+    if obj.get("schema") != IMPORT_SOURCE_SCHEMA:
+        raise ValueError(
+            f"Unexpected import source schema: {obj.get('schema')!r} "
+            f"(expected {IMPORT_SOURCE_SCHEMA!r})"
+        )
+    if int(obj.get("version", -1)) != IMPORT_SOURCE_VERSION:
+        raise ValueError(
+            f"Unexpected import source version: {obj.get('version')!r} "
+            f"(expected {IMPORT_SOURCE_VERSION})"
+        )
+
+    base_dir = config_path.parent.resolve()
+    source_id = _optional_text(obj.get("source_id"))
+    if source_id is None:
+        raise ValueError("Import source config missing non-empty 'source_id'")
+
+    archive_patterns_raw = obj.get("archive_patterns")
+    if archive_patterns_raw is None:
+        archive_patterns = DEFAULT_ARCHIVE_PATTERNS
+    elif isinstance(archive_patterns_raw, list) and archive_patterns_raw:
+        archive_patterns = tuple(
+            str(x).strip()
+            for x in archive_patterns_raw
+            if _optional_text(x) is not None
+        )
+        if not archive_patterns:
+            raise ValueError("Import source archive_patterns list is empty")
+    else:
+        raise ValueError("Import source archive_patterns must be a non-empty list when provided")
+
+    max_archives_per_scan_raw = obj.get("max_archives_per_scan")
+    max_archives_per_scan: Optional[int] = None
+    if max_archives_per_scan_raw is not None:
+        try:
+            max_archives_per_scan = int(max_archives_per_scan_raw)
+        except (TypeError, ValueError):
+            raise ValueError("max_archives_per_scan must be an integer when provided") from None
+
+    return ImportSourceConfig(
+        config_path=config_path,
+        source_root=base_dir,
+        source_id=source_id,
+        artifacts_dir=_resolve_relative_path(
+            _optional_text(obj.get("artifacts_dir")) or "artifacts",
+            base_dir=base_dir,
+        ),
+        preprocess_profile_path=_resolve_relative_path(
+            _optional_text(obj.get("preprocess_profile_path")) or "preprocess_profile.json",
+            base_dir=base_dir,
+        ),
+        bike_profile_path=_resolve_relative_path(
+            _optional_text(obj.get("bike_profile_path")) or "bike_profile.json",
+            base_dir=base_dir,
+        ),
+        inbox_dir=_resolve_relative_path(
+            _optional_text(obj.get("inbox_dir")) or "inbox",
+            base_dir=base_dir,
+        ),
+        done_dir=_resolve_relative_path(
+            _optional_text(obj.get("done_dir")) or "done",
+            base_dir=base_dir,
+        ),
+        failed_dir=_resolve_relative_path(
+            _optional_text(obj.get("failed_dir")) or "failed",
+            base_dir=base_dir,
+        ),
+        staging_dir=_resolve_relative_path(
+            _optional_text(obj.get("staging_dir")) or "staging",
+            base_dir=base_dir,
+        ),
+        archive_patterns=archive_patterns,
+        logger_timezone=_optional_text(obj.get("logger_timezone")),
+        run_tz_label=_optional_text(obj.get("run_tz_label")) or "AWST",
+        poll_interval_s=_safe_float(obj.get("poll_interval_s", 5.0), field_name="poll_interval_s"),
+        settle_time_s=_safe_float(obj.get("settle_time_s", 15.0), field_name="settle_time_s"),
+        include_events=bool(obj.get("include_events", True)),
+        include_metrics=bool(obj.get("include_metrics", True)),
+        description=_optional_text(obj.get("description")),
+        force_reprocess=bool(obj.get("force_reprocess", False)),
+        max_archives_per_scan=max_archives_per_scan,
+    )
+
+
+class ImportSourceRunner:
+    def __init__(
+        self,
+        source: ImportSourceConfig,
+        *,
+        store: Optional[ArtifactStore] = None,
+        state_path: Optional[Path] = None,
+    ) -> None:
+        self.source = source
+        self.store = store or ArtifactStore(source.artifacts_dir)
+        self.state = ImportAgentState(
+            state_path or (self.store.path_library_dir() / "import_agent_state_v1.json")
+        )
+        self.lock = ImportAgentLock(self.store.path_library_dir() / "import_agent.lock")
+        self.preprocess_profile_sha256: Optional[str] = None
+        self.bike_profile_sha256: Optional[str] = None
+        self.preprocess_config: Optional[Dict[str, Any]] = None
+
+    def _ensure_runtime_config_loaded(self) -> None:
+        if self.preprocess_config is None:
+            self.preprocess_profile_sha256 = _sha256_file(self.source.preprocess_profile_path)
+            self.bike_profile_sha256 = _sha256_file(self.source.bike_profile_path)
+            self.preprocess_config = resolve_preprocess_config_paths(
+                load_preprocess_config(self.source.preprocess_profile_path),
+                base_dir=self.source.preprocess_profile_path.parent,
+            )
+
+    def validate(self) -> tuple[list[str], list[str]]:
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        if not self.source.preprocess_profile_path.exists():
+            errors.append(f"Preprocess profile does not exist: {self.source.preprocess_profile_path}")
+        else:
+            try:
+                load_preprocess_config(self.source.preprocess_profile_path)
+            except Exception as exc:
+                errors.append(f"Preprocess profile is invalid: {self.source.preprocess_profile_path} ({exc})")
+
+        if not self.source.bike_profile_path.exists():
+            errors.append(f"Bike profile does not exist: {self.source.bike_profile_path}")
+        else:
+            try:
+                load_bike_profile(self.source.bike_profile_path)
+            except Exception as exc:
+                errors.append(f"Bike profile is invalid: {self.source.bike_profile_path} ({exc})")
+
+        for path in (self.source.inbox_dir, self.source.done_dir, self.source.failed_dir, self.source.staging_dir):
+            if not path.exists():
+                warnings.append(f"Directory will be created when needed: {path}")
+
+        return errors, warnings
+
+    def ensure_runtime_dirs(self) -> None:
+        for path in (self.source.inbox_dir, self.source.done_dir, self.source.failed_dir, self.source.staging_dir):
+            _ensure_dir(path)
+
+    def _discover_archives(self) -> list[Path]:
+        self.ensure_runtime_dirs()
+        out: list[Path] = []
+        seen: set[str] = set()
+        for pattern in self.source.archive_patterns:
+            for path in sorted(self.source.inbox_dir.glob(pattern)):
+                if not path.is_file():
+                    continue
+                key = _path_key(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(path.resolve())
+        out.sort(key=lambda p: (p.stat().st_mtime_ns if p.exists() else 0, str(p)))
+        if self.source.max_archives_per_scan is not None:
+            return out[: int(self.source.max_archives_per_scan)]
+        return out
+
+    def _is_settled(self, path: Path, *, now_s: float) -> bool:
+        age_s = now_s - (path.stat().st_mtime_ns / 1_000_000_000.0)
+        return age_s >= float(self.source.settle_time_s)
+
+    def _archive_contract(self, archive_path: Path) -> SessionArchiveContract:
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            infos = [info for info in zf.infolist() if not info.is_dir()]
+            if len(infos) != 2:
+                raise ValueError(
+                    f"Session archive must contain exactly two root files (.csv + .json): {archive_path.name}"
+                )
+
+            for info in infos:
+                member_path = Path(info.filename)
+                if any(part == ".." for part in member_path.parts):
+                    raise ValueError(f"Archive member contains parent traversal: {info.filename}")
+                if len(member_path.parts) != 1:
+                    raise ValueError(
+                        f"Session archive members must be stored at the archive root: {info.filename}"
+                    )
+
+            csv_infos = [info for info in infos if info.filename.lower().endswith(".csv")]
+            json_infos = [info for info in infos if info.filename.lower().endswith(".json")]
+            if len(csv_infos) != 1 or len(json_infos) != 1:
+                raise ValueError(
+                    f"Session archive must contain exactly one .csv and one .json: {archive_path.name}"
+                )
+
+            csv_info = csv_infos[0]
+            json_info = json_infos[0]
+            csv_stem = Path(csv_info.filename).stem
+            json_stem = Path(json_info.filename).stem
+            if csv_stem != json_stem:
+                raise ValueError(
+                    "Session archive CSV and JSON filenames must share the same stem: "
+                    f"{csv_info.filename!r} vs {json_info.filename!r}"
+                )
+
+            csv_sha256 = _sha256_bytes(zf.read(csv_info))
+            log_metadata_sha256 = _sha256_bytes(zf.read(json_info))
+            return SessionArchiveContract(
+                csv_member_name=csv_info.filename,
+                log_metadata_member_name=json_info.filename,
+                session_stem=csv_stem,
+                csv_sha256=csv_sha256,
+                log_metadata_sha256=log_metadata_sha256,
+            )
+
+    def _build_candidate(
+        self,
+        *,
+        inbox_archive_path: Path,
+        claimed_archive_path: Path,
+    ) -> ImportArchiveCandidate:
+        self._ensure_runtime_config_loaded()
+        stat = claimed_archive_path.stat()
+        contract = self._archive_contract(claimed_archive_path)
+        raw_session_identity = _sha256_jsonable(
+            {
+                "csv_sha256": contract.csv_sha256,
+                "log_metadata_sha256": contract.log_metadata_sha256,
+            }
+        )
+        processing_key = _sha256_jsonable(
+            {
+                "raw_session_identity": raw_session_identity,
+                "preprocess_profile_sha256": self.preprocess_profile_sha256,
+                "bike_profile_sha256": self.bike_profile_sha256,
+                "include_events": self.source.include_events,
+                "include_metrics": self.source.include_metrics,
+                "logger_timezone": self.source.logger_timezone,
+            }
+        )
+        return ImportArchiveCandidate(
+            source=self.source,
+            inbox_archive_path=inbox_archive_path,
+            claimed_archive_path=claimed_archive_path,
+            archive_name=claimed_archive_path.name,
+            archive_sha256=_sha256_file(claimed_archive_path),
+            archive_size_bytes=int(stat.st_size),
+            archive_mtime_ns=int(stat.st_mtime_ns),
+            contract=contract,
+            raw_session_identity=raw_session_identity,
+            processing_key=processing_key,
+        )
+
+    def _extract_candidate(self, candidate: ImportArchiveCandidate, target_dir: Path) -> tuple[Path, Path]:
+        csv_target = target_dir / Path(candidate.contract.csv_member_name).name
+        json_target = target_dir / Path(candidate.contract.log_metadata_member_name).name
+
+        with zipfile.ZipFile(candidate.claimed_archive_path, "r") as zf:
+            for member_name, target_path in (
+                (candidate.contract.csv_member_name, csv_target),
+                (candidate.contract.log_metadata_member_name, json_target),
+            ):
+                with zf.open(member_name, "r") as src, target_path.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
+        return csv_target, json_target
+
+    def scan_once(self) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "source_id": self.source.source_id,
+            "artifacts_dir": str(self.source.artifacts_dir),
+            "seen": 0,
+            "deferred_unsettled": [],
+            "skipped_succeeded": [],
+            "skipped_failed": [],
+            "imported": [],
+            "failed": [],
+        }
+        now_s = time.time()
+
+        with self.lock:
+            for inbox_path in self._discover_archives():
+                summary["seen"] += 1
+                if not self._is_settled(inbox_path, now_s=now_s):
+                    summary["deferred_unsettled"].append(str(inbox_path))
+                    continue
+
+                try:
+                    claimed_path = _move_to_dir_unique(inbox_path, self.source.staging_dir)
+                except FileNotFoundError:
+                    logger.warning("Archive disappeared before it could be claimed: %s", inbox_path)
+                    continue
+
+                try:
+                    candidate = self._build_candidate(
+                        inbox_archive_path=inbox_path,
+                        claimed_archive_path=claimed_path,
+                    )
+                except Exception as exc:
+                    failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
+                    failure = {
+                        "status": "failed",
+                        "source_id": self.source.source_id,
+                        "archive_path": str(inbox_path),
+                        "failed_archive_path": str(failed_path),
+                        "updated_at": _utcnow_iso(),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    logger.exception("Archive validation failed for %s", inbox_path)
+                    summary["failed"].append(failure)
+                    continue
+
+                existing = self.state.get(candidate.processing_key)
+                if existing is not None and not self.source.force_reprocess:
+                    if str(existing.get("status") or "") == "succeeded":
+                        done_path = _move_to_dir_unique(claimed_path, self.source.done_dir)
+                        summary["skipped_succeeded"].append(
+                            {
+                                "archive_path": str(inbox_path),
+                                "done_archive_path": str(done_path),
+                                "run_id": existing.get("run_id"),
+                                "session_id": existing.get("session_id"),
+                                "processing_key": candidate.processing_key,
+                            }
+                        )
+                        continue
+                    if str(existing.get("status") or "") == "failed":
+                        failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
+                        summary["skipped_failed"].append(
+                            {
+                                "archive_path": str(inbox_path),
+                                "failed_archive_path": str(failed_path),
+                                "processing_key": candidate.processing_key,
+                                "error": existing.get("error"),
+                            }
+                        )
+                        continue
+
+                try:
+                    record = self.import_candidate(candidate)
+                    summary["imported"].append(record)
+                except Exception as exc:
+                    failed_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.failed_dir)
+                    error_record = {
+                        "status": "failed",
+                        "source_id": self.source.source_id,
+                        "archive_path": str(candidate.inbox_archive_path),
+                        "archive_sha256": candidate.archive_sha256,
+                        "failed_archive_path": str(failed_path),
+                        "raw_session_identity": candidate.raw_session_identity,
+                        "processing_key": candidate.processing_key,
+                        "updated_at": _utcnow_iso(),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    self.state.upsert(candidate.processing_key, error_record)
+                    logger.exception("Import failed for %s", candidate.inbox_archive_path)
+                    summary["failed"].append(error_record)
+
+        return summary
+
+    def import_candidate(self, candidate: ImportArchiveCandidate) -> Dict[str, Any]:
+        self._ensure_runtime_config_loaded()
+        run_id: Optional[str] = None
+
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix=f"{self.source.source_id}_",
+                dir=str(self.source.staging_dir),
+            ) as tmpdir:
+                csv_path, log_metadata_path = self._extract_candidate(candidate, Path(tmpdir))
+
+                results = preprocess_session(
+                    str(csv_path),
+                    preprocess_config=self.preprocess_config,
+                    bike_profile_path=str(self.source.bike_profile_path),
+                    log_metadata_path=str(log_metadata_path),
+                    timezone=self.source.logger_timezone,
+                    include_events=self.source.include_events,
+                    include_metrics=self.source.include_metrics,
+                )
+
+                session = results["session"]
+                session_id = str(session["session_id"])
+                run_id = self._make_unique_run_id()
+                ensure_run_is_new(self.store, run_id=run_id, force=False)
+                ensure_session_is_new(self.store, run_id=run_id, session_id=session_id, force=False)
+
+                copied_csv_sha256 = copy_raw_csv_to_source(
+                    store=self.store,
+                    run_id=run_id,
+                    session_id=session_id,
+                    csv_path=csv_path,
+                )
+
+                save_session_artifacts(
+                    self.store,
+                    run_id=run_id,
+                    session_id=session_id,
+                    session_df=session["df"],
+                    session_meta=session["meta"],
+                    secondary_stream_dfs=session.get("stream_dfs"),
+                    secondary_stream_meta=session.get("meta", {}).get("secondary_streams"),
+                )
+
+                events_df = results.get("events", pd.DataFrame())
+                metrics_df = results.get("metrics", pd.DataFrame())
+
+                source_manifest = {
+                    "path": "source/input.csv",
+                    "sha256": copied_csv_sha256,
+                    "import_mode": "import_agent_archive_v1",
+                    "import_source_id": self.source.source_id,
+                    "import_source_config_path": str(self.source.config_path),
+                    "original_archive_filename": candidate.archive_name,
+                    "original_archive_sha256": candidate.archive_sha256,
+                    "original_archive_path": str(candidate.inbox_archive_path),
+                    "archive_csv_member": candidate.contract.csv_member_name,
+                    "archive_log_metadata_member": candidate.contract.log_metadata_member_name,
+                    "raw_session_identity": candidate.raw_session_identity,
+                    "processing_key": candidate.processing_key,
+                }
+                if self.source.logger_timezone is not None:
+                    source_manifest["logger_timezone_fallback"] = self.source.logger_timezone
+
+                write_session_manifest(
+                    self.store,
+                    run_id=run_id,
+                    session_id=session_id,
+                    contracts={"session": "v0.x", "events": "v0.x", "metrics": "v0.x"},
+                    source=source_manifest,
+                    summary=self._session_summary(session),
+                )
+
+                schema_path = _optional_text(self.preprocess_config.get("schema_path"))
+                if self.source.include_events and schema_path and isinstance(events_df, pd.DataFrame) and not events_df.empty:
+                    write_events_partitioned_by_schema_id(
+                        store=self.store,
+                        run_id=run_id,
+                        session_id=session_id,
+                        events_df=events_df,
+                        schema_path=Path(schema_path),
+                    )
+                if self.source.include_metrics and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
+                    write_metrics_partitioned_by_schema_id(
+                        store=self.store,
+                        run_id=run_id,
+                        session_id=session_id,
+                        metrics_df=metrics_df,
+                    )
+
+                write_run_manifest(
+                    self.store,
+                    run_id=run_id,
+                    session_ids=[session_id],
+                    timezone_label=self.source.run_tz_label,
+                    description=self.source.description,
+                    pipeline_config={
+                        "import_source": {
+                            "source_id": self.source.source_id,
+                            "config_path": str(self.source.config_path),
+                        },
+                        "archive_import": {
+                            "schema": IMPORT_SOURCE_SCHEMA,
+                            "version": IMPORT_SOURCE_VERSION,
+                            "archive_sha256": candidate.archive_sha256,
+                            "raw_session_identity": candidate.raw_session_identity,
+                            "processing_key": candidate.processing_key,
+                            "preprocess_profile_path": str(self.source.preprocess_profile_path),
+                            "preprocess_profile_sha256": self.preprocess_profile_sha256,
+                            "bike_profile_path": str(self.source.bike_profile_path),
+                            "bike_profile_sha256": self.bike_profile_sha256,
+                        },
+                    },
+                )
+
+            done_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.done_dir)
+            record = {
+                "status": "succeeded",
+                "source_id": self.source.source_id,
+                "archive_path": str(candidate.inbox_archive_path),
+                "archive_sha256": candidate.archive_sha256,
+                "done_archive_path": str(done_path),
+                "archive_csv_member": candidate.contract.csv_member_name,
+                "archive_log_metadata_member": candidate.contract.log_metadata_member_name,
+                "raw_session_identity": candidate.raw_session_identity,
+                "processing_key": candidate.processing_key,
+                "run_id": run_id,
+                "session_id": session_id,
+                "session_key": f"{run_id}/{session_id}",
+                "session_manifest_path": str(self.store.path_session_manifest(run_id, session_id)),
+                "updated_at": _utcnow_iso(),
+            }
+            self.state.upsert(candidate.processing_key, record)
+            logger.info(
+                "Imported %s -> run=%s session=%s",
+                candidate.inbox_archive_path,
+                run_id,
+                session_id,
+            )
+            return record
+
+        except Exception:
+            if run_id is not None:
+                self._cleanup_failed_run(run_id)
+            raise
+
+    def _cleanup_failed_run(self, run_id: str) -> None:
+        run_dir = self.store.run_dir(run_id)
+        if not run_dir.exists():
+            return
+        try:
+            shutil.rmtree(run_dir)
+        except Exception:
+            logger.warning("Failed to clean up partial run directory after import error: %s", run_dir)
+
+    def _make_unique_run_id(self) -> str:
+        base = make_run_id(tz_label=self.source.run_tz_label)
+        run_id = base
+        suffix = 1
+        while self.store.run_dir(run_id).exists():
+            run_id = f"{base}_{suffix:02d}"
+            suffix += 1
+        return run_id
+
+    def _session_summary(self, session: Mapping[str, Any]) -> Dict[str, Any]:
+        df = session.get("df")
+        if not isinstance(df, pd.DataFrame) or df.empty or "time_s" not in df.columns:
+            return {}
+        return {
+            "n_rows": int(len(df)),
+            "t_start_s": float(df["time_s"].iloc[0]),
+            "t_end_s": float(df["time_s"].iloc[-1]),
+        }
+
+
+def load_import_sources(paths_or_dirs: Sequence[str | Path]) -> list[ImportSourceConfig]:
+    seen: set[str] = set()
+    sources: list[ImportSourceConfig] = []
+    for item in paths_or_dirs:
+        source = load_import_source_config(item)
+        key = _path_key(source.config_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(source)
+    return sources
+
+
+def validate_import_sources(paths_or_dirs: Sequence[str | Path]) -> list[Dict[str, Any]]:
+    results: list[Dict[str, Any]] = []
+    for source in load_import_sources(paths_or_dirs):
+        runner = ImportSourceRunner(source)
+        errors, warnings = runner.validate()
+        results.append(
+            {
+                "source_id": source.source_id,
+                "config_path": str(source.config_path),
+                "errors": errors,
+                "warnings": warnings,
+            }
+        )
+    return results
+
+
+def run_sources_once(paths_or_dirs: Sequence[str | Path]) -> Dict[str, Any]:
+    reports = [ImportSourceRunner(source).scan_once() for source in load_import_sources(paths_or_dirs)]
+    return {
+        "sources": reports,
+        "totals": _aggregate_reports(reports),
+    }
+
+
+def watch_sources(
+    paths_or_dirs: Sequence[str | Path],
+    *,
+    max_loops: Optional[int] = None,
+) -> None:
+    runners = [ImportSourceRunner(source) for source in load_import_sources(paths_or_dirs)]
+    next_due = {runner.source.source_id: 0.0 for runner in runners}
+    loops = 0
+
+    while True:
+        now_s = time.time()
+        ran_any = False
+
+        for runner in runners:
+            due_s = next_due[runner.source.source_id]
+            if now_s < due_s:
+                continue
+            report = runner.scan_once()
+            totals = _aggregate_reports([report])
+            logger.info(
+                "Import scan complete: source=%s seen=%d imported=%d deferred=%d dup_ok=%d dup_failed=%d failed=%d",
+                runner.source.source_id,
+                totals["seen"],
+                totals["imported"],
+                totals["deferred_unsettled"],
+                totals["skipped_succeeded"],
+                totals["skipped_failed"],
+                totals["failed"],
+            )
+            next_due[runner.source.source_id] = now_s + float(runner.source.poll_interval_s)
+            ran_any = True
+
+        loops += 1
+        if max_loops is not None and loops >= int(max_loops):
+            return
+
+        if not runners:
+            return
+        if not ran_any:
+            sleep_s = min(max(0.1, next_due[source_id] - now_s) for source_id in next_due)
+            time.sleep(sleep_s)
+
+
+def _aggregate_reports(reports: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
+    totals = {
+        "seen": 0,
+        "deferred_unsettled": 0,
+        "skipped_succeeded": 0,
+        "skipped_failed": 0,
+        "imported": 0,
+        "failed": 0,
+    }
+    for report in reports:
+        totals["seen"] += int(report.get("seen", 0))
+        for key in (
+            "deferred_unsettled",
+            "skipped_succeeded",
+            "skipped_failed",
+            "imported",
+            "failed",
+        ):
+            totals[key] += len(report.get(key, []))
+    return totals
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the BODAQS archive import agent over one or more import_source.json sources."
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Python logging level (default: INFO).",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    validate_parser = subparsers.add_parser("validate", help="Validate one or more import sources.")
+    validate_parser.add_argument("sources", nargs="+", help="Source directories or import_source.json paths.")
+
+    once_parser = subparsers.add_parser("once", help="Scan sources once and import any ready archives.")
+    once_parser.add_argument("sources", nargs="+", help="Source directories or import_source.json paths.")
+
+    watch_parser = subparsers.add_parser("watch", help="Poll sources continuously for new ready archives.")
+    watch_parser.add_argument("sources", nargs="+", help="Source directories or import_source.json paths.")
+    watch_parser.add_argument(
+        "--max-loops",
+        type=int,
+        default=None,
+        help="Optional test/debug limit on scheduler loops.",
+    )
+    return parser
+
+
+def _print_validate_results(results: Sequence[Mapping[str, Any]]) -> None:
+    for result in results:
+        print(f"Source: {result['source_id']}")
+        print(f"Config: {result['config_path']}")
+        errors = result.get("errors", [])
+        warnings = result.get("warnings", [])
+        if errors:
+            print("Errors:")
+            for item in errors:
+                print(f"  - {item}")
+        else:
+            print("Errors: none")
+        if warnings:
+            print("Warnings:")
+            for item in warnings:
+                print(f"  - {item}")
+        else:
+            print("Warnings: none")
+
+
+def _print_run_report(report: Mapping[str, Any]) -> None:
+    totals = report.get("totals", {})
+    print(f"Seen: {int(totals.get('seen', 0))}")
+    print(f"Imported: {int(totals.get('imported', 0))}")
+    print(f"Deferred (unsettled): {int(totals.get('deferred_unsettled', 0))}")
+    print(f"Skipped duplicate success: {int(totals.get('skipped_succeeded', 0))}")
+    print(f"Skipped duplicate failure: {int(totals.get('skipped_failed', 0))}")
+    print(f"Failed this scan: {int(totals.get('failed', 0))}")
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    if args.command == "validate":
+        results = validate_import_sources(args.sources)
+        _print_validate_results(results)
+        return 1 if any(result.get("errors") for result in results) else 0
+
+    if args.command == "once":
+        report = run_sources_once(args.sources)
+        _print_run_report(report)
+        return 1 if int(report.get("totals", {}).get("failed", 0)) > 0 else 0
+
+    if args.command == "watch":
+        try:
+            watch_sources(args.sources, max_loops=args.max_loops)
+        except KeyboardInterrupt:
+            logger.info("Import watch interrupted by user")
+        return 0
+
+    parser.error(f"Unsupported command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
