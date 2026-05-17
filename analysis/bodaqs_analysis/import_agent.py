@@ -118,6 +118,69 @@ def _resolve_relative_path(value: str | Path, *, base_dir: Path) -> Path:
     return path.resolve() if path.is_absolute() else (base_dir / path).resolve()
 
 
+def _summarize_candidates(paths: Sequence[Path], *, limit: int = 5) -> str:
+    shown = [path.name for path in paths[:limit]]
+    summary = ", ".join(shown)
+    if len(paths) > limit:
+        summary += f", +{len(paths) - limit} more"
+    return summary
+
+
+def _resolve_single_valid_json_file(
+    path_or_dir: Path,
+    *,
+    label: str,
+    loader: Any,
+) -> Path:
+    if not path_or_dir.exists():
+        raise FileNotFoundError(f"{label} path not found: {path_or_dir}")
+
+    if path_or_dir.is_file():
+        loader(path_or_dir)
+        return path_or_dir.resolve()
+
+    if not path_or_dir.is_dir():
+        raise ValueError(f"{label} path must be a file or directory: {path_or_dir}")
+
+    valid_paths: list[Path] = []
+    invalid_records: list[tuple[Path, Exception]] = []
+
+    for candidate in sorted(path_or_dir.iterdir()):
+        if not candidate.is_file() or candidate.suffix.lower() != ".json":
+            continue
+        try:
+            loader(candidate)
+        except Exception as exc:
+            invalid_records.append((candidate, exc))
+            continue
+        valid_paths.append(candidate.resolve())
+
+    if len(valid_paths) == 1:
+        return valid_paths[0]
+
+    if len(valid_paths) > 1:
+        raise ValueError(
+            f"{label} directory must contain exactly one valid JSON file: {path_or_dir} "
+            f"(found {len(valid_paths)} valid files: {_summarize_candidates(valid_paths)})"
+        )
+
+    if invalid_records:
+        invalid_details = "; ".join(
+            f"{path.name} ({type(exc).__name__}: {exc})"
+            for path, exc in invalid_records[:3]
+        )
+        if len(invalid_records) > 3:
+            invalid_details += f"; +{len(invalid_records) - 3} more"
+        raise ValueError(
+            f"{label} directory must contain exactly one valid JSON file: {path_or_dir} "
+            f"(found 0 valid files; invalid candidates: {invalid_details})"
+        )
+
+    raise FileNotFoundError(
+        f"{label} directory must contain exactly one valid JSON file, but none were found: {path_or_dir}"
+    )
+
+
 def _move_to_dir_unique(src: Path, dst_dir: Path) -> Path:
     _ensure_dir(dst_dir)
     candidate = dst_dir / src.name
@@ -306,6 +369,16 @@ class ImportArchiveCandidate:
     processing_key: str
 
 
+@dataclass
+class ImportSourceSupervisorState:
+    runner: "ImportSourceRunner"
+    paused: bool = False
+    next_due_s: float = 0.0
+    last_scan_started_at: Optional[str] = None
+    last_scan_completed_at: Optional[str] = None
+    last_report: Optional[Dict[str, Any]] = None
+
+
 def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
     config_path = _resolve_source_path(path_or_dir)
     if not config_path.exists():
@@ -414,35 +487,59 @@ class ImportSourceRunner:
         self.preprocess_profile_sha256: Optional[str] = None
         self.bike_profile_sha256: Optional[str] = None
         self.preprocess_config: Optional[Dict[str, Any]] = None
+        self.resolved_preprocess_profile_path: Optional[Path] = None
+        self.resolved_bike_profile_path: Optional[Path] = None
+
+    def _resolve_preprocess_profile_path(self) -> Path:
+        if self.resolved_preprocess_profile_path is None:
+            self.resolved_preprocess_profile_path = _resolve_single_valid_json_file(
+                self.source.preprocess_profile_path,
+                label="Preprocess profile",
+                loader=load_preprocess_config,
+            )
+        return self.resolved_preprocess_profile_path
+
+    def _resolve_bike_profile_path(self) -> Path:
+        if self.resolved_bike_profile_path is None:
+            self.resolved_bike_profile_path = _resolve_single_valid_json_file(
+                self.source.bike_profile_path,
+                label="Bike profile",
+                loader=load_bike_profile,
+            )
+        return self.resolved_bike_profile_path
 
     def _ensure_runtime_config_loaded(self) -> None:
         if self.preprocess_config is None:
-            self.preprocess_profile_sha256 = _sha256_file(self.source.preprocess_profile_path)
-            self.bike_profile_sha256 = _sha256_file(self.source.bike_profile_path)
+            preprocess_profile_path = self._resolve_preprocess_profile_path()
+            bike_profile_path = self._resolve_bike_profile_path()
+            self.preprocess_profile_sha256 = _sha256_file(preprocess_profile_path)
+            self.bike_profile_sha256 = _sha256_file(bike_profile_path)
             self.preprocess_config = resolve_preprocess_config_paths(
-                load_preprocess_config(self.source.preprocess_profile_path),
-                base_dir=self.source.preprocess_profile_path.parent,
+                load_preprocess_config(preprocess_profile_path),
+                base_dir=preprocess_profile_path.parent,
             )
 
     def validate(self) -> tuple[list[str], list[str]]:
         errors: list[str] = []
         warnings: list[str] = []
 
-        if not self.source.preprocess_profile_path.exists():
-            errors.append(f"Preprocess profile does not exist: {self.source.preprocess_profile_path}")
-        else:
-            try:
-                load_preprocess_config(self.source.preprocess_profile_path)
-            except Exception as exc:
-                errors.append(f"Preprocess profile is invalid: {self.source.preprocess_profile_path} ({exc})")
+        try:
+            self.resolved_preprocess_profile_path = _resolve_single_valid_json_file(
+                self.source.preprocess_profile_path,
+                label="Preprocess profile",
+                loader=load_preprocess_config,
+            )
+        except Exception as exc:
+            errors.append(str(exc))
 
-        if not self.source.bike_profile_path.exists():
-            errors.append(f"Bike profile does not exist: {self.source.bike_profile_path}")
-        else:
-            try:
-                load_bike_profile(self.source.bike_profile_path)
-            except Exception as exc:
-                errors.append(f"Bike profile is invalid: {self.source.bike_profile_path} ({exc})")
+        try:
+            self.resolved_bike_profile_path = _resolve_single_valid_json_file(
+                self.source.bike_profile_path,
+                label="Bike profile",
+                loader=load_bike_profile,
+            )
+        except Exception as exc:
+            errors.append(str(exc))
 
         for path in (self.source.inbox_dir, self.source.done_dir, self.source.failed_dir, self.source.staging_dir):
             if not path.exists():
@@ -668,6 +765,8 @@ class ImportSourceRunner:
     def import_candidate(self, candidate: ImportArchiveCandidate) -> Dict[str, Any]:
         self._ensure_runtime_config_loaded()
         run_id: Optional[str] = None
+        preprocess_profile_path = self._resolve_preprocess_profile_path()
+        bike_profile_path = self._resolve_bike_profile_path()
 
         try:
             with tempfile.TemporaryDirectory(
@@ -679,7 +778,7 @@ class ImportSourceRunner:
                 results = preprocess_session(
                     str(csv_path),
                     preprocess_config=self.preprocess_config,
-                    bike_profile_path=str(self.source.bike_profile_path),
+                    bike_profile_path=str(bike_profile_path),
                     log_metadata_path=str(log_metadata_path),
                     timezone=self.source.logger_timezone,
                     include_events=self.source.include_events,
@@ -772,9 +871,11 @@ class ImportSourceRunner:
                             "archive_sha256": candidate.archive_sha256,
                             "raw_session_identity": candidate.raw_session_identity,
                             "processing_key": candidate.processing_key,
-                            "preprocess_profile_path": str(self.source.preprocess_profile_path),
+                            "preprocess_profile_path": str(preprocess_profile_path),
+                            "preprocess_profile_selection_path": str(self.source.preprocess_profile_path),
                             "preprocess_profile_sha256": self.preprocess_profile_sha256,
-                            "bike_profile_path": str(self.source.bike_profile_path),
+                            "bike_profile_path": str(bike_profile_path),
+                            "bike_profile_selection_path": str(self.source.bike_profile_path),
                             "bike_profile_sha256": self.bike_profile_sha256,
                         },
                     },
@@ -840,6 +941,177 @@ class ImportSourceRunner:
         }
 
 
+class ImportAgentSupervisor:
+    """
+    Supervises one or more import-source runners inside a single process.
+
+    This is the app-facing orchestration layer that future tray/desktop shells
+    can use instead of spawning one watcher process per source.
+    """
+
+    def __init__(self, sources: Sequence[ImportSourceConfig]) -> None:
+        self._source_ids: list[str] = []
+        self._states: dict[str, ImportSourceSupervisorState] = {}
+        seen_ids: set[str] = set()
+
+        for source in sources:
+            if source.source_id in seen_ids:
+                raise ValueError(f"Duplicate import source id: {source.source_id!r}")
+            seen_ids.add(source.source_id)
+            state = ImportSourceSupervisorState(runner=ImportSourceRunner(source))
+            self._source_ids.append(source.source_id)
+            self._states[source.source_id] = state
+
+    @classmethod
+    def from_paths(cls, paths_or_dirs: Sequence[str | Path]) -> "ImportAgentSupervisor":
+        return cls(load_import_sources(paths_or_dirs))
+
+    def source_ids(self) -> list[str]:
+        return list(self._source_ids)
+
+    def get_state(self, source_id: str) -> ImportSourceSupervisorState:
+        try:
+            return self._states[source_id]
+        except KeyError:
+            raise KeyError(f"Unknown import source id: {source_id!r}") from None
+
+    def pause_source(self, source_id: str) -> None:
+        self.get_state(source_id).paused = True
+
+    def resume_source(self, source_id: str, *, scan_immediately: bool = True) -> None:
+        state = self.get_state(source_id)
+        state.paused = False
+        if scan_immediately:
+            state.next_due_s = 0.0
+
+    def scan_source_once(
+        self,
+        source_id: str,
+        *,
+        now_s: Optional[float] = None,
+        include_paused: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        state = self.get_state(source_id)
+        if state.paused and not include_paused:
+            return None
+
+        state.last_scan_started_at = _utcnow_iso()
+        report = state.runner.scan_once()
+        state.last_scan_completed_at = _utcnow_iso()
+        state.last_report = report
+        next_due_base = time.time() if now_s is None else float(now_s)
+        state.next_due_s = next_due_base + float(state.runner.source.poll_interval_s)
+        return report
+
+    def scan_all_once(self, *, include_paused: bool = False, now_s: Optional[float] = None) -> Dict[str, Any]:
+        reports: list[Dict[str, Any]] = []
+        skipped_paused: list[str] = []
+
+        for source_id in self._source_ids:
+            report = self.scan_source_once(
+                source_id,
+                now_s=now_s,
+                include_paused=include_paused,
+            )
+            if report is None:
+                skipped_paused.append(source_id)
+                continue
+            reports.append(report)
+
+        return {
+            "sources": reports,
+            "totals": _aggregate_reports(reports),
+            "skipped_paused_sources": skipped_paused,
+        }
+
+    def scan_due(self, *, now_s: Optional[float] = None) -> list[Dict[str, Any]]:
+        due_reports: list[Dict[str, Any]] = []
+        current_s = time.time() if now_s is None else float(now_s)
+
+        for source_id in self._source_ids:
+            state = self.get_state(source_id)
+            if state.paused or current_s < float(state.next_due_s):
+                continue
+            report = self.scan_source_once(source_id, now_s=current_s)
+            if report is not None:
+                due_reports.append(report)
+
+        return due_reports
+
+    def watch(
+        self,
+        *,
+        max_loops: Optional[int] = None,
+        time_fn: Any = time.time,
+        sleep_fn: Any = time.sleep,
+    ) -> None:
+        loops = 0
+
+        while True:
+            now_s = float(time_fn())
+            reports = self.scan_due(now_s=now_s)
+            for report in reports:
+                totals = _aggregate_reports([report])
+                logger.info(
+                    "Import scan complete: source=%s seen=%d imported=%d deferred=%d dup_ok=%d dup_failed=%d failed=%d",
+                    report["source_id"],
+                    totals["seen"],
+                    totals["imported"],
+                    totals["deferred_unsettled"],
+                    totals["skipped_succeeded"],
+                    totals["skipped_failed"],
+                    totals["failed"],
+                )
+
+            loops += 1
+            if max_loops is not None and loops >= int(max_loops):
+                return
+
+            if not self._source_ids:
+                return
+
+            active_due_times = [
+                max(float(self.get_state(source_id).next_due_s) - now_s, 0.0)
+                for source_id in self._source_ids
+                if not self.get_state(source_id).paused
+            ]
+            if not active_due_times:
+                sleep_fn(0.25)
+                continue
+
+            if not reports:
+                sleep_fn(min(max(0.1, min(active_due_times)), 5.0))
+
+    def snapshot(self, *, now_s: Optional[float] = None) -> Dict[str, Any]:
+        current_s = time.time() if now_s is None else float(now_s)
+        sources: list[Dict[str, Any]] = []
+
+        for source_id in self._source_ids:
+            state = self.get_state(source_id)
+            report = state.last_report
+            sources.append(
+                {
+                    "source_id": source_id,
+                    "config_path": str(state.runner.source.config_path),
+                    "source_root": str(state.runner.source.source_root),
+                    "artifacts_dir": str(state.runner.source.artifacts_dir),
+                    "poll_interval_s": float(state.runner.source.poll_interval_s),
+                    "paused": state.paused,
+                    "next_due_s": float(state.next_due_s),
+                    "due_now": (not state.paused) and current_s >= float(state.next_due_s),
+                    "last_scan_started_at": state.last_scan_started_at,
+                    "last_scan_completed_at": state.last_scan_completed_at,
+                    "last_totals": _aggregate_reports([report]) if report is not None else None,
+                }
+            )
+
+        return {
+            "source_count": len(self._source_ids),
+            "active_source_count": sum(0 if self.get_state(source_id).paused else 1 for source_id in self._source_ids),
+            "sources": sources,
+        }
+
+
 def load_import_sources(paths_or_dirs: Sequence[str | Path]) -> list[ImportSourceConfig]:
     seen: set[str] = set()
     sources: list[ImportSourceConfig] = []
@@ -870,11 +1142,8 @@ def validate_import_sources(paths_or_dirs: Sequence[str | Path]) -> list[Dict[st
 
 
 def run_sources_once(paths_or_dirs: Sequence[str | Path]) -> Dict[str, Any]:
-    reports = [ImportSourceRunner(source).scan_once() for source in load_import_sources(paths_or_dirs)]
-    return {
-        "sources": reports,
-        "totals": _aggregate_reports(reports),
-    }
+    supervisor = ImportAgentSupervisor.from_paths(paths_or_dirs)
+    return supervisor.scan_all_once()
 
 
 def watch_sources(
@@ -882,42 +1151,8 @@ def watch_sources(
     *,
     max_loops: Optional[int] = None,
 ) -> None:
-    runners = [ImportSourceRunner(source) for source in load_import_sources(paths_or_dirs)]
-    next_due = {runner.source.source_id: 0.0 for runner in runners}
-    loops = 0
-
-    while True:
-        now_s = time.time()
-        ran_any = False
-
-        for runner in runners:
-            due_s = next_due[runner.source.source_id]
-            if now_s < due_s:
-                continue
-            report = runner.scan_once()
-            totals = _aggregate_reports([report])
-            logger.info(
-                "Import scan complete: source=%s seen=%d imported=%d deferred=%d dup_ok=%d dup_failed=%d failed=%d",
-                runner.source.source_id,
-                totals["seen"],
-                totals["imported"],
-                totals["deferred_unsettled"],
-                totals["skipped_succeeded"],
-                totals["skipped_failed"],
-                totals["failed"],
-            )
-            next_due[runner.source.source_id] = now_s + float(runner.source.poll_interval_s)
-            ran_any = True
-
-        loops += 1
-        if max_loops is not None and loops >= int(max_loops):
-            return
-
-        if not runners:
-            return
-        if not ran_any:
-            sleep_s = min(max(0.1, next_due[source_id] - now_s) for source_id in next_due)
-            time.sleep(sleep_s)
+    supervisor = ImportAgentSupervisor.from_paths(paths_or_dirs)
+    supervisor.watch(max_loops=max_loops)
 
 
 def _aggregate_reports(reports: Sequence[Mapping[str, Any]]) -> Dict[str, int]:

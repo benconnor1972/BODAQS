@@ -41,6 +41,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "validate_preprocess_config": (".preprocess_profile", "validate_preprocess_config"),
     "validate_preprocess_profile": (".preprocess_profile", "validate_preprocess_profile"),
     "ImportSourceConfig": (".import_agent", "ImportSourceConfig"),
+    "ImportAgentSupervisor": (".import_agent", "ImportAgentSupervisor"),
     "ImportSourceRunner": (".import_agent", "ImportSourceRunner"),
     "load_import_source_config": (".import_agent", "load_import_source_config"),
     "load_import_sources": (".import_agent", "load_import_sources"),

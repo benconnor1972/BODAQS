@@ -30,8 +30,11 @@ Each watched source is a directory containing:
 ```text
 <source_root>/
   import_source.json
-  preprocess_profile.json
-  bike_profile.json
+  settings/
+    <exactly one valid preprocess profile JSON>
+    event_schema.yaml
+  bike/
+    <exactly one valid bike profile JSON>
   inbox/
   done/
   failed/
@@ -39,6 +42,10 @@ Each watched source is a directory containing:
 ```
 
 Relative paths in `import_source.json` resolve relative to that file.
+The `preprocess_profile_path` and `bike_profile_path` fields may point either
+to a specific JSON file or to a directory. When a directory is used, it must
+contain exactly one valid JSON file for that profile type. The event schema YAML
+can live alongside the preprocess profile inside `settings/`.
 
 Multiple sources may target the same central artifact library.
 
@@ -86,8 +93,8 @@ python analysis\bodaqs_import_agent_cli.py validate C:\BODAQS\SourceA
 Checks:
 
 - source config schema/version
-- preprocess profile existence and validity
-- bike profile existence and validity
+- preprocess profile file/directory resolution and validity
+- bike profile file/directory resolution and validity
 - runtime directory presence
 
 ### Once

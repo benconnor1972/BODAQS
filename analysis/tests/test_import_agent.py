@@ -4,8 +4,10 @@ import zipfile
 from pathlib import Path
 
 from bodaqs_analysis.import_agent import (
+    ImportAgentSupervisor,
     ImportSourceRunner,
     load_import_source_config,
+    load_import_sources,
     run_sources_once,
 )
 from bodaqs_analysis.preprocess_profile import (
@@ -27,7 +29,7 @@ def _write_schema(path: Path) -> Path:
 
 def _write_preprocess_profile(path: Path, *, schema_path: Path) -> Path:
     config = default_preprocess_config()
-    config["schema_path"] = str(schema_path)
+    config["schema_path"] = schema_path.name
     profile = make_preprocess_profile("import_agent_test", config=config)
     save_preprocess_profile(profile, path)
     return path
@@ -72,14 +74,16 @@ def _write_source_config(
     *,
     artifacts_dir: Path,
     settle_time_s: float = 1.0,
+    preprocess_profile_path: str = "preprocess_profile.json",
+    bike_profile_path: str = "bike_profile.json",
 ) -> Path:
     payload = {
         "schema": "bodaqs.import_source",
         "version": 1,
         "source_id": source_root.name,
         "artifacts_dir": str(artifacts_dir),
-        "preprocess_profile_path": "preprocess_profile.json",
-        "bike_profile_path": "bike_profile.json",
+        "preprocess_profile_path": preprocess_profile_path,
+        "bike_profile_path": bike_profile_path,
         "inbox_dir": "inbox",
         "done_dir": "done",
         "failed_dir": "failed",
@@ -187,15 +191,38 @@ def _write_invalid_archive(inbox_dir: Path, *, name: str = "broken.zip") -> Path
     return archive_path
 
 
-def _prepare_source(tmp_path: Path, name: str, artifacts_dir: Path, *, settle_time_s: float = 1.0) -> Path:
+def _prepare_source(
+    tmp_path: Path,
+    name: str,
+    artifacts_dir: Path,
+    *,
+    settle_time_s: float = 1.0,
+    use_profile_dirs: bool = True,
+) -> Path:
     source_root = tmp_path / name
     inbox_dir = source_root / "inbox"
     inbox_dir.mkdir(parents=True)
 
-    schema_path = _write_schema(source_root / "schema.yaml")
-    _write_preprocess_profile(source_root / "preprocess_profile.json", schema_path=schema_path)
-    _write_bike_profile(source_root / "bike_profile.json")
-    _write_source_config(source_root, artifacts_dir=artifacts_dir, settle_time_s=settle_time_s)
+    if use_profile_dirs:
+        settings_dir = source_root / "settings"
+        bike_dir = source_root / "bike"
+        settings_dir.mkdir()
+        bike_dir.mkdir()
+        schema_path = _write_schema(settings_dir / "event_schema.yaml")
+        _write_preprocess_profile(settings_dir / "import_agent_test_settings.json", schema_path=schema_path)
+        _write_bike_profile(bike_dir / "import_agent_test_bike.json")
+        _write_source_config(
+            source_root,
+            artifacts_dir=artifacts_dir,
+            settle_time_s=settle_time_s,
+            preprocess_profile_path="settings",
+            bike_profile_path="bike",
+        )
+    else:
+        schema_path = _write_schema(source_root / "schema.yaml")
+        _write_preprocess_profile(source_root / "preprocess_profile.json", schema_path=schema_path)
+        _write_bike_profile(source_root / "bike_profile.json")
+        _write_source_config(source_root, artifacts_dir=artifacts_dir, settle_time_s=settle_time_s)
     return source_root
 
 
@@ -207,7 +234,21 @@ def test_load_import_source_config_from_directory(tmp_path):
 
     assert source.source_id == "source_a"
     assert source.inbox_dir == source_root / "inbox"
-    assert source.preprocess_profile_path == source_root / "preprocess_profile.json"
+    assert source.preprocess_profile_path == source_root / "settings"
+    assert source.bike_profile_path == source_root / "bike"
+
+
+def test_run_sources_once_supports_explicit_profile_files(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_files", artifacts_dir, use_profile_dirs=False)
+    archive_path = _write_session_archive(source_root / "inbox", stem="session_001")
+    _set_old_mtime(archive_path)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    done_archives = list((source_root / "done").glob("*.zip"))
+    assert len(done_archives) == 1
 
 
 def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
@@ -301,13 +342,89 @@ def test_runner_validate_reports_missing_runtime_dirs_as_warnings(tmp_path):
     artifacts_dir = tmp_path / "artifacts"
     source_root = tmp_path / "source_a"
     source_root.mkdir()
-    schema_path = _write_schema(source_root / "schema.yaml")
-    _write_preprocess_profile(source_root / "preprocess_profile.json", schema_path=schema_path)
-    _write_bike_profile(source_root / "bike_profile.json")
-    _write_source_config(source_root, artifacts_dir=artifacts_dir)
+    settings_dir = source_root / "settings"
+    bike_dir = source_root / "bike"
+    settings_dir.mkdir()
+    bike_dir.mkdir()
+    schema_path = _write_schema(settings_dir / "event_schema.yaml")
+    _write_preprocess_profile(settings_dir / "import_agent_test_settings.json", schema_path=schema_path)
+    _write_bike_profile(bike_dir / "import_agent_test_bike.json")
+    _write_source_config(
+        source_root,
+        artifacts_dir=artifacts_dir,
+        preprocess_profile_path="settings",
+        bike_profile_path="bike",
+    )
 
     runner = ImportSourceRunner(load_import_source_config(source_root))
     errors, warnings = runner.validate()
 
     assert errors == []
     assert len(warnings) == 4
+
+
+def test_runner_validate_requires_exactly_one_valid_preprocess_profile_in_directory(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    settings_dir = source_root / "settings"
+    schema_path = settings_dir / "event_schema.yaml"
+    _write_preprocess_profile(settings_dir / "second_settings_profile.json", schema_path=schema_path)
+
+    runner = ImportSourceRunner(load_import_source_config(source_root))
+    errors, _warnings = runner.validate()
+
+    assert len(errors) == 1
+    assert "Preprocess profile directory must contain exactly one valid JSON file" in errors[0]
+
+
+def test_supervisor_snapshot_and_pause_resume(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_a = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    source_b = _prepare_source(tmp_path, "source_b", artifacts_dir)
+    archive_a = _write_session_archive(source_a / "inbox", stem="session_a")
+    archive_b = _write_session_archive(source_b / "inbox", stem="session_b")
+    _set_old_mtime(archive_a)
+    _set_old_mtime(archive_b)
+
+    supervisor = ImportAgentSupervisor(load_import_sources([source_a, source_b]))
+    supervisor.pause_source("source_b")
+
+    report = supervisor.scan_all_once()
+
+    assert report["totals"]["imported"] == 1
+    assert report["skipped_paused_sources"] == ["source_b"]
+
+    snapshot = supervisor.snapshot(now_s=100.0)
+    source_states = {item["source_id"]: item for item in snapshot["sources"]}
+    assert snapshot["source_count"] == 2
+    assert snapshot["active_source_count"] == 1
+    assert source_states["source_a"]["paused"] is False
+    assert source_states["source_a"]["last_totals"]["imported"] == 1
+    assert source_states["source_b"]["paused"] is True
+    assert source_states["source_b"]["last_totals"] is None
+
+    supervisor.resume_source("source_b")
+    report_b = supervisor.scan_source_once("source_b", now_s=200.0)
+    assert report_b is not None
+    assert report_b["source_id"] == "source_b"
+
+
+def test_supervisor_scan_due_respects_poll_interval(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    first_archive = _write_session_archive(source_root / "inbox", stem="session_001")
+    _set_old_mtime(first_archive)
+
+    supervisor = ImportAgentSupervisor(load_import_sources([source_root]))
+
+    first_reports = supervisor.scan_due(now_s=10.0)
+    assert len(first_reports) == 1
+
+    second_archive = _write_session_archive(source_root / "inbox", stem="session_002")
+    _set_old_mtime(second_archive)
+
+    second_reports = supervisor.scan_due(now_s=10.005)
+    assert second_reports == []
+
+    third_reports = supervisor.scan_due(now_s=10.02)
+    assert len(third_reports) == 1
