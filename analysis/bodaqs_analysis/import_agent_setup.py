@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
+from zoneinfo import available_timezones
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -39,6 +40,16 @@ def _default_libraries_root() -> Path:
 def _default_app_config_path() -> Path:
     preferred_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None
     return runtime_import_agent_app_config_path(preferred_dir=preferred_dir)
+
+
+def available_logger_timezones() -> list[str]:
+    try:
+        zones = sorted(str(item) for item in available_timezones() if str(item).strip())
+    except Exception:
+        zones = []
+    if not zones:
+        zones = ["UTC", "Australia/Perth"]
+    return ["", *zones]
 
 
 def _aggregate_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
@@ -281,6 +292,7 @@ class ImportAgentManagerWindow:
         self.add_library_button: Optional[ttk.Button] = None
         self.add_source_button: Optional[ttk.Button] = None
         self.library_choice_combo: Optional[ttk.Combobox] = None
+        self.logger_timezone_combo: Optional[ttk.Combobox] = None
 
         self.libraries_tree: Optional[ttk.Treeview] = None
         self.sources_tree: Optional[ttk.Treeview] = None
@@ -435,7 +447,15 @@ class ImportAgentManagerWindow:
         combo.grid(row=4, column=1, sticky="ew", pady=4, padx=(12, 8))
         self.library_choice_combo = combo
         self._add_text_row(parent=parent, row=5, label="Source name", variable=self.source_name_var)
-        self._add_text_row(parent=parent, row=6, label="Logger timezone", variable=self.logger_timezone_var)
+        ttk.Label(parent, text="Logger timezone (optional)").grid(row=6, column=0, sticky="w", pady=4)
+        logger_timezone_combo = ttk.Combobox(
+            parent,
+            textvariable=self.logger_timezone_var,
+            values=available_logger_timezones(),
+            state="normal",
+        )
+        logger_timezone_combo.grid(row=6, column=1, sticky="ew", pady=4, padx=(12, 8))
+        self.logger_timezone_combo = logger_timezone_combo
         self._add_text_row(parent=parent, row=7, label="Run TZ label", variable=self.run_tz_label_var)
 
         options = ttk.Frame(parent)

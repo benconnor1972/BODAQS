@@ -69,6 +69,8 @@ analysis/dist/pyinstaller/bodaqs-import-setup/
 
 - The manager window manages the app-settings file automatically and does not
   ask the user to choose that path during normal setup.
+- The logger timezone field is presented as a dropdown seeded from the
+  available IANA timezone list, with a blank option for "unspecified".
 - In packaged builds, it will use the executable directory when that location
   is writable. If not, it falls back to the per-user app-data location.
 - The shipped default asset package is discovered by content, not fixed

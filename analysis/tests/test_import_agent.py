@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 import bodaqs_analysis.import_agent_provisioning as provisioning_module
+import bodaqs_analysis.import_agent_setup as import_agent_setup_module
 from bodaqs_analysis.import_agent import (
     ImportAgentSupervisor,
     ImportSourceRunner,
@@ -599,6 +600,19 @@ def test_runtime_import_agent_app_config_path_falls_back_when_preferred_director
     assert config_path == (
         tmp_path / "AppData" / "Local" / "BODAQS" / "import-agent" / "import_agent_app.json"
     ).resolve()
+
+
+def test_available_logger_timezones_includes_blank_option_and_sorted_values(monkeypatch):
+    monkeypatch.setattr(
+        import_agent_setup_module,
+        "available_timezones",
+        lambda: {"Europe/Paris", "Australia/Perth", "UTC"},
+    )
+
+    values = import_agent_setup_module.available_logger_timezones()
+
+    assert values[0] == ""
+    assert values[1:] == ["Australia/Perth", "Europe/Paris", "UTC"]
 
 
 def test_provision_import_agent_app_setup_creates_seeded_desktop_setup(tmp_path):
