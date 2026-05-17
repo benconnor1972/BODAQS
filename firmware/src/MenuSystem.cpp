@@ -951,6 +951,7 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
 
     case ButtonActions::ACT_LOGGING_TOGGLE:
     case ButtonActions::ACT_WEB_TOGGLE:
+    case ButtonActions::ACT_UPLOAD_MODE_TOGGLE:
       touch();
       return true;
 

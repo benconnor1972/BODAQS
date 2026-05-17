@@ -21,6 +21,7 @@ namespace ButtonActions {
   void onToggleLogging(ButtonEvent event);
   void onMarkEvent(ButtonEvent event);
   void onWebServerToggle(ButtonEvent event);
+  void onUploadModeToggle(ButtonEvent event);
   void onNavUp(ButtonEvent event);
   void onNavDown(ButtonEvent event);
   void onNavLeft(ButtonEvent event);
@@ -65,6 +66,7 @@ namespace ButtonActions {
     ACT_LOGGING_TOGGLE,
     ACT_MARK_EVENT,
     ACT_WEB_TOGGLE,
+    ACT_UPLOAD_MODE_TOGGLE,
 
     ACT_MENU_NAV_UP,
     ACT_MENU_NAV_DOWN,

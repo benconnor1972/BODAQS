@@ -4,6 +4,7 @@
 #include "UI.h"
 #include "SensorManager.h"
 #include "LoggingManager.h"
+#include "UploadModeManager.h"
 #include "I2CManager.h"
 #include "DebugLog.h"
 
@@ -79,17 +80,19 @@ namespace {
 
     const uint16_t hz  = ConfigManager::get().sampleRateHz;   // ← live read
     const uint8_t  act= SensorManager::activeCount();      // live active count
-    const bool logging = LoggingManager::isRunning();          
+    const bool logging = LoggingManager::isRunning();
+    const bool uploadMode = UploadModeManager::isActive();
 
 
     // Throttle to ~5 Hz and avoid redraws if nothing changed
     unsigned long now = millis();
     const uint8_t blinkPhase = logging ? ((now / BLINK_MS) & 0x1) : 0;  // 0/1
-    if (now - s_lastHudMs < 200 && hz == s_lastRate && act == s_lastActive && blinkPhase == s_lastBlinkPhase) return;
+    const uint8_t displayPhase = uploadMode ? 2 : blinkPhase;
+    if (now - s_lastHudMs < 200 && hz == s_lastRate && act == s_lastActive && displayPhase == s_lastBlinkPhase) return;
     s_lastHudMs  = now;
     s_lastRate   = hz;
     s_lastActive = act;
-    s_lastBlinkPhase = blinkPhase;
+    s_lastBlinkPhase = displayPhase;
 
     // Full redraw of the idle view
     DisplayManager::clear();
@@ -97,7 +100,10 @@ namespace {
     renderFooter_();
     const bool showMain = !logging || (blinkPhase == 0);
 
-    if (showMain) {
+    if (uploadMode) {
+      DisplayManager::drawText(0, 16, "UPLOAD", 2);
+      DisplayManager::drawText(0, 34, "MODE", 2);
+    } else if (showMain) {
       DisplayManager::drawText(0, 16, String(hz) + " Hz", 2);
       DisplayManager::drawText(
         0, 34,

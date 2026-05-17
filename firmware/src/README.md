@@ -137,6 +137,21 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Interlocks**
 - Will **refuse to start** while the web server is running (see `ButtonActions`).
+- Will **refuse to start** while upload mode is active.
+
+---
+
+## `UploadModeManager`
+
+**Purpose:** Runtime guard for Wi-Fi upload workflows.
+
+**Common APIs**
+- `bool enter()` / `void exit()` / `bool toggle()`
+- `bool isActive()` / `bool canEnter()`
+
+**Interlocks**
+- Upload mode cannot be entered while logging is active.
+- Logging cannot start while upload mode is active.
 
 ---
 
