@@ -1,14 +1,32 @@
 import json
 import os
+import sys
 import zipfile
 from pathlib import Path
 
+import bodaqs_analysis.import_agent_provisioning as provisioning_module
 from bodaqs_analysis.import_agent import (
     ImportAgentSupervisor,
     ImportSourceRunner,
     load_import_source_config,
     load_import_sources,
     run_sources_once,
+)
+from bodaqs_analysis.import_agent_provisioning import (
+    ImportAgentLibraryConfig,
+    ImportAgentManagedSourceConfig,
+    default_import_agent_app_config_path,
+    load_import_agent_app_config,
+    managed_import_agent_source_roots,
+    make_import_agent_app_config,
+    provision_import_agent_app_setup,
+    provision_import_agent_library_for_app,
+    provision_import_agent_library,
+    provision_import_agent_source_for_app,
+    provision_import_agent_source,
+    runtime_import_agent_app_config_path,
+    save_import_agent_app_config,
+    update_import_agent_source_enabled,
 )
 from bodaqs_analysis.preprocess_profile import (
     default_preprocess_config,
@@ -67,6 +85,14 @@ def _write_bike_profile(path: Path) -> Path:
     }
     path.write_text(json.dumps(bike_profile, indent=2), encoding="utf-8")
     return path
+
+
+def _write_asset_package(package_dir: Path) -> None:
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    _write_schema(package_dir / "event schema - default.yaml")
+    _write_preprocess_profile(package_dir / "suspension settings default.json", schema_path=Path("event schema - default.yaml"))
+    _write_bike_profile(package_dir / "stumpjumper evo default.json")
 
 
 def _write_source_config(
@@ -428,3 +454,266 @@ def test_supervisor_scan_due_respects_poll_interval(tmp_path):
 
     third_reports = supervisor.scan_due(now_s=10.02)
     assert len(third_reports) == 1
+
+
+def test_provision_import_agent_library_creates_artifact_store_dirs(tmp_path):
+    libraries_root = tmp_path / "libraries"
+
+    library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+
+    assert library.library_id == "alice-library"
+    assert library.runs_dir.exists()
+    assert library.state_dir.exists()
+    metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["library_id"] == "alice-library"
+
+
+def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp_path):
+    libraries_root = tmp_path / "libraries"
+    sources_root = tmp_path / "sources"
+    library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+
+    source = provision_import_agent_source(
+        sources_root / "Alice Enduro",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice Enduro",
+        logger_timezone="Australia/Perth",
+        run_tz_label="AWST",
+        include_events=False,
+        include_metrics=False,
+    )
+
+    loaded = load_import_source_config(source.source_root)
+    preprocess_profile = json.loads(source.preprocess_profile_path.read_text(encoding="utf-8"))
+
+    assert source.settings_dir.exists()
+    assert source.bike_dir.exists()
+    assert source.event_schema_path.exists()
+    assert loaded.preprocess_profile_path == source.settings_dir
+    assert loaded.bike_profile_path == source.bike_dir
+    assert loaded.artifacts_dir == library.artifacts_dir
+    assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
+
+
+def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp_path, monkeypatch):
+    asset_root = tmp_path / "asset_pkg_root"
+    package_dir = asset_root / "temp_import_agent_assets"
+    _write_asset_package(package_dir)
+    monkeypatch.syspath_prepend(str(asset_root))
+    monkeypatch.setattr(provisioning_module, "_ASSET_PACKAGE", "temp_import_agent_assets")
+
+    libraries_root = tmp_path / "libraries"
+    sources_root = tmp_path / "sources"
+    library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+
+    source = provision_import_agent_source(
+        sources_root / "Alice Enduro",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice Enduro",
+        include_events=False,
+        include_metrics=False,
+    )
+
+    preprocess_profile = json.loads(source.preprocess_profile_path.read_text(encoding="utf-8"))
+
+    assert source.preprocess_profile_path.name == "preprocess_profile.json"
+    assert source.event_schema_path.name == "event_schema.yaml"
+    assert source.bike_profile_path.name == "bike_profile.json"
+    assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
+
+
+def test_import_agent_app_config_round_trip(tmp_path):
+    libraries_root = tmp_path / "libraries"
+    sources_root = tmp_path / "sources"
+    library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+    source = provision_import_agent_source(
+        sources_root / "Alice Enduro",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice Enduro",
+        include_events=False,
+        include_metrics=False,
+    )
+
+    config = make_import_agent_app_config(
+        sources_root=sources_root,
+        libraries_root=libraries_root,
+        libraries=[
+            ImportAgentLibraryConfig(
+                library_id=library.library_id,
+                display_name=library.display_name,
+                artifacts_dir=library.artifacts_dir,
+            )
+        ],
+        sources=[
+            ImportAgentManagedSourceConfig(
+                source_id=source.source_id,
+                display_name=source.display_name,
+                source_root=source.source_root,
+                library_id=library.library_id,
+                enabled=True,
+            )
+        ],
+        auto_start=True,
+    )
+    config_path = tmp_path / "app_config.json"
+    save_import_agent_app_config(config, config_path)
+
+    loaded = load_import_agent_app_config(config_path)
+
+    assert loaded == config
+
+
+def test_default_import_agent_app_config_path_uses_windows_convention():
+    win_path = default_import_agent_app_config_path(
+        platform="win32",
+        env={"LOCALAPPDATA": r"C:\Users\Test\AppData\Local"},
+        home=r"C:\Users\Test",
+    )
+
+    assert win_path == Path(r"C:\Users\Test\AppData\Local\BODAQS\import-agent\import_agent_app.json")
+
+
+def test_runtime_import_agent_app_config_path_prefers_writable_directory(tmp_path):
+    preferred_dir = tmp_path / "bundle"
+    preferred_dir.mkdir()
+
+    config_path = runtime_import_agent_app_config_path(preferred_dir=preferred_dir)
+
+    assert config_path == preferred_dir.resolve() / "import_agent_app.json"
+
+
+def test_runtime_import_agent_app_config_path_falls_back_when_preferred_directory_is_missing_file(tmp_path):
+    preferred_file = tmp_path / "not_a_directory.txt"
+    preferred_file.write_text("x", encoding="utf-8")
+
+    config_path = runtime_import_agent_app_config_path(
+        preferred_dir=preferred_file,
+        platform="win32",
+        env={"LOCALAPPDATA": str(tmp_path / "AppData" / "Local")},
+        home=tmp_path,
+    )
+
+    assert config_path == (
+        tmp_path / "AppData" / "Local" / "BODAQS" / "import-agent" / "import_agent_app.json"
+    ).resolve()
+
+
+def test_provision_import_agent_app_setup_creates_seeded_desktop_setup(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+        logger_timezone="Australia/Perth",
+        run_tz_label="AWST",
+        include_events=False,
+        include_metrics=False,
+    )
+
+    config = load_import_agent_app_config(app_config_path)
+
+    assert provisioned.app_config_path == app_config_path.resolve()
+    assert provisioned.library.artifacts_dir.exists()
+    assert provisioned.source.import_source_config_path.exists()
+    assert len(config.libraries) == 1
+    assert config.libraries[0].library_id == "alice-library"
+    assert len(config.sources) == 1
+    assert config.sources[0].source_id == "alice-enduro"
+
+
+def test_provision_import_agent_app_setup_merges_additional_source_and_library(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    sources_root = tmp_path / "sources"
+    libraries_root = tmp_path / "libraries"
+
+    first = provision_import_agent_app_setup(
+        sources_root=sources_root,
+        libraries_root=libraries_root,
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    second = provision_import_agent_app_setup(
+        sources_root=sources_root,
+        libraries_root=libraries_root,
+        library_display_name="Ben Library",
+        source_display_name="Ben DH",
+        app_config_path=app_config_path,
+    )
+
+    config = load_import_agent_app_config(app_config_path)
+
+    assert first.library.library_id == "alice-library"
+    assert second.library.library_id == "ben-library"
+    assert {item.library_id for item in config.libraries} == {"alice-library", "ben-library"}
+    assert {item.source_id for item in config.sources} == {"alice-enduro", "ben-dh"}
+
+
+def test_provision_import_agent_library_for_app_adds_library_to_existing_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    updated, library = provision_import_agent_library_for_app(
+        app_config_path,
+        display_name="Ben Library",
+    )
+
+    assert library.library_id == "ben-library"
+    assert {item.library_id for item in updated.libraries} == {"alice-library", "ben-library"}
+
+
+def test_provision_import_agent_source_for_app_adds_source_to_selected_library(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+        include_events=False,
+        include_metrics=False,
+    )
+
+    updated, source = provision_import_agent_source_for_app(
+        app_config_path,
+        library_id=provisioned.library.library_id,
+        display_name="Alice DH",
+        include_events=False,
+        include_metrics=False,
+    )
+
+    assert source.library_id == provisioned.library.library_id
+    assert {item.source_id for item in updated.sources} == {"alice-enduro", "alice-dh"}
+    assert source.source_root.exists()
+
+
+def test_update_import_agent_source_enabled_persists_and_filters_enabled_roots(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    disabled = update_import_agent_source_enabled(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        enabled=False,
+    )
+
+    assert disabled.sources[0].enabled is False
+    assert managed_import_agent_source_roots(disabled, enabled_only=True) == []

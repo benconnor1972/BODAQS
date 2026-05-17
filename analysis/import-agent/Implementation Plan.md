@@ -79,26 +79,42 @@ Exit criteria:
 
 - seeded source folders are usable without manual JSON editing
 
+Status:
+
+- shipped default assets implemented
+- asset-package discovery now supports flexible filenames by content/type
+
 ### Phase 4. Build the desktop shell
 
 Purpose:
 
-- provide a tray/menu-bar host for the engine
+- provide the first packaged desktop UI around the engine
 
 Scope:
 
-- single-instance app startup
+- standalone setup/admin window
 - first-run setup flow
+- single-instance app startup
+- managed libraries and sources list
+- validate sources
+- import now
+- start/stop in-process watch loop
+- enable/disable sources
+- later tray/menu-bar host
 - tray status
-- source list
 - pause/resume
-- scan now
 - open folders
 - open logs
 
 Exit criteria:
 
-- user can install and operate the watcher without touching a terminal
+- user can provision libraries and sources without touching a terminal
+- user can validate, import once, and start/stop watching without touching a terminal
+- later tray work can reuse the same setup backend and supervisor
+
+Status:
+
+- first non-tray manager slice implemented in `bodaqs_analysis.import_agent_setup`
 
 ### Phase 5. Installer and auto-start
 
@@ -139,15 +155,20 @@ Exit criteria:
 - architecture note written
 - implementation plan written
 - supervisor extracted from the CLI watcher path
+- app-level provisioning helpers added
+- shipped default assets added
+- non-tray setup window added
+- non-tray manager window added with validate/import/watch controls
 
 ### Next recommended coding step
 
-Add app-level provisioning helpers that can:
+Refine the non-tray manager into a fuller desktop shell by adding:
 
-1. create a libraries root entry
-2. create a source folder under a chosen sources root
-3. seed `settings/`, `bike/`, and `import_source.json`
-4. point the source at a chosen library
+1. richer status and recent-error presentation
+2. open-folder shortcuts
+3. source-level pause/resume semantics distinct from persisted enable/disable
+4. config migration/version handling UX
+5. installer handoff and start-at-login wiring
 
-That will give the future tray app and installer a stable non-UI backend for
-first-run setup.
+That will give the future tray shell and installer a stronger desktop foundation
+without changing the import engine or artifact contract.

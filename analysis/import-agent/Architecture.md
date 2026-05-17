@@ -61,6 +61,12 @@ The shell owns:
 - recent import/error summaries
 - start-at-login behavior
 
+The first packaged desktop UI does not need to be the tray shell itself. A
+small non-tray setup/admin window is a good intermediate step because it can
+exercise packaged GUI delivery on Windows, own the user-specific provisioning
+workflow, and remain useful later as an "Add source / Add library" utility
+even after a tray shell exists.
+
 ### 3. Installer / Provisioner
 
 The installer should remain thin and platform-native:
