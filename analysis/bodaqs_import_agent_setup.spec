@@ -7,12 +7,12 @@ from PyInstaller.utils.hooks import collect_data_files
 
 analysis_dir = Path.cwd()
 setup_datas = collect_data_files("bodaqs_analysis.import_agent_assets")
+app_icon_path = (analysis_dir / "import-agent" / "windows" / "bodaqs_import_agent.ico").resolve()
 setup_excludes = [
     "IPython",
     "jedi",
     "matplotlib",
     "nbformat",
-    "PIL",
     "pytest",
     "tornado",
     "zmq",
@@ -24,7 +24,7 @@ a = Analysis(
     pathex=[str(analysis_dir)],
     binaries=[],
     datas=setup_datas,
-    hiddenimports=[],
+    hiddenimports=["pystray._win32"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -44,6 +44,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    icon=str(app_icon_path),
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

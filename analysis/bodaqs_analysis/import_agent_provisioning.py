@@ -28,6 +28,9 @@ DEFAULT_LIBRARY_STATE_DIRNAME = "library"
 DEFAULT_IMPORT_AGENT_APP_CONFIG_FILENAME = "import_agent_app.json"
 DEFAULT_IMPORT_AGENT_VENDOR_DIRNAME = "BODAQS"
 DEFAULT_IMPORT_AGENT_APP_DIRNAME = "import-agent"
+IMPORT_AGENT_APP_CONFIG_MODE_AUTO = "auto"
+IMPORT_AGENT_APP_CONFIG_MODE_PORTABLE = "portable"
+IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED = "installed"
 
 _ASSET_PACKAGE = "bodaqs_analysis.import_agent_assets"
 
@@ -255,10 +258,19 @@ def _is_directory_writable(directory: Path) -> bool:
 def runtime_import_agent_app_config_path(
     *,
     preferred_dir: Optional[str | Path] = None,
+    mode: str = IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
     platform: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
     home: Optional[str | Path] = None,
 ) -> Path:
+    if mode not in {
+        IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
+        IMPORT_AGENT_APP_CONFIG_MODE_PORTABLE,
+        IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
+    }:
+        raise ValueError(f"Unsupported import-agent app-config mode: {mode!r}")
+    if mode == IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED:
+        return default_import_agent_app_config_path(platform=platform, env=env, home=home)
     if preferred_dir is not None:
         candidate_dir = Path(preferred_dir).expanduser().resolve()
         if _is_directory_writable(candidate_dir):
@@ -542,6 +554,25 @@ def update_import_agent_source_enabled(
         libraries=config.libraries,
         sources=updated_sources,
         auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
+def update_import_agent_app_auto_start(
+    app_config_path: str | Path,
+    *,
+    enabled: bool,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+
+    updated = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=config.libraries,
+        sources=config.sources,
+        auto_start=bool(enabled),
     )
     save_import_agent_app_config(updated, config_path, overwrite=True)
     return updated

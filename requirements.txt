@@ -27,5 +27,8 @@ ipyleaflet==0.20.0
 # Optional feature support exercised by package code/tests
 fitparse==1.2.0
 
+# Desktop/runtime support
+pystray==0.19.5
+
 # Tests
 pytest==9.0.3

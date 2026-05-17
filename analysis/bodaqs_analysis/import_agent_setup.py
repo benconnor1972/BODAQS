@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import ctypes
 import queue
 import sys
 import threading
 import time
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 from zoneinfo import available_timezones
@@ -14,6 +17,9 @@ from tkinter import filedialog, messagebox, ttk
 
 from .import_agent import ImportAgentSupervisor, validate_import_sources
 from .import_agent_provisioning import (
+    IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
+    IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
+    IMPORT_AGENT_APP_CONFIG_MODE_PORTABLE,
     ImportAgentAppConfig,
     load_import_agent_app_config,
     managed_import_agent_source_roots,
@@ -21,8 +27,21 @@ from .import_agent_provisioning import (
     provision_import_agent_library_for_app,
     provision_import_agent_source_for_app,
     runtime_import_agent_app_config_path,
+    update_import_agent_app_auto_start,
     update_import_agent_source_enabled,
 )
+from .import_agent_startup import (
+    build_windows_startup_command,
+    sync_windows_startup_registration,
+    windows_startup_supported,
+)
+from .import_agent_tray import ImportAgentTrayIcon, tray_supported
+
+
+_ASSET_PACKAGE = "bodaqs_analysis.import_agent_assets"
+_WINDOW_ICON_FILENAME = "app_icon.png"
+_WINDOW_ICON_ICO_FILENAME = "app_icon.ico"
+_WINDOWS_APP_USER_MODEL_ID = "BODAQS.ImportAgent.Manager"
 
 
 def _default_workspace_root() -> Path:
@@ -37,9 +56,9 @@ def _default_libraries_root() -> Path:
     return _default_workspace_root() / "libraries"
 
 
-def _default_app_config_path() -> Path:
+def _default_app_config_path(*, mode: str = IMPORT_AGENT_APP_CONFIG_MODE_AUTO) -> Path:
     preferred_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None
-    return runtime_import_agent_app_config_path(preferred_dir=preferred_dir)
+    return runtime_import_agent_app_config_path(preferred_dir=preferred_dir, mode=mode)
 
 
 def available_logger_timezones() -> list[str]:
@@ -68,12 +87,31 @@ def _aggregate_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
     return totals
 
 
+def _apply_windows_app_user_model_id() -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_WINDOWS_APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bodaqs-import-setup",
         description="Create or manage a local BODAQS import-agent desktop setup.",
     )
-    parser.add_argument("--app-config", default=str(_default_app_config_path()), help=argparse.SUPPRESS)
+    parser.add_argument("--app-config", default="", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--app-config-mode",
+        choices=(
+            IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
+            IMPORT_AGENT_APP_CONFIG_MODE_PORTABLE,
+            IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
+        ),
+        default=IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--sources-root", default=str(_default_sources_root()))
     parser.add_argument("--libraries-root", default=str(_default_libraries_root()))
     parser.add_argument("--library-name", default="Default Library")
@@ -84,6 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-start", action="store_true")
     parser.add_argument("--disable-events", action="store_true")
     parser.add_argument("--disable-metrics", action="store_true")
+    parser.add_argument("--startup-launch", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--start-watch", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--start-minimized", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -177,6 +218,14 @@ class ImportAgentManagerController:
         self.app_config = updated
         return updated
 
+    def set_auto_start(self, enabled: bool) -> ImportAgentAppConfig:
+        updated = update_import_agent_app_auto_start(
+            self.app_config_path,
+            enabled=enabled,
+        )
+        self.app_config = updated
+        return updated
+
     def managed_source_roots(self, *, enabled_only: bool = False) -> list[Path]:
         return managed_import_agent_source_roots(self.require_config(), enabled_only=enabled_only)
 
@@ -257,15 +306,20 @@ class ImportAgentWatchService:
 
 class ImportAgentManagerWindow:
     def __init__(self, args: argparse.Namespace) -> None:
+        _apply_windows_app_user_model_id()
         self.root = tk.Tk()
+        self._window_icon_image: Optional[tk.PhotoImage] = None
+        self._apply_window_icon()
         self.root.title("BODAQS Import Agent Manager")
         self.root.geometry("1120x760")
         self.root.minsize(980, 680)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.controller = ImportAgentManagerController(args.app_config)
+        self.args = args
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.watch_service: Optional[ImportAgentWatchService] = None
+        self.tray_icon: Optional[ImportAgentTrayIcon] = None
         self.watch_state_var = tk.StringVar(value="Watcher stopped.")
         self.manager_status_var = tk.StringVar(value="Ready.")
         self.provision_status_var = tk.StringVar(value="Ready to provision or extend the managed setup.")
@@ -282,6 +336,12 @@ class ImportAgentManagerWindow:
         self.auto_start_var = tk.BooleanVar(value=bool(args.auto_start))
         self.overwrite_var = tk.BooleanVar(value=bool(args.overwrite))
         self.source_library_choice_var = tk.StringVar(value="")
+        self.startup_launch = bool(args.startup_launch)
+        self.start_watch_on_launch = bool(args.start_watch or args.startup_launch)
+        self.start_minimized_on_launch = bool(args.start_minimized or args.startup_launch)
+        self._launch_behavior_applied = False
+        self._close_notice_shown = False
+        self._shutdown_requested = False
 
         self._library_choice_map: dict[str, str] = {}
         self.sources_root_entry: Optional[ttk.Entry] = None
@@ -291,6 +351,7 @@ class ImportAgentManagerWindow:
         self.create_initial_button: Optional[ttk.Button] = None
         self.add_library_button: Optional[ttk.Button] = None
         self.add_source_button: Optional[ttk.Button] = None
+        self.apply_app_settings_button: Optional[ttk.Button] = None
         self.library_choice_combo: Optional[ttk.Combobox] = None
         self.logger_timezone_combo: Optional[ttk.Combobox] = None
 
@@ -301,7 +362,28 @@ class ImportAgentManagerWindow:
 
         self._build()
         self._refresh_ui_from_config(select_provision_when_missing=True)
+        self.root.after(100, self._apply_window_icon)
+        self._start_tray_icon()
+        self._sync_startup_registration(show_errors=False, emit_status=False)
         self.root.after(250, self._poll_event_queue)
+        self.root.after(400, self._apply_launch_behavior)
+
+    def _apply_window_icon(self) -> None:
+        try:
+            png_asset = files(_ASSET_PACKAGE).joinpath(_WINDOW_ICON_FILENAME)
+            icon_bytes = png_asset.read_bytes()
+            icon_data = base64.b64encode(icon_bytes).decode("ascii")
+
+            if sys.platform.startswith("win"):
+                ico_asset = files(_ASSET_PACKAGE).joinpath(_WINDOW_ICON_ICO_FILENAME)
+                with as_file(ico_asset) as ico_path:
+                    self.root.iconbitmap(str(ico_path))
+                    self.root.iconbitmap(default=str(ico_path))
+
+            self._window_icon_image = tk.PhotoImage(data=icon_data, format="png")
+            self.root.iconphoto(True, self._window_icon_image)
+        except Exception:
+            self._window_icon_image = None
 
     def _build(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -359,9 +441,9 @@ class ImportAgentManagerWindow:
             show="headings",
             height=9,
         )
-        libraries_tree.heading("display_name", text="Display Name")
-        libraries_tree.heading("library_id", text="Library ID")
-        libraries_tree.heading("artifacts_dir", text="Artifacts Directory")
+        libraries_tree.heading("display_name", text="Display Name", anchor="w")
+        libraries_tree.heading("library_id", text="Library ID", anchor="w")
+        libraries_tree.heading("artifacts_dir", text="Artifacts Directory", anchor="w")
         libraries_tree.column("display_name", width=180, anchor="w")
         libraries_tree.column("library_id", width=140, anchor="w")
         libraries_tree.column("artifacts_dir", width=320, anchor="w")
@@ -374,11 +456,11 @@ class ImportAgentManagerWindow:
             show="headings",
             height=9,
         )
-        sources_tree.heading("display_name", text="Display Name")
-        sources_tree.heading("source_id", text="Source ID")
-        sources_tree.heading("library_id", text="Library ID")
-        sources_tree.heading("enabled", text="Enabled")
-        sources_tree.heading("source_root", text="Source Root")
+        sources_tree.heading("display_name", text="Display Name", anchor="w")
+        sources_tree.heading("source_id", text="Source ID", anchor="w")
+        sources_tree.heading("library_id", text="Library ID", anchor="w")
+        sources_tree.heading("enabled", text="Enabled", anchor="w")
+        sources_tree.heading("source_root", text="Source Root", anchor="w")
         sources_tree.column("display_name", width=180, anchor="w")
         sources_tree.column("source_id", width=140, anchor="w")
         sources_tree.column("library_id", width=120, anchor="w")
@@ -466,7 +548,7 @@ class ImportAgentManagerWindow:
         ttk.Checkbutton(options, text="Include metrics", variable=self.include_metrics_var).grid(
             row=0, column=1, sticky="w", padx=(0, 12)
         )
-        ttk.Checkbutton(options, text="Store auto-start preference", variable=self.auto_start_var).grid(
+        ttk.Checkbutton(options, text="Start at login", variable=self.auto_start_var).grid(
             row=0, column=2, sticky="w", padx=(0, 12)
         )
         ttk.Checkbutton(options, text="Overwrite existing seeded files", variable=self.overwrite_var).grid(
@@ -488,6 +570,12 @@ class ImportAgentManagerWindow:
         self.add_library_button.grid(row=0, column=1, padx=(0, 8))
         self.add_source_button = ttk.Button(actions, text="Add Source", command=self._add_source)
         self.add_source_button.grid(row=0, column=2)
+        self.apply_app_settings_button = ttk.Button(
+            actions,
+            text="Apply App Settings",
+            command=self._apply_app_settings,
+        )
+        self.apply_app_settings_button.grid(row=0, column=3, padx=(8, 0))
 
         ttk.Label(parent, textvariable=self.provision_status_var, wraplength=980, justify="left").grid(
             row=10, column=0, columnspan=3, sticky="ew", pady=(10, 0)
@@ -536,6 +624,7 @@ class ImportAgentManagerWindow:
     def _set_manager_status(self, message: str) -> None:
         self.manager_status_var.set(message)
         self._append_log(message)
+        self._refresh_tray()
 
     def _set_provision_status(self, message: str) -> None:
         self.provision_status_var.set(message)
@@ -562,17 +651,22 @@ class ImportAgentManagerWindow:
                 self.add_library_button.configure(state="disabled")
             if self.add_source_button is not None:
                 self.add_source_button.configure(state="disabled")
+            if self.apply_app_settings_button is not None:
+                self.apply_app_settings_button.configure(state="disabled")
             if select_provision_when_missing and self.notebook is not None:
                 self.notebook.select(1)
+            self._refresh_tray()
             return
 
         self.sources_root_var.set(str(config.sources_root))
         self.libraries_root_var.set(str(config.libraries_root))
+        self.auto_start_var.set(bool(config.auto_start))
         enabled_count = sum(1 for source in config.sources if source.enabled)
         self.summary_var.set(
             "Managed roots: "
             f"sources={config.sources_root} | libraries={config.libraries_root} | "
-            f"libraries={len(config.libraries)} | sources={len(config.sources)} | enabled sources={enabled_count}"
+            f"libraries={len(config.libraries)} | sources={len(config.sources)} | "
+            f"enabled sources={enabled_count} | start at login={'yes' if config.auto_start else 'no'}"
         )
         self._render_libraries(config.libraries)
         self._render_sources(config.sources)
@@ -593,6 +687,9 @@ class ImportAgentManagerWindow:
             self.add_library_button.configure(state="normal")
         if self.add_source_button is not None:
             self.add_source_button.configure(state="normal")
+        if self.apply_app_settings_button is not None:
+            self.apply_app_settings_button.configure(state="normal")
+        self._refresh_tray()
 
     def _set_root_editable(self, editable: bool) -> None:
         state = "normal" if editable else "disabled"
@@ -646,6 +743,13 @@ class ImportAgentManagerWindow:
     def _watch_running(self) -> bool:
         return self.watch_service is not None and self.watch_service.running
 
+    def _has_enabled_sources(self) -> bool:
+        config = self.controller.app_config
+        return bool(config and any(source.enabled for source in config.sources))
+
+    def _window_visible(self) -> bool:
+        return self.root.state() != "withdrawn"
+
     def _guard_watch_inactive(self, *, action_label: str) -> bool:
         if self._watch_running():
             messagebox.showinfo(
@@ -655,6 +759,131 @@ class ImportAgentManagerWindow:
             )
             return False
         return True
+
+    def _manager_startup_argv(self) -> list[str]:
+        app_config_path = str(Path(self.args.app_config).expanduser().resolve())
+        app_config_mode = str(self.args.app_config_mode or IMPORT_AGENT_APP_CONFIG_MODE_AUTO)
+        if getattr(sys, "frozen", False):
+            launch_argv: list[str] = [str(Path(sys.executable).resolve())]
+        else:
+            launch_argv = [
+                str(Path(sys.executable).resolve()),
+                str((Path(__file__).resolve().parents[1] / "bodaqs_import_agent_setup.py").resolve()),
+            ]
+        launch_argv.extend(["--app-config", app_config_path, "--app-config-mode", app_config_mode, "--startup-launch"])
+        return launch_argv
+
+    def _tray_status_snapshot(self) -> dict[str, Any]:
+        config = self.controller.app_config
+        return {
+            "has_config": config is not None,
+            "auto_start": bool(config.auto_start) if config is not None else False,
+            "watch_running": self._watch_running(),
+            "window_visible": self._window_visible(),
+            "can_start_watch": config is not None and self._has_enabled_sources() and not self._watch_running(),
+            "can_stop_watch": self._watch_running(),
+            "can_import_now": config is not None and not self._watch_running(),
+            "source_count": len(config.sources) if config is not None else 0,
+        }
+
+    def _refresh_tray(self) -> None:
+        if self.tray_icon is not None:
+            self.tray_icon.refresh()
+
+    def _start_tray_icon(self) -> None:
+        if not tray_supported():
+            return
+        tray_icon = ImportAgentTrayIcon(
+            event_queue=self.event_queue,
+            status_supplier=self._tray_status_snapshot,
+        )
+        if tray_icon.start():
+            self.tray_icon = tray_icon
+            self._append_log("Tray icon started.")
+            self._refresh_tray()
+
+    def _hide_to_tray(self) -> None:
+        if self.tray_icon is None:
+            self._minimize_window()
+            return
+        self.root.withdraw()
+        self._refresh_tray()
+        if not self._close_notice_shown:
+            self._append_log("Manager window hidden to the tray. Use the tray icon to reopen or quit.")
+            self._close_notice_shown = True
+
+    def _show_window(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        try:
+            self.root.focus_force()
+        except Exception:
+            pass
+        self._refresh_tray()
+
+    def _quit_application(self) -> None:
+        self._shutdown_requested = True
+        if self.watch_service is not None:
+            self.watch_service.stop(timeout_s=2.0)
+            self.watch_service = None
+        if self.tray_icon is not None:
+            self.tray_icon.stop()
+            self.tray_icon = None
+        self.root.destroy()
+
+    def _sync_startup_registration(self, *, show_errors: bool, emit_status: bool) -> None:
+        config = self.controller.app_config
+        if config is None:
+            return
+        if not windows_startup_supported():
+            if emit_status:
+                self._append_log("Start-at-login registration is only available on Windows in this build.")
+            return
+
+        command = (
+            build_windows_startup_command(self._manager_startup_argv())
+            if config.auto_start
+            else None
+        )
+        try:
+            applied = sync_windows_startup_registration(enabled=config.auto_start, command=command)
+        except Exception as exc:
+            if emit_status:
+                self._set_manager_status(f"Start-at-login update failed: {exc}")
+            if show_errors:
+                messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            return
+
+        if not emit_status:
+            return
+        if config.auto_start:
+            self._set_manager_status("Start-at-login enabled.")
+            if applied:
+                self._append_log(f"Startup command: {applied}")
+        else:
+            self._set_manager_status("Start-at-login disabled.")
+
+    def _minimize_window(self) -> None:
+        self.root.update_idletasks()
+        self.root.iconify()
+
+    def _apply_launch_behavior(self) -> None:
+        if self._launch_behavior_applied:
+            return
+        self._launch_behavior_applied = True
+
+        config = self.controller.app_config
+        if config is None:
+            return
+        if not self.start_watch_on_launch:
+            return
+        if not config.auto_start:
+            self._append_log("Startup launch did not start the watcher because start-at-login is disabled.")
+            return
+
+        self._start_watch(show_errors=not self.startup_launch)
+        if self.start_minimized_on_launch and self._watch_running():
+            self.root.after(150, self._hide_to_tray)
 
     def _create_initial_setup(self) -> None:
         if not self._guard_watch_inactive(action_label="Create Initial Library + Source"):
@@ -678,6 +907,7 @@ class ImportAgentManagerWindow:
             return
 
         self._refresh_ui_from_config()
+        self._sync_startup_registration(show_errors=True, emit_status=False)
         self._set_provision_status(
             f"Created initial library '{result.library.display_name}' and source '{result.source.display_name}'."
         )
@@ -729,6 +959,27 @@ class ImportAgentManagerWindow:
         self._refresh_ui_from_config()
         self._set_provision_status(f"Added source '{source.display_name}'.")
 
+    def _apply_app_settings(self) -> None:
+        if not self.controller.has_config():
+            messagebox.showinfo(
+                "BODAQS Import Agent Manager",
+                "Create the initial managed setup before applying app settings.",
+                parent=self.root,
+            )
+            return
+        try:
+            updated = self.controller.set_auto_start(bool(self.auto_start_var.get()))
+        except Exception as exc:
+            self._set_provision_status(f"Apply app settings failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            return
+
+        self._refresh_ui_from_config()
+        self._sync_startup_registration(show_errors=True, emit_status=False)
+        self._set_provision_status(
+            f"Updated app settings: start at login={'enabled' if updated.auto_start else 'disabled'}."
+        )
+
     def _validate_sources(self) -> None:
         if not self._guard_watch_inactive(action_label="Validate"):
             return
@@ -779,20 +1030,22 @@ class ImportAgentManagerWindow:
             )
         self._apply_snapshot(snapshot)
 
-    def _start_watch(self) -> None:
+    def _start_watch(self, *, show_errors: bool = True) -> None:
         if self._watch_running():
             return
         try:
             supervisor = self.controller.make_enabled_supervisor()
         except Exception as exc:
             self._set_manager_status(f"Unable to start watch: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            if show_errors:
+                messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
             return
 
         self.watch_service = ImportAgentWatchService(supervisor, self.event_queue)
         self.watch_service.start()
         self.watch_state_var.set("Watcher starting...")
         self._set_manager_status("Started watch loop.")
+        self._refresh_tray()
 
     def _stop_watch(self) -> None:
         if self.watch_service is None:
@@ -805,6 +1058,7 @@ class ImportAgentManagerWindow:
             self._set_manager_status("Stopped watch loop.")
         else:
             self.watch_state_var.set("Watcher stop requested; waiting for background loop to exit...")
+        self._refresh_tray()
 
     def _enable_selected_source(self) -> None:
         if not self._guard_watch_inactive(action_label="Enable Source"):
@@ -884,10 +1138,32 @@ class ImportAgentManagerWindow:
                 self._apply_snapshot(item.get("snapshot", {}))
                 if self.watch_service is not None and not self.watch_service.running:
                     self.watch_service = None
+            elif kind == "tray_show_window":
+                self._show_window()
+            elif kind == "tray_hide_window":
+                self._hide_to_tray()
+            elif kind == "tray_start_watch":
+                self._start_watch(show_errors=False)
+            elif kind == "tray_stop_watch":
+                self._stop_watch()
+            elif kind == "tray_import_now":
+                self._import_now()
+            elif kind == "tray_toggle_auto_start":
+                self.auto_start_var.set(not bool(self.auto_start_var.get()))
+                self._apply_app_settings()
+            elif kind == "tray_quit":
+                self._quit_application()
 
+            self._refresh_tray()
         self.root.after(250, self._poll_event_queue)
 
     def _on_close(self) -> None:
+        if self._shutdown_requested:
+            self._quit_application()
+            return
+        if self.tray_icon is not None:
+            self._hide_to_tray()
+            return
         if self.watch_service is not None:
             self.watch_service.stop(timeout_s=2.0)
         self.root.destroy()
@@ -900,5 +1176,10 @@ class ImportAgentManagerWindow:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.startup_launch:
+        args.start_watch = True
+        args.start_minimized = True
+    if not str(args.app_config).strip():
+        args.app_config = str(_default_app_config_path(mode=args.app_config_mode))
     window = ImportAgentManagerWindow(args)
     return window.run()

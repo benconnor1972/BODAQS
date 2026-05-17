@@ -2,10 +2,13 @@ import json
 import os
 import sys
 import zipfile
+from importlib.resources import files
 from pathlib import Path
 
 import bodaqs_analysis.import_agent_provisioning as provisioning_module
 import bodaqs_analysis.import_agent_setup as import_agent_setup_module
+import bodaqs_analysis.import_agent_startup as import_agent_startup_module
+import bodaqs_analysis.import_agent_tray as import_agent_tray_module
 from bodaqs_analysis.import_agent import (
     ImportAgentSupervisor,
     ImportSourceRunner,
@@ -27,6 +30,7 @@ from bodaqs_analysis.import_agent_provisioning import (
     provision_import_agent_source,
     runtime_import_agent_app_config_path,
     save_import_agent_app_config,
+    update_import_agent_app_auto_start,
     update_import_agent_source_enabled,
 )
 from bodaqs_analysis.preprocess_profile import (
@@ -586,6 +590,23 @@ def test_runtime_import_agent_app_config_path_prefers_writable_directory(tmp_pat
     assert config_path == preferred_dir.resolve() / "import_agent_app.json"
 
 
+def test_runtime_import_agent_app_config_path_installed_mode_uses_appdata_even_when_bundle_dir_is_writable(tmp_path):
+    preferred_dir = tmp_path / "bundle"
+    preferred_dir.mkdir()
+
+    config_path = runtime_import_agent_app_config_path(
+        preferred_dir=preferred_dir,
+        mode="installed",
+        platform="win32",
+        env={"LOCALAPPDATA": str(tmp_path / "AppData" / "Local")},
+        home=tmp_path,
+    )
+
+    assert config_path == (
+        tmp_path / "AppData" / "Local" / "BODAQS" / "import-agent" / "import_agent_app.json"
+    ).resolve()
+
+
 def test_runtime_import_agent_app_config_path_falls_back_when_preferred_directory_is_missing_file(tmp_path):
     preferred_file = tmp_path / "not_a_directory.txt"
     preferred_file.write_text("x", encoding="utf-8")
@@ -731,3 +752,145 @@ def test_update_import_agent_source_enabled_persists_and_filters_enabled_roots(t
 
     assert disabled.sources[0].enabled is False
     assert managed_import_agent_source_roots(disabled, enabled_only=True) == []
+
+
+def test_update_import_agent_app_auto_start_persists(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+        auto_start=False,
+    )
+
+    updated = update_import_agent_app_auto_start(app_config_path, enabled=True)
+
+    assert updated.auto_start is True
+    assert load_import_agent_app_config(app_config_path).auto_start is True
+
+
+class _FakeRegistryKey:
+    def __init__(self, storage: dict[str, str], path: str) -> None:
+        self.storage = storage
+        self.path = path
+
+    def Close(self) -> None:
+        return None
+
+
+class _FakeWinreg:
+    HKEY_CURRENT_USER = object()
+    KEY_READ = 0x1
+    KEY_SET_VALUE = 0x2
+    REG_SZ = 1
+
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def CreateKeyEx(self, root: object, path: str, reserved: int, access: int) -> _FakeRegistryKey:
+        return _FakeRegistryKey(self.values, path)
+
+    def OpenKey(self, root: object, path: str, reserved: int, access: int) -> _FakeRegistryKey:
+        return _FakeRegistryKey(self.values, path)
+
+    def SetValueEx(self, key: _FakeRegistryKey, value_name: str, reserved: int, value_type: int, value: str) -> None:
+        self.values[(key.path, value_name)] = value
+
+    def QueryValueEx(self, key: _FakeRegistryKey, value_name: str) -> tuple[str, int]:
+        storage_key = (key.path, value_name)
+        if storage_key not in self.values:
+            raise FileNotFoundError(storage_key)
+        return self.values[storage_key], self.REG_SZ
+
+    def DeleteValue(self, key: _FakeRegistryKey, value_name: str) -> None:
+        storage_key = (key.path, value_name)
+        if storage_key not in self.values:
+            raise FileNotFoundError(storage_key)
+        del self.values[storage_key]
+
+
+def test_build_windows_startup_command_quotes_paths_with_spaces(tmp_path):
+    exe_path = tmp_path / "Program Files" / "bodaqs-import-setup.exe"
+    config_path = tmp_path / "App Data" / "import_agent_app.json"
+    command = import_agent_startup_module.build_windows_startup_command(
+        [
+            exe_path,
+            "--app-config",
+            str(config_path),
+            "--startup-launch",
+        ]
+    )
+
+    assert f'"{exe_path.resolve()}"' in command
+    assert f'"{config_path.resolve()}"' in command
+    assert "--startup-launch" in command
+
+
+def test_build_import_agent_tray_image_returns_square_rgba_image():
+    image = import_agent_tray_module.build_import_agent_tray_image(size=48)
+
+    assert image.size == (48, 48)
+    assert image.mode == "RGBA"
+
+
+def test_load_import_agent_tray_image_uses_packaged_asset():
+    image = import_agent_tray_module.load_import_agent_tray_image()
+
+    assert image.size == (256, 256)
+    assert image.mode == "RGBA"
+
+
+def test_import_agent_window_icon_asset_exists():
+    asset = files("bodaqs_analysis.import_agent_assets").joinpath("app_icon.png")
+    with asset.open("rb") as handle:
+        payload = handle.read()
+
+    assert len(payload) > 0
+
+
+def test_import_agent_window_icon_ico_asset_exists():
+    asset = files("bodaqs_analysis.import_agent_assets").joinpath("app_icon.ico")
+    with asset.open("rb") as handle:
+        payload = handle.read()
+
+    assert len(payload) > 0
+
+
+def test_tray_supported_is_false_for_non_windows_platform():
+    assert import_agent_tray_module.tray_supported(platform="linux") is False
+
+
+def test_sync_windows_startup_registration_round_trips_command_with_fake_registry():
+    fake_reg = _FakeWinreg()
+    command = '"C:\\Program Files\\BODAQS Import Agent\\manager\\bodaqs-import-setup.exe" --startup-launch'
+
+    stored = import_agent_startup_module.sync_windows_startup_registration(
+        enabled=True,
+        command=command,
+        registry_module=fake_reg,
+        platform="win32",
+    )
+    read_back = import_agent_startup_module.read_windows_startup_registration(
+        registry_module=fake_reg,
+        platform="win32",
+    )
+
+    assert stored == command
+    assert read_back == command
+
+    cleared = import_agent_startup_module.sync_windows_startup_registration(
+        enabled=False,
+        registry_module=fake_reg,
+        platform="win32",
+    )
+
+    assert cleared is None
+    assert (
+        import_agent_startup_module.read_windows_startup_registration(
+            registry_module=fake_reg,
+            platform="win32",
+        )
+        is None
+    )

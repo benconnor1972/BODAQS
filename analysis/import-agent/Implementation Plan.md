@@ -132,7 +132,43 @@ Exit criteria:
 
 - clean install produces a usable first-run experience on Windows
 
-### Phase 6. New source adapters
+Status:
+
+- phase 5A started
+- Windows installer script and build/staging flow implemented
+- installed-mode launches now pin the managed app config to per-user app-data
+- phase 5B started
+- Windows start-at-login registration is now managed by the desktop app
+- the manager now runs as a tray app on Windows
+- startup launches start the watch loop and hide the manager window to the tray
+
+### Phase 6. macOS packaging and startup
+
+Purpose:
+
+- package the existing desktop shell for macOS without changing the import
+  engine contract
+
+Scope:
+
+- macOS app bundle build
+- `.icns` branding assets
+- macOS app-config location rules
+- macOS start-at-login strategy
+- Developer ID signing and notarization workflow
+- DMG packaging
+
+Exit criteria:
+
+- a signed macOS manager build can provision libraries/sources and run imports
+- distribution outside the Mac App Store follows the normal Developer ID +
+  notarization path
+
+Status:
+
+- concrete planning note written at `analysis/import-agent/Phase 6 macOS Plan.md`
+
+### Phase 7. New source adapters
 
 Purpose:
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 analysis_dir = Path.cwd()
+app_icon_path = (analysis_dir / "import-agent" / "windows" / "bodaqs_import_agent.ico").resolve()
 cli_excludes = [
     "IPython",
     "jedi",
@@ -42,6 +43,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    icon=str(app_icon_path),
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,

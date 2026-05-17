@@ -49,6 +49,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ProvisionedImportAgentAppSetup": (".import_agent_provisioning", "ProvisionedImportAgentAppSetup"),
     "ImportAgentSupervisor": (".import_agent", "ImportAgentSupervisor"),
     "ImportSourceRunner": (".import_agent", "ImportSourceRunner"),
+    "build_windows_startup_command": (".import_agent_startup", "build_windows_startup_command"),
+    "build_import_agent_tray_image": (".import_agent_tray", "build_import_agent_tray_image"),
     "default_import_agent_app_config_dir": (".import_agent_provisioning", "default_import_agent_app_config_dir"),
     "default_import_agent_app_config_path": (".import_agent_provisioning", "default_import_agent_app_config_path"),
     "import_agent_app_config_to_jsonable": (".import_agent_provisioning", "import_agent_app_config_to_jsonable"),
@@ -66,10 +68,16 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "runtime_import_agent_app_config_path": (".import_agent_provisioning", "runtime_import_agent_app_config_path"),
     "run_sources_once": (".import_agent", "run_sources_once"),
     "save_import_agent_app_config": (".import_agent_provisioning", "save_import_agent_app_config"),
+    "read_windows_startup_registration": (".import_agent_startup", "read_windows_startup_registration"),
+    "load_import_agent_tray_image": (".import_agent_tray", "load_import_agent_tray_image"),
+    "sync_windows_startup_registration": (".import_agent_startup", "sync_windows_startup_registration"),
+    "tray_supported": (".import_agent_tray", "tray_supported"),
+    "update_import_agent_app_auto_start": (".import_agent_provisioning", "update_import_agent_app_auto_start"),
     "update_import_agent_source_enabled": (".import_agent_provisioning", "update_import_agent_source_enabled"),
     "validate_import_agent_app_config": (".import_agent_provisioning", "validate_import_agent_app_config"),
     "validate_import_sources": (".import_agent", "validate_import_sources"),
     "watch_sources": (".import_agent", "watch_sources"),
+    "windows_startup_supported": (".import_agent_startup", "windows_startup_supported"),
 }
 
 __all__ = sorted(_EXPORTS.keys())
