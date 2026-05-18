@@ -210,6 +210,24 @@ Purpose:
 
 - expose a machine-readable API without disturbing the existing web UI
 
+Status:
+
+- implemented `Routes_Api`
+- registered API routes from `WebServerManager::setupRoutes()`
+- implemented:
+  - `GET /api/v1/device`
+  - `GET /api/v1/status`
+  - `POST /api/v1/upload-mode/enter`
+  - `POST /api/v1/upload-mode/exit`
+  - `GET /api/v1/sessions`
+  - `GET /api/v1/session/archive?id=<session_id>`
+- session list and archive download require upload mode and return `409` when
+  upload mode is inactive
+- session acknowledgement is implemented in Phase 7
+- session deletion is registered but returns `501 not_implemented` after
+  upload-mode gating until the deletion policy is implemented
+- API responses use JSON envelopes and no-store cache headers
+
 Tasks:
 
 - Add `firmware/src/Routes_Api.h`.
@@ -246,6 +264,15 @@ Purpose:
 
 - allow the import agent to pull one completed session archive
 
+Status:
+
+- implemented during Phase 5 as `GET /api/v1/session/archive?id=<session_id>`
+- route requires upload mode and returns `409` otherwise
+- route resolves the requested session through `UploadSessionScanner`
+- route streams the completed `.zip` archive with `Content-Type:
+  application/zip` and a `<session_id>.zip` attachment filename
+- repeated downloads do not mutate logger-side state
+
 Tasks:
 
 - Resolve `session_id` to an archive path.
@@ -269,11 +296,24 @@ Purpose:
 
 - let the logger remember sessions successfully handled by a PC
 
+Status:
+
+- implemented `UploadAckIndex`
+- acknowledgement records are stored as newline-delimited JSON at
+  `/upload_index.ndjson`
+- latest valid record for a `session_id` wins
+- corrupt lines are skipped when reading the index
+- `POST /api/v1/session/ack` now validates upload mode, validates that the
+  session exists, appends an acknowledgement record, and returns the recorded
+  state
+- `/api/v1/sessions` now reports `uploaded` and `acknowledged` from the index
+
 Tasks:
 
 - Add a small upload acknowledgement index on SD.
 - Suggested path:
   - `/logs/upload_index.json`
+  - implemented path: `/upload_index.ndjson`
 - Record at minimum:
   - `session_id`
   - `status`
@@ -303,6 +343,19 @@ Purpose:
 
 - support user-requested storage cleanup after successful import
 
+Status:
+
+- implemented `UploadSessionCleanup`
+- `POST /api/v1/session/delete` now requires upload mode
+- cleanup requires a prior acknowledgement in `UploadAckIndex`
+- supported request modes:
+  - `move_to_uploaded`
+  - `delete`
+- `move_to_uploaded` creates `/uploaded` if needed and moves CSV, JSON, and ZIP
+  together when targets do not already exist
+- `delete` removes CSV, JSON, and ZIP
+- partial cleanup failures are reported with per-file success flags
+
 Tasks:
 
 - Implement `POST /api/v1/session/delete`.
@@ -331,6 +384,22 @@ Purpose:
 
 - make station-mode discovery smoother without forcing AP automation
 
+Status:
+
+- implemented `WiFiManager::hostname()` as the shared stable hostname helper
+- station-mode connection sets the Wi-Fi hostname before association
+- station-mode ONLINE starts mDNS advertisement:
+  - service: `_bodaqs-logger._tcp`
+  - port: `80`
+- mDNS TXT records currently include:
+  - `api=1`
+  - `logger_id=<logger_id>`
+  - `upload_mode=true|false`
+  - `hostname=<hostname>`
+- upload mode enter/exit refreshes mDNS so `upload_mode` TXT stays current
+- mDNS is stopped when Wi-Fi leaves station-online mode or AP mode starts
+- `/api/v1/device` and `/api/v1/status` report the same hostname
+
 Tasks:
 
 - Add a stable hostname derived from logger ID if not already present.
@@ -355,6 +424,25 @@ Acceptance checks:
 Purpose:
 
 - make upload mode discoverable and hard to enter accidentally
+
+Status:
+
+- implemented an `Upload: ON/OFF` main-menu entry
+- selecting the menu entry opens an upload status screen rather than toggling
+  immediately
+- upload status screen shows:
+  - upload mode state
+  - Wi-Fi SSID/mode
+  - IP address
+  - importable and incomplete session counts
+- Enter/Right toggles upload mode from the upload status screen
+- the existing `upload_mode_toggle` button binding action remains available
+- `/files` now includes a `Logger upload` panel with upload mode status,
+  network details, session counts, and enter/exit controls
+- generic file-browser mutations are blocked while logging or upload mode is
+  active; downloads remain available
+- config pages and config POST routes are locked while logging or upload mode
+  is active
 
 Tasks:
 

@@ -99,6 +99,20 @@ The user enters upload mode explicitly from the logger UI, button/menu action,
 or web UI. The desktop import agent does not automatically force the logger
 into upload mode as part of normal discovery.
 
+The built-in HTML file browser exposes human-facing upload mode controls at
+`/files`:
+
+- `POST /upload-mode/enter`
+- `POST /upload-mode/exit`
+
+These are browser convenience routes that redirect back to `/files`. Machine
+clients should use the JSON API routes under `/api/v1/upload-mode/*`.
+
+While logging or upload mode is active, the generic file browser disables and
+rejects manual SD-card mutation routes such as upload, mkdir, rmdir, and
+delete. Downloads remain available, and upload-session cleanup should go
+through `POST /api/v1/session/delete` after acknowledgement.
+
 ## Archive Contract
 
 The logger should create a session archive when a log is closed and the
@@ -181,10 +195,16 @@ Example response:
     "upload_mode",
     "session_archive_zip",
     "session_ack",
-    "session_delete"
+    "session_delete",
+    "mdns_discovery"
   ]
 }
 ```
+
+In station mode, reachable loggers may advertise mDNS service
+`_bodaqs-logger._tcp` on port `80` with TXT records including `api=1`,
+`logger_id`, `upload_mode`, and `hostname`. AP mode does not require mDNS; the
+PC confirms identity through this endpoint after connecting.
 
 ### `GET /api/v1/status`
 
@@ -347,6 +367,41 @@ Allowed `mode` values:
 
 - `move_to_uploaded`
 - `delete`
+
+Successful cleanup response:
+
+```json
+{
+  "schema": "bodaqs.logger.session_delete",
+  "api_version": 1,
+  "logger_id": "Prototype E",
+  "session_id": "Prototype E__2026-05-16_20-15-42",
+  "acknowledged": true,
+  "mode": "move_to_uploaded",
+  "ok": true,
+  "files": {
+    "csv": {
+      "ok": true,
+      "path": "/2026-05-16_20-15-42.CSV",
+      "target_path": "/uploaded/2026-05-16_20-15-42.CSV"
+    },
+    "json": {
+      "ok": true,
+      "path": "/2026-05-16_20-15-42.json",
+      "target_path": "/uploaded/2026-05-16_20-15-42.json"
+    },
+    "archive": {
+      "ok": true,
+      "path": "/2026-05-16_20-15-42.zip",
+      "target_path": "/uploaded/2026-05-16_20-15-42.zip"
+    }
+  }
+}
+```
+
+Partial cleanup failures return a non-`200` response with the same file result
+shape and an `error` string. Clients should treat partial cleanup as requiring
+manual review.
 
 ## Desktop Import Agent Policy
 

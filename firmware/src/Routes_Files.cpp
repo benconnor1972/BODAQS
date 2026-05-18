@@ -3,7 +3,11 @@
 #include <time.h>
 #include "SD_MMC.h"   // for SD_MMC backend
 
+#include "ConfigManager.h"
 #include "HtmlUtil.h"
+#include "LoggingManager.h"
+#include "UploadModeManager.h"
+#include "UploadSessionScanner.h"
 #include "WiFiManager.h"
 #include "PowerManager.h"
 #include "WebServerManager.h"
@@ -12,6 +16,8 @@
 using namespace HtmlUtil;
 
 #define FILES_LOGE(...) LOGE_TAG("FILES", __VA_ARGS__)
+
+static String urlEncodeQueryValue_(const String& in);
 
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
@@ -38,6 +44,33 @@ static String prettySize_(uint64_t bytes) {
   char buf[16];
   snprintf(buf, sizeof(buf), "%.2f GB", val);
   return String(buf);
+}
+
+static bool manualFileMutationBlocked_(String* reason = nullptr) {
+  if (LoggingManager::isRunning()) {
+    if (reason) *reason = F("logging is active");
+    return true;
+  }
+  if (UploadModeManager::isActive()) {
+    if (reason) *reason = F("upload mode is active");
+    return true;
+  }
+  return false;
+}
+
+static bool rejectManualFileMutation_(WebServer& srv) {
+  String reason;
+  if (!manualFileMutationBlocked_(&reason)) {
+    return false;
+  }
+
+  srv.send(409, F("text/plain"), String(F("Manual file changes are disabled while ")) + reason + F("."));
+  return true;
+}
+
+static void redirectToFiles_(WebServer& srv, const String& path = "/") {
+  srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(normDir(path)));
+  srv.send(303, F("text/plain"), F("Redirect"));
 }
 
 // Get the last path segment (strip leading directories)
@@ -167,7 +200,7 @@ static String makeZipName_() {
 }
 
 
-static void listDirMMC_(const String& dir, String& html) {
+static void listDirMMC_(const String& dir, String& html, bool allowDelete) {
   const String openDir = dirOpenPath_(dir);
   File d = SD_MMC.open(openDir.c_str());
   if (!d || !d.isDirectory()) {
@@ -230,10 +263,15 @@ static void listDirMMC_(const String& dir, String& html) {
         html += F("</td><td>"
                   "<a class='download' href=\"/download?path=");
         html += htmlEscape(urlEncodeQueryValue_(full));
-        html += F("\">Download</a> "
-                  "<a class='delete' href=\"/delete?path=");
-        html += htmlEscape(urlEncodeQueryValue_(full));
-        html += F("\">Delete</a></td></tr>");
+        html += F("\">Download</a> ");
+        if (allowDelete) {
+          html += F("<a class='delete' href=\"/delete?path=");
+          html += htmlEscape(urlEncodeQueryValue_(full));
+          html += F("\">Delete</a>");
+        } else {
+          html += F("<span style='color:#777'>Delete disabled</span>");
+        }
+        html += F("</td></tr>");
       }
       e.close();
       delay(0);
@@ -270,8 +308,84 @@ static void emitBreadcrumbs_(const String& dir, String& html) {
   html += F("</p>");
 }
 
+static void appendUploadModePanel_(String& html) {
+  UploadSessionScanner::ScanSummary summary = {};
+  (void)UploadSessionScanner::scan("/", nullptr, 0, &summary);
+
+  const WiFiStatus st = WiFiManager::status();
+  const bool uploadMode = UploadModeManager::isActive();
+  const bool logging = LoggingManager::isRunning();
+
+  html += F("<fieldset><legend>Logger upload</legend>");
+  html += F("<p><b>Upload mode:</b> ");
+  html += uploadMode ? F("active") : F("inactive");
+  if (logging) {
+    html += F(" <span style='color:#b60'>(logging active)</span>");
+  }
+  html += F("</p>");
+
+  html += F("<p><b>Network:</b> ");
+  html += htmlEscape(ConfigManager::wifiModeLabel(st.mode));
+  html += F(" / ");
+  html += htmlEscape(st.networkUp && st.ssid.length() ? st.ssid : String(F("not connected")));
+  html += F(" &nbsp; <b>IP:</b> ");
+  html += htmlEscape(st.networkUp ? st.ip : String(F("-")));
+  html += F(" &nbsp; <b>Hostname:</b> ");
+  html += htmlEscape(st.hostname);
+  html += F("</p>");
+
+  html += F("<p><b>Sessions:</b> ");
+  html += String(summary.completeCount);
+  html += F(" importable");
+  if (summary.incompleteCount) {
+    html += F(", ");
+    html += String(summary.incompleteCount);
+    html += F(" incomplete");
+  }
+  if (summary.tempArchiveCount) {
+    html += F(", ");
+    html += String(summary.tempArchiveCount);
+    html += F(" archive(s) being prepared");
+  }
+  html += F("</p>");
+
+  if (uploadMode) {
+    html += F("<form method='POST' action='/upload-mode/exit'>"
+              "<button type='submit'>Exit upload mode</button></form>");
+  } else {
+    html += F("<form method='POST' action='/upload-mode/enter'>"
+              "<button type='submit'");
+    if (logging) {
+      html += F(" disabled title='Stop logging before entering upload mode'");
+    }
+    html += F(">Enter upload mode</button></form>");
+  }
+
+  html += F("</fieldset>");
+}
+
 void registerFileRoutes(WebServer& srv) {
   WebServer* S = &srv;
+
+  S->on("/upload-mode/enter", HTTP_POST, [S](){
+    auto& srv = *S;
+    noteHttpActivity_();
+
+    if (!UploadModeManager::enter()) {
+      srv.send(409, F("text/plain"), F("Cannot enter upload mode while logging is active."));
+      return;
+    }
+
+    redirectToFiles_(srv);
+  });
+
+  S->on("/upload-mode/exit", HTTP_POST, [S](){
+    auto& srv = *S;
+    noteHttpActivity_();
+
+    UploadModeManager::exit();
+    redirectToFiles_(srv);
+  });
 
   // ---------- GET /files?path=/dir/ ----------
   S->on("/files", HTTP_GET, [S](){
@@ -284,24 +398,34 @@ void registerFileRoutes(WebServer& srv) {
 
     String html = htmlHeader(F("Files"));
     html += F("<h2>Files</h2>");
+    appendUploadModePanel_(html);
 
     // Breadcrumbs
     emitBreadcrumbs_(dir, html);
 
-    // Upload form (multipart)
-    html += F("<form method='POST' action='/upload?path=");
-    html += htmlEscape(urlEncodeQueryValue_(dir));
-    html += F("' enctype='multipart/form-data' style='margin:8px 0'>"
-             "<input type='file' name='file' multiple>"
-             "<button type='submit'>Upload</button></form>");
+    String mutationBlockReason;
+    const bool manualFileMutationBlocked = manualFileMutationBlocked_(&mutationBlockReason);
 
-    // New folder form
-    html += F("<form method='POST' action='/mkdir' style='margin:8px 0'>"
-              "<input type='hidden' name='path' value='");
-    html += htmlEscape(urlEncodeQueryValue_(dir));
-    html += F("'>"
-              "<input type='text' name='name' placeholder='New folder name'> "
-              "<button type='submit'>Create</button></form>");
+    if (manualFileMutationBlocked) {
+      html += F("<p><em>Manual file changes are disabled while ");
+      html += htmlEscape(mutationBlockReason);
+      html += F(".</em></p>");
+    } else {
+      // Upload form (multipart)
+      html += F("<form method='POST' action='/upload?path=");
+      html += htmlEscape(urlEncodeQueryValue_(dir));
+      html += F("' enctype='multipart/form-data' style='margin:8px 0'>"
+               "<input type='file' name='file' multiple>"
+               "<button type='submit'>Upload</button></form>");
+
+      // New folder form
+      html += F("<form method='POST' action='/mkdir' style='margin:8px 0'>"
+                "<input type='hidden' name='path' value='");
+      html += htmlEscape(urlEncodeQueryValue_(dir));
+      html += F("'>"
+                "<input type='text' name='name' placeholder='New folder name'> "
+                "<button type='submit'>Create</button></form>");
+    }
 
     // Parent link
     if (dir != "/") {
@@ -329,25 +453,27 @@ void registerFileRoutes(WebServer& srv) {
               "<th style='width:40px'><input type='checkbox' id='sel_all'></th>"
               "<th>Name</th><th>Size</th><th>Action</th>"
               "</tr>");
-    listDirMMC_(dir, html);
+    listDirMMC_(dir, html, !manualFileMutationBlocked);
     html += F("</table></form>");
     html += F("<iframe name='zipframe' style='display:none'></iframe>");
 
     // Inline JS: select all, enable/disable buttons, submit actions
     html += F("<script>"
-              "(function(){"
-              "const form=document.getElementById('multiForm');"
+              "(function(){");
+    html += F("const manualFileMutationBlocked=");
+    html += manualFileMutationBlocked ? F("true") : F("false");
+    html += F(";const form=document.getElementById('multiForm');"
               "const selAll=document.getElementById('sel_all');"
               "const btnDl=document.getElementById('btn_download');"
               "const btnDel=document.getElementById('btn_delete');const btnZip=document.getElementById('btn_zip');"
               "function cbs(){return Array.from(document.querySelectorAll('.filecb'));}"
               "function anyChecked(){return cbs().some(cb=>cb.checked);}"
-              "function refresh(){const any=anyChecked(); btnDl.disabled=!any; if(btnZip) btnZip.disabled=!any; btnDel.disabled=!any;}"
+              "function refresh(){const any=anyChecked(); btnDl.disabled=!any; if(btnZip) btnZip.disabled=!any; btnDel.disabled=manualFileMutationBlocked||!any;}"
               "if(selAll){selAll.addEventListener('change',()=>{cbs().forEach(cb=>cb.checked=selAll.checked); refresh();});}"
               "document.addEventListener('change',(e)=>{if(e.target && e.target.classList && e.target.classList.contains('filecb')){"
               "const all=cbs(); if(selAll){ selAll.checked = all.length && all.every(cb=>cb.checked); } refresh(); }});"
               "btnDl.addEventListener('click',async()=>{btnDl.disabled=true; if(btnZip) btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true;const status=document.getElementById('dl_status');const paths=cbs().filter(cb=>cb.checked).map(cb=>cb.value);if(!paths.length){refresh(); if(selAll) selAll.disabled=false; return;}if(status) status.textContent='Starting...';for(let i=0;i<paths.length;i++){const p=paths[i];const name=(p.split('/').pop()||p);if(status) status.textContent=`Fetching ${i+1}/${paths.length}: ${name}`;try{const url='/download?path='+encodeURIComponent(p);const resp=await fetch(url,{cache:'no-store'});if(!resp.ok) throw new Error('HTTP '+resp.status);const cd=resp.headers.get('Content-Disposition')||'';let fn=name;const mm=/filename\\s*=\\s*\"?([^\";]+)\"?/i.exec(cd);if(mm && mm[1]) fn=mm[1];const blob=await resp.blob();const a=document.createElement('a');const obj=URL.createObjectURL(blob);a.href=obj; a.download=fn; a.style.display='none';document.body.appendChild(a); a.click();setTimeout(()=>{URL.revokeObjectURL(obj); a.remove();},1500);}catch(err){console.error('Download failed for',p,err);if(status) status.textContent=`Failed: ${name}`;break;}await new Promise(r=>setTimeout(r,300));}if(status && !status.textContent.startsWith('Failed')) status.textContent='Done';refresh(); if(selAll) selAll.disabled=false;});"
-              "if(btnZip){btnZip.addEventListener('click',()=>{btnDl.disabled=true; btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true; const prevAction=form.action; const prevTarget=form.target; form.action='/download_zip'; form.target='zipframe'; form.submit(); form.action=prevAction; form.target=prevTarget; setTimeout(()=>{refresh(); if(selAll) selAll.disabled=false;},500);});}btnDel.addEventListener('click',()=>{form.action='/delete_multi'; form.submit();});"
+              "if(btnZip){btnZip.addEventListener('click',()=>{btnDl.disabled=true; btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true; const prevAction=form.action; const prevTarget=form.target; form.action='/download_zip'; form.target='zipframe'; form.submit(); form.action=prevAction; form.target=prevTarget; setTimeout(()=>{refresh(); if(selAll) selAll.disabled=false;},500);});}btnDel.addEventListener('click',()=>{if(manualFileMutationBlocked)return; form.action='/delete_multi'; form.submit();});"
               "refresh();"
               "})();"
               "</script>");
@@ -410,6 +536,7 @@ S->on("/download", HTTP_GET, [S](){
 S->on("/delete", HTTP_GET, [S](){
   auto& srv = *S;
   noteHttpActivity_();
+  if (rejectManualFileMutation_(srv)) return;
 
   if (!srv.hasArg("path")) {
     srv.send(400, F("text/plain"), F("Missing 'path'"));
@@ -530,6 +657,7 @@ S->on("/download_multi", HTTP_POST, [S](){
 S->on("/delete_multi", HTTP_POST, [S](){
   auto& srv = *S;
   noteHttpActivity_();
+  if (rejectManualFileMutation_(srv)) return;
 
   String dir = srv.hasArg("dir") ? srv.arg("dir") : "/";
   if (!safeRelPath(dir)) { dir = "/"; }
@@ -794,6 +922,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
 S->on("/rmdir", HTTP_GET, [S](){
   auto& srv = *S;
   noteHttpActivity_();
+  if (rejectManualFileMutation_(srv)) return;
 
   if (!srv.hasArg("path")) { srv.send(400, F("text/plain"), F("Missing 'path'")); return; }
 
@@ -861,6 +990,7 @@ S->on("/rmdir", HTTP_GET, [S](){
 S->on("/mkdir", HTTP_POST, [S](){
   auto& srv = *S;
   noteHttpActivity_();
+  if (rejectManualFileMutation_(srv)) return;
 
   const String base = srv.hasArg("path") ? srv.arg("path") : "/";
   const String name = srv.hasArg("name") ? srv.arg("name") : "";
@@ -889,6 +1019,7 @@ S->on("/mkdir", HTTP_POST, [S](){
 S->on("/rmdir", HTTP_POST, [S](){
   auto& srv = *S;
   noteHttpActivity_();
+  if (rejectManualFileMutation_(srv)) return;
 
   String p = srv.hasArg("path") ? srv.arg("path") : "/";
   p = normDir(p);
@@ -936,6 +1067,8 @@ S->on("/rmdir", HTTP_POST, [S](){
     [S](){
       auto& srv = *S;
       noteHttpActivity_();
+      if (rejectManualFileMutation_(srv)) return;
+
       String p = srv.hasArg("path") ? srv.arg("path") : "/";
       if (!safeRelPath(p)) p = "/";
   srv.sendHeader(F("Location"), "/files?path=" + urlEncodeQueryValue_(normDir(p)));
@@ -949,6 +1082,14 @@ S->on("/rmdir", HTTP_POST, [S](){
       HTTPUpload& up = srv.upload();
       static File   outMMC;
       static String targetDir;
+
+      if (manualFileMutationBlocked_()) {
+        if (outMMC) {
+          outMMC.close();
+        }
+        up.status = UPLOAD_FILE_ABORTED;
+        return;
+      }
 
       if (up.status == UPLOAD_FILE_START) {
         // Determine target directory

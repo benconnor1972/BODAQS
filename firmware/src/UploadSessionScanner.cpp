@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include "ConfigManager.h"
 #include "SD_MMC.h"
+#include "UploadAckIndex.h"
 
 namespace UploadSessionScanner {
 namespace {
@@ -162,8 +163,8 @@ static void fillSessionInfo_(const Candidate& candidate, SessionInfo& out) {
   out.jsonPath = candidate.jsonPath;
   out.archivePath = candidate.archivePath;
   out.archiveReady = true;
-  out.uploaded = false;
-  out.acknowledged = false;
+  out.acknowledged = UploadAckIndex::isSessionAcknowledged(out.sessionId.c_str());
+  out.uploaded = out.acknowledged;
   out.archiveSize = candidate.archiveSize;
 }
 
@@ -272,9 +273,9 @@ bool findBySessionId(const char* sessionId,
   out = SessionInfo{};
   if (!sessionId || !*sessionId) return false;
 
-  SessionInfo sessions[16];
+  SessionInfo sessions[24];
   ScanSummary summary;
-  const uint16_t n = scan(directory, sessions, 16, &summary);
+  const uint16_t n = scan(directory, sessions, 24, &summary);
   for (uint16_t i = 0; i < n; ++i) {
     if (sessions[i].sessionId == sessionId) {
       out = sessions[i];

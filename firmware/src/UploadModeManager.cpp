@@ -2,6 +2,7 @@
 
 #include "DebugLog.h"
 #include "UI.h"
+#include "WiFiManager.h"
 
 #define UPLOAD_LOGI(...) LOGI_TAG("Upload", __VA_ARGS__)
 #define UPLOAD_LOGW(...) LOGW_TAG("Upload", __VA_ARGS__)
@@ -42,6 +43,7 @@ bool UploadModeManager::enter() {
   UPLOAD_LOGI("Upload mode entered\n");
   UI::println("Upload mode active.", "Upload\nmode", UI::TARGET_BOTH, UI::LVL_INFO, 1500, 2);
   UI::status("Upload mode");
+  WiFiManager::refreshDiscovery();
   return true;
 }
 
@@ -54,6 +56,7 @@ void UploadModeManager::exit() {
   UPLOAD_LOGI("Upload mode exited\n");
   UI::println("Upload mode exited.", "Upload off", UI::TARGET_BOTH, UI::LVL_INFO, 1200, 2);
   UI::status("Ready");
+  WiFiManager::refreshDiscovery();
 }
 
 bool UploadModeManager::toggle() {

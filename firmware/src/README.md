@@ -5,7 +5,7 @@ ESP32-based data logger with:
 - Up to 500Hz logging (tested to 100Hz so far)
 - SD card logging
 - On-device web UI (list/download/delete files, simple config page)
-- mDNS discovery (browse to `http://esp32-logger.local/`)
+- mDNS discovery in station mode via `_bodaqs-logger._tcp`
 - Button control (start/stop logging, mark events, menu navigation)
 - General and sensor configuration via config file on SD (`loggercfg`) 
 
@@ -157,8 +157,43 @@ artifacts.
 **Notes/Gotchas**
 - `.zip.tmp` files are ignored as importable archives but counted in the scan
   summary for diagnostics.
-- Upload/acknowledgement flags are placeholders until the upload index is
-  implemented.
+- Upload/acknowledgement flags are read from `UploadAckIndex`.
+
+---
+
+## `UploadAckIndex`
+
+**Purpose:** Persist import acknowledgements from the desktop agent.
+
+**Common APIs**
+- `markSessionAcknowledged(record)` - appends a newline-delimited JSON record.
+- `findSessionAcknowledgement(sessionId, out)` - reads the latest valid record
+  for a session.
+- `isSessionAcknowledged(sessionId)` - convenience predicate used by session
+  listing.
+
+**Notes/Gotchas**
+- The index is `/upload_index.ndjson`; the `.ndjson` extension keeps it out of
+  same-stem session discovery.
+- Corrupt lines are skipped so a bad record does not block session listing.
+
+---
+
+## `UploadSessionCleanup`
+
+**Purpose:** Conservative cleanup for sessions already acknowledged by the
+desktop import agent.
+
+**Common APIs**
+- `cleanupSession(session, MoveToUploaded, result)` - moves CSV, JSON, and ZIP
+  into `/uploaded`.
+- `cleanupSession(session, Delete, result)` - removes CSV, JSON, and ZIP.
+
+**Notes/Gotchas**
+- API callers must require upload mode and prior acknowledgement before using
+  this helper.
+- Cleanup preflights all source files before moving/deleting and reports
+  per-file success for partial failures.
 
 ---
 
@@ -202,6 +237,24 @@ artifacts.
 
 ---
 
+## `WiFiManager`
+
+**Purpose:** Non-blocking Wi-Fi state machine for station/AP networking, RTC
+sync, web/API availability, and discovery.
+
+**Common APIs**
+- `status()` - returns mode, IP, hostname, RSSI/client details.
+- `hostname()` - returns a stable mDNS/HTTP hostname derived from `logger_id`.
+- `refreshDiscovery()` - restarts station-mode mDNS TXT records after upload
+  mode changes.
+
+**Notes/Gotchas**
+- Station mode advertises `_bodaqs-logger._tcp` on port `80` when online.
+- AP mode does not rely on mDNS; the PC confirms logger identity via
+  `/api/v1/device` after connecting.
+
+---
+
 ## `WebServerManager`
 
 **Purpose:** Lightweight HTTP UI for status, SD file browsing, and editing **all** configuration (globals + sensors).
@@ -211,9 +264,17 @@ artifacts.
 - `/config` (GET) displays editable globals and sensor sections.
 - `/config` (POST) updates globals and rewrites `loggercfg.txt` with all keys; also rewrites each sensor’s block.
 - `/config/sensors` can add or remove sensor config blocks. Removing a sensor rewrites config only; transform directories/files are left in place. Restart the logger after adding/removing sensors so the live sensor set is rebuilt.
+- `/api/v1/device`, `/api/v1/status`, `/api/v1/upload-mode/*`,
+  `/api/v1/sessions`, and `/api/v1/session/archive` expose the local-first
+  import-agent API. Session list/download/cleanup routes require upload mode.
+- `/files` includes browser controls for entering/exiting upload mode and
+  reports network/session readiness for manual checks.
 - All HTML pages share a title/navigation header showing `BODAQS data logger: <logger_name>`, the active network, and IP address.
 
 **Interlocks**
+- Config edits and generic SD-card mutations are rejected while logging or
+  upload mode is active. Downloads remain allowed; import cleanup should use
+  the upload API after acknowledgement.
 - `canStart()` returns false while logging is active; `ButtonActions` also blocks starting logging while Wi‑Fi/web is running.
 
 **Helpers**
