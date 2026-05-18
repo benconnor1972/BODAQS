@@ -16,6 +16,10 @@ from bodaqs_analysis.import_agent import (
     load_import_sources,
     run_sources_once,
 )
+from bodaqs_analysis.import_agent_sources import (
+    SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    SOURCE_TYPE_LOGGER_WIFI,
+)
 from bodaqs_analysis.import_agent_provisioning import (
     ImportAgentLibraryConfig,
     ImportAgentManagedSourceConfig,
@@ -264,9 +268,35 @@ def test_load_import_source_config_from_directory(tmp_path):
     source = load_import_source_config(source_root)
 
     assert source.source_id == "source_a"
+    assert source.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE
     assert source.inbox_dir == source_root / "inbox"
     assert source.preprocess_profile_path == source_root / "settings"
     assert source.bike_profile_path == source_root / "bike"
+
+
+def test_load_import_source_config_parses_logger_wifi_source(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "wifi_source", artifacts_dir)
+    config_path = source_root / "import_source.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["source_type"] = SOURCE_TYPE_LOGGER_WIFI
+    payload["logger_wifi"] = {
+        "logger_id": "Prototype E",
+        "base_url": "http://192.168.4.1/",
+        "request_timeout_s": 3,
+        "download_timeout_s": 45,
+        "require_upload_mode": True,
+        "cleanup_mode": "move_to_uploaded",
+    }
+    config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    source = load_import_source_config(source_root)
+
+    assert source.source_type == SOURCE_TYPE_LOGGER_WIFI
+    assert source.logger_wifi is not None
+    assert source.logger_wifi.logger_id == "Prototype E"
+    assert source.logger_wifi.base_url == "http://192.168.4.1"
+    assert source.logger_wifi.cleanup_mode == "move_to_uploaded"
 
 
 def test_run_sources_once_supports_explicit_profile_files(tmp_path):
@@ -491,6 +521,7 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
 
     loaded = load_import_source_config(source.source_root)
     preprocess_profile = json.loads(source.preprocess_profile_path.read_text(encoding="utf-8"))
+    source_payload = json.loads(source.import_source_config_path.read_text(encoding="utf-8"))
 
     assert source.settings_dir.exists()
     assert source.bike_dir.exists()
@@ -498,7 +529,37 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     assert loaded.preprocess_profile_path == source.settings_dir
     assert loaded.bike_profile_path == source.bike_dir
     assert loaded.artifacts_dir == library.artifacts_dir
+    assert loaded.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE
+    assert source_payload["source_type"] == SOURCE_TYPE_FILESYSTEM_ARCHIVE
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
+
+
+def test_provision_import_agent_source_can_seed_logger_wifi_config(tmp_path):
+    libraries_root = tmp_path / "libraries"
+    sources_root = tmp_path / "sources"
+    library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+
+    source = provision_import_agent_source(
+        sources_root / "Alice WiFi Logger",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice WiFi Logger",
+        source_type=SOURCE_TYPE_LOGGER_WIFI,
+        logger_wifi={
+            "logger_id": "Prototype E",
+            "base_url": "http://192.168.4.1",
+            "cleanup_mode": "none",
+        },
+        include_events=False,
+        include_metrics=False,
+    )
+
+    loaded = load_import_source_config(source.source_root)
+
+    assert source.source_type == SOURCE_TYPE_LOGGER_WIFI
+    assert loaded.source_type == SOURCE_TYPE_LOGGER_WIFI
+    assert loaded.logger_wifi is not None
+    assert loaded.logger_wifi.logger_id == "Prototype E"
 
 
 def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp_path, monkeypatch):
@@ -569,6 +630,48 @@ def test_import_agent_app_config_round_trip(tmp_path):
     loaded = load_import_agent_app_config(config_path)
 
     assert loaded == config
+    assert loaded.sources[0].source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE
+
+
+def test_import_agent_app_config_defaults_legacy_source_type(tmp_path):
+    libraries_root = tmp_path / "libraries"
+    sources_root = tmp_path / "sources"
+    library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+    source_root = sources_root / "Alice Enduro"
+    source_root.mkdir(parents=True)
+    config_path = tmp_path / "app_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema": "bodaqs.import_agent_app",
+                "version": 1,
+                "sources_root": str(sources_root),
+                "libraries_root": str(libraries_root),
+                "libraries": [
+                    {
+                        "library_id": library.library_id,
+                        "display_name": library.display_name,
+                        "artifacts_dir": str(library.artifacts_dir),
+                    }
+                ],
+                "sources": [
+                    {
+                        "source_id": "alice-enduro",
+                        "display_name": "Alice Enduro",
+                        "source_root": str(source_root),
+                        "library_id": library.library_id,
+                        "enabled": True,
+                    }
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_import_agent_app_config(config_path)
+
+    assert loaded.sources[0].source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE
 
 
 def test_default_import_agent_app_config_path_uses_windows_convention():
@@ -732,6 +835,44 @@ def test_provision_import_agent_source_for_app_adds_source_to_selected_library(t
     assert source.library_id == provisioned.library.library_id
     assert {item.source_id for item in updated.sources} == {"alice-enduro", "alice-dh"}
     assert source.source_root.exists()
+
+
+def test_provision_import_agent_source_for_app_persists_logger_wifi_source(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+        include_events=False,
+        include_metrics=False,
+    )
+
+    _updated, source = provision_import_agent_source_for_app(
+        app_config_path,
+        library_id=provisioned.library.library_id,
+        display_name="Prototype E WiFi",
+        source_type=SOURCE_TYPE_LOGGER_WIFI,
+        logger_wifi={
+            "logger_id": "Prototype E",
+            "base_url": "http://192.168.4.1",
+            "cleanup_mode": "move_to_uploaded",
+        },
+        include_events=False,
+        include_metrics=False,
+    )
+
+    reloaded_app_config = load_import_agent_app_config(app_config_path)
+    reloaded_source = load_import_source_config(source.source_root)
+    managed_wifi_source = next(item for item in reloaded_app_config.sources if item.source_id == source.source_id)
+
+    assert managed_wifi_source.source_type == SOURCE_TYPE_LOGGER_WIFI
+    assert reloaded_source.source_type == SOURCE_TYPE_LOGGER_WIFI
+    assert reloaded_source.logger_wifi is not None
+    assert reloaded_source.logger_wifi.logger_id == "Prototype E"
+    assert reloaded_source.logger_wifi.base_url == "http://192.168.4.1"
+    assert reloaded_source.logger_wifi.cleanup_mode == "move_to_uploaded"
 
 
 def test_update_import_agent_source_enabled_persists_and_filters_enabled_roots(tmp_path):

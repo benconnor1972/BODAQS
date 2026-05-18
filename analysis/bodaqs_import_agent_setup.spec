@@ -24,7 +24,11 @@ a = Analysis(
     pathex=[str(analysis_dir)],
     binaries=[],
     datas=setup_datas,
-    hiddenimports=["pystray._win32"],
+    hiddenimports=[
+        "bodaqs_analysis.import_agent_logger_wifi",
+        "bodaqs_analysis.import_agent_sources",
+        "pystray._win32",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

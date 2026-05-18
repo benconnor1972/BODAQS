@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+import webbrowser
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
@@ -15,7 +16,8 @@ from zoneinfo import available_timezones
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .import_agent import ImportAgentSupervisor, validate_import_sources
+from .import_agent import ImportAgentSupervisor, load_import_source_config, validate_import_sources
+from .import_agent_logger_wifi import LoggerWifiApiClient
 from .import_agent_provisioning import (
     IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
     IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
@@ -30,6 +32,13 @@ from .import_agent_provisioning import (
     update_import_agent_app_auto_start,
     update_import_agent_source_enabled,
 )
+from .import_agent_sources import (
+    LOGGER_WIFI_CLEANUP_DELETE,
+    LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED,
+    LOGGER_WIFI_CLEANUP_NONE,
+    SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    SOURCE_TYPE_LOGGER_WIFI,
+)
 from .import_agent_startup import (
     build_windows_startup_command,
     sync_windows_startup_registration,
@@ -42,6 +51,19 @@ _ASSET_PACKAGE = "bodaqs_analysis.import_agent_assets"
 _WINDOW_ICON_FILENAME = "app_icon.png"
 _WINDOW_ICON_ICO_FILENAME = "app_icon.ico"
 _WINDOWS_APP_USER_MODEL_ID = "BODAQS.ImportAgent.Manager"
+_SOURCE_TYPE_LABELS = {
+    SOURCE_TYPE_FILESYSTEM_ARCHIVE: "Local archive folder",
+    SOURCE_TYPE_LOGGER_WIFI: "Wi-Fi logger",
+}
+_SOURCE_TYPE_BY_LABEL = {label: value for value, label in _SOURCE_TYPE_LABELS.items()}
+_LOGGER_WIFI_CLEANUP_LABELS = {
+    LOGGER_WIFI_CLEANUP_NONE: "Keep files on logger",
+    LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED: "Move to uploaded",
+    LOGGER_WIFI_CLEANUP_DELETE: "Delete from logger",
+}
+_LOGGER_WIFI_CLEANUP_BY_LABEL = {
+    label: value for value, label in _LOGGER_WIFI_CLEANUP_LABELS.items()
+}
 
 
 def _default_workspace_root() -> Path:
@@ -153,6 +175,8 @@ class ImportAgentManagerController:
         libraries_root: str,
         library_display_name: str,
         source_display_name: str,
+        source_type: str,
+        logger_wifi: Optional[dict[str, Any]],
         logger_timezone: Optional[str],
         run_tz_label: str,
         include_events: bool,
@@ -166,6 +190,8 @@ class ImportAgentManagerController:
             library_display_name=library_display_name,
             source_display_name=source_display_name,
             app_config_path=self.app_config_path,
+            source_type=source_type,
+            logger_wifi=logger_wifi,
             logger_timezone=logger_timezone,
             run_tz_label=run_tz_label,
             include_events=include_events,
@@ -190,6 +216,8 @@ class ImportAgentManagerController:
         *,
         library_id: str,
         display_name: str,
+        source_type: str,
+        logger_wifi: Optional[dict[str, Any]],
         logger_timezone: Optional[str],
         run_tz_label: str,
         include_events: bool,
@@ -200,6 +228,8 @@ class ImportAgentManagerController:
             self.app_config_path,
             library_id=library_id,
             display_name=display_name,
+            source_type=source_type,
+            logger_wifi=logger_wifi,
             logger_timezone=logger_timezone,
             run_tz_label=run_tz_label,
             include_events=include_events,
@@ -329,6 +359,7 @@ class ImportAgentManagerWindow:
         self.libraries_root_var = tk.StringVar(value=str(args.libraries_root))
         self.library_name_var = tk.StringVar(value=str(args.library_name))
         self.source_name_var = tk.StringVar(value=str(args.source_name))
+        self.source_type_choice_var = tk.StringVar(value=_SOURCE_TYPE_LABELS[SOURCE_TYPE_FILESYSTEM_ARCHIVE])
         self.logger_timezone_var = tk.StringVar(value=str(args.logger_timezone or ""))
         self.run_tz_label_var = tk.StringVar(value=str(args.run_tz_label or "LOCAL"))
         self.include_events_var = tk.BooleanVar(value=not bool(args.disable_events))
@@ -336,6 +367,13 @@ class ImportAgentManagerWindow:
         self.auto_start_var = tk.BooleanVar(value=bool(args.auto_start))
         self.overwrite_var = tk.BooleanVar(value=bool(args.overwrite))
         self.source_library_choice_var = tk.StringVar(value="")
+        self.wifi_address_var = tk.StringVar(value="http://192.168.4.1")
+        self.wifi_logger_id_var = tk.StringVar(value="")
+        self.wifi_cleanup_choice_var = tk.StringVar(value=_LOGGER_WIFI_CLEANUP_LABELS[LOGGER_WIFI_CLEANUP_NONE])
+        self.wifi_request_timeout_var = tk.StringVar(value="5")
+        self.wifi_download_timeout_var = tk.StringVar(value="60")
+        self.wifi_require_upload_mode_var = tk.BooleanVar(value=True)
+        self.wifi_status_var = tk.StringVar(value="Wi-Fi logger not checked.")
         self.startup_launch = bool(args.startup_launch)
         self.start_watch_on_launch = bool(args.start_watch or args.startup_launch)
         self.start_minimized_on_launch = bool(args.start_minimized or args.startup_launch)
@@ -344,6 +382,7 @@ class ImportAgentManagerWindow:
         self._shutdown_requested = False
 
         self._library_choice_map: dict[str, str] = {}
+        self._source_runtime_status: dict[str, str] = {}
         self.sources_root_entry: Optional[ttk.Entry] = None
         self.libraries_root_entry: Optional[ttk.Entry] = None
         self.sources_root_browse_button: Optional[ttk.Button] = None
@@ -354,6 +393,8 @@ class ImportAgentManagerWindow:
         self.apply_app_settings_button: Optional[ttk.Button] = None
         self.library_choice_combo: Optional[ttk.Combobox] = None
         self.logger_timezone_combo: Optional[ttk.Combobox] = None
+        self.source_type_combo: Optional[ttk.Combobox] = None
+        self.wifi_frame: Optional[ttk.LabelFrame] = None
 
         self.libraries_tree: Optional[ttk.Treeview] = None
         self.sources_tree: Optional[ttk.Treeview] = None
@@ -452,20 +493,24 @@ class ImportAgentManagerWindow:
 
         sources_tree = ttk.Treeview(
             lists,
-            columns=("display_name", "source_id", "library_id", "enabled", "source_root"),
+            columns=("display_name", "source_id", "source_type", "library_id", "enabled", "status", "source_root"),
             show="headings",
             height=9,
         )
         sources_tree.heading("display_name", text="Display Name", anchor="w")
         sources_tree.heading("source_id", text="Source ID", anchor="w")
+        sources_tree.heading("source_type", text="Type", anchor="w")
         sources_tree.heading("library_id", text="Library ID", anchor="w")
         sources_tree.heading("enabled", text="Enabled", anchor="w")
+        sources_tree.heading("status", text="Status", anchor="w")
         sources_tree.heading("source_root", text="Source Root", anchor="w")
         sources_tree.column("display_name", width=180, anchor="w")
         sources_tree.column("source_id", width=140, anchor="w")
+        sources_tree.column("source_type", width=120, anchor="w")
         sources_tree.column("library_id", width=120, anchor="w")
         sources_tree.column("enabled", width=80, anchor="center")
-        sources_tree.column("source_root", width=320, anchor="w")
+        sources_tree.column("status", width=180, anchor="w")
+        sources_tree.column("source_root", width=240, anchor="w")
         sources_tree.grid(row=1, column=1, sticky="nsew", padx=(12, 0))
         self.sources_tree = sources_tree
 
@@ -482,6 +527,15 @@ class ImportAgentManagerWindow:
             row=0, column=5, padx=(0, 8)
         )
         ttk.Button(actions, text="Disable Source", command=self._disable_selected_source).grid(row=0, column=6)
+        ttk.Button(actions, text="Check Logger", command=self._check_selected_logger).grid(
+            row=1, column=0, padx=(0, 8), pady=(8, 0)
+        )
+        ttk.Button(actions, text="Request Upload Mode", command=self._request_selected_upload_mode).grid(
+            row=1, column=1, padx=(0, 8), pady=(8, 0)
+        )
+        ttk.Button(actions, text="Open Logger Web UI", command=self._open_selected_logger_web_ui).grid(
+            row=1, column=2, padx=(0, 8), pady=(8, 0)
+        )
 
         logs = ttk.Frame(parent)
         logs.grid(row=4, column=0, sticky="nsew")
@@ -528,20 +582,33 @@ class ImportAgentManagerWindow:
         ttk.Label(parent, text="Source target library").grid(row=4, column=0, sticky="w", pady=4)
         combo.grid(row=4, column=1, sticky="ew", pady=4, padx=(12, 8))
         self.library_choice_combo = combo
-        self._add_text_row(parent=parent, row=5, label="Source name", variable=self.source_name_var)
-        ttk.Label(parent, text="Logger timezone (optional)").grid(row=6, column=0, sticky="w", pady=4)
+        ttk.Label(parent, text="Source type").grid(row=5, column=0, sticky="w", pady=4)
+        source_type_combo = ttk.Combobox(
+            parent,
+            textvariable=self.source_type_choice_var,
+            values=list(_SOURCE_TYPE_BY_LABEL),
+            state="readonly",
+        )
+        source_type_combo.grid(row=5, column=1, sticky="ew", pady=4, padx=(12, 8))
+        source_type_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_source_type_fields())
+        self.source_type_combo = source_type_combo
+        self._add_text_row(parent=parent, row=6, label="Source name", variable=self.source_name_var)
+        ttk.Label(parent, text="Logger timezone (optional)").grid(row=7, column=0, sticky="w", pady=4)
         logger_timezone_combo = ttk.Combobox(
             parent,
             textvariable=self.logger_timezone_var,
             values=available_logger_timezones(),
             state="normal",
         )
-        logger_timezone_combo.grid(row=6, column=1, sticky="ew", pady=4, padx=(12, 8))
+        logger_timezone_combo.grid(row=7, column=1, sticky="ew", pady=4, padx=(12, 8))
         self.logger_timezone_combo = logger_timezone_combo
-        self._add_text_row(parent=parent, row=7, label="Run TZ label", variable=self.run_tz_label_var)
+        self._add_text_row(parent=parent, row=8, label="Run TZ label", variable=self.run_tz_label_var)
+
+        self.wifi_frame = self._build_wifi_provision_frame(parent)
+        self.wifi_frame.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 4))
 
         options = ttk.Frame(parent)
-        options.grid(row=8, column=0, columnspan=3, sticky="w", pady=(12, 8))
+        options.grid(row=10, column=0, columnspan=3, sticky="w", pady=(12, 8))
         ttk.Checkbutton(options, text="Include events", variable=self.include_events_var).grid(
             row=0, column=0, sticky="w", padx=(0, 12)
         )
@@ -556,7 +623,7 @@ class ImportAgentManagerWindow:
         )
 
         actions = ttk.Frame(parent)
-        actions.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        actions.grid(row=11, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         actions.columnconfigure(0, weight=0)
         actions.columnconfigure(1, weight=0)
         actions.columnconfigure(2, weight=0)
@@ -578,8 +645,54 @@ class ImportAgentManagerWindow:
         self.apply_app_settings_button.grid(row=0, column=3, padx=(8, 0))
 
         ttk.Label(parent, textvariable=self.provision_status_var, wraplength=980, justify="left").grid(
-            row=10, column=0, columnspan=3, sticky="ew", pady=(10, 0)
+            row=12, column=0, columnspan=3, sticky="ew", pady=(10, 0)
         )
+        self._sync_source_type_fields()
+
+    def _build_wifi_provision_frame(self, parent: ttk.Frame) -> ttk.LabelFrame:
+        frame = ttk.LabelFrame(parent, text="Wi-Fi logger source", padding=10)
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Logger address").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.wifi_address_var).grid(row=0, column=1, sticky="ew", pady=4, padx=(12, 8))
+        ttk.Button(frame, text="Verify Logger", command=self._verify_logger_from_provision_form).grid(
+            row=0, column=2, sticky="e", pady=4
+        )
+
+        ttk.Label(frame, text="Logger ID").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.wifi_logger_id_var).grid(
+            row=1, column=1, sticky="ew", pady=4, padx=(12, 8)
+        )
+
+        ttk.Label(frame, text="After import").grid(row=2, column=0, sticky="w", pady=4)
+        cleanup_combo = ttk.Combobox(
+            frame,
+            textvariable=self.wifi_cleanup_choice_var,
+            values=list(_LOGGER_WIFI_CLEANUP_BY_LABEL),
+            state="readonly",
+        )
+        cleanup_combo.grid(row=2, column=1, sticky="ew", pady=4, padx=(12, 8))
+
+        timeouts = ttk.Frame(frame)
+        timeouts.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(timeouts, text="Request timeout (s)").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(timeouts, textvariable=self.wifi_request_timeout_var, width=8).grid(
+            row=0, column=1, sticky="w", padx=(0, 18)
+        )
+        ttk.Label(timeouts, text="Download timeout (s)").grid(row=0, column=2, sticky="w", padx=(0, 8))
+        ttk.Entry(timeouts, textvariable=self.wifi_download_timeout_var, width=8).grid(
+            row=0, column=3, sticky="w", padx=(0, 18)
+        )
+        ttk.Checkbutton(
+            timeouts,
+            text="Require upload mode",
+            variable=self.wifi_require_upload_mode_var,
+        ).grid(row=0, column=4, sticky="w")
+
+        ttk.Label(frame, textvariable=self.wifi_status_var, wraplength=880, justify="left").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+        return frame
 
     def _add_text_row(
         self,
@@ -611,6 +724,159 @@ class ImportAgentManagerWindow:
         )
         if selected:
             variable.set(selected)
+
+    def _selected_source_type(self) -> str:
+        label = self.source_type_choice_var.get().strip()
+        return _SOURCE_TYPE_BY_LABEL.get(label, SOURCE_TYPE_FILESYSTEM_ARCHIVE)
+
+    def _selected_cleanup_mode(self) -> str:
+        label = self.wifi_cleanup_choice_var.get().strip()
+        return _LOGGER_WIFI_CLEANUP_BY_LABEL.get(label, LOGGER_WIFI_CLEANUP_NONE)
+
+    def _sync_source_type_fields(self) -> None:
+        if self.wifi_frame is None:
+            return
+        if self._selected_source_type() == SOURCE_TYPE_LOGGER_WIFI:
+            self.wifi_frame.grid()
+        else:
+            self.wifi_frame.grid_remove()
+
+    def _positive_float_from_var(self, variable: tk.StringVar, *, field_name: str) -> float:
+        try:
+            value = float(variable.get().strip())
+        except ValueError:
+            raise ValueError(f"{field_name} must be numeric") from None
+        if value <= 0:
+            raise ValueError(f"{field_name} must be > 0")
+        return value
+
+    def _logger_wifi_payload_from_form(self) -> Optional[dict[str, Any]]:
+        if self._selected_source_type() != SOURCE_TYPE_LOGGER_WIFI:
+            return None
+
+        logger_id = self.wifi_logger_id_var.get().strip()
+        base_url = self.wifi_address_var.get().strip()
+        if not logger_id:
+            raise ValueError("Verify the Wi-Fi logger, or enter its Logger ID, before creating the source.")
+        if not base_url:
+            raise ValueError("Wi-Fi logger sources need a logger address, for example http://192.168.4.1.")
+
+        return {
+            "logger_id": logger_id,
+            "base_url": base_url,
+            "request_timeout_s": self._positive_float_from_var(
+                self.wifi_request_timeout_var,
+                field_name="Wi-Fi request timeout",
+            ),
+            "download_timeout_s": self._positive_float_from_var(
+                self.wifi_download_timeout_var,
+                field_name="Wi-Fi download timeout",
+            ),
+            "require_upload_mode": bool(self.wifi_require_upload_mode_var.get()),
+            "cleanup_mode": self._selected_cleanup_mode(),
+        }
+
+    def _wifi_client_from_form(self) -> LoggerWifiApiClient:
+        base_url = self.wifi_address_var.get().strip()
+        if not base_url:
+            raise ValueError("Enter a logger address first.")
+        return LoggerWifiApiClient(
+            base_url,
+            request_timeout_s=self._positive_float_from_var(
+                self.wifi_request_timeout_var,
+                field_name="Wi-Fi request timeout",
+            ),
+            download_timeout_s=self._positive_float_from_var(
+                self.wifi_download_timeout_var,
+                field_name="Wi-Fi download timeout",
+            ),
+        )
+
+    def _verify_logger_from_provision_form(self) -> None:
+        try:
+            client = self._wifi_client_from_form()
+            device = client.get_device()
+            status = client.get_status()
+            logger_id = str(device.get("logger_id") or "").strip()
+            if not logger_id:
+                raise ValueError("Logger did not return a logger_id.")
+            display_name = str(device.get("display_name") or logger_id).strip()
+            self.wifi_logger_id_var.set(logger_id)
+            if self.source_name_var.get().strip() in {"", "Default Source"}:
+                self.source_name_var.set(display_name)
+            text = self._logger_status_text(
+                upload_mode=bool(status.get("upload_mode", False)),
+                session_count=status.get("importable_session_count"),
+            )
+            self.wifi_status_var.set(f"Verified {display_name} ({logger_id}). {text}")
+            self._set_provision_status(f"Verified Wi-Fi logger '{display_name}' at {client.base_url}.")
+        except Exception as exc:
+            self.wifi_status_var.set(f"Logger verification failed: {exc}")
+            self._set_provision_status(f"Logger verification failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+
+    def _logger_status_text(self, *, upload_mode: bool, session_count: Any = None) -> str:
+        session_part = ""
+        if session_count is not None:
+            session_part = f", sessions={session_count}"
+        return f"upload_mode={'yes' if upload_mode else 'no'}{session_part}"
+
+    def _selected_source_config(self) -> Any:
+        source_id = self._selected_source_id()
+        if source_id is None:
+            raise ValueError("Select a source first.")
+        config = self.controller.require_config()
+        managed_source = next((item for item in config.sources if item.source_id == source_id), None)
+        if managed_source is None:
+            raise ValueError(f"Unknown source: {source_id}")
+        return load_import_source_config(managed_source.source_root)
+
+    def _selected_logger_wifi_client_and_source(self) -> tuple[LoggerWifiApiClient, Any]:
+        source = self._selected_source_config()
+        if source.source_type != SOURCE_TYPE_LOGGER_WIFI or source.logger_wifi is None:
+            raise ValueError("Select a Wi-Fi logger source first.")
+        if source.logger_wifi.base_url is None:
+            raise ValueError("Selected Wi-Fi source does not have a logger address configured.")
+        client = LoggerWifiApiClient(
+            source.logger_wifi.base_url,
+            request_timeout_s=source.logger_wifi.request_timeout_s,
+            download_timeout_s=source.logger_wifi.download_timeout_s,
+        )
+        return client, source
+
+    def _set_source_runtime_status(self, source_id: str, status: str) -> None:
+        self._source_runtime_status[source_id] = status
+        if self.sources_tree is None or not self.sources_tree.exists(source_id):
+            return
+        values = list(self.sources_tree.item(source_id, "values"))
+        if len(values) >= 6:
+            values[5] = status
+            self.sources_tree.item(source_id, values=values)
+
+    def _remote_report_status_text(self, remote: Any) -> Optional[str]:
+        if not isinstance(remote, dict):
+            return None
+        status = remote.get("status")
+        if not isinstance(status, dict):
+            return None
+        state = str(status.get("state") or "unknown")
+        if state == "ready":
+            return self._logger_status_text(
+                upload_mode=bool(status.get("upload_mode", False)),
+                session_count=status.get("importable_session_count", remote.get("sessions_seen")),
+            )
+        if state == "waiting_upload_mode":
+            return "waiting for upload mode"
+        if state == "missing_base_url":
+            return "missing logger address"
+        if state == "error":
+            return f"error: {status.get('error')}"
+        return state
+
+    def _update_source_status_from_report(self, report: dict[str, Any]) -> None:
+        status = self._remote_report_status_text(report.get("remote"))
+        if status:
+            self._set_source_runtime_status(str(report.get("source_id") or ""), status)
 
     def _append_log(self, message: str) -> None:
         if self.log_text is None:
@@ -717,6 +983,9 @@ class ImportAgentManagerWindow:
             return
         self.sources_tree.delete(*self.sources_tree.get_children())
         for source in sources:
+            status_text = self._source_runtime_status.get(source.source_id)
+            if status_text is None:
+                status_text = "not checked" if source.source_type == SOURCE_TYPE_LOGGER_WIFI else "-"
             self.sources_tree.insert(
                 "",
                 "end",
@@ -724,8 +993,10 @@ class ImportAgentManagerWindow:
                 values=(
                     source.display_name,
                     source.source_id,
+                    _SOURCE_TYPE_LABELS.get(source.source_type, source.source_type),
                     source.library_id,
                     "yes" if source.enabled else "no",
+                    status_text,
                     str(source.source_root),
                 ),
             )
@@ -889,11 +1160,15 @@ class ImportAgentManagerWindow:
         if not self._guard_watch_inactive(action_label="Create Initial Library + Source"):
             return
         try:
+            source_type = self._selected_source_type()
+            logger_wifi = self._logger_wifi_payload_from_form()
             result = self.controller.create_initial_setup(
                 sources_root=self.sources_root_var.get(),
                 libraries_root=self.libraries_root_var.get(),
                 library_display_name=self.library_name_var.get(),
                 source_display_name=self.source_name_var.get(),
+                source_type=source_type,
+                logger_wifi=logger_wifi,
                 logger_timezone=self.logger_timezone_var.get().strip() or None,
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
                 include_events=bool(self.include_events_var.get()),
@@ -942,9 +1217,13 @@ class ImportAgentManagerWindow:
             )
             return
         try:
+            source_type = self._selected_source_type()
+            logger_wifi = self._logger_wifi_payload_from_form()
             source = self.controller.add_source(
                 library_id=library_id,
                 display_name=self.source_name_var.get(),
+                source_type=source_type,
+                logger_wifi=logger_wifi,
                 logger_timezone=self.logger_timezone_var.get().strip() or None,
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
                 include_events=bool(self.include_events_var.get()),
@@ -1022,6 +1301,7 @@ class ImportAgentManagerWindow:
             f"deferred={totals.get('deferred_unsettled', 0)} failed={totals.get('failed', 0)}"
         )
         for source_report in report.get("sources", []):
+            self._update_source_status_from_report(source_report)
             source_totals = _aggregate_reports([source_report])
             self._append_log(
                 f"Import source {source_report['source_id']}: "
@@ -1092,6 +1372,61 @@ class ImportAgentManagerWindow:
         self._refresh_ui_from_config()
         self._set_manager_status(f"Disabled source '{source_id}'.")
 
+    def _check_selected_logger(self) -> None:
+        try:
+            client, source = self._selected_logger_wifi_client_and_source()
+            device = client.get_device()
+            logger_id = str(device.get("logger_id") or "").strip()
+            if source.logger_wifi is not None and logger_id != source.logger_wifi.logger_id:
+                raise ValueError(
+                    f"Logger identity mismatch: expected {source.logger_wifi.logger_id!r}, got {logger_id!r}"
+                )
+            status = client.get_status()
+            upload_mode = bool(status.get("upload_mode", False))
+            sessions = client.list_sessions() if upload_mode else []
+            status_text = self._logger_status_text(
+                upload_mode=upload_mode,
+                session_count=len(sessions) if upload_mode else status.get("importable_session_count"),
+            )
+            self._set_source_runtime_status(source.source_id, status_text)
+            self._set_manager_status(f"Checked logger '{logger_id}' for source '{source.source_id}': {status_text}.")
+        except Exception as exc:
+            source_id = self._selected_source_id() or ""
+            if source_id:
+                self._set_source_runtime_status(source_id, f"error: {exc}")
+            self._set_manager_status(f"Check logger failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+
+    def _request_selected_upload_mode(self) -> None:
+        try:
+            client, source = self._selected_logger_wifi_client_and_source()
+            response = client.enter_upload_mode()
+            status_text = self._logger_status_text(
+                upload_mode=bool(response.get("upload_mode", False)),
+                session_count=response.get("importable_session_count"),
+            )
+            self._set_source_runtime_status(source.source_id, status_text)
+            self._set_manager_status(f"Requested upload mode for source '{source.source_id}': {status_text}.")
+        except Exception as exc:
+            source_id = self._selected_source_id() or ""
+            if source_id:
+                self._set_source_runtime_status(source_id, f"error: {exc}")
+            self._set_manager_status(f"Request upload mode failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+
+    def _open_selected_logger_web_ui(self) -> None:
+        try:
+            source = self._selected_source_config()
+            if source.source_type != SOURCE_TYPE_LOGGER_WIFI or source.logger_wifi is None:
+                raise ValueError("Select a Wi-Fi logger source first.")
+            if source.logger_wifi.base_url is None:
+                raise ValueError("Selected Wi-Fi source does not have a logger address configured.")
+            webbrowser.open(source.logger_wifi.base_url)
+            self._set_manager_status(f"Opened logger web UI: {source.logger_wifi.base_url}")
+        except Exception as exc:
+            self._set_manager_status(f"Open logger web UI failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+
     def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
         if not snapshot:
             return
@@ -1118,6 +1453,7 @@ class ImportAgentManagerWindow:
                 snapshot = item.get("snapshot", {})
                 self._apply_snapshot(snapshot)
                 for report in reports:
+                    self._update_source_status_from_report(report)
                     totals = _aggregate_reports([report])
                     self._append_log(
                         f"Watch source {report['source_id']}: "

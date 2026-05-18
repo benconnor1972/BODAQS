@@ -11,6 +11,13 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from .bike_profile import validate_bike_profile
+from .import_agent_sources import (
+    LoggerWifiSourceConfig,
+    SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    logger_wifi_source_config_to_jsonable,
+    normalize_import_source_type,
+    parse_logger_wifi_source_config,
+)
 from .preprocess_profile import normalize_preprocess_config_keys, validate_preprocess_profile
 from .schema import parse_event_schema
 
@@ -161,6 +168,7 @@ class ImportAgentManagedSourceConfig:
     display_name: str
     source_root: Path
     library_id: str
+    source_type: str = SOURCE_TYPE_FILESYSTEM_ARCHIVE
     enabled: bool = True
 
 
@@ -187,6 +195,7 @@ class ProvisionedImportAgentLibrary:
 class ProvisionedImportAgentSource:
     source_id: str
     display_name: str
+    source_type: str
     source_root: Path
     import_source_config_path: Path
     settings_dir: Path
@@ -344,6 +353,7 @@ def validate_import_agent_app_config(config: ImportAgentAppConfig | Mapping[str,
             raise ValueError(
                 f"Import agent source {source.source_id!r} references unknown library_id {source.library_id!r}"
             )
+        normalize_import_source_type(source.source_type)
 
 
 def import_agent_app_config_to_jsonable(config: ImportAgentAppConfig) -> dict[str, Any]:
@@ -368,6 +378,7 @@ def import_agent_app_config_to_jsonable(config: ImportAgentAppConfig) -> dict[st
                 "display_name": source.display_name,
                 "source_root": str(source.source_root),
                 "library_id": source.library_id,
+                "source_type": source.source_type,
                 "enabled": source.enabled,
             }
             for source in config.sources
@@ -442,6 +453,7 @@ def parse_import_agent_app_config(value: Mapping[str, Any] | str | bytes | Path)
                     field_name="sources[].source_root",
                 ),
                 library_id=str(item.get("library_id") or "").strip(),
+                source_type=normalize_import_source_type(item.get("source_type")),
                 enabled=bool(item.get("enabled", True)),
             )
         )
@@ -494,6 +506,7 @@ def _merge_managed_app_entries(
         display_name=source.display_name,
         source_root=source.source_root,
         library_id=library.library_id,
+        source_type=source.source_type,
         enabled=True,
     )
 
@@ -538,6 +551,7 @@ def update_import_agent_source_enabled(
                     display_name=source.display_name,
                     source_root=source.source_root,
                     library_id=source.library_id,
+                    source_type=source.source_type,
                     enabled=bool(enabled),
                 )
             )
@@ -631,6 +645,8 @@ def provision_import_agent_source(
     source_id: Optional[str] = None,
     display_name: Optional[str] = None,
     library_id: str,
+    source_type: str = SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    logger_wifi: Optional[LoggerWifiSourceConfig | Mapping[str, Any]] = None,
     import_source_filename: str = DEFAULT_IMPORT_SOURCE_FILENAME,
     settings_dir_name: str = DEFAULT_SETTINGS_DIRNAME,
     bike_dir_name: str = DEFAULT_BIKE_DIRNAME,
@@ -646,7 +662,20 @@ def provision_import_agent_source(
     source_root_path = Path(source_root).expanduser().resolve()
     display = _optional_text(display_name) or source_root_path.name or "Default Source"
     safe_source_id = _safe_slug(source_id or display, fallback="source")
+    normalized_source_type = normalize_import_source_type(source_type)
     artifacts_dir_path = Path(artifacts_dir).expanduser().resolve()
+    logger_wifi_config: Optional[LoggerWifiSourceConfig] = None
+    if normalized_source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE:
+        if logger_wifi is not None:
+            raise ValueError("logger_wifi config can only be used with source_type='logger_wifi'")
+    else:
+        if logger_wifi is None:
+            raise ValueError("source_type='logger_wifi' requires a logger_wifi config")
+        logger_wifi_config = (
+            logger_wifi
+            if isinstance(logger_wifi, LoggerWifiSourceConfig)
+            else parse_logger_wifi_source_config(logger_wifi)
+        )
     preprocess_asset = _discover_preprocess_profile_asset()
     schema_asset = _discover_single_schema_asset()
     bike_asset = _discover_bike_profile_asset()
@@ -672,35 +701,38 @@ def provision_import_agent_source(
     _write_text(event_schema_path, str(schema_asset.payload), overwrite=overwrite)
     _write_json(preprocess_profile_path, preprocess_profile, overwrite=overwrite)
     _write_json(bike_profile_path, dict(bike_asset.payload), overwrite=overwrite)
-    _write_json(
-        import_source_config_path,
-        {
-            "schema": "bodaqs.import_source",
-            "version": 1,
-            "source_id": safe_source_id,
-            "description": f"Provisioned BODAQS import source for {display}.",
-            "artifacts_dir": str(artifacts_dir_path),
-            "preprocess_profile_path": settings_dir_name,
-            "bike_profile_path": bike_dir_name,
-            "inbox_dir": "inbox",
-            "done_dir": "done",
-            "failed_dir": "failed",
-            "staging_dir": "staging",
-            "archive_patterns": ["*.zip"],
-            "logger_timezone": logger_timezone,
-            "run_tz_label": str(run_tz_label).strip() or "LOCAL",
-            "poll_interval_s": float(poll_interval_s),
-            "settle_time_s": float(settle_time_s),
-            "include_events": bool(include_events),
-            "include_metrics": bool(include_metrics),
-            "force_reprocess": bool(force_reprocess),
-        },
-        overwrite=overwrite,
-    )
+    import_source_payload: dict[str, Any] = {
+        "schema": "bodaqs.import_source",
+        "version": 1,
+        "source_id": safe_source_id,
+        "source_type": normalized_source_type,
+        "description": f"Provisioned BODAQS import source for {display}.",
+        "library_id": str(library_id).strip(),
+        "artifacts_dir": str(artifacts_dir_path),
+        "preprocess_profile_path": settings_dir_name,
+        "bike_profile_path": bike_dir_name,
+        "inbox_dir": "inbox",
+        "done_dir": "done",
+        "failed_dir": "failed",
+        "staging_dir": "staging",
+        "archive_patterns": ["*.zip"],
+        "logger_timezone": logger_timezone,
+        "run_tz_label": str(run_tz_label).strip() or "LOCAL",
+        "poll_interval_s": float(poll_interval_s),
+        "settle_time_s": float(settle_time_s),
+        "include_events": bool(include_events),
+        "include_metrics": bool(include_metrics),
+        "force_reprocess": bool(force_reprocess),
+    }
+    if logger_wifi_config is not None:
+        import_source_payload["logger_wifi"] = logger_wifi_source_config_to_jsonable(logger_wifi_config)
+
+    _write_json(import_source_config_path, import_source_payload, overwrite=overwrite)
 
     return ProvisionedImportAgentSource(
         source_id=safe_source_id,
         display_name=display,
+        source_type=normalized_source_type,
         source_root=source_root_path,
         import_source_config_path=import_source_config_path,
         settings_dir=settings_dir,
@@ -724,6 +756,8 @@ def provision_import_agent_app_setup(
     library_directory_name: Optional[str] = None,
     source_id: Optional[str] = None,
     source_directory_name: Optional[str] = None,
+    source_type: str = SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    logger_wifi: Optional[LoggerWifiSourceConfig | Mapping[str, Any]] = None,
     logger_timezone: Optional[str] = None,
     run_tz_label: str = "LOCAL",
     poll_interval_s: float = 5.0,
@@ -760,6 +794,8 @@ def provision_import_agent_app_setup(
         source_id=source_id,
         display_name=source_display_name,
         library_id=library.library_id,
+        source_type=source_type,
+        logger_wifi=logger_wifi,
         logger_timezone=logger_timezone,
         run_tz_label=run_tz_label,
         poll_interval_s=poll_interval_s,
@@ -795,6 +831,7 @@ def provision_import_agent_app_setup(
                     display_name=source.display_name,
                     source_root=source.source_root,
                     library_id=library.library_id,
+                    source_type=source.source_type,
                     enabled=True,
                 )
             ],
@@ -853,6 +890,8 @@ def provision_import_agent_source_for_app(
     display_name: str,
     source_id: Optional[str] = None,
     source_directory_name: Optional[str] = None,
+    source_type: str = SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    logger_wifi: Optional[LoggerWifiSourceConfig | Mapping[str, Any]] = None,
     logger_timezone: Optional[str] = None,
     run_tz_label: str = "LOCAL",
     poll_interval_s: float = 5.0,
@@ -875,6 +914,8 @@ def provision_import_agent_source_for_app(
         source_id=source_id,
         display_name=display_name,
         library_id=library.library_id,
+        source_type=source_type,
+        logger_wifi=logger_wifi,
         logger_timezone=logger_timezone,
         run_tz_label=run_tz_label,
         poll_interval_s=poll_interval_s,
@@ -891,6 +932,7 @@ def provision_import_agent_source_for_app(
         display_name=source.display_name,
         source_root=source.source_root,
         library_id=library.library_id,
+        source_type=source.source_type,
         enabled=True,
     )
     updated = make_import_agent_app_config(
