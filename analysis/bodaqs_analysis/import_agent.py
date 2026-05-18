@@ -403,6 +403,7 @@ class LoggerWifiArchiveAcquisition:
     logger_id: str
     base_url: str
     local_archive_path: Path
+    remote_already_acknowledged: bool = False
 
 
 @dataclass
@@ -661,6 +662,9 @@ class ImportSourceRunner:
                 logger_id=_optional_text(record.get("logger_id")) or self.source.logger_wifi.logger_id,
                 base_url=_optional_text(record.get("base_url")) or self.source.logger_wifi.base_url or "",
                 local_archive_path=local_archive_path.resolve(),
+                remote_already_acknowledged=bool(
+                    record.get("remote_already_acknowledged", record.get("acknowledged", False))
+                ),
             )
             out[_path_key(local_archive_path)] = acquisition
         return out
@@ -682,6 +686,7 @@ class ImportSourceRunner:
                 "base_url": acquisition.base_url,
                 "local_archive_path": str(acquisition.local_archive_path),
                 "archive_sha256": archive_sha256,
+                "remote_already_acknowledged": acquisition.remote_already_acknowledged,
                 "updated_at": _utcnow_iso(),
             },
         )
@@ -809,6 +814,7 @@ class ImportSourceRunner:
                     logger_id=config.logger_id,
                     base_url=config.base_url or client.base_url,
                     local_archive_path=target_path,
+                    remote_already_acknowledged=bool(session.get("acknowledged", False)),
                 )
 
                 if target_path.exists():
@@ -844,6 +850,7 @@ class ImportSourceRunner:
                     logger_id=config.logger_id,
                     base_url=config.base_url or client.base_url,
                     local_archive_path=downloaded_path.resolve(),
+                    remote_already_acknowledged=bool(session.get("acknowledged", False)),
                 )
                 archive_sha256 = _sha256_file(downloaded_path)
                 self._record_logger_wifi_downloaded(
@@ -895,7 +902,9 @@ class ImportSourceRunner:
         post_error: Optional[str] = None
 
         client = self._logger_wifi_client()
-        if client is None:
+        if acquisition.remote_already_acknowledged:
+            acknowledged = True
+        elif client is None:
             post_error = "Wi-Fi logger source has no base_url configured; cannot acknowledge remote session."
         else:
             try:
@@ -915,7 +924,10 @@ class ImportSourceRunner:
                     post_error,
                 )
 
-            if acknowledged and config.cleanup_mode != LOGGER_WIFI_CLEANUP_NONE:
+        if acknowledged and config.cleanup_mode != LOGGER_WIFI_CLEANUP_NONE:
+            if client is None:
+                post_error = "Wi-Fi logger source has no base_url configured; cannot clean up remote session."
+            else:
                 try:
                     cleanup_response = client.cleanup_session(
                         session_id=acquisition.remote_session_id,
@@ -939,6 +951,7 @@ class ImportSourceRunner:
                 "remote_logger_id": acquisition.logger_id,
                 "remote_base_url": acquisition.base_url,
                 "remote_acknowledged": acknowledged,
+                "remote_already_acknowledged": acquisition.remote_already_acknowledged,
                 "remote_cleanup_mode": config.cleanup_mode,
                 "remote_cleanup_done": cleanup_done,
             }
@@ -961,6 +974,7 @@ class ImportSourceRunner:
             "run_id": record.get("run_id"),
             "session_id": record.get("session_id"),
             "acknowledged": acknowledged,
+            "remote_already_acknowledged": acquisition.remote_already_acknowledged,
             "cleanup_mode": config.cleanup_mode,
             "cleanup_done": cleanup_done,
             "updated_at": _utcnow_iso(),

@@ -479,6 +479,29 @@ def test_logger_wifi_source_skips_duplicate_remote_session_after_success(tmp_pat
     assert len(server.state["acks"]) == 1
 
 
+def test_logger_wifi_source_does_not_reack_remote_acknowledged_session(tmp_path):
+    sessions = [
+        {
+            "session_id": "Prototype E__2026-05-16_20-15-42",
+            "session_stem": "2026-05-16_20-15-42",
+            "archive_ready": True,
+            "uploaded": True,
+            "acknowledged": True,
+        }
+    ]
+    with _FakeLoggerServer(archive_bytes=_importable_archive_bytes(), sessions=sessions) as server:
+        source, _library = _provision_wifi_source(tmp_path, server.base_url)
+
+        report = run_sources_once([source.source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert server.state["archive_ids"] == ["Prototype E__2026-05-16_20-15-42"]
+    assert server.state["acks"] == []
+    imported_record = report["sources"][0]["imported"][0]
+    assert imported_record["remote_acknowledged"] is True
+    assert imported_record["remote_already_acknowledged"] is True
+
+
 def test_logger_wifi_source_waits_for_upload_mode_without_failure(tmp_path):
     with _FakeLoggerServer(upload_mode=False, archive_bytes=_importable_archive_bytes()) as server:
         source, _library = _provision_wifi_source(tmp_path, server.base_url)

@@ -128,6 +128,8 @@ This document summarizes the major modules in the project, what each one is resp
 - `syn_bike_raw` logs headerless rows as `sample_id,front_raw,rear_raw,lat,long,speed`; GPS fields are blank for now and no CSV footer is emitted for third-party compatibility.
 - When metadata is enabled and written successfully, log close also creates a
   same-stem session ZIP via `<stem>.zip.tmp` then renames it to `<stem>.zip`.
+- After the ZIP is written successfully, the loose same-stem CSV and JSON are
+  removed; the ZIP is the canonical upload/import artifact.
 - A small smoke test may create `TEST.TXT` during setup.
 
 ---
@@ -146,11 +148,11 @@ artifacts.
 
 ## `UploadSessionScanner`
 
-**Purpose:** Find completed session triplets on SD for the Wi-Fi upload API.
+**Purpose:** Find completed session archives on SD for the Wi-Fi upload API.
 
 **Common APIs**
-- `scan(directory, out, capacity, summary)` - returns only complete
-  CSV/JSON/ZIP sessions and fills a bounded summary.
+- `scan(directory, out, capacity, summary)` - returns complete ZIP-backed
+  sessions and fills a bounded summary.
 - `findBySessionId(sessionId, out, directory)` - resolves a complete session by
   its `logger_id__session_stem` identifier.
 
@@ -166,15 +168,20 @@ artifacts.
 **Purpose:** Persist import acknowledgements from the desktop agent.
 
 **Common APIs**
-- `markSessionAcknowledged(record)` - appends a newline-delimited JSON record.
+- `markSessionAcknowledged(record)` - records an acknowledgement, returning
+  success without appending when the session is already acknowledged.
 - `findSessionAcknowledgement(sessionId, out)` - reads the latest valid record
   for a session.
+- `applyAcknowledgementStatuses(lookups, count)` - resolves acknowledgement
+  flags for a batch of session ids with one index scan.
 - `isSessionAcknowledged(sessionId)` - convenience predicate used by session
   listing.
 
 **Notes/Gotchas**
 - The index is `/upload_index.ndjson`; the `.ndjson` extension keeps it out of
   same-stem session discovery.
+- Oversized indexes are refused rather than scanned indefinitely; remove or
+  compact `/upload_index.ndjson` on the SD card if this diagnostic appears.
 - Corrupt lines are skipped so a bad record does not block session listing.
 
 ---
@@ -185,15 +192,16 @@ artifacts.
 desktop import agent.
 
 **Common APIs**
-- `cleanupSession(session, MoveToUploaded, result)` - moves CSV, JSON, and ZIP
-  into `/uploaded`.
-- `cleanupSession(session, Delete, result)` - removes CSV, JSON, and ZIP.
+- `cleanupSession(session, MoveToUploaded, result)` - moves the ZIP into
+  `/uploaded`; loose CSV/JSON files are moved too when present on older cards.
+- `cleanupSession(session, Delete, result)` - removes the ZIP; loose CSV/JSON
+  files are removed too when present on older cards.
 
 **Notes/Gotchas**
 - API callers must require upload mode and prior acknowledgement before using
   this helper.
-- Cleanup preflights all source files before moving/deleting and reports
-  per-file success for partial failures.
+- Cleanup requires the archive and treats loose CSV/JSON files as optional
+  legacy companions.
 
 ---
 

@@ -124,6 +124,18 @@ static String archivePathForCsv_(const String& csvPath) {
   return out;
 }
 
+static void removeArchivedSourceFile_(const String& path, const __FlashStringHelper* label) {
+  if (!path.length()) return;
+  if (!SD_MMC.exists(path.c_str())) return;
+
+  const String labelText(label);
+  if (SD_MMC.remove(path.c_str())) {
+    STOR_LOGI("%s removed after archive: %s\n", labelText.c_str(), path.c_str());
+  } else {
+    STOR_LOGW("%s left in place after archive: %s\n", labelText.c_str(), path.c_str());
+  }
+}
+
 static void createSessionArchive_(const String& csvPath, const String& metadataPath) {
   if (!csvPath.length() || !metadataPath.length()) {
     STOR_LOGW("Session archive skipped: missing CSV or metadata path\n");
@@ -167,6 +179,8 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
   }
 
   STOR_LOGI("Session archive written: %s\n", archivePath.c_str());
+  removeArchivedSourceFile_(csvPath, F("CSV source"));
+  removeArchivedSourceFile_(metadataPath, F("metadata source"));
 }
 
 static void allocQueue(uint16_t depth) {

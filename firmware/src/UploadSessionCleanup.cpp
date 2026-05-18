@@ -25,8 +25,12 @@ static void setCommonResult_(const UploadSessionScanner::SessionInfo& session,
   result.archivePath = session.archivePath;
 
   if (mode == CleanupMode::MoveToUploaded) {
-    result.csvTargetPath = String(kUploadedDir) + "/" + baseName_(session.csvPath);
-    result.jsonTargetPath = String(kUploadedDir) + "/" + baseName_(session.jsonPath);
+    if (session.csvPath.length()) {
+      result.csvTargetPath = String(kUploadedDir) + "/" + baseName_(session.csvPath);
+    }
+    if (session.jsonPath.length()) {
+      result.jsonTargetPath = String(kUploadedDir) + "/" + baseName_(session.jsonPath);
+    }
     result.archiveTargetPath = String(kUploadedDir) + "/" + baseName_(session.archivePath);
   }
 }
@@ -42,14 +46,6 @@ static bool fileExists_(const String& path) {
 
 static bool preflightSources_(const UploadSessionScanner::SessionInfo& session,
                               CleanupResult& result) {
-  if (!fileExists_(session.csvPath)) {
-    result.error = String(F("missing CSV: ")) + session.csvPath;
-    return false;
-  }
-  if (!fileExists_(session.jsonPath)) {
-    result.error = String(F("missing JSON: ")) + session.jsonPath;
-    return false;
-  }
   if (!fileExists_(session.archivePath)) {
     result.error = String(F("missing archive: ")) + session.archivePath;
     return false;
@@ -73,11 +69,11 @@ static bool preflightMoveTargets_(CleanupResult& result) {
   }
   dir.close();
 
-  if (SD_MMC.exists(result.csvTargetPath.c_str())) {
+  if (result.csvTargetPath.length() && SD_MMC.exists(result.csvTargetPath.c_str())) {
     result.error = String(F("target exists: ")) + result.csvTargetPath;
     return false;
   }
-  if (SD_MMC.exists(result.jsonTargetPath.c_str())) {
+  if (result.jsonTargetPath.length() && SD_MMC.exists(result.jsonTargetPath.c_str())) {
     result.error = String(F("target exists: ")) + result.jsonTargetPath;
     return false;
   }
@@ -97,12 +93,28 @@ static bool moveOne_(const String& from, const String& to, bool& flag, CleanupRe
   return flag;
 }
 
+static bool moveOptional_(const String& from, const String& to, bool& flag, CleanupResult& result) {
+  if (!fileExists_(from)) {
+    flag = true;
+    return true;
+  }
+  return moveOne_(from, to, flag, result);
+}
+
 static bool deleteOne_(const String& path, bool& flag, CleanupResult& result) {
   flag = SD_MMC.remove(path.c_str());
   if (!flag && !result.error.length()) {
     result.error = String(F("delete failed: ")) + path;
   }
   return flag;
+}
+
+static bool deleteOptional_(const String& path, bool& flag, CleanupResult& result) {
+  if (!fileExists_(path)) {
+    flag = true;
+    return true;
+  }
+  return deleteOne_(path, flag, result);
 }
 
 } // namespace
@@ -149,12 +161,12 @@ bool cleanupSession(const UploadSessionScanner::SessionInfo& session,
   }
 
   if (mode == CleanupMode::MoveToUploaded) {
-    moveOne_(session.csvPath, result.csvTargetPath, result.csvOk, result);
-    moveOne_(session.jsonPath, result.jsonTargetPath, result.jsonOk, result);
+    moveOptional_(session.csvPath, result.csvTargetPath, result.csvOk, result);
+    moveOptional_(session.jsonPath, result.jsonTargetPath, result.jsonOk, result);
     moveOne_(session.archivePath, result.archiveTargetPath, result.archiveOk, result);
   } else {
-    deleteOne_(session.csvPath, result.csvOk, result);
-    deleteOne_(session.jsonPath, result.jsonOk, result);
+    deleteOptional_(session.csvPath, result.csvOk, result);
+    deleteOptional_(session.jsonPath, result.jsonOk, result);
     deleteOne_(session.archivePath, result.archiveOk, result);
   }
 

@@ -263,7 +263,7 @@ static void handleAck_(WebServer& srv) {
   resp["library_id"] = record.libraryId;
   resp["run_id"] = record.runId;
   resp["imported_at"] = record.importedAt;
-  resp["acknowledged"] = UploadAckIndex::isSessionAcknowledged(record.sessionId.c_str());
+  resp["acknowledged"] = true;
   resp["index_path"] = UploadAckIndex::indexPath();
   sendJson_(srv, 200, resp);
 }
