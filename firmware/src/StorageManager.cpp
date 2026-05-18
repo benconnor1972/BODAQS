@@ -3,6 +3,7 @@
 #include "ConfigManager.h"
 #include "SensorManager.h"
 #include "LogMetadataWriter.h"
+#include "ZipArchiveWriter.h"
 
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
 #include "BoardSelect.h"
@@ -102,6 +103,70 @@ static String stemFromPath_(const String& path) {
   const int start = slash >= 0 ? slash + 1 : 0;
   const int end = (dot > start) ? dot : path.length();
   return path.substring(start, end);
+}
+
+static String baseNameFromPath_(const String& path) {
+  const int slash = path.lastIndexOf('/');
+  if (slash >= 0 && slash + 1 < (int)path.length()) {
+    return path.substring(slash + 1);
+  }
+  return path;
+}
+
+static String archivePathForCsv_(const String& csvPath) {
+  const int slash = csvPath.lastIndexOf('/');
+  const int dot = csvPath.lastIndexOf('.');
+  String out = csvPath;
+  if (dot > slash) {
+    out = csvPath.substring(0, dot);
+  }
+  out += F(".zip");
+  return out;
+}
+
+static void createSessionArchive_(const String& csvPath, const String& metadataPath) {
+  if (!csvPath.length() || !metadataPath.length()) {
+    STOR_LOGW("Session archive skipped: missing CSV or metadata path\n");
+    return;
+  }
+
+  const String archivePath = archivePathForCsv_(csvPath);
+  const String tempPath = archivePath + F(".tmp");
+
+  if (SD_MMC.exists(archivePath.c_str())) {
+    STOR_LOGW("Session archive skipped: final archive already exists: %s\n", archivePath.c_str());
+    return;
+  }
+  if (SD_MMC.exists(tempPath.c_str()) && !SD_MMC.remove(tempPath.c_str())) {
+    STOR_LOGW("Session archive skipped: could not remove stale temp archive: %s\n", tempPath.c_str());
+    return;
+  }
+
+  const String csvName = baseNameFromPath_(csvPath);
+  const String metadataName = baseNameFromPath_(metadataPath);
+  const ZipArchiveEntry entries[] = {
+    { csvPath.c_str(), csvName.c_str() },
+    { metadataPath.c_str(), metadataName.c_str() },
+  };
+
+  String error;
+  if (!ZipArchiveWriter_createStoreOnly(tempPath.c_str(), entries, 2, &error)) {
+    STOR_LOGW("Session archive failed: %s (%s)\n", tempPath.c_str(), error.c_str());
+    if (SD_MMC.exists(tempPath.c_str())) {
+      SD_MMC.remove(tempPath.c_str());
+    }
+    return;
+  }
+
+  if (!SD_MMC.rename(tempPath.c_str(), archivePath.c_str())) {
+    STOR_LOGW("Session archive rename failed: %s -> %s\n", tempPath.c_str(), archivePath.c_str());
+    if (SD_MMC.exists(tempPath.c_str())) {
+      SD_MMC.remove(tempPath.c_str());
+    }
+    return;
+  }
+
+  STOR_LOGI("Session archive written: %s\n", archivePath.c_str());
 }
 
 static void allocQueue(uint16_t depth) {
@@ -642,6 +707,7 @@ void StorageManager_stopLog() {
       const String metadataPath = LogMetadataWriter_metadataPathForCsv(s_currentLogPath.c_str());
       if (StorageManager_saveTextFile(metadataPath.c_str(), metadata)) {
         STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
+        createSessionArchive_(s_currentLogPath, metadataPath);
       } else {
         STOR_LOGW("Failed to write log metadata: %s\n", metadataPath.c_str());
       }

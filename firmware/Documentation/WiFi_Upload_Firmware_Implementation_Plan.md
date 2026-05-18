@@ -74,6 +74,15 @@ Purpose:
 
 - expose a stable configured logger identity in the API
 
+Status:
+
+- implemented `ConfigManager::loggerId()` and
+  `ConfigManager::loggerId(const LoggerConfig&)`
+- `logger_name` remains the persisted source of truth
+- the helper trims whitespace, replaces path/filename-unsafe characters with
+  underscores, and falls back to `BODAQS` if the result is empty
+- `/api/v1/device` exposure remains part of the Phase 5 API route work
+
 Tasks:
 
 - Map the existing `logger_name` config key directly to `logger_id` in the API.
@@ -94,9 +103,21 @@ Purpose:
 
 - make each completed session self-contained before upload
 
+Status:
+
+- implemented a file-output store-only `ZipArchiveWriter`
+- `StorageManager_stopLog()` now creates a same-stem session archive only after
+  the CSV is closed and same-stem JSON metadata has been saved successfully
+- archive creation writes `<session_stem>.zip.tmp` first, then renames to
+  `<session_stem>.zip`
+- failed archive creation leaves the CSV and JSON in place and removes the
+  incomplete temp archive where possible
+- metadata-disabled logs do not create archives because the import contract
+  requires both CSV and JSON
+
 Tasks:
 
-- Identify the exact point where `LoggingManager` closes the CSV.
+- Identify the exact point where `StorageManager_stopLog()` closes the CSV.
 - Identify the exact point where `LogMetadataWriter` completes the same-stem
   JSON file.
 - After both files are closed successfully, create:
@@ -137,6 +158,21 @@ Acceptance checks:
 Purpose:
 
 - enumerate importable sessions from SD
+
+Status:
+
+- implemented `UploadSessionScanner`
+- scanner walks a requested SD directory, currently expected to be `/` for the
+  existing logger file layout
+- scanner matches same-stem `.CSV`, `.json`, and `.zip` files
+- scanner ignores `.zip.tmp` files as importable archives and counts them for
+  diagnostics
+- scanner returns only complete importable sessions and reports incomplete
+  candidates in a bounded summary
+- `session_id` is derived as `ConfigManager::loggerId() + "__" +
+  session_stem`
+- upload/acknowledgement flags are currently placeholders until the upload
+  index/ack phase is implemented
 
 Tasks:
 

@@ -208,10 +208,63 @@ namespace {
   }
   static inline bool validRssi(int v) { return v >= -100 && v <= -10; }
 
+  static bool isLoggerIdUnsafeChar_(char c) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (u < 32 || u == 127) return true;
+
+    switch (c) {
+      case '<':
+      case '>':
+      case ':':
+      case '"':
+      case '/':
+      case '\\':
+      case '|':
+      case '?':
+      case '*':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  static String sanitizedLoggerId_(const char* raw) {
+    String id = raw ? String(raw) : String("");
+    id.trim();
+
+    String out;
+    out.reserve(id.length());
+
+    bool lastWasUnderscore = false;
+    for (uint16_t i = 0; i < id.length(); ++i) {
+      const char c = id[i];
+      if (isLoggerIdUnsafeChar_(c)) {
+        if (!lastWasUnderscore) {
+          out += '_';
+          lastWasUnderscore = true;
+        }
+      } else {
+        out += c;
+        lastWasUnderscore = false;
+      }
+    }
+    out.trim();
+
+    return out.length() ? out : String("BODAQS");
+  }
+
 } // namespace
 
 const LoggerConfig& ConfigManager::get() {
     return s_cfg;
+}
+
+String ConfigManager::loggerId() {
+  return loggerId(get());
+}
+
+String ConfigManager::loggerId(const LoggerConfig& cfg) {
+  return sanitizedLoggerId_(cfg.loggerName);
 }
 
 
@@ -1080,6 +1133,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("[CFG] --- current config ---\n");
   LOGI("loggerName=%s\n", cfg.loggerName);
+  LOGI("loggerId=%s\n", ConfigManager::loggerId(cfg).c_str());
   LOGI("sampleRateHz=%u\n", cfg.sampleRateHz);
   LOGI("logFormat=%s\n", ConfigManager::logFormatKey(cfg.logFormat));
   LOGI("omitMetadata=%s\n", cfg.omitMetadata ? "true" : "false");

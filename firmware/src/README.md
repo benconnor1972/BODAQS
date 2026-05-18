@@ -52,7 +52,10 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Notes/Gotchas**
 - `save()` writes **all** config keys (globals + sensors) deterministically.
-- `logger_name` is the human-readable alias shown in the web UI title bar.
+- `logger_name` is the stable logger identity used by upload/import workflows
+  and shown in the web UI title bar.
+- `ConfigManager::loggerId()` returns a trimmed, filename-safe derivative of
+  `logger_name` for API/session identifiers without changing the stored name.
 - `log_format` controls the top-level CSV layout. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index.
 - `omit_metadata=false` keeps the default behaviour of writing a same-stem JSON log metadata file at log close. Set `true` to skip metadata generation.
 - Idle timeout config is saved in minutes (`auto_sleep_idle_min`, `wifi_idle_timeout_min`). Legacy `_ms` keys are still accepted on load for migration.
@@ -123,7 +126,39 @@ This document summarizes the major modules in the project, what each one is resp
 - `SD_MMC.begin()` and error handling live here.
 - `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and `mark`, with a header. Run statistics are written to the same-stem JSON metadata file under `qc.run_stats`.
 - `syn_bike_raw` logs headerless rows as `sample_id,front_raw,rear_raw,lat,long,speed`; GPS fields are blank for now and no CSV footer is emitted for third-party compatibility.
+- When metadata is enabled and written successfully, log close also creates a
+  same-stem session ZIP via `<stem>.zip.tmp` then renames it to `<stem>.zip`.
 - A small smoke test may create `TEST.TXT` during setup.
+
+---
+
+## `ZipArchiveWriter`
+
+**Purpose:** Create small store-only ZIP archives on SD for completed session
+artifacts.
+
+**Notes/Gotchas**
+- Currently used by `StorageManager` to archive each completed CSV/JSON pair.
+- Writes to a caller-supplied destination and refuses to overwrite existing
+  files; callers should write a temporary path and rename after success.
+
+---
+
+## `UploadSessionScanner`
+
+**Purpose:** Find completed session triplets on SD for the Wi-Fi upload API.
+
+**Common APIs**
+- `scan(directory, out, capacity, summary)` - returns only complete
+  CSV/JSON/ZIP sessions and fills a bounded summary.
+- `findBySessionId(sessionId, out, directory)` - resolves a complete session by
+  its `logger_id__session_stem` identifier.
+
+**Notes/Gotchas**
+- `.zip.tmp` files are ignored as importable archives but counted in the scan
+  summary for diagnostics.
+- Upload/acknowledgement flags are placeholders until the upload index is
+  implemented.
 
 ---
 

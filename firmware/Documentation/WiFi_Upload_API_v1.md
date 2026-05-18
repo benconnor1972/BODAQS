@@ -34,8 +34,10 @@ open an HTTP connection, the transfer contract is identical.
 
 `logger_id` is the stable configured identity string for the logger.
 
-For API v1, the firmware uses the existing persisted `logger_name` config value
-as `logger_id`.
+For API v1, the firmware derives `logger_id` from the existing persisted
+`logger_name` config value. Normal names are unchanged; whitespace is trimmed,
+path/filename-unsafe characters are replaced with underscores, and an empty
+result falls back to `BODAQS`.
 
 Future firmware may add a separate display-name field if the project needs a
 human-readable alias that can change without changing the stable logger
