@@ -229,6 +229,8 @@ desktop import agent.
 
 **Interlocks**
 - Upload mode cannot be entered while logging is active.
+- Entering upload mode enables Wi-Fi and starts the configured station/AP mode
+  so the web/API surface comes online for import.
 - Logging cannot start while upload mode is active.
 
 ---
@@ -253,6 +255,8 @@ sync, web/API availability, and discovery.
 **Common APIs**
 - `status()` - returns mode, IP, hostname, RSSI/client details.
 - `hostname()` - returns a stable mDNS/HTTP hostname derived from `logger_id`.
+- `ensureReadyForUploadMode()` - enables Wi-Fi and starts the configured
+  station/AP mode when upload mode is entered.
 - `refreshDiscovery()` - restarts station-mode mDNS TXT records after upload
   mode changes.
 

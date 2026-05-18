@@ -705,6 +705,12 @@ void WiFiManager::startConfiguredMode() {
   connectNow();
 }
 
+void WiFiManager::ensureReadyForUploadMode() {
+  enable();
+  startConfiguredMode();
+  noteUserActivity();
+}
+
 void WiFiManager::connectStationNow_() {
   if (!s_enabled || loggingGuard_()) return;
   if (!configuredNetworksExist_()) {
