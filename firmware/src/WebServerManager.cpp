@@ -15,6 +15,7 @@
 #include "Routes_Files.h"
 #include "Routes_Config.h"
 #include "Routes_Transforms.h"
+#include "Routes_Api.h"
 #include "HtmlUtil.h"
 #include "DebugLog.h"
 using namespace HtmlUtil;
@@ -188,6 +189,7 @@ void WebServerManager::setupRoutes() {
   registerFileRoutes(*g_server);
   registerConfigRoutes(*g_server);
   registerTransformRoutes(*g_server);
+  registerApiRoutes(*g_server);
 
 
   // --- debug canary: always available ---

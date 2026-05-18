@@ -13,6 +13,8 @@
 #include "CalCapture.h"
 #include "ButtonActions.h"
 #include "WiFiManager.h"
+#include "UploadModeManager.h"
+#include "UploadSessionScanner.h"
 #include "FirmwareInfo.h"
 #include "DebugLog.h"
 #include <WiFi.h>
@@ -33,6 +35,7 @@ static const char* stateName(MenuSystem::State s) {
     case MenuSystem::State::RatePicker:  return "RatePicker";
     case MenuSystem::State::LogFormatPicker: return "LogFormatPicker";
     case MenuSystem::State::WiFiModePicker: return "WiFiModePicker";
+    case MenuSystem::State::UploadStatus: return "UploadStatus";
     case MenuSystem::State::CalibSensors:return "CalibSensors";
     case MenuSystem::State::CalibDetail: return "CalibDetail";
     case MenuSystem::State::About:       return "About";
@@ -63,6 +66,7 @@ namespace {
   enum class MainItem : uint8_t {
     WebServerToggle = 0,
     WiFiMode,
+    UploadMode,
     SensorsToggle,
     SampleRate,
     Calibration,
@@ -72,7 +76,7 @@ namespace {
     Restart,
     About
   };
-  static inline uint8_t mainItemCount_() { return 10; }
+  static inline uint8_t mainItemCount_() { return 11; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -127,6 +131,8 @@ namespace {
   static void drawWiFiModePicker_();
   static void enterWiFiModePicker_();
   static void applyWiFiMode_();
+  static void drawUploadStatus_();
+  static void toggleUploadModeFromMenu_();
   static void redraw_();
   static void drawCalibSensors_();
   static void drawCalibDetail_();
@@ -165,6 +171,8 @@ namespace {
       case MainItem::WiFiMode:
         return String("WiFi mode: ") +
                (ConfigManager::get().wifiMode == WiFiMode::AccessPoint ? "AP" : "STA");
+      case MainItem::UploadMode:
+        return String("Upload: ") + (UploadModeManager::isActive() ? "ON" : "OFF");
       case MainItem::SensorsToggle:
         return "Mute sensors";
       case MainItem::SampleRate: {
@@ -263,6 +271,14 @@ namespace {
         s_swallowEnterRelease = true;
         guardEnterRight();
         enterWiFiModePicker_();
+        break;
+      }
+
+      case MainItem::UploadMode: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        s_state = State::UploadStatus;
+        drawUploadStatus_();
         break;
       }
 
@@ -494,6 +510,56 @@ namespace {
     DisplayManager::present();
   }
 
+  static void drawUploadStatus_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+
+    UploadSessionScanner::ScanSummary summary = {};
+    (void)UploadSessionScanner::scan("/", nullptr, 0, &summary);
+
+    const WiFiStatus st = WiFiManager::status();
+    const bool uploadMode = UploadModeManager::isActive();
+
+    UI::clear(UI::TARGET_OLED);
+    UI::oledText(0, 0, "Upload mode");
+    UI::oledText(0, 12, String("State: ") + (uploadMode ? "ON" : "OFF"));
+
+    String network = st.networkUp ? st.ssid : String("off");
+    if (!network.length()) network = ConfigManager::wifiModeLabel(st.mode);
+    UI::oledText(0, 22, truncateForOled_(String("WiFi: ") + network, 21));
+    UI::oledText(0, 32, truncateForOled_(String("IP: ") + (st.networkUp ? st.ip : String("-")), 21));
+
+    String sessions = String("Sessions: ") + summary.completeCount;
+    if (summary.incompleteCount) {
+      sessions += String(" +") + summary.incompleteCount;
+    }
+    UI::oledText(0, 42, truncateForOled_(sessions, 21));
+
+    if (LoggingManager::isRunning() && !uploadMode) {
+      UI::oledText(0, 54, "Stop log first");
+    } else {
+      UI::oledText(0, 54, "Enter toggle");
+    }
+    DisplayManager::present();
+  }
+
+  static void toggleUploadModeFromMenu_() {
+    if (UploadModeManager::isActive()) {
+      UploadModeManager::exit();
+      deferUiFor(1200);
+      drawUploadStatus_();
+      return;
+    }
+
+    if (!UploadModeManager::enter()) {
+      deferUiFor(1500);
+      drawUploadStatus_();
+      return;
+    }
+
+    deferUiFor(1500);
+    drawUploadStatus_();
+  }
+
   static void redraw_() {
     switch (s_state) {
       case State::Main:         drawMain_();         break;
@@ -501,6 +567,7 @@ namespace {
       case State::RatePicker:   drawRatePicker_();   break;
       case State::LogFormatPicker: drawLogFormatPicker_(); break;
       case State::WiFiModePicker: drawWiFiModePicker_(); break;
+      case State::UploadStatus: drawUploadStatus_(); break;
       case State::CalibSensors: drawCalibSensors_(); break;
       case State::CalibDetail:  drawCalibDetail_();  break;
       case State::About:        drawAbout_();        break;
@@ -543,6 +610,10 @@ namespace {
 
       case State::WiFiModePicker:
         applyWiFiMode_();
+        return true;
+
+      case State::UploadStatus:
+        toggleUploadModeFromMenu_();
         return true;
 
       case State::CalibSensors:
@@ -951,6 +1022,7 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
 
     case ButtonActions::ACT_LOGGING_TOGGLE:
     case ButtonActions::ACT_WEB_TOGGLE:
+    case ButtonActions::ACT_UPLOAD_MODE_TOGGLE:
       touch();
       return true;
 
@@ -1174,6 +1246,19 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
         }
       }
       if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
+      }
+      break;
+    }
+
+    case State::UploadStatus: {
+      if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
+        s_state = State::Main;
+        drawMain_();
+        return;
+      }
+
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED && millis() >= s_enterGuardUntilMs) {
         if (activateCurrentSelection_()) return;
       }
       break;

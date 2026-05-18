@@ -61,6 +61,7 @@ namespace {
     if (t == "logging_toggle")  return ButtonActions::ACT_LOGGING_TOGGLE;
     if (t == "mark_event")      return ButtonActions::ACT_MARK_EVENT;
     if (t == "web_toggle")      return ButtonActions::ACT_WEB_TOGGLE;
+    if (t == "upload_mode_toggle") return ButtonActions::ACT_UPLOAD_MODE_TOGGLE;
 
     // Menu navigation
     if (t == "menu_nav_up")     return ButtonActions::ACT_MENU_NAV_UP;

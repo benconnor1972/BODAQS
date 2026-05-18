@@ -14,6 +14,7 @@
 #include "WiFiManager.h"
 #include "PowerManager.h"
 #include "WebServerManager.h"  // for canStart()
+#include "UploadModeManager.h"
 #include "StorageManager.h"
 #include "ButtonManager.h"
 #include "BoardSelect.h" 
@@ -57,6 +58,27 @@ static bool parseMinutesToMs_(const String& text, uint32_t& out) {
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
   PowerManager::noteActivity();
+}
+
+static bool configEditLocked_(String* reason = nullptr) {
+  if (!WebServerManager::canStart()) {
+    if (reason) *reason = F("logging is active");
+    return true;
+  }
+  if (UploadModeManager::isActive()) {
+    if (reason) *reason = F("upload mode is active");
+    return true;
+  }
+  return false;
+}
+
+static bool rejectConfigEditLocked_(WebServer& srv) {
+  String reason;
+  if (!configEditLocked_(&reason)) {
+    return false;
+  }
+  srv.send(423, F("text/plain"), String(F("Configuration is locked while ")) + reason + F("."));
+  return true;
 }
 
 static void applyLogSettingsLive_(const LoggerConfig& cfg) {
@@ -197,7 +219,8 @@ void registerConfigRoutes(WebServer& srv) {
     // Read the active config for display
     const LoggerConfig& cfg = ConfigManager::get();
 
-    const bool locked = !WebServerManager::canStart();   // disable edits while logging
+    String lockedReason;
+    const bool locked = configEditLocked_(&lockedReason);
     const String dis  = locked ? F(" disabled") : F("");
 
     String html = htmlHeader(F("Config"));
@@ -207,8 +230,9 @@ void registerConfigRoutes(WebServer& srv) {
     }
     if (locked) {
       html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
-                "Logging is active (or not allowed). Editing is disabled. Stop logging to make changes."
-                "</p>");
+                "Editing is disabled while ");
+      html += htmlEscape(lockedReason);
+      html += F(". Exit upload mode or stop logging to make changes.</p>");
     }
 
     // Status banner
@@ -450,7 +474,8 @@ void registerConfigRoutes(WebServer& srv) {
     noteHttpActivity_();
 
     const LoggerConfig& cfg = ConfigManager::get();
-    const bool locked = !WebServerManager::canStart();
+    String lockedReason;
+    const bool locked = configEditLocked_(&lockedReason);
     const String dis  = locked ? F(" disabled") : F("");
 
     String html = htmlHeader(F("Sensors"));
@@ -462,6 +487,12 @@ void registerConfigRoutes(WebServer& srv) {
       html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
                 "Sensor add/delete changes are saved. Restart the logger to rebuild the live sensor set."
                 "</p>");
+    }
+    if (locked) {
+      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
+                "Editing is disabled while ");
+      html += htmlEscape(lockedReason);
+      html += F(". Exit upload mode or stop logging to make changes.</p>");
     }
 
     html += F("<form method='POST' action='/config/sensors'>");
@@ -911,10 +942,7 @@ void registerConfigRoutes(WebServer& srv) {
     auto& srv = *S;
     noteHttpActivity_();
 
-    if (!WebServerManager::canStart()) {
-      srv.send(423, F("text/plain"), F("Locked while logging"));
-      return;
-    }
+    if (rejectConfigEditLocked_(srv)) return;
 
     LoggerConfig tmp = ConfigManager::get();
 
@@ -1219,10 +1247,7 @@ void registerConfigRoutes(WebServer& srv) {
     auto& srv = *S;
     noteHttpActivity_();
 
-    if (!WebServerManager::canStart()) {
-      srv.send(423, F("text/plain"), F("Locked while logging"));
-      return;
-    }
+    if (rejectConfigEditLocked_(srv)) return;
 
     String submit = srv.hasArg("submit") ? srv.arg("submit") : "";
     submit.toLowerCase();

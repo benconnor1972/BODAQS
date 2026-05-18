@@ -136,6 +136,8 @@ class ConfigManager {
     static bool save(const LoggerConfig& cfg);
     static void print(const LoggerConfig& cfg);
     static const LoggerConfig& get();
+    static String loggerId();
+    static String loggerId(const LoggerConfig& cfg);
 
     // Load calibration block for a given sensor (by name or id)
     static bool loadCalibration(const char* sensorName, Calibration& out);
