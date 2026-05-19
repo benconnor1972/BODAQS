@@ -5,7 +5,7 @@ ESP32-based data logger with:
 - Up to 500Hz logging (tested to 100Hz so far)
 - SD card logging
 - On-device web UI (list/download/delete files, simple config page)
-- mDNS discovery (browse to `http://esp32-logger.local/`)
+- mDNS discovery in station mode via `_bodaqs-logger._tcp`
 - Button control (start/stop logging, mark events, menu navigation)
 - General and sensor configuration via config file on SD (`loggercfg`) 
 
@@ -52,7 +52,10 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Notes/Gotchas**
 - `save()` writes **all** config keys (globals + sensors) deterministically.
-- `logger_name` is the human-readable alias shown in the web UI title bar.
+- `logger_name` is the stable logger identity used by upload/import workflows
+  and shown in the web UI title bar.
+- `ConfigManager::loggerId()` returns a trimmed, filename-safe derivative of
+  `logger_name` for API/session identifiers without changing the stored name.
 - `log_format` controls the top-level CSV layout. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index.
 - `omit_metadata=false` keeps the default behaviour of writing a same-stem JSON log metadata file at log close. Set `true` to skip metadata generation.
 - Idle timeout config is saved in minutes (`auto_sleep_idle_min`, `wifi_idle_timeout_min`). Legacy `_ms` keys are still accepted on load for migration.
@@ -123,7 +126,82 @@ This document summarizes the major modules in the project, what each one is resp
 - `SD_MMC.begin()` and error handling live here.
 - `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and `mark`, with a header. Run statistics are written to the same-stem JSON metadata file under `qc.run_stats`.
 - `syn_bike_raw` logs headerless rows as `sample_id,front_raw,rear_raw,lat,long,speed`; GPS fields are blank for now and no CSV footer is emitted for third-party compatibility.
+- When metadata is enabled and written successfully, log close also creates a
+  same-stem session ZIP via `<stem>.zip.tmp` then renames it to `<stem>.zip`.
+- After the ZIP is written successfully, the loose same-stem CSV and JSON are
+  removed; the ZIP is the canonical upload/import artifact.
 - A small smoke test may create `TEST.TXT` during setup.
+
+---
+
+## `ZipArchiveWriter`
+
+**Purpose:** Create small store-only ZIP archives on SD for completed session
+artifacts.
+
+**Notes/Gotchas**
+- Currently used by `StorageManager` to archive each completed CSV/JSON pair.
+- Writes to a caller-supplied destination and refuses to overwrite existing
+  files; callers should write a temporary path and rename after success.
+
+---
+
+## `UploadSessionScanner`
+
+**Purpose:** Find completed session archives on SD for the Wi-Fi upload API.
+
+**Common APIs**
+- `scan(directory, out, capacity, summary)` - returns complete ZIP-backed
+  sessions and fills a bounded summary.
+- `findBySessionId(sessionId, out, directory)` - resolves a complete session by
+  its `logger_id__session_stem` identifier.
+
+**Notes/Gotchas**
+- `.zip.tmp` files are ignored as importable archives but counted in the scan
+  summary for diagnostics.
+- Upload/acknowledgement flags are read from `UploadAckIndex`.
+
+---
+
+## `UploadAckIndex`
+
+**Purpose:** Persist import acknowledgements from the desktop agent.
+
+**Common APIs**
+- `markSessionAcknowledged(record)` - records an acknowledgement, returning
+  success without appending when the session is already acknowledged.
+- `findSessionAcknowledgement(sessionId, out)` - reads the latest valid record
+  for a session.
+- `applyAcknowledgementStatuses(lookups, count)` - resolves acknowledgement
+  flags for a batch of session ids with one index scan.
+- `isSessionAcknowledged(sessionId)` - convenience predicate used by session
+  listing.
+
+**Notes/Gotchas**
+- The index is `/upload_index.ndjson`; the `.ndjson` extension keeps it out of
+  same-stem session discovery.
+- Oversized indexes are refused rather than scanned indefinitely; remove or
+  compact `/upload_index.ndjson` on the SD card if this diagnostic appears.
+- Corrupt lines are skipped so a bad record does not block session listing.
+
+---
+
+## `UploadSessionCleanup`
+
+**Purpose:** Conservative cleanup for sessions already acknowledged by the
+desktop import agent.
+
+**Common APIs**
+- `cleanupSession(session, MoveToUploaded, result)` - moves the ZIP into
+  `/uploaded`; loose CSV/JSON files are moved too when present on older cards.
+- `cleanupSession(session, Delete, result)` - removes the ZIP; loose CSV/JSON
+  files are removed too when present on older cards.
+
+**Notes/Gotchas**
+- API callers must require upload mode and prior acknowledgement before using
+  this helper.
+- Cleanup requires the archive and treats loose CSV/JSON files as optional
+  legacy companions.
 
 ---
 
@@ -137,6 +215,22 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Interlocks**
 - Will **refuse to start** while the web server is running (see `ButtonActions`).
+- Will **refuse to start** while upload mode is active.
+
+---
+
+## `UploadModeManager`
+
+**Purpose:** Runtime guard for Wi-Fi upload workflows.
+
+**Common APIs**
+- `bool enter()` / `void exit()` / `bool toggle()`
+- `bool isActive()` / `bool canEnter()`
+
+**Interlocks**
+- Upload mode cannot be entered while logging is active.
+- Upload mode is transport-neutral; it does not automatically start Wi-Fi.
+- Logging cannot start while upload mode is active.
 
 ---
 
@@ -152,6 +246,24 @@ This document summarizes the major modules in the project, what each one is resp
 
 ---
 
+## `WiFiManager`
+
+**Purpose:** Non-blocking Wi-Fi state machine for station/AP networking, RTC
+sync, web/API availability, and discovery.
+
+**Common APIs**
+- `status()` - returns mode, IP, hostname, RSSI/client details.
+- `hostname()` - returns a stable mDNS/HTTP hostname derived from `logger_id`.
+- `refreshDiscovery()` - restarts station-mode mDNS TXT records after upload
+  mode changes.
+
+**Notes/Gotchas**
+- Station mode advertises `_bodaqs-logger._tcp` on port `80` when online.
+- AP mode does not rely on mDNS; the PC confirms logger identity via
+  `/api/v1/device` after connecting.
+
+---
+
 ## `WebServerManager`
 
 **Purpose:** Lightweight HTTP UI for status, SD file browsing, and editing **all** configuration (globals + sensors).
@@ -161,9 +273,17 @@ This document summarizes the major modules in the project, what each one is resp
 - `/config` (GET) displays editable globals and sensor sections.
 - `/config` (POST) updates globals and rewrites `loggercfg.txt` with all keys; also rewrites each sensor’s block.
 - `/config/sensors` can add or remove sensor config blocks. Removing a sensor rewrites config only; transform directories/files are left in place. Restart the logger after adding/removing sensors so the live sensor set is rebuilt.
+- `/api/v1/device`, `/api/v1/status`, `/api/v1/upload-mode/*`,
+  `/api/v1/sessions`, and `/api/v1/session/archive` expose the local-first
+  import-agent API. Session list/download/cleanup routes require upload mode.
+- `/files` includes browser controls for entering/exiting upload mode and
+  reports network/session readiness for manual checks.
 - All HTML pages share a title/navigation header showing `BODAQS data logger: <logger_name>`, the active network, and IP address.
 
 **Interlocks**
+- Config edits and generic SD-card mutations are rejected while logging or
+  upload mode is active. Downloads remain allowed; import cleanup should use
+  the upload API after acknowledgement.
 - `canStart()` returns false while logging is active; `ButtonActions` also blocks starting logging while Wi‑Fi/web is running.
 
 **Helpers**
@@ -212,7 +332,8 @@ This document summarizes the major modules in the project, what each one is resp
 **Purpose:** Wire configured pins to user-visible actions and UI feedback.
 
 **Mappings (typical)**
-- **Web** → start/stop web server (blocks when logging).
+- **Web** → start/stop web server (blocks when logging). `web_toggle` can be
+  bound to `click`, `double_click`, or `held`.
 - **Log** → start/stop logging (blocks when web server is running).
 - **Mark** → inserts a mark only when logging is active.
 - **Nav Up/Down/Left/Right/Enter** → dispatch into **MenuSystem** when the menu is active; otherwise show small UI toasts.
@@ -227,19 +348,26 @@ ButtonActions::registerButtons();  // reads pins & debounce from config
 
 ## `MenuSystem`
 
-**Purpose:** A small, modal OLED UI navigated by five buttons. Current focus: **Sensors on/off** list for mute toggling.
+**Purpose:** A small, modal OLED UI navigated by five buttons for logging,
+upload, sensor, calibration, and settings workflows.
 
 **Behavior**
 - **Open/Close**: short‑press Enter to open, long‑press Enter to close (or via left/back).
 - **Auto‑close** after inactivity (default 15 s; `setIdleCloseMs(ms)`).
-- **States**: `Inactive` → `Main` (shows “Sensors on/off”) → `SensorsList` (list of sensors with `[M]` suffix when muted).
+- **States**: `Inactive` → `Main`; `Settings` groups lower-frequency
+  configuration and device actions (`WiFi mode`, `Log format`, `Reset time`,
+  `Restart`, `About`).
 - **Navigation**:
-  - From **Main**: Right/Enter opens “Sensors on/off” list.
+  - From **Main**: Right/Enter opens the selected item, including the
+    `Settings` submenu.
+  - In **Settings**: Up/Down selects settings; Right/Enter opens or runs the
+    selected setting.
   - In **SensorsList**: Up/Down to move selection, Right/Enter toggles mute for the selected sensor via `SensorManager::getMuted/setMuted`.
   - Left goes back; closing returns the OLED to `DisplayManager` by calling `UI::setModal(false)` internally.
 
 **Notes**
-- The final main-menu item is `About`; it shows firmware version, active board profile, and build timestamp.
+- The `About` screen is under `Settings`; it shows firmware version, active
+  board profile, and build timestamp.
 - Firmware version text comes from the compile-time `BODAQS_FW_VERSION` define, with fallback defaults in `FirmwareInfo.h`.
 - Calls `UI::setModal(true)` on open and `UI::setModal(false)` on close so normal telemetry rendering pauses while the menu is visible.
 - Uses `ConfigManager::sensorCount()`/`getSensorSpec()` to render names; relies on `SensorManager` for the **live** mute state.

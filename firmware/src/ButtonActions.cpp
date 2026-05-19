@@ -10,6 +10,7 @@
 #include "ConfigManager.h"
 #include "BoardSelect.h" 
 #include "WiFiManager.h"
+#include "UploadModeManager.h"
 #include "DebugLog.h"
 
 #define BLOG(...) LOGD_TAG("BTN", __VA_ARGS__)
@@ -79,6 +80,7 @@ namespace {
     if (t == "logging_toggle")  return ACT_LOGGING_TOGGLE;
     if (t == "mark_event")      return ACT_MARK_EVENT;
     if (t == "web_toggle")      return ACT_WEB_TOGGLE;
+    if (t == "upload_mode_toggle") return ACT_UPLOAD_MODE_TOGGLE;
 
     if (t == "menu_nav_up")     return ACT_MENU_NAV_UP;
     if (t == "menu_nav_down")   return ACT_MENU_NAV_DOWN;
@@ -232,6 +234,10 @@ void ButtonActions::invoke(ActionId action, ButtonEvent ev) {
       onWebServerToggle(ev);
       return;
 
+    case ACT_UPLOAD_MODE_TOGGLE:
+      onUploadModeToggle(ev);
+      return;
+
     case ACT_MENU_NAV_UP:
       onNavUp(ev);
       return;
@@ -314,8 +320,7 @@ void ButtonActions::onMarkEvent(ButtonEvent event) {
 
 
 void ButtonActions::onWebServerToggle(ButtonEvent event) {
-  // Make this action strictly the "double press" action.
-  if (event != BUTTON_DOUBLE_CLICK) return;
+  if (event != BUTTON_CLICK && event != BUTTON_DOUBLE_CLICK && event != BUTTON_HELD) return;
 
   // If web server is running, treat this as a full "WiFi off".
   if (WebServerManager::isRunning()) {
@@ -355,6 +360,12 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
   WiFiManager::connectNow();
   UI::println("Starting WiFi...", "WiFi\nstarting", UI::TARGET_BOTH, UI::LVL_INFO, 1500, 2);
   UI::status("WiFi...");
+}
+
+void ButtonActions::onUploadModeToggle(ButtonEvent event) {
+  if (event != BUTTON_CLICK && event != BUTTON_DOUBLE_CLICK && event != BUTTON_HELD) return;
+
+  UploadModeManager::toggle();
 }
 
 

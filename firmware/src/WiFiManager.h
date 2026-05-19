@@ -23,6 +23,7 @@ struct WiFiStatus {
   wl_status_t  wl;
   String       ssid;
   String       ip;
+  String       hostname;
   int          rssi;   // dBm (WL_CONNECTED only; otherwise 0)
   uint8_t      apClients;
   bool         enabled;
@@ -61,6 +62,8 @@ public:
   static bool isNetworkUp();
   static IPAddress localAddress();
   static String networkName();
+  static String hostname();
+  static void refreshDiscovery();
 
   // Events (optional, set from .ino)
   typedef void (*OnOnlineFn)();         // called once when ONLINE (got IP)

@@ -1,11 +1,13 @@
 #include "WiFiManager.h"
 #include "ConfigManager.h"
+#include "UploadModeManager.h"
 #include <esp_wifi.h>
 #include <esp_bt.h>
 #include <esp_coexist.h>
 #include <esp_heap_caps.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
+#include <ESPmDNS.h>
 #include <cstring>
 #include "RTCManager.h"
 #include "DebugLog.h"
@@ -38,6 +40,7 @@ static bool s_suspendedForLogging = false;
 static bool s_restoreWifiAfterRtcSync = false;
 static bool s_prevEnabledBeforeRtcSync = false;
 static bool s_forceNetworkRtcSync = false;
+static bool s_mdnsActive = false;
 
 WiFiMgrState WiFiManager::s_state = WiFiMgrState::OFF;
 bool         WiFiManager::s_enabled = false;
@@ -77,6 +80,73 @@ static bool wifiRadioIsAp_() {
 
 static bool configuredWifiModeIsStation_() {
   return ConfigManager::get().wifiMode == WiFiMode::Station;
+}
+
+static String discoveryHostname_() {
+  String id = ConfigManager::loggerId();
+  id.toLowerCase();
+
+  String suffix;
+  suffix.reserve(id.length());
+  bool lastDash = false;
+  for (uint16_t i = 0; i < id.length(); ++i) {
+    const char c = id[i];
+    const bool ok = (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') ||
+                    c == '-';
+    if (ok) {
+      suffix += c;
+      lastDash = (c == '-');
+    } else if (!lastDash) {
+      suffix += '-';
+      lastDash = true;
+    }
+  }
+
+  while (suffix.startsWith("-")) suffix.remove(0, 1);
+  while (suffix.endsWith("-")) suffix.remove(suffix.length() - 1);
+
+  String host = F("bodaqs");
+  if (suffix.length()) {
+    host += '-';
+    host += suffix;
+  }
+  if (host.length() > 63) {
+    host = host.substring(0, 63);
+    while (host.endsWith("-")) host.remove(host.length() - 1);
+  }
+  return host.length() ? host : String(F("bodaqs-logger"));
+}
+
+static void stopMdns_(const char* reason) {
+  if (!s_mdnsActive) return;
+  MDNS.end();
+  s_mdnsActive = false;
+  WIFI_LOGI("mDNS stopped%s%s\n", reason ? ": " : "", reason ? reason : "");
+}
+
+static void startMdns_() {
+  if (!WiFiManager::isNetworkUp() || ConfigManager::get().wifiMode != WiFiMode::Station) {
+    stopMdns_("not station online");
+    return;
+  }
+
+  const String host = discoveryHostname_();
+  stopMdns_("refresh");
+
+  if (!MDNS.begin(host.c_str())) {
+    WIFI_LOGW("mDNS begin failed host='%s'\n", host.c_str());
+    return;
+  }
+
+  MDNS.addService("bodaqs-logger", "tcp", 80);
+  MDNS.addServiceTxt("bodaqs-logger", "tcp", "api", "1");
+  const String loggerId = ConfigManager::loggerId();
+  MDNS.addServiceTxt("bodaqs-logger", "tcp", "logger_id", loggerId.c_str());
+  MDNS.addServiceTxt("bodaqs-logger", "tcp", "upload_mode", UploadModeManager::isActive() ? "true" : "false");
+  MDNS.addServiceTxt("bodaqs-logger", "tcp", "hostname", host.c_str());
+  s_mdnsActive = true;
+  WIFI_LOGI("mDNS started host='%s.local' service='_bodaqs-logger._tcp'\n", host.c_str());
 }
 
 static const char* resetReasonName_(esp_reset_reason_t reason) {
@@ -169,6 +239,7 @@ static void wifiDiag_(const char* reason) {
 }
 
 static void keepStaIdle_(const char* reason) {
+  stopMdns_(reason);
   wifiDiag_(reason);
   WiFi.scanDelete();
   WiFi.softAPdisconnect(true);
@@ -181,6 +252,7 @@ static void keepStaIdle_(const char* reason) {
 }
 
 static void hardOff_(const char* reason) {
+  stopMdns_(reason);
   wifiDiag_(reason);
   WiFi.scanDelete();
   WiFi.softAPdisconnect(true);
@@ -429,6 +501,7 @@ void WiFiManager::loop() {
       rememberConnectedNetwork_();
       clearIntent_();
       if (s_onOnline) s_onOnline();
+      startMdns_();
       notifyUi_();
       tryRtcSyncIfPending_();     
 
@@ -464,6 +537,7 @@ void WiFiManager::loop() {
         rememberConnectedNetwork_();
 
         if (s_onOnline) s_onOnline();
+        startMdns_();
         clearIntent_();
         notifyUi_();
         tryRtcSyncIfPending_();     // <-- add this
@@ -783,6 +857,7 @@ WiFiStatus WiFiManager::status() {
   st.networkUp = isNetworkUp();
   st.ssid    = st.networkUp ? networkName() : "";
   st.ip      = st.networkUp ? localAddress().toString() : "";
+  st.hostname = hostname();
   st.rssi    = (s_state == WiFiMgrState::ONLINE) ? s_currRssi : 0;
   st.apClients = (s_state == WiFiMgrState::AP_ONLINE && wifiRadioIsAp_())
                  ? (uint8_t)WiFi.softAPgetStationNum()
@@ -818,6 +893,18 @@ String WiFiManager::networkName() {
   return WiFi.SSID();
 }
 
+String WiFiManager::hostname() {
+  return discoveryHostname_();
+}
+
+void WiFiManager::refreshDiscovery() {
+  if (s_state == WiFiMgrState::ONLINE && isNetworkUp()) {
+    startMdns_();
+  } else {
+    stopMdns_("refresh while offline");
+  }
+}
+
 void WiFiManager::notifyUi_() {
   if (s_onUi) s_onUi();
 }
@@ -848,6 +935,7 @@ void WiFiManager::startAccessPoint_() {
   if (s_state == WiFiMgrState::ONLINE && s_onOffline) {
     s_onOffline();
   }
+  stopMdns_("access point mode");
 
   clearIntent_();
   s_targetConfigIndex = -1;
@@ -1072,6 +1160,8 @@ void WiFiManager::selectAndConnect_() {
     return;
   }
   WiFi.setSleep(true);
+  const String host = hostname();
+  WiFi.setHostname(host.c_str());
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   noteIdleOffActivity_();
 

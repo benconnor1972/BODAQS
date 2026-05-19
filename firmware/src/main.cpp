@@ -21,6 +21,7 @@
 #include "TransformRegistry.h"
 #include "OutputTransform.h"
 #include "WiFiManager.h"
+#include "UploadModeManager.h"
 #include "BoardSelect.h"
 #include "I2CManager.h"
 #include "IndicatorManager.h"
@@ -277,6 +278,10 @@ void setup() {
   BOOT_LOGI("SETUP: G wifimanager::begin\n");
   WiFiManager::begin(isLoggingPredicate);
   BOOT_LOGI("SETUP: G Done\n");
+
+  BOOT_LOGI("SETUP: H uploadmodemanager::begin\n");
+  UploadModeManager::begin(isLoggingPredicate);
+  BOOT_LOGI("SETUP: H Done\n");
 
   // Bring Wi-Fi up on boot only if the user asked for it by default
   if (cfg.wifiEnabledDefault) {

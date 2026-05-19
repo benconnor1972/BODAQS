@@ -10,6 +10,7 @@
 #include "PowerManager.h"
 #include "IndicatorManager.h"
 #include "WiFiManager.h"
+#include "UploadModeManager.h"
 #include "DebugTrace.h"
 #include "esp_timer.h"
 #include "DebugLog.h"
@@ -202,6 +203,13 @@ bool LoggingManager::start() {
   if (!s_cfg) return false;
   TRACE("enter start()");
   const uint32_t startT0 = millis();
+
+  if (UploadModeManager::isActive()) {
+    UI::toast("Upload mode", 1500, 2);
+    UI::status("Upload mode");
+    LOGGING_LOGW("start refused: upload mode active\n");
+    return false;
+  }
 
   if (!PowerManager::canStartLogging()) {
     UI::toast("Batt Low", 1500, 2);
