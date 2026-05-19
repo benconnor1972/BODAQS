@@ -320,8 +320,7 @@ void ButtonActions::onMarkEvent(ButtonEvent event) {
 
 
 void ButtonActions::onWebServerToggle(ButtonEvent event) {
-  // Make this action strictly the "double press" action.
-  if (event != BUTTON_DOUBLE_CLICK) return;
+  if (event != BUTTON_CLICK && event != BUTTON_DOUBLE_CLICK && event != BUTTON_HELD) return;
 
   // If web server is running, treat this as a full "WiFi off".
   if (WebServerManager::isRunning()) {

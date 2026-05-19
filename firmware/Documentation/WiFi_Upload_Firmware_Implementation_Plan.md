@@ -64,7 +64,7 @@ Tasks:
 
 Acceptance checks:
 
-- entering upload mode enables Wi-Fi and starts the configured station/AP mode
+- upload mode can be entered and exited without starting Wi-Fi
 - logging cannot start in upload mode
 - upload mode cannot expose a currently open log
 

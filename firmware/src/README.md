@@ -229,8 +229,7 @@ desktop import agent.
 
 **Interlocks**
 - Upload mode cannot be entered while logging is active.
-- Entering upload mode enables Wi-Fi and starts the configured station/AP mode
-  so the web/API surface comes online for import.
+- Upload mode is transport-neutral; it does not automatically start Wi-Fi.
 - Logging cannot start while upload mode is active.
 
 ---
@@ -255,8 +254,6 @@ sync, web/API availability, and discovery.
 **Common APIs**
 - `status()` - returns mode, IP, hostname, RSSI/client details.
 - `hostname()` - returns a stable mDNS/HTTP hostname derived from `logger_id`.
-- `ensureReadyForUploadMode()` - enables Wi-Fi and starts the configured
-  station/AP mode when upload mode is entered.
 - `refreshDiscovery()` - restarts station-mode mDNS TXT records after upload
   mode changes.
 
@@ -335,7 +332,8 @@ sync, web/API availability, and discovery.
 **Purpose:** Wire configured pins to user-visible actions and UI feedback.
 
 **Mappings (typical)**
-- **Web** → start/stop web server (blocks when logging).
+- **Web** → start/stop web server (blocks when logging). `web_toggle` can be
+  bound to `click`, `double_click`, or `held`.
 - **Log** → start/stop logging (blocks when web server is running).
 - **Mark** → inserts a mark only when logging is active.
 - **Nav Up/Down/Left/Right/Enter** → dispatch into **MenuSystem** when the menu is active; otherwise show small UI toasts.
@@ -350,19 +348,26 @@ ButtonActions::registerButtons();  // reads pins & debounce from config
 
 ## `MenuSystem`
 
-**Purpose:** A small, modal OLED UI navigated by five buttons. Current focus: **Sensors on/off** list for mute toggling.
+**Purpose:** A small, modal OLED UI navigated by five buttons for logging,
+upload, sensor, calibration, and settings workflows.
 
 **Behavior**
 - **Open/Close**: short‑press Enter to open, long‑press Enter to close (or via left/back).
 - **Auto‑close** after inactivity (default 15 s; `setIdleCloseMs(ms)`).
-- **States**: `Inactive` → `Main` (shows “Sensors on/off”) → `SensorsList` (list of sensors with `[M]` suffix when muted).
+- **States**: `Inactive` → `Main`; `Settings` groups lower-frequency
+  configuration and device actions (`WiFi mode`, `Log format`, `Reset time`,
+  `Restart`, `About`).
 - **Navigation**:
-  - From **Main**: Right/Enter opens “Sensors on/off” list.
+  - From **Main**: Right/Enter opens the selected item, including the
+    `Settings` submenu.
+  - In **Settings**: Up/Down selects settings; Right/Enter opens or runs the
+    selected setting.
   - In **SensorsList**: Up/Down to move selection, Right/Enter toggles mute for the selected sensor via `SensorManager::getMuted/setMuted`.
   - Left goes back; closing returns the OLED to `DisplayManager` by calling `UI::setModal(false)` internally.
 
 **Notes**
-- The final main-menu item is `About`; it shows firmware version, active board profile, and build timestamp.
+- The `About` screen is under `Settings`; it shows firmware version, active
+  board profile, and build timestamp.
 - Firmware version text comes from the compile-time `BODAQS_FW_VERSION` define, with fallback defaults in `FirmwareInfo.h`.
 - Calls `UI::setModal(true)` on open and `UI::setModal(false)` on close so normal telemetry rendering pauses while the menu is visible.
 - Uses `ConfigManager::sensorCount()`/`getSensorSpec()` to render names; relies on `SensorManager` for the **live** mute state.

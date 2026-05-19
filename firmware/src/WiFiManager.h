@@ -47,7 +47,6 @@ public:
   // Ignored if logging is active or Wi-Fi is disabled.
   static void connectNow();
   static void startConfiguredMode();
-  static void ensureReadyForUploadMode();
 
   // Disconnect but keep enabled; returns to IDLE.
   static void disconnect();

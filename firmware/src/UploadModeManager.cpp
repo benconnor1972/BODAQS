@@ -43,7 +43,6 @@ bool UploadModeManager::enter() {
   UPLOAD_LOGI("Upload mode entered\n");
   UI::println("Upload mode active.", "Upload\nmode", UI::TARGET_BOTH, UI::LVL_INFO, 1500, 2);
   UI::status("Upload mode");
-  WiFiManager::ensureReadyForUploadMode();
   WiFiManager::refreshDiscovery();
   return true;
 }
