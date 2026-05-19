@@ -23,7 +23,10 @@ a = Analysis(
     pathex=[str(analysis_dir)],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=[
+        "bodaqs_analysis.import_agent_logger_wifi",
+        "bodaqs_analysis.import_agent_sources",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

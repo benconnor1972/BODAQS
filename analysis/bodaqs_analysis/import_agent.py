@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import tempfile
@@ -30,8 +31,17 @@ from .artifacts import (
     write_session_manifest,
 )
 from .bike_profile import load_bike_profile
+from .import_agent_logger_wifi import LoggerWifiApiClient
 from .pipeline import preprocess_session
 from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
+from .import_agent_sources import (
+    LOGGER_WIFI_CLEANUP_NONE,
+    LoggerWifiSourceConfig,
+    SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    SOURCE_TYPE_LOGGER_WIFI,
+    normalize_import_source_type,
+    parse_logger_wifi_source_config,
+)
 
 
 IMPORT_SOURCE_SCHEMA = "bodaqs.import_source"
@@ -304,6 +314,16 @@ class ImportAgentState:
         record = records.get(key)
         return dict(record) if isinstance(record, dict) else None
 
+    def records(self) -> dict[str, Dict[str, Any]]:
+        records = self.data.get("records")
+        if not isinstance(records, dict):
+            return {}
+        return {
+            str(key): dict(value)
+            for key, value in records.items()
+            if isinstance(value, dict)
+        }
+
     def upsert(self, key: str, record: Mapping[str, Any]) -> None:
         records = self.data.setdefault("records", {})
         if not isinstance(records, dict):
@@ -317,6 +337,7 @@ class ImportSourceConfig:
     config_path: Path
     source_root: Path
     source_id: str
+    source_type: str
     artifacts_dir: Path
     preprocess_profile_path: Path
     bike_profile_path: Path
@@ -334,10 +355,16 @@ class ImportSourceConfig:
     description: Optional[str] = None
     force_reprocess: bool = False
     max_archives_per_scan: Optional[int] = None
+    library_id: Optional[str] = None
+    logger_wifi: Optional[LoggerWifiSourceConfig] = None
 
     def __post_init__(self) -> None:
         if not self.source_id.strip():
             raise ValueError("Import source config must include a non-empty source_id")
+        if self.source_type != normalize_import_source_type(self.source_type):
+            raise ValueError(f"Import source config has unsupported source_type: {self.source_type!r}")
+        if self.source_type == SOURCE_TYPE_LOGGER_WIFI and self.logger_wifi is None:
+            raise ValueError("logger_wifi import sources must include a logger_wifi config block")
         if not self.archive_patterns:
             raise ValueError("Import source config must include at least one archive pattern")
         if self.include_metrics and not self.include_events:
@@ -367,6 +394,16 @@ class ImportArchiveCandidate:
     contract: SessionArchiveContract
     raw_session_identity: str
     processing_key: str
+
+
+@dataclass(frozen=True)
+class LoggerWifiArchiveAcquisition:
+    remote_state_key: str
+    remote_session_id: str
+    logger_id: str
+    base_url: str
+    local_archive_path: Path
+    remote_already_acknowledged: bool = False
 
 
 @dataclass
@@ -402,6 +439,11 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
     source_id = _optional_text(obj.get("source_id"))
     if source_id is None:
         raise ValueError("Import source config missing non-empty 'source_id'")
+    source_type = normalize_import_source_type(obj.get("source_type"))
+
+    logger_wifi: Optional[LoggerWifiSourceConfig] = None
+    if source_type == SOURCE_TYPE_LOGGER_WIFI:
+        logger_wifi = parse_logger_wifi_source_config(obj.get("logger_wifi"))
 
     archive_patterns_raw = obj.get("archive_patterns")
     if archive_patterns_raw is None:
@@ -429,6 +471,7 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         config_path=config_path,
         source_root=base_dir,
         source_id=source_id,
+        source_type=source_type,
         artifacts_dir=_resolve_relative_path(
             _optional_text(obj.get("artifacts_dir")) or "artifacts",
             base_dir=base_dir,
@@ -467,6 +510,8 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         description=_optional_text(obj.get("description")),
         force_reprocess=bool(obj.get("force_reprocess", False)),
         max_archives_per_scan=max_archives_per_scan,
+        library_id=_optional_text(obj.get("library_id")),
+        logger_wifi=logger_wifi,
     )
 
 
@@ -545,11 +590,411 @@ class ImportSourceRunner:
             if not path.exists():
                 warnings.append(f"Directory will be created when needed: {path}")
 
+        if self.source.source_type == SOURCE_TYPE_LOGGER_WIFI:
+            if self.source.logger_wifi is not None and self.source.logger_wifi.base_url is None:
+                warnings.append(
+                    "Wi-Fi logger source has no remembered base_url; the manager will need a manual address before acquisition."
+                )
+
         return errors, warnings
 
     def ensure_runtime_dirs(self) -> None:
         for path in (self.source.inbox_dir, self.source.done_dir, self.source.failed_dir, self.source.staging_dir):
             _ensure_dir(path)
+
+    def _logger_wifi_remote_state_key(self, remote_session_id: str) -> str:
+        if self.source.logger_wifi is None:
+            raise ValueError("Cannot build Wi-Fi remote state key without logger_wifi config")
+        return "logger_wifi:" + _sha256_jsonable(
+            {
+                "source_id": self.source.source_id,
+                "logger_id": self.source.logger_wifi.logger_id,
+                "remote_session_id": remote_session_id,
+            }
+        )
+
+    def _logger_wifi_archive_filename(self, session: Mapping[str, Any]) -> str:
+        remote_session_id = _optional_text(session.get("session_id"))
+        if remote_session_id is None:
+            raise ValueError("Wi-Fi logger session entry is missing session_id")
+
+        name_hint = _optional_text(session.get("session_stem")) or remote_session_id
+        safe_hint = re.sub(r"[^A-Za-z0-9._-]+", "_", name_hint).strip("._-")
+        if not safe_hint:
+            safe_hint = "logger_session"
+        digest = hashlib.sha256(remote_session_id.encode("utf-8")).hexdigest()[:12]
+        return f"{safe_hint[:80]}_{digest}.zip"
+
+    def _logger_wifi_client(self) -> Optional[LoggerWifiApiClient]:
+        config = self.source.logger_wifi
+        if self.source.source_type != SOURCE_TYPE_LOGGER_WIFI or config is None:
+            return None
+        if config.base_url is None:
+            return None
+        return LoggerWifiApiClient(
+            config.base_url,
+            request_timeout_s=config.request_timeout_s,
+            download_timeout_s=config.download_timeout_s,
+        )
+
+    def _pending_logger_wifi_acquisitions_from_state(self) -> dict[str, LoggerWifiArchiveAcquisition]:
+        if self.source.source_type != SOURCE_TYPE_LOGGER_WIFI or self.source.logger_wifi is None:
+            return {}
+
+        out: dict[str, LoggerWifiArchiveAcquisition] = {}
+        for state_key, record in self.state.records().items():
+            if not state_key.startswith("logger_wifi:"):
+                continue
+            if str(record.get("source_id") or "") != self.source.source_id:
+                continue
+            if str(record.get("status") or "") != "downloaded":
+                continue
+            remote_session_id = _optional_text(record.get("remote_session_id"))
+            local_archive_path_raw = _optional_text(record.get("local_archive_path"))
+            if remote_session_id is None or local_archive_path_raw is None:
+                continue
+            local_archive_path = Path(local_archive_path_raw)
+            if not local_archive_path.exists():
+                continue
+            acquisition = LoggerWifiArchiveAcquisition(
+                remote_state_key=state_key,
+                remote_session_id=remote_session_id,
+                logger_id=_optional_text(record.get("logger_id")) or self.source.logger_wifi.logger_id,
+                base_url=_optional_text(record.get("base_url")) or self.source.logger_wifi.base_url or "",
+                local_archive_path=local_archive_path.resolve(),
+                remote_already_acknowledged=bool(
+                    record.get("remote_already_acknowledged", record.get("acknowledged", False))
+                ),
+            )
+            out[_path_key(local_archive_path)] = acquisition
+        return out
+
+    def _record_logger_wifi_downloaded(
+        self,
+        *,
+        acquisition: LoggerWifiArchiveAcquisition,
+        archive_sha256: str,
+    ) -> None:
+        self.state.upsert(
+            acquisition.remote_state_key,
+            {
+                "status": "downloaded",
+                "source_id": self.source.source_id,
+                "source_type": SOURCE_TYPE_LOGGER_WIFI,
+                "remote_session_id": acquisition.remote_session_id,
+                "logger_id": acquisition.logger_id,
+                "base_url": acquisition.base_url,
+                "local_archive_path": str(acquisition.local_archive_path),
+                "archive_sha256": archive_sha256,
+                "remote_already_acknowledged": acquisition.remote_already_acknowledged,
+                "updated_at": _utcnow_iso(),
+            },
+        )
+
+    def _record_logger_wifi_failure(
+        self,
+        *,
+        acquisition: LoggerWifiArchiveAcquisition,
+        error: str,
+        processing_key: Optional[str] = None,
+        archive_sha256: Optional[str] = None,
+    ) -> None:
+        record: dict[str, Any] = {
+            "status": "failed",
+            "source_id": self.source.source_id,
+            "source_type": SOURCE_TYPE_LOGGER_WIFI,
+            "remote_session_id": acquisition.remote_session_id,
+            "logger_id": acquisition.logger_id,
+            "base_url": acquisition.base_url,
+            "local_archive_path": str(acquisition.local_archive_path),
+            "updated_at": _utcnow_iso(),
+            "error": error,
+        }
+        if processing_key is not None:
+            record["processing_key"] = processing_key
+        if archive_sha256 is not None:
+            record["archive_sha256"] = archive_sha256
+        self.state.upsert(acquisition.remote_state_key, record)
+
+    def _acquire_logger_wifi_archives(
+        self,
+        summary: Dict[str, Any],
+    ) -> dict[str, LoggerWifiArchiveAcquisition]:
+        if self.source.source_type != SOURCE_TYPE_LOGGER_WIFI or self.source.logger_wifi is None:
+            return {}
+
+        config = self.source.logger_wifi
+        remote_summary: Dict[str, Any] = {
+            "logger_id": config.logger_id,
+            "base_url": config.base_url,
+            "status": None,
+            "sessions_seen": 0,
+            "downloaded": [],
+            "skipped": [],
+            "failed": [],
+        }
+        summary["remote"] = remote_summary
+
+        acquisitions = self._pending_logger_wifi_acquisitions_from_state()
+        client = self._logger_wifi_client()
+        if client is None:
+            remote_summary["status"] = {
+                "state": "missing_base_url",
+                "message": "Wi-Fi logger source has no base_url configured.",
+            }
+            return acquisitions
+
+        try:
+            device = client.get_device()
+            device_logger_id = _optional_text(device.get("logger_id"))
+            if device_logger_id != config.logger_id:
+                raise ValueError(
+                    f"Logger identity mismatch: expected {config.logger_id!r}, got {device_logger_id!r}"
+                )
+
+            status = client.get_status()
+            status_logger_id = _optional_text(status.get("logger_id"))
+            if status_logger_id is not None and status_logger_id != config.logger_id:
+                raise ValueError(
+                    f"Logger status identity mismatch: expected {config.logger_id!r}, got {status_logger_id!r}"
+                )
+
+            upload_mode = bool(status.get("upload_mode", False))
+            if config.require_upload_mode and not upload_mode:
+                remote_summary["status"] = {
+                    "state": "waiting_upload_mode",
+                    "upload_mode": False,
+                    "message": "Logger is reachable but not in upload mode.",
+                }
+                logger.info(
+                    "Wi-Fi logger source waiting for upload mode: source=%s logger_id=%s",
+                    self.source.source_id,
+                    config.logger_id,
+                )
+                return acquisitions
+
+            sessions = client.list_sessions()
+            remote_summary["sessions_seen"] = len(sessions)
+            remote_summary["status"] = {
+                "state": "ready",
+                "upload_mode": upload_mode,
+                "importable_session_count": len(sessions),
+            }
+
+            for session in sessions:
+                remote_session_id = _optional_text(session.get("session_id"))
+                if remote_session_id is None:
+                    continue
+                remote_state_key = self._logger_wifi_remote_state_key(remote_session_id)
+                existing = self.state.get(remote_state_key)
+                if (
+                    existing is not None
+                    and str(existing.get("status") or "") == "succeeded"
+                    and not self.source.force_reprocess
+                ):
+                    remote_summary["skipped"].append(
+                        {
+                            "session_id": remote_session_id,
+                            "reason": "already_imported",
+                            "run_id": existing.get("run_id"),
+                            "session": existing.get("session_id"),
+                        }
+                    )
+                    continue
+                if session.get("archive_ready") is False:
+                    remote_summary["skipped"].append(
+                        {"session_id": remote_session_id, "reason": "archive_not_ready"}
+                    )
+                    continue
+
+                target_path = (self.source.inbox_dir / self._logger_wifi_archive_filename(session)).resolve()
+                acquisition = LoggerWifiArchiveAcquisition(
+                    remote_state_key=remote_state_key,
+                    remote_session_id=remote_session_id,
+                    logger_id=config.logger_id,
+                    base_url=config.base_url or client.base_url,
+                    local_archive_path=target_path,
+                    remote_already_acknowledged=bool(session.get("acknowledged", False)),
+                )
+
+                if target_path.exists():
+                    acquisitions[_path_key(target_path)] = acquisition
+                    remote_summary["skipped"].append(
+                        {
+                            "session_id": remote_session_id,
+                            "reason": "already_local_pending",
+                            "archive_path": str(target_path),
+                        }
+                    )
+                    continue
+
+                downloaded_path = client.download_archive_to_part(remote_session_id, target_path)
+                try:
+                    self._archive_contract(downloaded_path)
+                except Exception as exc:
+                    failed_path = _move_to_dir_unique(downloaded_path, self.source.failed_dir)
+                    error = f"{type(exc).__name__}: {exc}"
+                    self._record_logger_wifi_failure(acquisition=acquisition, error=error)
+                    remote_summary["failed"].append(
+                        {
+                            "session_id": remote_session_id,
+                            "failed_archive_path": str(failed_path),
+                            "error": error,
+                        }
+                    )
+                    continue
+
+                acquisition = LoggerWifiArchiveAcquisition(
+                    remote_state_key=remote_state_key,
+                    remote_session_id=remote_session_id,
+                    logger_id=config.logger_id,
+                    base_url=config.base_url or client.base_url,
+                    local_archive_path=downloaded_path.resolve(),
+                    remote_already_acknowledged=bool(session.get("acknowledged", False)),
+                )
+                archive_sha256 = _sha256_file(downloaded_path)
+                self._record_logger_wifi_downloaded(
+                    acquisition=acquisition,
+                    archive_sha256=archive_sha256,
+                )
+                acquisitions[_path_key(downloaded_path)] = acquisition
+                remote_summary["downloaded"].append(
+                    {
+                        "session_id": remote_session_id,
+                        "archive_path": str(downloaded_path),
+                        "archive_sha256": archive_sha256,
+                    }
+                )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            remote_summary["status"] = {
+                "state": "error",
+                "error": error,
+            }
+            remote_summary["failed"].append({"error": error})
+            logger.warning(
+                "Wi-Fi logger acquisition failed for source=%s logger_id=%s: %s",
+                self.source.source_id,
+                config.logger_id,
+                error,
+            )
+
+        return acquisitions
+
+    def _postprocess_logger_wifi_import(
+        self,
+        *,
+        acquisition: Optional[LoggerWifiArchiveAcquisition],
+        record: Mapping[str, Any],
+        candidate: ImportArchiveCandidate,
+        summary: Dict[str, Any],
+    ) -> None:
+        if acquisition is None:
+            return
+        if self.source.logger_wifi is None:
+            return
+
+        config = self.source.logger_wifi
+        acknowledged = False
+        cleanup_done = False
+        ack_response: Optional[dict[str, Any]] = None
+        cleanup_response: Optional[dict[str, Any]] = None
+        post_error: Optional[str] = None
+
+        client = self._logger_wifi_client()
+        if acquisition.remote_already_acknowledged:
+            acknowledged = True
+        elif client is None:
+            post_error = "Wi-Fi logger source has no base_url configured; cannot acknowledge remote session."
+        else:
+            try:
+                ack_response = client.ack_session(
+                    session_id=acquisition.remote_session_id,
+                    library_id=self.source.library_id,
+                    run_id=_optional_text(record.get("run_id")),
+                    imported_at=_optional_text(record.get("updated_at")),
+                )
+                acknowledged = True
+            except Exception as exc:
+                post_error = f"ack failed: {type(exc).__name__}: {exc}"
+                logger.warning(
+                    "Wi-Fi logger acknowledgement failed for source=%s session=%s: %s",
+                    self.source.source_id,
+                    acquisition.remote_session_id,
+                    post_error,
+                )
+
+        if acknowledged and config.cleanup_mode != LOGGER_WIFI_CLEANUP_NONE:
+            if client is None:
+                post_error = "Wi-Fi logger source has no base_url configured; cannot clean up remote session."
+            else:
+                try:
+                    cleanup_response = client.cleanup_session(
+                        session_id=acquisition.remote_session_id,
+                        mode=config.cleanup_mode,
+                    )
+                    cleanup_done = True
+                except Exception as exc:
+                    post_error = f"cleanup failed: {type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "Wi-Fi logger cleanup failed for source=%s session=%s: %s",
+                        self.source.source_id,
+                        acquisition.remote_session_id,
+                        post_error,
+                    )
+
+        updated_record = dict(record)
+        updated_record.update(
+            {
+                "remote_source": SOURCE_TYPE_LOGGER_WIFI,
+                "remote_session_id": acquisition.remote_session_id,
+                "remote_logger_id": acquisition.logger_id,
+                "remote_base_url": acquisition.base_url,
+                "remote_acknowledged": acknowledged,
+                "remote_already_acknowledged": acquisition.remote_already_acknowledged,
+                "remote_cleanup_mode": config.cleanup_mode,
+                "remote_cleanup_done": cleanup_done,
+            }
+        )
+        if post_error is not None:
+            updated_record["remote_postprocess_error"] = post_error
+        self.state.upsert(candidate.processing_key, updated_record)
+
+        remote_record: dict[str, Any] = {
+            "status": "succeeded",
+            "source_id": self.source.source_id,
+            "source_type": SOURCE_TYPE_LOGGER_WIFI,
+            "remote_session_id": acquisition.remote_session_id,
+            "logger_id": acquisition.logger_id,
+            "base_url": acquisition.base_url,
+            "local_archive_path": str(acquisition.local_archive_path),
+            "archive_sha256": candidate.archive_sha256,
+            "processing_key": candidate.processing_key,
+            "raw_session_identity": candidate.raw_session_identity,
+            "run_id": record.get("run_id"),
+            "session_id": record.get("session_id"),
+            "acknowledged": acknowledged,
+            "remote_already_acknowledged": acquisition.remote_already_acknowledged,
+            "cleanup_mode": config.cleanup_mode,
+            "cleanup_done": cleanup_done,
+            "updated_at": _utcnow_iso(),
+        }
+        if ack_response is not None:
+            remote_record["ack_response"] = ack_response
+        if cleanup_response is not None:
+            remote_record["cleanup_response"] = cleanup_response
+        if post_error is not None:
+            remote_record["postprocess_error"] = post_error
+        self.state.upsert(acquisition.remote_state_key, remote_record)
+
+        if post_error is not None:
+            summary.setdefault("remote", {}).setdefault("failed", []).append(
+                {
+                    "session_id": acquisition.remote_session_id,
+                    "stage": "postprocess",
+                    "error": post_error,
+                }
+            )
 
     def _discover_archives(self) -> list[Path]:
         self.ensure_runtime_dirs()
@@ -570,6 +1015,8 @@ class ImportSourceRunner:
         return out
 
     def _is_settled(self, path: Path, *, now_s: float) -> bool:
+        if self.source.source_type == SOURCE_TYPE_LOGGER_WIFI:
+            return True
         age_s = now_s - (path.stat().st_mtime_ns / 1_000_000_000.0)
         return age_s >= float(self.source.settle_time_s)
 
@@ -672,6 +1119,7 @@ class ImportSourceRunner:
     def scan_once(self) -> Dict[str, Any]:
         summary: Dict[str, Any] = {
             "source_id": self.source.source_id,
+            "source_type": self.source.source_type,
             "artifacts_dir": str(self.source.artifacts_dir),
             "seen": 0,
             "deferred_unsettled": [],
@@ -683,7 +1131,10 @@ class ImportSourceRunner:
         now_s = time.time()
 
         with self.lock:
+            remote_acquisitions = self._acquire_logger_wifi_archives(summary)
+
             for inbox_path in self._discover_archives():
+                remote_acquisition = remote_acquisitions.get(_path_key(inbox_path))
                 summary["seen"] += 1
                 if not self._is_settled(inbox_path, now_s=now_s):
                     summary["deferred_unsettled"].append(str(inbox_path))
@@ -711,6 +1162,11 @@ class ImportSourceRunner:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                     logger.exception("Archive validation failed for %s", inbox_path)
+                    if remote_acquisition is not None:
+                        self._record_logger_wifi_failure(
+                            acquisition=remote_acquisition,
+                            error=failure["error"],
+                        )
                     summary["failed"].append(failure)
                     continue
 
@@ -727,6 +1183,12 @@ class ImportSourceRunner:
                                 "processing_key": candidate.processing_key,
                             }
                         )
+                        self._postprocess_logger_wifi_import(
+                            acquisition=remote_acquisition,
+                            record=existing,
+                            candidate=candidate,
+                            summary=summary,
+                        )
                         continue
                     if str(existing.get("status") or "") == "failed":
                         failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
@@ -742,6 +1204,13 @@ class ImportSourceRunner:
 
                 try:
                     record = self.import_candidate(candidate)
+                    self._postprocess_logger_wifi_import(
+                        acquisition=remote_acquisition,
+                        record=record,
+                        candidate=candidate,
+                        summary=summary,
+                    )
+                    record = self.state.get(candidate.processing_key) or record
                     summary["imported"].append(record)
                 except Exception as exc:
                     failed_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.failed_dir)
@@ -757,6 +1226,13 @@ class ImportSourceRunner:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                     self.state.upsert(candidate.processing_key, error_record)
+                    if remote_acquisition is not None:
+                        self._record_logger_wifi_failure(
+                            acquisition=remote_acquisition,
+                            error=error_record["error"],
+                            processing_key=candidate.processing_key,
+                            archive_sha256=candidate.archive_sha256,
+                        )
                     logger.exception("Import failed for %s", candidate.inbox_archive_path)
                     summary["failed"].append(error_record)
 
@@ -816,6 +1292,7 @@ class ImportSourceRunner:
                     "sha256": copied_csv_sha256,
                     "import_mode": "import_agent_archive_v1",
                     "import_source_id": self.source.source_id,
+                    "import_source_type": self.source.source_type,
                     "import_source_config_path": str(self.source.config_path),
                     "original_archive_filename": candidate.archive_name,
                     "original_archive_sha256": candidate.archive_sha256,
@@ -827,6 +1304,12 @@ class ImportSourceRunner:
                 }
                 if self.source.logger_timezone is not None:
                     source_manifest["logger_timezone_fallback"] = self.source.logger_timezone
+                if self.source.source_type == SOURCE_TYPE_LOGGER_WIFI and self.source.logger_wifi is not None:
+                    source_manifest["remote_source"] = {
+                        "kind": SOURCE_TYPE_LOGGER_WIFI,
+                        "logger_id": self.source.logger_wifi.logger_id,
+                        "base_url": self.source.logger_wifi.base_url,
+                    }
 
                 write_session_manifest(
                     self.store,
@@ -863,6 +1346,7 @@ class ImportSourceRunner:
                     pipeline_config={
                         "import_source": {
                             "source_id": self.source.source_id,
+                            "source_type": self.source.source_type,
                             "config_path": str(self.source.config_path),
                         },
                         "archive_import": {
@@ -1092,6 +1576,7 @@ class ImportAgentSupervisor:
             sources.append(
                 {
                     "source_id": source_id,
+                    "source_type": state.runner.source.source_type,
                     "config_path": str(state.runner.source.config_path),
                     "source_root": str(state.runner.source.source_root),
                     "artifacts_dir": str(state.runner.source.artifacts_dir),
@@ -1133,6 +1618,7 @@ def validate_import_sources(paths_or_dirs: Sequence[str | Path]) -> list[Dict[st
         results.append(
             {
                 "source_id": source.source_id,
+                "source_type": source.source_type,
                 "config_path": str(source.config_path),
                 "errors": errors,
                 "warnings": warnings,

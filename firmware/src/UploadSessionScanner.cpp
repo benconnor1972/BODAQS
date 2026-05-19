@@ -131,7 +131,7 @@ static Candidate* findOrAddCandidate_(const String& stem,
 }
 
 static bool isComplete_(const Candidate& candidate) {
-  return candidate.hasCsv && candidate.hasJson && candidate.hasZip;
+  return candidate.hasZip;
 }
 
 static void sortCandidatesNewestFirst_(uint16_t count) {
@@ -163,9 +163,30 @@ static void fillSessionInfo_(const Candidate& candidate, SessionInfo& out) {
   out.jsonPath = candidate.jsonPath;
   out.archivePath = candidate.archivePath;
   out.archiveReady = true;
-  out.acknowledged = UploadAckIndex::isSessionAcknowledged(out.sessionId.c_str());
-  out.uploaded = out.acknowledged;
+  out.acknowledged = false;
+  out.uploaded = false;
   out.archiveSize = candidate.archiveSize;
+}
+
+static void applyAcknowledgements_(SessionInfo* out, uint16_t count) {
+  if (!out || count == 0) return;
+
+  UploadAckIndex::AckStatusLookup lookups[kMaxCandidates];
+  const uint16_t lookupCount = count > kMaxCandidates ? kMaxCandidates : count;
+  for (uint16_t i = 0; i < lookupCount; ++i) {
+    lookups[i].sessionId = out[i].sessionId.c_str();
+    lookups[i].acknowledged = false;
+  }
+
+  String error;
+  if (!UploadAckIndex::applyAcknowledgementStatuses(lookups, lookupCount, &error)) {
+    return;
+  }
+
+  for (uint16_t i = 0; i < lookupCount; ++i) {
+    out[i].acknowledged = lookups[i].acknowledged;
+    out[i].uploaded = lookups[i].acknowledged;
+  }
 }
 
 } // namespace
@@ -263,6 +284,8 @@ uint16_t scan(const char* directory,
     summary->completeCount = complete;
     summary->incompleteCount = incomplete;
   }
+
+  applyAcknowledgements_(out, written);
 
   return written;
 }

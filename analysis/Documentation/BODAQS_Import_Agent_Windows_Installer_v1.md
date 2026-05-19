@@ -15,6 +15,18 @@ so the import agent can be installed like a normal desktop application.
 The CLI is installed as a support/debug tool but is not exposed with a Start
 Menu shortcut by default.
 
+## Wi-Fi Logger Source Support
+
+The Windows bundles include the Wi-Fi logger source modules used by both the
+CLI importer and the manager.
+
+This support does not add a third-party network dependency. The logger API
+client uses Python standard-library outbound HTTP calls, so the installed
+manager should not need an inbound Windows Firewall exception. If a logger is
+offline or unreachable during watch mode, the source reports a remote status
+error without raising a modal dialog or marking the local import scan as a
+failed archive import.
+
 ## Build
 
 First make sure PyInstaller is available in the repo environment.

@@ -64,7 +64,7 @@ Tasks:
 
 Acceptance checks:
 
-- upload mode can be entered and exited without Wi-Fi enabled
+- upload mode can be entered and exited without starting Wi-Fi
 - logging cannot start in upload mode
 - upload mode cannot expose a currently open log
 
@@ -147,8 +147,9 @@ Implementation notes:
 
 Acceptance checks:
 
-- every normal completed log creates CSV, JSON, and ZIP
-- failed ZIP creation does not corrupt CSV or JSON
+- every normal completed log creates a ZIP containing the same-stem CSV and JSON
+- after successful ZIP creation, loose same-stem CSV/JSON files are removed
+- failed ZIP creation does not corrupt or remove CSV or JSON
 - no `.zip` is visible until complete
 - generated ZIP opens on Windows
 - generated ZIP passes the import-agent archive validation contract
@@ -164,7 +165,8 @@ Status:
 - implemented `UploadSessionScanner`
 - scanner walks a requested SD directory, currently expected to be `/` for the
   existing logger file layout
-- scanner matches same-stem `.CSV`, `.json`, and `.zip` files
+- scanner treats same-stem `.zip` files as canonical importable sessions; loose
+  same-stem `.CSV`/`.json` files may exist on older cards but are not required
 - scanner ignores `.zip.tmp` files as importable archives and counts them for
   diagnostics
 - scanner returns only complete importable sessions and reports incomplete
@@ -177,9 +179,7 @@ Status:
 Tasks:
 
 - Add a session scanner that walks the log directory or relevant SD root.
-- Find same-stem triplets:
-  - `.CSV`
-  - `.json`
+- Find same-stem ZIP archives:
   - `.zip`
 - Return only complete sessions as importable.
 - Optionally return incomplete sessions for diagnostics with
@@ -351,9 +351,10 @@ Status:
 - supported request modes:
   - `move_to_uploaded`
   - `delete`
-- `move_to_uploaded` creates `/uploaded` if needed and moves CSV, JSON, and ZIP
-  together when targets do not already exist
-- `delete` removes CSV, JSON, and ZIP
+- `move_to_uploaded` creates `/uploaded` if needed and moves the ZIP; loose
+  same-stem CSV/JSON files are moved too when present on older cards
+- `delete` removes the ZIP; loose same-stem CSV/JSON files are removed too when
+  present on older cards
 - partial cleanup failures are reported with per-file success flags
 
 Tasks:
@@ -364,8 +365,8 @@ Tasks:
 - Support:
   - `move_to_uploaded`
   - `delete`
-- For `move_to_uploaded`, move CSV, JSON, and ZIP together.
-- For `delete`, delete CSV, JSON, and ZIP together.
+- For `move_to_uploaded`, move the ZIP and any loose legacy CSV/JSON companions.
+- For `delete`, delete the ZIP and any loose legacy CSV/JSON companions.
 
 Recommended default:
 
@@ -474,7 +475,8 @@ Acceptance checks:
 ### Bench Tests
 
 - Record a short log.
-- Confirm CSV, JSON, and ZIP are created.
+- Confirm a ZIP is created and loose same-stem CSV/JSON files are removed after
+  successful archiving.
 - Connect in station mode.
 - Enter upload mode.
 - Fetch `/api/v1/device`.

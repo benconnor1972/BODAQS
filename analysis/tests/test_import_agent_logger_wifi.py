@@ -1,0 +1,532 @@
+import json
+import socket
+import threading
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+
+from bodaqs_analysis.import_agent import run_sources_once
+from bodaqs_analysis.import_agent_logger_wifi import LoggerWifiApiClient, LoggerWifiApiError
+from bodaqs_analysis.import_agent_provisioning import (
+    provision_import_agent_library,
+    provision_import_agent_source,
+)
+from bodaqs_analysis.import_agent_sources import (
+    LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED,
+    SOURCE_TYPE_LOGGER_WIFI,
+)
+
+
+def _archive_bytes(stem: str = "2026-05-16_20-15-42") -> bytes:
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{stem}.CSV", "time_s,value\n0.0,1\n")
+        zf.writestr(f"{stem}.json", json.dumps({"session": {"session_id": stem}}))
+    return buf.getvalue()
+
+
+def _importable_archive_bytes(stem: str = "2026-05-16_20-15-42") -> bytes:
+    sidecar = {
+        "contract": {
+            "name": "mtb_logger_timeseries",
+            "version": "0.2.0",
+            "sidecar_kind": "session",
+        },
+        "session": {
+            "session_id": stem,
+            "started_at_local": "2026-05-16T10:00:00+08:00",
+            "timezone": "Australia/Perth",
+        },
+        "data_file": {
+            "delimiter": ",",
+            "header": True,
+        },
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "time_s",
+                "time_encoding": "elapsed_s",
+                "time_unit": "s",
+                "sample_rate_hz": 33.3333333,
+            }
+        },
+        "columns": {
+            "time_s": {
+                "class": "time",
+                "dtype": "float64",
+                "stream": "primary",
+                "unit": "s",
+            },
+            "front_shock_dom_suspension [mm]": {
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "front_shock",
+                "end": "front",
+                "quantity": "disp",
+                "domain": "suspension",
+                "unit": "mm",
+            },
+            "rear_shock_dom_suspension [mm]": {
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "rear_shock",
+                "end": "rear",
+                "quantity": "disp",
+                "domain": "suspension",
+                "unit": "mm",
+            },
+            "mark": {
+                "class": "event_flag",
+                "dtype": "bool",
+                "stream": "primary",
+            },
+        },
+    }
+    csv_text = "\n".join(
+        [
+            "time_s,front_shock_dom_suspension [mm],rear_shock_dom_suspension [mm],mark",
+            "0.00,10.0,20.0,0",
+            "0.03,11.0,21.0,1",
+            "0.06,12.0,22.0,0",
+        ]
+    )
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{stem}.CSV", csv_text)
+        zf.writestr(f"{stem}.json", json.dumps(sidecar, indent=2))
+    return buf.getvalue()
+
+
+def _provision_wifi_source(
+    tmp_path: Path,
+    base_url: str,
+    *,
+    cleanup_mode: str = "none",
+    request_timeout_s: float = 5.0,
+):
+    library = provision_import_agent_library(tmp_path / "libraries", display_name="Test Library")
+    source = provision_import_agent_source(
+        tmp_path / "sources" / "Prototype E WiFi",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Prototype E WiFi",
+        source_type=SOURCE_TYPE_LOGGER_WIFI,
+        logger_wifi={
+            "logger_id": "Prototype E",
+            "base_url": base_url,
+            "request_timeout_s": request_timeout_s,
+            "cleanup_mode": cleanup_mode,
+        },
+        logger_timezone="Australia/Perth",
+        run_tz_label="AWST",
+        settle_time_s=3600.0,
+        include_events=False,
+        include_metrics=False,
+    )
+    return source, library
+
+
+def _unused_local_base_url() -> str:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        host, port = sock.getsockname()
+    return f"http://{host}:{port}"
+
+
+class _FakeLoggerHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, _format, *_args):
+        return None
+
+    @property
+    def state(self) -> dict:
+        return self.server.state  # type: ignore[attr-defined]
+
+    def _read_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def _send_json(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        self.state["requests"].append(("GET", parsed.path, parse_qs(parsed.query)))
+        logger_id = self.state.get("logger_id", "Prototype E")
+
+        if parsed.path == "/api/v1/device":
+            if self.state.get("invalid_device_json"):
+                body = b"{not-json"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self._send_json(
+                200,
+                {
+                    "schema": "bodaqs.logger.device",
+                    "api_version": 1,
+                    "logger_id": logger_id,
+                    "display_name": logger_id,
+                    "hostname": "bodaqs-prototype-e",
+                    "capabilities": ["upload_mode", "session_archive_zip"],
+                },
+            )
+            return
+
+        if parsed.path == "/api/v1/status":
+            self._send_json(
+                200,
+                {
+                    "schema": "bodaqs.logger.status",
+                    "api_version": 1,
+                    "logger_id": logger_id,
+                    "upload_mode": bool(self.state.get("upload_mode", True)),
+                    "importable_session_count": 1,
+                },
+            )
+            return
+
+        if parsed.path == "/api/v1/sessions":
+            if self.state.get("sessions_error"):
+                self._send_json(
+                    409,
+                    {
+                        "schema": "bodaqs.logger.error",
+                        "api_version": 1,
+                        "error": "upload_mode_required",
+                        "message": "Upload mode is required for this endpoint.",
+                    },
+                )
+                return
+            self._send_json(
+                200,
+                    {
+                        "schema": "bodaqs.logger.sessions",
+                        "api_version": 1,
+                        "logger_id": logger_id,
+                        "sessions": self.state.get("sessions"),
+                    },
+                )
+            return
+
+        if parsed.path == "/api/v1/session/archive":
+            query = parse_qs(parsed.query)
+            self.state["archive_ids"].append(query.get("id", [""])[0])
+            payload = self.state["archive_bytes"]
+            if self.state.get("truncate_archive"):
+                partial = payload[: max(1, len(payload) // 3)]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(partial)
+                self.close_connection = True
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        self._send_json(404, {"schema": "bodaqs.logger.error", "api_version": 1, "error": "not_found"})
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        body = self._read_json_body()
+        self.state["requests"].append(("POST", parsed.path, body))
+
+        if parsed.path == "/api/v1/upload-mode/enter":
+            self._send_json(
+                200,
+                {"schema": "bodaqs.logger.upload_mode", "api_version": 1, "logger_id": "Prototype E", "upload_mode": True},
+            )
+            return
+
+        if parsed.path == "/api/v1/upload-mode/exit":
+            self._send_json(
+                200,
+                {"schema": "bodaqs.logger.upload_mode", "api_version": 1, "logger_id": "Prototype E", "upload_mode": False},
+            )
+            return
+
+        if parsed.path == "/api/v1/session/ack":
+            self.state["acks"].append(body)
+            self._send_json(
+                200,
+                {
+                    "schema": "bodaqs.logger.session_ack",
+                    "api_version": 1,
+                    "logger_id": "Prototype E",
+                    "session_id": body.get("session_id"),
+                    "acknowledged": True,
+                },
+            )
+            return
+
+        if parsed.path == "/api/v1/session/delete":
+            self.state["cleanups"].append(body)
+            self._send_json(
+                200,
+                {
+                    "schema": "bodaqs.logger.session_delete",
+                    "api_version": 1,
+                    "logger_id": "Prototype E",
+                    "session_id": body.get("session_id"),
+                    "mode": body.get("mode"),
+                    "ok": True,
+                },
+            )
+            return
+
+        self._send_json(404, {"schema": "bodaqs.logger.error", "api_version": 1, "error": "not_found"})
+
+
+class _FakeLoggerServer:
+    def __init__(self, **state):
+        default_sessions = [
+            {
+                "session_id": "Prototype E__2026-05-16_20-15-42",
+                "session_stem": "2026-05-16_20-15-42",
+                "archive_ready": True,
+                "uploaded": False,
+                "acknowledged": False,
+            }
+        ]
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeLoggerHandler)
+        self.server.state = {
+            "archive_bytes": _archive_bytes(),
+            "archive_ids": [],
+            "acks": [],
+            "cleanups": [],
+            "requests": [],
+            "sessions": default_sessions,
+            **state,
+        }
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def base_url(self) -> str:
+        host, port = self.server.server_address
+        return f"http://{host}:{port}"
+
+    @property
+    def state(self) -> dict:
+        return self.server.state
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2.0)
+
+
+def test_logger_wifi_client_reads_status_sessions_and_posts_actions():
+    with _FakeLoggerServer() as server:
+        client = LoggerWifiApiClient(server.base_url)
+
+        assert client.get_device()["logger_id"] == "Prototype E"
+        assert client.get_status()["upload_mode"] is True
+        sessions = client.list_sessions()
+        enter = client.enter_upload_mode()
+        exit_state = client.exit_upload_mode()
+        ack = client.ack_session(
+            session_id=sessions[0]["session_id"],
+            library_id="default-library",
+            run_id="run_001",
+            imported_at="2026-05-18T12:00:00+08:00",
+        )
+        cleanup = client.cleanup_session(session_id=sessions[0]["session_id"], mode="move_to_uploaded")
+
+    assert sessions[0]["session_id"] == "Prototype E__2026-05-16_20-15-42"
+    assert enter["upload_mode"] is True
+    assert exit_state["upload_mode"] is False
+    assert ack["acknowledged"] is True
+    assert cleanup["ok"] is True
+    assert server.state["acks"][0]["run_id"] == "run_001"
+    assert server.state["cleanups"][0]["mode"] == "move_to_uploaded"
+
+
+def test_logger_wifi_client_downloads_archive_via_part_then_final(tmp_path):
+    with _FakeLoggerServer() as server:
+        client = LoggerWifiApiClient(server.base_url)
+        target = tmp_path / "session.zip"
+
+        result = client.download_archive_to_part("Prototype E__2026-05-16_20-15-42", target)
+
+    assert result == target.resolve()
+    assert target.exists()
+    assert not Path(str(target.resolve()) + ".part").exists()
+    assert server.state["archive_ids"] == ["Prototype E__2026-05-16_20-15-42"]
+    with zipfile.ZipFile(target, "r") as zf:
+        assert sorted(zf.namelist()) == ["2026-05-16_20-15-42.CSV", "2026-05-16_20-15-42.json"]
+
+
+def test_logger_wifi_client_failed_download_leaves_part_file(tmp_path):
+    with _FakeLoggerServer(truncate_archive=True) as server:
+        client = LoggerWifiApiClient(server.base_url)
+        target = tmp_path / "session.zip"
+
+        with pytest.raises(LoggerWifiApiError) as exc_info:
+            client.download_archive_to_part("Prototype E__2026-05-16_20-15-42", target)
+
+    assert "download" in str(exc_info.value).lower()
+    assert not target.exists()
+    assert Path(str(target.resolve()) + ".part").exists()
+
+
+def test_logger_wifi_client_raises_api_error_details():
+    with _FakeLoggerServer(sessions_error=True) as server:
+        client = LoggerWifiApiClient(server.base_url)
+
+        with pytest.raises(LoggerWifiApiError) as exc_info:
+            client.list_sessions()
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.error == "upload_mode_required"
+    assert "Upload mode is required" in str(exc_info.value)
+
+
+def test_logger_wifi_client_rejects_invalid_json():
+    with _FakeLoggerServer(invalid_device_json=True) as server:
+        client = LoggerWifiApiClient(server.base_url)
+
+        with pytest.raises(LoggerWifiApiError) as exc_info:
+            client.get_device()
+
+    assert exc_info.value.error == "invalid_json"
+
+
+def test_logger_wifi_client_does_not_call_cleanup_for_none_mode():
+    with _FakeLoggerServer() as server:
+        client = LoggerWifiApiClient(server.base_url)
+
+        with pytest.raises(ValueError):
+            client.cleanup_session(session_id="Prototype E__2026-05-16_20-15-42", mode="none")
+
+    assert server.state["cleanups"] == []
+
+
+def test_logger_wifi_source_acquires_imports_acknowledges_and_cleans_up(tmp_path):
+    with _FakeLoggerServer(archive_bytes=_importable_archive_bytes()) as server:
+        source, library = _provision_wifi_source(
+            tmp_path,
+            server.base_url,
+            cleanup_mode=LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED,
+        )
+
+        report = run_sources_once([source.source_root])
+
+    assert report["totals"]["seen"] == 1
+    assert report["totals"]["imported"] == 1
+    assert report["totals"]["failed"] == 0
+    assert server.state["archive_ids"] == ["Prototype E__2026-05-16_20-15-42"]
+    assert server.state["acks"][0]["session_id"] == "Prototype E__2026-05-16_20-15-42"
+    assert server.state["acks"][0]["run_id"]
+    assert server.state["cleanups"][0]["mode"] == LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED
+
+    imported_record = report["sources"][0]["imported"][0]
+    assert imported_record["remote_session_id"] == "Prototype E__2026-05-16_20-15-42"
+    assert imported_record["remote_acknowledged"] is True
+    assert imported_record["remote_cleanup_done"] is True
+    assert len(list((source.source_root / "done").glob("*.zip"))) == 1
+    assert len(list((library.artifacts_dir / "runs").glob("run_*"))) == 1
+
+    state = json.loads((library.artifacts_dir / "library" / "import_agent_state_v1.json").read_text(encoding="utf-8"))
+    remote_records = [
+        record
+        for key, record in state["records"].items()
+        if key.startswith("logger_wifi:")
+    ]
+    assert remote_records[0]["status"] == "succeeded"
+    assert remote_records[0]["remote_session_id"] == "Prototype E__2026-05-16_20-15-42"
+    assert remote_records[0]["acknowledged"] is True
+
+
+def test_logger_wifi_source_skips_duplicate_remote_session_after_success(tmp_path):
+    with _FakeLoggerServer(archive_bytes=_importable_archive_bytes()) as server:
+        source, _library = _provision_wifi_source(tmp_path, server.base_url)
+
+        first_report = run_sources_once([source.source_root])
+        second_report = run_sources_once([source.source_root])
+
+    assert first_report["totals"]["imported"] == 1
+    assert second_report["totals"]["imported"] == 0
+    assert second_report["sources"][0]["remote"]["skipped"][0]["reason"] == "already_imported"
+    assert server.state["archive_ids"] == ["Prototype E__2026-05-16_20-15-42"]
+    assert len(server.state["acks"]) == 1
+
+
+def test_logger_wifi_source_does_not_reack_remote_acknowledged_session(tmp_path):
+    sessions = [
+        {
+            "session_id": "Prototype E__2026-05-16_20-15-42",
+            "session_stem": "2026-05-16_20-15-42",
+            "archive_ready": True,
+            "uploaded": True,
+            "acknowledged": True,
+        }
+    ]
+    with _FakeLoggerServer(archive_bytes=_importable_archive_bytes(), sessions=sessions) as server:
+        source, _library = _provision_wifi_source(tmp_path, server.base_url)
+
+        report = run_sources_once([source.source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert server.state["archive_ids"] == ["Prototype E__2026-05-16_20-15-42"]
+    assert server.state["acks"] == []
+    imported_record = report["sources"][0]["imported"][0]
+    assert imported_record["remote_acknowledged"] is True
+    assert imported_record["remote_already_acknowledged"] is True
+
+
+def test_logger_wifi_source_waits_for_upload_mode_without_failure(tmp_path):
+    with _FakeLoggerServer(upload_mode=False, archive_bytes=_importable_archive_bytes()) as server:
+        source, _library = _provision_wifi_source(tmp_path, server.base_url)
+
+        report = run_sources_once([source.source_root])
+
+    assert report["totals"]["seen"] == 0
+    assert report["totals"]["imported"] == 0
+    assert report["totals"]["failed"] == 0
+    assert report["sources"][0]["remote"]["status"]["state"] == "waiting_upload_mode"
+    assert server.state["archive_ids"] == []
+    assert server.state["acks"] == []
+
+
+def test_logger_wifi_offline_source_reports_remote_error_without_import_failure(tmp_path):
+    source, _library = _provision_wifi_source(
+        tmp_path,
+        _unused_local_base_url(),
+        request_timeout_s=0.1,
+    )
+
+    report = run_sources_once([source.source_root])
+
+    assert report["totals"]["seen"] == 0
+    assert report["totals"]["imported"] == 0
+    assert report["totals"]["failed"] == 0
+    assert report["sources"][0]["remote"]["status"]["state"] == "error"
+    assert report["sources"][0]["remote"]["failed"]

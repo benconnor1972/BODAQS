@@ -31,6 +31,7 @@ static const char* stateName(MenuSystem::State s) {
   switch (s) {
     case MenuSystem::State::Inactive:    return "Inactive";
     case MenuSystem::State::Main:        return "Main";
+    case MenuSystem::State::Settings:    return "Settings";
     case MenuSystem::State::SensorsList: return "SensorsList";
     case MenuSystem::State::RatePicker:  return "RatePicker";
     case MenuSystem::State::LogFormatPicker: return "LogFormatPicker";
@@ -65,21 +66,27 @@ namespace {
 
   enum class MainItem : uint8_t {
     WebServerToggle = 0,
-    WiFiMode,
     UploadMode,
     SensorsToggle,
     SampleRate,
     Calibration,
-    LogFormat,
     Sleep,
+    Settings
+  };
+  static inline uint8_t mainItemCount_() { return 7; }
+
+  enum class SettingsItem : uint8_t {
+    WiFiMode = 0,
+    LogFormat,
     ResetTime,
     Restart,
     About
   };
-  static inline uint8_t mainItemCount_() { return 11; }
+  static inline uint8_t settingsItemCount_() { return 5; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
+  static uint8_t s_settingsSel = 0;
   static uint8_t s_sensorSel   = 0;
 
   // ---- Calibration UI state (per detail screen) ----
@@ -121,6 +128,7 @@ namespace {
   }
 
   static void drawMain_();
+  static void drawSettings_();
   static void drawSensors_();
   static void drawRatePicker_();
   static void enterRatePicker_();
@@ -168,9 +176,6 @@ namespace {
         bool on = WebServerManager::isRunning();
         return String("WiFi: ") + (on ? "ON" : "OFF");
       }
-      case MainItem::WiFiMode:
-        return String("WiFi mode: ") +
-               (ConfigManager::get().wifiMode == WiFiMode::AccessPoint ? "AP" : "STA");
       case MainItem::UploadMode:
         return String("Upload: ") + (UploadModeManager::isActive() ? "ON" : "OFF");
       case MainItem::SensorsToggle:
@@ -181,18 +186,30 @@ namespace {
       }
       case MainItem::Calibration:
         return "Calibration";
-      case MainItem::LogFormat:
-        return "Log format";
       case MainItem::Sleep:
         return "Sleep";
-      case MainItem::ResetTime:
+      case MainItem::Settings:
+        return "Settings";
+      default:
+        return "?";
+    }
+  }
+
+  static String settingsItemLabel_(SettingsItem item) {
+    switch (item) {
+      case SettingsItem::WiFiMode:
+        return String("WiFi mode: ") +
+               (ConfigManager::get().wifiMode == WiFiMode::AccessPoint ? "AP" : "STA");
+      case SettingsItem::LogFormat:
+        return "Log format";
+      case SettingsItem::ResetTime:
         if (s_timeSyncPending) {
           return "Time: SYNCING";
         }
         return "Reset time";
-      case MainItem::Restart:
+      case SettingsItem::Restart:
         return "Restart";
-      case MainItem::About:
+      case SettingsItem::About:
         return "About";
       default:
         return "?";
@@ -232,6 +249,96 @@ namespace {
     DisplayManager::present();
   }
 
+  static void drawSettings_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+    drawHeader_("Settings");
+
+    const uint8_t N = settingsItemCount_();
+    for (uint8_t i = 0; i < N; ++i) {
+      const String label = settingsItemLabel_(static_cast<SettingsItem>(i));
+      String line = (i == s_settingsSel) ? "> " : "  ";
+      line += label;
+
+      const int y = 12 + i * 10;
+      UI::oledText(0, y, line);
+    }
+
+    DisplayManager::present();
+  }
+
+  static void openSettingsSelection_() {
+    switch (static_cast<SettingsItem>(s_settingsSel)) {
+      case SettingsItem::WiFiMode: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        enterWiFiModePicker_();
+        break;
+      }
+
+      case SettingsItem::LogFormat: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        enterLogFormatPicker_();
+        break;
+      }
+
+      case SettingsItem::ResetTime: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+
+        if (LoggingManager::isRunning()) {
+          UI::toastModal("Stop logging first", 1200, 1);
+          deferUiFor(1200);
+          drawSettings_();
+          break;
+        }
+
+        s_timeSyncPending = true;
+        drawSettings_();
+
+        if (!WiFiManager::forceRtcSync()) {
+          s_timeSyncPending = false;
+          UI::toastModal("Time sync fail", 1200, 1);
+          deferUiFor(1200);
+          drawSettings_();
+          break;
+        }
+        break;
+      }
+
+      case SettingsItem::Restart: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+
+        if (LoggingManager::isRunning()) {
+          UI::toastModal("Stop logging first", 1200, 1);
+          deferUiFor(1200);
+          drawSettings_();
+          break;
+        }
+
+        UI::toastModal("Restarting...", 800, 1);
+        deferUiFor(800);
+        DisplayManager::present();
+
+        LOGI_TAG("Menu", "Restarting via esp_restart()\n");
+        Serial.flush();
+        delay(150);
+        RTCManager_invalidateInternalTime();
+        esp_restart();
+        break;
+      }
+
+      case SettingsItem::About: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        s_state = State::About;
+        drawAbout_();
+        break;
+      }
+    }
+  }
+
 
   static void openMainSelection_() {
     switch (static_cast<MainItem>(s_mainSel)) {
@@ -267,13 +374,6 @@ namespace {
         break;
       }
 
-      case MainItem::WiFiMode: {
-        s_swallowEnterRelease = true;
-        guardEnterRight();
-        enterWiFiModePicker_();
-        break;
-      }
-
       case MainItem::UploadMode: {
         s_swallowEnterRelease = true;
         guardEnterRight();
@@ -294,30 +394,6 @@ namespace {
         requestSleepImpl_();
         break;
 
-      case MainItem::ResetTime: {
-        s_swallowEnterRelease = true;
-        guardEnterRight();
-
-        if (LoggingManager::isRunning()) {
-          UI::toastModal("Stop logging first", 1200, 1);
-          deferUiFor(1200);
-          drawMain_();
-          break;
-        }
-
-        s_timeSyncPending = true;
-        drawMain_();
-
-        if (!WiFiManager::forceRtcSync()) {
-          s_timeSyncPending = false;
-          UI::toastModal("Time sync fail", 1200, 1);
-          deferUiFor(1200);
-          drawMain_();
-          break;
-        }
-        break;
-      }
-
       case MainItem::SampleRate: {
         s_swallowEnterRelease = true;   // <--- ADD
         guardEnterRight();              // <--- add
@@ -336,42 +412,12 @@ namespace {
         break;
       }
 
-      case MainItem::LogFormat: {
+      case MainItem::Settings: {
         s_swallowEnterRelease = true;
         guardEnterRight();
-        enterLogFormatPicker_();
-        break;
-      }
-
-      case MainItem::Restart: {
-        s_swallowEnterRelease = true;
-        guardEnterRight();
-
-        // Guard: no restart while logging
-        if (LoggingManager::isRunning()) {
-          UI::toastModal("Stop logging first", 1200, 1);
-          deferUiFor(1200);
-          drawMain_();
-          break;
-        }
-
-        UI::toastModal("Restarting...", 800, 1);
-        deferUiFor(800);
-        DisplayManager::present(); // ensure OLED pushes immediately (if applicable)
-
-        LOGI_TAG("Menu", "Restarting via esp_restart()\n");
-        Serial.flush();
-        delay(150);
-        RTCManager_invalidateInternalTime();
-        esp_restart(); // does not return
-        break;
-      }
-
-      case MainItem::About: {
-        s_swallowEnterRelease = true;
-        guardEnterRight();
-        s_state = State::About;
-        drawAbout_();
+        s_settingsSel = 0;
+        s_state = State::Settings;
+        drawSettings_();
         break;
       }
     }
@@ -563,6 +609,7 @@ namespace {
   static void redraw_() {
     switch (s_state) {
       case State::Main:         drawMain_();         break;
+      case State::Settings:     drawSettings_();     break;
       case State::SensorsList:  drawSensors_();      break;
       case State::RatePicker:   drawRatePicker_();   break;
       case State::LogFormatPicker: drawLogFormatPicker_(); break;
@@ -594,6 +641,10 @@ namespace {
     switch (s_state) {
       case State::Main:
         openMainSelection_();
+        return true;
+
+      case State::Settings:
+        openSettingsSelection_();
         return true;
 
       case State::SensorsList:
@@ -894,8 +945,8 @@ namespace {
     ConfigManager::setLogFormat(format);
     UI::toastModal(String("Format: ") + ConfigManager::logFormatLabel(format), 2000, 1);
     deferUiFor(2000);
-    s_state = State::Main;
-    drawMain_();
+    s_state = State::Settings;
+    drawSettings_();
   }
 
   static void drawWiFiModePicker_() {
@@ -966,8 +1017,8 @@ namespace {
 
     UI::toastModal(String("Mode: ") + ConfigManager::wifiModeLabel(mode), 2000, 1);
     deferUiFor(2000);
-    s_state = State::Main;
-    drawMain_();
+    s_state = State::Settings;
+    drawSettings_();
   }
 
   static void requestSleepImpl_() {
@@ -1162,6 +1213,34 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       break;
     }
 
+    case State::Settings: {
+      if (d == Dir::Left) {
+        s_state = State::Main;
+        drawMain_();
+        return;
+      }
+
+      const uint8_t N = settingsItemCount_();
+      if (d == Dir::Up) {
+        if (N == 0) return;
+        s_settingsSel = (uint8_t)((s_settingsSel + N - 1) % N);
+        drawSettings_();
+        return;
+      }
+
+      if (d == Dir::Down) {
+        if (N == 0) return;
+        s_settingsSel = (uint8_t)((s_settingsSel + 1) % N);
+        drawSettings_();
+        return;
+      }
+
+      if ((d == Dir::Enter || d == Dir::Right) && ev == BUTTON_PRESSED) {
+        if (activateCurrentSelection_()) return;
+      }
+      break;
+    }
+
     case State::SensorsList: {
       const uint8_t n = ConfigManager::sensorCount();
       if (n == 0) { if (d == Dir::Left) { s_state = State::Main; redraw_(); } return; }
@@ -1197,8 +1276,8 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
 
     case State::LogFormatPicker: {
       if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
-        s_state = State::Main;
-        drawMain_();
+        s_state = State::Settings;
+        drawSettings_();
         return;
       }
 
@@ -1225,8 +1304,8 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
 
     case State::WiFiModePicker: {
       if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
-        s_state = State::Main;
-        drawMain_();
+        s_state = State::Settings;
+        drawSettings_();
         return;
       }
 
@@ -1310,8 +1389,8 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
 
     case State::About:
       if (d == Dir::Left) {
-        s_state = State::Main;
-        drawMain_();
+        s_state = State::Settings;
+        drawSettings_();
         return;
       }
       break;

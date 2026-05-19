@@ -11,6 +11,7 @@ namespace UploadAckIndex {
 namespace {
 
 const char* kIndexPath = "/upload_index.ndjson";
+constexpr uint32_t kMaxIndexScanBytes = 1024UL * 1024UL;
 
 static void setError_(String* error, const __FlashStringHelper* msg) {
   if (error) *error = String(msg);
@@ -58,6 +59,30 @@ static bool appendLine_(const String& line, String* error) {
   return true;
 }
 
+static bool openReadableIndex_(File& f, String* error) {
+  if (!SD_MMC.exists(kIndexPath)) {
+    return false;
+  }
+
+  f = SD_MMC.open(kIndexPath, FILE_READ);
+  if (!f) {
+    setError_(error, String(F("open failed: ")) + kIndexPath);
+    return false;
+  }
+
+  if (f.size() > kMaxIndexScanBytes) {
+    setError_(
+      error,
+      String(F("ack index too large to scan: ")) + kIndexPath +
+        F(" (delete or compact this file on the SD card)")
+    );
+    f.close();
+    return false;
+  }
+
+  return true;
+}
+
 static void applyRecordFromJson_(JsonDocument& doc, AckRecord& out) {
   out.found = true;
   out.sessionId = doc["session_id"] | "";
@@ -82,6 +107,17 @@ bool markSessionAcknowledged(const AckRecord& record, String* error) {
   }
   if (!record.sessionId.length()) {
     setError_(error, F("missing session_id"));
+    return false;
+  }
+
+  AckRecord existing;
+  String findError;
+  if (findSessionAcknowledgement(record.sessionId.c_str(), existing, &findError)) {
+    if (isAcknowledgedStatus_(existing.status)) {
+      return true;
+    }
+  } else if (findError.length()) {
+    setError_(error, findError);
     return false;
   }
 
@@ -112,13 +148,8 @@ bool findSessionAcknowledgement(const char* sessionId, AckRecord& out, String* e
     return false;
   }
 
-  if (!SD_MMC.exists(kIndexPath)) {
-    return false;
-  }
-
-  File f = SD_MMC.open(kIndexPath, FILE_READ);
-  if (!f) {
-    setError_(error, String(F("open failed: ")) + kIndexPath);
+  File f;
+  if (!openReadableIndex_(f, error)) {
     return false;
   }
 
@@ -144,6 +175,52 @@ bool findSessionAcknowledgement(const char* sessionId, AckRecord& out, String* e
 
   f.close();
   return out.found;
+}
+
+bool applyAcknowledgementStatuses(AckStatusLookup* lookups, uint16_t count, String* error) {
+  if (error) *error = "";
+  if (!lookups || count == 0) return true;
+
+  for (uint16_t i = 0; i < count; ++i) {
+    lookups[i].acknowledged = false;
+  }
+
+  if (SD_MMC.cardType() == CARD_NONE) {
+    setError_(error, F("SD storage unavailable"));
+    return false;
+  }
+
+  File f;
+  if (!openReadableIndex_(f, error)) {
+    return !(error && error->length());
+  }
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) {
+      delay(0);
+      continue;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, line);
+    if (!err) {
+      const char* sid = doc["session_id"] | "";
+      const String status = doc["status"] | "";
+      for (uint16_t i = 0; i < count; ++i) {
+        if (lookups[i].sessionId && strcmp(sid, lookups[i].sessionId) == 0) {
+          lookups[i].acknowledged = isAcknowledgedStatus_(status);
+          break;
+        }
+      }
+    }
+
+    delay(0);
+  }
+
+  f.close();
+  return true;
 }
 
 bool isSessionAcknowledged(const char* sessionId) {
