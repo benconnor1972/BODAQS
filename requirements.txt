@@ -29,6 +29,7 @@ fitparse==1.2.0
 
 # Desktop/runtime support
 pystray==0.19.5
+zeroconf==0.149.7
 
 # Tests
 pytest==9.0.3

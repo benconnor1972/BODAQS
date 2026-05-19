@@ -19,7 +19,7 @@
         "grade",
         "heading"
       ],
-      "ambiguity_policy": "require_binding",
+      "ambiguity_policy": "largest_overlap",
       "partial_overlap": "allow",
       "persist_raw_stream": true,
       "resample_to_primary": true,

@@ -6,7 +6,6 @@ from importlib.resources import files
 from pathlib import Path
 
 import bodaqs_analysis.import_agent_provisioning as provisioning_module
-import bodaqs_analysis.import_agent_setup as import_agent_setup_module
 import bodaqs_analysis.import_agent_startup as import_agent_startup_module
 import bodaqs_analysis.import_agent_tray as import_agent_tray_module
 from bodaqs_analysis.import_agent import (
@@ -32,6 +31,7 @@ from bodaqs_analysis.import_agent_provisioning import (
     provision_import_agent_library,
     provision_import_agent_source_for_app,
     provision_import_agent_source,
+    remove_import_agent_source,
     runtime_import_agent_app_config_path,
     save_import_agent_app_config,
     update_import_agent_app_auto_start,
@@ -421,7 +421,8 @@ def test_runner_validate_reports_missing_runtime_dirs_as_warnings(tmp_path):
     errors, warnings = runner.validate()
 
     assert errors == []
-    assert len(warnings) == 4
+    assert len(warnings) == 5
+    assert any(str(source_root / "fit") in item for item in warnings)
 
 
 def test_runner_validate_requires_exactly_one_valid_preprocess_profile_in_directory(tmp_path):
@@ -560,6 +561,32 @@ def test_provision_import_agent_source_can_seed_logger_wifi_config(tmp_path):
     assert loaded.source_type == SOURCE_TYPE_LOGGER_WIFI
     assert loaded.logger_wifi is not None
     assert loaded.logger_wifi.logger_id == "Prototype E"
+
+
+def test_provision_import_agent_source_can_seed_logger_wifi_config_without_base_url(tmp_path):
+    libraries_root = tmp_path / "libraries"
+    sources_root = tmp_path / "sources"
+    library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+
+    source = provision_import_agent_source(
+        sources_root / "Alice WiFi Logger",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice WiFi Logger",
+        source_type=SOURCE_TYPE_LOGGER_WIFI,
+        logger_wifi={
+            "logger_id": "Prototype E",
+            "cleanup_mode": "none",
+        },
+        include_events=False,
+        include_metrics=False,
+    )
+
+    loaded = load_import_source_config(source.source_root)
+
+    assert loaded.logger_wifi is not None
+    assert loaded.logger_wifi.logger_id == "Prototype E"
+    assert loaded.logger_wifi.base_url is None
 
 
 def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp_path, monkeypatch):
@@ -726,19 +753,6 @@ def test_runtime_import_agent_app_config_path_falls_back_when_preferred_director
     ).resolve()
 
 
-def test_available_logger_timezones_includes_blank_option_and_sorted_values(monkeypatch):
-    monkeypatch.setattr(
-        import_agent_setup_module,
-        "available_timezones",
-        lambda: {"Europe/Paris", "Australia/Perth", "UTC"},
-    )
-
-    values = import_agent_setup_module.available_logger_timezones()
-
-    assert values[0] == ""
-    assert values[1:] == ["Australia/Perth", "Europe/Paris", "UTC"]
-
-
 def test_provision_import_agent_app_setup_creates_seeded_desktop_setup(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
 
@@ -759,6 +773,12 @@ def test_provision_import_agent_app_setup_creates_seeded_desktop_setup(tmp_path)
     assert provisioned.app_config_path == app_config_path.resolve()
     assert provisioned.library.artifacts_dir.exists()
     assert provisioned.source.import_source_config_path.exists()
+    assert (provisioned.source.source_root / "fit").is_dir()
+    source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
+    assert source_payload["fit_dir"] == "fit"
+    assert "logger_timezone" not in source_payload
+    assert "include_events" not in source_payload
+    assert "include_metrics" not in source_payload
     assert len(config.libraries) == 1
     assert config.libraries[0].library_id == "alice-library"
     assert len(config.sources) == 1
@@ -873,6 +893,8 @@ def test_provision_import_agent_source_for_app_persists_logger_wifi_source(tmp_p
     assert reloaded_source.logger_wifi.logger_id == "Prototype E"
     assert reloaded_source.logger_wifi.base_url == "http://192.168.4.1"
     assert reloaded_source.logger_wifi.cleanup_mode == "move_to_uploaded"
+    source_payload = json.loads(source.import_source_config_path.read_text(encoding="utf-8"))
+    assert "require_upload_mode" not in source_payload["logger_wifi"]
 
 
 def test_update_import_agent_source_enabled_persists_and_filters_enabled_roots(tmp_path):
@@ -893,6 +915,30 @@ def test_update_import_agent_source_enabled_persists_and_filters_enabled_roots(t
 
     assert disabled.sources[0].enabled is False
     assert managed_import_agent_source_roots(disabled, enabled_only=True) == []
+
+
+def test_remove_import_agent_source_only_updates_app_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    source_root = provisioned.source.source_root
+    marker = source_root / "keep_me.txt"
+    marker.write_text("do not delete", encoding="utf-8")
+
+    updated = remove_import_agent_source(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+    )
+
+    assert updated.sources == ()
+    assert load_import_agent_app_config(app_config_path).sources == ()
+    assert source_root.exists()
+    assert marker.read_text(encoding="utf-8") == "do not delete"
 
 
 def test_update_import_agent_app_auto_start_persists(tmp_path):

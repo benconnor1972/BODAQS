@@ -6,6 +6,7 @@
 struct LogMetadataContext {
   const char* csvPath = "";
   const char* sessionId = "";
+  const char* startedAtUtc = "";
   const char* startedAtLocal = "";
   const char* timezone = "";
   const char* generatedAtLocal = "";

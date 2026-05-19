@@ -10,6 +10,7 @@
 #include "DebugTrace.h"
 #include "DebugLog.h"
 #include <math.h>
+#include <time.h>
 
 #define STOR_LOGE(...) LOGE_TAG("Storage", __VA_ARGS__)
 #define STOR_LOGW(...) LOGW_TAG("Storage", __VA_ARGS__)
@@ -42,6 +43,7 @@ static bool loggingActive = false;
 static char s_customHeader[160] = {0};
 static String s_currentLogPath;
 static String s_currentSessionId;
+static String s_logStartedAtUtc;
 static String s_logStartedAtLocal;
 static uint32_t s_rowsWritten = 0;
 static LogFormat s_activeLogFormat = LogFormat::BodaqsStandard;
@@ -95,6 +97,18 @@ static String isoLocalFromFilenameTimestamp_(const String& s) {
   out.setCharAt(13, ':');
   out.setCharAt(16, ':');
   return out;
+}
+
+static String isoUtcFromEpoch_(time_t epoch) {
+  if (epoch < 1577836800) return String();
+
+  struct tm utcInfo;
+  gmtime_r(&epoch, &utcInfo);
+  if ((utcInfo.tm_year + 1900) < 2020) return String();
+
+  char buf[32];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &utcInfo);
+  return String(buf);
 }
 
 static String stemFromPath_(const String& path) {
@@ -564,13 +578,16 @@ static void startLog() {
   s_rowsWritten = 0;
   s_currentLogPath = "";
   s_currentSessionId = "";
+  s_logStartedAtUtc = "";
   s_logStartedAtLocal = "";
   s_activeLogFormat = ConfigManager::get().logFormat;
   s_synBikeRawBindings = SensorManager::SynBikeRawBindings{};
 
   const bool rtcValid = RTCManager_hasValidTime();
+  const time_t startEpoch = RTCManager_getEpoch();
   const uint32_t filenameT0 = millis();
   String filename = RTCManager_getDateTimeString();
+  s_logStartedAtUtc = isoUtcFromEpoch_(startEpoch);
   s_logStartedAtLocal = isoLocalFromFilenameTimestamp_(filename);
   const uint32_t filenameMs = millis() - filenameT0;
   filename.replace(":", "-");
@@ -701,6 +718,7 @@ void StorageManager_stopLog() {
     LogMetadataContext metaCtx;
     metaCtx.csvPath = s_currentLogPath.c_str();
     metaCtx.sessionId = s_currentSessionId.c_str();
+    metaCtx.startedAtUtc = s_logStartedAtUtc.c_str();
     metaCtx.startedAtLocal = s_logStartedAtLocal.c_str();
     metaCtx.timezone = RTCManager_getTimezone();
     metaCtx.generatedAtLocal = generatedAtLocal.c_str();

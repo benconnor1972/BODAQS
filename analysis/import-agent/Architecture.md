@@ -165,6 +165,7 @@ Recommended app-managed roots:
       event_schema.yaml
     bike/
       bike_profile.json
+    fit/
     inbox/
     done/
     failed/
@@ -186,6 +187,12 @@ The product should ship with default assets for a new source:
 - one default preprocess profile
 - one default event schema
 - one example bike profile
+
+Each source also has a `fit/` directory. When FIT import is enabled in the
+preprocess profile, FIT files must be fully copied into this directory before
+import. The agent leaves original FIT files untouched, selects the
+largest-overlap match, and treats FIT enrichment failure as a QC warning rather
+than an import failure.
 
 ## Configuration Layers
 

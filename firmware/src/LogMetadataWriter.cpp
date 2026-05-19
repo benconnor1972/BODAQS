@@ -312,6 +312,7 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
   appendKey_(out, 1, "session");
   out += F("{\n");
   appendKeyString_(out, 2, "session_id", ctx.sessionId);
+  if (hasText_(ctx.startedAtUtc)) appendKeyString_(out, 2, "started_at_utc", ctx.startedAtUtc);
   if (startedAt.length()) appendKeyString_(out, 2, "started_at_local", startedAt.c_str());
   if (hasText_(ctx.timezone)) appendKeyString_(out, 2, "timezone", ctx.timezone);
   appendKeyString_(out, 2, "notes", "CSV emitted in syn.bike raw import format.", false);
@@ -454,6 +455,7 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   appendKey_(out, 1, "session");
   out += F("{\n");
   appendKeyString_(out, 2, "session_id", ctx.sessionId);
+  if (hasText_(ctx.startedAtUtc)) appendKeyString_(out, 2, "started_at_utc", ctx.startedAtUtc);
   if (startedAt.length()) appendKeyString_(out, 2, "started_at_local", startedAt.c_str());
   if (hasText_(ctx.timezone)) appendKeyString_(out, 2, "timezone", ctx.timezone);
   const char* sessionNote = "";

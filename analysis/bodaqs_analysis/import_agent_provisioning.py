@@ -573,6 +573,29 @@ def update_import_agent_source_enabled(
     return updated
 
 
+def remove_import_agent_source(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+
+    updated_sources = [source for source in config.sources if source.source_id != source_id]
+    if len(updated_sources) == len(config.sources):
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+
+    updated = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=config.libraries,
+        sources=updated_sources,
+        auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
 def update_import_agent_app_auto_start(
     app_config_path: str | Path,
     *,
@@ -682,6 +705,7 @@ def provision_import_agent_source(
 
     settings_dir = source_root_path / settings_dir_name
     bike_dir = source_root_path / bike_dir_name
+    fit_dir = source_root_path / "fit"
     inbox_dir = source_root_path / "inbox"
     done_dir = source_root_path / "done"
     failed_dir = source_root_path / "failed"
@@ -691,7 +715,7 @@ def provision_import_agent_source(
     event_schema_path = settings_dir / "event_schema.yaml"
     bike_profile_path = bike_dir / "bike_profile.json"
 
-    for path in (settings_dir, bike_dir, inbox_dir, done_dir, failed_dir, staging_dir):
+    for path in (settings_dir, bike_dir, fit_dir, inbox_dir, done_dir, failed_dir, staging_dir):
         path.mkdir(parents=True, exist_ok=True)
 
     preprocess_profile = copy.deepcopy(dict(preprocess_asset.payload))
@@ -711,17 +735,15 @@ def provision_import_agent_source(
         "artifacts_dir": str(artifacts_dir_path),
         "preprocess_profile_path": settings_dir_name,
         "bike_profile_path": bike_dir_name,
+        "fit_dir": "fit",
         "inbox_dir": "inbox",
         "done_dir": "done",
         "failed_dir": "failed",
         "staging_dir": "staging",
         "archive_patterns": ["*.zip"],
-        "logger_timezone": logger_timezone,
         "run_tz_label": str(run_tz_label).strip() or "LOCAL",
         "poll_interval_s": float(poll_interval_s),
         "settle_time_s": float(settle_time_s),
-        "include_events": bool(include_events),
-        "include_metrics": bool(include_metrics),
         "force_reprocess": bool(force_reprocess),
     }
     if logger_wifi_config is not None:

@@ -25,7 +25,9 @@ a = Analysis(
     datas=[],
     hiddenimports=[
         "bodaqs_analysis.import_agent_logger_wifi",
+        "bodaqs_analysis.import_agent_logger_wifi_discovery",
         "bodaqs_analysis.import_agent_sources",
+        "zeroconf",
     ],
     hookspath=[],
     hooksconfig={},

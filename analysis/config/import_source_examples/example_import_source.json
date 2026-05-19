@@ -6,6 +6,7 @@
   "artifacts_dir": "C:/BODAQS/library",
   "preprocess_profile_path": "settings",
   "bike_profile_path": "bike",
+  "fit_dir": "fit",
   "inbox_dir": "inbox",
   "done_dir": "done",
   "failed_dir": "failed",
@@ -13,11 +14,8 @@
   "archive_patterns": [
     "*.zip"
   ],
-  "logger_timezone": "Australia/Perth",
   "run_tz_label": "AWST",
   "poll_interval_s": 5.0,
   "settle_time_s": 15.0,
-  "include_events": true,
-  "include_metrics": true,
   "force_reprocess": false
 }

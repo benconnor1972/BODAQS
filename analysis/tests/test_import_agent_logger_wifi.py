@@ -9,8 +9,18 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+import bodaqs_analysis.import_agent as import_agent_module
+import bodaqs_analysis.import_agent_logger_wifi_discovery as discovery_module
 from bodaqs_analysis.import_agent import run_sources_once
 from bodaqs_analysis.import_agent_logger_wifi import LoggerWifiApiClient, LoggerWifiApiError
+from bodaqs_analysis.import_agent_logger_wifi_discovery import (
+    LoggerWifiDiscoveryError,
+    LoggerWifiDiscoveryResult,
+    LoggerWifiDiscoveryUnavailable,
+    discover_logger_wifi_sources,
+    discover_single_logger_wifi_source,
+    logger_wifi_discovery_result_from_service_info,
+)
 from bodaqs_analysis.import_agent_provisioning import (
     provision_import_agent_library,
     provision_import_agent_source,
@@ -106,24 +116,26 @@ def _importable_archive_bytes(stem: str = "2026-05-16_20-15-42") -> bytes:
 
 def _provision_wifi_source(
     tmp_path: Path,
-    base_url: str,
+    base_url: str | None,
     *,
     cleanup_mode: str = "none",
     request_timeout_s: float = 5.0,
 ):
     library = provision_import_agent_library(tmp_path / "libraries", display_name="Test Library")
+    logger_wifi = {
+        "logger_id": "Prototype E",
+        "request_timeout_s": request_timeout_s,
+        "cleanup_mode": cleanup_mode,
+    }
+    if base_url is not None:
+        logger_wifi["base_url"] = base_url
     source = provision_import_agent_source(
         tmp_path / "sources" / "Prototype E WiFi",
         artifacts_dir=library.artifacts_dir,
         library_id=library.library_id,
         display_name="Prototype E WiFi",
         source_type=SOURCE_TYPE_LOGGER_WIFI,
-        logger_wifi={
-            "logger_id": "Prototype E",
-            "base_url": base_url,
-            "request_timeout_s": request_timeout_s,
-            "cleanup_mode": cleanup_mode,
-        },
+        logger_wifi=logger_wifi,
         logger_timezone="Australia/Perth",
         run_tz_label="AWST",
         settle_time_s=3600.0,
@@ -429,6 +441,67 @@ def test_logger_wifi_client_does_not_call_cleanup_for_none_mode():
     assert server.state["cleanups"] == []
 
 
+class _FakeMdnsServiceInfo:
+    name = "Prototype E._bodaqs-logger._tcp.local."
+    server = "bodaqs-prototype-e.local."
+    port = 80
+    properties = {
+        b"api": b"1",
+        b"logger_id": b"Prototype E",
+        b"upload_mode": b"true",
+        b"hostname": b"bodaqs-prototype-e",
+    }
+
+    def parsed_addresses(self):
+        return ["fe80::1234", "192.168.1.42"]
+
+
+def test_logger_wifi_discovery_result_parses_mdns_service_info():
+    result = logger_wifi_discovery_result_from_service_info(_FakeMdnsServiceInfo())
+
+    assert result is not None
+    assert result.logger_id == "Prototype E"
+    assert result.base_url == "http://192.168.1.42"
+    assert result.hostname == "bodaqs-prototype-e"
+    assert result.api_version == 1
+    assert result.upload_mode is True
+    assert result.addresses == ("fe80::1234", "192.168.1.42")
+
+
+def test_logger_wifi_discovery_reports_unavailable_dependency(monkeypatch):
+    def unavailable():
+        raise LoggerWifiDiscoveryUnavailable("missing test zeroconf")
+
+    monkeypatch.setattr(discovery_module, "_import_zeroconf_symbols", unavailable)
+
+    with pytest.raises(LoggerWifiDiscoveryUnavailable):
+        discover_logger_wifi_sources(timeout_s=0.1)
+
+
+def test_logger_wifi_discovery_rejects_duplicate_logger_ids(monkeypatch):
+    results = [
+        LoggerWifiDiscoveryResult(
+            service_name="one",
+            base_url="http://192.168.1.42",
+            addresses=("192.168.1.42",),
+            port=80,
+            logger_id="Prototype E",
+        ),
+        LoggerWifiDiscoveryResult(
+            service_name="two",
+            base_url="http://192.168.1.43",
+            addresses=("192.168.1.43",),
+            port=80,
+            logger_id="Prototype E",
+        ),
+    ]
+
+    monkeypatch.setattr(discovery_module, "discover_logger_wifi_sources", lambda **_kwargs: results)
+
+    with pytest.raises(LoggerWifiDiscoveryError):
+        discover_single_logger_wifi_source(logger_id="Prototype E", timeout_s=0.1)
+
+
 def test_logger_wifi_source_acquires_imports_acknowledges_and_cleans_up(tmp_path):
     with _FakeLoggerServer(archive_bytes=_importable_archive_bytes()) as server:
         source, library = _provision_wifi_source(
@@ -500,6 +573,61 @@ def test_logger_wifi_source_does_not_reack_remote_acknowledged_session(tmp_path)
     imported_record = report["sources"][0]["imported"][0]
     assert imported_record["remote_acknowledged"] is True
     assert imported_record["remote_already_acknowledged"] is True
+
+
+def test_logger_wifi_source_discovers_logger_when_base_url_missing(tmp_path, monkeypatch):
+    with _FakeLoggerServer(archive_bytes=_importable_archive_bytes()) as server:
+        source, _library = _provision_wifi_source(tmp_path, None)
+
+        monkeypatch.setattr(
+            import_agent_module,
+            "discover_single_logger_wifi_source",
+            lambda **_kwargs: LoggerWifiDiscoveryResult(
+                service_name="Prototype E._bodaqs-logger._tcp.local.",
+                base_url=server.base_url,
+                addresses=("127.0.0.1",),
+                port=int(server.base_url.rsplit(":", 1)[1]),
+                logger_id="Prototype E",
+                upload_mode=True,
+            ),
+        )
+
+        report = run_sources_once([source.source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert report["sources"][0]["remote"]["discovery"]["state"] == "found"
+    assert report["sources"][0]["remote"]["base_url"] is None
+    assert report["sources"][0]["imported"][0]["remote_base_url"] == server.base_url
+    assert server.state["acks"][0]["session_id"] == "Prototype E__2026-05-16_20-15-42"
+
+
+def test_logger_wifi_source_falls_back_to_discovered_address_after_stale_base_url(tmp_path, monkeypatch):
+    with _FakeLoggerServer(archive_bytes=_importable_archive_bytes()) as server:
+        source, _library = _provision_wifi_source(
+            tmp_path,
+            _unused_local_base_url(),
+            request_timeout_s=0.1,
+        )
+
+        monkeypatch.setattr(
+            import_agent_module,
+            "discover_single_logger_wifi_source",
+            lambda **_kwargs: LoggerWifiDiscoveryResult(
+                service_name="Prototype E._bodaqs-logger._tcp.local.",
+                base_url=server.base_url,
+                addresses=("127.0.0.1",),
+                port=int(server.base_url.rsplit(":", 1)[1]),
+                logger_id="Prototype E",
+                upload_mode=True,
+            ),
+        )
+
+        report = run_sources_once([source.source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert report["sources"][0]["remote"]["discovery"]["state"] == "found"
+    assert "configured_address_error" in report["sources"][0]["remote"]
+    assert report["sources"][0]["imported"][0]["remote_base_url"] == server.base_url
 
 
 def test_logger_wifi_source_waits_for_upload_mode_without_failure(tmp_path):

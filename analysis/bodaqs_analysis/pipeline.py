@@ -328,10 +328,16 @@ def _apply_log_metadata(
 
     session_meta = log_metadata.get("session")
     if isinstance(session_meta, dict):
+        started_at_utc = session_meta.get("started_at_utc")
+        if isinstance(started_at_utc, str) and started_at_utc.strip():
+            source["created_utc"] = started_at_utc
+            meta["t0_datetime"] = started_at_utc
+
         started_at_local = session_meta.get("started_at_local")
         if isinstance(started_at_local, str) and started_at_local.strip():
             source["created_local"] = started_at_local
-            meta["t0_datetime"] = started_at_local
+            if not isinstance(meta.get("t0_datetime"), str) or not meta["t0_datetime"].strip():
+                meta["t0_datetime"] = started_at_local
 
         timezone = _optional_nonempty_str(session_meta.get("timezone"))
         if timezone is not None:
@@ -1228,6 +1234,11 @@ def attach_fit_stream(
     return session
 
 
+def _fit_failure_policy_warns(cfg: Mapping[str, Any]) -> bool:
+    policy = str(cfg.get("failure_policy") or cfg.get("on_error") or "raise").strip().lower()
+    return policy in {"warn", "warning", "qc_warning", "skip", "continue"}
+
+
 def enrich_session_with_fit(
     session: Dict[str, Any],
     *,
@@ -1239,6 +1250,46 @@ def enrich_session_with_fit(
     cfg = _normalized_fit_import_config(fit_import)
     if not bool(cfg.get("enabled")):
         return session
+    if _fit_failure_policy_warns(cfg):
+        try:
+            return _enrich_session_with_fit_impl(
+                session,
+                fit_import=cfg,
+                fit_stream=fit_stream,
+                fit_candidates=fit_candidates,
+                fit_bindings=fit_bindings,
+            )
+        except Exception as exc:
+            logger.warning("FIT enrichment failed; continuing without FIT data: %s", exc)
+            _append_qc_warning(session, "fit_import_failed")
+            fit_qc = session.setdefault("qc", {}).setdefault("fit_import", {})
+            fit_qc.update(
+                {
+                    "enabled": True,
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            return session
+
+    return _enrich_session_with_fit_impl(
+        session,
+        fit_import=cfg,
+        fit_stream=fit_stream,
+        fit_candidates=fit_candidates,
+        fit_bindings=fit_bindings,
+    )
+
+
+def _enrich_session_with_fit_impl(
+    session: Dict[str, Any],
+    *,
+    fit_import: Mapping[str, Any],
+    fit_stream: Optional[Mapping[str, Any]] = None,
+    fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
+) -> Dict[str, Any]:
+    cfg = _normalized_fit_import_config(fit_import)
 
     stream_name = str(cfg.get("raw_stream_name") or "gps_fit")
     selected: Optional[Mapping[str, Any]] = None

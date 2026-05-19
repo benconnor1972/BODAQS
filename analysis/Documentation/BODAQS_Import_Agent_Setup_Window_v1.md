@@ -90,8 +90,8 @@ analysis/dist/installer/windows/
 
 - The manager window manages the app-settings file automatically and does not
   ask the user to choose that path during normal setup.
-- The logger timezone field is presented as a dropdown seeded from the
-  available IANA timezone list, with a blank option for "unspecified".
+- Logger timestamp interpretation comes from per-session log metadata; the
+  manager does not ask for a logger timezone during normal source setup.
 - On Windows, the manager can persist a start-at-login preference. Startup
   launches begin the watch loop automatically and hide the window to the tray.
 - Closing the window hides it to the tray instead of quitting the app when the

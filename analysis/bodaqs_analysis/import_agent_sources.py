@@ -102,7 +102,7 @@ def parse_logger_wifi_source_config(value: Mapping[str, Any]) -> LoggerWifiSourc
             value.get("download_timeout_s", 60.0),
             field_name="logger_wifi.download_timeout_s",
         ),
-        require_upload_mode=bool(value.get("require_upload_mode", True)),
+        require_upload_mode=True,
         cleanup_mode=cleanup_mode,
     )
 
@@ -113,7 +113,6 @@ def logger_wifi_source_config_to_jsonable(config: LoggerWifiSourceConfig) -> dic
         "base_url": config.base_url,
         "request_timeout_s": float(config.request_timeout_s),
         "download_timeout_s": float(config.download_timeout_s),
-        "require_upload_mode": bool(config.require_upload_mode),
         "cleanup_mode": config.cleanup_mode,
     }
 

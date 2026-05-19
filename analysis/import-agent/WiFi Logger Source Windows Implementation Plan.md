@@ -2,7 +2,11 @@
 
 ## Status
 
-Windows-first implementation plan. mDNS discovery is deliberately deferred.
+Windows-first implementation plan. Manual-address Wi-Fi import is implemented.
+The first mDNS implementation slice is also implemented on the agent side:
+the manager can discover loggers, Wi-Fi sources may omit a fixed address, and
+background acquisition can fall back from a remembered/manual address to
+mDNS discovery by logger id.
 
 This plan extends the existing BODAQS Import Agent Manager so it can import
 sessions directly from a logger over Wi-Fi while preserving the current archive
@@ -20,7 +24,6 @@ mode before session transfer proceeds.
 
 ## Non-Goals For The First Windows Version
 
-- mDNS discovery.
 - Automatic PC Wi-Fi switching into logger AP mode.
 - Serial, BLE, cloud, or phone-bridge acquisition.
 - Live streaming.
@@ -47,9 +50,7 @@ mode before session transfer proceeds.
 1. Install and launch BODAQS Import Agent Manager.
 2. Create or select a local BODAQS library.
 3. Add a Wi-Fi logger source.
-4. Enter either:
-   - a logger address such as `http://192.168.4.1`
-   - or a remembered station-mode address/hostname
+4. Either discover nearby loggers with mDNS or enter a logger address manually.
 5. The manager calls `/api/v1/device`, verifies identity, and records the
    logger id.
 6. User selects the local bike/settings profile folders seeded by the manager.
@@ -125,27 +126,29 @@ Example `logger_wifi` source:
   "artifacts_dir": "C:/Users/Ben/BODAQS/libraries/default-library",
   "preprocess_profile_path": "settings",
   "bike_profile_path": "bike",
+  "fit_dir": "fit",
   "inbox_dir": "inbox",
   "done_dir": "done",
   "failed_dir": "failed",
   "staging_dir": "staging",
   "archive_patterns": ["*.zip"],
-  "logger_timezone": "Australia/Perth",
   "run_tz_label": "LOCAL",
   "poll_interval_s": 10,
   "settle_time_s": 0,
-  "include_events": true,
-  "include_metrics": true,
   "logger_wifi": {
     "logger_id": "Prototype E",
     "base_url": "http://192.168.4.1",
     "request_timeout_s": 5,
     "download_timeout_s": 60,
-    "require_upload_mode": true,
     "cleanup_mode": "none"
   }
 }
 ```
+
+Wi-Fi logger imports always require upload mode. If `fit_import.enabled` is true in the source
+preprocess profile, the agent reads fully copied `.fit` files from `fit_dir`, selects the
+largest-overlap match, leaves the original FIT file in place, and continues without FIT enrichment
+if parsing or matching fails.
 
 Cleanup modes:
 
@@ -154,6 +157,11 @@ Cleanup modes:
 - `delete`
 
 Default should be `none`.
+
+With mDNS enabled, `logger_wifi.logger_id` remains the source identity.
+`logger_wifi.base_url` becomes a remembered/manual address rather than a
+required identity field. The agent may use it first for speed, but must verify
+the logger id over HTTP before importing.
 
 ## Phase 1. Source Model And Config Scaffold
 
@@ -280,8 +288,8 @@ Purpose:
 Status:
 
 - added a source-type selector to the Provision tab
-- added a Wi-Fi logger source panel with logger address, Verify Logger,
-  logger ID, cleanup mode, timeouts, and Require upload mode
+- added a Wi-Fi logger source panel with logger ID, optional logger address,
+  Verify Logger, cleanup mode, and timeouts
 - Verify Logger calls `/api/v1/device` and `/api/v1/status`, then stores the
   returned logger ID for source creation
 - Create Initial Library + Source and Add Source can now provision
@@ -384,9 +392,100 @@ Acceptance:
 
 ### mDNS Discovery
 
-Add optional discovery of `_bodaqs-logger._tcp` and populate the Add Source
-dialog with discovered loggers. This should enhance, not replace,
-manual/remembered addresses.
+Status:
+
+- firmware already advertises `_bodaqs-logger._tcp` in station mode
+- firmware already publishes `api`, `logger_id`, `upload_mode`, and `hostname`
+  TXT records
+- firmware already exposes `mdns_discovery` in `/api/v1/device` capabilities
+- agent discovery module implemented with the Python `zeroconf` package
+- manager discovery button implemented for the Add Source flow
+- background acquisition fallback implemented for missing/stale `base_url`
+
+Purpose:
+
+- remove the need for fixed station-mode IP addresses
+- let the manager find the current address for a known logger id
+- keep AP-mode and troublesome-network workflows working through manual
+  address entry
+
+Design:
+
+- logger id is the stable identity
+- mDNS answers "where is that logger right now?"
+- `/api/v1/device` remains the authoritative identity check
+- discovered addresses are cached as reachability hints, not trusted identity
+- AP mode keeps using manual/default address, because the PC must explicitly
+  join the logger AP network
+
+Firmware tasks:
+
+- keep advertising service `_bodaqs-logger._tcp.local.` on port 80 in station
+  mode only
+- keep hostname stable and DNS-safe, derived from `logger_id`
+- include TXT records:
+  - `api=1`
+  - `logger_id=<logger id>`
+  - `upload_mode=true|false`
+  - `hostname=<advertised hostname>`
+- restart or refresh mDNS after:
+  - station connection comes online
+  - upload mode enters/exits
+  - logger id/name changes
+  - Wi-Fi disconnect/reconnect
+- stop mDNS when:
+  - Wi-Fi is disabled
+  - logging suspends Wi-Fi
+  - AP mode starts
+  - sleep/shutdown begins
+- keep `/api/v1/device` and `/api/v1/status` hostname/capability fields in
+  sync with the mDNS advertisement
+- document that mDNS is station-mode discovery only
+
+Agent tasks:
+
+- add a small `zeroconf`-backed discovery module for
+  `_bodaqs-logger._tcp.local.`
+- parse service addresses, port, server name, and TXT properties
+- expose discovery results as:
+  - `logger_id`
+  - `display_name` when available
+  - `base_url`
+  - `hostname`
+  - `upload_mode`
+  - `api_version`
+  - raw addresses/properties for diagnostics
+- tolerate missing `zeroconf` with a friendly "mDNS support not installed"
+  status rather than breaking normal imports
+- add `zeroconf` to requirements and PyInstaller hidden imports
+- in background acquisition:
+  - try remembered/manual `base_url` first if configured
+  - if it is missing or unreachable, discover by `logger_id`
+  - verify `/api/v1/device.logger_id` before any session call
+  - record the resolved address in import state/report
+  - do not fail the local import scan if discovery finds nothing
+- in the manager:
+  - add `Discover Loggers`
+  - list discovered loggers with logger id, address, upload mode, and hostname
+  - selecting a logger fills logger id and address
+  - allow source creation with logger id only when discovery is available
+  - keep manual address entry visible as fallback
+- add tests for:
+  - TXT/address parsing
+  - discovery unavailable path
+  - acquisition with no configured `base_url` using discovery fallback
+  - configured stale address falling back to discovered address
+  - duplicate discovered logger ids refusing automatic selection
+
+Acceptance:
+
+- a source can be defined by logger id without a fixed station-mode IP
+- manual AP address still works
+- stale remembered station IPs do not block import if mDNS finds the logger
+- no session is imported unless HTTP identity verification matches the source
+  logger id
+- offline or blocked mDNS appears as a waiting/not found status, not a modal
+  error storm
 
 ### Serial Logger Source
 
@@ -404,10 +503,16 @@ Normalize cloud-synced archives into the same local handoff contract.
 Risk:
 
 - mDNS availability varies depending on Bonjour/iTunes/Windows network setup.
+- multicast DNS can be blocked by firewall profiles, VPN adapters, guest Wi-Fi,
+  router/AP isolation, or VLAN boundaries.
 
 Resolution:
 
-- defer mDNS and start with manual/remembered addresses.
+- use the Python `zeroconf` package rather than relying on Bonjour being
+  separately installed
+- keep manual address and last-known-address fallback
+- always verify identity with `/api/v1/device`
+- surface "not discovered" as a normal waiting state
 
 ### Upload Mode Confusion
 

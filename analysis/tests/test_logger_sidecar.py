@@ -118,6 +118,64 @@ def _write_csv_and_sidecar(tmp_path):
     return csv_path, sidecar_path
 
 
+def test_log_metadata_started_at_utc_takes_precedence_for_absolute_anchor():
+    df = pd.DataFrame({"time_s": [0.0, 1.0], "front_shock_dom_suspension [mm]": [10.0, 11.0]})
+    session = build_session_from_dataframe(
+        df,
+        session_id="utc_anchor",
+        log_metadata={
+            "contract": {"name": "mtb_logger_timeseries", "version": "0.2.0"},
+            "session": {
+                "session_id": "utc_anchor",
+                "started_at_utc": "2026-02-19T00:35:11Z",
+                "started_at_local": "2026-02-19T08:35:11",
+                "timezone": "AWST-8",
+            },
+            "streams": {"primary": {"type": "uniform", "time_col": "time_s"}},
+            "columns": {
+                "time_s": {"class": "time", "stream": "primary", "unit": "s"},
+                "front_shock_dom_suspension [mm]": {"class": "signal", "stream": "primary", "unit": "mm"},
+            },
+        },
+    )
+
+    assert session["meta"]["t0_datetime"] == "2026-02-19T00:35:11Z"
+    assert session["source"]["created_utc"] == "2026-02-19T00:35:11Z"
+    assert session["source"]["created_local"] == "2026-02-19T08:35:11"
+
+
+def test_fit_import_failure_policy_warn_continues_without_fit_stream():
+    session = {
+        "session_id": "fit_failure_policy",
+        "df": pd.DataFrame({"time_s": [0.0, 1.0], "front_shock_dom_suspension [mm]": [10.0, 11.0]}),
+        "meta": {"t0_datetime": "2026-02-19T00:35:11Z", "channel_info": {}},
+        "source": {},
+        "qc": {"warnings": []},
+    }
+
+    out = enrich_session_with_fit(
+        session,
+        fit_import={
+            "enabled": True,
+            "failure_policy": "warn",
+            "ambiguity_policy": "largest_overlap",
+        },
+        fit_candidates=[
+            {
+                "filename": "bad.fit",
+                "fit_input": b"not a fit file",
+                "start_datetime": "2026-02-19T00:35:10Z",
+                "end_datetime": "2026-02-19T00:35:20Z",
+            }
+        ],
+    )
+
+    assert out is session
+    assert "fit_import_failed" in out["qc"]["warnings"]
+    assert out["qc"]["fit_import"]["status"] == "failed"
+    assert "stream_dfs" not in out
+
+
 def _write_csv_only(tmp_path, name: str = "session.csv"):
     csv_path = tmp_path / name
     csv_path.write_text(

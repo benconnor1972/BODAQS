@@ -17,7 +17,7 @@ Version 1 is intentionally narrow:
 - packaged CLI first
 - Windows-first deployment target
 - one archive = one session
-- no FIT enrichment
+- optional FIT enrichment from the source-local `fit/` directory
 - no generic log-metadata fallback
 - existing artifact contract preserved
 
@@ -35,6 +35,7 @@ Each watched source is a directory containing:
     event_schema.yaml
   bike/
     <exactly one valid bike profile JSON>
+  fit/
   inbox/
   done/
   failed/
@@ -48,6 +49,11 @@ contain exactly one valid JSON file for that profile type. The event schema YAML
 can live alongside the preprocess profile inside `settings/`.
 
 Multiple sources may target the same central artifact library.
+
+If `fit_import.enabled` is true in the preprocess profile, the import agent
+looks for fully copied `.fit` files in `fit/`, selects the largest-overlap FIT
+file, leaves the original FIT file in place, and records a QC warning rather
+than failing the import if FIT enrichment cannot be applied.
 
 ---
 
@@ -152,8 +158,6 @@ Derived from:
 - raw session identity
 - preprocess profile hash
 - bike profile hash
-- include-events / include-metrics settings
-- logger timezone fallback
 
 This means:
 

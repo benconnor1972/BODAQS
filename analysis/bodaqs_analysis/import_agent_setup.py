@@ -11,13 +11,17 @@ import webbrowser
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
-from zoneinfo import available_timezones
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .import_agent import ImportAgentSupervisor, load_import_source_config, validate_import_sources
 from .import_agent_logger_wifi import LoggerWifiApiClient
+from .import_agent_logger_wifi_discovery import (
+    LoggerWifiDiscoveryResult,
+    discover_logger_wifi_sources,
+    discover_single_logger_wifi_source,
+)
 from .import_agent_provisioning import (
     IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
     IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
@@ -28,6 +32,7 @@ from .import_agent_provisioning import (
     provision_import_agent_app_setup,
     provision_import_agent_library_for_app,
     provision_import_agent_source_for_app,
+    remove_import_agent_source,
     runtime_import_agent_app_config_path,
     update_import_agent_app_auto_start,
     update_import_agent_source_enabled,
@@ -64,6 +69,8 @@ _LOGGER_WIFI_CLEANUP_LABELS = {
 _LOGGER_WIFI_CLEANUP_BY_LABEL = {
     label: value for value, label in _LOGGER_WIFI_CLEANUP_LABELS.items()
 }
+_SOURCE_ENABLED_CHECKED = "☑"
+_SOURCE_ENABLED_UNCHECKED = "☐"
 
 
 def _default_workspace_root() -> Path:
@@ -81,16 +88,6 @@ def _default_libraries_root() -> Path:
 def _default_app_config_path(*, mode: str = IMPORT_AGENT_APP_CONFIG_MODE_AUTO) -> Path:
     preferred_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None
     return runtime_import_agent_app_config_path(preferred_dir=preferred_dir, mode=mode)
-
-
-def available_logger_timezones() -> list[str]:
-    try:
-        zones = sorted(str(item) for item in available_timezones() if str(item).strip())
-    except Exception:
-        zones = []
-    if not zones:
-        zones = ["UTC", "Australia/Perth"]
-    return ["", *zones]
 
 
 def _aggregate_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
@@ -138,12 +135,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--libraries-root", default=str(_default_libraries_root()))
     parser.add_argument("--library-name", default="Default Library")
     parser.add_argument("--source-name", default="Default Source")
-    parser.add_argument("--logger-timezone", default="")
     parser.add_argument("--run-tz-label", default="LOCAL")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--auto-start", action="store_true")
-    parser.add_argument("--disable-events", action="store_true")
-    parser.add_argument("--disable-metrics", action="store_true")
     parser.add_argument("--startup-launch", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--start-watch", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--start-minimized", action="store_true", help=argparse.SUPPRESS)
@@ -177,10 +171,7 @@ class ImportAgentManagerController:
         source_display_name: str,
         source_type: str,
         logger_wifi: Optional[dict[str, Any]],
-        logger_timezone: Optional[str],
         run_tz_label: str,
-        include_events: bool,
-        include_metrics: bool,
         auto_start: bool,
         overwrite: bool,
     ) -> Any:
@@ -192,10 +183,7 @@ class ImportAgentManagerController:
             app_config_path=self.app_config_path,
             source_type=source_type,
             logger_wifi=logger_wifi,
-            logger_timezone=logger_timezone,
             run_tz_label=run_tz_label,
-            include_events=include_events,
-            include_metrics=include_metrics,
             auto_start=auto_start,
             overwrite=overwrite,
         )
@@ -218,10 +206,7 @@ class ImportAgentManagerController:
         display_name: str,
         source_type: str,
         logger_wifi: Optional[dict[str, Any]],
-        logger_timezone: Optional[str],
         run_tz_label: str,
-        include_events: bool,
-        include_metrics: bool,
         overwrite: bool,
     ) -> Any:
         updated, source = provision_import_agent_source_for_app(
@@ -230,10 +215,7 @@ class ImportAgentManagerController:
             display_name=display_name,
             source_type=source_type,
             logger_wifi=logger_wifi,
-            logger_timezone=logger_timezone,
             run_tz_label=run_tz_label,
-            include_events=include_events,
-            include_metrics=include_metrics,
             overwrite=overwrite,
         )
         self.app_config = updated
@@ -244,6 +226,14 @@ class ImportAgentManagerController:
             self.app_config_path,
             source_id=source_id,
             enabled=enabled,
+        )
+        self.app_config = updated
+        return updated
+
+    def remove_source(self, source_id: str) -> ImportAgentAppConfig:
+        updated = remove_import_agent_source(
+            self.app_config_path,
+            source_id=source_id,
         )
         self.app_config = updated
         return updated
@@ -360,19 +350,15 @@ class ImportAgentManagerWindow:
         self.library_name_var = tk.StringVar(value=str(args.library_name))
         self.source_name_var = tk.StringVar(value=str(args.source_name))
         self.source_type_choice_var = tk.StringVar(value=_SOURCE_TYPE_LABELS[SOURCE_TYPE_FILESYSTEM_ARCHIVE])
-        self.logger_timezone_var = tk.StringVar(value=str(args.logger_timezone or ""))
         self.run_tz_label_var = tk.StringVar(value=str(args.run_tz_label or "LOCAL"))
-        self.include_events_var = tk.BooleanVar(value=not bool(args.disable_events))
-        self.include_metrics_var = tk.BooleanVar(value=not bool(args.disable_metrics))
         self.auto_start_var = tk.BooleanVar(value=bool(args.auto_start))
         self.overwrite_var = tk.BooleanVar(value=bool(args.overwrite))
         self.source_library_choice_var = tk.StringVar(value="")
-        self.wifi_address_var = tk.StringVar(value="http://192.168.4.1")
+        self.wifi_address_var = tk.StringVar(value="")
         self.wifi_logger_id_var = tk.StringVar(value="")
         self.wifi_cleanup_choice_var = tk.StringVar(value=_LOGGER_WIFI_CLEANUP_LABELS[LOGGER_WIFI_CLEANUP_NONE])
         self.wifi_request_timeout_var = tk.StringVar(value="5")
         self.wifi_download_timeout_var = tk.StringVar(value="60")
-        self.wifi_require_upload_mode_var = tk.BooleanVar(value=True)
         self.wifi_status_var = tk.StringVar(value="Wi-Fi logger not checked.")
         self.startup_launch = bool(args.startup_launch)
         self.start_watch_on_launch = bool(args.start_watch or args.startup_launch)
@@ -392,7 +378,6 @@ class ImportAgentManagerWindow:
         self.add_source_button: Optional[ttk.Button] = None
         self.apply_app_settings_button: Optional[ttk.Button] = None
         self.library_choice_combo: Optional[ttk.Combobox] = None
-        self.logger_timezone_combo: Optional[ttk.Combobox] = None
         self.source_type_combo: Optional[ttk.Combobox] = None
         self.wifi_frame: Optional[ttk.LabelFrame] = None
 
@@ -476,57 +461,69 @@ class ImportAgentManagerWindow:
         ttk.Label(lists, text="Libraries").grid(row=0, column=0, sticky="w", pady=(0, 4))
         ttk.Label(lists, text="Sources").grid(row=0, column=1, sticky="w", pady=(0, 4), padx=(12, 0))
 
+        libraries_frame = ttk.Frame(lists)
+        libraries_frame.grid(row=1, column=0, sticky="nsew")
+        libraries_frame.columnconfigure(0, weight=1)
+        libraries_frame.rowconfigure(0, weight=1)
         libraries_tree = ttk.Treeview(
-            lists,
+            libraries_frame,
             columns=("display_name", "library_id", "artifacts_dir"),
             show="headings",
             height=9,
         )
+        libraries_xscroll = ttk.Scrollbar(libraries_frame, orient="horizontal", command=libraries_tree.xview)
+        libraries_tree.configure(xscrollcommand=libraries_xscroll.set)
         libraries_tree.heading("display_name", text="Display Name", anchor="w")
         libraries_tree.heading("library_id", text="Library ID", anchor="w")
         libraries_tree.heading("artifacts_dir", text="Artifacts Directory", anchor="w")
         libraries_tree.column("display_name", width=180, anchor="w")
         libraries_tree.column("library_id", width=140, anchor="w")
-        libraries_tree.column("artifacts_dir", width=320, anchor="w")
-        libraries_tree.grid(row=1, column=0, sticky="nsew")
+        libraries_tree.column("artifacts_dir", width=520, anchor="w")
+        libraries_tree.grid(row=0, column=0, sticky="nsew")
+        libraries_xscroll.grid(row=1, column=0, sticky="ew")
         self.libraries_tree = libraries_tree
 
+        sources_frame = ttk.Frame(lists)
+        sources_frame.grid(row=1, column=1, sticky="nsew", padx=(12, 0))
+        sources_frame.columnconfigure(0, weight=1)
+        sources_frame.rowconfigure(0, weight=1)
         sources_tree = ttk.Treeview(
-            lists,
-            columns=("display_name", "source_id", "source_type", "library_id", "enabled", "status", "source_root"),
+            sources_frame,
+            columns=("enabled", "display_name", "source_id", "source_type", "library_id", "status", "source_root"),
             show="headings",
             height=9,
         )
+        sources_xscroll = ttk.Scrollbar(sources_frame, orient="horizontal", command=sources_tree.xview)
+        sources_tree.configure(xscrollcommand=sources_xscroll.set)
+        sources_tree.heading("enabled", text="Enabled", anchor="w")
         sources_tree.heading("display_name", text="Display Name", anchor="w")
         sources_tree.heading("source_id", text="Source ID", anchor="w")
         sources_tree.heading("source_type", text="Type", anchor="w")
         sources_tree.heading("library_id", text="Library ID", anchor="w")
-        sources_tree.heading("enabled", text="Enabled", anchor="w")
         sources_tree.heading("status", text="Status", anchor="w")
         sources_tree.heading("source_root", text="Source Root", anchor="w")
+        sources_tree.column("enabled", width=80, anchor="center", stretch=False)
         sources_tree.column("display_name", width=180, anchor="w")
         sources_tree.column("source_id", width=140, anchor="w")
         sources_tree.column("source_type", width=120, anchor="w")
         sources_tree.column("library_id", width=120, anchor="w")
-        sources_tree.column("enabled", width=80, anchor="center")
         sources_tree.column("status", width=180, anchor="w")
-        sources_tree.column("source_root", width=240, anchor="w")
-        sources_tree.grid(row=1, column=1, sticky="nsew", padx=(12, 0))
+        sources_tree.column("source_root", width=420, anchor="w")
+        sources_tree.grid(row=0, column=0, sticky="nsew")
+        sources_xscroll.grid(row=1, column=0, sticky="ew")
+        sources_tree.bind("<Button-1>", self._on_sources_tree_click)
         self.sources_tree = sources_tree
 
         actions = ttk.Frame(parent)
         actions.grid(row=3, column=0, sticky="ew", pady=(10, 8))
-        for col in range(7):
+        for col in range(6):
             actions.columnconfigure(col, weight=0)
         ttk.Button(actions, text="Refresh", command=self._refresh_ui_from_config).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(actions, text="Validate", command=self._validate_sources).grid(row=0, column=1, padx=(0, 8))
         ttk.Button(actions, text="Import Now", command=self._import_now).grid(row=0, column=2, padx=(0, 8))
         ttk.Button(actions, text="Start Watch", command=self._start_watch).grid(row=0, column=3, padx=(0, 8))
         ttk.Button(actions, text="Stop Watch", command=self._stop_watch).grid(row=0, column=4, padx=(0, 8))
-        ttk.Button(actions, text="Enable Source", command=self._enable_selected_source).grid(
-            row=0, column=5, padx=(0, 8)
-        )
-        ttk.Button(actions, text="Disable Source", command=self._disable_selected_source).grid(row=0, column=6)
+        ttk.Button(actions, text="Remove Source", command=self._remove_selected_source).grid(row=0, column=5)
         ttk.Button(actions, text="Check Logger", command=self._check_selected_logger).grid(
             row=1, column=0, padx=(0, 8), pady=(8, 0)
         )
@@ -551,7 +548,7 @@ class ImportAgentManagerWindow:
         )
 
     def _build_provision_tab(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(0, weight=1)
 
         ttk.Label(
             parent,
@@ -561,91 +558,86 @@ class ImportAgentManagerWindow:
             ),
             wraplength=980,
             justify="left",
-        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 16))
+        ).grid(row=0, column=0, sticky="w", pady=(0, 12))
 
-        self.sources_root_entry = self._add_text_row(
-            parent=parent,
-            row=1,
-            label="Sources root",
-            variable=self.sources_root_var,
-            browse_command=lambda: self._choose_directory(self.sources_root_var, "Choose sources root"),
-        )
+        library_frame = ttk.LabelFrame(parent, text="Library", padding=10)
+        library_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        library_frame.columnconfigure(1, weight=1)
+
         self.libraries_root_entry = self._add_text_row(
-            parent=parent,
-            row=2,
+            parent=library_frame,
+            row=0,
             label="Libraries root",
             variable=self.libraries_root_var,
             browse_command=lambda: self._choose_directory(self.libraries_root_var, "Choose libraries root"),
         )
-        self._add_text_row(parent=parent, row=3, label="Library name", variable=self.library_name_var)
-        combo = ttk.Combobox(parent, textvariable=self.source_library_choice_var, state="readonly")
-        ttk.Label(parent, text="Source target library").grid(row=4, column=0, sticky="w", pady=4)
-        combo.grid(row=4, column=1, sticky="ew", pady=4, padx=(12, 8))
-        self.library_choice_combo = combo
-        ttk.Label(parent, text="Source type").grid(row=5, column=0, sticky="w", pady=4)
+        self._add_text_row(parent=library_frame, row=1, label="Library name", variable=self.library_name_var)
+        self.add_library_button = ttk.Button(library_frame, text="Add Library", command=self._add_library)
+        self.add_library_button.grid(row=2, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
+
+        source_frame = ttk.LabelFrame(parent, text="Source", padding=10)
+        source_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        source_frame.columnconfigure(1, weight=1)
+
+        self.sources_root_entry = self._add_text_row(
+            parent=source_frame,
+            row=0,
+            label="Sources root",
+            variable=self.sources_root_var,
+            browse_command=lambda: self._choose_directory(self.sources_root_var, "Choose sources root"),
+        )
+        ttk.Label(source_frame, text="Source name").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(source_frame, textvariable=self.source_name_var).grid(
+            row=1, column=1, sticky="ew", pady=4, padx=(12, 8)
+        )
+        ttk.Label(source_frame, text="Source type").grid(row=2, column=0, sticky="w", pady=4)
         source_type_combo = ttk.Combobox(
-            parent,
+            source_frame,
             textvariable=self.source_type_choice_var,
             values=list(_SOURCE_TYPE_BY_LABEL),
             state="readonly",
         )
-        source_type_combo.grid(row=5, column=1, sticky="ew", pady=4, padx=(12, 8))
+        source_type_combo.grid(row=2, column=1, sticky="ew", pady=4, padx=(12, 8))
         source_type_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_source_type_fields())
         self.source_type_combo = source_type_combo
-        self._add_text_row(parent=parent, row=6, label="Source name", variable=self.source_name_var)
-        ttk.Label(parent, text="Logger timezone (optional)").grid(row=7, column=0, sticky="w", pady=4)
-        logger_timezone_combo = ttk.Combobox(
-            parent,
-            textvariable=self.logger_timezone_var,
-            values=available_logger_timezones(),
-            state="normal",
-        )
-        logger_timezone_combo.grid(row=7, column=1, sticky="ew", pady=4, padx=(12, 8))
-        self.logger_timezone_combo = logger_timezone_combo
-        self._add_text_row(parent=parent, row=8, label="Run TZ label", variable=self.run_tz_label_var)
+        combo = ttk.Combobox(source_frame, textvariable=self.source_library_choice_var, state="readonly")
+        ttk.Label(source_frame, text="Target library").grid(row=3, column=0, sticky="w", pady=4)
+        combo.grid(row=3, column=1, sticky="ew", pady=4, padx=(12, 8))
+        self.library_choice_combo = combo
+        self._add_text_row(parent=source_frame, row=4, label="Run TZ label", variable=self.run_tz_label_var)
 
-        self.wifi_frame = self._build_wifi_provision_frame(parent)
-        self.wifi_frame.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        self.wifi_frame = self._build_wifi_provision_frame(source_frame)
+        self.wifi_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 4))
 
-        options = ttk.Frame(parent)
-        options.grid(row=10, column=0, columnspan=3, sticky="w", pady=(12, 8))
-        ttk.Checkbutton(options, text="Include events", variable=self.include_events_var).grid(
+        self.add_source_button = ttk.Button(source_frame, text="Add Source", command=self._add_source)
+        self.add_source_button.grid(row=6, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
+
+        options = ttk.LabelFrame(parent, text="App options", padding=10)
+        options.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        ttk.Checkbutton(options, text="Start at login", variable=self.auto_start_var).grid(
             row=0, column=0, sticky="w", padx=(0, 12)
         )
-        ttk.Checkbutton(options, text="Include metrics", variable=self.include_metrics_var).grid(
-            row=0, column=1, sticky="w", padx=(0, 12)
-        )
-        ttk.Checkbutton(options, text="Start at login", variable=self.auto_start_var).grid(
-            row=0, column=2, sticky="w", padx=(0, 12)
-        )
         ttk.Checkbutton(options, text="Overwrite existing seeded files", variable=self.overwrite_var).grid(
-            row=0, column=3, sticky="w"
+            row=0, column=1, sticky="w"
         )
 
         actions = ttk.Frame(parent)
-        actions.grid(row=11, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        actions.columnconfigure(0, weight=0)
-        actions.columnconfigure(1, weight=0)
-        actions.columnconfigure(2, weight=0)
+        actions.grid(row=4, column=0, sticky="ew")
         self.create_initial_button = ttk.Button(
             actions,
             text="Create Initial Library + Source",
             command=self._create_initial_setup,
         )
         self.create_initial_button.grid(row=0, column=0, padx=(0, 8))
-        self.add_library_button = ttk.Button(actions, text="Add Library", command=self._add_library)
-        self.add_library_button.grid(row=0, column=1, padx=(0, 8))
-        self.add_source_button = ttk.Button(actions, text="Add Source", command=self._add_source)
-        self.add_source_button.grid(row=0, column=2)
         self.apply_app_settings_button = ttk.Button(
             actions,
             text="Apply App Settings",
             command=self._apply_app_settings,
         )
-        self.apply_app_settings_button.grid(row=0, column=3, padx=(8, 0))
+        self.apply_app_settings_button.grid(row=0, column=1)
 
         ttk.Label(parent, textvariable=self.provision_status_var, wraplength=980, justify="left").grid(
-            row=12, column=0, columnspan=3, sticky="ew", pady=(10, 0)
+            row=5, column=0, sticky="ew", pady=(10, 0)
         )
         self._sync_source_type_fields()
 
@@ -653,15 +645,18 @@ class ImportAgentManagerWindow:
         frame = ttk.LabelFrame(parent, text="Wi-Fi logger source", padding=10)
         frame.columnconfigure(1, weight=1)
 
-        ttk.Label(frame, text="Logger address").grid(row=0, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.wifi_address_var).grid(row=0, column=1, sticky="ew", pady=4, padx=(12, 8))
-        ttk.Button(frame, text="Verify Logger", command=self._verify_logger_from_provision_form).grid(
+        ttk.Label(frame, text="Logger ID").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.wifi_logger_id_var).grid(
+            row=0, column=1, sticky="ew", pady=4, padx=(12, 8)
+        )
+        ttk.Button(frame, text="Discover Loggers", command=self._discover_loggers_from_provision_form).grid(
             row=0, column=2, sticky="e", pady=4
         )
 
-        ttk.Label(frame, text="Logger ID").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.wifi_logger_id_var).grid(
-            row=1, column=1, sticky="ew", pady=4, padx=(12, 8)
+        ttk.Label(frame, text="Logger address (optional)").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.wifi_address_var).grid(row=1, column=1, sticky="ew", pady=4, padx=(12, 8))
+        ttk.Button(frame, text="Verify Logger", command=self._verify_logger_from_provision_form).grid(
+            row=1, column=2, sticky="e", pady=4
         )
 
         ttk.Label(frame, text="After import").grid(row=2, column=0, sticky="w", pady=4)
@@ -681,13 +676,8 @@ class ImportAgentManagerWindow:
         )
         ttk.Label(timeouts, text="Download timeout (s)").grid(row=0, column=2, sticky="w", padx=(0, 8))
         ttk.Entry(timeouts, textvariable=self.wifi_download_timeout_var, width=8).grid(
-            row=0, column=3, sticky="w", padx=(0, 18)
+            row=0, column=3, sticky="w"
         )
-        ttk.Checkbutton(
-            timeouts,
-            text="Require upload mode",
-            variable=self.wifi_require_upload_mode_var,
-        ).grid(row=0, column=4, sticky="w")
 
         ttk.Label(frame, textvariable=self.wifi_status_var, wraplength=880, justify="left").grid(
             row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
@@ -757,13 +747,10 @@ class ImportAgentManagerWindow:
         logger_id = self.wifi_logger_id_var.get().strip()
         base_url = self.wifi_address_var.get().strip()
         if not logger_id:
-            raise ValueError("Verify the Wi-Fi logger, or enter its Logger ID, before creating the source.")
-        if not base_url:
-            raise ValueError("Wi-Fi logger sources need a logger address, for example http://192.168.4.1.")
+            raise ValueError("Discover or verify the Wi-Fi logger, or enter its Logger ID, before creating the source.")
 
-        return {
+        payload = {
             "logger_id": logger_id,
-            "base_url": base_url,
             "request_timeout_s": self._positive_float_from_var(
                 self.wifi_request_timeout_var,
                 field_name="Wi-Fi request timeout",
@@ -772,9 +759,11 @@ class ImportAgentManagerWindow:
                 self.wifi_download_timeout_var,
                 field_name="Wi-Fi download timeout",
             ),
-            "require_upload_mode": bool(self.wifi_require_upload_mode_var.get()),
             "cleanup_mode": self._selected_cleanup_mode(),
         }
+        if base_url:
+            payload["base_url"] = base_url
+        return payload
 
     def _wifi_client_from_form(self) -> LoggerWifiApiClient:
         base_url = self.wifi_address_var.get().strip()
@@ -815,6 +804,112 @@ class ImportAgentManagerWindow:
             self._set_provision_status(f"Logger verification failed: {exc}")
             messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
 
+    def _apply_discovered_logger_to_provision_form(self, result: LoggerWifiDiscoveryResult) -> None:
+        if result.base_url:
+            self.wifi_address_var.set(result.base_url)
+        if result.logger_id:
+            self.wifi_logger_id_var.set(result.logger_id)
+        display_name = result.display_name or result.logger_id or result.hostname or "Wi-Fi Logger"
+        if self.source_name_var.get().strip() in {"", "Default Source"}:
+            self.source_name_var.set(display_name)
+        upload_text = "unknown" if result.upload_mode is None else ("yes" if result.upload_mode else "no")
+        self.wifi_status_var.set(
+            f"Discovered {display_name} at {result.base_url}; upload_mode={upload_text}."
+        )
+
+    def _discover_loggers_from_provision_form(self) -> None:
+        try:
+            timeout_s = max(
+                1.0,
+                min(
+                    self._positive_float_from_var(
+                        self.wifi_request_timeout_var,
+                        field_name="Wi-Fi request timeout",
+                    ),
+                    5.0,
+                ),
+            )
+            results = discover_logger_wifi_sources(timeout_s=timeout_s)
+            if not results:
+                message = "No BODAQS Wi-Fi loggers were discovered on the local network."
+                self.wifi_status_var.set(message)
+                self._set_provision_status(message)
+                return
+            result = results[0] if len(results) == 1 else self._choose_discovered_logger(results)
+            if result is None:
+                self._set_provision_status("Logger discovery cancelled.")
+                return
+            self._apply_discovered_logger_to_provision_form(result)
+            self._set_provision_status(
+                f"Selected discovered Wi-Fi logger '{result.logger_id or result.hostname or result.base_url}'."
+            )
+        except Exception as exc:
+            self.wifi_status_var.set(f"Logger discovery failed: {exc}")
+            self._set_provision_status(f"Logger discovery failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+
+    def _choose_discovered_logger(
+        self,
+        results: Sequence[LoggerWifiDiscoveryResult],
+    ) -> Optional[LoggerWifiDiscoveryResult]:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Discovered BODAQS Loggers")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry("760x320")
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            dialog,
+            columns=("logger_id", "address", "upload_mode", "hostname"),
+            show="headings",
+            selectmode="browse",
+        )
+        tree.heading("logger_id", text="Logger ID", anchor="w")
+        tree.heading("address", text="Address", anchor="w")
+        tree.heading("upload_mode", text="Upload Mode", anchor="w")
+        tree.heading("hostname", text="Hostname", anchor="w")
+        tree.column("logger_id", width=180, anchor="w")
+        tree.column("address", width=190, anchor="w")
+        tree.column("upload_mode", width=100, anchor="w")
+        tree.column("hostname", width=220, anchor="w")
+        tree.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 6))
+
+        result_by_iid: dict[str, LoggerWifiDiscoveryResult] = {}
+        for idx, result in enumerate(results):
+            iid = str(idx)
+            result_by_iid[iid] = result
+            upload_mode = "unknown" if result.upload_mode is None else ("yes" if result.upload_mode else "no")
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(result.logger_id or "", result.base_url, upload_mode, result.hostname or ""),
+            )
+        if result_by_iid:
+            tree.selection_set("0")
+
+        selected: dict[str, LoggerWifiDiscoveryResult] = {}
+
+        def choose() -> None:
+            selection = tree.selection()
+            if selection:
+                selected["result"] = result_by_iid[selection[0]]
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=1, column=0, sticky="e", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="Cancel", command=cancel).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Select Logger", command=choose).grid(row=0, column=1)
+        tree.bind("<Double-1>", lambda _event: choose())
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        self.root.wait_window(dialog)
+        return selected.get("result")
+
     def _logger_status_text(self, *, upload_mode: bool, session_count: Any = None) -> str:
         session_part = ""
         if session_count is not None:
@@ -835,10 +930,19 @@ class ImportAgentManagerWindow:
         source = self._selected_source_config()
         if source.source_type != SOURCE_TYPE_LOGGER_WIFI or source.logger_wifi is None:
             raise ValueError("Select a Wi-Fi logger source first.")
-        if source.logger_wifi.base_url is None:
-            raise ValueError("Selected Wi-Fi source does not have a logger address configured.")
+        base_url = source.logger_wifi.base_url
+        if base_url is None:
+            result = discover_single_logger_wifi_source(
+                logger_id=source.logger_wifi.logger_id,
+                timeout_s=max(1.0, min(float(source.logger_wifi.request_timeout_s), 5.0)),
+            )
+            if result is None:
+                raise ValueError(
+                    f"Selected Wi-Fi source '{source.logger_wifi.logger_id}' was not discovered on the local network."
+                )
+            base_url = result.base_url
         client = LoggerWifiApiClient(
-            source.logger_wifi.base_url,
+            base_url,
             request_timeout_s=source.logger_wifi.request_timeout_s,
             download_timeout_s=source.logger_wifi.download_timeout_s,
         )
@@ -991,11 +1095,11 @@ class ImportAgentManagerWindow:
                 "end",
                 iid=source.source_id,
                 values=(
+                    _SOURCE_ENABLED_CHECKED if source.enabled else _SOURCE_ENABLED_UNCHECKED,
                     source.display_name,
                     source.source_id,
                     _SOURCE_TYPE_LABELS.get(source.source_type, source.source_type),
                     source.library_id,
-                    "yes" if source.enabled else "no",
                     status_text,
                     str(source.source_root),
                 ),
@@ -1006,6 +1110,43 @@ class ImportAgentManagerWindow:
             return None
         selection = self.sources_tree.selection()
         return str(selection[0]) if selection else None
+
+    def _managed_source_enabled(self, source_id: str) -> bool:
+        config = self.controller.require_config()
+        for source in config.sources:
+            if source.source_id == source_id:
+                return bool(source.enabled)
+        raise ValueError(f"Unknown source: {source_id}")
+
+    def _on_sources_tree_click(self, event: tk.Event) -> Optional[str]:
+        if self.sources_tree is None:
+            return None
+        region = self.sources_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return None
+        if self.sources_tree.identify_column(event.x) != "#1":
+            return None
+        source_id = self.sources_tree.identify_row(event.y)
+        if not source_id:
+            return None
+        self.sources_tree.selection_set(source_id)
+        self._toggle_source_enabled(source_id)
+        return "break"
+
+    def _toggle_source_enabled(self, source_id: str) -> None:
+        if not self._guard_watch_inactive(action_label="Toggle Source"):
+            return
+        try:
+            enabled = not self._managed_source_enabled(source_id)
+            self.controller.set_source_enabled(source_id, enabled)
+        except Exception as exc:
+            self._set_manager_status(f"Toggle source failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.sources_tree is not None and self.sources_tree.exists(source_id):
+            self.sources_tree.selection_set(source_id)
+        self._set_manager_status(f"{'Enabled' if enabled else 'Disabled'} source '{source_id}'.")
 
     def _selected_library_id_from_choice(self) -> Optional[str]:
         label = self.source_library_choice_var.get().strip()
@@ -1169,10 +1310,7 @@ class ImportAgentManagerWindow:
                 source_display_name=self.source_name_var.get(),
                 source_type=source_type,
                 logger_wifi=logger_wifi,
-                logger_timezone=self.logger_timezone_var.get().strip() or None,
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
-                include_events=bool(self.include_events_var.get()),
-                include_metrics=bool(self.include_metrics_var.get()),
                 auto_start=bool(self.auto_start_var.get()),
                 overwrite=bool(self.overwrite_var.get()),
             )
@@ -1224,10 +1362,7 @@ class ImportAgentManagerWindow:
                 display_name=self.source_name_var.get(),
                 source_type=source_type,
                 logger_wifi=logger_wifi,
-                logger_timezone=self.logger_timezone_var.get().strip() or None,
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
-                include_events=bool(self.include_events_var.get()),
-                include_metrics=bool(self.include_metrics_var.get()),
                 overwrite=bool(self.overwrite_var.get()),
             )
         except Exception as exc:
@@ -1340,37 +1475,39 @@ class ImportAgentManagerWindow:
             self.watch_state_var.set("Watcher stop requested; waiting for background loop to exit...")
         self._refresh_tray()
 
-    def _enable_selected_source(self) -> None:
-        if not self._guard_watch_inactive(action_label="Enable Source"):
+    def _remove_selected_source(self) -> None:
+        if not self._guard_watch_inactive(action_label="Remove Source"):
             return
         source_id = self._selected_source_id()
         if source_id is None:
             messagebox.showinfo("BODAQS Import Agent Manager", "Select a source first.", parent=self.root)
             return
         try:
-            self.controller.set_source_enabled(source_id, True)
+            source = self._selected_source_config()
         except Exception as exc:
-            self._set_manager_status(f"Enable source failed: {exc}")
+            self._set_manager_status(f"Remove source failed: {exc}")
             messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
             return
-        self._refresh_ui_from_config()
-        self._set_manager_status(f"Enabled source '{source_id}'.")
-
-    def _disable_selected_source(self) -> None:
-        if not self._guard_watch_inactive(action_label="Disable Source"):
-            return
-        source_id = self._selected_source_id()
-        if source_id is None:
-            messagebox.showinfo("BODAQS Import Agent Manager", "Select a source first.", parent=self.root)
+        confirmed = messagebox.askyesno(
+            "Remove Source",
+            (
+                f"Remove source '{source.description or source.source_id}' from the manager?\n\n"
+                "This only removes the source from the app configuration. "
+                "Existing files and directories will not be deleted."
+            ),
+            parent=self.root,
+        )
+        if not confirmed:
             return
         try:
-            self.controller.set_source_enabled(source_id, False)
+            self.controller.remove_source(source_id)
         except Exception as exc:
-            self._set_manager_status(f"Disable source failed: {exc}")
+            self._set_manager_status(f"Remove source failed: {exc}")
             messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
             return
+        self._source_runtime_status.pop(source_id, None)
         self._refresh_ui_from_config()
-        self._set_manager_status(f"Disabled source '{source_id}'.")
+        self._set_manager_status(f"Removed source '{source_id}' from the manager. Files were left in place.")
 
     def _check_selected_logger(self) -> None:
         try:
@@ -1416,13 +1553,9 @@ class ImportAgentManagerWindow:
 
     def _open_selected_logger_web_ui(self) -> None:
         try:
-            source = self._selected_source_config()
-            if source.source_type != SOURCE_TYPE_LOGGER_WIFI or source.logger_wifi is None:
-                raise ValueError("Select a Wi-Fi logger source first.")
-            if source.logger_wifi.base_url is None:
-                raise ValueError("Selected Wi-Fi source does not have a logger address configured.")
-            webbrowser.open(source.logger_wifi.base_url)
-            self._set_manager_status(f"Opened logger web UI: {source.logger_wifi.base_url}")
+            client, _source = self._selected_logger_wifi_client_and_source()
+            webbrowser.open(client.base_url)
+            self._set_manager_status(f"Opened logger web UI: {client.base_url}")
         except Exception as exc:
             self._set_manager_status(f"Open logger web UI failed: {exc}")
             messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)

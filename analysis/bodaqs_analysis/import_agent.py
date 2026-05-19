@@ -20,6 +20,7 @@ import pandas as pd
 
 from .artifacts import (
     ArtifactStore,
+    copy_session_aux_sources,
     copy_raw_csv_to_source,
     ensure_run_is_new,
     ensure_session_is_new,
@@ -32,6 +33,11 @@ from .artifacts import (
 )
 from .bike_profile import load_bike_profile
 from .import_agent_logger_wifi import LoggerWifiApiClient
+from .import_agent_logger_wifi_discovery import (
+    LoggerWifiDiscoveryError,
+    LoggerWifiDiscoveryUnavailable,
+    discover_single_logger_wifi_source,
+)
 from .pipeline import preprocess_session
 from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
 from .import_agent_sources import (
@@ -341,6 +347,7 @@ class ImportSourceConfig:
     artifacts_dir: Path
     preprocess_profile_path: Path
     bike_profile_path: Path
+    fit_dir: Path
     inbox_dir: Path
     done_dir: Path
     failed_dir: Path
@@ -367,8 +374,6 @@ class ImportSourceConfig:
             raise ValueError("logger_wifi import sources must include a logger_wifi config block")
         if not self.archive_patterns:
             raise ValueError("Import source config must include at least one archive pattern")
-        if self.include_metrics and not self.include_events:
-            raise ValueError("include_metrics=True requires include_events=True")
         if self.max_archives_per_scan is not None and int(self.max_archives_per_scan) <= 0:
             raise ValueError("max_archives_per_scan must be > 0 when provided")
 
@@ -484,6 +489,10 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
             _optional_text(obj.get("bike_profile_path")) or "bike_profile.json",
             base_dir=base_dir,
         ),
+        fit_dir=_resolve_relative_path(
+            _optional_text(obj.get("fit_dir")) or "fit",
+            base_dir=base_dir,
+        ),
         inbox_dir=_resolve_relative_path(
             _optional_text(obj.get("inbox_dir")) or "inbox",
             base_dir=base_dir,
@@ -505,8 +514,8 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         run_tz_label=_optional_text(obj.get("run_tz_label")) or "AWST",
         poll_interval_s=_safe_float(obj.get("poll_interval_s", 5.0), field_name="poll_interval_s"),
         settle_time_s=_safe_float(obj.get("settle_time_s", 15.0), field_name="settle_time_s"),
-        include_events=bool(obj.get("include_events", True)),
-        include_metrics=bool(obj.get("include_metrics", True)),
+        include_events=True,
+        include_metrics=True,
         description=_optional_text(obj.get("description")),
         force_reprocess=bool(obj.get("force_reprocess", False)),
         max_archives_per_scan=max_archives_per_scan,
@@ -586,21 +595,48 @@ class ImportSourceRunner:
         except Exception as exc:
             errors.append(str(exc))
 
-        for path in (self.source.inbox_dir, self.source.done_dir, self.source.failed_dir, self.source.staging_dir):
+        for path in (
+            self.source.inbox_dir,
+            self.source.done_dir,
+            self.source.failed_dir,
+            self.source.staging_dir,
+            self.source.fit_dir,
+        ):
             if not path.exists():
                 warnings.append(f"Directory will be created when needed: {path}")
 
         if self.source.source_type == SOURCE_TYPE_LOGGER_WIFI:
             if self.source.logger_wifi is not None and self.source.logger_wifi.base_url is None:
                 warnings.append(
-                    "Wi-Fi logger source has no remembered base_url; the manager will need a manual address before acquisition."
+                    "Wi-Fi logger source has no remembered base_url; mDNS discovery will be used before acquisition."
                 )
 
         return errors, warnings
 
     def ensure_runtime_dirs(self) -> None:
-        for path in (self.source.inbox_dir, self.source.done_dir, self.source.failed_dir, self.source.staging_dir):
+        for path in (
+            self.source.inbox_dir,
+            self.source.done_dir,
+            self.source.failed_dir,
+            self.source.staging_dir,
+            self.source.fit_dir,
+        ):
             _ensure_dir(path)
+
+    def _import_agent_fit_import_config(self) -> Optional[Dict[str, Any]]:
+        if not isinstance(self.preprocess_config, Mapping):
+            return None
+        raw = self.preprocess_config.get("fit_import")
+        if not isinstance(raw, Mapping):
+            return None
+        if not bool(raw.get("enabled", False)):
+            return dict(raw)
+
+        cfg = dict(raw)
+        cfg["fit_dir"] = str(self.source.fit_dir)
+        cfg["ambiguity_policy"] = "largest_overlap"
+        cfg["failure_policy"] = "warn"
+        return cfg
 
     def _logger_wifi_remote_state_key(self, remote_session_id: str) -> str:
         if self.source.logger_wifi is None:
@@ -631,11 +667,74 @@ class ImportSourceRunner:
             return None
         if config.base_url is None:
             return None
+        return self._logger_wifi_client_for_base_url(config.base_url)
+
+    def _logger_wifi_client_for_base_url(self, base_url: str) -> LoggerWifiApiClient:
+        config = self.source.logger_wifi
+        if config is None:
+            raise ValueError("Cannot build Wi-Fi logger client without logger_wifi config")
         return LoggerWifiApiClient(
-            config.base_url,
+            base_url,
             request_timeout_s=config.request_timeout_s,
             download_timeout_s=config.download_timeout_s,
         )
+
+    def _discover_logger_wifi_client(self, remote_summary: Dict[str, Any]) -> Optional[LoggerWifiApiClient]:
+        config = self.source.logger_wifi
+        if self.source.source_type != SOURCE_TYPE_LOGGER_WIFI or config is None:
+            return None
+
+        timeout_s = max(1.0, min(float(config.request_timeout_s), 5.0))
+        try:
+            result = discover_single_logger_wifi_source(
+                logger_id=config.logger_id,
+                timeout_s=timeout_s,
+            )
+        except LoggerWifiDiscoveryUnavailable as exc:
+            remote_summary["discovery"] = {
+                "state": "unavailable",
+                "message": str(exc),
+            }
+            return None
+        except LoggerWifiDiscoveryError as exc:
+            remote_summary["discovery"] = {
+                "state": "error",
+                "error": str(exc),
+            }
+            return None
+        except Exception as exc:
+            remote_summary["discovery"] = {
+                "state": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            return None
+
+        if result is None:
+            remote_summary["discovery"] = {
+                "state": "not_found",
+                "logger_id": config.logger_id,
+            }
+            return None
+
+        remote_summary["discovery"] = {
+            "state": "found",
+            "logger_id": result.logger_id,
+            "base_url": result.base_url,
+            "hostname": result.hostname,
+            "upload_mode": result.upload_mode,
+            "api_version": result.api_version,
+            "addresses": list(result.addresses),
+        }
+        return self._logger_wifi_client_for_base_url(result.base_url)
+
+    def _logger_wifi_client_from_acquisition(
+        self,
+        acquisition: LoggerWifiArchiveAcquisition,
+    ) -> Optional[LoggerWifiApiClient]:
+        base_url = _optional_text(acquisition.base_url)
+        if base_url is not None:
+            return self._logger_wifi_client_for_base_url(base_url)
+        return self._logger_wifi_client()
 
     def _pending_logger_wifi_acquisitions_from_state(self) -> dict[str, LoggerWifiArchiveAcquisition]:
         if self.source.source_type != SOURCE_TYPE_LOGGER_WIFI or self.source.logger_wifi is None:
@@ -737,15 +836,43 @@ class ImportSourceRunner:
 
         acquisitions = self._pending_logger_wifi_acquisitions_from_state()
         client = self._logger_wifi_client()
-        if client is None:
-            remote_summary["status"] = {
-                "state": "missing_base_url",
-                "message": "Wi-Fi logger source has no base_url configured.",
-            }
-            return acquisitions
+        configured_error: Optional[Exception] = None
+        device: Optional[dict[str, Any]] = None
+
+        if client is not None:
+            try:
+                device = client.get_device()
+                device_logger_id = _optional_text(device.get("logger_id"))
+                if device_logger_id != config.logger_id:
+                    raise ValueError(
+                        f"Logger identity mismatch: expected {config.logger_id!r}, got {device_logger_id!r}"
+                    )
+            except Exception as exc:
+                configured_error = exc
+                remote_summary["configured_address_error"] = f"{type(exc).__name__}: {exc}"
+                device = None
+
+        if device is None:
+            discovered_client = self._discover_logger_wifi_client(remote_summary)
+            if discovered_client is not None:
+                client = discovered_client
 
         try:
-            device = client.get_device()
+            if client is None:
+                discovery_state = (
+                    remote_summary.get("discovery", {})
+                    if isinstance(remote_summary.get("discovery"), Mapping)
+                    else {}
+                )
+                remote_summary["status"] = {
+                    "state": str(discovery_state.get("state") or "not_found"),
+                    "message": "Wi-Fi logger was not reachable by remembered address or mDNS discovery.",
+                }
+                return acquisitions
+
+            if device is None:
+                device = client.get_device()
+
             device_logger_id = _optional_text(device.get("logger_id"))
             if device_logger_id != config.logger_id:
                 raise ValueError(
@@ -760,7 +887,7 @@ class ImportSourceRunner:
                 )
 
             upload_mode = bool(status.get("upload_mode", False))
-            if config.require_upload_mode and not upload_mode:
+            if not upload_mode:
                 remote_summary["status"] = {
                     "state": "waiting_upload_mode",
                     "upload_mode": False,
@@ -812,7 +939,7 @@ class ImportSourceRunner:
                     remote_state_key=remote_state_key,
                     remote_session_id=remote_session_id,
                     logger_id=config.logger_id,
-                    base_url=config.base_url or client.base_url,
+                    base_url=client.base_url,
                     local_archive_path=target_path,
                     remote_already_acknowledged=bool(session.get("acknowledged", False)),
                 )
@@ -848,7 +975,7 @@ class ImportSourceRunner:
                     remote_state_key=remote_state_key,
                     remote_session_id=remote_session_id,
                     logger_id=config.logger_id,
-                    base_url=config.base_url or client.base_url,
+                    base_url=client.base_url,
                     local_archive_path=downloaded_path.resolve(),
                     remote_already_acknowledged=bool(session.get("acknowledged", False)),
                 )
@@ -872,6 +999,8 @@ class ImportSourceRunner:
                 "error": error,
             }
             remote_summary["failed"].append({"error": error})
+            if configured_error is not None:
+                remote_summary["configured_address_error"] = f"{type(configured_error).__name__}: {configured_error}"
             logger.warning(
                 "Wi-Fi logger acquisition failed for source=%s logger_id=%s: %s",
                 self.source.source_id,
@@ -901,7 +1030,7 @@ class ImportSourceRunner:
         cleanup_response: Optional[dict[str, Any]] = None
         post_error: Optional[str] = None
 
-        client = self._logger_wifi_client()
+        client = self._logger_wifi_client_from_acquisition(acquisition)
         if acquisition.remote_already_acknowledged:
             acknowledged = True
         elif client is None:
@@ -1254,11 +1383,12 @@ class ImportSourceRunner:
                 results = preprocess_session(
                     str(csv_path),
                     preprocess_config=self.preprocess_config,
+                    fit_import=self._import_agent_fit_import_config(),
                     bike_profile_path=str(bike_profile_path),
                     log_metadata_path=str(log_metadata_path),
                     timezone=self.source.logger_timezone,
-                    include_events=self.source.include_events,
-                    include_metrics=self.source.include_metrics,
+                    include_events=True,
+                    include_metrics=True,
                 )
 
                 session = results["session"]
@@ -1311,6 +1441,21 @@ class ImportSourceRunner:
                         "base_url": self.source.logger_wifi.base_url,
                     }
 
+                session_source = session.get("source", {}) if isinstance(session.get("source"), Mapping) else {}
+                aux_manifest: list[Dict[str, Any]] = []
+                try:
+                    aux_manifest = copy_session_aux_sources(
+                        store=self.store,
+                        run_id=run_id,
+                        session_id=session_id,
+                        aux_sources=session_source.get("aux_sources"),
+                    )
+                except Exception as exc:
+                    logger.warning("Auxiliary source copy failed for %s: %s", session_id, exc)
+                    source_manifest["aux_source_copy_error"] = f"{type(exc).__name__}: {exc}"
+                if aux_manifest:
+                    source_manifest["aux_sources"] = aux_manifest
+
                 write_session_manifest(
                     self.store,
                     run_id=run_id,
@@ -1321,7 +1466,7 @@ class ImportSourceRunner:
                 )
 
                 schema_path = _optional_text(self.preprocess_config.get("schema_path"))
-                if self.source.include_events and schema_path and isinstance(events_df, pd.DataFrame) and not events_df.empty:
+                if schema_path and isinstance(events_df, pd.DataFrame) and not events_df.empty:
                     write_events_partitioned_by_schema_id(
                         store=self.store,
                         run_id=run_id,
@@ -1329,7 +1474,7 @@ class ImportSourceRunner:
                         events_df=events_df,
                         schema_path=Path(schema_path),
                     )
-                if self.source.include_metrics and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
+                if isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty:
                     write_metrics_partitioned_by_schema_id(
                         store=self.store,
                         run_id=run_id,
