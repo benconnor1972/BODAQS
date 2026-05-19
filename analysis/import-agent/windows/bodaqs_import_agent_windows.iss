@@ -15,6 +15,7 @@
 #define MyAppPublisher "BODAQS"
 #define MyAppExeName "bodaqs-import-setup.exe"
 #define MyCliExeName "bodaqs-import.exe"
+#define MyStartupValueName "BODAQS Import Agent"
 
 [Setup]
 AppId={#MyAppId}
@@ -34,6 +35,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\manager\{#MyAppExeName}
+CloseApplications=yes
+CloseApplicationsFilter={#MyAppExeName},{#MyCliExeName}
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -51,3 +55,31 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\manager\{#MyAppExeName}"; P
 
 [Run]
 Filename: "{app}\manager\{#MyAppExeName}"; Parameters: "--app-config-mode installed"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure StopProcessByImageName(ImageName: String);
+var
+  ResultCode: Integer;
+begin
+  Exec(
+    ExpandConstant('{cmd}'),
+    '/C taskkill /IM "' + ImageName + '" /T /F >NUL 2>&1',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then begin
+    StopProcessByImageName('{#MyAppExeName}');
+    StopProcessByImageName('{#MyCliExeName}');
+    RegDeleteValue(
+      HKEY_CURRENT_USER,
+      'Software\Microsoft\Windows\CurrentVersion\Run',
+      '{#MyStartupValueName}'
+    );
+  end;
+end;

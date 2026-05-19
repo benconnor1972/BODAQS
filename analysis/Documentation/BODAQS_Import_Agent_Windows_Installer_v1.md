@@ -106,6 +106,18 @@ Portable bundled runs still keep the older behavior:
 - prefer the executable directory when it is writable
 - otherwise fall back to per-user app-data
 
+## Uninstall Behavior
+
+The Inno Setup installer is configured to detect running manager/CLI processes
+and ask Windows to close them during uninstall. As a fallback, the uninstall
+script stops installed `bodaqs-import-setup.exe` and `bodaqs-import.exe`
+processes before files are removed, which avoids leaving PyInstaller bundle
+files behind when the tray app or watcher is still running.
+
+Uninstall also removes the per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+value named `BODAQS Import Agent` so start-at-login does not point at a removed
+install.
+
 ## Branding Assets
 
 Windows branding assets are generated from the existing BODAQS favicon source:
