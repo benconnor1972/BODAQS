@@ -1,0 +1,16 @@
+{
+  "contracts": {
+    "events": "v0.x",
+    "metrics": "v0.x",
+    "session": "v0.x"
+  },
+  "description": null,
+  "session_id": "2026-05-10_13-54-28",
+  "source": {
+    "path": "source/input.csv",
+    "sha256": "e4254f9864bf45c7950dda0f44394b775da0c0b68a3a02a1a191829a952d5ce9"
+  },
+  "summary": {
+    "n_rows": 313669
+  }
+}
