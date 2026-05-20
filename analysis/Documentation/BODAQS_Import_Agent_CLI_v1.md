@@ -35,6 +35,9 @@ Each watched source is a directory containing:
     event_schema.yaml
   bike/
     <exactly one valid bike profile JSON>
+  notes/
+    <exactly one valid session-note template JSON>
+    <exactly one valid bike setup preset JSON>
   fit/
   inbox/
   done/
@@ -47,6 +50,11 @@ The `preprocess_profile_path` and `bike_profile_path` fields may point either
 to a specific JSON file or to a directory. When a directory is used, it must
 contain exactly one valid JSON file for that profile type. The event schema YAML
 can live alongside the preprocess profile inside `settings/`.
+
+If `session_note.attach_on_import` is enabled in `import_source.json`, the
+`notes/` directory is also used at import time. The agent creates a draft
+session note from the setup preset, records the linked bike profile and preset
+in the note `source_context`, and copies the template into the target library.
 
 Multiple sources may target the same central artifact library.
 
@@ -101,6 +109,7 @@ Checks:
 - source config schema/version
 - preprocess profile file/directory resolution and validity
 - bike profile file/directory resolution and validity
+- session-note template and bike setup preset validity when auto-notes are enabled
 - runtime directory presence
 
 ### Once
@@ -177,6 +186,7 @@ The import agent writes the existing artifact contract:
 - `runs/<run_id>/sessions/<session_id>/session/df.parquet`
 - `runs/<run_id>/sessions/<session_id>/session/meta.json`
 - optional event and metric partitions when enabled
+- optional library-level `syn/` data.syn.bike CSV/helper outputs
 
 Version 1 uses **one run per imported session**.
 
@@ -189,6 +199,19 @@ The session manifest `source` block includes import provenance such as:
 - archive member names
 - raw session identity
 - processing key
+
+If the target library enables data.syn.bike exports, the importer additionally
+writes files under:
+
+```text
+<library>/syn/
+```
+
+Each imported session gets one or more headerless data.syn.bike CSV files and a
+per-session helper text file with the manual settings to enter in
+data.syn.bike. The export scales logger raw ranges to the configured ADC bit
+count for data.syn.bike compatibility. These outputs are generated for new
+imports only; older imported sessions are not backfilled by the v1 importer.
 
 ---
 

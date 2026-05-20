@@ -5,9 +5,18 @@ import zipfile
 from importlib.resources import files
 from pathlib import Path
 
+import pandas as pd
+import pytest
+
 import bodaqs_analysis.import_agent_provisioning as provisioning_module
 import bodaqs_analysis.import_agent_startup as import_agent_startup_module
 import bodaqs_analysis.import_agent_tray as import_agent_tray_module
+from bodaqs_analysis.exporters.data_syn_bike import (
+    data_syn_bike_manual_settings,
+    default_data_syn_bike_export_config,
+    export_data_syn_bike_resolved,
+    render_data_syn_bike_manual_settings_text,
+)
 from bodaqs_analysis.import_agent import (
     ImportAgentSupervisor,
     ImportSourceRunner,
@@ -35,6 +44,8 @@ from bodaqs_analysis.import_agent_provisioning import (
     runtime_import_agent_app_config_path,
     save_import_agent_app_config,
     update_import_agent_app_auto_start,
+    update_import_agent_library_data_syn_bike_export_enabled,
+    update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
 )
 from bodaqs_analysis.preprocess_profile import (
@@ -42,6 +53,15 @@ from bodaqs_analysis.preprocess_profile import (
     make_preprocess_profile,
     save_preprocess_profile,
 )
+from bodaqs_analysis.session_archive import (
+    prepare_session_input,
+    raw_session_identity,
+    read_session_archive_contract,
+    session_input_identity,
+    sha256_file,
+)
+from bodaqs_analysis.session_notes import build_session_catalog_df
+from bodaqs_analysis.ui.preprocess_file_selector import load_processed_sha256_set
 
 
 def _set_old_mtime(path: Path, *, seconds_ago: int = 120) -> None:
@@ -80,6 +100,16 @@ def _write_bike_profile(path: Path) -> Path:
                 "full_range": 170.0,
             },
             {
+                "id": "front_wheel_range",
+                "signal": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "full_range": 170.0,
+            },
+            {
                 "id": "rear_suspension_range",
                 "signal": {
                     "end": "rear",
@@ -89,10 +119,82 @@ def _write_bike_profile(path: Path) -> Path:
                 },
                 "full_range": 65.0,
             },
+            {
+                "id": "rear_wheel_range",
+                "signal": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "full_range": 150.0,
+            },
         ],
         "signal_transforms": [],
     }
     path.write_text(json.dumps(bike_profile, indent=2), encoding="utf-8")
+    return path
+
+
+def _write_session_note_template(path: Path) -> Path:
+    template = {
+        "schema": "bodaqs.session_notes.template",
+        "version": 1,
+        "template_id": "import_agent_test_setup",
+        "template_version": "1.0",
+        "title": "Import agent test setup",
+        "description": "Test template for import-agent draft notes.",
+        "allow_custom_fields": True,
+        "fields": [
+            {
+                "field_id": "bike",
+                "label": "Bike",
+                "field_type": "string",
+                "section": "Bike",
+                "default": "",
+                "project_to_catalog": True,
+            },
+            {
+                "field_id": "fork",
+                "label": "Fork",
+                "field_type": "string",
+                "section": "Front",
+                "default": "",
+                "project_to_catalog": True,
+            },
+            {
+                "field_id": "rear_air_pressure_psi",
+                "label": "Rear pressure",
+                "field_type": "float",
+                "section": "Rear",
+                "unit": "psi",
+                "project_to_catalog": True,
+            },
+        ],
+    }
+    path.write_text(json.dumps(template, indent=2), encoding="utf-8")
+    return path
+
+
+def _write_bike_setup_preset(path: Path, *, bike_profile_id: str = "import_agent_test_bike") -> Path:
+    preset = {
+        "schema": "bodaqs.session_note_preset",
+        "version": 1,
+        "preset_id": "test_setup",
+        "display_name": "Test setup",
+        "template_id": "import_agent_test_setup",
+        "template_version": "1.0",
+        "bike_profile_id": bike_profile_id,
+        "title": "Imported test setup",
+        "values": {
+            "bike": "Import Agent Test Bike",
+            "fork": "Test Fork",
+            "rear_air_pressure_psi": 185.0,
+        },
+        "custom_values": {},
+        "free_text_notes": "Created from test preset.",
+    }
+    path.write_text(json.dumps(preset, indent=2), encoding="utf-8")
     return path
 
 
@@ -102,6 +204,8 @@ def _write_asset_package(package_dir: Path) -> None:
     _write_schema(package_dir / "event schema - default.yaml")
     _write_preprocess_profile(package_dir / "suspension settings default.json", schema_path=Path("event schema - default.yaml"))
     _write_bike_profile(package_dir / "stumpjumper evo default.json")
+    _write_session_note_template(package_dir / "source note template.json")
+    _write_bike_setup_preset(package_dir / "source setup preset.json")
 
 
 def _write_source_config(
@@ -111,6 +215,7 @@ def _write_source_config(
     settle_time_s: float = 1.0,
     preprocess_profile_path: str = "preprocess_profile.json",
     bike_profile_path: str = "bike_profile.json",
+    session_note: dict | None = None,
 ) -> Path:
     payload = {
         "schema": "bodaqs.import_source",
@@ -131,6 +236,8 @@ def _write_source_config(
         "include_events": False,
         "include_metrics": False,
     }
+    if session_note is not None:
+        payload["session_note"] = session_note
     config_path = source_root / "import_source.json"
     config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return config_path
@@ -142,6 +249,7 @@ def _write_session_archive(
     stem: str,
     front_values: tuple[float, float, float] = (10.0, 11.0, 12.0),
     rear_values: tuple[float, float, float] = (20.0, 21.0, 22.0),
+    metadata_note: str | None = None,
 ) -> Path:
     archive_path = inbox_dir / f"{stem}.zip"
     sidecar = {
@@ -202,6 +310,8 @@ def _write_session_archive(
             },
         },
     }
+    if metadata_note is not None:
+        sidecar["session"]["notes"] = metadata_note
 
     csv_text = "\n".join(
         [
@@ -226,6 +336,163 @@ def _write_invalid_archive(inbox_dir: Path, *, name: str = "broken.zip") -> Path
     return archive_path
 
 
+def test_session_archive_contract_requires_same_stem_csv_and_metadata(tmp_path):
+    archive_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("session_a.CSV", "time_s\n0.0\n")
+        zf.writestr("session_b.json", "{}")
+
+    with pytest.raises(ValueError, match="share the same stem"):
+        read_session_archive_contract(archive_path)
+
+
+def test_session_archive_identity_includes_csv_and_metadata_hashes(tmp_path):
+    archive_path = _write_session_archive(tmp_path, stem="session_001")
+
+    contract = read_session_archive_contract(archive_path)
+    identity = session_input_identity(archive_path)
+
+    assert contract.session_stem == "session_001"
+    assert identity.source_identity_kind == "raw_session_identity"
+    assert identity.source_identity == raw_session_identity(
+        csv_sha256=contract.csv_sha256,
+        log_metadata_sha256=contract.log_metadata_sha256,
+    )
+
+
+def test_prepare_session_input_extracts_archive_and_builds_manifest(tmp_path):
+    archive_path = _write_session_archive(tmp_path, stem="session_001")
+
+    with prepare_session_input(archive_path) as session_input:
+        assert session_input.csv_path.exists()
+        assert session_input.log_metadata_path is not None
+        assert session_input.log_metadata_path.exists()
+        manifest = session_input.source_manifest(source_sha256=sha256_file(session_input.csv_path))
+
+    assert manifest["path"] == "source/input.csv"
+    assert manifest["input_kind"] == "archive"
+    assert manifest["archive_csv_member"] == "session_001.CSV"
+    assert manifest["archive_log_metadata_member"] == "session_001.json"
+    assert manifest["raw_session_identity"] == session_input.source_identity
+
+
+def test_processed_identity_loader_reads_raw_session_identity(tmp_path):
+    archive_path = _write_session_archive(tmp_path, stem="session_001")
+    identity = session_input_identity(archive_path)
+
+    manifest_path = tmp_path / "artifacts" / "runs" / "run_1" / "sessions" / "session_001" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps({"source": {"path": "source/input.csv", "raw_session_identity": identity.source_identity}}),
+        encoding="utf-8",
+    )
+
+    assert identity.source_identity in load_processed_sha256_set(tmp_path / "artifacts")
+
+
+def test_metadata_change_changes_archive_source_identity(tmp_path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+
+    first = _write_session_archive(first_dir, stem="session_001", metadata_note="first")
+    second = _write_session_archive(second_dir, stem="session_001", metadata_note="second")
+
+    assert session_input_identity(first).source_identity != session_input_identity(second).source_identity
+
+
+def test_data_syn_bike_export_can_scale_calibrated_raw_to_full_adc_range():
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01],
+                "front_raw [counts]": [100.0, 200.0],
+                "rear_raw [counts]": [1000.0, 1500.0],
+            }
+        ),
+        "meta": {
+            "signals": {
+                "front_raw [counts]": {
+                    "end": "front",
+                    "quantity": "raw",
+                    "domain": "suspension",
+                    "unit": "counts",
+                    "calibration": {
+                        "type": "linear",
+                        "input_unit": "counts",
+                        "output_unit": "mm",
+                        "sensor_zero_count": 100,
+                        "sensor_full_count": 200,
+                        "sensor_full_travel": 170,
+                    },
+                },
+                "rear_raw [counts]": {
+                    "end": "rear",
+                    "quantity": "raw",
+                    "domain": "suspension",
+                    "unit": "counts",
+                    "calibration": {
+                        "type": "linear",
+                        "input_unit": "counts",
+                        "output_unit": "mm",
+                        "sensor_zero_count": 1000,
+                        "sensor_full_count": 1500,
+                        "sensor_full_travel": 65,
+                    },
+                },
+            }
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="calibrated_full_scale",
+        raw_full_scale_by_end={"front": 170, "rear": 65},
+        adc_bit_count=12,
+        drop_inactive=False,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+
+    assert exported["Front Raw"].tolist() == [0, 4095]
+    assert exported["Rear Raw"].tolist() == [0, 4095]
+    assert result["exports"][0]["metadata"]["front_raw_scale"]["status"] == "ok"
+    assert result["exports"][0]["metadata"]["rear_raw_scale"]["target_full_range"] == 65.0
+
+
+def test_data_syn_bike_manual_settings_reports_bike_profile_values():
+    bike_profile = {
+        "bike_profile_id": "example-bike",
+        "normalization_ranges": [
+            {
+                "id": "front",
+                "signal": {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+                "full_range": 170,
+            },
+            {
+                "id": "rear_shock",
+                "signal": {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+                "full_range": 65,
+            },
+            {
+                "id": "rear_wheel",
+                "signal": {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+                "full_range": 150,
+            },
+        ],
+    }
+
+    settings = data_syn_bike_manual_settings(bike_profile=bike_profile)
+    text = render_data_syn_bike_manual_settings_text(settings)
+
+    assert settings["front_wheel_travel_mm"] == 170.0
+    assert settings["max_shock_mm"] == 65.0
+    assert settings["rear_wheel_travel_mm"] == 150.0
+    assert settings["average_leverage_rate"] == 150.0 / 65.0
+    assert "Average leverage rate:" in text
+
+
 def _prepare_source(
     tmp_path: Path,
     name: str,
@@ -233,6 +500,7 @@ def _prepare_source(
     *,
     settle_time_s: float = 1.0,
     use_profile_dirs: bool = True,
+    attach_session_note_on_import: bool = False,
 ) -> Path:
     source_root = tmp_path / name
     inbox_dir = source_root / "inbox"
@@ -241,17 +509,26 @@ def _prepare_source(
     if use_profile_dirs:
         settings_dir = source_root / "settings"
         bike_dir = source_root / "bike"
+        notes_dir = source_root / "notes"
         settings_dir.mkdir()
         bike_dir.mkdir()
+        notes_dir.mkdir()
         schema_path = _write_schema(settings_dir / "event_schema.yaml")
         _write_preprocess_profile(settings_dir / "import_agent_test_settings.json", schema_path=schema_path)
         _write_bike_profile(bike_dir / "import_agent_test_bike.json")
+        _write_session_note_template(notes_dir / "import_agent_test_note_template.json")
+        _write_bike_setup_preset(notes_dir / "import_agent_test_setup_preset.json")
         _write_source_config(
             source_root,
             artifacts_dir=artifacts_dir,
             settle_time_s=settle_time_s,
             preprocess_profile_path="settings",
             bike_profile_path="bike",
+            session_note={
+                "attach_on_import": attach_session_note_on_import,
+                "template_path": "notes",
+                "setup_preset_path": "notes",
+            },
         )
     else:
         schema_path = _write_schema(source_root / "schema.yaml")
@@ -335,6 +612,86 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
     assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_run_sources_once_can_attach_draft_session_note_from_source_preset(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(
+        tmp_path,
+        "source_a",
+        artifacts_dir,
+        attach_session_note_on_import=True,
+    )
+    archive_path = _write_session_archive(source_root / "inbox", stem="session_001")
+    _set_old_mtime(archive_path)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    record = report["sources"][0]["imported"][0]
+    note_path = (
+        artifacts_dir
+        / "runs"
+        / record["run_id"]
+        / "sessions"
+        / record["session_id"]
+        / "annotations"
+        / "session_notes.json"
+    )
+    note = json.loads(note_path.read_text(encoding="utf-8"))
+    catalog = build_session_catalog_df(artifacts_dir=artifacts_dir)
+    run_manifest = json.loads(
+        (artifacts_dir / "runs" / record["run_id"] / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert note["draft"] is True
+    assert note["template_id"] == "import_agent_test_setup"
+    assert note["values"]["fork"] == "Test Fork"
+    assert note["values"]["rear_air_pressure_psi"] == 185.0
+    assert note["source_context"]["origin"] == "import_agent"
+    assert note["source_context"]["bike_profile_id"] == "import_agent_test_bike"
+    assert note["source_context"]["setup_preset_id"] == "test_setup"
+    assert (
+        artifacts_dir / "library" / "session_note_templates" / "import_agent_test_setup" / "1.0.json"
+    ).exists()
+    assert run_manifest["pipeline_config"]["archive_import"]["session_note"]["draft"] is True
+    assert bool(catalog.loc[0, "note_draft"]) is True
+    assert catalog.loc[0, "note.fork"] == "Test Fork"
+
+
+def test_run_sources_once_writes_data_syn_bike_outputs_when_library_enables_them(tmp_path):
+    library = provision_import_agent_library(
+        tmp_path / "libraries",
+        display_name="Alice Library",
+        data_syn_bike_export_enabled=True,
+    )
+    metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
+    metadata["exports"]["data_syn_bike"]["drop_inactive"] = False
+    library.metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    source_root = _prepare_source(tmp_path, "source_a", library.artifacts_dir)
+    archive_path = _write_session_archive(source_root / "inbox", stem="session_001")
+    _set_old_mtime(archive_path)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    record = report["sources"][0]["imported"][0]
+    syn_dir = library.artifacts_dir / "syn"
+    csv_files = list(syn_dir.glob("*__data_syn_bike.csv"))
+    settings_files = list(syn_dir.glob("*__data_syn_bike_settings.txt"))
+    manifest = json.loads((syn_dir / "data_syn_bike_export_manifest.json").read_text(encoding="utf-8"))
+    run_manifest = json.loads(
+        (library.artifacts_dir / "runs" / record["run_id"] / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert len(csv_files) == 1
+    assert len(settings_files) == 1
+    assert "ADC bit count: 12" in settings_files[0].read_text(encoding="utf-8")
+    assert f"{record['run_id']}/{record['session_id']}" in manifest["records"]
+    assert (
+        run_manifest["pipeline_config"]["archive_import"]["data_syn_bike_export"]["status"]
+        == "succeeded"
+    )
 
 
 def test_run_sources_once_skips_duplicate_success_and_moves_duplicate_archive_to_done(tmp_path):
@@ -502,6 +859,43 @@ def test_provision_import_agent_library_creates_artifact_store_dirs(tmp_path):
     assert library.state_dir.exists()
     metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
     assert metadata["library_id"] == "alice-library"
+    assert metadata["exports"]["data_syn_bike"]["enabled"] is False
+
+
+def test_provision_import_agent_library_can_enable_data_syn_bike_exports(tmp_path):
+    libraries_root = tmp_path / "libraries"
+
+    library = provision_import_agent_library(
+        libraries_root,
+        display_name="Alice Library",
+        data_syn_bike_export_enabled=True,
+    )
+
+    metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
+    assert library.data_syn_bike_export_enabled is True
+    assert metadata["exports"]["data_syn_bike"]["enabled"] is True
+    assert metadata["exports"]["data_syn_bike"]["raw_scale_mode"] == "calibrated_full_scale"
+
+
+def test_update_import_agent_library_data_syn_bike_export_enabled_updates_app_and_library_metadata(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    updated = update_import_agent_library_data_syn_bike_export_enabled(
+        app_config_path,
+        library_id=provisioned.library.library_id,
+        enabled=True,
+    )
+
+    metadata = json.loads(provisioned.library.metadata_path.read_text(encoding="utf-8"))
+    assert updated.libraries[0].data_syn_bike_export_enabled is True
+    assert metadata["exports"]["data_syn_bike"]["enabled"] is True
 
 
 def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp_path):
@@ -526,12 +920,18 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
 
     assert source.settings_dir.exists()
     assert source.bike_dir.exists()
+    assert source.notes_dir.exists()
     assert source.event_schema_path.exists()
+    assert source.session_note_template_path.exists()
+    assert source.bike_setup_preset_path.exists()
     assert loaded.preprocess_profile_path == source.settings_dir
     assert loaded.bike_profile_path == source.bike_dir
+    assert loaded.session_note.template_path == source.notes_dir
+    assert loaded.session_note.setup_preset_path == source.notes_dir
     assert loaded.artifacts_dir == library.artifacts_dir
     assert loaded.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE
     assert source_payload["source_type"] == SOURCE_TYPE_FILESYSTEM_ARCHIVE
+    assert source_payload["session_note"]["attach_on_import"] is False
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
 
 
@@ -614,6 +1014,8 @@ def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp
     assert source.preprocess_profile_path.name == "preprocess_profile.json"
     assert source.event_schema_path.name == "event_schema.yaml"
     assert source.bike_profile_path.name == "bike_profile.json"
+    assert source.session_note_template_path.name == "session_note_template.json"
+    assert source.bike_setup_preset_path.name == "bike_setup_preset.json"
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
 
 
@@ -774,8 +1176,12 @@ def test_provision_import_agent_app_setup_creates_seeded_desktop_setup(tmp_path)
     assert provisioned.library.artifacts_dir.exists()
     assert provisioned.source.import_source_config_path.exists()
     assert (provisioned.source.source_root / "fit").is_dir()
+    assert (provisioned.source.source_root / "notes").is_dir()
     source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
     assert source_payload["fit_dir"] == "fit"
+    assert source_payload["session_note"]["template_path"] == "notes"
+    assert source_payload["session_note"]["setup_preset_path"] == "notes"
+    assert source_payload["session_note"]["attach_on_import"] is False
     assert "logger_timezone" not in source_payload
     assert "include_events" not in source_payload
     assert "include_metrics" not in source_payload
@@ -915,6 +1321,29 @@ def test_update_import_agent_source_enabled_persists_and_filters_enabled_roots(t
 
     assert disabled.sources[0].enabled is False
     assert managed_import_agent_source_roots(disabled, enabled_only=True) == []
+
+
+def test_update_import_agent_source_session_note_attach_updates_app_and_source_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    updated = update_import_agent_source_session_note_attach_enabled(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        enabled=True,
+    )
+    source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
+    reloaded = load_import_agent_app_config(app_config_path)
+
+    assert updated.sources[0].attach_session_note_on_import is True
+    assert reloaded.sources[0].attach_session_note_on_import is True
+    assert source_payload["session_note"]["attach_on_import"] is True
 
 
 def test_remove_import_agent_source_only_updates_app_config(tmp_path):

@@ -1,0 +1,19 @@
+{
+  "schema": "bodaqs.session_note_preset",
+  "version": 1,
+  "preset_id": "default_bike_setup",
+  "display_name": "Default bike setup",
+  "template_id": "import_agent_bike_setup",
+  "template_version": "1.0",
+  "bike_profile_id": null,
+  "title": "Imported bike setup",
+  "values": {
+    "bike": "",
+    "rider": "",
+    "fork": "",
+    "shock": "",
+    "linkage": "Stock"
+  },
+  "custom_values": {},
+  "free_text_notes": "Draft note created automatically by the BODAQS import agent. Review and save it in the library manager when the setup details are confirmed."
+}

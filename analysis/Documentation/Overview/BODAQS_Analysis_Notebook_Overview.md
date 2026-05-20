@@ -159,7 +159,7 @@ Notebook: [`BODAQS_library_manager.ipynb`](../../BODAQS_library_manager.ipynb)
 
 This notebook is for metadata management. It does not run the analysis pipeline itself; instead, it lets you browse existing sessions, edit descriptions, manage session notes, and create and manage canonical aggregations.
 
-A **session note** is a structured, per-session annotation document stored alongside a processed session. Notes are usually created from a versioned template and are intended to capture setup, context, and other human-entered information that should travel with the session across notebooks.
+A **session note** is a structured, per-session annotation document stored alongside a processed session. Notes are usually created from a versioned template and are intended to capture setup, context, and other human-entered information that should travel with the session across notebooks. Notes created automatically by the import agent are marked as drafts until a user saves them in the library manager.
 
 An **aggregation** is a saved, named group of sessions that downstream consumer notebooks can treat as one selectable entity. In addition to the member sessions, an aggregation stores policy flags describing how to handle differences in signal registries and event-schema coverage across those members.
 
@@ -171,7 +171,7 @@ An **aggregation** is a saved, named group of sessions that downstream consumer 
 
 ### Step 2. Build and browse the session catalog
 
-- **Inputs:** the selected artifact tree and the available session-note templates under `analysis/templates/session_note_templates/`.
+- **Inputs:** the selected artifact tree and the available session-note templates under the library's `library/session_note_templates/` directory plus `analysis/templates/session_note_templates/`.
 - **Outputs:** a catalog of sessions with run metadata, session metadata, and a note catalog status.
 - **What the note catalog status means:** it summarizes whether the session has no saved note yet, has a note that can be cleanly projected into the flattened fields used for filtering and sorting, is missing the template needed to interpret that note, or has a mismatch between the stored note and the template version being projected.
 - **Persisted artifacts:** none.
@@ -195,7 +195,7 @@ After the catalog is open, the remaining interactions are random-access user act
 ### Action B. Load, create, and save canonical session notes
 
 - **Inputs:** the selected session, a chosen note template, structured field values, custom JSON values, and free-text notes.
-- **Outputs:** validated in-memory `SessionNoteDocument` instances and updated note catalog status.
+- **Outputs:** validated in-memory `SessionNoteDocument` instances and updated note catalog/draft status. Saving a note marks it as intentionally reviewed by clearing its draft flag.
 - **Persisted artifacts:**
   - `runs/<run_id>/sessions/<session_id>/annotations/session_notes.json`
 - **Contracts / documentation:**
