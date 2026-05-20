@@ -1,0 +1,481 @@
+---
+title: Import Manager user guide
+description: Full guide to setting up BODAQS Import Manager, adding libraries and sources, importing sessions, and managing optional outputs.
+sidebar:
+  order: 7
+---
+
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+
+<Lede>
+  BODAQS Import Manager is a local desktop app for collecting completed logger
+  sessions, running the BODAQS preprocessing pipeline, and writing processed
+  artifacts into one or more local BODAQS libraries.
+</Lede>
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: a clean BODAQS Import Manager window showing the two
+  main tabs, `Provision` and `Manager`.
+</Aside>
+
+## What the import manager does
+
+The import manager sits between raw logger files and analysis-ready BODAQS
+libraries.
+
+It can:
+
+- create library folders and source folders
+- seed new sources with default settings, bike profile, note template, and bike
+  setup preset files
+- watch one or more local folders for new logger archives
+- discover and download completed sessions from Wi-Fi loggers
+- run the BODAQS preprocessing pipeline
+- optionally enrich sessions from `.fit` activity files
+- optionally create draft setup notes for imported sessions
+- optionally write data.syn.bike-compatible exports for selected libraries
+
+It does not require cloud services, a database server, a phone bridge, BLE, or a
+Python environment for normal use.
+
+## Key concepts
+
+<CardGrid>
+  <Card title="Library">
+    A library is the destination for processed sessions. It contains BODAQS run
+    artifacts, library state, optional data.syn.bike exports, and library
+    metadata.
+  </Card>
+  <Card title="Source">
+    A source is one place sessions come from. It may be a local archive folder
+    or a Wi-Fi logger. Each source targets one library.
+  </Card>
+  <Card title="Bike profile">
+    A bike profile describes the bike and suspension transformations used during
+    preprocessing. Each source has its own `bike/` folder.
+  </Card>
+  <Card title="Settings">
+    Source settings include the preprocess profile and event schema. Each source
+    has its own `settings/` folder.
+  </Card>
+</CardGrid>
+
+## Recommended folder layout
+
+The app creates a simple local-first layout. A common setup is:
+
+```text
+BODAQS/
+  libraries/
+    My Library/
+  sources/
+    Trail Bike/
+    Test Logger/
+```
+
+Each source folder contains:
+
+```text
+<source>/
+  import_source.json
+  bike/
+  settings/
+  notes/
+  fit/
+  inbox/
+  done/
+  failed/
+  staging/
+```
+
+Each library contains:
+
+```text
+<library>/
+  runs/
+  library/
+  syn/
+  library_definition.json
+```
+
+<Aside type="tip" title="Multiple riders or loggers">
+  You can create multiple libraries under the same libraries root. For example,
+  use one library per rider, one library per test program, or one library per
+  team.
+</Aside>
+
+## First run setup
+
+Open **BODAQS Import Manager** and go to the `Provision` tab.
+
+<Steps>
+  1. Choose a **Libraries root**.
+  2. Enter a **Library name**.
+  3. Choose whether the library should generate data.syn.bike exports.
+  4. Choose a **Sources root**.
+  5. Enter a **Source name**.
+  6. Choose a **Source type**.
+  7. Choose the target library for the source.
+  8. Choose whether the source should attach a draft setup note on import.
+  9. Select **Create initial setup**.
+</Steps>
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: the `Provision` tab with the library creation block and
+  source creation block labelled.
+</Aside>
+
+After first setup, the `Manager` tab shows the managed libraries and sources.
+
+## Adding more libraries
+
+Use this when you want a separate destination for sessions.
+
+<Steps>
+  1. On the `Provision` tab, enter a new **Library name**.
+  2. Set **Generate data.syn.bike exports** if that library should produce syn
+     exports for future imports.
+  3. Select **Add Library**.
+</Steps>
+
+The library appears in the libraries list on the `Manager` tab. The `Syn Export`
+checkbox can also be toggled there.
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: the libraries list with the `Syn Export` checkbox column
+  highlighted.
+</Aside>
+
+## Adding more sources
+
+Use this when sessions can arrive from another folder, another logger, another
+bike, or another rider.
+
+<Steps>
+  1. On the `Provision` tab, enter a new **Source name**.
+  2. Choose **Source type**.
+  3. Choose the **Target library**.
+  4. Fill in any source-type-specific fields.
+  5. Set **Attach draft setup note on import** if desired.
+  6. Select **Add Source**.
+</Steps>
+
+Adding a source does not disturb existing libraries or sources.
+
+## Source type: local archive folder
+
+Choose `Local archive folder` when sessions arrive as logger `.zip` archives.
+
+The normal workflow is:
+
+<Steps>
+  1. Copy a completed session archive into the source `inbox/` folder.
+  2. Let the watcher import it, or select **Import Now**.
+  3. The manager extracts the archive in `staging/`.
+  4. The manager validates that the archive contains a matching `.csv` and
+     `.json` session pair.
+  5. The manager runs preprocessing and writes outputs to the target library.
+  6. The archive moves to `done/` on success or `failed/` on failure.
+</Steps>
+
+The `.csv` and `.json` files inside the archive do not need a fixed name, but
+they must have the same stem.
+
+<Aside type="caution" title="Copy first, import second">
+  Do not ask the manager to import a file that is still being copied. Put fully
+  completed archives into `inbox/`.
+</Aside>
+
+## Source type: Wi-Fi logger
+
+Choose `Wi-Fi logger` when the manager should download completed sessions
+directly from a logger over the local network.
+
+The logger must be:
+
+- powered on
+- connected to the same local network as the computer
+- not actively logging
+- placed into upload mode
+
+### Creating a Wi-Fi source
+
+<Steps>
+  1. Put the logger on the same network as the computer.
+  2. Put the logger into upload mode.
+  3. On the `Provision` tab, select `Wi-Fi logger`.
+  4. Use **Discover Loggers** if mDNS discovery is available.
+  5. Select the logger from the discovered list.
+  6. Confirm the **Logger ID** and **Logger Address** fields.
+  7. Choose the remote cleanup policy.
+  8. Select **Add Source**.
+</Steps>
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: discovered logger dialog showing logger ID, address,
+  upload mode, and hostname.
+</Aside>
+
+### Logger ID and address
+
+The logger ID is the stable identity of the logger. It comes from the logger
+name configured on the device.
+
+The logger address may be discovered with mDNS. If discovery is not available
+or not reliable on a particular network, enter the logger address manually.
+
+Manual addresses look like:
+
+```text
+http://192.168.1.42
+```
+
+### Upload mode
+
+Upload mode is required for Wi-Fi imports. This prevents background imports
+from interfering with active data collection.
+
+On the `Manager` tab:
+
+- **Check Logger** verifies identity and reports whether the logger is in upload
+  mode.
+- **Request Upload Mode** asks the logger to enter upload mode over the API.
+
+<Aside type="tip" title="Use the logger controls when in doubt">
+  If the logger does not enter upload mode from the manager, use the logger menu
+  directly and then choose **Check Logger** again.
+</Aside>
+
+### Remote cleanup policy
+
+When a Wi-Fi session imports successfully, the manager can acknowledge the
+session back to the logger. Depending on the source settings, completed remote
+sessions may be:
+
+- kept on the logger
+- moved to the logger's uploaded/archive area
+- deleted from the logger
+
+Choose the conservative option until you are confident the workflow is doing
+what you expect.
+
+## The Manager tab
+
+The `Manager` tab is where day-to-day importing happens.
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: the `Manager` tab with the library list, source list,
+  action buttons, and status log labelled.
+</Aside>
+
+The library table shows:
+
+- display name
+- library ID
+- `Syn Export` checkbox
+- library folder path
+
+The source table shows:
+
+- `Enabled` checkbox
+- `Attach Note` checkbox
+- display name
+- source type
+- target library
+- runtime status
+- source folder path
+
+Use the checkboxes directly:
+
+- clear `Enabled` to stop a source from being watched or imported
+- set `Attach Note` to create draft notes for future imports from that source
+- set `Syn Export` on a library to create data.syn.bike outputs for future
+  imports into that library
+
+## Import now vs watch mode
+
+<CardGrid>
+  <Card title="Import Now">
+    **Import Now** scans enabled sources once. Use it for testing, manual
+    imports, and checking that a new setup works before leaving the watcher
+    running.
+  </Card>
+  <Card title="Start Watch">
+    **Start Watch** keeps the manager running in the background and repeatedly
+    checks enabled sources. Use it once setup is stable.
+  </Card>
+</CardGrid>
+
+Stop the watcher before making structural changes to sources or libraries.
+
+## Start at login
+
+The manager can save a start-at-login preference. When enabled, the app starts
+when you log in and can start the watcher automatically.
+
+On Windows, this is implemented as a per-user startup entry. You do not need
+administrator access just to use the preference.
+
+## Bike profiles and settings
+
+Each source has its own `bike/` and `settings/` folders. This is deliberate:
+different sources may correspond to different bikes, loggers, riders, or test
+programs.
+
+### Bike folder
+
+The `bike/` folder should contain exactly one valid bike profile.
+
+Replace the seeded default with the profile for the bike being logged.
+
+### Settings folder
+
+The `settings/` folder should contain:
+
+- exactly one valid preprocess profile
+- exactly one valid event schema if event detection/metrics are desired
+
+If an event schema is available, the manager will run event detection and
+metrics as part of the normal preprocessing flow.
+
+<Aside type="caution" title="Exactly one valid file">
+  The source folders are intentionally simple. Put one active bike profile in
+  `bike/`, and one active preprocess profile in `settings/`. Keep old versions
+  outside those folders or in a clearly separate backup folder.
+</Aside>
+
+## FIT enrichment
+
+If the preprocess profile enables FIT import, the manager looks in the source
+`fit/` folder for matching `.fit` files.
+
+Rules of thumb:
+
+- copy FIT files fully before importing sessions
+- FIT files are read in place
+- FIT files are not moved or deleted by the manager
+- if multiple FIT files overlap a session, the largest overlap is preferred
+- if FIT parsing fails or the match is ambiguous, the import should continue
+  without FIT enrichment and record a quality-control note
+
+## Draft setup notes
+
+Each source has a `notes/` folder containing:
+
+- a session note template
+- a bike setup preset
+
+When `Attach Note` is enabled for the source, each imported session gets a
+draft note generated from those files. The note is marked as a draft so it can
+be distinguished from a note intentionally created or edited by a user.
+
+Draft notes are useful for bike setup data such as:
+
+- bike
+- rider
+- fork settings
+- shock settings
+- sag
+- air pressures
+- setup comments
+
+When the note is reviewed and saved in the library manager, it becomes a normal
+non-draft note.
+
+## data.syn.bike exports
+
+If `Syn Export` is enabled for the target library before import, the manager
+writes data.syn.bike-compatible outputs into:
+
+```text
+<library>/syn/
+```
+
+The `syn/` folder includes:
+
+- exported CSV files
+- per-session helper text files with settings to enter manually in
+  data.syn.bike
+- an export manifest
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: a library `syn/` folder showing exported CSV files and
+  helper text files.
+</Aside>
+
+Old sessions are not backfilled automatically. The setting affects sessions
+imported after it is enabled.
+
+## Removing sources
+
+Removing a source in the manager removes it from the managed app configuration.
+It does not delete the source folder, imported archives, failed archives, bike
+profiles, settings, or any library data.
+
+This makes removal safe: you can stop managing a source without losing files.
+
+## Troubleshooting
+
+### A file stays in inbox
+
+Check that:
+
+- the file is a `.zip`
+- the copy has finished
+- the archive contains one matching `.csv` and `.json` pair
+- the source is enabled
+- the watcher is running, or you selected **Import Now**
+
+### A file moved to failed
+
+Open the manager status log and inspect the source `failed/` folder. Common
+causes include:
+
+- archive contents do not match the expected logger session contract
+- bike profile or preprocess settings are invalid
+- preprocessing failed
+- the target library path is unavailable
+
+### Wi-Fi logger is not discovered
+
+Try:
+
+- confirm the logger and computer are on the same network
+- confirm the logger Wi-Fi is on
+- confirm the logger is in upload mode
+- try **Check Logger** with a manual address
+- check whether VPN, firewall, or guest-network isolation is blocking mDNS
+
+### Wi-Fi source says waiting for upload mode
+
+The logger is reachable, but it is not accepting session transfers. Put the
+logger into upload mode and try again.
+
+### No data.syn.bike outputs were written
+
+Check that:
+
+- `Syn Export` was enabled on the target library before import
+- the imported session contains compatible raw signals
+- the bike profile includes the required normalization/travel information
+
+### No draft note was attached
+
+Check that:
+
+- `Attach Note` was enabled on the source before import
+- the source `notes/` folder contains exactly one valid template and one valid
+  bike setup preset
+- the preset refers to the template
+
+## Safe operating habits
+
+- Keep raw logger archives after import until you are confident the processed
+  library contains what you need.
+- Stop the watcher before editing source settings.
+- Keep one active bike profile per source.
+- Keep old profiles and experiments outside the active `bike/` and `settings/`
+  folders.
+- Use conservative Wi-Fi cleanup settings until you trust the end-to-end
+  workflow.

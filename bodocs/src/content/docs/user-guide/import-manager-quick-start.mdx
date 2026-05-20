@@ -1,0 +1,169 @@
+---
+title: Import Manager quick start
+description: The shortest path from a logger session archive to processed BODAQS library outputs.
+sidebar:
+  order: 6
+---
+
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+
+<Lede>
+  BODAQS Import Manager is the desktop app for getting logger sessions into a
+  local BODAQS library without running Python or opening notebooks. It can watch
+  folders, download from Wi-Fi loggers, run preprocessing, and write processed
+  session artifacts into a library directory.
+</Lede>
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: the BODAQS Import Manager main window immediately after
+  launch, showing the `Provision` and `Manager` tabs.
+</Aside>
+
+## What you need
+
+- BODAQS Import Manager installed on your computer.
+- A completed BODAQS logger session, either as a `.zip` archive or available
+  on a Wi-Fi logger in upload mode.
+- A bike profile and import settings. New sources are seeded with defaults, so
+  you can start by replacing only the bike profile if needed.
+
+<Aside type="tip" title="Current platform">
+  The packaged app is currently Windows-first. The workflow is designed to be
+  portable, and macOS packaging is planned separately.
+</Aside>
+
+## First-time setup
+
+<Steps>
+  1. Open **BODAQS Import Manager** from the Start Menu.
+  2. On the `Provision` tab, choose a **Libraries root**. This is where
+     processed BODAQS libraries will live.
+  3. Enter a **Library name**, such as `My BODAQS Library`.
+  4. Choose a **Sources root**. This is where import-source folders will live.
+  5. Enter a **Source name**, such as `Trail bike logger`.
+  6. Choose `Local archive folder` if you will drop logger `.zip` files into a
+     folder, or `Wi-Fi logger` if the logger will be downloaded over the local
+     network.
+  7. Select **Create initial setup**.
+</Steps>
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: the `Provision` tab with the library block, source
+  block, and `Create initial setup` button highlighted.
+</Aside>
+
+The manager creates a source folder and a library folder. A typical source
+folder looks like this:
+
+```text
+<source>/
+  import_source.json
+  bike/
+  settings/
+  notes/
+  fit/
+  inbox/
+  done/
+  failed/
+  staging/
+```
+
+## Import from a local archive folder
+
+<Steps>
+  1. Put one completed logger `.zip` file into the source `inbox/` folder.
+  2. Return to the `Manager` tab.
+  3. Select **Import Now**.
+  4. Wait for the status log to report that the archive was imported.
+  5. Check the target library `runs/` folder for the new processed run.
+</Steps>
+
+The source `inbox/` is for files waiting to be imported. Successfully imported
+archives move to `done/`. Failed archives move to `failed/`.
+
+<Aside type="caution" title="Use complete files only">
+  Copy archives fully before importing. If another program is still writing the
+  file, the manager may defer or fail the import rather than risk processing a
+  partial session.
+</Aside>
+
+## Import from a Wi-Fi logger
+
+<Steps>
+  1. Turn Wi-Fi on for the logger if needed.
+  2. Put the logger into **upload mode** from the logger menu.
+  3. In BODAQS Import Manager, choose a `Wi-Fi logger` source.
+  4. Use **Discover Loggers** when creating the source, or enter the logger ID
+     and address manually.
+  5. On the `Manager` tab, select the source and choose **Check Logger**.
+  6. Select **Import Now** or start the watcher.
+</Steps>
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: the Wi-Fi logger source fields with `Discover Loggers`,
+  `Logger ID`, and `Logger Address` visible.
+</Aside>
+
+Wi-Fi imports only transfer completed logger sessions. The logger must be in
+upload mode before transfer begins.
+
+## Start watching
+
+After setup is working, use **Start Watch** on the `Manager` tab. The manager
+will keep checking enabled sources and import new sessions when they appear.
+
+Use **Stop Watch** before changing source folders, editing source settings, or
+doing anything that moves files around manually.
+
+## Optional outputs
+
+<CardGrid>
+  <Card title="Draft setup notes">
+    Enable `Attach Note` on a source to create a draft session note whenever a
+    session is imported. The note is based on the source's `notes/` template and
+    bike setup preset.
+  </Card>
+  <Card title="data.syn.bike exports">
+    Enable `Syn Export` on a library to write compatible CSV files and a
+    per-session helper text file into the library `syn/` folder.
+  </Card>
+  <Card title="FIT enrichment">
+    Put `.fit` files in the source `fit/` folder if the preprocess settings
+    enable FIT enrichment. FIT files are read in place and are not moved or
+    deleted by the importer.
+  </Card>
+</CardGrid>
+
+<Aside type="note" title="Screenshot placeholder">
+  Suggested screenshot: the `Manager` tab showing library `Syn Export`
+  checkboxes and source `Enabled` / `Attach Note` checkboxes.
+</Aside>
+
+## Where to look for results
+
+Processed session artifacts are written under the target library:
+
+```text
+<library>/
+  runs/
+  library/
+  syn/
+  library_definition.json
+```
+
+The most important folder is `runs/`. Each import creates a run folder with one
+or more processed sessions inside it.
+
+## Quick troubleshooting
+
+- If nothing imports, check that the source is enabled.
+- If local files do not import, check that the archive is in `inbox/`, not
+  `done/` or `failed/`.
+- If Wi-Fi discovery does not find the logger, check that the computer and
+  logger are on the same network.
+- If Wi-Fi import waits, check that the logger is in upload mode.
+- If data.syn.bike files are missing, check that `Syn Export` is enabled on the
+  target library before the session is imported.
+- If draft notes are missing, check that `Attach Note` is enabled on the source
+  before the session is imported.
