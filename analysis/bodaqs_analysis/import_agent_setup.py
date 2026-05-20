@@ -35,6 +35,8 @@ from .import_agent_provisioning import (
     remove_import_agent_source,
     runtime_import_agent_app_config_path,
     update_import_agent_app_auto_start,
+    update_import_agent_library_data_syn_bike_export_enabled,
+    update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
 )
 from .import_agent_sources import (
@@ -136,6 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--library-name", default="Default Library")
     parser.add_argument("--source-name", default="Default Source")
     parser.add_argument("--run-tz-label", default="LOCAL")
+    parser.add_argument("--data-syn-bike-export", action="store_true")
+    parser.add_argument("--attach-session-note", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--auto-start", action="store_true")
     parser.add_argument("--startup-launch", action="store_true", help=argparse.SUPPRESS)
@@ -172,6 +176,8 @@ class ImportAgentManagerController:
         source_type: str,
         logger_wifi: Optional[dict[str, Any]],
         run_tz_label: str,
+        data_syn_bike_export_enabled: bool,
+        attach_session_note_on_import: bool,
         auto_start: bool,
         overwrite: bool,
     ) -> Any:
@@ -184,20 +190,32 @@ class ImportAgentManagerController:
             source_type=source_type,
             logger_wifi=logger_wifi,
             run_tz_label=run_tz_label,
+            data_syn_bike_export_enabled=data_syn_bike_export_enabled,
+            attach_session_note_on_import=attach_session_note_on_import,
             auto_start=auto_start,
             overwrite=overwrite,
         )
         self.app_config = result.app_config
         return result
 
-    def add_library(self, *, display_name: str, overwrite: bool) -> Any:
+    def add_library(self, *, display_name: str, data_syn_bike_export_enabled: bool, overwrite: bool) -> Any:
         updated, library = provision_import_agent_library_for_app(
             self.app_config_path,
             display_name=display_name,
+            data_syn_bike_export_enabled=data_syn_bike_export_enabled,
             overwrite=overwrite,
         )
         self.app_config = updated
         return library
+
+    def set_library_data_syn_bike_export_enabled(self, library_id: str, enabled: bool) -> ImportAgentAppConfig:
+        updated = update_import_agent_library_data_syn_bike_export_enabled(
+            self.app_config_path,
+            library_id=library_id,
+            enabled=enabled,
+        )
+        self.app_config = updated
+        return updated
 
     def add_source(
         self,
@@ -207,6 +225,7 @@ class ImportAgentManagerController:
         source_type: str,
         logger_wifi: Optional[dict[str, Any]],
         run_tz_label: str,
+        attach_session_note_on_import: bool,
         overwrite: bool,
     ) -> Any:
         updated, source = provision_import_agent_source_for_app(
@@ -216,6 +235,7 @@ class ImportAgentManagerController:
             source_type=source_type,
             logger_wifi=logger_wifi,
             run_tz_label=run_tz_label,
+            attach_session_note_on_import=attach_session_note_on_import,
             overwrite=overwrite,
         )
         self.app_config = updated
@@ -223,6 +243,15 @@ class ImportAgentManagerController:
 
     def set_source_enabled(self, source_id: str, enabled: bool) -> ImportAgentAppConfig:
         updated = update_import_agent_source_enabled(
+            self.app_config_path,
+            source_id=source_id,
+            enabled=enabled,
+        )
+        self.app_config = updated
+        return updated
+
+    def set_source_session_note_attach_enabled(self, source_id: str, enabled: bool) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_session_note_attach_enabled(
             self.app_config_path,
             source_id=source_id,
             enabled=enabled,
@@ -351,6 +380,8 @@ class ImportAgentManagerWindow:
         self.source_name_var = tk.StringVar(value=str(args.source_name))
         self.source_type_choice_var = tk.StringVar(value=_SOURCE_TYPE_LABELS[SOURCE_TYPE_FILESYSTEM_ARCHIVE])
         self.run_tz_label_var = tk.StringVar(value=str(args.run_tz_label or "LOCAL"))
+        self.data_syn_bike_export_var = tk.BooleanVar(value=bool(args.data_syn_bike_export))
+        self.attach_session_note_var = tk.BooleanVar(value=bool(args.attach_session_note))
         self.auto_start_var = tk.BooleanVar(value=bool(args.auto_start))
         self.overwrite_var = tk.BooleanVar(value=bool(args.overwrite))
         self.source_library_choice_var = tk.StringVar(value="")
@@ -467,7 +498,7 @@ class ImportAgentManagerWindow:
         libraries_frame.rowconfigure(0, weight=1)
         libraries_tree = ttk.Treeview(
             libraries_frame,
-            columns=("display_name", "library_id", "artifacts_dir"),
+            columns=("display_name", "library_id", "syn_export", "artifacts_dir"),
             show="headings",
             height=9,
         )
@@ -475,12 +506,15 @@ class ImportAgentManagerWindow:
         libraries_tree.configure(xscrollcommand=libraries_xscroll.set)
         libraries_tree.heading("display_name", text="Display Name", anchor="w")
         libraries_tree.heading("library_id", text="Library ID", anchor="w")
+        libraries_tree.heading("syn_export", text="Syn Export", anchor="w")
         libraries_tree.heading("artifacts_dir", text="Artifacts Directory", anchor="w")
         libraries_tree.column("display_name", width=180, anchor="w")
         libraries_tree.column("library_id", width=140, anchor="w")
+        libraries_tree.column("syn_export", width=90, anchor="center", stretch=False)
         libraries_tree.column("artifacts_dir", width=520, anchor="w")
         libraries_tree.grid(row=0, column=0, sticky="nsew")
         libraries_xscroll.grid(row=1, column=0, sticky="ew")
+        libraries_tree.bind("<Button-1>", self._on_libraries_tree_click)
         self.libraries_tree = libraries_tree
 
         sources_frame = ttk.Frame(lists)
@@ -489,13 +523,23 @@ class ImportAgentManagerWindow:
         sources_frame.rowconfigure(0, weight=1)
         sources_tree = ttk.Treeview(
             sources_frame,
-            columns=("enabled", "display_name", "source_id", "source_type", "library_id", "status", "source_root"),
+            columns=(
+                "enabled",
+                "attach_note",
+                "display_name",
+                "source_id",
+                "source_type",
+                "library_id",
+                "status",
+                "source_root",
+            ),
             show="headings",
             height=9,
         )
         sources_xscroll = ttk.Scrollbar(sources_frame, orient="horizontal", command=sources_tree.xview)
         sources_tree.configure(xscrollcommand=sources_xscroll.set)
         sources_tree.heading("enabled", text="Enabled", anchor="w")
+        sources_tree.heading("attach_note", text="Attach Note", anchor="w")
         sources_tree.heading("display_name", text="Display Name", anchor="w")
         sources_tree.heading("source_id", text="Source ID", anchor="w")
         sources_tree.heading("source_type", text="Type", anchor="w")
@@ -503,6 +547,7 @@ class ImportAgentManagerWindow:
         sources_tree.heading("status", text="Status", anchor="w")
         sources_tree.heading("source_root", text="Source Root", anchor="w")
         sources_tree.column("enabled", width=80, anchor="center", stretch=False)
+        sources_tree.column("attach_note", width=95, anchor="center", stretch=False)
         sources_tree.column("display_name", width=180, anchor="w")
         sources_tree.column("source_id", width=140, anchor="w")
         sources_tree.column("source_type", width=120, anchor="w")
@@ -572,8 +617,13 @@ class ImportAgentManagerWindow:
             browse_command=lambda: self._choose_directory(self.libraries_root_var, "Choose libraries root"),
         )
         self._add_text_row(parent=library_frame, row=1, label="Library name", variable=self.library_name_var)
+        ttk.Checkbutton(
+            library_frame,
+            text="Generate data.syn.bike exports",
+            variable=self.data_syn_bike_export_var,
+        ).grid(row=2, column=1, sticky="w", pady=(6, 0), padx=(12, 8))
         self.add_library_button = ttk.Button(library_frame, text="Add Library", command=self._add_library)
-        self.add_library_button.grid(row=2, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
+        self.add_library_button.grid(row=3, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
 
         source_frame = ttk.LabelFrame(parent, text="Source", padding=10)
         source_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
@@ -605,12 +655,17 @@ class ImportAgentManagerWindow:
         combo.grid(row=3, column=1, sticky="ew", pady=4, padx=(12, 8))
         self.library_choice_combo = combo
         self._add_text_row(parent=source_frame, row=4, label="Run TZ label", variable=self.run_tz_label_var)
+        ttk.Checkbutton(
+            source_frame,
+            text="Attach draft setup note on import",
+            variable=self.attach_session_note_var,
+        ).grid(row=5, column=1, sticky="w", pady=(6, 0), padx=(12, 8))
 
         self.wifi_frame = self._build_wifi_provision_frame(source_frame)
-        self.wifi_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        self.wifi_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 4))
 
         self.add_source_button = ttk.Button(source_frame, text="Add Source", command=self._add_source)
-        self.add_source_button.grid(row=6, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
+        self.add_source_button.grid(row=7, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
 
         options = ttk.LabelFrame(parent, text="App options", padding=10)
         options.grid(row=3, column=0, sticky="ew", pady=(0, 10))
@@ -953,8 +1008,8 @@ class ImportAgentManagerWindow:
         if self.sources_tree is None or not self.sources_tree.exists(source_id):
             return
         values = list(self.sources_tree.item(source_id, "values"))
-        if len(values) >= 6:
-            values[5] = status
+        if len(values) >= 7:
+            values[6] = status
             self.sources_tree.item(source_id, values=values)
 
     def _remote_report_status_text(self, remote: Any) -> Optional[str]:
@@ -1079,7 +1134,16 @@ class ImportAgentManagerWindow:
                 "",
                 "end",
                 iid=library.library_id,
-                values=(library.display_name, library.library_id, str(library.artifacts_dir)),
+                values=(
+                    library.display_name,
+                    library.library_id,
+                    (
+                        _SOURCE_ENABLED_CHECKED
+                        if getattr(library, "data_syn_bike_export_enabled", False)
+                        else _SOURCE_ENABLED_UNCHECKED
+                    ),
+                    str(library.artifacts_dir),
+                ),
             )
 
     def _render_sources(self, sources: Sequence[Any]) -> None:
@@ -1096,6 +1160,11 @@ class ImportAgentManagerWindow:
                 iid=source.source_id,
                 values=(
                     _SOURCE_ENABLED_CHECKED if source.enabled else _SOURCE_ENABLED_UNCHECKED,
+                    (
+                        _SOURCE_ENABLED_CHECKED
+                        if getattr(source, "attach_session_note_on_import", False)
+                        else _SOURCE_ENABLED_UNCHECKED
+                    ),
                     source.display_name,
                     source.source_id,
                     _SOURCE_TYPE_LABELS.get(source.source_type, source.source_type),
@@ -1111,11 +1180,31 @@ class ImportAgentManagerWindow:
         selection = self.sources_tree.selection()
         return str(selection[0]) if selection else None
 
+    def _selected_library_id(self) -> Optional[str]:
+        if self.libraries_tree is None:
+            return None
+        selection = self.libraries_tree.selection()
+        return str(selection[0]) if selection else None
+
+    def _managed_library_syn_export_enabled(self, library_id: str) -> bool:
+        config = self.controller.require_config()
+        for library in config.libraries:
+            if library.library_id == library_id:
+                return bool(getattr(library, "data_syn_bike_export_enabled", False))
+        raise ValueError(f"Unknown library: {library_id}")
+
     def _managed_source_enabled(self, source_id: str) -> bool:
         config = self.controller.require_config()
         for source in config.sources:
             if source.source_id == source_id:
                 return bool(source.enabled)
+        raise ValueError(f"Unknown source: {source_id}")
+
+    def _managed_source_session_note_attach_enabled(self, source_id: str) -> bool:
+        config = self.controller.require_config()
+        for source in config.sources:
+            if source.source_id == source_id:
+                return bool(getattr(source, "attach_session_note_on_import", False))
         raise ValueError(f"Unknown source: {source_id}")
 
     def _on_sources_tree_click(self, event: tk.Event) -> Optional[str]:
@@ -1124,13 +1213,32 @@ class ImportAgentManagerWindow:
         region = self.sources_tree.identify("region", event.x, event.y)
         if region != "cell":
             return None
-        if self.sources_tree.identify_column(event.x) != "#1":
+        column = self.sources_tree.identify_column(event.x)
+        if column not in {"#1", "#2"}:
             return None
         source_id = self.sources_tree.identify_row(event.y)
         if not source_id:
             return None
         self.sources_tree.selection_set(source_id)
-        self._toggle_source_enabled(source_id)
+        if column == "#1":
+            self._toggle_source_enabled(source_id)
+        else:
+            self._toggle_source_session_note_attach(source_id)
+        return "break"
+
+    def _on_libraries_tree_click(self, event: tk.Event) -> Optional[str]:
+        if self.libraries_tree is None:
+            return None
+        region = self.libraries_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return None
+        if self.libraries_tree.identify_column(event.x) != "#3":
+            return None
+        library_id = self.libraries_tree.identify_row(event.y)
+        if not library_id:
+            return None
+        self.libraries_tree.selection_set(library_id)
+        self._toggle_library_syn_export(library_id)
         return "break"
 
     def _toggle_source_enabled(self, source_id: str) -> None:
@@ -1147,6 +1255,51 @@ class ImportAgentManagerWindow:
         if self.sources_tree is not None and self.sources_tree.exists(source_id):
             self.sources_tree.selection_set(source_id)
         self._set_manager_status(f"{'Enabled' if enabled else 'Disabled'} source '{source_id}'.")
+
+    def _toggle_source_session_note_attach(self, source_id: str) -> None:
+        if not self._guard_watch_inactive(action_label="Toggle Source Draft Note"):
+            return
+        try:
+            enabled = not self._managed_source_session_note_attach_enabled(source_id)
+            self.controller.set_source_session_note_attach_enabled(source_id, enabled)
+        except Exception as exc:
+            self._set_manager_status(f"Toggle source draft-note attach failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.sources_tree is not None and self.sources_tree.exists(source_id):
+            self.sources_tree.selection_set(source_id)
+        self._set_manager_status(
+            f"{'Enabled' if enabled else 'Disabled'} draft setup notes for source '{source_id}'."
+        )
+
+    def _toggle_selected_library_syn_export(self) -> None:
+        library_id = self._selected_library_id()
+        if library_id is None:
+            messagebox.showinfo(
+                "BODAQS Import Agent Manager",
+                "Select a library first.",
+                parent=self.root,
+            )
+            return
+        self._toggle_library_syn_export(library_id)
+
+    def _toggle_library_syn_export(self, library_id: str) -> None:
+        if not self._guard_watch_inactive(action_label="Toggle Syn Export"):
+            return
+        try:
+            enabled = not self._managed_library_syn_export_enabled(library_id)
+            self.controller.set_library_data_syn_bike_export_enabled(library_id, enabled)
+        except Exception as exc:
+            self._set_manager_status(f"Toggle syn export failed: {exc}")
+            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.libraries_tree is not None and self.libraries_tree.exists(library_id):
+            self.libraries_tree.selection_set(library_id)
+        self._set_manager_status(
+            f"{'Enabled' if enabled else 'Disabled'} data.syn.bike exports for library '{library_id}'."
+        )
 
     def _selected_library_id_from_choice(self) -> Optional[str]:
         label = self.source_library_choice_var.get().strip()
@@ -1311,6 +1464,8 @@ class ImportAgentManagerWindow:
                 source_type=source_type,
                 logger_wifi=logger_wifi,
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
+                data_syn_bike_export_enabled=bool(self.data_syn_bike_export_var.get()),
+                attach_session_note_on_import=bool(self.attach_session_note_var.get()),
                 auto_start=bool(self.auto_start_var.get()),
                 overwrite=bool(self.overwrite_var.get()),
             )
@@ -1333,6 +1488,7 @@ class ImportAgentManagerWindow:
         try:
             library = self.controller.add_library(
                 display_name=self.library_name_var.get(),
+                data_syn_bike_export_enabled=bool(self.data_syn_bike_export_var.get()),
                 overwrite=bool(self.overwrite_var.get()),
             )
         except Exception as exc:
@@ -1363,6 +1519,7 @@ class ImportAgentManagerWindow:
                 source_type=source_type,
                 logger_wifi=logger_wifi,
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
+                attach_session_note_on_import=bool(self.attach_session_note_var.get()),
                 overwrite=bool(self.overwrite_var.get()),
             )
         except Exception as exc:

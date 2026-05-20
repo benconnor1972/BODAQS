@@ -557,6 +557,13 @@ write_result = write_data_syn_bike_exports(
 - `time_format="sample_count"` emits unsigned-style sample counts. The
   `sample_count_origin` option controls whether those counts preserve source
   session row numbers or restart from zero for each emitted export.
+- `raw_scale_mode="calibrated_full_scale"` maps calibrated logger raw ranges to
+  the configured `adc_bit_count`/`adc_max_count`, which is useful when emitting
+  files for data.syn.bike's rail-to-rail raw scaling assumption.
+- `data_syn_bike_manual_settings(...)` and
+  `render_data_syn_bike_manual_settings_text(...)` produce per-session helper
+  settings for manual data.syn.bike entry when metadata cannot be imported by
+  the external service.
 
 ---
 

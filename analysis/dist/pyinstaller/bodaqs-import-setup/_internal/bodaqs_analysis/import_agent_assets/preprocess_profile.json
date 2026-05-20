@@ -26,18 +26,27 @@
       "resample_method": "linear",
       "raw_stream_name": "gps_fit"
     },
-    "zeroing_enabled": false,
+    "zeroing_enabled": true,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
     "clip_0_1": false,
-    "prefer_postprocessing_transformations": false,
+    "prefer_postprocessing_transformations": true,
     "motion_derivation": {
-      "enabled": false,
+      "enabled": true,
       "sources": [
         {
           "id": "rear_wheel",
           "selector": {
             "end": "rear",
+            "quantity": "disp",
+            "domain": "wheel",
+            "unit": "mm"
+          }
+        },
+        {
+          "id": "front_wheel",
+          "selector": {
+            "end": "front",
             "quantity": "disp",
             "domain": "wheel",
             "unit": "mm"

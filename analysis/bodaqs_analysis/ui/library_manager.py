@@ -25,8 +25,8 @@ from bodaqs_analysis.session_notes import (
     SessionNoteFieldDef,
     SessionNoteStore,
     SessionNoteTemplate,
-    SessionNoteTemplateStore,
     build_session_catalog_df,
+    make_session_note_template_store,
 )
 from bodaqs_analysis.ui.aggregation_manager import make_aggregation_library_manager
 
@@ -220,7 +220,10 @@ def make_library_manager(
         if isinstance(selector_store, ArtifactStore):
             artifact_store = selector_store
     artifact_store = artifact_store or ArtifactStore(Path(artifacts_dir))
-    template_store = SessionNoteTemplateStore(template_root)
+    template_store = make_session_note_template_store(
+        artifacts_dir=artifact_store.root,
+        template_root=template_root,
+    )
     note_store = SessionNoteStore(store=artifact_store, template_store=template_store)
     agg_store = aggregation_store or make_default_aggregation_store(artifact_store=artifact_store)
 
@@ -244,6 +247,7 @@ def make_library_manager(
             "Created",
             "Run description",
             "Session / aggregation",
+            "Note state",
             "Projection status",
             "Run ID",
             "Session ID",
@@ -254,6 +258,7 @@ def make_library_manager(
             "Created": 165,
             "Run description": 220,
             "Session / aggregation": 250,
+            "Note state": 95,
             "Projection status": 130,
             "Run ID": 180,
             "Session ID": 220,
@@ -465,6 +470,11 @@ def make_library_manager(
                     "Created": str(row_dict.get("created_at") or ""),
                     "Run description": str(row_dict.get("run_description") or ""),
                     "Session / aggregation": str(row_dict.get("session_description") or ""),
+                    "Note state": (
+                        "draft"
+                        if row_dict.get("note_draft") is True
+                        else ("saved" if row_dict.get("note_draft") is False else "")
+                    ),
                     "Projection status": str(row_dict.get("projection_status") or ""),
                     "Run ID": str(row_dict.get("run_id") or ""),
                     "Session ID": str(row_dict.get("session_id") or ""),
@@ -481,6 +491,7 @@ def make_library_manager(
                 "Created",
                 "Run description",
                 "Session / aggregation",
+                "Note state",
                 "Projection status",
                 "Run ID",
                 "Session ID",
@@ -553,8 +564,10 @@ def make_library_manager(
         selected_count: int,
     ) -> None:
         note_part = "None"
+        note_state_part = ""
         if note is not None:
             note_part = f"{note.template_id}@{note.template_version} | updated {note.updated_at_utc}"
+            note_state_part = "draft" if note.draft else "saved"
         selected_part = (
             f"<b>Selected sessions:</b> {selected_count}<br>"
             if selected_count > 1
@@ -566,6 +579,7 @@ def make_library_manager(
             f"<b>Run:</b> {html.escape(str(run_id))}<br>"
             f"<b>Session:</b> {html.escape(str(session_id))}<br>"
             f"<b>Created:</b> {html.escape(str(row.get('created_at') or ''))}<br>"
+            f"<b>Note state:</b> {html.escape(note_state_part)}<br>"
             f"<b>Projection status:</b> {html.escape(str(row.get('projection_status') or ''))}<br>"
             f"<b>Note:</b> {html.escape(note_part)}"
             "</div>"
@@ -940,6 +954,7 @@ def make_library_manager(
                     custom_values=custom_values,
                     free_text_notes=free_text_notes,
                     title=title,
+                    draft=False,
                     replace_values=True,
                 )
                 saved = note_store.save_note(updated)

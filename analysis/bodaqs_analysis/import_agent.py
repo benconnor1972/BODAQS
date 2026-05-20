@@ -10,8 +10,7 @@ import shutil
 import socket
 import tempfile
 import time
-import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
@@ -32,6 +31,13 @@ from .artifacts import (
     write_session_manifest,
 )
 from .bike_profile import load_bike_profile
+from .exporters.data_syn_bike import (
+    data_syn_bike_manual_settings,
+    default_data_syn_bike_export_config,
+    export_data_syn_bike_resolved,
+    render_data_syn_bike_manual_settings_text,
+    write_data_syn_bike_exports,
+)
 from .import_agent_logger_wifi import LoggerWifiApiClient
 from .import_agent_logger_wifi_discovery import (
     LoggerWifiDiscoveryError,
@@ -40,6 +46,19 @@ from .import_agent_logger_wifi_discovery import (
 )
 from .pipeline import preprocess_session
 from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
+from .session_note_presets import BikeSetupPreset, load_bike_setup_preset
+from .session_notes import (
+    SessionNoteStore,
+    SessionNoteTemplate,
+    SessionNoteTemplateStore,
+    library_session_note_template_root,
+)
+from .session_archive import (
+    SessionArchiveContract,
+    extract_session_archive,
+    raw_session_identity as make_raw_session_identity,
+    read_session_archive_contract,
+)
 from .import_agent_sources import (
     LOGGER_WIFI_CLEANUP_NONE,
     LoggerWifiSourceConfig,
@@ -55,6 +74,10 @@ IMPORT_SOURCE_VERSION = 1
 IMPORT_AGENT_STATE_SCHEMA = "bodaqs.import_agent_state"
 IMPORT_AGENT_STATE_VERSION = 1
 DEFAULT_ARCHIVE_PATTERNS = ("*.zip",)
+DEFAULT_DATA_SYN_BIKE_EXPORT_FILENAME_TEMPLATE = "{run_id}__{session_id}__{export_id}__data_syn_bike.csv"
+DEFAULT_DATA_SYN_BIKE_SETTINGS_FILENAME_TEMPLATE = "{run_id}__{session_id}__data_syn_bike_settings.txt"
+DATA_SYN_BIKE_LIBRARY_MANIFEST_FILENAME = "data_syn_bike_export_manifest.json"
+DEFAULT_SESSION_NOTE_DIRNAME = "notes"
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +109,6 @@ def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def _sha256_jsonable(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -113,6 +132,80 @@ def _write_json_atomic(path: Path, obj: Mapping[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _library_data_syn_bike_export_config(artifacts_dir: Path) -> Optional[Dict[str, Any]]:
+    metadata = _read_json(artifacts_dir / "library_definition.json", {})
+    if not isinstance(metadata, Mapping):
+        return None
+    exports = metadata.get("exports")
+    data_syn_bike = exports.get("data_syn_bike") if isinstance(exports, Mapping) else None
+    if data_syn_bike is None:
+        data_syn_bike = metadata.get("data_syn_bike_export")
+    if not isinstance(data_syn_bike, Mapping) or not bool(data_syn_bike.get("enabled", False)):
+        return None
+
+    cfg = {
+        "adc_bit_count": 12,
+        "raw_scale_mode": "calibrated_full_scale",
+        "clip_raw_to_adc_range": True,
+        "drop_inactive": True,
+        "split_by_activity": False,
+        "sample_count_origin": "session",
+        "filename_template": DEFAULT_DATA_SYN_BIKE_EXPORT_FILENAME_TEMPLATE,
+    }
+    cfg.update({k: v for k, v in data_syn_bike.items() if k != "enabled"})
+    return cfg
+
+
+def _bike_profile_syn_raw_full_scale_by_end(bike_profile: Mapping[str, Any]) -> dict[str, float]:
+    ranges = bike_profile.get("normalization_ranges")
+    if not isinstance(ranges, Sequence) or isinstance(ranges, (str, bytes, bytearray)):
+        return {}
+
+    front_wheel: Optional[float] = None
+    rear_shock: Optional[float] = None
+    for item in ranges:
+        if not isinstance(item, Mapping):
+            continue
+        selector = item.get("signal")
+        if not isinstance(selector, Mapping):
+            continue
+        try:
+            full_range = float(item.get("full_range"))
+        except (TypeError, ValueError):
+            continue
+        if full_range <= 0:
+            continue
+        end = str(selector.get("end") or "").strip().lower()
+        quantity = str(selector.get("quantity") or "").strip().lower()
+        domain = str(selector.get("domain") or "").strip().lower()
+        unit = str(selector.get("unit") or "").strip().lower()
+        if quantity != "disp" or unit != "mm":
+            continue
+        if end == "front" and domain == "wheel":
+            front_wheel = full_range
+        elif end == "rear" and domain == "suspension":
+            rear_shock = full_range
+
+    out: dict[str, float] = {}
+    if front_wheel is not None:
+        out["front"] = float(front_wheel)
+    if rear_shock is not None:
+        out["rear"] = float(rear_shock)
+    return out
+
+
+def _render_data_syn_bike_settings_filename(run_id: str, session_id: str) -> str:
+    return DEFAULT_DATA_SYN_BIKE_SETTINGS_FILENAME_TEMPLATE.format(
+        run_id=_safe_filename_component(run_id),
+        session_id=_safe_filename_component(session_id),
+    )
+
+
+def _safe_filename_component(value: str) -> str:
+    text = str(value or "").strip() or "session"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
 
 
 def _path_key(path: Path) -> str:
@@ -339,6 +432,13 @@ class ImportAgentState:
 
 
 @dataclass(frozen=True)
+class ImportSourceSessionNoteConfig:
+    attach_on_import: bool = False
+    template_path: Optional[Path] = None
+    setup_preset_path: Optional[Path] = None
+
+
+@dataclass(frozen=True)
 class ImportSourceConfig:
     config_path: Path
     source_root: Path
@@ -364,6 +464,7 @@ class ImportSourceConfig:
     max_archives_per_scan: Optional[int] = None
     library_id: Optional[str] = None
     logger_wifi: Optional[LoggerWifiSourceConfig] = None
+    session_note: ImportSourceSessionNoteConfig = field(default_factory=ImportSourceSessionNoteConfig)
 
     def __post_init__(self) -> None:
         if not self.source_id.strip():
@@ -376,15 +477,10 @@ class ImportSourceConfig:
             raise ValueError("Import source config must include at least one archive pattern")
         if self.max_archives_per_scan is not None and int(self.max_archives_per_scan) <= 0:
             raise ValueError("max_archives_per_scan must be > 0 when provided")
-
-
-@dataclass(frozen=True)
-class SessionArchiveContract:
-    csv_member_name: str
-    log_metadata_member_name: str
-    session_stem: str
-    csv_sha256: str
-    log_metadata_sha256: str
+        if self.session_note.attach_on_import and (
+            self.session_note.template_path is None or self.session_note.setup_preset_path is None
+        ):
+            raise ValueError("session_note attach_on_import requires template_path and setup_preset_path")
 
 
 @dataclass(frozen=True)
@@ -472,6 +568,25 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         except (TypeError, ValueError):
             raise ValueError("max_archives_per_scan must be an integer when provided") from None
 
+    session_note_raw = obj.get("session_note")
+    if session_note_raw is None:
+        session_note = ImportSourceSessionNoteConfig()
+    elif not isinstance(session_note_raw, Mapping):
+        raise ValueError("Import source session_note must be an object when provided")
+    else:
+        attach_on_import = bool(session_note_raw.get("attach_on_import", False))
+        session_note = ImportSourceSessionNoteConfig(
+            attach_on_import=attach_on_import,
+            template_path=_resolve_relative_path(
+                _optional_text(session_note_raw.get("template_path")) or DEFAULT_SESSION_NOTE_DIRNAME,
+                base_dir=base_dir,
+            ),
+            setup_preset_path=_resolve_relative_path(
+                _optional_text(session_note_raw.get("setup_preset_path")) or DEFAULT_SESSION_NOTE_DIRNAME,
+                base_dir=base_dir,
+            ),
+        )
+
     return ImportSourceConfig(
         config_path=config_path,
         source_root=base_dir,
@@ -521,6 +636,7 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         max_archives_per_scan=max_archives_per_scan,
         library_id=_optional_text(obj.get("library_id")),
         logger_wifi=logger_wifi,
+        session_note=session_note,
     )
 
 
@@ -595,6 +711,25 @@ class ImportSourceRunner:
         except Exception as exc:
             errors.append(str(exc))
 
+        if self.source.session_note.attach_on_import:
+            template_store = SessionNoteTemplateStore(self.source.session_note.template_path)
+            try:
+                _resolve_single_valid_json_file(
+                    self.source.session_note.template_path,
+                    label="Session note template",
+                    loader=template_store.load_template_file,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+            try:
+                _resolve_single_valid_json_file(
+                    self.source.session_note.setup_preset_path,
+                    label="Bike setup preset",
+                    loader=load_bike_setup_preset,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+
         for path in (
             self.source.inbox_dir,
             self.source.done_dir,
@@ -637,6 +772,228 @@ class ImportSourceRunner:
         cfg["ambiguity_policy"] = "largest_overlap"
         cfg["failure_policy"] = "warn"
         return cfg
+
+    def _write_data_syn_bike_outputs_if_enabled(
+        self,
+        *,
+        session: Mapping[str, Any],
+        run_id: str,
+        session_id: str,
+        bike_profile_path: Path,
+    ) -> Optional[Dict[str, Any]]:
+        library_export_config = _library_data_syn_bike_export_config(self.store.root)
+        if library_export_config is None:
+            return None
+
+        record: Dict[str, Any] = {
+            "format": "data_syn_bike",
+            "status": "not_started",
+            "run_id": run_id,
+            "session_id": session_id,
+            "updated_at": _utcnow_iso(),
+        }
+        try:
+            bike_profile = load_bike_profile(bike_profile_path)
+            raw_full_scale_by_end = _bike_profile_syn_raw_full_scale_by_end(bike_profile)
+            export_config = dict(library_export_config)
+            if raw_full_scale_by_end:
+                existing = export_config.get("raw_full_scale_by_end")
+                merged_full_scales = dict(existing) if isinstance(existing, Mapping) else {}
+                merged_full_scales.update(raw_full_scale_by_end)
+                export_config["raw_full_scale_by_end"] = merged_full_scales
+
+            session_for_export = dict(session)
+            session_for_export["run_id"] = run_id
+            session_for_export["session_id"] = session_id
+            export_config = default_data_syn_bike_export_config(**export_config)
+            export_result = export_data_syn_bike_resolved(session_for_export, export_config=export_config)
+
+            output_dir = self.store.root / "syn"
+            write_result = write_data_syn_bike_exports(export_result, output_dir)
+            settings = data_syn_bike_manual_settings(
+                bike_profile=bike_profile,
+                export_config=export_config,
+                session=session_for_export,
+            )
+            settings_name = _render_data_syn_bike_settings_filename(run_id, session_id)
+            settings_path = output_dir / settings_name
+            _ensure_dir(settings_path.parent)
+            settings_path.write_text(
+                render_data_syn_bike_manual_settings_text(settings, export_result=export_result),
+                encoding="utf-8",
+            )
+
+            record.update(
+                {
+                    "status": "succeeded",
+                    "output_dir": str(output_dir),
+                    "n_files": int(write_result.get("n_files", 0)),
+                    "files": [
+                        {
+                            "path": str(item.get("path")),
+                            "export_id": item.get("export_id"),
+                            "rows": item.get("rows"),
+                        }
+                        for item in write_result.get("written", [])
+                        if isinstance(item, Mapping)
+                    ],
+                    "settings_path": str(settings_path),
+                    "settings": settings,
+                    "summary": export_result.get("summary", {}),
+                }
+            )
+        except Exception as exc:
+            record.update(
+                {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            logger.exception("data.syn.bike export failed for run=%s session=%s", run_id, session_id)
+
+        self._upsert_data_syn_bike_manifest(record)
+        return record
+
+    def _upsert_data_syn_bike_manifest(self, record: Mapping[str, Any]) -> None:
+        syn_dir = self.store.root / "syn"
+        manifest_path = syn_dir / DATA_SYN_BIKE_LIBRARY_MANIFEST_FILENAME
+        manifest = _read_json(
+            manifest_path,
+            {
+                "schema": "bodaqs.data_syn_bike_export_manifest",
+                "version": 1,
+                "records": {},
+            },
+        )
+        if not isinstance(manifest, dict):
+            manifest = {"schema": "bodaqs.data_syn_bike_export_manifest", "version": 1, "records": {}}
+        records = manifest.setdefault("records", {})
+        if not isinstance(records, dict):
+            records = {}
+            manifest["records"] = records
+        key = f"{record.get('run_id')}/{record.get('session_id')}"
+        records[key] = dict(record)
+        manifest["updated_at"] = _utcnow_iso()
+        _write_json_atomic(manifest_path, manifest)
+
+    def _resolve_session_note_template_path(self) -> Path:
+        if not self.source.session_note.attach_on_import:
+            raise ValueError("Session-note auto-attach is not enabled for this source")
+        if self.source.session_note.template_path is None:
+            raise ValueError("Session-note template path is not configured")
+        return _resolve_single_valid_json_file(
+            self.source.session_note.template_path,
+            label="Session note template",
+            loader=SessionNoteTemplateStore().load_template_file,
+        )
+
+    def _resolve_bike_setup_preset_path(self) -> Path:
+        if not self.source.session_note.attach_on_import:
+            raise ValueError("Session-note auto-attach is not enabled for this source")
+        if self.source.session_note.setup_preset_path is None:
+            raise ValueError("Bike setup preset path is not configured")
+        return _resolve_single_valid_json_file(
+            self.source.session_note.setup_preset_path,
+            label="Bike setup preset",
+            loader=load_bike_setup_preset,
+        )
+
+    def _copy_template_to_library(self, template: SessionNoteTemplate, template_path: Path) -> Path:
+        target = library_session_note_template_root(self.store.root) / template.template_id / f"{template.template_version}.json"
+        _ensure_dir(target.parent)
+        source_sha256 = _sha256_file(template_path)
+        if target.exists():
+            target_sha256 = _sha256_file(target)
+            if target_sha256 != source_sha256:
+                raise ValueError(
+                    "Library already contains a different session note template for "
+                    f"{template.template_id}@{template.template_version}: {target}"
+                )
+            return target
+        shutil.copy2(template_path, target)
+        return target
+
+    def _write_draft_session_note_if_enabled(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        bike_profile_path: Path,
+    ) -> Optional[Dict[str, Any]]:
+        if not self.source.session_note.attach_on_import:
+            return None
+
+        template_path = self._resolve_session_note_template_path()
+        preset_path = self._resolve_bike_setup_preset_path()
+        source_template_store = SessionNoteTemplateStore(template_path.parent)
+        template = source_template_store.load_template_file(template_path)
+        preset: BikeSetupPreset = load_bike_setup_preset(preset_path)
+        if preset.template_id != template.template_id:
+            raise ValueError(
+                f"Bike setup preset template_id {preset.template_id!r} does not match "
+                f"session note template {template.template_id!r}"
+            )
+        if preset.template_version is not None and preset.template_version != template.template_version:
+            raise ValueError(
+                f"Bike setup preset template_version {preset.template_version!r} does not match "
+                f"session note template {template.template_version!r}"
+            )
+
+        library_template_path = self._copy_template_to_library(template, template_path)
+        bike_profile = load_bike_profile(bike_profile_path)
+        bike_profile_id = _optional_text(bike_profile.get("bike_profile_id"))
+        source_context: Dict[str, Any] = {
+            "origin": "import_agent",
+            "import_source_id": self.source.source_id,
+            "import_source_type": self.source.source_type,
+            "import_source_config_path": str(self.source.config_path),
+            "bike_profile_id": bike_profile_id,
+            "bike_profile_path": str(bike_profile_path),
+            "bike_profile_sha256": _sha256_file(bike_profile_path),
+            "setup_preset_id": preset.preset_id,
+            "setup_preset_path": str(preset_path),
+            "setup_preset_sha256": _sha256_file(preset_path),
+            "template_id": template.template_id,
+            "template_version": template.template_version,
+            "template_path": str(template_path),
+            "template_sha256": _sha256_file(template_path),
+            "library_template_path": str(library_template_path),
+        }
+        if preset.bike_profile_id is not None:
+            source_context["preset_bike_profile_id"] = preset.bike_profile_id
+            source_context["preset_bike_profile_id_matches"] = preset.bike_profile_id == bike_profile_id
+
+        note_store = SessionNoteStore(
+            store=self.store,
+            template_store=SessionNoteTemplateStore(library_session_note_template_root(self.store.root)),
+        )
+        note = note_store.create_note_from_template(
+            run_id=run_id,
+            session_id=session_id,
+            template_id=template.template_id,
+            template_version=template.template_version,
+            title=preset.title,
+            draft=True,
+            source_context=source_context,
+        )
+        note = note_store.update_note(
+            note,
+            values=preset.values,
+            custom_values=preset.custom_values,
+            free_text_notes=preset.free_text_notes,
+        )
+        saved = note_store.save_note(note)
+        return {
+            "status": "succeeded",
+            "path": str(note_store.note_path(run_id=run_id, session_id=session_id)),
+            "draft": bool(saved.draft),
+            "template_id": saved.template_id,
+            "template_version": saved.template_version,
+            "setup_preset_id": preset.preset_id,
+            "setup_preset_path": str(preset_path),
+            "template_path": str(template_path),
+            "library_template_path": str(library_template_path),
+        }
 
     def _logger_wifi_remote_state_key(self, remote_session_id: str) -> str:
         if self.source.logger_wifi is None:
@@ -1150,48 +1507,7 @@ class ImportSourceRunner:
         return age_s >= float(self.source.settle_time_s)
 
     def _archive_contract(self, archive_path: Path) -> SessionArchiveContract:
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            infos = [info for info in zf.infolist() if not info.is_dir()]
-            if len(infos) != 2:
-                raise ValueError(
-                    f"Session archive must contain exactly two root files (.csv + .json): {archive_path.name}"
-                )
-
-            for info in infos:
-                member_path = Path(info.filename)
-                if any(part == ".." for part in member_path.parts):
-                    raise ValueError(f"Archive member contains parent traversal: {info.filename}")
-                if len(member_path.parts) != 1:
-                    raise ValueError(
-                        f"Session archive members must be stored at the archive root: {info.filename}"
-                    )
-
-            csv_infos = [info for info in infos if info.filename.lower().endswith(".csv")]
-            json_infos = [info for info in infos if info.filename.lower().endswith(".json")]
-            if len(csv_infos) != 1 or len(json_infos) != 1:
-                raise ValueError(
-                    f"Session archive must contain exactly one .csv and one .json: {archive_path.name}"
-                )
-
-            csv_info = csv_infos[0]
-            json_info = json_infos[0]
-            csv_stem = Path(csv_info.filename).stem
-            json_stem = Path(json_info.filename).stem
-            if csv_stem != json_stem:
-                raise ValueError(
-                    "Session archive CSV and JSON filenames must share the same stem: "
-                    f"{csv_info.filename!r} vs {json_info.filename!r}"
-                )
-
-            csv_sha256 = _sha256_bytes(zf.read(csv_info))
-            log_metadata_sha256 = _sha256_bytes(zf.read(json_info))
-            return SessionArchiveContract(
-                csv_member_name=csv_info.filename,
-                log_metadata_member_name=json_info.filename,
-                session_stem=csv_stem,
-                csv_sha256=csv_sha256,
-                log_metadata_sha256=log_metadata_sha256,
-            )
+        return read_session_archive_contract(archive_path)
 
     def _build_candidate(
         self,
@@ -1202,11 +1518,9 @@ class ImportSourceRunner:
         self._ensure_runtime_config_loaded()
         stat = claimed_archive_path.stat()
         contract = self._archive_contract(claimed_archive_path)
-        raw_session_identity = _sha256_jsonable(
-            {
-                "csv_sha256": contract.csv_sha256,
-                "log_metadata_sha256": contract.log_metadata_sha256,
-            }
+        raw_session_identity = make_raw_session_identity(
+            csv_sha256=contract.csv_sha256,
+            log_metadata_sha256=contract.log_metadata_sha256,
         )
         processing_key = _sha256_jsonable(
             {
@@ -1232,18 +1546,14 @@ class ImportSourceRunner:
         )
 
     def _extract_candidate(self, candidate: ImportArchiveCandidate, target_dir: Path) -> tuple[Path, Path]:
-        csv_target = target_dir / Path(candidate.contract.csv_member_name).name
-        json_target = target_dir / Path(candidate.contract.log_metadata_member_name).name
-
-        with zipfile.ZipFile(candidate.claimed_archive_path, "r") as zf:
-            for member_name, target_path in (
-                (candidate.contract.csv_member_name, csv_target),
-                (candidate.contract.log_metadata_member_name, json_target),
-            ):
-                with zf.open(member_name, "r") as src, target_path.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-
-        return csv_target, json_target
+        extracted = extract_session_archive(
+            candidate.claimed_archive_path,
+            target_dir,
+            contract=candidate.contract,
+        )
+        if extracted.log_metadata_path is None:
+            raise ValueError(f"Session archive did not yield log metadata: {candidate.archive_name}")
+        return extracted.csv_path, extracted.log_metadata_path
 
     def scan_once(self) -> Dict[str, Any]:
         summary: Dict[str, Any] = {
@@ -1428,8 +1738,13 @@ class ImportSourceRunner:
                     "original_archive_sha256": candidate.archive_sha256,
                     "original_archive_path": str(candidate.inbox_archive_path),
                     "archive_csv_member": candidate.contract.csv_member_name,
+                    "archive_csv_sha256": candidate.contract.csv_sha256,
                     "archive_log_metadata_member": candidate.contract.log_metadata_member_name,
+                    "archive_log_metadata_sha256": candidate.contract.log_metadata_sha256,
                     "raw_session_identity": candidate.raw_session_identity,
+                    "source_identity": candidate.raw_session_identity,
+                    "source_identity_kind": "raw_session_identity",
+                    "input_kind": "archive",
                     "processing_key": candidate.processing_key,
                 }
                 if self.source.logger_timezone is not None:
@@ -1482,6 +1797,36 @@ class ImportSourceRunner:
                         metrics_df=metrics_df,
                     )
 
+                data_syn_bike_export_record = self._write_data_syn_bike_outputs_if_enabled(
+                    session=session,
+                    run_id=run_id,
+                    session_id=session_id,
+                    bike_profile_path=bike_profile_path,
+                )
+                session_note_record = self._write_draft_session_note_if_enabled(
+                    run_id=run_id,
+                    session_id=session_id,
+                    bike_profile_path=bike_profile_path,
+                )
+
+                archive_import_config = {
+                    "schema": IMPORT_SOURCE_SCHEMA,
+                    "version": IMPORT_SOURCE_VERSION,
+                    "archive_sha256": candidate.archive_sha256,
+                    "raw_session_identity": candidate.raw_session_identity,
+                    "processing_key": candidate.processing_key,
+                    "preprocess_profile_path": str(preprocess_profile_path),
+                    "preprocess_profile_selection_path": str(self.source.preprocess_profile_path),
+                    "preprocess_profile_sha256": self.preprocess_profile_sha256,
+                    "bike_profile_path": str(bike_profile_path),
+                    "bike_profile_selection_path": str(self.source.bike_profile_path),
+                    "bike_profile_sha256": self.bike_profile_sha256,
+                }
+                if data_syn_bike_export_record is not None:
+                    archive_import_config["data_syn_bike_export"] = data_syn_bike_export_record
+                if session_note_record is not None:
+                    archive_import_config["session_note"] = session_note_record
+
                 write_run_manifest(
                     self.store,
                     run_id=run_id,
@@ -1494,19 +1839,7 @@ class ImportSourceRunner:
                             "source_type": self.source.source_type,
                             "config_path": str(self.source.config_path),
                         },
-                        "archive_import": {
-                            "schema": IMPORT_SOURCE_SCHEMA,
-                            "version": IMPORT_SOURCE_VERSION,
-                            "archive_sha256": candidate.archive_sha256,
-                            "raw_session_identity": candidate.raw_session_identity,
-                            "processing_key": candidate.processing_key,
-                            "preprocess_profile_path": str(preprocess_profile_path),
-                            "preprocess_profile_selection_path": str(self.source.preprocess_profile_path),
-                            "preprocess_profile_sha256": self.preprocess_profile_sha256,
-                            "bike_profile_path": str(bike_profile_path),
-                            "bike_profile_selection_path": str(self.source.bike_profile_path),
-                            "bike_profile_sha256": self.bike_profile_sha256,
-                        },
+                        "archive_import": archive_import_config,
                     },
                 )
 
@@ -1527,6 +1860,8 @@ class ImportSourceRunner:
                 "session_manifest_path": str(self.store.path_session_manifest(run_id, session_id)),
                 "updated_at": _utcnow_iso(),
             }
+            if session_note_record is not None:
+                record["session_note"] = session_note_record
             self.state.upsert(candidate.processing_key, record)
             logger.info(
                 "Imported %s -> run=%s session=%s",

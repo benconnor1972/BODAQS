@@ -75,6 +75,8 @@ class SessionNoteDocument:
     free_text_notes: str | None
     created_at_utc: str
     updated_at_utc: str
+    draft: bool = False
+    source_context: Dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,23 @@ def make_session_key(run_id: str, session_id: str) -> str:
 
 def default_template_root() -> Path:
     return Path(__file__).resolve().parents[2] / DEFAULT_TEMPLATE_ROOT
+
+
+def library_session_note_template_root(artifacts_dir: str | Path) -> Path:
+    return Path(artifacts_dir) / "library" / "session_note_templates"
+
+
+def make_session_note_template_store(
+    *,
+    artifacts_dir: str | Path | None = None,
+    template_root: str | Path | None = None,
+) -> SessionNoteTemplateStore:
+    if template_root is not None or artifacts_dir is None:
+        return SessionNoteTemplateStore(template_root)
+    return SessionNoteTemplateStore(
+        library_session_note_template_root(artifacts_dir),
+        extra_roots=(default_template_root(),),
+    )
 
 
 def _is_int_like(value: Any) -> bool:
@@ -191,7 +210,21 @@ def _field_from_mapping(data: Mapping[str, Any]) -> SessionNoteFieldDef:
     return field
 
 
-def _template_from_mapping(data: Mapping[str, Any]) -> SessionNoteTemplate:
+def parse_session_note_template(value: Mapping[str, Any] | str | bytes | Path) -> SessionNoteTemplate:
+    if isinstance(value, Mapping):
+        data = dict(value)
+    else:
+        if isinstance(value, Path):
+            text = value.read_text(encoding="utf-8")
+        elif isinstance(value, bytes):
+            text = value.decode("utf-8")
+        elif isinstance(value, str):
+            candidate = Path(value)
+            text = candidate.read_text(encoding="utf-8") if candidate.exists() else value
+        else:
+            raise TypeError("session note template must be a mapping, JSON text/bytes, or a path")
+        data = json.loads(text)
+
     if str(data.get("schema") or "") != TEMPLATE_SCHEMA:
         raise SessionNoteValidationError("Invalid session note template schema")
     if int(data.get("version", -1)) != TEMPLATE_VERSION:
@@ -236,6 +269,14 @@ def _template_from_mapping(data: Mapping[str, Any]) -> SessionNoteTemplate:
     )
 
 
+def validate_session_note_template(
+    value: Mapping[str, Any] | str | bytes | Path,
+    *,
+    path: Optional[str | Path] = None,
+) -> None:
+    parse_session_note_template(value)
+
+
 def _template_to_mapping(template: SessionNoteTemplate) -> dict[str, Any]:
     data = asdict(template)
     data["schema"] = TEMPLATE_SCHEMA
@@ -265,10 +306,13 @@ def _document_from_mapping(data: Mapping[str, Any]) -> SessionNoteDocument:
 
     values = data.get("values", {})
     custom_values = data.get("custom_values", {})
+    source_context = data.get("source_context")
     if not isinstance(values, Mapping):
         raise SessionNoteValidationError("values must be an object")
     if not isinstance(custom_values, Mapping):
         raise SessionNoteValidationError("custom_values must be an object")
+    if source_context is not None and not isinstance(source_context, Mapping):
+        raise SessionNoteValidationError("source_context must be an object when provided")
 
     return SessionNoteDocument(
         schema=NOTE_SCHEMA,
@@ -286,6 +330,10 @@ def _document_from_mapping(data: Mapping[str, Any]) -> SessionNoteDocument:
         ),
         created_at_utc=str(data.get("created_at_utc") or ""),
         updated_at_utc=str(data.get("updated_at_utc") or ""),
+        draft=bool(data.get("draft", False)),
+        source_context=(
+            None if source_context is None else {str(k): v for k, v in dict(source_context).items()}
+        ),
     )
 
 
@@ -294,27 +342,50 @@ def _document_to_mapping(doc: SessionNoteDocument) -> dict[str, Any]:
 
 
 class SessionNoteTemplateStore:
-    def __init__(self, root: Optional[str | Path] = None):
+    def __init__(
+        self,
+        root: Optional[str | Path] = None,
+        *,
+        extra_roots: Sequence[str | Path] = (),
+    ):
         self.root = Path(root).expanduser() if root else default_template_root()
+        self.extra_roots = tuple(Path(item).expanduser() for item in extra_roots)
         self._template_errors: dict[str, str] = {}
 
-    def _template_paths(self) -> Iterable[Path]:
-        if not self.root.exists():
-            return ()
-        return sorted(self.root.glob("*/*.json"))
+    def _template_roots(self) -> tuple[Path, ...]:
+        return (self.root, *self.extra_roots)
+
+    def _template_paths(self) -> Iterable[tuple[Path, Path]]:
+        for root in self._template_roots():
+            if not root.exists():
+                continue
+            for path in sorted(root.glob("*/*.json")):
+                yield root, path
+
+    def _template_error_label(self, root: Path, path: Path) -> str:
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            return str(path)
 
     def list_templates(self) -> list[SessionNoteTemplate]:
         self._template_errors = {}
         templates: list[SessionNoteTemplate] = []
-        for path in self._template_paths():
+        seen: set[tuple[str, str]] = set()
+        for root, path in self._template_paths():
             try:
-                templates.append(self.load_template_file(path))
+                template = self.load_template_file(path)
             except Exception as exc:
-                rel_path = str(path.relative_to(self.root))
+                rel_path = self._template_error_label(root, path)
                 message = f"Failed to load session note template {rel_path}: {exc}"
                 self._template_errors[rel_path] = str(exc)
                 logger.warning(message)
                 continue
+            key = (template.template_id, template.template_version)
+            if key in seen:
+                continue
+            seen.add(key)
+            templates.append(template)
         templates.sort(key=lambda t: (t.template_id, t.template_version))
         return templates
 
@@ -324,14 +395,15 @@ class SessionNoteTemplateStore:
         return dict(self._template_errors)
 
     def load_template_file(self, path: str | Path) -> SessionNoteTemplate:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return _template_from_mapping(data)
+        return parse_session_note_template(Path(path))
 
     def get_template(self, template_id: str, template_version: str) -> SessionNoteTemplate:
-        path = self.root / str(template_id) / f"{template_version}.json"
-        if not path.exists():
-            raise SessionNotesError(f"Template not found: {template_id}@{template_version}")
-        return self.load_template_file(path)
+        relative_path = Path(str(template_id)) / f"{template_version}.json"
+        for root in self._template_roots():
+            path = root / relative_path
+            if path.exists():
+                return self.load_template_file(path)
+        raise SessionNotesError(f"Template not found: {template_id}@{template_version}")
 
     def get_latest_template(self, template_id: str) -> SessionNoteTemplate:
         matches = [t for t in self.list_templates() if t.template_id == str(template_id)]
@@ -401,6 +473,8 @@ class SessionNoteStore:
         template_id: str,
         template_version: str | None = None,
         title: str | None = None,
+        draft: bool = False,
+        source_context: Optional[Mapping[str, Any]] = None,
     ) -> SessionNoteDocument:
         template = (
             self.template_store.get_template(template_id, template_version)
@@ -422,6 +496,10 @@ class SessionNoteStore:
             free_text_notes=None,
             created_at_utc=ts,
             updated_at_utc=ts,
+            draft=bool(draft),
+            source_context=(
+                None if source_context is None else {str(k): v for k, v in dict(source_context).items()}
+            ),
         )
         validate_note_document(doc, template)
         return doc
@@ -434,6 +512,8 @@ class SessionNoteStore:
         custom_values: Optional[Mapping[str, Any]] = None,
         free_text_notes: Optional[str | None] = None,
         title: Optional[str | None] = None,
+        draft: Optional[bool] = None,
+        source_context: Optional[Mapping[str, Any] | None] = None,
         replace_values: bool = False,
     ) -> SessionNoteDocument:
         updated_values = (
@@ -462,6 +542,12 @@ class SessionNoteStore:
             free_text_notes=note.free_text_notes if free_text_notes is None else free_text_notes,
             created_at_utc=note.created_at_utc,
             updated_at_utc=now_utc_iso(),
+            draft=note.draft if draft is None else bool(draft),
+            source_context=(
+                note.source_context
+                if source_context is None
+                else ({str(k): v for k, v in dict(source_context).items()} if source_context else None)
+            ),
         )
         template = self.template_store.get_template(updated.template_id, updated.template_version)
         validate_note_document(updated, template)
@@ -541,7 +627,10 @@ def build_session_catalog_df(
     projection_configs: Sequence[CatalogProjectionConfig] = (),
 ) -> pd.DataFrame:
     store = ArtifactStore(Path(artifacts_dir))
-    template_store = SessionNoteTemplateStore(template_root)
+    template_store = make_session_note_template_store(
+        artifacts_dir=store.root,
+        template_root=template_root,
+    )
     note_store = SessionNoteStore(store=store, template_store=template_store)
     projection_by_template = {cfg.template_id: cfg for cfg in projection_configs}
 
@@ -559,6 +648,11 @@ def build_session_catalog_df(
                 "note_template_id": None,
                 "note_template_version": None,
                 "note_updated_at_utc": None,
+                "note_draft": None,
+                "note_source_context": None,
+                "note_origin": None,
+                "note_bike_profile_id": None,
+                "note_setup_preset_id": None,
                 "projection_status": "missing_note",
             }
             note = note_store.load_note(run_id=run_id, session_id=session_id)
@@ -566,6 +660,12 @@ def build_session_catalog_df(
                 row["note_template_id"] = note.template_id
                 row["note_template_version"] = note.template_version
                 row["note_updated_at_utc"] = note.updated_at_utc
+                row["note_draft"] = bool(note.draft)
+                row["note_source_context"] = note.source_context
+                if isinstance(note.source_context, Mapping):
+                    row["note_origin"] = note.source_context.get("origin")
+                    row["note_bike_profile_id"] = note.source_context.get("bike_profile_id")
+                    row["note_setup_preset_id"] = note.source_context.get("setup_preset_id")
                 try:
                     projected, status = _project_note_fields(
                         note,

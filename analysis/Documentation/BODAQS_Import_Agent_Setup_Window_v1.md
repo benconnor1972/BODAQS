@@ -51,6 +51,7 @@ For each new library:
   <Library Name>/
     runs/
     library/
+    syn/
     library_definition.json
 ```
 
@@ -113,5 +114,8 @@ analysis/dist/installer/windows/
   one valid bike-profile JSON file, and one valid event-schema YAML file.
 - Re-running the manager against the same app config can add another library
   and source under the same managed roots.
+- Libraries can opt in to data.syn.bike exports. When enabled, new imports
+  write headerless CSV files and per-session manual-settings helper text files
+  under the library's `syn/` directory.
 - The watcher CLI remains separate and unchanged; this windowed manager shares
   the same engine and provisioning backend.

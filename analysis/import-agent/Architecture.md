@@ -177,6 +177,7 @@ Recommended app-managed roots:
   Alice Library/
     runs/
     library/
+    syn/
   Ben Library/
     runs/
     library/
@@ -187,12 +188,34 @@ The product should ship with default assets for a new source:
 - one default preprocess profile
 - one default event schema
 - one example bike profile
+- one default session-note template
+- one default bike setup preset
 
 Each source also has a `fit/` directory. When FIT import is enabled in the
 preprocess profile, FIT files must be fully copied into this directory before
 import. The agent leaves original FIT files untouched, selects the
 largest-overlap match, and treats FIT enrichment failure as a QC warning rather
 than an import failure.
+
+Each library may optionally enable data.syn.bike export output. When enabled,
+new imports also write headerless data.syn.bike CSV files under the library's
+`syn/` directory, plus a per-session helper text file containing the manual
+data.syn.bike settings derived from the bike profile. These files are an
+external-format convenience layer, not part of the canonical BODAQS artifact
+contract, and old sessions are not backfilled automatically.
+
+Each source may also enable automatic draft session notes. The source owns the
+policy (`session_note.attach_on_import`) and stores a `notes/` directory with:
+
+- exactly one valid session-note template JSON file
+- exactly one valid bike setup preset JSON file
+
+The bike profile remains the processing-facing description of the bike, while
+the setup preset is the user-facing bridge from that bike profile to default
+session-note values. On import, the agent creates a draft note, records
+bike-profile and setup-preset provenance in `source_context`, and copies the
+template into the target library under `library/session_note_templates/` so the
+library manager can interpret the note even if the source folder later changes.
 
 ## Configuration Layers
 
@@ -207,6 +230,7 @@ Suggested responsibilities:
 - libraries root
 - known libraries
 - known sources
+- per-source draft-note attach preference
 - auto-start preference
 - logging preference
 - UI preference
@@ -222,6 +246,7 @@ Likely future fields:
 - `source_type`
 - `library_id`
 - source-specific acquisition settings
+- source-local note template / bike setup preset settings
 - poll timing
 - enabled / paused state
 

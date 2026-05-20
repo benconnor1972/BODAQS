@@ -236,6 +236,8 @@ class SessionNoteDocument:
     free_text_notes: str | None
     created_at_utc: str
     updated_at_utc: str
+    draft: bool = False
+    source_context: dict[str, Any] | None = None
 ```
 
 Recommended on-disk JSON shape:
@@ -261,7 +263,9 @@ Recommended on-disk JSON shape:
   },
   "free_text_notes": "Rear felt harsh on repeated square edges.",
   "created_at_utc": "2026-03-15T10:02:11Z",
-  "updated_at_utc": "2026-03-15T10:15:47Z"
+  "updated_at_utc": "2026-03-15T10:15:47Z",
+  "draft": false,
+  "source_context": null
 }
 ```
 
@@ -273,6 +277,30 @@ Recommended on-disk JSON shape:
 - `template_id` and `template_version` are required
 - `values` may only contain known template field ids for the referenced template version
 - `custom_values` may contain arbitrary keys only if `allow_custom_fields=True` on the template
+- missing `draft` is interpreted as `false` for backwards compatibility
+- `source_context`, when present, must be an object
+
+### 6.4 Draft notes and source context
+
+`draft=true` marks a note that was created automatically and still needs human
+review. The import agent sets this flag for notes created during import. Library
+manager save operations clear the flag by writing `draft=false`, because the
+note has then been intentionally reviewed or edited by a user.
+
+`source_context` records provenance for automatically-created notes. Recommended
+fields include:
+
+- `origin`, for example `import_agent`
+- `import_source_id`
+- `bike_profile_id`
+- `bike_profile_path`
+- `bike_profile_sha256`
+- `setup_preset_id`
+- `setup_preset_path`
+- `setup_preset_sha256`
+- `template_id`
+- `template_version`
+- `library_template_path`
 
 ### 6.3 Custom fields
 
@@ -389,6 +417,10 @@ class SessionCatalogRow:
     note_template_id: str | None
     note_template_version: str | None
     note_updated_at_utc: str | None
+    note_draft: bool | None
+    note_origin: str | None
+    note_bike_profile_id: str | None
+    note_setup_preset_id: str | None
     projection_status: Literal["ok", "missing_note", "template_missing", "mismatch"]
     projected_fields: dict[str, Any]
 ```

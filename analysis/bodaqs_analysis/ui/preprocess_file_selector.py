@@ -10,6 +10,8 @@ import time
 import ipywidgets as W
 import pandas as pd
 
+from bodaqs_analysis.session_archive import session_input_identity
+
 try:
     from ipydatagrid import DataGrid, TextRenderer
     _HAS_IPYDATAGRID = True
@@ -53,16 +55,18 @@ def _iter_manifest_json_files(artifacts_dir: Path) -> Iterable[Path]:
     return artifacts_dir.rglob("*.json")
 
 
-def _extract_sha256_from_manifest(obj: Any) -> Optional[str]:
+def _extract_source_identities_from_manifest(obj: Any) -> Set[str]:
+    out: Set[str] = set()
     if not isinstance(obj, dict):
-        return None
+        return out
     src = obj.get("source")
     if not isinstance(src, dict):
-        return None
-    sha = src.get("sha256")
-    if isinstance(sha, str) and len(sha) >= 32:
-        return sha.strip()
-    return None
+        return out
+    for key in ("raw_session_identity", "source_identity", "sha256"):
+        value = src.get(key)
+        if isinstance(value, str) and len(value.strip()) >= 32:
+            out.add(value.strip())
+    return out
 
 
 def load_processed_sha256_set(artifacts_dir: Path) -> Set[str]:
@@ -72,9 +76,7 @@ def load_processed_sha256_set(artifacts_dir: Path) -> Set[str]:
             obj = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             continue
-        sha = _extract_sha256_from_manifest(obj)
-        if sha:
-            out.add(sha)
+        out.update(_extract_source_identities_from_manifest(obj))
     return out
 
 
@@ -131,6 +133,7 @@ class PreprocessLogSelector:
         sha_cache_file: Path = Path(".bodaqs_preprocess_sha_cache.json"),
         file_glob: str = "*.CSV",
         include_lowercase_csv: bool = True,
+        include_zip_archives: bool = True,
         show_mtime: bool = True,
         show_size: bool = True,
         max_list_height_px: int = 260,
@@ -140,6 +143,7 @@ class PreprocessLogSelector:
         self.sha_cache_file = Path(sha_cache_file)
         self.file_glob = file_glob
         self.include_lowercase_csv = include_lowercase_csv
+        self.include_zip_archives = include_zip_archives
         self.show_mtime = show_mtime
         self.show_size = show_size
         self.max_list_height_px = max_list_height_px
@@ -234,7 +238,7 @@ class PreprocessLogSelector:
                 W.HTML("<h3 style='margin: 16px 0 6px 0'>Log Selection</h3>"),
                 W.HTML(
                     "<p style='margin:0 0 10px 0;color:#555;line-height:1.35;white-space:normal'>"
-                    "Choose the logger CSV files to process. Files already present in the artifact library are hidden by default."
+                    "Choose logger session inputs to process. ZIP bundles and legacy CSV files already present in the artifact library are hidden by default."
                     "</p>"
                 ),
                 W.HBox([self.w_dir, self.b_browse, self.b_refresh]),
@@ -284,6 +288,9 @@ class PreprocessLogSelector:
             files.extend(sorted(self._dir.glob(self.file_glob)))
             if self.include_lowercase_csv and self.file_glob.upper() == "*.CSV":
                 files.extend(sorted(self._dir.glob("*.csv")))
+            if self.include_zip_archives:
+                files.extend(sorted(self._dir.glob("*.zip")))
+                files.extend(sorted(self._dir.glob("*.ZIP")))
             files = sorted({p.resolve() for p in files})
 
         show_processed = bool(self.w_show_processed.value)
@@ -315,7 +322,7 @@ class PreprocessLogSelector:
 
         hidden_processed = len(processed_files) if not show_processed else 0
         self.w_status.value = (
-            f"<b>Found:</b> {len(files)} CSV(s) &nbsp;&nbsp;"
+            f"<b>Found:</b> {len(files)} input(s) &nbsp;&nbsp;"
             f"<b>New:</b> {len(new_files)} &nbsp;&nbsp;"
             f"<b>Processed:</b> {len(processed_files)}"
             + (f" &nbsp;&nbsp; <b>Hidden processed:</b> {hidden_processed}" if hidden_processed else "")
@@ -545,10 +552,15 @@ class PreprocessLogSelector:
         key = self._cache_key(p)
         rec = self._sha_cache.get(key)
         if isinstance(rec, dict):
-            sha = rec.get("sha256")
+            sha = rec.get("source_identity") or rec.get("sha256")
             if isinstance(sha, str) and sha:
                 return sha, True
 
-        sha = _sha256_file(p)
-        self._sha_cache[key] = {"sha256": sha}
-        return sha, False
+        identity = session_input_identity(p)
+        self._sha_cache[key] = {
+            "sha256": identity.source_identity,
+            "source_identity": identity.source_identity,
+            "source_identity_kind": identity.source_identity_kind,
+            "input_kind": identity.input_kind,
+        }
+        return identity.source_identity, False
