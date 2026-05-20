@@ -157,7 +157,7 @@ if ($installerRequested) {
     $installerBuildDir = Join-Path $analysisDir "build\installer\windows"
     $installerStageDir = Join-Path $installerBuildDir "staging"
     $installerOutputDir = Join-Path $analysisDir "dist\installer\windows"
-    $finalInstallerPath = Join-Path $installerOutputDir ("bodaqs-import-agent-setup-" + $AppVersion + ".exe")
+    $finalInstallerPath = Join-Path $installerOutputDir ("bodaqs-import-manager-setup-" + $AppVersion + ".exe")
 
     Ensure-CleanDirectory -Path $installerStageDir
     if (-not (Test-Path $installerOutputDir)) {

@@ -11,7 +11,7 @@
 #endif
 
 #define MyAppId "{{A214DDDC-4A8A-412A-9B75-4C62AB3F1DAA}"
-#define MyAppName "BODAQS Import Agent"
+#define MyAppName "BODAQS Import Manager"
 #define MyAppPublisher "BODAQS"
 #define MyAppExeName "bodaqs-import-setup.exe"
 #define MyCliExeName "bodaqs-import.exe"
@@ -21,11 +21,11 @@ AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#AppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\BODAQS Import Agent
+DefaultDirName={autopf}\BODAQS Import Manager
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#InstallerOutputDir}
-OutputBaseFilename=bodaqs-import-agent-setup-{#AppVersion}
+OutputBaseFilename=bodaqs-import-manager-setup-{#AppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

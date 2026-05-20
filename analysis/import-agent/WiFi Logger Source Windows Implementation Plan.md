@@ -1,4 +1,4 @@
-# BODAQS Import Agent Wi-Fi Logger Source Implementation Plan
+# BODAQS Import Manager Wi-Fi Logger Source Implementation Plan
 
 ## Status
 
@@ -8,13 +8,13 @@ the manager can discover loggers, Wi-Fi sources may omit a fixed address, and
 background acquisition can fall back from a remembered/manual address to
 mDNS discovery by logger id.
 
-This plan extends the existing BODAQS Import Agent Manager so it can import
+This plan extends the existing BODAQS Import Manager so it can import
 sessions directly from a logger over Wi-Fi while preserving the current archive
 pipeline and artifact-library contract.
 
 ## Product Goal
 
-Let a Windows user run the installed Import Agent Manager, add one or more
+Let a Windows user run the installed Import Manager, add one or more
 Wi-Fi logger sources, and import completed logger sessions into one or more
 local BODAQS libraries without using Python, cloud services, a phone, BLE, or a
 database server.
@@ -47,7 +47,7 @@ mode before session transfer proceeds.
 
 ## Target User Workflow
 
-1. Install and launch BODAQS Import Agent Manager.
+1. Install and launch BODAQS Import Manager.
 2. Create or select a local BODAQS library.
 3. Add a Wi-Fi logger source.
 4. Either discover nearby loggers with mDNS or enter a logger address manually.

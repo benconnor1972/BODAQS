@@ -55,6 +55,7 @@ from .import_agent_tray import ImportAgentTrayIcon, tray_supported
 
 
 _ASSET_PACKAGE = "bodaqs_analysis.import_agent_assets"
+_APP_DISPLAY_NAME = "BODAQS Import Manager"
 _WINDOW_ICON_FILENAME = "app_icon.png"
 _WINDOW_ICON_ICO_FILENAME = "app_icon.ico"
 _WINDOWS_APP_USER_MODEL_ID = "BODAQS.ImportAgent.Manager"
@@ -120,7 +121,7 @@ def _apply_windows_app_user_model_id() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bodaqs-import-setup",
-        description="Create or manage a local BODAQS import-agent desktop setup.",
+        description="Create or manage a local BODAQS import manager desktop setup.",
     )
     parser.add_argument("--app-config", default="", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -359,7 +360,7 @@ class ImportAgentManagerWindow:
         self.root = tk.Tk()
         self._window_icon_image: Optional[tk.PhotoImage] = None
         self._apply_window_icon()
-        self.root.title("BODAQS Import Agent Manager")
+        self.root.title(_APP_DISPLAY_NAME)
         self.root.geometry("1120x760")
         self.root.minsize(980, 680)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -857,7 +858,7 @@ class ImportAgentManagerWindow:
         except Exception as exc:
             self.wifi_status_var.set(f"Logger verification failed: {exc}")
             self._set_provision_status(f"Logger verification failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
 
     def _apply_discovered_logger_to_provision_form(self, result: LoggerWifiDiscoveryResult) -> None:
         if result.base_url:
@@ -901,7 +902,7 @@ class ImportAgentManagerWindow:
         except Exception as exc:
             self.wifi_status_var.set(f"Logger discovery failed: {exc}")
             self._set_provision_status(f"Logger discovery failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
 
     def _choose_discovered_logger(
         self,
@@ -1249,7 +1250,7 @@ class ImportAgentManagerWindow:
             self.controller.set_source_enabled(source_id, enabled)
         except Exception as exc:
             self._set_manager_status(f"Toggle source failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
         self._refresh_ui_from_config()
         if self.sources_tree is not None and self.sources_tree.exists(source_id):
@@ -1264,7 +1265,7 @@ class ImportAgentManagerWindow:
             self.controller.set_source_session_note_attach_enabled(source_id, enabled)
         except Exception as exc:
             self._set_manager_status(f"Toggle source draft-note attach failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
         self._refresh_ui_from_config()
         if self.sources_tree is not None and self.sources_tree.exists(source_id):
@@ -1277,7 +1278,7 @@ class ImportAgentManagerWindow:
         library_id = self._selected_library_id()
         if library_id is None:
             messagebox.showinfo(
-                "BODAQS Import Agent Manager",
+                _APP_DISPLAY_NAME,
                 "Select a library first.",
                 parent=self.root,
             )
@@ -1292,7 +1293,7 @@ class ImportAgentManagerWindow:
             self.controller.set_library_data_syn_bike_export_enabled(library_id, enabled)
         except Exception as exc:
             self._set_manager_status(f"Toggle syn export failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
         self._refresh_ui_from_config()
         if self.libraries_tree is not None and self.libraries_tree.exists(library_id):
@@ -1318,7 +1319,7 @@ class ImportAgentManagerWindow:
     def _guard_watch_inactive(self, *, action_label: str) -> bool:
         if self._watch_running():
             messagebox.showinfo(
-                "BODAQS Import Agent Manager",
+                _APP_DISPLAY_NAME,
                 f"Stop the watcher before running '{action_label}'.",
                 parent=self.root,
             )
@@ -1416,7 +1417,7 @@ class ImportAgentManagerWindow:
             if emit_status:
                 self._set_manager_status(f"Start-at-login update failed: {exc}")
             if show_errors:
-                messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         if not emit_status:
@@ -1471,7 +1472,7 @@ class ImportAgentManagerWindow:
             )
         except Exception as exc:
             self._set_provision_status(f"Initial setup failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         self._refresh_ui_from_config()
@@ -1493,7 +1494,7 @@ class ImportAgentManagerWindow:
             )
         except Exception as exc:
             self._set_provision_status(f"Add library failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         self._refresh_ui_from_config()
@@ -1505,7 +1506,7 @@ class ImportAgentManagerWindow:
         library_id = self._selected_library_id_from_choice()
         if library_id is None:
             messagebox.showinfo(
-                "BODAQS Import Agent Manager",
+                _APP_DISPLAY_NAME,
                 "Select a target library for the new source first.",
                 parent=self.root,
             )
@@ -1524,7 +1525,7 @@ class ImportAgentManagerWindow:
             )
         except Exception as exc:
             self._set_provision_status(f"Add source failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         self._refresh_ui_from_config()
@@ -1533,7 +1534,7 @@ class ImportAgentManagerWindow:
     def _apply_app_settings(self) -> None:
         if not self.controller.has_config():
             messagebox.showinfo(
-                "BODAQS Import Agent Manager",
+                _APP_DISPLAY_NAME,
                 "Create the initial managed setup before applying app settings.",
                 parent=self.root,
             )
@@ -1542,7 +1543,7 @@ class ImportAgentManagerWindow:
             updated = self.controller.set_auto_start(bool(self.auto_start_var.get()))
         except Exception as exc:
             self._set_provision_status(f"Apply app settings failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         self._refresh_ui_from_config()
@@ -1558,7 +1559,7 @@ class ImportAgentManagerWindow:
             results = self.controller.validate_sources(enabled_only=False)
         except Exception as exc:
             self._set_manager_status(f"Validation failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         total_errors = sum(len(item.get("errors", [])) for item in results)
@@ -1583,7 +1584,7 @@ class ImportAgentManagerWindow:
             report, snapshot = self.controller.import_once()
         except Exception as exc:
             self._set_manager_status(f"Import failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         totals = report.get("totals", {})
@@ -1610,7 +1611,7 @@ class ImportAgentManagerWindow:
         except Exception as exc:
             self._set_manager_status(f"Unable to start watch: {exc}")
             if show_errors:
-                messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
         self.watch_service = ImportAgentWatchService(supervisor, self.event_queue)
@@ -1637,13 +1638,13 @@ class ImportAgentManagerWindow:
             return
         source_id = self._selected_source_id()
         if source_id is None:
-            messagebox.showinfo("BODAQS Import Agent Manager", "Select a source first.", parent=self.root)
+            messagebox.showinfo(_APP_DISPLAY_NAME, "Select a source first.", parent=self.root)
             return
         try:
             source = self._selected_source_config()
         except Exception as exc:
             self._set_manager_status(f"Remove source failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
         confirmed = messagebox.askyesno(
             "Remove Source",
@@ -1660,7 +1661,7 @@ class ImportAgentManagerWindow:
             self.controller.remove_source(source_id)
         except Exception as exc:
             self._set_manager_status(f"Remove source failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
         self._source_runtime_status.pop(source_id, None)
         self._refresh_ui_from_config()
@@ -1689,7 +1690,7 @@ class ImportAgentManagerWindow:
             if source_id:
                 self._set_source_runtime_status(source_id, f"error: {exc}")
             self._set_manager_status(f"Check logger failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
 
     def _request_selected_upload_mode(self) -> None:
         try:
@@ -1706,7 +1707,7 @@ class ImportAgentManagerWindow:
             if source_id:
                 self._set_source_runtime_status(source_id, f"error: {exc}")
             self._set_manager_status(f"Request upload mode failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
 
     def _open_selected_logger_web_ui(self) -> None:
         try:
@@ -1715,7 +1716,7 @@ class ImportAgentManagerWindow:
             self._set_manager_status(f"Opened logger web UI: {client.base_url}")
         except Exception as exc:
             self._set_manager_status(f"Open logger web UI failed: {exc}")
-            messagebox.showerror("BODAQS Import Agent Manager", str(exc), parent=self.root)
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
 
     def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
         if not snapshot:
@@ -1754,7 +1755,7 @@ class ImportAgentManagerWindow:
                 self.watch_state_var.set("Watcher error.")
                 self._append_log(f"Watcher error: {item.get('error')}")
                 messagebox.showerror(
-                    "BODAQS Import Agent Manager",
+                    _APP_DISPLAY_NAME,
                     str(item.get("error") or "Unknown watch error"),
                     parent=self.root,
                 )

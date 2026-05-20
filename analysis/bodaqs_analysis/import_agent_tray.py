@@ -122,7 +122,7 @@ class ImportAgentTrayIcon:
         *,
         event_queue: "queue.Queue[dict[str, Any]]",
         status_supplier: Callable[[], dict[str, Any]],
-        title: str = "BODAQS Import Agent",
+        title: str = "BODAQS Import Manager",
     ) -> None:
         self.event_queue = event_queue
         self.status_supplier = status_supplier

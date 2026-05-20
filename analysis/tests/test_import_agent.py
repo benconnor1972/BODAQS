@@ -1480,7 +1480,7 @@ def test_tray_supported_is_false_for_non_windows_platform():
 
 def test_sync_windows_startup_registration_round_trips_command_with_fake_registry():
     fake_reg = _FakeWinreg()
-    command = '"C:\\Program Files\\BODAQS Import Agent\\manager\\bodaqs-import-setup.exe" --startup-launch'
+    command = '"C:\\Program Files\\BODAQS Import Manager\\manager\\bodaqs-import-setup.exe" --startup-launch'
 
     stored = import_agent_startup_module.sync_windows_startup_registration(
         enabled=True,
@@ -1495,6 +1495,15 @@ def test_sync_windows_startup_registration_round_trips_command_with_fake_registr
 
     assert stored == command
     assert read_back == command
+    assert (
+        fake_reg.values[
+            (
+                import_agent_startup_module.WINDOWS_RUN_KEY_PATH,
+                import_agent_startup_module.WINDOWS_STARTUP_VALUE_NAME,
+            )
+        ]
+        == command
+    )
 
     cleared = import_agent_startup_module.sync_windows_startup_registration(
         enabled=False,
@@ -1510,3 +1519,27 @@ def test_sync_windows_startup_registration_round_trips_command_with_fake_registr
         )
         is None
     )
+
+
+def test_sync_windows_startup_registration_removes_legacy_value_name():
+    fake_reg = _FakeWinreg()
+    legacy_name = import_agent_startup_module.LEGACY_WINDOWS_STARTUP_VALUE_NAMES[0]
+    fake_reg.values[
+        (
+            import_agent_startup_module.WINDOWS_RUN_KEY_PATH,
+            legacy_name,
+        )
+    ] = "legacy command"
+    command = '"C:\\Program Files\\BODAQS Import Manager\\manager\\bodaqs-import-setup.exe" --startup-launch'
+
+    import_agent_startup_module.sync_windows_startup_registration(
+        enabled=True,
+        command=command,
+        registry_module=fake_reg,
+        platform="win32",
+    )
+
+    assert (
+        import_agent_startup_module.WINDOWS_RUN_KEY_PATH,
+        legacy_name,
+    ) not in fake_reg.values

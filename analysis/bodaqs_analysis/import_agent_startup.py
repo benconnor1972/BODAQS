@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 
-WINDOWS_STARTUP_VALUE_NAME = "BODAQS Import Agent"
+WINDOWS_STARTUP_VALUE_NAME = "BODAQS Import Manager"
+LEGACY_WINDOWS_STARTUP_VALUE_NAMES = ("BODAQS Import Agent",)
 WINDOWS_RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
@@ -60,6 +61,13 @@ def read_windows_startup_registration(
     return str(value)
 
 
+def _delete_windows_startup_value(reg: Any, key: Any, value_name: str) -> None:
+    try:
+        reg.DeleteValue(key, value_name)
+    except FileNotFoundError:
+        pass
+
+
 def sync_windows_startup_registration(
     *,
     enabled: bool,
@@ -73,6 +81,9 @@ def sync_windows_startup_registration(
     reg = _load_winreg(registry_module)
     if reg is None:
         return None
+    legacy_value_names = (
+        LEGACY_WINDOWS_STARTUP_VALUE_NAMES if value_name == WINDOWS_STARTUP_VALUE_NAME else ()
+    )
 
     key = reg.CreateKeyEx(
         reg.HKEY_CURRENT_USER,
@@ -85,11 +96,12 @@ def sync_windows_startup_registration(
             if not str(command or "").strip():
                 raise ValueError("A non-empty command is required when enabling Windows startup registration")
             reg.SetValueEx(key, value_name, 0, reg.REG_SZ, str(command))
+            for legacy_value_name in legacy_value_names:
+                _delete_windows_startup_value(reg, key, legacy_value_name)
         else:
-            try:
-                reg.DeleteValue(key, value_name)
-            except FileNotFoundError:
-                pass
+            _delete_windows_startup_value(reg, key, value_name)
+            for legacy_value_name in legacy_value_names:
+                _delete_windows_startup_value(reg, key, legacy_value_name)
     finally:
         try:
             key.Close()

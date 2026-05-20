@@ -1,9 +1,9 @@
-# BODAQS Import Agent Manager / Tray App v1
+# BODAQS Import Manager / Tray App v1
 
 ## Purpose
 
 The manager window is a small packaged desktop utility for provisioning,
-extending, and operating a local BODAQS import-agent installation without
+extending, and operating a local BODAQS import-manager installation without
 editing JSON files by hand.
 
 It can:

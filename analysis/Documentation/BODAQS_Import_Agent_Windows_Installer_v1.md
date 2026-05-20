@@ -1,9 +1,9 @@
-# BODAQS Import Agent Windows Installer v1
+# BODAQS Import Manager Windows Installer v1
 
 ## Purpose
 
 Phase 5A packages the existing manager and CLI bundles into a Windows installer
-so the import agent can be installed like a normal desktop application.
+so the import manager can be installed like a normal desktop application.
 
 ## What the Installer Includes
 
@@ -68,7 +68,7 @@ and reports that installer compilation was skipped.
 - staged installer payload:
   `analysis/build/installer/windows/staging/`
 - compiled installer:
-  `analysis/dist/installer/windows/bodaqs-import-agent-setup-<version>.exe`
+  `analysis/dist/installer/windows/bodaqs-import-manager-setup-<version>.exe`
 
 ## Config Location Behavior
 

@@ -1,8 +1,8 @@
-# BODAQS Import Agent Phase 6 macOS Plan
+# BODAQS Import Manager Phase 6 macOS Plan
 
 ## Goal
 
-Package the existing import-agent desktop shell for macOS as a normal
+Package the existing import-manager desktop shell for macOS as a normal
 user-installable app without changing the current import pipeline, artifact
 contract, or source-folder workflow.
 
@@ -32,7 +32,7 @@ Phase 6 does not cover:
 
 ## Recommended Product Shape
 
-Ship a signed and notarized `BODAQS Import Agent.app` in a DMG.
+Ship a signed and notarized `BODAQS Import Manager.app` in a DMG.
 
 Reasoning:
 
@@ -142,7 +142,7 @@ Wrap the signed/notarized `.app` in a DMG for distribution.
 
 Recommended DMG contents:
 
-- `BODAQS Import Agent.app`
+- `BODAQS Import Manager.app`
 - shortcut to `/Applications`
 - short install/readme text if needed
 
