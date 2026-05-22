@@ -1,16 +1,20 @@
-# BODAQS Zero-Install Web Application Roadmap
+# BODAQS Application Roadmap
 
-**Status:** Discussion draft
-**Date:** 2026-04-22
+**Status:** Discussion draft  
+**Date:** 2026-05-23  
 **Audience:** BODAQS project team
 
 ## Purpose
 
-This document summarizes:
+This document describes the recommended direction for evolving BODAQS from a
+notebook-driven analysis workflow toward a product application.
 
-- the stated requirements for moving BODAQS analysis toward an internet-facing product
-- the recommended architectural direction
-- a phased implementation roadmap for a zero-install web application
+The current direction is browser-first, offline-capable, and backend-optional.
+Zero-install web use remains valuable where it fits, but it cannot cover all
+important use cases because field use may involve no internet connection.
+
+The architecture should support multiple deployment modes over the same BODAQS
+library and cohort contracts.
 
 ## Current BODAQS Starting Point
 
@@ -20,250 +24,429 @@ Today, the system includes:
 
 - reusable Python analysis code in `analysis/bodaqs_analysis/`
 - notebook-based orchestration and UI in `analysis/*.ipynb`
+- an installed Import Manager direction for local acquisition and import
 - an explicit on-disk artifact model for processed sessions and derived outputs
 - documented public analysis interfaces and contracts
+- notebook consumer widgets that already separate some data preparation from rendering
 
-This means the migration is not primarily about rewriting the analysis logic. It is mainly about replacing notebook-centric user interaction with a browser-based product while preserving the existing processing engine and artifact structure.
+This means the migration is not primarily about rewriting the analysis logic.
+It is mainly about separating product interaction from notebook runtime state,
+while preserving the existing processing engine and artifact structure.
 
 Relevant existing references:
 
 - [`BODAQS_Public_API_Contract_v0.md`](./BODAQS_Public_API_Contract_v0.md)
 - [`BODAQS_analysis_artifacts_specification_v0_2.md`](./BODAQS_analysis_artifacts_specification_v0_2.md)
+- [`BODAQS_session_selector_consumer_widgets_contract.md`](./BODAQS_session_selector_consumer_widgets_contract.md)
 - [`Overview/BODAQS_Analysis_Notebook_Overview.md`](./Overview/BODAQS_Analysis_Notebook_Overview.md)
 
-## Stated Requirements
+## Product Direction
 
-The requirements expressed so far are:
+The starting point for user interaction is the BODAQS library.
 
-- BODAQS should evolve toward an internet-facing application rather than remaining a notebook-driven workflow.
-- The application should present a more polished, product-like user experience than Jupyter notebooks.
-- The underlying processing should generally reuse the same logic that currently exists in the analysis notebooks and extracted Python modules.
-- Processing and visualization may be provided by the server.
-- User data is allowed to pass through the server during use.
-- The BODAQS operator should not be responsible for long-term safekeeping of end-user data.
-- After a session is complete, raw files and preferably processed artifacts should live with the end user on their own resources.
-- The preferred delivery model is zero-install, meaning a browser-based experience rather than a required desktop install.
-- The target audience is ultimately outside users, not only the internal team.
+A user opens or connects to a library, selects or creates a cohort, then uses
+that cohort as the basis for analysis, comparison, charting, notes, exports,
+and reports.
 
-## Key Implications
+A cohort is a named or temporary analysis scope. It may include explicit
+sessions, aggregation references, bookmark references, geographical boundaries,
+time windows, event filters, comparison labels, display state, and other
+selection metadata.
 
-These requirements imply several important constraints.
+Cohorts should be first-class, versioned library objects, not only transient UI
+state.
 
-First, this should be treated as a real product architecture, not simply "Jupyter on the internet." Notebook technology remains useful for development and internal exploration, but it should not be the primary end-user product surface.
-
-Second, the system should minimize long-term server-side custody of customer files. The server can act as a temporary processing environment, but the saved canonical copy of user work should end up under the user's control.
-
-Third, because the preferred model is zero-install, the browser experience must work well with ordinary upload and download flows. More advanced local-file features can be added where browser support allows, but they should be enhancements rather than core requirements.
-
-## Recommended Architecture
-
-The recommended direction is:
-
-- build a browser-based application for end users
-- keep the core BODAQS analysis engine in Python
-- run analysis jobs on the server
-- treat server storage as temporary scratch space rather than a permanent data vault
-- make import and export of user-owned BODAQS workspaces a first-class feature
-
-In practical terms, this means the browser is the polished interface, the server performs analysis, and the user saves the finished workspace bundle locally after processing.
-
-### Recommended product model
-
-1. A user uploads one or more log files and associated inputs.
-2. The server performs preprocessing, event detection, metric extraction, and visualization preparation.
-3. The user inspects results in the browser.
-4. The user downloads a BODAQS workspace bundle containing the relevant raw inputs, processed artifacts, manifests, notes, and configuration.
-5. The server deletes temporary working files after the session ends or after a short retention window.
-6. A user who wants to continue later re-imports the previously exported bundle.
-
-This model allows server-side compute without making the BODAQS operator the long-term custodian of customer datasets.
-
-## Recommended Technical Stack
-
-The following stack is recommended as the default path:
-
-- **Backend API:** Python with FastAPI
-- **Background processing:** worker-based job execution for long-running analysis tasks
-- **Analysis engine:** the existing `analysis/bodaqs_analysis/` package
-- **Frontend:** React or Next.js
-- **Temporary storage:** server-side scratch storage with strict cleanup policy
-- **Long-term user data:** downloaded workspace bundles controlled by the end user
-- **Browser local storage:** only for convenience items such as UI state, not as the canonical saved copy of analysis data
-
-This approach supports a polished product experience while preserving the current investment in the BODAQS analysis code and artifacts model.
-
-## Proposed High-Level Architecture
+## Core Architecture
 
 ```text
-Browser UI
-  -> Web frontend
-  -> Backend API
-  -> Background analysis workers
-  -> existing bodaqs_analysis package
-  -> temporary server-side scratch storage
-  -> downloadable user-owned BODAQS workspace bundle
+Browser application
+  -> data source interface
+  -> local API, browser-local library, static bundle, or remote API
+  -> BODAQS processed library
+  -> optional Python processing engine
 ```
 
-### Data ownership model
+The browser application should not care whether a library is reached through a
+local Import Manager, a static website bundle, direct browser file access, or a
+remote service. Each mode should expose the same conceptual operations:
 
-- The server may receive raw files temporarily in order to process them.
-- The server may generate derived artifacts temporarily in order to display results.
-- The server should not be treated as the authoritative long-term home of customer data.
-- The canonical saved deliverable should be an exportable BODAQS workspace bundle that the user keeps.
+- list libraries
+- list sessions
+- load cohorts
+- save cohorts where the data source is writable
+- load signal metadata
+- load events and metrics
+- request chart-ready time-series windows
+- request summaries and downsampled traces
+- export selected data or a workspace bundle
 
-## Why This Is Preferable To A Notebook-Derived Product
+## Deployment Modes
 
-This approach is recommended over directly exposing notebook technology for end users because it provides:
+### Installed Local Mode
 
-- clearer separation between UI, backend logic, and persistence
-- a better path to authentication, billing, observability, and product hardening
-- better control over upload, retention, deletion, and privacy behavior
-- a more predictable user experience for outside customers
-- a lower risk of the product being tightly coupled to notebook session state
+The Import Manager manages a user-owned local BODAQS library and may expose a
+localhost API to the browser UI.
 
-## Implementation Plan
+This is the strongest field-use mode because it supports offline operation,
+local Python processing, folder watching, artifact writing, and efficient
+Parquet access without requiring internet connectivity.
 
-### Phase 0: Define service boundaries
+The Import Manager does not need to own all application state. Cohorts are
+canonical library objects and may be written by the browser directly where the
+browser has appropriate file permissions.
 
-Goal: prepare the current analysis code for use behind an API.
+### Browser-Local Mode
+
+The browser opens a BODAQS library or workspace bundle directly using browser
+file APIs.
+
+This is suitable for processed-library visualisation and cohort editing where
+the browser supports the required file access. It may use browser storage,
+Web Workers, DuckDB-WASM, Arrow, or similar browser-side tools for local
+querying and interaction.
+
+Browser-local mode is useful, but should not be the only architecture because
+local file and directory write support varies across browsers.
+
+### Static Bundle Mode
+
+A processed library and the web app are packaged together as a "website in a
+box."
+
+This is suitable for demos, reports, training material, and read-only review.
+It works best when the bundle includes prebuilt indexes and chart summaries.
+
+### Remote Service Mode
+
+The browser connects to a hosted backend that can process uploads, serve
+libraries, or provide heavier query support.
+
+This mode remains useful for cloud workflows, collaboration, public demos, or
+users who prefer zero-install operation. It should be optional rather than
+assumed as the primary field workflow.
+
+## Browser Responsibilities
+
+The browser should own the product experience:
+
+- cohort creation and selection
+- session catalog browsing
+- comparison layout
+- chart rendering with React, D3, Canvas, SVG, or WebGL
+- pan, zoom, brush, hover, and linked-chart interaction
+- lightweight filtering and sorting
+- UI state and draft view state
+- read-only exploration of processed artifacts where practical
+- writing cohort files directly where browser-local write support is available
+
+For processed libraries, the browser can realistically perform much of the
+current notebook consumer functionality, including event and metric browsing,
+histograms, scatter plots, and many session-window visualisations.
+
+## Local Or Server Engine Responsibilities
+
+Python should remain authoritative for:
+
+- raw logger import
+- session archive validation
+- metadata interpretation
+- FIT parsing and enrichment
+- preprocessing profiles
+- calibration and derived-signal materialisation
+- filtering and motion derivation
+- event detection
+- metric extraction
+- canonical artifact writing
+- provenance and QC recording
+
+The local or remote engine may also provide performance-oriented visualisation
+support:
+
+- Parquet reads across many sessions
+- signal registry resolution
+- large time-series downsampling
+- multiresolution trace generation
+- geospatial filtering over large datasets
+- writing cohort, bookmark, note, and export artifacts when browser-local writes are unavailable
+
+## Cohort Contract
+
+A cohort should be a versioned, portable object stored with the library.
+
+The preferred canonical storage shape is one cohort document per file:
+
+```text
+artifacts/
+  library/
+    cohorts/
+      <cohort_id>.json
+```
+
+Separate files reduce write conflicts, make browser-local saves simpler, and
+allow cohorts to be copied, shared, reviewed, and versioned independently.
+
+An optional generated cohort index may be added for fast discovery, but the
+individual cohort documents should be treated as the canonical source of truth.
+
+A cohort should be able to describe:
+
+- explicit session references
+- aggregation references
+- bookmark references
+- geographical boundaries
+- time windows or activity regions
+- event and schema filters
+- signal, end, domain, or quantity filters
+- comparison grouping labels
+- display preferences that are truly cohort-specific
+- provenance explaining how the cohort was created
+
+A cohort should avoid duplicating session data. It should reference library
+artifacts and record selection intent.
+
+The cohort contract becomes the main handoff between catalog browsing,
+visualisation, comparison, exports, and later reporting.
+
+## Cohort Writing Model
+
+Cohort writing should be an application/library capability, not an Import
+Manager-only capability.
+
+The application should define a small writer interface for cohort storage:
+
+```text
+listCohorts()
+loadCohort(cohortId)
+saveCohort(cohort)
+deleteCohort(cohortId)
+```
+
+Different deployment modes can implement that interface differently:
+
+- `BrowserDirectoryCohortStore` writes directly to a user-selected library folder where supported.
+- `LocalApiCohortStore` asks the installed local service to write the cohort file.
+- `DownloadCohortStore` exports a cohort file or updated workspace bundle when direct writes are unavailable.
+- `StaticReadOnlyCohortStore` loads bundled cohorts but does not save changes.
+
+This keeps cohort definition conceptually independent of the Import Manager,
+while still allowing the Import Manager or local API to be the most reliable
+writer in installed mode.
+
+## Recommended Technical Pattern
+
+Define a frontend `LibraryDataSource` interface with implementations such as:
+
+- `LocalApiDataSource`
+- `StaticBundleDataSource`
+- `BrowserDirectoryDataSource`
+- `RemoteApiDataSource`
+
+Each implementation should provide the same application-level methods even if
+the backing mechanism differs.
+
+Example operations:
+
+```text
+listSessions()
+listCohorts()
+loadCohort(cohortId)
+saveCohort(cohort)
+getSessionMeta(sessionKey)
+getSignalCatalog(cohort)
+getEvents(cohort, filters)
+getMetrics(cohort, filters)
+getTimeseriesWindow(cohort, signals, start, end, resolution)
+```
+
+This keeps the React/D3 application stable while allowing the deployment model
+to evolve.
+
+## Implementation Roadmap
+
+### Phase 0: Contracts And Boundaries
+
+Goal: define the application-level contracts before building a large UI.
 
 Work in this phase:
 
-- identify the stable backend entry points that the web product will call
-- formalize which parts of the current notebook workflow are UI/orchestration versus reusable analysis logic
-- confirm that the existing artifact model is suitable as the basis for an import/export workspace format
-- identify any notebook-only dependencies that should not leak into the product backend
+- define the library catalog contract
+- define the cohort contract
+- define the chart-ready payload contract
+- define the frontend data source interface
+- decide final cohort file locations and ID rules
+- map existing notebook selector and widget concepts to web concepts
+- identify notebook-only dependencies that should not leak into application code
 
 Expected outcome:
 
-- a clear boundary between the analysis engine and the notebook UI layer
+- a clear boundary between BODAQS library artifacts, cohort state, processing logic, and browser rendering
 
-### Phase 1: Stabilize the backend analysis service
+### Phase 1: Read-Only Library Browser Plus Cohorts
 
-Goal: make the current Python processing logic callable as web jobs.
+Goal: build the first browser UI around an existing processed library.
 
 Work in this phase:
 
-- wrap the current processing flow behind backend job endpoints
-- preserve use of the current analysis package and artifact writers where possible
-- add structured logging, error reporting, and progress reporting suitable for a web product
-- validate that typical sessions can run without notebook state or manual notebook interaction
+- implement a session catalog
+- implement cohort creation and selection
+- write cohort documents as individual library files where possible
+- display cohort summaries
+- show event and metric table views
+- support at least one read-only data source such as a static bundle or local API
 
 Expected outcome:
 
-- a backend service that can ingest files, run BODAQS processing, and return structured job results
+- an internal application prototype that can open a processed library, create a cohort, and use that cohort as the analysis scope
 
-### Phase 2: Define the portable workspace bundle
+### Phase 2: Browser Visualisation
 
-Goal: make user-owned export and re-import a core product feature.
+Goal: rebuild the highest-value notebook visualisations in React/D3 or related browser-native rendering tools.
 
 Work in this phase:
 
-- define the canonical contents of a BODAQS workspace bundle
-- include processed artifacts, manifests, notes, and relevant configuration
-- decide whether raw uploaded source files are always included, optionally included, or policy-driven
-- support import of a previously exported bundle so a user can reopen work later
+- implement a time-series session window view
+- implement an event browser
+- implement metric scatter plots
+- implement metric histograms
+- implement signal histograms
+- implement linked cohort and session selection
+- define chart-ready API payloads
+- add server-side or local downsampling where needed
 
 Expected outcome:
 
-- a versioned portable bundle format that becomes the main persistence boundary for end users
+- a browser-native visualisation experience for processed BODAQS libraries
 
-### Phase 3: Build the zero-install browser product
+### Phase 3: Installed Offline Mode
 
-Goal: deliver the first browser-based user experience.
+Goal: integrate the browser UI with the installed Import Manager where local services are useful.
 
 Work in this phase:
 
-- create upload, configuration, processing-status, results, and export pages
-- rebuild the highest-value notebook workflows as proper product pages
-- keep browser-local storage limited to convenience state such as recent settings or draft forms
-- support standard upload/download flows across mainstream browsers
+- expose a localhost API for configured local libraries
+- support user-owned local library configuration
+- add local library indexing
+- support local cohort save/load through the API as a fallback or preferred installed-mode writer
+- add local chart data endpoints
+- support an offline application launch path
 
 Expected outcome:
 
-- an internal alpha product that supports the main happy path without requiring installation
+- a field-usable local application mode that does not require internet connectivity
 
-### Phase 4: External beta hardening
+### Phase 4: Import And Processing Integration
 
-Goal: make the product safe and supportable for outside users.
+Goal: expose preprocessing workflows through the application while keeping Python as the compute engine.
 
 Work in this phase:
 
-- add authentication and account management
-- add rate limiting, quotas, and job isolation
-- enforce strict file validation and cleanup policies
-- define and implement the temporary retention window for uploaded data and generated artifacts
-- add monitoring, error capture, and operational dashboards
-- document user-facing privacy and retention behavior clearly
+- add import status UI
+- add preprocessing profile selection
+- run local processing jobs
+- write canonical artifacts back to the library
+- add progress and error reporting
+- add an optional remote processing adapter using the same job model
 
 Expected outcome:
 
-- an externally usable beta with controlled operational risk
+- a product workflow that can import, process, browse, and visualise BODAQS sessions without Jupyter
 
-### Phase 5: Product maturity
+### Phase 5: Portable Workspaces And Static Sharing
 
-Goal: improve usability and reduce friction without changing the zero-install principle.
+Goal: make export/import and read-only sharing first-class.
 
 Work in this phase:
 
-- add progressive browser enhancements for better local save/open behavior where supported
-- improve collaboration features only if they can be done without forcing long-term data custody
-- improve onboarding, performance, resumability, and support tooling
-- evaluate whether a later optional desktop wrapper is worthwhile, without changing the browser-first product model
+- define a workspace bundle format
+- support cohort export and import
+- support static "website in a box" export
+- generate report or review bundles
+- add compatibility checks for older libraries
 
 Expected outcome:
 
-- a more polished customer product built on the same core architecture
+- portable BODAQS workspaces and static review bundles that preserve cohorts and visualisation context
+
+### Phase 6: Optional Remote Product Hardening
+
+Goal: add hosted-service features only if the product direction requires them.
+
+Possible work in this phase:
+
+- authentication
+- accounts
+- quotas
+- remote job isolation
+- cloud retention policy
+- collaboration
+- billing
+- operational monitoring
+
+Expected outcome:
+
+- an externally usable hosted product path, if cloud operation becomes a product requirement
 
 ## Suggested First Deliverable
 
-The first meaningful product milestone should support this single end-to-end flow:
+The first meaningful application milestone should support this flow:
 
-1. Upload log files and related inputs.
-2. Choose analysis settings or a preprocessing profile.
-3. Run processing on the server.
-4. Inspect key dashboards and results in the browser.
-5. Export a BODAQS workspace bundle for local safekeeping.
-6. Re-import that bundle later to continue work.
+1. Open an existing processed BODAQS library.
+2. Browse the session catalog.
+3. Create a cohort from sessions, aggregations, bookmarks, or selection filters.
+4. Save the cohort as a canonical library object where the current data source is writable.
+5. Inspect event and metric tables for the cohort.
+6. Open at least one browser-native chart for the cohort.
 
-If this flow is solid, the product has a strong foundation. If this flow is weak, additional features will not fix the fundamental user experience.
+This first deliverable keeps the focus on the library and cohort model before
+adding full import, preprocessing, or hosted-service complexity.
 
 ## Design Principles For The Product
 
-- Preserve the existing core analysis logic unless there is a strong reason to change it.
-- Treat notebooks as development tools and internal reference implementations, not as the shipped product.
-- Keep user data retention minimal and explicit.
-- Make import/export and local ownership of saved work central to the workflow.
-- Avoid storing large volumes of customer data long-term on BODAQS-controlled infrastructure.
-- Prefer small, explicit contracts between frontend, backend, and artifacts over hidden state.
+- The BODAQS library is the primary user data object.
+- Cohorts are the primary analysis scope.
+- Browser UI owns visualisation and interaction.
+- Python owns canonical processing and artifact generation.
+- Local-first and offline use are first-class requirements.
+- Zero-install web use remains an option, not the sole target.
+- Deployment modes should share contracts rather than fork the product.
+- The app should avoid depending on Jupyter runtime state.
+- User-owned local libraries should remain usable outside the application where practical.
+- Browser-local storage should not be the only saved copy of important library objects.
 
 ## Risks And Decisions To Resolve
 
 The following decisions will materially affect implementation detail:
 
-- how long temporary uploaded files and derived artifacts may remain on the server
-- whether exported bundles always include raw inputs or only derived artifacts by default
+- the exact cohort schema and versioning policy
+- the cohort ID format and filename rules
+- whether the first browser-local writer targets Chromium-only file APIs or starts with export/download fallback
+- whether v1 requires direct browser writing to library folders or only through local API and bundle export
+- how chart summaries and downsampled traces should be stored
 - what browser support target is required for v1
-- what authentication model is needed for outside users
-- whether the first public release includes paid usage, quotas, or both
-- how much of the current notebook feature set must be present in the first browser release
+- how much of the current notebook widget feature set must be present in the first application release
+- whether remote accounts, collaboration, billing, or long-term cloud storage are product requirements
 
 ## Things To Avoid
 
+- Treating zero-install remote web use as the only target.
+- Requiring internet access for field analysis.
 - Exposing Jupyter or notebook sessions directly as the external product.
-- Making browser storage the only saved copy of important user work.
-- Rewriting the analysis engine prematurely when the current package can already serve as the backend.
-- Moving all analysis state into a traditional database without a clear need.
-- Quietly retaining customer datasets longer than the documented policy allows.
+- Rewriting the Python analysis engine prematurely.
+- Making the frontend depend on raw notebook-specific data structures.
+- Treating cohort selection as temporary UI state only.
+- Making browser storage the only saved copy of cohort definitions.
+- Making the Import Manager the only way to view an already processed static library.
+- Building separate incompatible apps for local, static, browser-local, and remote modes.
 
 ## Summary Recommendation
 
-The recommended path is to build a zero-install browser application that uses the current BODAQS Python analysis engine on the server, keeps server-side file retention temporary, and makes user-owned workspace export/import a core part of the product model.
+The recommended path is to build a browser-first BODAQS application around
+processed libraries and canonical cohort objects.
 
-This is the best fit for the stated goals because it combines:
+The browser should provide the primary visualisation and interaction experience.
+Python should remain the authoritative engine for import, preprocessing, event
+detection, metrics, artifact writing, and heavy data preparation.
 
-- a product-like experience for outside users
-- reuse of the existing BODAQS analysis logic
-- server-side processing and visualization
-- reduced responsibility for long-term custody of customer data
-- a clear migration path from the current notebook workflow
+The application should support offline local use through the installed Import
+Manager, browser-local and static-bundle use for processed libraries, and
+optional remote service use where internet-backed workflows are valuable.
