@@ -48,13 +48,34 @@ A user opens or connects to a library, selects or creates a cohort, then uses
 that cohort as the basis for analysis, comparison, charting, notes, exports,
 and reports.
 
-A cohort is a named or temporary analysis scope. It may include explicit
-sessions, aggregation references, bookmark references, geographical boundaries,
-time windows, event filters, comparison labels, display state, and other
-selection metadata.
+A cohort is a named or temporary analysis scope. It should be explicit and
+stable once saved. It may include session references, aggregation references,
+bookmark references, geographical section references, comparison labels, display
+state, and provenance explaining how the scope was created.
 
 Cohorts should be first-class, versioned library objects, not only transient UI
 state.
+
+Filters are helper tools used to find, narrow, validate, or refresh candidate
+membership. They should not be the hidden source of truth for saved cohort
+membership.
+
+## Session Identity
+
+The practical session identity remains:
+
+```text
+<run_id>::<session_id>
+```
+
+This is assumed to be unique for normal single-library workflows and is also
+expected to be unique enough for current multi-library exploration. The first
+application implementation should not redesign the whole cohort model around
+multi-library identity.
+
+If later required, session references can gain an optional `library_id` or
+`library_ref` field without changing the core principle that cohort membership
+is explicit.
 
 ## Core Architecture
 
@@ -131,6 +152,8 @@ The browser should own the product experience:
 
 - cohort creation and selection
 - session catalog browsing
+- interactive helper filtering, searching, and sorting
+- interactive geographical section editing and preview where practical
 - comparison layout
 - chart rendering with React, D3, Canvas, SVG, or WebGL
 - pan, zoom, brush, hover, and linked-chart interaction
@@ -167,6 +190,8 @@ support:
 - large time-series downsampling
 - multiresolution trace generation
 - geospatial filtering over large datasets
+- batch coverage calculations for geographical sections
+- durable indexes for session catalogs, filters, sections, and cohorts
 - writing cohort, bookmark, note, and export artifacts when browser-local writes are unavailable
 
 ## Cohort Contract
@@ -188,15 +213,13 @@ allow cohorts to be copied, shared, reviewed, and versioned independently.
 An optional generated cohort index may be added for fast discovery, but the
 individual cohort documents should be treated as the canonical source of truth.
 
-A cohort should be able to describe:
+A cohort should be able to describe explicit committed scope:
 
 - explicit session references
 - aggregation references
 - bookmark references
-- geographical boundaries
-- time windows or activity regions
-- event and schema filters
-- signal, end, domain, or quantity filters
+- geographical section references
+- time windows or activity regions when they are explicitly selected
 - comparison grouping labels
 - display preferences that are truly cohort-specific
 - provenance explaining how the cohort was created
@@ -204,8 +227,96 @@ A cohort should be able to describe:
 A cohort should avoid duplicating session data. It should reference library
 artifacts and record selection intent.
 
+Filters may be recorded as cohort provenance, for example "created from filter X
+at time Y", but a filter should not define live cohort membership. If a user
+wants to refresh a cohort from a saved filter later, that should be an explicit
+review-and-apply action.
+
 The cohort contract becomes the main handoff between catalog browsing,
 visualisation, comparison, exports, and later reporting.
+
+## Filters And Adequacy Checks
+
+Filters should be treated as helper tools for cohort creation, not as canonical
+cohort definitions.
+
+A filter may include criteria over:
+
+- visible session catalog columns
+- run and session descriptions
+- note status and projected note fields
+- QC summary status
+- provenance and preprocessing settings
+- signal registry semantics
+- event schema availability
+- event and metric contents
+- geographical section coverage
+
+Filters may be temporary UI state or saved reusable library helpers. A saved
+filter can be useful for repeated discovery, but applying it to a cohort should
+produce an explicit set of cohort members.
+
+Adequacy checks are related, but serve a different purpose. An adequacy check
+tests whether a cohort can support a view or analysis, for example:
+
+- the cohort has reviewed notes
+- the cohort has GPS coverage
+- the cohort contains front and rear primary suspension signals
+- the cohort uses compatible event schemas
+- the cohort covers a required geographical section
+
+Adequacy checks should report pass, warning, or fail states with reasons. They
+should help a user improve a cohort without silently changing the cohort.
+
+## Geographical Sections
+
+Geographical sections should be canonical reusable library objects, not private
+cohort state.
+
+The preferred storage shape is:
+
+```text
+artifacts/
+  library/
+    geography/
+      section_cuts/
+        <section_cut_id>.json
+      sections/
+        <section_id>.json
+```
+
+A section cut is an authored boundary on or near a GPS path. A section is a
+route region or interval derived from one or more cuts.
+
+A section cut should record enough information to be inspected, redrawn, and
+recomputed:
+
+- stable section cut id
+- title or label
+- reference session key
+- snapped point geometry
+- cut-line geometry
+- route distance or fraction along the reference route
+- route bearing at the snapped point
+- cut width or extent
+- creation and update timestamps
+
+The browser can perform the interactive parts of sectioning for typical
+processed sessions:
+
+- show GPS paths on a map
+- snap a clicked point to the visible route
+- estimate local route direction
+- draw a perpendicular cut-line
+- preview sections and session coverage
+- save section definitions where the current data source is writable
+
+A local API or remote service may be used for heavier or more durable work:
+
+- batch coverage calculations across many sessions
+- generation of section coverage indexes
+- validation and repair of section definitions
+- support for browsers that cannot write local library files directly
 
 ## Cohort Writing Model
 
@@ -251,11 +362,16 @@ listSessions()
 listCohorts()
 loadCohort(cohortId)
 saveCohort(cohort)
+listFilters()
+applyFilter(filterCriteria)
+listGeographicalSections()
+saveGeographicalSection(section)
 getSessionMeta(sessionKey)
 getSignalCatalog(cohort)
-getEvents(cohort, filters)
-getMetrics(cohort, filters)
+getEvents(cohort, query)
+getMetrics(cohort, query)
 getTimeseriesWindow(cohort, signals, start, end, resolution)
+checkCohortAdequacy(cohort, requirements)
 ```
 
 This keeps the React/D3 application stable while allowing the deployment model
@@ -271,9 +387,12 @@ Work in this phase:
 
 - define the library catalog contract
 - define the cohort contract
+- define the filter helper and adequacy-check contracts
+- define the geographical section contract
 - define the chart-ready payload contract
 - define the frontend data source interface
 - decide final cohort file locations and ID rules
+- decide final geographical section file locations and ID rules
 - map existing notebook selector and widget concepts to web concepts
 - identify notebook-only dependencies that should not leak into application code
 
@@ -281,7 +400,7 @@ Expected outcome:
 
 - a clear boundary between BODAQS library artifacts, cohort state, processing logic, and browser rendering
 
-### Phase 1: Read-Only Library Browser Plus Cohorts
+### Phase 1: Library Browser Plus Cohorts
 
 Goal: build the first browser UI around an existing processed library.
 
@@ -289,14 +408,33 @@ Work in this phase:
 
 - implement a session catalog
 - implement cohort creation and selection
+- implement helper filtering over visible catalog columns
 - write cohort documents as individual library files where possible
 - display cohort summaries
+- display note, QC, provenance, and preprocessing indicators
 - show event and metric table views
 - support at least one read-only data source such as a static bundle or local API
 
 Expected outcome:
 
 - an internal application prototype that can open a processed library, create a cohort, and use that cohort as the analysis scope
+
+### Phase 1A: Geographical Section Prototype
+
+Goal: prove the geographical sectioning model with processed sessions that
+include GPS data.
+
+Work in this phase:
+
+- render session GPS paths on a browser map
+- create perpendicular section cuts from points on the route
+- persist section cuts and sections as canonical library objects where possible
+- preview which sessions cover a selected section
+- expose section coverage as a filter helper and adequacy-check input
+
+Expected outcome:
+
+- a reusable geographical section model that can feed cohort creation without becoming hidden cohort state
 
 ### Phase 2: Browser Visualisation
 
@@ -312,6 +450,7 @@ Work in this phase:
 - implement linked cohort and session selection
 - define chart-ready API payloads
 - add server-side or local downsampling where needed
+- add local or server-side section coverage indexes where needed
 
 Expected outcome:
 
@@ -392,10 +531,12 @@ The first meaningful application milestone should support this flow:
 
 1. Open an existing processed BODAQS library.
 2. Browse the session catalog.
-3. Create a cohort from sessions, aggregations, bookmarks, or selection filters.
-4. Save the cohort as a canonical library object where the current data source is writable.
-5. Inspect event and metric tables for the cohort.
-6. Open at least one browser-native chart for the cohort.
+3. Use helper filters and catalog inspection to find candidate sessions.
+4. Create a cohort from explicit sessions, aggregations, bookmarks, or geographical sections.
+5. Save the cohort as a canonical library object where the current data source is writable.
+6. Inspect note, QC, provenance, event, and metric information for the cohort.
+7. Open at least one browser-native chart for the cohort.
+8. Run at least one adequacy check against the cohort.
 
 This first deliverable keeps the focus on the library and cohort model before
 adding full import, preprocessing, or hosted-service complexity.
@@ -404,6 +545,9 @@ adding full import, preprocessing, or hosted-service complexity.
 
 - The BODAQS library is the primary user data object.
 - Cohorts are the primary analysis scope.
+- Saved cohorts should be explicit and stable, not live filters.
+- Filters are helper tools for finding, validating, and refreshing candidate scope.
+- Geographical sections are reusable library objects, not private cohort state.
 - Browser UI owns visualisation and interaction.
 - Python owns canonical processing and artifact generation.
 - Local-first and offline use are first-class requirements.
@@ -419,6 +563,10 @@ The following decisions will materially affect implementation detail:
 
 - the exact cohort schema and versioning policy
 - the cohort ID format and filename rules
+- the exact saved-filter schema, if filters become reusable library helpers
+- the exact adequacy-check contract for views and visualisations
+- the geographical section and section-cut schemas
+- the section coverage index format
 - whether the first browser-local writer targets Chromium-only file APIs or starts with export/download fallback
 - whether v1 requires direct browser writing to library folders or only through local API and bundle export
 - how chart summaries and downsampled traces should be stored
@@ -434,6 +582,8 @@ The following decisions will materially affect implementation detail:
 - Rewriting the Python analysis engine prematurely.
 - Making the frontend depend on raw notebook-specific data structures.
 - Treating cohort selection as temporary UI state only.
+- Treating saved filters as hidden live cohort definitions.
+- Hiding geographical sections inside cohort documents.
 - Making browser storage the only saved copy of cohort definitions.
 - Making the Import Manager the only way to view an already processed static library.
 - Building separate incompatible apps for local, static, browser-local, and remote modes.
