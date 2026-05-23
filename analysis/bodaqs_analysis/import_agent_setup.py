@@ -47,9 +47,9 @@ from .import_agent_sources import (
     SOURCE_TYPE_LOGGER_WIFI,
 )
 from .import_agent_startup import (
-    build_windows_startup_command,
-    sync_windows_startup_registration,
-    windows_startup_supported,
+    build_startup_command,
+    startup_supported,
+    sync_startup_registration,
 )
 from .import_agent_tray import ImportAgentTrayIcon, tray_supported
 
@@ -1401,18 +1401,18 @@ class ImportAgentManagerWindow:
         config = self.controller.app_config
         if config is None:
             return
-        if not windows_startup_supported():
+        if not startup_supported():
             if emit_status:
-                self._append_log("Start-at-login registration is only available on Windows in this build.")
+                self._append_log("Start-at-login registration is not supported on this platform.")
             return
 
         command = (
-            build_windows_startup_command(self._manager_startup_argv())
+            build_startup_command(self._manager_startup_argv())
             if config.auto_start
             else None
         )
         try:
-            applied = sync_windows_startup_registration(enabled=config.auto_start, command=command)
+            applied = sync_startup_registration(enabled=config.auto_start, command=command)
         except Exception as exc:
             if emit_status:
                 self._set_manager_status(f"Start-at-login update failed: {exc}")

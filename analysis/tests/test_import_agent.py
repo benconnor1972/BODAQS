@@ -1,9 +1,11 @@
 import json
 import os
+import plistlib
 import sys
 import zipfile
 from importlib.resources import files
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -1543,3 +1545,199 @@ def test_sync_windows_startup_registration_removes_legacy_value_name():
         import_agent_startup_module.WINDOWS_RUN_KEY_PATH,
         legacy_name,
     ) not in fake_reg.values
+
+
+# ---------------------------------------------------------------------------
+# macOS platform-seam tests
+# ---------------------------------------------------------------------------
+
+
+def test_default_import_agent_app_config_path_uses_macos_convention():
+    mac_path = default_import_agent_app_config_path(
+        platform="darwin",
+        home="/Users/Test",
+    )
+
+    assert mac_path == Path(
+        "/Users/Test/Library/Application Support/BODAQS/import-agent/import_agent_app.json"
+    )
+
+
+def test_startup_supported_for_darwin():
+    assert import_agent_startup_module.startup_supported(platform="darwin") is True
+
+
+def test_startup_supported_for_windows():
+    assert import_agent_startup_module.startup_supported(platform="win32") is True
+
+
+def test_startup_supported_for_linux_is_false():
+    assert import_agent_startup_module.startup_supported(platform="linux") is False
+
+
+def test_build_startup_command_resolves_paths_and_renders_windows_string(tmp_path):
+    exe_path = tmp_path / "Program Files" / "BODAQS Import Manager" / "bodaqs-import-setup.exe"
+    exe_path.parent.mkdir(parents=True, exist_ok=True)
+    exe_path.write_text("", encoding="utf-8")
+
+    command = import_agent_startup_module.build_startup_command(
+        [exe_path, "--startup-launch", "--app-config-mode", "installed"]
+    )
+
+    assert command.argv[0] == str(exe_path.resolve())
+    assert "--startup-launch" in command.argv
+    win_cmdline = command.windows_command_line
+    assert f'"{exe_path.resolve()}"' in win_cmdline
+    assert "--startup-launch" in win_cmdline
+
+
+def test_build_macos_launch_agent_plist_includes_required_fields():
+    plist_text = import_agent_startup_module.build_macos_launch_agent_plist(
+        label="org.bodaqs.importmanager",
+        program_arguments=[
+            "/Applications/BODAQS Import Manager.app/Contents/MacOS/BODAQS Import Manager",
+            "--app-config-mode",
+            "installed",
+            "--startup-launch",
+        ],
+    )
+
+    assert "org.bodaqs.importmanager" in plist_text
+    assert "<key>Label</key>" in plist_text
+    assert "<key>ProgramArguments</key>" in plist_text
+    assert "<key>RunAtLoad</key>" in plist_text
+    assert "--startup-launch" in plist_text
+    assert "--app-config-mode" in plist_text
+    assert "installed" in plist_text
+
+    payload = plistlib.loads(plist_text.encode("utf-8"))
+    assert payload["Label"] == "org.bodaqs.importmanager"
+    assert payload["RunAtLoad"] is True
+    assert payload["ProgramArguments"][-1] == "--startup-launch"
+
+
+def test_macos_launch_agent_plist_path_uses_user_library():
+    plist_path = import_agent_startup_module.macos_launch_agent_plist_path(home="/Users/Test")
+
+    assert plist_path == Path("/Users/Test/Library/LaunchAgents/org.bodaqs.importmanager.plist")
+
+
+def test_sync_macos_startup_registration_writes_plist_when_enabled(tmp_path):
+    run_calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        run_calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    program_args = [
+        "/Applications/BODAQS Import Manager.app/Contents/MacOS/BODAQS Import Manager",
+        "--app-config-mode",
+        "installed",
+        "--startup-launch",
+    ]
+
+    stored = import_agent_startup_module.sync_macos_startup_registration(
+        enabled=True,
+        program_arguments=program_args,
+        home=tmp_path,
+        run_subprocess=fake_run,
+        launchctl_target="gui/501",
+    )
+
+    plist_path = tmp_path / "Library" / "LaunchAgents" / "org.bodaqs.importmanager.plist"
+    assert plist_path.exists()
+    payload = plistlib.loads(plist_path.read_bytes())
+    assert payload["Label"] == "org.bodaqs.importmanager"
+    assert payload["ProgramArguments"] == program_args
+    assert payload["RunAtLoad"] is True
+    assert stored is not None and "--startup-launch" in stored
+    assert run_calls, "expected launchctl bootstrap to be attempted"
+    bootstrap_call = run_calls[0]
+    assert bootstrap_call[:3] == ["launchctl", "bootstrap", "gui/501"]
+    assert bootstrap_call[-1] == str(plist_path)
+
+
+def test_sync_macos_startup_registration_removes_plist_when_disabled(tmp_path):
+    plist_path = tmp_path / "Library" / "LaunchAgents" / "org.bodaqs.importmanager.plist"
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_bytes(
+        plistlib.dumps(
+            {
+                "Label": "org.bodaqs.importmanager",
+                "ProgramArguments": ["/tmp/stale"],
+                "RunAtLoad": True,
+            }
+        )
+    )
+    run_calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        run_calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    stored = import_agent_startup_module.sync_macos_startup_registration(
+        enabled=False,
+        home=tmp_path,
+        run_subprocess=fake_run,
+        launchctl_target="gui/501",
+    )
+
+    assert stored is None
+    assert not plist_path.exists()
+    assert run_calls, "expected launchctl bootout to be attempted"
+    bootout_call = run_calls[0]
+    assert bootout_call[:2] == ["launchctl", "bootout"]
+    assert bootout_call[2].startswith("gui/501")
+    assert bootout_call[2].endswith("/org.bodaqs.importmanager")
+
+
+def test_sync_startup_registration_dispatches_to_macos_on_darwin(tmp_path):
+    run_calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        run_calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    command = import_agent_startup_module.StartupCommand(
+        argv=(
+            "/Applications/BODAQS Import Manager.app/Contents/MacOS/BODAQS Import Manager",
+            "--app-config-mode",
+            "installed",
+            "--startup-launch",
+        )
+    )
+
+    stored = import_agent_startup_module.sync_startup_registration(
+        enabled=True,
+        command=command,
+        platform="darwin",
+        home=tmp_path,
+        run_subprocess=fake_run,
+        launchctl_target="gui/501",
+    )
+
+    plist_path = tmp_path / "Library" / "LaunchAgents" / "org.bodaqs.importmanager.plist"
+    assert plist_path.exists()
+    assert stored is not None
+    assert run_calls and run_calls[0][:3] == ["launchctl", "bootstrap", "gui/501"]
+
+
+def test_tray_supported_for_darwin_is_false():
+    """Pin the v1 decision to defer macOS tray; change deliberately if needed."""
+    assert import_agent_tray_module.tray_supported(platform="darwin") is False
+
+
+def test_macos_pyinstaller_spec_contains_required_strings():
+    spec_path = Path(__file__).resolve().parents[1] / "bodaqs_import_manager_macos.spec"
+    assert spec_path.exists(), f"missing macOS spec: {spec_path}"
+    spec_text = spec_path.read_text(encoding="utf-8")
+
+    for needle in (
+        "org.bodaqs.importmanager",
+        "NSLocalNetworkUsageDescription",
+        "_bodaqs-logger._tcp",
+        "BODAQS Import Manager.app",
+        "BUNDLE",
+        "bodaqs_import_manager.icns",
+    ):
+        assert needle in spec_text, f"macOS spec missing required string: {needle}"
