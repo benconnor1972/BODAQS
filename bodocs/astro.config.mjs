@@ -40,7 +40,7 @@ export default defineConfig({
           label: 'Hardware guide',
           autogenerate: {directory: 'hardware-guide'},
         }, {
-          label: 'Software guide',
+          label: 'Software setup guide',
           autogenerate: {directory: 'software-guide'},
         }, {
           label: 'User guide',
