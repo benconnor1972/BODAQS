@@ -43,7 +43,8 @@ bike installation.
 - per-run artifact output locations
 
 Those items belong in log metadata, preprocess profiles, or notebook/runtime
-configuration.
+configuration. In particular, logger/source sensor identity, calibration, and
+channel-binding details belong in log metadata rather than the bike profile.
 
 ## 3. Recommended Storage
 
@@ -229,8 +230,8 @@ Optional fields:
 
 - `description`
 - `enabled`
-- `interpolation`
-- `extrapolation`
+- `interpolation` (LUT transforms only)
+- `extrapolation` (LUT transforms only)
 - `lut`
 - `polynomial`
 
@@ -337,20 +338,96 @@ Rules:
 - `coefficient_order` SHOULD be `ascending`, meaning `a0 + a1*x + a2*x^2 ...`.
 - If `coefficient_order` is omitted, consumers SHOULD assume `ascending`.
 - If `input_offset`, `input_scale`, or `output_offset` are present, consumers SHOULD evaluate `y = polynomial((x - input_offset) * input_scale) + output_offset`.
+- `interpolation` and `extrapolation` do not apply to polynomial transforms and SHOULD be omitted.
+
+Examples:
+
+A linear suspension-travel-to-wheel-travel relation is represented as a
+first-order polynomial rather than a separate `linear` method.
+
+Example: fixed leverage ratio, rear shock travel `[mm]` to rear wheel travel
+`[mm]`:
+
+```json
+{
+  "id": "rear_shock_to_rear_wheel_linear",
+  "description": "Rear wheel travel from rear shock travel using a fixed leverage ratio.",
+  "enabled": true,
+  "input": {
+    "end": "rear",
+    "quantity": "disp",
+    "domain": "suspension",
+    "unit": "mm"
+  },
+  "output": {
+    "end": "rear",
+    "quantity": "disp",
+    "domain": "wheel",
+    "unit": "mm"
+  },
+  "method": "polynomial",
+  "polynomial": {
+    "coefficient_order": "ascending",
+    "coefficients": [0.0, 2.8]
+  }
+}
+```
+
+This evaluates as `y = 0.0 + 2.8*x`, so 10 mm of shock travel produces 28 mm
+of wheel travel.
+
+Example: nonlinear polynomial approximation, rear shock travel `[mm]` to rear
+wheel travel `[mm]`:
+
+```json
+{
+  "id": "rear_shock_to_rear_wheel_poly2",
+  "description": "Rear wheel travel from rear shock travel using a quadratic approximation.",
+  "enabled": true,
+  "input": {
+    "end": "rear",
+    "quantity": "disp",
+    "domain": "suspension",
+    "unit": "mm"
+  },
+  "output": {
+    "end": "rear",
+    "quantity": "disp",
+    "domain": "wheel",
+    "unit": "mm"
+  },
+  "method": "polynomial",
+  "polynomial": {
+    "coefficient_order": "ascending",
+    "coefficients": [0.0, 3.05, -0.008]
+  }
+}
+```
+
+This evaluates as `y = 0.0 + 3.05*x - 0.008*x^2`, which is useful when the
+effective leverage ratio changes through the stroke.
 
 ## 9. Installed Sensors
 
 `installed_sensors` is an optional array describing sensor installation context.
+It is informational only in v0 and must not be treated as authoritative for
+preprocessing decisions, semantic binding, calibration lookup, or logger-channel
+resolution.
 
 Suggested fields:
 
 - `sensor`
-- `logger_channel`
 - `mount_location`
+- `orientation`
 - `notes`
 
-This section is informational in v0. It can help users understand why a
-particular transform is appropriate for a given bike setup.
+This section can help users understand why a particular transform is
+appropriate for a given bike setup. It may also record stable physical
+installation details that belong to the bike/setup rather than to any one log.
+
+Logger-facing details such as channel assignments, CSV bindings, source-side
+calibration ownership, or firmware/logger-specific sensor identifiers should be
+carried in log metadata `sensors`, not here.
 
 ## 10. Validation Rules
 
@@ -374,6 +451,8 @@ A bike profile is structurally valid if:
 ## 11. Relationship To Other Artifacts
 
 - Log metadata MAY include `bike_profile_id` as a hint.
+- Log metadata `sensors` is the authoritative place for source-side sensor
+  identity, calibration, and channel-binding metadata.
 - A preprocess profile MAY reference a bike profile by path or id.
 - The bike profile does not replace log metadata; it complements it.
 - The bike profile should be treated as analysis configuration, not firmware configuration.

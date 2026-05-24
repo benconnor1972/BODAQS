@@ -13,33 +13,23 @@ import Lightbox from '@components/Lightbox.astro';
 **syn.bike** have a very nice [website](https://data.syn.bike) that can be used to visualize BODAQS data. If you don't have an appetite for Jupyter Lab notebooks, this is a great way to view your logs.
 </Lede>
 
-## Change your logger settings
-<Flag src="/src/assets/pics/logformat.png" alt="logformat">
-On the logger menu, navigate to `log format` and select `syn.bike raw` (this can also be done via the logger's web UI). 
 
-Now go log some data!
+<Aside type="note" title="BODAQS Import Manager recommended">
+<Flag src="/src/assets/pics/use-import-manager.png" alt="use the import manager">
 
+We recommend you process your files with the BODAQS Import Manager, with the 'syn.bike export' option checked, prior to upload to data.syn.bike. 
 </Flag>
+</Aside>
 
+## Start synDAQ_server.exe
+Navigate to the local executable you downloaded from data.syn.bike. Double-click the executable to run it. A terminal window should openAs you use data.syn.bike this terminal window will report what it is doing (if you're interested).
 
-## Configuring data.syn.bike
-<Flag src="/src/assets/pics/synserver.png" alt="synserver">
-[data.syn.bike](https://data.syn.bike/) uses a small local executable to process log files. Download it from the 'settings' tab and place it in a suitable directory.
+## Checking the configuration of  data.syn.bike
+Navigate to [data.syn.bike](http://data.syn.bike) in your web browser. Check the `device' and `settings` tabs and ensure the settings are correct. See [setting up data.syn.bike](/software-guide/setup-syn-bike/).
 
-Double-click the executable to run it - a terminal window should open and the website will give you a message to show that the processing server is connected. As you use data.syn.bike this terminal window will report what it is doing (if you're interested).
-
-Whenever you use data.syn.bike you will need to have it running
-</Flag>
-<Flag src="/src/assets/pics/synsetup.png" alt="synsetup">
-Next, go to the 'settings' tab and ensure the following settings are correct:
-- Front and rear sensor travels: These should be the full-range travel figures for your sensors, *not* your bike's suspension travel.
-- Log frequency: This should match the sample rate at which you collected your data.
-- Analog resolution: leave this at 12 bits.
-- Wheel diameter and number of speed sensor magnets: Not used. You can ignore these.
-- Invert analog data: ordinarily leave set to 'off'. If you have wired your sensors so their output is inverted, switch it.
-- Position lowpass filter and zero crossing noise threshold: Leave these at their default values.
-- Processing server location: set to `http://127.0.0.1:5079`
-</Flag>
+<Aside type="note" title="Helper files">
+If you processed your files with the BODAQS Import Manager, each run has a small 'helper' text file to show you the correct settings.
+</Aside>
 
 
 ## Upload and examine your files

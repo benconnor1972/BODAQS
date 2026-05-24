@@ -1,0 +1,286 @@
+---
+title: Setting up the BODAQS Import Manager
+description: The shortest path from a logger session archive to processed BODAQS library outputs.
+sidebar:
+  order: 1
+---
+
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+import Flag from '@components/Flag.astro';
+import Lightbox from '@components/Lightbox.astro';
+
+<Lede>
+  BODAQS Import Manager is the desktop app for getting logger sessions into a
+  local BODAQS library without running Python or opening notebooks. It can watch
+  folders, download from Wi-Fi loggers, run preprocessing, and write processed
+  sessions into a library directory.
+</Lede>
+
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/import-manager.png" alt="import manager"/>
+
+To set up the BODAQS Import Manager you will need to:
+
+- Download and install the BODAQS Import Manager on your computer.
+- Use the Import Manager to set up a data source and a library.
+- Edit the bike profile to suit your bike.
+
+That's it.
+
+<Aside type="tip" title="Current platform">
+  The packaged app is currently Windows-first. The workflow is designed to be
+  portable, and macOS packaging is planned separately.
+</Aside>
+
+### Download and install the BODAQS Import Manager
+
+ <Flag src="/src/assets/pics/import-mgr-install.png" alt="install import manager">
+Most users should download the latest BODAQS Import Manager installer release to their computer as a `.exe` file and then run it.
+
+Go to the 'releases' page in the BODAQS github repository [here](https://github.com/benconnor1972/BODAQS/releases) and download the latest version of the BODAQS Import Manager executable.
+
+Run the executable and follow the prompts. Launch the Import Manager when prompted to do so.
+
+</Flag>
+
+
+### Set up a data source and library
+ <Flag src="/src/assets/pics/import-mgr-provisioning.png" alt="provision import manager">
+
+<Steps>
+  1. Choose a **Libraries root** and **Sources root**. These are the root directories for libraries and one for local-folder data sources. If you don't like the defaults you can specify other directories.
+  2. Enter a **Library name** and **Source name**. If you intend to have multiple source folders and/or libraries, change the library name and source name to something that describes its intended use.
+  3. Choose whether the library should generate data.syn.bike exports. If you are intending to use data.syn.bike to view your logs, then check this box. 
+  4. Choose a **Source type**. When you are first setting up the Import Manager, it is recommended you create a single source of type `local archive folder`. More information on Import Manager provisioning, including adding WiFi Sources, can be found [here](/user-guide/import-manager-user-guide/)
+  5. Choose the target library for the source. Files from the source will be processed into the target library. For initial setup, your one Source should be targeted at your one Library.
+  6. Choose whether the source should attach a draft setup note on import. If you want to automatically add bike setup notes from a template (see below) to your imported files, then check the box.
+  7. Select **Create initial setup**.
+</Steps>
+</Flag>
+
+
+
+
+
+<Aside type="note" title="Multiple sources, multiple libraries">
+The Import Manager supports multiple sources and source types. Those features can be used to direct log data for different bikes or riders into different libraries or to have them pre-processed with different bike data, setup notes or processing settings. 
+</Aside>
+
+The manager creates a source folder and a library folder. A typical source
+folder looks like this:
+
+```text
+<source>/
+  import_source.json
+  bike/
+  settings/
+  notes/
+  fit/
+  inbox/
+  done/
+  failed/
+  staging/
+```
+
+Processed session artifacts are written under the target library:
+
+```text
+<library>/
+  runs/
+  library/
+  syn/
+  library_definition.json
+```
+
+The most important folder is `runs/`. Each import creates a run folder with one
+or more processed sessions inside it.
+
+### Editing the bike profile
+
+The Import Manager needs to know some information about your bike to run pre-processing correctly. That information lives in a .json file inside the `<source>/bike` directory.
+
+You will need to edit this file with a text editor. You can change the name of the file to something more descriptive (e.g. `Stumpjumper Evo 2022.json`) but you can have only *one file* in this directory.
+
+#### Bike details
+ <Flag src="/src/assets/pics/bike-profile-bike-details.png" alt="bike profile bike details">
+This block contains basic descriptive information about the bike.
+</Flag>
+#### Normalization ranges
+ <Flag src="/src/assets/pics/bike-profile-norm-ranges.png" alt="bike profile normalization ranges">
+This block contains the full travel ranges of the fork, shock and rear wheel. Edit them to suit your bike.
+</Flag>
+
+#### Suspension curve data
+This block contains information on how to calculate wheel travel from suspension travel (AKA the 'suspension curve' or 'leverage curve'). Generally you will need this information for **both ends** because by convention wheel travel is measured vertically and although the fork moves in a straight line, it does not move vertically with respect to the bike due to the steering head angle.
+
+The suspension curves can be expressed either as a **look-up table** (LUT) or as a polynomial. It is generally easiest to express the rear suspension curve as a LUT and the front as a polynomial.
+
+For the front, the block should look like this:
+```
+{
+  "id": "fork_to_wheel_vertical",
+  "description": "Front wheel vertical travel from fork travel - linear.",
+  "enabled": true,
+  "input": {
+    "end": "front",
+    "quantity": "disp",
+    "domain": "suspension",
+    "unit": "mm"
+  },
+  "output": {
+    "end": "front",
+    "quantity": "disp",
+    "domain": "wheel",
+    "unit": "mm"
+  },
+  "method": "polynomial",
+  "polynomial": {
+    "coefficient_order": "ascending",
+    "coefficients": [0.0,0.8988 ]
+  }
+}
+```
+
+The value 0.8988 is the **sine of the steering head angle**. You should change it according to the steering head angle of your bike. Values for common steering head angles are:
+- 66.0 degrees: 0.9135
+- 65.0 degrees: 0.9063
+- 64.0 degrees: 0.8988
+- 63.0 degrees: 0.8910
+- 62.0 degrees: 0.8829
+
+For the rear, the block should look something like this:
+
+```
+    {
+      "description": "Example LUT converting rear shock travel to rear wheel travel.",
+      "enabled": true,
+      "extrapolation": "linear",
+      "interpolation": "linear",
+	  "id": "rear_shock_to_rear_wheel_travel",
+      "extrapolation": "linear",
+      "interpolation": "linear",
+      "input": {
+        "domain": "suspension",
+        "end": "rear",
+        "quantity": "disp",
+        "unit": "mm"
+      },
+	  "output": {
+        "domain": "wheel",
+        "end": "rear",
+        "quantity": "disp",
+        "unit": "mm"
+      }
+      "method": "lut",
+	  "lut": [
+        {
+          "input": 0.0,
+          "output": 0.0
+        },
+        ...
+        {
+          "input": 55.0,
+          "output": 165.0
+        }
+      ],
+
+
+    }
+```
+
+The `LUT` block in the middle contains points on the curve of shock travel vs wheel travel. You can have as many points as you like (>=2) in the table (10 is sufficient). A full suspension curve would look something like this:
+
+```
+      "lut": [
+        {
+          "input": 0.0,
+          "output": 0.0
+        },
+        {
+          "input": 2.84,
+          "output": 10.0
+        },
+        {
+          "input": 5.75,
+          "output": 20.0
+        },
+        {
+          "input": 8.73,
+          "output": 30.0
+        },
+        {
+          "input": 11.77,
+          "output": 40.0
+        },
+        {
+          "input": 14.88,
+          "output": 50.0
+        },
+        {
+          "input": 18.05,
+          "output": 60.0
+        },
+        {
+          "input": 21.29,
+          "output": 70.0
+        },
+        {
+          "input": 24.59,
+          "output": 80.0
+        },
+        {
+          "input": 27.96,
+          "output": 90.0
+        },
+        {
+          "input": 31.38,
+          "output": 100.0
+        },
+        {
+          "input": 34.87,
+          "output": 110.0
+        },
+        {
+          "input": 38.41,
+          "output": 120.0
+        },
+        {
+          "input": 42.01,
+          "output": 130.0
+        },
+        {
+          "input": 45.66,
+          "output": 140.0
+        },
+        {
+          "input": 49.36,
+          "output": 150.0
+        },
+        {
+          "input": 53.1,
+          "output": 160.0
+        },
+        {
+          "input": 55.0,
+          "output": 165.0
+        }
+      ],
+```	  
+
+<Aside type="tip" title="Obtaining suspension curves">
+Some ways to get suspension curve data for your bike:
+- Google it. Someone else may have done the work.
+- Find your bike in the Linkage X3 library, if you or someone you know has access to Linkage X3 software, and read the values off the motion curve. (The hobby version of Linkage X3 is pretty inexpensive).
+- Find a manufacturer-published graph of the leverage curve and read values off the graph. You can also upload a picture to your favourite LLM and ask it to produce a LUT from the graph.
+- Measure your bike and calculate the curve yourself. Note: **not easy**.
+
+If nothing else, you can always just assume a linear relationship between shock and wheel travel: the LUT in your bike profile would have two points in it, much like the first example above. This isn't a great solution, but it's better than nothing.
+</Aside>
+
+#### Optional further setup
+
+Later, you might want to:
+ - Add more data sources, including WiFi connections to your logger. 
+ - Add a notes template so your logs will automatically have a draft settings note added to them at import.  
+
+Continue to the [BODAQS Import Manager user guide](/user-guide/import-manager-user-guide/).

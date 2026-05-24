@@ -147,13 +147,11 @@
   "installed_sensors": [
     {
       "sensor": "front_shock",
-      "logger_channel": "sensor0",
       "mount_location": "fork travel sensor",
       "notes": "Example only."
     },
     {
       "sensor": "rear_shock",
-      "logger_channel": "sensor1",
       "mount_location": "shock body travel sensor",
       "notes": "Example only."
     }

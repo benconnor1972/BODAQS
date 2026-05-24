@@ -49,6 +49,7 @@
       }
     },
     "installed_sensors": {
+      "description": "Optional informational bike/setup installation context only. Consumers should not use this for preprocessing decisions, semantic binding, calibration lookup, or logger-channel resolution; source-side sensor identity and calibration belong in log metadata.sensors.",
       "type": "array",
       "items": {
         "type": "object",
@@ -191,6 +192,7 @@
           ]
         },
         "interpolation": {
+          "description": "LUT transforms only. Ignored for polynomial transforms.",
           "type": "string",
           "enum": [
             "linear",
@@ -198,6 +200,7 @@
           ]
         },
         "extrapolation": {
+          "description": "LUT transforms only. Ignored for polynomial transforms.",
           "type": "string",
           "enum": [
             "clamp",
