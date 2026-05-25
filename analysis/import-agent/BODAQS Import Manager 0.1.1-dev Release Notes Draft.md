@@ -1,9 +1,9 @@
-# BODAQS Import Manager 0.1.0-dev Release Notes Draft
+# BODAQS Import Manager 0.1.1-dev Release Notes Draft
 
 Status: draft  
 Release date: TBD
 
-BODAQS Import Manager `0.1.0-dev` is the first packaged desktop build of the
+BODAQS Import Manager `0.1.1-dev` is the current packaged desktop build of the
 local BODAQS import workflow. It is designed to let users create local
 libraries, configure import sources, watch for completed logger sessions, run
 the existing BODAQS preprocessing pipeline, and write processed artifacts
@@ -73,7 +73,7 @@ have the same stem.
 The Windows installer output is named:
 
 ```text
-bodaqs-import-manager-setup-0.1.0-dev.exe
+bodaqs-import-manager-setup-0.1.1-dev.exe
 ```
 
 The installer includes:

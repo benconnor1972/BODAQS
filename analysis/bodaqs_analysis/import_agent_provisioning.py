@@ -115,6 +115,17 @@ def _write_source_session_note_attach_enabled(source_root: Path, *, enabled: boo
     _write_json(config_path, updated, overwrite=True)
 
 
+def _write_source_target_library(source_root: Path, *, library_id: str, artifacts_dir: Path) -> None:
+    config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    payload = _read_json(config_path, {})
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Import source config is not a JSON object: {config_path}")
+    updated = dict(payload)
+    updated["library_id"] = str(library_id).strip()
+    updated["artifacts_dir"] = str(artifacts_dir)
+    _write_json(config_path, updated, overwrite=True)
+
+
 def _optional_text(value: Any) -> Optional[str]:
     text = "" if value is None else str(value).strip()
     return text or None
@@ -737,6 +748,56 @@ def update_import_agent_source_session_note_attach_enabled(
         raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
 
     _write_source_session_note_attach_enabled(found.source_root, enabled=bool(enabled))
+    updated = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=config.libraries,
+        sources=updated_sources,
+        auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
+def update_import_agent_source_library(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+    library_id: str,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+    target_library = next((library for library in config.libraries if library.library_id == library_id), None)
+    if target_library is None:
+        raise ValueError(f"Unknown managed import-agent library_id: {library_id!r}")
+
+    updated_sources: list[ImportAgentManagedSourceConfig] = []
+    found: Optional[ImportAgentManagedSourceConfig] = None
+    for source in config.sources:
+        if source.source_id == source_id:
+            found = source
+            updated_sources.append(
+                ImportAgentManagedSourceConfig(
+                    source_id=source.source_id,
+                    display_name=source.display_name,
+                    source_root=source.source_root,
+                    library_id=target_library.library_id,
+                    source_type=source.source_type,
+                    enabled=source.enabled,
+                    attach_session_note_on_import=source.attach_session_note_on_import,
+                )
+            )
+        else:
+            updated_sources.append(source)
+
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+
+    _write_source_target_library(
+        found.source_root,
+        library_id=target_library.library_id,
+        artifacts_dir=target_library.artifacts_dir,
+    )
     updated = make_import_agent_app_config(
         sources_root=config.sources_root,
         libraries_root=config.libraries_root,

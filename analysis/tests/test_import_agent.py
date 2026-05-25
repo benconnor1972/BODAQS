@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 import zipfile
@@ -47,6 +48,24 @@ from bodaqs_analysis.import_agent_provisioning import (
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
+    update_import_agent_source_library,
+)
+from bodaqs_analysis.import_agent_profile_builders import (
+    apply_bike_profile_form_values,
+    build_session_note_template_from_field_ids,
+    copy_source_bike_profile,
+    copy_source_note_assets,
+    derive_profile_id,
+    front_head_angle_from_profile,
+    front_vertical_transform_from_profile,
+    load_session_note_field_catalog,
+    load_source_bike_profile,
+    load_source_session_note_template,
+    parse_lut_text,
+    rear_wheel_lut_from_profile,
+    save_source_bike_profile,
+    save_source_session_note_assets,
+    set_rear_wheel_lut_transform,
 )
 from bodaqs_analysis.preprocess_profile import (
     default_preprocess_config,
@@ -1344,6 +1363,201 @@ def test_update_import_agent_source_session_note_attach_updates_app_and_source_c
     assert updated.sources[0].attach_session_note_on_import is True
     assert reloaded.sources[0].attach_session_note_on_import is True
     assert source_payload["session_note"]["attach_on_import"] is True
+
+
+def test_update_import_agent_source_library_updates_app_and_source_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    _updated, second_library = provision_import_agent_library_for_app(
+        app_config_path,
+        display_name="Ben Library",
+    )
+
+    updated = update_import_agent_source_library(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        library_id=second_library.library_id,
+    )
+    source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
+    loaded_source = load_import_source_config(provisioned.source.source_root)
+
+    managed_source = next(source for source in updated.sources if source.source_id == provisioned.source.source_id)
+    assert managed_source.library_id == second_library.library_id
+    assert source_payload["library_id"] == second_library.library_id
+    assert Path(source_payload["artifacts_dir"]) == second_library.artifacts_dir
+    assert loaded_source.artifacts_dir == second_library.artifacts_dir
+
+
+def test_derive_profile_id_slugifies_and_suffixes_duplicates():
+    profile_id = derive_profile_id(
+        "Alice's Enduro / Wet Setup",
+        existing_ids=["alice-s-enduro-wet-setup", "alice-s-enduro-wet-setup-2"],
+    )
+
+    assert profile_id == "alice-s-enduro-wet-setup-3"
+
+
+def test_import_agent_bike_profile_builder_updates_basic_fields_and_lut(tmp_path):
+    library = provision_import_agent_library(tmp_path / "libraries", display_name="Alice Library")
+    source = provision_import_agent_source(
+        tmp_path / "sources" / "Alice Enduro",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice Enduro",
+    )
+    _profile_path, profile = load_source_bike_profile(source.source_root)
+
+    updated = apply_bike_profile_form_values(
+        profile,
+        {
+            "display_name": "Alice Enduro",
+            "manufacturer": "Specialized",
+            "model": "Stumpjumper Evo",
+            "front_fork_travel_mm": "160",
+            "front_head_angle_deg": "63.5",
+            "rear_shock_travel_mm": "55",
+            "rear_wheel_travel_mm": "150",
+        },
+    )
+    updated = set_rear_wheel_lut_transform(
+        updated,
+        parse_lut_text("0, 0\n10, 25\n55, 150\n"),
+        extrapolation="clamp",
+    )
+    save_source_bike_profile(source.source_root, updated)
+    _reloaded_path, reloaded = load_source_bike_profile(source.source_root)
+    transform = rear_wheel_lut_from_profile(reloaded)
+    front_transform = front_vertical_transform_from_profile(reloaded)
+
+    assert reloaded["bike_profile_id"] == "alice-enduro"
+    assert reloaded["bike"]["manufacturer"] == "Specialized"
+    assert "setup" not in reloaded
+    assert front_transform is not None
+    assert front_transform["method"] == "polynomial"
+    assert front_transform["polynomial"]["coefficients"][0] == 0.0
+    assert front_transform["polynomial"]["coefficients"][1] == pytest.approx(math.sin(math.radians(63.5)))
+    assert front_head_angle_from_profile(reloaded) == pytest.approx(63.5)
+    assert transform is not None
+    assert transform["extrapolation"] == "clamp"
+    assert transform["lut"][-1] == {"input": 55.0, "output": 150.0}
+
+
+def test_copy_source_bike_profile_writes_independent_target_file(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    first = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    _updated, second = provision_import_agent_source_for_app(
+        app_config_path,
+        library_id=first.library.library_id,
+        display_name="Ben DH",
+    )
+    _profile_path, first_profile = load_source_bike_profile(first.source.source_root)
+    first_profile = apply_bike_profile_form_values(
+        first_profile,
+        {
+            "bike_profile_id": "alice-bike",
+            "display_name": "Alice Bike",
+            "front_fork_travel_mm": "170",
+            "rear_shock_travel_mm": "65",
+            "rear_wheel_travel_mm": "160",
+        },
+    )
+    save_source_bike_profile(first.source.source_root, first_profile)
+
+    target_path = copy_source_bike_profile(first.source.source_root, second.source_root)
+    _target_profile_path, target_profile = load_source_bike_profile(second.source_root)
+
+    assert target_path.parent == second.bike_dir
+    assert target_profile["bike_profile_id"] == "alice-bike"
+    assert target_path != first.source.bike_profile_path
+
+
+def test_session_note_template_builder_and_copy_relinks_setup_preset_to_target_bike(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    first = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    _updated, second = provision_import_agent_source_for_app(
+        app_config_path,
+        library_id=first.library.library_id,
+        display_name="Ben DH",
+    )
+    _target_profile_path, target_profile = load_source_bike_profile(second.source_root)
+    target_profile = apply_bike_profile_form_values(
+        target_profile,
+        {
+            "bike_profile_id": "ben-bike",
+            "display_name": "Ben Bike",
+            "front_fork_travel_mm": "180",
+            "rear_shock_travel_mm": "75",
+            "rear_wheel_travel_mm": "200",
+        },
+    )
+    save_source_bike_profile(second.source_root, target_profile)
+
+    catalog = load_session_note_field_catalog()
+    template = build_session_note_template_from_field_ids(
+        field_ids=["bike", "rider", "rear_air_pressure_psi", "test_conditions"],
+        template_id="source_setup",
+        template_version="1.0",
+        title="Source setup",
+        catalog=catalog,
+    )
+    save_source_session_note_assets(first.source.source_root, template)
+    copy_source_note_assets(first.source.source_root, second.source_root)
+
+    _template_path, copied_template = load_source_session_note_template(second.source_root)
+    preset = json.loads(second.bike_setup_preset_path.read_text(encoding="utf-8"))
+    field_ids = [field["field_id"] for field in copied_template["fields"]]
+
+    assert field_ids == ["bike", "rider", "rear_air_pressure_psi", "test_conditions"]
+    assert preset["bike_profile_id"] == "ben-bike"
+    assert preset["values"]["bike"] == "Ben Bike"
+
+
+def test_import_agent_note_field_catalog_matches_master_session_note_template():
+    master = json.loads(Path("templates/session_note_templates/1.x.json").read_text(encoding="utf-8"))
+    catalog = load_session_note_field_catalog()
+
+    assert [field["field_id"] for field in catalog] == [field["field_id"] for field in master["fields"]]
+    assert catalog == master["fields"]
+
+
+def test_session_note_template_builder_applies_typed_default_values():
+    catalog = load_session_note_field_catalog()
+    template = build_session_note_template_from_field_ids(
+        field_ids=["setup_variant", "front_air_pressure_psi", "front_tokens", "test_conditions"],
+        template_id="source_setup",
+        title="Source setup",
+        field_defaults={
+            "setup_variant": "wet setup",
+            "front_air_pressure_psi": "82.5",
+            "front_tokens": "3",
+            "test_conditions": "Loose and dusty",
+        },
+        catalog=catalog,
+    )
+    fields = {field["field_id"]: field for field in template["fields"]}
+
+    assert fields["setup_variant"]["default"] == "wet setup"
+    assert fields["front_air_pressure_psi"]["default"] == 82.5
+    assert fields["front_tokens"]["default"] == 3
+    assert fields["test_conditions"]["default"] == "Loose and dusty"
 
 
 def test_remove_import_agent_source_only_updates_app_config(tmp_path):

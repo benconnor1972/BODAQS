@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import math
 import queue
 import sys
 import threading
@@ -14,6 +15,11 @@ from typing import Any, Callable, Optional, Sequence
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+try:
+    from tksheet import Sheet
+except Exception:  # pragma: no cover - dependency presence is checked in packaged builds.
+    Sheet = None
 
 from .import_agent import ImportAgentSupervisor, load_import_source_config, validate_import_sources
 from .import_agent_logger_wifi import LoggerWifiApiClient
@@ -36,8 +42,29 @@ from .import_agent_provisioning import (
     runtime_import_agent_app_config_path,
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
+    update_import_agent_source_library,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
+)
+from .import_agent_profile_builders import (
+    apply_bike_profile_form_values,
+    bike_profile_form_values,
+    build_session_note_template_from_field_ids,
+    copy_source_bike_profile,
+    copy_source_note_assets,
+    derive_profile_id,
+    format_lut_text,
+    load_session_note_field_catalog,
+    load_source_bike_setup_preset,
+    load_source_bike_profile,
+    load_source_session_note_template,
+    normalize_lut_points,
+    parse_lut_text,
+    rear_wheel_lut_from_profile,
+    save_source_bike_profile,
+    save_source_session_note_assets,
+    set_rear_wheel_lut_transform,
+    sync_source_bike_setup_preset,
 )
 from .import_agent_sources import (
     LOGGER_WIFI_CLEANUP_DELETE,
@@ -256,6 +283,15 @@ class ImportAgentManagerController:
             self.app_config_path,
             source_id=source_id,
             enabled=enabled,
+        )
+        self.app_config = updated
+        return updated
+
+    def set_source_library(self, source_id: str, library_id: str) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_library(
+            self.app_config_path,
+            source_id=source_id,
+            library_id=library_id,
         )
         self.app_config = updated
         return updated
@@ -578,6 +614,18 @@ class ImportAgentManagerWindow:
         )
         ttk.Button(actions, text="Open Logger Web UI", command=self._open_selected_logger_web_ui).grid(
             row=1, column=2, padx=(0, 8), pady=(8, 0)
+        )
+        ttk.Button(actions, text="Change Library", command=self._change_selected_source_library).grid(
+            row=2, column=0, padx=(0, 8), pady=(8, 0)
+        )
+        ttk.Button(actions, text="Edit Bike", command=self._edit_selected_bike_profile).grid(
+            row=2, column=1, padx=(0, 8), pady=(8, 0)
+        )
+        ttk.Button(actions, text="Copy Bike", command=self._copy_selected_bike_profile_from_source).grid(
+            row=2, column=2, padx=(0, 8), pady=(8, 0)
+        )
+        ttk.Button(actions, text="Copy Notes", command=self._copy_selected_note_template_from_source).grid(
+            row=2, column=3, pady=(8, 0)
         )
 
         logs = ttk.Frame(parent)
@@ -1181,6 +1229,14 @@ class ImportAgentManagerWindow:
         selection = self.sources_tree.selection()
         return str(selection[0]) if selection else None
 
+    def _select_source_in_manager(self, source_id: str) -> None:
+        if self.notebook is not None:
+            self.notebook.select(0)
+        if self.sources_tree is not None and self.sources_tree.exists(source_id):
+            self.sources_tree.selection_set(source_id)
+            self.sources_tree.focus(source_id)
+            self.sources_tree.see(source_id)
+
     def _selected_library_id(self) -> Optional[str]:
         if self.libraries_tree is None:
             return None
@@ -1207,6 +1263,698 @@ class ImportAgentManagerWindow:
             if source.source_id == source_id:
                 return bool(getattr(source, "attach_session_note_on_import", False))
         raise ValueError(f"Unknown source: {source_id}")
+
+    def _managed_source_config(self, source_id: str) -> Any:
+        config = self.controller.require_config()
+        for source in config.sources:
+            if source.source_id == source_id:
+                return source
+        raise ValueError(f"Unknown source: {source_id}")
+
+    def _selected_managed_source_config(self) -> Any:
+        source_id = self._selected_source_id()
+        if source_id is None:
+            raise ValueError("Select a source first.")
+        return self._managed_source_config(source_id)
+
+    def _choose_library_id_dialog(self, *, current_library_id: str) -> Optional[str]:
+        config = self.controller.require_config()
+        choices = [f"{library.display_name} ({library.library_id})" for library in config.libraries]
+        choice_map = {f"{library.display_name} ({library.library_id})": library.library_id for library in config.libraries}
+        if not choices:
+            messagebox.showinfo(_APP_DISPLAY_NAME, "Create a library first.", parent=self.root)
+            return None
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Choose Library")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        selected = tk.StringVar()
+        for label, library_id in choice_map.items():
+            if library_id == current_library_id:
+                selected.set(label)
+                break
+        if not selected.get():
+            selected.set(choices[0])
+
+        ttk.Label(dialog, text="Choose the target library for this source.", justify="left").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(12, 6)
+        )
+        combo = ttk.Combobox(dialog, textvariable=selected, values=choices, state="readonly", width=56)
+        combo.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        result: dict[str, Optional[str]] = {"library_id": None}
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 12))
+
+        def accept() -> None:
+            result["library_id"] = choice_map.get(selected.get())
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Apply", command=accept).grid(row=0, column=1)
+        combo.focus_set()
+        self.root.wait_window(dialog)
+        return result["library_id"]
+
+    def _choose_source_dialog(self, *, title: str, exclude_source_id: Optional[str] = None) -> Optional[Any]:
+        config = self.controller.require_config()
+        sources = [source for source in config.sources if source.source_id != exclude_source_id]
+        if not sources:
+            messagebox.showinfo(_APP_DISPLAY_NAME, "No other source is available.", parent=self.root)
+            return None
+        choices = [f"{source.display_name} ({source.source_id})" for source in sources]
+        choice_map = {f"{source.display_name} ({source.source_id})": source for source in sources}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        selected = tk.StringVar(value=choices[0])
+        ttk.Label(dialog, text="Choose the source to copy from.", justify="left").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(12, 6)
+        )
+        combo = ttk.Combobox(dialog, textvariable=selected, values=choices, state="readonly", width=56)
+        combo.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        result: dict[str, Any] = {"source": None}
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 12))
+
+        def accept() -> None:
+            result["source"] = choice_map.get(selected.get())
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Copy", command=accept).grid(row=0, column=1)
+        combo.focus_set()
+        self.root.wait_window(dialog)
+        return result["source"]
+
+    def _change_selected_source_library(self) -> None:
+        if not self._guard_watch_inactive(action_label="Change Source Library"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            target_library_id = self._choose_library_id_dialog(current_library_id=source.library_id)
+            if target_library_id is None or target_library_id == source.library_id:
+                return
+            self.controller.set_source_library(source.source_id, target_library_id)
+        except Exception as exc:
+            self._set_manager_status(f"Change source library failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.sources_tree is not None and self.sources_tree.exists(source.source_id):
+            self.sources_tree.selection_set(source.source_id)
+        self._set_manager_status(f"Source '{source.source_id}' now targets library '{target_library_id}'.")
+
+    def _edit_selected_bike_profile(self) -> None:
+        if not self._guard_watch_inactive(action_label="Edit Bike Profile"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            _profile_path, profile = load_source_bike_profile(source.source_root)
+            form_values = bike_profile_form_values(profile)
+            transform = rear_wheel_lut_from_profile(profile)
+            if transform is None:
+                shock_travel = float(form_values.get("rear_shock_travel_mm") or 1.0)
+                wheel_travel = float(form_values.get("rear_wheel_travel_mm") or shock_travel)
+                lut_rows = [{"input": 0.0, "output": 0.0}, {"input": shock_travel, "output": wheel_travel}]
+                lut_options = {"enabled": True, "interpolation": "linear", "extrapolation": "linear"}
+            else:
+                lut_rows = normalize_lut_points(transform.get("lut", []))
+                lut_options = {
+                    "enabled": bool(transform.get("enabled", True)),
+                    "interpolation": str(transform.get("interpolation", "linear")),
+                    "extrapolation": str(transform.get("extrapolation", "linear")),
+                }
+        except Exception as exc:
+            self._set_manager_status(f"Open bike profile failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        if Sheet is None:
+            messagebox.showerror(
+                _APP_DISPLAY_NAME,
+                "The editable LUT table requires the 'tksheet' package. Install requirements and restart the manager.",
+                parent=self.root,
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Edit Bike Profile - {source.display_name}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+
+        profile_state: dict[str, dict[str, Any]] = {"profile": profile}
+
+        field_defs = [
+            ("Display name", "display_name"),
+            ("Description", "description"),
+            ("Manufacturer", "manufacturer"),
+            ("Model", "model"),
+            ("Model year", "model_year"),
+            ("Wheel size", "wheel_size"),
+            ("Bike notes", "bike_notes"),
+            ("Front fork travel (mm)", "front_fork_travel_mm"),
+            ("Steering head angle (deg)", "front_head_angle_deg"),
+            ("Rear shock travel (mm)", "rear_shock_travel_mm"),
+            ("Rear wheel travel (mm)", "rear_wheel_travel_mm"),
+        ]
+        variables: dict[str, tk.StringVar] = {}
+
+        form = ttk.Frame(dialog, padding=(12, 12, 12, 4))
+        form.grid(row=0, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+        for row, (label, key) in enumerate(field_defs):
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+            var = tk.StringVar(value=str(form_values.get(key, "")))
+            variables[key] = var
+            ttk.Entry(form, textvariable=var).grid(row=row, column=1, sticky="ew", pady=3)
+
+        def current_note_profile_label() -> str:
+            try:
+                _note_path, note_template = load_source_session_note_template(source.source_root)
+            except Exception as exc:
+                return f"Unavailable: {exc}"
+            return str(
+                note_template.get("title")
+                or note_template.get("template_id")
+                or "Source bike setup"
+            )
+
+        note_row = len(field_defs)
+        note_name_var = tk.StringVar(value=current_note_profile_label())
+        ttk.Label(form, text="Note profile").grid(row=note_row, column=0, sticky="w", padx=(0, 8), pady=(8, 3))
+        note_frame = ttk.Frame(form)
+        note_frame.grid(row=note_row, column=1, sticky="ew", pady=(8, 3))
+        note_frame.columnconfigure(0, weight=1)
+        ttk.Entry(note_frame, textvariable=note_name_var, state="readonly").grid(row=0, column=0, sticky="ew")
+
+        lut_frame = ttk.LabelFrame(dialog, text="Rear Wheel LUT", padding=8)
+        lut_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 0))
+        lut_frame.columnconfigure(0, weight=1)
+        lut_frame.rowconfigure(1, weight=1)
+        ttk.Label(
+            lut_frame,
+            text="Map rear shock travel to rear wheel travel. Select a row to edit it, or insert a new row before the selection.",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        table_frame = ttk.Frame(lut_frame)
+        table_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        lut_sheet = Sheet(
+            table_frame,
+            headers=["Shock mm", "Wheel mm"],
+            data=[[f"{point['input']:g}", f"{point['output']:g}"] for point in lut_rows],
+            width=300,
+            height=210,
+            show_row_index=True,
+            show_header=True,
+            show_x_scrollbar=False,
+            show_y_scrollbar=True,
+            default_column_width=120,
+        )
+        lut_sheet.grid(row=0, column=0, sticky="nsew")
+        lut_sheet.enable_bindings(
+            "single_select",
+            "row_select",
+            "drag_select",
+            "column_width_resize",
+            "row_height_resize",
+            "arrowkeys",
+            "right_click_popup_menu",
+            "rc_select",
+            "copy",
+            "cut",
+            "paste",
+            "delete",
+            "undo",
+            "edit_cell",
+        )
+
+        graph_canvas = tk.Canvas(lut_frame, width=280, height=180, bg="white", highlightthickness=1)
+        graph_canvas.grid(row=1, column=1, sticky="ne")
+
+        edit_frame = ttk.Frame(lut_frame)
+        edit_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        edit_frame.columnconfigure(2, weight=1)
+
+        def _format_lut_value(value: Any) -> str:
+            try:
+                return f"{float(value):g}"
+            except (TypeError, ValueError):
+                return str(value)
+
+        def selected_lut_index() -> Optional[int]:
+            rows = sorted(lut_sheet.get_selected_rows())
+            if rows:
+                return int(rows[0])
+            selected = lut_sheet.get_currently_selected()
+            row = getattr(selected, "row", None)
+            return int(row) if isinstance(row, int) and row >= 0 else None
+
+        def current_lut_rows() -> list[dict[str, float]]:
+            rows: list[dict[str, float]] = []
+            for row_number, raw_row in enumerate(lut_sheet.get_sheet_data(), start=1):
+                if len(raw_row) < 2:
+                    raise ValueError(f"LUT row {row_number} must contain shock and wheel values")
+                if str(raw_row[0]).strip() == "" and str(raw_row[1]).strip() == "":
+                    continue
+                try:
+                    point = {"input": float(raw_row[0]), "output": float(raw_row[1])}
+                except (TypeError, ValueError):
+                    raise ValueError(f"LUT row {row_number} values must be numeric") from None
+                if not all(math.isfinite(value) for value in point.values()):
+                    raise ValueError(f"LUT row {row_number} values must be finite")
+                rows.append(point)
+            return normalize_lut_points(rows)
+
+        def render_lut_graph() -> None:
+            graph_canvas.delete("all")
+            width = max(int(graph_canvas.winfo_width() or 280), 120)
+            height = max(int(graph_canvas.winfo_height() or 180), 100)
+            margin_left = 42
+            margin_bottom = 28
+            margin_top = 16
+            margin_right = 14
+            x0 = margin_left
+            y0 = height - margin_bottom
+            x1 = width - margin_right
+            y1 = margin_top
+            graph_canvas.create_line(x0, y0, x1, y0, fill="#777777")
+            graph_canvas.create_line(x0, y0, x0, y1, fill="#777777")
+            graph_canvas.create_text((x0 + x1) / 2, height - 9, text="Shock mm", fill="#555555", font=("TkDefaultFont", 8))
+            graph_canvas.create_text(14, (y0 + y1) / 2, text="Wheel", fill="#555555", font=("TkDefaultFont", 8), angle=90)
+            try:
+                points = current_lut_rows()
+            except Exception:
+                graph_canvas.create_text(
+                    (x0 + x1) / 2,
+                    (y0 + y1) / 2,
+                    text="LUT needs increasing numeric rows",
+                    fill="#9a4a00",
+                    font=("TkDefaultFont", 8),
+                )
+                return
+            xs = [point["input"] for point in points]
+            ys = [point["output"] for point in points]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            if max_x == min_x:
+                max_x = min_x + 1.0
+            if max_y == min_y:
+                max_y = min_y + 1.0
+
+            def scale(point: Mapping[str, float]) -> tuple[float, float]:
+                x = x0 + ((point["input"] - min_x) / (max_x - min_x)) * (x1 - x0)
+                y = y0 - ((point["output"] - min_y) / (max_y - min_y)) * (y0 - y1)
+                return x, y
+
+            coords: list[float] = []
+            for point in points:
+                x, y = scale(point)
+                coords.extend([x, y])
+                graph_canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill="#1f6f8b", outline="")
+            if len(coords) >= 4:
+                graph_canvas.create_line(*coords, fill="#1f6f8b", width=2)
+            graph_canvas.create_text(x0, y0 + 10, text=f"{min_x:g}", anchor="w", fill="#666666", font=("TkDefaultFont", 7))
+            graph_canvas.create_text(x1, y0 + 10, text=f"{max_x:g}", anchor="e", fill="#666666", font=("TkDefaultFont", 7))
+            graph_canvas.create_text(x0 - 4, y0, text=f"{min_y:g}", anchor="e", fill="#666666", font=("TkDefaultFont", 7))
+            graph_canvas.create_text(x0 - 4, y1, text=f"{max_y:g}", anchor="e", fill="#666666", font=("TkDefaultFont", 7))
+
+        def add_lut_row() -> None:
+            lut_sheet.insert_row(row=["", ""], idx=lut_sheet.get_total_rows(), undo=True, emit_event=True)
+            row = max(lut_sheet.get_total_rows() - 1, 0)
+            lut_sheet.select_cell(row, 0)
+            render_lut_graph()
+
+        def insert_lut_row() -> None:
+            index = selected_lut_index()
+            if index is None:
+                index = lut_sheet.get_total_rows()
+            lut_sheet.insert_row(row=["", ""], idx=index, undo=True, emit_event=True)
+            lut_sheet.select_cell(index, 0)
+            render_lut_graph()
+
+        def delete_lut_row() -> None:
+            index = selected_lut_index()
+            if index is None:
+                messagebox.showinfo(_APP_DISPLAY_NAME, "Select a LUT row to delete.", parent=dialog)
+                return
+            lut_sheet.delete_rows([index], undo=True, emit_event=True)
+            if lut_sheet.get_total_rows():
+                lut_sheet.select_cell(min(index, lut_sheet.get_total_rows() - 1), 0)
+            render_lut_graph()
+
+        ttk.Button(edit_frame, text="Add Row", command=add_lut_row).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Button(edit_frame, text="Insert Before Selected", command=insert_lut_row).grid(row=0, column=1, sticky="w", padx=(0, 6))
+        ttk.Button(edit_frame, text="Delete Selected Row", command=delete_lut_row).grid(row=0, column=2, sticky="w")
+        lut_sheet.extra_bindings("all_modified_events", lambda _event: render_lut_graph())
+        graph_canvas.bind("<Configure>", lambda _event: render_lut_graph())
+        if lut_rows:
+            lut_sheet.select_cell(0, 0)
+        render_lut_graph()
+
+        saved = {"ok": False}
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, sticky="e", padx=12, pady=(10, 12))
+
+        def save_profile() -> bool:
+            try:
+                values = {key: var.get() for key, var in variables.items()}
+                updated = apply_bike_profile_form_values(profile_state["profile"], values)
+                updated = set_rear_wheel_lut_transform(
+                    updated,
+                    current_lut_rows(),
+                    enabled=bool(lut_options["enabled"]),
+                    interpolation=str(lut_options["interpolation"]),
+                    extrapolation=str(lut_options["extrapolation"]),
+                )
+                save_source_bike_profile(source.source_root, updated)
+                sync_source_bike_setup_preset(source.source_root)
+            except Exception as exc:
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=dialog)
+                return False
+            profile_state["profile"] = updated
+            saved["ok"] = True
+            return True
+
+        def save_and_close() -> None:
+            if save_profile():
+                dialog.destroy()
+
+        def edit_note_profile() -> None:
+            if save_profile():
+                self._edit_selected_note_template(parent=dialog)
+                try:
+                    dialog.grab_set()
+                except Exception:
+                    pass
+                note_name_var.set(current_note_profile_label())
+
+        ttk.Button(note_frame, text="Edit Note Profile", command=edit_note_profile).grid(
+            row=0,
+            column=1,
+            sticky="e",
+            padx=(8, 0),
+        )
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Save", command=save_and_close).grid(row=0, column=1)
+        self.root.wait_window(dialog)
+        if saved["ok"]:
+            self._set_manager_status(f"Saved bike profile for source '{source.source_id}'.")
+
+    def _edit_selected_rear_lut(self) -> None:
+        if not self._guard_watch_inactive(action_label="Edit Rear LUT"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            _profile_path, profile = load_source_bike_profile(source.source_root)
+            transform = rear_wheel_lut_from_profile(profile)
+            if transform is None:
+                values = bike_profile_form_values(profile)
+                shock_travel = float(values.get("rear_shock_travel_mm") or 1.0)
+                wheel_travel = float(values.get("rear_wheel_travel_mm") or shock_travel)
+                points = [{"input": 0.0, "output": 0.0}, {"input": shock_travel, "output": wheel_travel}]
+                initial_text = format_lut_text(points)
+                interpolation = "linear"
+                extrapolation = "linear"
+                enabled = True
+            else:
+                initial_text = format_lut_text(transform.get("lut", []))
+                interpolation = str(transform.get("interpolation", "linear"))
+                extrapolation = str(transform.get("extrapolation", "linear"))
+                enabled = bool(transform.get("enabled", True))
+        except Exception as exc:
+            self._set_manager_status(f"Open rear LUT failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Edit Rear Wheel LUT - {source.display_name}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(2, weight=1)
+
+        ttk.Label(
+            dialog,
+            text="Enter one LUT point per line as: rear shock mm, rear wheel mm",
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+        options = ttk.Frame(dialog)
+        options.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        enabled_var = tk.BooleanVar(value=enabled)
+        interpolation_var = tk.StringVar(value=interpolation)
+        extrapolation_var = tk.StringVar(value=extrapolation)
+        ttk.Checkbutton(options, text="Enabled", variable=enabled_var).grid(row=0, column=0, sticky="w")
+        ttk.Label(options, text="Interpolation").grid(row=0, column=1, sticky="w", padx=(18, 6))
+        ttk.Combobox(
+            options,
+            textvariable=interpolation_var,
+            values=("linear", "nearest"),
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=2, sticky="w")
+        ttk.Label(options, text="Extrapolation").grid(row=0, column=3, sticky="w", padx=(18, 6))
+        ttk.Combobox(
+            options,
+            textvariable=extrapolation_var,
+            values=("linear", "clamp", "error"),
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=4, sticky="w")
+
+        text_frame = ttk.Frame(dialog)
+        text_frame.grid(row=2, column=0, sticky="nsew", padx=12)
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
+        lut_text = tk.Text(text_frame, height=18, width=56, wrap="none")
+        yscroll = ttk.Scrollbar(text_frame, orient="vertical", command=lut_text.yview)
+        lut_text.configure(yscrollcommand=yscroll.set)
+        lut_text.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        lut_text.insert("1.0", initial_text)
+
+        saved = {"ok": False}
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=3, column=0, sticky="e", padx=12, pady=(10, 12))
+
+        def save() -> None:
+            try:
+                points = parse_lut_text(lut_text.get("1.0", "end"))
+                updated = set_rear_wheel_lut_transform(
+                    profile,
+                    points,
+                    enabled=enabled_var.get(),
+                    interpolation=interpolation_var.get(),
+                    extrapolation=extrapolation_var.get(),
+                )
+                save_source_bike_profile(source.source_root, updated)
+            except Exception as exc:
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=dialog)
+                return
+            saved["ok"] = True
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Save", command=save).grid(row=0, column=1)
+        lut_text.focus_set()
+        self.root.wait_window(dialog)
+        if saved["ok"]:
+            self._set_manager_status(f"Saved rear-wheel LUT for source '{source.source_id}'.")
+
+    def _edit_selected_note_template(self, *, parent: Optional[tk.Misc] = None) -> bool:
+        parent_window = parent or self.root
+        if not self._guard_watch_inactive(action_label="Edit Note Template"):
+            return False
+        try:
+            source = self._selected_managed_source_config()
+            _template_path, template = load_source_session_note_template(source.source_root)
+            catalog = load_session_note_field_catalog()
+        except Exception as exc:
+            self._set_manager_status(f"Open note template failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=parent_window)
+            return False
+
+        current_ids = {
+            str(field.get("field_id"))
+            for field in template.get("fields", []) or []
+            if isinstance(field, dict) and field.get("field_id")
+        }
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Edit Note Template - {source.display_name}")
+        dialog.transient(parent_window)
+        dialog.grab_set()
+        dialog.columnconfigure(1, weight=1)
+        dialog.rowconfigure(3, weight=1)
+
+        title_var = tk.StringVar(value=str(template.get("title") or "Source bike setup"))
+        description_var = tk.StringVar(value=str(template.get("description") or ""))
+        allow_custom_var = tk.BooleanVar(value=bool(template.get("allow_custom_fields", True)))
+
+        rows = [
+            ("Title", title_var),
+            ("Description", description_var),
+        ]
+        for row, (label, var) in enumerate(rows):
+            ttk.Label(dialog, text=label).grid(row=row, column=0, sticky="w", padx=(12, 8), pady=3)
+            ttk.Entry(dialog, textvariable=var).grid(row=row, column=1, sticky="ew", padx=(0, 12), pady=3)
+        ttk.Checkbutton(dialog, text="Allow custom fields", variable=allow_custom_var).grid(
+            row=2, column=1, sticky="w", padx=(0, 12), pady=(4, 8)
+        )
+
+        fields_frame = ttk.LabelFrame(dialog, text="Fields", padding=6)
+        fields_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=12)
+        fields_frame.columnconfigure(0, weight=1)
+        fields_frame.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(fields_frame, height=280, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(fields_frame, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        def configure_inner(_event: tk.Event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def configure_canvas(event: tk.Event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        inner.bind("<Configure>", configure_inner)
+        canvas.bind("<Configure>", configure_canvas)
+
+        template_fields_by_id = {
+            str(field.get("field_id")): dict(field)
+            for field in template.get("fields", []) or []
+            if isinstance(field, dict) and field.get("field_id")
+        }
+        field_vars: dict[str, tk.BooleanVar] = {}
+        default_vars: dict[str, tk.StringVar] = {}
+        inner.columnconfigure(0, weight=1)
+        inner.columnconfigure(1, weight=1)
+        ttk.Label(inner, text="Include").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(inner, text="Default value").grid(row=0, column=1, sticky="w", padx=(12, 0), pady=(0, 4))
+        for row, field in enumerate(catalog, start=1):
+            field_id = str(field.get("field_id"))
+            label = str(field.get("label") or field_id)
+            section = str(field.get("section") or "General")
+            unit = field.get("unit")
+            suffix = f" [{unit}]" if unit else ""
+            var = tk.BooleanVar(value=field_id in current_ids)
+            field_vars[field_id] = var
+            selected_field = template_fields_by_id.get(field_id)
+            default_value = (
+                selected_field.get("default")
+                if isinstance(selected_field, dict) and "default" in selected_field
+                else field.get("default")
+            )
+            default_var = tk.StringVar(value="" if default_value is None else str(default_value))
+            default_vars[field_id] = default_var
+            ttk.Checkbutton(
+                inner,
+                text=f"{section}: {label}{suffix}",
+                variable=var,
+            ).grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Entry(inner, textvariable=default_var, width=24).grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                padx=(12, 0),
+                pady=2,
+            )
+
+        saved = {"ok": False}
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e", padx=12, pady=(10, 12))
+
+        def save() -> None:
+            try:
+                selected_field_ids = [field_id for field_id, var in field_vars.items() if var.get()]
+                template_id = str(template.get("template_id") or "").strip()
+                if template_id in {"", "import_agent_bike_setup", "source_bike_setup"}:
+                    template_id = derive_profile_id(title_var.get(), fallback="session-note-template")
+                updated_template = build_session_note_template_from_field_ids(
+                    field_ids=selected_field_ids,
+                    template_id=template_id,
+                    template_version=str(template.get("template_version") or "1.0"),
+                    title=title_var.get(),
+                    description=description_var.get(),
+                    allow_custom_fields=allow_custom_var.get(),
+                    field_defaults={field_id: var.get() for field_id, var in default_vars.items()},
+                    catalog=catalog,
+                )
+                preset_payload = None
+                try:
+                    _preset_path, existing_preset = load_source_bike_setup_preset(source.source_root)
+                    preset_payload = dict(existing_preset)
+                    preset_payload["values"] = {
+                        str(field.get("field_id")): field.get("default")
+                        for field in updated_template.get("fields", []) or []
+                        if isinstance(field, dict) and "default" in field and field.get("default") is not None
+                    }
+                except Exception:
+                    preset_payload = None
+                save_source_session_note_assets(source.source_root, updated_template, preset=preset_payload)
+            except Exception as exc:
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=dialog)
+                return
+            saved["ok"] = True
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Save", command=save).grid(row=0, column=1)
+        self.root.wait_window(dialog)
+        if saved["ok"]:
+            self._set_manager_status(f"Saved note template for source '{source.source_id}'.")
+        return saved["ok"]
+
+    def _copy_selected_bike_profile_from_source(self) -> None:
+        if not self._guard_watch_inactive(action_label="Copy Bike Profile"):
+            return
+        try:
+            target = self._selected_managed_source_config()
+            source = self._choose_source_dialog(title="Copy Bike Profile", exclude_source_id=target.source_id)
+            if source is None:
+                return
+            copy_source_bike_profile(source.source_root, target.source_root)
+            sync_source_bike_setup_preset(target.source_root)
+        except Exception as exc:
+            self._set_manager_status(f"Copy bike profile failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._set_manager_status(f"Copied bike profile from '{source.source_id}' to '{target.source_id}'.")
+
+    def _copy_selected_note_template_from_source(self) -> None:
+        if not self._guard_watch_inactive(action_label="Copy Note Template"):
+            return
+        try:
+            target = self._selected_managed_source_config()
+            source = self._choose_source_dialog(title="Copy Note Template", exclude_source_id=target.source_id)
+            if source is None:
+                return
+            copy_source_note_assets(source.source_root, target.source_root)
+        except Exception as exc:
+            self._set_manager_status(f"Copy note template failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._set_manager_status(f"Copied note template from '{source.source_id}' to '{target.source_id}'.")
+
+    def _offer_configure_source_after_creation(self, source_id: str) -> None:
+        self._select_source_in_manager(source_id)
+        if messagebox.askyesno(
+            _APP_DISPLAY_NAME,
+            "Open the bike-profile editor for this new source now? From there you can also edit the rear LUT and note template.",
+            parent=self.root,
+        ):
+            self._edit_selected_bike_profile()
 
     def _on_sources_tree_click(self, event: tk.Event) -> Optional[str]:
         if self.sources_tree is None:
@@ -1480,8 +2228,7 @@ class ImportAgentManagerWindow:
         self._set_provision_status(
             f"Created initial library '{result.library.display_name}' and source '{result.source.display_name}'."
         )
-        if self.notebook is not None:
-            self.notebook.select(0)
+        self._offer_configure_source_after_creation(result.source.source_id)
 
     def _add_library(self) -> None:
         if not self._guard_watch_inactive(action_label="Add Library"):
@@ -1530,6 +2277,7 @@ class ImportAgentManagerWindow:
 
         self._refresh_ui_from_config()
         self._set_provision_status(f"Added source '{source.display_name}'.")
+        self._offer_configure_source_after_creation(source.source_id)
 
     def _apply_app_settings(self) -> None:
         if not self.controller.has_config():

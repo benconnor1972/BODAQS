@@ -5,7 +5,7 @@ param(
     [ValidateSet("cli", "setup", "installer", "all")]
     [string]$Target = "cli",
     [string]$InnoSetupExe = "",
-    [string]$AppVersion = "0.1.0-dev"
+    [string]$AppVersion = "0.1.1-dev"
 )
 
 $ErrorActionPreference = "Stop"

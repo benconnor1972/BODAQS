@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.1.0-dev"
+  #define AppVersion "0.1.1-dev"
 #endif
 
 #ifndef StageRoot

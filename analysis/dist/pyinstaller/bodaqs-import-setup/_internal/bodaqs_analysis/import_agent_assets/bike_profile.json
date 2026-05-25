@@ -11,11 +11,6 @@
     "wheel_size": "29",
     "notes": "Illustrative values only; replace before real analysis."
   },
-  "setup": {
-    "setup_id": "default_suspension_setup",
-    "display_name": "Default suspension setup",
-    "notes": "Example setup for demonstrating bike-profile transforms."
-  },
   "normalization_ranges": [
     {
       "id": "front_fork_travel_range",
@@ -93,13 +88,11 @@
   "installed_sensors": [
     {
       "sensor": "front_shock",
-      "logger_channel": "sensor0",
       "mount_location": "fork travel sensor",
       "notes": "Example only."
     },
     {
       "sensor": "rear_shock",
-      "logger_channel": "sensor1",
       "mount_location": "shock body travel sensor",
       "notes": "Example only."
     }

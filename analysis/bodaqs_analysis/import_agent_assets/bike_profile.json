@@ -11,11 +11,6 @@
     "wheel_size": "29",
     "notes": "Illustrative values only; replace before real analysis."
   },
-  "setup": {
-    "setup_id": "default_suspension_setup",
-    "display_name": "Default suspension setup",
-    "notes": "Example setup for demonstrating bike-profile transforms."
-  },
   "normalization_ranges": [
     {
       "id": "front_fork_travel_range",
