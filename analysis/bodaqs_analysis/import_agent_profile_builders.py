@@ -282,28 +282,43 @@ def front_vertical_transform_from_profile(profile: Mapping[str, Any]) -> Optiona
 
 def front_head_angle_from_profile(profile: Mapping[str, Any]) -> Optional[float]:
     transform = front_vertical_transform_from_profile(profile)
-    if transform is None:
-        return None
-    metadata = transform.get("metadata")
-    if isinstance(metadata, Mapping) and metadata.get("head_angle_deg") is not None:
+    if transform is not None:
+        metadata = transform.get("metadata")
+        if isinstance(metadata, Mapping) and metadata.get("head_angle_deg") is not None:
+            try:
+                angle = float(metadata.get("head_angle_deg"))
+            except (TypeError, ValueError):
+                return None
+            return angle if math.isfinite(angle) else None
+        polynomial = transform.get("polynomial")
+        if not isinstance(polynomial, Mapping):
+            return None
+        coeffs = polynomial.get("coefficients")
+        if not isinstance(coeffs, Sequence) or isinstance(coeffs, (str, bytes, bytearray)) or len(coeffs) < 2:
+            return None
         try:
-            angle = float(metadata.get("head_angle_deg"))
+            coefficient = float(
+                coeffs[1] if polynomial.get("coefficient_order", "ascending") == "ascending" else coeffs[-2]
+            )
         except (TypeError, ValueError):
             return None
-        return angle if math.isfinite(angle) else None
-    polynomial = transform.get("polynomial")
-    if not isinstance(polynomial, Mapping):
+        if not math.isfinite(coefficient) or coefficient <= 0.0 or coefficient >= 1.0:
+            return None
+        return math.degrees(math.asin(coefficient))
+
+    bike = profile.get("bike")
+    if not isinstance(bike, Mapping):
         return None
-    coeffs = polynomial.get("coefficients")
-    if not isinstance(coeffs, Sequence) or isinstance(coeffs, (str, bytes, bytearray)) or len(coeffs) < 2:
-        return None
-    try:
-        coefficient = float(coeffs[1] if polynomial.get("coefficient_order", "ascending") == "ascending" else coeffs[-2])
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(coefficient) or coefficient <= 0.0 or coefficient >= 1.0:
-        return None
-    return math.degrees(math.asin(coefficient))
+    for key in ("steering_head_angle_deg", "front_head_angle_deg", "head_angle_deg"):
+        if bike.get(key) is None:
+            continue
+        try:
+            angle = float(bike.get(key))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(angle) and 0.0 < angle < 90.0:
+            return angle
+    return None
 
 
 def set_front_vertical_wheel_transform(profile: Mapping[str, Any], head_angle_deg: Any) -> dict[str, Any]:
@@ -414,6 +429,13 @@ def apply_bike_profile_form_values(
     ):
         if value_key in values:
             bike[bike_key] = str(values.get(value_key) or "")
+    if "front_head_angle_deg" in values:
+        angle = _coerce_optional_head_angle(values.get("front_head_angle_deg"))
+        if angle is None:
+            for key in ("steering_head_angle_deg", "front_head_angle_deg", "head_angle_deg"):
+                bike.pop(key, None)
+        else:
+            bike["steering_head_angle_deg"] = angle
     updated["bike"] = bike
 
     for key in _normalization_range_specs():
@@ -467,6 +489,46 @@ def normalize_lut_points(points: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         if current["input"] <= previous["input"]:
             raise ValueError("LUT input values must be strictly increasing")
     return normalized
+
+
+def normalize_rear_lut_with_endpoints(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    rear_shock_travel_mm: Any,
+    rear_wheel_travel_mm: Any,
+) -> list[dict[str, float]]:
+    shock_travel = _coerce_positive_float(rear_shock_travel_mm, field_name="rear_shock_travel_mm")
+    wheel_travel = _coerce_positive_float(rear_wheel_travel_mm, field_name="rear_wheel_travel_mm")
+    interiors: list[dict[str, float]] = []
+    for index, point in enumerate(points):
+        try:
+            x = float(point.get("input"))
+            y = float(point.get("output"))
+        except (TypeError, ValueError):
+            raise ValueError(f"LUT point {index + 1} must contain numeric input and output") from None
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError(f"LUT point {index + 1} must contain finite input and output")
+        if math.isclose(x, 0.0, rel_tol=0.0, abs_tol=1e-9) or math.isclose(
+            x,
+            shock_travel,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            continue
+        if x <= 0.0 or x >= shock_travel:
+            raise ValueError("LUT interior shock-travel values must be between 0 and rear shock travel")
+        interiors.append({"input": x, "output": y})
+
+    interiors.sort(key=lambda item: item["input"])
+    for previous, current in zip(interiors, interiors[1:]):
+        if math.isclose(current["input"], previous["input"], rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError("LUT interior shock-travel values must be unique")
+
+    return [
+        {"input": 0.0, "output": 0.0},
+        *interiors,
+        {"input": shock_travel, "output": wheel_travel},
+    ]
 
 
 def parse_lut_text(text: str) -> list[dict[str, float]]:
@@ -641,6 +703,66 @@ def build_session_note_template_from_field_ids(
     }
     validate_session_note_template(template)
     return template
+
+
+def derive_session_note_field_id(
+    display_name: str,
+    *,
+    existing_ids: Sequence[str] = (),
+    fallback: str = "custom_field",
+    max_length: int = 64,
+) -> str:
+    if max_length < 8:
+        raise ValueError("max_length must be at least 8")
+    base = re.sub(r"[^A-Za-z0-9]+", "_", str(display_name).strip()).strip("_").lower()
+    base = (base or fallback)[:max_length].strip("_") or fallback
+    used = {str(item) for item in existing_ids}
+    if base not in used:
+        return base
+    suffix = 2
+    while True:
+        suffix_text = f"_{suffix}"
+        candidate = (base[: max_length - len(suffix_text)].strip("_") or fallback) + suffix_text
+        if candidate not in used:
+            return candidate
+        suffix += 1
+
+
+def build_custom_session_note_field(
+    *,
+    field_name: str,
+    default_value: Any = "",
+    existing_ids: Sequence[str] = (),
+    section: str = "Custom",
+) -> dict[str, Any]:
+    label = _optional_text(field_name)
+    if label is None:
+        raise ValueError("Custom field name must be non-empty")
+    text_default = "" if default_value is None else str(default_value)
+    field_type = "text" if "\n" in text_default or len(text_default) > 80 else "string"
+    field = {
+        "field_id": derive_session_note_field_id(label, existing_ids=existing_ids),
+        "label": label,
+        "field_type": field_type,
+        "section": _optional_text(section) or "Custom",
+        "project_to_catalog": field_type == "string",
+        "sortable": field_type == "string",
+        "filterable": field_type == "string",
+    }
+    default = coerce_session_note_default_value(field, text_default)
+    if default is not None:
+        field["default"] = default
+    validate_session_note_template(
+        {
+            "schema": TEMPLATE_SCHEMA,
+            "version": TEMPLATE_VERSION,
+            "template_id": "custom_field_validation",
+            "template_version": "1.0",
+            "title": "Custom field validation",
+            "fields": [field],
+        }
+    )
+    return field
 
 
 def coerce_session_note_default_value(field: Mapping[str, Any], value: Any) -> Any:

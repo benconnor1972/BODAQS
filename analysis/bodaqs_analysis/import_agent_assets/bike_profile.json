@@ -9,6 +9,7 @@
     "model": "Enduro",
     "model_year": "2026",
     "wheel_size": "29",
+    "steering_head_angle_deg": 63.0,
     "notes": "Illustrative values only; replace before real analysis."
   },
   "normalization_ranges": [
@@ -30,7 +31,7 @@
         "domain": "suspension",
         "unit": "mm"
       },
-      "full_range": 65.0
+      "full_range": 55.0
     },
     {
       "id": "rear_wheel_travel_range",
@@ -40,7 +41,7 @@
         "domain": "wheel",
         "unit": "mm"
       },
-      "full_range": 150.0
+      "full_range": 165.0
     }
   ],
   "signal_transforms": [
@@ -65,36 +66,38 @@
       "extrapolation": "linear",
       "lut": [
         { "input": 0.0, "output": 0.0 },
-        { "input": 2.84, "output": 10.0 },
-        { "input": 5.75, "output": 20.0 },
-        { "input": 8.73, "output": 30.0 },
-        { "input": 11.77, "output": 40.0 },
-        { "input": 14.88, "output": 50.0 },
-        { "input": 18.05, "output": 60.0 },
-        { "input": 21.29, "output": 70.0 },
-        { "input": 24.59, "output": 80.0 },
-        { "input": 27.96, "output": 90.0 },
-        { "input": 31.38, "output": 100.0 },
-        { "input": 34.87, "output": 110.0 },
-        { "input": 38.41, "output": 120.0 },
-        { "input": 42.01, "output": 130.0 },
-        { "input": 45.66, "output": 140.0 },
-        { "input": 49.36, "output": 150.0 },
-        { "input": 53.1, "output": 160.0 },
         { "input": 55.0, "output": 165.0 }
       ]
-    }
-  ],
-  "installed_sensors": [
-    {
-      "sensor": "front_shock",
-      "mount_location": "fork travel sensor",
-      "notes": "Example only."
     },
     {
-      "sensor": "rear_shock",
-      "mount_location": "shock body travel sensor",
-      "notes": "Example only."
+      "description": "Front suspension travel converted to vertical front wheel travel from steering head angle.",
+      "enabled": true,
+      "id": "front_fork_to_front_vertical_wheel_travel",
+      "input": {
+        "domain": "suspension",
+        "end": "front",
+        "quantity": "disp",
+        "unit": "mm"
+      },
+      "metadata": {
+        "head_angle_deg": 63.0,
+        "linear_coefficient": 0.8910065241883678,
+        "source": "import_agent_head_angle"
+      },
+      "method": "polynomial",
+      "output": {
+        "domain": "wheel",
+        "end": "front",
+        "quantity": "disp",
+        "unit": "mm"
+      },
+      "polynomial": {
+        "coefficient_order": "ascending",
+        "coefficients": [
+          0.0,
+          0.8910065241883678
+        ]
+      }
     }
   ],
   "provenance": {

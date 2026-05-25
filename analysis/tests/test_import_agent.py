@@ -46,12 +46,16 @@ from bodaqs_analysis.import_agent_provisioning import (
     save_import_agent_app_config,
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
+    update_import_agent_library_display_name,
+    update_import_agent_source_display_name,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
     update_import_agent_source_library,
 )
 from bodaqs_analysis.import_agent_profile_builders import (
     apply_bike_profile_form_values,
+    bike_profile_form_values,
+    build_custom_session_note_field,
     build_session_note_template_from_field_ids,
     copy_source_bike_profile,
     copy_source_note_assets,
@@ -61,6 +65,7 @@ from bodaqs_analysis.import_agent_profile_builders import (
     load_session_note_field_catalog,
     load_source_bike_profile,
     load_source_session_note_template,
+    normalize_rear_lut_with_endpoints,
     parse_lut_text,
     rear_wheel_lut_from_profile,
     save_source_bike_profile,
@@ -1394,6 +1399,40 @@ def test_update_import_agent_source_library_updates_app_and_source_config(tmp_pa
     assert loaded_source.artifacts_dir == second_library.artifacts_dir
 
 
+def test_update_import_agent_display_names_do_not_change_ids_or_paths(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    renamed_library_config = update_import_agent_library_display_name(
+        app_config_path,
+        library_id=provisioned.library.library_id,
+        display_name="Race Library",
+    )
+    renamed_source_config = update_import_agent_source_display_name(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        display_name="Race Source",
+    )
+    reloaded = load_import_agent_app_config(app_config_path)
+    library_metadata = json.loads(provisioned.library.metadata_path.read_text(encoding="utf-8"))
+
+    assert renamed_library_config.libraries[0].library_id == provisioned.library.library_id
+    assert renamed_library_config.libraries[0].display_name == "Race Library"
+    assert renamed_library_config.libraries[0].artifacts_dir == provisioned.library.artifacts_dir
+    assert renamed_source_config.sources[0].source_id == provisioned.source.source_id
+    assert renamed_source_config.sources[0].display_name == "Race Source"
+    assert renamed_source_config.sources[0].source_root == provisioned.source.source_root
+    assert reloaded.libraries[0].display_name == "Race Library"
+    assert reloaded.sources[0].display_name == "Race Source"
+    assert library_metadata["display_name"] == "Race Library"
+
+
 def test_derive_profile_id_slugifies_and_suffixes_duplicates():
     profile_id = derive_profile_id(
         "Alice's Enduro / Wet Setup",
@@ -1437,6 +1476,7 @@ def test_import_agent_bike_profile_builder_updates_basic_fields_and_lut(tmp_path
 
     assert reloaded["bike_profile_id"] == "alice-enduro"
     assert reloaded["bike"]["manufacturer"] == "Specialized"
+    assert reloaded["bike"]["steering_head_angle_deg"] == pytest.approx(63.5)
     assert "setup" not in reloaded
     assert front_transform is not None
     assert front_transform["method"] == "polynomial"
@@ -1446,6 +1486,62 @@ def test_import_agent_bike_profile_builder_updates_basic_fields_and_lut(tmp_path
     assert transform is not None
     assert transform["extrapolation"] == "clamp"
     assert transform["lut"][-1] == {"input": 55.0, "output": 150.0}
+
+
+def test_import_agent_bike_profile_builder_reads_stored_head_angle(tmp_path):
+    library = provision_import_agent_library(tmp_path / "libraries", display_name="Alice Library")
+    source = provision_import_agent_source(
+        tmp_path / "sources" / "Alice Enduro",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice Enduro",
+    )
+    _profile_path, profile = load_source_bike_profile(source.source_root)
+    profile["signal_transforms"] = [
+        transform
+        for transform in profile.get("signal_transforms", [])
+        if transform.get("id") != "front_fork_to_front_vertical_wheel_travel"
+    ]
+    profile["bike"]["steering_head_angle_deg"] = 64.0
+
+    values = bike_profile_form_values(profile)
+    assert values["front_head_angle_deg"] == "64"
+
+    updated = apply_bike_profile_form_values(profile, values)
+    front_transform = front_vertical_transform_from_profile(updated)
+    assert front_transform is not None
+    assert front_transform["polynomial"]["coefficients"][1] == pytest.approx(math.sin(math.radians(64.0)))
+
+
+def test_normalize_rear_lut_with_endpoints_forces_travel_endpoints():
+    points = [
+        {"input": 0, "output": 123},
+        {"input": 55, "output": 999},
+        {"input": 30, "output": 90},
+        {"input": 10, "output": 25},
+    ]
+
+    normalized = normalize_rear_lut_with_endpoints(
+        points,
+        rear_shock_travel_mm=55,
+        rear_wheel_travel_mm=150,
+    )
+
+    assert normalized == [
+        {"input": 0.0, "output": 0.0},
+        {"input": 10.0, "output": 25.0},
+        {"input": 30.0, "output": 90.0},
+        {"input": 55.0, "output": 150.0},
+    ]
+
+
+def test_normalize_rear_lut_with_endpoints_rejects_out_of_range_interior_points():
+    with pytest.raises(ValueError, match="between 0 and rear shock travel"):
+        normalize_rear_lut_with_endpoints(
+            [{"input": 60, "output": 151}],
+            rear_shock_travel_mm=55,
+            rear_wheel_travel_mm=150,
+        )
 
 
 def test_copy_source_bike_profile_writes_independent_target_file(tmp_path):
@@ -1530,12 +1626,13 @@ def test_session_note_template_builder_and_copy_relinks_setup_preset_to_target_b
     assert preset["values"]["bike"] == "Ben Bike"
 
 
-def test_import_agent_note_field_catalog_matches_master_session_note_template():
-    master = json.loads(Path("templates/session_note_templates/1.x.json").read_text(encoding="utf-8"))
+def test_import_agent_note_field_catalog_is_valid_and_unique():
     catalog = load_session_note_field_catalog()
+    field_ids = [field["field_id"] for field in catalog]
 
-    assert [field["field_id"] for field in catalog] == [field["field_id"] for field in master["fields"]]
-    assert catalog == master["fields"]
+    assert catalog
+    assert len(field_ids) == len(set(field_ids))
+    assert "front_HBO" in field_ids
 
 
 def test_session_note_template_builder_applies_typed_default_values():
@@ -1558,6 +1655,20 @@ def test_session_note_template_builder_applies_typed_default_values():
     assert fields["front_air_pressure_psi"]["default"] == 82.5
     assert fields["front_tokens"]["default"] == 3
     assert fields["test_conditions"]["default"] == "Loose and dusty"
+
+
+def test_custom_session_note_field_builder_slugifies_and_defaults():
+    field = build_custom_session_note_field(
+        field_name="Shim Stack Notes",
+        default_value="Baseline tune",
+        existing_ids=["shim_stack_notes"],
+    )
+
+    assert field["field_id"] == "shim_stack_notes_2"
+    assert field["label"] == "Shim Stack Notes"
+    assert field["section"] == "Custom"
+    assert field["field_type"] == "string"
+    assert field["default"] == "Baseline tune"
 
 
 def test_remove_import_agent_source_only_updates_app_config(tmp_path):

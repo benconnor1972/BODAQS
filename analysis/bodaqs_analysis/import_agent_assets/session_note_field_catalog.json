@@ -53,16 +53,6 @@
                        "filterable":  true
                    },
                    {
-                       "field_id":  "linkage",
-                       "label":  "Linkage",
-                       "field_type":  "string",
-                       "section":  "Rear",
-                       "default":  "Stock",
-                       "project_to_catalog":  true,
-                       "sortable":  true,
-                       "filterable":  true
-                   },
-                   {
                        "field_id":  "front_air_pressure_psi",
                        "label":  "Pressure",
                        "field_type":  "float",
@@ -212,20 +202,20 @@
                    },
                    {
                        "field_id":  "front_sag_pct",
-                       "label":  "Sag %",
+                       "label":  "Front static sag",
                        "field_type":  "float",
                        "section":  "Front",
-                       "unit":  "%",
+                       "unit":  "mm",
                        "project_to_catalog":  true,
                        "sortable":  true,
                        "filterable":  true
                    },
                    {
                        "field_id":  "rear_sag_pct",
-                       "label":  "Sag %",
+                       "label":  "Rear static sag",
                        "field_type":  "float",
                        "section":  "Rear",
-                       "unit":  "%",
+                       "unit":  "mm",
                        "project_to_catalog":  true,
                        "sortable":  true,
                        "filterable":  true

@@ -99,6 +99,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "runtime_import_agent_app_config_path": (".import_agent_provisioning", "runtime_import_agent_app_config_path"),
     "apply_bike_profile_form_values": (".import_agent_profile_builders", "apply_bike_profile_form_values"),
     "bike_profile_form_values": (".import_agent_profile_builders", "bike_profile_form_values"),
+    "build_custom_session_note_field": (".import_agent_profile_builders", "build_custom_session_note_field"),
     "build_bike_profile_from_form": (".import_agent_profile_builders", "build_bike_profile_from_form"),
     "build_session_note_template_from_field_ids": (
         ".import_agent_profile_builders",
@@ -107,6 +108,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "copy_source_bike_profile": (".import_agent_profile_builders", "copy_source_bike_profile"),
     "copy_source_note_assets": (".import_agent_profile_builders", "copy_source_note_assets"),
     "derive_profile_id": (".import_agent_profile_builders", "derive_profile_id"),
+    "derive_session_note_field_id": (".import_agent_profile_builders", "derive_session_note_field_id"),
     "front_head_angle_from_profile": (".import_agent_profile_builders", "front_head_angle_from_profile"),
     "front_vertical_transform_from_profile": (
         ".import_agent_profile_builders",
@@ -114,6 +116,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     ),
     "load_session_note_field_catalog": (".import_agent_profile_builders", "load_session_note_field_catalog"),
     "normalize_lut_points": (".import_agent_profile_builders", "normalize_lut_points"),
+    "normalize_rear_lut_with_endpoints": (
+        ".import_agent_profile_builders",
+        "normalize_rear_lut_with_endpoints",
+    ),
     "parse_lut_text": (".import_agent_profile_builders", "parse_lut_text"),
     "rear_wheel_lut_from_profile": (".import_agent_profile_builders", "rear_wheel_lut_from_profile"),
     "set_front_vertical_wheel_transform": (

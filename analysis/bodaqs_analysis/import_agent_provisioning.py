@@ -872,6 +872,101 @@ def update_import_agent_library_data_syn_bike_export_enabled(
     return updated
 
 
+def update_import_agent_library_display_name(
+    app_config_path: str | Path,
+    *,
+    library_id: str,
+    display_name: str,
+) -> ImportAgentAppConfig:
+    new_display_name = _optional_text(display_name)
+    if new_display_name is None:
+        raise ValueError("display_name must be a non-empty string")
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+
+    updated_libraries: list[ImportAgentLibraryConfig] = []
+    found: Optional[ImportAgentLibraryConfig] = None
+    for library in config.libraries:
+        if library.library_id == library_id:
+            found = library
+            updated_libraries.append(
+                ImportAgentLibraryConfig(
+                    library_id=library.library_id,
+                    display_name=new_display_name,
+                    artifacts_dir=library.artifacts_dir,
+                    data_syn_bike_export_enabled=library.data_syn_bike_export_enabled,
+                )
+            )
+        else:
+            updated_libraries.append(library)
+
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent library_id: {library_id!r}")
+
+    metadata_path = found.artifacts_dir / "library_definition.json"
+    if metadata_path.exists():
+        metadata = _read_json(metadata_path, {})
+        if isinstance(metadata, Mapping):
+            updated_metadata = dict(metadata)
+            updated_metadata["display_name"] = new_display_name
+            _write_json(metadata_path, updated_metadata, overwrite=True)
+
+    updated = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=updated_libraries,
+        sources=config.sources,
+        auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
+def update_import_agent_source_display_name(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+    display_name: str,
+) -> ImportAgentAppConfig:
+    new_display_name = _optional_text(display_name)
+    if new_display_name is None:
+        raise ValueError("display_name must be a non-empty string")
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+
+    updated_sources: list[ImportAgentManagedSourceConfig] = []
+    found: Optional[ImportAgentManagedSourceConfig] = None
+    for source in config.sources:
+        if source.source_id == source_id:
+            found = source
+            updated_sources.append(
+                ImportAgentManagedSourceConfig(
+                    source_id=source.source_id,
+                    display_name=new_display_name,
+                    source_root=source.source_root,
+                    library_id=source.library_id,
+                    source_type=source.source_type,
+                    enabled=source.enabled,
+                    attach_session_note_on_import=source.attach_session_note_on_import,
+                )
+            )
+        else:
+            updated_sources.append(source)
+
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+
+    updated = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=config.libraries,
+        sources=updated_sources,
+        auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
 def remove_import_agent_source(
     app_config_path: str | Path,
     *,
