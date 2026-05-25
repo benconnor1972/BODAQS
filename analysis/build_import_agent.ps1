@@ -5,7 +5,7 @@ param(
     [ValidateSet("cli", "setup", "installer", "all")]
     [string]$Target = "cli",
     [string]$InnoSetupExe = "",
-    [string]$AppVersion = "0.1.0-dev"
+    [string]$AppVersion = "0.1.1-alpha"
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,7 +102,7 @@ $pyinstallerTargetsByName = @{
 $pyinstallerTargetNames = switch ($Target) {
     "cli" { @("cli") }
     "setup" { @("setup") }
-    "installer" { @("cli", "setup") }
+    "installer" { @("setup") }
     "all" { @("cli", "setup") }
 }
 $installerRequested = $Target -in @("installer", "all")
@@ -164,12 +164,9 @@ if ($installerRequested) {
         New-Item -ItemType Directory -Force -Path $installerOutputDir | Out-Null
     }
 
-    $cliStageDir = Join-Path $installerStageDir "cli"
     $managerStageDir = Join-Path $installerStageDir "manager"
-    New-Item -ItemType Directory -Force -Path $cliStageDir | Out-Null
     New-Item -ItemType Directory -Force -Path $managerStageDir | Out-Null
 
-    Copy-Item (Join-Path $distDir "bodaqs-import\*") $cliStageDir -Recurse -Force
     Copy-Item (Join-Path $distDir "bodaqs-import-setup\*") $managerStageDir -Recurse -Force
 
     Write-Host ""

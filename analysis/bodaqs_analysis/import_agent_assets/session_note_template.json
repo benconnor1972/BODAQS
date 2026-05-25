@@ -80,7 +80,7 @@
     },
     {
       "field_id": "front_sag_pct",
-      "label": "Front sag",
+      "label": "Front static sag",
       "field_type": "float",
       "section": "Front",
       "unit": "%",
@@ -90,7 +90,7 @@
     },
     {
       "field_id": "rear_sag_pct",
-      "label": "Rear sag",
+      "label": "Rear static sag",
       "field_type": "float",
       "section": "Rear",
       "unit": "%",

@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.1.0-dev"
+  #define AppVersion "0.1.1-alpha"
 #endif
 
 #ifndef StageRoot
@@ -14,7 +14,6 @@
 #define MyAppName "BODAQS Import Manager"
 #define MyAppPublisher "BODAQS"
 #define MyAppExeName "bodaqs-import-setup.exe"
-#define MyCliExeName "bodaqs-import.exe"
 
 [Setup]
 AppId={#MyAppId}
@@ -43,7 +42,6 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "{#StageRoot}\manager\*"; DestDir: "{app}\manager"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StageRoot}\cli\*"; DestDir: "{app}\cli"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\manager\{#MyAppExeName}"; Parameters: "--app-config-mode installed"; WorkingDir: "{app}\manager"

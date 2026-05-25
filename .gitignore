@@ -53,5 +53,11 @@ _autosave-*
 To do/~$To do list.xlsx
 *.lck
 analysis/exports/
+
+# Generated build and release package outputs
 analysis/build/
 analysis/dist/
+analysis/build-*/
+analysis/dist-*/
+analysis/packages/
+firmware/packages/
