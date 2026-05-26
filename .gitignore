@@ -29,7 +29,7 @@ analysis/tests/*
 !analysis/tests/test_logger_sidecar.py
 !analysis/tests/test_import_agent.py
 !analysis/tests/test_import_agent_logger_wifi.py
-analysis/documentation/old versions/*
+docs/analysis/old versions/*
 analysis/event schema/old versions/*
 firmware/libraries/*
 logs/*
@@ -60,4 +60,9 @@ analysis/dist/
 analysis/build-*/
 analysis/dist-*/
 analysis/packages/
+import-manager/build/
+import-manager/dist/
+import-manager/build-*/
+import-manager/dist-*/
+import-manager/packages/
 firmware/packages/

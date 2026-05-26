@@ -9,10 +9,16 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import bodaqs_analysis.import_agent_provisioning as provisioning_module
-import bodaqs_analysis.import_agent_single_instance as single_instance_module
-import bodaqs_analysis.import_agent_startup as import_agent_startup_module
-import bodaqs_analysis.import_agent_tray as import_agent_tray_module
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _package_root in (_REPO_ROOT / "analysis", _REPO_ROOT / "import-manager"):
+    _package_root_text = str(_package_root)
+    if _package_root_text not in sys.path:
+        sys.path.insert(0, _package_root_text)
+
+import bodaqs_import_manager.import_agent_provisioning as provisioning_module
+import bodaqs_import_manager.import_agent_single_instance as single_instance_module
+import bodaqs_import_manager.import_agent_startup as import_agent_startup_module
+import bodaqs_import_manager.import_agent_tray as import_agent_tray_module
 from bodaqs_analysis.exporters.data_syn_bike import (
     data_syn_bike_manual_settings,
     default_data_syn_bike_export_config,
@@ -30,7 +36,7 @@ from bodaqs_analysis.import_agent_sources import (
     SOURCE_TYPE_FILESYSTEM_ARCHIVE,
     SOURCE_TYPE_LOGGER_WIFI,
 )
-from bodaqs_analysis.import_agent_provisioning import (
+from bodaqs_import_manager.import_agent_provisioning import (
     ImportAgentLibraryConfig,
     ImportAgentManagedSourceConfig,
     default_import_agent_app_config_path,
@@ -54,7 +60,7 @@ from bodaqs_analysis.import_agent_provisioning import (
     update_import_agent_source_library,
     update_import_agent_source_logger_wifi,
 )
-from bodaqs_analysis.import_agent_profile_builders import (
+from bodaqs_import_manager.import_agent_profile_builders import (
     apply_bike_profile_form_values,
     bike_profile_form_values,
     build_custom_session_note_field,
@@ -1872,7 +1878,7 @@ def test_load_import_agent_tray_image_uses_packaged_asset():
 
 
 def test_import_agent_window_icon_asset_exists():
-    asset = files("bodaqs_analysis.import_agent_assets").joinpath("app_icon.png")
+    asset = files("bodaqs_import_manager.import_agent_assets").joinpath("app_icon.png")
     with asset.open("rb") as handle:
         payload = handle.read()
 
@@ -1880,7 +1886,7 @@ def test_import_agent_window_icon_asset_exists():
 
 
 def test_import_agent_window_icon_ico_asset_exists():
-    asset = files("bodaqs_analysis.import_agent_assets").joinpath("app_icon.ico")
+    asset = files("bodaqs_import_manager.import_agent_assets").joinpath("app_icon.ico")
     with asset.open("rb") as handle:
         payload = handle.read()
 

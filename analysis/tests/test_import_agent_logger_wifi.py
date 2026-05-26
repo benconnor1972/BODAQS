@@ -1,5 +1,6 @@
 import json
 import socket
+import sys
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +9,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _package_root in (_REPO_ROOT / "analysis", _REPO_ROOT / "import-manager"):
+    _package_root_text = str(_package_root)
+    if _package_root_text not in sys.path:
+        sys.path.insert(0, _package_root_text)
 
 import bodaqs_analysis.import_agent as import_agent_module
 import bodaqs_analysis.import_agent_logger_wifi_discovery as discovery_module
@@ -21,7 +28,7 @@ from bodaqs_analysis.import_agent_logger_wifi_discovery import (
     discover_single_logger_wifi_source,
     logger_wifi_discovery_result_from_service_info,
 )
-from bodaqs_analysis.import_agent_provisioning import (
+from bodaqs_import_manager.import_agent_provisioning import (
     provision_import_agent_library,
     provision_import_agent_source,
 )
