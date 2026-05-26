@@ -14,7 +14,7 @@ logger files, and running the local preprocessing workflow.
 
 Latest alpha:
 
-- [BODAQS Import Manager 0.1.2-alpha](https://github.com/benconnor1972/BODAQS/releases/tag/import-manager-0.1.2-alpha)
+- [BODAQS Import Manager 0.1.2-alpha](https://github.com/benconnor1972/BODAQS/releases/tag/import-manager-v0.1.2-alpha)
 
 ## Firmware
 
@@ -22,7 +22,7 @@ ESP32 logger firmware for BODAQS devices.
 
 Latest release:
 
-- [BODAQS Firmware 0.3.0](https://github.com/benconnor1972/BODAQS/releases/tag/firmware-0.3.0)
+- [BODAQS Firmware 0.3.0](https://github.com/benconnor1972/BODAQS/releases/tag/firmware-v0.3.0)
 
 ## Analysis Package
 
@@ -31,7 +31,7 @@ browsing, analysing, and exporting BODAQS data.
 
 Latest release:
 
-- [BODAQS Analysis Package 0.3.0](https://github.com/benconnor1972/BODAQS/releases/tag/analysis-0.3.0)
+- [BODAQS Analysis Package 0.3.0](https://github.com/benconnor1972/BODAQS/releases/tag/analysis-v0.3.0)
 
 ## Release Search Links
 
