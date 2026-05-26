@@ -29,30 +29,26 @@ import Lightbox from '@components/Lightbox.astro';
 ## Where the manager fits
 
 The manager sits between raw logger output and the tools you use for analysis.
-It can watch folders, download completed sessions from Wi-Fi loggers, run the
+It can watch folders, download completed sessions from loggers on WiFi, run the
 BODAQS preprocessing pipeline, and write the results into a local library.
 
 It does not require a cloud account, database server, phone app, or Python
 environment for normal use.
 
 <CardGrid>
-  <Card title="Logger session">
-    A completed ride or test recorded by the BODAQS logger. For local-folder
-    sources, this is normally a `.zip` archive containing matching logger data
-    and sidecar metadata files.
+  <Card title="Session">
+    A completed ride or test recorded by the BODAQS logger. Between the time you start logging and the time you stop, that's a session. The output of a session is normally a `.zip` archive containing logger data in a .csv file and
+     metadata in a .json file, written onto an SD card inside the logger.
   </Card>
   <Card title="Source">
-    One place sessions come from. A source can be a local archive folder or a
-    Wi-Fi logger. Each source has its own settings, bike profile, note template,
-    and target library.
+    A place the Import Manager looks to find sessions. A source can be a folder on your computer, or a
+    logger connected to the same WiFi network as your computer. Each source can have its own import settings, bike profile, notes template, and a target library into which processed sessions are written.
   </Card>
   <Card title="Library">
-    The destination for processed sessions. A library contains run artifacts,
-    session manifests, optional notes, and optional data.syn.bike exports.
+    A destination for processed sessions. A library contains processed run data and metadata, the original log files, optional notes, and optional files for export to data.syn.bike.
   </Card>
   <Card title="Import run">
-    A batch of work performed by the manager. Even a single imported session is
-    written into a run folder so the result has provenance and can be found
+    A batch of work performed by the manager. A run may involve processing one or many sessions. Details of the run are retained so the result has provenance and can be found
     again later.
   </Card>
 </CardGrid>
@@ -70,33 +66,39 @@ The Import Manager has two main areas:
 The setup guide walks through the first provisioning pass. In normal use, most
 of your time will be on the **Manager** tab.
 
-## Recommended daily workflow
+## Recommended workflow
 
 For a local archive folder source, the usual rhythm is:
 
 <Steps>
-  1. Record a session on the logger.
-  2. Export or copy the completed logger archive to the source `inbox/` folder.
-  3. Open the Import Manager.
-  4. Select **Import Now**, or start the watcher and leave the app running.
-  5. Check the status log for imported, deferred, or failed sessions.
-  6. Open the target library from Jupyter Lab, data.syn.bike, or another BODAQS
+  1. Record one or more sessions on the logger.
+  2. Open the import manager
+  3. Connect to the logger by WiFi 
+ </Steps>
+  
+#### Local archive source:
+<Steps>
+  4. In your browser, navigate to the logger and download the log files. 
+  5. Copy the files to the source `inbox/` folder.
+</Steps>
+
+#### WiFi logger source:
+<Steps>
+  4. Ensure your computer and the logger are connected to the same WiFi network. 
+  5. Right-click the source in the sources list and select `Request upload mode`
+</Steps>
+
+#### 
+<Steps>  
+  6. Select **Import Now**, or start the watcher and leave the app running.
+  7. Check the status log for imported, deferred, or failed sessions.
+  8. Open the target library from Jupyter Lab, data.syn.bike, or another BODAQS
      analysis tool.
 </Steps>
 
-For a Wi-Fi logger source, the rhythm is similar, except the manager downloads
-the completed session from the logger instead of reading a `.zip` file from
-`inbox/`.
-
-<Aside type="caution" title="Completed files only">
-  The manager expects complete sessions. Do not import a file that is still
-  being copied, and do not ask the manager to download from a logger that is
-  actively recording.
-</Aside>
-
 ## Folder layout
 
-By default, the app creates a local-first layout under your user folder:
+By default, the app creates a folder layout under your user folder:
 
 ```text
 BODAQS/
@@ -106,11 +108,11 @@ BODAQS/
     <source>/
 ```
 
-You can choose other root folders during setup. The important idea is that
-libraries and sources are separate:
+You can choose other root folders during setup. 
 
-- source folders hold inputs and per-source settings
-- library folders hold processed outputs
+<Aside type="tip" title="Using multiple computers?">
+  If you use more than one computer for data logging, you may want to set up your source and library roots on a cloud drive (OneDrive, Google Drive etc). You will still need to install the Import Manager on both computers but both versions will be able to access the same sources and libraries. 
+</Aside>
 
 ### Source folders
 
@@ -138,10 +140,16 @@ The manager owns the workflow folders:
 
 The source configuration folders are intended to be readable and editable:
 
-- `bike/` contains the source bike profile
-- `settings/` contains preprocessing and event-schema settings
-- `notes/` contains the optional session-note template and preset
-- `fit/` contains optional `.fit` files used for enrichment
+- `bike/` contains the source bike profile. This is editable via the Import Manager as well as by editing the file directly.
+- `settings/` contains preprocessing and event-schema settings. You should generally leave these unchanged.
+- `notes/` contains the optional session-note template and preset. These are editable via the Import Manager.
+- `fit/` contains optional `.fit` files used for enrichment. If you have `.fit` files from a Garmin device that you wish to obtain GPS data from, you should place them in this directory.
+
+<Aside type="note" title="Enriching log data from .fit files">
+  The BODAQS pre-processing pipeline can scan a collection of .fit files, find files whose time stamps overlap a session, and merge GPS data from the files. This is a quick-and-dirty way to get GPS data for analysis if the logger is not recording it directly. GPS data from Garmin devices is normally logged at 1Hz. It is better to use  dedicated GPS sensor logging at a higher rate if you have one.
+
+In the future we may support obtaining GPS data from Garmin Connect, subject to demand and technical feasibility.  
+</Aside>
 
 ### Library folders
 
@@ -163,18 +171,17 @@ other metadata. The `syn/` folder is used only when data.syn.bike export is
 enabled for that library.
 
 ## Manager tab
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/manager-tab.png" alt="Import Manager window"/>
 
-<Flag src="/src/assets/pics/import-manager.png" alt="Import Manager window">
 The **Manager** tab is the operational center of the app. It shows configured
 libraries and sources, exposes import actions, and writes a status log as work
 is performed.
-</Flag>
 
 ### Library list
 
 The library list shows the libraries managed by the app. Each library has a
 display name, an internal library ID, a folder path, and a **Syn Export**
-setting.
+checkbox.
 
 Use **Syn Export** when you want new imports into that library to produce
 data.syn.bike-compatible CSV outputs. The setting affects future imports. It
@@ -195,13 +202,14 @@ The source list shows the configured data sources. Important columns include:
 You can toggle **Enabled** and **Attach Note** directly in the source table.
 
 ### Source context menu
+<Flag src="/src/assets/pics/source-context-menu.png" alt="source context menu">
+Right-click a source to open actions for that source. Stop watch mode before editing source settings. The manager will also block
+some editing actions while the watcher is active. 
 
-Right-click a source to open actions for that source. Depending on the source
-type, the menu can include:
+</Flag>
+Depending on the source type, the menu can include:
 
-- edit the bike profile
-- edit the note profile
-- copy bike or note settings from another source
+- edit the bike and notes profiles
 - change the target library
 - view source details
 - edit Wi-Fi settings
@@ -209,9 +217,6 @@ type, the menu can include:
 - request logger upload mode
 - validate the source
 - rename or remove the source
-
-Stop watch mode before editing source settings. The manager will also block
-some editing actions while the watcher is active.
 
 ## Import Now and watch mode
 
@@ -221,8 +226,7 @@ some editing actions while the watcher is active.
     small number of files, or checking whether a failed setup has been fixed.
   </Card>
   <Card title="Start Watch">
-    Keeps the manager running and checks enabled sources repeatedly. Use this
-    once the source and library setup is stable.
+    Keeps the manager running and checks enabled sources repeatedly. Ideal in intensive use, for example when managing data acquisition for multiple riders concurrently.
   </Card>
 </CardGrid>
 
@@ -249,36 +253,30 @@ or quit the manager.
 </Aside>
 
 ## Adding libraries and sources
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/provision-tab.png" alt="provision tab"/>
 
-<Flag src="/src/assets/pics/import-mgr-provisioning.png" alt="Import Manager provisioning tab">
 Use the **Provision** tab when you need to add another destination library or
 another data source. You do not need to repeat the whole first-run setup.
-</Flag>
 
-Add another library when you want a separate destination for processed sessions.
-Common reasons include:
-
+Add another library when you want a separate destination for processed sessions, for example for:
 - a different rider
 - a different bike
 - a separate test program
-- a clean library for experiments
 
 Add another source when sessions arrive from a different place or need different
-settings. Common reasons include:
+settings, for example to manage:
 
 - another logger
 - another bike profile
-- another folder watched by the manager
-- different note defaults
-- a different target library
+- another way of getting data off the same logger
 
 Each source targets one library, but multiple sources can target the same
 library.
 
 ## Local archive folder sources
 
-Choose **Local archive folder** when completed sessions are copied into a
-folder as archives.
+Choose **Local archive folder** when you want to copy completed sessions  into a
+folder for processing.
 
 The import flow is:
 
@@ -297,7 +295,7 @@ inside the archive must describe the same session.
 
 ## Wi-Fi logger sources
 
-Choose **Wi-Fi logger** when the manager should talk directly to a BODAQS logger
+Choose **Wi-Fi logger** when you want the manager should talk directly to a BODAQS logger
 on the local network and download completed sessions.
 
 The logger must be:
@@ -342,7 +340,7 @@ and to see whether upload mode is active. Use **Request Upload Mode** if the
 logger is reachable but not yet accepting transfers.
 
 If the manager cannot put the logger into upload mode, use the logger controls
-directly, then return to the manager and check again.
+directly, then return to the manager and check again. Upload mode can be turned on in the logger menu, or by a long press of the `up` button from the home screen.
 
 ### Remote cleanup
 
@@ -358,20 +356,17 @@ library outputs are complete and the workflow is doing what you expect.
 
 ## Bike profiles
 
-<Flag src="/src/assets/pics/bike-profile-complete.png" alt="Completed bike profile editor">
-Each source has its own bike profile. This lets different bikes, riders, or
-test programs use different geometry and travel transformations while still
-importing into the same library if desired.
-</Flag>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/bike-profile-complete.png" alt="Completed bike profile editor"/>
+Each source has its own bike profile. If you have multiple sources for dta from the same bike, you can copy the source's bike profile from another source.
 
-The bike profile controls how logger signals are interpreted during
-preprocessing. It can include:
-
-- bike name and descriptive details
+The bike profile contains some general descriptive information but also controls how some logger signals are interpreted during
+preprocessing. The following are particularly important and should be entered accurately:
 - wheel travel and suspension travel values
-- front suspension geometry, including head angle
-- rear wheel travel lookup table
-- normalization ranges used by downstream analysis and exports
+- head angle
+- rear wheel travel lookup table (LUT)
+
+
+
 
 ### Rear wheel lookup table
 
@@ -379,13 +374,10 @@ The rear wheel lookup table maps rear suspension movement to rear wheel travel.
 At minimum, it needs a zero-travel point and a full-travel point. Additional
 points let the profile describe a non-linear suspension curve.
 
-The manager can edit the table in the bike profile editor. You can also copy a
-bike profile from another source if two sources use the same bike.
-
 ### Front suspension
 
-Fork movement is measured along the fork, but front wheel travel is usually
-treated as vertical wheel movement. The head angle lets the manager derive that
+Fork movement is measured along the fork, but by convention  wheel travel is usually
+taken to be vertical wheel movement. The head angle lets the manager derive that
 vertical component during preprocessing.
 
 ### Editing JSON directly
@@ -396,24 +388,11 @@ or experimental versions elsewhere.
 
 ## Note profiles and draft setup notes
 
-<Flag src="/src/assets/pics/edit-note-profile.png" alt="Edit note profile">
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/edit-note-profile.png" alt="Edit note profile"/>
 The note profile controls which setup-note fields are created for imported
 sessions and what default values they start with.
-</Flag>
 
-A source can attach a draft setup note to each imported session. This is useful
-for recording settings such as:
-
-- rider
-- bike
-- fork pressure and clicks
-- shock pressure and clicks
-- sag
-- tyres
-- trail or test conditions
-- comments
-
-Draft notes are intentionally marked as drafts. They are meant to be reviewed
+Automatically-generated notes are intentionally marked as drafts. They are meant to be reviewed
 and edited later, because the defaults may not exactly match the setup used for
 that session.
 
@@ -444,10 +423,9 @@ writes data.syn.bike-compatible outputs into:
 <library>/syn/
 ```
 
-<Flag src="/src/assets/pics/synoutputs.png" alt="data.syn.bike export outputs">
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/synoutputs.png" alt="data.syn.bike export outputs"/>
 The `syn/` folder contains exported CSV files, helper text files, and export
 metadata for sessions imported while export was enabled.
-</Flag>
 
 The helper text files show the settings to enter manually when uploading to
 data.syn.bike. This is useful because the export is shaped for data.syn.bike,
@@ -457,6 +435,7 @@ Old sessions are not backfilled automatically when you turn **Syn Export** on.
 Re-import or rebuild exports separately if you need outputs for earlier
 sessions.
 
+For more information, see [Analysis with syn.bike](/user-guide/analyzing-your-data-with-syn-bike/)
 ## Validation and status messages
 
 Use **Validate** after editing source files or adding a new source. Validation
