@@ -20,11 +20,23 @@ Top-level folders in this repo include:
   Contents of this folder are not expected to be edited when working on firmware or analysis tasks, except for documentation updates.
   Content should be added to `bodocs/src/content/` in MDX format and assets to `bodocs/src/assets/` when relevant.
 
+- `docs/`  
+  Formal project/reference documentation, including analysis contracts,
+  firmware notes, and cross-project interchange specifications. This is separate
+  from the published `bodocs/` site.
+
 - `firmware/`  
   ESP32 logger firmware (Arduino-style multi-file sketch folder: `.ino` + `.h/.cpp`).
+  Firmware reference docs live under `docs/firmware/`.
 
 - `analysis/`  
-  Python analysis tooling (package code, notebooks, docs).
+  Python analysis tooling (package code and notebooks). Analysis contracts and
+  reference docs live under `docs/analysis/`.
+
+- `import-manager/`  
+  BODAQS Import Manager desktop app, launchers, packaging/build scripts, and
+  app-specific docs/release/planning notes. Reusable import engine modules remain
+  under `analysis/bodaqs_analysis/`.
 
 - `hardware/`  
   Electronics design assets (schematics/PCB, etc.).

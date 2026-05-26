@@ -1,0 +1,129 @@
+# BODAQS Import Manager Windows Installer v1
+
+## Purpose
+
+Phase 5A packages the existing manager and CLI bundles into a Windows installer
+so the import manager can be installed like a normal desktop application.
+
+## What the Installer Includes
+
+- the windowed manager bundle at `manager/`
+- the CLI watcher bundle at `cli/`
+- a Start Menu shortcut to the manager
+- an optional desktop shortcut to the manager
+
+The CLI is installed as a support/debug tool but is not exposed with a Start
+Menu shortcut by default.
+
+## Wi-Fi Logger Source Support
+
+The Windows bundles include the Wi-Fi logger source modules used by both the
+CLI importer and the manager.
+
+This support does not add a third-party network dependency. The logger API
+client uses Python standard-library outbound HTTP calls, so the installed
+manager should not need an inbound Windows Firewall exception. If a logger is
+offline or unreachable during watch mode, the source reports a remote status
+error without raising a modal dialog or marking the local import scan as a
+failed archive import.
+
+## Build
+
+First make sure PyInstaller is available in the repo environment.
+
+If Inno Setup 6 is installed in its normal Windows location, build the
+installer with:
+
+```powershell
+.\import-manager\build_import_manager.ps1 -Target installer
+```
+
+You can also override the Inno Setup compiler path or the installer version:
+
+```powershell
+.\import-manager\build_import_manager.ps1 -Target installer `
+  -InnoSetupExe "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+  -AppVersion "0.1.0-dev"
+```
+
+If the existing bundled CLI or manager outputs are already good and you only
+want to restage or recompile the installer, you can skip the PyInstaller
+rebuild:
+
+```powershell
+.\import-manager\build_import_manager.ps1 -Target installer -SkipPyInstallerBuild
+```
+
+If `ISCC.exe` is not available, the build script still prepares the staged
+payload under:
+
+```text
+import-manager/build/installer/windows/staging/
+```
+
+and reports that installer compilation was skipped.
+
+## Outputs
+
+- staged installer payload:
+  `import-manager/build/installer/windows/staging/`
+- compiled installer:
+  `import-manager/dist/installer/windows/bodaqs-import-manager-setup-<version>.exe`
+
+## Config Location Behavior
+
+The installed app launches the manager with:
+
+```text
+--app-config-mode installed
+```
+
+That forces the managed app config to live in the per-user app-data location
+instead of beside the installed executable. This keeps user state separate from
+installed binaries and makes upgrades/uninstall safer.
+
+## Start At Login
+
+The installer itself stays thin and does not write the Windows login-start
+entry directly.
+
+Instead, the installed manager owns that preference:
+
+- the managed app config stores `auto_start`
+- the manager writes or removes the per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  entry
+- the registered command launches the manager in installed mode with
+  `--startup-launch`
+
+Startup launches:
+
+- reuse the installed app-data config location
+- start the watch loop automatically when `auto_start` is enabled
+- hide the manager window to the tray
+
+Portable bundled runs still keep the older behavior:
+
+- prefer the executable directory when it is writable
+- otherwise fall back to per-user app-data
+
+## Branding Assets
+
+Windows branding assets are generated from the existing BODAQS favicon source:
+
+- source SVG: `bodocs/public/favicon.svg`
+- tray PNG: `import-manager/bodaqs_import_manager/import_agent_assets/tray_icon.png`
+- app PNG: `import-manager/bodaqs_import_manager/import_agent_assets/app_icon.png`
+- runtime app icon: `import-manager/bodaqs_import_manager/import_agent_assets/app_icon.ico`
+- app/installer icon: `import-manager/packaging/windows/bodaqs_import_agent.ico`
+
+The helper script for regenerating those packaged assets is:
+
+- `import-manager/tools/generate_import_agent_branding.py`
+
+## Installer Script
+
+The Windows installer definition lives at:
+
+```text
+import-manager/packaging/windows/bodaqs_import_agent_windows.iss
+```
