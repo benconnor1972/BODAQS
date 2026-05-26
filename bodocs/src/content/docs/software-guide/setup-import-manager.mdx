@@ -95,177 +95,23 @@ Processed session artifacts are written under the target library:
 The most important folder is `runs/`. Each import creates a run folder with one
 or more processed sessions inside it.
 
-### Editing the bike profile
+### Adding a bike profile
+ <Flag src="/src/assets/pics/just-say-yes.png" alt="add a bike profile">
+The Import Manager needs to know some information about your bike to run pre-processing correctly. When you set up a new data source, you will be prompted to provide this information. (It is recommended you do this. If you say no,  generic defaults will be used). 
 
-The Import Manager needs to know some information about your bike to run pre-processing correctly. That information lives in a .json file inside the `<source>/bike` directory.
+</Flag>
 
-You will need to edit this file with a text editor. You can change the name of the file to something more descriptive (e.g. `Stumpjumper Evo 2022.json`) but you can have only *one file* in this directory.
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/bike-profile-complete.png" alt="completed bike profile"/>
+
 
 #### Bike details
- <Flag src="/src/assets/pics/bike-profile-bike-details.png" alt="bike profile bike details">
-This block contains basic descriptive information about the bike.
-</Flag>
-#### Normalization ranges
- <Flag src="/src/assets/pics/bike-profile-norm-ranges.png" alt="bike profile normalization ranges">
-This block contains the full travel ranges of the fork, shock and rear wheel. Edit them to suit your bike.
-</Flag>
-
-#### Suspension curve data
-This block contains information on how to calculate wheel travel from suspension travel (AKA the 'suspension curve' or 'leverage curve'). Generally you will need this information for **both ends** because by convention wheel travel is measured vertically and although the fork moves in a straight line, it does not move vertically with respect to the bike due to the steering head angle.
-
-The suspension curves can be expressed either as a **look-up table** (LUT) or as a polynomial. It is generally easiest to express the rear suspension curve as a LUT and the front as a polynomial.
-
-For the front, the block should look like this:
-```
-{
-  "id": "fork_to_wheel_vertical",
-  "description": "Front wheel vertical travel from fork travel - linear.",
-  "enabled": true,
-  "input": {
-    "end": "front",
-    "quantity": "disp",
-    "domain": "suspension",
-    "unit": "mm"
-  },
-  "output": {
-    "end": "front",
-    "quantity": "disp",
-    "domain": "wheel",
-    "unit": "mm"
-  },
-  "method": "polynomial",
-  "polynomial": {
-    "coefficient_order": "ascending",
-    "coefficients": [0.0,0.8988 ]
-  }
-}
-```
-
-The value 0.8988 is the **sine of the steering head angle**. You should change it according to the steering head angle of your bike. Values for common steering head angles are:
-- 66.0 degrees: 0.9135
-- 65.0 degrees: 0.9063
-- 64.0 degrees: 0.8988
-- 63.0 degrees: 0.8910
-- 62.0 degrees: 0.8829
-
-For the rear, the block should look something like this:
-
-```
-    {
-      "description": "Example LUT converting rear shock travel to rear wheel travel.",
-      "enabled": true,
-      "extrapolation": "linear",
-      "interpolation": "linear",
-	  "id": "rear_shock_to_rear_wheel_travel",
-      "extrapolation": "linear",
-      "interpolation": "linear",
-      "input": {
-        "domain": "suspension",
-        "end": "rear",
-        "quantity": "disp",
-        "unit": "mm"
-      },
-	  "output": {
-        "domain": "wheel",
-        "end": "rear",
-        "quantity": "disp",
-        "unit": "mm"
-      }
-      "method": "lut",
-	  "lut": [
-        {
-          "input": 0.0,
-          "output": 0.0
-        },
-        ...
-        {
-          "input": 55.0,
-          "output": 165.0
-        }
-      ],
+Provide some basic information aboutt your bike. The geometry information is important - make sure you enter it accurately.
 
 
-    }
-```
+#### Rear wheel LUT
+This section contains information on how to calculate wheel travel from suspension travel (AKA the 'suspension curve' or 'leverage curve'). The rear wheel suspension curve is expressed  as a **look-up table** (LUT).
 
-The `LUT` block in the middle contains points on the curve of shock travel vs wheel travel. You can have as many points as you like (>=2) in the table (10 is sufficient). A full suspension curve would look something like this:
-
-```
-      "lut": [
-        {
-          "input": 0.0,
-          "output": 0.0
-        },
-        {
-          "input": 2.84,
-          "output": 10.0
-        },
-        {
-          "input": 5.75,
-          "output": 20.0
-        },
-        {
-          "input": 8.73,
-          "output": 30.0
-        },
-        {
-          "input": 11.77,
-          "output": 40.0
-        },
-        {
-          "input": 14.88,
-          "output": 50.0
-        },
-        {
-          "input": 18.05,
-          "output": 60.0
-        },
-        {
-          "input": 21.29,
-          "output": 70.0
-        },
-        {
-          "input": 24.59,
-          "output": 80.0
-        },
-        {
-          "input": 27.96,
-          "output": 90.0
-        },
-        {
-          "input": 31.38,
-          "output": 100.0
-        },
-        {
-          "input": 34.87,
-          "output": 110.0
-        },
-        {
-          "input": 38.41,
-          "output": 120.0
-        },
-        {
-          "input": 42.01,
-          "output": 130.0
-        },
-        {
-          "input": 45.66,
-          "output": 140.0
-        },
-        {
-          "input": 49.36,
-          "output": 150.0
-        },
-        {
-          "input": 53.1,
-          "output": 160.0
-        },
-        {
-          "input": 55.0,
-          "output": 165.0
-        }
-      ],
-```	  
+You can add as many rows as you like to the LUT but at a minimum, it needs two rows: one representing zero travel and one representing full travel. If you don't specify any additional points, the suspension curve will be a straight line. 
 
 <Aside type="tip" title="Obtaining suspension curves">
 Some ways to get suspension curve data for your bike:
@@ -274,13 +120,28 @@ Some ways to get suspension curve data for your bike:
 - Find a manufacturer-published graph of the leverage curve and read values off the graph. You can also upload a picture to your favourite LLM and ask it to produce a LUT from the graph.
 - Measure your bike and calculate the curve yourself. Note: **not easy**.
 
-If nothing else, you can always just assume a linear relationship between shock and wheel travel: the LUT in your bike profile would have two points in it, much like the first example above. This isn't a great solution, but it's better than nothing.
+If nothing else, you can always run with just two points in the LUT, i.e. assume a linear relationship between shock and wheel travel. This isn't a great solution, but it's better than nothing.
 </Aside>
 
-#### Optional further setup
+<Aside type="note" title="What about the front wheel?">
+By convention, wheel travel is measured vertically and although the fork moves in a straight line, it does not move vertically with respect to the bike. That is why the steering head angle is required on this page.
+</Aside>
 
-Later, you might want to:
- - Add more data sources, including WiFi connections to your logger. 
- - Add a notes template so your logs will automatically have a draft settings note added to them at import.  
+<Aside type="tip" title="Editing bike profiles directly">
+Bike profile information lives in a .json file inside the `<source>/bike` directory. If you want, you can edit this file directly with a text editor.
+</Aside>
 
-Continue to the [BODAQS Import Manager user guide](/user-guide/import-manager-user-guide/).
+#### Editing the notes profile
+
+From the bike profile page you can **edit the notes profile** for the bike:
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/edit-note-profile.png" alt="edit note profile"/>
+
+You have the option to automatically attach draft setup note to your logs when they are processed. You can specify both the fields you want, and a default value for each (if any). You might set up your notes profile with your standard or baseline settings, and then edit the notes after import to reflect what you actually ran (notes are tagged 'draft' when they are created so you can tell which ones need your attention).
+
+Select the fields you want in your notes, and enter default values if you want them.
+
+<Aside type="tip" title="Re-using notes profiles">
+You can select an existing notes profile to re-use in the `Create from` box at the top of the form. 
+</Aside>
+
+Further information can be found in the [BODAQS Import Manager user guide](/user-guide/import-manager-user-guide/).
