@@ -48,6 +48,7 @@ from .import_agent_provisioning import (
     update_import_agent_source_display_name,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
+    update_import_agent_source_logger_wifi,
 )
 from .import_agent_profile_builders import (
     apply_bike_profile_form_values,
@@ -71,6 +72,7 @@ from .import_agent_profile_builders import (
     set_rear_wheel_lut_transform,
     sync_source_bike_setup_preset,
 )
+from .import_agent_single_instance import SingleInstanceLock
 from .import_agent_sources import (
     LOGGER_WIFI_CLEANUP_DELETE,
     LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED,
@@ -148,6 +150,22 @@ def _apply_windows_app_user_model_id() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_WINDOWS_APP_USER_MODEL_ID)
     except Exception:
         pass
+
+
+def _show_already_running_message(app_config_path: str | Path) -> None:
+    message = (
+        f"{_APP_DISPLAY_NAME} is already running for this app configuration.\n\n"
+        f"{Path(app_config_path).expanduser().resolve()}\n\n"
+        "Use the existing window or tray icon, or close the existing manager before starting another one."
+    )
+    try:
+        _apply_windows_app_user_model_id()
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showinfo(_APP_DISPLAY_NAME, message, parent=root)
+        root.destroy()
+    except Exception:
+        print(message, file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -319,6 +337,15 @@ class ImportAgentManagerController:
         self.app_config = updated
         return updated
 
+    def set_source_logger_wifi(self, source_id: str, logger_wifi: dict[str, Any]) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_logger_wifi(
+            self.app_config_path,
+            source_id=source_id,
+            logger_wifi=logger_wifi,
+        )
+        self.app_config = updated
+        return updated
+
     def remove_source(self, source_id: str) -> ImportAgentAppConfig:
         updated = remove_import_agent_source(
             self.app_config_path,
@@ -446,6 +473,7 @@ class ImportAgentManagerWindow:
         self.overwrite_var = tk.BooleanVar(value=bool(args.overwrite))
         self.source_library_choice_var = tk.StringVar(value="")
         self.wifi_address_var = tk.StringVar(value="")
+        self.wifi_remember_address_var = tk.BooleanVar(value=False)
         self.wifi_logger_id_var = tk.StringVar(value="")
         self.wifi_cleanup_choice_var = tk.StringVar(value=_LOGGER_WIFI_CLEANUP_LABELS[LOGGER_WIFI_CLEANUP_NONE])
         self.wifi_request_timeout_var = tk.StringVar(value="5")
@@ -471,6 +499,8 @@ class ImportAgentManagerWindow:
         self.library_choice_combo: Optional[ttk.Combobox] = None
         self.source_type_combo: Optional[ttk.Combobox] = None
         self.wifi_frame: Optional[ttk.LabelFrame] = None
+        self.wifi_address_entry: Optional[ttk.Entry] = None
+        self.wifi_verify_button: Optional[ttk.Button] = None
 
         self.libraries_tree: Optional[ttk.Treeview] = None
         self.sources_tree: Optional[ttk.Treeview] = None
@@ -752,23 +782,32 @@ class ImportAgentManagerWindow:
             row=0, column=2, sticky="e", pady=4
         )
 
-        ttk.Label(frame, text="Logger address (optional)").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.wifi_address_var).grid(row=1, column=1, sticky="ew", pady=4, padx=(12, 8))
-        ttk.Button(frame, text="Verify Logger", command=self._verify_logger_from_provision_form).grid(
-            row=1, column=2, sticky="e", pady=4
+        ttk.Checkbutton(
+            frame,
+            text="Use fixed logger address",
+            variable=self.wifi_remember_address_var,
+            command=self._sync_wifi_address_mode,
+        ).grid(row=1, column=1, sticky="w", pady=4, padx=(12, 8))
+
+        ttk.Label(frame, text="Logger address").grid(row=2, column=0, sticky="w", pady=4)
+        self.wifi_address_entry = ttk.Entry(frame, textvariable=self.wifi_address_var)
+        self.wifi_address_entry.grid(row=2, column=1, sticky="ew", pady=4, padx=(12, 8))
+        self.wifi_verify_button = ttk.Button(frame, text="Verify Logger", command=self._verify_logger_from_provision_form)
+        self.wifi_verify_button.grid(
+            row=2, column=2, sticky="e", pady=4
         )
 
-        ttk.Label(frame, text="After import").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text="After import").grid(row=3, column=0, sticky="w", pady=4)
         cleanup_combo = ttk.Combobox(
             frame,
             textvariable=self.wifi_cleanup_choice_var,
             values=list(_LOGGER_WIFI_CLEANUP_BY_LABEL),
             state="readonly",
         )
-        cleanup_combo.grid(row=2, column=1, sticky="ew", pady=4, padx=(12, 8))
+        cleanup_combo.grid(row=3, column=1, sticky="ew", pady=4, padx=(12, 8))
 
         timeouts = ttk.Frame(frame)
-        timeouts.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        timeouts.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
         ttk.Label(timeouts, text="Request timeout (s)").grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Entry(timeouts, textvariable=self.wifi_request_timeout_var, width=8).grid(
             row=0, column=1, sticky="w", padx=(0, 18)
@@ -779,8 +818,9 @@ class ImportAgentManagerWindow:
         )
 
         ttk.Label(frame, textvariable=self.wifi_status_var, wraplength=880, justify="left").grid(
-            row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+            row=5, column=0, columnspan=3, sticky="ew", pady=(8, 0)
         )
+        self._sync_wifi_address_mode()
         return frame
 
     def _add_text_row(
@@ -822,11 +862,19 @@ class ImportAgentManagerWindow:
         label = self.wifi_cleanup_choice_var.get().strip()
         return _LOGGER_WIFI_CLEANUP_BY_LABEL.get(label, LOGGER_WIFI_CLEANUP_NONE)
 
+    def _sync_wifi_address_mode(self) -> None:
+        state = "normal" if bool(self.wifi_remember_address_var.get()) else "disabled"
+        if self.wifi_address_entry is not None:
+            self.wifi_address_entry.configure(state=state)
+        if self.wifi_verify_button is not None:
+            self.wifi_verify_button.configure(state=state)
+
     def _sync_source_type_fields(self) -> None:
         if self.wifi_frame is None:
             return
         if self._selected_source_type() == SOURCE_TYPE_LOGGER_WIFI:
             self.wifi_frame.grid()
+            self._sync_wifi_address_mode()
         else:
             self.wifi_frame.grid_remove()
 
@@ -844,7 +892,7 @@ class ImportAgentManagerWindow:
             return None
 
         logger_id = self.wifi_logger_id_var.get().strip()
-        base_url = self.wifi_address_var.get().strip()
+        base_url = self.wifi_address_var.get().strip() if self.wifi_remember_address_var.get() else ""
         if not logger_id:
             raise ValueError("Discover or verify the Wi-Fi logger, or enter its Logger ID, before creating the source.")
 
@@ -904,7 +952,8 @@ class ImportAgentManagerWindow:
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
 
     def _apply_discovered_logger_to_provision_form(self, result: LoggerWifiDiscoveryResult) -> None:
-        if result.base_url:
+        remembered = bool(self.wifi_remember_address_var.get())
+        if result.base_url and remembered:
             self.wifi_address_var.set(result.base_url)
         if result.logger_id:
             self.wifi_logger_id_var.set(result.logger_id)
@@ -912,8 +961,9 @@ class ImportAgentManagerWindow:
         if self.source_name_var.get().strip() in {"", "Default Source"}:
             self.source_name_var.set(display_name)
         upload_text = "unknown" if result.upload_mode is None else ("yes" if result.upload_mode else "no")
+        remember_text = "address remembered" if remembered else "address not remembered"
         self.wifi_status_var.set(
-            f"Discovered {display_name} at {result.base_url}; upload_mode={upload_text}."
+            f"Discovered {display_name} at {result.base_url}; upload_mode={upload_text}; {remember_text}."
         )
 
     def _discover_loggers_from_provision_form(self) -> None:
@@ -1030,21 +1080,57 @@ class ImportAgentManagerWindow:
         if source.source_type != SOURCE_TYPE_LOGGER_WIFI or source.logger_wifi is None:
             raise ValueError("Select a Wi-Fi logger source first.")
         base_url = source.logger_wifi.base_url
-        if base_url is None:
-            result = discover_single_logger_wifi_source(
-                logger_id=source.logger_wifi.logger_id,
-                timeout_s=max(1.0, min(float(source.logger_wifi.request_timeout_s), 5.0)),
+        configured_error: Optional[Exception] = None
+        if base_url is not None:
+            client = LoggerWifiApiClient(
+                base_url,
+                request_timeout_s=source.logger_wifi.request_timeout_s,
+                download_timeout_s=source.logger_wifi.download_timeout_s,
             )
-            if result is None:
-                raise ValueError(
-                    f"Selected Wi-Fi source '{source.logger_wifi.logger_id}' was not discovered on the local network."
-                )
-            base_url = result.base_url
+            try:
+                device = client.get_device()
+                logger_id = str(device.get("logger_id") or "").strip()
+                if logger_id != source.logger_wifi.logger_id:
+                    raise ValueError(
+                        f"Logger identity mismatch: expected {source.logger_wifi.logger_id!r}, got {logger_id!r}"
+                    )
+                return client, source
+            except Exception as exc:
+                configured_error = exc
+
+        result = discover_single_logger_wifi_source(
+            logger_id=source.logger_wifi.logger_id,
+            timeout_s=max(1.0, min(float(source.logger_wifi.request_timeout_s), 5.0)),
+        )
+        if result is None:
+            detail = (
+                f" Remembered address {base_url!r} also failed: {configured_error}"
+                if configured_error is not None and base_url is not None
+                else ""
+            )
+            raise ValueError(
+                f"Selected Wi-Fi source '{source.logger_wifi.logger_id}' was not discovered on the local network."
+                + detail
+            )
         client = LoggerWifiApiClient(
-            base_url,
+            result.base_url,
             request_timeout_s=source.logger_wifi.request_timeout_s,
             download_timeout_s=source.logger_wifi.download_timeout_s,
         )
+        try:
+            device = client.get_device()
+            logger_id = str(device.get("logger_id") or "").strip()
+            if logger_id != source.logger_wifi.logger_id:
+                raise ValueError(
+                    f"Logger identity mismatch: expected {source.logger_wifi.logger_id!r}, got {logger_id!r}"
+                )
+        except Exception as exc:
+            if configured_error is not None and base_url is not None:
+                raise ValueError(
+                    f"Remembered logger address failed ({configured_error}); "
+                    f"discovered address {result.base_url!r} also failed: {exc}"
+                ) from exc
+            raise
         return client, source
 
     def _set_source_runtime_status(self, source_id: str, status: str) -> None:
@@ -2457,6 +2543,7 @@ class ImportAgentManagerWindow:
         menu.add_command(label="Details", command=self._show_selected_source_details)
         if source.source_type == SOURCE_TYPE_LOGGER_WIFI:
             menu.add_separator()
+            menu.add_command(label="Edit Wi-Fi settings", command=self._edit_selected_wifi_settings)
             menu.add_command(label="Check Logger", command=self._check_selected_logger)
             menu.add_command(label="Request Upload Mode", command=self._request_selected_upload_mode)
             menu.add_command(label="Open Logger Web UI", command=self._open_selected_logger_web_ui)
@@ -2526,6 +2613,219 @@ class ImportAgentManagerWindow:
                 ("Source Root", str(source.source_root)),
             ),
         )
+
+    def _edit_selected_wifi_settings(self) -> None:
+        if not self._guard_watch_inactive(action_label="Edit Wi-Fi Settings"):
+            return
+        try:
+            source = self._selected_source_config()
+        except Exception as exc:
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        if source.source_type != SOURCE_TYPE_LOGGER_WIFI or source.logger_wifi is None:
+            messagebox.showinfo(_APP_DISPLAY_NAME, "Select a Wi-Fi logger source first.", parent=self.root)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Wi-Fi Settings - {source.description or source.source_id}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(1, weight=1)
+
+        logger_id_var = tk.StringVar(value=source.logger_wifi.logger_id)
+        fixed_address_var = tk.BooleanVar(value=bool(source.logger_wifi.base_url))
+        address_var = tk.StringVar(value=source.logger_wifi.base_url or "")
+        cleanup_label = next(
+            (
+                label
+                for label, value in _LOGGER_WIFI_CLEANUP_BY_LABEL.items()
+                if value == source.logger_wifi.cleanup_mode
+            ),
+            _LOGGER_WIFI_CLEANUP_LABELS[LOGGER_WIFI_CLEANUP_NONE],
+        )
+        cleanup_var = tk.StringVar(value=cleanup_label)
+        request_timeout_var = tk.StringVar(value=f"{float(source.logger_wifi.request_timeout_s):g}")
+        download_timeout_var = tk.StringVar(value=f"{float(source.logger_wifi.download_timeout_s):g}")
+        status_var = tk.StringVar(value="Logger ID is the stable identity. Fixed address is optional.")
+
+        ttk.Label(dialog, text="Logger ID").grid(row=0, column=0, sticky="w", padx=(12, 8), pady=(12, 4))
+        ttk.Entry(dialog, textvariable=logger_id_var).grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(12, 4))
+        ttk.Button(dialog, text="Discover", command=lambda: discover()).grid(
+            row=0, column=2, sticky="e", padx=(0, 12), pady=(12, 4)
+        )
+
+        ttk.Checkbutton(
+            dialog,
+            text="Use fixed logger address",
+            variable=fixed_address_var,
+            command=lambda: sync_fixed_address_state(),
+        ).grid(row=1, column=1, sticky="w", padx=(0, 12), pady=4)
+
+        ttk.Label(dialog, text="Fixed address").grid(row=2, column=0, sticky="w", padx=(12, 8), pady=4)
+        address_entry = ttk.Entry(dialog, textvariable=address_var)
+        address_entry.grid(row=2, column=1, sticky="ew", padx=(0, 12), pady=4)
+        verify_button = ttk.Button(dialog, text="Verify", command=lambda: verify())
+        verify_button.grid(row=2, column=2, sticky="e", padx=(0, 12), pady=4)
+
+        ttk.Label(dialog, text="After import").grid(row=3, column=0, sticky="w", padx=(12, 8), pady=4)
+        ttk.Combobox(
+            dialog,
+            textvariable=cleanup_var,
+            values=list(_LOGGER_WIFI_CLEANUP_BY_LABEL),
+            state="readonly",
+        ).grid(row=3, column=1, sticky="ew", padx=(0, 12), pady=4)
+
+        timeouts = ttk.Frame(dialog)
+        timeouts.grid(row=4, column=0, columnspan=3, sticky="w", padx=12, pady=(6, 2))
+        ttk.Label(timeouts, text="Request timeout (s)").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(timeouts, textvariable=request_timeout_var, width=8).grid(row=0, column=1, sticky="w", padx=(0, 18))
+        ttk.Label(timeouts, text="Download timeout (s)").grid(row=0, column=2, sticky="w", padx=(0, 8))
+        ttk.Entry(timeouts, textvariable=download_timeout_var, width=8).grid(row=0, column=3, sticky="w")
+
+        ttk.Label(dialog, textvariable=status_var, wraplength=720, justify="left").grid(
+            row=5, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 4)
+        )
+
+        def positive_float_from_text(text: str, *, field_name: str) -> float:
+            try:
+                value = float(text.strip())
+            except ValueError:
+                raise ValueError(f"{field_name} must be numeric") from None
+            if value <= 0:
+                raise ValueError(f"{field_name} must be > 0")
+            return value
+
+        def sync_fixed_address_state() -> None:
+            state = "normal" if bool(fixed_address_var.get()) else "disabled"
+            address_entry.configure(state=state)
+            verify_button.configure(state=state)
+
+        def payload_from_dialog() -> dict[str, Any]:
+            logger_id = logger_id_var.get().strip()
+            if not logger_id:
+                raise ValueError("Logger ID must be non-empty.")
+            fixed_address = bool(fixed_address_var.get())
+            base_url = address_var.get().strip() if fixed_address else ""
+            if fixed_address and not base_url:
+                raise ValueError("Enter a fixed logger address, or turn off fixed address mode.")
+            payload: dict[str, Any] = {
+                "logger_id": logger_id,
+                "request_timeout_s": positive_float_from_text(
+                    request_timeout_var.get(),
+                    field_name="Wi-Fi request timeout",
+                ),
+                "download_timeout_s": positive_float_from_text(
+                    download_timeout_var.get(),
+                    field_name="Wi-Fi download timeout",
+                ),
+                "cleanup_mode": _LOGGER_WIFI_CLEANUP_BY_LABEL.get(
+                    cleanup_var.get().strip(),
+                    LOGGER_WIFI_CLEANUP_NONE,
+                ),
+            }
+            if base_url:
+                payload["base_url"] = base_url
+            return payload
+
+        def discover() -> None:
+            try:
+                timeout_s = max(
+                    1.0,
+                    min(
+                        positive_float_from_text(
+                            request_timeout_var.get(),
+                            field_name="Wi-Fi request timeout",
+                        ),
+                        5.0,
+                    ),
+                )
+                wanted_logger_id = logger_id_var.get().strip() or None
+                results = discover_logger_wifi_sources(logger_id=wanted_logger_id, timeout_s=timeout_s)
+                if not results:
+                    status_var.set("No matching BODAQS Wi-Fi logger was discovered on the local network.")
+                    return
+                dialog.grab_release()
+                try:
+                    result = results[0] if len(results) == 1 else self._choose_discovered_logger(results)
+                finally:
+                    dialog.grab_set()
+                if result is None:
+                    status_var.set("Logger discovery cancelled.")
+                    return
+                if result.logger_id:
+                    logger_id_var.set(result.logger_id)
+                if fixed_address_var.get():
+                    address_var.set(result.base_url)
+                upload_text = "unknown" if result.upload_mode is None else ("yes" if result.upload_mode else "no")
+                remember_text = "address remembered" if fixed_address_var.get() else "address not remembered"
+                status_var.set(
+                    f"Discovered {result.display_name or result.logger_id or result.hostname or 'logger'} "
+                    f"at {result.base_url}; upload_mode={upload_text}; {remember_text}."
+                )
+            except Exception as exc:
+                status_var.set(f"Discovery failed: {exc}")
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=dialog)
+
+        def verify() -> None:
+            try:
+                if not fixed_address_var.get():
+                    raise ValueError("Turn on fixed address mode before verifying a fixed address.")
+                client = LoggerWifiApiClient(
+                    address_var.get().strip(),
+                    request_timeout_s=positive_float_from_text(
+                        request_timeout_var.get(),
+                        field_name="Wi-Fi request timeout",
+                    ),
+                    download_timeout_s=positive_float_from_text(
+                        download_timeout_var.get(),
+                        field_name="Wi-Fi download timeout",
+                    ),
+                )
+                device = client.get_device()
+                status = client.get_status()
+                logger_id = str(device.get("logger_id") or "").strip()
+                if not logger_id:
+                    raise ValueError("Logger did not return a logger_id.")
+                logger_id_var.set(logger_id)
+                status_var.set(
+                    f"Verified {device.get('display_name') or logger_id} ({logger_id}). "
+                    + self._logger_status_text(
+                        upload_mode=bool(status.get("upload_mode", False)),
+                        session_count=status.get("importable_session_count"),
+                    )
+                )
+            except Exception as exc:
+                status_var.set(f"Verification failed: {exc}")
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=dialog)
+
+        saved = {"ok": False}
+
+        def save() -> None:
+            try:
+                payload = payload_from_dialog()
+                self.controller.set_source_logger_wifi(source.source_id, payload)
+            except Exception as exc:
+                status_var.set(f"Save failed: {exc}")
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=dialog)
+                return
+            saved["ok"] = True
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=6, column=0, columnspan=3, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Save", command=save).grid(row=0, column=1)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        sync_fixed_address_state()
+        dialog.lift(self.root)
+        dialog.focus_force()
+        self.root.wait_window(dialog)
+
+        if saved["ok"]:
+            self._refresh_ui_from_config()
+            if self.sources_tree is not None and self.sources_tree.exists(source.source_id):
+                self.sources_tree.selection_set(source.source_id)
+            self._set_manager_status(f"Updated Wi-Fi settings for source '{source.source_id}'.")
 
     def _rename_selected_library(self) -> None:
         if not self._guard_watch_inactive(action_label="Rename Library"):
@@ -3161,5 +3461,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.start_minimized = True
     if not str(args.app_config).strip():
         args.app_config = str(_default_app_config_path(mode=args.app_config_mode))
-    window = ImportAgentManagerWindow(args)
-    return window.run()
+    single_instance_lock = SingleInstanceLock.for_app_config(args.app_config)
+    if not single_instance_lock.acquire():
+        if not args.startup_launch:
+            _show_already_running_message(args.app_config)
+        return 0
+    try:
+        window = ImportAgentManagerWindow(args)
+        return window.run()
+    finally:
+        single_instance_lock.release()
