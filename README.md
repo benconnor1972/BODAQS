@@ -9,6 +9,7 @@
 ░░░░░░░░░░░     ░░░░░░░    ░░░░░░░░░░   ░░░░░   ░░░░░    ░░░░░░ ░░  ░░░░░░░░░
 ```
 
+Current releases [here](https://github.com/benconnor1972/BODAQS/blob/main/RELEASES.md)
 
 # Bicycle Open Data Acquisition System
 
