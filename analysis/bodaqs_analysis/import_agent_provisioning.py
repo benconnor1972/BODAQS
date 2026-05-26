@@ -14,6 +14,7 @@ from .bike_profile import validate_bike_profile
 from .import_agent_sources import (
     LoggerWifiSourceConfig,
     SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+    SOURCE_TYPE_LOGGER_WIFI,
     logger_wifi_source_config_to_jsonable,
     normalize_import_source_type,
     parse_logger_wifi_source_config,
@@ -123,6 +124,18 @@ def _write_source_target_library(source_root: Path, *, library_id: str, artifact
     updated = dict(payload)
     updated["library_id"] = str(library_id).strip()
     updated["artifacts_dir"] = str(artifacts_dir)
+    _write_json(config_path, updated, overwrite=True)
+
+
+def _write_source_logger_wifi(source_root: Path, *, logger_wifi: LoggerWifiSourceConfig) -> None:
+    config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    payload = _read_json(config_path, {})
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Import source config is not a JSON object: {config_path}")
+    updated = dict(payload)
+    if normalize_import_source_type(updated.get("source_type")) != SOURCE_TYPE_LOGGER_WIFI:
+        raise ValueError(f"Import source is not a Wi-Fi logger source: {config_path}")
+    updated["logger_wifi"] = logger_wifi_source_config_to_jsonable(logger_wifi)
     _write_json(config_path, updated, overwrite=True)
 
 
@@ -963,6 +976,34 @@ def update_import_agent_source_display_name(
         sources=updated_sources,
         auto_start=config.auto_start,
     )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
+def update_import_agent_source_logger_wifi(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+    logger_wifi: LoggerWifiSourceConfig | Mapping[str, Any],
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+    found = next((source for source in config.sources if source.source_id == source_id), None)
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+    if found.source_type != SOURCE_TYPE_LOGGER_WIFI:
+        raise ValueError(f"Managed source {source_id!r} is not a Wi-Fi logger source")
+
+    logger_wifi_config = (
+        logger_wifi
+        if isinstance(logger_wifi, LoggerWifiSourceConfig)
+        else parse_logger_wifi_source_config(logger_wifi)
+    )
+    _write_source_logger_wifi(found.source_root, logger_wifi=logger_wifi_config)
+
+    # The app-level source record does not duplicate Wi-Fi connection details.
+    # Reloading keeps the controller in sync while preserving source IDs/paths.
+    updated = load_import_agent_app_config(config_path)
     save_import_agent_app_config(updated, config_path, overwrite=True)
     return updated
 

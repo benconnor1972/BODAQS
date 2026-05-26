@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 import bodaqs_analysis.import_agent_provisioning as provisioning_module
+import bodaqs_analysis.import_agent_single_instance as single_instance_module
 import bodaqs_analysis.import_agent_startup as import_agent_startup_module
 import bodaqs_analysis.import_agent_tray as import_agent_tray_module
 from bodaqs_analysis.exporters.data_syn_bike import (
@@ -51,6 +52,7 @@ from bodaqs_analysis.import_agent_provisioning import (
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
     update_import_agent_source_library,
+    update_import_agent_source_logger_wifi,
 )
 from bodaqs_analysis.import_agent_profile_builders import (
     apply_bike_profile_form_values,
@@ -1327,6 +1329,55 @@ def test_provision_import_agent_source_for_app_persists_logger_wifi_source(tmp_p
     assert "require_upload_mode" not in source_payload["logger_wifi"]
 
 
+def test_update_import_agent_source_logger_wifi_can_clear_fixed_address(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+        include_events=False,
+        include_metrics=False,
+    )
+
+    _updated, source = provision_import_agent_source_for_app(
+        app_config_path,
+        library_id=provisioned.library.library_id,
+        display_name="Prototype E WiFi",
+        source_type=SOURCE_TYPE_LOGGER_WIFI,
+        logger_wifi={
+            "logger_id": "Prototype E",
+            "base_url": "http://192.168.1.42",
+            "cleanup_mode": "move_to_uploaded",
+        },
+        include_events=False,
+        include_metrics=False,
+    )
+
+    updated = update_import_agent_source_logger_wifi(
+        app_config_path,
+        source_id=source.source_id,
+        logger_wifi={
+            "logger_id": "Prototype E",
+            "request_timeout_s": 3,
+            "download_timeout_s": 90,
+            "cleanup_mode": "none",
+        },
+    )
+
+    reloaded_source = load_import_source_config(source.source_root)
+    source_payload = json.loads(source.import_source_config_path.read_text(encoding="utf-8"))
+
+    assert next(item for item in updated.sources if item.source_id == source.source_id).source_root == source.source_root
+    assert reloaded_source.logger_wifi is not None
+    assert reloaded_source.logger_wifi.logger_id == "Prototype E"
+    assert reloaded_source.logger_wifi.base_url is None
+    assert reloaded_source.logger_wifi.request_timeout_s == pytest.approx(3)
+    assert reloaded_source.logger_wifi.download_timeout_s == pytest.approx(90)
+    assert source_payload["logger_wifi"]["base_url"] is None
+
+
 def test_update_import_agent_source_enabled_persists_and_filters_enabled_roots(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
     provisioned = provision_import_agent_app_setup(
@@ -1710,6 +1761,43 @@ def test_update_import_agent_app_auto_start_persists(tmp_path):
 
     assert updated.auto_start is True
     assert load_import_agent_app_config(app_config_path).auto_start is True
+
+
+def test_single_instance_lock_path_is_per_app_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+
+    lock_path = single_instance_module.single_instance_lock_path(app_config_path)
+
+    assert lock_path == app_config_path.resolve().with_suffix(".json.lock")
+
+
+def test_single_instance_lock_rejects_second_active_manager_for_same_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    first = single_instance_module.SingleInstanceLock.for_app_config(app_config_path)
+    second = single_instance_module.SingleInstanceLock.for_app_config(app_config_path)
+
+    try:
+        assert first.acquire() is True
+        assert second.acquire() is False
+    finally:
+        first.release()
+
+    try:
+        assert second.acquire() is True
+    finally:
+        second.release()
+
+
+def test_single_instance_lock_allows_different_app_configs(tmp_path):
+    first = single_instance_module.SingleInstanceLock.for_app_config(tmp_path / "one" / "import_agent_app.json")
+    second = single_instance_module.SingleInstanceLock.for_app_config(tmp_path / "two" / "import_agent_app.json")
+
+    try:
+        assert first.acquire() is True
+        assert second.acquire() is True
+    finally:
+        second.release()
+        first.release()
 
 
 class _FakeRegistryKey:

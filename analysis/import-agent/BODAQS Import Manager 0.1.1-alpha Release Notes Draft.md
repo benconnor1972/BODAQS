@@ -27,7 +27,13 @@ bridge, BLE, or a database server.
   relationship clearer.
 - Source context menus now include validation, bike editing, target-library
   changes, details, rename, and removal actions.
+- Wi-Fi source provisioning now treats fixed logger addresses as an explicit
+  opt-in, so discovered IP addresses are not automatically remembered.
+- Existing Wi-Fi source connection settings can be viewed and edited from the
+  source context menu.
 - Library context menus now include rename and details actions.
+- The manager now prevents multiple running instances for the same app
+  configuration.
 - Bike-profile and note-template editing has been expanded with builder-style
   UI support, including LUT editing and draft note profile generation.
 
@@ -75,9 +81,15 @@ Manager table changes in this release:
 - Source validation has moved from the main button row into the source context
   menu.
 - Wi-Fi source actions appear only for Wi-Fi sources.
+- Wi-Fi source settings can be edited after provisioning, including logger ID,
+  fixed-address mode, fixed address, cleanup policy, and timeouts.
 
 Rename behavior is display-name-only. Renaming a library or source does not
 change IDs, paths, import history, or processed artifact locations.
+
+Only one manager instance can run at a time for a given app configuration. If a
+second copy is launched, it exits with an already-running message rather than
+starting another watcher or tray icon.
 
 ## Source And Profile Builders
 
@@ -102,6 +114,8 @@ This release keeps the existing Import Manager capabilities:
 - local archive-folder sources for completed logger ZIP files
 - Wi-Fi logger sources using the BODAQS Wi-Fi Upload API v1
 - mDNS discovery where the local network allows it
+- optional fixed logger addresses for networks where mDNS is unavailable or
+  unreliable
 - multi-source and multi-library management
 - background watch mode with Windows tray integration
 - start-at-login support
@@ -116,11 +130,15 @@ Upload mode is required before Wi-Fi session transfer.
 
 - This is an alpha release, not a polished public stable release.
 - Existing app configuration should continue to load.
+- Running multiple manager instances with the same app configuration is now
+  blocked to avoid duplicate watchers and competing config edits.
 - Removing the CLI from the GUI installer does not change the manager app's
   import behavior.
 - Existing source and library IDs remain stable when display names are renamed.
 - Existing source folders and library folders are not deleted by rename or
   remove-from-manager actions.
+- Existing Wi-Fi sources with remembered addresses continue to work, and those
+  addresses can now be cleared or updated from the manager.
 - macOS packaging is planned separately.
 
 ## Known Limitations
@@ -149,7 +167,13 @@ Upload mode is required before Wi-Fi session transfer.
 - Validate a source from the source context menu.
 - Change a source target library from the source context menu.
 - Open source and library details dialogs from their context menus.
+- Provision a Wi-Fi source from discovery with fixed address off and confirm no
+  address is written to the source config.
+- Edit a Wi-Fi source, enable fixed address, verify the logger, save, then clear
+  fixed address again.
 - Edit a bike profile and note profile from the source workflow.
+- Launch the manager a second time and confirm it reports that the manager is
+  already running rather than opening a duplicate instance.
 - Import a completed logger ZIP and confirm artifacts appear in the target
   library.
 - If testing Wi-Fi, use firmware `0.3.0` or later, put the logger in upload
