@@ -55,6 +55,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
     update_import_agent_source_display_name,
+    update_import_agent_source_force_reprocess_enabled,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
     update_import_agent_source_library,
@@ -248,6 +249,7 @@ def _write_source_config(
     preprocess_profile_path: str = "preprocess_profile.json",
     bike_profile_path: str = "bike_profile.json",
     session_note: dict | None = None,
+    force_reprocess: bool = False,
 ) -> Path:
     payload = {
         "schema": "bodaqs.import_source",
@@ -267,6 +269,7 @@ def _write_source_config(
         "settle_time_s": settle_time_s,
         "include_events": False,
         "include_metrics": False,
+        "force_reprocess": bool(force_reprocess),
     }
     if session_note is not None:
         payload["session_note"] = session_note
@@ -533,6 +536,7 @@ def _prepare_source(
     settle_time_s: float = 1.0,
     use_profile_dirs: bool = True,
     attach_session_note_on_import: bool = False,
+    force_reprocess: bool = False,
 ) -> Path:
     source_root = tmp_path / name
     inbox_dir = source_root / "inbox"
@@ -561,12 +565,18 @@ def _prepare_source(
                 "template_path": "notes",
                 "setup_preset_path": "notes",
             },
+            force_reprocess=force_reprocess,
         )
     else:
         schema_path = _write_schema(source_root / "schema.yaml")
         _write_preprocess_profile(source_root / "preprocess_profile.json", schema_path=schema_path)
         _write_bike_profile(source_root / "bike_profile.json")
-        _write_source_config(source_root, artifacts_dir=artifacts_dir, settle_time_s=settle_time_s)
+        _write_source_config(
+            source_root,
+            artifacts_dir=artifacts_dir,
+            settle_time_s=settle_time_s,
+            force_reprocess=force_reprocess,
+        )
     return source_root
 
 
@@ -743,6 +753,23 @@ def test_run_sources_once_skips_duplicate_success_and_moves_duplicate_archive_to
 
     done_archives = list((source_root / "done").glob("*.zip"))
     assert len(done_archives) == 2
+
+
+def test_run_sources_once_force_reprocess_imports_duplicate_success(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir, force_reprocess=True)
+    first_archive = _write_session_archive(source_root / "inbox", stem="session_001")
+    _set_old_mtime(first_archive)
+
+    first_report = run_sources_once([source_root])
+    second_archive = _write_session_archive(source_root / "inbox", stem="session_001")
+    _set_old_mtime(second_archive)
+    second_report = run_sources_once([source_root])
+
+    assert first_report["totals"]["imported"] == 1
+    assert second_report["totals"]["imported"] == 1
+    assert second_report["totals"]["skipped_succeeded"] == 0
+    assert first_report["sources"][0]["imported"][0]["run_id"] != second_report["sources"][0]["imported"][0]["run_id"]
 
 
 def test_run_sources_once_defers_unsettled_archive(tmp_path):
@@ -1425,6 +1452,31 @@ def test_update_import_agent_source_session_note_attach_updates_app_and_source_c
     assert updated.sources[0].attach_session_note_on_import is True
     assert reloaded.sources[0].attach_session_note_on_import is True
     assert source_payload["session_note"]["attach_on_import"] is True
+
+
+def test_update_import_agent_source_force_reprocess_updates_app_and_source_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    updated = update_import_agent_source_force_reprocess_enabled(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        enabled=True,
+    )
+    source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
+    reloaded = load_import_agent_app_config(app_config_path)
+    loaded_source = load_import_source_config(provisioned.source.source_root)
+
+    assert updated.sources[0].force_reprocess is True
+    assert reloaded.sources[0].force_reprocess is True
+    assert source_payload["force_reprocess"] is True
+    assert loaded_source.force_reprocess is True
 
 
 def test_update_import_agent_source_library_updates_app_and_source_config(tmp_path):
