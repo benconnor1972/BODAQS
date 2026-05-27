@@ -99,6 +99,13 @@ def _source_session_note_attach_enabled(source_root: Path) -> bool:
     return bool(session_note.get("attach_on_import", False))
 
 
+def _source_force_reprocess_enabled(source_root: Path) -> bool:
+    payload = _read_json(source_root / DEFAULT_IMPORT_SOURCE_FILENAME, {})
+    if not isinstance(payload, Mapping):
+        return False
+    return bool(payload.get("force_reprocess", False))
+
+
 def _write_source_session_note_attach_enabled(source_root: Path, *, enabled: bool) -> None:
     config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
     payload = _read_json(config_path, {})
@@ -113,6 +120,16 @@ def _write_source_session_note_attach_enabled(source_root: Path, *, enabled: boo
     session_note.setdefault("setup_preset_path", DEFAULT_NOTES_DIRNAME)
     session_note["attach_on_import"] = bool(enabled)
     updated["session_note"] = session_note
+    _write_json(config_path, updated, overwrite=True)
+
+
+def _write_source_force_reprocess_enabled(source_root: Path, *, enabled: bool) -> None:
+    config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    payload = _read_json(config_path, {})
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Import source config is not a JSON object: {config_path}")
+    updated = dict(payload)
+    updated["force_reprocess"] = bool(enabled)
     _write_json(config_path, updated, overwrite=True)
 
 
@@ -292,6 +309,7 @@ class ImportAgentManagedSourceConfig:
     source_type: str = SOURCE_TYPE_FILESYSTEM_ARCHIVE
     enabled: bool = True
     attach_session_note_on_import: bool = False
+    force_reprocess: bool = False
 
 
 @dataclass(frozen=True)
@@ -332,6 +350,7 @@ class ProvisionedImportAgentSource:
     library_id: str
     artifacts_dir: Path
     attach_session_note_on_import: bool = False
+    force_reprocess: bool = False
 
 
 @dataclass(frozen=True)
@@ -489,6 +508,10 @@ def validate_import_agent_app_config(config: ImportAgentAppConfig | Mapping[str,
             raise ValueError(
                 f"Import agent source {source.source_id!r} attach_session_note_on_import must be boolean"
             )
+        if not isinstance(source.force_reprocess, bool):
+            raise ValueError(
+                f"Import agent source {source.source_id!r} force_reprocess must be boolean"
+            )
 
 
 def import_agent_app_config_to_jsonable(config: ImportAgentAppConfig) -> dict[str, Any]:
@@ -517,6 +540,7 @@ def import_agent_app_config_to_jsonable(config: ImportAgentAppConfig) -> dict[st
                 "source_type": source.source_type,
                 "enabled": source.enabled,
                 "attach_session_note_on_import": source.attach_session_note_on_import,
+                "force_reprocess": source.force_reprocess,
             }
             for source in config.sources
         ],
@@ -586,26 +610,28 @@ def parse_import_agent_app_config(value: Mapping[str, Any] | str | bytes | Path)
     for item in obj.get("sources", []):
         if not isinstance(item, Mapping):
             raise ValueError("Import agent app config sources entries must be objects")
+        source_root = _coerce_required_path(
+            str(item.get("source_root") or ""),
+            field_name="sources[].source_root",
+        )
         sources.append(
             ImportAgentManagedSourceConfig(
                 source_id=str(item.get("source_id") or "").strip(),
                 display_name=str(item.get("display_name") or "").strip(),
-                source_root=_coerce_required_path(
-                    str(item.get("source_root") or ""),
-                    field_name="sources[].source_root",
-                ),
+                source_root=source_root,
                 library_id=str(item.get("library_id") or "").strip(),
                 source_type=normalize_import_source_type(item.get("source_type")),
                 enabled=bool(item.get("enabled", True)),
                 attach_session_note_on_import=bool(
                     item.get(
                         "attach_session_note_on_import",
-                        _source_session_note_attach_enabled(
-                            _coerce_required_path(
-                                str(item.get("source_root") or ""),
-                                field_name="sources[].source_root",
-                            )
-                        ),
+                        _source_session_note_attach_enabled(source_root),
+                    )
+                ),
+                force_reprocess=bool(
+                    item.get(
+                        "force_reprocess",
+                        _source_force_reprocess_enabled(source_root),
                     )
                 ),
             )
@@ -663,6 +689,7 @@ def _merge_managed_app_entries(
         source_type=source.source_type,
         enabled=True,
         attach_session_note_on_import=source.attach_session_note_on_import,
+        force_reprocess=source.force_reprocess,
     )
 
     return make_import_agent_app_config(
@@ -709,6 +736,7 @@ def update_import_agent_source_enabled(
                     source_type=source.source_type,
                     enabled=bool(enabled),
                     attach_session_note_on_import=source.attach_session_note_on_import,
+                    force_reprocess=source.force_reprocess,
                 )
             )
             found = True
@@ -752,6 +780,7 @@ def update_import_agent_source_session_note_attach_enabled(
                     source_type=source.source_type,
                     enabled=source.enabled,
                     attach_session_note_on_import=bool(enabled),
+                    force_reprocess=source.force_reprocess,
                 )
             )
         else:
@@ -761,6 +790,50 @@ def update_import_agent_source_session_note_attach_enabled(
         raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
 
     _write_source_session_note_attach_enabled(found.source_root, enabled=bool(enabled))
+    updated = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=config.libraries,
+        sources=updated_sources,
+        auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
+def update_import_agent_source_force_reprocess_enabled(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+    enabled: bool,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+
+    updated_sources: list[ImportAgentManagedSourceConfig] = []
+    found: Optional[ImportAgentManagedSourceConfig] = None
+    for source in config.sources:
+        if source.source_id == source_id:
+            found = source
+            updated_sources.append(
+                ImportAgentManagedSourceConfig(
+                    source_id=source.source_id,
+                    display_name=source.display_name,
+                    source_root=source.source_root,
+                    library_id=source.library_id,
+                    source_type=source.source_type,
+                    enabled=source.enabled,
+                    attach_session_note_on_import=source.attach_session_note_on_import,
+                    force_reprocess=bool(enabled),
+                )
+            )
+        else:
+            updated_sources.append(source)
+
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+
+    _write_source_force_reprocess_enabled(found.source_root, enabled=bool(enabled))
     updated = make_import_agent_app_config(
         sources_root=config.sources_root,
         libraries_root=config.libraries_root,
@@ -798,6 +871,7 @@ def update_import_agent_source_library(
                     source_type=source.source_type,
                     enabled=source.enabled,
                     attach_session_note_on_import=source.attach_session_note_on_import,
+                    force_reprocess=source.force_reprocess,
                 )
             )
         else:
@@ -961,6 +1035,7 @@ def update_import_agent_source_display_name(
                     source_type=source.source_type,
                     enabled=source.enabled,
                     attach_session_note_on_import=source.attach_session_note_on_import,
+                    force_reprocess=source.force_reprocess,
                 )
             )
         else:
@@ -1225,6 +1300,7 @@ def provision_import_agent_source(
         library_id=library_id,
         artifacts_dir=artifacts_dir_path,
         attach_session_note_on_import=bool(attach_session_note_on_import),
+        force_reprocess=bool(force_reprocess),
     )
 
 
@@ -1322,6 +1398,7 @@ def provision_import_agent_app_setup(
                     source_type=source.source_type,
                     enabled=True,
                     attach_session_note_on_import=source.attach_session_note_on_import,
+                    force_reprocess=source.force_reprocess,
                 )
             ],
             auto_start=auto_start,
@@ -1429,6 +1506,7 @@ def provision_import_agent_source_for_app(
         source_type=source.source_type,
         enabled=True,
         attach_session_note_on_import=source.attach_session_note_on_import,
+        force_reprocess=source.force_reprocess,
     )
     updated = make_import_agent_app_config(
         sources_root=config.sources_root,

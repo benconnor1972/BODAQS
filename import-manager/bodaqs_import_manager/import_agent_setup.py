@@ -46,6 +46,7 @@ from .import_agent_provisioning import (
     update_import_agent_library_display_name,
     update_import_agent_source_library,
     update_import_agent_source_display_name,
+    update_import_agent_source_force_reprocess_enabled,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
     update_import_agent_source_logger_wifi,
@@ -303,6 +304,15 @@ class ImportAgentManagerController:
 
     def set_source_session_note_attach_enabled(self, source_id: str, enabled: bool) -> ImportAgentAppConfig:
         updated = update_import_agent_source_session_note_attach_enabled(
+            self.app_config_path,
+            source_id=source_id,
+            enabled=enabled,
+        )
+        self.app_config = updated
+        return updated
+
+    def set_source_force_reprocess_enabled(self, source_id: str, enabled: bool) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_force_reprocess_enabled(
             self.app_config_path,
             source_id=source_id,
             enabled=enabled,
@@ -612,6 +622,7 @@ class ImportAgentManagerWindow:
             sources_frame,
             columns=(
                 "enabled",
+                "force_reprocess",
                 "display_name",
                 "source_type",
                 "status",
@@ -625,6 +636,7 @@ class ImportAgentManagerWindow:
         sources_xscroll = ttk.Scrollbar(sources_frame, orient="horizontal", command=sources_tree.xview)
         sources_tree.configure(xscrollcommand=sources_xscroll.set)
         sources_tree.heading("enabled", text="Enabled", anchor="w")
+        sources_tree.heading("force_reprocess", text="Allow Reprocessing", anchor="w")
         sources_tree.heading("display_name", text="Source Name", anchor="w")
         sources_tree.heading("source_type", text="Type", anchor="w")
         sources_tree.heading("status", text="Status", anchor="w")
@@ -632,6 +644,7 @@ class ImportAgentManagerWindow:
         sources_tree.heading("bike_name", text="Bike Name", anchor="w")
         sources_tree.heading("attach_note", text="Attach Note", anchor="w")
         sources_tree.column("enabled", width=80, anchor="center", stretch=False)
+        sources_tree.column("force_reprocess", width=130, anchor="center", stretch=False)
         sources_tree.column("display_name", width=180, anchor="w")
         sources_tree.column("source_type", width=120, anchor="w")
         sources_tree.column("status", width=180, anchor="w")
@@ -1290,6 +1303,11 @@ class ImportAgentManagerWindow:
                 iid=source.source_id,
                 values=(
                     _SOURCE_ENABLED_CHECKED if source.enabled else _SOURCE_ENABLED_UNCHECKED,
+                    (
+                        _SOURCE_ENABLED_CHECKED
+                        if getattr(source, "force_reprocess", False)
+                        else _SOURCE_ENABLED_UNCHECKED
+                    ),
                     source.display_name,
                     _SOURCE_TYPE_LABELS.get(source.source_type, source.source_type),
                     status_text,
@@ -1362,6 +1380,13 @@ class ImportAgentManagerWindow:
         for source in config.sources:
             if source.source_id == source_id:
                 return bool(getattr(source, "attach_session_note_on_import", False))
+        raise ValueError(f"Unknown source: {source_id}")
+
+    def _managed_source_force_reprocess_enabled(self, source_id: str) -> bool:
+        config = self.controller.require_config()
+        for source in config.sources:
+            if source.source_id == source_id:
+                return bool(getattr(source, "force_reprocess", False))
         raise ValueError(f"Unknown source: {source_id}")
 
     def _managed_source_config(self, source_id: str) -> Any:
@@ -2480,7 +2505,7 @@ class ImportAgentManagerWindow:
         if region != "cell":
             return None
         column = self.sources_tree.identify_column(event.x)
-        if column not in {"#1", "#7"}:
+        if column not in {"#1", "#2", "#8"}:
             return None
         source_id = self.sources_tree.identify_row(event.y)
         if not source_id:
@@ -2488,6 +2513,8 @@ class ImportAgentManagerWindow:
         self.sources_tree.selection_set(source_id)
         if column == "#1":
             self._toggle_source_enabled(source_id)
+        elif column == "#2":
+            self._toggle_source_force_reprocess(source_id)
         else:
             self._toggle_source_session_note_attach(source_id)
         return "break"
@@ -2925,6 +2952,23 @@ class ImportAgentManagerWindow:
             self.sources_tree.selection_set(source_id)
         self._set_manager_status(
             f"{'Enabled' if enabled else 'Disabled'} draft setup notes for source '{source_id}'."
+        )
+
+    def _toggle_source_force_reprocess(self, source_id: str) -> None:
+        if not self._guard_watch_inactive(action_label="Toggle Source Reprocessing"):
+            return
+        try:
+            enabled = not self._managed_source_force_reprocess_enabled(source_id)
+            self.controller.set_source_force_reprocess_enabled(source_id, enabled)
+        except Exception as exc:
+            self._set_manager_status(f"Toggle source reprocessing failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.sources_tree is not None and self.sources_tree.exists(source_id):
+            self.sources_tree.selection_set(source_id)
+        self._set_manager_status(
+            f"{'Enabled' if enabled else 'Disabled'} reprocessing for source '{source_id}'."
         )
 
     def _toggle_selected_library_syn_export(self) -> None:
