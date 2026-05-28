@@ -316,6 +316,9 @@ def make_signal_histogram_widget_for_loader(
                     if metrics.insufficient:
                         row.update(
                             {
+                                "Mean": "insufficient data",
+                                "Min": "insufficient data",
+                                "Max": "insufficient data",
                                 "Q25": "insufficient data",
                                 "Q50": "insufficient data",
                                 "Q75": "insufficient data",
@@ -328,6 +331,9 @@ def make_signal_histogram_widget_for_loader(
                     else:
                         row.update(
                             {
+                                "Mean": format_metric(metrics.mean),
+                                "Min": format_metric(metrics.minimum),
+                                "Max": format_metric(metrics.maximum),
                                 "Q25": format_metric(metrics.q25),
                                 "Q50": format_metric(metrics.q50),
                                 "Q75": format_metric(metrics.q75),

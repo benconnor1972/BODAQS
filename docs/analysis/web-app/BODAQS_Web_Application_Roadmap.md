@@ -101,6 +101,8 @@ remote service. Each mode should expose the same conceptual operations:
 - request summaries and downsampled traces
 - export selected data or a workspace bundle
 
+[Comment: For the first implementation, I would like to simplify this. We would support local library access only, and would not build an explicit API seam between the library data source and the browser consumer. While I accept an explicit API seam is a more rigorous long-term architecture, our priority for now is getting a local-library version up and running. Please critique, with an emphasis on any points where doing this drives us into a dead end.]
+
 ## Deployment Modes
 
 ### Installed Local Mode
@@ -116,6 +118,8 @@ The Import Manager does not need to own all application state. Cohorts are
 canonical library objects and may be written by the browser directly where the
 browser has appropriate file permissions.
 
+[Comment: this is a mode I'd like to be able to support on the first iteration].
+
 ### Browser-Local Mode
 
 The browser opens a BODAQS library or workspace bundle directly using browser
@@ -129,6 +133,9 @@ querying and interaction.
 Browser-local mode is useful, but should not be the only architecture because
 local file and directory write support varies across browsers.
 
+[Comment: this is a mode I'd like to be able to support on the first iteration. Per my comments above, for the first cut I'd like to forego a formal API and just give the browser access to the library in the local filesystem].
+
+
 ### Static Bundle Mode
 
 A processed library and the web app are packaged together as a "website in a
@@ -136,6 +143,8 @@ box."
 
 This is suitable for demos, reports, training material, and read-only review.
 It works best when the bundle includes prebuilt indexes and chart summaries.
+
+[Comment: No immediate need to implement this. Its requirements should not drive design].
 
 ### Remote Service Mode
 
@@ -145,6 +154,8 @@ libraries, or provide heavier query support.
 This mode remains useful for cloud workflows, collaboration, public demos, or
 users who prefer zero-install operation. It should be optional rather than
 assumed as the primary field workflow.
+
+[Comment: Not part of the first implementation. It is acceptable if we need to re-factor to support this later].
 
 ## Browser Responsibilities
 
@@ -196,6 +207,8 @@ support:
 
 ## Cohort Contract
 
+[Comment: I'd like to rename cohorts as 'study sets'. I think this is a more accessible name / idea for the average user].
+ 
 A cohort should be a versioned, portable object stored with the library.
 
 The preferred canonical storage shape is one cohort document per file:
@@ -270,6 +283,8 @@ should help a user improve a cohort without silently changing the cohort.
 
 ## Geographical Sections
 
+[Comment: I'd like to name these 'tracks']
+
 Geographical sections should be canonical reusable library objects, not private
 cohort state.
 
@@ -301,6 +316,8 @@ recomputed:
 - cut width or extent
 - creation and update timestamps
 
+[comment: possibly, a track could be a GPS path, maybe but not necessarily derived from a session, with 0 or more points that can be snapped to the path. Section cuts, route bearing and distance could be computed by the consumer based on policy. What do you think?]
+
 The browser can perform the interactive parts of sectioning for typical
 processed sessions:
 
@@ -318,10 +335,14 @@ A local API or remote service may be used for heavier or more durable work:
 - validation and repair of section definitions
 - support for browsers that cannot write local library files directly
 
+[comment: we would do browser-only for the first implementation]
+
 ## Cohort Writing Model
 
 Cohort writing should be an application/library capability, not an Import
 Manager-only capability.
+
+[comment: I would go further: I think cohort writing should be explicitly outside the import manager's scope]
 
 The application should define a small writer interface for cohort storage:
 
@@ -331,6 +352,7 @@ loadCohort(cohortId)
 saveCohort(cohort)
 deleteCohort(cohortId)
 ```
+[comment: again, I think an explicit interface can wait for later].
 
 Different deployment modes can implement that interface differently:
 
@@ -377,6 +399,8 @@ checkCohortAdequacy(cohort, requirements)
 This keeps the React/D3 application stable while allowing the deployment model
 to evolve.
 
+[comment: per my comments above, this feels a bit heavy for our first implementation].
+
 ## Implementation Roadmap
 
 ### Phase 0: Contracts And Boundaries
@@ -399,6 +423,8 @@ Work in this phase:
 Expected outcome:
 
 - a clear boundary between BODAQS library artifacts, cohort state, processing logic, and browser rendering
+
+[comment: for first implementation, I would limit this to library catalog and cohort. Filter helpers, geography tools, adequacy checks and frontend data source can wait].
 
 ### Phase 1: Library Browser Plus Cohorts
 

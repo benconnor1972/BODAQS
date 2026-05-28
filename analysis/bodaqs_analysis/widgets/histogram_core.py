@@ -74,6 +74,9 @@ class TrimmedQuantileMetrics:
     n_total: int
     n_trim: int
     insufficient: bool
+    mean: float
+    minimum: float
+    maximum: float
     q25: float
     q50: float
     q75: float
@@ -99,6 +102,9 @@ def compute_trimmed_quantile_metrics(
             n_total=n_total,
             n_trim=n_trim,
             insufficient=True,
+            mean=np.nan,
+            minimum=np.nan,
+            maximum=np.nan,
             q25=np.nan,
             q50=np.nan,
             q75=np.nan,
@@ -108,6 +114,9 @@ def compute_trimmed_quantile_metrics(
             skew_q=np.nan,
         )
 
+    mean = float(np.mean(trimmed))
+    minimum = float(np.min(trimmed))
+    maximum = float(np.max(trimmed))
     q25, q50, q75, q90, q95 = np.quantile(trimmed, [0.25, 0.5, 0.75, 0.9, 0.95])
     iqr = float(q75 - q25)
     skew_q = float("nan")
@@ -118,6 +127,9 @@ def compute_trimmed_quantile_metrics(
         n_total=n_total,
         n_trim=n_trim,
         insufficient=False,
+        mean=mean,
+        minimum=minimum,
+        maximum=maximum,
         q25=float(q25),
         q50=float(q50),
         q75=float(q75),
