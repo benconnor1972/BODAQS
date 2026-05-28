@@ -322,33 +322,38 @@ class PreprocessRuntimeSettingsEditor:
             elif not log_dir.exists() or not log_dir.is_dir():
                 warnings.append(f"Log directory does not exist or is not a directory: {log_dir}")
 
-        if not str(settings["preprocess_profile_path"]).strip():
-            errors.append("Preprocess profile path is blank.")
-        elif not settings["preprocess_profile_path"].exists():
-            warnings.append(f"Preprocess profile does not exist yet: {settings['preprocess_profile_path']}")
+        if self.show_preprocess_profile_path:
+            if not str(settings["preprocess_profile_path"]).strip():
+                errors.append("Preprocess profile path is blank.")
+            elif not settings["preprocess_profile_path"].exists():
+                warnings.append(f"Preprocess profile does not exist yet: {settings['preprocess_profile_path']}")
 
-        if not str(settings["artifacts_dir"]).strip():
-            errors.append("Artifacts directory is blank.")
-        elif not settings["artifacts_dir"].exists():
-            warnings.append(f"Artifacts directory does not exist yet and may be created later: {settings['artifacts_dir']}")
+        if self.show_artifacts_dir:
+            if not str(settings["artifacts_dir"]).strip():
+                errors.append("Artifacts directory is blank.")
+            elif not settings["artifacts_dir"].exists():
+                warnings.append(f"Artifacts directory does not exist yet and may be created later: {settings['artifacts_dir']}")
 
         bike_profile_path = settings["bike_profile_path"]
-        if bike_profile_path is None:
-            warnings.append("Bike profile path is blank; preprocessing will fail unless the notebook supplies one another way.")
-        elif not bike_profile_path.exists():
-            warnings.append(f"Bike profile does not exist: {bike_profile_path}")
+        if self.show_bike_profile_path:
+            if bike_profile_path is None:
+                warnings.append("Bike profile path is blank; preprocessing will fail unless the notebook supplies one another way.")
+            elif not bike_profile_path.exists():
+                warnings.append(f"Bike profile does not exist: {bike_profile_path}")
 
-        for p in settings["generic_log_metadata_paths"] or []:
-            if not p.exists():
-                warnings.append(f"Generic log metadata path does not exist: {p}")
+        if self.show_generic_log_metadata:
+            for p in settings["generic_log_metadata_paths"] or []:
+                if not p.exists():
+                    warnings.append(f"Generic log metadata path does not exist: {p}")
 
         fit_dir = settings["fit_dir"]
-        if fit_dir is not None and not fit_dir.exists():
-            warnings.append(f"FIT directory does not exist: {fit_dir}")
+        if self.show_fit_inputs:
+            if fit_dir is not None and not fit_dir.exists():
+                warnings.append(f"FIT directory does not exist: {fit_dir}")
 
-        fit_bindings_path = settings["fit_bindings_path"]
-        if fit_bindings_path is not None and not fit_bindings_path.exists():
-            warnings.append(f"FIT bindings path does not exist: {fit_bindings_path}")
+            fit_bindings_path = settings["fit_bindings_path"]
+            if fit_bindings_path is not None and not fit_bindings_path.exists():
+                warnings.append(f"FIT bindings path does not exist: {fit_bindings_path}")
 
         logger_timezone = settings["logger_timezone"]
         if self.show_logger_timezone:

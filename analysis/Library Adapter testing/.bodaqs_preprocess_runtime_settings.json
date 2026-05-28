@@ -1,0 +1,12 @@
+{
+  "artifacts_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library",
+  "bike_profile_path": "config\\bike_profiles\\example_enduro_bike_v1.json",
+  "fit_bindings_path": "config\\fit_bindings_v1.json",
+  "fit_dir": "Garmin\\FIT",
+  "generic_log_metadata_paths": null,
+  "log_dir": null,
+  "logger_timezone": "Australia/Perth",
+  "preprocess_profile_path": "config\\preprocess_profiles\\suspension_default_v1.json",
+  "prompt_for_descriptions": true,
+  "run_tz_label": "AWST"
+}
