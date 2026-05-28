@@ -5,7 +5,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -50,7 +50,7 @@ def default_library_data_syn_bike_export_config(*, enabled: bool = False) -> dic
     return {
         "enabled": bool(enabled),
         "adc_bit_count": 12,
-        "raw_scale_mode": "calibrated_full_scale",
+        "raw_scale_mode": "processed_wheel_travel",
         "clip_raw_to_adc_range": True,
         "drop_inactive": True,
         "split_by_activity": False,
@@ -140,7 +140,7 @@ def _write_source_target_library(source_root: Path, *, library_id: str, artifact
         raise ValueError(f"Import source config is not a JSON object: {config_path}")
     updated = dict(payload)
     updated["library_id"] = str(library_id).strip()
-    updated["artifacts_dir"] = str(artifacts_dir)
+    updated["artifacts_dir"] = _portable_path_text(artifacts_dir, base_dir=source_root)
     _write_json(config_path, updated, overwrite=True)
 
 
@@ -170,9 +170,22 @@ def _coerce_required_path(value: str | Path, *, field_name: str) -> Path:
     return Path(text).expanduser().resolve()
 
 
+def _portable_path_text(path: Path, *, base_dir: Path) -> str:
+    try:
+        relative = os.path.relpath(path, start=base_dir)
+    except ValueError:
+        return str(path)
+    return Path(relative).as_posix()
+
+
 def _safe_slug(value: str, *, fallback: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._").lower()
     return slug or fallback
+
+
+def _display_name_from_slug(value: str, *, fallback: str) -> str:
+    text = re.sub(r"[-_]+", " ", str(value or "").strip()).strip()
+    return text.title() if text else fallback
 
 
 def _write_json(path: Path, obj: Mapping[str, Any], *, overwrite: bool) -> None:
@@ -359,6 +372,12 @@ class ProvisionedImportAgentAppSetup:
     app_config: ImportAgentAppConfig
     library: ProvisionedImportAgentLibrary
     source: ProvisionedImportAgentSource
+
+
+@dataclass(frozen=True)
+class AdoptedImportAgentWorkspace:
+    app_config_path: Path
+    app_config: ImportAgentAppConfig
 
 
 def default_import_agent_app_config_dir(
@@ -714,6 +733,201 @@ def managed_import_agent_source_roots(
     ]
 
 
+def load_managed_import_source_configs(
+    config: ImportAgentAppConfig,
+    *,
+    enabled_only: bool = False,
+) -> list[Any]:
+    """Load managed sources with library paths resolved from local app config."""
+    from bodaqs_analysis.import_agent import load_import_source_config
+
+    validate_import_agent_app_config(config)
+    libraries_by_id = {library.library_id: library for library in config.libraries}
+    resolved_sources: list[Any] = []
+    for managed_source in config.sources:
+        if enabled_only and not managed_source.enabled:
+            continue
+        library = libraries_by_id.get(managed_source.library_id)
+        if library is None:
+            raise ValueError(
+                f"Import agent source {managed_source.source_id!r} references unknown "
+                f"library_id {managed_source.library_id!r}"
+            )
+        source_config = load_import_source_config(managed_source.source_root)
+        if source_config.source_id != managed_source.source_id:
+            raise ValueError(
+                f"Managed source id {managed_source.source_id!r} does not match "
+                f"{source_config.config_path}: {source_config.source_id!r}"
+            )
+        return_source_type = normalize_import_source_type(source_config.source_type)
+        if return_source_type != normalize_import_source_type(managed_source.source_type):
+            raise ValueError(
+                f"Managed source {managed_source.source_id!r} type {managed_source.source_type!r} "
+                f"does not match {source_config.config_path}: {source_config.source_type!r}"
+            )
+        resolved_sources.append(
+            replace(
+                source_config,
+                artifacts_dir=library.artifacts_dir,
+                library_id=managed_source.library_id,
+            )
+        )
+    return resolved_sources
+
+
+def validate_managed_import_sources(
+    config: ImportAgentAppConfig,
+    *,
+    enabled_only: bool = False,
+) -> list[dict[str, Any]]:
+    from bodaqs_analysis.import_agent import ImportSourceRunner
+
+    results: list[dict[str, Any]] = []
+    for source in load_managed_import_source_configs(config, enabled_only=enabled_only):
+        runner = ImportSourceRunner(source)
+        errors, warnings = runner.validate()
+        results.append(
+            {
+                "source_id": source.source_id,
+                "source_type": source.source_type,
+                "config_path": str(source.config_path),
+                "errors": errors,
+                "warnings": warnings,
+            }
+        )
+    return results
+
+
+def discover_import_agent_libraries(libraries_root: str | Path) -> list[ImportAgentLibraryConfig]:
+    root = _coerce_required_path(libraries_root, field_name="libraries_root")
+    if not root.exists():
+        raise FileNotFoundError(f"Libraries root does not exist: {root}")
+    if not root.is_dir():
+        raise NotADirectoryError(f"Libraries root is not a directory: {root}")
+
+    libraries: list[ImportAgentLibraryConfig] = []
+    seen_ids: set[str] = set()
+    for metadata_path in sorted(root.glob("*/library_definition.json")):
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"Library definition must be a JSON object: {metadata_path}")
+        if payload.get("schema") != IMPORT_AGENT_LIBRARY_SCHEMA:
+            raise ValueError(
+                f"Unexpected library definition schema in {metadata_path}: {payload.get('schema')!r}"
+            )
+        if int(payload.get("version", -1)) != IMPORT_AGENT_LIBRARY_VERSION:
+            raise ValueError(
+                f"Unexpected library definition version in {metadata_path}: {payload.get('version')!r}"
+            )
+        library_id = _optional_text(payload.get("library_id"))
+        if library_id is None:
+            raise ValueError(f"Library definition missing non-empty library_id: {metadata_path}")
+        if library_id in seen_ids:
+            raise ValueError(f"Duplicate library_id {library_id!r} under {root}")
+        seen_ids.add(library_id)
+        artifacts_dir = metadata_path.parent.resolve()
+        libraries.append(
+            ImportAgentLibraryConfig(
+                library_id=library_id,
+                display_name=_optional_text(payload.get("display_name"))
+                or _display_name_from_slug(artifacts_dir.name, fallback=library_id),
+                artifacts_dir=artifacts_dir,
+                data_syn_bike_export_enabled=_library_metadata_data_syn_bike_export_enabled(artifacts_dir),
+            )
+        )
+    return libraries
+
+
+def discover_import_agent_sources(
+    sources_root: str | Path,
+    *,
+    known_library_ids: Optional[set[str]] = None,
+) -> list[ImportAgentManagedSourceConfig]:
+    from bodaqs_analysis.import_agent import load_import_source_config
+
+    root = _coerce_required_path(sources_root, field_name="sources_root")
+    if not root.exists():
+        raise FileNotFoundError(f"Sources root does not exist: {root}")
+    if not root.is_dir():
+        raise NotADirectoryError(f"Sources root is not a directory: {root}")
+
+    candidate_paths: list[Path] = []
+    root_config = root / DEFAULT_IMPORT_SOURCE_FILENAME
+    if root_config.exists():
+        candidate_paths.append(root_config)
+    candidate_paths.extend(sorted(root.glob(f"*/{DEFAULT_IMPORT_SOURCE_FILENAME}")))
+
+    sources: list[ImportAgentManagedSourceConfig] = []
+    seen_ids: set[str] = set()
+    for config_path in candidate_paths:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"Import source config must be a JSON object: {config_path}")
+        source_config = load_import_source_config(config_path)
+        if source_config.source_id in seen_ids:
+            raise ValueError(f"Duplicate source_id {source_config.source_id!r} under {root}")
+        seen_ids.add(source_config.source_id)
+        library_id = _optional_text(source_config.library_id)
+        if library_id is None:
+            raise ValueError(f"Import source is missing target library_id: {config_path}")
+        if known_library_ids is not None and library_id not in known_library_ids:
+            raise ValueError(
+                f"Import source {source_config.source_id!r} references library_id {library_id!r}, "
+                f"but that library was not found under the selected libraries root."
+            )
+        source_root = config_path.parent.resolve()
+        sources.append(
+            ImportAgentManagedSourceConfig(
+                source_id=source_config.source_id,
+                display_name=_optional_text(payload.get("display_name"))
+                or _display_name_from_slug(source_root.name, fallback=source_config.source_id),
+                source_root=source_root,
+                library_id=library_id,
+                source_type=source_config.source_type,
+                enabled=True,
+                attach_session_note_on_import=source_config.session_note.attach_on_import,
+                force_reprocess=source_config.force_reprocess,
+            )
+        )
+    return sources
+
+
+def adopt_import_agent_existing_workspace(
+    *,
+    sources_root: str | Path,
+    libraries_root: str | Path,
+    app_config_path: Optional[str | Path] = None,
+    auto_start: bool = False,
+) -> AdoptedImportAgentWorkspace:
+    resolved_sources_root = _coerce_required_path(sources_root, field_name="sources_root")
+    resolved_libraries_root = _coerce_required_path(libraries_root, field_name="libraries_root")
+    resolved_app_config_path = (
+        default_import_agent_app_config_path()
+        if app_config_path is None
+        else _coerce_required_path(app_config_path, field_name="app_config_path")
+    )
+
+    libraries = discover_import_agent_libraries(resolved_libraries_root)
+    if not libraries:
+        raise ValueError(f"No BODAQS import-manager libraries found under: {resolved_libraries_root}")
+    sources = discover_import_agent_sources(
+        resolved_sources_root,
+        known_library_ids={library.library_id for library in libraries},
+    )
+    if not sources:
+        raise ValueError(f"No BODAQS import-manager sources found under: {resolved_sources_root}")
+
+    app_config = make_import_agent_app_config(
+        sources_root=resolved_sources_root,
+        libraries_root=resolved_libraries_root,
+        libraries=sorted(libraries, key=lambda item: item.library_id),
+        sources=sorted(sources, key=lambda item: item.source_id),
+        auto_start=auto_start,
+    )
+    save_import_agent_app_config(app_config, resolved_app_config_path, overwrite=True)
+    return AdoptedImportAgentWorkspace(app_config_path=resolved_app_config_path, app_config=app_config)
+
+
 def update_import_agent_source_enabled(
     app_config_path: str | Path,
     *,
@@ -1044,6 +1258,14 @@ def update_import_agent_source_display_name(
     if found is None:
         raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
 
+    config_path_on_disk = found.source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    if config_path_on_disk.exists():
+        payload = _read_json(config_path_on_disk, {})
+        if isinstance(payload, Mapping):
+            updated_payload = dict(payload)
+            updated_payload["display_name"] = new_display_name
+            _write_json(config_path_on_disk, updated_payload, overwrite=True)
+
     updated = make_import_agent_app_config(
         sources_root=config.sources_root,
         libraries_root=config.libraries_root,
@@ -1256,10 +1478,11 @@ def provision_import_agent_source(
         "schema": "bodaqs.import_source",
         "version": 1,
         "source_id": safe_source_id,
+        "display_name": display,
         "source_type": normalized_source_type,
         "description": f"Provisioned BODAQS import source for {display}.",
         "library_id": str(library_id).strip(),
-        "artifacts_dir": str(artifacts_dir_path),
+        "artifacts_dir": _portable_path_text(artifacts_dir_path, base_dir=source_root_path),
         "preprocess_profile_path": settings_dir_name,
         "bike_profile_path": bike_dir_name,
         "session_note": {

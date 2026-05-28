@@ -22,7 +22,7 @@ try:
 except Exception:  # pragma: no cover - dependency presence is checked in packaged builds.
     Sheet = None
 
-from bodaqs_analysis.import_agent import ImportAgentSupervisor, load_import_source_config, validate_import_sources
+from bodaqs_analysis.import_agent import ImportAgentSupervisor, load_import_source_config
 from bodaqs_analysis.import_agent_logger_wifi import LoggerWifiApiClient
 from bodaqs_analysis.import_agent_logger_wifi_discovery import (
     LoggerWifiDiscoveryResult,
@@ -34,7 +34,9 @@ from .import_agent_provisioning import (
     IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
     IMPORT_AGENT_APP_CONFIG_MODE_PORTABLE,
     ImportAgentAppConfig,
+    adopt_import_agent_existing_workspace,
     load_import_agent_app_config,
+    load_managed_import_source_configs,
     managed_import_agent_source_roots,
     provision_import_agent_app_setup,
     provision_import_agent_library_for_app,
@@ -50,6 +52,7 @@ from .import_agent_provisioning import (
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
     update_import_agent_source_logger_wifi,
+    validate_managed_import_sources,
 )
 from .import_agent_profile_builders import (
     apply_bike_profile_form_values,
@@ -250,6 +253,22 @@ class ImportAgentManagerController:
         self.app_config = result.app_config
         return result
 
+    def adopt_existing_workspace(
+        self,
+        *,
+        sources_root: str,
+        libraries_root: str,
+        auto_start: bool,
+    ) -> Any:
+        result = adopt_import_agent_existing_workspace(
+            sources_root=sources_root,
+            libraries_root=libraries_root,
+            app_config_path=self.app_config_path,
+            auto_start=auto_start,
+        )
+        self.app_config = result.app_config
+        return result
+
     def add_library(self, *, display_name: str, data_syn_bike_export_enabled: bool, overwrite: bool) -> Any:
         updated, library = provision_import_agent_library_for_app(
             self.app_config_path,
@@ -376,13 +395,13 @@ class ImportAgentManagerController:
         return managed_import_agent_source_roots(self.require_config(), enabled_only=enabled_only)
 
     def validate_sources(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
-        return validate_import_sources(self.managed_source_roots(enabled_only=enabled_only))
+        return validate_managed_import_sources(self.require_config(), enabled_only=enabled_only)
 
     def make_enabled_supervisor(self) -> ImportAgentSupervisor:
-        source_roots = self.managed_source_roots(enabled_only=True)
-        if not source_roots:
+        sources = load_managed_import_source_configs(self.require_config(), enabled_only=True)
+        if not sources:
             raise ValueError("No enabled managed sources are available.")
-        return ImportAgentSupervisor.from_paths(source_roots)
+        return ImportAgentSupervisor(sources)
 
     def import_once(self) -> tuple[dict[str, Any], dict[str, Any]]:
         supervisor = self.make_enabled_supervisor()
@@ -503,6 +522,7 @@ class ImportAgentManagerWindow:
         self.sources_root_browse_button: Optional[ttk.Button] = None
         self.libraries_root_browse_button: Optional[ttk.Button] = None
         self.create_initial_button: Optional[ttk.Button] = None
+        self.adopt_workspace_button: Optional[ttk.Button] = None
         self.add_library_button: Optional[ttk.Button] = None
         self.add_source_button: Optional[ttk.Button] = None
         self.apply_app_settings_button: Optional[ttk.Button] = None
@@ -771,12 +791,18 @@ class ImportAgentManagerWindow:
             command=self._create_initial_setup,
         )
         self.create_initial_button.grid(row=0, column=0, padx=(0, 8))
+        self.adopt_workspace_button = ttk.Button(
+            actions,
+            text="Use Existing Workspace",
+            command=self._adopt_existing_workspace,
+        )
+        self.adopt_workspace_button.grid(row=0, column=1, padx=(0, 8))
         self.apply_app_settings_button = ttk.Button(
             actions,
             text="Apply App Settings",
             command=self._apply_app_settings,
         )
-        self.apply_app_settings_button.grid(row=0, column=1)
+        self.apply_app_settings_button.grid(row=0, column=2)
 
         ttk.Label(parent, textvariable=self.provision_status_var, wraplength=980, justify="left").grid(
             row=5, column=0, sticky="ew", pady=(10, 0)
@@ -1215,6 +1241,8 @@ class ImportAgentManagerWindow:
             self._set_root_editable(True)
             if self.create_initial_button is not None:
                 self.create_initial_button.configure(state="normal")
+            if self.adopt_workspace_button is not None:
+                self.adopt_workspace_button.configure(state="normal")
             if self.add_library_button is not None:
                 self.add_library_button.configure(state="disabled")
             if self.add_source_button is not None:
@@ -1251,6 +1279,8 @@ class ImportAgentManagerWindow:
         self._set_root_editable(False)
         if self.create_initial_button is not None:
             self.create_initial_button.configure(state="disabled")
+        if self.adopt_workspace_button is not None:
+            self.adopt_workspace_button.configure(state="disabled")
         if self.add_library_button is not None:
             self.add_library_button.configure(state="normal")
         if self.add_source_button is not None:
@@ -3168,6 +3198,9 @@ class ImportAgentManagerWindow:
                 overwrite=bool(self.overwrite_var.get()),
             )
         except Exception as exc:
+            if isinstance(exc, FileExistsError) and self._confirm_adopt_existing_workspace_after_create_failure(exc):
+                self._adopt_existing_workspace(confirm=False)
+                return
             self._set_provision_status(f"Initial setup failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
@@ -3178,6 +3211,49 @@ class ImportAgentManagerWindow:
             f"Created initial library '{result.library.display_name}' and source '{result.source.display_name}'."
         )
         self._offer_configure_source_after_creation(result.source.source_id)
+
+    def _confirm_adopt_existing_workspace_after_create_failure(self, exc: Exception) -> bool:
+        return messagebox.askyesno(
+            _APP_DISPLAY_NAME,
+            "The selected roots already contain files, so the manager will not seed a new setup there.\n\n"
+            "Would you like to use the existing BODAQS workspace in those folders and rebuild this "
+            "computer's local app settings instead?\n\n"
+            f"Original error: {exc}",
+            parent=self.root,
+        )
+
+    def _adopt_existing_workspace(self, *, confirm: bool = True) -> None:
+        if not self._guard_watch_inactive(action_label="Use Existing Workspace"):
+            return
+        if confirm:
+            should_continue = messagebox.askyesno(
+                _APP_DISPLAY_NAME,
+                "Use the selected source and library roots as an existing BODAQS workspace?\n\n"
+                "This rebuilds only this computer's local Import Manager app settings. It does not "
+                "overwrite source folders, library folders, bike profiles, note templates, logs, or "
+                "processed artifacts.",
+                parent=self.root,
+            )
+            if not should_continue:
+                return
+        try:
+            result = self.controller.adopt_existing_workspace(
+                sources_root=self.sources_root_var.get(),
+                libraries_root=self.libraries_root_var.get(),
+                auto_start=bool(self.auto_start_var.get()),
+            )
+        except Exception as exc:
+            self._set_provision_status(f"Use existing workspace failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+
+        self._refresh_ui_from_config()
+        self._sync_startup_registration(show_errors=True, emit_status=False)
+        self._set_provision_status(
+            "Using existing workspace: "
+            f"libraries={len(result.app_config.libraries)} sources={len(result.app_config.sources)}. "
+            "Local app settings were rebuilt for this computer."
+        )
 
     def _add_library(self) -> None:
         if not self._guard_watch_inactive(action_label="Add Library"):

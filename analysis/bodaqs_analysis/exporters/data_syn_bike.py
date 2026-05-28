@@ -99,10 +99,16 @@ def export_data_syn_bike_resolved(
     session_id = str(session.get("session_id") or ((session.get("meta") or {}).get("session_id")) or "session")
     run_id = str(session.get("run_id") or ((session.get("meta") or {}).get("run_id")) or "")
 
-    front_col, front_info, front_reason = _pick_raw_column(session, "front")
-    rear_col, rear_info, rear_reason = _pick_raw_column(session, "rear")
-    front_inverted, front_inversion_reason = _raw_inversion(front_col, front_info, "front", session, config)
-    rear_inverted, rear_inversion_reason = _raw_inversion(rear_col, rear_info, "rear", session, config)
+    if str(config["raw_scale_mode"]) == "processed_wheel_travel":
+        front_col, front_info, front_reason = _pick_processed_wheel_column(session, "front")
+        rear_col, rear_info, rear_reason = _pick_processed_wheel_column(session, "rear")
+        front_inverted, front_inversion_reason = False, "not applicable for processed_wheel_travel"
+        rear_inverted, rear_inversion_reason = False, "not applicable for processed_wheel_travel"
+    else:
+        front_col, front_info, front_reason = _pick_raw_column(session, "front")
+        rear_col, rear_info, rear_reason = _pick_raw_column(session, "rear")
+        front_inverted, front_inversion_reason = _raw_inversion(front_col, front_info, "front", session, config)
+        rear_inverted, rear_inversion_reason = _raw_inversion(rear_col, rear_info, "rear", session, config)
 
     lat_col = _first_existing(df, LAT_COLS)
     lon_col = _first_existing(df, LON_COLS)
@@ -250,19 +256,27 @@ def data_syn_bike_manual_settings(
 ) -> dict[str, Any]:
     """Return the manual data.syn.bike settings implied by an export."""
     config = default_data_syn_bike_export_config(**dict(export_config or {}))
-    ranges = _bike_profile_travel_ranges(bike_profile)
+    ranges = bike_profile_travel_ranges(bike_profile)
 
     front_travel = ranges.get("front_wheel")
     rear_shock_travel = ranges.get("rear_shock")
     rear_wheel_travel = ranges.get("rear_wheel")
-    leverage = None
-    if rear_shock_travel is not None and rear_shock_travel > 0 and rear_wheel_travel is not None:
-        leverage = rear_wheel_travel / rear_shock_travel
+    raw_scale_mode = str(config["raw_scale_mode"])
+    if raw_scale_mode == "processed_wheel_travel":
+        # Rear raw is synthetic rear wheel travel, so tell data.syn.bike to
+        # treat the rear input as a 1:1 shock-to-wheel channel for this import.
+        rear_input_travel = rear_wheel_travel
+        leverage = 1.0 if rear_wheel_travel is not None else None
+    else:
+        rear_input_travel = rear_shock_travel
+        leverage = None
+        if rear_shock_travel is not None and rear_shock_travel > 0 and rear_wheel_travel is not None:
+            leverage = rear_wheel_travel / rear_shock_travel
 
     warnings: list[str] = []
     for label, value in (
         ("front wheel travel", front_travel),
-        ("rear shock travel", rear_shock_travel),
+        ("rear shock travel", rear_input_travel),
         ("rear wheel travel", rear_wheel_travel),
     ):
         if value is None:
@@ -285,13 +299,13 @@ def data_syn_bike_manual_settings(
         "adc_bit_count": int(config["adc_bit_count"]),
         "adc_max_count": int(config["adc_max_count"]),
         "front_normalization_range_mm": front_travel,
-        "rear_shock_normalization_range_mm": rear_shock_travel,
+        "rear_shock_normalization_range_mm": rear_input_travel,
         "rear_wheel_normalization_range_mm": rear_wheel_travel,
-        "max_shock_mm": rear_shock_travel,
+        "max_shock_mm": rear_input_travel,
         "front_wheel_travel_mm": front_travel,
         "rear_wheel_travel_mm": rear_wheel_travel,
         "average_leverage_rate": leverage,
-        "raw_scale_mode": str(config["raw_scale_mode"]),
+        "raw_scale_mode": raw_scale_mode,
         "raw_full_scale_by_end": dict(config["raw_full_scale_by_end"]),
         "warnings": warnings,
     }
@@ -329,7 +343,8 @@ def render_data_syn_bike_manual_settings_text(
             "",
             "Notes:",
             "- CSV files are headerless data.syn.bike exports.",
-            "- Raw columns may be calibrated synthetic ADC counts, not untouched logger ADC counts.",
+            "- Raw columns may be synthetic ADC counts, not untouched logger ADC counts.",
+            "- In processed_wheel_travel mode, rear raw represents rear wheel travel; use average leverage rate 1.",
             f"- Raw scale mode: {settings.get('raw_scale_mode') or 'unknown'}",
         ]
     )
@@ -545,9 +560,66 @@ def _pick_raw_column(session: Mapping[str, Any], end: str) -> tuple[Optional[str
     return col, info, reason
 
 
+def _pick_processed_wheel_column(session: Mapping[str, Any], end: str) -> tuple[Optional[str], dict[str, Any], str]:
+    df = session["df"]
+    end = _norm(end)
+    candidates: list[tuple[int, str, dict[str, Any], str]] = []
+
+    for col, info in _signals(session).items():
+        if col not in df.columns:
+            continue
+        if not _is_wheel_displacement_signal(info):
+            continue
+        if _norm(info.get("end")) != end:
+            continue
+        candidates.append((_wheel_displacement_score(info, col), col, info, "signal registry"))
+
+    if not candidates:
+        token = f"{end}_wheel"
+        for col in df.columns:
+            name = _norm(col)
+            if token not in name or "disp" not in name or "[mm]" not in name:
+                continue
+            if "raw" in name or "[counts]" in name or "_norm" in name or "[1]" in name:
+                continue
+            info = {"end": end, "quantity": "disp", "domain": "wheel", "unit": "mm"}
+            candidates.append((_wheel_displacement_score(info, col), str(col), info, "column-name fallback"))
+
+    if not candidates:
+        return None, {}, "not found"
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    _, col, info, reason = candidates[0]
+    return col, info, reason
+
+
 def _signals(session: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     signals = ((session.get("meta") or {}).get("signals") or {})
     return {str(k): dict(v) for k, v in signals.items() if isinstance(v, Mapping)}
+
+
+def _is_wheel_displacement_signal(info: Mapping[str, Any]) -> bool:
+    return (
+        _norm(info.get("domain")) == "wheel"
+        and _norm(info.get("quantity")) == "disp"
+        and _norm(info.get("unit")) == "mm"
+    )
+
+
+def _wheel_displacement_score(info: Mapping[str, Any], col: str) -> int:
+    score = 0
+    if _norm(info.get("processing_role")) == "primary_analysis":
+        score -= 20
+    if _norm(info.get("origin")) == "analysis":
+        score -= 10
+    name = _norm(col)
+    if "disp_dom_wheel" in name:
+        score -= 5
+    if "vel" in name or "acc" in name or "raw" in name:
+        score += 100
+    if "_norm" in name or "[1]" in name:
+        score += 100
+    return score
 
 
 def _is_raw_signal(col: str, info: Mapping[str, Any]) -> bool:
@@ -736,6 +808,14 @@ def _raw_counts_for_end(
             "status": "missing_raw_column",
         }
 
+    if str(config["raw_scale_mode"]) == "processed_wheel_travel":
+        return _processed_wheel_travel_raw_counts(
+            df,
+            col=col,
+            end=end,
+            config=config,
+        )
+
     if str(config["raw_scale_mode"]) == "calibrated_full_scale":
         scaled, meta = _calibrated_full_scale_raw_counts(
             session,
@@ -758,6 +838,49 @@ def _raw_counts_for_end(
         "inverted": bool(inverted),
         "inversion_reason": inversion_reason,
         "adc_max_count": adc_max,
+    }
+
+
+def _processed_wheel_travel_raw_counts(
+    df: pd.DataFrame,
+    *,
+    col: str,
+    end: str,
+    config: Mapping[str, Any],
+) -> tuple[pd.Series, dict[str, Any]]:
+    adc_max = int(config["adc_max_count"])
+    target_full_range, target_source = _raw_full_scale_for_end(
+        end,
+        config=config,
+        calibration_full_travel=None,
+    )
+    if target_full_range is None or target_full_range <= 0:
+        return _blank_series(df.index), {
+            "mode": "processed_wheel_travel",
+            "status": "missing_target_full_scale",
+            "source_col": col,
+            "adc_max_count": adc_max,
+        }
+
+    values = pd.to_numeric(df[col], errors="coerce").astype(float)
+    scaled = values / float(target_full_range) * adc_max
+    finite = np.isfinite(scaled)
+    clipped_low = int(((scaled < 0) & finite).sum())
+    clipped_high = int(((scaled > adc_max) & finite).sum())
+    if bool(config["clip_raw_to_adc_range"]):
+        scaled = scaled.clip(lower=0, upper=adc_max)
+
+    return _raw_counts_for_export(scaled), {
+        "mode": "processed_wheel_travel",
+        "status": "ok",
+        "source_col": col,
+        "target_full_range": float(target_full_range),
+        "target_full_range_source": target_source,
+        "adc_max_count": adc_max,
+        "adc_bit_count": int(config["adc_bit_count"]),
+        "clip_raw_to_adc_range": bool(config["clip_raw_to_adc_range"]),
+        "clipped_low_rows": clipped_low if bool(config["clip_raw_to_adc_range"]) else 0,
+        "clipped_high_rows": clipped_high if bool(config["clip_raw_to_adc_range"]) else 0,
     }
 
 
@@ -819,10 +942,14 @@ def _calibrated_full_scale_raw_counts(
     installed_zero_count = _as_finite_float(calibration.get("installed_zero_count"))
     zero_reference = installed_zero_count if installed_zero_count is not None else sensor_zero_count
     zero_reference_source = "installed_zero_count" if installed_zero_count is not None else "sensor_zero_count"
-    invert = calibration.get("invert")
-    invert_flag = bool(invert) if isinstance(invert, bool) else bool(sensor_full_count < sensor_zero_count)
-
     raw = pd.to_numeric(df[col], errors="coerce").astype(float)
+    invert_flag, invert_reason = _calibrated_raw_inversion(
+        raw,
+        calibration=calibration,
+        zero_reference=zero_reference,
+        sensor_zero_count=sensor_zero_count,
+        sensor_full_count=sensor_full_count,
+    )
     counts_per_output_unit = span_abs / sensor_full_travel
     physical_travel = (raw - zero_reference) / counts_per_output_unit
     if invert_flag:
@@ -846,12 +973,38 @@ def _calibrated_full_scale_raw_counts(
         "zero_reference_source": zero_reference_source,
         "counts_per_output_unit": float(counts_per_output_unit),
         "inverted": bool(invert_flag),
+        "inversion_reason": invert_reason,
         "adc_max_count": adc_max,
         "adc_bit_count": int(config["adc_bit_count"]),
         "clip_raw_to_adc_range": bool(config["clip_raw_to_adc_range"]),
         "clipped_low_rows": clipped_low if bool(config["clip_raw_to_adc_range"]) else 0,
         "clipped_high_rows": clipped_high if bool(config["clip_raw_to_adc_range"]) else 0,
     }
+
+
+def _calibrated_raw_inversion(
+    raw: pd.Series,
+    *,
+    calibration: Mapping[str, Any],
+    zero_reference: float,
+    sensor_zero_count: float,
+    sensor_full_count: float,
+) -> tuple[bool, str]:
+    configured = calibration.get("invert")
+    configured_flag = bool(configured) if isinstance(configured, bool) else bool(sensor_full_count < sensor_zero_count)
+    configured_reason = "calibration.invert" if isinstance(configured, bool) else "sensor_full_count_less_than_zero_count"
+
+    delta = raw - float(zero_reference)
+    finite = delta[np.isfinite(delta)]
+    if not finite.empty:
+        normal_nonnegative = float((finite >= 0).mean())
+        inverted_nonnegative = float(((-finite) >= 0).mean())
+        if inverted_nonnegative >= normal_nonnegative + 0.5:
+            return True, "raw_values_decrease_from_zero_reference"
+        if normal_nonnegative >= inverted_nonnegative + 0.5:
+            return False, "raw_values_increase_from_zero_reference"
+
+    return configured_flag, configured_reason
 
 
 def _first_complete_linear_calibration(
@@ -888,9 +1041,11 @@ def _raw_full_scale_for_end(
     return None, "missing"
 
 
-def _bike_profile_travel_ranges(bike_profile: Optional[Mapping[str, Any]]) -> dict[str, Optional[float]]:
+def bike_profile_travel_ranges(bike_profile: Optional[Mapping[str, Any]]) -> dict[str, Optional[float]]:
+    """Return bike-profile travel ranges used by data.syn.bike helpers."""
     out: dict[str, Optional[float]] = {
         "front_wheel": None,
+        "front_suspension": None,
         "rear_shock": None,
         "rear_wheel": None,
     }
@@ -918,11 +1073,112 @@ def _bike_profile_travel_ranges(bike_profile: Optional[Mapping[str, Any]]) -> di
             continue
         if end == "front" and domain == "wheel":
             out["front_wheel"] = float(value)
+        elif end == "front" and domain == "suspension":
+            out["front_suspension"] = float(value)
         elif end == "rear" and domain == "suspension":
             out["rear_shock"] = float(value)
         elif end == "rear" and domain == "wheel":
             out["rear_wheel"] = float(value)
+    if out["front_wheel"] is None and out["front_suspension"] is not None:
+        out["front_wheel"] = _derive_front_wheel_travel_from_transform(
+            bike_profile,
+            front_suspension_travel=float(out["front_suspension"]),
+        )
     return out
+
+
+def _derive_front_wheel_travel_from_transform(
+    bike_profile: Mapping[str, Any],
+    *,
+    front_suspension_travel: float,
+) -> Optional[float]:
+    transforms = bike_profile.get("signal_transforms")
+    if not isinstance(transforms, Sequence) or isinstance(transforms, (str, bytes, bytearray)):
+        return None
+
+    for transform in transforms:
+        if not isinstance(transform, Mapping) or transform.get("enabled") is False:
+            continue
+        input_selector = transform.get("input")
+        output_selector = transform.get("output")
+        if not isinstance(input_selector, Mapping) or not isinstance(output_selector, Mapping):
+            continue
+        if not (
+            _selector_matches(input_selector, end="front", domain="suspension", quantity="disp", unit="mm")
+            and _selector_matches(output_selector, end="front", domain="wheel", quantity="disp", unit="mm")
+        ):
+            continue
+        method = _norm(transform.get("method"))
+        if method == "polynomial":
+            derived = _polynomial_travel_at(transform, front_suspension_travel)
+        elif method == "lut":
+            derived = _lut_travel_at(transform, front_suspension_travel)
+        else:
+            derived = None
+        if derived is not None and derived > 0:
+            return float(derived)
+    return None
+
+
+def _selector_matches(
+    selector: Mapping[str, Any],
+    *,
+    end: str,
+    domain: str,
+    quantity: str,
+    unit: str,
+) -> bool:
+    return (
+        _norm(selector.get("end")) == end
+        and _norm(selector.get("domain")) == domain
+        and _norm(selector.get("quantity")) == quantity
+        and _norm(selector.get("unit")) == unit
+    )
+
+
+def _polynomial_travel_at(transform: Mapping[str, Any], travel: float) -> Optional[float]:
+    polynomial = transform.get("polynomial")
+    if not isinstance(polynomial, Mapping):
+        return None
+    coefficients = polynomial.get("coefficients")
+    if not isinstance(coefficients, Sequence) or isinstance(coefficients, (str, bytes, bytearray)):
+        return None
+    values: list[float] = []
+    for coefficient in coefficients:
+        value = _as_finite_float(coefficient)
+        if value is None:
+            return None
+        values.append(value)
+    if not values:
+        return None
+    order = _norm(polynomial.get("coefficient_order") or "ascending")
+    if order == "descending":
+        values = list(reversed(values))
+
+    def evaluate(x: float) -> float:
+        return float(sum(coefficient * (x ** power) for power, coefficient in enumerate(values)))
+
+    return evaluate(float(travel)) - evaluate(0.0)
+
+
+def _lut_travel_at(transform: Mapping[str, Any], travel: float) -> Optional[float]:
+    lut = transform.get("lut")
+    if not isinstance(lut, Sequence) or isinstance(lut, (str, bytes, bytearray)):
+        return None
+    points: list[tuple[float, float]] = []
+    for item in lut:
+        if not isinstance(item, Mapping):
+            continue
+        x = _as_finite_float(item.get("input"))
+        y = _as_finite_float(item.get("output"))
+        if x is not None and y is not None:
+            points.append((x, y))
+    if not points:
+        return None
+    points.sort(key=lambda item: item[0])
+    xs = np.asarray([item[0] for item in points], dtype=float)
+    ys = np.asarray([item[1] for item in points], dtype=float)
+    return float(np.interp(float(travel), xs, ys))
 
 
 def _fmt_mm(value: Any) -> str:
@@ -978,8 +1234,11 @@ def _validate_export_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("data.syn.bike export config 'adc_bit_count' must be > 0")
 
     raw_scale_mode = str(out.get("raw_scale_mode", "as_is"))
-    if raw_scale_mode not in {"as_is", "calibrated_full_scale"}:
-        raise ValueError("data.syn.bike export config 'raw_scale_mode' must be 'as_is' or 'calibrated_full_scale'")
+    if raw_scale_mode not in {"as_is", "calibrated_full_scale", "processed_wheel_travel"}:
+        raise ValueError(
+            "data.syn.bike export config 'raw_scale_mode' must be "
+            "'as_is', 'calibrated_full_scale', or 'processed_wheel_travel'"
+        )
     out["raw_scale_mode"] = raw_scale_mode
 
     raw_full_scale_by_end = out.get("raw_full_scale_by_end", {})

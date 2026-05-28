@@ -24,6 +24,22 @@
       "full_range": 170.0
     },
     {
+      "id": "front_wheel_travel_range",
+      "signal": {
+        "end": "front",
+        "quantity": "disp",
+        "domain": "wheel",
+        "unit": "mm"
+      },
+      "full_range": 151.47110911202253,
+      "metadata": {
+        "source": "import_agent_head_angle",
+        "source_range_id": "front_fork_travel_range",
+        "head_angle_deg": 63.0,
+        "linear_coefficient": 0.8910065241883678
+      }
+    },
+    {
       "id": "rear_shock_travel_range",
       "signal": {
         "end": "rear",

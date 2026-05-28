@@ -25,6 +25,7 @@ DEFAULT_SESSION_NOTE_TEMPLATE_FILENAME = "session_note_template.json"
 DEFAULT_BIKE_SETUP_PRESET_FILENAME = "bike_setup_preset.json"
 FRONT_VERTICAL_TRANSFORM_ID = "front_fork_to_front_vertical_wheel_travel"
 FRONT_VERTICAL_TRANSFORM_SOURCE = "import_agent_head_angle"
+FRONT_WHEEL_NORMALIZATION_RANGE_ID = "front_wheel_travel_range"
 
 _ASSET_PACKAGE = "bodaqs_import_manager.import_agent_assets"
 _FIELD_CATALOG_FILENAME = "session_note_field_catalog.json"
@@ -242,9 +243,16 @@ def _coerce_optional_head_angle(value: Any) -> Optional[float]:
     return angle
 
 
-def _set_normalization_range(profile: dict[str, Any], *, key: str, value: Any) -> None:
-    spec = _normalization_range_specs()[key]
-    full_range = _coerce_positive_float(value, field_name=key)
+def _set_normalization_range_for_signal(
+    profile: dict[str, Any],
+    *,
+    range_id: str,
+    signal: Mapping[str, Any],
+    full_range: Any,
+    field_name: str,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> None:
+    full_range_float = _coerce_positive_float(full_range, field_name=field_name)
     ranges = profile.setdefault("normalization_ranges", [])
     if not isinstance(ranges, list):
         ranges = []
@@ -253,13 +261,61 @@ def _set_normalization_range(profile: dict[str, Any], *, key: str, value: Any) -
     for item in ranges:
         if not isinstance(item, dict):
             continue
-        if item.get("id") == spec["id"] or _matches_signal_selector(item.get("signal"), spec["signal"]):
-            item["id"] = spec["id"]
-            item["signal"] = dict(spec["signal"])
-            item["full_range"] = full_range
+        if item.get("id") == range_id or _matches_signal_selector(item.get("signal"), signal):
+            item["id"] = range_id
+            item["signal"] = dict(signal)
+            item["full_range"] = full_range_float
+            if metadata is not None:
+                item["metadata"] = dict(metadata)
             return
 
-    ranges.append({"id": spec["id"], "signal": dict(spec["signal"]), "full_range": full_range})
+    payload = {"id": range_id, "signal": dict(signal), "full_range": full_range_float}
+    if metadata is not None:
+        payload["metadata"] = dict(metadata)
+    ranges.append(payload)
+
+
+def _set_normalization_range(profile: dict[str, Any], *, key: str, value: Any) -> None:
+    spec = _normalization_range_specs()[key]
+    _set_normalization_range_for_signal(
+        profile,
+        range_id=spec["id"],
+        signal=spec["signal"],
+        full_range=value,
+        field_name=key,
+    )
+
+
+def _normalization_range_value(profile: Mapping[str, Any], selector: Mapping[str, Any]) -> Optional[float]:
+    for item in profile.get("normalization_ranges", []) or []:
+        if not isinstance(item, Mapping):
+            continue
+        if not _matches_signal_selector(item.get("signal"), selector):
+            continue
+        try:
+            value = float(item.get("full_range"))
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) and value > 0.0 else None
+    return None
+
+
+def _remove_managed_front_wheel_normalization_range(profile: dict[str, Any]) -> None:
+    ranges = profile.get("normalization_ranges")
+    if not isinstance(ranges, list):
+        return
+    retained: list[Any] = []
+    for item in ranges:
+        if isinstance(item, Mapping):
+            metadata = item.get("metadata")
+            if (
+                item.get("id") == FRONT_WHEEL_NORMALIZATION_RANGE_ID
+                and isinstance(metadata, Mapping)
+                and metadata.get("source") == FRONT_VERTICAL_TRANSFORM_SOURCE
+            ):
+                continue
+        retained.append(item)
+    profile["normalization_ranges"] = retained
 
 
 def _front_suspension_selector() -> dict[str, str]:
@@ -359,6 +415,23 @@ def set_front_vertical_wheel_transform(profile: Mapping[str, Any], head_angle_de
                 },
             }
         )
+        front_fork_travel = _normalization_range_value(updated, _front_suspension_selector())
+        if front_fork_travel is not None:
+            _set_normalization_range_for_signal(
+                updated,
+                range_id=FRONT_WHEEL_NORMALIZATION_RANGE_ID,
+                signal=_front_wheel_selector(),
+                full_range=front_fork_travel * coefficient,
+                field_name="front_wheel_travel_mm",
+                metadata={
+                    "source": FRONT_VERTICAL_TRANSFORM_SOURCE,
+                    "source_range_id": "front_fork_travel_range",
+                    "head_angle_deg": angle,
+                    "linear_coefficient": coefficient,
+                },
+            )
+    else:
+        _remove_managed_front_wheel_normalization_range(updated)
 
     updated["signal_transforms"] = retained
     validate_bike_profile(updated)

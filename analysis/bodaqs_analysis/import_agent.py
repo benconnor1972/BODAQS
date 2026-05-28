@@ -32,6 +32,7 @@ from .artifacts import (
 )
 from .bike_profile import load_bike_profile
 from .exporters.data_syn_bike import (
+    bike_profile_travel_ranges,
     data_syn_bike_manual_settings,
     default_data_syn_bike_export_config,
     export_data_syn_bike_resolved,
@@ -147,7 +148,7 @@ def _library_data_syn_bike_export_config(artifacts_dir: Path) -> Optional[Dict[s
 
     cfg = {
         "adc_bit_count": 12,
-        "raw_scale_mode": "calibrated_full_scale",
+        "raw_scale_mode": "processed_wheel_travel",
         "clip_raw_to_adc_range": True,
         "drop_inactive": True,
         "split_by_activity": False,
@@ -155,44 +156,22 @@ def _library_data_syn_bike_export_config(artifacts_dir: Path) -> Optional[Dict[s
         "filename_template": DEFAULT_DATA_SYN_BIKE_EXPORT_FILENAME_TEMPLATE,
     }
     cfg.update({k: v for k, v in data_syn_bike.items() if k != "enabled"})
+    if cfg.get("raw_scale_mode") == "calibrated_full_scale":
+        # Earlier alpha library metadata used this mode by default. The manager
+        # now exports synthetic wheel-travel raw so syn.bike matches JLab views.
+        cfg["raw_scale_mode"] = "processed_wheel_travel"
     return cfg
 
 
 def _bike_profile_syn_raw_full_scale_by_end(bike_profile: Mapping[str, Any]) -> dict[str, float]:
-    ranges = bike_profile.get("normalization_ranges")
-    if not isinstance(ranges, Sequence) or isinstance(ranges, (str, bytes, bytearray)):
-        return {}
-
-    front_wheel: Optional[float] = None
-    rear_shock: Optional[float] = None
-    for item in ranges:
-        if not isinstance(item, Mapping):
-            continue
-        selector = item.get("signal")
-        if not isinstance(selector, Mapping):
-            continue
-        try:
-            full_range = float(item.get("full_range"))
-        except (TypeError, ValueError):
-            continue
-        if full_range <= 0:
-            continue
-        end = str(selector.get("end") or "").strip().lower()
-        quantity = str(selector.get("quantity") or "").strip().lower()
-        domain = str(selector.get("domain") or "").strip().lower()
-        unit = str(selector.get("unit") or "").strip().lower()
-        if quantity != "disp" or unit != "mm":
-            continue
-        if end == "front" and domain == "wheel":
-            front_wheel = full_range
-        elif end == "rear" and domain == "suspension":
-            rear_shock = full_range
-
+    ranges = bike_profile_travel_ranges(bike_profile)
     out: dict[str, float] = {}
-    if front_wheel is not None:
+    front_wheel = ranges.get("front_wheel")
+    rear_wheel = ranges.get("rear_wheel")
+    if front_wheel is not None and front_wheel > 0:
         out["front"] = float(front_wheel)
-    if rear_shock is not None:
-        out["rear"] = float(rear_shock)
+    if rear_wheel is not None and rear_wheel > 0:
+        out["rear"] = float(rear_wheel)
     return out
 
 

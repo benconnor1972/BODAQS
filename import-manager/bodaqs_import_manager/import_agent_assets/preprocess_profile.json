@@ -71,13 +71,13 @@
     "active_signal_disp_selector": {
       "end": "rear",
       "quantity": "disp",
-      "domain": "suspension",
+      "domain": "wheel",
       "unit": "mm"
     },
     "active_signal_vel_selector": {
       "end": "rear",
       "quantity": "vel",
-      "domain": "suspension",
+      "domain": "wheel",
       "unit": "mm/s"
     },
     "active_disp_thresh": 20.0,

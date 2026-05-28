@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import shutil
 import sys
 import zipfile
 from importlib.resources import files
@@ -36,10 +37,13 @@ from bodaqs_analysis.import_agent_sources import (
     SOURCE_TYPE_FILESYSTEM_ARCHIVE,
     SOURCE_TYPE_LOGGER_WIFI,
 )
+from bodaqs_analysis.widgets.histogram_core import compute_trimmed_quantile_metrics
 from bodaqs_import_manager.import_agent_provisioning import (
     ImportAgentLibraryConfig,
     ImportAgentManagedSourceConfig,
+    adopt_import_agent_existing_workspace,
     default_import_agent_app_config_path,
+    load_managed_import_source_configs,
     load_import_agent_app_config,
     managed_import_agent_source_roots,
     make_import_agent_app_config,
@@ -496,6 +500,120 @@ def test_data_syn_bike_export_can_scale_calibrated_raw_to_full_adc_range():
     assert result["exports"][0]["metadata"]["rear_raw_scale"]["target_full_range"] == 65.0
 
 
+def test_data_syn_bike_export_infers_raw_direction_from_installed_zero():
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01],
+                "front_raw [counts]": [4095.0, 3071.25],
+                "rear_raw [counts]": [0.0, 2047.5],
+            }
+        ),
+        "meta": {
+            "signals": {
+                "front_raw [counts]": {
+                    "end": "front",
+                    "quantity": "raw",
+                    "domain": "suspension",
+                    "unit": "counts",
+                    "calibration": {
+                        "type": "linear",
+                        "input_unit": "counts",
+                        "output_unit": "mm",
+                        "installed_zero_count": 4095,
+                        "sensor_zero_count": 0,
+                        "sensor_full_count": 4095,
+                        "sensor_full_travel": 170,
+                        "invert": False,
+                    },
+                },
+                "rear_raw [counts]": {
+                    "end": "rear",
+                    "quantity": "raw",
+                    "domain": "suspension",
+                    "unit": "counts",
+                    "calibration": {
+                        "type": "linear",
+                        "input_unit": "counts",
+                        "output_unit": "mm",
+                        "installed_zero_count": 0,
+                        "sensor_zero_count": 0,
+                        "sensor_full_count": 4095,
+                        "sensor_full_travel": 65,
+                    },
+                },
+            }
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="calibrated_full_scale",
+        raw_full_scale_by_end={"front": 170, "rear": 65},
+        adc_bit_count=12,
+        drop_inactive=False,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+
+    assert exported["Front Raw"].tolist() == [0, 1024]
+    assert result["exports"][0]["metadata"]["front_raw_scale"]["inverted"] is True
+    assert (
+        result["exports"][0]["metadata"]["front_raw_scale"]["inversion_reason"]
+        == "raw_values_decrease_from_zero_reference"
+    )
+
+
+def test_data_syn_bike_export_can_emit_processed_wheel_travel_as_synthetic_raw():
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01, 0.02, 0.03],
+                "front_wheel_disp_dom_wheel [mm]": [-5.0, 0.0, 75.0, 150.0],
+                "rear_wheel_disp_dom_wheel [mm]": [0.0, 82.5, 165.0, 200.0],
+            }
+        ),
+        "meta": {
+            "signals": {
+                "front_wheel_disp_dom_wheel [mm]": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "origin": "analysis",
+                    "processing_role": "primary_analysis",
+                },
+                "rear_wheel_disp_dom_wheel [mm]": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "origin": "analysis",
+                    "processing_role": "primary_analysis",
+                },
+            }
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="processed_wheel_travel",
+        raw_full_scale_by_end={"front": 150, "rear": 165},
+        adc_bit_count=12,
+        drop_inactive=False,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+
+    assert exported["Front Raw"].tolist() == [0, 0, 2048, 4095]
+    assert exported["Rear Raw"].tolist() == [0, 2048, 4095, 4095]
+    assert result["summary"]["front_raw_col"] == "front_wheel_disp_dom_wheel [mm]"
+    assert result["summary"]["rear_raw_col"] == "rear_wheel_disp_dom_wheel [mm]"
+    assert result["exports"][0]["metadata"]["front_raw_scale"]["mode"] == "processed_wheel_travel"
+    assert result["exports"][0]["metadata"]["front_raw_scale"]["clipped_low_rows"] == 1
+    assert result["exports"][0]["metadata"]["rear_raw_scale"]["clipped_high_rows"] == 1
+
+
 def test_data_syn_bike_manual_settings_reports_bike_profile_values():
     bike_profile = {
         "bike_profile_id": "example-bike",
@@ -526,6 +644,108 @@ def test_data_syn_bike_manual_settings_reports_bike_profile_values():
     assert settings["rear_wheel_travel_mm"] == 150.0
     assert settings["average_leverage_rate"] == 150.0 / 65.0
     assert "Average leverage rate:" in text
+
+
+def test_data_syn_bike_manual_settings_use_one_to_one_rear_linkage_for_processed_wheel_travel():
+    bike_profile = {
+        "bike_profile_id": "example-bike",
+        "normalization_ranges": [
+            {
+                "id": "front",
+                "signal": {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+                "full_range": 170,
+            },
+            {
+                "id": "rear_shock",
+                "signal": {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+                "full_range": 65,
+            },
+            {
+                "id": "rear_wheel",
+                "signal": {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+                "full_range": 150,
+            },
+        ],
+    }
+    config = default_data_syn_bike_export_config(raw_scale_mode="processed_wheel_travel")
+
+    settings = data_syn_bike_manual_settings(bike_profile=bike_profile, export_config=config)
+    text = render_data_syn_bike_manual_settings_text(settings)
+
+    assert settings["max_shock_mm"] == 150.0
+    assert settings["rear_shock_normalization_range_mm"] == 150.0
+    assert settings["rear_wheel_travel_mm"] == 150.0
+    assert settings["average_leverage_rate"] == 1.0
+    assert "Average leverage rate: 1" in text
+
+
+def test_data_syn_bike_manual_settings_derives_front_wheel_travel_from_transform():
+    bike_profile = {
+        "bike_profile_id": "example-bike",
+        "normalization_ranges": [
+            {
+                "id": "front_suspension",
+                "signal": {"end": "front", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+                "full_range": 170,
+            },
+            {
+                "id": "rear_shock",
+                "signal": {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+                "full_range": 55,
+            },
+            {
+                "id": "rear_wheel",
+                "signal": {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+                "full_range": 165,
+            },
+        ],
+        "signal_transforms": [
+            {
+                "enabled": True,
+                "method": "polynomial",
+                "input": {"end": "front", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+                "output": {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+                "polynomial": {
+                    "coefficient_order": "ascending",
+                    "coefficients": [0, 0.8910065241883678],
+                },
+            }
+        ],
+    }
+
+    settings = data_syn_bike_manual_settings(bike_profile=bike_profile)
+
+    assert settings["front_normalization_range_mm"] == pytest.approx(151.47110911202253)
+    assert settings["front_wheel_travel_mm"] == pytest.approx(151.47110911202253)
+    assert "missing_front_wheel_travel" not in settings["warnings"]
+
+
+def test_histogram_trimmed_metrics_include_mean_min_max():
+    metrics = compute_trimmed_quantile_metrics([1, 2, 3, 4, 5], cutoff=None)
+
+    assert metrics.insufficient is False
+    assert metrics.mean == pytest.approx(3.0)
+    assert metrics.minimum == pytest.approx(1.0)
+    assert metrics.maximum == pytest.approx(5.0)
+
+
+def test_histogram_trimmed_metrics_mean_min_max_use_trimmed_values():
+    metrics = compute_trimmed_quantile_metrics([1, 2, 3, 4, 5, 100], cutoff=2)
+
+    assert metrics.insufficient is False
+    assert metrics.n_trim == 5
+    assert metrics.mean == pytest.approx((2 + 3 + 4 + 5 + 100) / 5)
+    assert metrics.minimum == pytest.approx(2.0)
+    assert metrics.maximum == pytest.approx(100.0)
+
+
+def test_histogram_trimmed_metrics_mean_min_max_nan_when_insufficient():
+    metrics = compute_trimmed_quantile_metrics([1, 2, 3, 4], cutoff=None)
+
+    assert metrics.insufficient is True
+    assert math.isnan(metrics.mean)
+    assert math.isnan(metrics.minimum)
+    assert math.isnan(metrics.maximum)
 
 
 def _prepare_source(
@@ -933,7 +1153,7 @@ def test_provision_import_agent_library_can_enable_data_syn_bike_exports(tmp_pat
     metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
     assert library.data_syn_bike_export_enabled is True
     assert metadata["exports"]["data_syn_bike"]["enabled"] is True
-    assert metadata["exports"]["data_syn_bike"]["raw_scale_mode"] == "calibrated_full_scale"
+    assert metadata["exports"]["data_syn_bike"]["raw_scale_mode"] == "processed_wheel_travel"
 
 
 def test_update_import_agent_library_data_syn_bike_export_enabled_updates_app_and_library_metadata(tmp_path):
@@ -989,7 +1209,9 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     assert loaded.session_note.setup_preset_path == source.notes_dir
     assert loaded.artifacts_dir == library.artifacts_dir
     assert loaded.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE
+    assert source_payload["display_name"] == "Alice Enduro"
     assert source_payload["source_type"] == SOURCE_TYPE_FILESYSTEM_ARCHIVE
+    assert not Path(source_payload["artifacts_dir"]).is_absolute()
     assert source_payload["session_note"]["attach_on_import"] is False
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
 
@@ -1250,6 +1472,72 @@ def test_provision_import_agent_app_setup_creates_seeded_desktop_setup(tmp_path)
     assert config.sources[0].source_id == "alice-enduro"
 
 
+def test_load_managed_import_source_configs_uses_local_library_path(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
+    source_payload["artifacts_dir"] = str(tmp_path / "old-machine" / "wrong-library")
+    provisioned.source.import_source_config_path.write_text(
+        json.dumps(source_payload, indent=2),
+        encoding="utf-8",
+    )
+
+    stale_source = load_import_source_config(provisioned.source.source_root)
+    managed_sources = load_managed_import_source_configs(load_import_agent_app_config(app_config_path))
+
+    assert stale_source.artifacts_dir == (tmp_path / "old-machine" / "wrong-library").resolve()
+    assert managed_sources[0].artifacts_dir == provisioned.library.artifacts_dir
+    assert managed_sources[0].library_id == provisioned.library.library_id
+
+
+def test_adopt_import_agent_existing_workspace_rebuilds_local_app_config_with_new_paths(tmp_path):
+    first_workspace = tmp_path / "machine-a" / "BODAQS"
+    second_workspace = tmp_path / "machine-b" / "BODAQS"
+    first_app_config_path = tmp_path / "machine-a" / "config" / "import_agent_app.json"
+    second_app_config_path = tmp_path / "machine-b" / "config" / "import_agent_app.json"
+
+    provision_import_agent_app_setup(
+        sources_root=first_workspace / "sources",
+        libraries_root=first_workspace / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=first_app_config_path,
+        data_syn_bike_export_enabled=True,
+        attach_session_note_on_import=True,
+    )
+    shutil.copytree(first_workspace, second_workspace)
+
+    adopted = adopt_import_agent_existing_workspace(
+        sources_root=second_workspace / "sources",
+        libraries_root=second_workspace / "libraries",
+        app_config_path=second_app_config_path,
+        auto_start=True,
+    )
+    config = load_import_agent_app_config(second_app_config_path)
+    managed_sources = load_managed_import_source_configs(config)
+
+    assert adopted.app_config_path == second_app_config_path.resolve()
+    assert config.sources_root == (second_workspace / "sources").resolve()
+    assert config.libraries_root == (second_workspace / "libraries").resolve()
+    assert config.auto_start is True
+    assert config.libraries[0].library_id == "alice-library"
+    assert config.libraries[0].display_name == "Alice Library"
+    assert config.libraries[0].artifacts_dir == (second_workspace / "libraries" / "alice-library").resolve()
+    assert config.libraries[0].data_syn_bike_export_enabled is True
+    assert config.sources[0].source_id == "alice-enduro"
+    assert config.sources[0].display_name == "Alice Enduro"
+    assert config.sources[0].source_root == (second_workspace / "sources" / "alice-enduro").resolve()
+    assert config.sources[0].library_id == "alice-library"
+    assert config.sources[0].attach_session_note_on_import is True
+    assert managed_sources[0].artifacts_dir == config.libraries[0].artifacts_dir
+
+
 def test_provision_import_agent_app_setup_merges_additional_source_and_library(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
     sources_root = tmp_path / "sources"
@@ -1504,7 +1792,8 @@ def test_update_import_agent_source_library_updates_app_and_source_config(tmp_pa
     managed_source = next(source for source in updated.sources if source.source_id == provisioned.source.source_id)
     assert managed_source.library_id == second_library.library_id
     assert source_payload["library_id"] == second_library.library_id
-    assert Path(source_payload["artifacts_dir"]) == second_library.artifacts_dir
+    assert not Path(source_payload["artifacts_dir"]).is_absolute()
+    assert (provisioned.source.source_root / source_payload["artifacts_dir"]).resolve() == second_library.artifacts_dir
     assert loaded_source.artifacts_dir == second_library.artifacts_dir
 
 
@@ -1530,6 +1819,7 @@ def test_update_import_agent_display_names_do_not_change_ids_or_paths(tmp_path):
     )
     reloaded = load_import_agent_app_config(app_config_path)
     library_metadata = json.loads(provisioned.library.metadata_path.read_text(encoding="utf-8"))
+    source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
 
     assert renamed_library_config.libraries[0].library_id == provisioned.library.library_id
     assert renamed_library_config.libraries[0].display_name == "Race Library"
@@ -1540,6 +1830,7 @@ def test_update_import_agent_display_names_do_not_change_ids_or_paths(tmp_path):
     assert reloaded.libraries[0].display_name == "Race Library"
     assert reloaded.sources[0].display_name == "Race Source"
     assert library_metadata["display_name"] == "Race Library"
+    assert source_payload["display_name"] == "Race Source"
 
 
 def test_derive_profile_id_slugifies_and_suffixes_duplicates():
@@ -1592,6 +1883,15 @@ def test_import_agent_bike_profile_builder_updates_basic_fields_and_lut(tmp_path
     assert front_transform["polynomial"]["coefficients"][0] == 0.0
     assert front_transform["polynomial"]["coefficients"][1] == pytest.approx(math.sin(math.radians(63.5)))
     assert front_head_angle_from_profile(reloaded) == pytest.approx(63.5)
+    front_wheel_ranges = [
+        item
+        for item in reloaded["normalization_ranges"]
+        if item.get("signal") == {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"}
+    ]
+    assert len(front_wheel_ranges) == 1
+    assert front_wheel_ranges[0]["id"] == "front_wheel_travel_range"
+    assert front_wheel_ranges[0]["full_range"] == pytest.approx(160 * math.sin(math.radians(63.5)))
+    assert front_wheel_ranges[0]["metadata"]["source"] == "import_agent_head_angle"
     assert transform is not None
     assert transform["extrapolation"] == "clamp"
     assert transform["lut"][-1] == {"input": 55.0, "output": 150.0}
