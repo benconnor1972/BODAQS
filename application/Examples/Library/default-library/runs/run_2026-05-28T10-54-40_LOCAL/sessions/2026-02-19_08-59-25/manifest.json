@@ -1,0 +1,43 @@
+{
+  "contracts": {
+    "events": "v0.x",
+    "metrics": "v0.x",
+    "session": "v0.x"
+  },
+  "description": null,
+  "session_id": "2026-02-19_08-59-25",
+  "source": {
+    "archive_csv_member": "2026-02-19_08-59-25.CSV",
+    "archive_csv_sha256": "db826ebe0850085167ea399b7f2be774c186f32bd356683a5e00bb3db7ebff9a",
+    "archive_log_metadata_member": "2026-02-19_08-59-25.json",
+    "archive_log_metadata_sha256": "1ad4ba22f46b5e221236033ec554198455b6f448a971d5bf860f90b2a77177c2",
+    "aux_sources": [
+      {
+        "filename": "21913977910_ACTIVITY.fit",
+        "kind": "fit",
+        "path": "source_aux/21913977910_ACTIVITY.fit",
+        "sha256": "cef6becf6d201f62b5c073c95bc01cc86bf335dbed428bcfa7645c53569fc144",
+        "stream_name": "gps_fit"
+      }
+    ],
+    "import_mode": "import_agent_archive_v1",
+    "import_source_config_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\import_source.json",
+    "import_source_id": "ben-stevo-local",
+    "import_source_type": "filesystem_archive",
+    "input_kind": "archive",
+    "original_archive_filename": "2026-02-19_08-59-25.zip",
+    "original_archive_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\inbox\\2026-02-19_08-59-25.zip",
+    "original_archive_sha256": "5279f30bd21e15e648212120a2a4ced4da126ef46c2d1338097d1462adbe4605",
+    "path": "source/input.csv",
+    "processing_key": "db5fc79e3dd1a66e9e1faee2949e76afe1170335a19dedf8583c12e47a5e653b",
+    "raw_session_identity": "2add2c61cbcf734085e3e2f6d2d547363bb20b1ae50bd856edf98b5e7c4726dc",
+    "sha256": "db826ebe0850085167ea399b7f2be774c186f32bd356683a5e00bb3db7ebff9a",
+    "source_identity": "2add2c61cbcf734085e3e2f6d2d547363bb20b1ae50bd856edf98b5e7c4726dc",
+    "source_identity_kind": "raw_session_identity"
+  },
+  "summary": {
+    "n_rows": 90814,
+    "t_end_s": 181.628,
+    "t_start_s": 0.002
+  }
+}

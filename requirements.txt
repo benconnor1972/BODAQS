@@ -27,6 +27,10 @@ ipyleaflet==0.20.0
 # Optional feature support exercised by package code/tests
 fitparse==1.2.0
 
+# Local Library API service
+fastapi==0.115.6
+uvicorn==0.34.0
+
 # Desktop/runtime support
 pystray==0.19.5
 tksheet==7.5.7

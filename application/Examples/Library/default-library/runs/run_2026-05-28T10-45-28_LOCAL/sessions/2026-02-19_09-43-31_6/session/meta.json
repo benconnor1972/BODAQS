@@ -1,0 +1,1561 @@
+{
+  "bike_profile_id": "ben-s-stevo",
+  "channel_info": {
+    "front_suspension_disp_dom_suspension [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 170.0,
+        "method": "normalization",
+        "source_col": "front_suspension_disp_dom_suspension [mm]"
+      },
+      "domain": "suspension",
+      "end": "front",
+      "op_chain": [
+        "norm"
+      ],
+      "quantity": "disp_norm",
+      "sensor": "front_shock",
+      "source": [
+        "front_suspension_disp_dom_suspension [mm]"
+      ],
+      "source_columns": [
+        "front_suspension_disp_dom_suspension [mm]"
+      ],
+      "unit": "1"
+    },
+    "front_suspension_disp_dom_suspension [mm]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 203.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "front_shock",
+      "csv_column": "front_shock [mm]",
+      "csv_ref": {
+        "by": "header",
+        "header": "front_shock [mm]"
+      },
+      "domain": "suspension",
+      "end": "front",
+      "log_metadata_column_id": "fork_travel_mm",
+      "nominal_rate_hz": 1000.0,
+      "origin": "logger",
+      "quantity": "disp",
+      "role": "disp",
+      "sensor": "front_shock",
+      "sidecar_column_id": "fork_travel_mm",
+      "transform_chain": [],
+      "unit": "mm"
+    },
+    "front_suspension_raw_dom_suspension [counts]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 203.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "front_shock",
+      "csv_column": "front_shock_raw [counts]",
+      "csv_ref": {
+        "by": "header",
+        "header": "front_shock_raw [counts]"
+      },
+      "domain": "suspension",
+      "end": "front",
+      "log_metadata_column_id": "fork_raw_counts",
+      "nominal_rate_hz": 1000.0,
+      "origin": "logger",
+      "quantity": "raw",
+      "role": "raw",
+      "sensor": "front_shock",
+      "sidecar_column_id": "fork_raw_counts",
+      "unit": "counts"
+    },
+    "front_wheel_acc_dom_wheel [mm/s^2]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol40ms3Poly",
+        "Butterworth_30Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "acc",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s^2"
+    },
+    "front_wheel_disp_dom_wheel [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 151.47110911202253,
+        "method": "normalization",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "source_derivation": {
+          "acceleration_lowpass_hz": 30.0,
+          "acceleration_lowpass_order": 4,
+          "acceleration_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 40,
+            "requested_window_ms": 40.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 41
+          },
+          "displacement_lowpass_hz": 80.0,
+          "displacement_lowpass_order": 4,
+          "method": "motion_derivation",
+          "source_col": "front_wheel_disp_dom_wheel [mm]",
+          "velocity_lowpass_hz": 60.0,
+          "velocity_lowpass_order": 4,
+          "velocity_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 20,
+            "requested_window_ms": 20.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 21
+          }
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "norm"
+      ],
+      "processing_role": "primary_analysis",
+      "quantity": "disp_norm",
+      "sensor": "front_wheel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "1"
+    },
+    "front_wheel_disp_dom_wheel [mm]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "role": "disp",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "front_fork_to_front_vertical_wheel_travel"
+      ],
+      "unit": "mm"
+    },
+    "front_wheel_vel_dom_wheel [mm/s]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol20ms3Poly",
+        "Butterworth_60Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "vel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s"
+    },
+    "gps_fit_distance_dom_world [m]": {
+      "role": "distance",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "distance"
+      ],
+      "unit": "m"
+    },
+    "gps_fit_enhanced_altitude_dom_world [m]": {
+      "role": "altitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "enhanced_altitude"
+      ],
+      "unit": "m"
+    },
+    "gps_fit_enhanced_speed_dom_world [m/s]": {
+      "role": "speed",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "enhanced_speed"
+      ],
+      "unit": "m/s"
+    },
+    "gps_fit_position_latitude_dom_world [deg]": {
+      "role": "position_latitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "position_lat"
+      ],
+      "unit": "deg"
+    },
+    "gps_fit_position_longitude_dom_world [deg]": {
+      "role": "position_longitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "position_long"
+      ],
+      "unit": "deg"
+    },
+    "rear_suspension_disp_dom_suspension [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 55.0,
+        "method": "normalization",
+        "source_col": "rear_suspension_disp_dom_suspension [mm]",
+        "source_derivation": {
+          "counts_per_output_unit": 52.5,
+          "invert": true,
+          "method": "logger_linear_calibration",
+          "output_unit": "mm",
+          "source_col": "rear_suspension_raw_dom_suspension [counts]",
+          "zero_reference": 4095.0,
+          "zero_reference_source": "installed_zero_count"
+        }
+      },
+      "domain": "suspension",
+      "end": "rear",
+      "op_chain": [
+        "norm"
+      ],
+      "quantity": "disp_norm",
+      "sensor": "rear_shock",
+      "source": [
+        "rear_suspension_disp_dom_suspension [mm]"
+      ],
+      "source_columns": [
+        "rear_suspension_disp_dom_suspension [mm]"
+      ],
+      "unit": "1"
+    },
+    "rear_suspension_disp_dom_suspension [mm]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 78.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "rear_shock",
+      "derivation": {
+        "counts_per_output_unit": 52.5,
+        "invert": true,
+        "method": "logger_linear_calibration",
+        "output_unit": "mm",
+        "source_col": "rear_suspension_raw_dom_suspension [counts]",
+        "zero_reference": 4095.0,
+        "zero_reference_source": "installed_zero_count"
+      },
+      "domain": "suspension",
+      "end": "rear",
+      "origin": "analysis",
+      "quantity": "disp",
+      "role": "disp",
+      "sensor": "rear_shock",
+      "source": [
+        "rear_suspension_raw_dom_suspension [counts]"
+      ],
+      "source_columns": [
+        "rear_suspension_raw_dom_suspension [counts]"
+      ],
+      "unit": "mm"
+    },
+    "rear_suspension_raw_dom_suspension [counts]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 78.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "rear_shock",
+      "csv_column": "rear_shock_raw [counts]",
+      "csv_ref": {
+        "by": "header",
+        "header": "rear_shock_raw [counts]"
+      },
+      "domain": "suspension",
+      "end": "rear",
+      "log_metadata_column_id": "shock_raw_counts",
+      "nominal_rate_hz": 1000.0,
+      "origin": "logger",
+      "quantity": "raw",
+      "role": "raw",
+      "sensor": "rear_shock",
+      "sidecar_column_id": "shock_raw_counts",
+      "unit": "counts"
+    },
+    "rear_wheel_acc_dom_wheel [mm/s^2]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol40ms3Poly",
+        "Butterworth_30Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "acc",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s^2"
+    },
+    "rear_wheel_disp_dom_wheel [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 165.0,
+        "method": "normalization",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "source_derivation": {
+          "acceleration_lowpass_hz": 30.0,
+          "acceleration_lowpass_order": 4,
+          "acceleration_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 40,
+            "requested_window_ms": 40.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 41
+          },
+          "displacement_lowpass_hz": 80.0,
+          "displacement_lowpass_order": 4,
+          "method": "motion_derivation",
+          "source_col": "rear_wheel_disp_dom_wheel [mm]",
+          "velocity_lowpass_hz": 60.0,
+          "velocity_lowpass_order": 4,
+          "velocity_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 20,
+            "requested_window_ms": 20.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 21
+          }
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "norm"
+      ],
+      "processing_role": "primary_analysis",
+      "quantity": "disp_norm",
+      "sensor": "rear_shock",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "1"
+    },
+    "rear_wheel_disp_dom_wheel [mm]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 78.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "rear_shock",
+      "csv_column": "rear_shock [mm]",
+      "csv_ref": {
+        "by": "header",
+        "header": "rear_shock [mm]"
+      },
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "log_metadata_column_id": "shock_travel_mm",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "nominal_rate_hz": 1000.0,
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "role": "disp",
+      "sensor": "rear_shock",
+      "sidecar_column_id": "shock_travel_mm",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "rear_shock_to_rear_wheel_travel"
+      ],
+      "unit": "mm"
+    },
+    "rear_wheel_vel_dom_wheel [mm/s]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol20ms3Poly",
+        "Butterworth_60Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "vel",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s"
+    }
+  },
+  "channels": [
+    "front_suspension_disp_dom_suspension [mm]",
+    "front_suspension_raw_dom_suspension [counts]",
+    "rear_wheel_disp_dom_wheel [mm]",
+    "rear_suspension_raw_dom_suspension [counts]",
+    "mark"
+  ],
+  "declared_sensors": {
+    "front_shock": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 203.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "domain": "suspension",
+      "name": "front_shock",
+      "raw_unit": "counts",
+      "source_config": "sensor0",
+      "type": "analog_pot"
+    },
+    "rear_shock": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 78.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "domain": "suspension",
+      "name": "rear_shock",
+      "raw_unit": "counts",
+      "source_config": "sensor1",
+      "type": "analog_pot"
+    }
+  },
+  "declared_streams": {
+    "primary": {
+      "sample_rate_hz": 1000.0,
+      "time_column": "timestamp",
+      "time_encoding": "local_time",
+      "time_format": "HH:MM:SS.mmm",
+      "time_unit": "time_of_day",
+      "type": "uniform"
+    }
+  },
+  "device": {
+    "generator": "manual generic sidecar example for preprocessing development",
+    "logger_family": "BODAQS",
+    "metadata_generated_at": "2026-04-25T12:00:00+08:00"
+  },
+  "notes": null,
+  "sample_rate_by_channel_hz": null,
+  "sample_rate_hz": 1000.0,
+  "secondary_streams": {
+    "gps_fit": {
+      "available_fields": [
+        "accumulated_power",
+        "cadence",
+        "distance",
+        "enhanced_altitude",
+        "enhanced_speed",
+        "fractional_cadence",
+        "heart_rate",
+        "position_lat",
+        "position_long",
+        "power",
+        "temperature",
+        "unknown_107"
+      ],
+      "channel_info": {
+        "gps_fit_distance_dom_world [m]": {
+          "role": "distance",
+          "sensor": "gps_fit",
+          "source_columns": [
+            "distance"
+          ],
+          "unit": "m"
+        },
+        "gps_fit_enhanced_altitude_dom_world [m]": {
+          "role": "altitude",
+          "sensor": "gps_fit",
+          "source_columns": [
+            "enhanced_altitude"
+          ],
+          "unit": "m"
+        },
+        "gps_fit_enhanced_speed_dom_world [m/s]": {
+          "role": "speed",
+          "sensor": "gps_fit",
+          "source_columns": [
+            "enhanced_speed"
+          ],
+          "unit": "m/s"
+        },
+        "gps_fit_position_latitude_dom_world [deg]": {
+          "role": "position_latitude",
+          "sensor": "gps_fit",
+          "source_columns": [
+            "position_lat"
+          ],
+          "unit": "deg"
+        },
+        "gps_fit_position_longitude_dom_world [deg]": {
+          "role": "position_longitude",
+          "sensor": "gps_fit",
+          "source_columns": [
+            "position_long"
+          ],
+          "unit": "deg"
+        }
+      },
+      "field_units": {
+        "accumulated_power": "watts",
+        "cadence": "rpm",
+        "distance": "m",
+        "enhanced_altitude": "m",
+        "enhanced_speed": "m/s",
+        "fractional_cadence": "rpm",
+        "heart_rate": "bpm",
+        "position_lat": "semicircles",
+        "position_long": "semicircles",
+        "power": "watts",
+        "temperature": "C",
+        "timestamp": null,
+        "unknown_107": null
+      },
+      "filename": "21913977910_ACTIVITY.fit",
+      "fit_end_datetime": "2026-02-19T05:29:20+00:00",
+      "fit_sha256": "cef6becf6d201f62b5c073c95bc01cc86bf335dbed428bcfa7645c53569fc144",
+      "fit_start_datetime": "2026-02-18T23:23:43+00:00",
+      "kind": "intermittent",
+      "loaded_fields": [
+        "distance",
+        "enhanced_altitude",
+        "enhanced_speed",
+        "position_lat",
+        "position_long"
+      ],
+      "match": {
+        "ambiguity_policy": "largest_overlap",
+        "overlap_end_datetime": "2026-02-19T01:48:03.222000+00:00",
+        "overlap_s": 272.222,
+        "overlap_start_datetime": "2026-02-19T01:43:31+00:00"
+      },
+      "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\fit\\21913977910_ACTIVITY.fit",
+      "resample_columns": [
+        "gps_fit_distance_dom_world [m]",
+        "gps_fit_enhanced_altitude_dom_world [m]",
+        "gps_fit_enhanced_speed_dom_world [m/s]",
+        "gps_fit_position_latitude_dom_world [deg]",
+        "gps_fit_position_longitude_dom_world [deg]"
+      ],
+      "stream_name": "gps_fit",
+      "time_col": "time_s",
+      "timestamp_col": "timestamp"
+    }
+  },
+  "session_id": "2026-02-19_09-43-31_6",
+  "signals": {
+    "active_mask_qc": {
+      "domain": null,
+      "end": null,
+      "kind": "qc",
+      "notes": "qc flag/quality column",
+      "op_chain": [],
+      "quantity": null,
+      "sensor": "active",
+      "unit": null
+    },
+    "front_suspension_disp_acc_dom_suspension [mm/s^2]": {
+      "domain": "suspension",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "acc",
+      "sensor": "front",
+      "unit": "mm/s^2"
+    },
+    "front_suspension_disp_dom_suspension [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 170.0,
+        "method": "normalization",
+        "source_col": "front_suspension_disp_dom_suspension [mm]"
+      },
+      "domain": "suspension",
+      "end": "front",
+      "kind": "",
+      "op_chain": [
+        "norm"
+      ],
+      "quantity": "disp_norm",
+      "sensor": "front_shock",
+      "source": [
+        "front_suspension_disp_dom_suspension [mm]"
+      ],
+      "source_columns": [
+        "front_suspension_disp_dom_suspension [mm]"
+      ],
+      "unit": "1"
+    },
+    "front_suspension_disp_dom_suspension [mm]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 203.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "front_shock",
+      "domain": "suspension",
+      "end": "front",
+      "kind": "",
+      "log_metadata_column_id": "fork_travel_mm",
+      "op_chain": [],
+      "origin": "logger",
+      "quantity": "disp",
+      "sensor": "front_shock",
+      "sidecar_column_id": "fork_travel_mm",
+      "transform_chain": [],
+      "unit": "mm"
+    },
+    "front_suspension_disp_vel_dom_suspension [mm/s]": {
+      "domain": "suspension",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "vel",
+      "sensor": "front",
+      "unit": "mm/s"
+    },
+    "front_suspension_raw_dom_suspension [counts]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 203.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "front_shock",
+      "domain": "suspension",
+      "end": "front",
+      "kind": "raw",
+      "log_metadata_column_id": "fork_raw_counts",
+      "op_chain": [],
+      "origin": "logger",
+      "quantity": "raw",
+      "sensor": "front_shock",
+      "sidecar_column_id": "fork_raw_counts",
+      "unit": "counts"
+    },
+    "front_wheel_acc_dom_wheel [mm/s^2]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol40ms3Poly",
+        "Butterworth_30Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "acc",
+      "sensor": "front_wheel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s^2"
+    },
+    "front_wheel_disp_dom_wheel [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 151.47110911202253,
+        "method": "normalization",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "source_derivation": {
+          "acceleration_lowpass_hz": 30.0,
+          "acceleration_lowpass_order": 4,
+          "acceleration_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 40,
+            "requested_window_ms": 40.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 41
+          },
+          "displacement_lowpass_hz": 80.0,
+          "displacement_lowpass_order": 4,
+          "method": "motion_derivation",
+          "source_col": "front_wheel_disp_dom_wheel [mm]",
+          "velocity_lowpass_hz": 60.0,
+          "velocity_lowpass_order": 4,
+          "velocity_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 20,
+            "requested_window_ms": 20.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 21
+          }
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "norm"
+      ],
+      "processing_role": "primary_analysis",
+      "quantity": "disp_norm",
+      "sensor": "front_wheel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "1"
+    },
+    "front_wheel_disp_dom_wheel [mm]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "sensor": "front_wheel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "front_fork_to_front_vertical_wheel_travel"
+      ],
+      "unit": "mm"
+    },
+    "front_wheel_vel_dom_wheel [mm/s]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol20ms3Poly",
+        "Butterworth_60Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "vel",
+      "sensor": "front_wheel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s"
+    },
+    "gps_fit_distance_dom_world [m]": {
+      "domain": "world",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "distance",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "distance"
+      ],
+      "unit": "m"
+    },
+    "gps_fit_enhanced_altitude_dom_world [m]": {
+      "domain": "world",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "altitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "enhanced_altitude"
+      ],
+      "unit": "m"
+    },
+    "gps_fit_enhanced_speed_dom_world [m/s]": {
+      "domain": "world",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "speed",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "enhanced_speed"
+      ],
+      "unit": "m/s"
+    },
+    "gps_fit_position_latitude_dom_world [deg]": {
+      "domain": "world",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "position_latitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "position_lat"
+      ],
+      "unit": "deg"
+    },
+    "gps_fit_position_longitude_dom_world [deg]": {
+      "domain": "world",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "position_longitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "position_long"
+      ],
+      "unit": "deg"
+    },
+    "rear_suspension_disp_acc_dom_suspension [mm/s^2]": {
+      "domain": "suspension",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "acc",
+      "sensor": "rear",
+      "unit": "mm/s^2"
+    },
+    "rear_suspension_disp_dom_suspension [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 55.0,
+        "method": "normalization",
+        "source_col": "rear_suspension_disp_dom_suspension [mm]",
+        "source_derivation": {
+          "counts_per_output_unit": 52.5,
+          "invert": true,
+          "method": "logger_linear_calibration",
+          "output_unit": "mm",
+          "source_col": "rear_suspension_raw_dom_suspension [counts]",
+          "zero_reference": 4095.0,
+          "zero_reference_source": "installed_zero_count"
+        }
+      },
+      "domain": "suspension",
+      "end": "rear",
+      "kind": "",
+      "op_chain": [
+        "norm"
+      ],
+      "quantity": "disp_norm",
+      "sensor": "rear_shock",
+      "source": [
+        "rear_suspension_disp_dom_suspension [mm]"
+      ],
+      "source_columns": [
+        "rear_suspension_disp_dom_suspension [mm]"
+      ],
+      "unit": "1"
+    },
+    "rear_suspension_disp_dom_suspension [mm]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 78.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "rear_shock",
+      "derivation": {
+        "counts_per_output_unit": 52.5,
+        "invert": true,
+        "method": "logger_linear_calibration",
+        "output_unit": "mm",
+        "source_col": "rear_suspension_raw_dom_suspension [counts]",
+        "zero_reference": 4095.0,
+        "zero_reference_source": "installed_zero_count"
+      },
+      "domain": "suspension",
+      "end": "rear",
+      "kind": "",
+      "op_chain": [],
+      "origin": "analysis",
+      "quantity": "disp",
+      "sensor": "rear_shock",
+      "source": [
+        "rear_suspension_raw_dom_suspension [counts]"
+      ],
+      "source_columns": [
+        "rear_suspension_raw_dom_suspension [counts]"
+      ],
+      "unit": "mm"
+    },
+    "rear_suspension_disp_vel_dom_suspension [mm/s]": {
+      "domain": "suspension",
+      "end": null,
+      "kind": "",
+      "op_chain": [],
+      "quantity": "vel",
+      "sensor": "rear",
+      "unit": "mm/s"
+    },
+    "rear_suspension_raw_dom_suspension [counts]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 78.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "rear_shock",
+      "domain": "suspension",
+      "end": "rear",
+      "kind": "raw",
+      "log_metadata_column_id": "shock_raw_counts",
+      "op_chain": [],
+      "origin": "logger",
+      "quantity": "raw",
+      "sensor": "rear_shock",
+      "sidecar_column_id": "shock_raw_counts",
+      "unit": "counts"
+    },
+    "rear_wheel_acc_dom_wheel [mm/s^2]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol40ms3Poly",
+        "Butterworth_30Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "acc",
+      "sensor": "rear_wheel",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s^2"
+    },
+    "rear_wheel_disp_dom_wheel [1]_op_zeroed_norm": {
+      "derivation": {
+        "clip_0_1": false,
+        "full_range": 165.0,
+        "method": "normalization",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "source_derivation": {
+          "acceleration_lowpass_hz": 30.0,
+          "acceleration_lowpass_order": 4,
+          "acceleration_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 40,
+            "requested_window_ms": 40.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 41
+          },
+          "displacement_lowpass_hz": 80.0,
+          "displacement_lowpass_order": 4,
+          "method": "motion_derivation",
+          "source_col": "rear_wheel_disp_dom_wheel [mm]",
+          "velocity_lowpass_hz": 60.0,
+          "velocity_lowpass_order": 4,
+          "velocity_sg_window": {
+            "adjusted": true,
+            "poly_order": 3,
+            "requested_samples": 20,
+            "requested_window_ms": 20.0,
+            "warnings": [
+              "rounded window adjusted to odd sample count"
+            ],
+            "window_points": 21
+          }
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "norm"
+      ],
+      "processing_role": "primary_analysis",
+      "quantity": "disp_norm",
+      "sensor": "rear_shock",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "1"
+    },
+    "rear_wheel_disp_dom_wheel [mm]": {
+      "calibration": {
+        "input_unit": "counts",
+        "installed_zero_count": 4095,
+        "invert": true,
+        "output_unit": "mm",
+        "sensor_full_count": 0,
+        "sensor_full_travel": 78.0,
+        "sensor_zero_count": 4095,
+        "type": "linear"
+      },
+      "calibration_ref": "rear_shock",
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "kind": "",
+      "log_metadata_column_id": "shock_travel_mm",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "sensor": "rear_shock",
+      "sidecar_column_id": "shock_travel_mm",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "rear_shock_to_rear_wheel_travel"
+      ],
+      "unit": "mm"
+    },
+    "rear_wheel_vel_dom_wheel [mm/s]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 40,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 41
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order",
+        "Savgol20ms3Poly",
+        "Butterworth_60Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "vel",
+      "sensor": "rear_wheel",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "unit": "mm/s"
+    }
+  },
+  "source_contract": {
+    "name": "mtb_logger_timeseries",
+    "version": "0.2.0"
+  },
+  "streams": {
+    "gps_fit": {
+      "kind": "intermittent",
+      "notes": "Garmin FIT navigation stream",
+      "time_col": "time_s"
+    },
+    "primary": {
+      "dt_s": 0.001,
+      "jitter_frac": 0.0,
+      "kind": "uniform",
+      "sample_rate_hz": 1000.0,
+      "time_col": "time_s"
+    }
+  },
+  "t0_datetime": "2026-02-19T09:43:31+08:00"
+}
