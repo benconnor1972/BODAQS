@@ -1,0 +1,19 @@
+{
+  "artifacts_dir": "C:\\Users\\Ben Connor\\OneDrive\\BODAQS-data\\default-library",
+  "display_name": "Default Library",
+  "exports": {
+    "data_syn_bike": {
+      "adc_bit_count": 12,
+      "clip_raw_to_adc_range": true,
+      "drop_inactive": true,
+      "enabled": true,
+      "filename_template": "{run_id}__{session_id}__{export_id}__data_syn_bike.csv",
+      "raw_scale_mode": "calibrated_full_scale",
+      "sample_count_origin": "session",
+      "split_by_activity": false
+    }
+  },
+  "library_id": "default-library",
+  "schema": "bodaqs.import_agent_library",
+  "version": 1
+}

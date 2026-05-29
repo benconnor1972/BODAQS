@@ -1,0 +1,209 @@
+{
+  "allow_custom_fields": true,
+  "custom_field_section": "Custom",
+  "description": "Notes template with all the settings on Ben's STEVO",
+  "fields": [
+    {
+      "default": "Stumpjumper Evo",
+      "field_id": "bike",
+      "field_type": "string",
+      "filterable": true,
+      "label": "Bike",
+      "project_to_catalog": true,
+      "section": "Overview",
+      "sortable": true
+    },
+    {
+      "default": "Ben Connor",
+      "field_id": "rider",
+      "field_type": "string",
+      "filterable": true,
+      "label": "Rider",
+      "project_to_catalog": true,
+      "section": "Overview",
+      "sortable": true
+    },
+    {
+      "default": "Fox 38",
+      "field_id": "fork",
+      "field_type": "string",
+      "filterable": true,
+      "label": "Fork",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true
+    },
+    {
+      "default": "",
+      "field_id": "shock",
+      "field_type": "string",
+      "filterable": true,
+      "label": "Shock",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true
+    },
+    {
+      "default": 21.0,
+      "field_id": "front_air_pressure_psi",
+      "field_type": "float",
+      "filterable": true,
+      "label": "Pressure",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true,
+      "unit": "psi"
+    },
+    {
+      "field_id": "front_spring_rate_lb",
+      "field_type": "float",
+      "filterable": true,
+      "label": "Spring rate",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true,
+      "unit": "lb"
+    },
+    {
+      "field_id": "rear_spring_rate_lb",
+      "field_type": "float",
+      "filterable": true,
+      "label": "Spring rate",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true,
+      "unit": "lb"
+    },
+    {
+      "default": 0,
+      "field_id": "front_tokens",
+      "field_type": "int",
+      "filterable": true,
+      "label": "Tokens",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true
+    },
+    {
+      "field_id": "rear_HBO",
+      "field_type": "int",
+      "filterable": true,
+      "label": "HBO",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true
+    },
+    {
+      "field_id": "front_LSR_clicks",
+      "field_type": "int",
+      "filterable": true,
+      "label": "LSR",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true
+    },
+    {
+      "field_id": "rear_LSR_clicks",
+      "field_type": "int",
+      "filterable": true,
+      "label": "LSR",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true
+    },
+    {
+      "field_id": "front_LSC_clicks",
+      "field_type": "int",
+      "filterable": true,
+      "label": "LSC",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true
+    },
+    {
+      "field_id": "rear_LSC_clicks",
+      "field_type": "int",
+      "filterable": true,
+      "label": "LSC",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true
+    },
+    {
+      "field_id": "rear_HSC_clicks",
+      "field_type": "int",
+      "filterable": true,
+      "label": "HSC",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true
+    },
+    {
+      "field_id": "front_sag_pct",
+      "field_type": "float",
+      "filterable": true,
+      "label": "Front static sag",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true,
+      "unit": "mm"
+    },
+    {
+      "field_id": "rear_sag_pct",
+      "field_type": "float",
+      "filterable": true,
+      "label": "Rear static sag",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true,
+      "unit": "mm"
+    },
+    {
+      "default": 21.0,
+      "field_id": "front_tire_pressure_psi",
+      "field_type": "float",
+      "filterable": true,
+      "label": "Tire PSI",
+      "project_to_catalog": true,
+      "section": "Front",
+      "sortable": true,
+      "unit": "psi"
+    },
+    {
+      "default": 25.0,
+      "field_id": "rear_tire_pressure_psi",
+      "field_type": "float",
+      "filterable": true,
+      "label": "Tire PSI",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true,
+      "unit": "psi"
+    },
+    {
+      "default": "C link",
+      "field_id": "linkage",
+      "field_type": "string",
+      "filterable": true,
+      "label": "Linkage",
+      "project_to_catalog": true,
+      "section": "Rear",
+      "sortable": true
+    },
+    {
+      "default": "",
+      "field_id": "setup_notes",
+      "field_type": "text",
+      "filterable": false,
+      "label": "Setup notes",
+      "project_to_catalog": false,
+      "section": "Notes",
+      "sortable": false
+    }
+  ],
+  "schema": "bodaqs.session_notes.template",
+  "template_id": "ben-s-stevo-notes-template",
+  "template_version": "1.0",
+  "title": "Ben's STEVO notes template",
+  "version": 1
+}

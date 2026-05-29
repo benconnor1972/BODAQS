@@ -1,0 +1,25 @@
+BODAQS data.syn.bike manual import settings
+
+Enter these values manually in data.syn.bike for the accompanying CSV export.
+
+Session: run_2026-05-28T10-55-12_LOCAL / 2026-02-19_09-43-31
+Bike profile: ben-s-stevo
+
+ADC bit count: 12
+ADC max count: 4095
+Front normalisation range: 151.471 mm
+Rear shock normalisation range: 165 mm
+Rear wheel normalisation range: 165 mm
+Max shock: 165 mm
+Front wheel travel: 151.471 mm
+Rear wheel travel: 165 mm
+Average leverage rate: 1
+
+Notes:
+- CSV files are headerless data.syn.bike exports.
+- Raw columns may be synthetic ADC counts, not untouched logger ADC counts.
+- In processed_wheel_travel mode, rear raw represents rear wheel travel; use average leverage rate 1.
+- Raw scale mode: processed_wheel_travel
+- Exported rows: 124301
+- Export files: 1
+- Inactive rows dropped: 11810

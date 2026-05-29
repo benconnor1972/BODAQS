@@ -1,0 +1,48 @@
+{
+  "bookmarks": [],
+  "display_name": "Test study set 1",
+  "display_state": {
+    "bodaqs_web_v1": {}
+  },
+  "groupings": [],
+  "provenance": {
+    "created_at": "2026-05-28T10:33:37Z",
+    "created_by": "user",
+    "created_from": {
+      "details": {},
+      "kind": "manual_selection"
+    },
+    "updated_at": "2026-05-28T10:33:37Z"
+  },
+  "revision": 1,
+  "schema": "bodaqs.study_set",
+  "sessions": [
+    {
+      "label": "run_2026-05-28T10-55-12_LOCAL::2026-02-19_09-43-31",
+      "run_id": "run_2026-05-28T10-55-12_LOCAL",
+      "session_id": "2026-02-19_09-43-31",
+      "session_key": "run_2026-05-28T10-55-12_LOCAL::2026-02-19_09-43-31"
+    },
+    {
+      "label": "run_2026-05-28T10-54-56_LOCAL::2026-02-19_09-37-10",
+      "run_id": "run_2026-05-28T10-54-56_LOCAL",
+      "session_id": "2026-02-19_09-37-10",
+      "session_key": "run_2026-05-28T10-54-56_LOCAL::2026-02-19_09-37-10"
+    },
+    {
+      "label": "run_2026-05-28T10-54-40_LOCAL::2026-02-19_08-59-25",
+      "run_id": "run_2026-05-28T10-54-40_LOCAL",
+      "session_id": "2026-02-19_08-59-25",
+      "session_key": "run_2026-05-28T10-54-40_LOCAL::2026-02-19_08-59-25"
+    },
+    {
+      "label": "run_2026-05-28T10-54-28_LOCAL::2026-02-19_08-57-46",
+      "run_id": "run_2026-05-28T10-54-28_LOCAL",
+      "session_id": "2026-02-19_08-57-46",
+      "session_key": "run_2026-05-28T10-54-28_LOCAL::2026-02-19_08-57-46"
+    }
+  ],
+  "study_set_id": "test-study-set-1",
+  "tracks": [],
+  "version": 1
+}

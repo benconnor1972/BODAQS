@@ -1,0 +1,391 @@
+{
+  "records": {
+    "run_2026-05-28T10-54-09_LOCAL/2026-02-19_08-50-08": {
+      "files": [
+        {
+          "export_id": "session",
+          "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-09_LOCAL__2026-02-19_08-50-08__session__data_syn_bike.csv",
+          "rows": 65700
+        }
+      ],
+      "format": "data_syn_bike",
+      "n_files": 1,
+      "output_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn",
+      "run_id": "run_2026-05-28T10-54-09_LOCAL",
+      "session_id": "2026-02-19_08-50-08",
+      "settings": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "average_leverage_rate": 1.0,
+        "bike_profile_id": "ben-s-stevo",
+        "bike_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\bike\\bike_profile.json",
+        "format": "data_syn_bike",
+        "front_normalization_range_mm": 151.47110911202253,
+        "front_wheel_travel_mm": 151.47110911202253,
+        "max_shock_mm": 165.0,
+        "raw_full_scale_by_end": {
+          "front": 151.47110911202253,
+          "rear": 165.0
+        },
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_shock_normalization_range_mm": 165.0,
+        "rear_wheel_normalization_range_mm": 165.0,
+        "rear_wheel_travel_mm": 165.0,
+        "run_id": "run_2026-05-28T10-54-09_LOCAL",
+        "session_id": "2026-02-19_08-50-08",
+        "warnings": []
+      },
+      "settings_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-09_LOCAL__2026-02-19_08-50-08__data_syn_bike_settings.txt",
+      "status": "succeeded",
+      "summary": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "exported_rows": 65700,
+        "front_raw_col": "front_wheel_disp_dom_wheel [mm]",
+        "front_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "front_raw_inverted": false,
+        "front_raw_reason": "signal registry",
+        "inactive_rows_dropped": 0,
+        "input_rows": 65700,
+        "lat_col": "gps_fit_position_latitude_dom_world [deg]",
+        "lon_col": "gps_fit_position_longitude_dom_world [deg]",
+        "n_exports": 1,
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_raw_col": "rear_wheel_disp_dom_wheel [mm]",
+        "rear_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "rear_raw_inverted": false,
+        "rear_raw_reason": "signal registry",
+        "run_id": "run_2026-05-28T10-54-09_LOCAL",
+        "sample_count_origin": "session",
+        "session_id": "2026-02-19_08-50-08",
+        "speed_col": "gps_fit_enhanced_speed_dom_world [m/s]",
+        "split_by_activity": false,
+        "time_format": "sample_count"
+      },
+      "updated_at": "2026-05-28T02:54:10+00:00"
+    },
+    "run_2026-05-28T10-54-19_LOCAL/2026-02-19_08-55-18": {
+      "files": [
+        {
+          "export_id": "session",
+          "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-19_LOCAL__2026-02-19_08-55-18__session__data_syn_bike.csv",
+          "rows": 55964
+        }
+      ],
+      "format": "data_syn_bike",
+      "n_files": 1,
+      "output_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn",
+      "run_id": "run_2026-05-28T10-54-19_LOCAL",
+      "session_id": "2026-02-19_08-55-18",
+      "settings": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "average_leverage_rate": 1.0,
+        "bike_profile_id": "ben-s-stevo",
+        "bike_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\bike\\bike_profile.json",
+        "format": "data_syn_bike",
+        "front_normalization_range_mm": 151.47110911202253,
+        "front_wheel_travel_mm": 151.47110911202253,
+        "max_shock_mm": 165.0,
+        "raw_full_scale_by_end": {
+          "front": 151.47110911202253,
+          "rear": 165.0
+        },
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_shock_normalization_range_mm": 165.0,
+        "rear_wheel_normalization_range_mm": 165.0,
+        "rear_wheel_travel_mm": 165.0,
+        "run_id": "run_2026-05-28T10-54-19_LOCAL",
+        "session_id": "2026-02-19_08-55-18",
+        "warnings": []
+      },
+      "settings_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-19_LOCAL__2026-02-19_08-55-18__data_syn_bike_settings.txt",
+      "status": "succeeded",
+      "summary": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "exported_rows": 55964,
+        "front_raw_col": "front_wheel_disp_dom_wheel [mm]",
+        "front_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "front_raw_inverted": false,
+        "front_raw_reason": "signal registry",
+        "inactive_rows_dropped": 0,
+        "input_rows": 55964,
+        "lat_col": "gps_fit_position_latitude_dom_world [deg]",
+        "lon_col": "gps_fit_position_longitude_dom_world [deg]",
+        "n_exports": 1,
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_raw_col": "rear_wheel_disp_dom_wheel [mm]",
+        "rear_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "rear_raw_inverted": false,
+        "rear_raw_reason": "signal registry",
+        "run_id": "run_2026-05-28T10-54-19_LOCAL",
+        "sample_count_origin": "session",
+        "session_id": "2026-02-19_08-55-18",
+        "speed_col": "gps_fit_enhanced_speed_dom_world [m/s]",
+        "split_by_activity": false,
+        "time_format": "sample_count"
+      },
+      "updated_at": "2026-05-28T02:54:19+00:00"
+    },
+    "run_2026-05-28T10-54-28_LOCAL/2026-02-19_08-57-46": {
+      "files": [
+        {
+          "export_id": "session",
+          "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-28_LOCAL__2026-02-19_08-57-46__session__data_syn_bike.csv",
+          "rows": 33018
+        }
+      ],
+      "format": "data_syn_bike",
+      "n_files": 1,
+      "output_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn",
+      "run_id": "run_2026-05-28T10-54-28_LOCAL",
+      "session_id": "2026-02-19_08-57-46",
+      "settings": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "average_leverage_rate": 1.0,
+        "bike_profile_id": "ben-s-stevo",
+        "bike_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\bike\\bike_profile.json",
+        "format": "data_syn_bike",
+        "front_normalization_range_mm": 151.47110911202253,
+        "front_wheel_travel_mm": 151.47110911202253,
+        "max_shock_mm": 165.0,
+        "raw_full_scale_by_end": {
+          "front": 151.47110911202253,
+          "rear": 165.0
+        },
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_shock_normalization_range_mm": 165.0,
+        "rear_wheel_normalization_range_mm": 165.0,
+        "rear_wheel_travel_mm": 165.0,
+        "run_id": "run_2026-05-28T10-54-28_LOCAL",
+        "session_id": "2026-02-19_08-57-46",
+        "warnings": []
+      },
+      "settings_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-28_LOCAL__2026-02-19_08-57-46__data_syn_bike_settings.txt",
+      "status": "succeeded",
+      "summary": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "exported_rows": 33018,
+        "front_raw_col": "front_wheel_disp_dom_wheel [mm]",
+        "front_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "front_raw_inverted": false,
+        "front_raw_reason": "signal registry",
+        "inactive_rows_dropped": 437,
+        "input_rows": 33455,
+        "lat_col": "gps_fit_position_latitude_dom_world [deg]",
+        "lon_col": "gps_fit_position_longitude_dom_world [deg]",
+        "n_exports": 1,
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_raw_col": "rear_wheel_disp_dom_wheel [mm]",
+        "rear_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "rear_raw_inverted": false,
+        "rear_raw_reason": "signal registry",
+        "run_id": "run_2026-05-28T10-54-28_LOCAL",
+        "sample_count_origin": "session",
+        "session_id": "2026-02-19_08-57-46",
+        "speed_col": "gps_fit_enhanced_speed_dom_world [m/s]",
+        "split_by_activity": false,
+        "time_format": "sample_count"
+      },
+      "updated_at": "2026-05-28T02:54:28+00:00"
+    },
+    "run_2026-05-28T10-54-40_LOCAL/2026-02-19_08-59-25": {
+      "files": [
+        {
+          "export_id": "session",
+          "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-40_LOCAL__2026-02-19_08-59-25__session__data_syn_bike.csv",
+          "rows": 79351
+        }
+      ],
+      "format": "data_syn_bike",
+      "n_files": 1,
+      "output_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn",
+      "run_id": "run_2026-05-28T10-54-40_LOCAL",
+      "session_id": "2026-02-19_08-59-25",
+      "settings": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "average_leverage_rate": 1.0,
+        "bike_profile_id": "ben-s-stevo",
+        "bike_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\bike\\bike_profile.json",
+        "format": "data_syn_bike",
+        "front_normalization_range_mm": 151.47110911202253,
+        "front_wheel_travel_mm": 151.47110911202253,
+        "max_shock_mm": 165.0,
+        "raw_full_scale_by_end": {
+          "front": 151.47110911202253,
+          "rear": 165.0
+        },
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_shock_normalization_range_mm": 165.0,
+        "rear_wheel_normalization_range_mm": 165.0,
+        "rear_wheel_travel_mm": 165.0,
+        "run_id": "run_2026-05-28T10-54-40_LOCAL",
+        "session_id": "2026-02-19_08-59-25",
+        "warnings": []
+      },
+      "settings_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-40_LOCAL__2026-02-19_08-59-25__data_syn_bike_settings.txt",
+      "status": "succeeded",
+      "summary": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "exported_rows": 79351,
+        "front_raw_col": "front_wheel_disp_dom_wheel [mm]",
+        "front_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "front_raw_inverted": false,
+        "front_raw_reason": "signal registry",
+        "inactive_rows_dropped": 11463,
+        "input_rows": 90814,
+        "lat_col": "gps_fit_position_latitude_dom_world [deg]",
+        "lon_col": "gps_fit_position_longitude_dom_world [deg]",
+        "n_exports": 1,
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_raw_col": "rear_wheel_disp_dom_wheel [mm]",
+        "rear_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "rear_raw_inverted": false,
+        "rear_raw_reason": "signal registry",
+        "run_id": "run_2026-05-28T10-54-40_LOCAL",
+        "sample_count_origin": "session",
+        "session_id": "2026-02-19_08-59-25",
+        "speed_col": "gps_fit_enhanced_speed_dom_world [m/s]",
+        "split_by_activity": false,
+        "time_format": "sample_count"
+      },
+      "updated_at": "2026-05-28T02:54:40+00:00"
+    },
+    "run_2026-05-28T10-54-56_LOCAL/2026-02-19_09-37-10": {
+      "files": [
+        {
+          "export_id": "session",
+          "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-56_LOCAL__2026-02-19_09-37-10__session__data_syn_bike.csv",
+          "rows": 134185
+        }
+      ],
+      "format": "data_syn_bike",
+      "n_files": 1,
+      "output_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn",
+      "run_id": "run_2026-05-28T10-54-56_LOCAL",
+      "session_id": "2026-02-19_09-37-10",
+      "settings": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "average_leverage_rate": 1.0,
+        "bike_profile_id": "ben-s-stevo",
+        "bike_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\bike\\bike_profile.json",
+        "format": "data_syn_bike",
+        "front_normalization_range_mm": 151.47110911202253,
+        "front_wheel_travel_mm": 151.47110911202253,
+        "max_shock_mm": 165.0,
+        "raw_full_scale_by_end": {
+          "front": 151.47110911202253,
+          "rear": 165.0
+        },
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_shock_normalization_range_mm": 165.0,
+        "rear_wheel_normalization_range_mm": 165.0,
+        "rear_wheel_travel_mm": 165.0,
+        "run_id": "run_2026-05-28T10-54-56_LOCAL",
+        "session_id": "2026-02-19_09-37-10",
+        "warnings": []
+      },
+      "settings_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-54-56_LOCAL__2026-02-19_09-37-10__data_syn_bike_settings.txt",
+      "status": "succeeded",
+      "summary": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "exported_rows": 134185,
+        "front_raw_col": "front_wheel_disp_dom_wheel [mm]",
+        "front_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "front_raw_inverted": false,
+        "front_raw_reason": "signal registry",
+        "inactive_rows_dropped": 8588,
+        "input_rows": 142773,
+        "lat_col": "gps_fit_position_latitude_dom_world [deg]",
+        "lon_col": "gps_fit_position_longitude_dom_world [deg]",
+        "n_exports": 1,
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_raw_col": "rear_wheel_disp_dom_wheel [mm]",
+        "rear_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "rear_raw_inverted": false,
+        "rear_raw_reason": "signal registry",
+        "run_id": "run_2026-05-28T10-54-56_LOCAL",
+        "sample_count_origin": "session",
+        "session_id": "2026-02-19_09-37-10",
+        "speed_col": "gps_fit_enhanced_speed_dom_world [m/s]",
+        "split_by_activity": false,
+        "time_format": "sample_count"
+      },
+      "updated_at": "2026-05-28T02:54:56+00:00"
+    },
+    "run_2026-05-28T10-55-12_LOCAL/2026-02-19_09-43-31": {
+      "files": [
+        {
+          "export_id": "session",
+          "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-55-12_LOCAL__2026-02-19_09-43-31__session__data_syn_bike.csv",
+          "rows": 124301
+        }
+      ],
+      "format": "data_syn_bike",
+      "n_files": 1,
+      "output_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn",
+      "run_id": "run_2026-05-28T10-55-12_LOCAL",
+      "session_id": "2026-02-19_09-43-31",
+      "settings": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "average_leverage_rate": 1.0,
+        "bike_profile_id": "ben-s-stevo",
+        "bike_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\bike\\bike_profile.json",
+        "format": "data_syn_bike",
+        "front_normalization_range_mm": 151.47110911202253,
+        "front_wheel_travel_mm": 151.47110911202253,
+        "max_shock_mm": 165.0,
+        "raw_full_scale_by_end": {
+          "front": 151.47110911202253,
+          "rear": 165.0
+        },
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_shock_normalization_range_mm": 165.0,
+        "rear_wheel_normalization_range_mm": 165.0,
+        "rear_wheel_travel_mm": 165.0,
+        "run_id": "run_2026-05-28T10-55-12_LOCAL",
+        "session_id": "2026-02-19_09-43-31",
+        "warnings": []
+      },
+      "settings_path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\default-library\\syn\\run_2026-05-28T10-55-12_LOCAL__2026-02-19_09-43-31__data_syn_bike_settings.txt",
+      "status": "succeeded",
+      "summary": {
+        "adc_bit_count": 12,
+        "adc_max_count": 4095,
+        "exported_rows": 124301,
+        "front_raw_col": "front_wheel_disp_dom_wheel [mm]",
+        "front_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "front_raw_inverted": false,
+        "front_raw_reason": "signal registry",
+        "inactive_rows_dropped": 11810,
+        "input_rows": 136111,
+        "lat_col": "gps_fit_position_latitude_dom_world [deg]",
+        "lon_col": "gps_fit_position_longitude_dom_world [deg]",
+        "n_exports": 1,
+        "raw_scale_mode": "processed_wheel_travel",
+        "rear_raw_col": "rear_wheel_disp_dom_wheel [mm]",
+        "rear_raw_inversion_reason": "not applicable for processed_wheel_travel",
+        "rear_raw_inverted": false,
+        "rear_raw_reason": "signal registry",
+        "run_id": "run_2026-05-28T10-55-12_LOCAL",
+        "sample_count_origin": "session",
+        "session_id": "2026-02-19_09-43-31",
+        "speed_col": "gps_fit_enhanced_speed_dom_world [m/s]",
+        "split_by_activity": false,
+        "time_format": "sample_count"
+      },
+      "updated_at": "2026-05-28T02:55:12+00:00"
+    }
+  },
+  "schema": "bodaqs.data_syn_bike_export_manifest",
+  "updated_at": "2026-05-28T02:55:13+00:00",
+  "version": 1
+}

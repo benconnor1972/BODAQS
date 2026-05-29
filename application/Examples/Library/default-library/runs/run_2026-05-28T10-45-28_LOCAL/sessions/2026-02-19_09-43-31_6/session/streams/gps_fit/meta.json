@@ -1,0 +1,102 @@
+{
+  "available_fields": [
+    "accumulated_power",
+    "cadence",
+    "distance",
+    "enhanced_altitude",
+    "enhanced_speed",
+    "fractional_cadence",
+    "heart_rate",
+    "position_lat",
+    "position_long",
+    "power",
+    "temperature",
+    "unknown_107"
+  ],
+  "channel_info": {
+    "gps_fit_distance_dom_world [m]": {
+      "role": "distance",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "distance"
+      ],
+      "unit": "m"
+    },
+    "gps_fit_enhanced_altitude_dom_world [m]": {
+      "role": "altitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "enhanced_altitude"
+      ],
+      "unit": "m"
+    },
+    "gps_fit_enhanced_speed_dom_world [m/s]": {
+      "role": "speed",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "enhanced_speed"
+      ],
+      "unit": "m/s"
+    },
+    "gps_fit_position_latitude_dom_world [deg]": {
+      "role": "position_latitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "position_lat"
+      ],
+      "unit": "deg"
+    },
+    "gps_fit_position_longitude_dom_world [deg]": {
+      "role": "position_longitude",
+      "sensor": "gps_fit",
+      "source_columns": [
+        "position_long"
+      ],
+      "unit": "deg"
+    }
+  },
+  "field_units": {
+    "accumulated_power": "watts",
+    "cadence": "rpm",
+    "distance": "m",
+    "enhanced_altitude": "m",
+    "enhanced_speed": "m/s",
+    "fractional_cadence": "rpm",
+    "heart_rate": "bpm",
+    "position_lat": "semicircles",
+    "position_long": "semicircles",
+    "power": "watts",
+    "temperature": "C",
+    "timestamp": null,
+    "unknown_107": null
+  },
+  "filename": "21913977910_ACTIVITY.fit",
+  "fit_end_datetime": "2026-02-19T05:29:20+00:00",
+  "fit_sha256": "cef6becf6d201f62b5c073c95bc01cc86bf335dbed428bcfa7645c53569fc144",
+  "fit_start_datetime": "2026-02-18T23:23:43+00:00",
+  "kind": "intermittent",
+  "loaded_fields": [
+    "distance",
+    "enhanced_altitude",
+    "enhanced_speed",
+    "position_lat",
+    "position_long"
+  ],
+  "match": {
+    "ambiguity_policy": "largest_overlap",
+    "overlap_end_datetime": "2026-02-19T01:48:03.222000+00:00",
+    "overlap_s": 272.222,
+    "overlap_start_datetime": "2026-02-19T01:43:31+00:00"
+  },
+  "path": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\fit\\21913977910_ACTIVITY.fit",
+  "resample_columns": [
+    "gps_fit_distance_dom_world [m]",
+    "gps_fit_enhanced_altitude_dom_world [m]",
+    "gps_fit_enhanced_speed_dom_world [m/s]",
+    "gps_fit_position_latitude_dom_world [deg]",
+    "gps_fit_position_longitude_dom_world [deg]"
+  ],
+  "stream_name": "gps_fit",
+  "time_col": "time_s",
+  "timestamp_col": "timestamp"
+}
