@@ -123,6 +123,22 @@ namespace {
 
   // Dispatch from (buttonIndex, event) -> one or more actions
   void handleButtonBinding_(uint8_t buttonIndex, ButtonEvent ev) {
+#if defined(BODAQS_BRINGUP_DIAGNOSTICS)
+    const char* buttonId = "(unknown)";
+    if (board::gBoard && buttonIndex < board::gBoard->buttons.count) {
+      const auto& b = board::gBoard->buttons.btn[buttonIndex];
+      if (b.present && b.id[0]) buttonId = b.id;
+    }
+    LOGI_TAG("BRINGUP", "button idx=%u id=%s event=%s\n",
+             (unsigned)buttonIndex,
+             buttonId,
+             evName(ev));
+    if (ev == BUTTON_PRESSED || ev == BUTTON_CLICK || ev == BUTTON_HELD) {
+      UI::status(String("Button ") + buttonId);
+      UI::toast(String(buttonId) + "\n" + evName(ev), 700, 1);
+    }
+#endif
+
     for (uint8_t i = 0; i < s_bindingCount; ++i) {
       const auto& r = s_bindings[i];
       if (r.buttonIndex == buttonIndex && r.event == ev) {
@@ -211,7 +227,12 @@ void ButtonActions::registerButtons() {
              (mode == BUTTON_INTERRUPT ? "INT" : "POLL"),
              (unsigned)cfg.debounceMs);
 
-    ButtonManager_register((uint8_t)b.pin, mode, cfg.debounceMs, cb);
+    ButtonManager_register((uint8_t)b.pin,
+                           mode,
+                           cfg.debounceMs,
+                           cb,
+                           b.active_low,
+                           b.use_internal_pullup);
   }
 }
 

@@ -172,6 +172,33 @@ using namespace board;
 
 static bool isLoggingPredicate() { return LoggingManager::isRunning(); }
 
+#if defined(BODAQS_BRINGUP_DIAGNOSTICS)
+static void setupBringupDiagnostics_() {
+  BOOT_LOGI("Bring-up diagnostics enabled\n");
+
+  ConfigManager::begin("/config/loggercfg.txt");
+
+  g_cfg.uiTarget       = 3;
+  g_cfg.uiSerialLevel  = 3;
+  g_cfg.uiOledLevel    = 3;
+  g_cfg.oledBrightness = 200;
+  g_cfg.oledIdleDimMs  = 30000;
+  g_cfg.sampleRateHz   = 100;
+
+  I2CManager::begin(*gBoard);
+  DisplayManager::begin(g_cfg,
+                        gBoard->display,
+                        I2CManager::bus(gBoard->display.bus_index));
+  UI::begin(g_cfg);
+  UI::status("Bring-up ready");
+  UI::toast("BODAQS\nBRINGUP", 2500, 1);
+  UI::println("Bring-up diagnostics ready.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
+
+  ButtonActions::begin();
+  ButtonManager_setPressActivityCallback(PowerManager::noteActivity);
+}
+#endif
+
 void setup() {
   
     Serial.begin(115200);
@@ -183,6 +210,11 @@ void setup() {
     PowerManager::begin(*gBoard);
     configureBoardAnalogInputs_();
     DumpActiveBoardButtons();
+
+#if defined(BODAQS_BRINGUP_DIAGNOSTICS)
+    setupBringupDiagnostics_();
+    return;
+#endif
 
     //Debug
     auto dumpAdc = [](const char* tag){
@@ -317,7 +349,13 @@ void setup() {
 
 
   // Show initial status
+#if defined(BODAQS_BRINGUP_DIAGNOSTICS)
+  BOOT_LOGI("Bring-up diagnostics enabled\n");
+  UI::status("Bring-up ready");
+  UI::toast("BODAQS\nBRINGUP", 2500, 1);
+#else
   UI::status("Ready");
+#endif
   UI::println("Device ready.", "", UI::TARGET_SERIAL, UI::LVL_INFO, 1200);
 
   ButtonActions::begin();
@@ -341,6 +379,13 @@ void setup() {
 }
 
 void loop() {
+#if defined(BODAQS_BRINGUP_DIAGNOSTICS)
+  ButtonManager_loop();
+  DisplayManager::loop();
+  delay(1);
+  return;
+#endif
+
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();

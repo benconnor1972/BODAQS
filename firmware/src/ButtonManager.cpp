@@ -90,11 +90,19 @@ static inline int indexOf_(const Button* ptr) {
   return (idx >= 0 && idx < buttonCount) ? idx : -1;
 }
 
+static inline bool isPressed_(const Button& b, bool rawLevelHigh) {
+  return b.activeLow ? !rawLevelHigh : rawLevelHigh;
+}
+
 void ButtonManager_register(uint8_t pin, ButtonMode mode, unsigned long debounceDelay, ButtonCallback cb) {
+  ButtonManager_register(pin, mode, debounceDelay, cb, true, true);
+}
+
+void ButtonManager_register(uint8_t pin, ButtonMode mode, unsigned long debounceDelay,
+                            ButtonCallback cb, bool activeLow, bool useInternalPullup) {
   if (buttonCount >= board::BOARD_MAX_BUTTONS) return;
 
-  // Active-LOW wiring assumed: use pull-up
-  pinMode(pin, INPUT_PULLUP);
+  pinMode(pin, useInternalPullup ? INPUT_PULLUP : INPUT);
 
   // Initialize lastState from the real pin level
   bool initial = (digitalRead(pin) != 0);
@@ -102,6 +110,7 @@ void ButtonManager_register(uint8_t pin, ButtonMode mode, unsigned long debounce
   buttons[buttonCount] = {
     pin,
     initial,             // lastState
+    activeLow,
     0UL,                 // lastDebounceTime
     debounceDelay,
     mode,
@@ -138,12 +147,12 @@ ButtonEvent ButtonManager_read(uint8_t pin) {
         b.lastState = reading;
 
         // Start/stop hold timing only when edge is accepted
-        if (reading == LOW) { // pressed (active-LOW)
+        if (isPressed_(b, reading)) {
           s_pressStartMs[i] = now;
           s_heldPosted[i]   = false;
           if (s_pressActivityCb) s_pressActivityCb();
           return BUTTON_PRESSED;
-        } else {              // released
+        } else {
           s_pressStartMs[i] = 0;
           s_heldPosted[i]   = false;
           return BUTTON_RELEASED;
@@ -151,7 +160,7 @@ ButtonEvent ButtonManager_read(uint8_t pin) {
       }
     } else {
       // If still pressed, check for hold
-      if (b.lastState == LOW && s_pressStartMs[i] != 0 && !s_heldPosted[i]) {
+      if (isPressed_(b, b.lastState) && s_pressStartMs[i] != 0 && !s_heldPosted[i]) {
         unsigned long now = millis();
         if (now - s_pressStartMs[i] >= HOLD_THRESHOLD_MS) {
           s_heldPosted[i] = true;
@@ -200,8 +209,8 @@ void ButtonManager_loop() {
     }
 
     // Long-press detection for interrupt-mode:
-    // ISR updates b.lastState on edges; we watch for sustained LOW here.
-    if (b.lastState == LOW) {
+    // ISR updates b.lastState on edges; we watch for sustained pressed state here.
+    if (isPressed_(b, b.lastState)) {
       if (!s_heldPosted[i] && s_pressStartMs[i] != 0) {
         unsigned long now = millis();
         if (now - s_pressStartMs[i] >= HOLD_THRESHOLD_MS) {
@@ -231,7 +240,7 @@ void ButtonManager_loop() {
             b.lastDebounceTime = nowEdge;
             b.lastState = reading;
 
-            if (reading == LOW) {
+            if (isPressed_(b, reading)) {
               s_pressStartMs[i] = nowEdge;
               s_heldPosted[i]   = false;
               if (s_pressActivityCb) s_pressActivityCb();
@@ -246,7 +255,7 @@ void ButtonManager_loop() {
             }
           }
         } else {
-          if (b.lastState == LOW && s_pressStartMs[i] != 0 && !s_heldPosted[i]) {
+          if (isPressed_(b, b.lastState) && s_pressStartMs[i] != 0 && !s_heldPosted[i]) {
             if (now - s_pressStartMs[i] >= HOLD_THRESHOLD_MS) {
               s_heldPosted[i] = true;
               if (b.callback) b.callback(BUTTON_HELD);
@@ -287,7 +296,7 @@ void IRAM_ATTR handleButtonInterrupt(void* arg) {
 
   int idx = indexOf_(btn);
   if (idx >= 0) {
-    if (reading == LOW) {
+    if (isPressed_(*btn, reading)) {
       // PRESS
       s_pressStartMs[idx] = now;
       s_heldPosted[idx]   = false;
