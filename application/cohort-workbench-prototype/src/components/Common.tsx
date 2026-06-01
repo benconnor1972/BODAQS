@@ -25,15 +25,17 @@ export function IconButton({
   onClick,
   icon,
   disabled = false,
+  tone = 'neutral',
 }: {
   label: string
   onClick?: () => void
   icon: ReactNode
   disabled?: boolean
+  tone?: 'neutral' | 'good' | 'warning' | 'alert'
 }) {
   return (
     <button
-      className="icon-button"
+      className={`icon-button icon-${tone}`}
       type="button"
       onClick={onClick}
       title={label}

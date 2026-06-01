@@ -1,4 +1,4 @@
-export type NoteStatus = 'finished' | 'draft' | 'none'
+export type NoteStatus = 'missing' | 'draft' | 'edited'
 export type QcLevel = 'ok' | 'warning' | 'alert'
 export type SortDirection = 'asc' | 'desc'
 export type SessionInspectionTab = 'note' | 'qc' | 'metadata'
@@ -14,10 +14,11 @@ export type LibraryRecord = {
 export type SessionRecord = {
   libraryId: string
   runId: string
+  runName: string
   sessionId: string
   sessionKey: string
   name: string
-  date: string
+  startedAt: string
   bike: string
   rider: string
   durationMin: number
@@ -51,7 +52,6 @@ export type StudyGrouping = {
 export type TrackRecord = {
   id: string
   name: string
-  libraryId: string
   pointCount: number
   distanceKm: number
   points: Array<[number, number]>
@@ -70,15 +70,20 @@ export type StudySet = {
 
 export type ColumnId =
   | 'name'
-  | 'date'
+  | 'runName'
+  | 'started'
   | 'library'
+  | 'runId'
+  | 'sessionId'
   | 'bike'
   | 'rider'
   | 'duration'
   | 'distance'
-  | 'note'
-  | 'qc'
   | 'profile'
+  | 'eventSchema'
+  | 'firmware'
+  | 'source'
+  | 'signals'
 
 export type ModalState =
   | { kind: 'session'; tab: SessionInspectionTab; session: SessionRecord }

@@ -1,4 +1,4 @@
-import { AlertTriangle, FileText, Info } from 'lucide-react'
+import type { KeyboardEvent, MouseEvent } from 'react'
 import { columnLabels, getColumnText } from '../domain/sessionCatalog'
 import { candidateId } from '../domain/studySets'
 import type {
@@ -8,8 +8,12 @@ import type {
   SessionRecord,
   SortDirection,
 } from '../domain/types'
-import { IconButton } from './Common'
-import { NoteBadge, QcBadge } from './StatusBadges'
+import { SessionInfoButtons } from './SessionInfoButtons'
+
+export type SessionSelectionGesture = {
+  extendRange: boolean
+  toggle: boolean
+}
 
 export function SessionTable({
   sessions: tableSessions,
@@ -20,8 +24,7 @@ export function SessionTable({
   sortColumn,
   sortDirection,
   onSort,
-  onToggle,
-  onSelectSingle,
+  onSelect,
   onInspect,
 }: {
   sessions: SessionRecord[]
@@ -32,68 +35,86 @@ export function SessionTable({
   sortColumn: ColumnId
   sortDirection: SortDirection
   onSort: (columnId: ColumnId) => void
-  onToggle: (session: SessionRecord) => void
-  onSelectSingle: (session: SessionRecord) => void
+  onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
 }) {
   return (
-    <div className="table-shell">
-      <table className="session-table">
-        <thead>
-          <tr>
-            <th className="select-col">Sel</th>
-            {visibleColumns.map((columnId) => (
-              <th key={columnId}>
-                <button className="sort-button" onClick={() => onSort(columnId)}>
-                  {columnLabels[columnId]}
-                  {sortColumn === columnId && <span>{sortDirection === 'asc' ? 'up' : 'down'}</span>}
-                </button>
-              </th>
-            ))}
-            <th>Info</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tableSessions.map((session) => {
-            const id = candidateId(session)
-            const isSelected = selectedIds.includes(id)
-            return (
-              <tr
-                className={[isSelected ? 'selected' : '', primaryId === id ? 'primary-row' : ''].join(' ')}
-                key={id}
-                onClick={() => onSelectSingle(session)}
-              >
-                <td className="select-col" onClick={(event) => event.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => onToggle(session)}
-                    aria-label={`Select ${session.name}`}
-                  />
-                </td>
-                {visibleColumns.map((columnId) => (
-                  <td key={columnId}>{renderSessionCell(session, columnId, libraries)}</td>
-                ))}
-                <td className="icon-cluster" onClick={(event) => event.stopPropagation()}>
-                  <IconButton label="View note" onClick={() => onInspect(session, 'note')} icon={<FileText size={15} />} />
-                  <IconButton label="View QC" onClick={() => onInspect(session, 'qc')} icon={<AlertTriangle size={15} />} />
-                  <IconButton label="View metadata" onClick={() => onInspect(session, 'metadata')} icon={<Info size={15} />} />
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <p className="selection-hint">
+        Click a row to select it. Ctrl/Cmd-click toggles rows; Shift-click selects a range. The last selected row is primary.
+      </p>
+      <div className="table-shell">
+        <table className="session-table" aria-label="Candidate sessions">
+          <thead>
+            <tr>
+              {visibleColumns.map((columnId) => (
+                <th key={columnId}>
+                  <button className="sort-button" onClick={() => onSort(columnId)}>
+                    {columnLabels[columnId]}
+                    {sortColumn === columnId && <span>{sortDirection === 'asc' ? 'up' : 'down'}</span>}
+                  </button>
+                </th>
+              ))}
+              <th>Info</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tableSessions.map((session) => {
+              const id = candidateId(session)
+              const isSelected = selectedIds.includes(id)
+              const isPrimary = primaryId === id
+              return (
+                <tr
+                  aria-current={isPrimary ? 'true' : undefined}
+                  aria-selected={isSelected}
+                  className={[
+                    'session-row',
+                    isSelected ? 'selected' : '',
+                    isPrimary ? 'primary-row' : '',
+                  ].join(' ')}
+                  key={id}
+                  onClick={(event) => onSelect(session, mouseGesture(event))}
+                  onKeyDown={(event) => handleRowKeyDown(event, session, onSelect)}
+                  tabIndex={0}
+                >
+                  {visibleColumns.map((columnId) => (
+                    <td key={columnId}>{renderSessionCell(session, columnId, libraries)}</td>
+                  ))}
+                  <td className="icon-cluster" onClick={(event) => event.stopPropagation()}>
+                    <SessionInfoButtons session={session} onInspect={onInspect} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   )
 }
 
 function renderSessionCell(session: SessionRecord, columnId: ColumnId, libraries: LibraryRecord[]) {
-  if (columnId === 'note') {
-    return <NoteBadge status={session.noteStatus} />
-  }
-  if (columnId === 'qc') {
-    return <QcBadge session={session} />
-  }
   return getColumnText(session, columnId, libraries)
+}
+
+function mouseGesture(event: MouseEvent<HTMLTableRowElement>): SessionSelectionGesture {
+  return {
+    extendRange: event.shiftKey,
+    toggle: event.ctrlKey || event.metaKey,
+  }
+}
+
+function handleRowKeyDown(
+  event: KeyboardEvent<HTMLTableRowElement>,
+  session: SessionRecord,
+  onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void,
+) {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    onSelect(session, { extendRange: event.shiftKey, toggle: event.ctrlKey || event.metaKey })
+  }
+  if (event.key === ' ') {
+    event.preventDefault()
+    onSelect(session, { extendRange: event.shiftKey, toggle: true })
+  }
 }

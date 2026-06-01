@@ -1,94 +1,127 @@
-import { AlertTriangle, FileText, Trash2 } from 'lucide-react'
+import type { KeyboardEvent, MouseEvent } from 'react'
+import { Trash2 } from 'lucide-react'
+import { columnLabels, getColumnText } from '../domain/sessionCatalog'
 import { sessionByRef, sessionRefId } from '../domain/studySets'
-import type { SessionInspectionTab, SessionRecord, StudySet } from '../domain/types'
+import type {
+  ColumnId,
+  LibraryRecord,
+  SessionInspectionTab,
+  SessionRecord,
+  StudySet,
+} from '../domain/types'
 import { IconButton } from './Common'
-import { NoteBadge, QcBadge } from './StatusBadges'
+import type { SessionSelectionGesture } from './SessionTable'
+import { SessionInfoButtons } from './SessionInfoButtons'
 
 export function StudySessionTable({
   studySet,
+  libraries,
   sessions,
+  visibleColumns,
   selectedStudySessionIds,
-  onToggle,
+  onSelect,
   onRemove,
   onInspect,
 }: {
   studySet: StudySet
+  libraries: LibraryRecord[]
   sessions: SessionRecord[]
+  visibleColumns: ColumnId[]
   selectedStudySessionIds: string[]
-  onToggle: (refId: string) => void
+  onSelect: (refId: string, gesture: SessionSelectionGesture) => void
   onRemove: (refId: string) => void
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
 }) {
+  const inheritedColumns = visibleColumns.filter((columnId) => columnId !== 'name')
+  const emptyColSpan = inheritedColumns.length + 3
+
   return (
-    <div className="table-shell study-table-shell">
-      <table className="session-table study-session-table">
-        <thead>
-          <tr>
-            <th className="select-col">Use</th>
-            <th>Name</th>
-            <th>Date</th>
-            <th>Bike</th>
-            <th>Rider</th>
-            <th>Note</th>
-            <th>QC</th>
-            <th>Groupings</th>
-            <th>Controls</th>
-          </tr>
-        </thead>
-        <tbody>
-          {studySet.sessions.length === 0 && (
+    <>
+      <p className="selection-hint">
+        Click rows to choose sessions for grouping. Ctrl/Cmd-click toggles rows; Shift-click selects a range.
+      </p>
+      <div className="table-shell study-table-shell">
+        <table className="session-table study-session-table">
+          <thead>
             <tr>
-              <td className="empty-cell" colSpan={9}>
-                No sessions in the current Study Set.
-              </td>
+              <th>Name</th>
+              {inheritedColumns.map((columnId) => (
+                <th key={columnId}>{columnLabels[columnId]}</th>
+              ))}
+              <th>Groupings</th>
+              <th>Info</th>
             </tr>
-          )}
-          {studySet.sessions.map((sessionRef) => {
-            const refId = sessionRefId(sessionRef)
-            const session = sessionByRef(sessionRef, sessions)
-            const groupingMatches = studySet.groupings.filter((grouping) =>
-              grouping.sessionRefs.includes(refId),
-            )
-            return (
-              <tr key={refId}>
-                <td className="select-col">
-                  <input
-                    type="checkbox"
-                    checked={selectedStudySessionIds.includes(refId)}
-                    onChange={() => onToggle(refId)}
-                    aria-label={`Select ${sessionRef.label} for grouping`}
-                  />
-                </td>
-                <td>{sessionRef.label}</td>
-                <td>{session?.date ?? '-'}</td>
-                <td>{session?.bike ?? '-'}</td>
-                <td>{session?.rider ?? '-'}</td>
-                <td>{session ? <NoteBadge status={session.noteStatus} /> : '-'}</td>
-                <td>{session ? <QcBadge session={session} /> : '-'}</td>
-                <td>
-                  <div className="badge-row">
-                    {groupingMatches.length === 0 && <span className="subtle">none</span>}
-                    {groupingMatches.map((grouping) => (
-                      <span className="mini-group" style={{ borderColor: grouping.color }} key={grouping.id}>
-                        {grouping.name}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td className="icon-cluster">
-                  {session && (
-                    <>
-                      <IconButton label="View note" onClick={() => onInspect(session, 'note')} icon={<FileText size={15} />} />
-                      <IconButton label="View QC" onClick={() => onInspect(session, 'qc')} icon={<AlertTriangle size={15} />} />
-                    </>
-                  )}
-                  <IconButton label="Remove session" onClick={() => onRemove(refId)} icon={<Trash2 size={15} />} />
+          </thead>
+          <tbody>
+            {studySet.sessions.length === 0 && (
+              <tr>
+                <td className="empty-cell" colSpan={emptyColSpan}>
+                  No sessions in the current Study Set.
                 </td>
               </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+            )}
+            {studySet.sessions.map((sessionRef) => {
+              const refId = sessionRefId(sessionRef)
+              const session = sessionByRef(sessionRef, sessions)
+              const groupingMatches = studySet.groupings.filter((grouping) =>
+                grouping.sessionRefs.includes(refId),
+              )
+              const isSelected = selectedStudySessionIds.includes(refId)
+              return (
+                <tr
+                  aria-selected={isSelected}
+                  className={['session-row', isSelected ? 'selected' : ''].join(' ')}
+                  key={refId}
+                  onClick={(event) => onSelect(refId, mouseGesture(event))}
+                  onKeyDown={(event) => handleRowKeyDown(event, refId, onSelect)}
+                  tabIndex={0}
+                >
+                  <td>{sessionRef.label}</td>
+                  {inheritedColumns.map((columnId) => (
+                    <td key={columnId}>{session ? getColumnText(session, columnId, libraries) : '-'}</td>
+                  ))}
+                  <td>
+                    <div className="badge-row">
+                      {groupingMatches.length === 0 && <span className="subtle">none</span>}
+                      {groupingMatches.map((grouping) => (
+                        <span className="mini-group" style={{ borderColor: grouping.color }} key={grouping.id}>
+                          {grouping.name}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="icon-cluster" onClick={(event) => event.stopPropagation()}>
+                    {session && <SessionInfoButtons session={session} onInspect={onInspect} />}
+                    <IconButton label="Remove session" onClick={() => onRemove(refId)} icon={<Trash2 size={15} />} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   )
+}
+
+function mouseGesture(event: MouseEvent<HTMLTableRowElement>): SessionSelectionGesture {
+  return {
+    extendRange: event.shiftKey,
+    toggle: event.ctrlKey || event.metaKey,
+  }
+}
+
+function handleRowKeyDown(
+  event: KeyboardEvent<HTMLTableRowElement>,
+  refId: string,
+  onSelect: (refId: string, gesture: SessionSelectionGesture) => void,
+) {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    onSelect(refId, { extendRange: event.shiftKey, toggle: event.ctrlKey || event.metaKey })
+  }
+  if (event.key === ' ') {
+    event.preventDefault()
+    onSelect(refId, { extendRange: event.shiftKey, toggle: true })
+  }
 }

@@ -90,33 +90,32 @@ def create_app(
     def get_catalog(library_id: str) -> dict[str, Any]:
         return adapter.get_catalog(library_id)
 
-    @app.get("/api/v1/libraries/{library_id}/study-sets")
-    def list_study_sets(library_id: str) -> list[dict[str, Any]]:
-        return adapter.list_study_sets(library_id)
+    @app.get("/api/v1/study-sets")
+    def list_root_study_sets() -> list[dict[str, Any]]:
+        return adapter.list_study_sets()
 
-    @app.post("/api/v1/libraries/{library_id}/study-sets")
-    async def create_study_set(library_id: str, request: Request) -> dict[str, Any]:
+    @app.post("/api/v1/study-sets")
+    async def create_root_study_set(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return adapter.create_study_set(library_id, _study_set_payload(payload))
+        return adapter.create_study_set(_study_set_payload(payload))
 
-    @app.get("/api/v1/libraries/{library_id}/study-sets/{study_set_id}")
-    def load_study_set(library_id: str, study_set_id: str) -> dict[str, Any]:
-        return adapter.load_study_set(library_id, study_set_id)
+    @app.get("/api/v1/study-sets/{study_set_id}")
+    def load_root_study_set(study_set_id: str) -> dict[str, Any]:
+        return adapter.load_study_set(study_set_id)
 
-    @app.put("/api/v1/libraries/{library_id}/study-sets/{study_set_id}")
-    async def update_study_set(library_id: str, study_set_id: str, request: Request) -> dict[str, Any]:
+    @app.put("/api/v1/study-sets/{study_set_id}")
+    async def update_root_study_set(study_set_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         expected_revision = _expected_revision(payload)
         return adapter.update_study_set(
-            library_id,
             study_set_id,
             expected_revision=expected_revision,
             payload=_study_set_payload(payload),
         )
 
-    @app.delete("/api/v1/libraries/{library_id}/study-sets/{study_set_id}")
-    def delete_study_set(library_id: str, study_set_id: str) -> dict[str, Any]:
-        return adapter.delete_study_set(library_id, study_set_id)
+    @app.delete("/api/v1/study-sets/{study_set_id}")
+    def delete_root_study_set(study_set_id: str) -> dict[str, Any]:
+        return adapter.delete_study_set(study_set_id)
 
     @app.post("/api/v1/libraries/{library_id}/timeseries/window")
     async def get_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:

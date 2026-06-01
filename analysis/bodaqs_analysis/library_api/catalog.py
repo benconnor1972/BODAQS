@@ -18,7 +18,7 @@ from bodaqs_analysis.artifacts import (
 )
 
 from .errors import InvalidRequestError
-from .ids import derive_object_id, make_session_key
+from .ids import derive_object_id, make_session_key, make_session_ref_id
 from .models import library_payload
 
 
@@ -91,6 +91,7 @@ def build_session_catalog(
             rows.append(
                 _build_session_catalog_row(
                     store,
+                    library_id=library_id,
                     run_id=str(run_id),
                     session_id=str(session_id),
                     run_manifest=run_manifest,
@@ -134,6 +135,7 @@ def _discover_library_dir(path: Path) -> dict[str, Any] | None:
 def _build_session_catalog_row(
     store: ArtifactStore,
     *,
+    library_id: str | None,
     run_id: str,
     session_id: str,
     run_manifest: Mapping[str, Any],
@@ -162,6 +164,8 @@ def _build_session_catalog_row(
     row = {
         "schema": SESSION_CATALOG_ROW_SCHEMA,
         "version": SESSION_CATALOG_ROW_VERSION,
+        "library_id": library_id,
+        "session_ref_id": make_session_ref_id(library_id, session_key) if library_id else None,
         "session_key": session_key,
         "run_id": run_id,
         "session_id": session_id,
@@ -339,7 +343,7 @@ def _note_summary(
         status = dict(base)
         status.update(
             {
-                "status": "unreadable",
+                "status": "missing",
                 "has_note": True,
                 "error": f"{type(exc).__name__}: {exc}",
             }
@@ -348,7 +352,7 @@ def _note_summary(
 
     if not isinstance(data, Mapping) or str(data.get("schema") or "") != "bodaqs.session_notes.document":
         status = dict(base)
-        status.update({"status": "invalid", "has_note": True})
+        status.update({"status": "missing", "has_note": True, "error": "invalid_note_document"})
         return status, {}
 
     values = data.get("values") if isinstance(data.get("values"), Mapping) else {}
@@ -398,7 +402,7 @@ def _qc_summary(
     errors = qc.get("errors")
     warning_count = len(warnings) if isinstance(warnings, list) else 0
     error_count = len(errors) if isinstance(errors, list) else 0
-    status = "error" if error_count else ("warning" if warning_count else "ok")
+    status = "alert" if error_count else ("warning" if warning_count else "ok")
     return {
         "status": status,
         "warning_count": warning_count,

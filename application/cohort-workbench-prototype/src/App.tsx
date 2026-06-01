@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   BarChart3,
   BookOpen,
@@ -15,24 +15,38 @@ import {
   Plus,
   Save,
   Search,
+  Trash2,
   X,
 } from 'lucide-react'
 import './App.css'
 import { IconButton, PanelTitle, SummaryTile } from './components/Common'
 import { Modal } from './components/Modal'
 import { RoutePreview } from './components/RoutePreview'
-import { SessionTable } from './components/SessionTable'
+import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
+import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
-import { columnLabels, defaultColumns, matchesSearch, sortSessions } from './domain/sessionCatalog'
+import {
+  columnGroups,
+  columnLabels,
+  columnPresets,
+  defaultColumns,
+  lockedColumns,
+  matchesSearch,
+  normalizeColumnSelection,
+  sortSessions,
+} from './domain/sessionCatalog'
 import {
   candidateId,
   cloneStudySet,
   emptyStudySet,
   groupingColors,
+  hasStudySetContent,
+  isTemporaryStudySet,
   sessionRefId,
   sessionToStudyRef,
   slugify,
+  studySetsEqual,
   uniqueId,
 } from './domain/studySets'
 import type {
@@ -46,26 +60,37 @@ import type {
   TrackRecord,
 } from './domain/types'
 
+type PendingStudySetAction =
+  | { kind: 'load'; studySet: StudySet }
+  | { kind: 'analyze-now'; session: SessionRecord }
+  | { kind: 'clear' }
+
 function App() {
   const [dataSource] = useState(() => new FixtureLibraryDataSource())
+  const columnMenuRef = useRef<HTMLDivElement>(null)
   const [libraries, setLibraries] = useState<LibraryRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [tracks, setTracks] = useState<TrackRecord[]>([])
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([])
   const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(defaultColumns)
   const [searchText, setSearchText] = useState('')
-  const [sortColumn, setSortColumn] = useState<ColumnId>('date')
+  const [sortColumn, setSortColumn] = useState<ColumnId>('started')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([])
   const [primaryCandidateId, setPrimaryCandidateId] = useState<string | null>(null)
+  const [selectionAnchorCandidateId, setSelectionAnchorCandidateId] = useState<string | null>(null)
   const [selectedStudySessionIds, setSelectedStudySessionIds] = useState<string[]>([])
+  const [selectionAnchorStudySessionId, setSelectionAnchorStudySessionId] = useState<string | null>(null)
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([])
   const [savedStudySets, setSavedStudySets] = useState<StudySet[]>([])
-  const [currentStudySet, setCurrentStudySet] = useState<StudySet>(emptyStudySet())
+  const [currentStudySet, setCurrentStudySet] = useState<StudySet>(() => emptyStudySet())
+  const [lastCommittedStudySet, setLastCommittedStudySet] = useState<StudySet>(() => emptyStudySet())
   const [groupingName, setGroupingName] = useState('')
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
+  const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
   const [statusMessage, setStatusMessage] = useState('Loading fixture-backed prototype data source...')
 
   useEffect(() => {
@@ -102,6 +127,50 @@ function App() {
     }
   }, [dataSource])
 
+  const isCurrentStudySetDirty = !studySetsEqual(currentStudySet, lastCommittedStudySet)
+  const currentStudySetHasContent = hasStudySetContent(currentStudySet)
+  const currentStudySetStatus = studySetStatus(currentStudySet, isCurrentStudySetDirty)
+  const canSaveCurrentStudySet =
+    isCurrentStudySetDirty || (!currentStudySet.id && currentStudySet.sessions.length > 0)
+  const canSavePendingAction = Boolean(currentStudySet.displayName.trim() && currentStudySet.sessions.length > 0)
+
+  useEffect(() => {
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      if (!isCurrentStudySetDirty) {
+        return
+      }
+      event.preventDefault()
+      event.returnValue = ''
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [isCurrentStudySetDirty])
+
+  useEffect(() => {
+    if (!columnMenuOpen) {
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+      if (columnMenuRef.current?.contains(target)) {
+        return
+      }
+      setColumnMenuOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [columnMenuOpen])
+
   const selectedLibraries = libraries.filter((libraryItem) =>
     selectedLibraryIds.includes(libraryItem.id),
   )
@@ -130,12 +199,19 @@ function App() {
   }
 
   function toggleColumn(columnId: ColumnId) {
+    if (lockedColumns.includes(columnId)) {
+      return
+    }
     setVisibleColumns((current) => {
       if (current.includes(columnId)) {
-        return current.length === 1 ? current : current.filter((id) => id !== columnId)
+        return normalizeColumnSelection(current.filter((id) => id !== columnId))
       }
-      return [...current, columnId]
+      return normalizeColumnSelection([...current, columnId])
     })
+  }
+
+  function applyColumnPreset(columns: ColumnId[]) {
+    setVisibleColumns(normalizeColumnSelection(columns))
   }
 
   function setSort(columnId: ColumnId) {
@@ -147,27 +223,44 @@ function App() {
     setSortDirection('asc')
   }
 
-  function toggleCandidate(session: SessionRecord) {
+  function selectCandidate(session: SessionRecord, gesture: SessionSelectionGesture) {
     const id = candidateId(session)
-    setSelectedCandidateIds((current) => {
-      if (current.includes(id)) {
-        const next = current.filter((item) => item !== id)
-        if (primaryCandidateId === id) {
-          setPrimaryCandidateId(next[0] ?? null)
-        }
-        return next
-      }
-      if (!primaryCandidateId) {
-        setPrimaryCandidateId(id)
-      }
-      return [...current, id]
-    })
-  }
+    const wasSelected = selectedCandidateIds.includes(id)
 
-  function selectSingleCandidate(session: SessionRecord) {
-    const id = candidateId(session)
-    setSelectedCandidateIds([id])
-    setPrimaryCandidateId(id)
+    setSelectedCandidateIds((current) => {
+      if (gesture.extendRange && selectionAnchorCandidateId) {
+        const visibleIds = visibleSessions.map(candidateId)
+        const anchorIndex = visibleIds.indexOf(selectionAnchorCandidateId)
+        const targetIndex = visibleIds.indexOf(id)
+
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const start = Math.min(anchorIndex, targetIndex)
+          const end = Math.max(anchorIndex, targetIndex)
+          const rangeIds = visibleIds.slice(start, end + 1)
+          if (gesture.toggle) {
+            return uniqueStrings([...current, ...rangeIds])
+          }
+          return rangeIds
+        }
+      }
+
+      if (gesture.toggle) {
+        if (current.includes(id)) {
+          return current.filter((item) => item !== id)
+        }
+        return [...current, id]
+      }
+
+      return [id]
+    })
+
+    if (gesture.toggle && wasSelected && !gesture.extendRange) {
+      const remainingSelectedIds = selectedCandidateIds.filter((item) => item !== id)
+      setPrimaryCandidateId(remainingSelectedIds[0] ?? null)
+    } else {
+      setPrimaryCandidateId(id)
+    }
+    setSelectionAnchorCandidateId(id)
   }
 
   function addSelectedSessionsToStudySet() {
@@ -200,13 +293,21 @@ function App() {
       setStatusMessage('Choose a primary session before using Analyze now.')
       return
     }
+    requestStudySetReplacement({ kind: 'analyze-now', session: primarySession })
+  }
+
+  function executeAnalyzeNow(session: SessionRecord) {
     const temporarySet: StudySet = {
       ...emptyStudySet(),
-      displayName: `Analyze now: ${primarySession.name}`,
-      sessions: [sessionToStudyRef(primarySession)],
+      displayName: `Analyze now: ${session.name}`,
+      sessions: [sessionToStudyRef(session)],
       provenance: 'Temporary one-session Study Set created by Analyze now',
     }
     setCurrentStudySet(temporarySet)
+    setLastCommittedStudySet(cloneStudySet(temporarySet))
+    setSelectedStudySessionIds([])
+    setSelectionAnchorStudySessionId(null)
+    setGroupingName('')
     setModal({ kind: 'study-set', studySet: temporarySet, mode: 'analyze' })
     setStatusMessage('Created an unsaved one-session Study Set for analysis.')
   }
@@ -224,15 +325,37 @@ function App() {
         .filter((grouping) => grouping.sessionRefs.length > 0),
     }))
     setSelectedStudySessionIds((current) => current.filter((id) => id !== refId))
+    setSelectionAnchorStudySessionId((current) => (current === refId ? null : current))
   }
 
-  function toggleStudySession(refId: string) {
+  function selectStudySession(refId: string, gesture: SessionSelectionGesture) {
     setSelectedStudySessionIds((current) => {
-      if (current.includes(refId)) {
-        return current.filter((id) => id !== refId)
+      if (gesture.extendRange && selectionAnchorStudySessionId) {
+        const studySessionIds = currentStudySet.sessions.map(sessionRefId)
+        const anchorIndex = studySessionIds.indexOf(selectionAnchorStudySessionId)
+        const targetIndex = studySessionIds.indexOf(refId)
+
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const start = Math.min(anchorIndex, targetIndex)
+          const end = Math.max(anchorIndex, targetIndex)
+          const rangeIds = studySessionIds.slice(start, end + 1)
+          if (gesture.toggle) {
+            return uniqueStrings([...current, ...rangeIds])
+          }
+          return rangeIds
+        }
       }
-      return [...current, refId]
+
+      if (gesture.toggle) {
+        if (current.includes(refId)) {
+          return current.filter((id) => id !== refId)
+        }
+        return [...current, refId]
+      }
+
+      return [refId]
     })
+    setSelectionAnchorStudySessionId(refId)
   }
 
   function createGrouping() {
@@ -254,6 +377,7 @@ function App() {
     }))
     setGroupingName('')
     setSelectedStudySessionIds([])
+    setSelectionAnchorStudySessionId(null)
     setStatusMessage(`Grouping "${grouping.name}" added. Sessions can belong to multiple groupings.`)
   }
 
@@ -299,15 +423,15 @@ function App() {
     }))
   }
 
-  async function saveCurrentStudySet() {
+  async function saveCurrentStudySet(): Promise<StudySet | null> {
     const displayName = currentStudySet.displayName.trim()
     if (!displayName) {
       setStatusMessage('Name the Study Set before saving.')
-      return
+      return null
     }
     if (currentStudySet.sessions.length === 0) {
       setStatusMessage('Add at least one session before saving a Study Set.')
-      return
+      return null
     }
 
     try {
@@ -317,17 +441,87 @@ function App() {
       })
       setSavedStudySets(await dataSource.listStudySets())
       setCurrentStudySet(saved)
+      setLastCommittedStudySet(cloneStudySet(saved))
       setStatusMessage(`Saved "${saved.displayName}" at revision ${saved.revision}.`)
+      return saved
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setStatusMessage(`Could not save Study Set: ${message}`)
+      return null
     }
   }
 
-  function loadStudySet(studySet: StudySet) {
-    setCurrentStudySet(cloneStudySet(studySet))
+  function requestLoadStudySet(studySet: StudySet) {
+    requestStudySetReplacement({ kind: 'load', studySet })
+  }
+
+  function requestClearStudySet() {
+    if (!currentStudySetHasContent) {
+      setStatusMessage('The current Study Set is already clear.')
+      return
+    }
+    requestStudySetReplacement({ kind: 'clear' })
+  }
+
+  function requestStudySetReplacement(action: PendingStudySetAction) {
+    if (isCurrentStudySetDirty) {
+      setPendingStudySetAction(action)
+      return
+    }
+    executeStudySetReplacement(action)
+  }
+
+  function executeStudySetReplacement(action: PendingStudySetAction) {
+    if (action.kind === 'load') {
+      const loaded = cloneStudySet(action.studySet)
+      setCurrentStudySet(loaded)
+      setLastCommittedStudySet(cloneStudySet(loaded))
+      setSelectedStudySessionIds([])
+      setSelectionAnchorStudySessionId(null)
+      setGroupingName('')
+      setStatusMessage(`Loaded "${action.studySet.displayName}" into the current Study Set editor.`)
+      return
+    }
+
+    if (action.kind === 'analyze-now') {
+      executeAnalyzeNow(action.session)
+      return
+    }
+
+    const cleared = emptyStudySet()
+    setCurrentStudySet(cleared)
+    setLastCommittedStudySet(cloneStudySet(cleared))
     setSelectedStudySessionIds([])
-    setStatusMessage(`Loaded "${studySet.displayName}" into the current Study Set editor.`)
+    setSelectionAnchorStudySessionId(null)
+    setGroupingName('')
+    setStatusMessage('Cleared the current Study Set.')
+  }
+
+  async function savePendingStudySetAction() {
+    if (!pendingStudySetAction) {
+      return
+    }
+    const action = pendingStudySetAction
+    const saved = await saveCurrentStudySet()
+    if (!saved) {
+      return
+    }
+    setPendingStudySetAction(null)
+    executeStudySetReplacement(action)
+  }
+
+  function discardPendingStudySetAction() {
+    if (!pendingStudySetAction) {
+      return
+    }
+    const action = pendingStudySetAction
+    setPendingStudySetAction(null)
+    executeStudySetReplacement(action)
+  }
+
+  function cancelPendingStudySetAction() {
+    setPendingStudySetAction(null)
+    setStatusMessage('Kept the current Study Set open for editing.')
   }
 
   return (
@@ -398,24 +592,53 @@ function App() {
                   placeholder="Search visible fields"
                 />
               </label>
-              <details className="column-menu">
-                <summary>
+              <div className="column-menu" ref={columnMenuRef}>
+                <button
+                  aria-expanded={columnMenuOpen}
+                  className="column-menu-button"
+                  onClick={() => setColumnMenuOpen((current) => !current)}
+                  type="button"
+                >
                   <Columns3 size={16} />
                   Columns
-                </summary>
-                <div className="column-popover">
-                  {(Object.keys(columnLabels) as ColumnId[]).map((columnId) => (
-                    <label className="check-row compact" key={columnId}>
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.includes(columnId)}
-                        onChange={() => toggleColumn(columnId)}
-                      />
-                      <span>{columnLabels[columnId]}</span>
-                    </label>
-                  ))}
-                </div>
-              </details>
+                </button>
+                {columnMenuOpen && (
+                  <div className="column-popover">
+                    <div className="column-presets" aria-label="Column presets">
+                      {columnPresets.map((preset) => (
+                        <button
+                          className="preset-button"
+                          key={preset.id}
+                          title={preset.description}
+                          type="button"
+                          onClick={() => applyColumnPreset(preset.columns)}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                    {columnGroups.map((group) => (
+                      <fieldset className="column-group" key={group.id}>
+                        <legend>{group.label}</legend>
+                        {group.columns.map((columnId) => {
+                          const locked = lockedColumns.includes(columnId)
+                          return (
+                            <label className="check-row compact" key={columnId}>
+                              <input
+                                type="checkbox"
+                                checked={visibleColumns.includes(columnId)}
+                                disabled={locked}
+                                onChange={() => toggleColumn(columnId)}
+                              />
+                              <span>{columnLabels[columnId]}{locked ? ' (fixed)' : ''}</span>
+                            </label>
+                          )
+                        })}
+                      </fieldset>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <SessionTable
               sessions={visibleSessions}
@@ -426,8 +649,7 @@ function App() {
               sortColumn={sortColumn}
               sortDirection={sortDirection}
               onSort={setSort}
-              onToggle={toggleCandidate}
-              onSelectSingle={selectSingleCandidate}
+              onSelect={selectCandidate}
               onInspect={(session, tab) => setModal({ kind: 'session', session, tab })}
             />
             <div className="action-row">
@@ -527,9 +749,7 @@ function App() {
           <section className="module current-study-set">
             <div className="module-header">
               <h2>Current Study Set</h2>
-              <span className={currentStudySet.saved ? 'pill ok' : 'pill neutral'}>
-                {currentStudySet.saved ? `saved r${currentStudySet.revision}` : 'unsaved'}
-              </span>
+              <span className={currentStudySetStatus.className}>{currentStudySetStatus.label}</span>
             </div>
 
             <div className="study-name-row">
@@ -541,9 +761,17 @@ function App() {
                   placeholder="Name this Study Set"
                 />
               </label>
-              <button className="primary-action" onClick={() => void saveCurrentStudySet()}>
+              <button
+                className="primary-action"
+                disabled={!canSaveCurrentStudySet}
+                onClick={() => void saveCurrentStudySet()}
+              >
                 <Save size={17} />
                 Save
+              </button>
+              <button className="danger-action" disabled={!currentStudySetHasContent} onClick={requestClearStudySet}>
+                <Trash2 size={17} />
+                Clear
               </button>
               <button
                 className="secondary-action"
@@ -571,9 +799,11 @@ function App() {
               </div>
               <StudySessionTable
                 studySet={currentStudySet}
+                libraries={libraries}
                 sessions={sessions}
+                visibleColumns={visibleColumns}
                 selectedStudySessionIds={selectedStudySessionIds}
-                onToggle={toggleStudySession}
+                onSelect={selectStudySession}
                 onRemove={removeStudySession}
                 onInspect={(session, tab) => setModal({ kind: 'session', session, tab })}
               />
@@ -687,7 +917,7 @@ function App() {
                       />
                       <IconButton
                         label="Load Study Set"
-                        onClick={() => loadStudySet(studySet)}
+                        onClick={() => requestLoadStudySet(studySet)}
                         icon={<FileText size={15} />}
                       />
                     </td>
@@ -706,9 +936,53 @@ function App() {
         )}
       </section>
 
-      {modal && <Modal state={modal} libraries={libraries} onClose={() => setModal(null)} />}
+      {modal && (
+        <Modal
+          state={modal}
+          libraries={libraries}
+          sessions={sessions}
+          tracks={tracks}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {pendingStudySetAction && (
+        <UnsavedChangesDialog
+          actionLabel={pendingActionLabel(pendingStudySetAction)}
+          canSave={canSavePendingAction}
+          onSave={() => void savePendingStudySetAction()}
+          onDiscard={discardPendingStudySetAction}
+          onCancel={cancelPendingStudySetAction}
+        />
+      )}
     </main>
   )
+}
+
+function studySetStatus(studySet: StudySet, isDirty: boolean) {
+  if (isDirty) {
+    return { className: 'pill warning', label: 'unsaved changes' }
+  }
+  if (isTemporaryStudySet(studySet)) {
+    return { className: 'pill neutral', label: 'temporary' }
+  }
+  if (studySet.id) {
+    return { className: 'pill ok', label: `saved r${studySet.revision}` }
+  }
+  return { className: 'pill neutral', label: 'empty' }
+}
+
+function pendingActionLabel(action: PendingStudySetAction) {
+  if (action.kind === 'load') {
+    return 'load another Study Set'
+  }
+  if (action.kind === 'analyze-now') {
+    return 'start Analyze now'
+  }
+  return 'clear the current Study Set'
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values))
 }
 
 export default App

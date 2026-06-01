@@ -61,34 +61,38 @@ class LibraryAdapter:
         return copy.deepcopy(self._catalog_cache[wanted])
 
     def get_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        return get_timeseries_window(self._library_root(library_id), request)
+        return get_timeseries_window(self._library_root(library_id), request, library_id=library_id)
 
-    def list_study_sets(self, library_id: str) -> list[dict[str, Any]]:
-        return list_study_sets(self._library_root(library_id))
+    def list_study_sets(self, library_id: str | None = None) -> list[dict[str, Any]]:
+        if library_id is not None:
+            self.get_library(library_id)
+        return list_study_sets(self.libraries_root)
 
-    def load_study_set(self, library_id: str, study_set_id: str) -> dict[str, Any]:
-        return load_study_set(self._library_root(library_id), study_set_id)
+    def load_study_set(self, *args: str) -> dict[str, Any]:
+        study_set_id = self._study_set_id_arg(*args)
+        return load_study_set(self.libraries_root, study_set_id)
 
-    def create_study_set(self, library_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return create_study_set(self._library_root(library_id), payload)
+    def create_study_set(self, *args: Any) -> dict[str, Any]:
+        payload = self._study_set_payload_arg(*args)
+        return create_study_set(self.libraries_root, payload)
 
     def update_study_set(
         self,
-        library_id: str,
-        study_set_id: str,
-        *,
+        *args: Any,
         expected_revision: int,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        study_set_id = self._study_set_id_arg(*args)
         return update_study_set(
-            self._library_root(library_id),
+            self.libraries_root,
             study_set_id,
             expected_revision=expected_revision,
             payload=payload,
         )
 
-    def delete_study_set(self, library_id: str, study_set_id: str) -> dict[str, Any]:
-        return delete_study_set(self._library_root(library_id), study_set_id)
+    def delete_study_set(self, *args: str) -> dict[str, Any]:
+        study_set_id = self._study_set_id_arg(*args)
+        return delete_study_set(self.libraries_root, study_set_id)
 
     def study_set_to_selection_snapshot(
         self,
@@ -97,11 +101,42 @@ class LibraryAdapter:
         *,
         include_groupings: bool = True,
     ) -> dict[str, Any]:
+        study_set = self.load_study_set(study_set_id)
+        for session in study_set.get("sessions") or []:
+            if isinstance(session, dict) and session.get("library_id") != library_id:
+                from .errors import InvalidStudySetError
+
+                raise InvalidStudySetError(
+                    "Selection snapshot bridge only supports one-library Study Sets.",
+                    details={"library_id": library_id, "session_ref": session},
+                )
         return study_set_to_selection_snapshot(
             self._library_root(library_id),
-            study_set_id,
+            study_set,
             include_groupings=include_groupings,
         )
+
+    def _study_set_id_arg(self, *args: str) -> str:
+        if len(args) == 1:
+            return str(args[0])
+        if len(args) == 2:
+            self.get_library(str(args[0]))
+            return str(args[1])
+        raise TypeError("Expected study_set_id or library_id, study_set_id")
+
+    def _study_set_payload_arg(self, *args: Any) -> dict[str, Any]:
+        if len(args) == 1:
+            payload = args[0]
+        elif len(args) == 2:
+            self.get_library(str(args[0]))
+            payload = args[1]
+        else:
+            raise TypeError("Expected payload or library_id, payload")
+        if not isinstance(payload, dict):
+            from .errors import InvalidStudySetError
+
+            raise InvalidStudySetError("Study Set payload must be a JSON object.")
+        return payload
 
     def _library_root(self, library_id: str) -> Path:
         return Path(str(self.get_library(library_id)["root"]))

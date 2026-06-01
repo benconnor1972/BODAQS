@@ -10,8 +10,9 @@ from typing import Any, Mapping
 
 from bodaqs_analysis.artifacts import ArtifactStore, list_runs, list_sessions
 
+from .catalog import discover_libraries
 from .errors import InvalidStudySetError, RevisionConflictError, StudySetNotFoundError
-from .ids import is_valid_object_id, make_session_key, make_unique_object_id
+from .ids import is_valid_object_id, make_session_key, make_session_ref_id, make_unique_object_id
 
 
 STUDY_SET_SCHEMA = "bodaqs.study_set"
@@ -19,11 +20,11 @@ STUDY_SET_VERSION = 1
 STUDY_SETS_DIR = Path("library") / "study_sets"
 
 
-def list_study_sets(library_root: str | Path) -> list[dict[str, Any]]:
-    """Return lightweight Study Set summaries for a library."""
+def list_study_sets(libraries_root: str | Path) -> list[dict[str, Any]]:
+    """Return lightweight Study Set summaries for a libraries root."""
 
     out: list[dict[str, Any]] = []
-    for path in sorted(_study_sets_dir(library_root).glob("*.json"), key=lambda p: p.name.lower()):
+    for path in sorted(_study_sets_dir(libraries_root).glob("*.json"), key=lambda p: p.name.lower()):
         try:
             doc = _read_json_object(path)
         except StudySetNotFoundError:
@@ -35,22 +36,31 @@ def list_study_sets(library_root: str | Path) -> list[dict[str, Any]]:
                 "revision": int(doc.get("revision") or 0),
                 "updated_at": _provenance_updated_at(doc),
                 "session_count": len(doc.get("sessions") or []),
+                "library_count": len(
+                    {
+                        str(session.get("library_id"))
+                        for session in doc.get("sessions") or []
+                        if isinstance(session, Mapping) and session.get("library_id") is not None
+                    }
+                ),
+                "grouping_count": len(doc.get("groupings") or []),
+                "track_count": len(doc.get("tracks") or []),
                 "path": str(path),
             }
         )
     return out
 
 
-def load_study_set(library_root: str | Path, study_set_id: str) -> dict[str, Any]:
-    path = _study_set_path(library_root, study_set_id)
+def load_study_set(libraries_root: str | Path, study_set_id: str) -> dict[str, Any]:
+    path = _study_set_path(libraries_root, study_set_id)
     return _read_json_object(path)
 
 
-def create_study_set(library_root: str | Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+def create_study_set(libraries_root: str | Path, payload: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise InvalidStudySetError("Study Set payload must be a JSON object.")
 
-    existing_ids = [row["study_set_id"] for row in list_study_sets(library_root)]
+    existing_ids = [row["study_set_id"] for row in list_study_sets(libraries_root)]
     display_name = _required_text(payload.get("display_name"), field_name="display_name")
     requested_id = _optional_text(payload.get("study_set_id"))
     study_set_id = requested_id or make_unique_object_id(
@@ -72,19 +82,19 @@ def create_study_set(library_root: str | Path, payload: Mapping[str, Any]) -> di
         now=now,
         previous=None,
     )
-    validate_study_set(library_root, doc)
-    _write_study_set(library_root, doc)
+    validate_study_set(libraries_root, doc)
+    _write_study_set(libraries_root, doc)
     return doc
 
 
 def update_study_set(
-    library_root: str | Path,
+    libraries_root: str | Path,
     study_set_id: str,
     *,
     expected_revision: int,
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
-    current = load_study_set(library_root, study_set_id)
+    current = load_study_set(libraries_root, study_set_id)
     current_revision = int(current.get("revision") or 0)
     if int(expected_revision) != current_revision:
         raise RevisionConflictError(
@@ -104,13 +114,13 @@ def update_study_set(
         now=now,
         previous=current,
     )
-    validate_study_set(library_root, doc)
-    _write_study_set(library_root, doc)
+    validate_study_set(libraries_root, doc)
+    _write_study_set(libraries_root, doc)
     return doc
 
 
-def delete_study_set(library_root: str | Path, study_set_id: str) -> dict[str, Any]:
-    path = _study_set_path(library_root, study_set_id)
+def delete_study_set(libraries_root: str | Path, study_set_id: str) -> dict[str, Any]:
+    path = _study_set_path(libraries_root, study_set_id)
     if not path.exists():
         raise StudySetNotFoundError(
             "Study Set was not found.",
@@ -120,7 +130,7 @@ def delete_study_set(library_root: str | Path, study_set_id: str) -> dict[str, A
     return {"deleted": True, "study_set_id": str(study_set_id)}
 
 
-def validate_study_set(library_root: str | Path, payload: Mapping[str, Any]) -> None:
+def validate_study_set(libraries_root: str | Path, payload: Mapping[str, Any]) -> None:
     if not isinstance(payload, Mapping):
         raise InvalidStudySetError("Study Set payload must be a JSON object.")
 
@@ -144,20 +154,20 @@ def validate_study_set(library_root: str | Path, payload: Mapping[str, Any]) -> 
     if not isinstance(sessions, list):
         raise InvalidStudySetError("Study Set sessions must be a list.")
 
-    known_sessions = _library_session_keys(library_root)
+    known_sessions = _libraries_session_ref_ids(libraries_root)
     top_level_sessions: set[str] = set()
     for index, session_ref in enumerate(sessions):
-        session_key = _validate_session_ref(
+        session_ref_id = _validate_session_ref(
             session_ref,
             known_sessions=known_sessions,
             context=f"sessions[{index}]",
         )
-        if session_key in top_level_sessions:
+        if session_ref_id in top_level_sessions:
             raise InvalidStudySetError(
                 "Study Set contains duplicate session references.",
-                details={"session_key": session_key},
+                details={"session_ref_id": session_ref_id},
             )
-        top_level_sessions.add(session_key)
+        top_level_sessions.add(session_ref_id)
 
     _validate_groupings(payload.get("groupings"), known_top_level_sessions=top_level_sessions)
     _validate_bookmarks(payload.get("bookmarks"), known_top_level_sessions=top_level_sessions)
@@ -185,10 +195,22 @@ def _normalized_study_set_payload(
     doc["study_set_id"] = str(study_set_id)
     doc["display_name"] = _required_text(doc.get("display_name"), field_name="display_name")
     doc["revision"] = int(revision)
-    doc["sessions"] = list(doc.get("sessions") or [])
-    doc["groupings"] = list(doc.get("groupings") or [])
-    doc["tracks"] = list(doc.get("tracks") or [])
-    doc["bookmarks"] = list(doc.get("bookmarks") or [])
+    doc["sessions"] = [
+        _normalized_session_ref(session, context=f"sessions[{index}]")
+        for index, session in enumerate(list(doc.get("sessions") or []))
+    ]
+    doc["groupings"] = [
+        _normalized_grouping(grouping, index=index)
+        for index, grouping in enumerate(list(doc.get("groupings") or []))
+    ]
+    doc["tracks"] = [
+        _normalized_track_ref(track_ref, index=index)
+        for index, track_ref in enumerate(list(doc.get("tracks") or []))
+    ]
+    doc["bookmarks"] = [
+        _normalized_bookmark(bookmark, index=index)
+        for index, bookmark in enumerate(list(doc.get("bookmarks") or []))
+    ]
 
     previous_provenance = previous.get("provenance") if isinstance(previous, Mapping) else None
     provenance = doc.get("provenance")
@@ -209,6 +231,97 @@ def _normalized_study_set_payload(
     return doc
 
 
+def _normalized_session_ref(value: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise InvalidStudySetError(f"{context} must be a session reference object.")
+    library_id = _required_text(value.get("library_id"), field_name=f"{context}.library_id")
+    run_id = _required_text(value.get("run_id"), field_name=f"{context}.run_id")
+    session_id = _required_text(value.get("session_id"), field_name=f"{context}.session_id")
+    expected_key = make_session_key(run_id, session_id)
+    session_key = _optional_text(value.get("session_key")) or expected_key
+    if session_key != expected_key:
+        raise InvalidStudySetError(
+            "Session reference session_key does not match run_id/session_id.",
+            details={"context": context, "session_key": session_key, "expected_session_key": expected_key},
+        )
+    expected_ref_id = make_session_ref_id(library_id, session_key)
+    session_ref_id = _optional_text(value.get("session_ref_id")) or expected_ref_id
+    if session_ref_id != expected_ref_id:
+        raise InvalidStudySetError(
+            "Session reference session_ref_id does not match library_id/session_key.",
+            details={"context": context, "session_ref_id": session_ref_id, "expected_session_ref_id": expected_ref_id},
+        )
+
+    out = dict(value)
+    out["library_id"] = library_id
+    out["session_ref_id"] = session_ref_id
+    out["session_key"] = session_key
+    out["run_id"] = run_id
+    out["session_id"] = session_id
+    label = _optional_text(out.get("label") or out.get("display_label"))
+    if label is not None:
+        out["label"] = label
+    return out
+
+
+def _normalized_grouping(value: Any, *, index: int) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise InvalidStudySetError(f"groupings[{index}] must be an object.")
+    out = dict(value)
+    out["grouping_id"] = _required_text(value.get("grouping_id"), field_name=f"groupings[{index}].grouping_id")
+    out["display_name"] = _required_text(value.get("display_name"), field_name=f"groupings[{index}].display_name")
+    out["session_refs"] = _normalized_session_ref_id_list(
+        value.get("session_refs"),
+        legacy_session_refs=value.get("sessions"),
+        context=f"groupings[{index}].session_refs",
+    )
+    out.pop("sessions", None)
+    return out
+
+
+def _normalized_bookmark(value: Any, *, index: int) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise InvalidStudySetError(f"bookmarks[{index}] must be an object.")
+    out = dict(value)
+    out["bookmark_id"] = _required_text(value.get("bookmark_id"), field_name=f"bookmarks[{index}].bookmark_id")
+    out["display_name"] = _required_text(value.get("display_name"), field_name=f"bookmarks[{index}].display_name")
+    session_ref = _optional_text(value.get("session_ref"))
+    if session_ref is None:
+        session = _normalized_session_ref(value.get("session"), context=f"bookmarks[{index}].session")
+        session_ref = session["session_ref_id"]
+    out["session_ref"] = session_ref
+    out.pop("session", None)
+    return out
+
+
+def _normalized_track_ref(value: Any, *, index: int) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise InvalidStudySetError(f"tracks[{index}] must be an object.")
+    out = dict(value)
+    out["track_id"] = _required_text(value.get("track_id"), field_name=f"tracks[{index}].track_id")
+    return out
+
+
+def _normalized_session_ref_id_list(
+    value: Any,
+    *,
+    legacy_session_refs: Any,
+    context: str,
+) -> list[str]:
+    if value is None and isinstance(legacy_session_refs, list):
+        return [
+            _normalized_session_ref(session_ref, context=f"{context}[{index}]")["session_ref_id"]
+            for index, session_ref in enumerate(legacy_session_refs)
+        ]
+    if not isinstance(value, list):
+        raise InvalidStudySetError(f"{context} must be a list.")
+    out: list[str] = []
+    for index, item in enumerate(value):
+        item_text = _required_text(item, field_name=f"{context}[{index}]")
+        out.append(item_text)
+    return out
+
+
 def _validate_groupings(value: Any, *, known_top_level_sessions: set[str]) -> None:
     if not isinstance(value, list):
         raise InvalidStudySetError("Study Set groupings must be a list.")
@@ -224,19 +337,18 @@ def _validate_groupings(value: Any, *, known_top_level_sessions: set[str]) -> No
             )
         seen_ids.add(grouping_id)
         _required_text(grouping.get("display_name"), field_name=f"groupings[{index}].display_name")
-        sessions = grouping.get("sessions")
-        if not isinstance(sessions, list):
-            raise InvalidStudySetError(f"groupings[{index}].sessions must be a list.")
-        for session_index, session_ref in enumerate(sessions):
-            session_key = _validate_session_ref(
-                session_ref,
-                known_sessions=known_top_level_sessions,
-                context=f"groupings[{index}].sessions[{session_index}]",
+        session_refs = grouping.get("session_refs")
+        if not isinstance(session_refs, list):
+            raise InvalidStudySetError(f"groupings[{index}].session_refs must be a list.")
+        for session_index, session_ref_id in enumerate(session_refs):
+            session_ref_id = _required_text(
+                session_ref_id,
+                field_name=f"groupings[{index}].session_refs[{session_index}]",
             )
-            if session_key not in known_top_level_sessions:
+            if session_ref_id not in known_top_level_sessions:
                 raise InvalidStudySetError(
                     "Grouping references a session outside top-level Study Set sessions.",
-                    details={"session_key": session_key},
+                    details={"session_ref_id": session_ref_id},
                 )
 
 
@@ -255,15 +367,11 @@ def _validate_bookmarks(value: Any, *, known_top_level_sessions: set[str]) -> No
             )
         seen_ids.add(bookmark_id)
         _required_text(bookmark.get("display_name"), field_name=f"bookmarks[{index}].display_name")
-        session_key = _validate_session_ref(
-            bookmark.get("session"),
-            known_sessions=known_top_level_sessions,
-            context=f"bookmarks[{index}].session",
-        )
-        if session_key not in known_top_level_sessions:
+        session_ref = _required_text(bookmark.get("session_ref"), field_name=f"bookmarks[{index}].session_ref")
+        if session_ref not in known_top_level_sessions:
             raise InvalidStudySetError(
                 "Bookmark references a session outside top-level Study Set sessions.",
-                details={"session_key": session_key},
+                details={"session_ref_id": session_ref},
             )
 
         has_time_s = bookmark.get("time_s") is not None
@@ -307,46 +415,44 @@ def _validate_session_ref(
     known_sessions: set[str],
     context: str,
 ) -> str:
-    if not isinstance(value, Mapping):
-        raise InvalidStudySetError(f"{context} must be a session reference object.")
-    run_id = _required_text(value.get("run_id"), field_name=f"{context}.run_id")
-    session_id = _required_text(value.get("session_id"), field_name=f"{context}.session_id")
-    session_key = _required_text(value.get("session_key"), field_name=f"{context}.session_key")
-    expected_key = make_session_key(run_id, session_id)
-    if session_key != expected_key:
+    session_ref = _normalized_session_ref(value, context=context)
+    session_ref_id = session_ref["session_ref_id"]
+    if session_ref_id not in known_sessions:
         raise InvalidStudySetError(
-            "Session reference session_key does not match run_id/session_id.",
-            details={"context": context, "session_key": session_key, "expected_session_key": expected_key},
+            "Session reference does not exist in any configured library.",
+            details={
+                "context": context,
+                "library_id": session_ref["library_id"],
+                "session_key": session_ref["session_key"],
+                "session_ref_id": session_ref_id,
+            },
         )
-    if session_key not in known_sessions:
-        raise InvalidStudySetError(
-            "Session reference does not exist in this library.",
-            details={"context": context, "session_key": session_key},
-        )
-    return session_key
+    return session_ref_id
 
 
-def _library_session_keys(library_root: str | Path) -> set[str]:
-    store = ArtifactStore(Path(library_root))
+def _libraries_session_ref_ids(libraries_root: str | Path) -> set[str]:
     out: set[str] = set()
-    for run_id in list_runs(store):
-        for session_id in list_sessions(store, run_id):
-            out.add(make_session_key(run_id, session_id))
+    for library in discover_libraries(libraries_root):
+        library_id = _required_text(library.get("library_id"), field_name="library.library_id")
+        store = ArtifactStore(Path(str(library["root"])))
+        for run_id in list_runs(store):
+            for session_id in list_sessions(store, run_id):
+                out.add(make_session_ref_id(library_id, make_session_key(run_id, session_id)))
     return out
 
 
-def _study_sets_dir(library_root: str | Path) -> Path:
-    return Path(library_root) / STUDY_SETS_DIR
+def _study_sets_dir(libraries_root: str | Path) -> Path:
+    return Path(libraries_root) / STUDY_SETS_DIR
 
 
-def _study_set_path(library_root: str | Path, study_set_id: str) -> Path:
+def _study_set_path(libraries_root: str | Path, study_set_id: str) -> Path:
     study_set_id = _required_text(study_set_id, field_name="study_set_id")
     if not is_valid_object_id(study_set_id):
         raise InvalidStudySetError(
             "Study Set id is not filename-safe.",
             details={"study_set_id": study_set_id},
         )
-    return _study_sets_dir(library_root) / f"{study_set_id}.json"
+    return _study_sets_dir(libraries_root) / f"{study_set_id}.json"
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -367,8 +473,8 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
-def _write_study_set(library_root: str | Path, payload: Mapping[str, Any]) -> None:
-    path = _study_set_path(library_root, str(payload["study_set_id"]))
+def _write_study_set(libraries_root: str | Path, payload: Mapping[str, Any]) -> None:
+    path = _study_set_path(libraries_root, str(payload["study_set_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(dict(payload), indent=2, sort_keys=True), encoding="utf-8")

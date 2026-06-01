@@ -20,7 +20,7 @@ from bodaqs_analysis.widgets.entity_scope import build_entity_selection_snapshot
 
 from .errors import InvalidStudySetError
 from .ids import make_session_key
-from .study_sets import load_study_set, validate_study_set
+from .study_sets import load_study_set
 
 
 SELECTION_BRIDGE_SCHEMA = "bodaqs.study_set_selection_snapshot"
@@ -29,15 +29,18 @@ SELECTION_BRIDGE_VERSION = 1
 
 def study_set_to_selection_snapshot(
     library_root: str | Path,
-    study_set_id: str,
+    study_set_or_id: str | Mapping[str, Any],
     *,
     include_groupings: bool = True,
 ) -> dict[str, Any]:
     """Convert a persisted Study Set into notebook/widget selection objects."""
 
     root = Path(library_root)
-    study_set = load_study_set(root, study_set_id)
-    validate_study_set(root, study_set)
+    study_set = (
+        dict(study_set_or_id)
+        if isinstance(study_set_or_id, Mapping)
+        else load_study_set(root, str(study_set_or_id))
+    )
     store = ArtifactStore(root)
     key_to_ref = _key_to_ref_from_study_set(study_set)
     events_index_df = _events_index_df_from_key_to_ref(key_to_ref)
@@ -176,6 +179,20 @@ def _valid_groupings(study_set: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _grouping_session_keys(grouping: Mapping[str, Any]) -> list[str]:
+    session_refs = grouping.get("session_refs")
+    if isinstance(session_refs, list):
+        out: list[str] = []
+        for session_ref in session_refs:
+            if not isinstance(session_ref, str):
+                continue
+            for separator in ("|||",):
+                if separator in session_ref:
+                    out.append(session_ref.split(separator, 1)[1])
+                    break
+            else:
+                out.append(session_ref)
+        return out
+
     sessions = grouping.get("sessions")
     if not isinstance(sessions, list):
         return []

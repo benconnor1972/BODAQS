@@ -54,8 +54,50 @@ export function cloneStudySet(studySet: StudySet): StudySet {
   }
 }
 
+export function hasStudySetContent(studySet: StudySet) {
+  return Boolean(
+    studySet.id ||
+      studySet.displayName.trim() ||
+      studySet.sessions.length ||
+      studySet.groupings.length ||
+      studySet.trackIds.length ||
+      studySet.provenance.trim(),
+  )
+}
+
+export function isTemporaryStudySet(studySet: StudySet) {
+  return !studySet.id && studySet.provenance.startsWith('Temporary one-session Study Set')
+}
+
+export function studySetsEqual(a: StudySet, b: StudySet) {
+  return JSON.stringify(normalizeStudySetForComparison(a)) === JSON.stringify(normalizeStudySetForComparison(b))
+}
+
+function normalizeStudySetForComparison(studySet: StudySet) {
+  return {
+    id: studySet.id,
+    displayName: studySet.displayName.trim(),
+    revision: studySet.revision,
+    sessions: studySet.sessions.map((session) => ({
+      libraryId: session.libraryId,
+      sessionKey: session.sessionKey,
+      runId: session.runId,
+      sessionId: session.sessionId,
+      label: session.label,
+    })),
+    groupings: studySet.groupings.map((grouping) => ({
+      id: grouping.id,
+      name: grouping.name.trim(),
+      color: grouping.color,
+      sessionRefs: [...grouping.sessionRefs],
+    })),
+    trackIds: [...studySet.trackIds],
+    provenance: studySet.provenance.trim(),
+  }
+}
+
 export function noteSummary(status: NoteStatus) {
-  if (status === 'finished') {
+  if (status === 'edited') {
     return 'Reviewed setup note is available for filtering and display.'
   }
   if (status === 'draft') {

@@ -1,7 +1,7 @@
 # BODAQS Library API Contract v0 Draft
 
-**Status:** Draft  
-**Scope:** Local-first API seam for browsing processed BODAQS libraries, managing study sets, and serving browser-native visualisation data  
+**Status:** Accepted v0 implementation baseline  
+**Scope:** Local-first API seam for browsing processed BODAQS libraries, managing root-scoped study sets/tracks, and serving browser-native visualisation data  
 **Audience:** BODAQS web application, local Library API service, notebook/library adapter implementers
 
 ---
@@ -16,6 +16,7 @@ The API is intentionally focused on **processed-library use**:
 - list configured libraries
 - list processed sessions
 - create, load, update, and delete study sets
+- carry study sets across multiple libraries under one configured libraries root
 - expose compact semantic catalog information
 - serve chart-ready time-series windows
 - expose event and metric summaries/details where needed
@@ -41,6 +42,7 @@ remote service or static-bundle implementation.
 6. **The API should describe capabilities explicitly.**
 7. **The first implementation should be small, but not a dead end.**
 8. **Import Manager scope should not expand merely to serve this API.**
+9. **Study sets and tracks belong to the configured libraries root, not to one library.**
 
 ---
 
@@ -64,6 +66,25 @@ retaining the same endpoint and payload model.
 
 ## 4. Resource Model
 
+### 4.0 Libraries Root
+
+The libraries root is the configured local workspace containing one or more
+processed BODAQS libraries plus root-scoped application objects.
+
+Root-scoped application objects live under:
+
+```text
+<libraries_root>/
+  library/
+    study_sets/
+      <study_set_id>.json
+    tracks/
+      <track_id>.json
+```
+
+The first implementation reads one configured libraries root. Changing that root
+is a local setup concern, not a v0 API operation.
+
 ### 4.1 Library
 
 A library is a processed BODAQS artifacts tree. Multiple libraries may live under
@@ -83,10 +104,13 @@ The v0 session identity is:
 <run_id>::<session_id>
 ```
 
-Study sets and API payloads should carry all three fields:
+Study sets and API payloads should carry `library_id` plus the session identity
+fields:
 
 ```json
 {
+  "library_id": "default-library",
+  "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "run_id": "run_2026-05-25T13-57-10_LOCAL",
   "session_id": "2026-05-18_13-27-14",
@@ -96,16 +120,21 @@ Study sets and API payloads should carry all three fields:
 
 `run_id` and `session_id` are canonical. `session_key` is a readable convenience
 field and should be validated against those values when written.
+`session_ref_id` is the stable Study Set-local reference string:
+
+```text
+<library_id>|||<session_key>
+```
 
 ### 4.3 Study Set
 
 A study set is a named, versioned, portable analysis scope stored with the
-library.
+configured libraries root. It may contain sessions from more than one library.
 
 Canonical location:
 
 ```text
-<library>/
+<libraries_root>/
   library/
     study_sets/
       <study_set_id>.json
@@ -141,13 +170,13 @@ intrinsically tied to the study set where they were created.
 
 ### 4.6 Track
 
-A track is a reusable library object representing a route/path and optional named
-points along that route.
+A track is a reusable root-level object representing a route/path and optional
+named points along that route.
 
 Canonical future location:
 
 ```text
-<library>/
+<libraries_root>/
   library/
     tracks/
       <track_id>.json
@@ -244,6 +273,8 @@ Example:
   "display_name": "Setup comparison",
   "sessions": [
     {
+      "library_id": "default-library",
+      "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
       "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
       "run_id": "run_2026-05-25T13-57-10_LOCAL",
       "session_id": "2026-05-18_13-27-14",
@@ -254,12 +285,8 @@ Example:
     {
       "grouping_id": "baseline",
       "display_name": "Baseline",
-      "sessions": [
-        {
-          "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
-          "run_id": "run_2026-05-25T13-57-10_LOCAL",
-          "session_id": "2026-05-18_13-27-14"
-        }
+      "session_refs": [
+        "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14"
       ]
     }
   ],
@@ -275,11 +302,7 @@ Example:
     {
       "bookmark_id": "big-compression-before-bridge",
       "display_name": "Big compression before bridge",
-      "session": {
-        "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
-        "run_id": "run_2026-05-25T13-57-10_LOCAL",
-        "session_id": "2026-05-18_13-27-14"
-      },
+      "session_ref": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
       "time_window": {
         "start_s": 123.4,
         "end_s": 128.9
@@ -306,11 +329,15 @@ Validation notes:
 
 - `schema` must be `bodaqs.study_set`.
 - `version` must be supported by the service.
-- `study_set_id` must be filename-safe and unique within the library.
-- `revision` must increment on successful write.
+- `study_set_id` must be filename-safe and unique within the libraries root.
+- `revision` is assigned by the service and must increment on successful write.
 - top-level `sessions` are explicit membership and are the source of truth.
-- grouping session refs should refer to sessions in top-level `sessions`.
-- bookmark session refs should refer to sessions in top-level `sessions`.
+- every top-level session ref must include `library_id`, `session_ref_id`,
+  `session_key`, `run_id`, and `session_id`.
+- `session_key` must match `run_id::session_id`.
+- `session_ref_id` must match `library_id|||session_key`.
+- grouping `session_refs` should refer to top-level `session_ref_id` values.
+- bookmark `session_ref` values should refer to top-level `session_ref_id` values.
 - bookmark entries should define exactly one of `time_s` or `time_window`.
 - `display_state` is optional and non-authoritative.
 
@@ -355,6 +382,8 @@ Example:
   ],
   "source": {
     "kind": "session",
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
     "session_id": "2026-05-18_13-27-14"
@@ -371,6 +400,9 @@ imported from GPX/GeoJSON in the future, or created manually.
 
 A study set may reference a whole track by `track_id`, or a track interval by
 `track_id + from_point_id + to_point_id`.
+
+Track ids are unique within the libraries root. They are not scoped to an
+individual processed library.
 
 ---
 
@@ -390,6 +422,8 @@ Example:
 {
   "schema": "bodaqs.session_catalog_row",
   "version": 1,
+  "library_id": "default-library",
+  "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "run_id": "run_2026-05-25T13-57-10_LOCAL",
   "session_id": "2026-05-18_13-27-14",
@@ -470,7 +504,17 @@ Example:
 Recommended `note_status.status` values:
 
 ```text
-missing | draft | edited | unreadable | template_missing | invalid
+missing | draft | edited
+```
+
+`edited` means a reviewed/saved note is available. Unreadable or invalid note
+documents should still report `status: "missing"` and may include diagnostic
+fields such as `error`.
+
+Recommended `qc_summary.status` values:
+
+```text
+ok | warning | alert
 ```
 
 The first projected `note_fields` should include `bike` and `rider` where
@@ -497,6 +541,8 @@ Example request:
 ```json
 {
   "session": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
     "session_id": "2026-05-18_13-27-14"
@@ -539,8 +585,9 @@ Signals may be requested by semantic selector or concrete column. UI flows shoul
 prefer semantic selectors. Concrete columns are useful for data-explorer and
 debugging views.
 
-The endpoint serves one session per request in v1. Comparison views should make
-multiple requests and align results in the frontend.
+The endpoint serves one session per request in v1. The path `library_id` must
+match `session.library_id` when that request field is present. Comparison views
+should make multiple requests and align results in the frontend.
 
 ### 10.2 Response
 
@@ -552,6 +599,8 @@ Example response:
   "version": 1,
   "encoding": "json_arrays",
   "session": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
     "session_id": "2026-05-18_13-27-14"
@@ -659,14 +708,15 @@ concern and is outside the v0 API.
 ### 11.3 Study Sets
 
 ```text
-GET    /api/v1/libraries/{library_id}/study-sets
-POST   /api/v1/libraries/{library_id}/study-sets
-GET    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-PUT    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-DELETE /api/v1/libraries/{library_id}/study-sets/{study_set_id}
+GET    /api/v1/study-sets
+POST   /api/v1/study-sets
+GET    /api/v1/study-sets/{study_set_id}
+PUT    /api/v1/study-sets/{study_set_id}
+DELETE /api/v1/study-sets/{study_set_id}
 ```
 
-Study-set writes should use revision checks.
+Study Set endpoints are scoped to the configured libraries root, not to a single
+processed library. Study Set writes should use revision checks.
 
 Example update request:
 
@@ -677,9 +727,9 @@ Example update request:
     "schema": "bodaqs.study_set",
     "version": 1,
     "study_set_id": "setup-comparison",
-    "revision": 3,
-    "display_name": "Setup comparison",
-    "sessions": [],
+      "revision": 3,
+      "display_name": "Setup comparison",
+      "sessions": [],
     "groupings": [],
     "tracks": [],
     "bookmarks": [],
@@ -777,7 +827,7 @@ The smallest useful v0 service should implement:
 3. `GET /api/v1/libraries`
 4. `GET /api/v1/libraries/{library_id}/catalog`
 5. `POST /api/v1/libraries/{library_id}/refresh`
-6. study-set CRUD
+6. root-scoped Study Set CRUD
 7. `POST /api/v1/libraries/{library_id}/timeseries/window`
 
 This is enough to support two parallel workstreams:
@@ -805,4 +855,3 @@ The following are deliberately outside the first implementation:
 
 These may be added later without changing the core resource model if the v0
 contracts are kept stable.
-

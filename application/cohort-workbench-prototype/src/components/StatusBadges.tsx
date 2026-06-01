@@ -1,7 +1,7 @@
 import type { NoteStatus, SessionRecord } from '../domain/types'
 
 export function NoteBadge({ status }: { status: NoteStatus }) {
-  const label = status === 'finished' ? 'finished' : status === 'draft' ? 'draft' : 'none'
+  const label = status === 'edited' ? 'edited' : status
   return <span className={`pill note-${status}`}>{label}</span>
 }
 

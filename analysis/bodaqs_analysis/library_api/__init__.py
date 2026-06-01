@@ -25,6 +25,7 @@ from .fixtures import FIXTURE_SCHEMA, FIXTURE_VERSION, export_library_fixture
 from .ids import (
     derive_object_id,
     is_valid_object_id,
+    make_session_ref_id,
     make_session_key,
     make_unique_object_id,
     parse_session_key,
@@ -85,6 +86,7 @@ __all__ = [
     "list_study_sets",
     "load_study_set",
     "make_session_key",
+    "make_session_ref_id",
     "make_unique_object_id",
     "parse_session_key",
     "study_set_to_selection_snapshot",

@@ -23,6 +23,7 @@ from bodaqs_analysis.library_api import (
     derive_object_id,
     export_library_fixture,
     make_session_key,
+    make_session_ref_id,
     make_unique_object_id,
     parse_session_key,
 )
@@ -58,19 +59,28 @@ def _make_library_definition(
     )
 
 
-def _make_session(library_root: Path, run_id: str, session_id: str) -> dict:
+def _make_session(
+    library_root: Path,
+    run_id: str,
+    session_id: str,
+    *,
+    library_id: str = "default-library",
+) -> dict:
     (library_root / "runs" / run_id / "sessions" / session_id).mkdir(parents=True)
+    session_key = make_session_key(run_id, session_id)
     return {
+        "library_id": library_id,
         "run_id": run_id,
         "session_id": session_id,
-        "session_key": make_session_key(run_id, session_id),
+        "session_key": session_key,
+        "session_ref_id": make_session_ref_id(library_id, session_key),
     }
 
 
-def _write_catalog_fixture_session(library_root: Path) -> dict:
+def _write_catalog_fixture_session(library_root: Path, *, library_id: str = "default-library") -> dict:
     run_id = "run_2026-05-25T13-57-10_LOCAL"
     session_id = "2026-05-18_13-27-14"
-    session_ref = _make_session(library_root, run_id, session_id)
+    session_ref = _make_session(library_root, run_id, session_id, library_id=library_id)
     session_root = library_root / "runs" / run_id / "sessions" / session_id
 
     _write_json(
@@ -346,7 +356,7 @@ def test_library_adapter_creates_loads_lists_and_deletes_study_set(
         },
     )
 
-    study_set_path = library_root / "library" / "study_sets" / "setup-comparison.json"
+    study_set_path = libraries_root / "library" / "study_sets" / "setup-comparison.json"
     assert created["schema"] == "bodaqs.study_set"
     assert created["version"] == 1
     assert created["study_set_id"] == "setup-comparison"
@@ -361,6 +371,9 @@ def test_library_adapter_creates_loads_lists_and_deletes_study_set(
             "revision": 1,
             "updated_at": created["provenance"]["updated_at"],
             "session_count": 1,
+            "library_count": 1,
+            "grouping_count": 0,
+            "track_count": 0,
             "path": str(study_set_path),
         }
     ]
@@ -396,6 +409,50 @@ def test_library_adapter_creates_unique_study_set_ids(tmp_path: Path) -> None:
 
     assert first["study_set_id"] == "setup-comparison"
     assert second["study_set_id"] == "setup-comparison-2"
+
+
+def test_library_adapter_study_sets_can_span_libraries(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    first_library = libraries_root / "default-library"
+    second_library = libraries_root / "second-library"
+    _make_library_definition(
+        first_library,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _make_library_definition(
+        second_library,
+        library_id="second-library",
+        display_name="Second Library",
+    )
+    first_ref = _make_session(first_library, "run_1", "session_1", library_id="default-library")
+    second_ref = _make_session(second_library, "run_2", "session_2", library_id="second-library")
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_study_set(
+        {
+            "display_name": "Cross Library Comparison",
+            "sessions": [first_ref, second_ref],
+            "groupings": [
+                {
+                    "grouping_id": "comparison",
+                    "display_name": "Comparison",
+                    "session_refs": [first_ref["session_ref_id"], second_ref["session_ref_id"]],
+                }
+            ],
+        },
+    )
+
+    assert created["study_set_id"] == "cross-library-comparison"
+    assert {session["library_id"] for session in created["sessions"]} == {
+        "default-library",
+        "second-library",
+    }
+    assert created["groupings"][0]["session_refs"] == [
+        first_ref["session_ref_id"],
+        second_ref["session_ref_id"],
+    ]
+    assert adapter.list_study_sets()[0]["library_count"] == 2
 
 
 def test_library_adapter_updates_study_set_with_revision_check(
@@ -473,10 +530,15 @@ def test_create_study_set_rejects_missing_session(tmp_path: Path) -> None:
     )
     adapter = LibraryAdapter(libraries_root)
     missing_session = {
+        "library_id": "default-library",
         "run_id": "run_missing",
         "session_id": "session_missing",
         "session_key": make_session_key("run_missing", "session_missing"),
     }
+    missing_session["session_ref_id"] = make_session_ref_id(
+        missing_session["library_id"],
+        missing_session["session_key"],
+    )
 
     with pytest.raises(InvalidStudySetError) as exc:
         adapter.create_study_set(
@@ -486,6 +548,7 @@ def test_create_study_set_rejects_missing_session(tmp_path: Path) -> None:
 
     assert exc.value.code == "invalid_study_set"
     assert exc.value.details["session_key"] == "run_missing::session_missing"
+    assert exc.value.details["session_ref_id"] == "default-library|||run_missing::session_missing"
 
 
 def test_create_study_set_rejects_grouping_outside_top_level_sessions(
@@ -518,7 +581,7 @@ def test_create_study_set_rejects_grouping_outside_top_level_sessions(
             },
         )
 
-    assert exc.value.details["session_key"] == other_session_ref["session_key"]
+    assert exc.value.details["session_ref_id"] == other_session_ref["session_ref_id"]
 
 
 def test_create_study_set_validates_bookmark_shape(tmp_path: Path) -> None:
@@ -588,7 +651,9 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert catalog["row_count"] == 1
     row = catalog["rows"][0]
     assert row["schema"] == "bodaqs.session_catalog_row"
+    assert row["library_id"] == "default-library"
     assert row["session_key"] == session_ref["session_key"]
+    assert row["session_ref_id"] == session_ref["session_ref_id"]
     assert row["display"]["label"] == "Prototype F - Rough descent"
     assert row["timestamps"]["started_at_utc"] == "2026-05-18T05:27:14Z"
     assert row["timestamps"]["processed_at"] == "2026-05-25T13:57:10"
@@ -841,8 +906,6 @@ def test_export_library_fixture_writes_static_payloads(tmp_path: Path) -> None:
 
     study_set_path = (
         fixture_dir
-        / "libraries"
-        / "default-library"
         / "study_sets"
         / "fixture-study-set.json"
     )
@@ -851,7 +914,7 @@ def test_export_library_fixture_writes_static_payloads(tmp_path: Path) -> None:
     assert study_set["sessions"][0]["session_key"] == session_ref["session_key"]
 
     study_set_index = _read_json(
-        fixture_dir / "libraries" / "default-library" / "study_sets" / "index.json"
+        fixture_dir / "study_sets" / "index.json"
     )
     assert study_set_index[0]["path"].endswith("fixture-study-set.json")
 
@@ -896,8 +959,6 @@ def test_export_library_fixture_uses_existing_study_set(tmp_path: Path) -> None:
 
     study_set_path = (
         fixture_dir
-        / "libraries"
-        / "default-library"
         / "study_sets"
         / "existing-study-set.json"
     )
@@ -1087,7 +1148,7 @@ def test_library_api_service_study_set_crud_and_revision_conflict(
     client = TestClient(create_app(libraries_root))
 
     create_response = client.post(
-        "/api/v1/libraries/default-library/study-sets",
+        "/api/v1/study-sets",
         json={
             "display_name": "Service Study Set",
             "sessions": [session_ref],
@@ -1098,31 +1159,31 @@ def test_library_api_service_study_set_crud_and_revision_conflict(
     assert created["study_set_id"] == "service-study-set"
     assert created["revision"] == 1
 
-    list_response = client.get("/api/v1/libraries/default-library/study-sets")
+    list_response = client.get("/api/v1/study-sets")
     assert list_response.status_code == 200
     assert list_response.json()[0]["study_set_id"] == "service-study-set"
 
-    load_response = client.get("/api/v1/libraries/default-library/study-sets/service-study-set")
+    load_response = client.get("/api/v1/study-sets/service-study-set")
     assert load_response.status_code == 200
     assert load_response.json()["display_name"] == "Service Study Set"
 
     updated_payload = dict(created)
     updated_payload["display_name"] = "Service Study Set Edited"
     update_response = client.put(
-        "/api/v1/libraries/default-library/study-sets/service-study-set",
+        "/api/v1/study-sets/service-study-set",
         json={"expected_revision": 1, "study_set": updated_payload},
     )
     assert update_response.status_code == 200
     assert update_response.json()["revision"] == 2
 
     conflict_response = client.put(
-        "/api/v1/libraries/default-library/study-sets/service-study-set",
+        "/api/v1/study-sets/service-study-set",
         json={"expected_revision": 1, "study_set": updated_payload},
     )
     assert conflict_response.status_code == 409
     assert conflict_response.json()["error"]["code"] == "revision_conflict"
 
-    delete_response = client.delete("/api/v1/libraries/default-library/study-sets/service-study-set")
+    delete_response = client.delete("/api/v1/study-sets/service-study-set")
     assert delete_response.status_code == 200
     assert delete_response.json() == {"deleted": True, "study_set_id": "service-study-set"}
 

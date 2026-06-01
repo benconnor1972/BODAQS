@@ -51,8 +51,9 @@ A user opens or connects to a library, selects or creates a **Study Set**, then
 uses that Study Set as the basis for analysis, comparison, charting, notes,
 exports, and reports.
 
-A Study Set is a named analysis scope. It should be explicit and stable once
-saved. It may include:
+A Study Set is a named analysis scope stored under the configured libraries
+root. It should be explicit and stable once saved, and it may include sessions
+from more than one library. It may include:
 
 - explicit session references
 - Study Set-local groupings
@@ -78,18 +79,17 @@ The practical session identity remains:
 
 Study Set session references should carry:
 
+- `library_id`
+- `session_ref_id`
 - `session_key`
 - `run_id`
 - `session_id`
 - optional display label
 
 `run_id` and `session_id` are canonical. `session_key` is a readable convenience
-field that should be validated against those values.
-
-The first application implementation should not redesign the model around
-multi-library session identity. If later required, session references can gain
-an optional `library_id` or `library_ref` field without changing the core
-principle that Study Set membership is explicit.
+field that should be validated against those values. `session_ref_id` is
+`library_id|||session_key` and is the stable reference used by Study Set
+groupings and bookmarks.
 
 ## Core Architecture
 
@@ -209,12 +209,13 @@ Python should also remain authoritative, outside the Library API scope, for:
 
 ## Study Set Contract
 
-Study Sets are versioned, portable objects stored with the library.
+Study Sets are versioned, portable objects stored with the configured libraries
+root.
 
 Canonical storage shape:
 
 ```text
-<library>/
+<libraries_root>/
   library/
     study_sets/
       <study_set_id>.json
@@ -251,13 +252,13 @@ The Study Set contract is documented in:
 
 ### Tracks
 
-Tracks are reusable library objects. A track is a GPS path or route, optionally
-derived from a session but not required to be tied to one.
+Tracks are reusable root-level objects. A track is a GPS path or route,
+optionally derived from a session but not required to be tied to one.
 
 Canonical future storage shape:
 
 ```text
-<library>/
+<libraries_root>/
   library/
     tracks/
       <track_id>.json
@@ -314,11 +315,11 @@ GET  /api/v1/libraries/{library_id}
 POST /api/v1/libraries/{library_id}/refresh
 GET  /api/v1/libraries/{library_id}/catalog
 
-GET    /api/v1/libraries/{library_id}/study-sets
-POST   /api/v1/libraries/{library_id}/study-sets
-GET    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-PUT    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-DELETE /api/v1/libraries/{library_id}/study-sets/{study_set_id}
+GET    /api/v1/study-sets
+POST   /api/v1/study-sets
+GET    /api/v1/study-sets/{study_set_id}
+PUT    /api/v1/study-sets/{study_set_id}
+DELETE /api/v1/study-sets/{study_set_id}
 
 POST /api/v1/libraries/{library_id}/timeseries/window
 ```
@@ -335,7 +336,7 @@ binary encoding later.
 Goal: define enough contract shape to let frontend and backend work proceed in
 parallel.
 
-Status: started.
+Status: completed for the initial v0 implementation baseline.
 
 Work in this phase:
 
@@ -533,7 +534,7 @@ bundles, or hosted-service complexity.
 - Study Sets are the primary analysis scope.
 - Saved Study Sets should be explicit and stable, not live filters.
 - Filters are helper tools for finding, validating, and refreshing candidate scope.
-- Tracks are reusable library objects, not private Study Set state.
+- Tracks are reusable root-level objects, not private Study Set state.
 - Bookmarks and groupings are Study Set-local in v0.
 - Browser UI owns visualisation and interaction.
 - Python owns canonical processing, artifact interpretation, and heavy data preparation.
