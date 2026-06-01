@@ -17,42 +17,49 @@ from .ids import is_valid_object_id, make_session_key, make_session_ref_id, make
 
 STUDY_SET_SCHEMA = "bodaqs.study_set"
 STUDY_SET_VERSION = 1
-STUDY_SETS_DIR = Path("library") / "study_sets"
+STUDY_SETS_DIR = Path("study_sets")
+LEGACY_STUDY_SETS_DIR = Path("library") / "study_sets"
 
 
 def list_study_sets(libraries_root: str | Path) -> list[dict[str, Any]]:
     """Return lightweight Study Set summaries for a libraries root."""
 
     out: list[dict[str, Any]] = []
-    for path in sorted(_study_sets_dir(libraries_root).glob("*.json"), key=lambda p: p.name.lower()):
-        try:
-            doc = _read_json_object(path)
-        except StudySetNotFoundError:
-            continue
-        out.append(
-            {
-                "study_set_id": str(doc.get("study_set_id") or path.stem),
-                "display_name": str(doc.get("display_name") or doc.get("study_set_id") or path.stem),
-                "revision": int(doc.get("revision") or 0),
-                "updated_at": _provenance_updated_at(doc),
-                "session_count": len(doc.get("sessions") or []),
-                "library_count": len(
-                    {
-                        str(session.get("library_id"))
-                        for session in doc.get("sessions") or []
-                        if isinstance(session, Mapping) and session.get("library_id") is not None
-                    }
-                ),
-                "grouping_count": len(doc.get("groupings") or []),
-                "track_count": len(doc.get("tracks") or []),
-                "path": str(path),
-            }
-        )
+    seen_ids: set[str] = set()
+    for directory in _study_set_dirs(libraries_root):
+        for path in sorted(directory.glob("*.json"), key=lambda p: p.name.lower()):
+            try:
+                doc = _read_json_object(path)
+            except StudySetNotFoundError:
+                continue
+            study_set_id = str(doc.get("study_set_id") or path.stem)
+            if study_set_id in seen_ids:
+                continue
+            seen_ids.add(study_set_id)
+            out.append(
+                {
+                    "study_set_id": study_set_id,
+                    "display_name": str(doc.get("display_name") or doc.get("study_set_id") or path.stem),
+                    "revision": int(doc.get("revision") or 0),
+                    "updated_at": _provenance_updated_at(doc),
+                    "session_count": len(doc.get("sessions") or []),
+                    "library_count": len(
+                        {
+                            str(session.get("library_id"))
+                            for session in doc.get("sessions") or []
+                            if isinstance(session, Mapping) and session.get("library_id") is not None
+                        }
+                    ),
+                    "grouping_count": len(doc.get("groupings") or []),
+                    "track_count": len(doc.get("tracks") or []),
+                    "path": str(path),
+                }
+            )
     return out
 
 
 def load_study_set(libraries_root: str | Path, study_set_id: str) -> dict[str, Any]:
-    path = _study_set_path(libraries_root, study_set_id)
+    path = _existing_study_set_path(libraries_root, study_set_id)
     return _read_json_object(path)
 
 
@@ -120,13 +127,14 @@ def update_study_set(
 
 
 def delete_study_set(libraries_root: str | Path, study_set_id: str) -> dict[str, Any]:
-    path = _study_set_path(libraries_root, study_set_id)
-    if not path.exists():
+    paths = [path for path in _study_set_paths(libraries_root, study_set_id) if path.exists()]
+    if not paths:
         raise StudySetNotFoundError(
             "Study Set was not found.",
             details={"study_set_id": str(study_set_id)},
         )
-    path.unlink()
+    for path in paths:
+        path.unlink()
     return {"deleted": True, "study_set_id": str(study_set_id)}
 
 
@@ -445,14 +453,41 @@ def _study_sets_dir(libraries_root: str | Path) -> Path:
     return Path(libraries_root) / STUDY_SETS_DIR
 
 
+def _legacy_study_sets_dir(libraries_root: str | Path) -> Path:
+    return Path(libraries_root) / LEGACY_STUDY_SETS_DIR
+
+
+def _study_set_dirs(libraries_root: str | Path) -> list[Path]:
+    return [_study_sets_dir(libraries_root), _legacy_study_sets_dir(libraries_root)]
+
+
 def _study_set_path(libraries_root: str | Path, study_set_id: str) -> Path:
+    return _study_set_path_in_dir(_study_sets_dir(libraries_root), study_set_id)
+
+
+def _legacy_study_set_path(libraries_root: str | Path, study_set_id: str) -> Path:
+    return _study_set_path_in_dir(_legacy_study_sets_dir(libraries_root), study_set_id)
+
+
+def _study_set_paths(libraries_root: str | Path, study_set_id: str) -> list[Path]:
+    return [_study_set_path(libraries_root, study_set_id), _legacy_study_set_path(libraries_root, study_set_id)]
+
+
+def _existing_study_set_path(libraries_root: str | Path, study_set_id: str) -> Path:
+    for path in _study_set_paths(libraries_root, study_set_id):
+        if path.exists():
+            return path
+    return _study_set_path(libraries_root, study_set_id)
+
+
+def _study_set_path_in_dir(directory: Path, study_set_id: str) -> Path:
     study_set_id = _required_text(study_set_id, field_name="study_set_id")
     if not is_valid_object_id(study_set_id):
         raise InvalidStudySetError(
             "Study Set id is not filename-safe.",
             details={"study_set_id": study_set_id},
         )
-    return _study_sets_dir(libraries_root) / f"{study_set_id}.json"
+    return directory / f"{study_set_id}.json"
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -474,11 +509,15 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 
 
 def _write_study_set(libraries_root: str | Path, payload: Mapping[str, Any]) -> None:
-    path = _study_set_path(libraries_root, str(payload["study_set_id"]))
+    study_set_id = str(payload["study_set_id"])
+    path = _study_set_path(libraries_root, study_set_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(dict(payload), indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+    legacy_path = _legacy_study_set_path(libraries_root, study_set_id)
+    if legacy_path.exists():
+        legacy_path.unlink()
 
 
 def _required_text(value: Any, *, field_name: str) -> str:

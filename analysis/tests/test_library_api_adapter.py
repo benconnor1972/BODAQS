@@ -356,7 +356,7 @@ def test_library_adapter_creates_loads_lists_and_deletes_study_set(
         },
     )
 
-    study_set_path = libraries_root / "library" / "study_sets" / "setup-comparison.json"
+    study_set_path = libraries_root / "study_sets" / "setup-comparison.json"
     assert created["schema"] == "bodaqs.study_set"
     assert created["version"] == 1
     assert created["study_set_id"] == "setup-comparison"
@@ -385,6 +385,56 @@ def test_library_adapter_creates_loads_lists_and_deletes_study_set(
     }
     with pytest.raises(StudySetNotFoundError):
         adapter.load_study_set("default-library", "setup-comparison")
+
+
+def test_library_adapter_reads_and_migrates_legacy_study_set_location(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _make_session(library_root, "run_1", "session_1")
+    legacy_path = libraries_root / "library" / "study_sets" / "legacy-study-set.json"
+    _write_json(
+        legacy_path,
+        {
+            "schema": "bodaqs.study_set",
+            "version": 1,
+            "study_set_id": "legacy-study-set",
+            "display_name": "Legacy Study Set",
+            "revision": 1,
+            "sessions": [session_ref],
+            "groupings": [],
+            "bookmarks": [],
+            "tracks": [],
+            "provenance": {
+                "created_at": "2026-06-01T00:00:00Z",
+                "created_by": "test",
+                "created_from": {"kind": "manual_selection", "details": {}},
+                "updated_at": "2026-06-01T00:00:00Z",
+            },
+            "display_state": {"bodaqs_web_v1": {}},
+        },
+    )
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.list_study_sets()[0]["path"] == str(legacy_path)
+    loaded = adapter.load_study_set("legacy-study-set")
+    assert loaded["display_name"] == "Legacy Study Set"
+
+    loaded["display_name"] = "Migrated Study Set"
+    updated = adapter.update_study_set(
+        "legacy-study-set",
+        expected_revision=1,
+        payload=loaded,
+    )
+
+    canonical_path = libraries_root / "study_sets" / "legacy-study-set.json"
+    assert updated["revision"] == 2
+    assert canonical_path.exists()
+    assert not legacy_path.exists()
 
 
 def test_library_adapter_creates_unique_study_set_ids(tmp_path: Path) -> None:
@@ -1132,6 +1182,36 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     refresh = client.post("/api/v1/libraries/default-library/refresh")
     assert refresh.status_code == 200
     assert refresh.json()["refreshed"] is True
+
+    other_libraries_root = tmp_path / "other-libraries"
+    other_library_root = other_libraries_root / "field-library"
+    _make_library_definition(
+        other_library_root,
+        library_id="field-library",
+        display_name="Field Library",
+    )
+    other_session_ref = _write_catalog_fixture_session(other_library_root, library_id="field-library")
+
+    switch_root = client.post(
+        "/api/v1/config/libraries-root",
+        json={"libraries_root": str(other_libraries_root)},
+    )
+    assert switch_root.status_code == 200
+    assert switch_root.json()["updated"] is True
+    assert switch_root.json()["library_count"] == 1
+    assert switch_root.json()["libraries_root"] == str(other_libraries_root)
+
+    switched_health = client.get("/api/v1/health")
+    assert switched_health.status_code == 200
+    assert switched_health.json()["libraries_root"] == str(other_libraries_root)
+
+    switched_libraries = client.get("/api/v1/libraries")
+    assert switched_libraries.status_code == 200
+    assert switched_libraries.json()[0]["library_id"] == "field-library"
+
+    switched_catalog = client.get("/api/v1/libraries/field-library/catalog")
+    assert switched_catalog.status_code == 200
+    assert switched_catalog.json()["rows"][0]["session_key"] == other_session_ref["session_key"]
 
 
 def test_library_api_service_study_set_crud_and_revision_conflict(

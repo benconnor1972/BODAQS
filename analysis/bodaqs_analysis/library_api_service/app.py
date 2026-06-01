@@ -38,15 +38,13 @@ def create_app(
         libraries_root=Path(libraries_root).expanduser(),
         allow_origins=tuple(allow_origins or DEFAULT_ALLOW_ORIGINS),
     )
-    adapter = LibraryAdapter(config.libraries_root)
-
     app = FastAPI(
         title=SERVICE_NAME,
         version=SERVICE_API_VERSION,
         description="Local HTTP wrapper around processed BODAQS libraries.",
     )
     app.state.config = config
-    app.state.adapter = adapter
+    app.state.adapter = LibraryAdapter(config.libraries_root)
 
     app.add_middleware(
         CORSMiddleware,
@@ -62,52 +60,71 @@ def create_app(
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
+        current_config = _current_config(app)
         return {
             "status": "ok",
             "service": SERVICE_NAME,
             "api_version": SERVICE_API_VERSION,
-            "libraries_root": str(config.libraries_root),
+            "libraries_root": str(current_config.libraries_root),
         }
 
     @app.get("/api/v1/capabilities")
     def capabilities() -> dict[str, Any]:
-        return adapter.capabilities()
+        return _current_adapter(app).capabilities()
+
+    @app.post("/api/v1/config/libraries-root")
+    async def set_libraries_root(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        libraries_root = _libraries_root_payload(payload)
+        next_adapter = LibraryAdapter(libraries_root)
+        libraries = next_adapter.list_libraries(refresh=True)
+        app.state.config = LibraryApiServiceConfig(
+            libraries_root=Path(libraries_root).expanduser(),
+            allow_origins=_current_config(app).allow_origins,
+        )
+        app.state.adapter = next_adapter
+        return {
+            "updated": True,
+            "libraries_root": str(_current_config(app).libraries_root),
+            "library_count": len(libraries),
+            "libraries": libraries,
+        }
 
     @app.get("/api/v1/libraries")
     def list_libraries() -> list[dict[str, Any]]:
-        return adapter.list_libraries()
+        return _current_adapter(app).list_libraries()
 
     @app.get("/api/v1/libraries/{library_id}")
     def get_library(library_id: str) -> dict[str, Any]:
-        return adapter.get_library(library_id)
+        return _current_adapter(app).get_library(library_id)
 
     @app.post("/api/v1/libraries/{library_id}/refresh")
     def refresh_library(library_id: str) -> dict[str, Any]:
-        library = adapter.refresh_library(library_id)
+        library = _current_adapter(app).refresh_library(library_id)
         return {"refreshed": True, "library": library}
 
     @app.get("/api/v1/libraries/{library_id}/catalog")
     def get_catalog(library_id: str) -> dict[str, Any]:
-        return adapter.get_catalog(library_id)
+        return _current_adapter(app).get_catalog(library_id)
 
     @app.get("/api/v1/study-sets")
     def list_root_study_sets() -> list[dict[str, Any]]:
-        return adapter.list_study_sets()
+        return _current_adapter(app).list_study_sets()
 
     @app.post("/api/v1/study-sets")
     async def create_root_study_set(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return adapter.create_study_set(_study_set_payload(payload))
+        return _current_adapter(app).create_study_set(_study_set_payload(payload))
 
     @app.get("/api/v1/study-sets/{study_set_id}")
     def load_root_study_set(study_set_id: str) -> dict[str, Any]:
-        return adapter.load_study_set(study_set_id)
+        return _current_adapter(app).load_study_set(study_set_id)
 
     @app.put("/api/v1/study-sets/{study_set_id}")
     async def update_root_study_set(study_set_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         expected_revision = _expected_revision(payload)
-        return adapter.update_study_set(
+        return _current_adapter(app).update_study_set(
             study_set_id,
             expected_revision=expected_revision,
             payload=_study_set_payload(payload),
@@ -115,12 +132,12 @@ def create_app(
 
     @app.delete("/api/v1/study-sets/{study_set_id}")
     def delete_root_study_set(study_set_id: str) -> dict[str, Any]:
-        return adapter.delete_study_set(study_set_id)
+        return _current_adapter(app).delete_study_set(study_set_id)
 
     @app.post("/api/v1/libraries/{library_id}/timeseries/window")
     async def get_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return adapter.get_timeseries_window(library_id, payload)
+        return _current_adapter(app).get_timeseries_window(library_id, payload)
 
     return app
 
@@ -136,6 +153,27 @@ def _study_set_payload(payload: Any) -> dict[str, Any]:
 
         raise InvalidRequestError("Study Set request body must include a JSON object.")
     return value
+
+
+def _libraries_root_payload(payload: Any) -> Path:
+    if not isinstance(payload, dict):
+        from bodaqs_analysis.library_api.errors import InvalidRequestError
+
+        raise InvalidRequestError("Request body must be a JSON object.")
+    value = payload.get("libraries_root")
+    if not isinstance(value, str) or not value.strip():
+        from bodaqs_analysis.library_api.errors import InvalidRequestError
+
+        raise InvalidRequestError("libraries_root must be a non-empty string.")
+    return Path(value).expanduser()
+
+
+def _current_config(app: FastAPI) -> LibraryApiServiceConfig:
+    return app.state.config
+
+
+def _current_adapter(app: FastAPI) -> LibraryAdapter:
+    return app.state.adapter
 
 
 def _expected_revision(payload: Any) -> int:

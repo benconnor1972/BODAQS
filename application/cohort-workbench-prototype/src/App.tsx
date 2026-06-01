@@ -8,6 +8,7 @@ import {
   Eye,
   FileText,
   Filter,
+  FolderOpen,
   GitBranch,
   Library,
   Minus,
@@ -26,6 +27,8 @@ import { SessionTable, type SessionSelectionGesture } from './components/Session
 import { StudySessionTable } from './components/StudySessionTable'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
+import { LocalApiDataSource } from './data/LocalApiDataSource'
+import type { LibraryDataSource } from './data/LibraryDataSource'
 import {
   columnGroups,
   columnLabels,
@@ -66,7 +69,9 @@ type PendingStudySetAction =
   | { kind: 'clear' }
 
 function App() {
-  const [dataSource] = useState(() => new FixtureLibraryDataSource())
+  const [localDataSource] = useState(() => new LocalApiDataSource())
+  const [fixtureDataSource] = useState(() => new FixtureLibraryDataSource())
+  const [activeDataSource, setActiveDataSource] = useState<LibraryDataSource>(localDataSource)
   const columnMenuRef = useRef<HTMLDivElement>(null)
   const [libraries, setLibraries] = useState<LibraryRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
@@ -91,41 +96,68 @@ function App() {
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
-  const [statusMessage, setStatusMessage] = useState('Loading fixture-backed prototype data source...')
+  const [libraryRootInput, setLibraryRootInput] = useState('')
+  const [connectionMode, setConnectionMode] = useState<'local-api' | 'fixture'>('local-api')
+  const [isChangingLibraryRoot, setIsChangingLibraryRoot] = useState(false)
+  const [statusMessage, setStatusMessage] = useState('Connecting to configured BODAQS Library API...')
 
   useEffect(() => {
     let cancelled = false
 
-    async function loadPrototypeData() {
+    async function loadDefaultData() {
       try {
-        const [loadedLibraries, loadedSessions, loadedTracks, loadedStudySets] = await Promise.all([
-          dataSource.listLibraries(),
-          dataSource.listSessions(),
-          dataSource.listTracks(),
-          dataSource.listStudySets(),
-        ])
-
+        const health = await localDataSource.getHealth()
         if (cancelled) {
           return
         }
-
-        setLibraries(loadedLibraries)
-        setSessions(loadedSessions)
-        setTracks(loadedTracks)
-        setSavedStudySets(loadedStudySets)
-        setSelectedLibraryIds(loadedLibraries.map((libraryItem) => libraryItem.id))
-        setStatusMessage('Fixture-backed prototype ready. Study Sets save to in-memory mock state.')
+        if (health.libraries_root) {
+          setLibraryRootInput(health.libraries_root)
+        }
+        const loaded = await fetchWorkbenchData(localDataSource)
+        if (cancelled) {
+          return
+        }
+        setLibraries(loaded.libraries)
+        setSessions(loaded.sessions)
+        setTracks(loaded.tracks)
+        setSavedStudySets(loaded.studySets)
+        setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
+        setStatusMessage(`Connected to Library API at ${localDataSource.baseUrl}.`)
+        setActiveDataSource(localDataSource)
+        setConnectionMode('local-api')
       } catch (error) {
+        if (cancelled) {
+          return
+        }
         const message = error instanceof Error ? error.message : String(error)
-        setStatusMessage(`Could not load prototype fixture data: ${message}`)
+        setActiveDataSource(fixtureDataSource)
+        setConnectionMode('fixture')
+        try {
+          const loaded = await fetchWorkbenchData(fixtureDataSource)
+          if (cancelled) {
+            return
+          }
+          setLibraries(loaded.libraries)
+          setSessions(loaded.sessions)
+          setTracks(loaded.tracks)
+          setSavedStudySets(loaded.studySets)
+          setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
+          setStatusMessage(`Local API unavailable at ${localDataSource.baseUrl}; fixture prototype loaded. ${message}`)
+        } catch (fixtureError) {
+          if (cancelled) {
+            return
+          }
+          const fixtureMessage = fixtureError instanceof Error ? fixtureError.message : String(fixtureError)
+          setStatusMessage(`Could not load local API or prototype fixture data: ${fixtureMessage}`)
+        }
       }
     }
 
-    void loadPrototypeData()
+    void loadDefaultData()
     return () => {
       cancelled = true
     }
-  }, [dataSource])
+  }, [fixtureDataSource, localDataSource])
 
   const isCurrentStudySetDirty = !studySetsEqual(currentStudySet, lastCommittedStudySet)
   const currentStudySetHasContent = hasStudySetContent(currentStudySet)
@@ -196,6 +228,52 @@ function App() {
       }
       return [...current, libraryId]
     })
+  }
+
+  async function applyLibraryRoot() {
+    const librariesRoot = libraryRootInput.trim()
+    if (!librariesRoot) {
+      setStatusMessage('Enter a local libraries root path before selecting a root.')
+      return
+    }
+    if (isCurrentStudySetDirty) {
+      setStatusMessage('Save, discard, or clear the current Study Set before changing library roots.')
+      return
+    }
+
+    setIsChangingLibraryRoot(true)
+    try {
+      const response = await localDataSource.setLibrariesRoot(librariesRoot)
+      const resolvedRoot = response.libraries_root ?? librariesRoot
+      setLibraryRootInput(resolvedRoot)
+      const loaded = await fetchWorkbenchData(localDataSource)
+      const libraryCount = response.library_count ?? loaded.libraries.length
+      const libraryLabel = libraryCount === 1 ? 'library' : 'libraries'
+      setLibraries(loaded.libraries)
+      setSessions(loaded.sessions)
+      setTracks(loaded.tracks)
+      setSavedStudySets(loaded.studySets)
+      setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
+      setStatusMessage(`Connected to ${libraryCount} ${libraryLabel} under ${resolvedRoot}.`)
+      setActiveDataSource(localDataSource)
+      setConnectionMode('local-api')
+
+      const cleared = emptyStudySet()
+      setCurrentStudySet(cleared)
+      setLastCommittedStudySet(cloneStudySet(cleared))
+      setSelectedCandidateIds([])
+      setPrimaryCandidateId(null)
+      setSelectionAnchorCandidateId(null)
+      setSelectedStudySessionIds([])
+      setSelectionAnchorStudySessionId(null)
+      setSelectedTrackIds([])
+      setGroupingName('')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not select library root through ${localDataSource.baseUrl}: ${message}`)
+    } finally {
+      setIsChangingLibraryRoot(false)
+    }
   }
 
   function toggleColumn(columnId: ColumnId) {
@@ -435,11 +513,11 @@ function App() {
     }
 
     try {
-      const saved = await dataSource.saveStudySet({
+      const saved = await activeDataSource.saveStudySet({
         ...currentStudySet,
         displayName,
       })
-      setSavedStudySets(await dataSource.listStudySets())
+      setSavedStudySets(await activeDataSource.listStudySets())
       setCurrentStudySet(saved)
       setLastCommittedStudySet(cloneStudySet(saved))
       setStatusMessage(`Saved "${saved.displayName}" at revision ${saved.revision}.`)
@@ -561,6 +639,34 @@ function App() {
               <h2>Library Selector</h2>
               <span className="subtle">{selectedLibraries.length} active</span>
             </div>
+            <div className="library-root-control">
+              <label>
+                <span>Library root</span>
+                <input
+                  value={libraryRootInput}
+                  onChange={(event) => setLibraryRootInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      void applyLibraryRoot()
+                    }
+                  }}
+                  placeholder="Paste a local libraries root path"
+                />
+              </label>
+              <button
+                className="secondary-action"
+                disabled={isChangingLibraryRoot}
+                onClick={() => void applyLibraryRoot()}
+                type="button"
+              >
+                <FolderOpen size={16} />
+                Select root
+              </button>
+            </div>
+            <p className="connection-note">
+              <strong>{connectionMode === 'local-api' ? 'Local API' : 'Fixture fallback'}</strong>
+              <span>{localDataSource.baseUrl}</span>
+            </p>
             <div className="library-list">
               {libraries.map((libraryItem) => (
                 <label className="check-row" key={libraryItem.id}>
@@ -979,6 +1085,33 @@ function pendingActionLabel(action: PendingStudySetAction) {
     return 'start Analyze now'
   }
   return 'clear the current Study Set'
+}
+
+async function fetchWorkbenchData(source: LibraryDataSource) {
+  const [loadedLibraries, loadedSessions, loadedTracks, loadedStudySets] = await Promise.all([
+    source.listLibraries(),
+    source.listSessions(),
+    source.listTracks(),
+    source.listStudySets(),
+  ])
+
+  return {
+    libraries: applySessionCounts(loadedLibraries, loadedSessions),
+    sessions: loadedSessions,
+    tracks: loadedTracks,
+    studySets: loadedStudySets,
+  }
+}
+
+function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[]) {
+  const sessionCounts = new Map<string, number>()
+  for (const session of sessions) {
+    sessionCounts.set(session.libraryId, (sessionCounts.get(session.libraryId) ?? 0) + 1)
+  }
+  return libraries.map((libraryItem) => ({
+    ...libraryItem,
+    sessionCount: sessionCounts.get(libraryItem.id) ?? libraryItem.sessionCount,
+  }))
 }
 
 function uniqueStrings(values: string[]) {

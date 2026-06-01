@@ -75,15 +75,16 @@ Root-scoped application objects live under:
 
 ```text
 <libraries_root>/
-  library/
-    study_sets/
-      <study_set_id>.json
-    tracks/
-      <track_id>.json
+  study_sets/
+    <study_set_id>.json
+  tracks/
+    <track_id>.json
 ```
 
-The first implementation reads one configured libraries root. Changing that root
-is a local setup concern, not a v0 API operation.
+The first implementation reads one active libraries root at a time. The local
+service may expose a setup endpoint for changing that active root, so the
+browser can recover when the default configured root is wrong or when the user
+needs to move between field and development workspaces.
 
 ### 4.1 Library
 
@@ -135,9 +136,8 @@ Canonical location:
 
 ```text
 <libraries_root>/
-  library/
-    study_sets/
-      <study_set_id>.json
+  study_sets/
+    <study_set_id>.json
 ```
 
 Study sets contain:
@@ -177,9 +177,8 @@ Canonical future location:
 
 ```text
 <libraries_root>/
-  library/
-    tracks/
-      <track_id>.json
+  tracks/
+    <track_id>.json
 ```
 
 The v0 API contract defines track objects and references, but the first endpoint
@@ -690,6 +689,7 @@ Example decimated sampling block:
 ```text
 GET /api/v1/health
 GET /api/v1/capabilities
+POST /api/v1/config/libraries-root
 ```
 
 ### 11.2 Libraries
@@ -701,9 +701,11 @@ POST /api/v1/libraries/{library_id}/refresh
 GET  /api/v1/libraries/{library_id}/catalog
 ```
 
-The first implementation may discover libraries under one configured
-`libraries_root`. Changing `libraries_root` is a local configuration/setup
-concern and is outside the v0 API.
+The first implementation discovers libraries under the active `libraries_root`.
+`POST /api/v1/config/libraries-root` is a local setup operation: the browser
+sends a service-local filesystem path, the service validates/discovers that
+root, and subsequent calls use the new adapter state. This is not an Import
+Manager import/preprocessing operation.
 
 ### 11.3 Study Sets
 

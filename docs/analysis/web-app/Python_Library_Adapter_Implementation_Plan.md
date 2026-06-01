@@ -343,9 +343,8 @@ Study Sets live at the configured libraries root:
 
 ```text
 <libraries_root>/
-  library/
-    study_sets/
-      <study_set_id>.json
+  study_sets/
+    <study_set_id>.json
 ```
 
 ### Validation
@@ -776,6 +775,8 @@ Status: complete.
 - add a thin FastAPI wrapper around `LibraryAdapter`
 - expose health, capabilities, library, catalog, Study Set, and time-series
   endpoints
+- expose a local setup endpoint that switches the active `libraries_root` and
+  rebuilds the adapter state
 - map adapter exceptions to the standard JSON error envelope
 - add CLI startup via `python -m bodaqs_analysis.library_api_service`
 - add focused route tests with `fastapi.testclient.TestClient`

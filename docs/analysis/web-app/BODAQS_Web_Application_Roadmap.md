@@ -106,6 +106,12 @@ source. This gives the browser a stable API seam while keeping Python
 authoritative for artifact interpretation, Parquet reads, signal semantics, and
 time-series window preparation.
 
+The frontend should default to a configured local API URL, initially
+`http://127.0.0.1:8765` unless overridden by deployment configuration. If the
+service is reachable but pointed at the wrong workspace, the Library Selector
+should provide a fallback "select library root" control that asks the local API
+to switch its active `libraries_root`.
+
 The API is not an Import Manager API. Import Manager remains responsible for
 import, logger transfer, preprocessing, and artifact writing. The Library API is
 responsible for processed-library browsing, Study Set persistence, and
@@ -132,6 +138,11 @@ The user has:
 This mode supports offline operation, efficient Parquet access, local Study Set
 writes, and Python-backed time-series preparation without requiring internet
 connectivity.
+
+The browser does not need direct filesystem custody of the library root in this
+mode. It should ask the local API which libraries are available. The optional
+root selector is a setup fallback for changing the service's active root, not a
+browser-side directory reader.
 
 ### Browser-Local Mode
 
@@ -216,9 +227,8 @@ Canonical storage shape:
 
 ```text
 <libraries_root>/
-  library/
-    study_sets/
-      <study_set_id>.json
+  study_sets/
+    <study_set_id>.json
 ```
 
 Separate files reduce write conflicts, make saves simple, and allow Study Sets
@@ -259,9 +269,8 @@ Canonical future storage shape:
 
 ```text
 <libraries_root>/
-  library/
-    tracks/
-      <track_id>.json
+  tracks/
+    <track_id>.json
 ```
 
 A track may have zero or more named points. A Study Set can reference a whole
@@ -310,6 +319,7 @@ The first endpoint set should be deliberately small:
 ```text
 GET  /api/v1/health
 GET  /api/v1/capabilities
+POST /api/v1/config/libraries-root
 GET  /api/v1/libraries
 GET  /api/v1/libraries/{library_id}
 POST /api/v1/libraries/{library_id}/refresh
@@ -392,6 +402,7 @@ Work in this phase:
 - choose a minimal Python HTTP framework
 - bind to `127.0.0.1`
 - read local service config containing `libraries_root`
+- expose a local setup endpoint for switching the active `libraries_root`
 - implement `health`, `capabilities`, `libraries`, `refresh`, `catalog`, Study Set CRUD, and `timeseries/window`
 - keep import/preprocessing endpoints out of scope
 - provide consistent API error responses
@@ -413,6 +424,7 @@ Work in this phase:
 - implement `LocalApiDataSource`
 - implement `FixtureLibraryDataSource` for George's static development fixture
 - build a basic library selector
+- default to the configured local API URL and provide a Library Selector fallback for changing the active root
 - build a basic session catalog table
 - load and display service capabilities
 
