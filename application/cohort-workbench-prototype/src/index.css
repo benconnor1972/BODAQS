@@ -1,0 +1,46 @@
+:root {
+  --ink: #243039;
+  --muted: #66737b;
+  --surface-ground: #e7ebe4;
+  --surface: #fbfbf7;
+  --surface-warm: #f2f3ed;
+  --line: #d4dbd7;
+  --line-strong: #aebbb5;
+  --green: #2f7d6d;
+  --amber: #b66a2c;
+  --red: #983d3d;
+  --blue: #4d70a8;
+
+  font-family: Aptos, "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 400;
+  color: var(--ink);
+  background: var(--surface-ground);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 360px;
+  margin: 0;
+}
+
+button,
+input,
+summary {
+  letter-spacing: 0;
+}
+
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
