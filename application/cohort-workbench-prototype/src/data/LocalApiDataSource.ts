@@ -101,6 +101,29 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapStudySet(saved)
   }
 
+  async saveTrack(track: TrackRecord) {
+    const payload = toApiTrack(track)
+    const saved = track.id
+      ? await requestJson<ApiObject>(`${this.baseUrl}/api/v1/tracks/${encodeURIComponent(track.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            expected_revision: track.revision,
+            track: payload,
+          }),
+        })
+      : await requestJson<ApiObject>(`${this.baseUrl}/api/v1/tracks`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+    return mapTrack(saved)
+  }
+
+  async deleteTrack(trackId: string) {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/tracks/${encodeURIComponent(trackId)}`, {
+      method: 'DELETE',
+    })
+  }
+
   async listTrackMatches(studySet: StudySet) {
     if (studySet.sessions.length === 0 || studySet.trackIds.length === 0) {
       return []
@@ -226,9 +249,11 @@ function mapTrack(value: ApiObject): TrackRecord {
   const coordinates = arrayValue(path.coordinates).map(coordinatePair).filter(isCoordinatePair)
   const lengthM = numberValue(path.length_m)
   const policyRef = objectValue(value.default_policy_ref)
+  const source = objectValue(value.source)
   return {
     id: textValue(value.track_id),
     name: textValue(value.display_name, textValue(value.track_id)),
+    description: textValue(value.description),
     revision: numberValue(value.revision),
     pointCount: coordinates.length,
     distanceKm: lengthM / 1000,
@@ -255,6 +280,16 @@ function mapTrack(value: ApiObject): TrackRecord {
         }
       }),
     matchSummaries: arrayValue(value.match_summaries).filter(isObject).map(mapTrackMatch),
+    source: textValue(source.kind)
+      ? {
+          kind: textValue(source.kind),
+          libraryId: textValue(source.library_id) || undefined,
+          sessionRefId: textValue(source.session_ref_id) || undefined,
+          sessionKey: textValue(source.session_key) || undefined,
+          runId: textValue(source.run_id) || undefined,
+          sessionId: textValue(source.session_id) || undefined,
+        }
+      : undefined,
   }
 }
 
@@ -406,6 +441,67 @@ function toApiStudySet(studySet: StudySet) {
     payload.study_set_id = studySet.id
   }
 
+  return payload
+}
+
+function toApiTrack(track: TrackRecord) {
+  const payload: ApiObject = {
+    schema: 'bodaqs.track',
+    version: 1,
+    display_name: track.name.trim(),
+    description: track.description ?? '',
+    revision: track.revision,
+    path: {
+      type: 'LineString',
+      coordinates: track.points.map(([longitude, latitude]) => [longitude, latitude]),
+      coordinate_reference_system: 'EPSG:4326',
+      distance_model: 'geodesic',
+      length_m: track.lengthM,
+    },
+    direction: {
+      positive: 'coordinate_order',
+      description: 'Positive direction follows the stored coordinate order.',
+    },
+    default_policy_ref: {
+      policy_id: track.defaultPolicyId || 'default-geospatial-policy',
+      version: 1,
+    },
+    trackpoints: track.trackpoints.map((trackpoint) => {
+      const out: ApiObject = {
+        trackpoint_id: trackpoint.id,
+        display_name: trackpoint.name,
+        station_m: trackpoint.stationM,
+        position: {
+          type: 'Point',
+          coordinates: trackpoint.position,
+        },
+      }
+      if (trackpoint.cutlineOverride) {
+        out.cutline_override = {
+          left_length_m: trackpoint.cutlineOverride.leftLengthM,
+          right_length_m: trackpoint.cutlineOverride.rightLengthM,
+          angle_deg_from_path_normal: trackpoint.cutlineOverride.angleDegFromPathNormal,
+        }
+      }
+      return out
+    }),
+    display_state: {
+      bodaqs_web_v1: {},
+    },
+  }
+  if (track.id) {
+    payload.track_id = track.id
+  }
+  if (track.source) {
+    payload.source = {
+      kind: track.source.kind,
+      library_id: track.source.libraryId,
+      session_ref_id: track.source.sessionRefId,
+      session_key: track.source.sessionKey,
+      run_id: track.source.runId,
+      session_id: track.source.sessionId,
+    }
+  }
   return payload
 }
 

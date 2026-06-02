@@ -104,6 +104,7 @@ export type StudyGrouping = {
 export type TrackRecord = {
   id: string
   name: string
+  description?: string
   revision: number
   pointCount: number
   distanceKm: number
@@ -112,6 +113,14 @@ export type TrackRecord = {
   defaultPolicyId: string
   trackpoints: TrackpointRecord[]
   matchSummaries: SessionTrackMatchRecord[]
+  source?: {
+    kind: string
+    libraryId?: string
+    sessionRefId?: string
+    sessionKey?: string
+    runId?: string
+    sessionId?: string
+  }
 }
 
 export type TrackpointRecord = {

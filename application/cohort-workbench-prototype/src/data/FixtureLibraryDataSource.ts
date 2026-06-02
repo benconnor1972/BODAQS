@@ -10,6 +10,7 @@ import type { LibraryDataSource } from './LibraryDataSource'
 
 export class FixtureLibraryDataSource implements LibraryDataSource {
   private savedStudySets = fixtureSavedStudySets.map(cloneStudySet)
+  private tracks = fixtureTracks.map(cloneTrack)
 
   async listLibraries() {
     return fixtureLibraries.map((libraryItem) => ({ ...libraryItem }))
@@ -20,7 +21,7 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   }
 
   async listTracks() {
-    return fixtureTracks.map(cloneTrack)
+    return this.tracks.map(cloneTrack)
   }
 
   async listStudySets() {
@@ -47,6 +48,31 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
       ? this.savedStudySets.map((savedStudySet) => (savedStudySet.id === nextId ? saved : savedStudySet))
       : [...this.savedStudySets, saved]
     return cloneStudySet(saved)
+  }
+
+  async saveTrack(track: TrackRecord) {
+    const displayName = track.name.trim()
+    const existingIds = this.tracks.map((savedTrack) => savedTrack.id)
+    const nextId = track.id || uniqueId(slugify(displayName), existingIds)
+    const previous = this.tracks.find((savedTrack) => savedTrack.id === nextId)
+    const saved: TrackRecord = {
+      ...cloneTrack(track),
+      id: nextId,
+      name: displayName,
+      revision: previous ? previous.revision + 1 : 1,
+      pointCount: track.points.length,
+      distanceKm: track.lengthM / 1000,
+      matchSummaries: previous?.matchSummaries ?? [],
+    }
+    const exists = this.tracks.some((savedTrack) => savedTrack.id === nextId)
+    this.tracks = exists
+      ? this.tracks.map((savedTrack) => (savedTrack.id === nextId ? saved : savedTrack))
+      : [...this.tracks, saved]
+    return cloneTrack(saved)
+  }
+
+  async deleteTrack(trackId: string) {
+    this.tracks = this.tracks.filter((track) => track.id !== trackId)
   }
 
   async loadSessionGpsPoints(session: SessionRecord): Promise<SessionGpsPointSet> {
@@ -96,6 +122,7 @@ function cloneTrack(track: TrackRecord): TrackRecord {
       trackpointResults: match.trackpointResults.map((result) => ({ ...result })),
       warnings: [...match.warnings],
     })),
+    source: track.source ? { ...track.source } : undefined,
   }
 }
 

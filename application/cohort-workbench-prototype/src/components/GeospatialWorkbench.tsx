@@ -1,4 +1,5 @@
-import { Crosshair, Eye, MapPin, Plus, Route } from 'lucide-react'
+import { useState } from 'react'
+import { Crosshair, Eye, MapPin, Plus, Route, Save, Trash2 } from 'lucide-react'
 import {
   formatPercent,
   gpsSourceLabel,
@@ -6,8 +7,10 @@ import {
   trackMatchForSession,
   trackMatchStatusLabel,
 } from '../domain/geospatial'
-import { candidateId, sessionByRef } from '../domain/studySets'
-import type { SessionRecord, StudySet, TrackRecord } from '../domain/types'
+import { candidateId, sessionByRef, slugify, uniqueId } from '../domain/studySets'
+import { pointAtStationM, routeLengthM } from '../domain/trackGeometry'
+import type { SessionRecord, StudySet, TrackRecord, TrackpointRecord } from '../domain/types'
+import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { IconButton } from './Common'
 import { GpsBadge } from './StatusBadges'
 
@@ -18,9 +21,12 @@ export function GeospatialWorkbench({
   tracks,
   selectedTrackIds,
   currentStudyTracks,
+  dataSource,
   onToggleTrack,
   onAttachSelectedTracks,
   onInspectTrack,
+  onTrackSaved,
+  onTrackDeleted,
 }: {
   primarySession: SessionRecord | null
   currentStudySet: StudySet
@@ -28,14 +34,154 @@ export function GeospatialWorkbench({
   tracks: TrackRecord[]
   selectedTrackIds: string[]
   currentStudyTracks: TrackRecord[]
+  dataSource: LibraryDataSource
   onToggleTrack: (trackId: string) => void
   onAttachSelectedTracks: () => void
   onInspectTrack: (track: TrackRecord) => void
+  onTrackSaved: (track: TrackRecord) => void
+  onTrackDeleted: (trackId: string) => void
 }) {
+  const [trackName, setTrackName] = useState('')
+  const [trackDescription, setTrackDescription] = useState('')
+  const [activeTrackId, setActiveTrackId] = useState<string | null>(null)
+  const [trackpointName, setTrackpointName] = useState('')
+  const [trackpointStationM, setTrackpointStationM] = useState('')
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
   const adequacy = studySetGpsAdequacy(currentStudySet, sessions)
   const studySessions = currentStudySet.sessions
     .map((sessionRef) => sessionByRef(sessionRef, sessions))
     .filter((session): session is SessionRecord => Boolean(session))
+  const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? null
+  const canCreateTrack = Boolean(primarySession && dataSource.loadSessionGpsPoints && dataSource.saveTrack && !busy)
+  const canEditTrack = Boolean(activeTrack && dataSource.saveTrack && !busy)
+
+  async function createTrackFromPrimaryGps() {
+    if (!primarySession || !dataSource.loadSessionGpsPoints || !dataSource.saveTrack) {
+      setMessage('Select a primary session and connect to a data source that can save tracks.')
+      return
+    }
+    const displayName = trackName.trim() || `${primarySession.name} track`
+    setBusy(true)
+    setMessage(`Creating ${displayName}...`)
+    try {
+      const gpsPoints = await dataSource.loadSessionGpsPoints(primarySession)
+      if (gpsPoints.path.length < 2) {
+        setMessage('Primary session does not have enough GPS points to create a track.')
+        return
+      }
+      const lengthM = routeLengthM(gpsPoints.path)
+      const savedTrack = await dataSource.saveTrack({
+        id: '',
+        name: displayName,
+        description: trackDescription.trim(),
+        revision: 0,
+        pointCount: gpsPoints.path.length,
+        distanceKm: lengthM / 1000,
+        lengthM,
+        points: gpsPoints.path,
+        defaultPolicyId: 'default-geospatial-policy',
+        trackpoints: [],
+        matchSummaries: [],
+        source: {
+          kind: 'session_gps',
+          libraryId: primarySession.libraryId,
+          sessionRefId: candidateId(primarySession),
+          sessionKey: primarySession.sessionKey,
+          runId: primarySession.runId,
+          sessionId: primarySession.sessionId,
+        },
+      })
+      onTrackSaved(savedTrack)
+      setActiveTrackId(savedTrack.id)
+      setTrackName('')
+      setTrackDescription('')
+      setMessage(`Created ${savedTrack.name}.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addTrackpoint() {
+    if (!activeTrack || !dataSource.saveTrack) {
+      setMessage('Choose a track to manage first.')
+      return
+    }
+    const name = trackpointName.trim()
+    const stationM = Number(trackpointStationM)
+    if (!name || !Number.isFinite(stationM)) {
+      setMessage('Trackpoint name and station must be provided.')
+      return
+    }
+    const clippedStationM = Math.max(0, Math.min(activeTrack.lengthM, stationM))
+    const nextTrackpoint: TrackpointRecord = {
+      id: uniqueId(slugify(name), activeTrack.trackpoints.map((trackpoint) => trackpoint.id)),
+      name,
+      stationM: clippedStationM,
+      position: pointAtStationM(activeTrack.points, clippedStationM),
+    }
+    const updatedTrack = {
+      ...activeTrack,
+      trackpoints: [...activeTrack.trackpoints, nextTrackpoint].sort((a, b) => a.stationM - b.stationM),
+    }
+    await saveTrackUpdate(updatedTrack, `Added ${name}.`)
+    setTrackpointName('')
+    setTrackpointStationM('')
+  }
+
+  async function deleteTrackpoint(trackpointId: string) {
+    if (!activeTrack) {
+      return
+    }
+    const updatedTrack = {
+      ...activeTrack,
+      trackpoints: activeTrack.trackpoints.filter((trackpoint) => trackpoint.id !== trackpointId),
+    }
+    await saveTrackUpdate(updatedTrack, 'Trackpoint deleted.')
+  }
+
+  async function deleteActiveTrack() {
+    if (!activeTrack || !dataSource.deleteTrack) {
+      setMessage('Choose a track to delete first.')
+      return
+    }
+    if (!window.confirm(`Delete track "${activeTrack.name}"?`)) {
+      return
+    }
+    setBusy(true)
+    setMessage(`Deleting ${activeTrack.name}...`)
+    try {
+      await dataSource.deleteTrack(activeTrack.id)
+      onTrackDeleted(activeTrack.id)
+      setActiveTrackId(null)
+      setMessage(`Deleted ${activeTrack.name}.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveTrackUpdate(track: TrackRecord, successMessage: string) {
+    if (!dataSource.saveTrack) {
+      setMessage('Current data source cannot save tracks.')
+      return
+    }
+    setBusy(true)
+    setMessage(`Saving ${track.name}...`)
+    try {
+      const savedTrack = await dataSource.saveTrack(track)
+      onTrackSaved(savedTrack)
+      setActiveTrackId(savedTrack.id)
+      setMessage(successMessage)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <section className="geospatial-workbench">
@@ -83,25 +229,113 @@ export function GeospatialWorkbench({
         </div>
         <div className="track-list compact-track-list">
           {tracks.map((track) => (
-            <label className="check-row compact track-row" key={track.id}>
+            <div className={`check-row compact track-row${activeTrack?.id === track.id ? ' active-track' : ''}`} key={track.id}>
               <input
+                aria-label={`Select ${track.name}`}
                 type="checkbox"
                 checked={selectedTrackIds.includes(track.id)}
                 onChange={() => onToggleTrack(track.id)}
               />
-              <span>
+              <button className="track-row-summary" onClick={() => setActiveTrackId(track.id)} type="button">
                 <strong>{track.name}</strong>
                 <small>
                   {track.trackpoints.length} trackpoints, {track.distanceKm.toFixed(1)} km, {track.defaultPolicyId}
                 </small>
-              </span>
+              </button>
               <IconButton label="Inspect Track" onClick={() => onInspectTrack(track)} icon={<Eye size={16} />} />
-            </label>
+              <IconButton label="Manage Track" onClick={() => setActiveTrackId(track.id)} icon={<Route size={16} />} />
+            </div>
           ))}
+          {tracks.length === 0 && <p className="empty-note">No tracks yet. Create one from primary GPS.</p>}
+        </div>
+        <div className="track-create-form">
+          <label>
+            New track name
+            <input
+              value={trackName}
+              onChange={(event) => setTrackName(event.target.value)}
+              placeholder={primarySession ? `${primarySession.name} track` : 'Select a primary session first'}
+            />
+          </label>
+          <label>
+            Description
+            <input
+              value={trackDescription}
+              onChange={(event) => setTrackDescription(event.target.value)}
+              placeholder="Optional context for this reusable track"
+            />
+          </label>
+          <button className="secondary-action" disabled={!canCreateTrack} onClick={() => void createTrackFromPrimaryGps()} type="button">
+            <Plus size={16} />
+            Create from primary GPS
+          </button>
+        </div>
+        <div className="trackpoint-editor">
+          <div className="trackpoint-editor-header">
+            <strong>{activeTrack ? `Manage ${activeTrack.name}` : 'No track selected'}</strong>
+            {activeTrack && (
+              <button
+                className="danger-action compact-danger"
+                disabled={!dataSource.deleteTrack || busy}
+                onClick={() => void deleteActiveTrack()}
+                type="button"
+              >
+                <Trash2 size={14} />
+                Delete
+              </button>
+            )}
+          </div>
+          {activeTrack ? (
+            <>
+              <div className="trackpoint-form">
+                <label>
+                  Trackpoint
+                  <input
+                    value={trackpointName}
+                    onChange={(event) => setTrackpointName(event.target.value)}
+                    placeholder="e.g. Rock garden entry"
+                  />
+                </label>
+                <label>
+                  Station m
+                  <input
+                    value={trackpointStationM}
+                    onChange={(event) => setTrackpointStationM(event.target.value)}
+                    placeholder={`0-${activeTrack.lengthM.toFixed(0)}`}
+                  />
+                </label>
+                <button className="secondary-action" disabled={!canEditTrack} onClick={() => void addTrackpoint()} type="button">
+                  <Save size={15} />
+                  Add point
+                </button>
+              </div>
+              <div className="trackpoint-list">
+                {activeTrack.trackpoints.length === 0 && <span className="subtle">No trackpoints yet.</span>}
+                {activeTrack.trackpoints.map((trackpoint) => (
+                  <div className="trackpoint-row" key={trackpoint.id}>
+                    <span>
+                      <strong>{trackpoint.name}</strong>
+                      <small>{trackpoint.stationM.toFixed(0)} m</small>
+                    </span>
+                    <IconButton
+                      label={`Delete ${trackpoint.name}`}
+                      disabled={!canEditTrack}
+                      onClick={() => void deleteTrackpoint(trackpoint.id)}
+                      icon={<Trash2 size={14} />}
+                      tone="alert"
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="empty-note">Create or manage a track to add simple station-based trackpoints.</p>
+          )}
         </div>
         <div className="geo-policy-note">
           Default cutlines are policy-generated. Trackpoint rows show only explicit overrides.
         </div>
+        {message && <p className="track-manager-message">{message}</p>}
         <div className="action-row tight">
           <button
             className="secondary-action"
@@ -111,9 +345,6 @@ export function GeospatialWorkbench({
           >
             <Plus size={16} />
             Attach track
-          </button>
-          <button className="ghost-action" disabled type="button">
-            New track later
           </button>
         </div>
       </div>

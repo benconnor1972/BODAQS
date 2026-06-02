@@ -9,7 +9,6 @@ import {
   Columns3,
   Eye,
   FileText,
-  Filter,
   FolderOpen,
   GitBranch,
   Library,
@@ -23,6 +22,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { IconButton, PanelTitle, SummaryTile } from './components/Common'
+import { FilterPanel } from './components/FilterPanel'
 import { GeospatialWorkbench } from './components/GeospatialWorkbench'
 import { GpsRoutePreview } from './components/GpsRoutePreview'
 import { Modal } from './components/Modal'
@@ -42,6 +42,7 @@ import {
   normalizeColumnSelection,
   sortSessions,
 } from './domain/sessionCatalog'
+import { applySessionFilters, buildSessionFilters } from './domain/sessionFilters'
 import {
   candidateId,
   cloneStudySet,
@@ -102,6 +103,7 @@ function App() {
   const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
   const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
+  const [activeFilterIds, setActiveFilterIds] = useState<string[]>([])
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
@@ -177,6 +179,14 @@ function App() {
   const trackMatchRequestKey = JSON.stringify({
     sessions: currentStudySet.sessions,
     trackIds: currentStudySet.trackIds,
+    trackRevisions: currentStudySet.trackIds.map((trackId) => {
+      const track = tracks.find((item) => item.id === trackId)
+      return {
+        trackId,
+        revision: track?.revision ?? 0,
+        trackpoints: track?.trackpoints.map((trackpoint) => [trackpoint.id, trackpoint.stationM]) ?? [],
+      }
+    }),
   })
 
   useEffect(() => {
@@ -258,12 +268,19 @@ function App() {
   const selectedLibraries = libraries.filter((libraryItem) =>
     selectedLibraryIds.includes(libraryItem.id),
   )
+  const libraryScopedSessions = sessions.filter((session) => selectedLibraryIds.includes(session.libraryId))
+  const availableSessionFilters = buildSessionFilters(libraryScopedSessions)
+  const activeSessionFilters = availableSessionFilters.filter((filter) => activeFilterIds.includes(filter.id))
+  const filteredSessions = applySessionFilters(libraryScopedSessions, activeSessionFilters)
+  const searchedSessions = filteredSessions.filter((session) =>
+    matchesSearch(session, searchText, visibleColumns, libraries),
+  )
   const visibleSessions = sortSessions(
-    sessions.filter((session) => selectedLibraryIds.includes(session.libraryId)),
+    searchedSessions,
     sortColumn,
     sortDirection,
     libraries,
-  ).filter((session) => matchesSearch(session, searchText, visibleColumns, libraries))
+  )
   const primarySession = primaryCandidateId
     ? sessions.find((session) => candidateId(session) === primaryCandidateId) ?? null
     : null
@@ -319,6 +336,7 @@ function App() {
       setSelectedStudySessionIds([])
       setSelectionAnchorStudySessionId(null)
       setSelectedTrackIds([])
+      setActiveFilterIds([])
       setGroupingName('')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -342,6 +360,27 @@ function App() {
 
   function applyColumnPreset(columns: ColumnId[]) {
     setVisibleColumns(normalizeColumnSelection(columns))
+  }
+
+  function toggleSessionFilter(filterId: string) {
+    setActiveFilterIds((current) => {
+      if (current.includes(filterId)) {
+        return current.filter((id) => id !== filterId)
+      }
+      return [...current, filterId]
+    })
+    clearSessionSelection()
+  }
+
+  function clearSessionFilters() {
+    setActiveFilterIds([])
+    clearSessionSelection()
+  }
+
+  function clearSessionSelection() {
+    setSelectedCandidateIds([])
+    setPrimaryCandidateId(null)
+    setSelectionAnchorCandidateId(null)
   }
 
   function setSort(columnId: ColumnId) {
@@ -535,6 +574,25 @@ function App() {
       trackIds: Array.from(new Set([...current.trackIds, ...selectedTrackIds])),
     }))
     setStatusMessage(`${selectedTrackIds.length} selected track(s) attached to the Study Set.`)
+  }
+
+  function upsertTrack(track: TrackRecord) {
+    setTracks((currentTracks) => {
+      const exists = currentTracks.some((item) => item.id === track.id)
+      return exists ? currentTracks.map((item) => (item.id === track.id ? track : item)) : [...currentTracks, track]
+    })
+    setModal((current) => (current?.kind === 'track' && current.track.id === track.id ? { kind: 'track', track } : current))
+  }
+
+  function deleteTrackFromWorkbench(trackId: string) {
+    setTracks((currentTracks) => currentTracks.filter((track) => track.id !== trackId))
+    setSelectedTrackIds((current) => current.filter((id) => id !== trackId))
+    setCurrentStudySet((current) => ({
+      ...current,
+      saved: current.trackIds.includes(trackId) ? false : current.saved,
+      trackIds: current.trackIds.filter((id) => id !== trackId),
+    }))
+    setModal((current) => (current?.kind === 'track' && current.track.id === trackId ? null : current))
   }
 
   function removeTrack(trackId: string) {
@@ -882,7 +940,9 @@ function App() {
                 <div className="module-header">
                   <h2>Filters</h2>
                   <div className="module-header-actions">
-                    <span className="pill neutral">reserved</span>
+                    <span className={activeSessionFilters.length ? 'pill ok' : 'pill neutral'}>
+                      {activeSessionFilters.length ? `${activeSessionFilters.length} active` : 'helper stack'}
+                    </span>
                     <IconButton
                       label={filtersCollapsed ? 'Expand Filters' : 'Collapse Filters'}
                       onClick={() => setFiltersCollapsed((current) => !current)}
@@ -891,10 +951,15 @@ function App() {
                   </div>
                 </div>
                 {!filtersCollapsed && (
-                  <div className="placeholder-list">
-                    <Filter size={18} />
-                    <p>Reusable filters will sit here after the catalog path is stable.</p>
-                  </div>
+                  <FilterPanel
+                    filters={availableSessionFilters}
+                    activeFilterIds={activeFilterIds}
+                    totalCount={libraryScopedSessions.length}
+                    filteredCount={filteredSessions.length}
+                    visibleCount={visibleSessions.length}
+                    onToggleFilter={toggleSessionFilter}
+                    onClearFilters={clearSessionFilters}
+                  />
                 )}
               </section>
 
@@ -918,9 +983,12 @@ function App() {
                     tracks={tracks}
                     selectedTrackIds={selectedTrackIds}
                     currentStudyTracks={currentStudyTracks}
+                    dataSource={activeDataSource}
                     onToggleTrack={toggleTrack}
                     onAttachSelectedTracks={addSelectedTracksToStudySet}
                     onInspectTrack={(track) => setModal({ kind: 'track', track })}
+                    onTrackSaved={upsertTrack}
+                    onTrackDeleted={deleteTrackFromWorkbench}
                   />
                 )}
               </section>
@@ -1041,7 +1109,7 @@ function App() {
             <section className="study-section">
               <div className="subsection-header">
                 <h3>Tracks</h3>
-                <span className="subtle">Track authoring is reserved for a later prototype pass.</span>
+                <span className="subtle">Attached root-level tracks for this Study Set.</span>
               </div>
               <table className="tracks-table">
                 <thead>
