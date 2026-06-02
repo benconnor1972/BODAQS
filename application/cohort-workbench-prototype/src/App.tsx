@@ -56,6 +56,7 @@ import {
   studySetsEqual,
   uniqueId,
 } from './domain/studySets'
+import { applyTableColumnFilters, tableFilterLabel, type TableColumnFilter } from './domain/tableFilters'
 import type {
   ColumnId,
   LibraryRecord,
@@ -104,6 +105,7 @@ function App() {
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
   const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
   const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
+  const [tableColumnFilters, setTableColumnFilters] = useState<TableColumnFilter[]>([])
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
@@ -272,7 +274,8 @@ function App() {
   const savedSessionFilters = prototypeSavedSessionFilters
   const activeSavedSessionFilters = savedSessionFilters.filter((filter) => activeSavedFilterIds.includes(filter.id))
   const savedFilteredSessions = applySavedSessionFilters(libraryScopedSessions, activeSavedSessionFilters)
-  const tableFilteredSessions = savedFilteredSessions
+  const activeTableColumnFilters = tableColumnFilters.filter((filter) => filter.values.length > 0)
+  const tableFilteredSessions = applyTableColumnFilters(savedFilteredSessions, activeTableColumnFilters, libraries)
   const searchedSessions = tableFilteredSessions.filter((session) =>
     matchesSearch(session, searchText, visibleColumns, libraries),
   )
@@ -338,6 +341,7 @@ function App() {
       setSelectionAnchorStudySessionId(null)
       setSelectedTrackIds([])
       setActiveSavedFilterIds([])
+      setTableColumnFilters([])
       setGroupingName('')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -375,6 +379,28 @@ function App() {
 
   function clearSavedSessionFilters() {
     setActiveSavedFilterIds([])
+    clearSessionSelection()
+  }
+
+  function setTableColumnFilter(columnId: ColumnId, values: string[]) {
+    setTableColumnFilters((current) => {
+      const nextValues = Array.from(new Set(values)).filter(Boolean)
+      const withoutColumn = current.filter((filter) => filter.columnId !== columnId)
+      if (nextValues.length === 0) {
+        return withoutColumn
+      }
+      return [...withoutColumn, { columnId, values: nextValues }]
+    })
+    clearSessionSelection()
+  }
+
+  function clearTableColumnFilter(columnId: ColumnId) {
+    setTableColumnFilters((current) => current.filter((filter) => filter.columnId !== columnId))
+    clearSessionSelection()
+  }
+
+  function clearTableColumnFilters() {
+    setTableColumnFilters([])
     clearSessionSelection()
   }
 
@@ -900,16 +926,39 @@ function App() {
                     ))
                   )}
                   <span className="filter-status-label">Table filters</span>
-                  <span className="pill neutral">none</span>
+                  {activeTableColumnFilters.length === 0 ? (
+                    <span className="pill neutral">none</span>
+                  ) : (
+                    <>
+                      {activeTableColumnFilters.map((filter) => (
+                        <button
+                          className="filter-chip compact-session-filter-chip"
+                          key={filter.columnId}
+                          onClick={() => clearTableColumnFilter(filter.columnId)}
+                          type="button"
+                        >
+                          {columnLabels[filter.columnId]}: {tableFilterSummary(filter, libraries)}
+                          <X size={12} />
+                        </button>
+                      ))}
+                      <button className="ghost-action compact-filter-action" onClick={clearTableColumnFilters} type="button">
+                        Clear table filters
+                      </button>
+                    </>
+                  )}
                 </div>
                 <SessionTable
                   sessions={visibleSessions}
+                  filterBaseSessions={savedFilteredSessions}
                   libraries={libraries}
                   visibleColumns={visibleColumns}
+                  tableColumnFilters={tableColumnFilters}
                   selectedIds={selectedCandidateIds}
                   primaryId={primaryCandidateId}
                   sortColumn={sortColumn}
                   sortDirection={sortDirection}
+                  onTableColumnFilterChange={setTableColumnFilter}
+                  onClearTableColumnFilter={clearTableColumnFilter}
                   onSort={setSort}
                   onSelect={selectCandidate}
                   onInspect={(session, tab) => setModal({ kind: 'session', session, tab })}
@@ -978,6 +1027,7 @@ function App() {
                     totalCount={libraryScopedSessions.length}
                     savedFilteredCount={savedFilteredSessions.length}
                     visibleCount={visibleSessions.length}
+                    activeTableFilterCount={activeTableColumnFilters.length}
                     onToggleSavedFilter={toggleSavedSessionFilter}
                     onClearSavedFilters={clearSavedSessionFilters}
                   />
@@ -1315,6 +1365,13 @@ function withTrackMatches(tracks: TrackRecord[], matches: SessionTrackMatchRecor
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values))
+}
+
+function tableFilterSummary(filter: TableColumnFilter, libraries: LibraryRecord[]) {
+  if (filter.values.length === 1) {
+    return tableFilterLabel(filter.columnId, libraries, filter.values[0])
+  }
+  return `${filter.values.length} values`
 }
 
 export default App

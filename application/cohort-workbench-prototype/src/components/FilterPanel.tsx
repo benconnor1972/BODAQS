@@ -7,6 +7,7 @@ export function FilterPanel({
   totalCount,
   savedFilteredCount,
   visibleCount,
+  activeTableFilterCount,
   onToggleSavedFilter,
   onClearSavedFilters,
 }: {
@@ -15,6 +16,7 @@ export function FilterPanel({
   totalCount: number
   savedFilteredCount: number
   visibleCount: number
+  activeTableFilterCount: number
   onToggleSavedFilter: (filterId: string) => void
   onClearSavedFilters: () => void
 }) {
@@ -68,9 +70,15 @@ export function FilterPanel({
           <strong>Ad-hoc table filters</strong>
           <span className="pill neutral">column headers</span>
         </div>
-        <p className="empty-note">
-          None yet. These will be temporary Session Selector header filters, separate from saved filters.
-        </p>
+        {activeTableFilterCount === 0 ? (
+          <p className="empty-note">
+            None active. These are temporary Session Selector header filters, separate from saved filters.
+          </p>
+        ) : (
+          <p className="empty-note">
+            {activeTableFilterCount} active in the Session Selector headers. Use the table chips or header menus to clear them.
+          </p>
+        )}
       </div>
 
       <div className="filter-library">

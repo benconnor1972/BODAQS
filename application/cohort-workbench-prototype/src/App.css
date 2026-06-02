@@ -505,6 +505,127 @@ tbody tr.primary-row td {
   font-size: 10px;
 }
 
+.column-header-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.column-filter-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.column-filter-button:hover,
+.column-filter-button.active {
+  border-color: #b8d7cb;
+  background: #e5f1ec;
+  color: #225f50;
+}
+
+.column-filter-button span {
+  position: absolute;
+  right: -5px;
+  top: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--green);
+  color: white;
+  font-size: 9px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.column-filter-popover {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  top: 30px;
+  display: grid;
+  gap: 8px;
+  width: 260px;
+  max-width: min(320px, calc(100vw - 40px));
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 18px 40px rgba(34, 46, 54, 0.18);
+  color: var(--ink);
+  text-transform: none;
+}
+
+.column-filter-header,
+.column-filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.column-filter-header strong {
+  font-size: 12px;
+  text-transform: none;
+}
+
+.column-filter-header button,
+.column-filter-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-warm);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.column-filter-search {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-warm);
+  color: var(--ink);
+  font: inherit;
+}
+
+.column-filter-actions {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.column-filter-options {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.column-filter-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .icon-cluster {
   display: flex;
   gap: 4px;
