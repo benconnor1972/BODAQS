@@ -108,6 +108,14 @@
   border-bottom: 1px solid var(--line);
 }
 
+.module-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
 .module-header h2,
 .subsection-header h3 {
   margin: 0;
@@ -118,6 +126,34 @@
 .module-header.spaced {
   margin-top: 12px;
   border-top: 1px solid var(--line);
+}
+
+.collapsible-module.collapsed {
+  box-shadow: 0 7px 16px rgba(34, 46, 54, 0.06);
+}
+
+.collapsed-root-summary {
+  display: grid;
+  gap: 4px;
+  padding: 9px 12px 11px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.collapsed-root-summary span {
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.collapsed-root-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .subtle,
@@ -560,13 +596,19 @@ button {
   min-height: 352px;
 }
 
+.lower-grid.gps-collapsed {
+  grid-template-columns: 42px minmax(260px, 1fr);
+}
+
 .map-module,
 .support-stack {
   min-height: 352px;
 }
 
 .support-stack {
-  padding-bottom: 10px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
 }
 
 .placeholder-list {
@@ -591,6 +633,30 @@ button {
   font-size: 13px;
 }
 
+.gps-rail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 352px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 800;
+  writing-mode: vertical-rl;
+}
+
+.gps-rail svg {
+  writing-mode: horizontal-tb;
+}
+
+.gps-rail:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+
 .route-preview {
   display: block;
   width: 100%;
@@ -607,6 +673,43 @@ button {
 .map-grid line {
   stroke: rgba(69, 91, 96, 0.18);
   stroke-width: 1;
+}
+
+.gps-route-shell {
+  display: grid;
+  gap: 0;
+}
+
+.gps-route-shell.compact .route-preview {
+  height: 240px;
+}
+
+.gps-route-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.64);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gps-route-status strong {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.gps-route-status.loading strong {
+  color: var(--green);
+}
+
+.gps-route-status.error strong {
+  color: #983d3d;
 }
 
 .trackpoint-marker line {
@@ -1048,6 +1151,10 @@ button {
   margin: 0;
   color: var(--ink);
   font-size: 14px;
+}
+
+.gps-modal-preview {
+  margin-top: 16px;
 }
 
 .compact-detail-list {

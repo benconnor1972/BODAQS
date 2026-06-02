@@ -65,7 +65,7 @@ export function GeospatialWorkbench({
         <div className="geo-card-title">
           <Crosshair size={16} />
           <strong>Study Set GPS</strong>
-          <span className="pill neutral">mock adequacy</span>
+          <span className="pill neutral">catalog adequacy</span>
         </div>
         <div className="geo-adequacy-grid">
           <Metric label="usable" value={adequacy.usableCount} />
@@ -79,7 +79,7 @@ export function GeospatialWorkbench({
         <div className="geo-card-title">
           <Route size={16} />
           <strong>Track Manager</strong>
-          <span className="subtle">{tracks.length} mocked</span>
+          <span className="subtle">{tracks.length} available</span>
         </div>
         <div className="track-list compact-track-list">
           {tracks.map((track) => (
@@ -122,10 +122,10 @@ export function GeospatialWorkbench({
         <div className="geo-card-title">
           <Crosshair size={16} />
           <strong>Match Preview</strong>
-          <span className="pill neutral">mock</span>
+          <span className="pill neutral">derived preview</span>
         </div>
         {studySessions.length === 0 || currentStudyTracks.length === 0 ? (
-          <p className="empty-note">Add sessions and attach a track to preview mocked coverage.</p>
+          <p className="empty-note">Add sessions and attach a track to preview coverage.</p>
         ) : (
           <div className="match-preview-list">
             {currentStudyTracks.flatMap((track) =>
@@ -141,7 +141,7 @@ export function GeospatialWorkbench({
                       <small>{track.name}</small>
                     </div>
                     <span className={matchStatusClassName(match?.status)}>
-                      {match ? trackMatchStatusLabel(match.status) : 'not mocked'}
+                      {match ? trackMatchStatusLabel(match.status) : 'not computed'}
                     </span>
                     <span>{match ? formatPercent(match.coverageRatio) : '-'}</span>
                     <span>

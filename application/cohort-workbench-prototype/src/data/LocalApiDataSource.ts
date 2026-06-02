@@ -1,4 +1,4 @@
-import { groupingColors, sessionRefId } from '../domain/studySets'
+import { candidateId, groupingColors, sessionRefId } from '../domain/studySets'
 import { emptyGpsSummary } from '../domain/geospatial'
 import type {
   GpsQuality,
@@ -7,10 +7,14 @@ import type {
   LibraryRecord,
   NoteStatus,
   QcLevel,
+  SessionGpsPointSet,
   SessionGpsSummary,
   SessionRecord,
+  SessionTrackMatchRecord,
   StudyGrouping,
   StudySet,
+  TrackDirection,
+  TrackMatchStatus,
   TrackRecord,
 } from '../domain/types'
 import type { LibraryDataSource } from './LibraryDataSource'
@@ -65,7 +69,8 @@ export class LocalApiDataSource implements LibraryDataSource {
   }
 
   async listTracks(): Promise<TrackRecord[]> {
-    return []
+    const tracks = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/tracks`)
+    return tracks.map(mapTrack)
   }
 
   async listStudySets() {
@@ -94,6 +99,47 @@ export class LocalApiDataSource implements LibraryDataSource {
           body: JSON.stringify(payload),
         })
     return mapStudySet(saved)
+  }
+
+  async listTrackMatches(studySet: StudySet) {
+    if (studySet.sessions.length === 0 || studySet.trackIds.length === 0) {
+      return []
+    }
+    const payload = {
+      sessions: studySet.sessions.map((session) => ({
+        library_id: session.libraryId,
+        session_ref_id: sessionRefId(session),
+        session_key: session.sessionKey,
+        run_id: session.runId,
+        session_id: session.sessionId,
+      })),
+      track_ids: studySet.trackIds,
+    }
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/track-matches/query`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    return arrayValue(response.matches).filter(isObject).map(mapTrackMatch)
+  }
+
+  async loadSessionGpsPoints(session: SessionRecord): Promise<SessionGpsPointSet> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/gps/points`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          session_ref: {
+            library_id: session.libraryId,
+            session_ref_id: candidateId(session),
+            session_key: session.sessionKey,
+            run_id: session.runId,
+            session_id: session.sessionId,
+          },
+          max_points: 1800,
+        }),
+      },
+    )
+    return mapSessionGpsPoints(response)
   }
 }
 
@@ -175,6 +221,67 @@ function mapSession(row: ApiObject): SessionRecord {
   }
 }
 
+function mapTrack(value: ApiObject): TrackRecord {
+  const path = objectValue(value.path)
+  const coordinates = arrayValue(path.coordinates).map(coordinatePair).filter(isCoordinatePair)
+  const lengthM = numberValue(path.length_m)
+  const policyRef = objectValue(value.default_policy_ref)
+  return {
+    id: textValue(value.track_id),
+    name: textValue(value.display_name, textValue(value.track_id)),
+    revision: numberValue(value.revision),
+    pointCount: coordinates.length,
+    distanceKm: lengthM / 1000,
+    lengthM,
+    points: coordinates,
+    defaultPolicyId: textValue(policyRef.policy_id, 'default-geospatial-policy'),
+    trackpoints: arrayValue(value.trackpoints)
+      .filter(isObject)
+      .map((trackpoint) => {
+        const position = objectValue(trackpoint.position)
+        const cutlineOverride = objectValue(trackpoint.cutline_override)
+        const mappedOverride = {
+          leftLengthM: nullableNumberValue(cutlineOverride.left_length_m) ?? undefined,
+          rightLengthM: nullableNumberValue(cutlineOverride.right_length_m) ?? undefined,
+          angleDegFromPathNormal: nullableNumberValue(cutlineOverride.angle_deg_from_path_normal) ?? undefined,
+        }
+        const hasOverride = Object.values(mappedOverride).some((item) => item !== undefined)
+        return {
+          id: textValue(trackpoint.trackpoint_id),
+          name: textValue(trackpoint.display_name, textValue(trackpoint.trackpoint_id)),
+          stationM: numberValue(trackpoint.station_m),
+          position: coordinatePair(position.coordinates) ?? ([0, 0] as [number, number]),
+          cutlineOverride: hasOverride ? mappedOverride : undefined,
+        }
+      }),
+    matchSummaries: arrayValue(value.match_summaries).filter(isObject).map(mapTrackMatch),
+  }
+}
+
+function mapTrackMatch(value: ApiObject): SessionTrackMatchRecord {
+  const coverage = objectValue(value.coverage)
+  const sessionRef = objectValue(value.session_ref)
+  const trackRef = objectValue(value.track_ref)
+  return {
+    trackId: textValue(trackRef.track_id),
+    sessionRefId: textValue(sessionRef.session_ref_id),
+    status: trackMatchStatusValue(value.status),
+    direction: trackDirectionValue(value.direction),
+    coverageRatio: numberValue(coverage.track_coverage_ratio),
+    matchedGpsPointCount: numberValue(coverage.matched_gps_point_count),
+    trackpointResults: arrayValue(value.trackpoint_results)
+      .filter(isObject)
+      .map((result) => ({
+        trackpointId: textValue(result.trackpoint_id),
+        crossed: Boolean(result.crossed),
+        crossingTimeS: nullableNumberValue(result.crossing_time_s),
+        minDistanceM: nullableNumberValue(result.min_distance_m),
+        quality: trackpointQualityValue(result.quality),
+      })),
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
 function mapGpsSummary(value: ApiObject): SessionGpsSummary {
   const quality = gpsQualityValue(value.quality)
   const sources = arrayValue(value.sources).filter(isObject).map((source) => ({
@@ -189,7 +296,7 @@ function mapGpsSummary(value: ApiObject): SessionGpsSummary {
     gapCountOverThreshold: numberValue(source.gap_count_over_threshold),
     gapThresholdS: numberValue(source.gap_threshold_s),
   }))
-  if (!Boolean(value.present) && sources.length === 0) {
+  if (!value.present && sources.length === 0) {
     return emptyGpsSummary
   }
   return {
@@ -200,6 +307,34 @@ function mapGpsSummary(value: ApiObject): SessionGpsSummary {
     timeCoverageRatio: numberValue(value.time_coverage_ratio),
     positionPointCount: numberValue(value.position_point_count),
     quality,
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
+function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
+  const source = objectValue(value.source)
+  const sampling = objectValue(value.sampling)
+  const points = arrayValue(value.points)
+    .filter(isObject)
+    .map((point) => ({
+      timeS: nullableNumberValue(point.time_s),
+      longitude: numberValue(point.longitude),
+      latitude: numberValue(point.latitude),
+      elevationM: nullableNumberValue(point.elevation_m),
+    }))
+    .filter((point) => Number.isFinite(point.longitude) && Number.isFinite(point.latitude))
+  return {
+    present: Boolean(value.present),
+    sourceId: textValue(source.source_id),
+    sourceKind: gpsSourceKindValue(source.kind),
+    streamName: textValue(source.stream_name),
+    samplingMode: textValue(sampling.mode),
+    sourcePoints: numberValue(sampling.source_points),
+    returnedPoints: numberValue(sampling.returned_points),
+    maxPoints: numberValue(sampling.max_points),
+    stride: nullableNumberValue(sampling.stride),
+    points,
+    path: points.map((point) => [point.longitude, point.latitude] as [number, number]),
     warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
   }
 }
@@ -307,6 +442,34 @@ function gpsTimebaseValue(value: unknown): GpsTimebase {
   return 'unknown'
 }
 
+function trackMatchStatusValue(value: unknown): TrackMatchStatus {
+  if (
+    value === 'matched' ||
+    value === 'partial' ||
+    value === 'no_gps' ||
+    value === 'no_overlap' ||
+    value === 'ambiguous' ||
+    value === 'failed'
+  ) {
+    return value
+  }
+  return 'failed'
+}
+
+function trackDirectionValue(value: unknown): TrackDirection {
+  if (value === 'positive' || value === 'reverse') {
+    return value
+  }
+  return 'unknown'
+}
+
+function trackpointQualityValue(value: unknown): 'good' | 'approximate' | 'ambiguous' | 'missing' {
+  if (value === 'good' || value === 'approximate' || value === 'ambiguous') {
+    return value
+  }
+  return 'missing'
+}
+
 function qcLevelValue(value: unknown): QcLevel {
   if (value === 'warning' || value === 'alert') {
     return value
@@ -352,6 +515,22 @@ function numberValue(value: unknown): number {
 
 function nullableNumberValue(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function coordinatePair(value: unknown): [number, number] | null {
+  if (!Array.isArray(value) || value.length < 2) {
+    return null
+  }
+  const x = value[0]
+  const y = value[1]
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+    return null
+  }
+  return [x, y]
+}
+
+function isCoordinatePair(value: [number, number] | null): value is [number, number] {
+  return value !== null
 }
 
 function isObject(value: unknown): value is ApiObject {

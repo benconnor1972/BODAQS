@@ -107,6 +107,64 @@ def create_app(
     def get_catalog(library_id: str) -> dict[str, Any]:
         return _current_adapter(app).get_catalog(library_id)
 
+    @app.post("/api/v1/libraries/{library_id}/sessions/gps-summary")
+    async def get_session_gps_summary(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).get_session_gps_summary(library_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/libraries/{library_id}/sessions/gps/points")
+    async def get_session_gps_points(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).get_session_gps_points(library_id, _json_object_payload(payload))
+
+    @app.get("/api/v1/tracks")
+    def list_root_tracks() -> list[dict[str, Any]]:
+        return _current_adapter(app).list_tracks()
+
+    @app.post("/api/v1/tracks")
+    async def create_root_track(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).create_track(_track_payload(payload))
+
+    @app.get("/api/v1/tracks/{track_id}")
+    def load_root_track(track_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_track(track_id)
+
+    @app.put("/api/v1/tracks/{track_id}")
+    async def update_root_track(track_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).update_track(
+            track_id,
+            expected_revision=_expected_revision_optional(payload),
+            payload=_track_payload(payload),
+        )
+
+    @app.delete("/api/v1/tracks/{track_id}")
+    def delete_root_track(track_id: str) -> dict[str, Any]:
+        return _current_adapter(app).delete_track(track_id)
+
+    @app.get("/api/v1/geospatial-policies")
+    def list_root_geospatial_policies() -> list[dict[str, Any]]:
+        return _current_adapter(app).list_geospatial_policies()
+
+    @app.post("/api/v1/geospatial-policies")
+    async def create_root_geospatial_policy(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).create_geospatial_policy(_geospatial_policy_payload(payload))
+
+    @app.get("/api/v1/geospatial-policies/{policy_id}")
+    def load_root_geospatial_policy(policy_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_geospatial_policy(policy_id)
+
+    @app.put("/api/v1/geospatial-policies/{policy_id}")
+    async def update_root_geospatial_policy(policy_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).update_geospatial_policy(policy_id, payload=_geospatial_policy_payload(payload))
+
+    @app.delete("/api/v1/geospatial-policies/{policy_id}")
+    def delete_root_geospatial_policy(policy_id: str) -> dict[str, Any]:
+        return _current_adapter(app).delete_geospatial_policy(policy_id)
+
     @app.get("/api/v1/study-sets")
     def list_root_study_sets() -> list[dict[str, Any]]:
         return _current_adapter(app).list_study_sets()
@@ -139,14 +197,33 @@ def create_app(
         payload = await request.json()
         return _current_adapter(app).get_timeseries_window(library_id, payload)
 
+    @app.post("/api/v1/track-matches/query")
+    async def query_track_matches(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_track_matches(_json_object_payload(payload))
+
+    @app.post("/api/v1/track-matches/compute")
+    async def compute_track_match(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).compute_track_match(_json_object_payload(payload))
+
+    @app.get("/api/v1/track-matches/{track_match_id}")
+    def load_track_match(track_match_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_track_match(track_match_id)
+
     return app
 
 
-def _study_set_payload(payload: Any) -> dict[str, Any]:
+def _json_object_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         from bodaqs_analysis.library_api.errors import InvalidRequestError
 
         raise InvalidRequestError("Request body must be a JSON object.")
+    return payload
+
+
+def _study_set_payload(payload: Any) -> dict[str, Any]:
+    payload = _json_object_payload(payload)
     value = payload.get("study_set", payload)
     if not isinstance(value, dict):
         from bodaqs_analysis.library_api.errors import InvalidRequestError
@@ -155,11 +232,28 @@ def _study_set_payload(payload: Any) -> dict[str, Any]:
     return value
 
 
-def _libraries_root_payload(payload: Any) -> Path:
-    if not isinstance(payload, dict):
+def _track_payload(payload: Any) -> dict[str, Any]:
+    payload = _json_object_payload(payload)
+    value = payload.get("track", payload)
+    if not isinstance(value, dict):
         from bodaqs_analysis.library_api.errors import InvalidRequestError
 
-        raise InvalidRequestError("Request body must be a JSON object.")
+        raise InvalidRequestError("Track request body must include a JSON object.")
+    return value
+
+
+def _geospatial_policy_payload(payload: Any) -> dict[str, Any]:
+    payload = _json_object_payload(payload)
+    value = payload.get("geospatial_policy", payload.get("policy", payload))
+    if not isinstance(value, dict):
+        from bodaqs_analysis.library_api.errors import InvalidRequestError
+
+        raise InvalidRequestError("Geospatial policy request body must include a JSON object.")
+    return value
+
+
+def _libraries_root_payload(payload: Any) -> Path:
+    payload = _json_object_payload(payload)
     value = payload.get("libraries_root")
     if not isinstance(value, str) or not value.strip():
         from bodaqs_analysis.library_api.errors import InvalidRequestError
@@ -177,10 +271,7 @@ def _current_adapter(app: FastAPI) -> LibraryAdapter:
 
 
 def _expected_revision(payload: Any) -> int:
-    if not isinstance(payload, dict):
-        from bodaqs_analysis.library_api.errors import InvalidRequestError
-
-        raise InvalidRequestError("Request body must be a JSON object.")
+    payload = _json_object_payload(payload)
     value = payload.get("expected_revision")
     if isinstance(value, bool):
         from bodaqs_analysis.library_api.errors import InvalidRequestError
@@ -192,3 +283,10 @@ def _expected_revision(payload: Any) -> int:
         from bodaqs_analysis.library_api.errors import InvalidRequestError
 
         raise InvalidRequestError("expected_revision must be an integer.") from exc
+
+
+def _expected_revision_optional(payload: Any) -> int | None:
+    payload = _json_object_payload(payload)
+    if "expected_revision" not in payload:
+        return None
+    return _expected_revision(payload)

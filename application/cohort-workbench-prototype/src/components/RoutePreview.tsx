@@ -4,15 +4,20 @@ import type { SessionRecord, TrackRecord } from '../domain/types'
 
 export function RoutePreview({
   primarySession,
+  primaryGpsPath,
   selectedTracks,
   currentTracks,
 }: {
   primarySession: SessionRecord | null
+  primaryGpsPath?: Array<[number, number]>
   selectedTracks: TrackRecord[]
   currentTracks: TrackRecord[]
 }) {
+  const primaryPoints = primaryGpsPath ?? primarySession?.gps ?? []
   const allPaths = [
-    ...(primarySession ? [{ id: 'primary', points: primarySession.gps, color: '#25333d', width: 4 }] : []),
+    ...(primarySession && primaryPoints.length
+      ? [{ id: 'primary', points: primaryPoints, color: '#25333d', width: 4 }]
+      : []),
     ...selectedTracks.map((track) => ({
       id: `selected-${track.id}`,
       points: track.points,

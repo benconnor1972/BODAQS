@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import {
   BarChart3,
   BookOpen,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Columns3,
   Eye,
   FileText,
@@ -22,8 +24,8 @@ import {
 import './App.css'
 import { IconButton, PanelTitle, SummaryTile } from './components/Common'
 import { GeospatialWorkbench } from './components/GeospatialWorkbench'
+import { GpsRoutePreview } from './components/GpsRoutePreview'
 import { Modal } from './components/Modal'
-import { RoutePreview } from './components/RoutePreview'
 import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
@@ -57,6 +59,7 @@ import type {
   ColumnId,
   LibraryRecord,
   ModalState,
+  SessionTrackMatchRecord,
   SessionRecord,
   SortDirection,
   StudyGrouping,
@@ -94,6 +97,11 @@ function App() {
   const [groupingName, setGroupingName] = useState('')
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [librarySelectorCollapsed, setLibrarySelectorCollapsed] = useState(true)
+  const [sessionSelectorCollapsed, setSessionSelectorCollapsed] = useState(false)
+  const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
+  const [filtersCollapsed, setFiltersCollapsed] = useState(false)
+  const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
@@ -166,6 +174,10 @@ function App() {
   const canSaveCurrentStudySet =
     isCurrentStudySetDirty || (!currentStudySet.id && currentStudySet.sessions.length > 0)
   const canSavePendingAction = Boolean(currentStudySet.displayName.trim() && currentStudySet.sessions.length > 0)
+  const trackMatchRequestKey = JSON.stringify({
+    sessions: currentStudySet.sessions,
+    trackIds: currentStudySet.trackIds,
+  })
 
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
@@ -181,6 +193,45 @@ function App() {
       window.removeEventListener('beforeunload', handleBeforeUnload)
     }
   }, [isCurrentStudySetDirty])
+
+  useEffect(() => {
+    if (!activeDataSource.listTrackMatches) {
+      return
+    }
+
+    let cancelled = false
+    async function loadTrackMatches() {
+      try {
+        const matchRequest = JSON.parse(trackMatchRequestKey) as Pick<StudySet, 'sessions' | 'trackIds'>
+        const matches = await activeDataSource.listTrackMatches?.({
+          id: null,
+          displayName: '',
+          revision: 0,
+          saved: false,
+          sessions: matchRequest.sessions,
+          groupings: [],
+          trackIds: matchRequest.trackIds,
+          provenance: '',
+        })
+        if (cancelled || !matches) {
+          return
+        }
+        setTracks((currentTracks) => withTrackMatches(currentTracks, matches))
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        setStatusMessage(`Track match preview unavailable: ${message}`)
+        setTracks((currentTracks) => withTrackMatches(currentTracks, []))
+      }
+    }
+
+    void loadTrackMatches()
+    return () => {
+      cancelled = true
+    }
+  }, [activeDataSource, trackMatchRequestKey])
 
   useEffect(() => {
     if (!columnMenuOpen) {
@@ -635,181 +686,245 @@ function App() {
             }
           />
 
-          <section className="module">
+          <section className={`module collapsible-module${librarySelectorCollapsed ? ' collapsed' : ''}`}>
             <div className="module-header">
               <h2>Library Selector</h2>
-              <span className="subtle">{selectedLibraries.length} active</span>
-            </div>
-            <div className="library-root-control">
-              <label>
-                <span>Library root</span>
-                <input
-                  value={libraryRootInput}
-                  onChange={(event) => setLibraryRootInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      void applyLibraryRoot()
-                    }
-                  }}
-                  placeholder="Paste a local libraries root path"
+              <div className="module-header-actions">
+                <span className="subtle">{selectedLibraries.length} active</span>
+                <IconButton
+                  label={librarySelectorCollapsed ? 'Expand Library Selector' : 'Collapse Library Selector'}
+                  onClick={() => setLibrarySelectorCollapsed((current) => !current)}
+                  icon={librarySelectorCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
                 />
-              </label>
-              <button
-                className="secondary-action"
-                disabled={isChangingLibraryRoot}
-                onClick={() => void applyLibraryRoot()}
-                type="button"
-              >
-                <FolderOpen size={16} />
-                Select root
-              </button>
+              </div>
             </div>
-            <p className="connection-note">
-              <strong>{connectionMode === 'local-api' ? 'Local API' : 'Fixture fallback'}</strong>
-              <span>{localDataSource.baseUrl}</span>
-            </p>
-            <div className="library-list">
-              {libraries.map((libraryItem) => (
-                <label className="check-row" key={libraryItem.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedLibraryIds.includes(libraryItem.id)}
-                    onChange={() => toggleLibrary(libraryItem.id)}
-                  />
-                  <span>
-                    <strong>{libraryItem.name}</strong>
-                    <small>{libraryItem.sessionCount} sessions</small>
-                  </span>
-                </label>
-              ))}
-            </div>
+            {librarySelectorCollapsed ? (
+              <div className="collapsed-root-summary">
+                <span>Library root</span>
+                <strong>{libraryRootInput || 'No library root selected'}</strong>
+              </div>
+            ) : (
+              <>
+                <div className="library-root-control">
+                  <label>
+                    <span>Library root</span>
+                    <input
+                      value={libraryRootInput}
+                      onChange={(event) => setLibraryRootInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          void applyLibraryRoot()
+                        }
+                      }}
+                      placeholder="Paste a local libraries root path"
+                    />
+                  </label>
+                  <button
+                    className="secondary-action"
+                    disabled={isChangingLibraryRoot}
+                    onClick={() => void applyLibraryRoot()}
+                    type="button"
+                  >
+                    <FolderOpen size={16} />
+                    Select root
+                  </button>
+                </div>
+                <p className="connection-note">
+                  <strong>{connectionMode === 'local-api' ? 'Local API' : 'Fixture fallback'}</strong>
+                  <span>{localDataSource.baseUrl}</span>
+                </p>
+                <div className="library-list">
+                  {libraries.map((libraryItem) => (
+                    <label className="check-row" key={libraryItem.id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedLibraryIds.includes(libraryItem.id)}
+                        onChange={() => toggleLibrary(libraryItem.id)}
+                      />
+                      <span>
+                        <strong>{libraryItem.name}</strong>
+                        <small>{libraryItem.sessionCount} sessions</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
           </section>
 
-          <section className="module session-selector">
+          <section className={`module session-selector collapsible-module${sessionSelectorCollapsed ? ' collapsed' : ''}`}>
             <div className="module-header">
               <h2>Session Selector</h2>
-              <span className="subtle">{visibleSessions.length} shown</span>
-            </div>
-            <div className="toolbar">
-              <label className="search-field">
-                <Search size={16} />
-                <input
-                  value={searchText}
-                  onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="Search visible fields"
+              <div className="module-header-actions">
+                <span className="subtle">{visibleSessions.length} shown</span>
+                <IconButton
+                  label={sessionSelectorCollapsed ? 'Expand Session Selector' : 'Collapse Session Selector'}
+                  onClick={() => setSessionSelectorCollapsed((current) => !current)}
+                  icon={sessionSelectorCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
                 />
-              </label>
-              <div className="column-menu" ref={columnMenuRef}>
-                <button
-                  aria-expanded={columnMenuOpen}
-                  className="column-menu-button"
-                  onClick={() => setColumnMenuOpen((current) => !current)}
-                  type="button"
-                >
-                  <Columns3 size={16} />
-                  Columns
-                </button>
-                {columnMenuOpen && (
-                  <div className="column-popover">
-                    <div className="column-presets" aria-label="Column presets">
-                      {columnPresets.map((preset) => (
-                        <button
-                          className="preset-button"
-                          key={preset.id}
-                          title={preset.description}
-                          type="button"
-                          onClick={() => applyColumnPreset(preset.columns)}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
-                    </div>
-                    {columnGroups.map((group) => (
-                      <fieldset className="column-group" key={group.id}>
-                        <legend>{group.label}</legend>
-                        {group.columns.map((columnId) => {
-                          const locked = lockedColumns.includes(columnId)
-                          return (
-                            <label className="check-row compact" key={columnId}>
-                              <input
-                                type="checkbox"
-                                checked={visibleColumns.includes(columnId)}
-                                disabled={locked}
-                                onChange={() => toggleColumn(columnId)}
-                              />
-                              <span>{columnLabels[columnId]}{locked ? ' (fixed)' : ''}</span>
-                            </label>
-                          )
-                        })}
-                      </fieldset>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
-            <SessionTable
-              sessions={visibleSessions}
-              libraries={libraries}
-              visibleColumns={visibleColumns}
-              selectedIds={selectedCandidateIds}
-              primaryId={primaryCandidateId}
-              sortColumn={sortColumn}
-              sortDirection={sortDirection}
-              onSort={setSort}
-              onSelect={selectCandidate}
-              onInspect={(session, tab) => setModal({ kind: 'session', session, tab })}
-            />
-            <div className="action-row">
-              <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
-                <Plus size={17} />
-                Add to Study Set
-              </button>
-              <button className="secondary-action" onClick={analyzeNow}>
-                <Play size={17} />
-                Analyze now
-              </button>
-            </div>
+            {!sessionSelectorCollapsed && (
+              <>
+                <div className="toolbar">
+                  <label className="search-field">
+                    <Search size={16} />
+                    <input
+                      value={searchText}
+                      onChange={(event) => setSearchText(event.target.value)}
+                      placeholder="Search visible fields"
+                    />
+                  </label>
+                  <div className="column-menu" ref={columnMenuRef}>
+                    <button
+                      aria-expanded={columnMenuOpen}
+                      className="column-menu-button"
+                      onClick={() => setColumnMenuOpen((current) => !current)}
+                      type="button"
+                    >
+                      <Columns3 size={16} />
+                      Columns
+                    </button>
+                    {columnMenuOpen && (
+                      <div className="column-popover">
+                        <div className="column-presets" aria-label="Column presets">
+                          {columnPresets.map((preset) => (
+                            <button
+                              className="preset-button"
+                              key={preset.id}
+                              title={preset.description}
+                              type="button"
+                              onClick={() => applyColumnPreset(preset.columns)}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                        {columnGroups.map((group) => (
+                          <fieldset className="column-group" key={group.id}>
+                            <legend>{group.label}</legend>
+                            {group.columns.map((columnId) => {
+                              const locked = lockedColumns.includes(columnId)
+                              return (
+                                <label className="check-row compact" key={columnId}>
+                                  <input
+                                    type="checkbox"
+                                    checked={visibleColumns.includes(columnId)}
+                                    disabled={locked}
+                                    onChange={() => toggleColumn(columnId)}
+                                  />
+                                  <span>{columnLabels[columnId]}{locked ? ' (fixed)' : ''}</span>
+                                </label>
+                              )
+                            })}
+                          </fieldset>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <SessionTable
+                  sessions={visibleSessions}
+                  libraries={libraries}
+                  visibleColumns={visibleColumns}
+                  selectedIds={selectedCandidateIds}
+                  primaryId={primaryCandidateId}
+                  sortColumn={sortColumn}
+                  sortDirection={sortDirection}
+                  onSort={setSort}
+                  onSelect={selectCandidate}
+                  onInspect={(session, tab) => setModal({ kind: 'session', session, tab })}
+                />
+                <div className="action-row">
+                  <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
+                    <Plus size={17} />
+                    Add to Study Set
+                  </button>
+                  <button className="secondary-action" onClick={analyzeNow}>
+                    <Play size={17} />
+                    Analyze now
+                  </button>
+                </div>
+              </>
+            )}
           </section>
 
-          <section className="lower-grid">
-            <section className="module map-module">
-              <div className="module-header">
-                <h2>GPS Location</h2>
-                <span className="subtle">{primarySession ? primarySession.name : 'No primary session'}</span>
-              </div>
-              <RoutePreview
-                primarySession={primarySession}
-                selectedTracks={selectedTracks}
-                currentTracks={currentStudyTracks}
-              />
-            </section>
+          <section className={`lower-grid${gpsLocationCollapsed ? ' gps-collapsed' : ''}`}>
+            {gpsLocationCollapsed ? (
+              <button className="gps-rail" onClick={() => setGpsLocationCollapsed(false)} type="button">
+                <ChevronRight size={18} />
+                GPS Location
+              </button>
+            ) : (
+              <section className="module map-module">
+                <div className="module-header">
+                  <h2>GPS Location</h2>
+                  <div className="module-header-actions">
+                    <span className="subtle">{primarySession ? primarySession.name : 'No primary session'}</span>
+                    <IconButton
+                      label="Collapse GPS Location"
+                      onClick={() => setGpsLocationCollapsed(true)}
+                      icon={<ChevronLeft size={16} />}
+                    />
+                  </div>
+                </div>
+                <GpsRoutePreview
+                  session={primarySession}
+                  dataSource={activeDataSource}
+                  selectedTracks={selectedTracks}
+                  currentTracks={currentStudyTracks}
+                />
+              </section>
+            )}
 
-            <section className="module support-stack">
-              <div className="module-header">
-                <h2>Filters</h2>
-                <span className="pill neutral">reserved</span>
-              </div>
-              <div className="placeholder-list">
-                <Filter size={18} />
-                <p>Reusable filters will sit here after the catalog path is stable.</p>
-              </div>
+            <div className="support-stack">
+              <section className={`module collapsible-module${filtersCollapsed ? ' collapsed' : ''}`}>
+                <div className="module-header">
+                  <h2>Filters</h2>
+                  <div className="module-header-actions">
+                    <span className="pill neutral">reserved</span>
+                    <IconButton
+                      label={filtersCollapsed ? 'Expand Filters' : 'Collapse Filters'}
+                      onClick={() => setFiltersCollapsed((current) => !current)}
+                      icon={filtersCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                    />
+                  </div>
+                </div>
+                {!filtersCollapsed && (
+                  <div className="placeholder-list">
+                    <Filter size={18} />
+                    <p>Reusable filters will sit here after the catalog path is stable.</p>
+                  </div>
+                )}
+              </section>
 
-              <div className="module-header spaced">
-                <h2>Geospatial Workbench</h2>
-                <span className="pill neutral">mocked</span>
-              </div>
-              <GeospatialWorkbench
-                primarySession={primarySession}
-                currentStudySet={currentStudySet}
-                sessions={sessions}
-                tracks={tracks}
-                selectedTrackIds={selectedTrackIds}
-                currentStudyTracks={currentStudyTracks}
-                onToggleTrack={toggleTrack}
-                onAttachSelectedTracks={addSelectedTracksToStudySet}
-                onInspectTrack={(track) => setModal({ kind: 'track', track })}
-              />
-            </section>
+              <section className={`module collapsible-module${geospatialCollapsed ? ' collapsed' : ''}`}>
+                <div className="module-header">
+                  <h2>Geospatial Workbench</h2>
+                  <div className="module-header-actions">
+                    <span className="pill neutral">v0 endpoints</span>
+                    <IconButton
+                      label={geospatialCollapsed ? 'Expand Geospatial Workbench' : 'Collapse Geospatial Workbench'}
+                      onClick={() => setGeospatialCollapsed((current) => !current)}
+                      icon={geospatialCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                    />
+                  </div>
+                </div>
+                {!geospatialCollapsed && (
+                  <GeospatialWorkbench
+                    primarySession={primarySession}
+                    currentStudySet={currentStudySet}
+                    sessions={sessions}
+                    tracks={tracks}
+                    selectedTrackIds={selectedTrackIds}
+                    currentStudyTracks={currentStudyTracks}
+                    onToggleTrack={toggleTrack}
+                    onAttachSelectedTracks={addSelectedTracksToStudySet}
+                    onInspectTrack={(track) => setModal({ kind: 'track', track })}
+                  />
+                )}
+              </section>
+            </div>
           </section>
         </aside>
 
@@ -1029,6 +1144,7 @@ function App() {
           libraries={libraries}
           sessions={sessions}
           tracks={tracks}
+          dataSource={activeDataSource}
           onClose={() => setModal(null)}
         />
       )}
@@ -1092,6 +1208,19 @@ function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[
   return libraries.map((libraryItem) => ({
     ...libraryItem,
     sessionCount: sessionCounts.get(libraryItem.id) ?? libraryItem.sessionCount,
+  }))
+}
+
+function withTrackMatches(tracks: TrackRecord[], matches: SessionTrackMatchRecord[]) {
+  const matchesByTrack = new Map<string, SessionTrackMatchRecord[]>()
+  for (const match of matches) {
+    const trackMatches = matchesByTrack.get(match.trackId) ?? []
+    trackMatches.push(match)
+    matchesByTrack.set(match.trackId, trackMatches)
+  }
+  return tracks.map((track) => ({
+    ...track,
+    matchSummaries: matchesByTrack.get(track.id) ?? [],
   }))
 }
 

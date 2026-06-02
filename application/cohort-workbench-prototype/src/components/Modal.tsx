@@ -3,7 +3,9 @@ import { formatPercent, gpsSourceLabel } from '../domain/geospatial'
 import { libraryName } from '../domain/sessionCatalog'
 import { noteSummary, sessionByRef, sessionRefId } from '../domain/studySets'
 import type { LibraryRecord, ModalState, SessionRecord, StudySet, TrackRecord } from '../domain/types'
+import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { IconButton } from './Common'
+import { GpsRoutePreview } from './GpsRoutePreview'
 import { GpsBadge, NoteBadge, QcBadge } from './StatusBadges'
 
 export function Modal({
@@ -11,12 +13,14 @@ export function Modal({
   libraries,
   sessions,
   tracks,
+  dataSource,
   onClose,
 }: {
   state: ModalState
   libraries: LibraryRecord[]
   sessions: SessionRecord[]
   tracks: TrackRecord[]
+  dataSource: LibraryDataSource
   onClose: () => void
 }) {
   if (!state) {
@@ -30,7 +34,7 @@ export function Modal({
           <h2>{modalTitle(state)}</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
-        <div className="modal-content">{modalContent(state, libraries, sessions, tracks)}</div>
+        <div className="modal-content">{modalContent(state, libraries, sessions, tracks, dataSource)}</div>
       </section>
     </div>
   )
@@ -54,6 +58,7 @@ function modalContent(
   libraries: LibraryRecord[],
   sessions: SessionRecord[],
   tracks: TrackRecord[],
+  dataSource: LibraryDataSource,
 ) {
   if (state.kind === 'session') {
     if (state.tab === 'note') {
@@ -124,6 +129,16 @@ function modalContent(
               ))}
             </ul>
           )}
+          <section className="modal-section gps-modal-preview">
+            <h3>GPS Path</h3>
+            <GpsRoutePreview
+              session={state.session}
+              dataSource={dataSource}
+              selectedTracks={[]}
+              currentTracks={[]}
+              compact
+            />
+          </section>
         </div>
       )
     }

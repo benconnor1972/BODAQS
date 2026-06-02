@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -28,6 +29,12 @@ SESSION_CATALOG_SCHEMA = "bodaqs.session_catalog"
 SESSION_CATALOG_VERSION = 1
 SESSION_CATALOG_ROW_SCHEMA = "bodaqs.session_catalog_row"
 SESSION_CATALOG_ROW_VERSION = 1
+SESSION_GPS_SUMMARY_SCHEMA = "bodaqs.session_gps_summary"
+SESSION_GPS_SUMMARY_VERSION = 1
+SESSION_GPS_POINTS_SCHEMA = "bodaqs.session_gps_points"
+SESSION_GPS_POINTS_VERSION = 1
+GPS_GAP_THRESHOLD_S = 5.0
+DEFAULT_GPS_POINTS_MAX_POINTS = 2000
 
 
 def discover_libraries(libraries_root: str | Path) -> list[dict[str, Any]]:
@@ -184,10 +191,659 @@ def _build_session_catalog_row(
             session_meta,
             dataframe_path=store.path_session_df(run_id, session_id),
         ),
+        "gps_summary": _gps_summary(
+            store,
+            run_id=run_id,
+            session_id=session_id,
+            session_meta=session_meta,
+            session_manifest=session_manifest,
+        ),
         "event_summary": event_summary,
         "metric_summary": metric_summary,
     }
     return row
+
+
+def _gps_summary(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+    session_meta: Mapping[str, Any],
+    session_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    session_start_s, session_end_s = _session_time_bounds(
+        session_manifest,
+        dataframe_path=store.path_session_df(run_id, session_id),
+    )
+    session_duration_s = _duration_from_bounds(session_start_s, session_end_s)
+    session_window = (session_start_s, session_end_s)
+    warnings: list[str] = []
+    sources: list[dict[str, Any]] = []
+
+    stream_names = _gps_stream_names(store, run_id=run_id, session_id=session_id, session_meta=session_meta)
+    streams_meta = session_meta.get("streams") if isinstance(session_meta.get("streams"), Mapping) else {}
+    for stream_name in stream_names:
+        stream_meta = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name))
+        if stream_meta is None and isinstance(streams_meta, Mapping):
+            raw_stream_meta = streams_meta.get(stream_name)
+            stream_meta = dict(raw_stream_meta) if isinstance(raw_stream_meta, Mapping) else {}
+        source = _gps_source_summary(
+            source_id=stream_name,
+            stream_name=stream_name,
+            metadata=stream_meta or {},
+            dataframe_path=store.path_session_stream_df(run_id, session_id, stream_name),
+            session_duration_s=session_duration_s,
+            window_range=session_window,
+        )
+        if source is not None:
+            warnings.extend(source.pop("_warnings", []))
+            sources.append(source)
+
+    if not sources:
+        primary_source = _gps_source_summary(
+            source_id="primary",
+            stream_name="primary",
+            metadata=session_meta,
+            dataframe_path=store.path_session_df(run_id, session_id),
+            session_duration_s=session_duration_s,
+            window_range=session_window,
+        )
+        if primary_source is not None:
+            warnings.extend(primary_source.pop("_warnings", []))
+            sources.append(primary_source)
+
+    if not sources:
+        return {
+            "schema": SESSION_GPS_SUMMARY_SCHEMA,
+            "version": SESSION_GPS_SUMMARY_VERSION,
+            "present": False,
+            "preferred_source": None,
+            "sources": [],
+            "session_duration_s": session_duration_s,
+            "time_coverage_ratio": 0.0,
+            "position_point_count": 0,
+            "quality": "absent",
+            "warnings": [],
+        }
+
+    preferred = max(
+        sources,
+        key=lambda source: (
+            float(source.get("_coverage_ratio") or 0.0),
+            int(source.get("point_count") or 0),
+        ),
+    )
+    position_point_count = int(preferred.get("point_count") or 0)
+    time_coverage_ratio = min(1.0, max(0.0, float(preferred.get("_coverage_ratio") or 0.0)))
+    max_gap_s = preferred.get("max_gap_s")
+
+    if position_point_count <= 0:
+        quality = "absent"
+    elif position_point_count < 3:
+        quality = "limited"
+        warnings.append("gps_low_point_count")
+    elif time_coverage_ratio >= 0.85:
+        quality = "usable"
+    else:
+        quality = "limited"
+        warnings.append("gps_coverage_limited")
+    if isinstance(max_gap_s, (int, float)) and max_gap_s > GPS_GAP_THRESHOLD_S:
+        warnings.append("gps_max_gap_exceeds_threshold")
+
+    public_sources = []
+    for source in sources:
+        public_source = dict(source)
+        public_source.pop("_coverage_ratio", None)
+        public_sources.append(public_source)
+
+    return {
+        "schema": SESSION_GPS_SUMMARY_SCHEMA,
+        "version": SESSION_GPS_SUMMARY_VERSION,
+        "present": position_point_count > 0,
+        "preferred_source": preferred.get("kind"),
+        "sources": public_sources,
+        "session_duration_s": session_duration_s,
+        "time_coverage_ratio": time_coverage_ratio,
+        "position_point_count": position_point_count,
+        "quality": quality,
+        "warnings": sorted(set(str(warning) for warning in warnings if warning)),
+    }
+
+
+def get_session_gps_points(
+    library_root: str | Path,
+    session_ref: Mapping[str, Any],
+    *,
+    library_id: str | None = None,
+    max_points: int | None = None,
+    window: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return an on-demand GPS point set for one processed session."""
+
+    store = ArtifactStore(Path(library_root).expanduser())
+    run_id = _required_text(session_ref.get("run_id"), field_name="run_id")
+    session_id = _required_text(session_ref.get("session_id"), field_name="session_id")
+    session_manifest = _read_json_object(store.path_session_manifest(run_id, session_id)) or {}
+    session_meta = _read_json_object(store.path_session_meta(run_id, session_id)) or {}
+    session_start_s, session_end_s = _session_time_bounds(
+        session_manifest,
+        dataframe_path=store.path_session_df(run_id, session_id),
+    )
+    session_duration_s = _duration_from_bounds(session_start_s, session_end_s)
+    max_points = _normalized_max_points(max_points)
+    window_range = _normalized_time_window(window, default_range=(session_start_s, session_end_s))
+
+    candidates: list[dict[str, Any]] = []
+    streams_meta = session_meta.get("streams") if isinstance(session_meta.get("streams"), Mapping) else {}
+    for stream_name in _gps_stream_names(store, run_id=run_id, session_id=session_id, session_meta=session_meta):
+        stream_meta = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name))
+        if stream_meta is None and isinstance(streams_meta, Mapping):
+            raw_stream_meta = streams_meta.get(stream_name)
+            stream_meta = dict(raw_stream_meta) if isinstance(raw_stream_meta, Mapping) else {}
+        candidate = _gps_point_source_candidate(
+            source_id=stream_name,
+            stream_name=stream_name,
+            metadata=stream_meta or {},
+            dataframe_path=store.path_session_stream_df(run_id, session_id, stream_name),
+            max_points=max_points,
+            window_range=window_range,
+            session_duration_s=session_duration_s,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+
+    if not candidates:
+        primary_candidate = _gps_point_source_candidate(
+            source_id="primary",
+            stream_name="primary",
+            metadata=session_meta,
+            dataframe_path=store.path_session_df(run_id, session_id),
+            max_points=max_points,
+            window_range=window_range,
+            session_duration_s=session_duration_s,
+        )
+        if primary_candidate is not None:
+            candidates.append(primary_candidate)
+
+    if not candidates:
+        return {
+            "schema": SESSION_GPS_POINTS_SCHEMA,
+            "version": SESSION_GPS_POINTS_VERSION,
+            "library_id": library_id,
+            "session": dict(session_ref),
+            "present": False,
+            "source": None,
+            "sampling": {
+                "mode": "none",
+                "source_points": 0,
+                "returned_points": 0,
+                "max_points": max_points,
+                "stride": None,
+                "window": _sampling_window(window_range),
+            },
+            "points": [],
+            "warnings": ["gps_points_unavailable"],
+        }
+
+    best = max(
+        candidates,
+        key=lambda candidate: (
+            int(candidate["sampling"].get("source_points") or 0),
+            int(candidate["sampling"].get("returned_points") or 0),
+        ),
+    )
+    return {
+        "schema": SESSION_GPS_POINTS_SCHEMA,
+        "version": SESSION_GPS_POINTS_VERSION,
+        "library_id": library_id,
+        "session": dict(session_ref),
+        "present": bool(best["points"]),
+        "source": best["source"],
+        "sampling": best["sampling"],
+        "points": best["points"],
+        "warnings": best["warnings"],
+    }
+
+
+def _gps_source_summary(
+    *,
+    source_id: str,
+    stream_name: str,
+    metadata: Mapping[str, Any],
+    dataframe_path: Path,
+    session_duration_s: float,
+    window_range: tuple[float | None, float | None],
+) -> dict[str, Any] | None:
+    known_columns = _parquet_columns(dataframe_path)
+    if known_columns is not None and not known_columns:
+        return None
+
+    time_col = _optional_text(metadata.get("time_col")) or "time_s"
+    if known_columns is not None and time_col not in known_columns and "time_s" in known_columns:
+        time_col = "time_s"
+
+    latitude_col, longitude_col, elevation_col = _gps_columns(metadata, known_columns)
+    if latitude_col is None or longitude_col is None:
+        return None
+
+    columns = [time_col, latitude_col, longitude_col]
+    if elevation_col:
+        columns.append(elevation_col)
+    columns = [column for column in dict.fromkeys(columns) if known_columns is None or column in known_columns]
+    warnings: list[str] = []
+    try:
+        df = pd.read_parquet(dataframe_path, columns=columns)
+    except Exception as exc:
+        return {
+            "source_id": source_id,
+            "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+            "stream_name": stream_name,
+            "timebase": _gps_timebase(metadata),
+            "position_columns": {
+                "latitude": latitude_col,
+                "longitude": longitude_col,
+            },
+            "elevation_column": elevation_col,
+            "point_count": 0,
+            "nominal_sample_rate_hz": None,
+            "median_gap_s": None,
+            "max_gap_s": None,
+            "gap_count_over_threshold": 0,
+            "gap_threshold_s": GPS_GAP_THRESHOLD_S,
+            "_coverage_ratio": 0.0,
+            "_warnings": [f"gps_source_read_failed:{type(exc).__name__}"],
+        }
+
+    if latitude_col not in df.columns or longitude_col not in df.columns:
+        return None
+
+    lat = pd.to_numeric(df[latitude_col], errors="coerce")
+    lon = pd.to_numeric(df[longitude_col], errors="coerce")
+    valid_position = lat.notna() & lon.notna()
+    if time_col in df.columns:
+        time_values_all = pd.to_numeric(df[time_col], errors="coerce")
+        valid_position = valid_position & time_values_all.notna()
+        start_s, end_s = window_range
+        if start_s is not None:
+            valid_position = valid_position & (time_values_all >= start_s)
+        if end_s is not None:
+            valid_position = valid_position & (time_values_all <= end_s)
+    else:
+        warnings.append("gps_time_column_missing")
+    point_count = int(valid_position.sum())
+
+    times: list[float] = []
+    if time_col in df.columns:
+        time_values = pd.to_numeric(df.loc[valid_position, time_col], errors="coerce").dropna()
+        times = sorted(float(value) for value in time_values.to_list() if math.isfinite(float(value)))
+
+    gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
+    median_gap_s = float(pd.Series(gaps).median()) if gaps else None
+    max_gap_s = max(gaps) if gaps else None
+    nominal_sample_rate_hz = (1.0 / median_gap_s) if median_gap_s and median_gap_s > 0 else None
+    coverage_ratio = _gps_coverage_ratio(times, session_duration_s, gap_threshold_s=GPS_GAP_THRESHOLD_S)
+    gap_count_over_threshold = sum(1 for gap in gaps if gap > GPS_GAP_THRESHOLD_S)
+
+    return {
+        "source_id": source_id,
+        "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+        "stream_name": stream_name,
+        "timebase": _gps_timebase(metadata),
+        "position_columns": {
+            "latitude": latitude_col,
+            "longitude": longitude_col,
+        },
+        "elevation_column": elevation_col,
+        "point_count": point_count,
+        "nominal_sample_rate_hz": nominal_sample_rate_hz,
+        "median_gap_s": median_gap_s,
+        "max_gap_s": max_gap_s,
+        "gap_count_over_threshold": gap_count_over_threshold,
+        "gap_threshold_s": GPS_GAP_THRESHOLD_S,
+        "_coverage_ratio": coverage_ratio,
+        "_warnings": warnings,
+    }
+
+
+def _gps_point_source_candidate(
+    *,
+    source_id: str,
+    stream_name: str,
+    metadata: Mapping[str, Any],
+    dataframe_path: Path,
+    max_points: int,
+    window_range: tuple[float | None, float | None],
+    session_duration_s: float,
+) -> dict[str, Any] | None:
+    known_columns = _parquet_columns(dataframe_path)
+    if known_columns is not None and not known_columns:
+        return None
+    time_col = _optional_text(metadata.get("time_col")) or "time_s"
+    if known_columns is not None and time_col not in known_columns and "time_s" in known_columns:
+        time_col = "time_s"
+    latitude_col, longitude_col, elevation_col = _gps_columns(metadata, known_columns)
+    if latitude_col is None or longitude_col is None:
+        return None
+
+    read_columns = [time_col, latitude_col, longitude_col]
+    if elevation_col:
+        read_columns.append(elevation_col)
+    read_columns = [
+        column
+        for column in dict.fromkeys(read_columns)
+        if known_columns is None or column in known_columns
+    ]
+    warnings: list[str] = []
+    try:
+        df = pd.read_parquet(dataframe_path, columns=read_columns)
+    except Exception as exc:
+        return {
+            "source": {
+                "source_id": source_id,
+                "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+                "stream_name": stream_name,
+                "timebase": _gps_timebase(metadata),
+                "position_columns": {
+                    "latitude": latitude_col,
+                    "longitude": longitude_col,
+                },
+                "elevation_column": elevation_col,
+            },
+            "sampling": {
+                "mode": "error",
+                "source_points": 0,
+                "returned_points": 0,
+                "max_points": max_points,
+                "stride": None,
+                "window": _sampling_window(window_range),
+            },
+            "points": [],
+            "warnings": [f"gps_points_read_failed:{type(exc).__name__}"],
+        }
+
+    if latitude_col not in df.columns or longitude_col not in df.columns:
+        return None
+
+    lat = pd.to_numeric(df[latitude_col], errors="coerce")
+    lon = pd.to_numeric(df[longitude_col], errors="coerce")
+    valid = lat.notna() & lon.notna()
+    if time_col in df.columns:
+        time_values = pd.to_numeric(df[time_col], errors="coerce")
+        valid = valid & time_values.notna()
+    else:
+        time_values = pd.Series([None] * len(df), index=df.index)
+        warnings.append("gps_time_column_missing")
+
+    start_s, end_s = window_range
+    if time_col in df.columns:
+        if start_s is not None:
+            valid = valid & (time_values >= start_s)
+        if end_s is not None:
+            valid = valid & (time_values <= end_s)
+
+    filtered = df.loc[valid].copy()
+    if filtered.empty:
+        return {
+            "source": {
+                "source_id": source_id,
+                "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+                "stream_name": stream_name,
+                "timebase": _gps_timebase(metadata),
+                "position_columns": {
+                    "latitude": latitude_col,
+                    "longitude": longitude_col,
+                },
+                "elevation_column": elevation_col,
+            },
+            "sampling": {
+                "mode": "none",
+                "source_points": 0,
+                "returned_points": 0,
+                "max_points": max_points,
+                "stride": None,
+                "window": _sampling_window(window_range),
+            },
+            "points": [],
+            "warnings": warnings + ["gps_points_empty"],
+        }
+
+    if time_col in filtered.columns:
+        filtered[time_col] = pd.to_numeric(filtered[time_col], errors="coerce")
+        filtered = filtered.sort_values(time_col)
+    filtered[latitude_col] = pd.to_numeric(filtered[latitude_col], errors="coerce")
+    filtered[longitude_col] = pd.to_numeric(filtered[longitude_col], errors="coerce")
+    if elevation_col and elevation_col in filtered.columns:
+        filtered[elevation_col] = pd.to_numeric(filtered[elevation_col], errors="coerce")
+
+    source_points = int(len(filtered))
+    stride = max(1, math.ceil(source_points / max_points)) if max_points > 0 else 1
+    if stride > 1:
+        sampled = filtered.iloc[::stride].copy()
+        if sampled.index[-1] != filtered.index[-1]:
+            sampled = pd.concat([sampled, filtered.tail(1)])
+        sampled = sampled.drop_duplicates()
+    else:
+        sampled = filtered
+
+    points = []
+    for _, row in sampled.iterrows():
+        time_s = _number_or_none(row.get(time_col)) if time_col in sampled.columns else None
+        elevation_m = _number_or_none(row.get(elevation_col)) if elevation_col and elevation_col in sampled.columns else None
+        points.append(
+            {
+                "time_s": time_s,
+                "longitude": float(row[longitude_col]),
+                "latitude": float(row[latitude_col]),
+                "elevation_m": elevation_m,
+            }
+        )
+
+    return {
+        "source": {
+            "source_id": source_id,
+            "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+            "stream_name": stream_name,
+            "timebase": _gps_timebase(metadata),
+            "position_columns": {
+                "latitude": latitude_col,
+                "longitude": longitude_col,
+            },
+            "elevation_column": elevation_col,
+        },
+        "sampling": {
+            "mode": "stride" if stride > 1 else "raw",
+            "source_points": source_points,
+            "returned_points": len(points),
+            "max_points": max_points,
+            "stride": stride,
+            "session_duration_s": session_duration_s,
+            "window": _sampling_window(window_range),
+        },
+        "points": points,
+        "warnings": warnings,
+    }
+
+
+def _gps_stream_names(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+    session_meta: Mapping[str, Any],
+) -> list[str]:
+    names: set[str] = set()
+    streams = session_meta.get("streams")
+    if isinstance(streams, Mapping):
+        names.update(str(name) for name in streams.keys() if "gps" in str(name).lower())
+    streams_dir = store.session_dir(run_id, session_id) / "session" / "streams"
+    if streams_dir.exists():
+        names.update(child.name for child in streams_dir.iterdir() if child.is_dir() and "gps" in child.name.lower())
+    return sorted(names)
+
+
+def _gps_columns(metadata: Mapping[str, Any], known_columns: set[str] | None) -> tuple[str | None, str | None, str | None]:
+    column_info: dict[str, Mapping[str, Any]] = {}
+    for key in ("channel_info", "signals"):
+        raw = metadata.get(key)
+        if isinstance(raw, Mapping):
+            column_info.update(
+                {
+                    str(column): info if isinstance(info, Mapping) else {}
+                    for column, info in raw.items()
+                }
+            )
+    if known_columns is not None:
+        for column in known_columns:
+            column_info.setdefault(column, {})
+
+    latitude = _first_matching_column(column_info, known_columns, _is_latitude_column)
+    longitude = _first_matching_column(column_info, known_columns, _is_longitude_column)
+    elevation = _first_matching_column(column_info, known_columns, _is_elevation_column)
+    return latitude, longitude, elevation
+
+
+def _first_matching_column(
+    column_info: Mapping[str, Mapping[str, Any]],
+    known_columns: set[str] | None,
+    predicate: Any,
+) -> str | None:
+    candidates = []
+    for column, info in column_info.items():
+        if known_columns is not None and column not in known_columns:
+            continue
+        if predicate(column, info):
+            candidates.append(column)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda value: (0 if "gps_fit" in value.lower() else 1, value.lower()))[0]
+
+
+def _is_latitude_column(column: str, info: Mapping[str, Any]) -> bool:
+    text = _column_semantic_text(column, info)
+    return "latitude" in text or " lat " in f" {text} " or "_lat" in text
+
+
+def _is_longitude_column(column: str, info: Mapping[str, Any]) -> bool:
+    text = _column_semantic_text(column, info)
+    return "longitude" in text or " lon " in f" {text} " or "_lon" in text
+
+
+def _is_elevation_column(column: str, info: Mapping[str, Any]) -> bool:
+    text = _column_semantic_text(column, info)
+    return "altitude" in text or "elevation" in text
+
+
+def _column_semantic_text(column: str, info: Mapping[str, Any]) -> str:
+    parts = [column]
+    for key in ("role", "quantity", "domain", "sensor", "origin", "display_name", "processing_role"):
+        value = info.get(key)
+        if value is not None:
+            parts.append(str(value))
+    return " ".join(parts).replace("-", "_").lower()
+
+
+def _gps_source_kind(source_id: str, metadata: Mapping[str, Any], *, latitude_col: str) -> str:
+    text_parts = [source_id, latitude_col]
+    for key in ("source_kind", "source", "sensor", "filename", "fit_filename"):
+        value = metadata.get(key)
+        if value is not None:
+            text_parts.append(str(value))
+    text = " ".join(text_parts).lower()
+    if "fit" in text:
+        return "fit_enrichment"
+    if "gps" in text:
+        return "logger_sensor"
+    return "unknown"
+
+
+def _gps_timebase(metadata: Mapping[str, Any]) -> str:
+    value = _optional_text(metadata.get("kind"))
+    if value in {"uniform", "intermittent"}:
+        return value
+    return "unknown"
+
+
+def _gps_coverage_ratio(times: list[float], session_duration_s: float, *, gap_threshold_s: float) -> float:
+    if session_duration_s <= 0 or not times:
+        return 0.0
+    if len(times) == 1:
+        return min(1.0, gap_threshold_s / session_duration_s)
+    gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
+    if not gaps:
+        return 0.0
+    covered_s = sum(min(gap, gap_threshold_s) for gap in gaps)
+    return min(1.0, max(0.0, covered_s / session_duration_s))
+
+
+def _session_duration_s(session_manifest: Mapping[str, Any], *, dataframe_path: Path) -> float:
+    start_s, end_s = _session_time_bounds(session_manifest, dataframe_path=dataframe_path)
+    return _duration_from_bounds(start_s, end_s)
+
+
+def _session_time_bounds(
+    session_manifest: Mapping[str, Any],
+    *,
+    dataframe_path: Path,
+) -> tuple[float | None, float | None]:
+    summary = session_manifest.get("summary")
+    if isinstance(summary, Mapping):
+        start = _number_or_none(summary.get("t_start_s"))
+        end = _number_or_none(summary.get("t_end_s"))
+        if start is not None and end is not None and end >= start:
+            return float(start), float(end)
+
+    try:
+        df = pd.read_parquet(dataframe_path, columns=["time_s"])
+    except Exception:
+        return None, None
+    if "time_s" not in df.columns or df.empty:
+        return None, None
+    times = pd.to_numeric(df["time_s"], errors="coerce").dropna()
+    if times.empty:
+        return None, None
+    return float(times.min()), float(times.max())
+
+
+def _duration_from_bounds(start_s: float | None, end_s: float | None) -> float:
+    if start_s is None or end_s is None or end_s < start_s:
+        return 0.0
+    return float(end_s - start_s)
+
+
+def _normalized_max_points(value: int | None) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return DEFAULT_GPS_POINTS_MAX_POINTS
+    return max(2, min(25_000, value))
+
+
+def _normalized_time_window(
+    window: Mapping[str, Any] | None,
+    *,
+    default_range: tuple[float | None, float | None],
+) -> tuple[float | None, float | None]:
+    if not isinstance(window, Mapping):
+        return default_range
+    start_s = _number_or_none(window.get("start_s"))
+    end_s = _number_or_none(window.get("end_s"))
+    if start_s is not None and end_s is not None and end_s < start_s:
+        start_s, end_s = end_s, start_s
+    return start_s, end_s
+
+
+def _sampling_window(window_range: tuple[float | None, float | None]) -> dict[str, Any]:
+    start_s, end_s = window_range
+    return {
+        "start_s": start_s,
+        "end_s": end_s,
+    }
+
+
+def _required_text(value: Any, *, field_name: str) -> str:
+    text = _optional_text(value)
+    if text is None:
+        raise InvalidRequestError(f"Missing non-empty {field_name!r}.")
+    return text
 
 
 def _available_signals(
@@ -524,6 +1180,13 @@ def _first_text(*values: Any) -> str | None:
         if text is not None:
             return text
     return None
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _utc_timestamp_or_none(value: str | None) -> str | None:

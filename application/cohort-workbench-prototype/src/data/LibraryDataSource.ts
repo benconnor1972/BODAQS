@@ -1,4 +1,11 @@
-import type { LibraryRecord, SessionRecord, StudySet, TrackRecord } from '../domain/types'
+import type {
+  LibraryRecord,
+  SessionGpsPointSet,
+  SessionRecord,
+  SessionTrackMatchRecord,
+  StudySet,
+  TrackRecord,
+} from '../domain/types'
 
 export interface LibraryDataSource {
   listLibraries(): Promise<LibraryRecord[]>
@@ -6,4 +13,6 @@ export interface LibraryDataSource {
   listTracks(): Promise<TrackRecord[]>
   listStudySets(): Promise<StudySet[]>
   saveStudySet(studySet: StudySet): Promise<StudySet>
+  listTrackMatches?(studySet: StudySet): Promise<SessionTrackMatchRecord[]>
+  loadSessionGpsPoints?(session: SessionRecord): Promise<SessionGpsPointSet>
 }

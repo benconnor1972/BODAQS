@@ -286,12 +286,12 @@ Example:
     "write_study_sets": true,
     "delete_study_sets": true,
     "read_session_gps_summaries": true,
-    "read_tracks": false,
-    "write_tracks": false,
-    "read_geospatial_policies": false,
-    "write_geospatial_policies": false,
-    "compute_track_matches": false,
-    "read_track_matches": false,
+    "read_tracks": true,
+    "write_tracks": true,
+    "read_geospatial_policies": true,
+    "write_geospatial_policies": true,
+    "compute_track_matches": true,
+    "read_track_matches": true,
     "read_filters": false,
     "write_filters": false,
     "export_static_bundle": false,
@@ -884,6 +884,7 @@ Session GPS summaries and session-track matching:
 
 ```text
 POST /api/v1/libraries/{library_id}/sessions/gps-summary
+POST /api/v1/libraries/{library_id}/sessions/gps/points
 POST /api/v1/track-matches/query
 POST /api/v1/track-matches/compute
 GET  /api/v1/track-matches/{track_match_id}
@@ -892,6 +893,13 @@ GET  /api/v1/track-matches/{track_match_id}
 The GPS summary endpoint accepts a session reference in the request body and
 returns the `SessionGpsSummary` defined in
 `BODAQS_Geospatial_Contracts_v0_draft.md`.
+
+The GPS points endpoint accepts a session reference plus optional `max_points`
+and `window` fields, and returns downsampled longitude/latitude points for
+offline browser preview. The session catalog remains summary-only; full GPS
+geometry is loaded on demand. If `window` is omitted, the service must default
+to the processed session's own primary `time_s` bounds rather than returning an
+entire auxiliary GPS/FIT stream.
 
 Track and policy endpoints are scoped to the configured libraries root, not to
 one processed library. Track match endpoints may return cached derived matches

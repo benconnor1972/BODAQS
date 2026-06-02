@@ -1,5 +1,5 @@
 import { cloneStudySet, slugify, uniqueId } from '../domain/studySets'
-import type { SessionGpsSummary, SessionRecord, StudySet, TrackRecord } from '../domain/types'
+import type { SessionGpsPointSet, SessionGpsSummary, SessionRecord, StudySet, TrackRecord } from '../domain/types'
 import {
   fixtureLibraries,
   fixtureSavedStudySets,
@@ -47,6 +47,28 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
       ? this.savedStudySets.map((savedStudySet) => (savedStudySet.id === nextId ? saved : savedStudySet))
       : [...this.savedStudySets, saved]
     return cloneStudySet(saved)
+  }
+
+  async loadSessionGpsPoints(session: SessionRecord): Promise<SessionGpsPointSet> {
+    return {
+      present: session.gps.length > 0,
+      sourceId: session.gpsSummary.sources[0]?.sourceId ?? '',
+      sourceKind: session.gpsSummary.preferredSource ?? 'unknown',
+      streamName: session.gpsSummary.sources[0]?.streamName ?? '',
+      samplingMode: 'fixture',
+      sourcePoints: session.gpsSummary.positionPointCount,
+      returnedPoints: session.gps.length,
+      maxPoints: session.gps.length,
+      stride: null,
+      points: session.gps.map(([longitude, latitude], index) => ({
+        timeS: index,
+        longitude,
+        latitude,
+        elevationM: null,
+      })),
+      path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as [number, number]),
+      warnings: [...session.gpsSummary.warnings],
+    }
   }
 }
 

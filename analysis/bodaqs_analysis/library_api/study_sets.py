@@ -307,6 +307,14 @@ def _normalized_track_ref(value: Any, *, index: int) -> dict[str, Any]:
         raise InvalidStudySetError(f"tracks[{index}] must be an object.")
     out = dict(value)
     out["track_id"] = _required_text(value.get("track_id"), field_name=f"tracks[{index}].track_id")
+    from_trackpoint = _optional_text(value.get("from_trackpoint_id")) or _optional_text(value.get("from_point_id"))
+    to_trackpoint = _optional_text(value.get("to_trackpoint_id")) or _optional_text(value.get("to_point_id"))
+    if from_trackpoint is not None:
+        out["from_trackpoint_id"] = from_trackpoint
+    if to_trackpoint is not None:
+        out["to_trackpoint_id"] = to_trackpoint
+    out.pop("from_point_id", None)
+    out.pop("to_point_id", None)
     return out
 
 
@@ -408,11 +416,13 @@ def _validate_tracks(value: Any) -> None:
         if not isinstance(track_ref, Mapping):
             raise InvalidStudySetError(f"tracks[{index}] must be an object.")
         _required_text(track_ref.get("track_id"), field_name=f"tracks[{index}].track_id")
-        from_point = _optional_text(track_ref.get("from_point_id"))
-        to_point = _optional_text(track_ref.get("to_point_id"))
-        if (from_point is None) != (to_point is None):
+        from_trackpoint = _optional_text(track_ref.get("from_trackpoint_id")) or _optional_text(
+            track_ref.get("from_point_id")
+        )
+        to_trackpoint = _optional_text(track_ref.get("to_trackpoint_id")) or _optional_text(track_ref.get("to_point_id"))
+        if (from_trackpoint is None) != (to_trackpoint is None):
             raise InvalidStudySetError(
-                "Track interval references must include both from_point_id and to_point_id.",
+                "Track interval references must include both from_trackpoint_id and to_trackpoint_id.",
                 details={"track_id": track_ref.get("track_id")},
             )
 

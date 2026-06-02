@@ -213,6 +213,57 @@ def _write_catalog_fixture_session(library_root: Path, *, library_id: str = "def
     return session_ref
 
 
+def _write_gps_fit_stream(
+    library_root: Path,
+    session_ref: dict,
+    *,
+    times: list[float],
+) -> None:
+    stream_root = (
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+        / "session"
+        / "streams"
+        / "gps_fit"
+    )
+    _write_json(
+        stream_root / "meta.json",
+        {
+            "kind": "intermittent",
+            "stream_name": "gps_fit",
+            "time_col": "time_s",
+            "channel_info": {
+                "gps_fit_position_latitude_dom_world [deg]": {
+                    "role": "position_latitude",
+                    "quantity": "latitude",
+                    "unit": "deg",
+                },
+                "gps_fit_position_longitude_dom_world [deg]": {
+                    "role": "position_longitude",
+                    "quantity": "longitude",
+                    "unit": "deg",
+                },
+                "gps_fit_altitude_dom_world [m]": {
+                    "role": "altitude",
+                    "quantity": "altitude",
+                    "unit": "m",
+                },
+            },
+        },
+    )
+    pd.DataFrame(
+        {
+            "time_s": times,
+            "gps_fit_position_latitude_dom_world [deg]": [-31.95 - (index * 0.0001) for index, _ in enumerate(times)],
+            "gps_fit_position_longitude_dom_world [deg]": [115.86 + (index * 0.0001) for index, _ in enumerate(times)],
+            "gps_fit_altitude_dom_world [m]": [200.0 + index for index, _ in enumerate(times)],
+        }
+    ).to_parquet(stream_root / "df.parquet", index=False)
+
+
 def test_derive_object_id_from_display_name() -> None:
     assert derive_object_id("Setup Comparison 1") == "setup-comparison-1"
     assert derive_object_id("Ben's Stévo / Prototype F!") == "ben-s-stevo-prototype-f"
@@ -746,6 +797,120 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert front_signal["signal_id"] == "front-wheel-disp-mm"
     assert front_signal["display_name"] == "Front Wheel Disp"
     assert front_signal["processing_role"] == "primary_analysis"
+
+
+def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(library_root, session_ref, times=[-100.0, 0.0, 2.0, 100.0])
+    adapter = LibraryAdapter(libraries_root)
+
+    summary = adapter.get_catalog("default-library")["rows"][0]["gps_summary"]
+
+    assert summary["schema"] == "bodaqs.session_gps_summary"
+    assert summary["present"] is True
+    assert summary["preferred_source"] == "fit_enrichment"
+    assert summary["position_point_count"] == 2
+    assert summary["quality"] == "limited"
+    assert "gps_low_point_count" in summary["warnings"]
+    assert summary == adapter.get_session_gps_summary("default-library", session_ref)
+
+    points = adapter.get_session_gps_points(
+        "default-library",
+        {
+            **session_ref,
+            "max_points": 2,
+        },
+    )
+    assert points["schema"] == "bodaqs.session_gps_points"
+    assert points["present"] is True
+    assert points["source"]["kind"] == "fit_enrichment"
+    assert points["sampling"]["source_points"] == 2
+    assert points["sampling"]["returned_points"] == 2
+    assert [point["time_s"] for point in points["points"]] == [0.0, 2.0]
+    assert points["sampling"]["window"] == {"start_s": 0.0, "end_s": 2.0}
+
+
+def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(library_root, session_ref, times=[-100.0, 0.0, 1.0, 2.0, 100.0])
+    client = TestClient(create_app(libraries_root))
+
+    policy_response = client.get("/api/v1/geospatial-policies/default-geospatial-policy")
+    assert policy_response.status_code == 200
+    assert policy_response.json()["schema"] == "bodaqs.geospatial_policy"
+
+    track_payload = {
+        "track_id": "test-track",
+        "display_name": "Test Track",
+        "path": {
+            "type": "LineString",
+            "coordinates": [
+                [115.86, -31.95, 200.0],
+                [115.861, -31.951, 201.0],
+            ],
+        },
+        "trackpoints": [
+            {
+                "trackpoint_id": "start-gate",
+                "display_name": "Start gate",
+                "station_m": 0.0,
+                "position": {
+                    "type": "Point",
+                    "coordinates": [115.86, -31.95, 200.0],
+                },
+            }
+        ],
+    }
+    create_response = client.post("/api/v1/tracks", json=track_payload)
+    assert create_response.status_code == 200
+    assert create_response.json()["track_id"] == "test-track"
+    assert client.get("/api/v1/tracks").json()[0]["track_id"] == "test-track"
+
+    gps_response = client.post(
+        "/api/v1/libraries/default-library/sessions/gps-summary",
+        json=session_ref,
+    )
+    assert gps_response.status_code == 200
+    assert gps_response.json()["quality"] == "usable"
+
+    points_response = client.post(
+        "/api/v1/libraries/default-library/sessions/gps/points",
+        json={**session_ref, "max_points": 2},
+    )
+    assert points_response.status_code == 200
+    points = points_response.json()
+    assert points["schema"] == "bodaqs.session_gps_points"
+    assert points["sampling"]["source_points"] == 3
+    assert points["sampling"]["returned_points"] == 2
+    assert points["points"][0]["time_s"] == 0.0
+    assert points["points"][-1]["time_s"] == 2.0
+
+    match_response = client.post(
+        "/api/v1/track-matches/compute",
+        json={"track_id": "test-track", "session_ref": session_ref},
+    )
+    assert match_response.status_code == 200
+    match = match_response.json()
+    assert match["schema"] == "bodaqs.session_track_match"
+    assert match["status"] == "matched"
+    assert match["trackpoint_results"][0]["trackpoint_id"] == "start-gate"
+    assert match["trackpoint_results"][0]["crossed"] is True
 
 
 def test_library_adapter_catalog_cache_refreshes_explicitly(tmp_path: Path) -> None:

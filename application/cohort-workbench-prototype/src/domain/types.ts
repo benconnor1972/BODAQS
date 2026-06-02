@@ -33,6 +33,28 @@ export type SessionGpsSummary = {
   warnings: string[]
 }
 
+export type SessionGpsPoint = {
+  timeS: number | null
+  longitude: number
+  latitude: number
+  elevationM: number | null
+}
+
+export type SessionGpsPointSet = {
+  present: boolean
+  sourceId: string
+  sourceKind: GpsSourceKind
+  streamName: string
+  samplingMode: string
+  sourcePoints: number
+  returnedPoints: number
+  maxPoints: number
+  stride: number | null
+  points: SessionGpsPoint[]
+  path: Array<[number, number]>
+  warnings: string[]
+}
+
 export type LibraryRecord = {
   id: string
   name: string

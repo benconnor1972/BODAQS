@@ -4,10 +4,31 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from .catalog import build_session_catalog, discover_libraries
-from .errors import LibraryNotFoundError
+from .catalog import (
+    build_session_catalog,
+    discover_libraries,
+    get_session_gps_points as catalog_get_session_gps_points,
+)
+from .errors import InvalidRequestError, LibraryNotFoundError, SessionNotFoundError
+from .geospatial import (
+    DEFAULT_GEOSPATIAL_POLICY_ID,
+    build_session_track_match,
+    create_geospatial_policy,
+    create_track,
+    delete_geospatial_policy,
+    delete_track,
+    list_geospatial_policies,
+    list_tracks,
+    load_geospatial_policy,
+    load_track,
+    load_track_match,
+    update_geospatial_policy,
+    update_track,
+    write_track_match,
+)
+from .ids import make_session_key, make_session_ref_id, parse_session_key
 from .models import default_capabilities
 from .selection import study_set_to_selection_snapshot
 from .study_sets import (
@@ -62,6 +83,118 @@ class LibraryAdapter:
 
     def get_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return get_timeseries_window(self._library_root(library_id), request, library_id=library_id)
+
+    def get_session_gps_summary(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        row = self._catalog_row_for_session(library_id, request)
+        summary = row.get("gps_summary")
+        if isinstance(summary, Mapping):
+            return copy.deepcopy(dict(summary))
+        return {
+            "schema": "bodaqs.session_gps_summary",
+            "version": 1,
+            "present": False,
+            "preferred_source": None,
+            "sources": [],
+            "session_duration_s": 0.0,
+            "time_coverage_ratio": 0.0,
+            "position_point_count": 0,
+            "quality": "absent",
+            "warnings": [],
+        }
+
+    def get_session_gps_points(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        raw_max_points = request.get("max_points") if isinstance(request, Mapping) else None
+        max_points = raw_max_points if isinstance(raw_max_points, int) and not isinstance(raw_max_points, bool) else None
+        raw_window = request.get("window") if isinstance(request, Mapping) else None
+        window = raw_window if isinstance(raw_window, Mapping) else None
+        return catalog_get_session_gps_points(
+            self._library_root(library_id),
+            session_ref,
+            library_id=library_id,
+            max_points=max_points,
+            window=window,
+        )
+
+    def list_tracks(self) -> list[dict[str, Any]]:
+        return list_tracks(self.libraries_root)
+
+    def load_track(self, track_id: str) -> dict[str, Any]:
+        return load_track(self.libraries_root, track_id)
+
+    def create_track(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return create_track(self.libraries_root, payload)
+
+    def update_track(
+        self,
+        track_id: str,
+        *,
+        payload: dict[str, Any],
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        return update_track(
+            self.libraries_root,
+            track_id,
+            payload=payload,
+            expected_revision=expected_revision,
+        )
+
+    def delete_track(self, track_id: str) -> dict[str, Any]:
+        return delete_track(self.libraries_root, track_id)
+
+    def list_geospatial_policies(self) -> list[dict[str, Any]]:
+        return list_geospatial_policies(self.libraries_root)
+
+    def load_geospatial_policy(self, policy_id: str) -> dict[str, Any]:
+        return load_geospatial_policy(self.libraries_root, policy_id)
+
+    def create_geospatial_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return create_geospatial_policy(self.libraries_root, payload)
+
+    def update_geospatial_policy(self, policy_id: str, *, payload: dict[str, Any]) -> dict[str, Any]:
+        return update_geospatial_policy(self.libraries_root, policy_id, payload=payload)
+
+    def delete_geospatial_policy(self, policy_id: str) -> dict[str, Any]:
+        return delete_geospatial_policy(self.libraries_root, policy_id)
+
+    def query_track_matches(self, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            raise InvalidRequestError("Track match query body must be a JSON object.")
+        study_set = self._study_set_for_match_request(request)
+        session_refs = self._session_refs_for_match_request(request, study_set=study_set)
+        track_ids = self._track_ids_for_match_request(request, study_set=study_set)
+        policy = self._policy_for_match_request(request)
+        persist = bool(request.get("persist", False))
+
+        matches = [
+            self._build_track_match(track_id, session_ref, policy=policy, persist=persist)
+            for track_id in track_ids
+            for session_ref in session_refs
+        ]
+        return {
+            "schema": "bodaqs.track_match_query",
+            "version": 1,
+            "match_count": len(matches),
+            "matches": matches,
+        }
+
+    def compute_track_match(self, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            raise InvalidRequestError("Track match compute body must be a JSON object.")
+        track_ids = self._track_ids_for_match_request(request, study_set=None)
+        session_refs = self._session_refs_for_match_request(request, study_set=None)
+        if len(track_ids) != 1 or len(session_refs) != 1:
+            raise InvalidRequestError(
+                "Track match compute requires exactly one track and one session reference.",
+                details={"track_count": len(track_ids), "session_count": len(session_refs)},
+            )
+        policy = self._policy_for_match_request(request)
+        persist = bool(request.get("persist", False))
+        return self._build_track_match(track_ids[0], session_refs[0], policy=policy, persist=persist)
+
+    def load_track_match(self, track_match_id: str) -> dict[str, Any]:
+        return load_track_match(self.libraries_root, track_match_id)
 
     def list_study_sets(self, library_id: str | None = None) -> list[dict[str, Any]]:
         if library_id is not None:
@@ -140,3 +273,149 @@ class LibraryAdapter:
 
     def _library_root(self, library_id: str) -> Path:
         return Path(str(self.get_library(library_id)["root"]))
+
+    def _catalog_row_for_session(self, library_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        catalog = self.get_catalog(library_id)
+        for row in catalog.get("rows") or []:
+            if not isinstance(row, Mapping):
+                continue
+            if row.get("session_ref_id") == session_ref.get("session_ref_id"):
+                return dict(row)
+            if row.get("session_key") == session_ref.get("session_key"):
+                return dict(row)
+            if row.get("run_id") == session_ref.get("run_id") and row.get("session_id") == session_ref.get("session_id"):
+                return dict(row)
+        raise SessionNotFoundError(
+            "Session was not found.",
+            details={
+                "library_id": str(library_id),
+                "session_ref_id": session_ref.get("session_ref_id"),
+                "session_key": session_ref.get("session_key"),
+                "run_id": session_ref.get("run_id"),
+                "session_id": session_ref.get("session_id"),
+            },
+        )
+
+    def _normalized_session_ref_request(
+        self,
+        library_id: str | None,
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        raw = request.get("session_ref") if isinstance(request.get("session_ref"), Mapping) else request
+        if not isinstance(raw, Mapping):
+            raise InvalidRequestError("Session reference must be a JSON object.")
+        ref_library_id = str(raw.get("library_id") or library_id or "").strip()
+        if not ref_library_id:
+            raise InvalidRequestError("Session reference missing library_id.")
+
+        run_id = str(raw.get("run_id") or "").strip()
+        session_id = str(raw.get("session_id") or "").strip()
+        session_key = str(raw.get("session_key") or "").strip()
+        if session_key and (not run_id or not session_id):
+            try:
+                parsed_run_id, parsed_session_id = parse_session_key(session_key)
+            except ValueError as exc:
+                raise InvalidRequestError("Session reference session_key is invalid.") from exc
+            run_id = run_id or parsed_run_id
+            session_id = session_id or parsed_session_id
+        if not run_id or not session_id:
+            raise InvalidRequestError("Session reference must include run_id/session_id or session_key.")
+        expected_session_key = make_session_key(run_id, session_id)
+        if session_key and session_key != expected_session_key:
+            raise InvalidRequestError(
+                "Session reference session_key does not match run_id/session_id.",
+                details={"session_key": session_key, "expected_session_key": expected_session_key},
+            )
+        session_key = expected_session_key
+        expected_ref_id = make_session_ref_id(ref_library_id, session_key)
+        session_ref_id = str(raw.get("session_ref_id") or "").strip() or expected_ref_id
+        if session_ref_id != expected_ref_id:
+            raise InvalidRequestError(
+                "Session reference session_ref_id does not match library_id/session_key.",
+                details={"session_ref_id": session_ref_id, "expected_session_ref_id": expected_ref_id},
+            )
+        return {
+            "library_id": ref_library_id,
+            "session_ref_id": session_ref_id,
+            "session_key": session_key,
+            "run_id": run_id,
+            "session_id": session_id,
+        }
+
+    def _study_set_for_match_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        study_set_id = str(request.get("study_set_id") or "").strip()
+        return self.load_study_set(study_set_id) if study_set_id else None
+
+    def _session_refs_for_match_request(
+        self,
+        request: Mapping[str, Any],
+        *,
+        study_set: Mapping[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        raw_sessions = request.get("sessions")
+        if raw_sessions is None and isinstance(request.get("session_ref"), Mapping):
+            raw_sessions = [request.get("session_ref")]
+        if raw_sessions is None and any(key in request for key in ("library_id", "session_key", "run_id", "session_id")):
+            raw_sessions = [request]
+        if raw_sessions is None and isinstance(study_set, Mapping):
+            raw_sessions = study_set.get("sessions")
+        if not isinstance(raw_sessions, list) or not raw_sessions:
+            raise InvalidRequestError("Track match request must include at least one session reference.")
+        refs: list[dict[str, Any]] = []
+        for index, raw_session in enumerate(raw_sessions):
+            if not isinstance(raw_session, Mapping):
+                raise InvalidRequestError(
+                    "Track match session references must be objects.",
+                    details={"index": index},
+                )
+            refs.append(self._normalized_session_ref_request(raw_session.get("library_id"), raw_session))
+        return refs
+
+    def _track_ids_for_match_request(
+        self,
+        request: Mapping[str, Any],
+        *,
+        study_set: Mapping[str, Any] | None,
+    ) -> list[str]:
+        raw_track_ids = request.get("track_ids")
+        if raw_track_ids is None and request.get("track_id") is not None:
+            raw_track_ids = [request.get("track_id")]
+        if raw_track_ids is None and isinstance(study_set, Mapping):
+            raw_track_ids = [
+                track.get("track_id")
+                for track in study_set.get("tracks") or []
+                if isinstance(track, Mapping)
+            ]
+        if not isinstance(raw_track_ids, list) or not raw_track_ids:
+            raise InvalidRequestError("Track match request must include at least one track_id.")
+        track_ids = [str(track_id).strip() for track_id in raw_track_ids if str(track_id).strip()]
+        if not track_ids:
+            raise InvalidRequestError("Track match request must include at least one non-empty track_id.")
+        return track_ids
+
+    def _policy_for_match_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        policy_ref = request.get("policy_ref") if isinstance(request.get("policy_ref"), Mapping) else {}
+        policy_id = str(request.get("policy_id") or policy_ref.get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
+        return self.load_geospatial_policy(policy_id)
+
+    def _build_track_match(
+        self,
+        track_id: str,
+        session_ref: Mapping[str, Any],
+        *,
+        policy: Mapping[str, Any],
+        persist: bool,
+    ) -> dict[str, Any]:
+        track = self.load_track(track_id)
+        row = self._catalog_row_for_session(str(session_ref["library_id"]), session_ref)
+        gps_summary = row.get("gps_summary") if isinstance(row.get("gps_summary"), Mapping) else {}
+        match = build_session_track_match(
+            track=track,
+            policy=policy,
+            session_ref=session_ref,
+            gps_summary=gps_summary,
+        )
+        if persist:
+            write_track_match(self.libraries_root, match)
+        return match

@@ -53,6 +53,24 @@ class StudySetNotFoundError(LibraryApiError):
     default_message = "Study set was not found."
 
 
+class TrackNotFoundError(LibraryApiError):
+    code = "track_not_found"
+    status_code = 404
+    default_message = "Track was not found."
+
+
+class GeospatialPolicyNotFoundError(LibraryApiError):
+    code = "geospatial_policy_not_found"
+    status_code = 404
+    default_message = "Geospatial policy was not found."
+
+
+class TrackMatchNotFoundError(LibraryApiError):
+    code = "track_match_not_found"
+    status_code = 404
+    default_message = "Track match was not found."
+
+
 class InvalidRequestError(LibraryApiError):
     code = "invalid_request"
     status_code = 400
@@ -63,6 +81,18 @@ class InvalidStudySetError(LibraryApiError):
     code = "invalid_study_set"
     status_code = 400
     default_message = "Study set is invalid."
+
+
+class InvalidTrackError(LibraryApiError):
+    code = "invalid_track"
+    status_code = 400
+    default_message = "Track is invalid."
+
+
+class InvalidGeospatialPolicyError(LibraryApiError):
+    code = "invalid_geospatial_policy"
+    status_code = 400
+    default_message = "Geospatial policy is invalid."
 
 
 class RevisionConflictError(LibraryApiError):
@@ -81,6 +111,18 @@ class SignalNotFoundError(LibraryApiError):
     code = "signal_not_found"
     status_code = 404
     default_message = "Signal was not found."
+
+
+class GpsUnavailableError(LibraryApiError):
+    code = "gps_unavailable"
+    status_code = 404
+    default_message = "GPS data is unavailable."
+
+
+class TrackMatchUnavailableError(LibraryApiError):
+    code = "track_match_unavailable"
+    status_code = 404
+    default_message = "Track match data is unavailable."
 
 
 class TimeseriesUnavailableError(LibraryApiError):
