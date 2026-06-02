@@ -25,70 +25,142 @@ export type SessionFilterPredicate =
       value?: boolean | string | string[]
     }
 
-export type SessionFilterRecord = {
+export type SavedSessionFilterRecord = {
   id: string
   displayName: string
   description: string
   category: string
+  origin: 'prototype_saved' | 'api_saved'
   predicate: SessionFilterPredicate
 }
 
-export function buildSessionFilters(sessions: SessionRecord[]): SessionFilterRecord[] {
-  return [
-    ...baseSessionFilters,
-    ...uniqueValueFilters(sessions, 'rider', 'Rider', 'rider'),
-    ...uniqueValueFilters(sessions, 'bike', 'Bike', 'bike'),
-    ...uniqueValueFilters(sessions, 'preprocessing.profile', 'Preprocess', 'preprocessingProfile'),
-    ...uniqueValueFilters(sessions, 'event.schema', 'Event schema', 'eventSchema'),
-  ]
-}
+export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
+  {
+    id: 'ben-rides',
+    displayName: "Ben's rides",
+    description: 'Prototype saved filter matching rider fields that contain Ben.',
+    category: 'people',
+    origin: 'prototype_saved',
+    predicate: { field: 'rider', op: 'contains', value: 'ben' },
+  },
+  {
+    id: 'notes-edited',
+    displayName: 'Edited notes',
+    description: 'Sessions with reviewed or edited notes.',
+    category: 'notes-qc',
+    origin: 'prototype_saved',
+    predicate: { field: 'note.status', op: 'eq', value: 'edited' },
+  },
+  {
+    id: 'notes-need-review',
+    displayName: 'Notes need review',
+    description: 'Sessions with missing or draft notes.',
+    category: 'notes-qc',
+    origin: 'prototype_saved',
+    predicate: { field: 'note.status', op: 'in', value: ['missing', 'draft'] },
+  },
+  {
+    id: 'qc-no-alerts',
+    displayName: 'No QC alerts',
+    description: 'Sessions with no QC alert-level metadata.',
+    category: 'notes-qc',
+    origin: 'prototype_saved',
+    predicate: { field: 'qc.level', op: 'in', value: ['ok', 'warning'] },
+  },
+  {
+    id: 'qc-clean',
+    displayName: 'QC clean',
+    description: 'Sessions with an OK QC level.',
+    category: 'notes-qc',
+    origin: 'prototype_saved',
+    predicate: { field: 'qc.level', op: 'eq', value: 'ok' },
+  },
+  {
+    id: 'has-usable-gps',
+    displayName: 'Usable GPS',
+    description: 'Sessions with usable GPS coverage.',
+    category: 'gps',
+    origin: 'prototype_saved',
+    predicate: { field: 'gps.quality', op: 'eq', value: 'usable' },
+  },
+  {
+    id: 'has-any-gps',
+    displayName: 'Any GPS',
+    description: 'Sessions with any GPS source present.',
+    category: 'gps',
+    origin: 'prototype_saved',
+    predicate: { field: 'gps.present', op: 'present', value: true },
+  },
+  {
+    id: 'gps-fit-enriched',
+    displayName: 'FIT-enriched GPS',
+    description: 'Sessions using FIT enrichment as a GPS source.',
+    category: 'gps',
+    origin: 'prototype_saved',
+    predicate: { field: 'gps.source', op: 'eq', value: 'fit_enrichment' },
+  },
+  {
+    id: 'gps-logger-sensor',
+    displayName: 'Logger GPS sensor',
+    description: 'Sessions using logger-sensor GPS.',
+    category: 'gps',
+    origin: 'prototype_saved',
+    predicate: { field: 'gps.source', op: 'eq', value: 'logger_sensor' },
+  },
+  {
+    id: 'has-accelerometer',
+    displayName: 'Accelerometer data',
+    description: 'Sessions with accelerometer or IMU signal names.',
+    category: 'data',
+    origin: 'prototype_saved',
+    predicate: {
+      op: 'or',
+      children: [
+        { field: 'signals', op: 'contains', value: 'accel' },
+        { field: 'signals', op: 'contains', value: 'accelerometer' },
+        { field: 'signals', op: 'contains', value: 'imu' },
+      ],
+    },
+  },
+  {
+    id: 'has-suspension',
+    displayName: 'Suspension signals',
+    description: 'Sessions with front or rear suspension signal names.',
+    category: 'data',
+    origin: 'prototype_saved',
+    predicate: {
+      op: 'or',
+      children: [
+        { field: 'signals', op: 'contains', value: 'front' },
+        { field: 'signals', op: 'contains', value: 'rear' },
+        { field: 'signals', op: 'contains', value: 'suspension' },
+      ],
+    },
+  },
+]
 
-export function applySessionFilters(sessions: SessionRecord[], filters: SessionFilterRecord[]) {
+export function applySavedSessionFilters(sessions: SessionRecord[], filters: SavedSessionFilterRecord[]) {
   if (filters.length === 0) {
     return sessions
   }
   return sessions.filter((session) => filters.every((filter) => sessionMatchesPredicate(session, filter.predicate)))
 }
 
-export function filterCategoryLabel(category: string) {
+export function savedFilterCategoryLabel(category: string) {
   switch (category) {
-    case 'rider':
-      return 'Rider'
-    case 'bike':
-      return 'Bike'
     case 'data':
       return 'Data coverage'
     case 'gps':
       return 'GPS'
     case 'notes-qc':
       return 'Notes and QC'
+    case 'people':
+      return 'People'
     case 'processing':
       return 'Processing'
     default:
       return category
   }
-}
-
-function uniqueValueFilters(
-  sessions: SessionRecord[],
-  field: SessionFilterField,
-  category: string,
-  sessionKey: keyof SessionRecord,
-) {
-  const values = uniqueStrings(
-    sessions.map((session) => session[sessionKey]).filter((value): value is string => typeof value === 'string' && Boolean(value.trim())),
-  )
-  return values.map<SessionFilterRecord>((value) => ({
-    id: `${field.replace(/\./g, '-')}-${slugify(value)}`,
-    displayName: value,
-    description: `${category} is ${value}.`,
-    category: field === 'preprocessing.profile' || field === 'event.schema' ? 'processing' : String(sessionKey),
-    predicate: {
-      field,
-      op: 'eq',
-      value,
-    },
-  }))
 }
 
 function sessionMatchesPredicate(session: SessionRecord, predicate: SessionFilterPredicate): boolean {
@@ -153,106 +225,6 @@ function fieldValues(session: SessionRecord, field: SessionFilterField): Array<b
   }
 }
 
-const baseSessionFilters: SessionFilterRecord[] = [
-  {
-    id: 'notes-edited',
-    displayName: 'Edited notes',
-    description: 'Sessions with reviewed or edited notes.',
-    category: 'notes-qc',
-    predicate: { field: 'note.status', op: 'eq', value: 'edited' },
-  },
-  {
-    id: 'notes-need-review',
-    displayName: 'Notes need review',
-    description: 'Sessions with missing or draft notes.',
-    category: 'notes-qc',
-    predicate: { field: 'note.status', op: 'in', value: ['missing', 'draft'] },
-  },
-  {
-    id: 'qc-no-alerts',
-    displayName: 'No QC alerts',
-    description: 'Sessions with no QC alert-level metadata.',
-    category: 'notes-qc',
-    predicate: { field: 'qc.level', op: 'in', value: ['ok', 'warning'] },
-  },
-  {
-    id: 'qc-clean',
-    displayName: 'QC clean',
-    description: 'Sessions with an OK QC level.',
-    category: 'notes-qc',
-    predicate: { field: 'qc.level', op: 'eq', value: 'ok' },
-  },
-  {
-    id: 'has-usable-gps',
-    displayName: 'Usable GPS',
-    description: 'Sessions with usable GPS coverage.',
-    category: 'gps',
-    predicate: { field: 'gps.quality', op: 'eq', value: 'usable' },
-  },
-  {
-    id: 'has-any-gps',
-    displayName: 'Any GPS',
-    description: 'Sessions with any GPS source present.',
-    category: 'gps',
-    predicate: { field: 'gps.present', op: 'present', value: true },
-  },
-  {
-    id: 'gps-fit-enriched',
-    displayName: 'FIT-enriched GPS',
-    description: 'Sessions using FIT enrichment as a GPS source.',
-    category: 'gps',
-    predicate: { field: 'gps.source', op: 'eq', value: 'fit_enrichment' },
-  },
-  {
-    id: 'gps-logger-sensor',
-    displayName: 'Logger GPS sensor',
-    description: 'Sessions using logger-sensor GPS.',
-    category: 'gps',
-    predicate: { field: 'gps.source', op: 'eq', value: 'logger_sensor' },
-  },
-  {
-    id: 'has-accelerometer',
-    displayName: 'Accelerometer data',
-    description: 'Sessions with accelerometer or IMU signal names.',
-    category: 'data',
-    predicate: {
-      op: 'or',
-      children: [
-        { field: 'signals', op: 'contains', value: 'accel' },
-        { field: 'signals', op: 'contains', value: 'accelerometer' },
-        { field: 'signals', op: 'contains', value: 'imu' },
-      ],
-    },
-  },
-  {
-    id: 'has-suspension',
-    displayName: 'Suspension signals',
-    description: 'Sessions with front or rear suspension signal names.',
-    category: 'data',
-    predicate: {
-      op: 'or',
-      children: [
-        { field: 'signals', op: 'contains', value: 'front' },
-        { field: 'signals', op: 'contains', value: 'rear' },
-        { field: 'signals', op: 'contains', value: 'suspension' },
-      ],
-    },
-  },
-]
-
 function normalized(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
-}
-
-function uniqueStrings(values: string[]) {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((a, b) =>
-    a.localeCompare(b, undefined, { sensitivity: 'base' }),
-  )
-}
-
-function slugify(value: string) {
-  return normalized(value)
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64)
 }

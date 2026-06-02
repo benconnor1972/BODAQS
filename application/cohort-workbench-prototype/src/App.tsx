@@ -42,7 +42,7 @@ import {
   normalizeColumnSelection,
   sortSessions,
 } from './domain/sessionCatalog'
-import { applySessionFilters, buildSessionFilters } from './domain/sessionFilters'
+import { applySavedSessionFilters, prototypeSavedSessionFilters } from './domain/sessionFilters'
 import {
   candidateId,
   cloneStudySet,
@@ -103,7 +103,7 @@ function App() {
   const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
   const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
-  const [activeFilterIds, setActiveFilterIds] = useState<string[]>([])
+  const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
@@ -269,10 +269,11 @@ function App() {
     selectedLibraryIds.includes(libraryItem.id),
   )
   const libraryScopedSessions = sessions.filter((session) => selectedLibraryIds.includes(session.libraryId))
-  const availableSessionFilters = buildSessionFilters(libraryScopedSessions)
-  const activeSessionFilters = availableSessionFilters.filter((filter) => activeFilterIds.includes(filter.id))
-  const filteredSessions = applySessionFilters(libraryScopedSessions, activeSessionFilters)
-  const searchedSessions = filteredSessions.filter((session) =>
+  const savedSessionFilters = prototypeSavedSessionFilters
+  const activeSavedSessionFilters = savedSessionFilters.filter((filter) => activeSavedFilterIds.includes(filter.id))
+  const savedFilteredSessions = applySavedSessionFilters(libraryScopedSessions, activeSavedSessionFilters)
+  const tableFilteredSessions = savedFilteredSessions
+  const searchedSessions = tableFilteredSessions.filter((session) =>
     matchesSearch(session, searchText, visibleColumns, libraries),
   )
   const visibleSessions = sortSessions(
@@ -336,7 +337,7 @@ function App() {
       setSelectedStudySessionIds([])
       setSelectionAnchorStudySessionId(null)
       setSelectedTrackIds([])
-      setActiveFilterIds([])
+      setActiveSavedFilterIds([])
       setGroupingName('')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -362,8 +363,8 @@ function App() {
     setVisibleColumns(normalizeColumnSelection(columns))
   }
 
-  function toggleSessionFilter(filterId: string) {
-    setActiveFilterIds((current) => {
+  function toggleSavedSessionFilter(filterId: string) {
+    setActiveSavedFilterIds((current) => {
       if (current.includes(filterId)) {
         return current.filter((id) => id !== filterId)
       }
@@ -372,8 +373,8 @@ function App() {
     clearSessionSelection()
   }
 
-  function clearSessionFilters() {
-    setActiveFilterIds([])
+  function clearSavedSessionFilters() {
+    setActiveSavedFilterIds([])
     clearSessionSelection()
   }
 
@@ -881,6 +882,26 @@ function App() {
                     )}
                   </div>
                 </div>
+                <div className="session-filter-status">
+                  <span className="filter-status-label">Saved filters</span>
+                  {activeSavedSessionFilters.length === 0 ? (
+                    <span className="pill neutral">none</span>
+                  ) : (
+                    activeSavedSessionFilters.map((filter) => (
+                      <button
+                        className="filter-chip compact-session-filter-chip"
+                        key={filter.id}
+                        onClick={() => toggleSavedSessionFilter(filter.id)}
+                        type="button"
+                      >
+                        {filter.displayName}
+                        <X size={12} />
+                      </button>
+                    ))
+                  )}
+                  <span className="filter-status-label">Table filters</span>
+                  <span className="pill neutral">none</span>
+                </div>
                 <SessionTable
                   sessions={visibleSessions}
                   libraries={libraries}
@@ -940,8 +961,8 @@ function App() {
                 <div className="module-header">
                   <h2>Filters</h2>
                   <div className="module-header-actions">
-                    <span className={activeSessionFilters.length ? 'pill ok' : 'pill neutral'}>
-                      {activeSessionFilters.length ? `${activeSessionFilters.length} active` : 'helper stack'}
+                    <span className={activeSavedSessionFilters.length ? 'pill ok' : 'pill neutral'}>
+                      {activeSavedSessionFilters.length ? `${activeSavedSessionFilters.length} saved active` : 'saved stack'}
                     </span>
                     <IconButton
                       label={filtersCollapsed ? 'Expand Filters' : 'Collapse Filters'}
@@ -952,13 +973,13 @@ function App() {
                 </div>
                 {!filtersCollapsed && (
                   <FilterPanel
-                    filters={availableSessionFilters}
-                    activeFilterIds={activeFilterIds}
+                    savedFilters={savedSessionFilters}
+                    activeSavedFilterIds={activeSavedFilterIds}
                     totalCount={libraryScopedSessions.length}
-                    filteredCount={filteredSessions.length}
+                    savedFilteredCount={savedFilteredSessions.length}
                     visibleCount={visibleSessions.length}
-                    onToggleFilter={toggleSessionFilter}
-                    onClearFilters={clearSessionFilters}
+                    onToggleSavedFilter={toggleSavedSessionFilter}
+                    onClearSavedFilters={clearSavedSessionFilters}
                   />
                 )}
               </section>

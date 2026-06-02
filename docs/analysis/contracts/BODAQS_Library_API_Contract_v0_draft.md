@@ -1,7 +1,7 @@
 # BODAQS Library API Contract v0 Draft
 
 **Status:** Accepted v0 implementation baseline  
-**Scope:** Local-first API seam for browsing processed BODAQS libraries, managing root-scoped study sets/tracks, and serving browser-native visualisation data  
+**Scope:** Local-first API seam for browsing processed BODAQS libraries, managing root-scoped study sets/tracks/filters, and serving browser-native visualisation data
 **Audience:** BODAQS web application, local Library API service, notebook/library adapter implementers
 
 ---
@@ -18,7 +18,8 @@ The API is intentionally focused on **processed-library use**:
 - create, load, update, and delete study sets
 - carry study sets across multiple libraries under one configured libraries root
 - expose processed-session GPS availability and quality summaries
-- create, load, update, and delete root-scoped tracks and geospatial policies
+- create, load, update, and delete root-scoped tracks, geospatial policies, and
+  persisted session filters
 - compute or read derived session-track matches where available
 - expose compact semantic catalog information
 - serve chart-ready time-series windows
@@ -45,8 +46,9 @@ remote service or static-bundle implementation.
 6. **The API should describe capabilities explicitly.**
 7. **The first implementation should be small, but not a dead end.**
 8. **Import Manager scope should not expand merely to serve this API.**
-9. **Study sets and tracks belong to the configured libraries root, not to one library.**
+9. **Study sets, tracks, and saved filters belong to the configured libraries root, not to one library.**
 10. **Geospatial policies make track analysis reproducible.**
+11. **Saved filters are reusable helpers; ad-hoc table filters are transient UI state.**
 
 ---
 
@@ -87,6 +89,8 @@ Root-scoped application objects live under:
     <policy_id>.json
   track_matches/
     <track_match_id>.json
+  session_filters/
+    <filter_id>.json
 ```
 
 The first implementation reads one active libraries root at a time. The local
@@ -225,12 +229,28 @@ Optional derived-cache location:
 Session track matches are not canonical session artifacts. They can be
 recomputed from the referenced session, track, and policy.
 
-### 4.9 Filter
+### 4.9 Session Filter
 
-A filter is a future reusable library helper for finding candidate sessions.
+A persisted session filter is a reusable root-level helper for finding candidate
+sessions from one or more libraries under the configured libraries root.
 
-Filters are not part of the first endpoint implementation. If a filter was used
-to create a study set, record it as study-set provenance only.
+Canonical location:
+
+```text
+<libraries_root>/
+  session_filters/
+    <filter_id>.json
+```
+
+The detailed contract is defined in
+`BODAQS_Session_Filter_Contract_v0_draft.md`.
+
+Saved filters do not define Study Set membership. If a filter was used to create
+a Study Set, record it as Study Set provenance only. The Study Set still stores
+explicit session references.
+
+Ad-hoc table filters are not `bodaqs.session_filter` objects. They are transient
+Session Selector UI state, normally controlled from table column headers.
 
 ---
 
@@ -482,7 +502,56 @@ individual processed library.
 
 ---
 
-## 9. Session Catalog Row Contract v1
+## 9. Session Filter Contract v1
+
+The authoritative persisted Session Filter object contract is defined in
+`BODAQS_Session_Filter_Contract_v0_draft.md`.
+
+The API-facing summary is:
+
+- persisted filters are root-scoped objects under the configured libraries root.
+- a filter contains a named predicate over session catalog fields and, later,
+  derived summaries.
+- multiple applied saved filters are combined with `AND` by default.
+- ad-hoc table filters are separate transient UI state and are not saved unless
+  the user explicitly creates or copies a persisted filter.
+- Study Sets store explicit session membership; filters may appear only in
+  provenance unless an explicit refresh/update action is added later.
+
+Minimal API example:
+
+```json
+{
+  "schema": "bodaqs.session_filter",
+  "version": 1,
+  "filter_id": "ben-rides-with-usable-gps",
+  "revision": 1,
+  "display_name": "Ben rides with usable GPS",
+  "description": "Reusable helper for GPS comparison sessions.",
+  "predicate": {
+    "op": "and",
+    "children": [
+      {
+        "field": "rider",
+        "op": "contains",
+        "value": "ben"
+      },
+      {
+        "field": "gps.quality",
+        "op": "eq",
+        "value": "usable"
+      }
+    ]
+  },
+  "display_state": {
+    "bodaqs_web_v1": {}
+  }
+}
+```
+
+---
+
+## 10. Session Catalog Row Contract v1
 
 The service should build the session catalog from canonical artifacts and cache
 it in memory. The catalog source of truth remains the run/session artifacts on
@@ -629,12 +698,12 @@ core row shape.
 
 ---
 
-## 10. Time-Series Window Contract v1
+## 11. Time-Series Window Contract v1
 
 The first high-value browser-native visualisation is a one-session time-series
 window view, initially for front/rear wheel travel and event overlays.
 
-### 10.1 Request
+### 11.1 Request
 
 Endpoint:
 
@@ -695,7 +764,7 @@ The endpoint serves one session per request in v1. The path `library_id` must
 match `session.library_id` when that request field is present. Comparison views
 should make multiple requests and align results in the frontend.
 
-### 10.2 Response
+### 11.2 Response
 
 Example response:
 
@@ -766,7 +835,7 @@ Example response:
 }
 ```
 
-### 10.3 Downsampling
+### 11.3 Downsampling
 
 Recommended v1 behavior:
 
@@ -789,9 +858,9 @@ Example decimated sampling block:
 
 ---
 
-## 11. Endpoint List v0
+## 12. Endpoint List v0
 
-### 11.1 Service
+### 12.1 Service
 
 ```text
 GET /api/v1/health
@@ -799,7 +868,7 @@ GET /api/v1/capabilities
 POST /api/v1/config/libraries-root
 ```
 
-### 11.2 Libraries
+### 12.2 Libraries
 
 ```text
 GET  /api/v1/libraries
@@ -814,7 +883,7 @@ sends a service-local filesystem path, the service validates/discovers that
 root, and subsequent calls use the new adapter state. This is not an Import
 Manager import/preprocessing operation.
 
-### 11.3 Study Sets
+### 12.3 Study Sets
 
 ```text
 GET    /api/v1/study-sets
@@ -858,7 +927,7 @@ Example update request:
 }
 ```
 
-### 11.4 Geospatial
+### 12.4 Geospatial
 
 Root-scoped tracks:
 
@@ -905,7 +974,22 @@ Track and policy endpoints are scoped to the configured libraries root, not to
 one processed library. Track match endpoints may return cached derived matches
 or compute new matches, depending on service capabilities.
 
-### 11.5 Signals, Events, Metrics, And Time-Series
+### 12.5 Session Filters
+
+Root-scoped persisted session filters:
+
+```text
+GET    /api/v1/session-filters
+POST   /api/v1/session-filters
+GET    /api/v1/session-filters/{filter_id}
+PUT    /api/v1/session-filters/{filter_id}
+DELETE /api/v1/session-filters/{filter_id}
+```
+
+Session Filter endpoints are scoped to the configured libraries root, not to a
+single processed library. Filter writes should use revision checks.
+
+### 12.6 Signals, Events, Metrics, And Time-Series
 
 ```text
 POST /api/v1/libraries/{library_id}/signals/query
@@ -921,7 +1005,7 @@ window endpoint are working.
 
 ---
 
-## 12. Error Response Contract
+## 13. Error Response Contract
 
 All API errors should use a consistent envelope:
 
@@ -946,11 +1030,13 @@ Recommended initial error codes:
 library_not_found
 session_not_found
 study_set_not_found
+session_filter_not_found
 track_not_found
 geospatial_policy_not_found
 track_match_not_found
 invalid_request
 invalid_study_set
+invalid_session_filter
 invalid_track
 invalid_geospatial_policy
 revision_conflict
@@ -980,7 +1066,7 @@ Revision conflict example:
 
 ---
 
-## 13. First Implementation Cut
+## 14. First Implementation Cut
 
 The smallest useful v0 service should implement:
 
@@ -1005,9 +1091,16 @@ The first geospatial extension should add:
 4. root-scoped Geospatial Policy read/list, with at least one default policy
 5. session-track match computation as a derived, non-preprocessing analysis job
 
+The first persisted-filter extension should add:
+
+1. root-scoped Session Filter CRUD
+2. loading saved filters into the web app Filters pane
+3. applying catalog-backed saved filters in the browser
+4. keeping ad-hoc table filters separate from persisted filter objects
+
 ---
 
-## 14. Deferred Work
+## 15. Deferred Work
 
 The following are deliberately outside the first implementation:
 
@@ -1016,7 +1109,8 @@ The following are deliberately outside the first implementation:
 - LAN-facing service access
 - authentication tokens for development mode
 - persisted catalog indexes
-- filter CRUD endpoints
+- full visual filter-builder UI
+- ad-hoc table-header filter persistence
 - advanced track editing, including explicit cutline endpoint editing
 - persisted track match cache management
 - GPX/GeoJSON import/export
