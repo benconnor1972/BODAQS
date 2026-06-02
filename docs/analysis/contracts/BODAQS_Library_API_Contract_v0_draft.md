@@ -17,6 +17,9 @@ The API is intentionally focused on **processed-library use**:
 - list processed sessions
 - create, load, update, and delete study sets
 - carry study sets across multiple libraries under one configured libraries root
+- expose processed-session GPS availability and quality summaries
+- create, load, update, and delete root-scoped tracks and geospatial policies
+- compute or read derived session-track matches where available
 - expose compact semantic catalog information
 - serve chart-ready time-series windows
 - expose event and metric summaries/details where needed
@@ -43,6 +46,7 @@ remote service or static-bundle implementation.
 7. **The first implementation should be small, but not a dead end.**
 8. **Import Manager scope should not expand merely to serve this API.**
 9. **Study sets and tracks belong to the configured libraries root, not to one library.**
+10. **Geospatial policies make track analysis reproducible.**
 
 ---
 
@@ -79,6 +83,10 @@ Root-scoped application objects live under:
     <study_set_id>.json
   tracks/
     <track_id>.json
+  geospatial_policies/
+    <policy_id>.json
+  track_matches/
+    <track_match_id>.json
 ```
 
 The first implementation reads one active libraries root at a time. The local
@@ -170,10 +178,10 @@ intrinsically tied to the study set where they were created.
 
 ### 4.6 Track
 
-A track is a reusable root-level object representing a route/path and optional
-named points along that route.
+A track is a reusable root-level object representing one directed geospatial
+path and zero or more named `trackpoints` along that path.
 
-Canonical future location:
+Canonical location:
 
 ```text
 <libraries_root>/
@@ -181,10 +189,43 @@ Canonical future location:
     <track_id>.json
 ```
 
-The v0 API contract defines track objects and references, but the first endpoint
-implementation does not need to include track CRUD.
+The detailed contract is defined in
+`BODAQS_Geospatial_Contracts_v0_draft.md`.
 
-### 4.7 Filter
+### 4.7 Geospatial Policy
+
+A geospatial policy is a reusable root-level object that defines defaults for
+track construction, trackpoint cutlines, session-track matching, and derived
+profiles such as heading, gradient, and curvature.
+
+Canonical location:
+
+```text
+<libraries_root>/
+  geospatial_policies/
+    <policy_id>.json
+```
+
+The package may provide defaults, but library-root policies should be used when
+results need to be reproducible across machines.
+
+### 4.8 Session Track Match
+
+A session track match is a derived analysis result describing how one processed
+session maps onto one track under one geospatial policy.
+
+Optional derived-cache location:
+
+```text
+<libraries_root>/
+  track_matches/
+    <track_match_id>.json
+```
+
+Session track matches are not canonical session artifacts. They can be
+recomputed from the referenced session, track, and policy.
+
+### 4.9 Filter
 
 A filter is a future reusable library helper for finding candidate sessions.
 
@@ -244,8 +285,13 @@ Example:
   "features": {
     "write_study_sets": true,
     "delete_study_sets": true,
+    "read_session_gps_summaries": true,
     "read_tracks": false,
     "write_tracks": false,
+    "read_geospatial_policies": false,
+    "write_geospatial_policies": false,
+    "compute_track_matches": false,
+    "read_track_matches": false,
     "read_filters": false,
     "write_filters": false,
     "export_static_bundle": false,
@@ -293,8 +339,8 @@ Example:
     {
       "track_id": "munda-biddi-test-loop",
       "display_name": "Munda Biddi test loop",
-      "from_point_id": "start-gate",
-      "to_point_id": "rock-garden-entry"
+      "from_trackpoint_id": "start-gate",
+      "to_trackpoint_id": "rock-garden-entry"
     }
   ],
   "bookmarks": [
@@ -338,49 +384,80 @@ Validation notes:
 - grouping `session_refs` should refer to top-level `session_ref_id` values.
 - bookmark `session_ref` values should refer to top-level `session_ref_id` values.
 - bookmark entries should define exactly one of `time_s` or `time_window`.
+- study-set track intervals should use `from_trackpoint_id` and
+  `to_trackpoint_id` when referencing a subset of a track.
 - `display_state` is optional and non-authoritative.
 
 ---
 
 ## 8. Track Contract v1
 
-Example:
+The authoritative Track, Trackpoint, Geospatial Policy, and Session Track Match
+object contracts are defined in `BODAQS_Geospatial_Contracts_v0_draft.md`.
+
+The API-facing summary is:
+
+- tracks are root-scoped objects under the configured libraries root.
+- a track contains one and only one directed geospatial path.
+- trackpoints are named locations along that path, ordered by `station_m`.
+- default trackpoint cutlines are generated from policy.
+- trackpoints store only cutline overrides unless explicit geometry editing is
+  introduced later.
+- heading, gradient, curvature, and session-track coverage are derived
+  geospatial analysis outputs, not minimal canonical track fields.
+
+Minimal API example:
 
 ```json
 {
   "schema": "bodaqs.track",
   "version": 1,
   "track_id": "munda-biddi-test-loop",
+  "revision": 1,
   "display_name": "Munda Biddi test loop",
-  "geometry": {
+  "path": {
     "type": "LineString",
     "coordinates": [
-      [115.8571, -31.9523],
-      [115.8580, -31.9531]
-    ]
+      [115.8571, -31.9523, 210.2],
+      [115.8580, -31.9531, 208.7]
+    ],
+    "coordinate_reference_system": "EPSG:4326",
+    "distance_model": "geodesic",
+    "length_m": 1420.5
   },
-  "points": [
+  "direction": {
+    "positive": "coordinate_order"
+  },
+  "default_policy_ref": {
+    "policy_id": "default-geospatial-policy",
+    "version": 1
+  },
+  "trackpoints": [
     {
-      "point_id": "start-gate",
+      "trackpoint_id": "start-gate",
       "display_name": "Start gate",
+      "station_m": 0.0,
       "position": {
         "type": "Point",
-        "coordinates": [115.8571, -31.9523]
-      },
-      "route_fraction": 0.0
+        "coordinates": [115.8571, -31.9523, 210.2]
+      }
     },
     {
-      "point_id": "rock-garden-entry",
+      "trackpoint_id": "rock-garden-entry",
       "display_name": "Rock garden entry",
+      "station_m": 248.5,
       "position": {
         "type": "Point",
-        "coordinates": [115.8580, -31.9531]
+        "coordinates": [115.8580, -31.9531, 208.7]
       },
-      "route_fraction": 0.42
+      "cutline_override": {
+        "left_length_m": 8.0,
+        "right_length_m": 4.0
+      }
     }
   ],
   "source": {
-    "kind": "session",
+    "kind": "session_gps",
     "library_id": "default-library",
     "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
@@ -398,7 +475,7 @@ Track `source` is optional. A track may be authored from a session GPS path,
 imported from GPX/GeoJSON in the future, or created manually.
 
 A study set may reference a whole track by `track_id`, or a track interval by
-`track_id + from_point_id + to_point_id`.
+`track_id + from_trackpoint_id + to_trackpoint_id`.
 
 Track ids are unique within the libraries root. They are not scoped to an
 individual processed library.
@@ -452,6 +529,29 @@ Example:
     "status": "warning",
     "warning_count": 2,
     "error_count": 0
+  },
+  "gps_summary": {
+    "schema": "bodaqs.session_gps_summary",
+    "version": 1,
+    "present": true,
+    "preferred_source": "fit_enrichment",
+    "session_duration_s": 612.4,
+    "time_coverage_ratio": 0.94,
+    "position_point_count": 1234,
+    "quality": "usable",
+    "sources": [
+      {
+        "source_id": "gps_fit",
+        "kind": "fit_enrichment",
+        "stream_name": "gps_fit",
+        "timebase": "intermittent",
+        "point_count": 1234,
+        "nominal_sample_rate_hz": 1.0,
+        "median_gap_s": 1.0,
+        "max_gap_s": 8.2
+      }
+    ],
+    "warnings": []
   },
   "provenance": {
     "source_type": "logger_wifi",
@@ -514,6 +614,13 @@ Recommended `qc_summary.status` values:
 
 ```text
 ok | warning | alert
+```
+
+Recommended `gps_summary.quality` values are defined in
+`BODAQS_Geospatial_Contracts_v0_draft.md`:
+
+```text
+absent | limited | usable | invalid
 ```
 
 The first projected `note_fields` should include `bike` and `rider` where
@@ -751,7 +858,46 @@ Example update request:
 }
 ```
 
-### 11.4 Signals, Events, Metrics, And Time-Series
+### 11.4 Geospatial
+
+Root-scoped tracks:
+
+```text
+GET    /api/v1/tracks
+POST   /api/v1/tracks
+GET    /api/v1/tracks/{track_id}
+PUT    /api/v1/tracks/{track_id}
+DELETE /api/v1/tracks/{track_id}
+```
+
+Root-scoped geospatial policies:
+
+```text
+GET    /api/v1/geospatial-policies
+POST   /api/v1/geospatial-policies
+GET    /api/v1/geospatial-policies/{policy_id}
+PUT    /api/v1/geospatial-policies/{policy_id}
+DELETE /api/v1/geospatial-policies/{policy_id}
+```
+
+Session GPS summaries and session-track matching:
+
+```text
+POST /api/v1/libraries/{library_id}/sessions/gps-summary
+POST /api/v1/track-matches/query
+POST /api/v1/track-matches/compute
+GET  /api/v1/track-matches/{track_match_id}
+```
+
+The GPS summary endpoint accepts a session reference in the request body and
+returns the `SessionGpsSummary` defined in
+`BODAQS_Geospatial_Contracts_v0_draft.md`.
+
+Track and policy endpoints are scoped to the configured libraries root, not to
+one processed library. Track match endpoints may return cached derived matches
+or compute new matches, depending on service capabilities.
+
+### 11.5 Signals, Events, Metrics, And Time-Series
 
 ```text
 POST /api/v1/libraries/{library_id}/signals/query
@@ -793,11 +939,17 @@ library_not_found
 session_not_found
 study_set_not_found
 track_not_found
+geospatial_policy_not_found
+track_match_not_found
 invalid_request
 invalid_study_set
+invalid_track
+invalid_geospatial_policy
 revision_conflict
 capability_unavailable
+gps_unavailable
 signal_not_found
+track_match_unavailable
 timeseries_unavailable
 internal_error
 ```
@@ -837,6 +989,14 @@ This is enough to support two parallel workstreams:
 - library manager / study set builder
 - first browser-native time-series visualisation
 
+The first geospatial extension should add:
+
+1. `gps_summary` in catalog rows
+2. `POST /api/v1/libraries/{library_id}/sessions/gps-summary`
+3. root-scoped Track CRUD
+4. root-scoped Geospatial Policy read/list, with at least one default policy
+5. session-track match computation as a derived, non-preprocessing analysis job
+
 ---
 
 ## 14. Deferred Work
@@ -848,8 +1008,10 @@ The following are deliberately outside the first implementation:
 - LAN-facing service access
 - authentication tokens for development mode
 - persisted catalog indexes
-- track CRUD endpoints
 - filter CRUD endpoints
+- advanced track editing, including explicit cutline endpoint editing
+- persisted track match cache management
+- GPX/GeoJSON import/export
 - static bundle export
 - Arrow/binary time-series payloads
 - multi-session time-series window requests

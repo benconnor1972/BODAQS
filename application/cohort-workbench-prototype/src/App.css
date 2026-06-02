@@ -225,6 +225,12 @@
   grid-template-columns: 18px 1fr 30px;
 }
 
+.compact-track-list {
+  max-height: 164px;
+  overflow: auto;
+  padding: 4px 0 0;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -603,6 +609,146 @@ button {
   stroke-width: 1;
 }
 
+.trackpoint-marker line {
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0.76;
+}
+
+.trackpoint-marker text {
+  fill: var(--ink);
+  font-size: 10px;
+  font-weight: 900;
+  paint-order: stroke;
+  stroke: #fffaf0;
+  stroke-width: 3px;
+}
+
+.geospatial-workbench {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+
+.geo-card {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #fffdf7, #eef5f1);
+}
+
+.primary-gps-card {
+  background: linear-gradient(135deg, #eef5f1, #f8f0dd);
+}
+
+.geo-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  min-width: 0;
+}
+
+.geo-card-title strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.geo-metrics {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.geo-metrics dt {
+  color: var(--muted);
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.geo-metrics dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geo-adequacy-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.geo-metric {
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.geo-metric strong {
+  color: var(--green);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.geo-metric span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.geo-policy-note {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: rgba(37, 51, 61, 0.06);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.match-preview-list {
+  display: grid;
+  gap: 6px;
+  max-height: 176px;
+  overflow: auto;
+}
+
+.match-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+}
+
+.match-row strong,
+.match-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.match-row small {
+  color: var(--muted);
+}
+
 .study-panel {
   min-width: 0;
 }
@@ -770,9 +916,21 @@ button {
 }
 
 .note-missing,
-.qc-alert {
+.qc-alert,
+.gps-absent,
+.gps-invalid {
   background: #f5dddd;
   color: #983d3d;
+}
+
+.gps-usable {
+  background: #dcece6;
+  color: #225f50;
+}
+
+.gps-limited {
+  background: #f5ead2;
+  color: #8a5a19;
 }
 
 .pill.neutral {

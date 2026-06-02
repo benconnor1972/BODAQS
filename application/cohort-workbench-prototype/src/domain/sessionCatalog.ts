@@ -1,3 +1,4 @@
+import { gpsSummaryLine } from './geospatial'
 import type { ColumnId, LibraryRecord, SessionRecord, SortDirection } from './types'
 
 export type ColumnGroup = {
@@ -29,6 +30,7 @@ export const columnLabels: Record<ColumnId, string> = {
   firmware: 'Firmware',
   source: 'Source',
   signals: 'Signals',
+  gps: 'GPS',
 }
 
 export const allColumns: ColumnId[] = [
@@ -47,6 +49,7 @@ export const allColumns: ColumnId[] = [
   'firmware',
   'source',
   'signals',
+  'gps',
 ]
 
 export const lockedColumns: ColumnId[] = ['name']
@@ -79,7 +82,7 @@ export const columnGroups: ColumnGroup[] = [
   {
     id: 'source-signals',
     label: 'Source and signals',
-    columns: ['source', 'signals'],
+    columns: ['source', 'signals', 'gps'],
   },
 ]
 
@@ -106,7 +109,13 @@ export const columnPresets: ColumnPreset[] = [
     id: 'signals',
     label: 'Signals',
     description: 'Signal coverage and source archive.',
-    columns: ['name', 'started', 'source', 'signals'],
+    columns: ['name', 'started', 'source', 'signals', 'gps'],
+  },
+  {
+    id: 'geospatial',
+    label: 'Geospatial',
+    description: 'GPS quality and source context.',
+    columns: ['name', 'runName', 'started', 'distance', 'gps'],
   },
   {
     id: 'all',
@@ -161,6 +170,8 @@ export function getColumnText(
       return session.sourceArchive
     case 'signals':
       return session.signals.join(', ')
+    case 'gps':
+      return gpsSummaryLine(session.gpsSummary)
   }
 }
 

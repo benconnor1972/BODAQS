@@ -1,8 +1,13 @@
 import { groupingColors, sessionRefId } from '../domain/studySets'
+import { emptyGpsSummary } from '../domain/geospatial'
 import type {
+  GpsQuality,
+  GpsSourceKind,
+  GpsTimebase,
   LibraryRecord,
   NoteStatus,
   QcLevel,
+  SessionGpsSummary,
   SessionRecord,
   StudyGrouping,
   StudySet,
@@ -135,6 +140,7 @@ function mapSession(row: ApiObject): SessionRecord {
   const provenance = objectValue(row.provenance)
   const eventSchema = objectValue(row.event_schema)
   const summary = objectValue(row.summary)
+  const gpsSummary = objectValue(row.gps_summary)
   const libraryId = textValue(row.library_id)
   const sessionKey = textValue(row.session_key)
   const runId = textValue(row.run_id)
@@ -165,6 +171,36 @@ function mapSession(row: ApiObject): SessionRecord {
     sourceArchive: textValue(provenance.archive_name),
     signals: availableSignals.map((signal) => textValue(signal.display_name, textValue(signal.column))),
     gps: [],
+    gpsSummary: mapGpsSummary(gpsSummary),
+  }
+}
+
+function mapGpsSummary(value: ApiObject): SessionGpsSummary {
+  const quality = gpsQualityValue(value.quality)
+  const sources = arrayValue(value.sources).filter(isObject).map((source) => ({
+    sourceId: textValue(source.source_id),
+    kind: gpsSourceKindValue(source.kind),
+    streamName: textValue(source.stream_name),
+    timebase: gpsTimebaseValue(source.timebase),
+    pointCount: numberValue(source.point_count),
+    nominalSampleRateHz: nullableNumberValue(source.nominal_sample_rate_hz),
+    medianGapS: nullableNumberValue(source.median_gap_s),
+    maxGapS: nullableNumberValue(source.max_gap_s),
+    gapCountOverThreshold: numberValue(source.gap_count_over_threshold),
+    gapThresholdS: numberValue(source.gap_threshold_s),
+  }))
+  if (!Boolean(value.present) && sources.length === 0) {
+    return emptyGpsSummary
+  }
+  return {
+    present: Boolean(value.present),
+    preferredSource: gpsSourceKindOrNull(value.preferred_source),
+    sources,
+    sessionDurationS: numberValue(value.session_duration_s),
+    timeCoverageRatio: numberValue(value.time_coverage_ratio),
+    positionPointCount: numberValue(value.position_point_count),
+    quality,
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
   }
 }
 
@@ -245,6 +281,32 @@ function noteStatusValue(value: unknown): NoteStatus {
   return 'missing'
 }
 
+function gpsQualityValue(value: unknown): GpsQuality {
+  if (value === 'usable' || value === 'limited' || value === 'invalid') {
+    return value
+  }
+  return 'absent'
+}
+
+function gpsSourceKindValue(value: unknown): GpsSourceKind {
+  if (value === 'logger_sensor' || value === 'fit_enrichment' || value === 'imported_route') {
+    return value
+  }
+  return 'unknown'
+}
+
+function gpsSourceKindOrNull(value: unknown): GpsSourceKind | null {
+  const kind = gpsSourceKindValue(value)
+  return kind === 'unknown' ? null : kind
+}
+
+function gpsTimebaseValue(value: unknown): GpsTimebase {
+  if (value === 'uniform' || value === 'intermittent') {
+    return value
+  }
+  return 'unknown'
+}
+
 function qcLevelValue(value: unknown): QcLevel {
   if (value === 'warning' || value === 'alert') {
     return value
@@ -286,6 +348,10 @@ function textValue(value: unknown, fallback = ''): string {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function nullableNumberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function isObject(value: unknown): value is ApiObject {

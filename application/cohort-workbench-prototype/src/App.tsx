@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { IconButton, PanelTitle, SummaryTile } from './components/Common'
+import { GeospatialWorkbench } from './components/GeospatialWorkbench'
 import { Modal } from './components/Modal'
 import { RoutePreview } from './components/RoutePreview'
 import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
@@ -794,40 +795,20 @@ function App() {
               </div>
 
               <div className="module-header spaced">
-                <h2>Track Manager</h2>
-                <span className="subtle">{tracks.length} fixture tracks</span>
+                <h2>Geospatial Workbench</h2>
+                <span className="pill neutral">mocked</span>
               </div>
-              <div className="track-list">
-                {tracks.map((track) => (
-                  <label className="check-row compact track-row" key={track.id}>
-                    <input
-                      type="checkbox"
-                      checked={selectedTrackIds.includes(track.id)}
-                      onChange={() => toggleTrack(track.id)}
-                    />
-                    <span>
-                      <strong>{track.name}</strong>
-                      <small>
-                        {track.pointCount} points, {track.distanceKm.toFixed(1)} km
-                      </small>
-                    </span>
-                    <IconButton
-                      label="Inspect Track"
-                      onClick={() => setModal({ kind: 'track', track })}
-                      icon={<Eye size={16} />}
-                    />
-                  </label>
-                ))}
-              </div>
-              <div className="action-row tight">
-                <button className="secondary-action" onClick={addSelectedTracksToStudySet}>
-                  <Plus size={16} />
-                  Attach track
-                </button>
-                <button className="ghost-action" disabled>
-                  New track later
-                </button>
-              </div>
+              <GeospatialWorkbench
+                primarySession={primarySession}
+                currentStudySet={currentStudySet}
+                sessions={sessions}
+                tracks={tracks}
+                selectedTrackIds={selectedTrackIds}
+                currentStudyTracks={currentStudyTracks}
+                onToggleTrack={toggleTrack}
+                onAttachSelectedTracks={addSelectedTracksToStudySet}
+                onInspectTrack={(track) => setModal({ kind: 'track', track })}
+              />
             </section>
           </section>
         </aside>
@@ -951,7 +932,7 @@ function App() {
                 <thead>
                   <tr>
                     <th>Name</th>
-                    <th>Points</th>
+                    <th>Trackpoints</th>
                     <th>Distance</th>
                     <th>Controls</th>
                   </tr>
@@ -967,7 +948,7 @@ function App() {
                   {currentStudyTracks.map((track) => (
                     <tr key={track.id}>
                       <td>{track.name}</td>
-                      <td>{track.pointCount}</td>
+                      <td>{track.trackpoints.length}</td>
                       <td>{track.distanceKm.toFixed(1)} km</td>
                       <td>
                         <IconButton

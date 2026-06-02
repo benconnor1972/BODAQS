@@ -1,9 +1,10 @@
 import { X } from 'lucide-react'
+import { formatPercent, gpsSourceLabel } from '../domain/geospatial'
 import { libraryName } from '../domain/sessionCatalog'
 import { noteSummary, sessionByRef, sessionRefId } from '../domain/studySets'
 import type { LibraryRecord, ModalState, SessionRecord, StudySet, TrackRecord } from '../domain/types'
 import { IconButton } from './Common'
-import { NoteBadge, QcBadge } from './StatusBadges'
+import { GpsBadge, NoteBadge, QcBadge } from './StatusBadges'
 
 export function Modal({
   state,
@@ -87,6 +88,45 @@ function modalContent(
         </div>
       )
     }
+    if (state.tab === 'gps') {
+      const summary = state.session.gpsSummary
+      const primarySource = summary.sources[0]
+      return (
+        <div>
+          <dl className="detail-list">
+            <dt>GPS status</dt>
+            <dd>
+              <GpsBadge summary={summary} />
+            </dd>
+            <dt>Preferred source</dt>
+            <dd>{gpsSourceLabel(summary.preferredSource)}</dd>
+            <dt>Coverage</dt>
+            <dd>{formatPercent(summary.timeCoverageRatio)}</dd>
+            <dt>Position points</dt>
+            <dd>{summary.positionPointCount}</dd>
+            <dt>Timebase</dt>
+            <dd>{primarySource?.timebase ?? 'unknown'}</dd>
+            <dt>Nominal rate</dt>
+            <dd>
+              {primarySource?.nominalSampleRateHz
+                ? `${primarySource.nominalSampleRateHz.toFixed(2)} Hz`
+                : 'unknown'}
+            </dd>
+            <dt>Median gap</dt>
+            <dd>{primarySource?.medianGapS ? `${primarySource.medianGapS.toFixed(1)} s` : 'unknown'}</dd>
+            <dt>Max gap</dt>
+            <dd>{primarySource?.maxGapS ? `${primarySource.maxGapS.toFixed(1)} s` : 'unknown'}</dd>
+          </dl>
+          {summary.warnings.length > 0 && (
+            <ul className="alert-list">
+              {summary.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )
+    }
     return (
       <dl className="detail-list">
         <dt>Library</dt>
@@ -115,14 +155,47 @@ function modalContent(
 
   if (state.kind === 'track') {
     return (
-      <dl className="detail-list">
-        <dt>Track ID</dt>
-        <dd>{state.track.id}</dd>
-        <dt>Points</dt>
-        <dd>{state.track.pointCount}</dd>
-        <dt>Distance</dt>
-        <dd>{state.track.distanceKm.toFixed(1)} km</dd>
-      </dl>
+      <div className="study-set-view">
+        <section className="modal-section">
+          <dl className="detail-list">
+            <dt>Track ID</dt>
+            <dd>{state.track.id}</dd>
+            <dt>Revision</dt>
+            <dd>{state.track.revision}</dd>
+            <dt>Path points</dt>
+            <dd>{state.track.pointCount}</dd>
+            <dt>Trackpoints</dt>
+            <dd>{state.track.trackpoints.length}</dd>
+            <dt>Distance</dt>
+            <dd>{state.track.distanceKm.toFixed(1)} km</dd>
+            <dt>Policy</dt>
+            <dd>{state.track.defaultPolicyId}</dd>
+          </dl>
+        </section>
+        <section className="modal-section">
+          <h3>Trackpoints</h3>
+          <div className="modal-table-shell">
+            <table className="modal-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Station</th>
+                  <th>Cutline</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.track.trackpoints.map((trackpoint) => (
+                  <tr key={trackpoint.id}>
+                    <td>{trackpoint.name}</td>
+                    <td>{trackpoint.stationM.toFixed(0)} m</td>
+                    <td>{trackpoint.cutlineOverride ? 'override' : 'policy default'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
     )
   }
 
@@ -209,13 +282,14 @@ function StudySetView({
                 <th>Session ID</th>
                 <th>Note</th>
                 <th>QC</th>
+                <th>GPS</th>
                 <th>Groupings</th>
               </tr>
             </thead>
             <tbody>
               {studySet.sessions.length === 0 && (
                 <tr>
-                  <td className="empty-cell" colSpan={8}>
+                  <td className="empty-cell" colSpan={9}>
                     No sessions in this Study Set.
                   </td>
                 </tr>
@@ -236,6 +310,7 @@ function StudySetView({
                     <td>{sessionRef.sessionId}</td>
                     <td>{session ? <NoteBadge status={session.noteStatus} /> : '-'}</td>
                     <td>{session ? <QcBadge session={session} /> : '-'}</td>
+                    <td>{session ? <GpsBadge summary={session.gpsSummary} /> : '-'}</td>
                     <td>
                       <div className="badge-row">
                         {groupingMatches.length === 0 && <span className="subtle">none</span>}
@@ -283,7 +358,7 @@ function StudySetView({
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Points</th>
+                <th>Trackpoints</th>
                 <th>Distance</th>
               </tr>
             </thead>
@@ -298,7 +373,7 @@ function StudySetView({
               {studySetTracks.map((track) => (
                 <tr key={track.id}>
                   <td>{track.name}</td>
-                  <td>{track.pointCount}</td>
+                  <td>{track.trackpoints.length}</td>
                   <td>{track.distanceKm.toFixed(1)} km</td>
                 </tr>
               ))}

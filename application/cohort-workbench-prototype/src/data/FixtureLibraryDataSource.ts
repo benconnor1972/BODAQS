@@ -1,5 +1,5 @@
 import { cloneStudySet, slugify, uniqueId } from '../domain/studySets'
-import type { SessionRecord, StudySet, TrackRecord } from '../domain/types'
+import type { SessionGpsSummary, SessionRecord, StudySet, TrackRecord } from '../domain/types'
 import {
   fixtureLibraries,
   fixtureSavedStudySets,
@@ -56,6 +56,7 @@ function cloneSession(session: SessionRecord): SessionRecord {
     qcAlerts: [...session.qcAlerts],
     signals: [...session.signals],
     gps: session.gps.map(([x, y]) => [x, y]),
+    gpsSummary: cloneGpsSummary(session.gpsSummary),
   }
 }
 
@@ -63,5 +64,23 @@ function cloneTrack(track: TrackRecord): TrackRecord {
   return {
     ...track,
     points: track.points.map(([x, y]) => [x, y]),
+    trackpoints: track.trackpoints.map((trackpoint) => ({
+      ...trackpoint,
+      position: [trackpoint.position[0], trackpoint.position[1]] as [number, number],
+      cutlineOverride: trackpoint.cutlineOverride ? { ...trackpoint.cutlineOverride } : undefined,
+    })),
+    matchSummaries: track.matchSummaries.map((match) => ({
+      ...match,
+      trackpointResults: match.trackpointResults.map((result) => ({ ...result })),
+      warnings: [...match.warnings],
+    })),
+  }
+}
+
+function cloneGpsSummary(summary: SessionGpsSummary): SessionGpsSummary {
+  return {
+    ...summary,
+    sources: summary.sources.map((source) => ({ ...source })),
+    warnings: [...summary.warnings],
   }
 }

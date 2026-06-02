@@ -1,5 +1,15 @@
 import { sessionRefId, sessionToStudyRef } from '../domain/studySets'
-import type { LibraryRecord, SessionRecord, StudySet, TrackRecord } from '../domain/types'
+import type {
+  GeospatialPolicyRecord,
+  GpsSourceKind,
+  LibraryRecord,
+  SessionGpsSummary,
+  SessionRecord,
+  SessionTrackMatchRecord,
+  StudySet,
+  TrackRecord,
+  TrackMatchStatus,
+} from '../domain/types'
 
 export const fixtureLibraries: LibraryRecord[] = [
   {
@@ -50,6 +60,7 @@ export const fixtureSessions: SessionRecord[] = [
       [115.949, -42.764],
       [115.952, -42.769],
     ],
+    gpsSummary: gpsSummary('fit_enrichment', 'usable', 516, 0.98, 518, 1.0, 2.1),
   },
   {
     libraryId: 'library-maydena',
@@ -78,6 +89,9 @@ export const fixtureSessions: SessionRecord[] = [
       [115.95, -42.765],
       [115.953, -42.77],
     ],
+    gpsSummary: gpsSummary('fit_enrichment', 'limited', 504, 0.91, 476, 1.0, 4.2, [
+      'FIT overlap has a short gap near the matching boundary.',
+    ]),
   },
   {
     libraryId: 'library-maydena',
@@ -105,6 +119,7 @@ export const fixtureSessions: SessionRecord[] = [
       [115.959, -42.778],
       [115.963, -42.781],
     ],
+    gpsSummary: gpsSummary('fit_enrichment', 'usable', 372, 0.96, 366, 1.0, 2.7),
   },
   {
     libraryId: 'library-local-test',
@@ -132,6 +147,9 @@ export const fixtureSessions: SessionRecord[] = [
       [116.048, -32.007],
       [116.053, -32.008],
     ],
+    gpsSummary: gpsSummary('logger_sensor', 'limited', 846, 0.78, 632, 1.4, 12.8, [
+      'GPS coverage is patchy in tree cover.',
+    ]),
   },
   {
     libraryId: 'library-local-test',
@@ -159,6 +177,9 @@ export const fixtureSessions: SessionRecord[] = [
       [116.083, -31.997],
       [116.09, -31.998],
     ],
+    gpsSummary: gpsSummary('fit_enrichment', 'limited', 1308, 0.82, 1104, 1.0, 18.0, [
+      'GPS stream ends 18 s before logger stream.',
+    ]),
   },
   {
     libraryId: 'library-shock-dev',
@@ -180,12 +201,8 @@ export const fixtureSessions: SessionRecord[] = [
     eventSchema: 'shock_dev_v2',
     sourceArchive: '2026-05-30_12-11-03.zip',
     signals: ['front shock raw', 'rear shock raw', 'speed'],
-    gps: [
-      [115.858, -31.953],
-      [115.861, -31.954],
-      [115.865, -31.955],
-      [115.868, -31.957],
-    ],
+    gps: [],
+    gpsSummary: noGpsSummary(294),
   },
 ]
 
@@ -193,8 +210,11 @@ export const fixtureTracks: TrackRecord[] = [
   {
     id: 'maydena-upper',
     name: 'Maydena upper test sector',
+    revision: 1,
     pointCount: 5,
     distanceKm: 2.8,
+    lengthM: 2800,
+    defaultPolicyId: 'default-geospatial-policy',
     points: [
       [115.935, -42.756],
       [115.94, -42.759],
@@ -202,18 +222,127 @@ export const fixtureTracks: TrackRecord[] = [
       [115.951, -42.766],
       [115.953, -42.77],
     ],
+    trackpoints: [
+      {
+        id: 'upper-start',
+        name: 'Upper start',
+        stationM: 0,
+        position: [115.935, -42.756],
+      },
+      {
+        id: 'rock-shelf',
+        name: 'Rock shelf',
+        stationM: 980,
+        position: [115.946, -42.762],
+        cutlineOverride: {
+          leftLengthM: 7,
+          rightLengthM: 4,
+        },
+      },
+      {
+        id: 'compression-gully',
+        name: 'Compression gully',
+        stationM: 1840,
+        position: [115.951, -42.766],
+      },
+      {
+        id: 'upper-exit',
+        name: 'Upper exit',
+        stationM: 2800,
+        position: [115.953, -42.77],
+      },
+    ],
+    matchSummaries: [
+      trackMatch('maydena-upper', fixtureSessions[0], 'matched', 0.97, 514, [
+        ['upper-start', true, 3.2],
+        ['rock-shelf', true, 1.8],
+        ['compression-gully', true, 2.1],
+        ['upper-exit', true, 3.6],
+      ]),
+      trackMatch('maydena-upper', fixtureSessions[1], 'matched', 0.94, 468, [
+        ['upper-start', true, 3.4],
+        ['rock-shelf', true, 2.6],
+        ['compression-gully', true, 2.8],
+        ['upper-exit', true, 4.1],
+      ]),
+      trackMatch('maydena-upper', fixtureSessions[2], 'no_overlap', 0, 0, [
+        ['upper-start', false, null],
+        ['rock-shelf', false, null],
+        ['compression-gully', false, null],
+        ['upper-exit', false, null],
+      ], ['Session appears to cover lower trail only.']),
+    ],
   },
   {
     id: 'kalamunda-compression',
     name: 'Kalamunda compression line',
+    revision: 1,
     pointCount: 4,
     distanceKm: 4.7,
+    lengthM: 4700,
+    defaultPolicyId: 'default-geospatial-policy',
     points: [
       [116.038, -32.004],
       [116.044, -32.006],
       [116.05, -32.008],
       [116.056, -32.009],
     ],
+    trackpoints: [
+      {
+        id: 'loop-entry',
+        name: 'Loop entry',
+        stationM: 0,
+        position: [116.038, -32.004],
+      },
+      {
+        id: 'root-web',
+        name: 'Root web',
+        stationM: 1420,
+        position: [116.044, -32.006],
+      },
+      {
+        id: 'compression-dip',
+        name: 'Compression dip',
+        stationM: 2860,
+        position: [116.05, -32.008],
+        cutlineOverride: {
+          leftLengthM: 5,
+          rightLengthM: 9,
+          angleDegFromPathNormal: -8,
+        },
+      },
+      {
+        id: 'loop-exit',
+        name: 'Loop exit',
+        stationM: 4700,
+        position: [116.056, -32.009],
+      },
+    ],
+    matchSummaries: [
+      trackMatch('kalamunda-compression', fixtureSessions[3], 'partial', 0.78, 612, [
+        ['loop-entry', true, 4.8],
+        ['root-web', true, 3.7],
+        ['compression-dip', true, 5.9],
+        ['loop-exit', false, null],
+      ], ['Coverage stops before the final trackpoint.']),
+      trackMatch('kalamunda-compression', fixtureSessions[4], 'ambiguous', 0.52, 488, [
+        ['loop-entry', true, 6.2],
+        ['root-web', false, 8.8],
+        ['compression-dip', false, null],
+        ['loop-exit', false, null],
+      ], ['Route resembles the track but heading is ambiguous.']),
+    ],
+  },
+]
+
+export const fixtureGeospatialPolicies: GeospatialPolicyRecord[] = [
+  {
+    id: 'default-geospatial-policy',
+    name: 'Default geospatial policy',
+    defaultCutlineLeftLengthM: 5,
+    defaultCutlineRightLengthM: 5,
+    maxPointDistanceM: 8,
+    reverseDirectionPolicy: 'allow_and_report',
   },
 ]
 
@@ -242,3 +371,78 @@ export const fixtureSavedStudySets: StudySet[] = [
     provenance: 'Created from sketch fixture data',
   },
 ]
+
+function gpsSummary(
+  preferredSource: GpsSourceKind,
+  quality: SessionGpsSummary['quality'],
+  sessionDurationS: number,
+  timeCoverageRatio: number,
+  pointCount: number,
+  medianGapS: number,
+  maxGapS: number,
+  warnings: string[] = [],
+): SessionGpsSummary {
+  return {
+    present: true,
+    preferredSource,
+    sessionDurationS,
+    timeCoverageRatio,
+    positionPointCount: pointCount,
+    quality,
+    sources: [
+      {
+        sourceId: preferredSource === 'logger_sensor' ? 'gps_logger' : 'gps_fit',
+        kind: preferredSource,
+        streamName: preferredSource === 'logger_sensor' ? 'gps_logger' : 'gps_fit',
+        timebase: preferredSource === 'logger_sensor' ? 'uniform' : 'intermittent',
+        pointCount,
+        nominalSampleRateHz: medianGapS > 0 ? 1 / medianGapS : null,
+        medianGapS,
+        maxGapS,
+        gapCountOverThreshold: warnings.length,
+        gapThresholdS: 5,
+      },
+    ],
+    warnings,
+  }
+}
+
+function noGpsSummary(sessionDurationS: number): SessionGpsSummary {
+  return {
+    present: false,
+    preferredSource: null,
+    sources: [],
+    sessionDurationS,
+    timeCoverageRatio: 0,
+    positionPointCount: 0,
+    quality: 'absent',
+    warnings: ['No GPS stream available in this fixture session.'],
+  }
+}
+
+function trackMatch(
+  trackId: string,
+  session: SessionRecord,
+  status: TrackMatchStatus,
+  coverageRatio: number,
+  matchedGpsPointCount: number,
+  trackpointResults: Array<[string, boolean, number | null]>,
+  warnings: string[] = [],
+): SessionTrackMatchRecord {
+  return {
+    trackId,
+    sessionRefId: sessionRefId(sessionToStudyRef(session)),
+    status,
+    direction: status === 'ambiguous' ? 'unknown' : 'positive',
+    coverageRatio,
+    matchedGpsPointCount,
+    trackpointResults: trackpointResults.map(([trackpointId, crossed, minDistanceM], index) => ({
+      trackpointId,
+      crossed,
+      crossingTimeS: crossed ? 60 + index * 72 : null,
+      minDistanceM,
+      quality: crossed ? (minDistanceM !== null && minDistanceM <= 4 ? 'good' : 'approximate') : 'missing',
+    })),
+    warnings,
+  }
+}

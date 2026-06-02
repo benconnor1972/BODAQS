@@ -26,7 +26,21 @@ export function RoutePreview({
       width: 2,
     })),
   ]
-  const allPoints = allPaths.flatMap((path) => path.points)
+  const trackpointOverlays = [
+    ...selectedTracks.map((track) => ({
+      id: `selected-trackpoints-${track.id}`,
+      points: track.trackpoints.map((trackpoint) => trackpoint.position),
+      color: '#2f7d6d',
+      width: 0,
+    })),
+    ...currentTracks.map((track) => ({
+      id: `current-trackpoints-${track.id}`,
+      points: track.trackpoints.map((trackpoint) => trackpoint.position),
+      color: '#b66a2c',
+      width: 0,
+    })),
+  ]
+  const allPoints = [...allPaths, ...trackpointOverlays].flatMap((path) => path.points)
 
   if (allPoints.length === 0) {
     return (
@@ -37,7 +51,9 @@ export function RoutePreview({
     )
   }
 
-  const projected = projectPaths(allPaths)
+  const projected = projectPaths([...allPaths, ...trackpointOverlays])
+  const projectedPaths = projected.filter((path) => path.width > 0)
+  const projectedTrackpoints = projected.filter((path) => path.width === 0)
   return (
     <svg className="route-preview" viewBox="0 0 320 260" role="img" aria-label="GPS route preview">
       <rect x="0" y="0" width="320" height="260" rx="8" />
@@ -49,7 +65,7 @@ export function RoutePreview({
           <line x1="20" x2="300" y1={y} y2={y} key={`y-${y}`} />
         ))}
       </g>
-      {projected.map((path) => (
+      {projectedPaths.map((path) => (
         <polyline
           fill="none"
           stroke={path.color}
@@ -58,9 +74,20 @@ export function RoutePreview({
           key={path.id}
         />
       ))}
-      {projected.flatMap((path) =>
+      {projectedPaths.flatMap((path) =>
         path.points.map(([x, y], index) => (
           <circle cx={x} cy={y} r={index === 0 ? 5 : 3.5} fill={path.color} key={`${path.id}-${index}`} />
+        )),
+      )}
+      {projectedTrackpoints.flatMap((path) =>
+        path.points.map(([x, y], index) => (
+          <g className="trackpoint-marker" key={`${path.id}-${index}`}>
+            <line x1={x - 13} x2={x + 13} y1={y + 9} y2={y - 9} stroke={path.color} />
+            <circle cx={x} cy={y} r="5.5" fill="#fffaf0" stroke={path.color} />
+            <text x={x + 8} y={y - 8}>
+              {index + 1}
+            </text>
+          </g>
         )),
       )}
     </svg>

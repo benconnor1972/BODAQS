@@ -69,10 +69,18 @@ _FIT_IMPORT_DEFAULTS: Dict[str, Any] = {
     "persist_raw_stream": True,
     "resample_to_primary": True,
     "resample_method": "linear",
+    "resample_max_gap_s": None,
+    "gps_resample_max_gap_s": 5.0,
     "raw_stream_name": "gps_fit",
     "resampled_prefix": "gps_fit",
     "bindings_path": None,
 }
+
+_FIT_GPS_POSITION_COLUMNS = {
+    "gps_fit_position_latitude_dom_world [deg]",
+    "gps_fit_position_longitude_dom_world [deg]",
+}
+_FIT_GPS_POSITION_ROLES = {"position_latitude", "position_longitude"}
 
 
 def _metadata_binding(log_metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1097,6 +1105,20 @@ def _normalized_fit_import_config(fit_import: Optional[Mapping[str, Any]]) -> Di
     return cfg
 
 
+def _positive_float_or_none(value: Any, *, field_name: str) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        out = float(value)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a positive finite number or None") from exc
+    if not np.isfinite(out) or out <= 0:
+        raise ValueError(f"{field_name} must be a positive finite number or None")
+    return out
+
+
 def _session_absolute_bounds(session: Dict[str, Any]) -> Optional[tuple[pd.Timestamp, pd.Timestamp]]:
     meta = session.get("meta", {})
     source = session.get("source", {})
@@ -1124,12 +1146,75 @@ def _session_absolute_bounds(session: Dict[str, Any]) -> Optional[tuple[pd.Times
     return start, end
 
 
+def _is_fit_gps_position_column(column: str, fit_meta: Mapping[str, Any]) -> bool:
+    channel_info = fit_meta.get("channel_info", {})
+    if isinstance(channel_info, Mapping):
+        info = channel_info.get(column)
+        if isinstance(info, Mapping) and info.get("role") in _FIT_GPS_POSITION_ROLES:
+            return True
+    return column in _FIT_GPS_POSITION_COLUMNS
+
+
+def _fit_gps_position_pair_summary(
+    fit_df: pd.DataFrame,
+    resampled_df: pd.DataFrame,
+    *,
+    target_time_s: np.ndarray,
+    gps_columns: Sequence[str],
+    max_gap_s: Optional[float],
+    resampling_meta: Sequence[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    lat_col = next((c for c in gps_columns if "latitude" in c), None)
+    lon_col = next((c for c in gps_columns if "longitude" in c), None)
+    if lat_col is None or lon_col is None:
+        return None
+
+    raw_pairs = 0
+    finite_target = target_time_s[np.isfinite(target_time_s)]
+    if finite_target.size and lat_col in fit_df.columns and lon_col in fit_df.columns:
+        t_src = pd.to_numeric(fit_df["time_s"], errors="coerce").to_numpy(dtype=float)
+        lat = pd.to_numeric(fit_df[lat_col], errors="coerce").to_numpy(dtype=float)
+        lon = pd.to_numeric(fit_df[lon_col], errors="coerce").to_numpy(dtype=float)
+        in_window = (
+            np.isfinite(t_src)
+            & (t_src >= float(np.nanmin(finite_target)))
+            & (t_src <= float(np.nanmax(finite_target)))
+        )
+        raw_pairs = int(np.count_nonzero(in_window & np.isfinite(lat) & np.isfinite(lon)))
+
+    resampled_pairs = 0
+    if lat_col in resampled_df.columns and lon_col in resampled_df.columns:
+        lat_out = pd.to_numeric(resampled_df[lat_col], errors="coerce").to_numpy(dtype=float)
+        lon_out = pd.to_numeric(resampled_df[lon_col], errors="coerce").to_numpy(dtype=float)
+        resampled_pairs = int(np.count_nonzero(np.isfinite(lat_out) & np.isfinite(lon_out)))
+
+    gap_rejected = 0
+    for meta in resampling_meta:
+        stats_by_col = meta.get("column_stats", {})
+        if not isinstance(stats_by_col, Mapping):
+            continue
+        for col in (lat_col, lon_col):
+            stats = stats_by_col.get(col)
+            if isinstance(stats, Mapping):
+                gap_rejected += int(stats.get("n_gap_rejected", 0) or 0)
+
+    return {
+        "position_columns": [lat_col, lon_col],
+        "max_gap_s": max_gap_s,
+        "raw_position_points_in_session_window": raw_pairs,
+        "resampled_position_points": resampled_pairs,
+        "gap_rejected_samples": gap_rejected,
+    }
+
+
 def _resample_fit_columns_onto_primary(
     session: Dict[str, Any],
     *,
     fit_df: pd.DataFrame,
     fit_meta: Mapping[str, Any],
     method: str,
+    max_gap_s: Optional[float],
+    gps_max_gap_s: Optional[float],
 ) -> None:
     df = session.get("df")
     if not isinstance(df, pd.DataFrame):
@@ -1146,15 +1231,31 @@ def _resample_fit_columns_onto_primary(
         return
 
     target_time_s = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(dtype=float)
+    gps_columns = [c for c in columns if _is_fit_gps_position_column(c, fit_meta)]
+    other_columns = [c for c in columns if c not in gps_columns]
+    column_groups = [
+        ("fit", other_columns, max_gap_s),
+        ("fit_gps_position", gps_columns, gps_max_gap_s),
+    ]
+    resampling_meta: list[Mapping[str, Any]] = []
     if len(fit_df.index) >= 2:
-        resampled_df, rs_meta = resample_to_time_grid(
-            fit_df,
-            src_time_col="time_s",
-            target_time_s=target_time_s,
-            columns=columns,
-            method=method,
-            allow_extrapolation=False,
-        )
+        resampled_df = pd.DataFrame({"time_s": target_time_s})
+        for group_name, group_columns, group_max_gap_s in column_groups:
+            if not group_columns:
+                continue
+            group_df, group_meta = resample_to_time_grid(
+                fit_df,
+                src_time_col="time_s",
+                target_time_s=target_time_s,
+                columns=group_columns,
+                method=method,
+                allow_extrapolation=False,
+                max_gap_s=group_max_gap_s,
+            )
+            for col in group_columns:
+                resampled_df[col] = group_df[col].to_numpy()
+            group_meta["column_group"] = group_name
+            resampling_meta.append(group_meta)
     else:
         resampled_df = pd.DataFrame({"time_s": target_time_s})
         for col in columns:
@@ -1168,7 +1269,11 @@ def _resample_fit_columns_onto_primary(
             "src_time_max": None,
             "n_target": int(len(target_time_s)),
             "columns": list(columns),
+            "max_gap_s": None,
+            "column_group": "fit",
+            "column_stats": {col: {"n_source": int(len(fit_df.index)), "n_output": 0} for col in columns},
         }
+        resampling_meta.append(rs_meta)
         _append_qc_warning(session, "fit_import_resample_skipped_too_few_samples")
 
     for col in columns:
@@ -1176,13 +1281,36 @@ def _resample_fit_columns_onto_primary(
 
     qc = session.setdefault("qc", {})
     resampling = qc.setdefault("resampling", [])
-    resampling.append({"stream": str(fit_meta.get("stream_name", "gps_fit")), **rs_meta})
+    stream_name = str(fit_meta.get("stream_name", "gps_fit"))
+    for rs_meta in resampling_meta:
+        resampling.append({"stream": stream_name, **rs_meta})
+
+    gps_summary = _fit_gps_position_pair_summary(
+        fit_df,
+        resampled_df,
+        target_time_s=target_time_s,
+        gps_columns=gps_columns,
+        max_gap_s=gps_max_gap_s,
+        resampling_meta=resampling_meta,
+    )
+    if gps_summary is not None:
+        fit_qc = qc.setdefault("fit_import", {})
+        fit_qc["gps_resampling"] = gps_summary
+        if (
+            gps_summary["raw_position_points_in_session_window"] == 0
+            and gps_summary["resampled_position_points"] == 0
+        ):
+            _append_qc_warning(session, "fit_import_no_gps_position_points_in_session_window")
+        if gps_summary["gap_rejected_samples"] > 0:
+            _append_qc_warning(session, "fit_import_gps_resample_gap_limited")
 
     transforms = qc.setdefault("transforms", {})
     transforms["resampled"] = {
         "applied": True,
         "target_rate_hz": session.get("meta", {}).get("sample_rate_hz"),
         "method": method,
+        "fit_resample_max_gap_s": max_gap_s,
+        "fit_gps_resample_max_gap_s": gps_max_gap_s,
     }
 
     _merge_channel_info(session, fit_meta.get("channel_info", {}))
@@ -1394,6 +1522,14 @@ def _enrich_session_with_fit_impl(
             fit_df=fit_df,
             fit_meta=fit_meta,
             method=str(cfg.get("resample_method", "linear")),
+            max_gap_s=_positive_float_or_none(
+                cfg.get("resample_max_gap_s"),
+                field_name="fit_import.resample_max_gap_s",
+            ),
+            gps_max_gap_s=_positive_float_or_none(
+                cfg.get("gps_resample_max_gap_s"),
+                field_name="fit_import.gps_resample_max_gap_s",
+            ),
         )
 
     qc = session.setdefault("qc", {})

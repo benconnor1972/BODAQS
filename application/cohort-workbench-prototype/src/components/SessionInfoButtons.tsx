@@ -1,4 +1,5 @@
-import { AlertTriangle, FileText, Info } from 'lucide-react'
+import { AlertTriangle, FileText, Info, MapPin } from 'lucide-react'
+import { gpsQualityTone, gpsSummaryLine } from '../domain/geospatial'
 import type { QcLevel, SessionInspectionTab, SessionRecord } from '../domain/types'
 import { IconButton } from './Common'
 
@@ -24,6 +25,12 @@ export function SessionInfoButtons({
         onClick={() => onInspect(session, 'qc')}
         icon={<AlertTriangle size={15} />}
         tone={qcTone(session.qcLevel)}
+      />
+      <IconButton
+        label={`View GPS: ${gpsSummaryLine(session.gpsSummary)}`}
+        onClick={() => onInspect(session, 'gps')}
+        icon={<MapPin size={15} />}
+        tone={gpsQualityTone(session.gpsSummary.quality)}
       />
       <IconButton
         label="View metadata"
