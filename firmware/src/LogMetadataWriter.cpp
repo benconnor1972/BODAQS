@@ -220,15 +220,72 @@ void appendSignalColumn_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-String localStartedAtFromSessionId_(const char* sessionId) {
-  if (!sessionId || strlen(sessionId) < 19) return String();
-  String s(sessionId);
-  s.replace("_", "T");
-  if (s.length() >= 19) {
-    s.setCharAt(13, ':');
-    s.setCharAt(16, ':');
+bool isDigitAt_(const String& s, int index) {
+  if (index < 0 || index >= (int)s.length()) return false;
+  const char c = s.charAt(index);
+  return c >= '0' && c <= '9';
+}
+
+bool hasDigits_(const String& s, int start, int count) {
+  for (int i = 0; i < count; ++i) {
+    if (!isDigitAt_(s, start + i)) return false;
   }
-  return s;
+  return true;
+}
+
+String localStartedAtFromSessionId_(const char* sessionId) {
+  if (!sessionId || !*sessionId) return String();
+
+  String s(sessionId);
+  int loggerSep = -1;
+  for (int i = 0; i + 1 < (int)s.length(); ++i) {
+    if (s.charAt(i) == '_' && s.charAt(i + 1) == '_') {
+      loggerSep = i;
+    }
+  }
+  if (loggerSep >= 0 && loggerSep + 2 < (int)s.length()) {
+    s = s.substring(loggerSep + 2);
+  }
+
+  if (s.length() >= 19
+      && hasDigits_(s, 0, 4)
+      && s.charAt(4) == '-'
+      && hasDigits_(s, 5, 2)
+      && s.charAt(7) == '-'
+      && hasDigits_(s, 8, 2)
+      && s.charAt(10) == '_'
+      && hasDigits_(s, 11, 2)
+      && s.charAt(13) == '-'
+      && hasDigits_(s, 14, 2)
+      && s.charAt(16) == '-'
+      && hasDigits_(s, 17, 2)) {
+    String out = s.substring(0, 19);
+    out.replace("_", "T");
+    out.setCharAt(13, ':');
+    out.setCharAt(16, ':');
+    return out;
+  }
+
+  if (s.length() >= 13
+      && hasDigits_(s, 0, 6)
+      && s.charAt(6) == '_'
+      && hasDigits_(s, 7, 6)) {
+    String out(F("20"));
+    out += s.substring(0, 2);
+    out += '-';
+    out += s.substring(2, 4);
+    out += '-';
+    out += s.substring(4, 6);
+    out += 'T';
+    out += s.substring(7, 9);
+    out += ':';
+    out += s.substring(9, 11);
+    out += ':';
+    out += s.substring(11, 13);
+    return out;
+  }
+
+  return String();
 }
 
 void appendSynBikeRawColumn_(String& out,

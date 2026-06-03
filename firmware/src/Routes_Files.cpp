@@ -191,9 +191,9 @@ static String makeZipName_() {
     struct tm t;
     localtime_r(&now, &t);
     char buf[32];
-    // YYYY-MM-DD_HH-MM-SS.zip
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d_%02d-%02d-%02d.zip",
-             t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+    // YYMMDD_HHMMSS.zip
+    snprintf(buf, sizeof(buf), "%02d%02d%02d_%02d%02d%02d.zip",
+             (t.tm_year + 1900) % 100, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
     return String(buf);
   }
   return String("bodaqs_") + String(millis()) + String(".zip");

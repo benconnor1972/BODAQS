@@ -90,15 +90,6 @@ static bool isSynBikeRawFormat_() {
   return s_activeLogFormat == LogFormat::SynBikeRaw;
 }
 
-static String isoLocalFromFilenameTimestamp_(const String& s) {
-  if (s.length() < 19) return String();
-  String out = s.substring(0, 19);
-  out.replace("_", "T");
-  out.setCharAt(13, ':');
-  out.setCharAt(16, ':');
-  return out;
-}
-
 static String isoUtcFromEpoch_(time_t epoch) {
   if (epoch < 1577836800) return String();
 
@@ -108,6 +99,30 @@ static String isoUtcFromEpoch_(time_t epoch) {
 
   char buf[32];
   strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &utcInfo);
+  return String(buf);
+}
+
+static String isoLocalFromEpoch_(time_t epoch) {
+  if (epoch < 1577836800) return String();
+
+  struct tm localInfo;
+  localtime_r(&epoch, &localInfo);
+  if ((localInfo.tm_year + 1900) < 2020) return String();
+
+  char buf[32];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &localInfo);
+  return String(buf);
+}
+
+static String compactLocalStemFromEpoch_(time_t epoch) {
+  if (epoch < 1577836800) return String();
+
+  struct tm localInfo;
+  localtime_r(&epoch, &localInfo);
+  if ((localInfo.tm_year + 1900) < 2020) return String();
+
+  char buf[16];
+  strftime(buf, sizeof(buf), "%y%m%d_%H%M%S", &localInfo);
   return String(buf);
 }
 
@@ -494,9 +509,38 @@ void StorageManager_setBufferSize(size_t bytes) {
     bufferIndex = 0;
 }
 
+static bool tryCreateLogFile_SDMMC_(const String& name, File& out) {
+  String abs = name;
+  if (!abs.startsWith("/")) abs = "/" + abs;
+
+  if (SD_MMC.exists(abs)) return false;
+
+  out = SD_MMC.open(abs, FILE_WRITE);
+  if (!out) return false;
+
+  // Ensure we start from an empty file even if FILE_WRITE appends on this FS.
+  out.seek(0);
+  return true;
+}
+
+static bool openNumberedLogFile_SDMMC_() {
+  STOR_LOGW("SD_MMC: trying LOGnnnn.CSV filename fallback...\n");
+  char fallback[20];
+  for (int i = 1; i < 10000; i++) {
+    snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
+    if (tryCreateLogFile_SDMMC_(String(fallback), logFileMMC)) {
+      STOR_LOGI("SD_MMC: Using fallback: %s\n", fallback);
+      s_currentLogPath = fallback;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Utility: truncate to 8.3 filename
 static String make83Name(const String &dtString) {
-    // Example: "2025-08-17_12-34-56" → "L20250817.CSV"
+    // Example: "260219_094331.CSV" -> "L2602190.CSV"
     String name = "L";
 
     // keep only digits
@@ -509,29 +553,16 @@ static String make83Name(const String &dtString) {
     return name;
 }
 
-static bool openNewLogFile_SDMMC(const String& longName) {
+static bool openNewLogFile_SDMMC(const String& longName, bool numberedOnly = false) {
   logFileMMC.close();
   s_currentLogPath = "";
 
-  // Helper lambda for "exclusive" create style.
-  auto tryCreate = [](const String& name, File& out) -> bool {
-    String abs = name;
-    if (!abs.startsWith("/")) abs = "/" + abs;
-
-    if (SD_MMC.exists(abs)) return false;
-
-    out = SD_MMC.open(abs, FILE_WRITE);
-    if (!out) return false;
-
-    // Ensure we start from an empty file even if FILE_WRITE appends on this FS
-    out.seek(0);
-
-    return true;
-  };
-
+  if (numberedOnly) {
+    return openNumberedLogFile_SDMMC_();
+  }
 
   // 1) Long name
-  if (tryCreate(longName, logFileMMC)) {
+  if (tryCreateLogFile_SDMMC_(longName, logFileMMC)) {
     STOR_LOGI("SD_MMC: Using long filename: %s\n", longName.c_str());
     s_currentLogPath = longName;
     return true;
@@ -542,25 +573,15 @@ static bool openNewLogFile_SDMMC(const String& longName) {
   String shortName = make83Name(longName);
   STOR_LOGI("SD_MMC: 8.3 candidate: %s\n", shortName.c_str());
 
-  if (tryCreate(shortName, logFileMMC)) {
+  if (tryCreateLogFile_SDMMC_(shortName, logFileMMC)) {
     STOR_LOGI("SD_MMC: Using 8.3: %s\n", shortName.c_str());
     s_currentLogPath = shortName;
     return true;
   }
 
   // 3) Fallback numbered files
-  STOR_LOGW("SD_MMC: 8.3 failed, trying LOGnnnn.CSV...\n");
-  char fallback[20];
-  for (int i = 1; i < 10000; i++) {
-    snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
-    if (tryCreate(String(fallback), logFileMMC)) {
-      STOR_LOGI("SD_MMC: Using fallback: %s\n", fallback);
-      s_currentLogPath = fallback;
-      return true;
-    }
-  }
-
-  return false;
+  STOR_LOGW("SD_MMC: 8.3 failed\n");
+  return openNumberedLogFile_SDMMC_();
 }
 
 // Start new log file
@@ -586,17 +607,20 @@ static void startLog() {
   const bool rtcValid = RTCManager_hasValidTime();
   const time_t startEpoch = RTCManager_getEpoch();
   const uint32_t filenameT0 = millis();
-  String filename = RTCManager_getDateTimeString();
-  s_logStartedAtUtc = isoUtcFromEpoch_(startEpoch);
-  s_logStartedAtLocal = isoLocalFromFilenameTimestamp_(filename);
+  const String compactStem = rtcValid ? compactLocalStemFromEpoch_(startEpoch) : String();
+  String filename;
+  if (compactStem.length()) {
+    filename = compactStem + F(".CSV");
+  } else {
+    filename = F("LOGnnnn.CSV");
+  }
+  s_logStartedAtUtc = compactStem.length() ? isoUtcFromEpoch_(startEpoch) : String();
+  s_logStartedAtLocal = compactStem.length() ? isoLocalFromEpoch_(startEpoch) : String();
   const uint32_t filenameMs = millis() - filenameT0;
-  filename.replace(":", "-");
-  filename.replace(" ", "_");
-  filename += ".CSV";
-  s_currentSessionId = filename.substring(0, filename.length() - 4);
+  s_currentSessionId = compactStem;
 
-  if (!rtcValid) {
-    STOR_LOGW("startLog: RTC invalid, using fallback filename '%s'\n", filename.c_str());
+  if (!compactStem.length()) {
+    STOR_LOGW("startLog: RTC timestamp unavailable, using LOGnnnn.CSV filename fallback\n");
   }
 
   TRACE("[Storage] Trying to open log: ");
@@ -611,7 +635,7 @@ static void startLog() {
 
   STOR_LOGI("SD_MMC path = %s\n", path.c_str());
 
-  ok = openNewLogFile_SDMMC(path);
+  ok = openNewLogFile_SDMMC(path, !compactStem.length());
   openMs = millis() - openT0;
   if (!ok) {
     TRACE("[Storage] startLog: SD_MMC open failed");
@@ -714,7 +738,7 @@ void StorageManager_stopLog() {
   logFileMMC.close();
 
   if (s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
-    const String generatedAtLocal = isoLocalFromFilenameTimestamp_(RTCManager_getDateTimeString());
+    const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
     LogMetadataContext metaCtx;
     metaCtx.csvPath = s_currentLogPath.c_str();
     metaCtx.sessionId = s_currentSessionId.c_str();

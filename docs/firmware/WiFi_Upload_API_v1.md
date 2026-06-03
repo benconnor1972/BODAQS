@@ -49,18 +49,21 @@ addresses are not the primary app-level identity in this contract.
 ### Session Stem
 
 `session_stem` is the shared basename of the session files, without extension.
+For logs started with a valid RTC timestamp, firmware-generated session stems
+use compact local time as `YYMMDD_HHMMSS`. If no valid timestamp is available at
+log start, the firmware uses a numbered `LOGnnnn` fallback stem.
 
 Example:
 
 ```text
-2026-05-16_20-15-42.CSV
-2026-05-16_20-15-42.json
+260516_201542.CSV
+260516_201542.json
 ```
 
 The `session_stem` is:
 
 ```text
-2026-05-16_20-15-42
+260516_201542
 ```
 
 ### Session ID
@@ -291,11 +294,11 @@ Example response:
   "logger_id": "Prototype E",
   "sessions": [
     {
-      "session_id": "Prototype E__2026-05-16_20-15-42",
-      "session_stem": "2026-05-16_20-15-42",
-      "csv_path": "/logs/2026-05-16_20-15-42.CSV",
-      "json_path": "/logs/2026-05-16_20-15-42.json",
-      "archive_path": "/logs/2026-05-16_20-15-42.zip",
+      "session_id": "Prototype E__260516_201542",
+      "session_stem": "260516_201542",
+      "csv_path": "/logs/260516_201542.CSV",
+      "json_path": "/logs/260516_201542.json",
+      "archive_path": "/logs/260516_201542.zip",
       "archive_ready": true,
       "uploaded": false,
       "acknowledged": false
@@ -330,7 +333,7 @@ Request JSON:
 
 ```json
 {
-  "session_id": "Prototype E__2026-05-16_20-15-42",
+  "session_id": "Prototype E__260516_201542",
   "status": "imported",
   "library_id": "default-library",
   "run_id": "run_2026-05-16T19-23-26_AWST",
@@ -358,7 +361,7 @@ Request JSON:
 
 ```json
 {
-  "session_id": "Prototype E__2026-05-16_20-15-42",
+  "session_id": "Prototype E__260516_201542",
   "mode": "move_to_uploaded"
 }
 ```
@@ -375,25 +378,25 @@ Successful cleanup response:
   "schema": "bodaqs.logger.session_delete",
   "api_version": 1,
   "logger_id": "Prototype E",
-  "session_id": "Prototype E__2026-05-16_20-15-42",
+  "session_id": "Prototype E__260516_201542",
   "acknowledged": true,
   "mode": "move_to_uploaded",
   "ok": true,
   "files": {
     "csv": {
       "ok": true,
-      "path": "/2026-05-16_20-15-42.CSV",
-      "target_path": "/uploaded/2026-05-16_20-15-42.CSV"
+      "path": "/260516_201542.CSV",
+      "target_path": "/uploaded/260516_201542.CSV"
     },
     "json": {
       "ok": true,
-      "path": "/2026-05-16_20-15-42.json",
-      "target_path": "/uploaded/2026-05-16_20-15-42.json"
+      "path": "/260516_201542.json",
+      "target_path": "/uploaded/260516_201542.json"
     },
     "archive": {
       "ok": true,
-      "path": "/2026-05-16_20-15-42.zip",
-      "target_path": "/uploaded/2026-05-16_20-15-42.zip"
+      "path": "/260516_201542.zip",
+      "target_path": "/uploaded/260516_201542.zip"
     }
   }
 }
