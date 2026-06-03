@@ -491,7 +491,7 @@ class SessionNoteStore:
             template_id=template.template_id,
             template_version=template.template_version,
             title=title,
-            values={field.field_id: field.default for field in template.fields if field.default is not None},
+            values={field.field_id: field.default for field in template.fields},
             custom_values={},
             free_text_notes=None,
             created_at_utc=ts,

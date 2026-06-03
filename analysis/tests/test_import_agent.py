@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import zipfile
@@ -205,6 +206,14 @@ def _write_session_note_template(path: Path) -> Path:
                 "field_type": "float",
                 "section": "Rear",
                 "unit": "psi",
+                "project_to_catalog": True,
+            },
+            {
+                "field_id": "front_sag_pct",
+                "label": "Front sag",
+                "field_type": "float",
+                "section": "Front",
+                "unit": "%",
                 "project_to_catalog": True,
             },
         ],
@@ -870,6 +879,8 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     session_manifest = artifacts_dir / "runs" / record["run_id"] / "sessions" / record["session_id"] / "manifest.json"
     manifest = json.loads(session_manifest.read_text(encoding="utf-8"))
 
+    assert re.fullmatch(r"source_a_\d{6}_\d{6}(?:_\d{2})?", record["run_id"])
+    assert record["session_id"] == "session_001"
     assert manifest["source"]["original_archive_filename"] == "session_001.zip"
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
@@ -910,6 +921,8 @@ def test_run_sources_once_can_attach_draft_session_note_from_source_preset(tmp_p
     assert note["template_id"] == "import_agent_test_setup"
     assert note["values"]["fork"] == "Test Fork"
     assert note["values"]["rear_air_pressure_psi"] == 185.0
+    assert "front_sag_pct" in note["values"]
+    assert note["values"]["front_sag_pct"] is None
     assert note["source_context"]["origin"] == "import_agent"
     assert note["source_context"]["bike_profile_id"] == "import_agent_test_bike"
     assert note["source_context"]["setup_preset_id"] == "test_setup"

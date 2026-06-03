@@ -23,7 +23,6 @@ from .artifacts import (
     copy_raw_csv_to_source,
     ensure_run_is_new,
     ensure_session_is_new,
-    make_run_id,
     save_session_artifacts,
     write_events_partitioned_by_schema_id,
     write_metrics_partitioned_by_schema_id,
@@ -185,6 +184,12 @@ def _render_data_syn_bike_settings_filename(run_id: str, session_id: str) -> str
 def _safe_filename_component(value: str) -> str:
     text = str(value or "").strip() or "session"
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+
+
+def _compact_import_run_id(source_id: str) -> str:
+    source_part = _safe_filename_component(source_id).strip("._-") or "source"
+    compact_ts = datetime.now().strftime("%y%m%d_%H%M%S")
+    return f"{source_part}_{compact_ts}"
 
 
 def _path_key(path: Path) -> str:
@@ -1865,7 +1870,7 @@ class ImportSourceRunner:
             logger.warning("Failed to clean up partial run directory after import error: %s", run_dir)
 
     def _make_unique_run_id(self) -> str:
-        base = make_run_id(tz_label=self.source.run_tz_label)
+        base = _compact_import_run_id(self.source.source_id)
         run_id = base
         suffix = 1
         while self.store.run_dir(run_id).exists():
