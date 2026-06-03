@@ -15,13 +15,16 @@ struct CleanupResult {
   bool csvOk = false;
   bool jsonOk = false;
   bool archiveOk = false;
+  bool dataOk = false;
   String mode;
   String csvPath;
   String jsonPath;
   String archivePath;
+  String dataPath;
   String csvTargetPath;
   String jsonTargetPath;
   String archiveTargetPath;
+  String dataTargetPath;
   String error;
 };
 

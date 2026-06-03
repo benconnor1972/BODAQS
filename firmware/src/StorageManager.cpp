@@ -2,6 +2,7 @@
 #include "RTCManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
+#include "BdqLogWriter.h"
 #include "LogMetadataWriter.h"
 #include "ZipArchiveWriter.h"
 
@@ -88,6 +89,14 @@ static void refreshValueColumnTypes_();
 
 static bool isSynBikeRawFormat_() {
   return s_activeLogFormat == LogFormat::SynBikeRaw;
+}
+
+static bool isCompactBinaryFormat_() {
+  return s_activeLogFormat == LogFormat::BodaqsCompactBinary;
+}
+
+static const char* activeLogExtension_() {
+  return isCompactBinaryFormat_() ? ".bdq" : ".CSV";
 }
 
 static String isoUtcFromEpoch_(time_t epoch) {
@@ -523,11 +532,11 @@ static bool tryCreateLogFile_SDMMC_(const String& name, File& out) {
   return true;
 }
 
-static bool openNumberedLogFile_SDMMC_() {
-  STOR_LOGW("SD_MMC: trying LOGnnnn.CSV filename fallback...\n");
-  char fallback[20];
+static bool openNumberedLogFile_SDMMC_(const char* extension) {
+  STOR_LOGW("SD_MMC: trying LOGnnnn%s filename fallback...\n", extension ? extension : "");
+  char fallback[24];
   for (int i = 1; i < 10000; i++) {
-    snprintf(fallback, sizeof(fallback), "LOG%04d.CSV", i);
+    snprintf(fallback, sizeof(fallback), "LOG%04d%s", i, extension ? extension : ".CSV");
     if (tryCreateLogFile_SDMMC_(String(fallback), logFileMMC)) {
       STOR_LOGI("SD_MMC: Using fallback: %s\n", fallback);
       s_currentLogPath = fallback;
@@ -539,7 +548,7 @@ static bool openNumberedLogFile_SDMMC_() {
 }
 
 // Utility: truncate to 8.3 filename
-static String make83Name(const String &dtString) {
+static String make83Name(const String &dtString, const char* extension) {
     // Example: "260219_094331.CSV" -> "L2602190.CSV"
     String name = "L";
 
@@ -549,16 +558,16 @@ static String make83Name(const String &dtString) {
         if (name.length() >= 8) break;  // enforce 8 chars max
     }
 
-    name += ".CSV";  // extension
+    name += extension ? extension : ".CSV";
     return name;
 }
 
-static bool openNewLogFile_SDMMC(const String& longName, bool numberedOnly = false) {
+static bool openNewLogFile_SDMMC(const String& longName, const char* extension, bool numberedOnly = false) {
   logFileMMC.close();
   s_currentLogPath = "";
 
   if (numberedOnly) {
-    return openNumberedLogFile_SDMMC_();
+    return openNumberedLogFile_SDMMC_(extension);
   }
 
   // 1) Long name
@@ -570,7 +579,7 @@ static bool openNewLogFile_SDMMC(const String& longName, bool numberedOnly = fal
 
   // 2) 8.3 short name
   STOR_LOGW("SD_MMC: long name failed, trying 8.3...\n");
-  String shortName = make83Name(longName);
+  String shortName = make83Name(longName, extension);
   STOR_LOGI("SD_MMC: 8.3 candidate: %s\n", shortName.c_str());
 
   if (tryCreateLogFile_SDMMC_(shortName, logFileMMC)) {
@@ -581,7 +590,7 @@ static bool openNewLogFile_SDMMC(const String& longName, bool numberedOnly = fal
 
   // 3) Fallback numbered files
   STOR_LOGW("SD_MMC: 8.3 failed\n");
-  return openNumberedLogFile_SDMMC_();
+  return openNumberedLogFile_SDMMC_(extension);
 }
 
 // Start new log file
@@ -608,11 +617,12 @@ static void startLog() {
   const time_t startEpoch = RTCManager_getEpoch();
   const uint32_t filenameT0 = millis();
   const String compactStem = rtcValid ? compactLocalStemFromEpoch_(startEpoch) : String();
+  const char* logExtension = activeLogExtension_();
   String filename;
   if (compactStem.length()) {
-    filename = compactStem + F(".CSV");
+    filename = compactStem + logExtension;
   } else {
-    filename = F("LOGnnnn.CSV");
+    filename = String(F("LOGnnnn")) + logExtension;
   }
   s_logStartedAtUtc = compactStem.length() ? isoUtcFromEpoch_(startEpoch) : String();
   s_logStartedAtLocal = compactStem.length() ? isoLocalFromEpoch_(startEpoch) : String();
@@ -620,7 +630,7 @@ static void startLog() {
   s_currentSessionId = compactStem;
 
   if (!compactStem.length()) {
-    STOR_LOGW("startLog: RTC timestamp unavailable, using LOGnnnn.CSV filename fallback\n");
+    STOR_LOGW("startLog: RTC timestamp unavailable, using LOGnnnn%s filename fallback\n", logExtension);
   }
 
   TRACE("[Storage] Trying to open log: ");
@@ -635,7 +645,7 @@ static void startLog() {
 
   STOR_LOGI("SD_MMC path = %s\n", path.c_str());
 
-  ok = openNewLogFile_SDMMC(path, !compactStem.length());
+  ok = openNewLogFile_SDMMC(path, logExtension, !compactStem.length());
   openMs = millis() - openT0;
   if (!ok) {
     TRACE("[Storage] startLog: SD_MMC open failed");
@@ -658,7 +668,28 @@ static void startLog() {
   uint32_t flushMs = 0;
   uint32_t headerMs = 0;
 
-  if (isSynBikeRawFormat_()) {
+  if (isCompactBinaryFormat_()) {
+    BdqLogSessionInfo info;
+    info.config = &ConfigManager::get();
+    info.logPath = s_currentLogPath.c_str();
+    info.sessionId = s_currentSessionId.c_str();
+    info.startedAtUtc = s_logStartedAtUtc.c_str();
+    info.startedAtLocal = s_logStartedAtLocal.c_str();
+    info.timezone = RTCManager_getTimezone();
+    info.createdUnixUs = rtcValid ? ((uint64_t)startEpoch * 1000000ULL) : 0;
+    info.sampleRateHz = (uint16_t)sampleRateHz;
+    info.samplePeriodUs = sampleRateHz ? (1000000UL / sampleRateHz) : 0;
+    info.targetChunkBytes = bufferSize ? (uint32_t)bufferSize : 8192UL;
+
+    if (!BdqLogWriter::begin(logFileMMC, info)) {
+      STOR_LOGE("BDQ writer begin failed\n");
+      logFileMMC.close();
+      s_currentLogPath = "";
+      return;
+    }
+    headerMs = millis() - headerT0;
+    flushMs = 0;
+  } else if (isSynBikeRawFormat_()) {
     (void)SensorManager::resolveSynBikeRawBindings(s_synBikeRawBindings);
     if (!s_synBikeRawBindings.front.available) {
       STOR_LOGW("syn.bike raw format: no front wheel/suspension raw column found; emitting blank front column\n");
@@ -718,6 +749,17 @@ void StorageManager_startLog() {
   startLog();
 }
 
+static void StorageManager_logSampleRow_(const SampleRow& row) {
+  if (isCompactBinaryFormat_()) {
+    if (BdqLogWriter::writeSample(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark)) {
+      ++s_rowsWritten;
+    }
+    return;
+  }
+
+  StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
+}
+
 
 // Stop log
 void StorageManager_stopLog() {
@@ -726,18 +768,30 @@ void StorageManager_stopLog() {
   // Drain any remaining queued samples into the staging buffer
   SampleRow row;
   while (dequeueSample(row)) {
-      StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
+      StorageManager_logSampleRow_(row);
   }
 
-  if (bufferIndex > 0) {
+  if (!isCompactBinaryFormat_() && bufferIndex > 0) {
     logFileMMC.write((const uint8_t*)buffer, bufferIndex);
     bufferIndex = 0;
   }
 
+  if (isCompactBinaryFormat_()) {
+    BdqLogEndInfo endInfo;
+    endInfo.samplesDropped = s_samplesDropped;
+    endInfo.queueMax = s_qMax;
+    endInfo.queueDepth = s_qCap;
+    endInfo.flushCount = s_flushCount;
+    endInfo.flushMaxMs = s_flushMaxMs;
+    endInfo.flushTotalMs = s_flushTotalMs;
+    if (!BdqLogWriter::end(endInfo)) {
+      STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
+    }
+  }
 
   logFileMMC.close();
 
-  if (s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
+  if (!isCompactBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
     LogMetadataContext metaCtx;
     metaCtx.csvPath = s_currentLogPath.c_str();
@@ -770,7 +824,7 @@ void StorageManager_stopLog() {
     } else {
       STOR_LOGW("Failed to build log metadata for %s\n", s_currentLogPath.c_str());
     }
-  } else if (s_currentLogPath.length()) {
+  } else if (!isCompactBinaryFormat_() && s_currentLogPath.length()) {
     STOR_LOGI("Log metadata omitted by config\n");
   }
 
@@ -1000,7 +1054,7 @@ void StorageManager_loop() {
       uint32_t t_row0 = 0;
       if ((s_rowCount % 200) == 0) t_row0 = micros();
 
-      StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
+      StorageManager_logSampleRow_(row);
 
       if (t_row0) {
         uint32_t us = micros() - t_row0;
@@ -1022,6 +1076,27 @@ void StorageManager_loop() {
   }
 
   // 2) Periodic / threshold-based flush of the staging buffer to SD
+  if (loggingActive && isCompactBinaryFormat_()) {
+    if ((now - lastFlush >= 5000) && BdqLogWriter::pendingFrameCount() > 0) {
+      uint32_t t0 = millis();
+
+      if (g_sdTrackEnabled) {
+        g_sdWriteSinceLastSample = true;
+      }
+
+      if (BdqLogWriter::flushDataChunk()) {
+        BdqLogWriter::flushFile();
+
+        uint32_t dt = millis() - t0;
+        ++s_flushCount;
+        s_flushTotalMs += dt;
+        if (dt > s_flushMaxMs) s_flushMaxMs = dt;
+      }
+      lastFlush = now;
+    }
+    return;
+  }
+
   if (loggingActive && bufferIndex > 0) {
     if ((now - lastFlush >= 5000) || (bufferIndex > bufferSize * 9 / 10)) {
 

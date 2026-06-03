@@ -121,6 +121,10 @@ through `POST /api/v1/session/delete` after acknowledgement.
 The logger should create a session archive when a log is closed and the
 same-stem JSON metadata has been written.
 
+This contract applies to CSV log formats only. Compact binary sessions use a
+loose self-contained `.bdq` file and are downloaded through
+`GET /api/v1/session/data`.
+
 For each completed session:
 
 ```text
@@ -141,6 +145,15 @@ The CSV and JSON filenames inside the archive must have the same basename.
 The archive should be generated only after both source files have been closed.
 If archive generation fails, the session may still be listed with
 `archive_ready: false`, but it must not be downloadable as a completed archive.
+
+For compact binary sessions:
+
+```text
+<session_stem>.bdq
+```
+
+No same-stem JSON sidecar or ZIP archive is required because metadata and
+channel schema are embedded in the `.bdq` file.
 
 ## Response Envelope
 
@@ -299,7 +312,25 @@ Example response:
       "csv_path": "/logs/260516_201542.CSV",
       "json_path": "/logs/260516_201542.json",
       "archive_path": "/logs/260516_201542.zip",
+      "data_format": "csv_zip",
+      "data_path": "/logs/260516_201542.zip",
       "archive_ready": true,
+      "data_ready": true,
+      "data_size": 123456,
+      "uploaded": false,
+      "acknowledged": false
+    },
+    {
+      "session_id": "Prototype E__260516_202012",
+      "session_stem": "260516_202012",
+      "csv_path": "",
+      "json_path": "",
+      "archive_path": "",
+      "data_format": "bdq",
+      "data_path": "/logs/260516_202012.bdq",
+      "archive_ready": false,
+      "data_ready": true,
+      "data_size": 654321,
       "uploaded": false,
       "acknowledged": false
     }
@@ -313,11 +344,27 @@ Downloads the session archive.
 
 Requires upload mode.
 
+CSV ZIP sessions only. For compact binary `.bdq` sessions, use
+`GET /api/v1/session/data?id=<session_id>`.
+
 Response:
 
 ```text
 Content-Type: application/zip
 Content-Disposition: attachment; filename="<session_id>.zip"
+```
+
+### `GET /api/v1/session/data?id=<session_id>`
+
+Downloads a loose compact binary `.bdq` session.
+
+Requires upload mode.
+
+Response:
+
+```text
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="<session_id>.bdq"
 ```
 
 The import agent downloads to a `.part` file first, validates the completed zip,
