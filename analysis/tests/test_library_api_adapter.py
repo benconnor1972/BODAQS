@@ -396,6 +396,62 @@ def test_library_adapter_refresh_updates_library_cache(tmp_path: Path) -> None:
     assert [library["library_id"] for library in refreshed] == ["new-library"]
 
 
+def test_library_adapter_loads_and_saves_session_note(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    loaded = adapter.load_session_note("default-library", {"session_ref": session_ref})
+    assert loaded["schema"] == "bodaqs.library_api.session_note"
+    assert loaded["present"] is True
+    assert loaded["note"]["values"]["bike"] == "Prototype F"
+    assert loaded["note"]["draft"] is True
+    assert loaded["template"]["status"] == "ok"
+    assert "bike" in {field["field_id"] for field in loaded["template"]["fields"]}
+
+    note = dict(loaded["note"])
+    note["values"] = {**note["values"], "bike": "Prototype G", "rider": "Ben"}
+    note["free_text_notes"] = "Sag checked before the shuttle laps."
+    note["draft"] = False
+
+    saved = adapter.save_session_note(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "note": note,
+        },
+    )
+
+    assert saved["present"] is True
+    assert saved["note"]["values"]["bike"] == "Prototype G"
+    assert saved["note"]["free_text_notes"] == "Sag checked before the shuttle laps."
+    assert saved["note"]["draft"] is False
+
+    saved_path = (
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+        / "annotations"
+        / "session_notes.json"
+    )
+    persisted = _read_json(saved_path)
+    assert persisted["values"]["bike"] == "Prototype G"
+    assert persisted["draft"] is False
+
+    catalog = adapter.get_catalog("default-library", refresh=True)
+    row = catalog["rows"][0]
+    assert row["note_status"]["status"] == "edited"
+    assert row["note_fields"]["bike"] == "Prototype G"
+
+
 def test_library_adapter_creates_loads_lists_and_deletes_study_set(
     tmp_path: Path,
 ) -> None:
@@ -680,6 +736,47 @@ def test_library_adapter_session_filter_crud_and_revision_check(tmp_path: Path) 
     assert adapter.delete_session_filter("ben-rides-with-gps") == {
         "deleted": True,
         "filter_id": "ben-rides-with-gps",
+    }
+
+
+def test_library_adapter_session_filter_accepts_trackpoint_crossing_predicate(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_session_filter(
+        {
+            "display_name": "Ben rides through test points",
+            "description": "Rider plus trackpoint crossing helper.",
+            "category": "riders",
+            "predicate": {
+                "op": "and",
+                "children": [
+                    {"field": "rider", "op": "contains", "value": "Ben"},
+                    {
+                        "field": "trackpoint.crossing",
+                        "op": "matches",
+                        "value": {
+                            "track_id": "ben-stevo-2026-02-19",
+                            "trackpoint_ids": ["test", "in-tween", "test-2"],
+                            "match_mode": "all",
+                            "tolerance_m": 10,
+                        },
+                    },
+                ],
+            },
+        }
+    )
+
+    trackpoint_predicate = created["predicate"]["children"][1]
+    assert trackpoint_predicate == {
+        "field": "trackpoint.crossing",
+        "op": "matches",
+        "value": {
+            "track_id": "ben-stevo-2026-02-19",
+            "trackpoint_ids": ["test", "in-tween", "test-2"],
+            "match_mode": "all",
+            "tolerance_m": 10.0,
+        },
     }
 
 
@@ -1616,6 +1713,26 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert refresh.status_code == 200
     assert refresh.json()["refreshed"] is True
 
+    note_response = client.post(
+        "/api/v1/libraries/default-library/sessions/note",
+        json={"session_ref": session_ref},
+    )
+    assert note_response.status_code == 200
+    note_payload = note_response.json()
+    assert note_payload["present"] is True
+    assert note_payload["note"]["values"]["rider"] == "Ben"
+
+    edited_note = note_payload["note"]
+    edited_note["values"] = {**edited_note["values"], "rider": "Alex"}
+    edited_note["draft"] = False
+    save_note_response = client.put(
+        "/api/v1/libraries/default-library/sessions/note",
+        json={"session_ref": session_ref, "note": edited_note},
+    )
+    assert save_note_response.status_code == 200
+    assert save_note_response.json()["note"]["values"]["rider"] == "Alex"
+    assert save_note_response.json()["note"]["draft"] is False
+
     other_libraries_root = tmp_path / "other-libraries"
     other_library_root = other_libraries_root / "field-library"
     _make_library_definition(
@@ -1747,6 +1864,42 @@ def test_library_api_service_session_filter_crud_and_revision_conflict(tmp_path:
     delete_response = client.delete("/api/v1/session-filters/service-gps-filter")
     assert delete_response.status_code == 200
     assert delete_response.json() == {"deleted": True, "filter_id": "service-gps-filter"}
+
+
+def test_library_api_service_session_filter_accepts_trackpoint_crossing_predicate(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    client = TestClient(create_app(libraries_root))
+
+    create_response = client.post(
+        "/api/v1/session-filters",
+        json={
+            "display_name": "Service Trackpoint Filter",
+            "description": "Reusable geospatial filter from service test.",
+            "category": "gps",
+            "predicate": {
+                "op": "and",
+                "children": [
+                    {"field": "rider", "op": "contains", "value": "Ben"},
+                    {
+                        "field": "trackpoint.crossing",
+                        "op": "matches",
+                        "value": {
+                            "track_id": "service-track",
+                            "trackpoint_ids": ["gate-a"],
+                            "match_mode": "all",
+                            "tolerance_m": 5,
+                        },
+                    },
+                ],
+            },
+        },
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["schema"] == "bodaqs.session_filter"
+    assert created["predicate"]["children"][1]["op"] == "matches"
+    assert created["predicate"]["children"][1]["value"]["track_id"] == "service-track"
 
 
 def test_library_api_service_timeseries_window_and_error_envelope(

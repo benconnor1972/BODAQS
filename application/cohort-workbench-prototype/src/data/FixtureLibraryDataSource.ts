@@ -7,6 +7,9 @@ import {
 import type {
   SessionGpsPointSet,
   SessionGpsSummary,
+  SessionNoteFieldDef,
+  SessionNoteRecord,
+  SessionNoteValue,
   SessionRecord,
   StudySet,
   TrackpointMatchQueryRecord,
@@ -27,6 +30,8 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   private savedStudySets = fixtureSavedStudySets.map(cloneStudySet)
   private savedFilters = prototypeSavedSessionFilters.map(cloneSavedFilter)
   private trackpointQueries = new Map<string, { query: TrackpointMatchQueryRecord; results: TrackpointMatchQueryResult[] }>()
+  private sessions = fixtureSessions.map(cloneSession)
+  private notes = new Map(this.sessions.map((session) => [sessionRefId(sessionToStudyRef(session)), sessionNoteFromSession(session)]))
   private tracks = fixtureTracks.map(cloneTrack)
 
   async listLibraries() {
@@ -34,7 +39,7 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   }
 
   async listSessions() {
-    return fixtureSessions.map(cloneSession)
+    return this.sessions.map(cloneSession)
   }
 
   async listTracks() {
@@ -124,8 +129,8 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
     const trackpointIds = request.trackpointIds.filter(Boolean)
     const libraryIds = request.scope?.libraryIds?.length
       ? request.scope.libraryIds
-      : Array.from(new Set(fixtureSessions.map((session) => session.libraryId)))
-    const candidateSessions = fixtureSessions.filter((session) => libraryIds.includes(session.libraryId))
+      : Array.from(new Set(this.sessions.map((session) => session.libraryId)))
+    const candidateSessions = this.sessions.filter((session) => libraryIds.includes(session.libraryId))
     const queryId = uniqueId(
       slugify([request.trackId, ...trackpointIds, request.matchMode, String(request.toleranceM)].join(' ')),
       Array.from(this.trackpointQueries.keys()),
@@ -211,6 +216,34 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
       warnings: [...session.gpsSummary.warnings],
     }
   }
+
+  async loadSessionNote(session: SessionRecord): Promise<SessionNoteRecord> {
+    const key = sessionRefId(sessionToStudyRef(session))
+    return cloneSessionNote(this.notes.get(key) ?? sessionNoteFromSession(session))
+  }
+
+  async saveSessionNote(note: SessionNoteRecord): Promise<SessionNoteRecord> {
+    const key = sessionRefId(note.sessionRef)
+    const now = new Date().toISOString()
+    const saved: SessionNoteRecord = {
+      ...cloneSessionNote(note),
+      present: true,
+      createdAtUtc: note.createdAtUtc || now,
+      updatedAtUtc: now,
+    }
+    this.notes.set(key, saved)
+    this.sessions = this.sessions.map((session) =>
+      sessionRefId(sessionToStudyRef(session)) === key
+        ? {
+            ...session,
+            bike: noteValueText(saved.values.bike),
+            rider: noteValueText(saved.values.rider),
+            noteStatus: saved.draft ? 'draft' : 'edited',
+          }
+        : session,
+    )
+    return cloneSessionNote(saved)
+  }
 }
 
 function fixtureTrackpointResult(
@@ -279,6 +312,79 @@ function cloneSession(session: SessionRecord): SessionRecord {
     gps: session.gps.map(([x, y]) => [x, y]),
     gpsSummary: cloneGpsSummary(session.gpsSummary),
   }
+}
+
+function sessionNoteFromSession(session: SessionRecord): SessionNoteRecord {
+  const now = new Date().toISOString()
+  return {
+    sessionRef: sessionToStudyRef(session),
+    present: session.noteStatus !== 'missing',
+    title: 'Session note',
+    templateId: 'fixture_session_note',
+    templateVersion: '1.0',
+    templateStatus: 'ok',
+    templateError: '',
+    fields: fixtureNoteFields.map((field) => ({ ...field, enumOptions: [...field.enumOptions] })),
+    customFieldSection: 'Custom',
+    values: {
+      bike: session.bike,
+      rider: session.rider,
+    },
+    customValues: {},
+    freeTextNotes: '',
+    draft: session.noteStatus !== 'edited',
+    createdAtUtc: now,
+    updatedAtUtc: now,
+  }
+}
+
+const fixtureNoteFields: SessionNoteFieldDef[] = [
+  {
+    fieldId: 'bike',
+    label: 'Bike',
+    fieldType: 'string',
+    section: 'Overview',
+    required: false,
+    default: '',
+    unit: '',
+    helpText: '',
+    enumOptions: [],
+  },
+  {
+    fieldId: 'rider',
+    label: 'Rider',
+    fieldType: 'string',
+    section: 'Overview',
+    required: false,
+    default: '',
+    unit: '',
+    helpText: '',
+    enumOptions: [],
+  },
+]
+
+function cloneSessionNote(note: SessionNoteRecord): SessionNoteRecord {
+  return {
+    ...note,
+    sessionRef: { ...note.sessionRef },
+    fields: note.fields.map((field) => ({ ...field, enumOptions: [...field.enumOptions] })),
+    values: cloneNoteValues(note.values),
+    customValues: cloneNoteValues(note.customValues),
+  }
+}
+
+function cloneNoteValues(values: Record<string, SessionNoteValue>): Record<string, SessionNoteValue> {
+  return { ...values }
+}
+
+function noteValueText(value: SessionNoteValue | undefined) {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  return ''
 }
 
 function cloneTrack(track: TrackRecord): TrackRecord {

@@ -86,12 +86,46 @@ export type SessionRecord = {
   gpsSummary: SessionGpsSummary
 }
 
+export type SessionNoteValue = string | number | boolean | string[] | null
+
+export type SessionNoteFieldType = 'string' | 'text' | 'int' | 'float' | 'bool' | 'enum' | 'multi_enum' | 'date'
+
 export type StudySessionRef = {
   libraryId: string
   sessionKey: string
   runId: string
   sessionId: string
   label: string
+}
+
+export type SessionNoteRecord = {
+  sessionRef: StudySessionRef
+  present: boolean
+  title: string
+  templateId: string
+  templateVersion: string
+  templateStatus: 'ok' | 'missing'
+  templateError: string
+  fields: SessionNoteFieldDef[]
+  customFieldSection: string
+  values: Record<string, SessionNoteValue>
+  customValues: Record<string, SessionNoteValue>
+  freeTextNotes: string
+  draft: boolean
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
+export type SessionNoteFieldDef = {
+  fieldId: string
+  label: string
+  fieldType: SessionNoteFieldType
+  section: string
+  required: boolean
+  default: SessionNoteValue
+  unit: string
+  helpText: string
+  enumOptions: string[]
 }
 
 export type TrackpointMatchMode = 'any' | 'all' | 'min_count'

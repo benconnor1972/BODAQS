@@ -78,6 +78,14 @@ from .session_filters import (
     load_session_filter,
     update_session_filter,
 )
+from .session_notes import (
+    SESSION_NOTE_API_SCHEMA,
+    SESSION_NOTE_API_VERSION,
+    SESSION_NOTE_DOCUMENT_SCHEMA,
+    SESSION_NOTE_DOCUMENT_VERSION,
+    load_session_note,
+    save_session_note,
+)
 from .study_sets import (
     STUDY_SET_SCHEMA,
     STUDY_SET_VERSION,
@@ -133,6 +141,10 @@ __all__ = [
     "SESSION_CATALOG_VERSION",
     "SESSION_GPS_POINTS_SCHEMA",
     "SESSION_GPS_POINTS_VERSION",
+    "SESSION_NOTE_API_SCHEMA",
+    "SESSION_NOTE_API_VERSION",
+    "SESSION_NOTE_DOCUMENT_SCHEMA",
+    "SESSION_NOTE_DOCUMENT_VERSION",
     "SELECTION_BRIDGE_SCHEMA",
     "SELECTION_BRIDGE_VERSION",
     "SESSION_TRACK_MATCH_SCHEMA",
@@ -179,6 +191,7 @@ __all__ = [
     "list_tracks",
     "load_geospatial_policy",
     "load_session_filter",
+    "load_session_note",
     "load_study_set",
     "load_track",
     "load_track_match",
@@ -197,5 +210,6 @@ __all__ = [
     "validate_study_set",
     "cancel_trackpoint_match_query",
     "fail_trackpoint_match_query",
+    "save_session_note",
     "write_trackpoint_match_query_results",
 ]

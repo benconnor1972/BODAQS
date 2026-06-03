@@ -15,7 +15,7 @@ export function SessionInfoButtons({
   return (
     <>
       <IconButton
-        label={`View note: ${noteStatusLabel(session.noteStatus)}`}
+        label={`View/edit note: ${noteStatusLabel(session.noteStatus)}`}
         onClick={() => onInspect(session, 'note')}
         icon={<FileText size={15} />}
         tone={noteTone(session.noteStatus)}

@@ -27,6 +27,7 @@ import { FilterManagerModal } from './components/FilterManagerModal'
 import { GeospatialWorkbench } from './components/GeospatialWorkbench'
 import { GpsRoutePreview } from './components/GpsRoutePreview'
 import { Modal } from './components/Modal'
+import { SessionNoteEditorModal } from './components/SessionNoteEditorModal'
 import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
@@ -68,6 +69,7 @@ import type {
   ColumnId,
   LibraryRecord,
   ModalState,
+  SessionInspectionTab,
   SessionTrackMatchRecord,
   SessionRecord,
   SortDirection,
@@ -131,6 +133,7 @@ function App() {
   const [filterManagerOpen, setFilterManagerOpen] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
+  const [noteEditorSession, setNoteEditorSession] = useState<SessionRecord | null>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
   const [libraryRootInput, setLibraryRootInput] = useState('')
   const [connectionMode, setConnectionMode] = useState<'local-api' | 'fixture'>('local-api')
@@ -620,6 +623,21 @@ function App() {
     }
     setSortColumn(columnId)
     setSortDirection('asc')
+  }
+
+  function inspectSession(session: SessionRecord, tab: SessionInspectionTab) {
+    if (tab === 'note') {
+      setModal(null)
+      setNoteEditorSession(session)
+      return
+    }
+    setModal({ kind: 'session', session, tab })
+  }
+
+  function updateSessionAfterNoteSave(updatedSession: SessionRecord) {
+    setSessions((current) =>
+      current.map((session) => (candidateId(session) === candidateId(updatedSession) ? updatedSession : session)),
+    )
   }
 
   function selectCandidate(session: SessionRecord, gesture: SessionSelectionGesture) {
@@ -1164,7 +1182,7 @@ function App() {
                   onClearTableColumnFilter={clearTableColumnFilter}
                   onSort={setSort}
                   onSelect={selectCandidate}
-                  onInspect={(session, tab) => setModal({ kind: 'session', session, tab })}
+                  onInspect={inspectSession}
                 />
                 <div className="action-row">
                   <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
@@ -1361,7 +1379,7 @@ function App() {
                 selectedStudySessionIds={selectedStudySessionIds}
                 onSelect={selectStudySession}
                 onRemove={removeStudySession}
-                onInspect={(session, tab) => setModal({ kind: 'session', session, tab })}
+                onInspect={inspectSession}
               />
               <div className="grouping-editor">
                 <label>
@@ -1502,9 +1520,18 @@ function App() {
           onClose={() => setModal(null)}
         />
       )}
+      {noteEditorSession && (
+        <SessionNoteEditorModal
+          session={noteEditorSession}
+          dataSource={activeDataSource}
+          onClose={() => setNoteEditorSession(null)}
+          onSaved={updateSessionAfterNoteSave}
+        />
+      )}
       {filterManagerOpen && (
         <FilterManagerModal
           filters={savedSessionFilters}
+          tracks={tracks}
           canWrite={Boolean(activeDataSource.saveSavedSessionFilter)}
           onClose={() => setFilterManagerOpen(false)}
           onSave={saveSessionFilter}

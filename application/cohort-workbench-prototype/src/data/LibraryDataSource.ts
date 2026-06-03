@@ -1,6 +1,7 @@
 import type {
   LibraryRecord,
   SessionGpsPointSet,
+  SessionNoteRecord,
   SessionRecord,
   SessionTrackMatchRecord,
   StudySet,
@@ -28,4 +29,6 @@ export interface LibraryDataSource {
   loadTrackpointMatchQueryResults?(queryId: string, cursor?: string | null, limit?: number): Promise<TrackpointMatchQueryResults>
   cancelTrackpointMatchQuery?(queryId: string): Promise<TrackpointMatchQueryRecord>
   loadSessionGpsPoints?(session: SessionRecord): Promise<SessionGpsPointSet>
+  loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
+  saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
 }

@@ -18,6 +18,7 @@ SESSION_FILTERS_DIR = Path("session_filters")
 
 _GROUP_OPS = {"and", "or"}
 _LEAF_OPS = {"eq", "in", "contains", "present"}
+_TRACKPOINT_OPS = {"matches"}
 _FIELDS = {
     "bike",
     "event.schema",
@@ -31,6 +32,7 @@ _FIELDS = {
     "rider",
     "signals",
     "source.archive",
+    "trackpoint.crossing",
 }
 
 
@@ -186,12 +188,29 @@ def _normalized_predicate(value: Any, *, context: str) -> dict[str, Any]:
                 for index, child in enumerate(children)
             ],
         }
-    if op not in _LEAF_OPS:
-        raise InvalidSessionFilterError(f"{context}.op is not supported.", details={"op": op})
-
     field = _required_text(value.get("field"), field_name=f"{context}.field")
     if field not in _FIELDS:
         raise InvalidSessionFilterError(f"{context}.field is not supported.", details={"field": field})
+    if op in _TRACKPOINT_OPS:
+        if field != "trackpoint.crossing":
+            raise InvalidSessionFilterError(
+                f"{context}.op is only supported for trackpoint crossing predicates.",
+                details={"field": field, "op": op},
+            )
+        if "value" not in value:
+            raise InvalidSessionFilterError(f"{context}.value is required for {op!r}.")
+        return {
+            "field": field,
+            "op": op,
+            "value": _normalized_trackpoint_match_value(value.get("value"), context=f"{context}.value"),
+        }
+    if op not in _LEAF_OPS:
+        raise InvalidSessionFilterError(f"{context}.op is not supported.", details={"op": op})
+    if field == "trackpoint.crossing":
+        raise InvalidSessionFilterError(
+            f"{context}.field requires a trackpoint match operator.",
+            details={"field": field, "op": op},
+        )
 
     out: dict[str, Any] = {"field": field, "op": op}
     if op == "present":
@@ -209,6 +228,63 @@ def _normalized_predicate(value: Any, *, context: str) -> dict[str, Any]:
         out["value"] = raw_value
     else:
         out["value"] = str(raw_value).strip()
+    return out
+
+
+def _normalized_trackpoint_match_value(value: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise InvalidSessionFilterError(f"{context} must be an object for trackpoint matching.")
+
+    track_id = _optional_text(value.get("track_id")) or _optional_text(value.get("trackId"))
+    if track_id is None:
+        raise InvalidSessionFilterError(f"{context}.track_id is required.")
+
+    raw_trackpoint_ids = value.get("trackpoint_ids")
+    if raw_trackpoint_ids is None:
+        raw_trackpoint_ids = value.get("trackpointIds")
+    if raw_trackpoint_ids is None:
+        raw_trackpoint_id = _optional_text(value.get("trackpoint_id")) or _optional_text(value.get("trackpointId"))
+        raw_trackpoint_ids = [raw_trackpoint_id] if raw_trackpoint_id is not None else []
+    if not isinstance(raw_trackpoint_ids, list):
+        raise InvalidSessionFilterError(f"{context}.trackpoint_ids must be a list.")
+    trackpoint_ids = [str(item).strip() for item in raw_trackpoint_ids if str(item).strip()]
+    if not trackpoint_ids:
+        raise InvalidSessionFilterError(f"{context}.trackpoint_ids must contain at least one trackpoint id.")
+
+    match_mode = _optional_text(value.get("match_mode")) or _optional_text(value.get("matchMode")) or "all"
+    if match_mode not in {"any", "all", "min_count"}:
+        raise InvalidSessionFilterError(
+            f"{context}.match_mode is not supported.",
+            details={"match_mode": match_mode},
+        )
+
+    tolerance_m = _number_or_none(value.get("tolerance_m"))
+    if tolerance_m is None:
+        tolerance_m = _number_or_none(value.get("toleranceM"))
+    if tolerance_m is None:
+        tolerance_m = 5.0
+    if tolerance_m < 0:
+        raise InvalidSessionFilterError(f"{context}.tolerance_m must be non-negative.")
+
+    out: dict[str, Any] = {
+        "track_id": track_id,
+        "trackpoint_ids": trackpoint_ids,
+        "match_mode": match_mode,
+        "tolerance_m": tolerance_m,
+    }
+    if match_mode == "min_count" or "min_count" in value or "minCount" in value:
+        min_count = _number_or_none(value.get("min_count"))
+        if min_count is None:
+            min_count = _number_or_none(value.get("minCount"))
+        if min_count is None or min_count < 1 or int(min_count) != min_count:
+            raise InvalidSessionFilterError(f"{context}.min_count must be a positive integer.")
+        out["min_count"] = int(min_count)
+
+    policy_ref = value.get("policy_ref") or value.get("policyRef")
+    if policy_ref is not None:
+        if not isinstance(policy_ref, Mapping):
+            raise InvalidSessionFilterError(f"{context}.policy_ref must be an object when present.")
+        out["policy_ref"] = dict(policy_ref)
     return out
 
 
@@ -259,6 +335,13 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = value.strip()
     return text or None
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if number == number and number not in {float("inf"), float("-inf")} else None
 
 
 def _utcnow_iso() -> str:

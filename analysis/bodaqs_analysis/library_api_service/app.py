@@ -120,6 +120,16 @@ def create_app(
         payload = await request.json()
         return _current_adapter(app).get_session_gps_points(library_id, _json_object_payload(payload))
 
+    @app.post("/api/v1/libraries/{library_id}/sessions/note")
+    async def load_session_note(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).load_session_note(library_id, _json_object_payload(payload))
+
+    @app.put("/api/v1/libraries/{library_id}/sessions/note")
+    async def save_session_note(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).save_session_note(library_id, _json_object_payload(payload))
+
     @app.get("/api/v1/tracks")
     def list_root_tracks() -> list[dict[str, Any]]:
         return _current_adapter(app).list_tracks()

@@ -10,9 +10,14 @@ import type {
   QcLevel,
   SessionGpsPointSet,
   SessionGpsSummary,
+  SessionNoteFieldDef,
+  SessionNoteFieldType,
+  SessionNoteRecord,
+  SessionNoteValue,
   SessionRecord,
   SessionTrackMatchRecord,
   StudyGrouping,
+  StudySessionRef,
   StudySet,
   TrackDirection,
   TrackMatchStatus,
@@ -220,18 +225,39 @@ export class LocalApiDataSource implements LibraryDataSource {
       {
         method: 'POST',
         body: JSON.stringify({
-          session_ref: {
-            library_id: session.libraryId,
-            session_ref_id: candidateId(session),
-            session_key: session.sessionKey,
-            run_id: session.runId,
-            session_id: session.sessionId,
-          },
+          session_ref: toApiSessionRef(session),
           max_points: 1800,
         }),
       },
     )
     return mapSessionGpsPoints(response)
+  }
+
+  async loadSessionNote(session: SessionRecord): Promise<SessionNoteRecord> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/note`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          session_ref: toApiSessionRef(session),
+        }),
+      },
+    )
+    return mapSessionNote(response, session)
+  }
+
+  async saveSessionNote(note: SessionNoteRecord): Promise<SessionNoteRecord> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(note.sessionRef.libraryId)}/sessions/note`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          session_ref: toApiStudySessionRef(note.sessionRef),
+          note: toApiSessionNote(note),
+        }),
+      },
+    )
+    return mapSessionNote(response, note.sessionRef)
   }
 }
 
@@ -488,6 +514,52 @@ function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
   }
 }
 
+function mapSessionNote(value: ApiObject, fallbackSession: SessionRecord | StudySessionRef): SessionNoteRecord {
+  const note = objectValue(value.note)
+  const template = objectValue(value.template)
+  const rawSessionRef = objectValue(value.session_ref)
+  const sessionRef = {
+    libraryId: textValue(rawSessionRef.library_id, fallbackSession.libraryId),
+    sessionKey: textValue(rawSessionRef.session_key, fallbackSession.sessionKey),
+    runId: textValue(rawSessionRef.run_id, fallbackSession.runId),
+    sessionId: textValue(rawSessionRef.session_id, fallbackSession.sessionId),
+    label: 'label' in fallbackSession ? fallbackSession.label : fallbackSession.name,
+  }
+  const values = jsonRecordValue(note.values)
+  const customValues = jsonRecordValue(note.custom_values)
+  return {
+    sessionRef,
+    present: Boolean(value.present),
+    title: textValue(note.title, 'Session note'),
+    templateId: textValue(note.template_id),
+    templateVersion: textValue(note.template_version),
+    templateStatus: template.status === 'ok' ? 'ok' : 'missing',
+    templateError: textValue(template.error),
+    fields: arrayValue(template.fields).filter(isObject).map(mapSessionNoteField),
+    customFieldSection: textValue(template.custom_field_section, 'Custom'),
+    values,
+    customValues,
+    freeTextNotes: textValue(note.free_text_notes),
+    draft: Boolean(note.draft),
+    createdAtUtc: textValue(note.created_at_utc),
+    updatedAtUtc: textValue(note.updated_at_utc),
+  }
+}
+
+function mapSessionNoteField(value: ApiObject): SessionNoteFieldDef {
+  return {
+    fieldId: textValue(value.field_id),
+    label: textValue(value.label, textValue(value.field_id)),
+    fieldType: sessionNoteFieldTypeValue(value.field_type),
+    section: textValue(value.section, 'General'),
+    required: Boolean(value.required),
+    default: jsonNoteValue(value.default),
+    unit: textValue(value.unit),
+    helpText: textValue(value.help_text),
+    enumOptions: arrayValue(value.enum_options).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
 function mapStudySet(value: ApiObject): StudySet {
   const sessions = arrayValue(value.sessions).filter(isObject).map((sessionRef) => ({
     libraryId: textValue(sessionRef.library_id),
@@ -679,6 +751,46 @@ function toApiTrackpointMatchQueryRequest(request: TrackpointMatchQueryRequest) 
   return payload
 }
 
+function toApiSessionRef(session: SessionRecord) {
+  return {
+    library_id: session.libraryId,
+    session_ref_id: candidateId(session),
+    session_key: session.sessionKey,
+    run_id: session.runId,
+    session_id: session.sessionId,
+  }
+}
+
+function toApiStudySessionRef(sessionRef: StudySessionRef) {
+  return {
+    library_id: sessionRef.libraryId,
+    session_ref_id: sessionRefId(sessionRef),
+    session_key: sessionRef.sessionKey,
+    run_id: sessionRef.runId,
+    session_id: sessionRef.sessionId,
+    label: sessionRef.label,
+  }
+}
+
+function toApiSessionNote(note: SessionNoteRecord) {
+  return {
+    schema: 'bodaqs.session_notes.document',
+    version: 1,
+    run_id: note.sessionRef.runId,
+    session_id: note.sessionRef.sessionId,
+    session_key: note.sessionRef.sessionKey,
+    title: note.title.trim() || 'Session note',
+    template_id: note.templateId || 'web_session_note',
+    template_version: note.templateVersion || '1.0',
+    values: note.values,
+    custom_values: note.customValues,
+    free_text_notes: note.freeTextNotes,
+    created_at_utc: note.createdAtUtc,
+    updated_at_utc: note.updatedAtUtc,
+    draft: note.draft,
+  }
+}
+
 function noteStatusValue(value: unknown): NoteStatus {
   if (value === 'draft' || value === 'edited') {
     return value
@@ -799,6 +911,38 @@ function numberValue(value: unknown): number {
 
 function nullableNumberValue(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function jsonRecordValue(value: unknown): Record<string, SessionNoteValue> {
+  const raw = objectValue(value)
+  return Object.fromEntries(
+    Object.entries(raw).map(([key, item]) => [key, jsonNoteValue(item)]),
+  )
+}
+
+function jsonNoteValue(value: unknown): SessionNoteValue {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => textValue(item)).filter(Boolean)
+  }
+  return null
+}
+
+function sessionNoteFieldTypeValue(value: unknown): SessionNoteFieldType {
+  if (
+    value === 'text' ||
+    value === 'int' ||
+    value === 'float' ||
+    value === 'bool' ||
+    value === 'enum' ||
+    value === 'multi_enum' ||
+    value === 'date'
+  ) {
+    return value
+  }
+  return 'string'
 }
 
 function sessionFilterPredicateValue(value: unknown): SessionFilterPredicate {

@@ -38,6 +38,7 @@ from .session_filters import (
     load_session_filter,
     update_session_filter,
 )
+from .session_notes import load_session_note, save_session_note
 from .study_sets import (
     create_study_set,
     delete_study_set,
@@ -133,6 +134,18 @@ class LibraryAdapter:
             max_points=max_points,
             window=window,
         )
+
+    def load_session_note(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        return load_session_note(self._library_root(library_id), session_ref)
+
+    def save_session_note(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        saved = save_session_note(self._library_root(library_id), session_ref, request)
+        self._catalog_cache.pop(str(library_id).strip(), None)
+        return saved
 
     def list_tracks(self) -> list[dict[str, Any]]:
         return list_tracks(self.libraries_root)

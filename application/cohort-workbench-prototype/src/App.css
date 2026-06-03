@@ -1812,6 +1812,169 @@ button {
   padding: 0 10px;
 }
 
+.visual-filter-builder {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(174, 187, 181, 0.72);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(47, 125, 109, 0.1), transparent 30%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(238, 245, 241, 0.78));
+}
+
+.visual-filter-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.visual-filter-toolbar label,
+.condition-main-grid label,
+.trackpoint-condition-grid label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.visual-filter-toolbar select,
+.condition-main-grid select,
+.condition-main-grid input,
+.trackpoint-condition-grid select,
+.trackpoint-condition-grid input {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
+.condition-stack {
+  display: grid;
+  gap: 9px;
+  max-height: 430px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.condition-card {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(174, 187, 181, 0.72);
+  border-radius: 9px;
+  background: rgba(251, 251, 247, 0.9);
+  box-shadow: 0 10px 26px rgba(48, 56, 52, 0.06);
+}
+
+.condition-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.condition-card-header strong {
+  color: var(--green);
+  font-size: 12px;
+}
+
+.condition-main-grid {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.9fr) minmax(110px, 0.7fr) minmax(170px, 1.25fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.condition-value-cell {
+  min-width: 0;
+}
+
+.condition-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.enum-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 3px 0;
+}
+
+.mini-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 4px 7px;
+  border: 1px solid rgba(184, 215, 203, 0.95);
+  border-radius: 999px;
+  background: rgba(229, 241, 236, 0.78);
+  color: #225f50;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.mini-check input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+}
+
+.mini-check small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.trackpoint-condition-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(130px, 0.8fr) minmax(80px, 0.45fr);
+  grid-column: span 2;
+  gap: 8px;
+}
+
+.trackpoint-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  grid-column: 1 / -1;
+  max-height: 110px;
+  overflow: auto;
+  padding: 7px;
+  border: 1px dashed rgba(174, 187, 181, 0.9);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.trackpoint-picker > strong {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.filter-builder-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .filter-manager-textarea {
   min-height: 260px;
   padding: 10px;
@@ -1819,6 +1982,174 @@ button {
   font-size: 12px;
   line-height: 1.45;
   resize: vertical;
+}
+
+.note-editor-modal {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.modal-kicker {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note-editor-content {
+  display: grid;
+  gap: 12px;
+}
+
+.note-editor-summary {
+  padding: 10px;
+  border: 1px solid rgba(174, 187, 181, 0.72);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 8% 10%, rgba(47, 125, 109, 0.1), transparent 28%),
+    rgba(251, 251, 247, 0.86);
+}
+
+.note-editor-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.note-editor-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.note-editor-form input,
+.note-editor-form select,
+.note-editor-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-warm);
+  box-sizing: border-box;
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
+.note-editor-form input,
+.note-editor-form select {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.note-editor-form textarea {
+  min-height: 130px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.note-editor-form .wide-field {
+  grid-column: 1 / -1;
+}
+
+.note-editor-form-full {
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+}
+
+.note-field-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.note-field-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(174, 187, 181, 0.78);
+  border-radius: 10px;
+  background: rgba(251, 251, 247, 0.86);
+}
+
+.note-field-group legend {
+  padding: 0 6px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.note-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 9px;
+}
+
+.note-field-row span:first-child {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.note-field-row em {
+  color: #a05f18;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.note-field-row small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.note-bool-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.note-bool-control input {
+  width: auto;
+  min-height: 0;
+}
+
+.note-enum-picker {
+  padding-top: 3px;
+}
+
+.note-enum-picker .mini-check {
+  display: inline-flex;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.note-enum-picker .mini-check input {
+  width: auto;
+  min-height: 0;
+}
+
+.note-editor-timestamp {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
 }
 
 .modal-status {
@@ -1873,12 +2204,14 @@ button {
   .grouping-editor,
   .library-root-control,
   .filter-manager-content,
-  .filter-manager-row.two-columns {
+  .filter-manager-row.two-columns,
+  .note-editor-form {
     grid-template-columns: 1fr;
   }
 
   .track-create-form,
-  .trackpoint-form {
+  .trackpoint-form,
+  .note-field-grid {
     grid-template-columns: 1fr;
   }
 
