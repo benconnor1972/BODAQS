@@ -12,7 +12,7 @@ adapter implementers
 
 A persisted session filter is a named reusable helper for finding candidate
 sessions. It describes a predicate over session catalog fields, signal metadata,
-and later derived summaries.
+and later derived summaries or API-backed indexes.
 
 Persisted filters are **not** Study Set definitions. Applying a filter changes
 which sessions are visible or selectable. Adding sessions to a Study Set still
@@ -55,6 +55,7 @@ Example:
   "revision": 2,
   "display_name": "Ben rides with usable GPS",
   "description": "Reusable helper for GPS comparison sessions.",
+  "category": "gps",
   "scope": {
     "library_ids": ["default-library"]
   },
@@ -91,6 +92,8 @@ Validation notes:
 - `filter_id` must be filename-safe and unique within the libraries root.
 - `revision` is assigned by the service and must increment on successful write.
 - `display_name` should be short enough for chips and filter-list rows.
+- `category` is optional display grouping metadata for UIs. Missing category
+  means `custom`.
 - `predicate` is required.
 - `scope` is optional. Missing scope means the filter can be evaluated against
   all libraries under the active libraries root.
@@ -144,7 +147,7 @@ Operator semantics:
 
 The service and browser should treat unknown fields/operators as invalid for
 saved objects. Future versions may add numeric comparison, date/time comparison,
-geospatial-section predicates, and signal-content predicates.
+trackpoint-match predicates, and signal-content predicates.
 
 ---
 
@@ -181,7 +184,54 @@ They should become API-backed predicates once signal summaries are available.
 
 ---
 
-## 6. Applying Filters
+## 6. API-Backed Trackpoint Predicates
+
+Trackpoint predicates are planned API-backed filter predicates. They should not
+be evaluated directly from the session catalog because they depend on a track,
+track revision, geospatial policy, tolerance, GPS source identity, and matching
+algorithm version.
+
+Recommended predicate shape:
+
+```json
+{
+  "field": "trackpoint.crossing",
+  "op": "matches",
+  "value": {
+    "track_id": "munda-biddi-test-loop",
+    "trackpoint_ids": ["start-gate", "rock-garden-entry"],
+    "match_mode": "all",
+    "tolerance_m": 5.0,
+    "policy_ref": {
+      "policy_id": "default-geospatial-policy"
+    }
+  }
+}
+```
+
+Recommended `match_mode` values:
+
+```text
+any | all | min_count
+```
+
+If `match_mode` is `min_count`, `value.min_count` is required.
+
+The browser should evaluate this predicate by creating or resuming a
+`TrackpointMatchQuery` through the Library API. The API may use the filter's
+own `scope`, the active selected-library scope, and/or other already-applied
+catalog-backed filters to reduce candidate sessions before starting broad
+geospatial matching.
+
+The result of a trackpoint predicate is a set of matched session references. It
+then participates in the active filter stack like any other saved filter. A
+Study Set created from the result still stores explicit session membership; the
+trackpoint predicate may appear only in Study Set provenance unless a future
+explicit refresh action is added.
+
+---
+
+## 7. Applying Filters
 
 The default filter stack behavior is:
 
@@ -254,7 +304,26 @@ that is not present in the session catalog.
 
 ---
 
-## 8. Deferred Work
+## 8. Implementation Sequence For Trackpoint Filters
+
+Recommended first implementation sequence:
+
+1. Extend the frontend filter model to recognise `trackpoint.crossing` /
+   `matches` predicates.
+2. Add a simple filter-builder UI for choosing track, trackpoints, `match_mode`,
+   and tolerance.
+3. When a trackpoint filter is applied, ask the Library API to create or resume
+   a `TrackpointMatchQuery`.
+4. Poll query status and apply the paged matched session refs to the visible
+   session set as results arrive.
+5. Cache the query id and progress in browser state so the UI can show
+   "building index", "partially available", and "complete" states.
+6. Keep authoring/persistence of the filter separate from execution/progress of
+   any particular query job.
+
+---
+
+## 9. Deferred Work
 
 Deferred beyond the first persisted-filter contract:
 
@@ -262,6 +331,6 @@ Deferred beyond the first persisted-filter contract:
 - ad-hoc table-header filtering
 - saving an ad-hoc table filter as a persisted filter
 - API-backed signal-content predicates
-- API-backed geospatial-section predicates
+- richer API-backed geospatial-section predicates beyond trackpoint crossings
 - importing/exporting filters across libraries roots
 - hosted/shared filter permissions

@@ -23,6 +23,7 @@ import {
 import './App.css'
 import { IconButton, PanelTitle, SummaryTile } from './components/Common'
 import { FilterPanel } from './components/FilterPanel'
+import { FilterManagerModal } from './components/FilterManagerModal'
 import { GeospatialWorkbench } from './components/GeospatialWorkbench'
 import { GpsRoutePreview } from './components/GpsRoutePreview'
 import { Modal } from './components/Modal'
@@ -42,7 +43,11 @@ import {
   normalizeColumnSelection,
   sortSessions,
 } from './domain/sessionCatalog'
-import { applySavedSessionFilters, prototypeSavedSessionFilters } from './domain/sessionFilters'
+import {
+  applySavedSessionFilters,
+  prototypeSavedSessionFilters,
+  type SavedSessionFilterRecord,
+} from './domain/sessionFilters'
 import {
   candidateId,
   cloneStudySet,
@@ -94,6 +99,7 @@ function App() {
   const [selectionAnchorStudySessionId, setSelectionAnchorStudySessionId] = useState<string | null>(null)
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([])
   const [savedStudySets, setSavedStudySets] = useState<StudySet[]>([])
+  const [savedSessionFilters, setSavedSessionFilters] = useState<SavedSessionFilterRecord[]>(prototypeSavedSessionFilters)
   const [currentStudySet, setCurrentStudySet] = useState<StudySet>(() => emptyStudySet())
   const [lastCommittedStudySet, setLastCommittedStudySet] = useState<StudySet>(() => emptyStudySet())
   const [groupingName, setGroupingName] = useState('')
@@ -106,6 +112,7 @@ function App() {
   const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
   const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
   const [tableColumnFilters, setTableColumnFilters] = useState<TableColumnFilter[]>([])
+  const [filterManagerOpen, setFilterManagerOpen] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
@@ -134,6 +141,7 @@ function App() {
         setSessions(loaded.sessions)
         setTracks(loaded.tracks)
         setSavedStudySets(loaded.studySets)
+        setSavedSessionFilters(loaded.savedFilters)
         setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
         setStatusMessage(`Connected to Library API at ${localDataSource.baseUrl}.`)
         setActiveDataSource(localDataSource)
@@ -154,6 +162,7 @@ function App() {
           setSessions(loaded.sessions)
           setTracks(loaded.tracks)
           setSavedStudySets(loaded.studySets)
+          setSavedSessionFilters(loaded.savedFilters)
           setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
           setStatusMessage(`Local API unavailable at ${localDataSource.baseUrl}; fixture prototype loaded. ${message}`)
         } catch (fixtureError) {
@@ -271,7 +280,6 @@ function App() {
     selectedLibraryIds.includes(libraryItem.id),
   )
   const libraryScopedSessions = sessions.filter((session) => selectedLibraryIds.includes(session.libraryId))
-  const savedSessionFilters = prototypeSavedSessionFilters
   const activeSavedSessionFilters = savedSessionFilters.filter((filter) => activeSavedFilterIds.includes(filter.id))
   const savedFilteredSessions = applySavedSessionFilters(libraryScopedSessions, activeSavedSessionFilters)
   const activeTableColumnFilters = tableColumnFilters.filter((filter) => filter.values.length > 0)
@@ -326,6 +334,7 @@ function App() {
       setSessions(loaded.sessions)
       setTracks(loaded.tracks)
       setSavedStudySets(loaded.studySets)
+      setSavedSessionFilters(loaded.savedFilters)
       setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
       setStatusMessage(`Connected to ${libraryCount} ${libraryLabel} under ${resolvedRoot}.`)
       setActiveDataSource(localDataSource)
@@ -379,6 +388,51 @@ function App() {
 
   function clearSavedSessionFilters() {
     setActiveSavedFilterIds([])
+    clearSessionSelection()
+  }
+
+  async function saveSessionFilter(filter: SavedSessionFilterRecord) {
+    if (!activeDataSource.saveSavedSessionFilter) {
+      throw new Error('The current data source does not support saved-filter writes.')
+    }
+    const saved = await activeDataSource.saveSavedSessionFilter(filter)
+    setSavedSessionFilters((current) => {
+      const withoutOldFilter = current.filter((item) => item.id !== saved.id && item.id !== filter.id)
+      return [...withoutOldFilter, saved].sort((a, b) =>
+        a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }),
+      )
+    })
+    setStatusMessage(`Saved filter "${saved.displayName}".`)
+    return saved
+  }
+
+  async function copySessionFilter(filter: SavedSessionFilterRecord) {
+    try {
+      const copied = await saveSessionFilter({
+        ...cloneSessionFilter(filter),
+        id: '',
+        displayName: `${filter.displayName} copy`,
+        origin: 'api_saved',
+        revision: 0,
+      })
+      setStatusMessage(`Copied filter "${filter.displayName}" to "${copied.displayName}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not copy saved filter: ${message}`)
+    }
+  }
+
+  async function deleteSessionFilter(filter: SavedSessionFilterRecord) {
+    if (!activeDataSource.deleteSavedSessionFilter) {
+      throw new Error('The current data source does not support saved-filter deletes.')
+    }
+    if (filter.origin !== 'api_saved') {
+      throw new Error('Prototype filters cannot be deleted.')
+    }
+    await activeDataSource.deleteSavedSessionFilter(filter.id)
+    setSavedSessionFilters((current) => current.filter((item) => item.id !== filter.id))
+    setActiveSavedFilterIds((current) => current.filter((filterId) => filterId !== filter.id))
+    setStatusMessage(`Deleted filter "${filter.displayName}".`)
     clearSessionSelection()
   }
 
@@ -1028,8 +1082,19 @@ function App() {
                     savedFilteredCount={savedFilteredSessions.length}
                     visibleCount={visibleSessions.length}
                     activeTableFilterCount={activeTableColumnFilters.length}
+                    canManageSavedFilters={Boolean(activeDataSource.saveSavedSessionFilter)}
                     onToggleSavedFilter={toggleSavedSessionFilter}
                     onClearSavedFilters={clearSavedSessionFilters}
+                    onManageSavedFilters={() => setFilterManagerOpen(true)}
+                    onCopySavedFilter={(filter) => void copySessionFilter(filter)}
+                    onDeleteSavedFilter={(filter) => {
+                      if (window.confirm(`Delete saved filter "${filter.displayName}"?`)) {
+                        void deleteSessionFilter(filter).catch((error) => {
+                          const message = error instanceof Error ? error.message : String(error)
+                          setStatusMessage(`Could not delete saved filter: ${message}`)
+                        })
+                      }
+                    }}
                   />
                 )}
               </section>
@@ -1287,6 +1352,15 @@ function App() {
           onClose={() => setModal(null)}
         />
       )}
+      {filterManagerOpen && (
+        <FilterManagerModal
+          filters={savedSessionFilters}
+          canWrite={Boolean(activeDataSource.saveSavedSessionFilter)}
+          onClose={() => setFilterManagerOpen(false)}
+          onSave={saveSessionFilter}
+          onDelete={deleteSessionFilter}
+        />
+      )}
       {pendingStudySetAction && (
         <UnsavedChangesDialog
           actionLabel={pendingActionLabel(pendingStudySetAction)}
@@ -1324,11 +1398,12 @@ function pendingActionLabel(action: PendingStudySetAction) {
 }
 
 async function fetchWorkbenchData(source: LibraryDataSource) {
-  const [loadedLibraries, loadedSessions, loadedTracks, loadedStudySets] = await Promise.all([
+  const [loadedLibraries, loadedSessions, loadedTracks, loadedStudySets, loadedSavedFilters] = await Promise.all([
     source.listLibraries(),
     source.listSessions(),
     source.listTracks(),
     source.listStudySets(),
+    source.listSavedSessionFilters ? source.listSavedSessionFilters() : Promise.resolve(prototypeSavedSessionFilters),
   ])
 
   return {
@@ -1336,6 +1411,7 @@ async function fetchWorkbenchData(source: LibraryDataSource) {
     sessions: loadedSessions,
     tracks: loadedTracks,
     studySets: loadedStudySets,
+    savedFilters: loadedSavedFilters,
   }
 }
 
@@ -1372,6 +1448,13 @@ function tableFilterSummary(filter: TableColumnFilter, libraries: LibraryRecord[
     return tableFilterLabel(filter.columnId, libraries, filter.values[0])
   }
   return `${filter.values.length} values`
+}
+
+function cloneSessionFilter(filter: SavedSessionFilterRecord): SavedSessionFilterRecord {
+  return {
+    ...filter,
+    predicate: JSON.parse(JSON.stringify(filter.predicate)) as SavedSessionFilterRecord['predicate'],
+  }
 }
 
 export default App

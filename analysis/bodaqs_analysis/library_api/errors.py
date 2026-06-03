@@ -53,6 +53,12 @@ class StudySetNotFoundError(LibraryApiError):
     default_message = "Study set was not found."
 
 
+class SessionFilterNotFoundError(LibraryApiError):
+    code = "session_filter_not_found"
+    status_code = 404
+    default_message = "Session filter was not found."
+
+
 class TrackNotFoundError(LibraryApiError):
     code = "track_not_found"
     status_code = 404
@@ -71,6 +77,12 @@ class TrackMatchNotFoundError(LibraryApiError):
     default_message = "Track match was not found."
 
 
+class TrackpointMatchQueryNotFoundError(LibraryApiError):
+    code = "trackpoint_match_query_not_found"
+    status_code = 404
+    default_message = "Trackpoint match query was not found."
+
+
 class InvalidRequestError(LibraryApiError):
     code = "invalid_request"
     status_code = 400
@@ -81,6 +93,12 @@ class InvalidStudySetError(LibraryApiError):
     code = "invalid_study_set"
     status_code = 400
     default_message = "Study set is invalid."
+
+
+class InvalidSessionFilterError(LibraryApiError):
+    code = "invalid_session_filter"
+    status_code = 400
+    default_message = "Session filter is invalid."
 
 
 class InvalidTrackError(LibraryApiError):
@@ -123,6 +141,12 @@ class TrackMatchUnavailableError(LibraryApiError):
     code = "track_match_unavailable"
     status_code = 404
     default_message = "Track match data is unavailable."
+
+
+class TrackpointMatchQueryUnavailableError(LibraryApiError):
+    code = "trackpoint_match_query_unavailable"
+    status_code = 404
+    default_message = "Trackpoint match query data is unavailable."
 
 
 class TimeseriesUnavailableError(LibraryApiError):

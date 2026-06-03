@@ -31,6 +31,7 @@ export type SavedSessionFilterRecord = {
   description: string
   category: string
   origin: 'prototype_saved' | 'api_saved'
+  revision: number
   predicate: SessionFilterPredicate
 }
 
@@ -41,6 +42,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Prototype saved filter matching rider fields that contain Ben.',
     category: 'people',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'rider', op: 'contains', value: 'ben' },
   },
   {
@@ -49,6 +51,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with reviewed or edited notes.',
     category: 'notes-qc',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'note.status', op: 'eq', value: 'edited' },
   },
   {
@@ -57,6 +60,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with missing or draft notes.',
     category: 'notes-qc',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'note.status', op: 'in', value: ['missing', 'draft'] },
   },
   {
@@ -65,6 +69,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with no QC alert-level metadata.',
     category: 'notes-qc',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'qc.level', op: 'in', value: ['ok', 'warning'] },
   },
   {
@@ -73,6 +78,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with an OK QC level.',
     category: 'notes-qc',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'qc.level', op: 'eq', value: 'ok' },
   },
   {
@@ -81,6 +87,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with usable GPS coverage.',
     category: 'gps',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'gps.quality', op: 'eq', value: 'usable' },
   },
   {
@@ -89,6 +96,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with any GPS source present.',
     category: 'gps',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'gps.present', op: 'present', value: true },
   },
   {
@@ -97,6 +105,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions using FIT enrichment as a GPS source.',
     category: 'gps',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'gps.source', op: 'eq', value: 'fit_enrichment' },
   },
   {
@@ -105,6 +114,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions using logger-sensor GPS.',
     category: 'gps',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: { field: 'gps.source', op: 'eq', value: 'logger_sensor' },
   },
   {
@@ -113,6 +123,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with accelerometer or IMU signal names.',
     category: 'data',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: {
       op: 'or',
       children: [
@@ -128,6 +139,7 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
     description: 'Sessions with front or rear suspension signal names.',
     category: 'data',
     origin: 'prototype_saved',
+    revision: 0,
     predicate: {
       op: 'or',
       children: [

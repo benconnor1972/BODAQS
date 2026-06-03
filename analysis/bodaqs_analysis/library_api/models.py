@@ -35,8 +35,10 @@ def default_capabilities() -> dict[str, Any]:
             "write_geospatial_policies": True,
             "read_track_matches": True,
             "compute_track_matches": True,
-            "read_filters": False,
-            "write_filters": False,
+            "query_trackpoint_matches": True,
+            "cancel_trackpoint_match_queries": True,
+            "read_filters": True,
+            "write_filters": True,
             "export_static_bundle": False,
             "run_processing_jobs": False,
         },
@@ -66,6 +68,10 @@ def library_payload(
             "write_geospatial_policies": True,
             "read_track_matches": True,
             "compute_track_matches": True,
+            "query_trackpoint_matches": True,
+            "cancel_trackpoint_match_queries": True,
+            "read_filters": True,
+            "write_filters": True,
         },
     }
     if definition:

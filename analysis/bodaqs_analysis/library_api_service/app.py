@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -45,6 +46,7 @@ def create_app(
     )
     app.state.config = config
     app.state.adapter = LibraryAdapter(config.libraries_root)
+    app.state.trackpoint_query_threads = {}
 
     app.add_middleware(
         CORSMiddleware,
@@ -83,6 +85,7 @@ def create_app(
             allow_origins=_current_config(app).allow_origins,
         )
         app.state.adapter = next_adapter
+        app.state.trackpoint_query_threads = {}
         return {
             "updated": True,
             "libraries_root": str(_current_config(app).libraries_root),
@@ -192,6 +195,32 @@ def create_app(
     def delete_root_study_set(study_set_id: str) -> dict[str, Any]:
         return _current_adapter(app).delete_study_set(study_set_id)
 
+    @app.get("/api/v1/session-filters")
+    def list_root_session_filters() -> list[dict[str, Any]]:
+        return _current_adapter(app).list_session_filters()
+
+    @app.post("/api/v1/session-filters")
+    async def create_root_session_filter(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).create_session_filter(_session_filter_payload(payload))
+
+    @app.get("/api/v1/session-filters/{filter_id}")
+    def load_root_session_filter(filter_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_session_filter(filter_id)
+
+    @app.put("/api/v1/session-filters/{filter_id}")
+    async def update_root_session_filter(filter_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).update_session_filter(
+            filter_id,
+            expected_revision=_expected_revision(payload),
+            payload=_session_filter_payload(payload),
+        )
+
+    @app.delete("/api/v1/session-filters/{filter_id}")
+    def delete_root_session_filter(filter_id: str) -> dict[str, Any]:
+        return _current_adapter(app).delete_session_filter(filter_id)
+
     @app.post("/api/v1/libraries/{library_id}/timeseries/window")
     async def get_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
@@ -210,6 +239,34 @@ def create_app(
     @app.get("/api/v1/track-matches/{track_match_id}")
     def load_track_match(track_match_id: str) -> dict[str, Any]:
         return _current_adapter(app).load_track_match(track_match_id)
+
+    @app.post("/api/v1/trackpoint-match-queries")
+    async def create_trackpoint_match_query(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        query = _current_adapter(app).create_trackpoint_match_query(_json_object_payload(payload))
+        if query.get("status") in {"queued", "running"}:
+            _start_trackpoint_query_worker(app, query["query_id"])
+        return query
+
+    @app.get("/api/v1/trackpoint-match-queries/{query_id}")
+    def load_trackpoint_match_query(query_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_trackpoint_match_query(query_id)
+
+    @app.get("/api/v1/trackpoint-match-queries/{query_id}/results")
+    def load_trackpoint_match_query_results(
+        query_id: str,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return _current_adapter(app).load_trackpoint_match_query_results(
+            query_id,
+            cursor=cursor,
+            limit=limit,
+        )
+
+    @app.delete("/api/v1/trackpoint-match-queries/{query_id}")
+    def cancel_trackpoint_match_query(query_id: str) -> dict[str, Any]:
+        return _current_adapter(app).cancel_trackpoint_match_query(query_id)
 
     return app
 
@@ -252,6 +309,16 @@ def _geospatial_policy_payload(payload: Any) -> dict[str, Any]:
     return value
 
 
+def _session_filter_payload(payload: Any) -> dict[str, Any]:
+    payload = _json_object_payload(payload)
+    value = payload.get("session_filter", payload.get("filter", payload))
+    if not isinstance(value, dict):
+        from bodaqs_analysis.library_api.errors import InvalidRequestError
+
+        raise InvalidRequestError("Session filter request body must include a JSON object.")
+    return value
+
+
 def _libraries_root_payload(payload: Any) -> Path:
     payload = _json_object_payload(payload)
     value = payload.get("libraries_root")
@@ -268,6 +335,26 @@ def _current_config(app: FastAPI) -> LibraryApiServiceConfig:
 
 def _current_adapter(app: FastAPI) -> LibraryAdapter:
     return app.state.adapter
+
+
+def _start_trackpoint_query_worker(app: FastAPI, query_id: str) -> None:
+    threads = app.state.trackpoint_query_threads
+    current = threads.get(query_id)
+    if isinstance(current, threading.Thread) and current.is_alive():
+        return
+    libraries_root = _current_config(app).libraries_root
+    worker = threading.Thread(
+        target=_run_trackpoint_query_worker,
+        args=(libraries_root, str(query_id)),
+        daemon=True,
+    )
+    threads[query_id] = worker
+    worker.start()
+
+
+def _run_trackpoint_query_worker(libraries_root: Path, query_id: str) -> None:
+    adapter = LibraryAdapter(libraries_root)
+    adapter.run_trackpoint_match_query(query_id)
 
 
 def _expected_revision(payload: Any) -> int:

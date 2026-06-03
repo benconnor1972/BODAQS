@@ -49,6 +49,9 @@ remote service or static-bundle implementation.
 9. **Study sets, tracks, and saved filters belong to the configured libraries root, not to one library.**
 10. **Geospatial policies make track analysis reproducible.**
 11. **Saved filters are reusable helpers; ad-hoc table filters are transient UI state.**
+12. **The session catalog stays cheap.** Expensive derived relationships such as
+    trackpoint crossings should live in async query/index caches, not in the
+    basic session catalog.
 
 ---
 
@@ -89,6 +92,10 @@ Root-scoped application objects live under:
     <policy_id>.json
   track_matches/
     <track_match_id>.json
+  trackpoint_match_queries/
+    <query_id>.json
+  trackpoint_match_results/
+    <query_id>.jsonl
   session_filters/
     <filter_id>.json
 ```
@@ -229,7 +236,27 @@ Optional derived-cache location:
 Session track matches are not canonical session artifacts. They can be
 recomputed from the referenced session, track, and policy.
 
-### 4.9 Session Filter
+### 4.9 Trackpoint Match Query
+
+A trackpoint match query is a derived, root-scoped, asynchronous job/index used
+to answer broad filtering questions such as "which sessions crossed these
+trackpoints within this tolerance?"
+
+Optional derived-cache locations:
+
+```text
+<libraries_root>/
+  trackpoint_match_queries/
+    <query_id>.json
+  trackpoint_match_results/
+    <query_id>.jsonl
+```
+
+Trackpoint match queries are not canonical session artifacts and are not Study
+Set membership. They may be deleted and rebuilt from session GPS data, tracks,
+policies, and persisted filters.
+
+### 4.10 Session Filter
 
 A persisted session filter is a reusable root-level helper for finding candidate
 sessions from one or more libraries under the configured libraries root.
@@ -312,8 +339,10 @@ Example:
     "write_geospatial_policies": true,
     "compute_track_matches": true,
     "read_track_matches": true,
-    "read_filters": false,
-    "write_filters": false,
+    "query_trackpoint_matches": true,
+    "cancel_trackpoint_match_queries": true,
+    "read_filters": true,
+    "write_filters": true,
     "export_static_bundle": false,
     "run_processing_jobs": false
   }
@@ -528,6 +557,7 @@ Minimal API example:
   "revision": 1,
   "display_name": "Ben rides with usable GPS",
   "description": "Reusable helper for GPS comparison sessions.",
+  "category": "gps",
   "predicate": {
     "op": "and",
     "children": [
@@ -957,6 +987,11 @@ POST /api/v1/libraries/{library_id}/sessions/gps/points
 POST /api/v1/track-matches/query
 POST /api/v1/track-matches/compute
 GET  /api/v1/track-matches/{track_match_id}
+
+POST   /api/v1/trackpoint-match-queries
+GET    /api/v1/trackpoint-match-queries/{query_id}
+GET    /api/v1/trackpoint-match-queries/{query_id}/results
+DELETE /api/v1/trackpoint-match-queries/{query_id}
 ```
 
 The GPS summary endpoint accepts a session reference in the request body and
@@ -973,6 +1008,18 @@ entire auxiliary GPS/FIT stream.
 Track and policy endpoints are scoped to the configured libraries root, not to
 one processed library. Track match endpoints may return cached derived matches
 or compute new matches, depending on service capabilities.
+
+Trackpoint match query endpoints are for broad, potentially library-scale
+filtering. `POST` should return quickly with a queued/running/completed query
+object instead of blocking until all candidate sessions have been processed.
+`GET .../results` should be paged and should return matched sessions by
+default. Rejected session evidence should be optional diagnostics, not the
+default response.
+
+Broad query scopes should be described declaratively with `library_ids`,
+`session_filter_ids`, or other root-scoped criteria rather than requiring the
+browser to enumerate every session. Narrow UI-driven requests may still provide
+explicit `session_refs`.
 
 ### 12.5 Session Filters
 
@@ -1044,6 +1091,8 @@ capability_unavailable
 gps_unavailable
 signal_not_found
 track_match_unavailable
+trackpoint_match_query_not_found
+trackpoint_match_query_unavailable
 timeseries_unavailable
 internal_error
 ```
@@ -1098,6 +1147,16 @@ The first persisted-filter extension should add:
 3. applying catalog-backed saved filters in the browser
 4. keeping ad-hoc table filters separate from persisted filter objects
 
+The first trackpoint-filter extension should add:
+
+1. track and trackpoint inventory loading from root-scoped Track objects
+2. a planned `trackpoint.crossing` saved-filter predicate shape
+3. async `trackpoint-match-queries` endpoints with status polling and paged
+   matched-session results
+4. cache keys based on session GPS identity, track revision, policy, tolerance,
+   match mode, and algorithm version
+5. browser states for queued/running/partial/complete trackpoint filters
+
 ---
 
 ## 15. Deferred Work
@@ -1112,7 +1171,7 @@ The following are deliberately outside the first implementation:
 - full visual filter-builder UI
 - ad-hoc table-header filter persistence
 - advanced track editing, including explicit cutline endpoint editing
-- persisted track match cache management
+- mature persisted track match and trackpoint query cache management
 - GPX/GeoJSON import/export
 - static bundle export
 - Arrow/binary time-series payloads

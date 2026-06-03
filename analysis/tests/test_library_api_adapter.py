@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -621,6 +622,58 @@ def test_library_adapter_updates_study_set_with_revision_check(
     assert exc.value.details["current_revision"] == 2
 
 
+def test_library_adapter_session_filter_crud_and_revision_check(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_session_filter(
+        {
+            "display_name": "Ben rides with GPS",
+            "description": "Reusable GPS comparison helper.",
+            "category": "gps",
+            "predicate": {
+                "op": "and",
+                "children": [
+                    {"field": "rider", "op": "contains", "value": "ben"},
+                    {"field": "gps.quality", "op": "eq", "value": "usable"},
+                ],
+            },
+        }
+    )
+
+    filter_path = libraries_root / "session_filters" / "ben-rides-with-gps.json"
+    assert created["schema"] == "bodaqs.session_filter"
+    assert created["version"] == 1
+    assert created["filter_id"] == "ben-rides-with-gps"
+    assert created["revision"] == 1
+    assert filter_path.exists()
+    assert adapter.list_session_filters()[0]["filter_id"] == "ben-rides-with-gps"
+    assert adapter.load_session_filter("ben-rides-with-gps") == created
+
+    updated_payload = dict(created)
+    updated_payload["display_name"] = "Ben rides with usable GPS"
+    updated = adapter.update_session_filter(
+        "ben-rides-with-gps",
+        expected_revision=1,
+        payload=updated_payload,
+    )
+    assert updated["revision"] == 2
+    assert updated["display_name"] == "Ben rides with usable GPS"
+
+    with pytest.raises(RevisionConflictError) as exc:
+        adapter.update_session_filter(
+            "ben-rides-with-gps",
+            expected_revision=1,
+            payload=updated,
+        )
+    assert exc.value.details["current_revision"] == 2
+
+    assert adapter.delete_session_filter("ben-rides-with-gps") == {
+        "deleted": True,
+        "filter_id": "ben-rides-with-gps",
+    }
+
+
 def test_create_study_set_rejects_missing_session(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -911,6 +964,140 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
     assert match["status"] == "matched"
     assert match["trackpoint_results"][0]["trackpoint_id"] == "start-gate"
     assert match["trackpoint_results"][0]["crossed"] is True
+
+
+def test_library_adapter_trackpoint_match_query_can_be_cancelled(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "coordinates": [[115.86, -31.95], [115.861, -31.951]],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "start-gate",
+                    "display_name": "Start gate",
+                    "station_m": 0.0,
+                    "position": {"type": "Point", "coordinates": [115.86, -31.95]},
+                }
+            ],
+        }
+    )
+
+    query = adapter.create_trackpoint_match_query(
+        {
+            "scope": {"library_ids": ["default-library"]},
+            "track_id": "test-track",
+            "trackpoint_ids": ["start-gate"],
+            "match_mode": "all",
+            "tolerance_m": 5.0,
+        }
+    )
+    assert query["status"] == "queued"
+    cancelled = adapter.cancel_trackpoint_match_query(query["query_id"])
+    assert cancelled["status"] == "cancelled"
+
+    after_run = adapter.run_trackpoint_match_query(query["query_id"])
+    assert after_run["status"] == "cancelled"
+    results = adapter.load_trackpoint_match_query_results(query["query_id"])
+    assert results["result_count"] == 0
+
+
+def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(library_root, session_ref, times=[-100.0, 0.0, 1.0, 2.0, 100.0])
+    client = TestClient(create_app(libraries_root))
+    track_payload = {
+        "track_id": "test-track",
+        "display_name": "Test Track",
+        "path": {
+            "type": "LineString",
+            "coordinates": [
+                [115.86, -31.95, 200.0],
+                [115.861, -31.951, 201.0],
+            ],
+        },
+        "trackpoints": [
+            {
+                "trackpoint_id": "start-gate",
+                "display_name": "Start gate",
+                "station_m": 0.0,
+                "position": {
+                    "type": "Point",
+                    "coordinates": [115.86, -31.95, 200.0],
+                },
+            }
+        ],
+    }
+    assert client.post("/api/v1/tracks", json=track_payload).status_code == 200
+
+    create_response = client.post(
+        "/api/v1/trackpoint-match-queries",
+        json={
+            "scope": {"library_ids": ["default-library"]},
+            "track_id": "test-track",
+            "trackpoint_ids": ["start-gate"],
+            "match_mode": "all",
+            "tolerance_m": 5.0,
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["schema"] == "bodaqs.trackpoint_match_query"
+    assert created["candidate_session_count"] == 1
+
+    query_id = created["query_id"]
+    status = created
+    for _ in range(50):
+        status_response = client.get(f"/api/v1/trackpoint-match-queries/{query_id}")
+        assert status_response.status_code == 200
+        status = status_response.json()
+        if status["status"] == "completed":
+            break
+        time.sleep(0.05)
+
+    assert status["status"] == "completed"
+    assert status["processed_session_count"] == 1
+    assert status["matched_session_count"] == 1
+
+    results_response = client.get(f"/api/v1/trackpoint-match-queries/{query_id}/results", params={"limit": 1})
+    assert results_response.status_code == 200
+    results = results_response.json()
+    assert results["schema"] == "bodaqs.trackpoint_match_query_results"
+    assert results["result_count"] == 1
+    assert results["results"][0]["session_ref"]["session_ref_id"] == session_ref["session_ref_id"]
+    assert results["results"][0]["matched_trackpoint_ids"] == ["start-gate"]
+
+    repeated = client.post(
+        "/api/v1/trackpoint-match-queries",
+        json={
+            "scope": {"library_ids": ["default-library"]},
+            "track_id": "test-track",
+            "trackpoint_ids": ["start-gate"],
+            "match_mode": "all",
+            "tolerance_m": 5.0,
+        },
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["query_id"] == query_id
 
 
 def test_library_adapter_catalog_cache_refreshes_explicitly(tmp_path: Path) -> None:
@@ -1431,6 +1618,54 @@ def test_library_api_service_study_set_crud_and_revision_conflict(
     delete_response = client.delete("/api/v1/study-sets/service-study-set")
     assert delete_response.status_code == 200
     assert delete_response.json() == {"deleted": True, "study_set_id": "service-study-set"}
+
+
+def test_library_api_service_session_filter_crud_and_revision_conflict(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    client = TestClient(create_app(libraries_root))
+
+    create_response = client.post(
+        "/api/v1/session-filters",
+        json={
+            "display_name": "Service GPS Filter",
+            "description": "Reusable filter from service test.",
+            "category": "gps",
+            "predicate": {"field": "gps.quality", "op": "eq", "value": "usable"},
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["schema"] == "bodaqs.session_filter"
+    assert created["filter_id"] == "service-gps-filter"
+    assert created["revision"] == 1
+
+    list_response = client.get("/api/v1/session-filters")
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["filter_id"] == "service-gps-filter"
+
+    load_response = client.get("/api/v1/session-filters/service-gps-filter")
+    assert load_response.status_code == 200
+    assert load_response.json()["display_name"] == "Service GPS Filter"
+
+    updated_payload = dict(created)
+    updated_payload["display_name"] = "Service Usable GPS Filter"
+    update_response = client.put(
+        "/api/v1/session-filters/service-gps-filter",
+        json={"expected_revision": 1, "session_filter": updated_payload},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["revision"] == 2
+
+    conflict_response = client.put(
+        "/api/v1/session-filters/service-gps-filter",
+        json={"expected_revision": 1, "session_filter": updated_payload},
+    )
+    assert conflict_response.status_code == 409
+    assert conflict_response.json()["error"]["code"] == "revision_conflict"
+
+    delete_response = client.delete("/api/v1/session-filters/service-gps-filter")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"deleted": True, "filter_id": "service-gps-filter"}
 
 
 def test_library_api_service_timeseries_window_and_error_envelope(

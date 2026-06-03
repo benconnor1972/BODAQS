@@ -276,8 +276,13 @@ Canonical future storage shape:
 A track may have zero or more named points. A Study Set can reference a whole
 track or a track interval defined by two track points.
 
-Track contracts are included in the Library API contract, but track CRUD
-endpoints are deferred until map/track work begins.
+Track and trackpoint inventory should remain cheap descriptive data. It should
+tell the browser what tracks and trackpoints exist, their names, station
+positions, revisions, and policy references. It should not include expensive
+session-to-trackpoint match results.
+
+Track contracts are included in the Library API and geospatial contracts.
+Trackpoint match results belong in a separate derived query/cache layer.
 
 ### Bookmarks
 
@@ -291,9 +296,26 @@ persisted independently and do not require richer roles or semantics for v0.
 
 ### Filters
 
-Filters are future reusable library helpers for finding candidate sessions.
-They are stronger reusable concepts than groupings, but are deferred from the
-first implementation.
+Filters are reusable library helpers for finding candidate sessions. They are
+stronger reusable concepts than groupings, but they still do not define saved
+Study Set membership.
+
+Catalog-backed filters can be evaluated in the browser after loading the
+session catalog and persisted filter definitions. Trackpoint-backed filters
+should be API-backed because they depend on track revision, geospatial policy,
+tolerance, GPS source identity, and matching algorithm version.
+
+Trackpoint-backed filters should use an asynchronous query/index pattern:
+
+- the filter definition records the track, trackpoints, match mode, and
+  tolerance.
+- the browser asks the Library API to create or resume a
+  `TrackpointMatchQuery`.
+- the service processes broad scopes in the background and reuses cached
+  per-session match evidence.
+- the browser polls status and pages matched session refs into the active
+  filter result.
+- rejected sessions are not returned by default; diagnostics can be optional.
 
 ## Recommended Technical Pattern
 
@@ -488,10 +510,10 @@ Expected outcome:
 
 - the browser app covers a meaningful subset of the current consumer notebook experience
 
-### Phase 7: Tracks And Map Prototype
+### Phase 7: Tracks, Map Prototype, And Trackpoint Filters
 
-Goal: prove reusable tracks and track-point intervals with processed sessions
-that include GPS data.
+Goal: prove reusable tracks, trackpoint inventory, and broad trackpoint-backed
+filters with processed sessions that include GPS data.
 
 Work in this phase:
 
@@ -500,10 +522,30 @@ Work in this phase:
 - add/edit track points
 - reference whole tracks or point-to-point intervals from Study Sets
 - preview session coverage over a selected track interval
+- keep the session catalog compact and track-independent
+- add async trackpoint match query endpoints with status polling and paged
+  matched-session results
+- cache match evidence by session GPS identity, track revision, policy,
+  tolerance, match mode, and algorithm version
+- add browser UI states for queued, running, partially available, complete,
+  cancelled, and failed trackpoint filters
 
 Expected outcome:
 
-- reusable track objects can feed Study Set creation without becoming hidden Study Set state
+- reusable track objects and trackpoint-backed filters can feed Study Set
+  creation without becoming hidden Study Set state
+
+Implementation sequence:
+
+1. Finalize the `trackpoint.crossing` persisted-filter predicate shape.
+2. Add Library API request/status/results models for `TrackpointMatchQuery`.
+3. Implement a simple in-process job runner for local service development.
+4. Reuse existing per-session `SessionTrackMatch` evidence where possible.
+5. Persist query status/results under the libraries root as derived cache.
+6. Wire the frontend filter pane to start/resume a query when a trackpoint
+   filter is applied.
+7. Apply matched session refs incrementally as results arrive.
+8. Add cancellation and clear user messaging before optimizing the worker.
 
 ### Phase 8: Static Bundles And Remote Options
 
@@ -564,6 +606,9 @@ The following decisions will materially affect implementation detail:
 - how the browser discovers the local service port in installed mode
 - whether development mode needs no auth and packaged mode needs a local token
 - how much catalog data can be built quickly enough at service startup
+- how broad trackpoint match jobs should be scheduled, cancelled, resumed, and
+  expired
+- how much trackpoint match evidence should be retained in the derived cache
 - exact min/max downsampling behavior for multiple signals
 - how much event detail should be included in first time-series overlays
 - what browser charting library George should use for dense time-series data
@@ -580,6 +625,9 @@ The following decisions will materially affect implementation detail:
 - Treating Study Set selection as temporary UI state only.
 - Treating saved filters as hidden live Study Set definitions.
 - Hiding reusable tracks inside Study Set documents.
+- Putting trackpoint match results into the main session catalog.
+- Making a broad library-scale trackpoint filter block one HTTP request until
+  all candidate sessions have been processed.
 - Building the first visualization directly against raw artifact paths.
 - Building separate incompatible apps for local, static, browser-local, and remote modes.
 

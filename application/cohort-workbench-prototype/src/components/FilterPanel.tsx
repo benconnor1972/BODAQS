@@ -8,8 +8,12 @@ export function FilterPanel({
   savedFilteredCount,
   visibleCount,
   activeTableFilterCount,
+  canManageSavedFilters,
   onToggleSavedFilter,
   onClearSavedFilters,
+  onManageSavedFilters,
+  onCopySavedFilter,
+  onDeleteSavedFilter,
 }: {
   savedFilters: SavedSessionFilterRecord[]
   activeSavedFilterIds: string[]
@@ -17,8 +21,12 @@ export function FilterPanel({
   savedFilteredCount: number
   visibleCount: number
   activeTableFilterCount: number
+  canManageSavedFilters: boolean
   onToggleSavedFilter: (filterId: string) => void
   onClearSavedFilters: () => void
+  onManageSavedFilters: () => void
+  onCopySavedFilter: (filter: SavedSessionFilterRecord) => void
+  onDeleteSavedFilter: (filter: SavedSessionFilterRecord) => void
 }) {
   const activeSavedFilters = savedFilters.filter((filter) => activeSavedFilterIds.includes(filter.id))
   const filtersByCategory = groupedFilters(savedFilters)
@@ -83,8 +91,16 @@ export function FilterPanel({
 
       <div className="filter-library">
         <div className="filter-library-title">
-          <strong>Saved filter library</strong>
-          <span className="subtle">Prototype entries until API persistence is wired.</span>
+          <div>
+            <strong>Saved filter library</strong>
+            <span className="subtle">
+              {canManageSavedFilters ? 'Writable saved filters.' : 'Read-only prototype entries.'}
+            </span>
+          </div>
+          <button className="ghost-action compact-filter-action" onClick={onManageSavedFilters} type="button">
+            <SlidersHorizontal size={13} />
+            Manage
+          </button>
         </div>
         {filtersByCategory.map(({ category, items }) => (
           <fieldset className="filter-category" key={category}>
@@ -101,10 +117,22 @@ export function FilterPanel({
                   <strong>{filter.displayName}</strong>
                   <small>{filter.description}</small>
                 </button>
-                <button className="icon-button" disabled title="Copy filter after persistence endpoints are wired" type="button">
+                <button
+                  className="icon-button"
+                  disabled={!canManageSavedFilters}
+                  onClick={() => onCopySavedFilter(filter)}
+                  title="Copy filter"
+                  type="button"
+                >
                   <Copy size={14} />
                 </button>
-                <button className="icon-button icon-alert" disabled title="Delete filter after persistence endpoints are wired" type="button">
+                <button
+                  className="icon-button icon-alert"
+                  disabled={!canManageSavedFilters || filter.origin !== 'api_saved'}
+                  onClick={() => onDeleteSavedFilter(filter)}
+                  title={filter.origin === 'api_saved' ? 'Delete filter' : 'Prototype filters cannot be deleted'}
+                  type="button"
+                >
                   <Trash2 size={14} />
                 </button>
               </div>

@@ -9,7 +9,7 @@ import {
 } from '../domain/geospatial'
 import { candidateId, sessionByRef, slugify, uniqueId } from '../domain/studySets'
 import { pointAtStationM, routeLengthM } from '../domain/trackGeometry'
-import type { SessionRecord, StudySet, TrackRecord, TrackpointRecord } from '../domain/types'
+import type { SessionRecord, StudySet, TrackpointMatchQueryRecord, TrackpointMatchQueryResults, TrackRecord, TrackpointRecord } from '../domain/types'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { IconButton } from './Common'
 import { GpsBadge } from './StatusBadges'
@@ -46,6 +46,8 @@ export function GeospatialWorkbench({
   const [activeTrackId, setActiveTrackId] = useState<string | null>(null)
   const [trackpointName, setTrackpointName] = useState('')
   const [trackpointStationM, setTrackpointStationM] = useState('')
+  const [trackpointQuery, setTrackpointQuery] = useState<TrackpointMatchQueryRecord | null>(null)
+  const [trackpointQueryResults, setTrackpointQueryResults] = useState<TrackpointMatchQueryResults | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const adequacy = studySetGpsAdequacy(currentStudySet, sessions)
@@ -55,6 +57,14 @@ export function GeospatialWorkbench({
   const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? null
   const canCreateTrack = Boolean(primarySession && dataSource.loadSessionGpsPoints && dataSource.saveTrack && !busy)
   const canEditTrack = Boolean(activeTrack && dataSource.saveTrack && !busy)
+  const canRunTrackpointQuery = Boolean(
+    activeTrack &&
+      activeTrack.trackpoints.length > 0 &&
+      dataSource.createTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQueryResults &&
+      !busy,
+  )
 
   async function createTrackFromPrimaryGps() {
     if (!primarySession || !dataSource.loadSessionGpsPoints || !dataSource.saveTrack) {
@@ -176,6 +186,71 @@ export function GeospatialWorkbench({
       onTrackSaved(savedTrack)
       setActiveTrackId(savedTrack.id)
       setMessage(successMessage)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runTrackpointQuery() {
+    if (
+      !activeTrack ||
+      !dataSource.createTrackpointMatchQuery ||
+      !dataSource.loadTrackpointMatchQuery ||
+      !dataSource.loadTrackpointMatchQueryResults
+    ) {
+      setMessage('Current data source cannot run trackpoint match queries.')
+      return
+    }
+    const trackpointIds = activeTrack.trackpoints.map((trackpoint) => trackpoint.id)
+    if (trackpointIds.length === 0) {
+      setMessage('Add at least one trackpoint before running a trackpoint query.')
+      return
+    }
+    setBusy(true)
+    setTrackpointQueryResults(null)
+    setMessage(`Starting trackpoint query for ${activeTrack.name}...`)
+    try {
+      let query = await dataSource.createTrackpointMatchQuery({
+        trackId: activeTrack.id,
+        trackpointIds,
+        matchMode: 'all',
+        toleranceM: 5,
+        scope: {
+          libraryIds: uniqueStrings(sessions.map((session) => session.libraryId)),
+        },
+        persist: true,
+      })
+      setTrackpointQuery(query)
+      for (let attempt = 0; attempt < 40 && (query.status === 'queued' || query.status === 'running'); attempt += 1) {
+        await delay(300)
+        query = await dataSource.loadTrackpointMatchQuery(query.queryId)
+        setTrackpointQuery(query)
+      }
+      if (query.status === 'completed') {
+        const results = await dataSource.loadTrackpointMatchQueryResults(query.queryId, null, 50)
+        setTrackpointQueryResults(results)
+        setMessage(`Trackpoint query complete: ${results.resultCount} matching session(s).`)
+      } else {
+        setMessage(`Trackpoint query is ${query.status}.`)
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function cancelTrackpointQuery() {
+    if (!trackpointQuery || !dataSource.cancelTrackpointMatchQuery) {
+      return
+    }
+    setBusy(true)
+    try {
+      const query = await dataSource.cancelTrackpointMatchQuery(trackpointQuery.queryId)
+      setTrackpointQuery(query)
+      setMessage(`Trackpoint query ${query.status}.`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -335,6 +410,44 @@ export function GeospatialWorkbench({
         <div className="geo-policy-note">
           Default cutlines are policy-generated. Trackpoint rows show only explicit overrides.
         </div>
+        <div className="geo-policy-note">
+          Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance.
+        </div>
+        <div className="action-row tight">
+          <button className="secondary-action" disabled={!canRunTrackpointQuery} onClick={() => void runTrackpointQuery()} type="button">
+            <Crosshair size={16} />
+            Run trackpoint query
+          </button>
+          <button
+            className="ghost-action"
+            disabled={!trackpointQuery || !dataSource.cancelTrackpointMatchQuery || busy}
+            onClick={() => void cancelTrackpointQuery()}
+            type="button"
+          >
+            Cancel query
+          </button>
+        </div>
+        {trackpointQuery && (
+          <p className="track-manager-message">
+            Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
+            {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
+          </p>
+        )}
+        {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
+          <div className="match-preview-list compact-query-results">
+            {trackpointQueryResults.results.map((result) => (
+              <article className="match-row" key={result.sessionRef.sessionKey}>
+                <div>
+                  <strong>{result.sessionRef.label || result.sessionRef.sessionId}</strong>
+                  <small>{result.sessionRef.libraryId}</small>
+                </div>
+                <span className="pill ok">{result.quality}</span>
+                <span>{result.matchedTrackpointIds.length} matched</span>
+                <span>{result.missingTrackpointIds.length} missing</span>
+              </article>
+            ))}
+          </div>
+        )}
         {message && <p className="track-manager-message">{message}</p>}
         <div className="action-row tight">
           <button
@@ -406,4 +519,14 @@ function matchStatusClassName(status: string | undefined) {
     return 'pill warning'
   }
   return 'pill neutral'
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
 }

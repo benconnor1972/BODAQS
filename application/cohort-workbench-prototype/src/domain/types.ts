@@ -94,6 +94,53 @@ export type StudySessionRef = {
   label: string
 }
 
+export type TrackpointMatchMode = 'any' | 'all' | 'min_count'
+export type TrackpointMatchQueryStatus = 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+
+export type TrackpointMatchQueryRequest = {
+  trackId: string
+  trackpointIds: string[]
+  matchMode: TrackpointMatchMode
+  toleranceM: number
+  minCount?: number
+  scope?: {
+    libraryIds?: string[]
+    sessionRefs?: StudySessionRef[]
+  }
+  persist?: boolean
+}
+
+export type TrackpointMatchQueryRecord = {
+  queryId: string
+  status: TrackpointMatchQueryStatus
+  trackId: string
+  trackRevision: number
+  trackpointIds: string[]
+  matchMode: TrackpointMatchMode
+  toleranceM: number
+  candidateSessionCount: number
+  processedSessionCount: number
+  matchedSessionCount: number
+  failedSessionCount: number
+  error: string
+}
+
+export type TrackpointMatchQueryResult = {
+  sessionRef: StudySessionRef
+  trackMatchId: string
+  matchedTrackpointIds: string[]
+  missingTrackpointIds: string[]
+  quality: string
+}
+
+export type TrackpointMatchQueryResults = {
+  queryId: string
+  resultCount: number
+  returnedCount: number
+  nextCursor: string | null
+  results: TrackpointMatchQueryResult[]
+}
+
 export type StudyGrouping = {
   id: string
   name: string

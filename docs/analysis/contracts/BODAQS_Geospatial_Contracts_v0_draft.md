@@ -44,6 +44,10 @@ matching belong to the geospatial analysis layer.
    session-track matches should record the policy and algorithm version used.
 7. **Session-track matches are derived outputs.** They do not change the track,
    the session, or the study set unless the user explicitly saves a new object.
+8. **Broad matching is asynchronous and cached.** Library-scale trackpoint
+   matching should be handled by a derived query/index layer, not by expanding
+   the session catalog or by making one HTTP request block until all sessions
+   have been processed.
 
 ---
 
@@ -62,11 +66,19 @@ Recommended layout:
     <policy_id>.json
   track_matches/
     <track_match_id>.json
+  trackpoint_match_queries/
+    <query_id>.json
+  trackpoint_match_results/
+    <query_id>.jsonl
 ```
 
 `tracks/` and `geospatial_policies/` are canonical user/application objects.
 `track_matches/` is a derived-cache location. A match may be recomputed from
 the referenced session, track, and policy.
+`trackpoint_match_queries/` and `trackpoint_match_results/` are optional
+derived job/index locations for broad "which sessions crossed these
+trackpoints?" queries. They may be deleted and rebuilt without changing
+canonical sessions, tracks, or study sets.
 
 The package may provide default geospatial policies. A library-root policy
 should be used when reproducible project-specific behavior matters.
@@ -321,7 +333,29 @@ edits the cutline geometry in a future UI.
 
 ---
 
-## 8. Geospatial Policy Contract v1
+## 8. Track And Trackpoint Inventory
+
+Track and trackpoint inventory is cheap descriptive data. It should be separate
+from expensive session-to-trackpoint match results.
+
+The browser needs to quickly ask:
+
+- what tracks exist under this libraries root?
+- what trackpoints does each track expose?
+- what are their names, `station_m` values, positions, and policy references?
+- which track revision would a match query depend on?
+
+This inventory can be served directly from root-scoped `tracks/*.json` through
+track list/detail endpoints. It should not require scanning session GPS data.
+
+Session catalog rows should not embed trackpoint match results. A session
+catalog may expose whether GPS is present and usable, but trackpoint crossings
+depend on track revision, policy, tolerance, algorithm version, and query scope.
+Those are properties of a derived match query/index, not of the session catalog.
+
+---
+
+## 9. Geospatial Policy Contract v1
 
 A `GeospatialPolicy` defines defaults for constructing, interrogating, and
 matching tracks.
@@ -388,7 +422,7 @@ explainable after defaults change.
 
 ---
 
-## 9. Session Track Match Contract v1
+## 10. Session Track Match Contract v1
 
 A `SessionTrackMatch` is a derived result that records how one processed session
 maps onto one track under one policy.
@@ -471,7 +505,139 @@ contract. It is an analysis output that may be cached under the libraries root.
 
 ---
 
-## 10. Derived Track Profiles
+## 11. Trackpoint Match Query Contract v1
+
+A `TrackpointMatchQuery` is an asynchronous root-scoped derived query used to
+answer broad filtering questions such as:
+
+```text
+Which sessions under this libraries root crossed all of these trackpoints within
+this tolerance?
+```
+
+It is intentionally separate from `SessionTrackMatch`:
+
+- `SessionTrackMatch` describes one session against one track.
+- `TrackpointMatchQuery` describes a broad query over many candidate sessions
+  and pages back the sessions that satisfy a trackpoint criterion.
+
+Request example:
+
+```json
+{
+  "schema": "bodaqs.trackpoint_match_query_request",
+  "version": 1,
+  "scope": {
+    "library_ids": ["default-library"],
+    "session_filter_ids": ["has-usable-gps"]
+  },
+  "track_id": "munda-biddi-test-loop",
+  "trackpoint_ids": ["start-gate", "rock-garden-entry"],
+  "match_mode": "all",
+  "tolerance_m": 5.0,
+  "policy_ref": {
+    "policy_id": "default-geospatial-policy"
+  },
+  "persist": true
+}
+```
+
+Recommended `scope` fields:
+
+- `library_ids`: optional list of libraries under the active libraries root.
+- `session_filter_ids`: optional persisted filters used to reduce candidates
+  before geospatial matching.
+- `session_refs`: optional explicit session references for narrow UI-driven
+  requests. Broad requests should prefer `library_ids` and/or saved filters.
+
+Recommended `match_mode` values:
+
+```text
+any | all | min_count
+```
+
+If `match_mode` is `min_count`, the request should also include `min_count`.
+
+Creation response example:
+
+```json
+{
+  "schema": "bodaqs.trackpoint_match_query",
+  "version": 1,
+  "query_id": "munda-biddi-test-loop--start-gate-rock-garden--all--tol-5m",
+  "status": "queued",
+  "track_ref": {
+    "track_id": "munda-biddi-test-loop",
+    "revision": 1
+  },
+  "trackpoint_ids": ["start-gate", "rock-garden-entry"],
+  "match_mode": "all",
+  "tolerance_m": 5.0,
+  "candidate_session_count": 842,
+  "processed_session_count": 0,
+  "matched_session_count": 0,
+  "failed_session_count": 0,
+  "cache": {
+    "reused_match_count": 311,
+    "stale_match_count": 0,
+    "missing_match_count": 531
+  }
+}
+```
+
+Recommended `status` values:
+
+```text
+queued | running | completed | cancelled | failed
+```
+
+Results should be paged. The default results endpoint should return matched
+sessions only, plus enough evidence for the UI to explain why they matched.
+Rejected sessions should be omitted by default and returned only through an
+explicit debug or diagnostics option.
+
+Paged result example:
+
+```json
+{
+  "schema": "bodaqs.trackpoint_match_query_results",
+  "version": 1,
+  "query_id": "munda-biddi-test-loop--start-gate-rock-garden--all--tol-5m",
+  "next_cursor": "page-2",
+  "results": [
+    {
+      "session_ref": {
+        "library_id": "default-library",
+        "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
+        "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
+        "run_id": "run_2026-05-25T13-57-10_LOCAL",
+        "session_id": "2026-05-18_13-27-14"
+      },
+      "track_match_id": "default-library--session-001--munda-biddi-test-loop--policy-default",
+      "matched_trackpoint_ids": ["start-gate", "rock-garden-entry"],
+      "missing_trackpoint_ids": [],
+      "quality": "good"
+    }
+  ]
+}
+```
+
+Cache keys should include at least:
+
+- session reference and GPS source identity
+- track id and track revision
+- geospatial policy id/version or policy hash
+- trackpoint ids
+- tolerance and match mode
+- matching algorithm name/version
+
+The query service should be resumable and cancellable. Cancelling a query should
+stop queued or in-progress work, but already computed per-session match cache
+entries may remain available for future queries.
+
+---
+
+## 12. Derived Track Profiles
 
 Heading, gradient, curvature, and related path properties should be treated as
 derived profiles.
@@ -509,7 +675,7 @@ Example profile shape:
 
 ---
 
-## 11. Deferred Decisions
+## 13. Deferred Decisions
 
 The following are intentionally left flexible in v0:
 
@@ -520,6 +686,9 @@ The following are intentionally left flexible in v0:
 - editing explicit cutline endpoints in the UI
 - storing multiple alternative paths inside one named route
 - multi-track matching and route networks
+- persistent background worker implementation details for trackpoint match
+  queries
+- retention/expiry policy for derived trackpoint match query results
 
 The v0 contracts should still support these later additions because canonical
 tracks, trackpoints, policies, and matches are separate objects.

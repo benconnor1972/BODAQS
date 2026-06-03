@@ -11,7 +11,7 @@ from .catalog import (
     discover_libraries,
     get_session_gps_points as catalog_get_session_gps_points,
 )
-from .errors import InvalidRequestError, LibraryNotFoundError, SessionNotFoundError
+from .errors import InvalidRequestError, LibraryApiError, LibraryNotFoundError, SessionNotFoundError
 from .geospatial import (
     DEFAULT_GEOSPATIAL_POLICY_ID,
     build_session_track_match,
@@ -31,6 +31,13 @@ from .geospatial import (
 from .ids import make_session_key, make_session_ref_id, parse_session_key
 from .models import default_capabilities
 from .selection import study_set_to_selection_snapshot
+from .session_filters import (
+    create_session_filter,
+    delete_session_filter,
+    list_session_filters,
+    load_session_filter,
+    update_session_filter,
+)
 from .study_sets import (
     create_study_set,
     delete_study_set,
@@ -39,6 +46,16 @@ from .study_sets import (
     update_study_set,
 )
 from .timeseries import get_timeseries_window
+from .trackpoint_queries import (
+    cancel_trackpoint_match_query,
+    complete_trackpoint_match_query,
+    create_trackpoint_match_query_record,
+    fail_trackpoint_match_query,
+    load_trackpoint_match_query,
+    load_trackpoint_match_query_results,
+    update_trackpoint_match_query,
+    write_trackpoint_match_query_results,
+)
 
 
 class LibraryAdapter:
@@ -195,6 +212,134 @@ class LibraryAdapter:
 
     def load_track_match(self, track_match_id: str) -> dict[str, Any]:
         return load_track_match(self.libraries_root, track_match_id)
+
+    def create_trackpoint_match_query(self, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            raise InvalidRequestError("Trackpoint match query body must be a JSON object.")
+        track = self.load_track(self._track_id_for_trackpoint_query(request))
+        policy = self._policy_for_match_request(request)
+        candidate_refs = self._session_refs_for_trackpoint_query(request)
+        return create_trackpoint_match_query_record(
+            self.libraries_root,
+            request,
+            track=track,
+            policy=policy,
+            candidate_session_refs=candidate_refs,
+        )
+
+    def load_trackpoint_match_query(self, query_id: str) -> dict[str, Any]:
+        return load_trackpoint_match_query(self.libraries_root, query_id)
+
+    def load_trackpoint_match_query_results(
+        self,
+        query_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return load_trackpoint_match_query_results(
+            self.libraries_root,
+            query_id,
+            cursor=cursor,
+            limit=limit,
+        )
+
+    def cancel_trackpoint_match_query(self, query_id: str) -> dict[str, Any]:
+        return cancel_trackpoint_match_query(self.libraries_root, query_id)
+
+    def fail_trackpoint_match_query(self, query_id: str, message: str) -> dict[str, Any]:
+        return fail_trackpoint_match_query(self.libraries_root, query_id, message)
+
+    def run_trackpoint_match_query(self, query_id: str) -> dict[str, Any]:
+        query = load_trackpoint_match_query(self.libraries_root, query_id)
+        if query.get("status") in {"cancelled", "completed"}:
+            return query
+
+        update_trackpoint_match_query(
+            self.libraries_root,
+            query_id,
+            {
+                "status": "running",
+                "processed_session_count": 0,
+                "matched_session_count": 0,
+                "failed_session_count": 0,
+                "error": None,
+            },
+        )
+        results: list[dict[str, Any]] = []
+        processed_count = 0
+        failed_count = 0
+        try:
+            track_id = str(query["track_ref"]["track_id"])
+            policy_id = str(query.get("policy_ref", {}).get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
+            policy = self.load_geospatial_policy(policy_id)
+            for raw_ref in query.get("candidate_sessions") or []:
+                if not isinstance(raw_ref, Mapping):
+                    failed_count += 1
+                    continue
+                latest = load_trackpoint_match_query(self.libraries_root, query_id)
+                if latest.get("status") == "cancelled":
+                    write_trackpoint_match_query_results(self.libraries_root, query_id, results)
+                    return latest
+                try:
+                    match = self._build_track_match(
+                        track_id,
+                        raw_ref,
+                        policy=policy,
+                        persist=bool(query.get("persist", True)),
+                    )
+                    result = self._trackpoint_match_result(query, match)
+                    if result is not None:
+                        results.append(result)
+                except LibraryApiError:
+                    failed_count += 1
+                processed_count += 1
+                update_trackpoint_match_query(
+                    self.libraries_root,
+                    query_id,
+                    {
+                        "processed_session_count": processed_count,
+                        "matched_session_count": len(results),
+                        "failed_session_count": failed_count,
+                    },
+                )
+
+            write_trackpoint_match_query_results(self.libraries_root, query_id, results)
+            return complete_trackpoint_match_query(
+                self.libraries_root,
+                query_id,
+                processed_count=processed_count,
+                matched_count=len(results),
+                failed_count=failed_count,
+            )
+        except Exception as exc:
+            return fail_trackpoint_match_query(self.libraries_root, query_id, f"{type(exc).__name__}: {exc}")
+
+    def list_session_filters(self) -> list[dict[str, Any]]:
+        return list_session_filters(self.libraries_root)
+
+    def load_session_filter(self, filter_id: str) -> dict[str, Any]:
+        return load_session_filter(self.libraries_root, filter_id)
+
+    def create_session_filter(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return create_session_filter(self.libraries_root, payload)
+
+    def update_session_filter(
+        self,
+        filter_id: str,
+        *,
+        expected_revision: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return update_session_filter(
+            self.libraries_root,
+            filter_id,
+            expected_revision=expected_revision,
+            payload=payload,
+        )
+
+    def delete_session_filter(self, filter_id: str) -> dict[str, Any]:
+        return delete_session_filter(self.libraries_root, filter_id)
 
     def list_study_sets(self, library_id: str | None = None) -> list[dict[str, Any]]:
         if library_id is not None:
@@ -394,6 +539,67 @@ class LibraryAdapter:
             raise InvalidRequestError("Track match request must include at least one non-empty track_id.")
         return track_ids
 
+    def _track_id_for_trackpoint_query(self, request: Mapping[str, Any]) -> str:
+        track_id = str(request.get("track_id") or "").strip()
+        if not track_id:
+            raise InvalidRequestError("Trackpoint match query must include track_id.")
+        return track_id
+
+    def _session_refs_for_trackpoint_query(self, request: Mapping[str, Any]) -> list[dict[str, Any]]:
+        scope = request.get("scope") if isinstance(request.get("scope"), Mapping) else {}
+        if isinstance(scope.get("session_filter_ids"), list) and scope.get("session_filter_ids"):
+            raise InvalidRequestError(
+                "Trackpoint match query session_filter_ids are not supported in this first implementation slice."
+            )
+
+        raw_refs = scope.get("session_refs") if isinstance(scope, Mapping) else None
+        if raw_refs is None:
+            raw_refs = request.get("session_refs")
+        if raw_refs is None and isinstance(request.get("sessions"), list):
+            raw_refs = request.get("sessions")
+        if isinstance(raw_refs, list):
+            refs: list[dict[str, Any]] = []
+            for index, raw_ref in enumerate(raw_refs):
+                if not isinstance(raw_ref, Mapping):
+                    raise InvalidRequestError(
+                        "Trackpoint match query session references must be objects.",
+                        details={"index": index},
+                    )
+                refs.append(self._normalized_session_ref_request(raw_ref.get("library_id"), raw_ref))
+            return refs
+
+        raw_library_ids = scope.get("library_ids") if isinstance(scope, Mapping) else None
+        if raw_library_ids is None:
+            raw_library_ids = request.get("library_ids")
+        if raw_library_ids is None:
+            library_ids = [str(library.get("library_id")) for library in self.list_libraries()]
+        elif isinstance(raw_library_ids, list):
+            library_ids = [str(item).strip() for item in raw_library_ids if str(item).strip()]
+        else:
+            raise InvalidRequestError("Trackpoint match query library_ids must be a list when supplied.")
+        if not library_ids:
+            raise InvalidRequestError("Trackpoint match query must include at least one candidate library.")
+
+        refs = []
+        for library_id in library_ids:
+            catalog = self.get_catalog(library_id)
+            for row in catalog.get("rows") or []:
+                if not isinstance(row, Mapping):
+                    continue
+                refs.append(
+                    self._normalized_session_ref_request(
+                        library_id,
+                        {
+                            "library_id": library_id,
+                            "session_ref_id": row.get("session_ref_id"),
+                            "session_key": row.get("session_key"),
+                            "run_id": row.get("run_id"),
+                            "session_id": row.get("session_id"),
+                        },
+                    )
+                )
+        return refs
+
     def _policy_for_match_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
         policy_ref = request.get("policy_ref") if isinstance(request.get("policy_ref"), Mapping) else {}
         policy_id = str(request.get("policy_id") or policy_ref.get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
@@ -419,3 +625,55 @@ class LibraryAdapter:
         if persist:
             write_track_match(self.libraries_root, match)
         return match
+
+    def _trackpoint_match_result(
+        self,
+        query: Mapping[str, Any],
+        match: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        wanted_ids = [str(item) for item in query.get("trackpoint_ids") or []]
+        tolerance_m = float(query.get("tolerance_m") or 0.0)
+        crossed: list[dict[str, Any]] = []
+        for result in match.get("trackpoint_results") or []:
+            if not isinstance(result, Mapping):
+                continue
+            trackpoint_id = str(result.get("trackpoint_id") or "")
+            min_distance = result.get("min_distance_m")
+            if (
+                trackpoint_id in wanted_ids
+                and bool(result.get("crossed"))
+                and isinstance(min_distance, (int, float))
+                and not isinstance(min_distance, bool)
+                and float(min_distance) <= tolerance_m
+            ):
+                crossed.append(dict(result))
+
+        matched_ids = [str(result.get("trackpoint_id")) for result in crossed]
+        missing_ids = [trackpoint_id for trackpoint_id in wanted_ids if trackpoint_id not in set(matched_ids)]
+        match_mode = str(query.get("match_mode") or "all")
+        min_count = int(query.get("min_count") or 0)
+        if match_mode == "all":
+            accepted = len(missing_ids) == 0
+        elif match_mode == "any":
+            accepted = len(matched_ids) > 0
+        elif match_mode == "min_count":
+            accepted = len(matched_ids) >= min_count
+        else:
+            accepted = False
+        if not accepted:
+            return None
+
+        qualities = {str(result.get("quality") or "") for result in crossed}
+        if len(matched_ids) == len(wanted_ids) and qualities <= {"good"}:
+            quality = "good"
+        elif "ambiguous" in qualities:
+            quality = "ambiguous"
+        else:
+            quality = "partial"
+        return {
+            "session_ref": dict(match.get("session_ref") or {}),
+            "track_match_id": match.get("track_match_id"),
+            "matched_trackpoint_ids": matched_ids,
+            "missing_trackpoint_ids": missing_ids,
+            "quality": quality,
+        }
