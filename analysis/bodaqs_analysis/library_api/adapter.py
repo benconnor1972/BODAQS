@@ -616,11 +616,18 @@ class LibraryAdapter:
         track = self.load_track(track_id)
         row = self._catalog_row_for_session(str(session_ref["library_id"]), session_ref)
         gps_summary = row.get("gps_summary") if isinstance(row.get("gps_summary"), Mapping) else {}
+        gps_points = catalog_get_session_gps_points(
+            self._library_root(str(session_ref["library_id"])),
+            session_ref,
+            library_id=str(session_ref["library_id"]),
+            max_points=25_000,
+        )
         match = build_session_track_match(
             track=track,
             policy=policy,
             session_ref=session_ref,
             gps_summary=gps_summary,
+            gps_points=gps_points,
         )
         if persist:
             write_track_match(self.libraries_root, match)

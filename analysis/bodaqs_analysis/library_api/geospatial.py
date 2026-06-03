@@ -226,8 +226,39 @@ def build_session_track_match(
     policy: Mapping[str, Any],
     session_ref: Mapping[str, Any],
     gps_summary: Mapping[str, Any],
+    gps_points: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a conservative v0 SessionTrackMatch from catalog GPS summary data."""
+    """Build a SessionTrackMatch from session GPS points, falling back to summary data."""
+
+    normalized_points = _normalized_gps_point_rows(gps_points)
+    if normalized_points:
+        match = _build_session_track_match_from_points(
+            track=track,
+            policy=policy,
+            session_ref=session_ref,
+            gps_summary=gps_summary,
+            gps_points=gps_points or {},
+            normalized_points=normalized_points,
+        )
+        if match is not None:
+            return match
+
+    return _build_session_track_match_from_summary(
+        track=track,
+        policy=policy,
+        session_ref=session_ref,
+        gps_summary=gps_summary,
+    )
+
+
+def _build_session_track_match_from_summary(
+    *,
+    track: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    session_ref: Mapping[str, Any],
+    gps_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a conservative fallback SessionTrackMatch from catalog GPS summary data."""
 
     track_id = str(track.get("track_id") or "")
     policy_id = str(policy.get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
@@ -583,6 +614,582 @@ def _trackpoint_result(
         "min_distance_m": max_distance / 4.0 if crossed else None,
         "quality": "good" if status == "matched" and crossed else ("approximate" if crossed else "missing"),
     }
+
+
+def _build_session_track_match_from_points(
+    *,
+    track: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    session_ref: Mapping[str, Any],
+    gps_summary: Mapping[str, Any],
+    gps_points: Mapping[str, Any],
+    normalized_points: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    path = track.get("path") if isinstance(track.get("path"), Mapping) else {}
+    track_coordinates = _track_coordinate_rows(path.get("coordinates"))
+    if len(track_coordinates) < 2:
+        return None
+
+    declared_length_m = _number_or_none(path.get("length_m")) or _line_length_m(
+        [[coord["longitude"], coord["latitude"]] for coord in track_coordinates]
+    )
+    origin = _projection_origin(track_coordinates, normalized_points)
+    track_geometry = _projected_track_geometry(
+        track_coordinates,
+        origin=origin,
+        declared_length_m=declared_length_m,
+    )
+    if track_geometry is None:
+        return None
+
+    projected_gps = [
+        {
+            **point,
+            "xy": _project_lon_lat(point["longitude"], point["latitude"], origin=origin),
+        }
+        for point in normalized_points
+    ]
+    matching_policy = policy.get("matching_policy") if isinstance(policy.get("matching_policy"), Mapping) else {}
+    max_distance_m = _number_or_none(matching_policy.get("max_point_distance_m")) or 8.0
+    projected_to_track = [
+        {
+            "point": point,
+            "projection": _nearest_track_projection(point["xy"], track_geometry),
+        }
+        for point in projected_gps
+    ]
+    matched_projections = [
+        item
+        for item in projected_to_track
+        if item["projection"] is not None
+        and float(item["projection"]["distance_m"]) <= max_distance_m
+    ]
+
+    warnings = _unique_warnings(
+        [str(item) for item in gps_summary.get("warnings") or []]
+        + [str(item) for item in gps_points.get("warnings") or []]
+    )
+    sampling = gps_points.get("sampling") if isinstance(gps_points.get("sampling"), Mapping) else {}
+    if str(sampling.get("mode") or "") == "stride":
+        warnings.append("gps_points_sampled_for_track_match")
+
+    coverage = _track_coverage(
+        matched_projections,
+        track_length_m=float(track_geometry["declared_length_m"]),
+        session_gps_point_count=int(_number_or_none(sampling.get("source_points")) or len(normalized_points)),
+    )
+    if not matched_projections:
+        status = "no_overlap"
+        direction = "unknown"
+        warnings.append("session_gps_no_track_overlap")
+    else:
+        status = "matched" if coverage["track_coverage_ratio"] >= 0.85 else "partial"
+        direction = _direction_from_station_sequence(matched_projections)
+        if status == "partial":
+            warnings.append("session_gps_partial_track_overlap")
+
+    track_id = str(track.get("track_id") or "")
+    policy_id = str(policy.get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
+    session_ref_id = str(session_ref.get("session_ref_id") or "")
+    track_match_id = derive_object_id(
+        f"{session_ref_id} {track_id} {policy_id}",
+        fallback="track-match",
+    )
+    return {
+        "schema": SESSION_TRACK_MATCH_SCHEMA,
+        "version": SESSION_TRACK_MATCH_VERSION,
+        "track_match_id": track_match_id,
+        "library_id": session_ref.get("library_id"),
+        "session_ref": dict(session_ref),
+        "track_ref": {
+            "track_id": track_id,
+            "revision": track.get("revision"),
+        },
+        "policy_ref": {
+            "policy_id": policy_id,
+            "version": policy.get("version"),
+        },
+        "status": status,
+        "direction": direction,
+        "coverage": coverage,
+        "trackpoint_results": [
+            _trackpoint_result_from_geometry(
+                trackpoint,
+                track_geometry=track_geometry,
+                gps_points=projected_gps,
+                policy=policy,
+            )
+            for trackpoint in track.get("trackpoints") or []
+            if isinstance(trackpoint, Mapping)
+        ],
+        "warnings": _unique_warnings(warnings),
+        "provenance": {
+            "derived_at": _utcnow_iso(),
+            "derived_by": "bodaqs_analysis.library_api.geospatial",
+            "algorithm": "session_track_match_geometry_v0",
+            "algorithm_version": "0.2.0",
+        },
+    }
+
+
+def _track_coverage(
+    matched_projections: list[dict[str, Any]],
+    *,
+    track_length_m: float,
+    session_gps_point_count: int,
+) -> dict[str, Any]:
+    stations = [
+        float(item["projection"]["station_m"])
+        for item in matched_projections
+        if item.get("projection") is not None
+    ]
+    if not stations or track_length_m <= 0:
+        return {
+            "track_start_station_m": 0.0,
+            "track_end_station_m": track_length_m,
+            "matched_start_station_m": None,
+            "matched_end_station_m": None,
+            "track_coverage_ratio": 0.0,
+            "session_gps_point_count": session_gps_point_count,
+            "matched_gps_point_count": 0,
+        }
+    start_station = min(stations)
+    end_station = max(stations)
+    coverage_ratio = min(1.0, max(0.0, (end_station - start_station) / track_length_m))
+    return {
+        "track_start_station_m": 0.0,
+        "track_end_station_m": track_length_m,
+        "matched_start_station_m": start_station,
+        "matched_end_station_m": end_station,
+        "track_coverage_ratio": coverage_ratio,
+        "session_gps_point_count": session_gps_point_count,
+        "matched_gps_point_count": len(stations),
+    }
+
+
+def _trackpoint_result_from_geometry(
+    trackpoint: Mapping[str, Any],
+    *,
+    track_geometry: Mapping[str, Any],
+    gps_points: list[dict[str, Any]],
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    trackpoint_id = trackpoint.get("trackpoint_id")
+    station_m = _number_or_none(trackpoint.get("station_m")) or 0.0
+    cutline = _trackpoint_cutline(trackpoint, track_geometry=track_geometry, policy=policy)
+    if cutline is None:
+        return {
+            "trackpoint_id": trackpoint_id,
+            "crossed": False,
+            "crossing_time_s": None,
+            "crossing_station_m": None,
+            "min_distance_m": None,
+            "quality": "missing",
+        }
+
+    matching_policy = policy.get("matching_policy") if isinstance(policy.get("matching_policy"), Mapping) else {}
+    max_distance_m = _number_or_none(matching_policy.get("max_point_distance_m")) or 8.0
+    cutline_crossing_required = bool(matching_policy.get("cutline_crossing_required", True))
+    crossings: list[dict[str, Any]] = []
+    for segment_index, (start, end) in enumerate(zip(gps_points, gps_points[1:])):
+        intersection = _segment_intersection(
+            start["xy"],
+            end["xy"],
+            cutline["start_xy"],
+            cutline["end_xy"],
+        )
+        if intersection is None:
+            continue
+        crossing_xy, segment_t = intersection
+        crossings.append(
+            {
+                "segment_index": segment_index,
+                "segment_t": segment_t,
+                "xy": crossing_xy,
+                "distance_m": _distance(crossing_xy, cutline["anchor_xy"]),
+                "time_s": _interpolated_time(start.get("time_s"), end.get("time_s"), segment_t),
+            }
+        )
+
+    if crossings:
+        chosen = _choose_crossing(crossings, matching_policy)
+        distance_m = float(chosen["distance_m"])
+        return {
+            "trackpoint_id": trackpoint_id,
+            "crossed": True,
+            "crossing_time_s": chosen.get("time_s"),
+            "crossing_station_m": station_m,
+            "min_distance_m": distance_m,
+            "quality": "good" if distance_m <= max_distance_m else "approximate",
+        }
+
+    nearest = _nearest_gps_distance(cutline["anchor_xy"], gps_points)
+    min_distance_m = None if nearest is None else float(nearest["distance_m"])
+    if not cutline_crossing_required and min_distance_m is not None and min_distance_m <= max_distance_m:
+        return {
+            "trackpoint_id": trackpoint_id,
+            "crossed": True,
+            "crossing_time_s": nearest.get("time_s"),
+            "crossing_station_m": station_m,
+            "min_distance_m": min_distance_m,
+            "quality": "approximate",
+        }
+
+    return {
+        "trackpoint_id": trackpoint_id,
+        "crossed": False,
+        "crossing_time_s": None,
+        "crossing_station_m": None,
+        "min_distance_m": min_distance_m,
+        "quality": "missing",
+    }
+
+
+def _trackpoint_cutline(
+    trackpoint: Mapping[str, Any],
+    *,
+    track_geometry: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    station_m = _number_or_none(trackpoint.get("station_m")) or 0.0
+    station_state = _track_state_at_station(station_m, track_geometry)
+    if station_state is None:
+        return None
+
+    origin = track_geometry["origin"]
+    position = trackpoint.get("position") if isinstance(trackpoint.get("position"), Mapping) else {}
+    coordinates = position.get("coordinates") if isinstance(position, Mapping) else None
+    anchor_xy = _project_position_or_none(coordinates, origin=origin) or station_state["xy"]
+
+    trackpoint_policy = policy.get("trackpoint_policy") if isinstance(policy.get("trackpoint_policy"), Mapping) else {}
+    override = trackpoint.get("cutline_override") if isinstance(trackpoint.get("cutline_override"), Mapping) else {}
+    left_length_m = _policy_number(
+        override.get("left_length_m"),
+        trackpoint_policy.get("default_cutline_left_length_m"),
+        default=5.0,
+    )
+    right_length_m = _policy_number(
+        override.get("right_length_m"),
+        trackpoint_policy.get("default_cutline_right_length_m"),
+        default=5.0,
+    )
+    angle_deg = _policy_number(
+        override.get("angle_deg_from_path_normal"),
+        trackpoint_policy.get("default_cutline_angle_deg_from_path_normal"),
+        default=0.0,
+    )
+    heading = station_state["unit"]
+    normal = (-heading[1], heading[0])
+    cutline_unit = _rotate_unit(normal, math.radians(angle_deg))
+    return {
+        "anchor_xy": anchor_xy,
+        "start_xy": _add_scaled(anchor_xy, cutline_unit, left_length_m),
+        "end_xy": _add_scaled(anchor_xy, cutline_unit, -right_length_m),
+    }
+
+
+def _choose_crossing(crossings: list[dict[str, Any]], matching_policy: Mapping[str, Any]) -> dict[str, Any]:
+    policy = str(matching_policy.get("multi_crossing_policy") or "nearest_to_trackpoint")
+    if policy == "first":
+        return min(crossings, key=lambda item: (int(item["segment_index"]), float(item["segment_t"])))
+    if policy == "last":
+        return max(crossings, key=lambda item: (int(item["segment_index"]), float(item["segment_t"])))
+    return min(crossings, key=lambda item: float(item["distance_m"]))
+
+
+def _normalized_gps_point_rows(gps_points: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(gps_points, Mapping):
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in gps_points.get("points") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        longitude = _number_or_none(raw.get("longitude"))
+        latitude = _number_or_none(raw.get("latitude"))
+        if longitude is None or latitude is None:
+            continue
+        rows.append(
+            {
+                "longitude": float(longitude),
+                "latitude": float(latitude),
+                "time_s": _number_or_none(raw.get("time_s")),
+                "elevation_m": _number_or_none(raw.get("elevation_m")),
+            }
+        )
+    return rows
+
+
+def _track_coordinate_rows(value: Any) -> list[dict[str, float]]:
+    rows: list[dict[str, float]] = []
+    if not isinstance(value, list):
+        return rows
+    for raw in value:
+        if not isinstance(raw, list) or len(raw) < 2:
+            continue
+        longitude = _number_or_none(raw[0])
+        latitude = _number_or_none(raw[1])
+        if longitude is None or latitude is None:
+            continue
+        rows.append({"longitude": float(longitude), "latitude": float(latitude)})
+    return rows
+
+
+def _projection_origin(
+    track_coordinates: list[dict[str, float]],
+    gps_points: list[dict[str, Any]],
+) -> tuple[float, float]:
+    latitudes = [coord["latitude"] for coord in track_coordinates] + [point["latitude"] for point in gps_points]
+    longitudes = [coord["longitude"] for coord in track_coordinates] + [point["longitude"] for point in gps_points]
+    return sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes)
+
+
+def _projected_track_geometry(
+    track_coordinates: list[dict[str, float]],
+    *,
+    origin: tuple[float, float],
+    declared_length_m: float,
+) -> dict[str, Any] | None:
+    points = [
+        _project_lon_lat(coord["longitude"], coord["latitude"], origin=origin)
+        for coord in track_coordinates
+    ]
+    stations = [0.0]
+    for start, end in zip(points, points[1:]):
+        stations.append(stations[-1] + _distance(start, end))
+    projected_length_m = stations[-1]
+    if projected_length_m <= 0:
+        return None
+    return {
+        "origin": origin,
+        "points": points,
+        "projected_stations_m": stations,
+        "projected_length_m": projected_length_m,
+        "declared_length_m": declared_length_m if declared_length_m > 0 else projected_length_m,
+    }
+
+
+def _project_lon_lat(longitude: float, latitude: float, *, origin: tuple[float, float]) -> tuple[float, float]:
+    origin_lat, origin_lon = origin
+    x = math.radians(longitude - origin_lon) * _EARTH_RADIUS_M * math.cos(math.radians(origin_lat))
+    y = math.radians(latitude - origin_lat) * _EARTH_RADIUS_M
+    return x, y
+
+
+def _project_position_or_none(value: Any, *, origin: tuple[float, float]) -> tuple[float, float] | None:
+    if not isinstance(value, list) or len(value) < 2:
+        return None
+    longitude = _number_or_none(value[0])
+    latitude = _number_or_none(value[1])
+    if longitude is None or latitude is None:
+        return None
+    return _project_lon_lat(float(longitude), float(latitude), origin=origin)
+
+
+def _track_state_at_station(station_m: float, track_geometry: Mapping[str, Any]) -> dict[str, Any] | None:
+    points = track_geometry["points"]
+    stations = track_geometry["projected_stations_m"]
+    projected_station = _declared_to_projected_station(station_m, track_geometry)
+    projected_station = min(float(track_geometry["projected_length_m"]), max(0.0, projected_station))
+    for index, (start_station, end_station) in enumerate(zip(stations, stations[1:])):
+        start_xy = points[index]
+        end_xy = points[index + 1]
+        segment_length = end_station - start_station
+        if segment_length <= 0:
+            continue
+        if projected_station <= end_station or index == len(points) - 2:
+            segment_t = min(1.0, max(0.0, (projected_station - start_station) / segment_length))
+            direction = _unit(_sub(end_xy, start_xy))
+            return {
+                "xy": _lerp_xy(start_xy, end_xy, segment_t),
+                "unit": direction,
+            }
+    return None
+
+
+def _nearest_track_projection(
+    xy: tuple[float, float],
+    track_geometry: Mapping[str, Any],
+) -> dict[str, float] | None:
+    points = track_geometry["points"]
+    stations = track_geometry["projected_stations_m"]
+    best: dict[str, float] | None = None
+    for index, (start_xy, end_xy) in enumerate(zip(points, points[1:])):
+        segment_length = stations[index + 1] - stations[index]
+        if segment_length <= 0:
+            continue
+        projection_xy, segment_t = _point_segment_projection(xy, start_xy, end_xy)
+        projected_station = stations[index] + segment_length * segment_t
+        distance_m = _distance(xy, projection_xy)
+        candidate = {
+            "station_m": _projected_to_declared_station(projected_station, track_geometry),
+            "distance_m": distance_m,
+        }
+        if best is None or distance_m < best["distance_m"]:
+            best = candidate
+    return best
+
+
+def _nearest_gps_distance(
+    xy: tuple[float, float],
+    gps_points: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not gps_points:
+        return None
+    if len(gps_points) == 1:
+        return {
+            "distance_m": _distance(xy, gps_points[0]["xy"]),
+            "time_s": gps_points[0].get("time_s"),
+        }
+
+    best: dict[str, Any] | None = None
+    for start, end in zip(gps_points, gps_points[1:]):
+        projection_xy, segment_t = _point_segment_projection(xy, start["xy"], end["xy"])
+        distance_m = _distance(xy, projection_xy)
+        candidate = {
+            "distance_m": distance_m,
+            "time_s": _interpolated_time(start.get("time_s"), end.get("time_s"), segment_t),
+        }
+        if best is None or distance_m < float(best["distance_m"]):
+            best = candidate
+    return best
+
+
+def _direction_from_station_sequence(matched_projections: list[dict[str, Any]]) -> str:
+    station_sequence = [
+        float(item["projection"]["station_m"])
+        for item in matched_projections
+        if item.get("projection") is not None
+    ]
+    if len(station_sequence) < 2:
+        return "unknown"
+    delta = station_sequence[-1] - station_sequence[0]
+    if abs(delta) < 1e-6:
+        return "ambiguous"
+    return "positive" if delta > 0 else "negative"
+
+
+def _declared_to_projected_station(station_m: float, track_geometry: Mapping[str, Any]) -> float:
+    declared_length = float(track_geometry["declared_length_m"])
+    projected_length = float(track_geometry["projected_length_m"])
+    if declared_length <= 0:
+        return station_m
+    return station_m / declared_length * projected_length
+
+
+def _projected_to_declared_station(projected_station_m: float, track_geometry: Mapping[str, Any]) -> float:
+    declared_length = float(track_geometry["declared_length_m"])
+    projected_length = float(track_geometry["projected_length_m"])
+    if projected_length <= 0:
+        return projected_station_m
+    return projected_station_m / projected_length * declared_length
+
+
+def _point_segment_projection(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> tuple[tuple[float, float], float]:
+    segment = _sub(end, start)
+    length_sq = _dot(segment, segment)
+    if length_sq <= 0:
+        return start, 0.0
+    t = min(1.0, max(0.0, _dot(_sub(point, start), segment) / length_sq))
+    return _lerp_xy(start, end, t), t
+
+
+def _segment_intersection(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    d: tuple[float, float],
+) -> tuple[tuple[float, float], float] | None:
+    r = _sub(b, a)
+    s = _sub(d, c)
+    denominator = _cross(r, s)
+    c_minus_a = _sub(c, a)
+    if abs(denominator) < 1e-9:
+        return None
+    t = _cross(c_minus_a, s) / denominator
+    u = _cross(c_minus_a, r) / denominator
+    if -1e-9 <= t <= 1.0 + 1e-9 and -1e-9 <= u <= 1.0 + 1e-9:
+        clamped_t = min(1.0, max(0.0, t))
+        return _lerp_xy(a, b, clamped_t), clamped_t
+    return None
+
+
+def _interpolated_time(start_time: Any, end_time: Any, segment_t: float) -> float | None:
+    start = _number_or_none(start_time)
+    end = _number_or_none(end_time)
+    if start is None or end is None:
+        return None
+    return float(start + (end - start) * segment_t)
+
+
+def _policy_number(primary: Any, fallback: Any, *, default: float) -> float:
+    primary_number = _number_or_none(primary)
+    if primary_number is not None:
+        return float(primary_number)
+    fallback_number = _number_or_none(fallback)
+    if fallback_number is not None:
+        return float(fallback_number)
+    return default
+
+
+def _unique_warnings(warnings: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for warning in warnings:
+        text = str(warning)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _add_scaled(
+    xy: tuple[float, float],
+    unit: tuple[float, float],
+    scale: float,
+) -> tuple[float, float]:
+    return xy[0] + unit[0] * scale, xy[1] + unit[1] * scale
+
+
+def _rotate_unit(unit: tuple[float, float], angle_rad: float) -> tuple[float, float]:
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    return _unit((unit[0] * cos_a - unit[1] * sin_a, unit[0] * sin_a + unit[1] * cos_a))
+
+
+def _unit(vector: tuple[float, float]) -> tuple[float, float]:
+    length = math.hypot(vector[0], vector[1])
+    if length <= 0:
+        return 1.0, 0.0
+    return vector[0] / length, vector[1] / length
+
+
+def _lerp_xy(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    t: float,
+) -> tuple[float, float]:
+    return start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t
+
+
+def _sub(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+    return a[0] - b[0], a[1] - b[1]
+
+
+def _dot(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return a[0] * b[0] + a[1] * b[1]
+
+
+def _cross(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return a[0] * b[1] - a[1] * b[0]
+
+
+def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 def _track_path(libraries_root: str | Path, track_id: str) -> Path:

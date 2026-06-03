@@ -46,7 +46,9 @@ import {
 import {
   applySavedSessionFilters,
   prototypeSavedSessionFilters,
+  trackpointCrossingSpecsForFilters,
   type SavedSessionFilterRecord,
+  type TrackpointCrossingSpec,
 } from './domain/sessionFilters'
 import {
   candidateId,
@@ -71,6 +73,8 @@ import type {
   SortDirection,
   StudyGrouping,
   StudySet,
+  TrackpointMatchQueryRecord,
+  TrackpointMatchQueryResults,
   TrackRecord,
 } from './domain/types'
 
@@ -78,6 +82,17 @@ type PendingStudySetAction =
   | { kind: 'load'; studySet: StudySet }
   | { kind: 'analyze-now'; session: SessionRecord }
   | { kind: 'clear' }
+
+type GeoFilterQueryState = {
+  key: string
+  label: string
+  status: 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+  candidateSessionCount: number
+  processedSessionCount: number
+  matchedSessionCount: number
+  matchedSessionIds: string[]
+  error: string
+}
 
 function App() {
   const [localDataSource] = useState(() => new LocalApiDataSource())
@@ -111,6 +126,7 @@ function App() {
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
   const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
   const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
+  const [geoFilterQueryStates, setGeoFilterQueryStates] = useState<Record<string, GeoFilterQueryState>>({})
   const [tableColumnFilters, setTableColumnFilters] = useState<TableColumnFilter[]>([])
   const [filterManagerOpen, setFilterManagerOpen] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
@@ -281,7 +297,24 @@ function App() {
   )
   const libraryScopedSessions = sessions.filter((session) => selectedLibraryIds.includes(session.libraryId))
   const activeSavedSessionFilters = savedSessionFilters.filter((filter) => activeSavedFilterIds.includes(filter.id))
-  const savedFilteredSessions = applySavedSessionFilters(libraryScopedSessions, activeSavedSessionFilters)
+  const activeTrackpointFilterSpecs = trackpointCrossingSpecsForFilters(activeSavedSessionFilters, selectedLibraryIds)
+  const activeTrackpointFilterSpecKey = JSON.stringify(activeTrackpointFilterSpecs)
+  const pendingTrackpointFilterKeys = new Set(
+    activeTrackpointFilterSpecs
+      .filter((spec) => geoFilterQueryStates[spec.key]?.status !== 'completed')
+      .map((spec) => spec.key),
+  )
+  const trackpointCrossingMatches = Object.fromEntries(
+    activeTrackpointFilterSpecs
+      .filter((spec) => geoFilterQueryStates[spec.key]?.status === 'completed')
+      .map((spec) => [spec.key, geoFilterQueryStates[spec.key].matchedSessionIds]),
+  )
+  const activeGeoFilterStates = activeTrackpointFilterSpecs.map((spec) => geoFilterQueryStates[spec.key] ?? queuedGeoFilterState(spec))
+  const savedFilteredSessions = applySavedSessionFilters(libraryScopedSessions, activeSavedSessionFilters, {
+    libraryIds: selectedLibraryIds,
+    pendingTrackpointCrossingKeys: pendingTrackpointFilterKeys,
+    trackpointCrossingMatches,
+  })
   const activeTableColumnFilters = tableColumnFilters.filter((filter) => filter.values.length > 0)
   const tableFilteredSessions = applyTableColumnFilters(savedFilteredSessions, activeTableColumnFilters, libraries)
   const searchedSessions = tableFilteredSessions.filter((session) =>
@@ -301,6 +334,122 @@ function App() {
     .filter((session): session is SessionRecord => Boolean(session))
   const selectedTracks = tracks.filter((track) => selectedTrackIds.includes(track.id))
   const currentStudyTracks = tracks.filter((track) => currentStudySet.trackIds.includes(track.id))
+
+  useEffect(() => {
+    const specs = JSON.parse(activeTrackpointFilterSpecKey) as TrackpointCrossingSpec[]
+    if (specs.length === 0) {
+      return
+    }
+
+    if (
+      !activeDataSource.createTrackpointMatchQuery ||
+      !activeDataSource.loadTrackpointMatchQuery ||
+      !activeDataSource.loadTrackpointMatchQueryResults
+    ) {
+      const timeoutId = window.setTimeout(() => {
+        setGeoFilterQueryStates((current) => {
+          const next: Record<string, GeoFilterQueryState> = {}
+          for (const spec of specs) {
+            next[spec.key] = {
+              ...(current[spec.key] ?? queuedGeoFilterState(spec)),
+              status: 'failed',
+              error: 'Current data source cannot run trackpoint match queries.',
+            }
+          }
+          return next
+        })
+      }, 0)
+      return () => window.clearTimeout(timeoutId)
+    }
+
+    let cancelled = false
+    for (const spec of specs) {
+      void runTrackpointFilterQuery(spec)
+    }
+
+    return () => {
+      cancelled = true
+    }
+
+    async function runTrackpointFilterQuery(spec: TrackpointCrossingSpec) {
+      try {
+        const created = await activeDataSource.createTrackpointMatchQuery?.({
+          trackId: spec.trackId,
+          trackpointIds: spec.trackpointIds,
+          matchMode: spec.matchMode,
+          toleranceM: spec.toleranceM,
+          minCount: spec.minCount,
+          scope: { libraryIds: spec.libraryIds },
+          persist: true,
+        })
+        if (!created || cancelled) {
+          return
+        }
+        setGeoFilterQueryStates((current) => ({
+          ...current,
+          [spec.key]: geoFilterStateFromQuery(spec, created, current[spec.key]?.matchedSessionIds ?? []),
+        }))
+
+        let query = created
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          if (cancelled || query.status === 'completed' || query.status === 'failed' || query.status === 'cancelled') {
+            break
+          }
+          await delay(500)
+          const loaded = await activeDataSource.loadTrackpointMatchQuery?.(query.queryId)
+          if (!loaded || cancelled) {
+            return
+          }
+          query = loaded
+          setGeoFilterQueryStates((current) => ({
+            ...current,
+            [spec.key]: geoFilterStateFromQuery(spec, query, current[spec.key]?.matchedSessionIds ?? []),
+          }))
+        }
+
+        if (query.status !== 'completed' || cancelled) {
+          return
+        }
+
+        const matchedSessionIds = await loadAllTrackpointFilterResultIds(query.queryId)
+        if (cancelled) {
+          return
+        }
+        setGeoFilterQueryStates((current) => ({
+          ...current,
+          [spec.key]: geoFilterStateFromQuery(spec, query, matchedSessionIds),
+        }))
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        setGeoFilterQueryStates((current) => ({
+          ...current,
+          [spec.key]: {
+            ...(current[spec.key] ?? queuedGeoFilterState(spec)),
+            status: 'failed',
+            error: message,
+          },
+        }))
+      }
+    }
+
+    async function loadAllTrackpointFilterResultIds(queryId: string) {
+      const matchedSessionIds: string[] = []
+      let cursor: string | null = null
+      do {
+        const page: TrackpointMatchQueryResults | undefined =
+          await activeDataSource.loadTrackpointMatchQueryResults?.(queryId, cursor, 500)
+        if (!page) {
+          break
+        }
+        matchedSessionIds.push(...page.results.map((result) => sessionRefId(result.sessionRef)))
+        cursor = page.nextCursor
+      } while (cursor && !cancelled)
+      return Array.from(new Set(matchedSessionIds))
+    }
+  }, [activeDataSource, activeTrackpointFilterSpecKey])
 
   function toggleLibrary(libraryId: string) {
     setSelectedLibraryIds((current) => {
@@ -1082,6 +1231,7 @@ function App() {
                     savedFilteredCount={savedFilteredSessions.length}
                     visibleCount={visibleSessions.length}
                     activeTableFilterCount={activeTableColumnFilters.length}
+                    trackpointFilterStates={activeGeoFilterStates}
                     canManageSavedFilters={Boolean(activeDataSource.saveSavedSessionFilter)}
                     onToggleSavedFilter={toggleSavedSessionFilter}
                     onClearSavedFilters={clearSavedSessionFilters}
@@ -1424,6 +1574,46 @@ function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[
     ...libraryItem,
     sessionCount: sessionCounts.get(libraryItem.id) ?? libraryItem.sessionCount,
   }))
+}
+
+function queuedGeoFilterState(spec: TrackpointCrossingSpec): GeoFilterQueryState {
+  return {
+    key: spec.key,
+    label: trackpointFilterLabel(spec),
+    status: 'queued',
+    candidateSessionCount: 0,
+    processedSessionCount: 0,
+    matchedSessionCount: 0,
+    matchedSessionIds: [],
+    error: '',
+  }
+}
+
+function geoFilterStateFromQuery(
+  spec: TrackpointCrossingSpec,
+  query: TrackpointMatchQueryRecord,
+  matchedSessionIds: string[],
+): GeoFilterQueryState {
+  return {
+    key: spec.key,
+    label: trackpointFilterLabel(spec),
+    status: query.status,
+    candidateSessionCount: query.candidateSessionCount,
+    processedSessionCount: query.processedSessionCount,
+    matchedSessionCount: query.matchedSessionCount,
+    matchedSessionIds,
+    error: query.error,
+  }
+}
+
+function trackpointFilterLabel(spec: TrackpointCrossingSpec) {
+  const count = spec.trackpointIds.length
+  const countLabel = count === 1 ? spec.trackpointIds[0] : `${count} trackpoints`
+  return `${spec.trackId}: ${countLabel}`
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 function withTrackMatches(tracks: TrackRecord[], matches: SessionTrackMatchRecord[]) {

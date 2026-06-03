@@ -13,6 +13,32 @@ export type SessionFilterField =
   | 'rider'
   | 'signals'
   | 'source.archive'
+  | 'trackpoint.crossing'
+
+export type TrackpointCrossingFilterValue = {
+  track_id?: string
+  trackId?: string
+  trackpoint_id?: string
+  trackpointId?: string
+  trackpoint_ids?: string[]
+  trackpointIds?: string[]
+  match_mode?: 'any' | 'all' | 'min_count'
+  matchMode?: 'any' | 'all' | 'min_count'
+  tolerance_m?: number
+  toleranceM?: number
+  min_count?: number
+  minCount?: number
+}
+
+export type TrackpointCrossingSpec = {
+  key: string
+  trackId: string
+  trackpointIds: string[]
+  matchMode: 'any' | 'all' | 'min_count'
+  toleranceM: number
+  minCount?: number
+  libraryIds: string[]
+}
 
 export type SessionFilterPredicate =
   | {
@@ -20,7 +46,12 @@ export type SessionFilterPredicate =
       children: SessionFilterPredicate[]
     }
   | {
-      field: SessionFilterField
+      field: 'trackpoint.crossing'
+      op: 'matches'
+      value: TrackpointCrossingFilterValue
+    }
+  | {
+      field: Exclude<SessionFilterField, 'trackpoint.crossing'>
       op: 'contains' | 'eq' | 'in' | 'present'
       value?: boolean | string | string[]
     }
@@ -151,11 +182,35 @@ export const prototypeSavedSessionFilters: SavedSessionFilterRecord[] = [
   },
 ]
 
-export function applySavedSessionFilters(sessions: SessionRecord[], filters: SavedSessionFilterRecord[]) {
+export function applySavedSessionFilters(
+  sessions: SessionRecord[],
+  filters: SavedSessionFilterRecord[],
+  options: {
+    trackpointCrossingMatches?: Record<string, string[]>
+    pendingTrackpointCrossingKeys?: Set<string>
+    libraryIds?: string[]
+  } = {},
+) {
   if (filters.length === 0) {
     return sessions
   }
-  return sessions.filter((session) => filters.every((filter) => sessionMatchesPredicate(session, filter.predicate)))
+  return sessions.filter((session) => filters.every((filter) => sessionMatchesPredicate(session, filter.predicate, options)))
+}
+
+export function trackpointCrossingSpecsForFilters(
+  filters: SavedSessionFilterRecord[],
+  libraryIds: string[],
+): TrackpointCrossingSpec[] {
+  const specs = new Map<string, TrackpointCrossingSpec>()
+  for (const filter of filters) {
+    for (const predicate of trackpointCrossingPredicates(filter.predicate)) {
+      const spec = trackpointCrossingSpecFromValue(predicate.value, libraryIds)
+      if (spec) {
+        specs.set(spec.key, spec)
+      }
+    }
+  }
+  return Array.from(specs.values()).sort((a, b) => a.key.localeCompare(b.key))
 }
 
 export function savedFilterCategoryLabel(category: string) {
@@ -175,12 +230,35 @@ export function savedFilterCategoryLabel(category: string) {
   }
 }
 
-function sessionMatchesPredicate(session: SessionRecord, predicate: SessionFilterPredicate): boolean {
+function sessionMatchesPredicate(
+  session: SessionRecord,
+  predicate: SessionFilterPredicate,
+  options: {
+    trackpointCrossingMatches?: Record<string, string[]>
+    pendingTrackpointCrossingKeys?: Set<string>
+    libraryIds?: string[]
+  },
+): boolean {
   if ('children' in predicate) {
     if (predicate.op === 'and') {
-      return predicate.children.every((child) => sessionMatchesPredicate(session, child))
+      return predicate.children.every((child) => sessionMatchesPredicate(session, child, options))
     }
-    return predicate.children.some((child) => sessionMatchesPredicate(session, child))
+    return predicate.children.some((child) => sessionMatchesPredicate(session, child, options))
+  }
+
+  if (predicate.field === 'trackpoint.crossing') {
+    const spec = trackpointCrossingSpecFromValue(predicate.value, options.libraryIds ?? [])
+    if (!spec) {
+      return false
+    }
+    if (options.pendingTrackpointCrossingKeys?.has(spec.key)) {
+      return true
+    }
+    const matchedRefs = options.trackpointCrossingMatches?.[spec.key]
+    if (!matchedRefs) {
+      return true
+    }
+    return matchedRefs.includes(sessionFilterSessionRefId(session))
   }
 
   const values = fieldValues(session, predicate.field)
@@ -234,9 +312,75 @@ function fieldValues(session: SessionRecord, field: SessionFilterField): Array<b
       return session.signals
     case 'source.archive':
       return [session.sourceArchive]
+    case 'trackpoint.crossing':
+      return []
   }
 }
 
 function normalized(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
+}
+
+function trackpointCrossingPredicates(predicate: SessionFilterPredicate): Array<Extract<SessionFilterPredicate, { field: 'trackpoint.crossing' }>> {
+  if ('children' in predicate) {
+    return predicate.children.flatMap(trackpointCrossingPredicates)
+  }
+  return predicate.field === 'trackpoint.crossing' ? [predicate] : []
+}
+
+function trackpointCrossingSpecFromValue(
+  value: TrackpointCrossingFilterValue,
+  libraryIds: string[],
+): TrackpointCrossingSpec | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+  const trackId = textValue(value.track_id ?? value.trackId)
+  const rawTrackpointIds =
+    value.trackpoint_ids ?? value.trackpointIds ?? (value.trackpoint_id ?? value.trackpointId ? [value.trackpoint_id ?? value.trackpointId] : [])
+  const trackpointIds = Array.from(new Set((rawTrackpointIds ?? []).map(textValue).filter(Boolean))).sort()
+  if (!trackId || trackpointIds.length === 0) {
+    return null
+  }
+  const matchMode = matchModeValue(value.match_mode ?? value.matchMode)
+  const toleranceM = numberValue(value.tolerance_m ?? value.toleranceM, 5)
+  const minCount = matchMode === 'min_count' ? numberValue(value.min_count ?? value.minCount, trackpointIds.length) : undefined
+  const scopedLibraryIds = Array.from(new Set(libraryIds.map(textValue).filter(Boolean))).sort()
+  const key = JSON.stringify({
+    field: 'trackpoint.crossing',
+    trackId,
+    trackpointIds,
+    matchMode,
+    toleranceM,
+    minCount,
+    libraryIds: scopedLibraryIds,
+  })
+  return {
+    key,
+    trackId,
+    trackpointIds,
+    matchMode,
+    toleranceM,
+    minCount,
+    libraryIds: scopedLibraryIds,
+  }
+}
+
+function sessionFilterSessionRefId(session: SessionRecord) {
+  return `${session.libraryId}|||${session.sessionKey}`
+}
+
+function textValue(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function numberValue(value: unknown, fallback: number) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function matchModeValue(value: unknown): 'any' | 'all' | 'min_count' {
+  if (value === 'any' || value === 'min_count') {
+    return value
+  }
+  return 'all'
 }

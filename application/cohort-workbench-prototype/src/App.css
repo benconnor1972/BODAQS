@@ -876,6 +876,44 @@ button {
   color: var(--green);
 }
 
+.geo-filter-status-list {
+  display: grid;
+  gap: 6px;
+}
+
+.geo-filter-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid rgba(174, 187, 181, 0.58);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.geo-filter-status-row div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.geo-filter-status-row strong,
+.geo-filter-status-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geo-filter-status-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.warning-text {
+  color: #983d3d;
+}
+
 .compact-filter-action {
   min-height: 26px;
   padding: 4px 8px;
@@ -1498,6 +1536,11 @@ button {
 .pill.warning {
   background: #f5ead2;
   color: #8a5a19;
+}
+
+.pill.alert {
+  background: #f5dddd;
+  color: #983d3d;
 }
 
 .rail {

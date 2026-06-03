@@ -8,6 +8,7 @@ export function FilterPanel({
   savedFilteredCount,
   visibleCount,
   activeTableFilterCount,
+  trackpointFilterStates,
   canManageSavedFilters,
   onToggleSavedFilter,
   onClearSavedFilters,
@@ -21,6 +22,15 @@ export function FilterPanel({
   savedFilteredCount: number
   visibleCount: number
   activeTableFilterCount: number
+  trackpointFilterStates: Array<{
+    key: string
+    label: string
+    status: 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+    candidateSessionCount: number
+    processedSessionCount: number
+    matchedSessionCount: number
+    error: string
+  }>
   canManageSavedFilters: boolean
   onToggleSavedFilter: (filterId: string) => void
   onClearSavedFilters: () => void
@@ -89,6 +99,30 @@ export function FilterPanel({
         )}
       </div>
 
+      {trackpointFilterStates.length > 0 && (
+        <div className="active-filter-stack table-filter-stack">
+          <div className="filter-stack-title">
+            <Filter size={15} />
+            <strong>Trackpoint filters</strong>
+            <span className="pill neutral">async</span>
+          </div>
+          <div className="geo-filter-status-list">
+            {trackpointFilterStates.map((state) => (
+              <div className="geo-filter-status-row" key={state.key}>
+                <div>
+                  <strong>{state.label}</strong>
+                  <small>
+                    {state.processedSessionCount}/{state.candidateSessionCount} processed, {state.matchedSessionCount} matched
+                  </small>
+                  {state.error && <small className="warning-text">{state.error}</small>}
+                </div>
+                <span className={geoFilterStatusClass(state.status)}>{state.status}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="filter-library">
         <div className="filter-library-title">
           <div>
@@ -155,4 +189,14 @@ function groupedFilters(filters: SavedSessionFilterRecord[]) {
     category,
     items: items.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' })),
   }))
+}
+
+function geoFilterStatusClass(status: 'queued' | 'running' | 'completed' | 'cancelled' | 'failed') {
+  if (status === 'completed') {
+    return 'pill ok'
+  }
+  if (status === 'failed' || status === 'cancelled') {
+    return 'pill alert'
+  }
+  return 'pill warning'
 }

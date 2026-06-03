@@ -219,7 +219,10 @@ def _write_gps_fit_stream(
     session_ref: dict,
     *,
     times: list[float],
+    coordinates: list[tuple[float, float]] | None = None,
 ) -> None:
+    if coordinates is not None and len(coordinates) != len(times):
+        raise ValueError("coordinates must contain one lon/lat pair for each time.")
     stream_root = (
         library_root
         / "runs"
@@ -258,8 +261,14 @@ def _write_gps_fit_stream(
     pd.DataFrame(
         {
             "time_s": times,
-            "gps_fit_position_latitude_dom_world [deg]": [-31.95 - (index * 0.0001) for index, _ in enumerate(times)],
-            "gps_fit_position_longitude_dom_world [deg]": [115.86 + (index * 0.0001) for index, _ in enumerate(times)],
+            "gps_fit_position_latitude_dom_world [deg]": [
+                coordinates[index][1] if coordinates is not None else -31.95 - (index * 0.0001)
+                for index, _ in enumerate(times)
+            ],
+            "gps_fit_position_longitude_dom_world [deg]": [
+                coordinates[index][0] if coordinates is not None else 115.86 + (index * 0.0001)
+                for index, _ in enumerate(times)
+            ],
             "gps_fit_altitude_dom_world [m]": [200.0 + index for index, _ in enumerate(times)],
         }
     ).to_parquet(stream_root / "df.parquet", index=False)
@@ -901,7 +910,16 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
         display_name="Default Library",
     )
     session_ref = _write_catalog_fixture_session(library_root)
-    _write_gps_fit_stream(library_root, session_ref, times=[-100.0, 0.0, 1.0, 2.0, 100.0])
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
     client = TestClient(create_app(libraries_root))
 
     policy_response = client.get("/api/v1/geospatial-policies/default-geospatial-policy")
@@ -913,19 +931,20 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
         "display_name": "Test Track",
         "path": {
             "type": "LineString",
+            "length_m": 100.0,
             "coordinates": [
                 [115.86, -31.95, 200.0],
-                [115.861, -31.951, 201.0],
+                [115.861, -31.95, 201.0],
             ],
         },
         "trackpoints": [
             {
                 "trackpoint_id": "start-gate",
                 "display_name": "Start gate",
-                "station_m": 0.0,
+                "station_m": 50.0,
                 "position": {
                     "type": "Point",
-                    "coordinates": [115.86, -31.95, 200.0],
+                    "coordinates": [115.8605, -31.95, 200.0],
                 },
             }
         ],
@@ -964,6 +983,58 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
     assert match["status"] == "matched"
     assert match["trackpoint_results"][0]["trackpoint_id"] == "start-gate"
     assert match["trackpoint_results"][0]["crossed"] is True
+    assert match["trackpoint_results"][0]["crossing_time_s"] == pytest.approx(1.0)
+
+
+def test_library_adapter_track_match_requires_cutline_crossing(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8604, -31.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "length_m": 100.0,
+                "coordinates": [
+                    [115.86, -31.95],
+                    [115.861, -31.95],
+                ],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "late-gate",
+                    "display_name": "Late gate",
+                    "station_m": 90.0,
+                    "position": {"type": "Point", "coordinates": [115.8609, -31.95]},
+                }
+            ],
+        }
+    )
+
+    match = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+    result = match["trackpoint_results"][0]
+
+    assert match["status"] == "partial"
+    assert result["trackpoint_id"] == "late-gate"
+    assert result["crossed"] is False
+    assert result["min_distance_m"] > 5.0
 
 
 def test_library_adapter_trackpoint_match_query_can_be_cancelled(tmp_path: Path) -> None:
@@ -1023,26 +1094,36 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
         display_name="Default Library",
     )
     session_ref = _write_catalog_fixture_session(library_root)
-    _write_gps_fit_stream(library_root, session_ref, times=[-100.0, 0.0, 1.0, 2.0, 100.0])
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
     client = TestClient(create_app(libraries_root))
     track_payload = {
         "track_id": "test-track",
         "display_name": "Test Track",
         "path": {
             "type": "LineString",
+            "length_m": 100.0,
             "coordinates": [
                 [115.86, -31.95, 200.0],
-                [115.861, -31.951, 201.0],
+                [115.861, -31.95, 201.0],
             ],
         },
         "trackpoints": [
             {
                 "trackpoint_id": "start-gate",
                 "display_name": "Start gate",
-                "station_m": 0.0,
+                "station_m": 50.0,
                 "position": {
                     "type": "Point",
-                    "coordinates": [115.86, -31.95, 200.0],
+                    "coordinates": [115.8605, -31.95, 200.0],
                 },
             }
         ],

@@ -529,6 +529,11 @@ Work in this phase:
   tolerance, match mode, and algorithm version
 - add browser UI states for queued, running, partially available, complete,
   cancelled, and failed trackpoint filters
+- defer a general server-side saved-filter evaluator until the prototype proves
+  the filter contract and at least one expensive predicate
+- harden derived-cache invalidation after the first trackpoint-filter UI slice,
+  including track revision, policy version, session GPS identity, tolerance,
+  match mode, and algorithm version
 
 Expected outcome:
 
@@ -546,6 +551,11 @@ Implementation sequence:
    filter is applied.
 7. Apply matched session refs incrementally as results arrive.
 8. Add cancellation and clear user messaging before optimizing the worker.
+9. Add a general server-side saved-filter evaluation endpoint once catalog,
+   geospatial, signal-content, and adequacy predicates need one shared execution
+   path.
+10. Replace the first-cut derived-cache checks with explicit stale detection and
+    cache refresh controls.
 
 ### Phase 8: Static Bundles And Remote Options
 
