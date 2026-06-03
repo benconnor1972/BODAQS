@@ -279,10 +279,13 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<label>Log format: </label>");
     html += F("<label><input type='radio' name='log_format' value='bodaqs_standard'");
     if (cfg.logFormat == LogFormat::BodaqsStandard) html += F(" checked");
-    html += dis; html += F("> BODAQS standard</label> ");
+    html += dis; html += F("> BODAQS CSV</label> ");
     html += F("<label><input type='radio' name='log_format' value='syn_bike_raw'");
     if (cfg.logFormat == LogFormat::SynBikeRaw) html += F(" checked");
-    html += dis; html += F("> syn.bike raw</label><br>");
+    html += dis; html += F("> syn.bike CSV</label> ");
+    html += F("<label><input type='radio' name='log_format' value='bodaqs_compact_binary'");
+    if (cfg.logFormat == LogFormat::BodaqsCompactBinary) html += F(" checked");
+    html += dis; html += F("> BODAQS compact binary</label><br>");
 
     html += F("<label><input type='checkbox' name='omit_metadata' value='true'");
     if (cfg.omitMetadata) html += F(" checked");

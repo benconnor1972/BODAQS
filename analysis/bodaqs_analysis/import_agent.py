@@ -20,7 +20,7 @@ import pandas as pd
 from .artifacts import (
     ArtifactStore,
     copy_session_aux_sources,
-    copy_raw_csv_to_source,
+    copy_raw_input_to_source,
     ensure_run_is_new,
     ensure_session_is_new,
     save_session_artifacts,
@@ -44,6 +44,7 @@ from .import_agent_logger_wifi_discovery import (
     LoggerWifiDiscoveryUnavailable,
     discover_single_logger_wifi_source,
 )
+from .io_bdq import is_bdq_path, read_bdq
 from .pipeline import preprocess_session
 from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
 from .session_note_presets import BikeSetupPreset, load_bike_setup_preset
@@ -55,6 +56,7 @@ from .session_notes import (
 )
 from .session_archive import (
     SessionArchiveContract,
+    bdq_session_identity as make_bdq_session_identity,
     extract_session_archive,
     raw_session_identity as make_raw_session_identity,
     read_session_archive_contract,
@@ -73,13 +75,32 @@ IMPORT_SOURCE_SCHEMA = "bodaqs.import_source"
 IMPORT_SOURCE_VERSION = 1
 IMPORT_AGENT_STATE_SCHEMA = "bodaqs.import_agent_state"
 IMPORT_AGENT_STATE_VERSION = 1
-DEFAULT_ARCHIVE_PATTERNS = ("*.zip",)
+DEFAULT_ARCHIVE_PATTERNS = ("*.zip", "*.ZIP", "*.bdq", "*.BDQ")
 DEFAULT_DATA_SYN_BIKE_EXPORT_FILENAME_TEMPLATE = "{run_id}__{session_id}__{export_id}__data_syn_bike.csv"
 DEFAULT_DATA_SYN_BIKE_SETTINGS_FILENAME_TEMPLATE = "{run_id}__{session_id}__data_syn_bike_settings.txt"
 DATA_SYN_BIKE_LIBRARY_MANIFEST_FILENAME = "data_syn_bike_export_manifest.json"
 DEFAULT_SESSION_NOTE_DIRNAME = "notes"
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_archive_patterns(patterns: Sequence[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        text = str(pattern).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+
+    lower = {item.lower() for item in normalized}
+    if "*.zip" in lower and "*.bdq" not in lower:
+        normalized.extend(["*.bdq", "*.BDQ"])
+    return tuple(normalized)
 
 
 def _utcnow_iso() -> str:
@@ -476,7 +497,9 @@ class ImportArchiveCandidate:
     archive_sha256: str
     archive_size_bytes: int
     archive_mtime_ns: int
-    contract: SessionArchiveContract
+    contract: Optional[SessionArchiveContract]
+    input_kind: str
+    source_identity_kind: str
     raw_session_identity: str
     processing_key: str
 
@@ -488,6 +511,7 @@ class LoggerWifiArchiveAcquisition:
     logger_id: str
     base_url: str
     local_archive_path: Path
+    data_format: str = "csv_zip"
     remote_already_acknowledged: bool = False
 
 
@@ -534,7 +558,7 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
     if archive_patterns_raw is None:
         archive_patterns = DEFAULT_ARCHIVE_PATTERNS
     elif isinstance(archive_patterns_raw, list) and archive_patterns_raw:
-        archive_patterns = tuple(
+        archive_patterns = _normalize_archive_patterns(
             str(x).strip()
             for x in archive_patterns_raw
             if _optional_text(x) is not None
@@ -995,12 +1019,31 @@ class ImportSourceRunner:
         if remote_session_id is None:
             raise ValueError("Wi-Fi logger session entry is missing session_id")
 
+        data_format = self._logger_wifi_data_format(session)
+        suffix = ".bdq" if data_format == "bdq" else ".zip"
         name_hint = _optional_text(session.get("session_stem")) or remote_session_id
+        if data_format == "bdq":
+            data_path = _optional_text(session.get("data_path"))
+            if data_path is not None:
+                data_stem = Path(data_path.replace("\\", "/")).stem
+                if data_stem:
+                    name_hint = data_stem
         safe_hint = re.sub(r"[^A-Za-z0-9._-]+", "_", name_hint).strip("._-")
         if not safe_hint:
             safe_hint = "logger_session"
         digest = hashlib.sha256(remote_session_id.encode("utf-8")).hexdigest()[:12]
-        return f"{safe_hint[:80]}_{digest}.zip"
+        return f"{safe_hint[:80]}_{digest}{suffix}"
+
+    def _logger_wifi_data_format(self, session: Mapping[str, Any]) -> str:
+        data_format = str(session.get("data_format") or "").strip().lower()
+        if data_format in {"bdq", "csv_zip"}:
+            return data_format
+        return "csv_zip"
+
+    def _logger_wifi_data_ready(self, session: Mapping[str, Any], *, data_format: str) -> bool:
+        if data_format == "bdq":
+            return bool(session.get("data_ready", False))
+        return session.get("archive_ready") is not False
 
     def _logger_wifi_client(self) -> Optional[LoggerWifiApiClient]:
         config = self.source.logger_wifi
@@ -1102,6 +1145,7 @@ class ImportSourceRunner:
                 logger_id=_optional_text(record.get("logger_id")) or self.source.logger_wifi.logger_id,
                 base_url=_optional_text(record.get("base_url")) or self.source.logger_wifi.base_url or "",
                 local_archive_path=local_archive_path.resolve(),
+                data_format=_optional_text(record.get("data_format")) or "csv_zip",
                 remote_already_acknowledged=bool(
                     record.get("remote_already_acknowledged", record.get("acknowledged", False))
                 ),
@@ -1126,6 +1170,7 @@ class ImportSourceRunner:
                 "base_url": acquisition.base_url,
                 "local_archive_path": str(acquisition.local_archive_path),
                 "archive_sha256": archive_sha256,
+                "data_format": acquisition.data_format,
                 "remote_already_acknowledged": acquisition.remote_already_acknowledged,
                 "updated_at": _utcnow_iso(),
             },
@@ -1147,6 +1192,7 @@ class ImportSourceRunner:
             "logger_id": acquisition.logger_id,
             "base_url": acquisition.base_url,
             "local_archive_path": str(acquisition.local_archive_path),
+            "data_format": acquisition.data_format,
             "updated_at": _utcnow_iso(),
             "error": error,
         }
@@ -1253,6 +1299,7 @@ class ImportSourceRunner:
                 remote_session_id = _optional_text(session.get("session_id"))
                 if remote_session_id is None:
                     continue
+                data_format = self._logger_wifi_data_format(session)
                 remote_state_key = self._logger_wifi_remote_state_key(remote_session_id)
                 existing = self.state.get(remote_state_key)
                 if (
@@ -1269,9 +1316,13 @@ class ImportSourceRunner:
                         }
                     )
                     continue
-                if session.get("archive_ready") is False:
+                if not self._logger_wifi_data_ready(session, data_format=data_format):
                     remote_summary["skipped"].append(
-                        {"session_id": remote_session_id, "reason": "archive_not_ready"}
+                        {
+                            "session_id": remote_session_id,
+                            "reason": "data_not_ready" if data_format == "bdq" else "archive_not_ready",
+                            "data_format": data_format,
+                        }
                     )
                     continue
 
@@ -1282,6 +1333,7 @@ class ImportSourceRunner:
                     logger_id=config.logger_id,
                     base_url=client.base_url,
                     local_archive_path=target_path,
+                    data_format=data_format,
                     remote_already_acknowledged=bool(session.get("acknowledged", False)),
                 )
 
@@ -1291,14 +1343,21 @@ class ImportSourceRunner:
                         {
                             "session_id": remote_session_id,
                             "reason": "already_local_pending",
+                            "data_format": data_format,
                             "archive_path": str(target_path),
                         }
                     )
                     continue
 
-                downloaded_path = client.download_archive_to_part(remote_session_id, target_path)
+                if data_format == "bdq":
+                    downloaded_path = client.download_bdq_to_part(remote_session_id, target_path)
+                else:
+                    downloaded_path = client.download_archive_to_part(remote_session_id, target_path)
                 try:
-                    self._archive_contract(downloaded_path)
+                    if data_format == "bdq":
+                        self._validate_bdq_input(downloaded_path)
+                    else:
+                        self._archive_contract(downloaded_path)
                 except Exception as exc:
                     failed_path = _move_to_dir_unique(downloaded_path, self.source.failed_dir)
                     error = f"{type(exc).__name__}: {exc}"
@@ -1306,6 +1365,7 @@ class ImportSourceRunner:
                     remote_summary["failed"].append(
                         {
                             "session_id": remote_session_id,
+                            "data_format": data_format,
                             "failed_archive_path": str(failed_path),
                             "error": error,
                         }
@@ -1318,6 +1378,7 @@ class ImportSourceRunner:
                     logger_id=config.logger_id,
                     base_url=client.base_url,
                     local_archive_path=downloaded_path.resolve(),
+                    data_format=data_format,
                     remote_already_acknowledged=bool(session.get("acknowledged", False)),
                 )
                 archive_sha256 = _sha256_file(downloaded_path)
@@ -1329,6 +1390,7 @@ class ImportSourceRunner:
                 remote_summary["downloaded"].append(
                     {
                         "session_id": remote_session_id,
+                        "data_format": data_format,
                         "archive_path": str(downloaded_path),
                         "archive_sha256": archive_sha256,
                     }
@@ -1420,6 +1482,7 @@ class ImportSourceRunner:
                 "remote_session_id": acquisition.remote_session_id,
                 "remote_logger_id": acquisition.logger_id,
                 "remote_base_url": acquisition.base_url,
+                "remote_data_format": acquisition.data_format,
                 "remote_acknowledged": acknowledged,
                 "remote_already_acknowledged": acquisition.remote_already_acknowledged,
                 "remote_cleanup_mode": config.cleanup_mode,
@@ -1439,6 +1502,7 @@ class ImportSourceRunner:
             "base_url": acquisition.base_url,
             "local_archive_path": str(acquisition.local_archive_path),
             "archive_sha256": candidate.archive_sha256,
+            "data_format": acquisition.data_format,
             "processing_key": candidate.processing_key,
             "raw_session_identity": candidate.raw_session_identity,
             "run_id": record.get("run_id"),
@@ -1493,6 +1557,15 @@ class ImportSourceRunner:
     def _archive_contract(self, archive_path: Path) -> SessionArchiveContract:
         return read_session_archive_contract(archive_path)
 
+    def _validate_bdq_input(self, bdq_path: Path) -> None:
+        info = read_bdq(bdq_path)
+        if not info.metadata:
+            raise ValueError(f"BDQ file has no metadata chunk: {bdq_path.name}")
+        if not info.channel_schema:
+            raise ValueError(f"BDQ file has no channel schema chunk: {bdq_path.name}")
+        if info.sample_count <= 0:
+            raise ValueError(f"BDQ file has no decodable samples: {bdq_path.name}")
+
     def _build_candidate(
         self,
         *,
@@ -1501,13 +1574,23 @@ class ImportSourceRunner:
     ) -> ImportArchiveCandidate:
         self._ensure_runtime_config_loaded()
         stat = claimed_archive_path.stat()
-        contract = self._archive_contract(claimed_archive_path)
-        raw_session_identity = make_raw_session_identity(
-            csv_sha256=contract.csv_sha256,
-            log_metadata_sha256=contract.log_metadata_sha256,
-        )
+        archive_sha256 = _sha256_file(claimed_archive_path)
+        input_kind = "bdq" if is_bdq_path(claimed_archive_path) else "archive"
+        source_identity_kind = "raw_session_identity"
+        contract: Optional[SessionArchiveContract] = None
+        if input_kind == "bdq":
+            self._validate_bdq_input(claimed_archive_path)
+            raw_session_identity = make_bdq_session_identity(bdq_sha256=archive_sha256)
+            source_identity_kind = "bdq_session_identity"
+        else:
+            contract = self._archive_contract(claimed_archive_path)
+            raw_session_identity = make_raw_session_identity(
+                csv_sha256=contract.csv_sha256,
+                log_metadata_sha256=contract.log_metadata_sha256,
+            )
         processing_key = _sha256_jsonable(
             {
+                "input_kind": input_kind,
                 "raw_session_identity": raw_session_identity,
                 "preprocess_profile_sha256": self.preprocess_profile_sha256,
                 "bike_profile_sha256": self.bike_profile_sha256,
@@ -1521,15 +1604,21 @@ class ImportSourceRunner:
             inbox_archive_path=inbox_archive_path,
             claimed_archive_path=claimed_archive_path,
             archive_name=claimed_archive_path.name,
-            archive_sha256=_sha256_file(claimed_archive_path),
+            archive_sha256=archive_sha256,
             archive_size_bytes=int(stat.st_size),
             archive_mtime_ns=int(stat.st_mtime_ns),
             contract=contract,
+            input_kind=input_kind,
+            source_identity_kind=source_identity_kind,
             raw_session_identity=raw_session_identity,
             processing_key=processing_key,
         )
 
-    def _extract_candidate(self, candidate: ImportArchiveCandidate, target_dir: Path) -> tuple[Path, Path]:
+    def _extract_candidate(self, candidate: ImportArchiveCandidate, target_dir: Path) -> tuple[Path, Optional[Path]]:
+        if candidate.input_kind == "bdq":
+            return candidate.claimed_archive_path, None
+        if candidate.contract is None:
+            raise ValueError(f"Session archive contract missing for {candidate.archive_name}")
         extracted = extract_session_archive(
             candidate.claimed_archive_path,
             target_dir,
@@ -1672,17 +1761,20 @@ class ImportSourceRunner:
                 prefix=f"{self.source.source_id}_",
                 dir=str(self.source.staging_dir),
             ) as tmpdir:
-                csv_path, log_metadata_path = self._extract_candidate(candidate, Path(tmpdir))
+                input_path, log_metadata_path = self._extract_candidate(candidate, Path(tmpdir))
+                preprocess_kwargs: Dict[str, Any] = {}
+                if log_metadata_path is not None:
+                    preprocess_kwargs["log_metadata_path"] = str(log_metadata_path)
 
                 results = preprocess_session(
-                    str(csv_path),
+                    str(input_path),
                     preprocess_config=self.preprocess_config,
                     fit_import=self._import_agent_fit_import_config(),
                     bike_profile_path=str(bike_profile_path),
-                    log_metadata_path=str(log_metadata_path),
                     timezone=self.source.logger_timezone,
                     include_events=True,
                     include_metrics=True,
+                    **preprocess_kwargs,
                 )
 
                 session = results["session"]
@@ -1691,11 +1783,13 @@ class ImportSourceRunner:
                 ensure_run_is_new(self.store, run_id=run_id, force=False)
                 ensure_session_is_new(self.store, run_id=run_id, session_id=session_id, force=False)
 
-                copied_csv_sha256 = copy_raw_csv_to_source(
+                source_input_name = "input.bdq" if candidate.input_kind == "bdq" else "input.csv"
+                copied_input_sha256 = copy_raw_input_to_source(
                     store=self.store,
                     run_id=run_id,
                     session_id=session_id,
-                    csv_path=csv_path,
+                    input_path=input_path,
+                    dest_name=source_input_name,
                 )
 
                 save_session_artifacts(
@@ -1712,25 +1806,42 @@ class ImportSourceRunner:
                 metrics_df = results.get("metrics", pd.DataFrame())
 
                 source_manifest = {
-                    "path": "source/input.csv",
-                    "sha256": copied_csv_sha256,
+                    "path": f"source/{source_input_name}",
+                    "sha256": copied_input_sha256,
                     "import_mode": "import_agent_archive_v1",
                     "import_source_id": self.source.source_id,
                     "import_source_type": self.source.source_type,
                     "import_source_config_path": str(self.source.config_path),
-                    "original_archive_filename": candidate.archive_name,
-                    "original_archive_sha256": candidate.archive_sha256,
-                    "original_archive_path": str(candidate.inbox_archive_path),
-                    "archive_csv_member": candidate.contract.csv_member_name,
-                    "archive_csv_sha256": candidate.contract.csv_sha256,
-                    "archive_log_metadata_member": candidate.contract.log_metadata_member_name,
-                    "archive_log_metadata_sha256": candidate.contract.log_metadata_sha256,
                     "raw_session_identity": candidate.raw_session_identity,
                     "source_identity": candidate.raw_session_identity,
-                    "source_identity_kind": "raw_session_identity",
-                    "input_kind": "archive",
+                    "source_identity_kind": candidate.source_identity_kind,
+                    "input_kind": candidate.input_kind,
                     "processing_key": candidate.processing_key,
                 }
+                if candidate.input_kind == "bdq":
+                    source_manifest.update(
+                        {
+                            "import_mode": "import_agent_bdq_v1",
+                            "original_bdq_filename": candidate.archive_name,
+                            "original_bdq_sha256": candidate.archive_sha256,
+                            "original_bdq_path": str(candidate.inbox_archive_path),
+                            "bdq_sha256": candidate.archive_sha256,
+                        }
+                    )
+                else:
+                    if candidate.contract is None:
+                        raise ValueError(f"Session archive contract missing for {candidate.archive_name}")
+                    source_manifest.update(
+                        {
+                            "original_archive_filename": candidate.archive_name,
+                            "original_archive_sha256": candidate.archive_sha256,
+                            "original_archive_path": str(candidate.inbox_archive_path),
+                            "archive_csv_member": candidate.contract.csv_member_name,
+                            "archive_csv_sha256": candidate.contract.csv_sha256,
+                            "archive_log_metadata_member": candidate.contract.log_metadata_member_name,
+                            "archive_log_metadata_sha256": candidate.contract.log_metadata_sha256,
+                        }
+                    )
                 if self.source.logger_timezone is not None:
                     source_manifest["logger_timezone_fallback"] = self.source.logger_timezone
                 if self.source.source_type == SOURCE_TYPE_LOGGER_WIFI and self.source.logger_wifi is not None:
@@ -1796,8 +1907,10 @@ class ImportSourceRunner:
                 archive_import_config = {
                     "schema": IMPORT_SOURCE_SCHEMA,
                     "version": IMPORT_SOURCE_VERSION,
+                    "input_kind": candidate.input_kind,
                     "archive_sha256": candidate.archive_sha256,
                     "raw_session_identity": candidate.raw_session_identity,
+                    "source_identity_kind": candidate.source_identity_kind,
                     "processing_key": candidate.processing_key,
                     "preprocess_profile_path": str(preprocess_profile_path),
                     "preprocess_profile_selection_path": str(self.source.preprocess_profile_path),
@@ -1806,6 +1919,8 @@ class ImportSourceRunner:
                     "bike_profile_selection_path": str(self.source.bike_profile_path),
                     "bike_profile_sha256": self.bike_profile_sha256,
                 }
+                if candidate.input_kind == "bdq":
+                    archive_import_config["bdq_sha256"] = candidate.archive_sha256
                 if data_syn_bike_export_record is not None:
                     archive_import_config["data_syn_bike_export"] = data_syn_bike_export_record
                 if session_note_record is not None:
@@ -1834,8 +1949,8 @@ class ImportSourceRunner:
                 "archive_path": str(candidate.inbox_archive_path),
                 "archive_sha256": candidate.archive_sha256,
                 "done_archive_path": str(done_path),
-                "archive_csv_member": candidate.contract.csv_member_name,
-                "archive_log_metadata_member": candidate.contract.log_metadata_member_name,
+                "input_kind": candidate.input_kind,
+                "source_identity_kind": candidate.source_identity_kind,
                 "raw_session_identity": candidate.raw_session_identity,
                 "processing_key": candidate.processing_key,
                 "run_id": run_id,
@@ -1844,6 +1959,11 @@ class ImportSourceRunner:
                 "session_manifest_path": str(self.store.path_session_manifest(run_id, session_id)),
                 "updated_at": _utcnow_iso(),
             }
+            if candidate.contract is not None:
+                record["archive_csv_member"] = candidate.contract.csv_member_name
+                record["archive_log_metadata_member"] = candidate.contract.log_metadata_member_name
+            if candidate.input_kind == "bdq":
+                record["bdq_sha256"] = candidate.archive_sha256
             if session_note_record is not None:
                 record["session_note"] = session_note_record
             self.state.upsert(candidate.processing_key, record)

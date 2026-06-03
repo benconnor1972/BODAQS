@@ -56,7 +56,7 @@ This document summarizes the major modules in the project, what each one is resp
   and shown in the web UI title bar.
 - `ConfigManager::loggerId()` returns a trimmed, filename-safe derivative of
   `logger_name` for API/session identifiers without changing the stored name.
-- `log_format` controls the top-level CSV layout. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index.
+- `log_format` controls the emitted log file format. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index; `bodaqs_compact_binary` writes a self-contained `.bdq` compact binary log.
 - `omit_metadata=false` keeps the default behaviour of writing a same-stem JSON log metadata file at log close. Set `true` to skip metadata generation.
 - Idle timeout config is saved in minutes (`auto_sleep_idle_min`, `wifi_idle_timeout_min`). Legacy `_ms` keys are still accepted on load for migration.
 - Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
@@ -126,6 +126,7 @@ This document summarizes the major modules in the project, what each one is resp
 - `SD_MMC.begin()` and error handling live here.
 - `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and `mark`, with a header. Run statistics are written to the same-stem JSON metadata file under `qc.run_stats`.
 - `syn_bike_raw` logs headerless rows as `sample_id,front_raw,rear_raw,lat,long,speed`; GPS fields are blank for now and no CSV footer is emitted for third-party compatibility.
+- `bodaqs_compact_binary` writes `.bdq` logs with embedded metadata and channel schema. No separate JSON sidecar or automatic ZIP archive is generated for compact binary sessions.
 - When metadata is enabled and written successfully, log close also creates a
   same-stem session ZIP via `<stem>.zip.tmp` then renames it to `<stem>.zip`.
 - After the ZIP is written successfully, the loose same-stem CSV and JSON are
@@ -148,17 +149,20 @@ artifacts.
 
 ## `UploadSessionScanner`
 
-**Purpose:** Find completed session archives on SD for the Wi-Fi upload API.
+**Purpose:** Find completed CSV archives and compact binary sessions on SD for
+the Wi-Fi upload API.
 
 **Common APIs**
-- `scan(directory, out, capacity, summary)` - returns complete ZIP-backed
-  sessions and fills a bounded summary.
+- `scan(directory, out, capacity, summary)` - returns complete ZIP-backed CSV
+  sessions and loose `.bdq` sessions, then fills a bounded summary.
 - `findBySessionId(sessionId, out, directory)` - resolves a complete session by
   its `logger_id__session_stem` identifier.
 
 **Notes/Gotchas**
 - `.zip.tmp` files are ignored as importable archives but counted in the scan
   summary for diagnostics.
+- `.bdq` sessions report `data_format=bdq`, `data_path`, and `data_ready`
+  instead of a CSV archive.
 - Upload/acknowledgement flags are read from `UploadAckIndex`.
 
 ---
@@ -274,7 +278,7 @@ sync, web/API availability, and discovery.
 - `/config` (POST) updates globals and rewrites `loggercfg.txt` with all keys; also rewrites each sensor’s block.
 - `/config/sensors` can add or remove sensor config blocks. Removing a sensor rewrites config only; transform directories/files are left in place. Restart the logger after adding/removing sensors so the live sensor set is rebuilt.
 - `/api/v1/device`, `/api/v1/status`, `/api/v1/upload-mode/*`,
-  `/api/v1/sessions`, and `/api/v1/session/archive` expose the local-first
+  `/api/v1/sessions`, `/api/v1/session/archive`, and `/api/v1/session/data` expose the local-first
   import-agent API. Session list/download/cleanup routes require upload mode.
 - `/files` includes browser controls for entering/exiting upload mode and
   reports network/session readiness for manual checks.
@@ -400,7 +404,7 @@ void DBG_IMPL(DebugLevel lvl, const char* fmt, ...);
 
 ## Configuration Keys (globals)
 
-- `logger_name`, `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format`, `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
+- `logger_name`, `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format` (`bodaqs_standard|syn_bike_raw|bodaqs_compact_binary`), `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
 - `debounce_ms`
 - Button pins: `web_button_pin`, `log_button_pin`, `mark_button_pin`, `nav_up_pin`, `nav_down_pin`, `nav_left_pin`, `nav_right_pin`, `nav_enter_pin`
 - Network/time: `wifi_ssid`, `wifi_password`, `ntp_servers`, `time_check_url`
