@@ -51,8 +51,9 @@ A user opens or connects to a library, selects or creates a **Study Set**, then
 uses that Study Set as the basis for analysis, comparison, charting, notes,
 exports, and reports.
 
-A Study Set is a named analysis scope. It should be explicit and stable once
-saved. It may include:
+A Study Set is a named analysis scope stored under the configured libraries
+root. It should be explicit and stable once saved, and it may include sessions
+from more than one library. It may include:
 
 - explicit session references
 - Study Set-local groupings
@@ -78,18 +79,17 @@ The practical session identity remains:
 
 Study Set session references should carry:
 
+- `library_id`
+- `session_ref_id`
 - `session_key`
 - `run_id`
 - `session_id`
 - optional display label
 
 `run_id` and `session_id` are canonical. `session_key` is a readable convenience
-field that should be validated against those values.
-
-The first application implementation should not redesign the model around
-multi-library session identity. If later required, session references can gain
-an optional `library_id` or `library_ref` field without changing the core
-principle that Study Set membership is explicit.
+field that should be validated against those values. `session_ref_id` is
+`library_id|||session_key` and is the stable reference used by Study Set
+groupings and bookmarks.
 
 ## Core Architecture
 
@@ -105,6 +105,12 @@ The first implementation should use the local Library API as the primary data
 source. This gives the browser a stable API seam while keeping Python
 authoritative for artifact interpretation, Parquet reads, signal semantics, and
 time-series window preparation.
+
+The frontend should default to a configured local API URL, initially
+`http://127.0.0.1:8765` unless overridden by deployment configuration. If the
+service is reachable but pointed at the wrong workspace, the Library Selector
+should provide a fallback "select library root" control that asks the local API
+to switch its active `libraries_root`.
 
 The API is not an Import Manager API. Import Manager remains responsible for
 import, logger transfer, preprocessing, and artifact writing. The Library API is
@@ -132,6 +138,11 @@ The user has:
 This mode supports offline operation, efficient Parquet access, local Study Set
 writes, and Python-backed time-series preparation without requiring internet
 connectivity.
+
+The browser does not need direct filesystem custody of the library root in this
+mode. It should ask the local API which libraries are available. The optional
+root selector is a setup fallback for changing the service's active root, not a
+browser-side directory reader.
 
 ### Browser-Local Mode
 
@@ -209,15 +220,15 @@ Python should also remain authoritative, outside the Library API scope, for:
 
 ## Study Set Contract
 
-Study Sets are versioned, portable objects stored with the library.
+Study Sets are versioned, portable objects stored with the configured libraries
+root.
 
 Canonical storage shape:
 
 ```text
-<library>/
-  library/
-    study_sets/
-      <study_set_id>.json
+<libraries_root>/
+  study_sets/
+    <study_set_id>.json
 ```
 
 Separate files reduce write conflicts, make saves simple, and allow Study Sets
@@ -251,23 +262,27 @@ The Study Set contract is documented in:
 
 ### Tracks
 
-Tracks are reusable library objects. A track is a GPS path or route, optionally
-derived from a session but not required to be tied to one.
+Tracks are reusable root-level objects. A track is a GPS path or route,
+optionally derived from a session but not required to be tied to one.
 
 Canonical future storage shape:
 
 ```text
-<library>/
-  library/
-    tracks/
-      <track_id>.json
+<libraries_root>/
+  tracks/
+    <track_id>.json
 ```
 
 A track may have zero or more named points. A Study Set can reference a whole
 track or a track interval defined by two track points.
 
-Track contracts are included in the Library API contract, but track CRUD
-endpoints are deferred until map/track work begins.
+Track and trackpoint inventory should remain cheap descriptive data. It should
+tell the browser what tracks and trackpoints exist, their names, station
+positions, revisions, and policy references. It should not include expensive
+session-to-trackpoint match results.
+
+Track contracts are included in the Library API and geospatial contracts.
+Trackpoint match results belong in a separate derived query/cache layer.
 
 ### Bookmarks
 
@@ -281,9 +296,26 @@ persisted independently and do not require richer roles or semantics for v0.
 
 ### Filters
 
-Filters are future reusable library helpers for finding candidate sessions.
-They are stronger reusable concepts than groupings, but are deferred from the
-first implementation.
+Filters are reusable library helpers for finding candidate sessions. They are
+stronger reusable concepts than groupings, but they still do not define saved
+Study Set membership.
+
+Catalog-backed filters can be evaluated in the browser after loading the
+session catalog and persisted filter definitions. Trackpoint-backed filters
+should be API-backed because they depend on track revision, geospatial policy,
+tolerance, GPS source identity, and matching algorithm version.
+
+Trackpoint-backed filters should use an asynchronous query/index pattern:
+
+- the filter definition records the track, trackpoints, match mode, and
+  tolerance.
+- the browser asks the Library API to create or resume a
+  `TrackpointMatchQuery`.
+- the service processes broad scopes in the background and reuses cached
+  per-session match evidence.
+- the browser polls status and pages matched session refs into the active
+  filter result.
+- rejected sessions are not returned by default; diagnostics can be optional.
 
 ## Recommended Technical Pattern
 
@@ -309,16 +341,17 @@ The first endpoint set should be deliberately small:
 ```text
 GET  /api/v1/health
 GET  /api/v1/capabilities
+POST /api/v1/config/libraries-root
 GET  /api/v1/libraries
 GET  /api/v1/libraries/{library_id}
 POST /api/v1/libraries/{library_id}/refresh
 GET  /api/v1/libraries/{library_id}/catalog
 
-GET    /api/v1/libraries/{library_id}/study-sets
-POST   /api/v1/libraries/{library_id}/study-sets
-GET    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-PUT    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-DELETE /api/v1/libraries/{library_id}/study-sets/{study_set_id}
+GET    /api/v1/study-sets
+POST   /api/v1/study-sets
+GET    /api/v1/study-sets/{study_set_id}
+PUT    /api/v1/study-sets/{study_set_id}
+DELETE /api/v1/study-sets/{study_set_id}
 
 POST /api/v1/libraries/{library_id}/timeseries/window
 ```
@@ -335,7 +368,7 @@ binary encoding later.
 Goal: define enough contract shape to let frontend and backend work proceed in
 parallel.
 
-Status: started.
+Status: completed for the initial v0 implementation baseline.
 
 Work in this phase:
 
@@ -391,6 +424,7 @@ Work in this phase:
 - choose a minimal Python HTTP framework
 - bind to `127.0.0.1`
 - read local service config containing `libraries_root`
+- expose a local setup endpoint for switching the active `libraries_root`
 - implement `health`, `capabilities`, `libraries`, `refresh`, `catalog`, Study Set CRUD, and `timeseries/window`
 - keep import/preprocessing endpoints out of scope
 - provide consistent API error responses
@@ -412,6 +446,7 @@ Work in this phase:
 - implement `LocalApiDataSource`
 - implement `FixtureLibraryDataSource` for George's static development fixture
 - build a basic library selector
+- default to the configured local API URL and provide a Library Selector fallback for changing the active root
 - build a basic session catalog table
 - load and display service capabilities
 
@@ -475,10 +510,10 @@ Expected outcome:
 
 - the browser app covers a meaningful subset of the current consumer notebook experience
 
-### Phase 7: Tracks And Map Prototype
+### Phase 7: Tracks, Map Prototype, And Trackpoint Filters
 
-Goal: prove reusable tracks and track-point intervals with processed sessions
-that include GPS data.
+Goal: prove reusable tracks, trackpoint inventory, and broad trackpoint-backed
+filters with processed sessions that include GPS data.
 
 Work in this phase:
 
@@ -487,10 +522,40 @@ Work in this phase:
 - add/edit track points
 - reference whole tracks or point-to-point intervals from Study Sets
 - preview session coverage over a selected track interval
+- keep the session catalog compact and track-independent
+- add async trackpoint match query endpoints with status polling and paged
+  matched-session results
+- cache match evidence by session GPS identity, track revision, policy,
+  tolerance, match mode, and algorithm version
+- add browser UI states for queued, running, partially available, complete,
+  cancelled, and failed trackpoint filters
+- defer a general server-side saved-filter evaluator until the prototype proves
+  the filter contract and at least one expensive predicate
+- harden derived-cache invalidation after the first trackpoint-filter UI slice,
+  including track revision, policy version, session GPS identity, tolerance,
+  match mode, and algorithm version
 
 Expected outcome:
 
-- reusable track objects can feed Study Set creation without becoming hidden Study Set state
+- reusable track objects and trackpoint-backed filters can feed Study Set
+  creation without becoming hidden Study Set state
+
+Implementation sequence:
+
+1. Finalize the `trackpoint.crossing` persisted-filter predicate shape.
+2. Add Library API request/status/results models for `TrackpointMatchQuery`.
+3. Implement a simple in-process job runner for local service development.
+4. Reuse existing per-session `SessionTrackMatch` evidence where possible.
+5. Persist query status/results under the libraries root as derived cache.
+6. Wire the frontend filter pane to start/resume a query when a trackpoint
+   filter is applied.
+7. Apply matched session refs incrementally as results arrive.
+8. Add cancellation and clear user messaging before optimizing the worker.
+9. Add a general server-side saved-filter evaluation endpoint once catalog,
+   geospatial, signal-content, and adequacy predicates need one shared execution
+   path.
+10. Replace the first-cut derived-cache checks with explicit stale detection and
+    cache refresh controls.
 
 ### Phase 8: Static Bundles And Remote Options
 
@@ -533,7 +598,7 @@ bundles, or hosted-service complexity.
 - Study Sets are the primary analysis scope.
 - Saved Study Sets should be explicit and stable, not live filters.
 - Filters are helper tools for finding, validating, and refreshing candidate scope.
-- Tracks are reusable library objects, not private Study Set state.
+- Tracks are reusable root-level objects, not private Study Set state.
 - Bookmarks and groupings are Study Set-local in v0.
 - Browser UI owns visualisation and interaction.
 - Python owns canonical processing, artifact interpretation, and heavy data preparation.
@@ -551,6 +616,9 @@ The following decisions will materially affect implementation detail:
 - how the browser discovers the local service port in installed mode
 - whether development mode needs no auth and packaged mode needs a local token
 - how much catalog data can be built quickly enough at service startup
+- how broad trackpoint match jobs should be scheduled, cancelled, resumed, and
+  expired
+- how much trackpoint match evidence should be retained in the derived cache
 - exact min/max downsampling behavior for multiple signals
 - how much event detail should be included in first time-series overlays
 - what browser charting library George should use for dense time-series data
@@ -567,6 +635,9 @@ The following decisions will materially affect implementation detail:
 - Treating Study Set selection as temporary UI state only.
 - Treating saved filters as hidden live Study Set definitions.
 - Hiding reusable tracks inside Study Set documents.
+- Putting trackpoint match results into the main session catalog.
+- Making a broad library-scale trackpoint filter block one HTTP request until
+  all candidate sessions have been processed.
 - Building the first visualization directly against raw artifact paths.
 - Building separate incompatible apps for local, static, browser-local, and remote modes.
 

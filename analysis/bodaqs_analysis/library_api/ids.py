@@ -63,6 +63,14 @@ def make_session_key(run_id: str, session_id: str) -> str:
     return f"{run}::{session}"
 
 
+def make_session_ref_id(library_id: str, session_key: str) -> str:
+    library = str(library_id).strip()
+    key = str(session_key).strip()
+    if not library or not key:
+        raise ValueError("library_id and session_key must be non-empty")
+    return f"{library}|||{key}"
+
+
 def is_valid_object_id(value: str) -> bool:
     return bool(_OBJECT_ID_RE.fullmatch(str(value or "")))
 

@@ -1,7 +1,7 @@
 # BODAQS Library API Contract v0 Draft
 
-**Status:** Draft  
-**Scope:** Local-first API seam for browsing processed BODAQS libraries, managing study sets, and serving browser-native visualisation data  
+**Status:** Accepted v0 implementation baseline  
+**Scope:** Local-first API seam for browsing processed BODAQS libraries, managing root-scoped study sets/tracks/filters, and serving browser-native visualisation data
 **Audience:** BODAQS web application, local Library API service, notebook/library adapter implementers
 
 ---
@@ -16,6 +16,11 @@ The API is intentionally focused on **processed-library use**:
 - list configured libraries
 - list processed sessions
 - create, load, update, and delete study sets
+- carry study sets across multiple libraries under one configured libraries root
+- expose processed-session GPS availability and quality summaries
+- create, load, update, and delete root-scoped tracks, geospatial policies, and
+  persisted session filters
+- compute or read derived session-track matches where available
 - expose compact semantic catalog information
 - serve chart-ready time-series windows
 - expose event and metric summaries/details where needed
@@ -41,6 +46,12 @@ remote service or static-bundle implementation.
 6. **The API should describe capabilities explicitly.**
 7. **The first implementation should be small, but not a dead end.**
 8. **Import Manager scope should not expand merely to serve this API.**
+9. **Study sets, tracks, and saved filters belong to the configured libraries root, not to one library.**
+10. **Geospatial policies make track analysis reproducible.**
+11. **Saved filters are reusable helpers; ad-hoc table filters are transient UI state.**
+12. **The session catalog stays cheap.** Expensive derived relationships such as
+    trackpoint crossings should live in async query/index caches, not in the
+    basic session catalog.
 
 ---
 
@@ -64,6 +75,36 @@ retaining the same endpoint and payload model.
 
 ## 4. Resource Model
 
+### 4.0 Libraries Root
+
+The libraries root is the configured local workspace containing one or more
+processed BODAQS libraries plus root-scoped application objects.
+
+Root-scoped application objects live under:
+
+```text
+<libraries_root>/
+  study_sets/
+    <study_set_id>.json
+  tracks/
+    <track_id>.json
+  geospatial_policies/
+    <policy_id>.json
+  track_matches/
+    <track_match_id>.json
+  trackpoint_match_queries/
+    <query_id>.json
+  trackpoint_match_results/
+    <query_id>.jsonl
+  session_filters/
+    <filter_id>.json
+```
+
+The first implementation reads one active libraries root at a time. The local
+service may expose a setup endpoint for changing that active root, so the
+browser can recover when the default configured root is wrong or when the user
+needs to move between field and development workspaces.
+
 ### 4.1 Library
 
 A library is a processed BODAQS artifacts tree. Multiple libraries may live under
@@ -83,10 +124,13 @@ The v0 session identity is:
 <run_id>::<session_id>
 ```
 
-Study sets and API payloads should carry all three fields:
+Study sets and API payloads should carry `library_id` plus the session identity
+fields:
 
 ```json
 {
+  "library_id": "default-library",
+  "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "run_id": "run_2026-05-25T13-57-10_LOCAL",
   "session_id": "2026-05-18_13-27-14",
@@ -96,19 +140,23 @@ Study sets and API payloads should carry all three fields:
 
 `run_id` and `session_id` are canonical. `session_key` is a readable convenience
 field and should be validated against those values when written.
+`session_ref_id` is the stable Study Set-local reference string:
+
+```text
+<library_id>|||<session_key>
+```
 
 ### 4.3 Study Set
 
 A study set is a named, versioned, portable analysis scope stored with the
-library.
+configured libraries root. It may contain sessions from more than one library.
 
 Canonical location:
 
 ```text
-<library>/
-  library/
-    study_sets/
-      <study_set_id>.json
+<libraries_root>/
+  study_sets/
+    <study_set_id>.json
 ```
 
 Study sets contain:
@@ -141,27 +189,95 @@ intrinsically tied to the study set where they were created.
 
 ### 4.6 Track
 
-A track is a reusable library object representing a route/path and optional named
-points along that route.
+A track is a reusable root-level object representing one directed geospatial
+path and zero or more named `trackpoints` along that path.
 
-Canonical future location:
+Canonical location:
 
 ```text
-<library>/
-  library/
-    tracks/
-      <track_id>.json
+<libraries_root>/
+  tracks/
+    <track_id>.json
 ```
 
-The v0 API contract defines track objects and references, but the first endpoint
-implementation does not need to include track CRUD.
+The detailed contract is defined in
+`BODAQS_Geospatial_Contracts_v0_draft.md`.
 
-### 4.7 Filter
+### 4.7 Geospatial Policy
 
-A filter is a future reusable library helper for finding candidate sessions.
+A geospatial policy is a reusable root-level object that defines defaults for
+track construction, trackpoint cutlines, session-track matching, and derived
+profiles such as heading, gradient, and curvature.
 
-Filters are not part of the first endpoint implementation. If a filter was used
-to create a study set, record it as study-set provenance only.
+Canonical location:
+
+```text
+<libraries_root>/
+  geospatial_policies/
+    <policy_id>.json
+```
+
+The package may provide defaults, but library-root policies should be used when
+results need to be reproducible across machines.
+
+### 4.8 Session Track Match
+
+A session track match is a derived analysis result describing how one processed
+session maps onto one track under one geospatial policy.
+
+Optional derived-cache location:
+
+```text
+<libraries_root>/
+  track_matches/
+    <track_match_id>.json
+```
+
+Session track matches are not canonical session artifacts. They can be
+recomputed from the referenced session, track, and policy.
+
+### 4.9 Trackpoint Match Query
+
+A trackpoint match query is a derived, root-scoped, asynchronous job/index used
+to answer broad filtering questions such as "which sessions crossed these
+trackpoints within this tolerance?"
+
+Optional derived-cache locations:
+
+```text
+<libraries_root>/
+  trackpoint_match_queries/
+    <query_id>.json
+  trackpoint_match_results/
+    <query_id>.jsonl
+```
+
+Trackpoint match queries are not canonical session artifacts and are not Study
+Set membership. They may be deleted and rebuilt from session GPS data, tracks,
+policies, and persisted filters.
+
+### 4.10 Session Filter
+
+A persisted session filter is a reusable root-level helper for finding candidate
+sessions from one or more libraries under the configured libraries root.
+
+Canonical location:
+
+```text
+<libraries_root>/
+  session_filters/
+    <filter_id>.json
+```
+
+The detailed contract is defined in
+`BODAQS_Session_Filter_Contract_v0_draft.md`.
+
+Saved filters do not define Study Set membership. If a filter was used to create
+a Study Set, record it as Study Set provenance only. The Study Set still stores
+explicit session references.
+
+Ad-hoc table filters are not `bodaqs.session_filter` objects. They are transient
+Session Selector UI state, normally controlled from table column headers.
 
 ---
 
@@ -216,10 +332,17 @@ Example:
   "features": {
     "write_study_sets": true,
     "delete_study_sets": true,
-    "read_tracks": false,
-    "write_tracks": false,
-    "read_filters": false,
-    "write_filters": false,
+    "read_session_gps_summaries": true,
+    "read_tracks": true,
+    "write_tracks": true,
+    "read_geospatial_policies": true,
+    "write_geospatial_policies": true,
+    "compute_track_matches": true,
+    "read_track_matches": true,
+    "query_trackpoint_matches": true,
+    "cancel_trackpoint_match_queries": true,
+    "read_filters": true,
+    "write_filters": true,
     "export_static_bundle": false,
     "run_processing_jobs": false
   }
@@ -244,6 +367,8 @@ Example:
   "display_name": "Setup comparison",
   "sessions": [
     {
+      "library_id": "default-library",
+      "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
       "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
       "run_id": "run_2026-05-25T13-57-10_LOCAL",
       "session_id": "2026-05-18_13-27-14",
@@ -254,12 +379,8 @@ Example:
     {
       "grouping_id": "baseline",
       "display_name": "Baseline",
-      "sessions": [
-        {
-          "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
-          "run_id": "run_2026-05-25T13-57-10_LOCAL",
-          "session_id": "2026-05-18_13-27-14"
-        }
+      "session_refs": [
+        "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14"
       ]
     }
   ],
@@ -267,19 +388,15 @@ Example:
     {
       "track_id": "munda-biddi-test-loop",
       "display_name": "Munda Biddi test loop",
-      "from_point_id": "start-gate",
-      "to_point_id": "rock-garden-entry"
+      "from_trackpoint_id": "start-gate",
+      "to_trackpoint_id": "rock-garden-entry"
     }
   ],
   "bookmarks": [
     {
       "bookmark_id": "big-compression-before-bridge",
       "display_name": "Big compression before bridge",
-      "session": {
-        "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
-        "run_id": "run_2026-05-25T13-57-10_LOCAL",
-        "session_id": "2026-05-18_13-27-14"
-      },
+      "session_ref": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
       "time_window": {
         "start_s": 123.4,
         "end_s": 128.9
@@ -306,55 +423,92 @@ Validation notes:
 
 - `schema` must be `bodaqs.study_set`.
 - `version` must be supported by the service.
-- `study_set_id` must be filename-safe and unique within the library.
-- `revision` must increment on successful write.
+- `study_set_id` must be filename-safe and unique within the libraries root.
+- `revision` is assigned by the service and must increment on successful write.
 - top-level `sessions` are explicit membership and are the source of truth.
-- grouping session refs should refer to sessions in top-level `sessions`.
-- bookmark session refs should refer to sessions in top-level `sessions`.
+- every top-level session ref must include `library_id`, `session_ref_id`,
+  `session_key`, `run_id`, and `session_id`.
+- `session_key` must match `run_id::session_id`.
+- `session_ref_id` must match `library_id|||session_key`.
+- grouping `session_refs` should refer to top-level `session_ref_id` values.
+- bookmark `session_ref` values should refer to top-level `session_ref_id` values.
 - bookmark entries should define exactly one of `time_s` or `time_window`.
+- study-set track intervals should use `from_trackpoint_id` and
+  `to_trackpoint_id` when referencing a subset of a track.
 - `display_state` is optional and non-authoritative.
 
 ---
 
 ## 8. Track Contract v1
 
-Example:
+The authoritative Track, Trackpoint, Geospatial Policy, and Session Track Match
+object contracts are defined in `BODAQS_Geospatial_Contracts_v0_draft.md`.
+
+The API-facing summary is:
+
+- tracks are root-scoped objects under the configured libraries root.
+- a track contains one and only one directed geospatial path.
+- trackpoints are named locations along that path, ordered by `station_m`.
+- default trackpoint cutlines are generated from policy.
+- trackpoints store only cutline overrides unless explicit geometry editing is
+  introduced later.
+- heading, gradient, curvature, and session-track coverage are derived
+  geospatial analysis outputs, not minimal canonical track fields.
+
+Minimal API example:
 
 ```json
 {
   "schema": "bodaqs.track",
   "version": 1,
   "track_id": "munda-biddi-test-loop",
+  "revision": 1,
   "display_name": "Munda Biddi test loop",
-  "geometry": {
+  "path": {
     "type": "LineString",
     "coordinates": [
-      [115.8571, -31.9523],
-      [115.8580, -31.9531]
-    ]
+      [115.8571, -31.9523, 210.2],
+      [115.8580, -31.9531, 208.7]
+    ],
+    "coordinate_reference_system": "EPSG:4326",
+    "distance_model": "geodesic",
+    "length_m": 1420.5
   },
-  "points": [
+  "direction": {
+    "positive": "coordinate_order"
+  },
+  "default_policy_ref": {
+    "policy_id": "default-geospatial-policy",
+    "version": 1
+  },
+  "trackpoints": [
     {
-      "point_id": "start-gate",
+      "trackpoint_id": "start-gate",
       "display_name": "Start gate",
+      "station_m": 0.0,
       "position": {
         "type": "Point",
-        "coordinates": [115.8571, -31.9523]
-      },
-      "route_fraction": 0.0
+        "coordinates": [115.8571, -31.9523, 210.2]
+      }
     },
     {
-      "point_id": "rock-garden-entry",
+      "trackpoint_id": "rock-garden-entry",
       "display_name": "Rock garden entry",
+      "station_m": 248.5,
       "position": {
         "type": "Point",
-        "coordinates": [115.8580, -31.9531]
+        "coordinates": [115.8580, -31.9531, 208.7]
       },
-      "route_fraction": 0.42
+      "cutline_override": {
+        "left_length_m": 8.0,
+        "right_length_m": 4.0
+      }
     }
   ],
   "source": {
-    "kind": "session",
+    "kind": "session_gps",
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
     "session_id": "2026-05-18_13-27-14"
@@ -370,11 +524,64 @@ Track `source` is optional. A track may be authored from a session GPS path,
 imported from GPX/GeoJSON in the future, or created manually.
 
 A study set may reference a whole track by `track_id`, or a track interval by
-`track_id + from_point_id + to_point_id`.
+`track_id + from_trackpoint_id + to_trackpoint_id`.
+
+Track ids are unique within the libraries root. They are not scoped to an
+individual processed library.
 
 ---
 
-## 9. Session Catalog Row Contract v1
+## 9. Session Filter Contract v1
+
+The authoritative persisted Session Filter object contract is defined in
+`BODAQS_Session_Filter_Contract_v0_draft.md`.
+
+The API-facing summary is:
+
+- persisted filters are root-scoped objects under the configured libraries root.
+- a filter contains a named predicate over session catalog fields and, later,
+  derived summaries.
+- multiple applied saved filters are combined with `AND` by default.
+- ad-hoc table filters are separate transient UI state and are not saved unless
+  the user explicitly creates or copies a persisted filter.
+- Study Sets store explicit session membership; filters may appear only in
+  provenance unless an explicit refresh/update action is added later.
+
+Minimal API example:
+
+```json
+{
+  "schema": "bodaqs.session_filter",
+  "version": 1,
+  "filter_id": "ben-rides-with-usable-gps",
+  "revision": 1,
+  "display_name": "Ben rides with usable GPS",
+  "description": "Reusable helper for GPS comparison sessions.",
+  "category": "gps",
+  "predicate": {
+    "op": "and",
+    "children": [
+      {
+        "field": "rider",
+        "op": "contains",
+        "value": "ben"
+      },
+      {
+        "field": "gps.quality",
+        "op": "eq",
+        "value": "usable"
+      }
+    ]
+  },
+  "display_state": {
+    "bodaqs_web_v1": {}
+  }
+}
+```
+
+---
+
+## 10. Session Catalog Row Contract v1
 
 The service should build the session catalog from canonical artifacts and cache
 it in memory. The catalog source of truth remains the run/session artifacts on
@@ -390,6 +597,8 @@ Example:
 {
   "schema": "bodaqs.session_catalog_row",
   "version": 1,
+  "library_id": "default-library",
+  "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "run_id": "run_2026-05-25T13-57-10_LOCAL",
   "session_id": "2026-05-18_13-27-14",
@@ -419,6 +628,29 @@ Example:
     "status": "warning",
     "warning_count": 2,
     "error_count": 0
+  },
+  "gps_summary": {
+    "schema": "bodaqs.session_gps_summary",
+    "version": 1,
+    "present": true,
+    "preferred_source": "fit_enrichment",
+    "session_duration_s": 612.4,
+    "time_coverage_ratio": 0.94,
+    "position_point_count": 1234,
+    "quality": "usable",
+    "sources": [
+      {
+        "source_id": "gps_fit",
+        "kind": "fit_enrichment",
+        "stream_name": "gps_fit",
+        "timebase": "intermittent",
+        "point_count": 1234,
+        "nominal_sample_rate_hz": 1.0,
+        "median_gap_s": 1.0,
+        "max_gap_s": 8.2
+      }
+    ],
+    "warnings": []
   },
   "provenance": {
     "source_type": "logger_wifi",
@@ -470,7 +702,24 @@ Example:
 Recommended `note_status.status` values:
 
 ```text
-missing | draft | edited | unreadable | template_missing | invalid
+missing | draft | edited
+```
+
+`edited` means a reviewed/saved note is available. Unreadable or invalid note
+documents should still report `status: "missing"` and may include diagnostic
+fields such as `error`.
+
+Recommended `qc_summary.status` values:
+
+```text
+ok | warning | alert
+```
+
+Recommended `gps_summary.quality` values are defined in
+`BODAQS_Geospatial_Contracts_v0_draft.md`:
+
+```text
+absent | limited | usable | invalid
 ```
 
 The first projected `note_fields` should include `bike` and `rider` where
@@ -479,12 +728,12 @@ core row shape.
 
 ---
 
-## 10. Time-Series Window Contract v1
+## 11. Time-Series Window Contract v1
 
 The first high-value browser-native visualisation is a one-session time-series
 window view, initially for front/rear wheel travel and event overlays.
 
-### 10.1 Request
+### 11.1 Request
 
 Endpoint:
 
@@ -497,6 +746,8 @@ Example request:
 ```json
 {
   "session": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
     "session_id": "2026-05-18_13-27-14"
@@ -539,10 +790,11 @@ Signals may be requested by semantic selector or concrete column. UI flows shoul
 prefer semantic selectors. Concrete columns are useful for data-explorer and
 debugging views.
 
-The endpoint serves one session per request in v1. Comparison views should make
-multiple requests and align results in the frontend.
+The endpoint serves one session per request in v1. The path `library_id` must
+match `session.library_id` when that request field is present. Comparison views
+should make multiple requests and align results in the frontend.
 
-### 10.2 Response
+### 11.2 Response
 
 Example response:
 
@@ -552,6 +804,8 @@ Example response:
   "version": 1,
   "encoding": "json_arrays",
   "session": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
     "session_id": "2026-05-18_13-27-14"
@@ -611,7 +865,7 @@ Example response:
 }
 ```
 
-### 10.3 Downsampling
+### 11.3 Downsampling
 
 Recommended v1 behavior:
 
@@ -634,16 +888,17 @@ Example decimated sampling block:
 
 ---
 
-## 11. Endpoint List v0
+## 12. Endpoint List v0
 
-### 11.1 Service
+### 12.1 Service
 
 ```text
 GET /api/v1/health
 GET /api/v1/capabilities
+POST /api/v1/config/libraries-root
 ```
 
-### 11.2 Libraries
+### 12.2 Libraries
 
 ```text
 GET  /api/v1/libraries
@@ -652,21 +907,24 @@ POST /api/v1/libraries/{library_id}/refresh
 GET  /api/v1/libraries/{library_id}/catalog
 ```
 
-The first implementation may discover libraries under one configured
-`libraries_root`. Changing `libraries_root` is a local configuration/setup
-concern and is outside the v0 API.
+The first implementation discovers libraries under the active `libraries_root`.
+`POST /api/v1/config/libraries-root` is a local setup operation: the browser
+sends a service-local filesystem path, the service validates/discovers that
+root, and subsequent calls use the new adapter state. This is not an Import
+Manager import/preprocessing operation.
 
-### 11.3 Study Sets
+### 12.3 Study Sets
 
 ```text
-GET    /api/v1/libraries/{library_id}/study-sets
-POST   /api/v1/libraries/{library_id}/study-sets
-GET    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-PUT    /api/v1/libraries/{library_id}/study-sets/{study_set_id}
-DELETE /api/v1/libraries/{library_id}/study-sets/{study_set_id}
+GET    /api/v1/study-sets
+POST   /api/v1/study-sets
+GET    /api/v1/study-sets/{study_set_id}
+PUT    /api/v1/study-sets/{study_set_id}
+DELETE /api/v1/study-sets/{study_set_id}
 ```
 
-Study-set writes should use revision checks.
+Study Set endpoints are scoped to the configured libraries root, not to a single
+processed library. Study Set writes should use revision checks.
 
 Example update request:
 
@@ -677,9 +935,9 @@ Example update request:
     "schema": "bodaqs.study_set",
     "version": 1,
     "study_set_id": "setup-comparison",
-    "revision": 3,
-    "display_name": "Setup comparison",
-    "sessions": [],
+      "revision": 3,
+      "display_name": "Setup comparison",
+      "sessions": [],
     "groupings": [],
     "tracks": [],
     "bookmarks": [],
@@ -699,7 +957,86 @@ Example update request:
 }
 ```
 
-### 11.4 Signals, Events, Metrics, And Time-Series
+### 12.4 Geospatial
+
+Root-scoped tracks:
+
+```text
+GET    /api/v1/tracks
+POST   /api/v1/tracks
+GET    /api/v1/tracks/{track_id}
+PUT    /api/v1/tracks/{track_id}
+DELETE /api/v1/tracks/{track_id}
+```
+
+Root-scoped geospatial policies:
+
+```text
+GET    /api/v1/geospatial-policies
+POST   /api/v1/geospatial-policies
+GET    /api/v1/geospatial-policies/{policy_id}
+PUT    /api/v1/geospatial-policies/{policy_id}
+DELETE /api/v1/geospatial-policies/{policy_id}
+```
+
+Session GPS summaries and session-track matching:
+
+```text
+POST /api/v1/libraries/{library_id}/sessions/gps-summary
+POST /api/v1/libraries/{library_id}/sessions/gps/points
+POST /api/v1/track-matches/query
+POST /api/v1/track-matches/compute
+GET  /api/v1/track-matches/{track_match_id}
+
+POST   /api/v1/trackpoint-match-queries
+GET    /api/v1/trackpoint-match-queries/{query_id}
+GET    /api/v1/trackpoint-match-queries/{query_id}/results
+DELETE /api/v1/trackpoint-match-queries/{query_id}
+```
+
+The GPS summary endpoint accepts a session reference in the request body and
+returns the `SessionGpsSummary` defined in
+`BODAQS_Geospatial_Contracts_v0_draft.md`.
+
+The GPS points endpoint accepts a session reference plus optional `max_points`
+and `window` fields, and returns downsampled longitude/latitude points for
+offline browser preview. The session catalog remains summary-only; full GPS
+geometry is loaded on demand. If `window` is omitted, the service must default
+to the processed session's own primary `time_s` bounds rather than returning an
+entire auxiliary GPS/FIT stream.
+
+Track and policy endpoints are scoped to the configured libraries root, not to
+one processed library. Track match endpoints may return cached derived matches
+or compute new matches, depending on service capabilities.
+
+Trackpoint match query endpoints are for broad, potentially library-scale
+filtering. `POST` should return quickly with a queued/running/completed query
+object instead of blocking until all candidate sessions have been processed.
+`GET .../results` should be paged and should return matched sessions by
+default. Rejected session evidence should be optional diagnostics, not the
+default response.
+
+Broad query scopes should be described declaratively with `library_ids`,
+`session_filter_ids`, or other root-scoped criteria rather than requiring the
+browser to enumerate every session. Narrow UI-driven requests may still provide
+explicit `session_refs`.
+
+### 12.5 Session Filters
+
+Root-scoped persisted session filters:
+
+```text
+GET    /api/v1/session-filters
+POST   /api/v1/session-filters
+GET    /api/v1/session-filters/{filter_id}
+PUT    /api/v1/session-filters/{filter_id}
+DELETE /api/v1/session-filters/{filter_id}
+```
+
+Session Filter endpoints are scoped to the configured libraries root, not to a
+single processed library. Filter writes should use revision checks.
+
+### 12.6 Signals, Events, Metrics, And Time-Series
 
 ```text
 POST /api/v1/libraries/{library_id}/signals/query
@@ -715,7 +1052,7 @@ window endpoint are working.
 
 ---
 
-## 12. Error Response Contract
+## 13. Error Response Contract
 
 All API errors should use a consistent envelope:
 
@@ -740,12 +1077,22 @@ Recommended initial error codes:
 library_not_found
 session_not_found
 study_set_not_found
+session_filter_not_found
 track_not_found
+geospatial_policy_not_found
+track_match_not_found
 invalid_request
 invalid_study_set
+invalid_session_filter
+invalid_track
+invalid_geospatial_policy
 revision_conflict
 capability_unavailable
+gps_unavailable
 signal_not_found
+track_match_unavailable
+trackpoint_match_query_not_found
+trackpoint_match_query_unavailable
 timeseries_unavailable
 internal_error
 ```
@@ -768,7 +1115,7 @@ Revision conflict example:
 
 ---
 
-## 13. First Implementation Cut
+## 14. First Implementation Cut
 
 The smallest useful v0 service should implement:
 
@@ -777,7 +1124,7 @@ The smallest useful v0 service should implement:
 3. `GET /api/v1/libraries`
 4. `GET /api/v1/libraries/{library_id}/catalog`
 5. `POST /api/v1/libraries/{library_id}/refresh`
-6. study-set CRUD
+6. root-scoped Study Set CRUD
 7. `POST /api/v1/libraries/{library_id}/timeseries/window`
 
 This is enough to support two parallel workstreams:
@@ -785,9 +1132,34 @@ This is enough to support two parallel workstreams:
 - library manager / study set builder
 - first browser-native time-series visualisation
 
+The first geospatial extension should add:
+
+1. `gps_summary` in catalog rows
+2. `POST /api/v1/libraries/{library_id}/sessions/gps-summary`
+3. root-scoped Track CRUD
+4. root-scoped Geospatial Policy read/list, with at least one default policy
+5. session-track match computation as a derived, non-preprocessing analysis job
+
+The first persisted-filter extension should add:
+
+1. root-scoped Session Filter CRUD
+2. loading saved filters into the web app Filters pane
+3. applying catalog-backed saved filters in the browser
+4. keeping ad-hoc table filters separate from persisted filter objects
+
+The first trackpoint-filter extension should add:
+
+1. track and trackpoint inventory loading from root-scoped Track objects
+2. a planned `trackpoint.crossing` saved-filter predicate shape
+3. async `trackpoint-match-queries` endpoints with status polling and paged
+   matched-session results
+4. cache keys based on session GPS identity, track revision, policy, tolerance,
+   match mode, and algorithm version
+5. browser states for queued/running/partial/complete trackpoint filters
+
 ---
 
-## 14. Deferred Work
+## 15. Deferred Work
 
 The following are deliberately outside the first implementation:
 
@@ -796,8 +1168,11 @@ The following are deliberately outside the first implementation:
 - LAN-facing service access
 - authentication tokens for development mode
 - persisted catalog indexes
-- track CRUD endpoints
-- filter CRUD endpoints
+- full visual filter-builder UI
+- ad-hoc table-header filter persistence
+- advanced track editing, including explicit cutline endpoint editing
+- mature persisted track match and trackpoint query cache management
+- GPX/GeoJSON import/export
 - static bundle export
 - Arrow/binary time-series payloads
 - multi-session time-series window requests
@@ -805,4 +1180,3 @@ The following are deliberately outside the first implementation:
 
 These may be added later without changing the core resource model if the v0
 contracts are kept stable.
-
