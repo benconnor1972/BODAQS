@@ -45,8 +45,12 @@ from .sensor_aliases import canonical_end, canonical_sensor_id
 from .signalname import SignalNameParts, format_signal_name
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
-_FILENAME_STEM_DATETIME_RE = re.compile(
+_FILENAME_STEM_LONG_DATETIME_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})(?:$|[^0-9].*)"
+)
+_FILENAME_STEM_COMPACT_DATETIME_RE = re.compile(
+    r"^(?P<year>\d{2})(?P<month>\d{2})(?P<day>\d{2})_"
+    r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})(?:$|[^0-9].*)"
 )
 ACTIVE_MASK_COL = "active_mask_qc"  # stored in session["df"] (not in registry)
 
@@ -408,13 +412,24 @@ def _infer_time_anchor_from_filename_stem(
     *,
     timezone: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    match = _FILENAME_STEM_DATETIME_RE.match(Path(csv_path).stem)
-    if match is None:
-        return None, None
+    stem = Path(csv_path).stem
+    match = _FILENAME_STEM_LONG_DATETIME_RE.match(stem)
+    if match is not None:
+        base_ts = pd.Timestamp(
+            f"{match.group('date')}T{match.group('time').replace('-', ':')}"
+        )
+    else:
+        match = _FILENAME_STEM_COMPACT_DATETIME_RE.match(stem)
+        if match is None:
+            return None, None
+        base_ts = pd.Timestamp(
+            "20"
+            f"{match.group('year')}-{match.group('month')}-{match.group('day')}"
+            f"T{match.group('hour')}:{match.group('minute')}:{match.group('second')}"
+        )
 
-    base_ts = pd.Timestamp(
-        f"{match.group('date')}T{match.group('time').replace('-', ':')}"
-    )
+    if pd.isna(base_ts):
+        return None, None
     tz_source: Optional[str] = None
 
     if isinstance(timezone, str) and timezone.strip():

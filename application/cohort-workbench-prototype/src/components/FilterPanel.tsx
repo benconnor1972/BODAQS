@@ -7,7 +7,6 @@ export function FilterPanel({
   totalCount,
   savedFilteredCount,
   visibleCount,
-  activeTableFilterCount,
   trackpointFilterStates,
   canManageSavedFilters,
   onToggleSavedFilter,
@@ -21,7 +20,6 @@ export function FilterPanel({
   totalCount: number
   savedFilteredCount: number
   visibleCount: number
-  activeTableFilterCount: number
   trackpointFilterStates: Array<{
     key: string
     label: string
@@ -50,7 +48,7 @@ export function FilterPanel({
         </div>
         <div>
           <strong>{visibleCount}</strong>
-          <span>shown after table/search</span>
+          <span>shown in session selector</span>
         </div>
       </div>
 
@@ -79,23 +77,6 @@ export function FilterPanel({
               Clear saved filters
             </button>
           </div>
-        )}
-      </div>
-
-      <div className="active-filter-stack table-filter-stack">
-        <div className="filter-stack-title">
-          <SlidersHorizontal size={15} />
-          <strong>Ad-hoc table filters</strong>
-          <span className="pill neutral">column headers</span>
-        </div>
-        {activeTableFilterCount === 0 ? (
-          <p className="empty-note">
-            None active. These are temporary Session Selector header filters, separate from saved filters.
-          </p>
-        ) : (
-          <p className="empty-note">
-            {activeTableFilterCount} active in the Session Selector headers. Use the table chips or header menus to clear them.
-          </p>
         )}
       </div>
 
