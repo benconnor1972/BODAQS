@@ -16,6 +16,7 @@ enum class FileKind : uint8_t {
   Json,
   Zip,
   ZipTemp,
+  Bdq,
 };
 
 struct Candidate {
@@ -23,22 +24,28 @@ struct Candidate {
   String csvPath;
   String jsonPath;
   String archivePath;
+  String bdqPath;
   bool hasCsv = false;
   bool hasJson = false;
   bool hasZip = false;
   bool hasZipTemp = false;
+  bool hasBdq = false;
   uint32_t archiveSize = 0;
+  uint32_t bdqSize = 0;
 
   void clear() {
     stem = "";
     csvPath = "";
     jsonPath = "";
     archivePath = "";
+    bdqPath = "";
     hasCsv = false;
     hasJson = false;
     hasZip = false;
     hasZipTemp = false;
+    hasBdq = false;
     archiveSize = 0;
+    bdqSize = 0;
   }
 };
 
@@ -108,6 +115,11 @@ static bool splitSessionFileName_(const String& fileName, String& stem, FileKind
     kind = FileKind::Zip;
     return stem.length() > 0;
   }
+  if (endsWithIgnoreCase_(fileName, ".bdq")) {
+    stem = fileName.substring(0, fileName.length() - 4);
+    kind = FileKind::Bdq;
+    return stem.length() > 0;
+  }
 
   return false;
 }
@@ -131,7 +143,7 @@ static Candidate* findOrAddCandidate_(const String& stem,
 }
 
 static bool isComplete_(const Candidate& candidate) {
-  return candidate.hasZip;
+  return candidate.hasZip || candidate.hasBdq;
 }
 
 static void sortCandidatesNewestFirst_(uint16_t count) {
@@ -162,7 +174,18 @@ static void fillSessionInfo_(const Candidate& candidate, SessionInfo& out) {
   out.csvPath = candidate.csvPath;
   out.jsonPath = candidate.jsonPath;
   out.archivePath = candidate.archivePath;
-  out.archiveReady = true;
+  out.archiveReady = candidate.hasZip;
+  if (candidate.hasBdq) {
+    out.dataFormat = F("bdq");
+    out.dataPath = candidate.bdqPath;
+    out.dataReady = true;
+    out.dataSize = candidate.bdqSize;
+  } else if (candidate.hasZip) {
+    out.dataFormat = F("csv_zip");
+    out.dataPath = candidate.archivePath;
+    out.dataReady = true;
+    out.dataSize = candidate.archiveSize;
+  }
   out.acknowledged = false;
   out.uploaded = false;
   out.archiveSize = candidate.archiveSize;
@@ -244,6 +267,11 @@ uint16_t scan(const char* directory,
             case FileKind::ZipTemp:
               candidate->hasZipTemp = true;
               if (summary) summary->tempArchiveCount++;
+              break;
+            case FileKind::Bdq:
+              candidate->hasBdq = true;
+              candidate->bdqPath = fullPath;
+              candidate->bdqSize = static_cast<uint32_t>(entry.size());
               break;
             case FileKind::Unknown:
               break;

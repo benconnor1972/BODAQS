@@ -28,7 +28,8 @@ The following surfaces should be treated as the firmware's semver-governed exter
 
 Current observed behaviour in firmware:
 
-- Log filenames are created from local RTC time as `YYYY-MM-DD_HH-MM-SS.CSV`.
+- Log filenames are created from local RTC time as `YYMMDD_HHMMSS.CSV`; if no
+  valid timestamp is available at log start, firmware uses `LOGnnnn.CSV`.
 - Logs are comma-separated CSV files with one header row.
 - The first CSV column is `sample_id`.
 - The time column is `timestamp` in human mode or `timestamp_ms` in fast mode.

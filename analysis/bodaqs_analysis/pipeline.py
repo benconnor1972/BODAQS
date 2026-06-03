@@ -9,6 +9,7 @@ import os
 import re
 
 from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
+from .io_bdq import bdq_to_dataframe, bdq_to_log_metadata, is_bdq_path, read_bdq
 from .io_fit import (
     FIT_DEFAULT_FIELDS,
     find_overlapping_fit_candidates,
@@ -585,6 +586,44 @@ def build_session_from_dataframe(
     if source_ref is not None:
         _apply_filename_stem_time_anchor(session, csv_path=source_ref)
     return session
+
+
+def load_bdq_session(
+    bdq_path: str | Path,
+    *,
+    timezone: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Load a self-contained BDQ compact binary log into a v0 Session dict."""
+    p = Path(bdq_path)
+    info = read_bdq(p)
+    df_raw = bdq_to_dataframe(p)
+    log_metadata = bdq_to_log_metadata(info)
+    session_meta = log_metadata.get("session") if isinstance(log_metadata.get("session"), Mapping) else {}
+    session_id = _optional_nonempty_str(session_meta.get("session_id")) if isinstance(session_meta, Mapping) else None
+
+    session = build_session_from_dataframe(
+        df_raw,
+        session_id=session_id or p.stem,
+        source_path=p,
+        timezone=timezone,
+        log_metadata=log_metadata,
+        firmware_stats=log_metadata.get("qc", {}).get("run_stats") if isinstance(log_metadata.get("qc"), Mapping) else None,
+    )
+
+    source = session.setdefault("source", {})
+    source["input_format"] = "bdq"
+    source["bdq_path"] = str(p)
+
+    parse = session.setdefault("qc", {}).setdefault("parse", {})
+    parse["bdq_used"] = True
+    parse["bdq_sample_count"] = info.sample_count
+    parse["bdq_valid_chunk_count"] = info.valid_chunk_count
+    if info.detected_errors:
+        parse["bdq_detected_errors"] = list(info.detected_errors)
+        for error in info.detected_errors:
+            _append_qc_warning(session, f"bdq_parser_warning:{error}")
+    return session
+
 
 def load_and_canonicalize(
     csv_path: str,
@@ -2423,16 +2462,21 @@ def preprocess_session(
         session = dict(session_or_path)
         logger.info("Using existing session for preprocessing")
     else:
-        csv_path = session_or_path
-        session = load_session(
-            str(csv_path),
-            timezone=timezone,
-            log_metadata_path=log_metadata_path,
-            generic_log_metadata_paths=generic_log_metadata_paths,
-            sidecar_path=sidecar_path,
-            generic_sidecar_paths=generic_sidecar_paths,
-        )
-        logger.info("Session load complete: %s", csv_path)
+        input_path = session_or_path
+        if is_bdq_path(input_path):
+            session = load_bdq_session(input_path, timezone=timezone)
+            logger.info("BDQ session load complete: %s", input_path)
+        else:
+            csv_path = input_path
+            session = load_session(
+                str(csv_path),
+                timezone=timezone,
+                log_metadata_path=log_metadata_path,
+                generic_log_metadata_paths=generic_log_metadata_paths,
+                sidecar_path=sidecar_path,
+                generic_sidecar_paths=generic_sidecar_paths,
+            )
+            logger.info("Session load complete: %s", csv_path)
 
     resolved_schema = parse_event_schema(schema_path) if schema_path is not None else None
     resolved_bike_profile = (

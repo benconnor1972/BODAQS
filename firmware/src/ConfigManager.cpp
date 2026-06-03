@@ -409,6 +409,7 @@ static String minutesStringFromMs_(uint32_t ms) {
 
 const char* ConfigManager::logFormatKey(LogFormat format) {
   switch (format) {
+    case LogFormat::BodaqsCompactBinary: return "bodaqs_compact_binary";
     case LogFormat::SynBikeRaw: return "syn_bike_raw";
     case LogFormat::BodaqsStandard:
     default: return "bodaqs_standard";
@@ -417,9 +418,10 @@ const char* ConfigManager::logFormatKey(LogFormat format) {
 
 const char* ConfigManager::logFormatLabel(LogFormat format) {
   switch (format) {
-    case LogFormat::SynBikeRaw: return "syn.bike raw";
+    case LogFormat::BodaqsCompactBinary: return "BODAQS compact binary";
+    case LogFormat::SynBikeRaw: return "syn.bike CSV";
     case LogFormat::BodaqsStandard:
-    default: return "BODAQS standard";
+    default: return "BODAQS CSV";
   }
 }
 
@@ -427,14 +429,26 @@ bool ConfigManager::parseLogFormat(const char* text, LogFormat& out) {
   if (!text || !*text) return false;
   if (keyEquals(text, "bodaqs_standard") ||
       keyEquals(text, "standard") ||
+      keyEquals(text, "bodaqs_csv") ||
+      keyEquals(text, "csv") ||
       keyEquals(text, "bodaqs")) {
     out = LogFormat::BodaqsStandard;
     return true;
   }
   if (keyEquals(text, "syn_bike_raw") ||
       keyEquals(text, "syn.bike_raw") ||
+      keyEquals(text, "syn_bike_csv") ||
+      keyEquals(text, "syn.bike_csv") ||
       keyEquals(text, "synbike_raw")) {
     out = LogFormat::SynBikeRaw;
+    return true;
+  }
+  if (keyEquals(text, "bodaqs_compact_binary") ||
+      keyEquals(text, "bodaqs_binary") ||
+      keyEquals(text, "compact_binary") ||
+      keyEquals(text, "bdq") ||
+      keyEquals(text, "binary")) {
+    out = LogFormat::BodaqsCompactBinary;
     return true;
   }
   return false;
