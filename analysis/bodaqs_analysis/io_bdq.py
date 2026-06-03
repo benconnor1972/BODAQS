@@ -8,7 +8,9 @@ import math
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
+
+import pandas as pd
 
 
 FILE_MAGIC = b"BDQLOG\x00\x01"
@@ -67,6 +69,7 @@ class BdqReadResult:
     header: BdqFileHeader
     metadata: dict[str, Any] = field(default_factory=dict)
     channel_schema: dict[str, Any] = field(default_factory=dict)
+    final_summary: dict[str, Any] = field(default_factory=dict)
     data_chunks: tuple[BdqDataChunkSummary, ...] = ()
     detected_errors: tuple[str, ...] = ()
     valid_chunk_count: int = 0
@@ -198,6 +201,7 @@ def read_bdq(path: str | Path) -> BdqReadResult:
 
     metadata: dict[str, Any] = {}
     channel_schema: dict[str, Any] = {}
+    final_summary: dict[str, Any] = {}
     data_chunks: list[BdqDataChunkSummary] = []
     errors: list[str] = []
     valid_chunk_count = 0
@@ -215,6 +219,8 @@ def read_bdq(path: str | Path) -> BdqReadResult:
                 channel_schema = _decode_json_payload(chunk)
             elif chunk.chunk_type == CHUNK_TYPE_DATA:
                 data_chunks.append(_summarize_data_chunk(chunk))
+            elif chunk.chunk_type == CHUNK_TYPE_FINAL_SUMMARY and not final_summary:
+                final_summary = _decode_json_payload(chunk)
         except ValueError as exc:
             errors.append(str(exc))
             break
@@ -224,6 +230,7 @@ def read_bdq(path: str | Path) -> BdqReadResult:
         header=header,
         metadata=metadata,
         channel_schema=channel_schema,
+        final_summary=final_summary,
         data_chunks=tuple(data_chunks),
         detected_errors=tuple(errors),
         valid_chunk_count=valid_chunk_count,
@@ -319,6 +326,269 @@ def iter_bdq_rows(path: str | Path) -> Iterator[dict[str, Any]]:
             yield row
 
 
+def _numeric_value(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _bdq_sample_rate_hz(metadata: Mapping[str, Any], schema: Mapping[str, Any]) -> Optional[float]:
+    direct = _numeric_value(metadata.get("sample_rate_hz"))
+    if direct is not None and direct > 0:
+        return direct
+
+    timebase = schema.get("timebase")
+    if isinstance(timebase, Mapping):
+        from_schema = _numeric_value(timebase.get("sample_rate_hz"))
+        if from_schema is not None and from_schema > 0:
+            return from_schema
+
+    period_us = _bdq_sample_period_us(metadata, schema)
+    if period_us is not None and period_us > 0:
+        return 1_000_000.0 / period_us
+    return None
+
+
+def _bdq_sample_period_us(metadata: Mapping[str, Any], schema: Mapping[str, Any]) -> Optional[float]:
+    direct = _numeric_value(metadata.get("sample_period_us"))
+    if direct is not None and direct > 0:
+        return direct
+
+    timebase = schema.get("timebase")
+    if isinstance(timebase, Mapping):
+        from_schema = _numeric_value(timebase.get("sample_period_us"))
+        if from_schema is not None and from_schema > 0:
+            return from_schema
+
+    sample_rate_hz = _numeric_value(metadata.get("sample_rate_hz"))
+    if sample_rate_hz is not None and sample_rate_hz > 0:
+        return 1_000_000.0 / sample_rate_hz
+    return None
+
+
+def bdq_to_dataframe(input_path: str | Path) -> pd.DataFrame:
+    """Decode a BDQ file into a dataframe suitable for the preprocessing pipeline."""
+    info = read_bdq(input_path)
+    if not info.metadata:
+        raise ValueError(f"BDQ file has no metadata chunk: {Path(input_path).name}")
+    if not info.channel_schema:
+        raise ValueError(f"BDQ file has no channel schema chunk: {Path(input_path).name}")
+    if info.sample_count <= 0:
+        raise ValueError(f"BDQ file has no decodable samples: {Path(input_path).name}")
+
+    rows = list(iter_bdq_rows(input_path))
+    if not rows:
+        raise ValueError(f"BDQ file yielded no decoded rows: {Path(input_path).name}")
+
+    df = pd.DataFrame.from_records(rows)
+    if "sample_id" not in df.columns:
+        df.insert(0, "sample_id", range(len(df)))
+
+    period_us = _bdq_sample_period_us(info.metadata, info.channel_schema)
+    if period_us is None or period_us <= 0:
+        raise ValueError(f"BDQ file has no usable sample period: {Path(input_path).name}")
+
+    first_sample_id = info.first_sample_id
+    if first_sample_id is None:
+        first_sample_id = int(df["sample_id"].iloc[0])
+    df["time_s"] = (pd.to_numeric(df["sample_id"], errors="coerce") - int(first_sample_id)) * (float(period_us) / 1_000_000.0)
+
+    sample_flags = info.channel_schema.get("sample_flags")
+    mark_mask = 1
+    if isinstance(sample_flags, Mapping):
+        maybe_mask = sample_flags.get("mark")
+        try:
+            mark_mask = int(maybe_mask)
+        except (TypeError, ValueError):
+            mark_mask = 1
+
+    if "mark" not in df.columns and "flags" in df.columns:
+        flags = pd.to_numeric(df["flags"], errors="coerce").fillna(0).astype("int64")
+        df["mark"] = (flags & mark_mask) != 0
+
+    column_map = _bdq_dataframe_column_map(info.channel_schema)
+    df = df.rename(columns={field: column for field, column in column_map.items() if field in df.columns})
+
+    ordered = ["time_s", "sample_id"] + [c for c in df.columns if c not in {"time_s", "sample_id"}]
+    return df.loc[:, ordered]
+
+
+def _text_or_none(value: Any) -> Optional[str]:
+    text = "" if value is None else str(value).strip()
+    return text or None
+
+
+def _infer_end_from_text(*values: Any) -> Optional[str]:
+    for value in values:
+        text = _text_or_none(value)
+        if text is None:
+            continue
+        lower = text.lower()
+        if lower.startswith("front") or "_front" in lower or "front_" in lower:
+            return "front"
+        if lower.startswith("rear") or "_rear" in lower or "rear_" in lower:
+            return "rear"
+    return None
+
+
+def _infer_domain_from_field(field: str) -> Optional[str]:
+    parts = [part for part in str(field).lower().split("_") if part]
+    for domain in ("wheel", "suspension", "brake", "drivetrain", "frame", "steering"):
+        if domain in parts:
+            return domain
+    return None
+
+
+def _bdq_column_class(channel: Mapping[str, Any]) -> str:
+    quantity = _text_or_none(channel.get("quantity"))
+    field = _text_or_none(channel.get("field"))
+    if quantity == "sample_index" or field == "sample_id":
+        return "sample_index"
+    if quantity == "flags" or field == "flags" or field == "mark":
+        return "event_flag"
+    return "signal"
+
+
+def _bdq_dataframe_column_map(schema: Mapping[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for channel in _schema_channels(dict(schema)):
+        field = _text_or_none(channel.get("field"))
+        if field is None:
+            continue
+        name = field
+        if _bdq_column_class(channel) == "signal":
+            domain = _text_or_none(channel.get("domain")) or _infer_domain_from_field(field)
+            unit = _text_or_none(channel.get("unit"))
+            if domain is not None and "_dom_" not in name:
+                name = f"{name}_dom_{domain}"
+            if unit is not None and " [" not in name:
+                name = f"{name} [{unit}]"
+
+        candidate = name
+        suffix = 2
+        while candidate in used:
+            candidate = f"{name}_{suffix}"
+            suffix += 1
+        used.add(candidate)
+        out[field] = candidate
+    return out
+
+
+def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
+    """Map BDQ embedded metadata/schema into the existing logger metadata shape."""
+    metadata = info.metadata
+    schema = info.channel_schema
+    sample_rate_hz = _bdq_sample_rate_hz(metadata, schema)
+    sample_period_us = _bdq_sample_period_us(metadata, schema)
+    session_id = _text_or_none(metadata.get("recording_id")) or info.path.stem
+
+    columns: dict[str, Any] = {
+        "time_s": {
+            "class": "time",
+            "dtype": "float64",
+            "stream": "primary",
+            "unit": "s",
+        }
+    }
+    column_map = _bdq_dataframe_column_map(schema)
+
+    for channel in _schema_channels(schema):
+        field = _text_or_none(channel.get("field"))
+        if field is None:
+            continue
+        dataframe_column = column_map.get(field, field)
+        column_class = _bdq_column_class(channel)
+        entry: dict[str, Any] = {
+            "class": column_class,
+            "stream": "primary",
+            "unit": _text_or_none(channel.get("unit")) or "",
+            "storage_type": _text_or_none(channel.get("storage_type")),
+            "source": _text_or_none(channel.get("source")),
+            "source_columns": [field],
+            "bdq_field": field,
+            "raw": bool(channel.get("raw", False)),
+        }
+        quantity = _text_or_none(channel.get("quantity"))
+        if quantity is not None:
+            entry["quantity"] = quantity
+        sensor = _text_or_none(channel.get("sensor"))
+        if sensor is not None:
+            entry["sensor"] = sensor
+        end = _text_or_none(channel.get("end")) or _infer_end_from_text(field, sensor)
+        if end is not None:
+            entry["end"] = end
+        domain = _text_or_none(channel.get("domain")) or _infer_domain_from_field(field)
+        if domain is not None:
+            entry["domain"] = domain
+        columns[dataframe_column] = entry
+
+    if "flags" in columns and "mark" not in columns:
+        columns["mark"] = {
+            "class": "event_flag",
+            "dtype": "bool",
+            "stream": "primary",
+            "source": "bdq.sample_flags.mark",
+        }
+
+    run_stats = dict(info.final_summary) if isinstance(info.final_summary, Mapping) else {}
+    if info.detected_errors:
+        run_stats["bdq_parser_errors"] = list(info.detected_errors)
+
+    return {
+        "contract": {
+            "name": "bdq.v1",
+            "version": f"{info.header.format_major}.{info.header.format_minor}",
+            "sidecar_kind": "embedded",
+        },
+        "session": {
+            "session_id": session_id,
+            "started_at_utc": _text_or_none(metadata.get("started_at_utc")),
+            "started_at_local": _text_or_none(metadata.get("started_at_local")),
+            "timezone": _text_or_none(metadata.get("timezone")),
+        },
+        "data_file": {
+            "format": "bdq",
+            "path": str(info.path),
+        },
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "time_s",
+                "time_encoding": "elapsed_s",
+                "time_unit": "s",
+                "sample_rate_hz": sample_rate_hz,
+                "sample_period_us": sample_period_us,
+            }
+        },
+        "columns": columns,
+        "provenance": {
+            "logger_family": "BODAQS",
+            "firmware_version": _text_or_none(metadata.get("firmware_version")),
+            "firmware_build": _text_or_none(metadata.get("firmware_build")),
+            "generator": "bdq.v1",
+            "metadata_generated_at": _text_or_none(metadata.get("started_at_utc")),
+            "device_id": _text_or_none(metadata.get("device_id")),
+            "hardware_version": _text_or_none(metadata.get("hardware_version")),
+        },
+        "qc": {
+            "run_stats": run_stats,
+        },
+        "bdq": {
+            "metadata": dict(metadata),
+            "channel_schema": dict(schema),
+            "detected_errors": list(info.detected_errors),
+            "sample_count": info.sample_count,
+            "first_sample_id": info.first_sample_id,
+            "last_sample_id": info.last_sample_id,
+        },
+    }
+
+
 def bdq_to_csv(input_path: str | Path, output_path: str | Path) -> None:
     info = read_bdq(input_path)
     channels = _schema_channels(info.channel_schema)
@@ -338,6 +608,7 @@ def summary_lines(info: BdqReadResult) -> list[str]:
         f"format version: {info.header.format_major}.{info.header.format_minor}",
         f"metadata: {json.dumps(info.metadata, sort_keys=True)}",
         f"channel schema: {json.dumps(info.channel_schema, sort_keys=True)}",
+        f"final summary: {json.dumps(info.final_summary, sort_keys=True)}",
         f"valid chunks: {info.valid_chunk_count}",
         f"valid data chunks: {len(info.data_chunks)}",
         f"samples: {info.sample_count}",

@@ -1,8 +1,10 @@
+import binascii
 import json
 import math
 import os
 import re
 import shutil
+import struct
 import sys
 import zipfile
 from importlib.resources import files
@@ -377,6 +379,117 @@ def _write_session_archive(
     return archive_path
 
 
+_BDQ_FILE_HEADER = struct.Struct("<8sHHIQII")
+_BDQ_CHUNK_HEADER = struct.Struct("<4sHHIII")
+_BDQ_DATA_HEADER = struct.Struct("<IIQHH")
+_BDQ_FRAME = struct.Struct("<IffH")
+
+
+def _bdq_crc32(payload: bytes) -> int:
+    return binascii.crc32(payload) & 0xFFFFFFFF
+
+
+def _bdq_chunk(chunk_type: int, sequence: int, payload: bytes) -> bytes:
+    return _BDQ_CHUNK_HEADER.pack(b"BDQC", 1, chunk_type, sequence, len(payload), _bdq_crc32(payload)) + payload
+
+
+def _bdq_json_chunk(chunk_type: int, sequence: int, payload: dict) -> bytes:
+    return _bdq_chunk(chunk_type, sequence, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def _write_bdq_input(
+    inbox_dir: Path,
+    *,
+    stem: str,
+    front_values: tuple[float, float, float] = (10.0, 11.0, 12.0),
+    rear_values: tuple[float, float, float] = (20.0, 21.0, 22.0),
+) -> Path:
+    bdq_path = inbox_dir / f"{stem}.bdq"
+    metadata = {
+        "format": "bdq.v1",
+        "format_name": "BDQLOG v1",
+        "device_id": "Prototype_E",
+        "firmware_name": "BODAQS Firmware",
+        "firmware_version": "0.3.0",
+        "recording_id": stem,
+        "path": f"/{stem}.bdq",
+        "created_unix_us": 1_768_998_942_000_000,
+        "sample_rate_hz": 33,
+        "sample_period_us": 30_000,
+        "timezone": "Australia/Perth",
+        "started_at_utc": "2026-05-16T02:00:00Z",
+        "started_at_local": "2026-05-16T10:00:00+08:00",
+        "log_format": "bodaqs_compact_binary",
+    }
+    schema = {
+        "schema_format": "bdq.channel_schema.v1",
+        "frame_layout": "fixed_mixed_v1",
+        "endianness": "little",
+        "frame_size_bytes": _BDQ_FRAME.size,
+        "timebase": {
+            "type": "fixed_rate",
+            "sample_rate_hz": 33,
+            "sample_period_us": 30_000,
+            "timestamp_per_sample": False,
+        },
+        "channels": [
+            {
+                "field": "sample_id",
+                "quantity": "sample_index",
+                "unit": "sample",
+                "storage_type": "uint32",
+                "byte_offset": 0,
+                "source": "frame",
+                "raw": False,
+            },
+            {
+                "field": "front_suspension_disp",
+                "quantity": "disp",
+                "unit": "mm",
+                "storage_type": "float32",
+                "byte_offset": 4,
+                "sensor": "front_shock",
+                "source": "linear_calibrated",
+                "raw": False,
+            },
+            {
+                "field": "rear_suspension_disp",
+                "quantity": "disp",
+                "unit": "mm",
+                "storage_type": "float32",
+                "byte_offset": 8,
+                "sensor": "rear_shock",
+                "source": "linear_calibrated",
+                "raw": False,
+            },
+            {
+                "field": "flags",
+                "quantity": "flags",
+                "unit": "bitfield",
+                "storage_type": "uint16",
+                "byte_offset": 12,
+                "source": "frame",
+                "raw": False,
+            },
+        ],
+        "sample_flags": {"mark": 1},
+    }
+    rows = [
+        _BDQ_FRAME.pack(i, float(front_values[i]), float(rear_values[i]), 1 if i == 1 else 0)
+        for i in range(3)
+    ]
+    data_payload = _BDQ_DATA_HEADER.pack(0, len(rows), 1_768_998_942_000_000, _BDQ_FRAME.size, 0) + b"".join(rows)
+    header = _BDQ_FILE_HEADER.pack(b"BDQLOG\x00\x01", 1, 0, _BDQ_FILE_HEADER.size, metadata["created_unix_us"], 0, 0)
+    bdq_path.write_bytes(
+        header
+        + _bdq_json_chunk(1, 0, metadata)
+        + _bdq_json_chunk(2, 1, schema)
+        + _bdq_chunk(3, 2, data_payload)
+        + _bdq_json_chunk(5, 3, {"summary_format": "bdq.final_summary.v1", "samples_written": 3})
+    )
+    return bdq_path
+
+
 def _write_invalid_archive(inbox_dir: Path, *, name: str = "broken.zip") -> Path:
     archive_path = inbox_dir / name
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -422,6 +535,23 @@ def test_prepare_session_input_extracts_archive_and_builds_manifest(tmp_path):
     assert manifest["archive_csv_member"] == "session_001.CSV"
     assert manifest["archive_log_metadata_member"] == "session_001.json"
     assert manifest["raw_session_identity"] == session_input.source_identity
+
+
+def test_prepare_session_input_accepts_bdq_file(tmp_path):
+    bdq_path = _write_bdq_input(tmp_path, stem="260516_201542")
+
+    identity = session_input_identity(bdq_path)
+    with prepare_session_input(bdq_path) as session_input:
+        manifest = session_input.source_manifest(source_path="source/input.bdq")
+
+    assert identity.input_kind == "bdq"
+    assert identity.source_identity_kind == "bdq_session_identity"
+    assert session_input.input_kind == "bdq"
+    assert session_input.csv_path == bdq_path.resolve()
+    assert manifest["path"] == "source/input.bdq"
+    assert manifest["input_kind"] == "bdq"
+    assert manifest["original_bdq_filename"] == "260516_201542.bdq"
+    assert manifest["source_identity"] == identity.source_identity
 
 
 def test_processed_identity_loader_reads_raw_session_identity(tmp_path):
@@ -884,6 +1014,37 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["original_archive_filename"] == "session_001.zip"
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
+    assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_run_sources_once_imports_bdq_and_moves_it_to_done(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    bdq_path = _write_bdq_input(source_root / "inbox", stem="260516_201542")
+    _set_old_mtime(bdq_path)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert report["totals"]["failed"] == 0
+    assert not bdq_path.exists()
+
+    done_bdq_files = list((source_root / "done").glob("*.bdq"))
+    assert len(done_bdq_files) == 1
+
+    record = report["sources"][0]["imported"][0]
+    session_manifest = artifacts_dir / "runs" / record["run_id"] / "sessions" / record["session_id"] / "manifest.json"
+    manifest = json.loads(session_manifest.read_text(encoding="utf-8"))
+    source_input = artifacts_dir / "runs" / record["run_id"] / "sessions" / record["session_id"] / "source" / "input.bdq"
+
+    assert record["session_id"] == "260516_201542"
+    assert record["input_kind"] == "bdq"
+    assert record["source_identity_kind"] == "bdq_session_identity"
+    assert source_input.exists()
+    assert manifest["source"]["path"] == "source/input.bdq"
+    assert manifest["source"]["input_kind"] == "bdq"
+    assert manifest["source"]["original_bdq_filename"] == "260516_201542.bdq"
+    assert manifest["source"]["bdq_sha256"] == record["archive_sha256"]
     assert manifest["source"]["import_source_id"] == "source_a"
 
 

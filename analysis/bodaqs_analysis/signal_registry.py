@@ -15,6 +15,7 @@ from .sensor_aliases import canonical_end, canonical_sensor_from_text, canonical
 # Columns that are not "signals" but may be numeric and should be tolerated.
 DEFAULT_NON_SIGNAL_COLUMNS: Set[str] = {
     "mark",
+    "flags",
     "sample_id",
     "event_id",
     "segment_id",

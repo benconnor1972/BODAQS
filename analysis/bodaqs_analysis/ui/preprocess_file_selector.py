@@ -134,6 +134,7 @@ class PreprocessLogSelector:
         file_glob: str = "*.CSV",
         include_lowercase_csv: bool = True,
         include_zip_archives: bool = True,
+        include_bdq_files: bool = True,
         show_mtime: bool = True,
         show_size: bool = True,
         max_list_height_px: int = 260,
@@ -144,6 +145,7 @@ class PreprocessLogSelector:
         self.file_glob = file_glob
         self.include_lowercase_csv = include_lowercase_csv
         self.include_zip_archives = include_zip_archives
+        self.include_bdq_files = include_bdq_files
         self.show_mtime = show_mtime
         self.show_size = show_size
         self.max_list_height_px = max_list_height_px
@@ -238,7 +240,7 @@ class PreprocessLogSelector:
                 W.HTML("<h3 style='margin: 16px 0 6px 0'>Log Selection</h3>"),
                 W.HTML(
                     "<p style='margin:0 0 10px 0;color:#555;line-height:1.35;white-space:normal'>"
-                    "Choose logger session inputs to process. ZIP bundles and legacy CSV files already present in the artifact library are hidden by default."
+                    "Choose logger session inputs to process. BDQ files, ZIP bundles, and legacy CSV files already present in the artifact library are hidden by default."
                     "</p>"
                 ),
                 W.HBox([self.w_dir, self.b_browse, self.b_refresh]),
@@ -291,6 +293,9 @@ class PreprocessLogSelector:
             if self.include_zip_archives:
                 files.extend(sorted(self._dir.glob("*.zip")))
                 files.extend(sorted(self._dir.glob("*.ZIP")))
+            if self.include_bdq_files:
+                files.extend(sorted(self._dir.glob("*.bdq")))
+                files.extend(sorted(self._dir.glob("*.BDQ")))
             files = sorted({p.resolve() for p in files})
 
         show_processed = bool(self.w_show_processed.value)

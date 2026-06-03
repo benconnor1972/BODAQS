@@ -1,5 +1,7 @@
+import binascii
 import json
 import socket
+import struct
 import sys
 import threading
 import zipfile
@@ -121,6 +123,110 @@ def _importable_archive_bytes(stem: str = "2026-05-16_20-15-42") -> bytes:
     return buf.getvalue()
 
 
+_BDQ_FILE_HEADER = struct.Struct("<8sHHIQII")
+_BDQ_CHUNK_HEADER = struct.Struct("<4sHHIII")
+_BDQ_DATA_HEADER = struct.Struct("<IIQHH")
+_BDQ_FRAME = struct.Struct("<IffH")
+
+
+def _bdq_crc32(payload: bytes) -> int:
+    return binascii.crc32(payload) & 0xFFFFFFFF
+
+
+def _bdq_chunk(chunk_type: int, sequence: int, payload: bytes) -> bytes:
+    return _BDQ_CHUNK_HEADER.pack(b"BDQC", 1, chunk_type, sequence, len(payload), _bdq_crc32(payload)) + payload
+
+
+def _bdq_json_chunk(chunk_type: int, sequence: int, payload: dict) -> bytes:
+    return _bdq_chunk(chunk_type, sequence, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def _importable_bdq_bytes(stem: str = "260516_201542") -> bytes:
+    metadata = {
+        "format": "bdq.v1",
+        "format_name": "BDQLOG v1",
+        "device_id": "Prototype_E",
+        "firmware_name": "BODAQS Firmware",
+        "firmware_version": "0.3.0",
+        "recording_id": stem,
+        "path": f"/{stem}.bdq",
+        "created_unix_us": 1_768_998_942_000_000,
+        "sample_rate_hz": 33,
+        "sample_period_us": 30_000,
+        "timezone": "Australia/Perth",
+        "started_at_utc": "2026-05-16T02:00:00Z",
+        "started_at_local": "2026-05-16T10:00:00+08:00",
+        "log_format": "bodaqs_compact_binary",
+    }
+    schema = {
+        "schema_format": "bdq.channel_schema.v1",
+        "frame_layout": "fixed_mixed_v1",
+        "endianness": "little",
+        "frame_size_bytes": _BDQ_FRAME.size,
+        "timebase": {
+            "type": "fixed_rate",
+            "sample_rate_hz": 33,
+            "sample_period_us": 30_000,
+            "timestamp_per_sample": False,
+        },
+        "channels": [
+            {
+                "field": "sample_id",
+                "quantity": "sample_index",
+                "unit": "sample",
+                "storage_type": "uint32",
+                "byte_offset": 0,
+                "source": "frame",
+                "raw": False,
+            },
+            {
+                "field": "front_suspension_disp",
+                "quantity": "disp",
+                "unit": "mm",
+                "storage_type": "float32",
+                "byte_offset": 4,
+                "sensor": "front_shock",
+                "source": "linear_calibrated",
+                "raw": False,
+            },
+            {
+                "field": "rear_suspension_disp",
+                "quantity": "disp",
+                "unit": "mm",
+                "storage_type": "float32",
+                "byte_offset": 8,
+                "sensor": "rear_shock",
+                "source": "linear_calibrated",
+                "raw": False,
+            },
+            {
+                "field": "flags",
+                "quantity": "flags",
+                "unit": "bitfield",
+                "storage_type": "uint16",
+                "byte_offset": 12,
+                "source": "frame",
+                "raw": False,
+            },
+        ],
+        "sample_flags": {"mark": 1},
+    }
+    rows = [
+        _BDQ_FRAME.pack(0, 10.0, 20.0, 0),
+        _BDQ_FRAME.pack(1, 11.0, 21.0, 1),
+        _BDQ_FRAME.pack(2, 12.0, 22.0, 0),
+    ]
+    data_payload = _BDQ_DATA_HEADER.pack(0, len(rows), 1_768_998_942_000_000, _BDQ_FRAME.size, 0) + b"".join(rows)
+    header = _BDQ_FILE_HEADER.pack(b"BDQLOG\x00\x01", 1, 0, _BDQ_FILE_HEADER.size, metadata["created_unix_us"], 0, 0)
+    return (
+        header
+        + _bdq_json_chunk(1, 0, metadata)
+        + _bdq_json_chunk(2, 1, schema)
+        + _bdq_chunk(3, 2, data_payload)
+        + _bdq_json_chunk(5, 3, {"summary_format": "bdq.final_summary.v1", "samples_written": 3})
+    )
+
+
 def _provision_wifi_source(
     tmp_path: Path,
     base_url: str | None,
@@ -205,7 +311,7 @@ class _FakeLoggerHandler(BaseHTTPRequestHandler):
                     "logger_id": logger_id,
                     "display_name": logger_id,
                     "hostname": "bodaqs-prototype-e",
-                    "capabilities": ["upload_mode", "session_archive_zip"],
+                    "capabilities": ["upload_mode", "session_archive_zip", "session_data_bdq"],
                 },
             )
             return
@@ -262,6 +368,27 @@ class _FakeLoggerHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/v1/session/data":
+            query = parse_qs(parsed.query)
+            self.state["data_ids"].append(query.get("id", [""])[0])
+            payload = self.state["data_bytes"]
+            if self.state.get("truncate_data"):
+                partial = payload[: max(1, len(payload) // 3)]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(partial)
+                self.close_connection = True
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -326,7 +453,9 @@ class _FakeLoggerServer:
             {
                 "session_id": "Prototype E__2026-05-16_20-15-42",
                 "session_stem": "2026-05-16_20-15-42",
+                "data_format": "csv_zip",
                 "archive_ready": True,
+                "data_ready": True,
                 "uploaded": False,
                 "acknowledged": False,
             }
@@ -334,7 +463,9 @@ class _FakeLoggerServer:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeLoggerHandler)
         self.server.state = {
             "archive_bytes": _archive_bytes(),
+            "data_bytes": _importable_bdq_bytes(),
             "archive_ids": [],
+            "data_ids": [],
             "acks": [],
             "cleanups": [],
             "requests": [],
@@ -401,6 +532,19 @@ def test_logger_wifi_client_downloads_archive_via_part_then_final(tmp_path):
     assert server.state["archive_ids"] == ["Prototype E__2026-05-16_20-15-42"]
     with zipfile.ZipFile(target, "r") as zf:
         assert sorted(zf.namelist()) == ["2026-05-16_20-15-42.CSV", "2026-05-16_20-15-42.json"]
+
+
+def test_logger_wifi_client_downloads_bdq_data_via_part_then_final(tmp_path):
+    with _FakeLoggerServer() as server:
+        client = LoggerWifiApiClient(server.base_url)
+        target = tmp_path / "session.bdq"
+
+        result = client.download_bdq_to_part("Prototype E__260516_201542", target)
+
+    assert result == target.resolve()
+    assert target.exists()
+    assert not Path(str(target.resolve()) + ".part").exists()
+    assert server.state["data_ids"] == ["Prototype E__260516_201542"]
 
 
 def test_logger_wifi_client_failed_download_leaves_part_file(tmp_path):
@@ -532,7 +676,7 @@ def test_logger_wifi_source_acquires_imports_acknowledges_and_cleans_up(tmp_path
     assert imported_record["remote_acknowledged"] is True
     assert imported_record["remote_cleanup_done"] is True
     assert len(list((source.source_root / "done").glob("*.zip"))) == 1
-    assert len(list((library.artifacts_dir / "runs").glob("run_*"))) == 1
+    assert (library.artifacts_dir / "runs" / imported_record["run_id"]).exists()
 
     state = json.loads((library.artifacts_dir / "library" / "import_agent_state_v1.json").read_text(encoding="utf-8"))
     remote_records = [
@@ -542,6 +686,63 @@ def test_logger_wifi_source_acquires_imports_acknowledges_and_cleans_up(tmp_path
     ]
     assert remote_records[0]["status"] == "succeeded"
     assert remote_records[0]["remote_session_id"] == "Prototype E__2026-05-16_20-15-42"
+    assert remote_records[0]["acknowledged"] is True
+
+
+def test_logger_wifi_source_acquires_imports_bdq_session_data(tmp_path):
+    sessions = [
+        {
+            "session_id": "Prototype E__260516_201542",
+            "session_stem": "260516_201542",
+            "data_format": "bdq",
+            "data_path": "/260516_201542.bdq",
+            "archive_ready": False,
+            "data_ready": True,
+            "data_size": len(_importable_bdq_bytes()),
+            "uploaded": False,
+            "acknowledged": False,
+        }
+    ]
+    with _FakeLoggerServer(sessions=sessions, data_bytes=_importable_bdq_bytes()) as server:
+        source, library = _provision_wifi_source(tmp_path, server.base_url)
+
+        report = run_sources_once([source.source_root])
+
+    assert report["totals"]["seen"] == 1
+    assert report["totals"]["imported"] == 1
+    assert report["totals"]["failed"] == 0
+    assert server.state["archive_ids"] == []
+    assert server.state["data_ids"] == ["Prototype E__260516_201542"]
+    assert server.state["acks"][0]["session_id"] == "Prototype E__260516_201542"
+    assert len(list((source.source_root / "done").glob("*.bdq"))) == 1
+
+    imported_record = report["sources"][0]["imported"][0]
+    session_manifest = (
+        library.artifacts_dir
+        / "runs"
+        / imported_record["run_id"]
+        / "sessions"
+        / imported_record["session_id"]
+        / "manifest.json"
+    )
+    manifest = json.loads(session_manifest.read_text(encoding="utf-8"))
+
+    assert imported_record["input_kind"] == "bdq"
+    assert imported_record["remote_data_format"] == "bdq"
+    assert imported_record["remote_session_id"] == "Prototype E__260516_201542"
+    assert manifest["source"]["path"] == "source/input.bdq"
+    assert manifest["source"]["input_kind"] == "bdq"
+    assert manifest["source"]["original_bdq_filename"].endswith(".bdq")
+    assert (session_manifest.parent / "source" / "input.bdq").exists()
+
+    state = json.loads((library.artifacts_dir / "library" / "import_agent_state_v1.json").read_text(encoding="utf-8"))
+    remote_records = [
+        record
+        for key, record in state["records"].items()
+        if key.startswith("logger_wifi:")
+    ]
+    assert remote_records[0]["status"] == "succeeded"
+    assert remote_records[0]["data_format"] == "bdq"
     assert remote_records[0]["acknowledged"] is True
 
 

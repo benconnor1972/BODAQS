@@ -125,6 +125,9 @@ This contract applies to CSV log formats only. Compact binary sessions use a
 loose self-contained `.bdq` file and are downloaded through
 `GET /api/v1/session/data`.
 
+The compact binary on-disk parser contract is documented in
+`BDQ_v1_format.md`.
+
 For each completed session:
 
 ```text
@@ -367,8 +370,9 @@ Content-Type: application/octet-stream
 Content-Disposition: attachment; filename="<session_id>.bdq"
 ```
 
-The import agent downloads to a `.part` file first, validates the completed zip,
-and only then moves the archive into the local import inbox/staging area.
+The import agent downloads to a `.part` file first, validates the completed
+`.bdq` file against `BDQ_v1_format.md`, and only then moves the file into the
+local import inbox/staging area.
 
 ### `POST /api/v1/session/ack`
 
