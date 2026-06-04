@@ -2,6 +2,9 @@
 #include <WebServer.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <dirent.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include "SD_MMC.h"
 #include "WebServerManager.h"
 #include "ConfigManager.h"
@@ -68,6 +71,40 @@ static void ws_diag_on_response(int code) {
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
   PowerManager::noteActivity();
+}
+
+static void appendVfsProbe_(String& out, const char* label, const char* path) {
+  struct stat st;
+  errno = 0;
+  const int statRc = stat(path, &st);
+  const int statErr = errno;
+  out += F(",\"");
+  out += label;
+  out += F("StatRc\":");
+  out += String(statRc);
+  out += F(",\"");
+  out += label;
+  out += F("StatErr\":");
+  out += String(statErr);
+  if (statRc == 0) {
+    out += F(",\"");
+    out += label;
+    out += F("StatMode\":");
+    out += String((unsigned)(st.st_mode & S_IFMT));
+  }
+
+  errno = 0;
+  DIR* dir = opendir(path);
+  const int openErr = errno;
+  out += F(",\"");
+  out += label;
+  out += F("Opendir\":");
+  out += dir ? F("true") : F("false");
+  out += F(",\"");
+  out += label;
+  out += F("OpendirErr\":");
+  out += String(openErr);
+  if (dir) closedir(dir);
 }
 
 
@@ -202,7 +239,7 @@ void WebServerManager::setupRoutes() {
   g_server->on("/__health", HTTP_GET, [](){
     noteHttpActivity_();
     String out;
-    out.reserve(256);
+    out.reserve(384);
     auto st = WiFiManager::status();
     out += F("{\"wifi\":");
     out += String((int)st.wl);
@@ -211,7 +248,25 @@ void WebServerManager::setupRoutes() {
     out += F(",\"ip\":\""); out += st.ip; out += F("\"");
     out += F(",\"running\":"); out += g_running ? F("true") : F("false");
     out += F(",\"canStart\":"); out += canStart() ? F("true") : F("false");
-    out += F(",\"sdmmc\":"); out += (SD_MMC.cardType() != CARD_NONE ? F("true") : F("false"));
+    out += F(",\"batteryOk\":"); out += PowerManager::fuelGaugeOk() ? F("true") : F("false");
+    out += F(",\"batteryVoltage\":"); out += String(PowerManager::batteryVoltage(), 3);
+    out += F(",\"batterySocPct\":"); out += String(PowerManager::batterySocPercent(), 1);
+    out += F(",\"batteryLow\":"); out += PowerManager::batteryLow() ? F("true") : F("false");
+    out += F(",\"analogRailEnabled\":"); out += PowerManager::analogRailEnabled() ? F("true") : F("false");
+    const uint8_t sdCardType = SD_MMC.cardType();
+    out += F(",\"sdmmc\":"); out += (sdCardType != CARD_NONE ? F("true") : F("false"));
+    out += F(",\"sdCardType\":"); out += String((unsigned)sdCardType);
+    if (sdCardType != CARD_NONE) {
+      out += F(",\"sdSizeMB\":"); out += String((unsigned long long)(SD_MMC.cardSize() / (1024ULL * 1024ULL)));
+      out += F(",\"sdTotalMB\":"); out += String((unsigned long long)(SD_MMC.totalBytes() / (1024ULL * 1024ULL)));
+      out += F(",\"sdUsedMB\":"); out += String((unsigned long long)(SD_MMC.usedBytes() / (1024ULL * 1024ULL)));
+    }
+    File sdRoot = SD_MMC.open("/");
+    out += F(",\"sdRootOpen\":"); out += sdRoot ? F("true") : F("false");
+    out += F(",\"sdRootDir\":"); out += (sdRoot && sdRoot.isDirectory()) ? F("true") : F("false");
+    if (sdRoot) sdRoot.close();
+    appendVfsProbe_(out, "sdcard", "/sdcard");
+    appendVfsProbe_(out, "sdcardSlash", "/sdcard/");
   #ifdef ESP32
     out += F(",\"heap\":"); out += String((int)ESP.getFreeHeap());
   #endif

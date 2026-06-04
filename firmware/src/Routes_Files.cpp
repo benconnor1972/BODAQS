@@ -126,6 +126,27 @@ static String dirOpenPath_(const String& dir) {
   return dir;
 }
 
+static void appendSdDiagnostics_(String& html, const String& openDir) {
+  const uint8_t cardType = SD_MMC.cardType();
+  File probe = SD_MMC.open(openDir.c_str());
+  html += F("<p><small>SD_MMC cardType=");
+  html += String((unsigned)cardType);
+  html += F(", openPath=");
+  html += htmlEscape(openDir);
+  html += F(", open=");
+  html += probe ? F("true") : F("false");
+  html += F(", isDir=");
+  html += (probe && probe.isDirectory()) ? F("true") : F("false");
+  if (cardType != CARD_NONE) {
+    html += F(", sizeMB=");
+    html += String((unsigned long long)(SD_MMC.cardSize() / (1024ULL * 1024ULL)));
+    html += F(", totalMB=");
+    html += String((unsigned long long)(SD_MMC.totalBytes() / (1024ULL * 1024ULL)));
+  }
+  html += F("</small></p>");
+  if (probe) probe.close();
+}
+
 static bool isFileInDir_(const String& filePath, const String& dirNorm) {
   // dirNorm is normalized directory (leading '/', trailing '/' unless root)
   const String p = filePath;
@@ -205,6 +226,7 @@ static void listDirMMC_(const String& dir, String& html, bool allowDelete) {
   File d = SD_MMC.open(openDir.c_str());
   if (!d || !d.isDirectory()) {
     html += F("<p>Failed to open directory.</p>");
+    appendSdDiagnostics_(html, openDir);
     if (d) d.close();
     return;
   }

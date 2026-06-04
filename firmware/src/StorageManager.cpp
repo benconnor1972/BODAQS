@@ -390,6 +390,33 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
     return true;
 }
 
+static bool ensureParentDirs_(const String& absPath) {
+  const int lastSlash = absPath.lastIndexOf('/');
+  if (lastSlash <= 0) return true;
+
+  int slash = absPath.indexOf('/', 1);
+  while (slash > 0 && slash <= lastSlash) {
+    String dir = absPath.substring(0, slash);
+    if (dir.length() && !SD_MMC.exists(dir.c_str())) {
+      if (!SD_MMC.mkdir(dir.c_str())) {
+        STOR_LOGW("saveTextFile: mkdir failed for %s\n", dir.c_str());
+        return false;
+      }
+    }
+    slash = absPath.indexOf('/', slash + 1);
+  }
+
+  String parent = absPath.substring(0, lastSlash);
+  if (parent.length() && !SD_MMC.exists(parent.c_str())) {
+    if (!SD_MMC.mkdir(parent.c_str())) {
+      STOR_LOGW("saveTextFile: mkdir failed for %s\n", parent.c_str());
+      return false;
+    }
+  }
+
+  return true;
+}
+
 bool StorageManager_saveTextFile(const char* path, const String& data) {
   if (!path || !*path) return false;
 
@@ -406,15 +433,21 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
     return false;
   }
 
-  // Best-effort remove to simulate truncate (FILE_WRITE appends on ESP32)
-  // Only attempt remove if it exists, to avoid edge-case FS bugs.
-  if (SD_MMC.exists(absPath.c_str())) {
-    SD_MMC.remove(absPath.c_str());
+  if (!ensureParentDirs_(absPath)) {
+    return false;
   }
 
-  File f = SD_MMC.open(absPath.c_str(), FILE_WRITE);
+  String tmpPath = absPath + F(".tmp");
+  String bakPath = absPath + F(".bak");
+
+  if (SD_MMC.exists(tmpPath.c_str()) && !SD_MMC.remove(tmpPath.c_str())) {
+    STOR_LOGW("saveTextFile: remove stale temp failed for %s\n", tmpPath.c_str());
+    return false;
+  }
+
+  File f = SD_MMC.open(tmpPath.c_str(), FILE_WRITE);
   if (!f) {
-    STOR_LOGW("saveTextFile: SD_MMC open failed for %s\n", absPath.c_str());
+    STOR_LOGW("saveTextFile: SD_MMC open failed for %s\n", tmpPath.c_str());
     return false;
   }
 
@@ -425,7 +458,34 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   if (written != len) {
     STOR_LOGW("saveTextFile: SD_MMC short write (%u/%u)\n",
               (unsigned)written, (unsigned)len);
+    SD_MMC.remove(tmpPath.c_str());
     return false;
+  }
+
+  if (SD_MMC.exists(bakPath.c_str()) && !SD_MMC.remove(bakPath.c_str())) {
+    STOR_LOGW("saveTextFile: remove stale backup failed for %s\n", bakPath.c_str());
+    SD_MMC.remove(tmpPath.c_str());
+    return false;
+  }
+
+  const bool hadExisting = SD_MMC.exists(absPath.c_str());
+  if (hadExisting && !SD_MMC.rename(absPath.c_str(), bakPath.c_str())) {
+    STOR_LOGW("saveTextFile: backup rename failed for %s\n", absPath.c_str());
+    SD_MMC.remove(tmpPath.c_str());
+    return false;
+  }
+
+  if (!SD_MMC.rename(tmpPath.c_str(), absPath.c_str())) {
+    STOR_LOGW("saveTextFile: final rename failed for %s\n", absPath.c_str());
+    if (hadExisting && SD_MMC.exists(bakPath.c_str())) {
+      SD_MMC.rename(bakPath.c_str(), absPath.c_str());
+    }
+    SD_MMC.remove(tmpPath.c_str());
+    return false;
+  }
+
+  if (hadExisting && SD_MMC.exists(bakPath.c_str())) {
+    SD_MMC.remove(bakPath.c_str());
   }
 
   return true;
@@ -470,7 +530,12 @@ void StorageManager_begin(const board::BoardProfile& bp) {
       SD_MMC.setPins(clk, cmd, d0, d1, d2, d3);
     }
 
+#if defined(BODAQS_SDMMC_FREQ_KHZ)
+    STOR_LOGI("SD_MMC frequency override: %d kHz\n", (int)BODAQS_SDMMC_FREQ_KHZ);
+    const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit, false, BODAQS_SDMMC_FREQ_KHZ);
+#else
     const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit);
+#endif
     STOR_LOGI("SD_MMC.begin result: %s\n", ok ? "OK (true)" : "FAILED (false)");
 
     if (!ok) {

@@ -45,7 +45,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
       { "nav_left",  true, 5, 1, true,  true },
       { "nav_right", true, 4, 1, true,  true },
       { "nav_enter", true, 21, 0, true,  true },
-      { "mark",      true, 2, 0, false, true },
+      { "mark",      true, 2, 0, true,  true },
     },
     .count = 6,
   },
@@ -147,11 +147,109 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   return p;
 }();
 
+static const BoardProfile BODAQS_S3_MINI_N4R2 = {
+  .name = "BODAQS S3 Mini N4R2",
+
+  .storage = {
+    .type = StorageType::SDMMC,
+    .sdmmc_1bit =
+#if defined(BODAQS_SDMMC_1BIT)
+      true,
+#else
+      false,
+#endif
+    .sdmmc_clk = 10,
+    .sdmmc_cmd = 9,
+    .sdmmc_d0  = 11,
+    .sdmmc_d1  = 12,
+    .sdmmc_d2  = 7,
+    .sdmmc_d3  = 8,
+  },
+
+  .display = {
+    .type = DisplayType::OLED_SSD1306,
+    .addr_primary = 0x3C,
+    .addr_alt     = 0x3D,
+    .bus_index    = 0,
+    .rst = -1
+  },
+
+  .buttons = {
+    .btn = {
+      { "nav_up",    true, 17, 1, true, true },
+      { "nav_down",  true, 13, 1, true, true },
+      { "nav_left",  true, 14, 1, true, true },
+      { "nav_right", true, 15, 1, true, true },
+      { "nav_enter", true, 16, 0, true, true },
+      { "mark",      true, 42, 0, true, true },
+    },
+    .count = 6,
+  },
+
+  .fuel = {
+    .type = FuelGaugeType::MAX17048,
+    .i2c_addr = 0x36,
+    .bus_index = 0
+  },
+
+  .analog = {
+    .pins  = { -1, -1, -1, -1, -1, -1, -1, -1 },
+    .count = 0,
+    .enable_pin = 35,
+    .enable_active_high = true,
+    .enable_default_on = true,
+    .adc_max = 4095,
+    .vref = 3.3f,
+    .attenuation = AdcAttenuation::Db11
+  },
+
+  .i2c = {
+    {
+      .present = true,
+      .sda = 1,
+      .scl = 2,
+      .hz  = 400000
+    },
+    {
+      .present = true,
+      .sda = 4,
+      .scl = 5,
+      .hz  = 400000
+    }
+  },
+  .i2c_count = 2,
+
+  .spi = MakeSPI(
+    true,
+    37,
+    39,
+    38,
+    (const int8_t[]){ 47, 21, 40 },
+    3,
+    20000000
+  ),
+
+  .indicators = {
+    .has_led = false,
+    .led_pin = -1,
+    .led_active_high = true,
+    .has_buzzer = false,
+    .buzzer_pin = -1,
+    .buzzer_active_high = true
+  },
+
+  .perf = {
+    .queue_depth = 256,
+    .ring_buffer_bytes = 32768
+  }
+};
+
 const BoardProfile& GetBoardProfile(BoardID id) {
   switch (id) {
     case BoardID::ThingPlusS3_BODAQS_4_D: return THING_PLUS_S3_BODAQS_4_D;
     case BoardID::ThingPlusS3_BODAQS_4_D_UartI2C1: return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
     case BoardID::ThingPlusS3_BODAQS_4_F: return THING_PLUS_S3_BODAQS_4_F;
+    case BoardID::BODAQS_S3_Mini_N4R2: return BODAQS_S3_MINI_N4R2;
     default: return THING_PLUS_S3_BODAQS_4_D;
   }
 }
@@ -162,6 +260,7 @@ const BoardProfile& GetBoardProfileByName(const char* name) {
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D.name) == 0) return THING_PLUS_S3_BODAQS_4_D;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D_UART_I2C1.name) == 0) return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_F.name) == 0) return THING_PLUS_S3_BODAQS_4_F;
+  if (strcmp(name, BODAQS_S3_MINI_N4R2.name) == 0) return BODAQS_S3_MINI_N4R2;
 
   return THING_PLUS_S3_BODAQS_4_D;
 }
