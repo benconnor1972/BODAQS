@@ -528,6 +528,36 @@ function App() {
     setVisibleColumns(normalizeColumnSelection(columns))
   }
 
+  function moveVisibleColumn(columnId: ColumnId, direction: -1 | 1) {
+    if (lockedColumns.includes(columnId)) {
+      return
+    }
+
+    setVisibleColumns((current) => {
+      const fixedColumns = current.filter((id) => lockedColumns.includes(id))
+      const movableColumns = current.filter((id) => !lockedColumns.includes(id))
+      const index = movableColumns.indexOf(columnId)
+      const targetIndex = index + direction
+      if (index === -1 || targetIndex < 0 || targetIndex >= movableColumns.length) {
+        return current
+      }
+      const nextMovableColumns = [...movableColumns]
+      const [movedColumn] = nextMovableColumns.splice(index, 1)
+      nextMovableColumns.splice(targetIndex, 0, movedColumn)
+      return normalizeColumnSelection([...fixedColumns, ...nextMovableColumns])
+    })
+  }
+
+  function canMoveVisibleColumn(columnId: ColumnId, direction: -1 | 1) {
+    if (lockedColumns.includes(columnId)) {
+      return false
+    }
+    const movableColumns = visibleColumns.filter((id) => !lockedColumns.includes(id))
+    const index = movableColumns.indexOf(columnId)
+    const targetIndex = index + direction
+    return index !== -1 && targetIndex >= 0 && targetIndex < movableColumns.length
+  }
+
   function toggleSavedSessionFilter(filterId: string) {
     setActiveSavedFilterIds((current) => {
       if (current.includes(filterId)) {
@@ -1106,6 +1136,40 @@ function App() {
                             </button>
                           ))}
                         </div>
+                        <div className="column-order-panel" aria-label="Visible column order">
+                          <div className="column-order-title">Visible order</div>
+                          <div className="column-order-list">
+                            {visibleColumns.map((columnId) => {
+                              const locked = lockedColumns.includes(columnId)
+                              return (
+                                <div className="column-order-row" key={columnId}>
+                                  <span className="column-order-label">
+                                    {columnLabels[columnId]}
+                                    {locked ? <span>fixed</span> : null}
+                                  </span>
+                                  <div className="column-order-actions">
+                                    <button
+                                      aria-label={`Move ${columnLabels[columnId]} earlier`}
+                                      disabled={!canMoveVisibleColumn(columnId, -1)}
+                                      onClick={() => moveVisibleColumn(columnId, -1)}
+                                      type="button"
+                                    >
+                                      <ChevronUp size={13} />
+                                    </button>
+                                    <button
+                                      aria-label={`Move ${columnLabels[columnId]} later`}
+                                      disabled={!canMoveVisibleColumn(columnId, 1)}
+                                      onClick={() => moveVisibleColumn(columnId, 1)}
+                                      type="button"
+                                    >
+                                      <ChevronDown size={13} />
+                                    </button>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
                         {columnGroups.map((group) => (
                           <fieldset className="column-group" key={group.id}>
                             <legend>{group.label}</legend>
@@ -1130,22 +1194,6 @@ function App() {
                   </div>
                 </div>
                 <div className="session-filter-status">
-                  <span className="filter-status-label">Saved filters</span>
-                  {activeSavedSessionFilters.length === 0 ? (
-                    <span className="pill neutral">none</span>
-                  ) : (
-                    activeSavedSessionFilters.map((filter) => (
-                      <button
-                        className="filter-chip compact-session-filter-chip"
-                        key={filter.id}
-                        onClick={() => toggleSavedSessionFilter(filter.id)}
-                        type="button"
-                      >
-                        {filter.displayName}
-                        <X size={12} />
-                      </button>
-                    ))
-                  )}
                   <span className="filter-status-label">Table filters</span>
                   {activeTableColumnFilters.length === 0 ? (
                     <span className="pill neutral">none</span>
@@ -1248,7 +1296,6 @@ function App() {
                     totalCount={libraryScopedSessions.length}
                     savedFilteredCount={savedFilteredSessions.length}
                     visibleCount={visibleSessions.length}
-                    activeTableFilterCount={activeTableColumnFilters.length}
                     trackpointFilterStates={activeGeoFilterStates}
                     canManageSavedFilters={Boolean(activeDataSource.saveSavedSessionFilter)}
                     onToggleSavedFilter={toggleSavedSessionFilter}

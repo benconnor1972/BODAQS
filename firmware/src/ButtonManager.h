@@ -22,7 +22,8 @@ typedef void (*ButtonActivityCallback)();
 
 struct Button {
     uint8_t pin;
-    bool lastState;                 // HIGH idle (pullup), LOW pressed
+    bool lastState;                 // last raw pin level
+    bool activeLow;                 // true when LOW means pressed
     unsigned long lastDebounceTime; // last accepted edge time
     unsigned long debounceDelay;    // ms
     ButtonMode mode;
@@ -32,6 +33,8 @@ struct Button {
 };
 
 void ButtonManager_register(uint8_t pin, ButtonMode mode, unsigned long debounceDelay, ButtonCallback cb);
+void ButtonManager_register(uint8_t pin, ButtonMode mode, unsigned long debounceDelay,
+                            ButtonCallback cb, bool activeLow, bool useInternalPullup);
 ButtonEvent ButtonManager_read(uint8_t pin); // optional; returns BUTTON_NONE if unused
 void ButtonManager_loop();
 void ButtonManager_setPollingEnabled(bool enabled);

@@ -1,19 +1,22 @@
 :root {
-  --ink: #243039;
-  --muted: #66737b;
-  --surface-ground: #e7ebe4;
-  --surface: #fbfbf7;
-  --surface-warm: #f2f3ed;
-  --line: #d4dbd7;
-  --line-strong: #aebbb5;
-  --green: #2f7d6d;
+  --ink: #101820;
+  --muted: #5b6670;
+  --surface-ground: #eef2f1;
+  --surface: #ffffff;
+  --surface-warm: #f4f7f6;
+  --line: #d7dfdd;
+  --line-strong: #9fb0ad;
+  --green: #008c95;
   --amber: #b66a2c;
   --red: #983d3d;
-  --blue: #4d70a8;
+  --blue: #28668a;
+  --teal-soft: #e3f2f2;
+  --teal-quiet: #cfe6e5;
+  --teal-strong: #00666d;
 
   font-family: Aptos, "IBM Plex Sans", "Segoe UI", sans-serif;
-  font-size: 15px;
-  line-height: 1.35;
+  font-size: 14px;
+  line-height: 1.3;
   font-weight: 400;
   color: var(--ink);
   background: var(--surface-ground);

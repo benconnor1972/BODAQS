@@ -52,7 +52,7 @@ export const allColumns: ColumnId[] = [
   'gps',
 ]
 
-export const lockedColumns: ColumnId[] = ['name']
+export const lockedColumns: ColumnId[] = []
 
 export const defaultColumns: ColumnId[] = normalizeColumnSelection([
   'name',
@@ -126,8 +126,18 @@ export const columnPresets: ColumnPreset[] = [
 ]
 
 export function normalizeColumnSelection(columns: ColumnId[]) {
-  const requested = new Set([...lockedColumns, ...columns])
-  return allColumns.filter((columnId) => requested.has(columnId))
+  const normalized: ColumnId[] = []
+
+  function append(columnId: ColumnId) {
+    if (!allColumns.includes(columnId) || normalized.includes(columnId)) {
+      return
+    }
+    normalized.push(columnId)
+  }
+
+  lockedColumns.forEach(append)
+  columns.forEach(append)
+  return normalized
 }
 
 export function libraryName(libraries: LibraryRecord[], libraryId: string) {

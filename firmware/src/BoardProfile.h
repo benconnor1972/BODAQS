@@ -13,6 +13,7 @@ enum class BoardID : uint8_t {
   ThingPlusS3_BODAQS_4_D = 0,
   ThingPlusS3_BODAQS_4_D_UartI2C1,
   ThingPlusS3_BODAQS_4_F,
+  BODAQS_S3_Mini_N4R2,
   // Add more here...
 };
 

@@ -819,6 +819,18 @@ def test_load_session_uses_filename_stem_anchor_with_suffix(tmp_path):
     assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
 
 
+def test_load_session_uses_compact_filename_stem_anchor(tmp_path):
+    csv_path = _write_csv_only(tmp_path, name="260219_083511.CSV")
+
+    session = load_session(str(csv_path), timezone="Australia/Perth")
+
+    assert session["source"]["created_local"] == "2026-02-19T08:35:11+08:00"
+    assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
+    assert session["qc"]["parse"]["time_anchor_source"] == "filename_stem"
+    assert session["qc"]["parse"]["time_anchor_timezone_source"] == "explicit_timezone"
+    assert session["qc"]["warnings"] == []
+
+
 def test_log_metadata_timezone_overrides_runtime_fallback_for_filename_anchor(tmp_path):
     csv_path = _write_csv_only(tmp_path, name="2026-02-19_08-35-11.csv")
     sidecar = {

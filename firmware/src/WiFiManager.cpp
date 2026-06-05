@@ -653,6 +653,7 @@ void WiFiManager::loop() {
 // ----- public control -----
 void WiFiManager::enable() {
   if (s_enabled) return;
+#if defined(BODAQS_ADC_DEBUG_PROBE)
   auto dumpAdc = [](const char* tag){
     ADC_LOGD("\n%s\n", tag);
     int pins[] = {15,17,18,10};
@@ -662,6 +663,7 @@ void WiFiManager::enable() {
     }
   };
   dumpAdc("after WiFi on");
+#endif
   wifiDiag_("enable");
   s_enabled = true;
   if (s_state == WiFiMgrState::OFF) enterIdle_();
