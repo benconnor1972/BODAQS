@@ -1198,6 +1198,40 @@ button {
   box-sizing: border-box;
 }
 
+.map-route-preview {
+  width: 100%;
+  height: var(--gps-map-height, 292px);
+  min-height: var(--gps-map-height, 292px);
+  overflow: hidden;
+  background: var(--surface-warm);
+}
+
+.map-route-preview .maplibregl-ctrl-group {
+  border-radius: 5px;
+  box-shadow: 0 6px 16px rgba(16, 24, 32, 0.14);
+}
+
+.map-route-preview .maplibregl-ctrl-attrib {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.map-route-marker {
+  display: grid;
+  place-items: center;
+  min-width: calc(var(--marker-radius) * 2 + 8px);
+  height: calc(var(--marker-radius) * 2 + 8px);
+  padding: 0 4px;
+  border: 2px solid var(--marker-color);
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(16, 24, 32, 0.22);
+  color: var(--marker-color);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .route-preview rect {
   fill: #eef1ed;
   stroke: var(--line);
@@ -1213,8 +1247,47 @@ button {
   gap: 0;
 }
 
+.gps-map-resize-frame {
+  position: relative;
+  --gps-map-height: 292px;
+  border-bottom: 1px solid var(--line);
+}
+
+.gps-map-resize-handle {
+  position: absolute;
+  z-index: 6;
+  right: 0;
+  bottom: -6px;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ns-resize;
+}
+
+.gps-map-resize-handle span {
+  width: 54px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(0, 140, 149, 0.24);
+  box-shadow: 0 0 0 1px rgba(0, 140, 149, 0.08);
+}
+
+.gps-map-resize-handle:hover span,
+.gps-map-resize-handle:focus-visible span {
+  background: rgba(0, 140, 149, 0.48);
+}
+
 .gps-route-shell.compact .route-preview {
   height: 240px;
+}
+
+.gps-route-shell.compact .gps-map-resize-frame {
+  --gps-map-height: 240px;
 }
 
 .gps-route-status {
