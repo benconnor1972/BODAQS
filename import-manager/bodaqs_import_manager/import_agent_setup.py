@@ -34,7 +34,9 @@ from .import_agent_provisioning import (
     IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
     IMPORT_AGENT_APP_CONFIG_MODE_PORTABLE,
     ImportAgentAppConfig,
+    ImportAgentWorkspaceSyncReport,
     adopt_import_agent_existing_workspace,
+    check_import_agent_workspace_sync,
     load_import_agent_app_config,
     load_managed_import_source_configs,
     managed_import_agent_source_roots,
@@ -43,6 +45,7 @@ from .import_agent_provisioning import (
     provision_import_agent_source_for_app,
     remove_import_agent_source,
     runtime_import_agent_app_config_path,
+    sync_import_agent_workspace_from_roots,
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
@@ -266,6 +269,15 @@ class ImportAgentManagerController:
             app_config_path=self.app_config_path,
             auto_start=auto_start,
         )
+        self.app_config = result.app_config
+        return result
+
+    def check_workspace_sync(self) -> ImportAgentWorkspaceSyncReport:
+        config = self.require_config()
+        return check_import_agent_workspace_sync(config)
+
+    def sync_workspace_from_roots(self) -> Any:
+        result = sync_import_agent_workspace_from_roots(self.app_config_path)
         self.app_config = result.app_config
         return result
 
@@ -514,6 +526,7 @@ class ImportAgentManagerWindow:
         self._launch_behavior_applied = False
         self._close_notice_shown = False
         self._shutdown_requested = False
+        self._startup_workspace_sync_checked = False
 
         self._library_choice_map: dict[str, str] = {}
         self._source_runtime_status: dict[str, str] = {}
@@ -544,6 +557,7 @@ class ImportAgentManagerWindow:
         self._sync_startup_registration(show_errors=False, emit_status=False)
         self.root.after(250, self._poll_event_queue)
         self.root.after(400, self._apply_launch_behavior)
+        self.root.after(900, self._check_workspace_sync_on_startup)
 
     def _apply_window_icon(self) -> None:
         try:
@@ -679,12 +693,15 @@ class ImportAgentManagerWindow:
 
         actions = ttk.Frame(parent)
         actions.grid(row=3, column=0, sticky="ew", pady=(10, 8))
-        for col in range(4):
+        for col in range(5):
             actions.columnconfigure(col, weight=0)
         ttk.Button(actions, text="Refresh", command=self._refresh_ui_from_config).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(actions, text="Import Now", command=self._import_now).grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(actions, text="Start Watch", command=self._start_watch).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(actions, text="Stop Watch", command=self._stop_watch).grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(actions, text="Sync Workspace", command=self._sync_workspace_from_roots).grid(
+            row=0, column=1, padx=(0, 8)
+        )
+        ttk.Button(actions, text="Import Now", command=self._import_now).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(actions, text="Start Watch", command=self._start_watch).grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(actions, text="Stop Watch", command=self._stop_watch).grid(row=0, column=4, padx=(0, 8))
 
         logs = ttk.Frame(parent)
         logs.grid(row=4, column=0, sticky="nsew")
@@ -3221,6 +3238,134 @@ class ImportAgentManagerWindow:
             f"Original error: {exc}",
             parent=self.root,
         )
+
+    def _format_workspace_sync_report(self, report: ImportAgentWorkspaceSyncReport) -> str:
+        lines: list[str] = []
+
+        def add(label: str, values: Sequence[str]) -> None:
+            if values:
+                lines.append(f"{label}: {', '.join(values)}")
+
+        add("New libraries", report.added_libraries)
+        add("Updated libraries", report.updated_libraries)
+        add("Libraries missing from shared root", report.missing_libraries)
+        add("New sources", report.added_sources)
+        add("Updated sources", report.updated_sources)
+        add("Sources missing from shared root", report.missing_sources)
+        if not lines:
+            return "No workspace differences found."
+        return "\n".join(lines)
+
+    def _sync_workspace_from_roots(self, *, confirm: bool = True, startup_check: bool = False) -> None:
+        if not self.controller.has_config():
+            messagebox.showinfo(
+                _APP_DISPLAY_NAME,
+                "Create or use an existing managed workspace first.",
+                parent=self.root,
+            )
+            return
+        if not self._guard_watch_inactive(action_label="Sync Workspace"):
+            return
+
+        try:
+            report = self.controller.check_workspace_sync()
+        except Exception as exc:
+            self._set_manager_status(f"Workspace sync check failed: {exc}")
+            if not startup_check:
+                messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+
+        if not report.has_changes:
+            self._set_manager_status("Workspace sync check complete: no differences found.")
+            if not startup_check:
+                messagebox.showinfo(_APP_DISPLAY_NAME, "No workspace differences found.", parent=self.root)
+            return
+
+        summary = self._format_workspace_sync_report(report)
+        if not report.has_syncable_changes:
+            message = (
+                "Workspace differences were found, but there are no new or updated shared definitions "
+                "to apply. Local entries missing from the shared root are preserved.\n\n"
+                f"{summary}"
+            )
+            self._set_manager_status("Workspace differences found; no syncable additions or updates.")
+            if not startup_check:
+                messagebox.showinfo(_APP_DISPLAY_NAME, message, parent=self.root)
+            return
+
+        if confirm:
+            should_sync = messagebox.askyesno(
+                _APP_DISPLAY_NAME,
+                "Workspace changes were found under the configured source/library roots.\n\n"
+                f"{summary}\n\n"
+                "Apply new and updated shared definitions to this computer's local Import Manager settings?\n\n"
+                "Local enabled/disabled state and start-at-login settings will be preserved. Entries missing "
+                "from the shared root will not be removed automatically.",
+                parent=self.root,
+            )
+            if not should_sync:
+                self._set_manager_status("Workspace sync deferred.")
+                return
+
+        try:
+            result = self.controller.sync_workspace_from_roots()
+        except Exception as exc:
+            self._set_manager_status(f"Workspace sync failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+
+        self._refresh_ui_from_config()
+        applied_summary = self._format_workspace_sync_report(result.report)
+        self._set_manager_status(
+            "Workspace sync complete. "
+            f"libraries={len(result.app_config.libraries)} sources={len(result.app_config.sources)}."
+        )
+        if not startup_check:
+            messagebox.showinfo(
+                _APP_DISPLAY_NAME,
+                "Workspace sync complete.\n\n" + applied_summary,
+                parent=self.root,
+            )
+
+    def _check_workspace_sync_on_startup(self) -> None:
+        if self._startup_workspace_sync_checked:
+            return
+        self._startup_workspace_sync_checked = True
+        if not self.controller.has_config():
+            return
+
+        try:
+            report = self.controller.check_workspace_sync()
+        except Exception as exc:
+            self._set_manager_status(f"Workspace sync check failed: {exc}")
+            return
+        if not report.has_changes:
+            return
+
+        summary = self._format_workspace_sync_report(report)
+        if self.startup_launch or self.start_minimized_on_launch or self.watch_service is not None:
+            self._set_manager_status(
+                "Workspace changes found. Stop watch mode if needed, then use Sync Workspace to apply them."
+            )
+            self._append_log(summary)
+            return
+
+        if not report.has_syncable_changes:
+            self._set_manager_status("Workspace differences found; no syncable additions or updates.")
+            self._append_log(summary)
+            return
+
+        should_sync = messagebox.askyesno(
+            _APP_DISPLAY_NAME,
+            "Workspace changes were found under the configured source/library roots.\n\n"
+            f"{summary}\n\n"
+            "Sync this computer's local Import Manager settings now?",
+            parent=self.root,
+        )
+        if should_sync:
+            self._sync_workspace_from_roots(confirm=False, startup_check=True)
+        else:
+            self._set_manager_status("Workspace sync deferred.")
 
     def _adopt_existing_workspace(self, *, confirm: bool = True) -> None:
         if not self._guard_watch_inactive(action_label="Use Existing Workspace"):
