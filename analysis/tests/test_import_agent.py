@@ -45,6 +45,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     ImportAgentLibraryConfig,
     ImportAgentManagedSourceConfig,
     adopt_import_agent_existing_workspace,
+    check_import_agent_workspace_sync,
     default_import_agent_app_config_path,
     load_managed_import_source_configs,
     load_import_agent_app_config,
@@ -58,6 +59,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     remove_import_agent_source,
     runtime_import_agent_app_config_path,
     save_import_agent_app_config,
+    sync_import_agent_workspace_from_roots,
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
@@ -1710,6 +1712,106 @@ def test_adopt_import_agent_existing_workspace_rebuilds_local_app_config_with_ne
     assert config.sources[0].library_id == "alice-library"
     assert config.sources[0].attach_session_note_on_import is True
     assert managed_sources[0].artifacts_dir == config.libraries[0].artifacts_dir
+
+
+def test_workspace_sync_adds_shared_entries_and_preserves_local_enabled_state(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    sources_root = tmp_path / "sources"
+    libraries_root = tmp_path / "libraries"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=sources_root,
+        libraries_root=libraries_root,
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    update_import_agent_source_enabled(app_config_path, source_id=provisioned.source.source_id, enabled=False)
+
+    shared_library = provision_import_agent_library(libraries_root, display_name="Ben Library")
+    shared_source = provision_import_agent_source(
+        sources_root / "ben-dh",
+        artifacts_dir=shared_library.artifacts_dir,
+        library_id=shared_library.library_id,
+        display_name="Ben DH",
+    )
+
+    report = check_import_agent_workspace_sync(app_config_path)
+
+    assert report.added_libraries == (shared_library.library_id,)
+    assert report.added_sources == (shared_source.source_id,)
+    assert report.has_changes is True
+    assert report.has_syncable_changes is True
+
+    synced = sync_import_agent_workspace_from_roots(app_config_path)
+    config = load_import_agent_app_config(app_config_path)
+
+    assert synced.report.added_libraries == (shared_library.library_id,)
+    assert {library.library_id for library in config.libraries} == {
+        provisioned.library.library_id,
+        shared_library.library_id,
+    }
+    assert {source.source_id for source in config.sources} == {
+        provisioned.source.source_id,
+        shared_source.source_id,
+    }
+    assert next(source for source in config.sources if source.source_id == provisioned.source.source_id).enabled is False
+    assert next(source for source in config.sources if source.source_id == shared_source.source_id).enabled is True
+
+
+def test_workspace_sync_updates_shared_metadata_without_removing_missing_entries(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    update_import_agent_source_enabled(app_config_path, source_id=provisioned.source.source_id, enabled=False)
+
+    library_metadata_path = provisioned.library.artifacts_dir / "library_definition.json"
+    library_payload = json.loads(library_metadata_path.read_text(encoding="utf-8"))
+    library_payload["display_name"] = "Alice Shared Library"
+    library_metadata_path.write_text(json.dumps(library_payload, indent=2), encoding="utf-8")
+
+    source_config_path = provisioned.source.import_source_config_path
+    source_payload = json.loads(source_config_path.read_text(encoding="utf-8"))
+    source_payload["display_name"] = "Alice Shared Source"
+    source_payload["force_reprocess"] = True
+    source_config_path.write_text(json.dumps(source_payload, indent=2), encoding="utf-8")
+
+    missing_library = ImportAgentLibraryConfig(
+        library_id="missing-library",
+        display_name="Missing Library",
+        artifacts_dir=tmp_path / "missing-library",
+    )
+    config = load_import_agent_app_config(app_config_path)
+    with_missing = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=(*config.libraries, missing_library),
+        sources=config.sources,
+        auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(with_missing, app_config_path)
+
+    report = check_import_agent_workspace_sync(app_config_path)
+
+    assert report.updated_libraries == (provisioned.library.library_id,)
+    assert report.updated_sources == (provisioned.source.source_id,)
+    assert report.missing_libraries == ("missing-library",)
+
+    synced = sync_import_agent_workspace_from_roots(app_config_path)
+    updated = load_import_agent_app_config(app_config_path)
+    library = next(item for item in updated.libraries if item.library_id == provisioned.library.library_id)
+    source = next(item for item in updated.sources if item.source_id == provisioned.source.source_id)
+
+    assert synced.report.missing_libraries == ("missing-library",)
+    assert library.display_name == "Alice Shared Library"
+    assert source.display_name == "Alice Shared Source"
+    assert source.force_reprocess is True
+    assert source.enabled is False
+    assert any(item.library_id == "missing-library" for item in updated.libraries)
 
 
 def test_provision_import_agent_app_setup_merges_additional_source_and_library(tmp_path):
