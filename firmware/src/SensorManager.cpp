@@ -8,6 +8,7 @@
 #include "SensorTypes.h"
 #include "UI.h"
 #include "BoardSelect.h" 
+#include "AnalogInputManager.h"
 #include <cstring>
 #include "BoardSelect.h"
 #include "DebugLog.h"
@@ -62,7 +63,7 @@ namespace {
     return total;
   }
 
-  bool sensorNeedsAnalogPin_(SensorType t) {
+  bool sensorNeedsAnalogInput_(SensorType t) {
     switch (t) {
       case SensorType::AnalogPot:
       case SensorType::AS5600StringPotAnalog:
@@ -72,6 +73,19 @@ namespace {
       default:
         return false;
     }
+  }
+
+  bool sensorHasValidAnalogInput_(const SensorSpec& sp) {
+    long ain = -1;
+    if (sp.params.getInt("ain", ain)) {
+      if (ain >= 0) {
+        return ain < (long)board::BOARD_MAX_ANALOG_INPUTS &&
+               AnalogInputManager::available((uint8_t)ain);
+      }
+    }
+
+    long pin = -1;
+    return sp.params.getInt("pin", pin) && pin >= 0;
   }
 }
 
@@ -141,10 +155,10 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
-    // --- Resolve analog input ordinal (ain) to a physical GPIO pin via BoardProfile ---
-    if (sensorNeedsAnalogPin_(sp.type)) {
+    // --- Resolve analog input ordinal (ain) through the active board profile ---
+    if (sensorNeedsAnalogInput_(sp.type)) {
       long ain = -1;
-      if (sp.params.getInt("ain", ain)) {
+      if (sp.params.getInt("ain", ain) && ain >= 0) {
         if (!board::gBoard) {
           SENS_LOGW("sensor '%s' has ain=%ld but gBoard is null\n", sp.name, ain);
         } else {
@@ -154,13 +168,17 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
             SENS_LOGW("sensor '%s': ain=%ld out of range (board analog.count=%u)\n",
                       sp.name, ain, (unsigned)bp.analog.count);
           } else {
-            const int pin = bp.analog.pins[(uint8_t)ain];
-            if (pin < 0) {
-              SENS_LOGW("sensor '%s': AIN%ld not available on this board (pin<0)\n",
+            if (!AnalogInputManager::available((uint8_t)ain)) {
+              SENS_LOGW("sensor '%s': AIN%ld not available on this board\n",
                         sp.name, ain);
             } else {
-              sp.params.set("pin", String(pin));
-              SENS_LOGI("sensor '%s': ain=%ld -> pin=%d\n", sp.name, ain, pin);
+              const int pin = AnalogInputManager::pinForAin((uint8_t)ain);
+              if (pin >= 0) {
+                sp.params.set("pin", String(pin));
+                SENS_LOGI("sensor '%s': ain=%ld -> GPIO%d\n", sp.name, ain, pin);
+              } else if (AnalogInputManager::inputIsExternal((uint8_t)ain)) {
+                SENS_LOGI("sensor '%s': ain=%ld -> external ADC\n", sp.name, ain);
+              }
             }
           }
         }
@@ -174,9 +192,8 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
-    if (sensorNeedsAnalogPin_(sp.type)) {
-      long pinCheck;
-      if (!sp.params.getInt("pin", pinCheck) || pinCheck < 0) {
+    if (sensorNeedsAnalogInput_(sp.type)) {
+      if (!sensorHasValidAnalogInput_(sp)) {
         SENS_LOGW("'%s': no valid analog input assigned (missing or invalid ain)\n",
                   sp.name);
         continue;
@@ -445,6 +462,7 @@ void buildHeader(char* out, size_t n, bool humanTs) {
 void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     written = 0;
     if (!out || cap == 0) return;
+    AnalogInputManager::beginSample();
     //
     // 2. Write all sensor columns as before
     //
@@ -463,6 +481,7 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
 
         if (toWrite < need) break;
     }
+    AnalogInputManager::endSample();
 }
 
 uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut) {

@@ -7,6 +7,7 @@
 #include "Calibration.h"
 #include "ConfigManager.h"
 #include "BoardSelect.h"
+#include "AnalogInputManager.h"
 //#include "OutputTransforms.h"
 
 namespace {
@@ -44,6 +45,7 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   String s;
 
   if (params.getInt("pin", li))                     p.pin = (uint8_t)li;
+  if (params.getInt("ain", li))                     p.ain = (int8_t)li;
   if (params.getInt("sensor_zero_count", li))       p.sensorZeroCount = (int32_t)li;
   if (params.getInt("sensor_full_count", li))       p.sensorFullCount = (int32_t)li;
   if (params.getFloat("sensor_full_travel_mm", d))  p.sensorFullTravelMm = (float)d;
@@ -58,7 +60,7 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   if (params.getInt("ain", ain) && board::gBoard) {
     const auto& bp = *board::gBoard;
     if (ain >= 0 && ain < (long)bp.analog.count) {
-      const int pin = bp.analog.pins[(uint8_t)ain];
+      const int pin = AnalogInputManager::pinForAin((uint8_t)ain);
       if (pin >= 0) {
         p.pin = (uint8_t)pin;
       }
@@ -81,7 +83,9 @@ AnalogPotSensor::AnalogPotSensor(const char* nm, const Params& p) {
 }
 
 void AnalogPotSensor::begin() {
-  pinMode(m_pin, INPUT);
+  if (m_ain < 0 && m_pin != uint8_t(-1)) {
+    pinMode(m_pin, INPUT);
+  }
 }
 
 // Satisfy vtable: we don't apply anything from LoggerConfig yet for this sensor
@@ -95,7 +99,9 @@ bool AnalogPotSensor::reconfigureFromSpec(const SensorSpec& spec) {
   Params p;
   loadParamsFromPack_(p, spec.name, spec.params);
   applyParams(p);
-  pinMode(m_pin, INPUT);
+  if (m_ain < 0 && m_pin != uint8_t(-1)) {
+    pinMode(m_pin, INPUT);
+  }
   return true;
 }
 
@@ -107,6 +113,7 @@ void AnalogPotSensor::applyParams(const Params& p) {
   }
 
   // wiring / polarity
+  m_ain    = p.ain;
   m_pin    = p.pin;
 
   // geometry
@@ -151,6 +158,14 @@ void AnalogPotSensor::applyParams(const Params& p) {
 
 // ---------- RAW helpers ----------
 int AnalogPotSensor::readOnce() const {
+  if (m_ain >= 0) {
+    int32_t counts = 0;
+    if (AnalogInputManager::readCounts((uint8_t)m_ain, counts)) {
+      return (int)counts;
+    }
+    return 0;
+  }
+
   int raw = analogRead(m_pin);
   return raw;
 }

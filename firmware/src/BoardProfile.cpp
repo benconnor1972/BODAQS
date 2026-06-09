@@ -19,6 +19,23 @@ static SPIProfile MakeSPI(bool present, int8_t sck, int8_t miso, int8_t mosi,
   return p;
 }
 
+static AnalogInputHW MakeInternalAnalog(int8_t pin) {
+  AnalogInputHW input;
+  input.source = (pin >= 0) ? AnalogSourceType::InternalGpio : AnalogSourceType::None;
+  input.pin = pin;
+  return input;
+}
+
+static AnalogInputHW MakeExternalAdcInput(uint8_t adcIndex, uint8_t channel) {
+  AnalogInputHW input;
+  input.source = AnalogSourceType::ExternalAdc;
+  input.external_adc_index = adcIndex;
+  input.external_channel = channel;
+  input.differential = false;
+  input.negative_channel = -1;
+  return input;
+}
+
 static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
   .name = "BODAQS 4D",
 
@@ -58,6 +75,12 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
   .analog = {
     .pins  = { 15, 17, 18, 10, -1, -1, -1, -1 },
+    .inputs = {
+      MakeInternalAnalog(15),
+      MakeInternalAnalog(17),
+      MakeInternalAnalog(18),
+      MakeInternalAnalog(10),
+    },
     .count = 4,
     .adc_max = 4095,
     .vref = 3.3f,
@@ -125,6 +148,10 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   p.analog.pins[1] = 18;
   p.analog.pins[2] = 17;
   p.analog.pins[3] = 15;
+  p.analog.inputs[0] = MakeInternalAnalog(10);
+  p.analog.inputs[1] = MakeInternalAnalog(18);
+  p.analog.inputs[2] = MakeInternalAnalog(17);
+  p.analog.inputs[3] = MakeInternalAnalog(15);
 
   p.i2c[0] = {
     .present = true,
@@ -147,23 +174,21 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   return p;
 }();
 
-static const BoardProfile BODAQS_S3_MINI_N4R2 = {
-  .name = "BODAQS S3 Mini N4R2",
+static const BoardProfile V1RC3_PROFILE = {
+  .name = "BODAQS V1RC3",
 
   .storage = {
     .type = StorageType::SDMMC,
-    .sdmmc_1bit =
-#if defined(BODAQS_SDMMC_1BIT)
-      true,
-#else
-      false,
-#endif
+    .sdmmc_1bit = false,
     .sdmmc_clk = 10,
     .sdmmc_cmd = 9,
     .sdmmc_d0  = 11,
     .sdmmc_d1  = 12,
     .sdmmc_d2  = 7,
     .sdmmc_d3  = 8,
+    .detect_pin = 6,
+    .detect_active_low = true,
+    .detect_use_internal_pullup = true,
   },
 
   .display = {
@@ -189,12 +214,34 @@ static const BoardProfile BODAQS_S3_MINI_N4R2 = {
   .fuel = {
     .type = FuelGaugeType::MAX17048,
     .i2c_addr = 0x36,
-    .bus_index = 0
+    .bus_index = 0,
+    .alert_pin = 33,
+    .alert_active_low = true,
+    .alert_use_internal_pullup = true
+  },
+
+  .rtc = {
+    .type = RtcType::RV3028,
+    .i2c_addr = 0x52,
+    .bus_index = 0,
+    .interrupt_pin = -1,
+    .interrupt_active_low = true,
+    .interrupt_use_internal_pullup = true
   },
 
   .analog = {
     .pins  = { -1, -1, -1, -1, -1, -1, -1, -1 },
-    .count = 0,
+    .inputs = {
+      MakeExternalAdcInput(0, 0),
+      MakeExternalAdcInput(0, 1),
+      MakeExternalAdcInput(0, 2),
+      MakeExternalAdcInput(0, 3),
+      MakeExternalAdcInput(1, 0),
+      MakeExternalAdcInput(1, 1),
+      MakeExternalAdcInput(1, 2),
+      MakeExternalAdcInput(1, 3),
+    },
+    .count = 8,
     .enable_pin = 35,
     .enable_active_high = true,
     .enable_default_on = true,
@@ -229,6 +276,42 @@ static const BoardProfile BODAQS_S3_MINI_N4R2 = {
     20000000
   ),
 
+  .external_adcs = {
+    {
+      .type = ExternalAdcType::ADS1220,
+      .present = true,
+      .spi_bus_index = 0,
+      .cs_pin = 47,
+      .drdy_pin = 36,
+      .drdy_active_low = true,
+      .drdy_use_internal_pullup = false,
+      .channel_count = 4,
+      .max_sps = 2000,
+      .spi_hz = 1000000,
+      .reference = AdcReferenceType::ExternalRef0,
+      .gain = 1,
+      .pga_bypass = true,
+      .effective_bits = 12
+    },
+    {
+      .type = ExternalAdcType::ADS1220,
+      .present = true,
+      .spi_bus_index = 0,
+      .cs_pin = 21,
+      .drdy_pin = 18,
+      .drdy_active_low = true,
+      .drdy_use_internal_pullup = false,
+      .channel_count = 4,
+      .max_sps = 2000,
+      .spi_hz = 1000000,
+      .reference = AdcReferenceType::ExternalRef0,
+      .gain = 1,
+      .pga_bypass = true,
+      .effective_bits = 12
+    }
+  },
+  .external_adc_count = 2,
+
   .indicators = {
     .has_led = false,
     .led_pin = -1,
@@ -236,6 +319,13 @@ static const BoardProfile BODAQS_S3_MINI_N4R2 = {
     .has_buzzer = false,
     .buzzer_pin = -1,
     .buzzer_active_high = true
+  },
+
+  .current_limit = {
+    .present = true,
+    .fault_pin = 34,
+    .fault_active_low = true,
+    .fault_use_internal_pullup = true
   },
 
   .perf = {
@@ -249,7 +339,7 @@ const BoardProfile& GetBoardProfile(BoardID id) {
     case BoardID::ThingPlusS3_BODAQS_4_D: return THING_PLUS_S3_BODAQS_4_D;
     case BoardID::ThingPlusS3_BODAQS_4_D_UartI2C1: return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
     case BoardID::ThingPlusS3_BODAQS_4_F: return THING_PLUS_S3_BODAQS_4_F;
-    case BoardID::BODAQS_S3_Mini_N4R2: return BODAQS_S3_MINI_N4R2;
+    case BoardID::BODAQS_V1RC3: return V1RC3_PROFILE;
     default: return THING_PLUS_S3_BODAQS_4_D;
   }
 }
@@ -260,7 +350,8 @@ const BoardProfile& GetBoardProfileByName(const char* name) {
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D.name) == 0) return THING_PLUS_S3_BODAQS_4_D;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D_UART_I2C1.name) == 0) return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_F.name) == 0) return THING_PLUS_S3_BODAQS_4_F;
-  if (strcmp(name, BODAQS_S3_MINI_N4R2.name) == 0) return BODAQS_S3_MINI_N4R2;
+  if (strcmp(name, V1RC3_PROFILE.name) == 0) return V1RC3_PROFILE;
+  if (strcmp(name, "BODAQS S3 Mini N4R2") == 0) return V1RC3_PROFILE;
 
   return THING_PLUS_S3_BODAQS_4_D;
 }

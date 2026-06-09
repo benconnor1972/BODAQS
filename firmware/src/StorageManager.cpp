@@ -5,6 +5,8 @@
 #include "BdqLogWriter.h"
 #include "LogMetadataWriter.h"
 #include "ZipArchiveWriter.h"
+#include "LoggingManager.h"
+#include "UI.h"
 
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
 #include "BoardSelect.h"
@@ -25,6 +27,11 @@ extern LoggerConfig g_cfg;   // declared in your .ino
 
 static const board::StorageProfile* s_storage = nullptr;
 static const board::LoggerPerfProfile* s_perf = nullptr;
+static bool s_sdMounted = false;
+static bool s_cardDetectedCached = true;
+static bool s_haveDetectPin = false;
+static uint32_t s_nextDetectPollMs = 0;
+static char s_lastStatus[48] = "not initialized";
 
 static inline bool isSdmmcBackend() {
   return s_storage && (s_storage->type == board::StorageType::SDMMC);
@@ -86,6 +93,34 @@ static uint16_t   s_qCap = 0;
 static inline bool queueEmpty() { return s_qCount == 0; }
 static inline bool queueFull()  { return (s_qCap != 0) && (s_qCount >= s_qCap); }
 static void refreshValueColumnTypes_();
+static bool mountSdmmc_();
+
+static void setStatus_(const char* status) {
+  if (!status) status = "";
+  snprintf(s_lastStatus, sizeof(s_lastStatus), "%s", status);
+}
+
+static bool readCardDetectPin_() {
+  if (!s_storage || s_storage->detect_pin < 0) return true;
+  const int level = digitalRead((uint8_t)s_storage->detect_pin);
+  return s_storage->detect_active_low ? (level == LOW) : (level == HIGH);
+}
+
+static void setupCardDetectPin_() {
+  s_haveDetectPin = s_storage && s_storage->detect_pin >= 0;
+  if (!s_haveDetectPin) {
+    s_cardDetectedCached = true;
+    return;
+  }
+
+  pinMode((uint8_t)s_storage->detect_pin,
+          s_storage->detect_use_internal_pullup ? INPUT_PULLUP : INPUT);
+  s_cardDetectedCached = readCardDetectPin_();
+  STOR_LOGI("SD detect GPIO%d active_%s initial=%s\n",
+            (int)s_storage->detect_pin,
+            s_storage->detect_active_low ? "low" : "high",
+            s_cardDetectedCached ? "present" : "absent");
+}
 
 static bool isSynBikeRawFormat_() {
   return s_activeLogFormat == LogFormat::SynBikeRaw;
@@ -241,6 +276,88 @@ static void allocQueue(uint16_t depth) {
 
   s_qHead = s_qTail = s_qCount = 0;
   s_qMax = 0;
+}
+
+static bool mountSdmmc_() {
+  if (!isSdmmcBackend()) {
+    setStatus_("storage disabled");
+    return false;
+  }
+
+  if (s_haveDetectPin && !s_cardDetectedCached) {
+    if (s_sdMounted) {
+      SD_MMC.end();
+      s_sdMounted = false;
+    }
+    setStatus_("card not detected");
+    STOR_LOGW("SD mount skipped: card detect says absent\n");
+    return false;
+  }
+
+  if (s_sdMounted && SD_MMC.cardType() != CARD_NONE) {
+    setStatus_("mounted");
+    return true;
+  }
+
+  if (s_sdMounted) {
+    SD_MMC.end();
+    s_sdMounted = false;
+  }
+
+  STOR_LOGI("begin(): backend = SDMMC (SD_MMC)\n");
+  STOR_LOGI("begin (SDMMC): starting SD_MMC\n");
+
+  const int clk = s_storage->sdmmc_clk;
+  const int cmd = s_storage->sdmmc_cmd;
+  const int d0  = s_storage->sdmmc_d0;
+
+  if (clk < 0 || cmd < 0 || d0 < 0) {
+    setStatus_("SDMMC pins invalid");
+    STOR_LOGE("SDMMC backend selected but sdmmc_clk/cmd/d0 not set\n");
+    return false;
+  }
+
+  if (s_storage->sdmmc_1bit) {
+    SD_MMC.setPins(clk, cmd, d0);
+  } else {
+    const int d1 = s_storage->sdmmc_d1;
+    const int d2 = s_storage->sdmmc_d2;
+    const int d3 = s_storage->sdmmc_d3;
+    if (d1 < 0 || d2 < 0 || d3 < 0) {
+      setStatus_("SDMMC 4-bit pins invalid");
+      STOR_LOGE("SDMMC 4-bit selected but d1/d2/d3 not set\n");
+      return false;
+    }
+    SD_MMC.setPins(clk, cmd, d0, d1, d2, d3);
+  }
+
+  const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit);
+  STOR_LOGI("SD_MMC.begin result: %s\n", ok ? "OK (true)" : "FAILED (false)");
+
+  if (!ok) {
+    setStatus_("mount failed");
+    STOR_LOGE("SD_MMC.begin FAILED, returning\n");
+    return false;
+  }
+
+  uint8_t cardType = SD_MMC.cardType();
+  if (cardType == CARD_NONE) {
+    setStatus_("no card");
+    STOR_LOGW("No SD card attached (cardType=CARD_NONE)\n");
+    SD_MMC.end();
+    s_sdMounted = false;
+    return false;
+  }
+
+  s_sdMounted = true;
+  setStatus_("mounted");
+  STOR_LOGI("SD_MMC cardType = %u\n", (unsigned)cardType);
+
+  uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
+  STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
+
+  STOR_LOGI("SD_MMC.begin OK.\n");
+  return true;
 }
 
 
@@ -495,6 +612,8 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
 void StorageManager_begin(const board::BoardProfile& bp) {
   s_storage = &bp.storage;
   s_perf    = &bp.perf;
+  s_sdMounted = false;
+  setStatus_("not mounted");
 
   // 1) Apply perf knobs early
   if (s_perf) {
@@ -502,60 +621,10 @@ void StorageManager_begin(const board::BoardProfile& bp) {
     StorageManager_setBufferSize(s_perf->ring_buffer_bytes);
   }
 
+  setupCardDetectPin_();
+
   if (isSdmmcBackend()) {
-    STOR_LOGI("begin(): backend = SDMMC (SD_MMC)\n");
-    STOR_LOGI("begin (SDMMC): starting SD_MMC\n");
-
-    // Pins must come from the board profile now
-    const int clk = s_storage->sdmmc_clk;
-    const int cmd = s_storage->sdmmc_cmd;
-    const int d0  = s_storage->sdmmc_d0;
-
-    if (clk < 0 || cmd < 0 || d0 < 0) {
-      STOR_LOGE("SDMMC backend selected but sdmmc_clk/cmd/d0 not set\n");
-      return;
-    }
-
-    if (s_storage->sdmmc_1bit) {
-      SD_MMC.setPins(clk, cmd, d0);   // CLK, CMD, D0 (1-bit)
-    } else {
-      // 4-bit requires d1..d3
-      const int d1 = s_storage->sdmmc_d1;
-      const int d2 = s_storage->sdmmc_d2;
-      const int d3 = s_storage->sdmmc_d3;
-      if (d1 < 0 || d2 < 0 || d3 < 0) {
-        STOR_LOGE("SDMMC 4-bit selected but d1/d2/d3 not set\n");
-        return;
-      }
-      SD_MMC.setPins(clk, cmd, d0, d1, d2, d3);
-    }
-
-#if defined(BODAQS_SDMMC_FREQ_KHZ)
-    STOR_LOGI("SD_MMC frequency override: %d kHz\n", (int)BODAQS_SDMMC_FREQ_KHZ);
-    const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit, false, BODAQS_SDMMC_FREQ_KHZ);
-#else
-    const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit);
-#endif
-    STOR_LOGI("SD_MMC.begin result: %s\n", ok ? "OK (true)" : "FAILED (false)");
-
-    if (!ok) {
-      STOR_LOGE("SD_MMC.begin FAILED, returning\n");
-      return;
-    }
-
-    uint8_t cardType = SD_MMC.cardType();
-    if (cardType == CARD_NONE) {
-      STOR_LOGW("No SD card attached (cardType=CARD_NONE)\n");
-      SD_MMC.end();
-      return;
-    }
-
-    STOR_LOGI("SD_MMC cardType = %u\n", (unsigned)cardType);
-
-    uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
-    STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
-
-    STOR_LOGI("SD_MMC.begin OK.\n");
+    (void)mountSdmmc_();
     return;
   }
 
@@ -701,6 +770,13 @@ static void startLog() {
   TRACE("[Storage] Trying to open log: ");
   STOR_LOGI("Trying to open log: %s\n", filename.c_str());
 
+  if (!StorageManager_readyForLogging()) {
+    STOR_LOGE("startLog: storage not ready (%s)\n", StorageManager_lastStatus());
+    UI::status("SD missing");
+    UI::toast("SD missing", 1500, 1);
+    return;
+  }
+
   bool ok = false;
   uint32_t openMs = 0;
   const uint32_t openT0 = millis();
@@ -810,8 +886,10 @@ static void startLog() {
 }
 
 
-void StorageManager_startLog() {
+bool StorageManager_startLog() {
+  const bool wasActive = loggingActive;
   startLog();
+  return loggingActive || wasActive;
 }
 
 static void StorageManager_logSampleRow_(const SampleRow& row) {
@@ -916,6 +994,38 @@ void StorageManager_setCustomHeader(const char* csv) {
     }
     strncpy(s_customHeader, csv, sizeof(s_customHeader) - 1);
     s_customHeader[sizeof(s_customHeader) - 1] = '\0';
+}
+
+bool StorageManager_cardDetected() {
+  if (!s_storage) return true;
+  if (s_haveDetectPin) {
+    s_cardDetectedCached = readCardDetectPin_();
+    return s_cardDetectedCached;
+  }
+  if (!isSdmmcBackend()) return false;
+  return s_sdMounted && SD_MMC.cardType() != CARD_NONE;
+}
+
+bool StorageManager_isMounted() {
+  if (!s_storage) return true;
+  return s_sdMounted && SD_MMC.cardType() != CARD_NONE;
+}
+
+bool StorageManager_remountIfPresent() {
+  if (!s_storage || !isSdmmcBackend()) return false;
+  if (s_haveDetectPin) {
+    s_cardDetectedCached = readCardDetectPin_();
+  }
+  return mountSdmmc_();
+}
+
+bool StorageManager_readyForLogging() {
+  if (StorageManager_isMounted()) return true;
+  return StorageManager_remountIfPresent();
+}
+
+const char* StorageManager_lastStatus() {
+  return s_lastStatus;
 }
 
 // Dynamic CSV logging: one FULL row per call, matching header
@@ -1100,6 +1210,37 @@ void StorageManager_loop() {
   static unsigned long lastFlush = 0;
   unsigned long now = millis();
   static uint32_t s_rowCount = 0;
+
+  if (s_haveDetectPin && (int32_t)(now - s_nextDetectPollMs) >= 0) {
+    s_nextDetectPollMs = now + 500;
+    const bool present = readCardDetectPin_();
+    if (present != s_cardDetectedCached) {
+      s_cardDetectedCached = present;
+      if (!present) {
+        setStatus_("card removed");
+        STOR_LOGW("SD card removed\n");
+        UI::status("SD removed");
+        UI::toast("SD removed", 1800, 1);
+
+        if (LoggingManager::isRunning()) {
+          STOR_LOGW("Stopping logging because SD card detect went absent\n");
+          LoggingManager::stop();
+          SD_MMC.end();
+          s_sdMounted = false;
+        } else if (s_sdMounted) {
+          SD_MMC.end();
+          s_sdMounted = false;
+        }
+      } else {
+        setStatus_("card inserted");
+        STOR_LOGI("SD card inserted; attempting mount\n");
+        UI::toast("SD inserted", 1200, 1);
+        if (!LoggingManager::isRunning() && mountSdmmc_()) {
+          UI::status("SD ready");
+        }
+      }
+    }
+  }
 
   // 1) Drain queued samples into the CSV staging buffer (backlog-aware)
   if (loggingActive) {

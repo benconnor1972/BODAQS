@@ -30,10 +30,16 @@ namespace PowerManager {
   float batterySocPercent();   // 0..100 (approx)
   float batteryVoltage();      // volts
   bool  batteryLow();
+  bool  fuelAlertActive();
+  const char* fuelAlertCause();
+  uint16_t fuelAlertStatusRaw();
 
   // ---------------- Analog rail control ----------------
   void setAnalogRailEnabled(bool enabled);
   bool analogRailEnabled();
+  bool analogRailFaultActive();
+  bool analogRailFaultLatched();
+  const char* analogRailFaultText();
   bool canStartLogging();
 
 } // namespace PowerManager

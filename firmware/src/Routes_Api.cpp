@@ -9,6 +9,10 @@
 #include "FirmwareInfo.h"
 #include "LoggingManager.h"
 #include "PowerManager.h"
+#include "RTCManager.h"
+#include "StorageManager.h"
+#include "AnalogInputManager.h"
+#include "BoardSelect.h"
 #include "UploadAckIndex.h"
 #include "UploadModeManager.h"
 #include "UploadSessionCleanup.h"
@@ -110,6 +114,43 @@ static void handleStatus_(WebServer& srv) {
   doc["logging_active"] = LoggingManager::isRunning();
   doc["storage_available"] = scanSummary.storageAvailable;
   doc["storage_directory_opened"] = scanSummary.directoryOpened;
+  JsonObject storage = doc["storage"].to<JsonObject>();
+  storage["card_detected"] = StorageManager_cardDetected();
+  storage["mounted"] = StorageManager_isMounted();
+  storage["status"] = StorageManager_lastStatus();
+
+  JsonObject battery = doc["battery"].to<JsonObject>();
+  battery["gauge_ok"] = PowerManager::fuelGaugeOk();
+  battery["voltage_v"] = PowerManager::batteryVoltage();
+  battery["soc_percent"] = PowerManager::batterySocPercent();
+  battery["low"] = PowerManager::batteryLow();
+  battery["alert_active"] = PowerManager::fuelAlertActive();
+  battery["alert_cause"] = PowerManager::fuelAlertCause();
+  battery["alert_status_raw"] = PowerManager::fuelAlertStatusRaw();
+
+  JsonObject analog = doc["analog"].to<JsonObject>();
+  analog["rail_enabled"] = PowerManager::analogRailEnabled();
+  analog["fault_active"] = PowerManager::analogRailFaultActive();
+  analog["fault_latched"] = PowerManager::analogRailFaultLatched();
+  analog["fault_text"] = PowerManager::analogRailFaultText();
+  analog["requested_rate_hz"] = ConfigManager::get().sampleRateHz;
+  analog["effective_rate_hz"] = AnalogInputManager::effectiveSampleRateHz();
+  JsonArray adcs = analog["external_adcs"].to<JsonArray>();
+  if (board::gBoard) {
+    for (uint8_t i = 0; i < board::gBoard->external_adc_count && i < board::BOARD_MAX_EXTERNAL_ADCS; ++i) {
+      JsonObject adc = adcs.add<JsonObject>();
+      adc["index"] = i;
+      adc["active_channels"] = AnalogInputManager::activeChannelCount(i);
+      adc["data_rate_sps"] = AnalogInputManager::configuredDataRateSps(i);
+    }
+  }
+
+  JsonObject rtc = doc["rtc"].to<JsonObject>();
+  rtc["source"] = RTCManager_sourceLabel();
+  rtc["external"] = RTCManager_usingExternalRtc();
+  rtc["valid"] = RTCManager_hasValidTime();
+  rtc["external_last_read_ok"] = RTCManager_externalRtcLastReadOk();
+  rtc["external_porf"] = RTCManager_externalRtcPorf();
   doc["wifi_mode"] = ConfigManager::wifiModeKey(st.mode);
   doc["network_up"] = st.networkUp;
   doc["ip"] = st.ip;

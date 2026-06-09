@@ -11,6 +11,7 @@
 #include "IndicatorManager.h"
 #include "WiFiManager.h"
 #include "UploadModeManager.h"
+#include "AnalogInputManager.h"
 #include "DebugTrace.h"
 #include "esp_timer.h"
 #include "DebugLog.h"
@@ -218,6 +219,13 @@ bool LoggingManager::start() {
     return false;
   }
 
+  if (!StorageManager_readyForLogging()) {
+    UI::toast("SD missing", 1500, 1);
+    UI::status("SD missing");
+    LOGGING_LOGW("start refused: storage unavailable (%s)\n", StorageManager_lastStatus());
+    return false;
+  }
+
   // Pick up any sample-rate changes that were applied while logging was idle.
   s_intervalMs = StorageManager_getSampleIntervalMs();
   s_lastSample = 0;
@@ -238,6 +246,7 @@ bool LoggingManager::start() {
   //SensorManager::debugDump("before-header");
 
   // sampling cadence
+  StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(*s_cfg, s_cfg->sampleRateHz));
   s_intervalMs = StorageManager_getSampleIntervalMs();
 
   TRACE("RTC sanity check begin");
@@ -260,7 +269,13 @@ bool LoggingManager::start() {
   // Open/create log file
   TRACE("Entering storagemanager_startlog");
   const uint32_t storageT0 = millis();
-  StorageManager_startLog();
+  if (!StorageManager_startLog()) {
+    WiFiManager::resumeAfterLogging();
+    UI::toast("SD open fail", 1500, 1);
+    UI::status("SD error");
+    LOGGING_LOGW("start refused: StorageManager_startLog failed (%s)\n", StorageManager_lastStatus());
+    return false;
+  }
   const uint32_t storageMs = millis() - storageT0;
   TRACE("storagemanager_startlog complete");
 
@@ -308,7 +323,8 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
   int idx = Rates::indexOf(hz);
   if (idx < 0) return;
   ConfigManager::setSampleRateHz(hz);        // update + persist
-  StorageManager_setSampleRate(hz);          // apply to the live logging cadence
+  const uint16_t effectiveHz = AnalogInputManager::configureFromConfig(ConfigManager::get(), hz);
+  StorageManager_setSampleRate(effectiveHz); // apply to the live logging cadence
   s_intervalMs = StorageManager_getSampleIntervalMs();
 
   // realign to grid to avoid jitter: next sample at now + interval
