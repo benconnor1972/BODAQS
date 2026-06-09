@@ -16,6 +16,8 @@
 #include "UploadModeManager.h"
 #include "UploadSessionScanner.h"
 #include "FirmwareInfo.h"
+#include "StorageManager.h"
+#include "AnalogInputManager.h"
 #include "DebugLog.h"
 #include <WiFi.h>
 #include "RTCManager.h"
@@ -39,6 +41,7 @@ static const char* stateName(MenuSystem::State s) {
     case MenuSystem::State::UploadStatus: return "UploadStatus";
     case MenuSystem::State::CalibSensors:return "CalibSensors";
     case MenuSystem::State::CalibDetail: return "CalibDetail";
+    case MenuSystem::State::Health:      return "Health";
     case MenuSystem::State::About:       return "About";
     default: return "?";
   }
@@ -57,6 +60,8 @@ static const char* dirName(MenuSystem::Dir d) {
 
 static uint8_t s_mainTop = 0;   // first visible item in main menu (scroll window)
 static constexpr uint8_t MAIN_VISIBLE_ROWS = 5;
+static uint8_t s_settingsTop = 0;
+static constexpr uint8_t SETTINGS_VISIBLE_ROWS = 5;
 
 namespace {
   using State = MenuSystem::State;
@@ -79,10 +84,11 @@ namespace {
     WiFiMode = 0,
     LogFormat,
     ResetTime,
+    Health,
     Restart,
     About
   };
-  static inline uint8_t settingsItemCount_() { return 5; }
+  static inline uint8_t settingsItemCount_() { return 6; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -144,6 +150,7 @@ namespace {
   static void redraw_();
   static void drawCalibSensors_();
   static void drawCalibDetail_();
+  static void drawHealth_();
   static void drawAbout_();
   static void toggleSelectedSensor_();
   static void showCalibrationCaptureToast_(const char* label, int32_t counts);
@@ -207,6 +214,8 @@ namespace {
           return "Time: SYNCING";
         }
         return "Reset time";
+      case SettingsItem::Health:
+        return "Health";
       case SettingsItem::Restart:
         return "Restart";
       case SettingsItem::About:
@@ -254,14 +263,26 @@ namespace {
     drawHeader_("Settings");
 
     const uint8_t N = settingsItemCount_();
-    for (uint8_t i = 0; i < N; ++i) {
+    if (N <= SETTINGS_VISIBLE_ROWS) {
+      s_settingsTop = 0;
+    } else {
+      const uint8_t maxTop = (uint8_t)(N - SETTINGS_VISIBLE_ROWS);
+      if (s_settingsTop > maxTop) s_settingsTop = maxTop;
+    }
+
+    for (uint8_t row = 0; row < SETTINGS_VISIBLE_ROWS; ++row) {
+      const uint8_t i = (uint8_t)(s_settingsTop + row);
+      if (i >= N) break;
       const String label = settingsItemLabel_(static_cast<SettingsItem>(i));
       String line = (i == s_settingsSel) ? "> " : "  ";
       line += label;
 
-      const int y = 12 + i * 10;
+      const int y = 12 + row * 10;
       UI::oledText(0, y, line);
     }
+
+    if (s_settingsTop > 0) UI::oledText(118, 0, "^");
+    if ((uint8_t)(s_settingsTop + SETTINGS_VISIBLE_ROWS) < N) UI::oledText(118, 54, "v");
 
     DisplayManager::present();
   }
@@ -303,6 +324,14 @@ namespace {
           drawSettings_();
           break;
         }
+        break;
+      }
+
+      case SettingsItem::Health: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        s_state = State::Health;
+        drawHealth_();
         break;
       }
 
@@ -416,6 +445,7 @@ namespace {
         s_swallowEnterRelease = true;
         guardEnterRight();
         s_settingsSel = 0;
+        s_settingsTop = 0;
         s_state = State::Settings;
         drawSettings_();
         break;
@@ -545,6 +575,47 @@ namespace {
     return text.substring(0, maxChars - 1) + String("~");
   }
 
+  static void drawHealth_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+    UI::clear(UI::TARGET_OLED);
+    UI::oledText(0, 0, "Health");
+
+    const String sd =
+        !StorageManager_cardDetected() ? "absent" :
+        StorageManager_isMounted() ? "ready" : "not ready";
+    UI::oledText(0, 12, truncateForOled_(String("SD: ") + sd, 21));
+
+    String batt = "Batt: --";
+    if (PowerManager::fuelGaugeOk()) {
+      char buf[28];
+      snprintf(buf, sizeof(buf), "Batt: %.2fV %.0f%%",
+               (double)PowerManager::batteryVoltage(),
+               (double)PowerManager::batterySocPercent());
+      batt = buf;
+    }
+    if (PowerManager::fuelAlertActive()) batt = "Batt: ALRT";
+    UI::oledText(0, 22, truncateForOled_(batt, 21));
+
+    String rail = PowerManager::analogRailEnabled() ? "on" : "off";
+    if (PowerManager::analogRailFaultLatched() || PowerManager::analogRailFaultActive()) {
+      rail = "FAULT";
+    }
+    UI::oledText(0, 32, truncateForOled_(String("Analog: ") + rail, 21));
+
+    String rtc = String("RTC: ") + RTCManager_sourceLabel();
+    rtc += RTCManager_hasValidTime() ? " ok" : " bad";
+    if (RTCManager_externalRtcPorf()) rtc += " PORF";
+    UI::oledText(0, 42, truncateForOled_(rtc, 21));
+
+    const uint16_t req = ConfigManager::get().sampleRateHz;
+    const uint16_t eff = AnalogInputManager::effectiveSampleRateHz();
+    String rate = String("Rate: ") + req;
+    if (eff && eff != req) rate += String("->") + eff;
+    rate += "Hz";
+    UI::oledText(0, 54, truncateForOled_(rate, 21));
+    DisplayManager::present();
+  }
+
   static void drawAbout_() {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;
     UI::clear(UI::TARGET_OLED);
@@ -617,6 +688,7 @@ namespace {
       case State::UploadStatus: drawUploadStatus_(); break;
       case State::CalibSensors: drawCalibSensors_(); break;
       case State::CalibDetail:  drawCalibDetail_();  break;
+      case State::Health:       drawHealth_();       break;
       case State::About:        drawAbout_();        break;
       default: break;
     }
@@ -1223,14 +1295,34 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       const uint8_t N = settingsItemCount_();
       if (d == Dir::Up) {
         if (N == 0) return;
+        const uint8_t oldSel = s_settingsSel;
         s_settingsSel = (uint8_t)((s_settingsSel + N - 1) % N);
+
+        if (oldSel == 0 && s_settingsSel == (uint8_t)(N - 1)) {
+          s_settingsTop = (N > SETTINGS_VISIBLE_ROWS) ? (uint8_t)(N - SETTINGS_VISIBLE_ROWS) : 0;
+          drawSettings_();
+          return;
+        }
+
+        if (s_settingsSel < s_settingsTop) s_settingsTop = s_settingsSel;
         drawSettings_();
         return;
       }
 
       if (d == Dir::Down) {
         if (N == 0) return;
+        const uint8_t oldSel = s_settingsSel;
         s_settingsSel = (uint8_t)((s_settingsSel + 1) % N);
+
+        if (oldSel == (uint8_t)(N - 1) && s_settingsSel == 0) {
+          s_settingsTop = 0;
+          drawSettings_();
+          return;
+        }
+
+        if (s_settingsSel >= (uint8_t)(s_settingsTop + SETTINGS_VISIBLE_ROWS)) {
+          s_settingsTop = (uint8_t)(s_settingsSel - (SETTINGS_VISIBLE_ROWS - 1));
+        }
         drawSettings_();
         return;
       }
@@ -1343,6 +1435,18 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       break;
     }
 
+    case State::Health:
+      if (d == Dir::Left) {
+        s_state = State::Settings;
+        drawSettings_();
+        return;
+      }
+      if (d == Dir::Enter || d == Dir::Right || d == Dir::Up || d == Dir::Down) {
+        if (ev == BUTTON_PRESSED) drawHealth_();
+        return;
+      }
+      break;
+
     case State::CalibSensors: {
       const uint8_t n = ConfigManager::sensorCount();
       if (n == 0) { if (d == Dir::Left) { s_state = State::Main; redraw_(); } return; }
@@ -1419,6 +1523,14 @@ void MenuSystem::loop() {
   if (s_timeSyncPending && !WiFiManager::isRtcSyncPending()) {
     s_timeSyncPending = false;
     redraw_();
+  }
+
+  if (s_state == State::Health) {
+    static uint32_t s_nextHealthRedrawMs = 0;
+    if ((int32_t)(millis() - s_nextHealthRedrawMs) >= 0) {
+      s_nextHealthRedrawMs = millis() + 1000;
+      drawHealth_();
+    }
   }
 
   // Finish web server start once Wi-Fi is ready (or time out)

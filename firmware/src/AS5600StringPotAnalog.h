@@ -6,6 +6,7 @@
 class AS5600StringPotAnalog : public AS5600StringPotSensorBase {
 public:
   struct Params : public BaseParams {
+    int8_t ain = -1;
     uint8_t pin = uint8_t(-1);
   };
 
@@ -21,5 +22,6 @@ protected:
   int readWrappedCountsOnce() const override;
 
 private:
+  int8_t m_ain = -1;
   uint8_t m_pin = uint8_t(-1);
 };

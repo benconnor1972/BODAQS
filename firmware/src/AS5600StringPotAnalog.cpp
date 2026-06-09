@@ -5,6 +5,7 @@
 
 #include "SensorRegistry.h"
 #include "BoardSelect.h"
+#include "AnalogInputManager.h"
 
 namespace {
 
@@ -19,6 +20,7 @@ void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
   String s;
 
   if (params.getInt("pin", li))                    p.pin = (uint8_t)li;
+  if (params.getInt("ain", li))                    p.ain = (int8_t)li;
   if (params.getInt("counts_per_turn", li))        p.countsPerTurn = (uint16_t)li;
   if (params.getInt("wrap_threshold_counts", li))  p.wrapThresholdCounts = (uint16_t)li;
   if (params.getInt("sensor_zero_count", li))      p.sensorZeroCount = (int32_t)li;
@@ -36,7 +38,7 @@ void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
   if (params.getInt("ain", ain) && board::gBoard) {
     const auto& bp = *board::gBoard;
     if (ain >= 0 && ain < (long)bp.analog.count) {
-      const int pin = bp.analog.pins[(uint8_t)ain];
+      const int pin = AnalogInputManager::pinForAin((uint8_t)ain);
       if (pin >= 0) {
         p.pin = (uint8_t)pin;
       }
@@ -48,11 +50,14 @@ void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
 
 AS5600StringPotAnalog::AS5600StringPotAnalog(const Params& p)
   : AS5600StringPotSensorBase(p),
+    m_ain(p.ain),
     m_pin(p.pin) {
 }
 
 void AS5600StringPotAnalog::begin() {
-  pinMode(m_pin, INPUT);
+  if (m_ain < 0 && m_pin != uint8_t(-1)) {
+    pinMode(m_pin, INPUT);
+  }
   onLoggingStart();
 }
 
@@ -62,13 +67,24 @@ bool AS5600StringPotAnalog::reconfigureFromSpec(const SensorSpec& spec) {
   Params p;
   loadParamsFromPack_(p, spec.name, spec.params);
   applyBaseParams(p);
+  m_ain = p.ain;
   m_pin = p.pin;
-  pinMode(m_pin, INPUT);
+  if (m_ain < 0 && m_pin != uint8_t(-1)) {
+    pinMode(m_pin, INPUT);
+  }
   onLoggingStart();
   return true;
 }
 
 int AS5600StringPotAnalog::readWrappedCountsOnce() const {
+  if (m_ain >= 0) {
+    int32_t counts = 0;
+    if (AnalogInputManager::readCounts((uint8_t)m_ain, counts)) {
+      return (int)counts;
+    }
+    return 0;
+  }
+
   return analogRead(m_pin);
 }
 

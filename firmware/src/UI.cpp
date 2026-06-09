@@ -4,6 +4,7 @@
 #include "MenuSystem.h"
 #include "WiFiManager.h"
 #include "PowerManager.h"
+#include "StorageManager.h"
 #include "DebugLog.h"
 #include <WiFi.h>   // for WiFi.SSID() and WiFi.localIP()
 #include <time.h>
@@ -75,6 +76,26 @@ static bool makeLowBatteryWarning_(String& out) {
   return true;
 }
 
+static bool makeBoardWarning_(String& out) {
+  if (PowerManager::analogRailFaultLatched() || PowerManager::analogRailFaultActive()) {
+    out = "Analog fault";
+    return true;
+  }
+  if (!StorageManager_cardDetected()) {
+    out = "SD: missing";
+    return true;
+  }
+  if (!StorageManager_isMounted()) {
+    out = "SD: not ready";
+    return true;
+  }
+  if (PowerManager::fuelAlertActive()) {
+    out = "Batt alert";
+    return true;
+  }
+  return false;
+}
+
 static uint32_t s_nextClockUiCheckMs = 0;
 
 static bool makeClockString_(String& out) {
@@ -116,8 +137,11 @@ void UI::loop() {
   if ((int32_t)(millis() - s_nextWifiUiCheckMs) >= 0) {
     s_nextWifiUiCheckMs = millis() + 1000;  // 1 Hz is plenty
     String now;
+    String boardWarn;
     String lowBattery;
-    if (makeLowBatteryWarning_(lowBattery) && ((millis() / 1000UL) & 0x1UL) == 0) {
+    if (makeBoardWarning_(boardWarn) && ((millis() / 1000UL) & 0x1UL) == 0) {
+      now = boardWarn;
+    } else if (makeLowBatteryWarning_(lowBattery) && ((millis() / 1000UL) & 0x1UL) == 0) {
       now = lowBattery;
     } else {
       now = makeWifiSummary_();

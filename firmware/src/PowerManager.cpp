@@ -8,6 +8,7 @@
 #include "WebServerManager.h"
 #include "DisplayManager.h"
 #include "StorageManager.h"    // if you have a flush/close; otherwise remove
+#include "UI.h"
 #include "I2CManager.h"
 #include "ConfigManager.h"
 #include "BoardProfile.h"
@@ -16,6 +17,17 @@
 
 #define PWR_LOGI(...) LOGI_TAG("PWR", __VA_ARGS__)
 #define PWR_LOGW(...) LOGW_TAG("PWR", __VA_ARGS__)
+
+static constexpr uint8_t MAX17048_REG_CONFIG = 0x0C;
+static constexpr uint8_t MAX17048_REG_STATUS = 0x1A;
+static constexpr uint16_t MAX17048_CONFIG_ALRT = 0x0020;
+static constexpr uint16_t MAX17048_STATUS_RI = 0x0100;
+static constexpr uint16_t MAX17048_STATUS_VH = 0x0200;
+static constexpr uint16_t MAX17048_STATUS_VL = 0x0400;
+static constexpr uint16_t MAX17048_STATUS_VR = 0x0800;
+static constexpr uint16_t MAX17048_STATUS_HD = 0x1000;
+static constexpr uint16_t MAX17048_STATUS_SC = 0x2000;
+static constexpr uint16_t MAX17048_STATUS_ENVR = 0x4000;
 
 static constexpr float LOW_BATTERY_WARN_V = 3.30f;
 
@@ -31,6 +43,13 @@ static TwoWire* g_fgWire     = nullptr;
 static float    g_fgSocPct   = 0.0f;
 static float    g_fgVbat     = 0.0f;
 static uint32_t g_fgLastPoll = 0;
+static int8_t   g_fgAlertPin = -1;
+static bool     g_fgAlertActiveLow = true;
+static bool     g_fgAlertUsePullup = true;
+static bool     g_fgAlertActive = false;
+static uint16_t g_fgAlertStatusRaw = 0;
+static char     g_fgAlertCause[56] = "";
+static uint32_t g_fgLastAlertToastMs = 0;
 static uint32_t g_lastActivityMs = 0;
 
 // ---------------- Analog rail state ----------------
@@ -39,10 +58,35 @@ static bool   g_analogRailActiveHigh = true;
 static bool   g_analogRailEnabled = false;
 static gpio_num_t g_enterWakePin = GPIO_NUM_NC;
 static bool       g_enterWakeActiveLow = true;
+static bool       g_currentLimitPresent = false;
+static int8_t     g_currentLimitFaultPin = -1;
+static bool       g_currentLimitFaultActiveLow = true;
+static bool       g_currentLimitFaultUsePullup = true;
+static bool       g_analogRailFaultLatched = false;
+static bool       g_analogRailFaultActive = false;
+static char       g_analogRailFaultText[48] = "";
 
 static bool hasAnalogRailEnable_()
 {
   return g_analogRailEnablePin >= 0;
+}
+
+static bool readCurrentLimitFaultPin_()
+{
+  if (!g_currentLimitPresent || g_currentLimitFaultPin < 0) return false;
+  const int level = digitalRead((uint8_t)g_currentLimitFaultPin);
+  return g_currentLimitFaultActiveLow ? (level == LOW) : (level == HIGH);
+}
+
+static void latchAnalogRailFault_(const char* reason)
+{
+  g_analogRailFaultActive = true;
+  g_analogRailFaultLatched = true;
+  snprintf(g_analogRailFaultText,
+           sizeof(g_analogRailFaultText),
+           "%s",
+           reason ? reason : "fault");
+  PWR_LOGW("Analog rail fault: %s\n", g_analogRailFaultText);
 }
 
 static void applyAnalogRailPin_(bool enabled)
@@ -55,6 +99,36 @@ static void applyAnalogRailPin_(bool enabled)
   const uint8_t level = (enabled == g_analogRailActiveHigh) ? HIGH : LOW;
   digitalWrite((uint8_t)g_analogRailEnablePin, level);
   g_analogRailEnabled = enabled;
+}
+
+static bool checkAnalogRailFault_(bool stopLogging)
+{
+  const bool fault = readCurrentLimitFaultPin_();
+  g_analogRailFaultActive = fault;
+
+  if (!fault) {
+    if (g_analogRailFaultLatched && !g_analogRailEnabled) {
+      g_analogRailFaultLatched = false;
+      g_analogRailFaultText[0] = '\0';
+      PWR_LOGI("Analog rail fault cleared\n");
+    }
+    return false;
+  }
+
+  latchAnalogRailFault_("current-limit fault");
+
+  if (g_analogRailEnabled) {
+    applyAnalogRailPin_(false);
+    UI::status("Analog fault");
+    UI::toast("Analog fault", 2000, 1);
+  }
+
+  if (stopLogging && LoggingManager::isRunning()) {
+    PWR_LOGW("Stopping logging because analog rail fault asserted\n");
+    LoggingManager::stop();
+  }
+
+  return true;
 }
 
 static bool batteryLowCached_()
@@ -103,6 +177,21 @@ static bool i2cRead16_(uint8_t addr, uint8_t reg, uint16_t &out)
   return true;
 }
 
+static bool i2cWrite16_(uint8_t addr, uint8_t reg, uint16_t value)
+{
+  TwoWire* wire = fuelWire_();
+  if (!wire) return false;
+  if (!I2CManager::lock(wire)) return false;
+
+  wire->beginTransmission(addr);
+  wire->write(reg);
+  wire->write((uint8_t)(value >> 8));
+  wire->write((uint8_t)(value & 0xFF));
+  const bool ok = (wire->endTransmission() == 0);
+  I2CManager::unlock(wire);
+  return ok;
+}
+
 static bool max17048_read_(uint8_t addr, float &vbat_V, float &soc_pct)
 {
   uint16_t vcell = 0, soc = 0;
@@ -120,6 +209,94 @@ static bool max17048_read_(uint8_t addr, float &vbat_V, float &soc_pct)
   if (soc_pct > 100.0f) soc_pct = 100.0f;
 
   return true;
+}
+
+static bool max17048ReadAlert_(uint8_t addr, uint16_t& statusRaw, uint16_t& configRaw)
+{
+  if (!i2cRead16_(addr, MAX17048_REG_STATUS, statusRaw)) return false;
+  if (!i2cRead16_(addr, MAX17048_REG_CONFIG, configRaw)) return false;
+  return true;
+}
+
+static void appendCause_(char* out, size_t cap, const char* text)
+{
+  if (!out || cap == 0 || !text || !*text) return;
+  const size_t len = strnlen(out, cap);
+  if (len >= cap - 1) return;
+  if (len > 0) {
+    strncat(out, ",", cap - strlen(out) - 1);
+  }
+  strncat(out, text, cap - strlen(out) - 1);
+}
+
+static void decodeMax17048Alert_(uint16_t status, uint16_t config, char* out, size_t cap)
+{
+  if (!out || cap == 0) return;
+  out[0] = '\0';
+  if (status & MAX17048_STATUS_HD) appendCause_(out, cap, "low SOC");
+  if (status & MAX17048_STATUS_SC) appendCause_(out, cap, "SOC change");
+  if (status & MAX17048_STATUS_VL) appendCause_(out, cap, "undervoltage");
+  if (status & MAX17048_STATUS_VH) appendCause_(out, cap, "overvoltage");
+  if (status & MAX17048_STATUS_VR) appendCause_(out, cap, "voltage reset");
+  if (status & MAX17048_STATUS_RI) appendCause_(out, cap, "reset");
+  if (!out[0] && (config & MAX17048_CONFIG_ALRT)) {
+    snprintf(out, cap, "alert");
+  }
+  if (!out[0]) {
+    snprintf(out, cap, "none");
+  }
+}
+
+static bool fuelAlertPinAsserted_()
+{
+  if (g_fgAlertPin < 0) return false;
+  const int level = digitalRead((uint8_t)g_fgAlertPin);
+  return g_fgAlertActiveLow ? (level == LOW) : (level == HIGH);
+}
+
+static void pollFuelAlert_()
+{
+  if (!g_fgDetected) return;
+
+  const bool pinAsserted = fuelAlertPinAsserted_();
+  uint16_t status = 0;
+  uint16_t config = 0;
+  if (!pinAsserted) {
+    g_fgAlertActive = false;
+    return;
+  }
+
+  if (!max17048ReadAlert_(g_fgAddr, status, config)) {
+    g_fgAlertActive = true;
+    snprintf(g_fgAlertCause, sizeof(g_fgAlertCause), "read failed");
+    return;
+  }
+
+  g_fgAlertStatusRaw = status;
+  decodeMax17048Alert_(status, config, g_fgAlertCause, sizeof(g_fgAlertCause));
+  g_fgAlertActive = true;
+  PWR_LOGW("Fuel alert: status=0x%04X config=0x%04X cause=%s\n",
+           (unsigned)status,
+           (unsigned)config,
+           g_fgAlertCause);
+
+  if ((uint32_t)(millis() - g_fgLastAlertToastMs) > 10000UL) {
+    g_fgLastAlertToastMs = millis();
+    if ((status & (MAX17048_STATUS_HD | MAX17048_STATUS_VL)) != 0) {
+      UI::toast("Battery alert", 1800, 1);
+      UI::status("Battery alert");
+    }
+  }
+
+  const uint16_t clearStatus =
+      (uint16_t)(status & ~(MAX17048_STATUS_RI |
+                            MAX17048_STATUS_VH |
+                            MAX17048_STATUS_VL |
+                            MAX17048_STATUS_VR |
+                            MAX17048_STATUS_HD |
+                            MAX17048_STATUS_SC));
+  (void)i2cWrite16_(g_fgAddr, MAX17048_REG_STATUS, clearStatus);
+  (void)i2cWrite16_(g_fgAddr, MAX17048_REG_CONFIG, (uint16_t)(config & ~MAX17048_CONFIG_ALRT));
 }
 
 static bool i2cProbe_(uint8_t addr)
@@ -236,6 +413,8 @@ void PowerManager::noteActivity() {
 }
 
 void PowerManager::loop() {
+  checkAnalogRailFault_(true);
+
   const uint32_t timeoutMs = ConfigManager::get().autoSleepIdleMs;
   const uint32_t now = millis();
 
@@ -274,6 +453,20 @@ void PowerManager::begin(const board::BoardProfile& board)
 {
   g_analogRailEnablePin = board.analog.enable_pin;
   g_analogRailActiveHigh = board.analog.enable_active_high;
+  g_fgAlertPin = board.fuel.alert_pin;
+  g_fgAlertActiveLow = board.fuel.alert_active_low;
+  g_fgAlertUsePullup = board.fuel.alert_use_internal_pullup;
+  g_fgAlertActive = false;
+  g_fgAlertStatusRaw = 0;
+  g_fgAlertCause[0] = '\0';
+
+  g_currentLimitPresent = board.current_limit.present;
+  g_currentLimitFaultPin = board.current_limit.fault_pin;
+  g_currentLimitFaultActiveLow = board.current_limit.fault_active_low;
+  g_currentLimitFaultUsePullup = board.current_limit.fault_use_internal_pullup;
+  g_analogRailFaultLatched = false;
+  g_analogRailFaultActive = false;
+  g_analogRailFaultText[0] = '\0';
   g_enterWakePin = GPIO_NUM_NC;
   g_enterWakeActiveLow = true;
 
@@ -305,6 +498,22 @@ void PowerManager::begin(const board::BoardProfile& board)
   } else {
     g_analogRailEnabled = true;
   }
+
+  if (g_fgAlertPin >= 0) {
+    pinMode((uint8_t)g_fgAlertPin, g_fgAlertUsePullup ? INPUT_PULLUP : INPUT);
+    PWR_LOGI("Fuel alert GPIO%d active_%s\n",
+             (int)g_fgAlertPin,
+             g_fgAlertActiveLow ? "low" : "high");
+  }
+
+  if (g_currentLimitPresent && g_currentLimitFaultPin >= 0) {
+    pinMode((uint8_t)g_currentLimitFaultPin,
+            g_currentLimitFaultUsePullup ? INPUT_PULLUP : INPUT);
+    PWR_LOGI("Analog rail fault GPIO%d active_%s\n",
+             (int)g_currentLimitFaultPin,
+             g_currentLimitFaultActiveLow ? "low" : "high");
+    (void)checkAnalogRailFault_(false);
+  }
 }
 
 void PowerManager::fuelGaugeBegin(uint8_t i2c_addr, TwoWire* wire)
@@ -322,6 +531,10 @@ void PowerManager::fuelGaugeLoop()
 {
   fuelGaugeInitIfNeeded_();
   if (!g_fgDetected) return;
+
+  if (g_fgAlertPin >= 0) {
+    pollFuelAlert_();
+  }
 
   // Poll at ~1 Hz; adjust later as you like
   const uint32_t now = millis();
@@ -361,14 +574,57 @@ bool PowerManager::batteryLow()
   return batteryLowCached_();
 }
 
+bool PowerManager::fuelAlertActive()
+{
+  fuelGaugeInitIfNeeded_();
+  if (g_fgAlertPin >= 0) {
+    pollFuelAlert_();
+  }
+  return g_fgAlertActive;
+}
+
+const char* PowerManager::fuelAlertCause()
+{
+  return g_fgAlertCause;
+}
+
+uint16_t PowerManager::fuelAlertStatusRaw()
+{
+  return g_fgAlertStatusRaw;
+}
+
 void PowerManager::setAnalogRailEnabled(bool enabled)
 {
+  if (enabled && checkAnalogRailFault_(false)) {
+    return;
+  }
   applyAnalogRailPin_(enabled);
+  if (enabled) {
+    delay(5);
+    (void)checkAnalogRailFault_(false);
+  }
 }
 
 bool PowerManager::analogRailEnabled()
 {
   return g_analogRailEnabled;
+}
+
+bool PowerManager::analogRailFaultActive()
+{
+  (void)checkAnalogRailFault_(false);
+  return g_analogRailFaultActive;
+}
+
+bool PowerManager::analogRailFaultLatched()
+{
+  (void)checkAnalogRailFault_(false);
+  return g_analogRailFaultLatched;
+}
+
+const char* PowerManager::analogRailFaultText()
+{
+  return g_analogRailFaultText;
 }
 
 bool PowerManager::canStartLogging()
@@ -379,9 +635,18 @@ bool PowerManager::canStartLogging()
     return false;
   }
 
+  if (checkAnalogRailFault_(false)) {
+    applyAnalogRailPin_(false);
+    return false;
+  }
+
   if (!g_analogRailEnabled) {
     applyAnalogRailPin_(true);
     delay(5);
+    if (checkAnalogRailFault_(false)) {
+      applyAnalogRailPin_(false);
+      return false;
+    }
   }
   return true;
 }

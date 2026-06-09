@@ -11,7 +11,7 @@ void StorageManager_begin(const board::BoardProfile& bp);
 void StorageManager_setSampleRate(unsigned int hz);
 void StorageManager_setBufferSize(size_t bytes);
 unsigned long StorageManager_getSampleIntervalMs();   // <-- NEW
-void StorageManager_startLog();
+bool StorageManager_startLog();
 void StorageManager_stopLog();
 void StorageManager_loop();
 void StorageManager_setCustomHeader(const char* csv);
@@ -20,6 +20,12 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms, const floa
 
 bool StorageManager_loadTextFile(const char* path, String& out);
 bool StorageManager_saveTextFile(const char* path, const String& data);
+
+bool StorageManager_cardDetected();
+bool StorageManager_isMounted();
+bool StorageManager_readyForLogging();
+bool StorageManager_remountIfPresent();
+const char* StorageManager_lastStatus();
 
 
 // Debug: SD write tracking flag (set when any SD write occurred since last sample)

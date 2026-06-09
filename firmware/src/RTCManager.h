@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 class TwoWire;
+namespace board { struct RtcProfile; }
 
 // Choose source of time
 enum RTCSource {
@@ -16,6 +17,7 @@ void RTCManager_invalidateInternalTime();
 
 // Initialize RTC system
 void RTCManager_begin(RTCSource source = RTC_INTERNAL, TwoWire* extRtcWire = nullptr);
+void RTCManager_begin(const board::RtcProfile& rtcProfile);
 
 // Apply POSIX TZ string for localtime()/timestamp formatting.
 void RTCManager_setTimezone(const char* tz);
@@ -42,6 +44,10 @@ void RTCManager_sync();
 
 // Returns true if local time looks valid (SNTP or external RTC has set it)
 bool RTCManager_hasValidTime();
+bool RTCManager_usingExternalRtc();
+bool RTCManager_externalRtcLastReadOk();
+bool RTCManager_externalRtcPorf();
+const char* RTCManager_sourceLabel();
 
 // Wait for SNTP to populate time (does NOT manipulate Wi-Fi). Returns true on success.
 bool RTCManager_waitForSNTP(uint32_t timeoutMs = 8000);

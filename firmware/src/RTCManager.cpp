@@ -6,6 +6,7 @@
 #include <esp_sntp.h>
 #include <HTTPClient.h>
 #include "I2CManager.h"
+#include "BoardProfile.h"
 #include "DebugLog.h"
 
 #define RTC_LOGE(...) LOGE_TAG("RTC", __VA_ARGS__)
@@ -13,11 +14,8 @@
 #define RTC_LOGI(...) LOGI_TAG("RTC", __VA_ARGS__)
 #define RTC_LOGD(...) LOGD_TAG("RTC", __VA_ARGS__)
 
-// For external RTC (stub now, add DS3231 later)
+// For external RTC
 #include <Wire.h>
-// #include <RTClib.h>   // Example if you choose Adafruit RTClib
-
-// static RTC_DS3231 externalRTC;  // Uncomment if using DS3231 + RTClib
 
 // --- Internal state ---
 static RTCSource currentSource = RTC_INTERNAL;
@@ -26,6 +24,9 @@ static time_t baseEpoch = 0;
 static unsigned long lastSyncMs = 0;
 static bool useHumanReadableTimestamps = false;
 static TwoWire* s_externalRtcWire = nullptr;
+static board::RtcProfile s_externalRtcProfile;
+static bool s_externalRtcLastReadOk = false;
+static bool s_externalRtcPorf = false;
 static char s_timezone_[64] = "UTC";
 static constexpr size_t kMaxSntpServerNameLen_ = 128;
 static char s_sntpServerNames_[3][kMaxSntpServerNameLen_] = {{0}, {0}, {0}};
@@ -33,6 +34,13 @@ static const char* kBuiltinHttpTimeUrls_[] = {
   "http://connectivitycheck.gstatic.com/generate_204",
   "https://gettimeapi.dev/v1/time?timezone=UTC",
 };
+
+static constexpr time_t kSaneEpoch_ = 1577836800; // 2020-01-01T00:00:00Z
+
+static void updateCachedEpoch_(time_t epoch) {
+  baseMillis = millis();
+  baseEpoch = epoch;
+}
 
 static void splitCsv3_(const char* csv, String& s1, String& s2, String& s3) {
   s1 = "";
@@ -109,7 +117,7 @@ static bool parseLeadingEpoch_(const String& body, time_t& epochOut) {
   if (end == p) return false;
   while (*end && isSpace_(*end)) ++end;
   if (*end != '\0') return false;
-  if (v < 1577836800LL) return false;
+  if (v < (long long)kSaneEpoch_) return false;
 
   epochOut = (time_t)v;
   return true;
@@ -130,7 +138,7 @@ static bool parseJsonUnixtime_(const String& body, time_t& epochOut) {
   char* end = nullptr;
   long long v = strtoll(body.c_str() + pos, &end, 10);
   if (end == body.c_str() + pos) return false;
-  if (v < 1577836800LL) return false;
+  if (v < (long long)kSaneEpoch_) return false;
 
   epochOut = (time_t)v;
   return true;
@@ -151,7 +159,7 @@ static bool parseJsonTimestamp_(const String& body, time_t& epochOut) {
   char* end = nullptr;
   long long v = strtoll(body.c_str() + pos, &end, 10);
   if (end == body.c_str() + pos) return false;
-  if (v < 1577836800LL) return false;
+  if (v < (long long)kSaneEpoch_) return false;
 
   epochOut = (time_t)v;
   return true;
@@ -164,6 +172,170 @@ static int64_t daysFromCivil_(int year, unsigned month, unsigned day) {
   const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
   const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
   return (int64_t)era * 146097LL + (int64_t)doe - 719468LL;
+}
+
+static bool epochFromUtcTm_(const struct tm& tm, time_t& epochOut) {
+  const int year = tm.tm_year + 1900;
+  const unsigned month = (unsigned)tm.tm_mon + 1U;
+  const unsigned day = (unsigned)tm.tm_mday;
+  if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  if (tm.tm_hour < 0 || tm.tm_hour > 23) return false;
+  if (tm.tm_min < 0 || tm.tm_min > 59) return false;
+  if (tm.tm_sec < 0 || tm.tm_sec > 60) return false;
+
+  const int64_t days = daysFromCivil_(year, month, day);
+  const int64_t epoch =
+      days * 86400LL +
+      (int64_t)tm.tm_hour * 3600LL +
+      (int64_t)tm.tm_min * 60LL +
+      (int64_t)tm.tm_sec;
+
+  if (epoch < 0) return false;
+  epochOut = (time_t)epoch;
+  return true;
+}
+
+static uint8_t bcdToDec_(uint8_t v) {
+  return (uint8_t)(((v >> 4) * 10U) + (v & 0x0FU));
+}
+
+static uint8_t decToBcd_(uint8_t v) {
+  return (uint8_t)(((v / 10U) << 4) | (v % 10U));
+}
+
+static bool rtcI2cRead_(uint8_t reg, uint8_t* data, size_t len) {
+  if (!s_externalRtcWire || !data || len == 0) return false;
+  if (!I2CManager::lock(s_externalRtcWire)) return false;
+
+  s_externalRtcWire->beginTransmission(s_externalRtcProfile.i2c_addr);
+  s_externalRtcWire->write(reg);
+  if (s_externalRtcWire->endTransmission(false) != 0) {
+    I2CManager::unlock(s_externalRtcWire);
+    return false;
+  }
+
+  const size_t got = s_externalRtcWire->requestFrom((int)s_externalRtcProfile.i2c_addr, (int)len);
+  if (got != len) {
+    I2CManager::unlock(s_externalRtcWire);
+    return false;
+  }
+
+  for (size_t i = 0; i < len; ++i) {
+    data[i] = (uint8_t)s_externalRtcWire->read();
+  }
+  I2CManager::unlock(s_externalRtcWire);
+  return true;
+}
+
+static bool rtcI2cWrite_(uint8_t reg, const uint8_t* data, size_t len) {
+  if (!s_externalRtcWire || !data || len == 0) return false;
+  if (!I2CManager::lock(s_externalRtcWire)) return false;
+
+  s_externalRtcWire->beginTransmission(s_externalRtcProfile.i2c_addr);
+  s_externalRtcWire->write(reg);
+  for (size_t i = 0; i < len; ++i) {
+    s_externalRtcWire->write(data[i]);
+  }
+  const bool ok = (s_externalRtcWire->endTransmission() == 0);
+  I2CManager::unlock(s_externalRtcWire);
+  return ok;
+}
+
+static bool rv3028ReadEpoch_(time_t& epochOut) {
+  uint8_t status = 0;
+  if (!rtcI2cRead_(0x0E, &status, 1)) return false;
+
+  // PORF means the RTC has seen a power-on reset and the calendar is not
+  // trustworthy until explicitly set.
+  s_externalRtcPorf = (status & 0x01) != 0;
+  if (status & 0x01) {
+    RTC_LOGW("RV3028 PORF set; RTC time is not trusted yet\n");
+    return false;
+  }
+
+  uint8_t regs[7] = {0};
+  if (!rtcI2cRead_(0x00, regs, sizeof(regs))) return false;
+
+  struct tm tm = {};
+  tm.tm_sec  = bcdToDec_(regs[0] & 0x7F);
+  tm.tm_min  = bcdToDec_(regs[1] & 0x7F);
+  tm.tm_hour = bcdToDec_(regs[2] & 0x3F);
+  tm.tm_mday = bcdToDec_(regs[4] & 0x3F);
+  tm.tm_mon  = (int)bcdToDec_(regs[5] & 0x1F) - 1;
+  tm.tm_year = (int)bcdToDec_(regs[6]) + 100; // RV3028 year is 2000..2099
+
+  time_t epoch = 0;
+  if (!epochFromUtcTm_(tm, epoch)) return false;
+  if (epoch < kSaneEpoch_) return false;
+
+  epochOut = epoch;
+  return true;
+}
+
+static bool rv3028WriteEpoch_(time_t epoch) {
+  if (epoch < kSaneEpoch_) return false;
+
+  struct tm tm;
+  gmtime_r(&epoch, &tm);
+
+  const int year = tm.tm_year + 1900;
+  if (year < 2000 || year > 2099) return false;
+
+  uint8_t regs[7] = {
+    decToBcd_((uint8_t)tm.tm_sec),
+    decToBcd_((uint8_t)tm.tm_min),
+    decToBcd_((uint8_t)tm.tm_hour),
+    decToBcd_((uint8_t)((tm.tm_wday == 0) ? 7 : tm.tm_wday)),
+    decToBcd_((uint8_t)tm.tm_mday),
+    decToBcd_((uint8_t)(tm.tm_mon + 1)),
+    decToBcd_((uint8_t)(year - 2000)),
+  };
+
+  if (!rtcI2cWrite_(0x00, regs, sizeof(regs))) return false;
+
+  const uint32_t unixTime = (uint32_t)epoch;
+  const uint8_t unixRegs[4] = {
+    (uint8_t)(unixTime & 0xFFU),
+    (uint8_t)((unixTime >> 8) & 0xFFU),
+    (uint8_t)((unixTime >> 16) & 0xFFU),
+    (uint8_t)((unixTime >> 24) & 0xFFU),
+  };
+  (void)rtcI2cWrite_(0x1B, unixRegs, sizeof(unixRegs));
+
+  uint8_t status = 0;
+  if (rtcI2cRead_(0x0E, &status, 1)) {
+    status &= (uint8_t)~0x01U; // clear PORF after writing a known-good time
+    (void)rtcI2cWrite_(0x0E, &status, 1);
+    s_externalRtcPorf = false;
+  }
+
+  return true;
+}
+
+static bool externalRtcReadEpoch_(time_t& epochOut) {
+  if (s_externalRtcProfile.type == board::RtcType::RV3028) {
+    return rv3028ReadEpoch_(epochOut);
+  }
+  return false;
+}
+
+static bool externalRtcWriteEpoch_(time_t epoch) {
+  if (s_externalRtcProfile.type == board::RtcType::RV3028) {
+    return rv3028WriteEpoch_(epoch);
+  }
+  return false;
+}
+
+static bool setSystemEpoch_(time_t epoch, const char* sourceLabel) {
+  struct timeval tv;
+  tv.tv_sec = epoch;
+  tv.tv_usec = 0;
+  if (settimeofday(&tv, nullptr) != 0) {
+    RTC_LOGW("%s: settimeofday failed\n", sourceLabel ? sourceLabel : "time sync");
+    return false;
+  }
+  updateCachedEpoch_(epoch);
+  return true;
 }
 
 static bool parseHttpDate_(const String& dateHeader, time_t& epochOut) {
@@ -184,25 +356,28 @@ static bool parseHttpDate_(const String& dateHeader, time_t& epochOut) {
       (int64_t)tm.tm_min * 60LL +
       (int64_t)tm.tm_sec;
 
-  if (epoch < 1577836800LL) return false;
+  if (epoch < (int64_t)kSaneEpoch_) return false;
 
   epochOut = (time_t)epoch;
   return true;
 }
 
 static bool applyEpoch_(time_t epoch, const char* sourceLabel) {
-  struct timeval tv;
-  tv.tv_sec = epoch;
-  tv.tv_usec = 0;
-  if (settimeofday(&tv, nullptr) != 0) {
-    RTC_LOGW("%s: settimeofday failed\n", sourceLabel ? sourceLabel : "time sync");
+  if (!setSystemEpoch_(epoch, sourceLabel)) {
     return false;
+  }
+
+  if (currentSource == RTC_EXTERNAL && s_externalRtcProfile.type != board::RtcType::None) {
+    if (externalRtcWriteEpoch_(epoch)) {
+      RTC_LOGI("%s: external RTC updated\n", sourceLabel ? sourceLabel : "time sync");
+    } else {
+      RTC_LOGW("%s: external RTC update failed\n", sourceLabel ? sourceLabel : "time sync");
+    }
   }
 
   RTC_LOGI("%s: set epoch=%lld\n",
            sourceLabel ? sourceLabel : "time sync",
            (long long)epoch);
-  RTCManager_sync();
   return true;
 }
 
@@ -306,6 +481,29 @@ bool RTCManager_hasValidTime() {
   return (tmnow.tm_year + 1900) >= 2020;
 }
 
+bool RTCManager_usingExternalRtc() {
+  return currentSource == RTC_EXTERNAL;
+}
+
+bool RTCManager_externalRtcLastReadOk() {
+  return s_externalRtcLastReadOk;
+}
+
+bool RTCManager_externalRtcPorf() {
+  return s_externalRtcPorf;
+}
+
+const char* RTCManager_sourceLabel() {
+  if (currentSource == RTC_EXTERNAL) {
+    switch (s_externalRtcProfile.type) {
+      case board::RtcType::RV3028: return "RV3028";
+      case board::RtcType::None:
+      default: return "external";
+    }
+  }
+  return "internal";
+}
+
 void RTCManager_setTimezone(const char* tz) {
   const char* applied = (tz && *tz) ? tz : "UTC";
   snprintf(s_timezone_, sizeof(s_timezone_), "%s", applied);
@@ -321,7 +519,7 @@ const char* RTCManager_getTimezone() {
 bool RTCManager_waitForSNTP(uint32_t timeout_ms) {
   const uint32_t deadline = millis() + timeout_ms;
   // Consider anything >= 2020-01-01 as "valid"
-  const time_t sane = 1577836800;
+  const time_t sane = kSaneEpoch_;
   time_t now = 0;
 
   RTC_LOGD("SNTP wait: enabled=%d mode=%s status=%s server0='%s' server1='%s' server2='%s'\n",
@@ -361,12 +559,22 @@ bool RTCManager_syncNetworkTime(const char* tz,
   configureSntp_(ntpServersCsv);
 
   if (RTCManager_waitForSNTP(sntpTimeout_ms)) {
-    RTCManager_sync();
+    time_t now = 0;
+    time(&now);
+    if (now >= kSaneEpoch_) {
+      if (currentSource == RTC_EXTERNAL && s_externalRtcProfile.type != board::RtcType::None) {
+        if (externalRtcWriteEpoch_(now)) {
+          RTC_LOGI("SNTP: external RTC updated\n");
+        } else {
+          RTC_LOGW("SNTP: external RTC update failed\n");
+        }
+      }
+      updateCachedEpoch_(now);
+    }
     return true;
   }
 
   if (RTCManager_syncFromHttp(timeCheckUrl, httpTimeout_ms)) {
-    RTCManager_sync();
     return true;
   }
 
@@ -406,22 +614,54 @@ bool RTCManager_syncFromHttp(const char* url, uint32_t timeout_ms) {
 // --- Setup RTC ---
 void RTCManager_begin(RTCSource source, TwoWire* extRtcWire) {
   currentSource = source;
+  if (currentSource != RTC_EXTERNAL) {
+    s_externalRtcProfile = board::RtcProfile{};
+  }
 
   if (currentSource == RTC_EXTERNAL) {
     s_externalRtcWire = extRtcWire ? extRtcWire : I2CManager::bus(0);
     if (!s_externalRtcWire) {
       RTC_LOGW("External RTC selected but no I2C bus available\n");
     }
-    // externalRTC.begin(); // Uncomment for DS3231
-    // if (!externalRTC.isrunning()) {
-    //     RTC_LOGI("RTC not running, setting to compile time.\n");
-    //     externalRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    // }
+    if (s_externalRtcProfile.type == board::RtcType::None) {
+      RTC_LOGW("External RTC selected but no supported RTC type configured\n");
+    }
   } else {
     // Internal RTC (ESP32 system time)
+    s_externalRtcWire = nullptr;
     esp_sntp_set_time_sync_notification_cb(sntpTimeSyncNotification_);
   }
   RTCManager_sync();
+}
+
+void RTCManager_begin(const board::RtcProfile& rtcProfile) {
+  s_externalRtcProfile = rtcProfile;
+  s_externalRtcLastReadOk = false;
+
+  if (rtcProfile.type == board::RtcType::None) {
+    RTCManager_begin(RTC_INTERNAL);
+    return;
+  }
+
+  s_externalRtcWire = I2CManager::bus(rtcProfile.bus_index);
+  if (!s_externalRtcWire) {
+    RTC_LOGW("RTC profile requested external RTC on unavailable I2C bus %u; using internal time\n",
+             (unsigned)rtcProfile.bus_index);
+    s_externalRtcProfile = board::RtcProfile{};
+    RTCManager_begin(RTC_INTERNAL);
+    return;
+  }
+
+  if (rtcProfile.interrupt_pin >= 0) {
+    const int mode = rtcProfile.interrupt_use_internal_pullup ? INPUT_PULLUP : INPUT;
+    pinMode((uint8_t)rtcProfile.interrupt_pin, mode);
+  }
+
+  RTC_LOGI("External RTC selected: type=%u addr=0x%02X bus=%u\n",
+           (unsigned)rtcProfile.type,
+           (unsigned)rtcProfile.i2c_addr,
+           (unsigned)rtcProfile.bus_index);
+  RTCManager_begin(RTC_EXTERNAL, s_externalRtcWire);
 }
 
 // --- Periodic sync (every second) ---
@@ -438,20 +678,22 @@ void RTCManager_sync() {
   time_t now = 0;
 
   if (currentSource == RTC_EXTERNAL) {
-      // Replace with DS3231 call:
-      // DateTime dt = externalRTC.now();
-      // now = dt.unixtime();
-      now = baseEpoch + ((millis() - baseMillis) / 1000); // Stub fallback
+      if (externalRtcReadEpoch_(now)) {
+          s_externalRtcLastReadOk = true;
+          (void)setSystemEpoch_(now, "external RTC");
+      } else {
+          s_externalRtcLastReadOk = false;
+          RTC_LOGW("External RTC read failed or invalid; keeping cached time\n");
+          return;
+      }
   } else {
       time(&now);
       // Don't update if system time is obviously invalid (pre-2020)
-      if (now < 1577836800) { // 2020-01-01
+      if (now < kSaneEpoch_) {
           return;             // keep previous baseEpoch/baseMillis
       }
+      updateCachedEpoch_(now);
   }
-
-  baseMillis = millis();
-  baseEpoch = now;
 
 }
 
@@ -511,7 +753,7 @@ String RTCManager_getDateTimeString() {
     // defaults to a 5 s wait when the system clock is unset, which can
     // stall log start on warm boots or after sleep.
     const time_t sec = RTCManager_getEpoch();
-    if (sec < 1577836800) {
+    if (sec < kSaneEpoch_) {
         return "1970-01-01_00-00-00";
     }
 

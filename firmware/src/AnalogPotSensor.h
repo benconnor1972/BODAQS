@@ -13,6 +13,7 @@ public:
     const char* name = nullptr;
 
     // Wiring
+    int8_t   ain = -1;
     uint8_t  pin = -1;
 
     // Geometry / anchors (counts)
@@ -128,6 +129,7 @@ private:
   char   m_rawDomain[24] = "";
 
   // Wiring / behavior
+  int8_t   m_ain = -1;
   uint8_t  m_pin = 36;
   bool     m_invert = false;
 

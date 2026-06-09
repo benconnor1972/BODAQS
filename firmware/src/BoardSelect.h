@@ -11,6 +11,7 @@ void SelectBoard(BoardID id);
 
 // Helpers
 int FindButtonIndexById(const char* id);
+void DumpActiveBoardProfile();
 void DumpActiveBoardButtons();
 
 } // namespace board

@@ -24,6 +24,7 @@
 #include "UploadModeManager.h"
 #include "BoardSelect.h"
 #include "I2CManager.h"
+#include "AnalogInputManager.h"
 #include "IndicatorManager.h"
 #include "PowerManager.h"
 #include "BoardProfile.h"
@@ -209,6 +210,7 @@ void setup() {
     }
     PowerManager::begin(*gBoard);
     configureBoardAnalogInputs_();
+    DumpActiveBoardProfile();
     DumpActiveBoardButtons();
 
 #if defined(BODAQS_BRINGUP_DIAGNOSTICS)
@@ -216,13 +218,17 @@ void setup() {
     return;
 #endif
 
+  AnalogInputManager::begin(*gBoard);
+
     //Debug
     auto dumpAdc = [](const char* tag){
       ADC_LOGD("\n%s\n", tag);
-      int pins[] = {15,17,18,10};
-      for (int p : pins) {
-        int v = analogRead(p);
-        LOGD("  GPIO%02d = %d\n", p, v);
+      if (!gBoard) return;
+      for (uint8_t i = 0; i < gBoard->analog.count && i < board::BOARD_MAX_ANALOG_INPUTS; ++i) {
+        int8_t p = AnalogInputManager::pinForAin(i);
+        if (p < 0) continue;
+        int v = analogRead((uint8_t)p);
+        LOGD("  AIN%u GPIO%02d = %d\n", (unsigned)i, (int)p, v);
       }
     };
 
@@ -286,7 +292,7 @@ void setup() {
   //SensorManager::debugDump("after-register");
   UI::status("Sensors ready");
 
-  StorageManager_setSampleRate(g_cfg.sampleRateHz);
+  StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(g_cfg, g_cfg.sampleRateHz));
 
 
   //ConfigManager::print(g_cfg);
@@ -302,9 +308,9 @@ void setup() {
   WebServerManager::begin(isLoggingPredicate);
     BOOT_LOGI("SETUP: F done\n");
 
-  // Choose RTC
-  RTCManager_begin(RTC_INTERNAL);
-  // RTCManager_begin(RTC_EXTERNAL, I2CManager::bus(0));
+  // Choose RTC from the board profile. V1RC3 uses its RV3028; legacy boards
+  // retain the ESP32 internal clock until network sync.
+  RTCManager_begin(gBoard->rtc);
 
   //Initialise wifi manager
   BOOT_LOGI("SETUP: G wifimanager::begin\n");
