@@ -819,6 +819,18 @@ def test_load_session_uses_filename_stem_anchor_with_suffix(tmp_path):
     assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
 
 
+def test_load_session_uses_compact_filename_stem_anchor(tmp_path):
+    csv_path = _write_csv_only(tmp_path, name="260219_083511.CSV")
+
+    session = load_session(str(csv_path), timezone="Australia/Perth")
+
+    assert session["source"]["created_local"] == "2026-02-19T08:35:11+08:00"
+    assert session["meta"]["t0_datetime"] == "2026-02-19T08:35:11+08:00"
+    assert session["qc"]["parse"]["time_anchor_source"] == "filename_stem"
+    assert session["qc"]["parse"]["time_anchor_timezone_source"] == "explicit_timezone"
+    assert session["qc"]["warnings"] == []
+
+
 def test_log_metadata_timezone_overrides_runtime_fallback_for_filename_anchor(tmp_path):
     csv_path = _write_csv_only(tmp_path, name="2026-02-19_08-35-11.csv")
     sidecar = {
@@ -1283,6 +1295,67 @@ def test_enrich_session_with_fit_adds_raw_stream_and_resampled_columns(tmp_path,
     assert np.allclose(altitude[1:3], np.array([101.0, 103.0]))
     assert out["meta"]["channel_info"]["gps_fit_speed_dom_world [m/s]"]["role"] == "speed"
     assert out["qc"]["fit_import"]["selected_file"] == fit_path.name
+
+
+def test_enrich_session_with_fit_does_not_bridge_paused_gps_gap():
+    session = {
+        "session_id": "session_in_fit_pause",
+        "source": {"filename": "session.csv"},
+        "meta": {"t0_datetime": "2026-02-19T08:55:18+08:00", "channel_info": {}},
+        "qc": {"warnings": [], "transforms": {}},
+        "df": pd.DataFrame({"time_s": np.array([10.0, 20.0, 30.0])}),
+    }
+
+    lat_col = "gps_fit_position_latitude_dom_world [deg]"
+    lon_col = "gps_fit_position_longitude_dom_world [deg]"
+    fit_df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                [
+                    "2026-02-19T00:55:18+00:00",
+                    "2026-02-19T00:56:58+00:00",
+                ],
+                utc=True,
+            ),
+            "time_s": np.array([0.0, 100.0]),
+            lat_col: np.array([-32.0, -32.01]),
+            lon_col: np.array([116.0, 116.01]),
+        }
+    )
+    fit_meta = {
+        "filename": "paused_ride.fit",
+        "fit_sha256": "abc123",
+        "stream_name": "gps_fit",
+        "resample_columns": [lat_col, lon_col],
+        "channel_info": {
+            lat_col: {"unit": "deg", "sensor": "gps_fit", "role": "position_latitude"},
+            lon_col: {"unit": "deg", "sensor": "gps_fit", "role": "position_longitude"},
+        },
+    }
+
+    out = enrich_session_with_fit(
+        session,
+        fit_import={
+            "enabled": True,
+            "persist_raw_stream": True,
+            "resample_to_primary": True,
+            "gps_resample_max_gap_s": 5.0,
+        },
+        fit_stream={"df": fit_df, "meta": fit_meta},
+    )
+
+    assert "gps_fit" in out["stream_dfs"]
+    assert np.isnan(out["df"][lat_col].to_numpy()).all()
+    assert np.isnan(out["df"][lon_col].to_numpy()).all()
+
+    warnings = out["qc"]["warnings"]
+    assert "fit_import_no_gps_position_points_in_session_window" in warnings
+    assert "fit_import_gps_resample_gap_limited" in warnings
+
+    gps_qc = out["qc"]["fit_import"]["gps_resampling"]
+    assert gps_qc["raw_position_points_in_session_window"] == 0
+    assert gps_qc["resampled_position_points"] == 0
+    assert gps_qc["gap_rejected_samples"] == 6
 
 
 def test_enrich_session_with_fit_accepts_in_memory_bindings(tmp_path, monkeypatch):

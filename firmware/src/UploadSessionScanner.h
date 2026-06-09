@@ -10,10 +10,14 @@ struct SessionInfo {
   String csvPath;
   String jsonPath;
   String archivePath;
+  String dataFormat;
+  String dataPath;
   bool archiveReady = false;
+  bool dataReady = false;
   bool uploaded = false;
   bool acknowledged = false;
   uint32_t archiveSize = 0;
+  uint32_t dataSize = 0;
 };
 
 struct ScanSummary {

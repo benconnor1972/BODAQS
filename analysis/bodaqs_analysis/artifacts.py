@@ -385,6 +385,37 @@ def write_metrics_partitioned_by_schema_id(
     return sorted(set(schema_ids_written))
 
 
+def copy_raw_input_to_source(
+    *,
+    store,
+    run_id: str,
+    session_id: str,
+    input_path: Path,
+    dest_name: str = "input.csv",
+) -> str:
+    """
+    Copy the raw input file into the canonical source/ directory
+    and compute its SHA-256 hash.
+
+    Returns
+    -------
+    sha256 : str
+        Hex digest of the copied file.
+    """
+    dst = store.session_dir(run_id, session_id) / "source" / dest_name
+    store.ensure_dir(dst.parent)
+
+    shutil.copy2(input_path, dst)
+
+    sha256 = _sha256_file(dst)
+
+    # Write hash sidecar
+    hash_path = dst.with_suffix(".sha256")
+    hash_path.write_text(sha256 + "\n", encoding="utf-8")
+
+    return sha256
+
+
 def copy_raw_csv_to_source(
     *,
     store,
@@ -395,24 +426,14 @@ def copy_raw_csv_to_source(
     """
     Copy the raw input CSV into the canonical source/ directory
     and compute its SHA-256 hash.
-
-    Returns
-    -------
-    sha256 : str
-        Hex digest of the copied file.
     """
-    dst = store.session_dir(run_id, session_id) / "source" / "input.csv"
-    store.ensure_dir(dst.parent)
-
-    shutil.copy2(csv_path, dst)
-
-    sha256 = _sha256_file(dst)
-
-    # Write hash sidecar
-    hash_path = dst.with_suffix(".sha256")
-    hash_path.write_text(sha256 + "\n", encoding="utf-8")
-
-    return sha256
+    return copy_raw_input_to_source(
+        store=store,
+        run_id=run_id,
+        session_id=session_id,
+        input_path=csv_path,
+        dest_name="input.csv",
+    )
 
 
 def copy_aux_source_to_session(

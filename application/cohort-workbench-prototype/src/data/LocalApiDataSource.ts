@@ -1,0 +1,973 @@
+import { candidateId, groupingColors, sessionRefId } from '../domain/studySets'
+import { emptyGpsSummary } from '../domain/geospatial'
+import type { SavedSessionFilterRecord, SessionFilterPredicate } from '../domain/sessionFilters'
+import type {
+  GpsQuality,
+  GpsSourceKind,
+  GpsTimebase,
+  LibraryRecord,
+  NoteStatus,
+  QcLevel,
+  SessionGpsPointSet,
+  SessionGpsSummary,
+  SessionNoteFieldDef,
+  SessionNoteFieldType,
+  SessionNoteRecord,
+  SessionNoteValue,
+  SessionRecord,
+  SessionTrackMatchRecord,
+  StudyGrouping,
+  StudySessionRef,
+  StudySet,
+  TrackDirection,
+  TrackMatchStatus,
+  TrackpointMatchMode,
+  TrackpointMatchQueryRecord,
+  TrackpointMatchQueryRequest,
+  TrackpointMatchQueryResults,
+  TrackpointMatchQueryStatus,
+  TrackRecord,
+} from '../domain/types'
+import type { LibraryDataSource } from './LibraryDataSource'
+
+const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
+
+type ApiObject = Record<string, unknown>
+
+type ApiHealth = {
+  libraries_root?: string
+}
+
+type ApiSetLibrariesRootResponse = {
+  libraries_root?: string
+  library_count?: number
+}
+
+export class LocalApiDataSource implements LibraryDataSource {
+  readonly baseUrl: string
+
+  constructor(baseUrl = import.meta.env.VITE_BODAQS_LIBRARY_API_URL || DEFAULT_API_BASE_URL) {
+    this.baseUrl = String(baseUrl).replace(/\/+$/, '')
+  }
+
+  async getHealth() {
+    return requestJson<ApiHealth>(`${this.baseUrl}/api/v1/health`)
+  }
+
+  async setLibrariesRoot(librariesRoot: string) {
+    return requestJson<ApiSetLibrariesRootResponse>(`${this.baseUrl}/api/v1/config/libraries-root`, {
+      method: 'POST',
+      body: JSON.stringify({ libraries_root: librariesRoot }),
+    })
+  }
+
+  async listLibraries() {
+    const libraries = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/libraries`)
+    return libraries.map(mapLibrary)
+  }
+
+  async listSessions() {
+    const libraries = await this.listLibraries()
+    const catalogs = await Promise.all(
+      libraries.map((libraryItem) =>
+        requestJson<ApiObject>(`${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryItem.id)}/catalog`),
+      ),
+    )
+    return catalogs.flatMap((catalog) => {
+      const rows = arrayValue(catalog.rows)
+      return rows.filter(isObject).map(mapSession)
+    })
+  }
+
+  async listTracks(): Promise<TrackRecord[]> {
+    const tracks = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/tracks`)
+    return tracks.map(mapTrack)
+  }
+
+  async listStudySets() {
+    const summaries = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/study-sets`)
+    const studySets = await Promise.all(
+      summaries.map((summary) => {
+        const studySetId = textValue(summary.study_set_id)
+        return requestJson<ApiObject>(`${this.baseUrl}/api/v1/study-sets/${encodeURIComponent(studySetId)}`)
+      }),
+    )
+    return studySets.map(mapStudySet)
+  }
+
+  async listSavedSessionFilters() {
+    const filters = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/session-filters`)
+    return filters.map(mapSavedSessionFilter)
+  }
+
+  async saveStudySet(studySet: StudySet) {
+    const payload = toApiStudySet(studySet)
+    const saved = studySet.id
+      ? await requestJson<ApiObject>(`${this.baseUrl}/api/v1/study-sets/${encodeURIComponent(studySet.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            expected_revision: studySet.revision,
+            study_set: payload,
+          }),
+        })
+      : await requestJson<ApiObject>(`${this.baseUrl}/api/v1/study-sets`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+    return mapStudySet(saved)
+  }
+
+  async saveSavedSessionFilter(filter: SavedSessionFilterRecord) {
+    const payload = toApiSessionFilter(filter)
+    const saved =
+      filter.id && filter.origin === 'api_saved'
+        ? await requestJson<ApiObject>(`${this.baseUrl}/api/v1/session-filters/${encodeURIComponent(filter.id)}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              expected_revision: filter.revision,
+              session_filter: payload,
+            }),
+          })
+        : await requestJson<ApiObject>(`${this.baseUrl}/api/v1/session-filters`, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          })
+    return mapSavedSessionFilter(saved)
+  }
+
+  async deleteSavedSessionFilter(filterId: string) {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/session-filters/${encodeURIComponent(filterId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async saveTrack(track: TrackRecord) {
+    const payload = toApiTrack(track)
+    const saved = track.id
+      ? await requestJson<ApiObject>(`${this.baseUrl}/api/v1/tracks/${encodeURIComponent(track.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            expected_revision: track.revision,
+            track: payload,
+          }),
+        })
+      : await requestJson<ApiObject>(`${this.baseUrl}/api/v1/tracks`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+    return mapTrack(saved)
+  }
+
+  async deleteTrack(trackId: string) {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/tracks/${encodeURIComponent(trackId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async listTrackMatches(studySet: StudySet) {
+    if (studySet.sessions.length === 0 || studySet.trackIds.length === 0) {
+      return []
+    }
+    const payload = {
+      sessions: studySet.sessions.map((session) => ({
+        library_id: session.libraryId,
+        session_ref_id: sessionRefId(session),
+        session_key: session.sessionKey,
+        run_id: session.runId,
+        session_id: session.sessionId,
+      })),
+      track_ids: studySet.trackIds,
+    }
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/track-matches/query`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    return arrayValue(response.matches).filter(isObject).map(mapTrackMatch)
+  }
+
+  async createTrackpointMatchQuery(request: TrackpointMatchQueryRequest) {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/trackpoint-match-queries`, {
+      method: 'POST',
+      body: JSON.stringify(toApiTrackpointMatchQueryRequest(request)),
+    })
+    return mapTrackpointMatchQuery(response)
+  }
+
+  async loadTrackpointMatchQuery(queryId: string) {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/trackpoint-match-queries/${encodeURIComponent(queryId)}`,
+    )
+    return mapTrackpointMatchQuery(response)
+  }
+
+  async loadTrackpointMatchQueryResults(queryId: string, cursor: string | null = null, limit = 100) {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (cursor) {
+      params.set('cursor', cursor)
+    }
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/trackpoint-match-queries/${encodeURIComponent(queryId)}/results?${params}`,
+    )
+    return mapTrackpointMatchQueryResults(response)
+  }
+
+  async cancelTrackpointMatchQuery(queryId: string) {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/trackpoint-match-queries/${encodeURIComponent(queryId)}`,
+      { method: 'DELETE' },
+    )
+    return mapTrackpointMatchQuery(response)
+  }
+
+  async loadSessionGpsPoints(session: SessionRecord): Promise<SessionGpsPointSet> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/gps/points`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          session_ref: toApiSessionRef(session),
+          max_points: 1800,
+        }),
+      },
+    )
+    return mapSessionGpsPoints(response)
+  }
+
+  async loadSessionNote(session: SessionRecord): Promise<SessionNoteRecord> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/note`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          session_ref: toApiSessionRef(session),
+        }),
+      },
+    )
+    return mapSessionNote(response, session)
+  }
+
+  async saveSessionNote(note: SessionNoteRecord): Promise<SessionNoteRecord> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(note.sessionRef.libraryId)}/sessions/note`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          session_ref: toApiStudySessionRef(note.sessionRef),
+          note: toApiSessionNote(note),
+        }),
+      },
+    )
+    return mapSessionNote(response, note.sessionRef)
+  }
+}
+
+async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init.headers ?? {}),
+    },
+  })
+
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`
+    try {
+      const payload = (await response.json()) as ApiObject
+      const error = isObject(payload.error) ? payload.error : null
+      const message = error ? textValue(error.message, detail) : detail
+      detail = message
+    } catch {
+      // Keep the HTTP status fallback.
+    }
+    throw new Error(detail)
+  }
+  return (await response.json()) as T
+}
+
+function mapLibrary(value: ApiObject): LibraryRecord {
+  const id = textValue(value.library_id)
+  return {
+    id,
+    name: textValue(value.display_name, id),
+    path: textValue(value.root),
+    sessionCount: 0,
+  }
+}
+
+function mapSession(row: ApiObject): SessionRecord {
+  const display = objectValue(row.display)
+  const timestamps = objectValue(row.timestamps)
+  const noteStatus = objectValue(row.note_status)
+  const noteFields = objectValue(row.note_fields)
+  const qcSummary = objectValue(row.qc_summary)
+  const provenance = objectValue(row.provenance)
+  const eventSchema = objectValue(row.event_schema)
+  const summary = objectValue(row.summary)
+  const gpsSummary = objectValue(row.gps_summary)
+  const libraryId = textValue(row.library_id)
+  const sessionKey = textValue(row.session_key)
+  const runId = textValue(row.run_id)
+  const sessionId = textValue(row.session_id)
+  const availableSignals = arrayValue(row.available_signals).filter(isObject)
+  const qcLevel = qcLevelValue(qcSummary.status)
+  const warningCount = numberValue(qcSummary.warning_count)
+  const errorCount = numberValue(qcSummary.error_count)
+
+  return {
+    libraryId,
+    runId,
+    runName: textValue(display.run_label, runId),
+    sessionId,
+    sessionKey,
+    name: textValue(display.label, textValue(display.session_label, sessionKey)),
+    startedAt: textValue(timestamps.started_at_local, textValue(timestamps.started_at_utc)),
+    bike: textValue(noteFields.bike),
+    rider: textValue(noteFields.rider),
+    durationMin: numberValue(summary.duration_min),
+    distanceKm: numberValue(summary.distance_km),
+    noteStatus: noteStatusValue(noteStatus.status),
+    qcLevel,
+    qcAlerts: qcAlertLabels(qcLevel, warningCount, errorCount),
+    preprocessingProfile: textValue(provenance.preprocessing_profile),
+    firmware: textValue(provenance.firmware_version),
+    eventSchema: textValue(eventSchema.display_name, textValue(eventSchema.schema_id)),
+    sourceArchive: textValue(provenance.archive_name),
+    signals: availableSignals.map((signal) => textValue(signal.display_name, textValue(signal.column))),
+    gps: [],
+    gpsSummary: mapGpsSummary(gpsSummary),
+  }
+}
+
+function mapTrack(value: ApiObject): TrackRecord {
+  const path = objectValue(value.path)
+  const coordinates = arrayValue(path.coordinates).map(coordinatePair).filter(isCoordinatePair)
+  const lengthM = numberValue(path.length_m)
+  const policyRef = objectValue(value.default_policy_ref)
+  const source = objectValue(value.source)
+  return {
+    id: textValue(value.track_id),
+    name: textValue(value.display_name, textValue(value.track_id)),
+    description: textValue(value.description),
+    revision: numberValue(value.revision),
+    pointCount: coordinates.length,
+    distanceKm: lengthM / 1000,
+    lengthM,
+    points: coordinates,
+    defaultPolicyId: textValue(policyRef.policy_id, 'default-geospatial-policy'),
+    trackpoints: arrayValue(value.trackpoints)
+      .filter(isObject)
+      .map((trackpoint) => {
+        const position = objectValue(trackpoint.position)
+        const cutlineOverride = objectValue(trackpoint.cutline_override)
+        const mappedOverride = {
+          leftLengthM: nullableNumberValue(cutlineOverride.left_length_m) ?? undefined,
+          rightLengthM: nullableNumberValue(cutlineOverride.right_length_m) ?? undefined,
+          angleDegFromPathNormal: nullableNumberValue(cutlineOverride.angle_deg_from_path_normal) ?? undefined,
+        }
+        const hasOverride = Object.values(mappedOverride).some((item) => item !== undefined)
+        return {
+          id: textValue(trackpoint.trackpoint_id),
+          name: textValue(trackpoint.display_name, textValue(trackpoint.trackpoint_id)),
+          stationM: numberValue(trackpoint.station_m),
+          position: coordinatePair(position.coordinates) ?? ([0, 0] as [number, number]),
+          cutlineOverride: hasOverride ? mappedOverride : undefined,
+        }
+      }),
+    matchSummaries: arrayValue(value.match_summaries).filter(isObject).map(mapTrackMatch),
+    source: textValue(source.kind)
+      ? {
+          kind: textValue(source.kind),
+          libraryId: textValue(source.library_id) || undefined,
+          sessionRefId: textValue(source.session_ref_id) || undefined,
+          sessionKey: textValue(source.session_key) || undefined,
+          runId: textValue(source.run_id) || undefined,
+          sessionId: textValue(source.session_id) || undefined,
+        }
+      : undefined,
+  }
+}
+
+function mapTrackMatch(value: ApiObject): SessionTrackMatchRecord {
+  const coverage = objectValue(value.coverage)
+  const sessionRef = objectValue(value.session_ref)
+  const trackRef = objectValue(value.track_ref)
+  return {
+    trackId: textValue(trackRef.track_id),
+    sessionRefId: textValue(sessionRef.session_ref_id),
+    status: trackMatchStatusValue(value.status),
+    direction: trackDirectionValue(value.direction),
+    coverageRatio: numberValue(coverage.track_coverage_ratio),
+    matchedGpsPointCount: numberValue(coverage.matched_gps_point_count),
+    trackpointResults: arrayValue(value.trackpoint_results)
+      .filter(isObject)
+      .map((result) => ({
+        trackpointId: textValue(result.trackpoint_id),
+        crossed: Boolean(result.crossed),
+        crossingTimeS: nullableNumberValue(result.crossing_time_s),
+        minDistanceM: nullableNumberValue(result.min_distance_m),
+        quality: trackpointQualityValue(result.quality),
+      })),
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
+function mapTrackpointMatchQuery(value: ApiObject): TrackpointMatchQueryRecord {
+  const trackRef = objectValue(value.track_ref)
+  return {
+    queryId: textValue(value.query_id),
+    status: trackpointMatchQueryStatusValue(value.status),
+    trackId: textValue(trackRef.track_id),
+    trackRevision: numberValue(trackRef.revision),
+    trackpointIds: arrayValue(value.trackpoint_ids).map((item) => textValue(item)).filter(Boolean),
+    matchMode: trackpointMatchModeValue(value.match_mode),
+    toleranceM: numberValue(value.tolerance_m),
+    candidateSessionCount: numberValue(value.candidate_session_count),
+    processedSessionCount: numberValue(value.processed_session_count),
+    matchedSessionCount: numberValue(value.matched_session_count),
+    failedSessionCount: numberValue(value.failed_session_count),
+    error: textValue(value.error),
+  }
+}
+
+function mapTrackpointMatchQueryResults(value: ApiObject): TrackpointMatchQueryResults {
+  return {
+    queryId: textValue(value.query_id),
+    resultCount: numberValue(value.result_count),
+    returnedCount: numberValue(value.returned_count),
+    nextCursor: textValue(value.next_cursor) || null,
+    results: arrayValue(value.results)
+      .filter(isObject)
+      .map((result) => {
+        const sessionRef = objectValue(result.session_ref)
+        return {
+          sessionRef: {
+            libraryId: textValue(sessionRef.library_id),
+            sessionKey: textValue(sessionRef.session_key),
+            runId: textValue(sessionRef.run_id),
+            sessionId: textValue(sessionRef.session_id),
+            label: textValue(sessionRef.label, textValue(sessionRef.session_id)),
+          },
+          trackMatchId: textValue(result.track_match_id),
+          matchedTrackpointIds: arrayValue(result.matched_trackpoint_ids).map((item) => textValue(item)).filter(Boolean),
+          missingTrackpointIds: arrayValue(result.missing_trackpoint_ids).map((item) => textValue(item)).filter(Boolean),
+          quality: textValue(result.quality, 'unknown'),
+        }
+      }),
+  }
+}
+
+function mapGpsSummary(value: ApiObject): SessionGpsSummary {
+  const quality = gpsQualityValue(value.quality)
+  const sources = arrayValue(value.sources).filter(isObject).map((source) => ({
+    sourceId: textValue(source.source_id),
+    kind: gpsSourceKindValue(source.kind),
+    streamName: textValue(source.stream_name),
+    timebase: gpsTimebaseValue(source.timebase),
+    pointCount: numberValue(source.point_count),
+    nominalSampleRateHz: nullableNumberValue(source.nominal_sample_rate_hz),
+    medianGapS: nullableNumberValue(source.median_gap_s),
+    maxGapS: nullableNumberValue(source.max_gap_s),
+    gapCountOverThreshold: numberValue(source.gap_count_over_threshold),
+    gapThresholdS: numberValue(source.gap_threshold_s),
+  }))
+  if (!value.present && sources.length === 0) {
+    return emptyGpsSummary
+  }
+  return {
+    present: Boolean(value.present),
+    preferredSource: gpsSourceKindOrNull(value.preferred_source),
+    sources,
+    sessionDurationS: numberValue(value.session_duration_s),
+    timeCoverageRatio: numberValue(value.time_coverage_ratio),
+    positionPointCount: numberValue(value.position_point_count),
+    quality,
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
+function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
+  const source = objectValue(value.source)
+  const sampling = objectValue(value.sampling)
+  const points = arrayValue(value.points)
+    .filter(isObject)
+    .map((point) => ({
+      timeS: nullableNumberValue(point.time_s),
+      longitude: numberValue(point.longitude),
+      latitude: numberValue(point.latitude),
+      elevationM: nullableNumberValue(point.elevation_m),
+    }))
+    .filter((point) => Number.isFinite(point.longitude) && Number.isFinite(point.latitude))
+  return {
+    present: Boolean(value.present),
+    sourceId: textValue(source.source_id),
+    sourceKind: gpsSourceKindValue(source.kind),
+    streamName: textValue(source.stream_name),
+    samplingMode: textValue(sampling.mode),
+    sourcePoints: numberValue(sampling.source_points),
+    returnedPoints: numberValue(sampling.returned_points),
+    maxPoints: numberValue(sampling.max_points),
+    stride: nullableNumberValue(sampling.stride),
+    points,
+    path: points.map((point) => [point.longitude, point.latitude] as [number, number]),
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
+function mapSessionNote(value: ApiObject, fallbackSession: SessionRecord | StudySessionRef): SessionNoteRecord {
+  const note = objectValue(value.note)
+  const template = objectValue(value.template)
+  const rawSessionRef = objectValue(value.session_ref)
+  const sessionRef = {
+    libraryId: textValue(rawSessionRef.library_id, fallbackSession.libraryId),
+    sessionKey: textValue(rawSessionRef.session_key, fallbackSession.sessionKey),
+    runId: textValue(rawSessionRef.run_id, fallbackSession.runId),
+    sessionId: textValue(rawSessionRef.session_id, fallbackSession.sessionId),
+    label: 'label' in fallbackSession ? fallbackSession.label : fallbackSession.name,
+  }
+  const values = jsonRecordValue(note.values)
+  const customValues = jsonRecordValue(note.custom_values)
+  return {
+    sessionRef,
+    present: Boolean(value.present),
+    title: textValue(note.title, 'Session note'),
+    templateId: textValue(note.template_id),
+    templateVersion: textValue(note.template_version),
+    templateStatus: template.status === 'ok' ? 'ok' : 'missing',
+    templateError: textValue(template.error),
+    fields: arrayValue(template.fields).filter(isObject).map(mapSessionNoteField),
+    customFieldSection: textValue(template.custom_field_section, 'Custom'),
+    values,
+    customValues,
+    freeTextNotes: textValue(note.free_text_notes),
+    draft: Boolean(note.draft),
+    createdAtUtc: textValue(note.created_at_utc),
+    updatedAtUtc: textValue(note.updated_at_utc),
+  }
+}
+
+function mapSessionNoteField(value: ApiObject): SessionNoteFieldDef {
+  return {
+    fieldId: textValue(value.field_id),
+    label: textValue(value.label, textValue(value.field_id)),
+    fieldType: sessionNoteFieldTypeValue(value.field_type),
+    section: textValue(value.section, 'General'),
+    required: Boolean(value.required),
+    default: jsonNoteValue(value.default),
+    unit: textValue(value.unit),
+    helpText: textValue(value.help_text),
+    enumOptions: arrayValue(value.enum_options).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
+function mapStudySet(value: ApiObject): StudySet {
+  const sessions = arrayValue(value.sessions).filter(isObject).map((sessionRef) => ({
+    libraryId: textValue(sessionRef.library_id),
+    sessionKey: textValue(sessionRef.session_key),
+    runId: textValue(sessionRef.run_id),
+    sessionId: textValue(sessionRef.session_id),
+    label: textValue(sessionRef.label, textValue(sessionRef.session_id)),
+  }))
+  const groupings = arrayValue(value.groupings).filter(isObject).map<StudyGrouping>((grouping, index) => ({
+    id: textValue(grouping.grouping_id),
+    name: textValue(grouping.display_name, textValue(grouping.grouping_id)),
+    color: textValue(grouping.color, groupingColors[index % groupingColors.length]),
+    sessionRefs: arrayValue(grouping.session_refs).map((item) => textValue(item)),
+  }))
+  const tracks = arrayValue(value.tracks).filter(isObject)
+  return {
+    id: textValue(value.study_set_id) || null,
+    displayName: textValue(value.display_name),
+    revision: numberValue(value.revision),
+    saved: true,
+    sessions,
+    groupings,
+    trackIds: tracks.map((track) => textValue(track.track_id)).filter(Boolean),
+    provenance: provenanceLabel(objectValue(value.provenance)),
+  }
+}
+
+function mapSavedSessionFilter(value: ApiObject): SavedSessionFilterRecord {
+  const filterId = textValue(value.filter_id)
+  return {
+    id: filterId,
+    displayName: textValue(value.display_name, filterId),
+    description: textValue(value.description),
+    category: textValue(value.category, 'custom'),
+    origin: 'api_saved',
+    revision: numberValue(value.revision),
+    predicate: sessionFilterPredicateValue(value.predicate),
+  }
+}
+
+function toApiStudySet(studySet: StudySet) {
+  const payload: ApiObject = {
+    schema: 'bodaqs.study_set',
+    version: 1,
+    display_name: studySet.displayName.trim(),
+    revision: studySet.revision,
+    sessions: studySet.sessions.map((session) => ({
+      library_id: session.libraryId,
+      session_ref_id: sessionRefId(session),
+      session_key: session.sessionKey,
+      run_id: session.runId,
+      session_id: session.sessionId,
+      label: session.label,
+    })),
+    groupings: studySet.groupings.map((grouping) => ({
+      grouping_id: grouping.id,
+      display_name: grouping.name,
+      color: grouping.color,
+      session_refs: grouping.sessionRefs,
+    })),
+    tracks: studySet.trackIds.map((trackId) => ({ track_id: trackId })),
+    bookmarks: [],
+    provenance: {
+      created_by: 'bodaqs_web_prototype',
+      created_from: {
+        kind: 'manual_selection',
+        details: {
+          note: studySet.provenance || 'Created in the Library Browser prototype',
+        },
+      },
+    },
+    display_state: {
+      bodaqs_web_v1: {},
+    },
+  }
+
+  if (studySet.id) {
+    payload.study_set_id = studySet.id
+  }
+
+  return payload
+}
+
+function toApiSessionFilter(filter: SavedSessionFilterRecord) {
+  const payload: ApiObject = {
+    schema: 'bodaqs.session_filter',
+    version: 1,
+    display_name: filter.displayName.trim(),
+    description: filter.description ?? '',
+    category: filter.category || 'custom',
+    revision: filter.revision,
+    predicate: filter.predicate as unknown as ApiObject,
+    display_state: {
+      bodaqs_web_v1: {},
+    },
+  }
+
+  if (filter.id && filter.origin === 'api_saved') {
+    payload.filter_id = filter.id
+  }
+
+  return payload
+}
+
+function toApiTrack(track: TrackRecord) {
+  const payload: ApiObject = {
+    schema: 'bodaqs.track',
+    version: 1,
+    display_name: track.name.trim(),
+    description: track.description ?? '',
+    revision: track.revision,
+    path: {
+      type: 'LineString',
+      coordinates: track.points.map(([longitude, latitude]) => [longitude, latitude]),
+      coordinate_reference_system: 'EPSG:4326',
+      distance_model: 'geodesic',
+      length_m: track.lengthM,
+    },
+    direction: {
+      positive: 'coordinate_order',
+      description: 'Positive direction follows the stored coordinate order.',
+    },
+    default_policy_ref: {
+      policy_id: track.defaultPolicyId || 'default-geospatial-policy',
+      version: 1,
+    },
+    trackpoints: track.trackpoints.map((trackpoint) => {
+      const out: ApiObject = {
+        trackpoint_id: trackpoint.id,
+        display_name: trackpoint.name,
+        station_m: trackpoint.stationM,
+        position: {
+          type: 'Point',
+          coordinates: trackpoint.position,
+        },
+      }
+      if (trackpoint.cutlineOverride) {
+        out.cutline_override = {
+          left_length_m: trackpoint.cutlineOverride.leftLengthM,
+          right_length_m: trackpoint.cutlineOverride.rightLengthM,
+          angle_deg_from_path_normal: trackpoint.cutlineOverride.angleDegFromPathNormal,
+        }
+      }
+      return out
+    }),
+    display_state: {
+      bodaqs_web_v1: {},
+    },
+  }
+  if (track.id) {
+    payload.track_id = track.id
+  }
+  if (track.source) {
+    payload.source = {
+      kind: track.source.kind,
+      library_id: track.source.libraryId,
+      session_ref_id: track.source.sessionRefId,
+      session_key: track.source.sessionKey,
+      run_id: track.source.runId,
+      session_id: track.source.sessionId,
+    }
+  }
+  return payload
+}
+
+function toApiTrackpointMatchQueryRequest(request: TrackpointMatchQueryRequest) {
+  const payload: ApiObject = {
+    track_id: request.trackId,
+    trackpoint_ids: request.trackpointIds,
+    match_mode: request.matchMode,
+    tolerance_m: request.toleranceM,
+    persist: request.persist ?? true,
+  }
+  if (request.minCount !== undefined) {
+    payload.min_count = request.minCount
+  }
+  if (request.scope) {
+    payload.scope = {
+      library_ids: request.scope.libraryIds,
+      session_refs: request.scope.sessionRefs?.map((session) => ({
+        library_id: session.libraryId,
+        session_key: session.sessionKey,
+        run_id: session.runId,
+        session_id: session.sessionId,
+        label: session.label,
+      })),
+    }
+  }
+  return payload
+}
+
+function toApiSessionRef(session: SessionRecord) {
+  return {
+    library_id: session.libraryId,
+    session_ref_id: candidateId(session),
+    session_key: session.sessionKey,
+    run_id: session.runId,
+    session_id: session.sessionId,
+  }
+}
+
+function toApiStudySessionRef(sessionRef: StudySessionRef) {
+  return {
+    library_id: sessionRef.libraryId,
+    session_ref_id: sessionRefId(sessionRef),
+    session_key: sessionRef.sessionKey,
+    run_id: sessionRef.runId,
+    session_id: sessionRef.sessionId,
+    label: sessionRef.label,
+  }
+}
+
+function toApiSessionNote(note: SessionNoteRecord) {
+  return {
+    schema: 'bodaqs.session_notes.document',
+    version: 1,
+    run_id: note.sessionRef.runId,
+    session_id: note.sessionRef.sessionId,
+    session_key: note.sessionRef.sessionKey,
+    title: note.title.trim() || 'Session note',
+    template_id: note.templateId || 'web_session_note',
+    template_version: note.templateVersion || '1.0',
+    values: note.values,
+    custom_values: note.customValues,
+    free_text_notes: note.freeTextNotes,
+    created_at_utc: note.createdAtUtc,
+    updated_at_utc: note.updatedAtUtc,
+    draft: note.draft,
+  }
+}
+
+function noteStatusValue(value: unknown): NoteStatus {
+  if (value === 'draft' || value === 'edited') {
+    return value
+  }
+  return 'missing'
+}
+
+function gpsQualityValue(value: unknown): GpsQuality {
+  if (value === 'usable' || value === 'limited' || value === 'invalid') {
+    return value
+  }
+  return 'absent'
+}
+
+function gpsSourceKindValue(value: unknown): GpsSourceKind {
+  if (value === 'logger_sensor' || value === 'fit_enrichment' || value === 'imported_route') {
+    return value
+  }
+  return 'unknown'
+}
+
+function gpsSourceKindOrNull(value: unknown): GpsSourceKind | null {
+  const kind = gpsSourceKindValue(value)
+  return kind === 'unknown' ? null : kind
+}
+
+function gpsTimebaseValue(value: unknown): GpsTimebase {
+  if (value === 'uniform' || value === 'intermittent') {
+    return value
+  }
+  return 'unknown'
+}
+
+function trackMatchStatusValue(value: unknown): TrackMatchStatus {
+  if (
+    value === 'matched' ||
+    value === 'partial' ||
+    value === 'no_gps' ||
+    value === 'no_overlap' ||
+    value === 'ambiguous' ||
+    value === 'failed'
+  ) {
+    return value
+  }
+  return 'failed'
+}
+
+function trackDirectionValue(value: unknown): TrackDirection {
+  if (value === 'positive' || value === 'reverse') {
+    return value
+  }
+  return 'unknown'
+}
+
+function trackpointQualityValue(value: unknown): 'good' | 'approximate' | 'ambiguous' | 'missing' {
+  if (value === 'good' || value === 'approximate' || value === 'ambiguous') {
+    return value
+  }
+  return 'missing'
+}
+
+function trackpointMatchModeValue(value: unknown): TrackpointMatchMode {
+  if (value === 'any' || value === 'min_count') {
+    return value
+  }
+  return 'all'
+}
+
+function trackpointMatchQueryStatusValue(value: unknown): TrackpointMatchQueryStatus {
+  if (value === 'running' || value === 'completed' || value === 'cancelled' || value === 'failed') {
+    return value
+  }
+  return 'queued'
+}
+
+function qcLevelValue(value: unknown): QcLevel {
+  if (value === 'warning' || value === 'alert') {
+    return value
+  }
+  return 'ok'
+}
+
+function qcAlertLabels(level: QcLevel, warnings: number, alerts: number) {
+  if (level === 'ok') {
+    return []
+  }
+  const labels: string[] = []
+  if (warnings > 0) {
+    labels.push(`${warnings} warning${warnings === 1 ? '' : 's'} reported`)
+  }
+  if (alerts > 0) {
+    labels.push(`${alerts} alert${alerts === 1 ? '' : 's'} reported`)
+  }
+  return labels.length ? labels : [`${level} status reported`]
+}
+
+function provenanceLabel(provenance: ApiObject) {
+  const createdFrom = objectValue(provenance.created_from)
+  const kind = textValue(createdFrom.kind)
+  return kind ? `Created from ${kind.replace(/_/g, ' ')}` : ''
+}
+
+function objectValue(value: unknown): ApiObject {
+  return isObject(value) ? value : {}
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+function textValue(value: unknown, fallback = ''): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function nullableNumberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function jsonRecordValue(value: unknown): Record<string, SessionNoteValue> {
+  const raw = objectValue(value)
+  return Object.fromEntries(
+    Object.entries(raw).map(([key, item]) => [key, jsonNoteValue(item)]),
+  )
+}
+
+function jsonNoteValue(value: unknown): SessionNoteValue {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => textValue(item)).filter(Boolean)
+  }
+  return null
+}
+
+function sessionNoteFieldTypeValue(value: unknown): SessionNoteFieldType {
+  if (
+    value === 'text' ||
+    value === 'int' ||
+    value === 'float' ||
+    value === 'bool' ||
+    value === 'enum' ||
+    value === 'multi_enum' ||
+    value === 'date'
+  ) {
+    return value
+  }
+  return 'string'
+}
+
+function sessionFilterPredicateValue(value: unknown): SessionFilterPredicate {
+  if (isObject(value) && typeof value.op === 'string') {
+    return value as unknown as SessionFilterPredicate
+  }
+  return { field: 'rider', op: 'contains', value: '' }
+}
+
+function coordinatePair(value: unknown): [number, number] | null {
+  if (!Array.isArray(value) || value.length < 2) {
+    return null
+  }
+  const x = value[0]
+  const y = value[1]
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+    return null
+  }
+  return [x, y]
+}
+
+function isCoordinatePair(value: [number, number] | null): value is [number, number] {
+  return value !== null
+}
+
+function isObject(value: unknown): value is ApiObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}

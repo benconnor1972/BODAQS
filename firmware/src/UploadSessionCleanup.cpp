@@ -23,6 +23,7 @@ static void setCommonResult_(const UploadSessionScanner::SessionInfo& session,
   result.csvPath = session.csvPath;
   result.jsonPath = session.jsonPath;
   result.archivePath = session.archivePath;
+  result.dataPath = session.dataPath;
 
   if (mode == CleanupMode::MoveToUploaded) {
     if (session.csvPath.length()) {
@@ -31,7 +32,12 @@ static void setCommonResult_(const UploadSessionScanner::SessionInfo& session,
     if (session.jsonPath.length()) {
       result.jsonTargetPath = String(kUploadedDir) + "/" + baseName_(session.jsonPath);
     }
-    result.archiveTargetPath = String(kUploadedDir) + "/" + baseName_(session.archivePath);
+    if (session.archivePath.length()) {
+      result.archiveTargetPath = String(kUploadedDir) + "/" + baseName_(session.archivePath);
+    }
+    if (session.dataPath.length()) {
+      result.dataTargetPath = String(kUploadedDir) + "/" + baseName_(session.dataPath);
+    }
   }
 }
 
@@ -46,6 +52,14 @@ static bool fileExists_(const String& path) {
 
 static bool preflightSources_(const UploadSessionScanner::SessionInfo& session,
                               CleanupResult& result) {
+  if (session.dataFormat == "bdq") {
+    if (!fileExists_(session.dataPath)) {
+      result.error = String(F("missing data file: ")) + session.dataPath;
+      return false;
+    }
+    return true;
+  }
+
   if (!fileExists_(session.archivePath)) {
     result.error = String(F("missing archive: ")) + session.archivePath;
     return false;
@@ -77,8 +91,12 @@ static bool preflightMoveTargets_(CleanupResult& result) {
     result.error = String(F("target exists: ")) + result.jsonTargetPath;
     return false;
   }
-  if (SD_MMC.exists(result.archiveTargetPath.c_str())) {
+  if (result.archiveTargetPath.length() && SD_MMC.exists(result.archiveTargetPath.c_str())) {
     result.error = String(F("target exists: ")) + result.archiveTargetPath;
+    return false;
+  }
+  if (result.dataTargetPath.length() && SD_MMC.exists(result.dataTargetPath.c_str())) {
+    result.error = String(F("target exists: ")) + result.dataTargetPath;
     return false;
   }
 
@@ -161,16 +179,28 @@ bool cleanupSession(const UploadSessionScanner::SessionInfo& session,
   }
 
   if (mode == CleanupMode::MoveToUploaded) {
-    moveOptional_(session.csvPath, result.csvTargetPath, result.csvOk, result);
-    moveOptional_(session.jsonPath, result.jsonTargetPath, result.jsonOk, result);
-    moveOne_(session.archivePath, result.archiveTargetPath, result.archiveOk, result);
+    if (session.dataFormat == "bdq") {
+      moveOne_(session.dataPath, result.dataTargetPath, result.dataOk, result);
+      result.csvOk = result.jsonOk = result.archiveOk = true;
+    } else {
+      moveOptional_(session.csvPath, result.csvTargetPath, result.csvOk, result);
+      moveOptional_(session.jsonPath, result.jsonTargetPath, result.jsonOk, result);
+      moveOne_(session.archivePath, result.archiveTargetPath, result.archiveOk, result);
+      result.dataOk = true;
+    }
   } else {
-    deleteOptional_(session.csvPath, result.csvOk, result);
-    deleteOptional_(session.jsonPath, result.jsonOk, result);
-    deleteOne_(session.archivePath, result.archiveOk, result);
+    if (session.dataFormat == "bdq") {
+      deleteOne_(session.dataPath, result.dataOk, result);
+      result.csvOk = result.jsonOk = result.archiveOk = true;
+    } else {
+      deleteOptional_(session.csvPath, result.csvOk, result);
+      deleteOptional_(session.jsonPath, result.jsonOk, result);
+      deleteOne_(session.archivePath, result.archiveOk, result);
+      result.dataOk = true;
+    }
   }
 
-  result.ok = result.csvOk && result.jsonOk && result.archiveOk;
+  result.ok = result.csvOk && result.jsonOk && result.archiveOk && result.dataOk;
   return result.ok;
 }
 

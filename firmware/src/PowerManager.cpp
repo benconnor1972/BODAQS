@@ -138,6 +138,11 @@ static bool batteryLowCached_()
 
 static void updateAnalogRailForBattery_()
 {
+#if defined(BODAQS_FORCE_ANALOG_RAIL_ON)
+  applyAnalogRailPin_(true);
+  return;
+#endif
+
   if (batteryLowCached_()) {
     if (g_analogRailEnabled) {
       PWR_LOGW("Battery low %.3f V; disabling analog rail\n", (double)g_fgVbat);
@@ -490,7 +495,11 @@ void PowerManager::begin(const board::BoardProfile& board)
 
   if (hasAnalogRailEnable_()) {
     pinMode((uint8_t)g_analogRailEnablePin, OUTPUT);
+#if defined(BODAQS_FORCE_ANALOG_RAIL_ON)
+    applyAnalogRailPin_(true);
+#else
     applyAnalogRailPin_(board.analog.enable_default_on);
+#endif
     PWR_LOGI("Analog rail enable GPIO%d active_%s default=%s\n",
              (int)g_analogRailEnablePin,
              g_analogRailActiveHigh ? "high" : "low",
@@ -630,6 +639,11 @@ const char* PowerManager::analogRailFaultText()
 bool PowerManager::canStartLogging()
 {
   fuelGaugeInitIfNeeded_();
+#if defined(BODAQS_FORCE_ANALOG_RAIL_ON)
+  applyAnalogRailPin_(true);
+  return true;
+#endif
+
   if (batteryLowCached_()) {
     applyAnalogRailPin_(false);
     return false;

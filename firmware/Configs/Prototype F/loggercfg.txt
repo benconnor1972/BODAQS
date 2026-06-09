@@ -1,17 +1,19 @@
 # global
-logger_name=Prototype E
+logger_name=Prototype F
 sample_rate_hz=500
+log_format=bodaqs_CSV
+omit_metadata=false
 timestamp_mode=human
-tz=AWST-8 #your timezone, in this format
+tz=AWST-8
 ntp_servers=au.pool.ntp.org,pool.ntp.org,time.google.com
-time_check_url=http://worldtimeapi.org/api/timezone/Australia/Perth #your timezone, in this format. This is a fallback
+time_check_url=http://worldtimeapi.org/api/timezone/Australia/Perth
 debounce_ms=40
-auto_sleep_idle_ms=900000
-wifi_idle_timeout_ms=300000
+auto_sleep_idle_min=15
+wifi_idle_timeout_min=5
 log_level=default
 
-# bindings - generally don't touch these
-binding_count=8
+# bindings
+binding_count=12
 binding0.button=nav_up
 binding0.event=pressed
 binding0.action=menu_nav_up
@@ -42,6 +44,12 @@ binding8.action=menu_select
 binding9.button=nav_left
 binding9.event=held
 binding9.action=sleep
+binding10.button=nav_up
+binding10.event=held
+binding10.action=upload_mode_toggle
+binding11.button=nav_down
+binding11.event=held
+binding11.action=web_toggle
 
 # wifi - configure up to 5 wifi networks. Copy the settings block if needed.
 

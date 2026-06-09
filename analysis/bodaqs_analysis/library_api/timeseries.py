@@ -13,7 +13,7 @@ from bodaqs_analysis.artifacts import ArtifactStore, list_event_types
 
 from .catalog import _signal_display_name, _signal_id
 from .errors import InvalidRequestError, SessionNotFoundError, SignalNotFoundError, TimeseriesUnavailableError
-from .ids import make_session_key
+from .ids import make_session_key, make_session_ref_id
 
 
 TIMESERIES_WINDOW_SCHEMA = "bodaqs.timeseries_window"
@@ -21,7 +21,12 @@ TIMESERIES_WINDOW_VERSION = 1
 DEFAULT_TARGET_POINTS = 2000
 
 
-def get_timeseries_window(library_root: str | Path, request: Mapping[str, Any]) -> dict[str, Any]:
+def get_timeseries_window(
+    library_root: str | Path,
+    request: Mapping[str, Any],
+    *,
+    library_id: str | None = None,
+) -> dict[str, Any]:
     """Return a JSON-serializable, one-session time-series window payload."""
 
     if not isinstance(request, Mapping):
@@ -29,6 +34,12 @@ def get_timeseries_window(library_root: str | Path, request: Mapping[str, Any]) 
 
     store = ArtifactStore(Path(library_root))
     session_ref = _parse_session_ref(request.get("session"))
+    request_library_id = session_ref.get("library_id")
+    if library_id is not None and request_library_id is not None and request_library_id != library_id:
+        raise InvalidRequestError(
+            "session.library_id does not match the request library.",
+            details={"library_id": library_id, "session_library_id": request_library_id},
+        )
     run_id = session_ref["run_id"]
     session_id = session_ref["session_id"]
     session_key = session_ref["session_key"]
@@ -99,15 +110,20 @@ def get_timeseries_window(library_root: str | Path, request: Mapping[str, Any]) 
         requested_end_s=window_request["end_s"],
     )
 
+    response_session = {
+        "library_id": library_id or request_library_id,
+        "session_key": session_key,
+        "run_id": run_id,
+        "session_id": session_id,
+    }
+    if response_session["library_id"] is not None:
+        response_session["session_ref_id"] = make_session_ref_id(response_session["library_id"], session_key)
+
     return {
         "schema": TIMESERIES_WINDOW_SCHEMA,
         "version": TIMESERIES_WINDOW_VERSION,
         "encoding": "json_arrays",
-        "session": {
-            "session_key": session_key,
-            "run_id": run_id,
-            "session_id": session_id,
-        },
+        "session": response_session,
         "window": {
             "requested_start_s": window_request["start_s"],
             "requested_end_s": window_request["end_s"],
@@ -161,7 +177,11 @@ def _parse_session_ref(value: Any) -> dict[str, str]:
             "session_key does not match run_id/session_id.",
             details={"session_key": session_key, "expected_session_key": expected_key},
         )
-    return {"run_id": run_id, "session_id": session_id, "session_key": session_key}
+    library_id = _optional_text(value.get("library_id"))
+    out = {"run_id": run_id, "session_id": session_id, "session_key": session_key}
+    if library_id is not None:
+        out["library_id"] = library_id
+    return out
 
 
 def _resolve_time_column(meta: Mapping[str, Any], available_columns: Sequence[str]) -> tuple[str, str]:

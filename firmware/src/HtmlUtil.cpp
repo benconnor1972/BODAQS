@@ -24,6 +24,7 @@ namespace HtmlUtil {
   String contentTypeFor(const String& name) {
     String n = name; n.toLowerCase();
     if (n.endsWith(".csv"))  return F("text/csv");
+    if (n.endsWith(".bdq"))  return F("application/octet-stream");
     if (n.endsWith(".txt"))  return F("text/plain");
     if (n.endsWith(".json")) return F("application/json");
     if (n.endsWith(".htm") || n.endsWith(".html")) return F("text/html");

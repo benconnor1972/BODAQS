@@ -49,18 +49,21 @@ addresses are not the primary app-level identity in this contract.
 ### Session Stem
 
 `session_stem` is the shared basename of the session files, without extension.
+For logs started with a valid RTC timestamp, firmware-generated session stems
+use compact local time as `YYMMDD_HHMMSS`. If no valid timestamp is available at
+log start, the firmware uses a numbered `LOGnnnn` fallback stem.
 
 Example:
 
 ```text
-2026-05-16_20-15-42.CSV
-2026-05-16_20-15-42.json
+260516_201542.CSV
+260516_201542.json
 ```
 
 The `session_stem` is:
 
 ```text
-2026-05-16_20-15-42
+260516_201542
 ```
 
 ### Session ID
@@ -118,6 +121,13 @@ through `POST /api/v1/session/delete` after acknowledgement.
 The logger should create a session archive when a log is closed and the
 same-stem JSON metadata has been written.
 
+This contract applies to CSV log formats only. Compact binary sessions use a
+loose self-contained `.bdq` file and are downloaded through
+`GET /api/v1/session/data`.
+
+The compact binary on-disk parser contract is documented in
+`BDQ_v1_format.md`.
+
 For each completed session:
 
 ```text
@@ -138,6 +148,15 @@ The CSV and JSON filenames inside the archive must have the same basename.
 The archive should be generated only after both source files have been closed.
 If archive generation fails, the session may still be listed with
 `archive_ready: false`, but it must not be downloadable as a completed archive.
+
+For compact binary sessions:
+
+```text
+<session_stem>.bdq
+```
+
+No same-stem JSON sidecar or ZIP archive is required because metadata and
+channel schema are embedded in the `.bdq` file.
 
 ## Response Envelope
 
@@ -291,12 +310,30 @@ Example response:
   "logger_id": "Prototype E",
   "sessions": [
     {
-      "session_id": "Prototype E__2026-05-16_20-15-42",
-      "session_stem": "2026-05-16_20-15-42",
-      "csv_path": "/logs/2026-05-16_20-15-42.CSV",
-      "json_path": "/logs/2026-05-16_20-15-42.json",
-      "archive_path": "/logs/2026-05-16_20-15-42.zip",
+      "session_id": "Prototype E__260516_201542",
+      "session_stem": "260516_201542",
+      "csv_path": "/logs/260516_201542.CSV",
+      "json_path": "/logs/260516_201542.json",
+      "archive_path": "/logs/260516_201542.zip",
+      "data_format": "csv_zip",
+      "data_path": "/logs/260516_201542.zip",
       "archive_ready": true,
+      "data_ready": true,
+      "data_size": 123456,
+      "uploaded": false,
+      "acknowledged": false
+    },
+    {
+      "session_id": "Prototype E__260516_202012",
+      "session_stem": "260516_202012",
+      "csv_path": "",
+      "json_path": "",
+      "archive_path": "",
+      "data_format": "bdq",
+      "data_path": "/logs/260516_202012.bdq",
+      "archive_ready": false,
+      "data_ready": true,
+      "data_size": 654321,
       "uploaded": false,
       "acknowledged": false
     }
@@ -310,6 +347,9 @@ Downloads the session archive.
 
 Requires upload mode.
 
+CSV ZIP sessions only. For compact binary `.bdq` sessions, use
+`GET /api/v1/session/data?id=<session_id>`.
+
 Response:
 
 ```text
@@ -317,8 +357,22 @@ Content-Type: application/zip
 Content-Disposition: attachment; filename="<session_id>.zip"
 ```
 
-The import agent downloads to a `.part` file first, validates the completed zip,
-and only then moves the archive into the local import inbox/staging area.
+### `GET /api/v1/session/data?id=<session_id>`
+
+Downloads a loose compact binary `.bdq` session.
+
+Requires upload mode.
+
+Response:
+
+```text
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="<session_id>.bdq"
+```
+
+The import agent downloads to a `.part` file first, validates the completed
+`.bdq` file against `BDQ_v1_format.md`, and only then moves the file into the
+local import inbox/staging area.
 
 ### `POST /api/v1/session/ack`
 
@@ -330,7 +384,7 @@ Request JSON:
 
 ```json
 {
-  "session_id": "Prototype E__2026-05-16_20-15-42",
+  "session_id": "Prototype E__260516_201542",
   "status": "imported",
   "library_id": "default-library",
   "run_id": "run_2026-05-16T19-23-26_AWST",
@@ -358,7 +412,7 @@ Request JSON:
 
 ```json
 {
-  "session_id": "Prototype E__2026-05-16_20-15-42",
+  "session_id": "Prototype E__260516_201542",
   "mode": "move_to_uploaded"
 }
 ```
@@ -375,25 +429,25 @@ Successful cleanup response:
   "schema": "bodaqs.logger.session_delete",
   "api_version": 1,
   "logger_id": "Prototype E",
-  "session_id": "Prototype E__2026-05-16_20-15-42",
+  "session_id": "Prototype E__260516_201542",
   "acknowledged": true,
   "mode": "move_to_uploaded",
   "ok": true,
   "files": {
     "csv": {
       "ok": true,
-      "path": "/2026-05-16_20-15-42.CSV",
-      "target_path": "/uploaded/2026-05-16_20-15-42.CSV"
+      "path": "/260516_201542.CSV",
+      "target_path": "/uploaded/260516_201542.CSV"
     },
     "json": {
       "ok": true,
-      "path": "/2026-05-16_20-15-42.json",
-      "target_path": "/uploaded/2026-05-16_20-15-42.json"
+      "path": "/260516_201542.json",
+      "target_path": "/uploaded/260516_201542.json"
     },
     "archive": {
       "ok": true,
-      "path": "/2026-05-16_20-15-42.zip",
-      "target_path": "/uploaded/2026-05-16_20-15-42.zip"
+      "path": "/260516_201542.zip",
+      "target_path": "/uploaded/260516_201542.zip"
     }
   }
 }

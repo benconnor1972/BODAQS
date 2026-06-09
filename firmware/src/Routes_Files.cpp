@@ -126,6 +126,27 @@ static String dirOpenPath_(const String& dir) {
   return dir;
 }
 
+static void appendSdDiagnostics_(String& html, const String& openDir) {
+  const uint8_t cardType = SD_MMC.cardType();
+  File probe = SD_MMC.open(openDir.c_str());
+  html += F("<p><small>SD_MMC cardType=");
+  html += String((unsigned)cardType);
+  html += F(", openPath=");
+  html += htmlEscape(openDir);
+  html += F(", open=");
+  html += probe ? F("true") : F("false");
+  html += F(", isDir=");
+  html += (probe && probe.isDirectory()) ? F("true") : F("false");
+  if (cardType != CARD_NONE) {
+    html += F(", sizeMB=");
+    html += String((unsigned long long)(SD_MMC.cardSize() / (1024ULL * 1024ULL)));
+    html += F(", totalMB=");
+    html += String((unsigned long long)(SD_MMC.totalBytes() / (1024ULL * 1024ULL)));
+  }
+  html += F("</small></p>");
+  if (probe) probe.close();
+}
+
 static bool isFileInDir_(const String& filePath, const String& dirNorm) {
   // dirNorm is normalized directory (leading '/', trailing '/' unless root)
   const String p = filePath;
@@ -191,9 +212,9 @@ static String makeZipName_() {
     struct tm t;
     localtime_r(&now, &t);
     char buf[32];
-    // YYYY-MM-DD_HH-MM-SS.zip
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d_%02d-%02d-%02d.zip",
-             t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+    // YYMMDD_HHMMSS.zip
+    snprintf(buf, sizeof(buf), "%02d%02d%02d_%02d%02d%02d.zip",
+             (t.tm_year + 1900) % 100, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
     return String(buf);
   }
   return String("bodaqs_") + String(millis()) + String(".zip");
@@ -205,6 +226,7 @@ static void listDirMMC_(const String& dir, String& html, bool allowDelete) {
   File d = SD_MMC.open(openDir.c_str());
   if (!d || !d.isDirectory()) {
     html += F("<p>Failed to open directory.</p>");
+    appendSdDiagnostics_(html, openDir);
     if (d) d.close();
     return;
   }

@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .io_bdq import read_bdq
 from .import_agent_sources import (
     LOGGER_WIFI_CLEANUP_DELETE,
     LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED,
@@ -104,49 +105,32 @@ class LoggerWifiApiClient:
         *,
         chunk_size: int = 1024 * 256,
     ) -> Path:
-        session_id = str(session_id or "").strip()
-        if not session_id:
-            raise ValueError("session_id must be non-empty")
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be > 0")
-
-        target = Path(target_path).expanduser().resolve()
-        part_path = Path(str(target) + ".part")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if part_path.exists():
-            part_path.unlink()
-
-        request = Request(
-            self._url("/api/v1/session/archive", {"id": session_id}),
-            headers={"Accept": "application/zip"},
-            method="GET",
+        return self._download_session_payload_to_part(
+            session_id,
+            target_path,
+            endpoint="/api/v1/session/archive",
+            accept="application/zip",
+            label="Archive",
+            validator=self._validate_zip,
+            chunk_size=chunk_size,
         )
 
-        try:
-            with self._open(request, timeout_s=float(self.download_timeout_s)) as response:
-                expected_size = self._content_length(response)
-                bytes_written = 0
-                with part_path.open("wb") as out:
-                    while True:
-                        chunk = response.read(chunk_size)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        bytes_written += len(chunk)
-
-                if expected_size is not None and bytes_written != expected_size:
-                    raise LoggerWifiApiError(
-                        f"Archive download was incomplete: expected {expected_size} bytes, got {bytes_written}",
-                        error="download_incomplete",
-                    )
-
-            self._validate_zip(part_path)
-            os.replace(part_path, target)
-            return target
-        except Exception as exc:
-            if isinstance(exc, LoggerWifiApiError):
-                raise
-            raise LoggerWifiApiError(f"Archive download failed: {exc}", error="download_failed") from exc
+    def download_bdq_to_part(
+        self,
+        session_id: str,
+        target_path: str | Path,
+        *,
+        chunk_size: int = 1024 * 256,
+    ) -> Path:
+        return self._download_session_payload_to_part(
+            session_id,
+            target_path,
+            endpoint="/api/v1/session/data",
+            accept="application/octet-stream",
+            label="BDQ session data",
+            validator=self._validate_bdq,
+            chunk_size=chunk_size,
+        )
 
     def ack_session(
         self,
@@ -283,6 +267,61 @@ class LoggerWifiApiClient:
         except (TypeError, ValueError):
             return None
 
+    def _download_session_payload_to_part(
+        self,
+        session_id: str,
+        target_path: str | Path,
+        *,
+        endpoint: str,
+        accept: str,
+        label: str,
+        validator: Any,
+        chunk_size: int,
+    ) -> Path:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            raise ValueError("session_id must be non-empty")
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+
+        target = Path(target_path).expanduser().resolve()
+        part_path = Path(str(target) + ".part")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if part_path.exists():
+            part_path.unlink()
+
+        request = Request(
+            self._url(endpoint, {"id": session_id}),
+            headers={"Accept": accept},
+            method="GET",
+        )
+
+        try:
+            with self._open(request, timeout_s=float(self.download_timeout_s)) as response:
+                expected_size = self._content_length(response)
+                bytes_written = 0
+                with part_path.open("wb") as out:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        bytes_written += len(chunk)
+
+                if expected_size is not None and bytes_written != expected_size:
+                    raise LoggerWifiApiError(
+                        f"{label} download was incomplete: expected {expected_size} bytes, got {bytes_written}",
+                        error="download_incomplete",
+                    )
+
+            validator(part_path)
+            os.replace(part_path, target)
+            return target
+        except Exception as exc:
+            if isinstance(exc, LoggerWifiApiError):
+                raise
+            raise LoggerWifiApiError(f"{label} download failed: {exc}", error="download_failed") from exc
+
     def _validate_zip(self, path: Path) -> None:
         try:
             with zipfile.ZipFile(path, "r") as zf:
@@ -294,3 +333,15 @@ class LoggerWifiApiClient:
                 f"Downloaded archive failed ZIP validation at member: {bad_member}",
                 error="invalid_archive",
             )
+
+    def _validate_bdq(self, path: Path) -> None:
+        try:
+            info = read_bdq(path)
+        except Exception as exc:
+            raise LoggerWifiApiError(f"Downloaded BDQ data is not valid: {exc}", error="invalid_bdq") from exc
+        if not info.metadata:
+            raise LoggerWifiApiError("Downloaded BDQ data has no metadata chunk", error="invalid_bdq")
+        if not info.channel_schema:
+            raise LoggerWifiApiError("Downloaded BDQ data has no channel schema chunk", error="invalid_bdq")
+        if info.sample_count <= 0:
+            raise LoggerWifiApiError("Downloaded BDQ data has no decodable samples", error="invalid_bdq")

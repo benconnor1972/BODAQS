@@ -233,6 +233,7 @@ void setup() {
     };
 
     dumpAdc("before WiFi");
+#endif
   
   //Buffer debug
   static uint32_t g_sampleCounter = 0;

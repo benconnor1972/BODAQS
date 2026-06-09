@@ -380,6 +380,43 @@ class AdoptedImportAgentWorkspace:
     app_config: ImportAgentAppConfig
 
 
+@dataclass(frozen=True)
+class ImportAgentWorkspaceSyncReport:
+    added_libraries: tuple[str, ...] = ()
+    updated_libraries: tuple[str, ...] = ()
+    missing_libraries: tuple[str, ...] = ()
+    added_sources: tuple[str, ...] = ()
+    updated_sources: tuple[str, ...] = ()
+    missing_sources: tuple[str, ...] = ()
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(
+            self.added_libraries
+            or self.updated_libraries
+            or self.missing_libraries
+            or self.added_sources
+            or self.updated_sources
+            or self.missing_sources
+        )
+
+    @property
+    def has_syncable_changes(self) -> bool:
+        return bool(
+            self.added_libraries
+            or self.updated_libraries
+            or self.added_sources
+            or self.updated_sources
+        )
+
+
+@dataclass(frozen=True)
+class SyncedImportAgentWorkspace:
+    app_config_path: Path
+    app_config: ImportAgentAppConfig
+    report: ImportAgentWorkspaceSyncReport
+
+
 def default_import_agent_app_config_dir(
     *,
     platform: Optional[str] = None,
@@ -926,6 +963,136 @@ def adopt_import_agent_existing_workspace(
     )
     save_import_agent_app_config(app_config, resolved_app_config_path, overwrite=True)
     return AdoptedImportAgentWorkspace(app_config_path=resolved_app_config_path, app_config=app_config)
+
+
+def _library_config_matches(lhs: ImportAgentLibraryConfig, rhs: ImportAgentLibraryConfig) -> bool:
+    return (
+        lhs.display_name == rhs.display_name
+        and lhs.artifacts_dir == rhs.artifacts_dir
+        and lhs.data_syn_bike_export_enabled == rhs.data_syn_bike_export_enabled
+    )
+
+
+def _source_config_matches_for_workspace_sync(
+    lhs: ImportAgentManagedSourceConfig,
+    rhs: ImportAgentManagedSourceConfig,
+) -> bool:
+    return (
+        lhs.display_name == rhs.display_name
+        and lhs.source_root == rhs.source_root
+        and lhs.library_id == rhs.library_id
+        and lhs.source_type == rhs.source_type
+        and lhs.attach_session_note_on_import == rhs.attach_session_note_on_import
+        and lhs.force_reprocess == rhs.force_reprocess
+    )
+
+
+def check_import_agent_workspace_sync(
+    config: ImportAgentAppConfig | str | Path,
+) -> ImportAgentWorkspaceSyncReport:
+    current = load_import_agent_app_config(config) if isinstance(config, (str, Path)) else config
+    validate_import_agent_app_config(current)
+
+    discovered_libraries = discover_import_agent_libraries(current.libraries_root)
+    discovered_sources = discover_import_agent_sources(
+        current.sources_root,
+        known_library_ids={library.library_id for library in discovered_libraries},
+    )
+
+    current_libraries = {library.library_id: library for library in current.libraries}
+    current_sources = {source.source_id: source for source in current.sources}
+    discovered_library_map = {library.library_id: library for library in discovered_libraries}
+    discovered_source_map = {source.source_id: source for source in discovered_sources}
+
+    added_libraries: list[str] = []
+    updated_libraries: list[str] = []
+    missing_libraries: list[str] = []
+    for library_id, discovered in discovered_library_map.items():
+        existing = current_libraries.get(library_id)
+        if existing is None:
+            added_libraries.append(library_id)
+        elif not _library_config_matches(existing, discovered):
+            updated_libraries.append(library_id)
+    for library_id in current_libraries:
+        if library_id not in discovered_library_map:
+            missing_libraries.append(library_id)
+
+    added_sources: list[str] = []
+    updated_sources: list[str] = []
+    missing_sources: list[str] = []
+    for source_id, discovered in discovered_source_map.items():
+        existing = current_sources.get(source_id)
+        if existing is None:
+            added_sources.append(source_id)
+        elif not _source_config_matches_for_workspace_sync(existing, discovered):
+            updated_sources.append(source_id)
+    for source_id in current_sources:
+        if source_id not in discovered_source_map:
+            missing_sources.append(source_id)
+
+    return ImportAgentWorkspaceSyncReport(
+        added_libraries=tuple(sorted(added_libraries)),
+        updated_libraries=tuple(sorted(updated_libraries)),
+        missing_libraries=tuple(sorted(missing_libraries)),
+        added_sources=tuple(sorted(added_sources)),
+        updated_sources=tuple(sorted(updated_sources)),
+        missing_sources=tuple(sorted(missing_sources)),
+    )
+
+
+def sync_import_agent_workspace_from_roots(
+    app_config_path: str | Path,
+) -> SyncedImportAgentWorkspace:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    current = load_import_agent_app_config(config_path)
+    report = check_import_agent_workspace_sync(current)
+
+    if not report.has_syncable_changes:
+        return SyncedImportAgentWorkspace(
+            app_config_path=config_path,
+            app_config=current,
+            report=report,
+        )
+
+    discovered_libraries = discover_import_agent_libraries(current.libraries_root)
+    discovered_sources = discover_import_agent_sources(
+        current.sources_root,
+        known_library_ids={library.library_id for library in discovered_libraries},
+    )
+    discovered_library_map = {library.library_id: library for library in discovered_libraries}
+    discovered_source_map = {source.source_id: source for source in discovered_sources}
+
+    library_entries: dict[str, ImportAgentLibraryConfig] = {
+        library.library_id: library for library in current.libraries
+    }
+    for library_id in (*report.added_libraries, *report.updated_libraries):
+        library_entries[library_id] = discovered_library_map[library_id]
+
+    source_entries: dict[str, ImportAgentManagedSourceConfig] = {
+        source.source_id: source for source in current.sources
+    }
+    for source_id in (*report.added_sources, *report.updated_sources):
+        discovered = discovered_source_map[source_id]
+        existing = source_entries.get(source_id)
+        source_entries[source_id] = (
+            discovered
+            if existing is None
+            else replace(discovered, enabled=existing.enabled)
+        )
+
+    updated = make_import_agent_app_config(
+        sources_root=current.sources_root,
+        libraries_root=current.libraries_root,
+        libraries=sorted(library_entries.values(), key=lambda item: item.library_id),
+        sources=sorted(source_entries.values(), key=lambda item: item.source_id),
+        auto_start=current.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return SyncedImportAgentWorkspace(
+        app_config_path=config_path,
+        app_config=updated,
+        report=report,
+    )
 
 
 def update_import_agent_source_enabled(
@@ -1495,7 +1662,7 @@ def provision_import_agent_source(
         "done_dir": "done",
         "failed_dir": "failed",
         "staging_dir": "staging",
-        "archive_patterns": ["*.zip"],
+        "archive_patterns": ["*.zip", "*.bdq"],
         "run_tz_label": str(run_tz_label).strip() or "LOCAL",
         "poll_interval_s": float(poll_interval_s),
         "settle_time_s": float(settle_time_s),

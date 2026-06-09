@@ -94,6 +94,7 @@ static void handleDevice_(WebServer& srv) {
   caps.add("upload_mode");
   caps.add("session_discovery");
   caps.add("session_archive_zip");
+  caps.add("session_data");
   caps.add("session_ack");
   caps.add("session_delete");
   caps.add("mdns_discovery");
@@ -191,8 +192,12 @@ static void handleSessions_(WebServer& srv) {
     item["csv_path"] = sessions[i].csvPath;
     item["json_path"] = sessions[i].jsonPath;
     item["archive_path"] = sessions[i].archivePath;
+    item["data_format"] = sessions[i].dataFormat;
+    item["data_path"] = sessions[i].dataPath;
     item["archive_ready"] = sessions[i].archiveReady;
+    item["data_ready"] = sessions[i].dataReady;
     item["archive_size"] = sessions[i].archiveSize;
+    item["data_size"] = sessions[i].dataSize;
     item["uploaded"] = sessions[i].uploaded;
     item["acknowledged"] = sessions[i].acknowledged;
   }
@@ -217,6 +222,10 @@ static void handleArchive_(WebServer& srv) {
     sendError_(srv, 404, "unknown_session", "No complete session matches the requested id.");
     return;
   }
+  if (!session.archiveReady || !session.archivePath.length()) {
+    sendError_(srv, 404, "archive_not_available", "The requested session does not have a CSV ZIP archive.");
+    return;
+  }
 
   File f = SD_MMC.open(session.archivePath.c_str(), FILE_READ);
   if (!f || f.isDirectory()) {
@@ -230,6 +239,51 @@ static void handleArchive_(WebServer& srv) {
   srv.sendHeader(F("Content-Disposition"), String(F("attachment; filename=\"")) + filename + F("\""));
   srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
   srv.send(200, F("application/zip"), "");
+
+  static uint8_t buf[2048];
+  int n = 0;
+  while ((n = f.read(buf, sizeof(buf))) > 0) {
+    srv.sendContent_P(reinterpret_cast<const char*>(buf), n);
+    delay(0);
+  }
+  f.close();
+  srv.sendContent("");
+}
+
+static void handleData_(WebServer& srv) {
+  if (!requireUploadMode_(srv)) return;
+
+  if (!srv.hasArg("id") || srv.arg("id").length() == 0) {
+    sendError_(srv, 400, "missing_session_id", "Missing required query argument: id.");
+    return;
+  }
+  if (SD_MMC.cardType() == CARD_NONE) {
+    sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
+    return;
+  }
+
+  UploadSessionScanner::SessionInfo session;
+  if (!UploadSessionScanner::findBySessionId(srv.arg("id").c_str(), session, kSessionScanDir)) {
+    sendError_(srv, 404, "unknown_session", "No complete session matches the requested id.");
+    return;
+  }
+  if (session.dataFormat != "bdq" || !session.dataReady || !session.dataPath.length()) {
+    sendError_(srv, 404, "data_not_available", "The requested session does not have a loose BDQ data file.");
+    return;
+  }
+
+  File f = SD_MMC.open(session.dataPath.c_str(), FILE_READ);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    sendError_(srv, 404, "data_not_found", "The session data file is not available.");
+    return;
+  }
+
+  const String filename = session.sessionId + F(".bdq");
+  srv.sendHeader(F("Cache-Control"), F("no-store"));
+  srv.sendHeader(F("Content-Disposition"), String(F("attachment; filename=\"")) + filename + F("\""));
+  srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  srv.send(200, F("application/octet-stream"), "");
 
   static uint8_t buf[2048];
   int n = 0;
@@ -329,6 +383,11 @@ static void addCleanupResult_(JsonDocument& doc, const UploadSessionCleanup::Cle
   archive["ok"] = result.archiveOk;
   archive["path"] = result.archivePath;
   if (result.archiveTargetPath.length()) archive["target_path"] = result.archiveTargetPath;
+
+  JsonObject data = files["data"].to<JsonObject>();
+  data["ok"] = result.dataOk;
+  data["path"] = result.dataPath;
+  if (result.dataTargetPath.length()) data["target_path"] = result.dataTargetPath;
 }
 
 static void handleDelete_(WebServer& srv) {
@@ -422,6 +481,10 @@ void registerApiRoutes(WebServer& srv) {
   S->on("/api/v1/session/archive", HTTP_GET, [S]() {
     noteHttpActivity_();
     handleArchive_(*S);
+  });
+  S->on("/api/v1/session/data", HTTP_GET, [S]() {
+    noteHttpActivity_();
+    handleData_(*S);
   });
 
   S->on("/api/v1/session/ack", HTTP_POST, [S]() {

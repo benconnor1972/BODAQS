@@ -163,11 +163,11 @@ adapter.get_library(library_id)
 adapter.refresh_library(library_id)
 adapter.get_catalog(library_id)
 
-adapter.list_study_sets(library_id)
-adapter.load_study_set(library_id, study_set_id)
-adapter.create_study_set(library_id, payload)
-adapter.update_study_set(library_id, study_set_id, expected_revision, payload)
-adapter.delete_study_set(library_id, study_set_id)
+adapter.list_study_sets()
+adapter.load_study_set(study_set_id)
+adapter.create_study_set(payload)
+adapter.update_study_set(study_set_id, expected_revision, payload)
+adapter.delete_study_set(study_set_id)
 
 adapter.get_timeseries_window(library_id, request)
 ```
@@ -233,8 +233,7 @@ Output shape should align with:
   "root": "C:/Users/.../libraries/default-library",
   "capabilities": {
     "read_processed_library": true,
-    "read_parquet": true,
-    "write_study_sets": true
+    "read_parquet": true
   }
 }
 ```
@@ -272,7 +271,7 @@ Build each row from:
 
 Each row should include:
 
-- `session_key`, `run_id`, `session_id`
+- `library_id`, `session_ref_id`, `session_key`, `run_id`, `session_id`
 - display labels
 - timestamps:
   - `started_at_utc`
@@ -283,9 +282,6 @@ Each row should include:
   - `missing`
   - `draft`
   - `edited`
-  - `unreadable`
-  - `template_missing`
-  - `invalid`
 - projected note fields:
   - `bike`
   - `rider`
@@ -343,13 +339,12 @@ The implementation should be tolerant of sessions with no metrics.
 
 ## 9. Study Set Persistence
 
-Study Sets live at:
+Study Sets live at the configured libraries root:
 
 ```text
-<library>/
-  library/
-    study_sets/
-      <study_set_id>.json
+<libraries_root>/
+  study_sets/
+    <study_set_id>.json
 ```
 
 ### Validation
@@ -359,10 +354,11 @@ Validate:
 - `schema == "bodaqs.study_set"`
 - supported `version`
 - filename-safe `study_set_id`
+- `session_ref_id == f"{library_id}|||{session_key}"`
 - `session_key == f"{run_id}::{session_id}"`
-- top-level sessions exist in the library catalog
-- grouping sessions are contained in top-level sessions
-- bookmark sessions are contained in top-level sessions
+- top-level sessions exist in one of the configured libraries
+- grouping `session_refs` are contained in top-level sessions
+- bookmark `session_ref` values are contained in top-level sessions
 - each bookmark has exactly one of `time_s` or `time_window`
 - track references are structurally valid, even if track endpoints are deferred
 
@@ -517,11 +513,12 @@ Recommended output:
 <fixture_dir>/
   capabilities.json
   libraries.json
+  study_sets/
+    index.json
+    <study_set_id>.json
   libraries/
     <library_id>/
       catalog.json
-      study_sets/
-        <study_set_id>.json
       timeseries_windows/
         <session_key_safe>__front-rear-wheel.json
 ```
@@ -778,6 +775,8 @@ Status: complete.
 - add a thin FastAPI wrapper around `LibraryAdapter`
 - expose health, capabilities, library, catalog, Study Set, and time-series
   endpoints
+- expose a local setup endpoint that switches the active `libraries_root` and
+  rebuilds the adapter state
 - map adapter exceptions to the standard JSON error envelope
 - add CLI startup via `python -m bodaqs_analysis.library_api_service`
 - add focused route tests with `fastapi.testclient.TestClient`

@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,7 @@ from bodaqs_analysis.library_api import (
     derive_object_id,
     export_library_fixture,
     make_session_key,
+    make_session_ref_id,
     make_unique_object_id,
     parse_session_key,
 )
@@ -58,19 +60,28 @@ def _make_library_definition(
     )
 
 
-def _make_session(library_root: Path, run_id: str, session_id: str) -> dict:
+def _make_session(
+    library_root: Path,
+    run_id: str,
+    session_id: str,
+    *,
+    library_id: str = "default-library",
+) -> dict:
     (library_root / "runs" / run_id / "sessions" / session_id).mkdir(parents=True)
+    session_key = make_session_key(run_id, session_id)
     return {
+        "library_id": library_id,
         "run_id": run_id,
         "session_id": session_id,
-        "session_key": make_session_key(run_id, session_id),
+        "session_key": session_key,
+        "session_ref_id": make_session_ref_id(library_id, session_key),
     }
 
 
-def _write_catalog_fixture_session(library_root: Path) -> dict:
+def _write_catalog_fixture_session(library_root: Path, *, library_id: str = "default-library") -> dict:
     run_id = "run_2026-05-25T13-57-10_LOCAL"
     session_id = "2026-05-18_13-27-14"
-    session_ref = _make_session(library_root, run_id, session_id)
+    session_ref = _make_session(library_root, run_id, session_id, library_id=library_id)
     session_root = library_root / "runs" / run_id / "sessions" / session_id
 
     _write_json(
@@ -203,6 +214,66 @@ def _write_catalog_fixture_session(library_root: Path) -> dict:
     return session_ref
 
 
+def _write_gps_fit_stream(
+    library_root: Path,
+    session_ref: dict,
+    *,
+    times: list[float],
+    coordinates: list[tuple[float, float]] | None = None,
+) -> None:
+    if coordinates is not None and len(coordinates) != len(times):
+        raise ValueError("coordinates must contain one lon/lat pair for each time.")
+    stream_root = (
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+        / "session"
+        / "streams"
+        / "gps_fit"
+    )
+    _write_json(
+        stream_root / "meta.json",
+        {
+            "kind": "intermittent",
+            "stream_name": "gps_fit",
+            "time_col": "time_s",
+            "channel_info": {
+                "gps_fit_position_latitude_dom_world [deg]": {
+                    "role": "position_latitude",
+                    "quantity": "latitude",
+                    "unit": "deg",
+                },
+                "gps_fit_position_longitude_dom_world [deg]": {
+                    "role": "position_longitude",
+                    "quantity": "longitude",
+                    "unit": "deg",
+                },
+                "gps_fit_altitude_dom_world [m]": {
+                    "role": "altitude",
+                    "quantity": "altitude",
+                    "unit": "m",
+                },
+            },
+        },
+    )
+    pd.DataFrame(
+        {
+            "time_s": times,
+            "gps_fit_position_latitude_dom_world [deg]": [
+                coordinates[index][1] if coordinates is not None else -31.95 - (index * 0.0001)
+                for index, _ in enumerate(times)
+            ],
+            "gps_fit_position_longitude_dom_world [deg]": [
+                coordinates[index][0] if coordinates is not None else 115.86 + (index * 0.0001)
+                for index, _ in enumerate(times)
+            ],
+            "gps_fit_altitude_dom_world [m]": [200.0 + index for index, _ in enumerate(times)],
+        }
+    ).to_parquet(stream_root / "df.parquet", index=False)
+
+
 def test_derive_object_id_from_display_name() -> None:
     assert derive_object_id("Setup Comparison 1") == "setup-comparison-1"
     assert derive_object_id("Ben's Stévo / Prototype F!") == "ben-s-stevo-prototype-f"
@@ -325,6 +396,62 @@ def test_library_adapter_refresh_updates_library_cache(tmp_path: Path) -> None:
     assert [library["library_id"] for library in refreshed] == ["new-library"]
 
 
+def test_library_adapter_loads_and_saves_session_note(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    loaded = adapter.load_session_note("default-library", {"session_ref": session_ref})
+    assert loaded["schema"] == "bodaqs.library_api.session_note"
+    assert loaded["present"] is True
+    assert loaded["note"]["values"]["bike"] == "Prototype F"
+    assert loaded["note"]["draft"] is True
+    assert loaded["template"]["status"] == "ok"
+    assert "bike" in {field["field_id"] for field in loaded["template"]["fields"]}
+
+    note = dict(loaded["note"])
+    note["values"] = {**note["values"], "bike": "Prototype G", "rider": "Ben"}
+    note["free_text_notes"] = "Sag checked before the shuttle laps."
+    note["draft"] = False
+
+    saved = adapter.save_session_note(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "note": note,
+        },
+    )
+
+    assert saved["present"] is True
+    assert saved["note"]["values"]["bike"] == "Prototype G"
+    assert saved["note"]["free_text_notes"] == "Sag checked before the shuttle laps."
+    assert saved["note"]["draft"] is False
+
+    saved_path = (
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+        / "annotations"
+        / "session_notes.json"
+    )
+    persisted = _read_json(saved_path)
+    assert persisted["values"]["bike"] == "Prototype G"
+    assert persisted["draft"] is False
+
+    catalog = adapter.get_catalog("default-library", refresh=True)
+    row = catalog["rows"][0]
+    assert row["note_status"]["status"] == "edited"
+    assert row["note_fields"]["bike"] == "Prototype G"
+
+
 def test_library_adapter_creates_loads_lists_and_deletes_study_set(
     tmp_path: Path,
 ) -> None:
@@ -346,7 +473,7 @@ def test_library_adapter_creates_loads_lists_and_deletes_study_set(
         },
     )
 
-    study_set_path = library_root / "library" / "study_sets" / "setup-comparison.json"
+    study_set_path = libraries_root / "study_sets" / "setup-comparison.json"
     assert created["schema"] == "bodaqs.study_set"
     assert created["version"] == 1
     assert created["study_set_id"] == "setup-comparison"
@@ -361,6 +488,9 @@ def test_library_adapter_creates_loads_lists_and_deletes_study_set(
             "revision": 1,
             "updated_at": created["provenance"]["updated_at"],
             "session_count": 1,
+            "library_count": 1,
+            "grouping_count": 0,
+            "track_count": 0,
             "path": str(study_set_path),
         }
     ]
@@ -372,6 +502,56 @@ def test_library_adapter_creates_loads_lists_and_deletes_study_set(
     }
     with pytest.raises(StudySetNotFoundError):
         adapter.load_study_set("default-library", "setup-comparison")
+
+
+def test_library_adapter_reads_and_migrates_legacy_study_set_location(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _make_session(library_root, "run_1", "session_1")
+    legacy_path = libraries_root / "library" / "study_sets" / "legacy-study-set.json"
+    _write_json(
+        legacy_path,
+        {
+            "schema": "bodaqs.study_set",
+            "version": 1,
+            "study_set_id": "legacy-study-set",
+            "display_name": "Legacy Study Set",
+            "revision": 1,
+            "sessions": [session_ref],
+            "groupings": [],
+            "bookmarks": [],
+            "tracks": [],
+            "provenance": {
+                "created_at": "2026-06-01T00:00:00Z",
+                "created_by": "test",
+                "created_from": {"kind": "manual_selection", "details": {}},
+                "updated_at": "2026-06-01T00:00:00Z",
+            },
+            "display_state": {"bodaqs_web_v1": {}},
+        },
+    )
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.list_study_sets()[0]["path"] == str(legacy_path)
+    loaded = adapter.load_study_set("legacy-study-set")
+    assert loaded["display_name"] == "Legacy Study Set"
+
+    loaded["display_name"] = "Migrated Study Set"
+    updated = adapter.update_study_set(
+        "legacy-study-set",
+        expected_revision=1,
+        payload=loaded,
+    )
+
+    canonical_path = libraries_root / "study_sets" / "legacy-study-set.json"
+    assert updated["revision"] == 2
+    assert canonical_path.exists()
+    assert not legacy_path.exists()
 
 
 def test_library_adapter_creates_unique_study_set_ids(tmp_path: Path) -> None:
@@ -396,6 +576,50 @@ def test_library_adapter_creates_unique_study_set_ids(tmp_path: Path) -> None:
 
     assert first["study_set_id"] == "setup-comparison"
     assert second["study_set_id"] == "setup-comparison-2"
+
+
+def test_library_adapter_study_sets_can_span_libraries(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    first_library = libraries_root / "default-library"
+    second_library = libraries_root / "second-library"
+    _make_library_definition(
+        first_library,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _make_library_definition(
+        second_library,
+        library_id="second-library",
+        display_name="Second Library",
+    )
+    first_ref = _make_session(first_library, "run_1", "session_1", library_id="default-library")
+    second_ref = _make_session(second_library, "run_2", "session_2", library_id="second-library")
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_study_set(
+        {
+            "display_name": "Cross Library Comparison",
+            "sessions": [first_ref, second_ref],
+            "groupings": [
+                {
+                    "grouping_id": "comparison",
+                    "display_name": "Comparison",
+                    "session_refs": [first_ref["session_ref_id"], second_ref["session_ref_id"]],
+                }
+            ],
+        },
+    )
+
+    assert created["study_set_id"] == "cross-library-comparison"
+    assert {session["library_id"] for session in created["sessions"]} == {
+        "default-library",
+        "second-library",
+    }
+    assert created["groupings"][0]["session_refs"] == [
+        first_ref["session_ref_id"],
+        second_ref["session_ref_id"],
+    ]
+    assert adapter.list_study_sets()[0]["library_count"] == 2
 
 
 def test_library_adapter_updates_study_set_with_revision_check(
@@ -463,6 +687,99 @@ def test_library_adapter_updates_study_set_with_revision_check(
     assert exc.value.details["current_revision"] == 2
 
 
+def test_library_adapter_session_filter_crud_and_revision_check(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_session_filter(
+        {
+            "display_name": "Ben rides with GPS",
+            "description": "Reusable GPS comparison helper.",
+            "category": "gps",
+            "predicate": {
+                "op": "and",
+                "children": [
+                    {"field": "rider", "op": "contains", "value": "ben"},
+                    {"field": "gps.quality", "op": "eq", "value": "usable"},
+                ],
+            },
+        }
+    )
+
+    filter_path = libraries_root / "session_filters" / "ben-rides-with-gps.json"
+    assert created["schema"] == "bodaqs.session_filter"
+    assert created["version"] == 1
+    assert created["filter_id"] == "ben-rides-with-gps"
+    assert created["revision"] == 1
+    assert filter_path.exists()
+    assert adapter.list_session_filters()[0]["filter_id"] == "ben-rides-with-gps"
+    assert adapter.load_session_filter("ben-rides-with-gps") == created
+
+    updated_payload = dict(created)
+    updated_payload["display_name"] = "Ben rides with usable GPS"
+    updated = adapter.update_session_filter(
+        "ben-rides-with-gps",
+        expected_revision=1,
+        payload=updated_payload,
+    )
+    assert updated["revision"] == 2
+    assert updated["display_name"] == "Ben rides with usable GPS"
+
+    with pytest.raises(RevisionConflictError) as exc:
+        adapter.update_session_filter(
+            "ben-rides-with-gps",
+            expected_revision=1,
+            payload=updated,
+        )
+    assert exc.value.details["current_revision"] == 2
+
+    assert adapter.delete_session_filter("ben-rides-with-gps") == {
+        "deleted": True,
+        "filter_id": "ben-rides-with-gps",
+    }
+
+
+def test_library_adapter_session_filter_accepts_trackpoint_crossing_predicate(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_session_filter(
+        {
+            "display_name": "Ben rides through test points",
+            "description": "Rider plus trackpoint crossing helper.",
+            "category": "riders",
+            "predicate": {
+                "op": "and",
+                "children": [
+                    {"field": "rider", "op": "contains", "value": "Ben"},
+                    {
+                        "field": "trackpoint.crossing",
+                        "op": "matches",
+                        "value": {
+                            "track_id": "ben-stevo-2026-02-19",
+                            "trackpoint_ids": ["test", "in-tween", "test-2"],
+                            "match_mode": "all",
+                            "tolerance_m": 10,
+                        },
+                    },
+                ],
+            },
+        }
+    )
+
+    trackpoint_predicate = created["predicate"]["children"][1]
+    assert trackpoint_predicate == {
+        "field": "trackpoint.crossing",
+        "op": "matches",
+        "value": {
+            "track_id": "ben-stevo-2026-02-19",
+            "trackpoint_ids": ["test", "in-tween", "test-2"],
+            "match_mode": "all",
+            "tolerance_m": 10.0,
+        },
+    }
+
+
 def test_create_study_set_rejects_missing_session(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -473,10 +790,15 @@ def test_create_study_set_rejects_missing_session(tmp_path: Path) -> None:
     )
     adapter = LibraryAdapter(libraries_root)
     missing_session = {
+        "library_id": "default-library",
         "run_id": "run_missing",
         "session_id": "session_missing",
         "session_key": make_session_key("run_missing", "session_missing"),
     }
+    missing_session["session_ref_id"] = make_session_ref_id(
+        missing_session["library_id"],
+        missing_session["session_key"],
+    )
 
     with pytest.raises(InvalidStudySetError) as exc:
         adapter.create_study_set(
@@ -486,6 +808,7 @@ def test_create_study_set_rejects_missing_session(tmp_path: Path) -> None:
 
     assert exc.value.code == "invalid_study_set"
     assert exc.value.details["session_key"] == "run_missing::session_missing"
+    assert exc.value.details["session_ref_id"] == "default-library|||run_missing::session_missing"
 
 
 def test_create_study_set_rejects_grouping_outside_top_level_sessions(
@@ -518,7 +841,7 @@ def test_create_study_set_rejects_grouping_outside_top_level_sessions(
             },
         )
 
-    assert exc.value.details["session_key"] == other_session_ref["session_key"]
+    assert exc.value.details["session_ref_id"] == other_session_ref["session_ref_id"]
 
 
 def test_create_study_set_validates_bookmark_shape(tmp_path: Path) -> None:
@@ -588,7 +911,9 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert catalog["row_count"] == 1
     row = catalog["rows"][0]
     assert row["schema"] == "bodaqs.session_catalog_row"
+    assert row["library_id"] == "default-library"
     assert row["session_key"] == session_ref["session_key"]
+    assert row["session_ref_id"] == session_ref["session_ref_id"]
     assert row["display"]["label"] == "Prototype F - Rough descent"
     assert row["timestamps"]["started_at_utc"] == "2026-05-18T05:27:14Z"
     assert row["timestamps"]["processed_at"] == "2026-05-25T13:57:10"
@@ -631,6 +956,326 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert front_signal["signal_id"] == "front-wheel-disp-mm"
     assert front_signal["display_name"] == "Front Wheel Disp"
     assert front_signal["processing_role"] == "primary_analysis"
+
+
+def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(library_root, session_ref, times=[-100.0, 0.0, 2.0, 100.0])
+    adapter = LibraryAdapter(libraries_root)
+
+    summary = adapter.get_catalog("default-library")["rows"][0]["gps_summary"]
+
+    assert summary["schema"] == "bodaqs.session_gps_summary"
+    assert summary["present"] is True
+    assert summary["preferred_source"] == "fit_enrichment"
+    assert summary["position_point_count"] == 2
+    assert summary["quality"] == "limited"
+    assert "gps_low_point_count" in summary["warnings"]
+    assert summary == adapter.get_session_gps_summary("default-library", session_ref)
+
+    points = adapter.get_session_gps_points(
+        "default-library",
+        {
+            **session_ref,
+            "max_points": 2,
+        },
+    )
+    assert points["schema"] == "bodaqs.session_gps_points"
+    assert points["present"] is True
+    assert points["source"]["kind"] == "fit_enrichment"
+    assert points["sampling"]["source_points"] == 2
+    assert points["sampling"]["returned_points"] == 2
+    assert [point["time_s"] for point in points["points"]] == [0.0, 2.0]
+    assert points["sampling"]["window"] == {"start_s": 0.0, "end_s": 2.0}
+
+
+def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
+    client = TestClient(create_app(libraries_root))
+
+    policy_response = client.get("/api/v1/geospatial-policies/default-geospatial-policy")
+    assert policy_response.status_code == 200
+    assert policy_response.json()["schema"] == "bodaqs.geospatial_policy"
+
+    track_payload = {
+        "track_id": "test-track",
+        "display_name": "Test Track",
+        "path": {
+            "type": "LineString",
+            "length_m": 100.0,
+            "coordinates": [
+                [115.86, -31.95, 200.0],
+                [115.861, -31.95, 201.0],
+            ],
+        },
+        "trackpoints": [
+            {
+                "trackpoint_id": "start-gate",
+                "display_name": "Start gate",
+                "station_m": 50.0,
+                "position": {
+                    "type": "Point",
+                    "coordinates": [115.8605, -31.95, 200.0],
+                },
+            }
+        ],
+    }
+    create_response = client.post("/api/v1/tracks", json=track_payload)
+    assert create_response.status_code == 200
+    assert create_response.json()["track_id"] == "test-track"
+    assert client.get("/api/v1/tracks").json()[0]["track_id"] == "test-track"
+
+    gps_response = client.post(
+        "/api/v1/libraries/default-library/sessions/gps-summary",
+        json=session_ref,
+    )
+    assert gps_response.status_code == 200
+    assert gps_response.json()["quality"] == "usable"
+
+    points_response = client.post(
+        "/api/v1/libraries/default-library/sessions/gps/points",
+        json={**session_ref, "max_points": 2},
+    )
+    assert points_response.status_code == 200
+    points = points_response.json()
+    assert points["schema"] == "bodaqs.session_gps_points"
+    assert points["sampling"]["source_points"] == 3
+    assert points["sampling"]["returned_points"] == 2
+    assert points["points"][0]["time_s"] == 0.0
+    assert points["points"][-1]["time_s"] == 2.0
+
+    match_response = client.post(
+        "/api/v1/track-matches/compute",
+        json={"track_id": "test-track", "session_ref": session_ref},
+    )
+    assert match_response.status_code == 200
+    match = match_response.json()
+    assert match["schema"] == "bodaqs.session_track_match"
+    assert match["status"] == "matched"
+    assert match["trackpoint_results"][0]["trackpoint_id"] == "start-gate"
+    assert match["trackpoint_results"][0]["crossed"] is True
+    assert match["trackpoint_results"][0]["crossing_time_s"] == pytest.approx(1.0)
+
+
+def test_library_adapter_track_match_requires_cutline_crossing(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8604, -31.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "length_m": 100.0,
+                "coordinates": [
+                    [115.86, -31.95],
+                    [115.861, -31.95],
+                ],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "late-gate",
+                    "display_name": "Late gate",
+                    "station_m": 90.0,
+                    "position": {"type": "Point", "coordinates": [115.8609, -31.95]},
+                }
+            ],
+        }
+    )
+
+    match = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+    result = match["trackpoint_results"][0]
+
+    assert match["status"] == "partial"
+    assert result["trackpoint_id"] == "late-gate"
+    assert result["crossed"] is False
+    assert result["min_distance_m"] > 5.0
+
+
+def test_library_adapter_trackpoint_match_query_can_be_cancelled(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "coordinates": [[115.86, -31.95], [115.861, -31.951]],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "start-gate",
+                    "display_name": "Start gate",
+                    "station_m": 0.0,
+                    "position": {"type": "Point", "coordinates": [115.86, -31.95]},
+                }
+            ],
+        }
+    )
+
+    query = adapter.create_trackpoint_match_query(
+        {
+            "scope": {"library_ids": ["default-library"]},
+            "track_id": "test-track",
+            "trackpoint_ids": ["start-gate"],
+            "match_mode": "all",
+            "tolerance_m": 5.0,
+        }
+    )
+    assert query["status"] == "queued"
+    cancelled = adapter.cancel_trackpoint_match_query(query["query_id"])
+    assert cancelled["status"] == "cancelled"
+
+    after_run = adapter.run_trackpoint_match_query(query["query_id"])
+    assert after_run["status"] == "cancelled"
+    results = adapter.load_trackpoint_match_query_results(query["query_id"])
+    assert results["result_count"] == 0
+
+
+def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
+    client = TestClient(create_app(libraries_root))
+    track_payload = {
+        "track_id": "test-track",
+        "display_name": "Test Track",
+        "path": {
+            "type": "LineString",
+            "length_m": 100.0,
+            "coordinates": [
+                [115.86, -31.95, 200.0],
+                [115.861, -31.95, 201.0],
+            ],
+        },
+        "trackpoints": [
+            {
+                "trackpoint_id": "start-gate",
+                "display_name": "Start gate",
+                "station_m": 50.0,
+                "position": {
+                    "type": "Point",
+                    "coordinates": [115.8605, -31.95, 200.0],
+                },
+            }
+        ],
+    }
+    assert client.post("/api/v1/tracks", json=track_payload).status_code == 200
+
+    create_response = client.post(
+        "/api/v1/trackpoint-match-queries",
+        json={
+            "scope": {"library_ids": ["default-library"]},
+            "track_id": "test-track",
+            "trackpoint_ids": ["start-gate"],
+            "match_mode": "all",
+            "tolerance_m": 5.0,
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["schema"] == "bodaqs.trackpoint_match_query"
+    assert created["candidate_session_count"] == 1
+
+    query_id = created["query_id"]
+    status = created
+    for _ in range(50):
+        status_response = client.get(f"/api/v1/trackpoint-match-queries/{query_id}")
+        assert status_response.status_code == 200
+        status = status_response.json()
+        if status["status"] == "completed":
+            break
+        time.sleep(0.05)
+
+    assert status["status"] == "completed"
+    assert status["processed_session_count"] == 1
+    assert status["matched_session_count"] == 1
+
+    results_response = client.get(f"/api/v1/trackpoint-match-queries/{query_id}/results", params={"limit": 1})
+    assert results_response.status_code == 200
+    results = results_response.json()
+    assert results["schema"] == "bodaqs.trackpoint_match_query_results"
+    assert results["result_count"] == 1
+    assert results["results"][0]["session_ref"]["session_ref_id"] == session_ref["session_ref_id"]
+    assert results["results"][0]["matched_trackpoint_ids"] == ["start-gate"]
+
+    repeated = client.post(
+        "/api/v1/trackpoint-match-queries",
+        json={
+            "scope": {"library_ids": ["default-library"]},
+            "track_id": "test-track",
+            "trackpoint_ids": ["start-gate"],
+            "match_mode": "all",
+            "tolerance_m": 5.0,
+        },
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["query_id"] == query_id
 
 
 def test_library_adapter_catalog_cache_refreshes_explicitly(tmp_path: Path) -> None:
@@ -841,8 +1486,6 @@ def test_export_library_fixture_writes_static_payloads(tmp_path: Path) -> None:
 
     study_set_path = (
         fixture_dir
-        / "libraries"
-        / "default-library"
         / "study_sets"
         / "fixture-study-set.json"
     )
@@ -851,7 +1494,7 @@ def test_export_library_fixture_writes_static_payloads(tmp_path: Path) -> None:
     assert study_set["sessions"][0]["session_key"] == session_ref["session_key"]
 
     study_set_index = _read_json(
-        fixture_dir / "libraries" / "default-library" / "study_sets" / "index.json"
+        fixture_dir / "study_sets" / "index.json"
     )
     assert study_set_index[0]["path"].endswith("fixture-study-set.json")
 
@@ -896,8 +1539,6 @@ def test_export_library_fixture_uses_existing_study_set(tmp_path: Path) -> None:
 
     study_set_path = (
         fixture_dir
-        / "libraries"
-        / "default-library"
         / "study_sets"
         / "existing-study-set.json"
     )
@@ -1072,6 +1713,56 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert refresh.status_code == 200
     assert refresh.json()["refreshed"] is True
 
+    note_response = client.post(
+        "/api/v1/libraries/default-library/sessions/note",
+        json={"session_ref": session_ref},
+    )
+    assert note_response.status_code == 200
+    note_payload = note_response.json()
+    assert note_payload["present"] is True
+    assert note_payload["note"]["values"]["rider"] == "Ben"
+
+    edited_note = note_payload["note"]
+    edited_note["values"] = {**edited_note["values"], "rider": "Alex"}
+    edited_note["draft"] = False
+    save_note_response = client.put(
+        "/api/v1/libraries/default-library/sessions/note",
+        json={"session_ref": session_ref, "note": edited_note},
+    )
+    assert save_note_response.status_code == 200
+    assert save_note_response.json()["note"]["values"]["rider"] == "Alex"
+    assert save_note_response.json()["note"]["draft"] is False
+
+    other_libraries_root = tmp_path / "other-libraries"
+    other_library_root = other_libraries_root / "field-library"
+    _make_library_definition(
+        other_library_root,
+        library_id="field-library",
+        display_name="Field Library",
+    )
+    other_session_ref = _write_catalog_fixture_session(other_library_root, library_id="field-library")
+
+    switch_root = client.post(
+        "/api/v1/config/libraries-root",
+        json={"libraries_root": str(other_libraries_root)},
+    )
+    assert switch_root.status_code == 200
+    assert switch_root.json()["updated"] is True
+    assert switch_root.json()["library_count"] == 1
+    assert switch_root.json()["libraries_root"] == str(other_libraries_root)
+
+    switched_health = client.get("/api/v1/health")
+    assert switched_health.status_code == 200
+    assert switched_health.json()["libraries_root"] == str(other_libraries_root)
+
+    switched_libraries = client.get("/api/v1/libraries")
+    assert switched_libraries.status_code == 200
+    assert switched_libraries.json()[0]["library_id"] == "field-library"
+
+    switched_catalog = client.get("/api/v1/libraries/field-library/catalog")
+    assert switched_catalog.status_code == 200
+    assert switched_catalog.json()["rows"][0]["session_key"] == other_session_ref["session_key"]
+
 
 def test_library_api_service_study_set_crud_and_revision_conflict(
     tmp_path: Path,
@@ -1087,7 +1778,7 @@ def test_library_api_service_study_set_crud_and_revision_conflict(
     client = TestClient(create_app(libraries_root))
 
     create_response = client.post(
-        "/api/v1/libraries/default-library/study-sets",
+        "/api/v1/study-sets",
         json={
             "display_name": "Service Study Set",
             "sessions": [session_ref],
@@ -1098,33 +1789,117 @@ def test_library_api_service_study_set_crud_and_revision_conflict(
     assert created["study_set_id"] == "service-study-set"
     assert created["revision"] == 1
 
-    list_response = client.get("/api/v1/libraries/default-library/study-sets")
+    list_response = client.get("/api/v1/study-sets")
     assert list_response.status_code == 200
     assert list_response.json()[0]["study_set_id"] == "service-study-set"
 
-    load_response = client.get("/api/v1/libraries/default-library/study-sets/service-study-set")
+    load_response = client.get("/api/v1/study-sets/service-study-set")
     assert load_response.status_code == 200
     assert load_response.json()["display_name"] == "Service Study Set"
 
     updated_payload = dict(created)
     updated_payload["display_name"] = "Service Study Set Edited"
     update_response = client.put(
-        "/api/v1/libraries/default-library/study-sets/service-study-set",
+        "/api/v1/study-sets/service-study-set",
         json={"expected_revision": 1, "study_set": updated_payload},
     )
     assert update_response.status_code == 200
     assert update_response.json()["revision"] == 2
 
     conflict_response = client.put(
-        "/api/v1/libraries/default-library/study-sets/service-study-set",
+        "/api/v1/study-sets/service-study-set",
         json={"expected_revision": 1, "study_set": updated_payload},
     )
     assert conflict_response.status_code == 409
     assert conflict_response.json()["error"]["code"] == "revision_conflict"
 
-    delete_response = client.delete("/api/v1/libraries/default-library/study-sets/service-study-set")
+    delete_response = client.delete("/api/v1/study-sets/service-study-set")
     assert delete_response.status_code == 200
     assert delete_response.json() == {"deleted": True, "study_set_id": "service-study-set"}
+
+
+def test_library_api_service_session_filter_crud_and_revision_conflict(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    client = TestClient(create_app(libraries_root))
+
+    create_response = client.post(
+        "/api/v1/session-filters",
+        json={
+            "display_name": "Service GPS Filter",
+            "description": "Reusable filter from service test.",
+            "category": "gps",
+            "predicate": {"field": "gps.quality", "op": "eq", "value": "usable"},
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["schema"] == "bodaqs.session_filter"
+    assert created["filter_id"] == "service-gps-filter"
+    assert created["revision"] == 1
+
+    list_response = client.get("/api/v1/session-filters")
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["filter_id"] == "service-gps-filter"
+
+    load_response = client.get("/api/v1/session-filters/service-gps-filter")
+    assert load_response.status_code == 200
+    assert load_response.json()["display_name"] == "Service GPS Filter"
+
+    updated_payload = dict(created)
+    updated_payload["display_name"] = "Service Usable GPS Filter"
+    update_response = client.put(
+        "/api/v1/session-filters/service-gps-filter",
+        json={"expected_revision": 1, "session_filter": updated_payload},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["revision"] == 2
+
+    conflict_response = client.put(
+        "/api/v1/session-filters/service-gps-filter",
+        json={"expected_revision": 1, "session_filter": updated_payload},
+    )
+    assert conflict_response.status_code == 409
+    assert conflict_response.json()["error"]["code"] == "revision_conflict"
+
+    delete_response = client.delete("/api/v1/session-filters/service-gps-filter")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"deleted": True, "filter_id": "service-gps-filter"}
+
+
+def test_library_api_service_session_filter_accepts_trackpoint_crossing_predicate(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    client = TestClient(create_app(libraries_root))
+
+    create_response = client.post(
+        "/api/v1/session-filters",
+        json={
+            "display_name": "Service Trackpoint Filter",
+            "description": "Reusable geospatial filter from service test.",
+            "category": "gps",
+            "predicate": {
+                "op": "and",
+                "children": [
+                    {"field": "rider", "op": "contains", "value": "Ben"},
+                    {
+                        "field": "trackpoint.crossing",
+                        "op": "matches",
+                        "value": {
+                            "track_id": "service-track",
+                            "trackpoint_ids": ["gate-a"],
+                            "match_mode": "all",
+                            "tolerance_m": 5,
+                        },
+                    },
+                ],
+            },
+        },
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["schema"] == "bodaqs.session_filter"
+    assert created["predicate"]["children"][1]["op"] == "matches"
+    assert created["predicate"]["children"][1]["value"]["track_id"] == "service-track"
 
 
 def test_library_api_service_timeseries_window_and_error_envelope(

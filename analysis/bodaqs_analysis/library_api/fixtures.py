@@ -47,7 +47,7 @@ def export_library_fixture(
     window = adapter.get_timeseries_window(library_id, request)
 
     library_dir = out_root / "libraries" / str(library_id)
-    study_set_rel = Path("libraries") / str(library_id) / "study_sets" / f"{study_set['study_set_id']}.json"
+    study_set_rel = Path("study_sets") / f"{study_set['study_set_id']}.json"
     window_id = _timeseries_window_id(window)
     window_rel = Path("libraries") / str(library_id) / "timeseries_windows" / f"{window_id}.json"
 
@@ -57,7 +57,7 @@ def export_library_fixture(
     _write_json(library_dir / "catalog.json", catalog)
     _write_json(out_root / study_set_rel, study_set)
     _write_json(
-        library_dir / "study_sets" / "index.json",
+        out_root / "study_sets" / "index.json",
         [
             {
                 "study_set_id": study_set["study_set_id"],
@@ -104,11 +104,11 @@ def _select_or_synthesize_study_set(
     study_set_id: str | None,
 ) -> dict[str, Any]:
     if study_set_id is not None:
-        return adapter.load_study_set(library_id, study_set_id)
+        return adapter.load_study_set(study_set_id)
 
-    summaries = adapter.list_study_sets(library_id)
+    summaries = adapter.list_study_sets()
     if summaries:
-        return adapter.load_study_set(library_id, str(summaries[0]["study_set_id"]))
+        return adapter.load_study_set(str(summaries[0]["study_set_id"]))
 
     rows = catalog.get("rows")
     if not isinstance(rows, list) or not rows:
@@ -127,6 +127,8 @@ def _select_or_synthesize_study_set(
         "sessions": [
             {
                 "session_key": row["session_key"],
+                "session_ref_id": row["session_ref_id"],
+                "library_id": row["library_id"],
                 "run_id": row["run_id"],
                 "session_id": row["session_id"],
                 "label": (row.get("display") or {}).get("label") if isinstance(row.get("display"), Mapping) else None,
@@ -160,6 +162,8 @@ def _default_timeseries_request(
     return {
         "session": {
             "session_key": session_ref["session_key"],
+            "session_ref_id": session_ref["session_ref_id"],
+            "library_id": session_ref["library_id"],
             "run_id": session_ref["run_id"],
             "session_id": session_ref["session_id"],
         },
@@ -176,6 +180,8 @@ def _first_study_set_session(study_set: Mapping[str, Any]) -> dict[str, str]:
     session = sessions[0]
     return {
         "session_key": _required_text(session.get("session_key"), field_name="session.session_key"),
+        "session_ref_id": _required_text(session.get("session_ref_id"), field_name="session.session_ref_id"),
+        "library_id": _required_text(session.get("library_id"), field_name="session.library_id"),
         "run_id": _required_text(session.get("run_id"), field_name="session.run_id"),
         "session_id": _required_text(session.get("session_id"), field_name="session.session_id"),
     }
