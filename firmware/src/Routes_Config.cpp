@@ -134,6 +134,16 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::AS5600StringPotI2C;
     return true;
   }
+  if (text.equalsIgnoreCase("as5600_angle_i2c") || text.equalsIgnoreCase("as5600_rotary_i2c") ||
+      text.equalsIgnoreCase("as5600_rotary")) {
+    out = SensorType::AS5600AngleI2C;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5048b_angle_i2c") || text.equalsIgnoreCase("as5048b") ||
+      text.equalsIgnoreCase("as5048_angle_i2c")) {
+    out = SensorType::AS5048BAngleI2C;
+    return true;
+  }
   return false;
 }
 
@@ -142,6 +152,8 @@ static const char* defaultNamePrefix_(SensorType type) {
     case SensorType::AnalogPot: return "analog";
     case SensorType::AS5600StringPotAnalog: return "as5600a";
     case SensorType::AS5600StringPotI2C: return "as5600i";
+    case SensorType::AS5048BAngleI2C: return "as5048";
+    case SensorType::AS5600AngleI2C: return "as5600r";
     default: return "sensor";
   }
 }
@@ -596,6 +608,8 @@ void registerConfigRoutes(WebServer& srv) {
           SensorType::AnalogPot,
           SensorType::AS5600StringPotAnalog,
           SensorType::AS5600StringPotI2C,
+          SensorType::AS5048BAngleI2C,
+          SensorType::AS5600AngleI2C,
         };
         for (const auto typeChoice : typeChoices) {
           const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
@@ -770,6 +784,7 @@ void registerConfigRoutes(WebServer& srv) {
         emitParamRow("sensor_zero_count", "Sensor count at zero travel");
         emitParamRow("sensor_full_count", "Sensor count at full travel");
         emitParamRow("installed_zero_count", "Installed zero count");
+        emitParamRow("zero_count", "Zero count");
 
         // ---- Wrapping ----
         if (findDef("counts_per_turn") || findDef("wrap_threshold_counts") || findDef("assume_turn0_at_start")) {
@@ -784,7 +799,7 @@ void registerConfigRoutes(WebServer& srv) {
           "ain","muted","i2c_bus","i2c_addr",
           "output_mode","include_raw","sensor_full_travel_mm","units_label",
           "end","primary_domain","primary_quantity","raw_domain",
-          "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count",
+          "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count","zero_count",
           "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start"
         };
         auto isShown = [&](const char* key)->bool{
@@ -859,6 +874,8 @@ void registerConfigRoutes(WebServer& srv) {
       SensorType::AnalogPot,
       SensorType::AS5600StringPotAnalog,
       SensorType::AS5600StringPotI2C,
+      SensorType::AS5048BAngleI2C,
+      SensorType::AS5600AngleI2C,
     };
     for (const auto typeChoice : addTypeChoices) {
       const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
@@ -1164,6 +1181,7 @@ void registerConfigRoutes(WebServer& srv) {
         if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
         if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
         if (getArgLast("installed_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("installed_zero_count", vi); }
+        if (getArgLast("zero_count", v)) { long vi = v.toInt(); sp.params.setInt("zero_count", vi); }
       }
 
       // Wrapping
@@ -1189,6 +1207,7 @@ void registerConfigRoutes(WebServer& srv) {
             pkey.equalsIgnoreCase("primary_quantity") || pkey.equalsIgnoreCase("raw_domain") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
             pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("installed_zero_count") ||
+            pkey.equalsIgnoreCase("zero_count") ||
             pkey.equalsIgnoreCase("counts_per_turn") || pkey.equalsIgnoreCase("wrap_threshold_counts") ||
             pkey.equalsIgnoreCase("assume_turn0_at_start") ||
             pkey.equalsIgnoreCase("ain") || pkey.equalsIgnoreCase("i2c_bus") ||

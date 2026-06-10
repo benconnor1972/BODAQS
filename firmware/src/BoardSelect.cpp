@@ -116,6 +116,17 @@ namespace board {
            (unsigned long)bus.hz);
     }
 
+    LOGI_TAG("Board", "UART ports: count=%u\n", (unsigned)bp.uart_count);
+    for (uint8_t i = 0; i < bp.uart_count && i < BOARD_MAX_UART_PORTS; ++i) {
+      const auto& port = bp.uart[i];
+      LOGI("  uart%u present=%u tx=%d rx=%d baud=%lu\n",
+           (unsigned)i,
+           (unsigned)port.present,
+           (int)port.tx,
+           (int)port.rx,
+           (unsigned long)port.baud_default);
+    }
+
     LOGI_TAG("Board", "SPI: present=%u sck=%d miso=%d mosi=%d hz=%lu cs_count=%u\n",
              (unsigned)bp.spi.present,
              (int)bp.spi.sck,

@@ -4,6 +4,9 @@
 
 namespace board {
 
+static constexpr int8_t kDefaultUartTxPin = 43;
+static constexpr int8_t kDefaultUartRxPin = 44;
+
 static SPIProfile MakeSPI(bool present, int8_t sck, int8_t miso, int8_t mosi,
                           const int8_t* cs_list, uint8_t cs_count,
                           uint32_t hz = 20000000) {
@@ -16,6 +19,16 @@ static SPIProfile MakeSPI(bool present, int8_t sck, int8_t miso, int8_t mosi,
   p.cs_count = (cs_count > 8) ? 8 : cs_count;
   for (uint8_t i = 0; i < 8; ++i) p.cs_pins[i] = -1;
   for (uint8_t i = 0; i < p.cs_count; ++i) p.cs_pins[i] = cs_list[i];
+  return p;
+}
+
+static UARTProfile MakeUART(bool present, int8_t tx, int8_t rx,
+                            uint32_t baud = 38400) {
+  UARTProfile p;
+  p.present = present;
+  p.tx = tx;
+  p.rx = rx;
+  p.baud_default = baud;
   return p;
 }
 
@@ -166,6 +179,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
     .hz  = 400000
   };
   p.i2c_count = 2;
+  p.uart[0] = MakeUART(true, kDefaultUartTxPin, kDefaultUartRxPin);
+  p.uart_count = 1;
   p.analog.attenuation = AdcAttenuation::Db6;
   p.analog.enable_pin = 42;
   p.analog.enable_active_high = true;
@@ -265,6 +280,16 @@ static const BoardProfile V1RC3_PROFILE = {
     }
   },
   .i2c_count = 2,
+
+  .uart = {
+    {
+      .present = true,
+      .tx = kDefaultUartTxPin,
+      .rx = kDefaultUartRxPin,
+      .baud_default = 38400
+    }
+  },
+  .uart_count = 1,
 
   .spi = MakeSPI(
     true,

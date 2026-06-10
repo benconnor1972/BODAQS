@@ -28,6 +28,9 @@
 #include "IndicatorManager.h"
 #include "PowerManager.h"
 #include "BoardProfile.h"
+#if defined(BODAQS_AS5048_LIBRARY_PROBE)
+#include "AS5048LibraryProbe.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -213,6 +216,11 @@ void setup() {
     DumpActiveBoardProfile();
     DumpActiveBoardButtons();
 
+#if defined(BODAQS_AS5048_LIBRARY_PROBE)
+    RunAS5048LibraryProbe(*gBoard);
+    return;
+#endif
+
 #if defined(BODAQS_BRINGUP_DIAGNOSTICS)
     setupBringupDiagnostics_();
     return;
@@ -220,7 +228,7 @@ void setup() {
 
   AnalogInputManager::begin(*gBoard);
 
-    //Debug
+#if defined(BODAQS_ADC_DEBUG_PROBE)
     auto dumpAdc = [](const char* tag){
       ADC_LOGD("\n%s\n", tag);
       if (!gBoard) return;
@@ -386,6 +394,11 @@ void setup() {
 }
 
 void loop() {
+#if defined(BODAQS_AS5048_LIBRARY_PROBE)
+  delay(1000);
+  return;
+#endif
+
 #if defined(BODAQS_BRINGUP_DIAGNOSTICS)
   ButtonManager_loop();
   DisplayManager::loop();

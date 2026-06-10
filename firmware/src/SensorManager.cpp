@@ -69,6 +69,7 @@ namespace {
       case SensorType::AS5600StringPotAnalog:
         return true;
       case SensorType::AS5600StringPotI2C:
+      case SensorType::AS5600AngleI2C:
       case SensorType::Unknown:
       default:
         return false;
