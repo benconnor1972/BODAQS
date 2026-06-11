@@ -14,6 +14,7 @@
 #include "DebugLog.h"
 #include "LoggerLimits.h"
 #include <math.h>
+#include <new>
 #include <time.h>
 
 #define STOR_LOGE(...) LOGE_TAG("Storage", __VA_ARGS__)
@@ -33,6 +34,8 @@ static bool s_cardDetectedCached = true;
 static bool s_haveDetectPin = false;
 static uint32_t s_nextDetectPollMs = 0;
 static char s_lastStatus[48] = "not initialized";
+constexpr size_t kMinWriteBufferBytes = 1024;
+constexpr uint32_t kBdqTargetChunkBytes = 2048UL;
 
 static inline bool isSdmmcBackend() {
   return s_storage && (s_storage->type == board::StorageType::SDMMC);
@@ -43,6 +46,7 @@ static File logFileMMC;
 static char* buffer = nullptr;
 static size_t bufferSize = 0;
 static size_t bufferIndex = 0;
+static size_t s_configuredBufferSize = 0;
 
 static unsigned int sampleRateHz = 1;
 static unsigned long sampleIntervalMs = 1000;
@@ -257,26 +261,99 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
   removeArchivedSourceFile_(metadataPath, F("metadata source"));
 }
 
-static void allocQueue(uint16_t depth) {
+static void resetQueueState_() {
+  s_qHead = s_qTail = s_qCount = 0;
+  s_qMax = 0;
+}
+
+static void releaseQueue_() {
+  SampleRow* rows = s_rows;
+  s_rows = nullptr;
+  s_qCap = 0;
+  resetQueueState_();
+  delete[] rows;
+}
+
+static bool allocQueue_(uint16_t depth) {
   if (depth < 4) depth = 4;
   // cap it to something sane for uint16 math
   if (depth > 4096) depth = 4096;
 
-  delete[] s_rows;
-  s_rows = new SampleRow[depth];
+  releaseQueue_();
+  s_rows = new (std::nothrow) SampleRow[depth];
 
   if (!s_rows) {
-    STOR_LOGE("allocQueue failed (OOM)\n");
+    STOR_LOGE("allocQueue failed depth=%u bytes=%u\n",
+              (unsigned)depth,
+              (unsigned)(depth * sizeof(SampleRow)));
     s_qCap = 0;
-    s_qHead = s_qTail = s_qCount = 0;
-    s_qMax = 0;
-    return;
+    resetQueueState_();
+    return false;
   }
 
-  s_qCap = s_rows ? depth : 0;
+  s_qCap = depth;
+  resetQueueState_();
+  return true;
+}
 
-  s_qHead = s_qTail = s_qCount = 0;
-  s_qMax = 0;
+static void releaseWriteBuffer_() {
+  char* old = buffer;
+  buffer = nullptr;
+  bufferSize = 0;
+  bufferIndex = 0;
+  delete[] old;
+}
+
+static bool allocWriteBuffer_(size_t bytes) {
+  releaseWriteBuffer_();
+  if (bytes == 0) {
+    return true;
+  }
+
+  if (bytes < kMinWriteBufferBytes) bytes = kMinWriteBufferBytes;
+  for (size_t attempt = bytes; attempt >= kMinWriteBufferBytes; attempt /= 2) {
+    buffer = new (std::nothrow) char[attempt];
+    if (buffer) {
+      bufferSize = attempt;
+      bufferIndex = 0;
+      if (attempt != bytes) {
+        STOR_LOGW("write buffer reduced to %u bytes after allocation fallback\n",
+                  (unsigned)attempt);
+      }
+      return true;
+    }
+  }
+
+  STOR_LOGW("write buffer allocation failed; using direct SD writes\n");
+  return true;
+}
+
+static void releaseLogSessionBuffers_() {
+  releaseWriteBuffer_();
+  releaseQueue_();
+}
+
+static bool prepareLogSessionBuffers_() {
+  const uint16_t queueDepth = s_perf ? s_perf->queue_depth : 64;
+  if (!allocQueue_(queueDepth)) {
+    setStatus_("sample queue OOM");
+    return false;
+  }
+
+  if (isCompactBinaryFormat_()) {
+    releaseWriteBuffer_();
+    return true;
+  }
+
+  const size_t desiredBufferSize = s_configuredBufferSize
+                                     ? s_configuredBufferSize
+                                     : (s_perf ? s_perf->ring_buffer_bytes : 4096);
+  if (!allocWriteBuffer_(desiredBufferSize)) {
+    releaseQueue_();
+    setStatus_("write buffer OOM");
+    return false;
+  }
+  return true;
 }
 
 static bool mountSdmmc_() {
@@ -616,9 +693,9 @@ void StorageManager_begin(const board::BoardProfile& bp) {
   s_sdMounted = false;
   setStatus_("not mounted");
 
-  // 1) Apply perf knobs early
+  // 1) Capture perf knobs early. Large logging buffers are allocated only
+  // when a logging session starts, so web/config modes keep that RAM free.
   if (s_perf) {
-    allocQueue(s_perf->queue_depth);
     StorageManager_setBufferSize(s_perf->ring_buffer_bytes);
   }
 
@@ -647,10 +724,10 @@ unsigned long StorageManager_getSampleIntervalMs() {
 
 // Set buffer size
 void StorageManager_setBufferSize(size_t bytes) {
-    if (buffer) delete[] buffer;
-    buffer = new char[bytes];
-    bufferSize = bytes;
-    bufferIndex = 0;
+    s_configuredBufferSize = bytes;
+    if (!loggingActive) {
+      releaseWriteBuffer_();
+    }
 }
 
 static bool tryCreateLogFile_SDMMC_(const String& name, File& out) {
@@ -734,8 +811,7 @@ static void startLog() {
   const uint32_t totalT0 = millis();
   const char* backendName = "SD_MMC";
 
-  // Reset non-blocking sample queue
-  s_qHead = s_qTail = s_qCount = 0;
+  resetQueueState_();
   s_samplesDropped = 0;
   s_flushCount = 0;
   s_flushMaxMs = 0;
@@ -778,6 +854,13 @@ static void startLog() {
     return;
   }
 
+  if (!prepareLogSessionBuffers_()) {
+    STOR_LOGE("startLog: failed to allocate logging buffers (%s)\n", StorageManager_lastStatus());
+    UI::status("Log memory");
+    UI::toast("Log memory", 1500, 1);
+    return;
+  }
+
   bool ok = false;
   uint32_t openMs = 0;
   const uint32_t openT0 = millis();
@@ -797,6 +880,7 @@ static void startLog() {
               (unsigned long)(millis() - totalT0),
               backendName,
               rtcValid ? 1 : 0);
+    releaseLogSessionBuffers_();
     return;
   }
 
@@ -821,12 +905,13 @@ static void startLog() {
     info.createdUnixUs = rtcValid ? ((uint64_t)startEpoch * 1000000ULL) : 0;
     info.sampleRateHz = (uint16_t)sampleRateHz;
     info.samplePeriodUs = sampleRateHz ? (1000000UL / sampleRateHz) : 0;
-    info.targetChunkBytes = bufferSize ? (uint32_t)bufferSize : 8192UL;
+    info.targetChunkBytes = kBdqTargetChunkBytes;
 
     if (!BdqLogWriter::begin(logFileMMC, info)) {
       STOR_LOGE("BDQ writer begin failed\n");
       logFileMMC.close();
       s_currentLogPath = "";
+      releaseLogSessionBuffers_();
       return;
     }
     headerMs = millis() - headerT0;
@@ -981,9 +1066,9 @@ void StorageManager_stopLog() {
   STOR_LOGI("qMax=%u/%u\n", s_qMax, s_qCap);
 
   STOR_LOGI("Log file closed.\n");
-  
-  // Clear any leftover queued samples (we're no longer logging)
-  s_qHead = s_qTail = s_qCount = 0;
+
+  // Logging owns these buffers; give them back before returning to web/config mode.
+  releaseLogSessionBuffers_();
 }
 
 
