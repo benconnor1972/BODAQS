@@ -5,6 +5,7 @@
 #include "WiFiManager.h"
 #include "PowerManager.h"
 #include "StorageManager.h"
+#include "SensorManager.h"
 #include "DebugLog.h"
 #include <WiFi.h>   // for WiFi.SSID() and WiFi.localIP()
 #include <time.h>
@@ -104,12 +105,61 @@ static bool makeClockString_(String& out) {
   if (getLocalTime(&t, 10)) {
     // Format: 24h HH:MM:SS (change to taste)
     char buf[32];
-    strftime(buf, sizeof(buf), "Time: %H:%M:%S", &t);
+    strftime(buf, sizeof(buf), "%H:%M:%S", &t);
     out = buf;
     return true;
   }
-  out = "Time: not set";
+  out = "--:--:--";
   return false;
+}
+
+static String makeGpsFooterString_() {
+  SensorGpsStatus gps;
+  if (!SensorManager::gpsStatus(gps)) return "";
+
+  switch (gps.state) {
+    case SensorGpsState::Fixed: return "GPS";
+    case SensorGpsState::Acquiring: return ".....";
+    case SensorGpsState::Error:
+    default: return "NOGPS";
+  }
+}
+
+static String composeFooterLine_(const String& left, const String& middle, const String& right) {
+  constexpr int FOOTER_COLS = 21;  // 128px / 6px per char (GFX default font, size=1)
+  char buf[FOOTER_COLS + 1];
+  for (int i = 0; i < FOOTER_COLS; ++i) buf[i] = ' ';
+  buf[FOOTER_COLS] = '\0';
+
+  auto put = [&](int pos, const String& text) {
+    if (pos < 0) pos = 0;
+    for (int i = 0; i < (int)text.length() && (pos + i) < FOOTER_COLS; ++i) {
+      buf[pos + i] = text[i];
+    }
+  };
+
+  const int leftLen = min((int)left.length(), FOOTER_COLS);
+  put(0, left.substring(0, leftLen));
+
+  String rightTrimmed = right;
+  if ((int)rightTrimmed.length() > FOOTER_COLS) {
+    rightTrimmed = rightTrimmed.substring(0, FOOTER_COLS);
+  }
+  const int rightPos = FOOTER_COLS - (int)rightTrimmed.length();
+  put(rightPos, rightTrimmed);
+
+  if (middle.length()) {
+    int middlePos = (FOOTER_COLS - (int)middle.length()) / 2;
+    const int minPos = leftLen + 1;
+    const int maxPos = rightPos - (int)middle.length() - 1;
+    if (maxPos >= minPos) {
+      if (middlePos < minPos) middlePos = minPos;
+      if (middlePos > maxPos) middlePos = maxPos;
+      put(middlePos, middle);
+    }
+  }
+
+  return String(buf);
 }
 
 
@@ -158,6 +208,9 @@ void UI::loop() {
     String left;
     makeClockString_(left);
 
+    // Middle: GPS state, only when a GPS sensor is configured.
+    String middle = makeGpsFooterString_();
+
     // Right side: battery
     String right;
     if (PowerManager::fuelGaugeOk()) {
@@ -169,26 +222,7 @@ void UI::loop() {
       right = "";   // or "--%" if you prefer a placeholder
     }
 
-    // Compose a single line with right-aligned battery (monospace assumption)
-    constexpr int FOOTER_COLS = 21;  // 128px / 6px per char (GFX default font, size=1)
-
-    // If right part is too long, truncate it
-    if ((int)right.length() > FOOTER_COLS) right = right.substring(0, FOOTER_COLS);
-
-    // Available space for left once we reserve the right-hand text
-    int leftMax = FOOTER_COLS - (int)right.length();
-    if (leftMax < 0) leftMax = 0;
-
-    if ((int)left.length() > leftMax) {
-      left = left.substring(0, leftMax);
-    }
-
-    // Pad with spaces so 'right' ends at the far right
-    String footer = left;
-    while ((int)footer.length() < leftMax) footer += ' ';
-    footer += right;
-
-    DisplayManager::setFooterLine(footer);
+    DisplayManager::setFooterLine(composeFooterLine_(left, middle, right));
   }
   DisplayManager::loop();
 }

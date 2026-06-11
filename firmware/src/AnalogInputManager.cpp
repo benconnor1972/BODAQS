@@ -77,6 +77,8 @@ bool sensorUsesAnalogInput_(SensorType t) {
       return true;
     case SensorType::AS5600StringPotI2C:
     case SensorType::AS5600AngleI2C:
+    case SensorType::AS5048BAngleI2C:
+    case SensorType::DANF10NGps:
     case SensorType::Unknown:
     default:
       return false;

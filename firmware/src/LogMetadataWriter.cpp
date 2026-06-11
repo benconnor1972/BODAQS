@@ -200,6 +200,10 @@ void appendSignalColumn_(String& out,
   appendKeyString_(out, 3, "quantity", c.quantity);
   if (hasText_(c.domain)) appendKeyString_(out, 3, "domain", c.domain);
   appendKeyString_(out, 3, "unit", c.unit[0] ? c.unit : "");
+  if (hasText_(c.kind) || c.raw) appendKeyString_(out, 3, "kind", c.kind[0] ? c.kind : "raw");
+  if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);
+  if (hasText_(c.processingRole)) appendKeyString_(out, 3, "processing_role", c.processingRole);
+  if (c.semanticSelectionExcluded) appendKeyBool_(out, 3, "semantic_selection_excluded", true);
   if (hasText_(c.calibrationId)) appendKeyString_(out, 3, "calibration_ref", c.sensorName);
 
   if (hasText_(c.transformChain)) {

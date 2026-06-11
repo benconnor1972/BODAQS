@@ -19,6 +19,7 @@
 #include "ButtonManager.h"
 #include "BoardSelect.h" 
 #include "TransformRegistry.h"
+#include "HttpFileSender.h"
 #include "DebugLog.h"
 
 #define WEB_LOGW(...) LOGW_TAG("WEB", __VA_ARGS__)
@@ -144,6 +145,11 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::AS5048BAngleI2C;
     return true;
   }
+  if (text.equalsIgnoreCase("dan_f10n_gps_uart") || text.equalsIgnoreCase("dan_f10n_gps") ||
+      text.equalsIgnoreCase("gps_uart") || text.equalsIgnoreCase("gps")) {
+    out = SensorType::DANF10NGps;
+    return true;
+  }
   return false;
 }
 
@@ -154,6 +160,7 @@ static const char* defaultNamePrefix_(SensorType type) {
     case SensorType::AS5600StringPotI2C: return "as5600i";
     case SensorType::AS5048BAngleI2C: return "as5048";
     case SensorType::AS5600AngleI2C: return "as5600r";
+    case SensorType::DANF10NGps: return "gps";
     default: return "sensor";
   }
 }
@@ -480,7 +487,7 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("</form>");
 
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
   });
 
   // -------------------- GET /config/sensors --------------------
@@ -610,6 +617,7 @@ void registerConfigRoutes(WebServer& srv) {
           SensorType::AS5600StringPotI2C,
           SensorType::AS5048BAngleI2C,
           SensorType::AS5600AngleI2C,
+          SensorType::DANF10NGps,
         };
         for (const auto typeChoice : typeChoices) {
           const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
@@ -876,6 +884,7 @@ void registerConfigRoutes(WebServer& srv) {
       SensorType::AS5600StringPotI2C,
       SensorType::AS5048BAngleI2C,
       SensorType::AS5600AngleI2C,
+      SensorType::DANF10NGps,
     };
     for (const auto typeChoice : addTypeChoices) {
       const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
@@ -954,7 +963,7 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("</form>");
 
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
   });
 
   // -------------------- POST /config/sensors --------------------

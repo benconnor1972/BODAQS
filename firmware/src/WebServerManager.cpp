@@ -157,6 +157,8 @@ bool WebServerManager::start() {
   // Allocate server and wire routes if first time
   if (!g_server) {
     g_server = new WebServer(80);
+    static const char* kHeaderKeys[] = { "Range" };
+    g_server->collectHeaders(kHeaderKeys, sizeof(kHeaderKeys) / sizeof(kHeaderKeys[0]));
     setupRoutes();  // registers all handlers
   }
 

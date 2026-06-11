@@ -12,6 +12,7 @@
 #include "BoardSelect.h"
 #include "DebugTrace.h"
 #include "DebugLog.h"
+#include "LoggerLimits.h"
 #include <math.h>
 #include <time.h>
 
@@ -63,8 +64,8 @@ static uint64_t s_flushTotalMs  = 0;
 
 
 // --- Sample row queue for non-blocking sampling ---
-// Must match LoggingManager's float values[32] size.
-constexpr uint16_t SM_MAX_DYNAMIC_COLS   = 32;
+// Must match LoggingManager's values buffer size.
+constexpr uint16_t SM_MAX_DYNAMIC_COLS = LoggerLimits::kMaxDynamicColumns;
 static bool s_valueColumnIsRaw[SM_MAX_DYNAMIC_COLS] = {false};
 
 struct SampleRow {
@@ -1106,8 +1107,8 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     if (nValues == 0 || !values) return;
 
     // 1) Format ONE complete CSV line into a local stack buffer.
-    //    Size generously: timestamp + commas + up to ~32 floats + mark + sd_busy + \n
-    char line[512];
+    //    Size generously: sample id + timestamp + commas + sensor values + mark + newline.
+    char line[1280];
     int off = 0;
     
     // sample_id first

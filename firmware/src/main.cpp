@@ -31,6 +31,9 @@
 #if defined(BODAQS_AS5048_LIBRARY_PROBE)
 #include "AS5048LibraryProbe.h"
 #endif
+#if defined(BODAQS_GPS_UART_PROBE)
+#include "GpsUartProbe.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -221,6 +224,11 @@ void setup() {
     return;
 #endif
 
+#if defined(BODAQS_GPS_UART_PROBE)
+    RunGpsUartProbe(*gBoard);
+    return;
+#endif
+
 #if defined(BODAQS_BRINGUP_DIAGNOSTICS)
     setupBringupDiagnostics_();
     return;
@@ -394,7 +402,7 @@ void setup() {
 }
 
 void loop() {
-#if defined(BODAQS_AS5048_LIBRARY_PROBE)
+#if defined(BODAQS_AS5048_LIBRARY_PROBE) || defined(BODAQS_GPS_UART_PROBE)
   delay(1000);
   return;
 #endif

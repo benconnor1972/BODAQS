@@ -119,6 +119,10 @@ namespace {
         !strcasecmp(v, "as5048_angle_i2c")) {
       return SensorType::AS5048BAngleI2C;
     }
+    if (!strcasecmp(v, "dan_f10n_gps_uart") || !strcasecmp(v, "dan_f10n_gps") ||
+        !strcasecmp(v, "gps_uart") || !strcasecmp(v, "gps")) {
+      return SensorType::DANF10NGps;
+    }
     return SensorType::AnalogPot;
   }
 

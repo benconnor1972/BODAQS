@@ -70,6 +70,8 @@ namespace {
         return true;
       case SensorType::AS5600StringPotI2C:
       case SensorType::AS5600AngleI2C:
+      case SensorType::AS5048BAngleI2C:
+      case SensorType::DANF10NGps:
       case SensorType::Unknown:
       default:
         return false;
@@ -418,6 +420,34 @@ bool setMuted(uint8_t index, bool muted) {
   return true;
 }
 
+bool gpsStatus(SensorGpsStatus& out) {
+  out = SensorGpsStatus{};
+  bool found = false;
+  SensorGpsStatus best;
+  best.state = SensorGpsState::Error;
+
+  for (auto* s : s_list) {
+    if (!s) continue;
+
+    SensorGpsStatus candidate;
+    if (!s->gpsStatus(candidate)) continue;
+
+    found = true;
+    if (candidate.state == SensorGpsState::Fixed) {
+      out = candidate;
+      return true;
+    }
+    if (candidate.state == SensorGpsState::Acquiring && best.state != SensorGpsState::Acquiring) {
+      best = candidate;
+    } else if (best.state == SensorGpsState::Error) {
+      best = candidate;
+    }
+  }
+
+  if (found) out = best;
+  return found;
+}
+
 uint8_t activeCount() {
   uint8_t n = ConfigManager::sensorCount();
   uint8_t active = 0;
@@ -432,6 +462,19 @@ uint8_t activeCount() {
 
 uint16_t dynamicColumnCount() {
   return countColumns();
+}
+
+uint16_t synchronousMaxSampleRateHz() {
+  uint16_t cap = 0;
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+    if (s->sampleMode() != SensorSampleMode::Synchronous) continue;
+
+    const uint16_t sensorCap = s->maxSampleRateHz();
+    if (sensorCap == 0) continue;
+    if (cap == 0 || sensorCap < cap) cap = sensorCap;
+  }
+  return cap;
 }
 
 void buildHeader(char* out, size_t n, bool humanTs) {

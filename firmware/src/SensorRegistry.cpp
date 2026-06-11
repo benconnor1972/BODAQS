@@ -4,7 +4,7 @@
 
 namespace {
   struct Entry { SensorType t; SensorTypeInfo info; };
-  constexpr uint8_t kMax = 8;
+  constexpr uint8_t kMax = 12;
   Entry   table[kMax]{};
   uint8_t used = 0;
 
@@ -16,6 +16,7 @@ namespace {
       case SensorType::AS5600StringPotI2C:    return "as5600_string_pot_i2c";
       case SensorType::AS5048BAngleI2C:       return "as5048b_angle_i2c";
       case SensorType::AS5600AngleI2C:        return "as5600_angle_i2c";
+      case SensorType::DANF10NGps:            return "dan_f10n_gps_uart";
       case SensorType::Unknown:
       default:                    return "unknown";
     }
@@ -27,6 +28,7 @@ namespace {
       case SensorType::AS5600StringPotI2C:    return "AS5600 String Pot (I2C)";
       case SensorType::AS5048BAngleI2C:       return "AS5048B Angle (I2C)";
       case SensorType::AS5600AngleI2C:        return "AS5600 Angle (I2C)";
+      case SensorType::DANF10NGps:            return "DAN-F10N GPS (UART)";
       case SensorType::Unknown:
       default:                    return "Unknown Sensor";
     }

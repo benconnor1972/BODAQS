@@ -125,6 +125,7 @@ bool Sensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
     copyField_(out.quantity, sizeof(out.quantity), "raw");
     copyField_(out.unit, sizeof(out.unit), "counts");
     copyField_(out.source, sizeof(out.source), "raw_counts");
+    copyField_(out.kind, sizeof(out.kind), "raw");
   }
 
   if (out.transformed && selectedTransformId().length()) {

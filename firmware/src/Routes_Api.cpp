@@ -18,6 +18,7 @@
 #include "UploadSessionCleanup.h"
 #include "UploadSessionScanner.h"
 #include "WiFiManager.h"
+#include "HttpFileSender.h"
 
 namespace {
 
@@ -227,27 +228,10 @@ static void handleArchive_(WebServer& srv) {
     return;
   }
 
-  File f = SD_MMC.open(session.archivePath.c_str(), FILE_READ);
-  if (!f || f.isDirectory()) {
-    if (f) f.close();
-    sendError_(srv, 404, "archive_not_found", "The session archive is not available.");
-    return;
-  }
-
   const String filename = session.sessionId + F(".zip");
-  srv.sendHeader(F("Cache-Control"), F("no-store"));
-  srv.sendHeader(F("Content-Disposition"), String(F("attachment; filename=\"")) + filename + F("\""));
-  srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  srv.send(200, F("application/zip"), "");
-
-  static uint8_t buf[2048];
-  int n = 0;
-  while ((n = f.read(buf, sizeof(buf))) > 0) {
-    srv.sendContent_P(reinterpret_cast<const char*>(buf), n);
-    delay(0);
+  if (!HttpFileSender::sendSdFile(srv, session.archivePath, F("application/zip"), filename, F("no-store"))) {
+    sendError_(srv, 404, "archive_not_found", "The session archive is not available.");
   }
-  f.close();
-  srv.sendContent("");
 }
 
 static void handleData_(WebServer& srv) {
@@ -272,27 +256,10 @@ static void handleData_(WebServer& srv) {
     return;
   }
 
-  File f = SD_MMC.open(session.dataPath.c_str(), FILE_READ);
-  if (!f || f.isDirectory()) {
-    if (f) f.close();
-    sendError_(srv, 404, "data_not_found", "The session data file is not available.");
-    return;
-  }
-
   const String filename = session.sessionId + F(".bdq");
-  srv.sendHeader(F("Cache-Control"), F("no-store"));
-  srv.sendHeader(F("Content-Disposition"), String(F("attachment; filename=\"")) + filename + F("\""));
-  srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  srv.send(200, F("application/octet-stream"), "");
-
-  static uint8_t buf[2048];
-  int n = 0;
-  while ((n = f.read(buf, sizeof(buf))) > 0) {
-    srv.sendContent_P(reinterpret_cast<const char*>(buf), n);
-    delay(0);
+  if (!HttpFileSender::sendSdFile(srv, session.dataPath, F("application/octet-stream"), filename, F("no-store"))) {
+    sendError_(srv, 404, "data_not_found", "The session data file is not available.");
   }
-  f.close();
-  srv.sendContent("");
 }
 
 static bool readJsonBody_(WebServer& srv, JsonDocument& doc) {
