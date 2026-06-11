@@ -225,6 +225,73 @@ static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const Sens
   return true;
 }
 
+class ChunkedHtmlResponse {
+public:
+  explicit ChunkedHtmlResponse(WebServer& srv) : srv_(srv) {
+    buf_.reserve(kFlushThreshold);
+  }
+
+  void begin(const String& contentType, const String& cacheControl) {
+    if (cacheControl.length()) {
+      srv_.sendHeader(F("Cache-Control"), cacheControl);
+    }
+    srv_.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    srv_.send(200, contentType, "");
+    begun_ = true;
+  }
+
+  void finish() {
+    flush();
+    if (begun_) {
+      srv_.sendContent("");
+      begun_ = false;
+    }
+  }
+
+  void flushIfLarge() {
+    if (buf_.length() >= kFlushThreshold) flush();
+  }
+
+  void flush() {
+    if (!begun_ || !buf_.length()) return;
+    srv_.sendContent(buf_);
+    buf_.remove(0);
+    delay(0);
+  }
+
+  ChunkedHtmlResponse& operator+=(const String& s) {
+    buf_ += s;
+    flushIfLarge();
+    return *this;
+  }
+
+  ChunkedHtmlResponse& operator+=(const __FlashStringHelper* s) {
+    buf_ += s;
+    flushIfLarge();
+    return *this;
+  }
+
+  ChunkedHtmlResponse& operator+=(const char* s) {
+    buf_ += s;
+    flushIfLarge();
+    return *this;
+  }
+
+  ChunkedHtmlResponse& operator+=(char c) {
+    buf_ += c;
+    flushIfLarge();
+    return *this;
+  }
+
+  operator String&() { return buf_; }
+
+private:
+  static constexpr size_t kFlushThreshold = 2048;
+  WebServer& srv_;
+  String buf_;
+  bool begun_ = false;
+};
+
 using namespace HtmlUtil;
 
 void registerConfigRoutes(WebServer& srv) {
@@ -500,7 +567,9 @@ void registerConfigRoutes(WebServer& srv) {
     const bool locked = configEditLocked_(&lockedReason);
     const String dis  = locked ? F(" disabled") : F("");
 
-    String html = htmlHeader(F("Sensors"));
+    ChunkedHtmlResponse html(srv);
+    html.begin(F("text/html"), F("no-store"));
+    html += htmlHeader(F("Sensors"));
 
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
@@ -741,7 +810,7 @@ void registerConfigRoutes(WebServer& srv) {
         emitParamRow("units_label", "Units label");
 
         // Transform picker (per sensor)
-        {
+        if (findDef("output_mode")) {
           // use live sensor to preselect
           const uint8_t liveN = SensorManager::count();
           String currentId;
@@ -749,17 +818,25 @@ void registerConfigRoutes(WebServer& srv) {
             Sensor* ss = SensorManager::get(j);
             if (ss && String(ss->name()) == String(dispName)) { currentId = ss->selectedTransformId(); break; }
           }
+          if (!currentId.length()) sp.params.get("output_id", currentId);
+          currentId.trim();
+          if (!currentId.length()) currentId = F("identity");
 
           html += F("<div class='row tr-block' data-sensor='");
           html += htmlEscape(String(dispName));
           html += F("' data-current='");
           html += htmlEscape(currentId);
-          html += F("'>");
+          html += F("' data-loaded='0'>");
           html += F("<label>Output transform</label>");
-          html += F("<select name='s"); html += i; html += F(".output_id'>");
+          html += F("<select name='s"); html += String(i); html += F(".output_id'>");
+          html += F("<option value='");
+          html += htmlEscape(currentId);
+          html += F("' selected>");
+          html += htmlEscape(currentId);
+          html += F("</option>");
           html += F("</select> ");
-          html += F("<button class='apply'");  if (locked) html += F(" disabled"); html += F(">Apply</button> ");
-          html += F("<button class='reload'"); if (locked) html += F(" disabled"); html += F(">Reload</button> ");
+          html += F("<button type='submit' class='apply'");  if (locked) html += F(" disabled"); html += F(">Apply</button> ");
+          html += F("<button type='button' class='reload'"); if (locked) html += F(" disabled"); html += F(">Reload</button> ");
           html += F("<span class='status' style='margin-left:8px;color:#060'></span></div>");
         }
 
@@ -908,7 +985,7 @@ void registerConfigRoutes(WebServer& srv) {
 
     
 
-    // --- per-sensor transform UI script (unchanged) ---
+    // --- per-sensor transform UI script ---
     html += F(
       "<script>\n"
       "document.addEventListener('DOMContentLoaded',function(){\n"
@@ -925,8 +1002,10 @@ void registerConfigRoutes(WebServer& srv) {
       "        if(t.type){ label+=' ('+t.type+(t.out_units?(', '+t.out_units):'')+')'; }\n"
       "        var o=document.createElement('option'); o.value=id; o.textContent=label; if(current===id) o.selected=true; sel.appendChild(o);\n"
       "      });\n"
+      "      block.setAttribute('data-loaded','1');\n"
       "    }).catch(function(e){ console.error('load list',e); });\n"
       "  }\n"
+      "  function ensureLoaded(block){ if(block && block.getAttribute('data-loaded')!=='1') populate(block); }\n"
       "  window.__xf_onModeChange=function(sensor,mode){\n"
       "    var block=[].find.call(document.querySelectorAll('.tr-block'),function(el){return el.dataset&&el.dataset.sensor===sensor;});\n"
       "    if(!block) return; block.dataset.current='identity'; populate(block, mode);\n"
@@ -951,7 +1030,7 @@ void registerConfigRoutes(WebServer& srv) {
       "        .catch(function(){ if(status){ status.style.color='#900'; status.textContent='Error'; } });\n"
       "    });\n"
       "  });\n"
-      "  Array.prototype.forEach.call(document.querySelectorAll('.tr-block'), function(b){ populate(b); });\n"
+      "  document.querySelectorAll('.tr-block select').forEach(function(sel){ sel.addEventListener('focus',function(){ ensureLoaded(sel.closest('.tr-block')); }); sel.addEventListener('mousedown',function(){ ensureLoaded(sel.closest('.tr-block')); }); });\n"
       "  document.addEventListener('change',function(ev){ var n=(ev.target&&ev.target.name)||''; var m=n.match(/^s(\\d+)\\.output_mode$/); if(!m) return; var idx=m[1]; var newMode=ev.target.value; var nameEl=document.querySelector('input[name=\"s'+idx+'.name\"]'); if(!nameEl) return; var sensor=nameEl.value||''; var block=Array.prototype.find.call(document.querySelectorAll('.tr-block'),function(el){return el.dataset&&el.dataset.sensor===sensor;}); if(block){ block.dataset.current='identity'; populate(block, newMode); } });\n"
       "});\n"
       "</script>\n"
@@ -963,7 +1042,7 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("</form>");
 
     html += htmlFooter();
-    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
+    html.finish();
   });
 
   // -------------------- POST /config/sensors --------------------

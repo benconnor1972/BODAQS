@@ -2,6 +2,7 @@
 #include <WebServer.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <new>
 #include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -111,10 +112,12 @@ static void appendVfsProbe_(String& out, const char* label, const char* path) {
 // -------------------- public API --------------------
 void WebServerManager::begin(IsLoggingFn isLogging) {
   g_isLogging = isLogging;
+  (void)WebServerManager::prepareServer_();
 }
 
 void WebServerManager::attachConfig(LoggerConfig* cfg) {
   g_cfgPtr = cfg;
+  (void)WebServerManager::prepareServer_();
 }
 
 void WebServerManager::setStaConfig(const String& ssid, const String& password) {
@@ -154,12 +157,9 @@ bool WebServerManager::start() {
   IPAddress ip = WiFiManager::localAddress();
   WS_LOGI("start: starting on http://%s/\n", ip.toString().c_str());
 
-  // Allocate server and wire routes if first time
-  if (!g_server) {
-    g_server = new WebServer(80);
-    static const char* kHeaderKeys[] = { "Range" };
-    g_server->collectHeaders(kHeaderKeys, sizeof(kHeaderKeys) / sizeof(kHeaderKeys[0]));
-    setupRoutes();  // registers all handlers
+  if (!prepareServer_()) {
+    WS_LOGE("start: failed to prepare web server\n");
+    return false;
   }
 
   g_server->begin();
@@ -181,6 +181,22 @@ void WebServerManager::stop() {
 }
 
 bool WebServerManager::isRunning() { return g_running; }
+
+bool WebServerManager::prepareServer_() {
+  if (g_server) return true;
+
+  g_server = new (std::nothrow) WebServer(80);
+  if (!g_server) {
+    WS_LOGE("prepareServer: WebServer allocation failed\n");
+    return false;
+  }
+
+  static const char* kHeaderKeys[] = { "Range" };
+  g_server->collectHeaders(kHeaderKeys, sizeof(kHeaderKeys) / sizeof(kHeaderKeys[0]));
+  setupRoutes();
+  WS_LOGI("prepareServer: routes registered\n");
+  return true;
+}
 
 /*
 void WebServerManager::loop() {

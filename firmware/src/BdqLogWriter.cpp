@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
 #include "FirmwareInfo.h"
 #include "SensorManager.h"
 #include "DebugLog.h"
@@ -236,13 +237,7 @@ bool buildColumnLayout_() {
   s_columnCount = 0;
   s_frameSize = 4; // sample_id
 
-  SensorColumnDescriptor* descs = new SensorColumnDescriptor[kMaxColumns];
-  if (!descs) {
-    BDQ_LOGE("schema descriptor allocation failed\n");
-    return false;
-  }
-
-  const uint16_t total = SensorManager::describeSensorColumns(descs, kMaxColumns);
+  const uint16_t total = SensorManager::describeSensorColumns(nullptr, 0);
   const uint16_t n = (total > kMaxColumns) ? kMaxColumns : total;
 
   if (total > kMaxColumns) {
@@ -250,7 +245,9 @@ bool buildColumnLayout_() {
   }
 
   for (uint16_t i = 0; i < n; ++i) {
-    const SensorColumnDescriptor& desc = descs[i];
+    SensorColumnDescriptor desc;
+    if (!SensorManager::describeSensorColumnAt(i, desc)) continue;
+
     ColumnLayout& col = s_columns[s_columnCount];
     col = ColumnLayout{};
     col.storage = storageTypeFor_(desc);
@@ -276,7 +273,6 @@ bool buildColumnLayout_() {
 
   // trailing flags
   s_frameSize += 2;
-  delete[] descs;
   return s_frameSize > 6;
 }
 
@@ -441,7 +437,7 @@ void resetChunkState_() {
 }
 
 bool allocChunkBuffer_(uint32_t targetBytes) {
-  delete[] s_chunkPayload;
+  free(s_chunkPayload);
   s_chunkPayload = nullptr;
   s_chunkPayloadCapacity = 0;
   s_framesPerChunk = 0;
@@ -456,7 +452,7 @@ bool allocChunkBuffer_(uint32_t targetBytes) {
   if (frames > kMaxFramesPerChunk) frames = kMaxFramesPerChunk;
 
   const uint32_t payloadCapacity = kDataPayloadHeaderLen + frames * s_frameSize;
-  s_chunkPayload = new uint8_t[payloadCapacity];
+  s_chunkPayload = static_cast<uint8_t*>(malloc(payloadCapacity));
   if (!s_chunkPayload) {
     BDQ_LOGE("chunk buffer allocation failed bytes=%lu\n", (unsigned long)payloadCapacity);
     return false;
@@ -670,7 +666,7 @@ bool end(const BdqLogEndInfo& info) {
 }
 
 void reset() {
-  delete[] s_chunkPayload;
+  free(s_chunkPayload);
   s_chunkPayload = nullptr;
   s_chunkPayloadCapacity = 0;
   s_file = nullptr;

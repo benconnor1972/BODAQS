@@ -10,6 +10,8 @@
 #include "ConfigManager.h"
 #include "DebugLog.h"
 #include "SensorRegistry.h"
+#include "UploadModeManager.h"
+#include "WebServerManager.h"
 
 #define GPS_LOGI(...) LOGI_TAG("GPS", __VA_ARGS__)
 #define GPS_LOGW(...) LOGW_TAG("GPS", __VA_ARGS__)
@@ -18,7 +20,13 @@ namespace {
 
 static constexpr uint8_t kDanf10nMaxUpdateHz = 10;
 static constexpr uint32_t kTaskRetryMs = 1000;
-static constexpr uint32_t kTaskIdleMs = 5;
+static constexpr uint32_t kTaskPollMs = 20;
+static constexpr uint32_t kTaskWebBackoffMs = 250;
+static constexpr uint32_t kTaskMutedSleepMs = 1000;
+static constexpr uint16_t kTaskWebDrainBytes = 256;
+static constexpr uint32_t kTaskStartSettleMs = 250;
+static constexpr uint32_t kGpsTaskStackBytes = 10240;
+static constexpr BaseType_t kGpsTaskCore = 1;
 
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
@@ -68,6 +76,26 @@ DANF10NGpsSensor::ValidityPolicy parseValidityPolicy_(const String& value) {
   return DANF10NGpsSensor::ValidityPolicy::ValidOnly;
 }
 
+DANF10NGpsSensor::DiagnosticMode parseDiagnosticMode_(const String& value) {
+  String s = value;
+  s.trim();
+  s.toLowerCase();
+  s.replace("-", "_");
+  if (s == "disabled" || s == "off" || s == "0") {
+    return DANF10NGpsSensor::DiagnosticMode::Disabled;
+  }
+  if (s == "serial_only" || s == "serial" || s == "1") {
+    return DANF10NGpsSensor::DiagnosticMode::SerialOnly;
+  }
+  if (s == "sleep_task" || s == "task_sleep" || s == "sleep" || s == "2") {
+    return DANF10NGpsSensor::DiagnosticMode::SleepTask;
+  }
+  if (s == "drain_task" || s == "drain" || s == "3") {
+    return DANF10NGpsSensor::DiagnosticMode::DrainTask;
+  }
+  return DANF10NGpsSensor::DiagnosticMode::Normal;
+}
+
 uint8_t clampUpdateRate_(long value) {
   if (value <= 1) return 1;
   if (value <= 2) return 2;
@@ -93,6 +121,7 @@ void loadParamsFromPack_(DANF10NGpsSensor::Params& p,
   if (params.getInt("rx_buffer_bytes", li)) p.rxBufferBytes = (li < 256) ? 256u : (uint16_t)li;
   if (params.get("quality_columns", s)) p.qualityColumns = parseQualityColumns_(s);
   if (params.get("validity_policy", s)) p.validityPolicy = parseValidityPolicy_(s);
+  if (params.get("diagnostic_mode", s)) p.diagnosticMode = parseDiagnosticMode_(s);
   if (params.getBool("emit_position", b)) p.emitPosition = b;
   if (params.getBool("emit_altitude", b)) p.emitAltitude = b;
   if (params.getBool("emit_motion", b)) p.emitMotion = b;
@@ -180,6 +209,17 @@ bool isQcColumn_(DANF10NGpsSensor::ColumnKind kind) {
   }
 }
 
+void drainSerial_(HardwareSerial* serial, uint16_t maxBytes) {
+  if (!serial) return;
+  while (maxBytes-- && serial->available() > 0) {
+    (void)serial->read();
+  }
+}
+
+bool webOrUploadActive_() {
+  return WebServerManager::isRunning() || UploadModeManager::isActive();
+}
+
 } // namespace
 
 DANF10NGpsSensor::DANF10NGpsSensor(const Params& p) {
@@ -200,6 +240,7 @@ void DANF10NGpsSensor::applyParams(const Params& p) {
   m_rxBufferBytes = p.rxBufferBytes;
   m_qualityColumns = p.qualityColumns;
   m_validityPolicy = p.validityPolicy;
+  m_diagnosticMode = p.diagnosticMode;
   m_emitPosition = p.emitPosition;
   m_emitAltitude = p.emitAltitude;
   m_emitMotion = p.emitMotion;
@@ -220,7 +261,35 @@ void DANF10NGpsSensor::begin() {
   m_lastLoggedSeq = 0;
 
   if (m_muted) return;
+  if (m_diagnosticMode == DiagnosticMode::Disabled) {
+    GPS_LOGW("sensor '%s': GPS diagnostic_mode=disabled; serial/task not started\n", name());
+    return;
+  }
   if (!startSerial_()) return;
+  if (m_diagnosticMode == DiagnosticMode::SerialOnly) {
+    GPS_LOGW("sensor '%s': GPS diagnostic_mode=serial_only; task not started\n", name());
+    return;
+  }
+  if (webOrUploadActive_()) {
+    GPS_LOGI("sensor '%s': GPS task deferred while web/upload mode is active\n", name());
+    return;
+  }
+  (void)startTask_();
+}
+
+void DANF10NGpsSensor::setMuted(bool m) {
+  if (m_muted == m) return;
+  m_muted = m;
+
+  if (m_muted) {
+    return;
+  }
+
+  // Runtime unmute: start acquisition if this sensor was muted at boot.
+  if (m_diagnosticMode == DiagnosticMode::Disabled) return;
+  if (!m_serial && !startSerial_()) return;
+  if (m_diagnosticMode == DiagnosticMode::SerialOnly) return;
+  if (webOrUploadActive_()) return;
   (void)startTask_();
 }
 
@@ -290,15 +359,16 @@ bool DANF10NGpsSensor::startSerial_() {
 bool DANF10NGpsSensor::startTask_() {
 #if defined(ESP32)
   if (m_task) return true;
+  if (webOrUploadActive_()) return false;
   m_taskRun = true;
   const BaseType_t ok = xTaskCreatePinnedToCore(
     &DANF10NGpsSensor::taskThunk_,
     "GpsTask",
-    6144,
+    kGpsTaskStackBytes,
     this,
     1,
     &m_task,
-    1);
+    kGpsTaskCore);
   if (ok != pdPASS) {
     GPS_LOGW("sensor '%s': failed to start GPS task\n", name());
     m_task = nullptr;
@@ -311,17 +381,56 @@ bool DANF10NGpsSensor::startTask_() {
 #endif
 }
 
+void DANF10NGpsSensor::stopTask_() {
+#if defined(ESP32)
+  m_taskRun = false;
+#endif
+}
+
 void DANF10NGpsSensor::taskThunk_(void* arg) {
   DANF10NGpsSensor* self = static_cast<DANF10NGpsSensor*>(arg);
   if (self) self->taskLoop_();
 #if defined(ESP32)
+  if (self) {
+    self->m_task = nullptr;
+    self->m_taskRun = false;
+  }
   vTaskDelete(nullptr);
 #endif
 }
 
 void DANF10NGpsSensor::taskLoop_() {
 #if defined(ESP32)
+  vTaskDelay(pdMS_TO_TICKS(kTaskStartSettleMs));
+
   while (m_taskRun) {
+    if (webOrUploadActive_()) {
+      GPS_LOGI("sensor '%s': GPS task stopped while web/upload mode is active\n", name());
+      break;
+    }
+
+    if (m_muted) {
+      vTaskDelay(pdMS_TO_TICKS(kTaskMutedSleepMs));
+      continue;
+    }
+
+    if (m_diagnosticMode == DiagnosticMode::Disabled ||
+        m_diagnosticMode == DiagnosticMode::SerialOnly) {
+      vTaskDelay(pdMS_TO_TICKS(kTaskMutedSleepMs));
+      continue;
+    }
+
+    if (m_diagnosticMode == DiagnosticMode::SleepTask) {
+      vTaskDelay(pdMS_TO_TICKS(kTaskMutedSleepMs));
+      continue;
+    }
+
+    if (m_diagnosticMode == DiagnosticMode::DrainTask) {
+      drainSerial_(m_serial, kTaskWebDrainBytes);
+      vTaskDelay(pdMS_TO_TICKS(kTaskWebBackoffMs));
+      continue;
+    }
+
     if (!m_initialized) {
       if (!initializeGnss_()) {
         vTaskDelay(pdMS_TO_TICKS(kTaskRetryMs));
@@ -331,9 +440,11 @@ void DANF10NGpsSensor::taskLoop_() {
 
     if (m_gnss && m_gnss->getPVT(0)) {
       updateSnapshotFromGnss_();
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(kTaskIdleMs));
     }
+
+    // Keep GPS acquisition cooperative with the Arduino loop, which services
+    // the web UI. The SparkFun parser drains all pending serial bytes per call.
+    vTaskDelay(pdMS_TO_TICKS(kTaskPollMs));
   }
 #endif
 }
@@ -552,12 +663,25 @@ void DANF10NGpsSensor::sampleValues(float* out, uint8_t max) {
 }
 
 void DANF10NGpsSensor::onLoggingStart() {
+  if (!m_muted &&
+      m_diagnosticMode != DiagnosticMode::Disabled &&
+      m_diagnosticMode != DiagnosticMode::SerialOnly) {
+    if (!m_serial) {
+      (void)startSerial_();
+    }
+    (void)startTask_();
+  }
+
   Snapshot s;
   if (copySnapshot_(s)) {
     m_lastLoggedSeq = s.seq;
   } else {
     m_lastLoggedSeq = 0;
   }
+}
+
+void DANF10NGpsSensor::onLoggingStop() {
+  stopTask_();
 }
 
 bool DANF10NGpsSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
@@ -613,7 +737,7 @@ bool DANF10NGpsSensor::gpsStatus(SensorGpsStatus& out) const {
 
 #if defined(ESP32)
   if (!m_task) {
-    out.state = SensorGpsState::Error;
+    out.state = webOrUploadActive_() ? SensorGpsState::Acquiring : SensorGpsState::Error;
     return true;
   }
 #endif
@@ -646,6 +770,7 @@ const ParamDef* DANF10NGpsSensor::paramDefs(size_t& count) {
     {"update_rate_hz",     ParamType::Enum,   "1",     nullptr, nullptr, "1,2,5,10", "GNSS navigation update rate"},
     {"stale_after_ms",     ParamType::Int,    "1500",  "0",     "10000", nullptr, "Snapshot age after which position/motion values become NaN; 0 disables stale filtering"},
     {"validity_policy",    ParamType::Enum,   "valid_only", nullptr, nullptr, "valid_only,latest_with_status,fresh_only", "Controls when position/motion values are emitted"},
+    {"diagnostic_mode",    ParamType::Enum,   "normal", nullptr, nullptr, "normal,disabled,serial_only,sleep_task,drain_task", "Temporary GPS isolation mode for web/GNSS interaction debugging"},
     {"quality_columns",    ParamType::Enum,   "minimal", nullptr, nullptr, "none,minimal,full", "GPS status columns to append"},
     {"emit_position",      ParamType::Bool,   "true",  nullptr, nullptr, nullptr, "Emit latitude and longitude columns"},
     {"emit_altitude",      ParamType::Bool,   "true",  nullptr, nullptr, nullptr, "Emit altitude column"},

@@ -105,10 +105,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
 
   const String sensor = srv.arg("sensor");
 
-  // Ensure registry is loaded for this sensor.
-  gTransforms.loadForSensor(sensor, SD_MMC);
-
-  DynamicJsonDocument doc(8192);
+  DynamicJsonDocument doc(4096);
   JsonArray items = doc.createNestedArray("items");
 
   // Always include identity
@@ -196,8 +193,18 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
   S->on("/api/transforms/reload", HTTP_POST, [S](){
     auto& srv = *S;
     noteHttpActivity_();
-    // Placeholder no-op: integrate a TransformRegistry here if/when available.
+
+    if (!srv.hasArg("sensor")) {
+      srv.send(400, F("application/json"), F("{\"error\":\"sensor required\"}"));
+      return;
+    }
+
+    const String sensor = srv.arg("sensor");
+    const bool ok = (SD_MMC.cardType() != CARD_NONE) && gTransforms.reload(sensor, SD_MMC);
+
     srv.sendHeader("Cache-Control", "no-store");
-    srv.send(200, F("application/json"), F("{\"ok\":true}"));
+    srv.send(ok ? 200 : 500,
+             F("application/json"),
+             ok ? F("{\"ok\":true}") : F("{\"ok\":false}"));
   });
 }

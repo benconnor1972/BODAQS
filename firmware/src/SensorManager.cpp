@@ -551,6 +551,28 @@ uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut) {
   return total;
 }
 
+bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out) {
+  uint16_t logicalIndex = 0;
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    const uint8_t cols = s->columnCount();
+    for (uint8_t i = 0; i < cols; ++i) {
+      SensorColumnDescriptor desc;
+      if (!s->describeColumn(i, desc)) continue;
+
+      if (logicalIndex == columnIndex) {
+        out = desc;
+        return true;
+      }
+      ++logicalIndex;
+    }
+  }
+
+  return false;
+}
+
 uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut) {
   uint16_t total = 0;
   uint16_t written = 0;

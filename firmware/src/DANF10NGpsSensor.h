@@ -28,6 +28,14 @@ public:
     FreshOnly,
   };
 
+  enum class DiagnosticMode : uint8_t {
+    Normal = 0,
+    Disabled,
+    SerialOnly,
+    SleepTask,
+    DrainTask,
+  };
+
   enum class ColumnKind : uint8_t {
     LatDeg,
     LonDeg,
@@ -55,6 +63,7 @@ public:
     uint16_t rxBufferBytes = 4096;
     QualityColumns qualityColumns = QualityColumns::Minimal;
     ValidityPolicy validityPolicy = ValidityPolicy::ValidOnly;
+    DiagnosticMode diagnosticMode = DiagnosticMode::Normal;
     bool emitPosition = true;
     bool emitAltitude = true;
     bool emitMotion = true;
@@ -64,10 +73,10 @@ public:
 
   void begin() override;
   void onLoggingStart() override;
-  void onLoggingStop() override {}
+  void onLoggingStop() override;
 
   bool muted() const override { return m_muted; }
-  void setMuted(bool m) override { m_muted = m; }
+  void setMuted(bool m) override;
 
   SensorSampleMode sampleMode() const override { return SensorSampleMode::Asynchronous; }
   uint8_t columnCount() const override;
@@ -111,6 +120,7 @@ private:
   void applyParams(const Params& p);
   bool startSerial_();
   bool startTask_();
+  void stopTask_();
   bool initializeGnss_();
   void taskLoop_();
   void updateSnapshotFromGnss_();
@@ -134,6 +144,7 @@ private:
   uint16_t m_rxBufferBytes = 4096;
   QualityColumns m_qualityColumns = QualityColumns::Minimal;
   ValidityPolicy m_validityPolicy = ValidityPolicy::ValidOnly;
+  DiagnosticMode m_diagnosticMode = DiagnosticMode::Normal;
   bool m_emitPosition = true;
   bool m_emitAltitude = true;
   bool m_emitMotion = true;
