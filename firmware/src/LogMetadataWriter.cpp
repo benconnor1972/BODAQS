@@ -1,6 +1,7 @@
 #include "LogMetadataWriter.h"
 
 #include "SensorManager.h"
+#include <new>
 
 namespace {
 
@@ -200,6 +201,10 @@ void appendSignalColumn_(String& out,
   appendKeyString_(out, 3, "quantity", c.quantity);
   if (hasText_(c.domain)) appendKeyString_(out, 3, "domain", c.domain);
   appendKeyString_(out, 3, "unit", c.unit[0] ? c.unit : "");
+  if (hasText_(c.kind) || c.raw) appendKeyString_(out, 3, "kind", c.kind[0] ? c.kind : "raw");
+  if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);
+  if (hasText_(c.processingRole)) appendKeyString_(out, 3, "processing_role", c.processingRole);
+  if (c.semanticSelectionExcluded) appendKeyBool_(out, 3, "semantic_selection_excluded", true);
   if (hasText_(c.calibrationId)) appendKeyString_(out, 3, "calibration_ref", c.sensorName);
 
   if (hasText_(c.transformChain)) {
@@ -341,7 +346,7 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
   (void)SensorManager::resolveSynBikeRawBindings(bindings);
 
   const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
-  SensorMetadataDescriptor* sensors = sensorCount ? new SensorMetadataDescriptor[sensorCount] : nullptr;
+  SensorMetadataDescriptor* sensors = sensorCount ? new (std::nothrow) SensorMetadataDescriptor[sensorCount] : nullptr;
   if (sensorCount && !sensors) return false;
   const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
   String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
@@ -473,8 +478,8 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
   const uint16_t columnCount = SensorManager::describeSensorColumns(nullptr, 0);
 
-  SensorMetadataDescriptor* sensors = sensorCount ? new SensorMetadataDescriptor[sensorCount] : nullptr;
-  SensorColumnDescriptor* columns = columnCount ? new SensorColumnDescriptor[columnCount] : nullptr;
+  SensorMetadataDescriptor* sensors = sensorCount ? new (std::nothrow) SensorMetadataDescriptor[sensorCount] : nullptr;
+  SensorColumnDescriptor* columns = columnCount ? new (std::nothrow) SensorColumnDescriptor[columnCount] : nullptr;
   if ((sensorCount && !sensors) || (columnCount && !columns)) {
     delete[] sensors;
     delete[] columns;

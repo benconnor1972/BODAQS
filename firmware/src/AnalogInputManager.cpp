@@ -76,6 +76,9 @@ bool sensorUsesAnalogInput_(SensorType t) {
     case SensorType::AS5600StringPotAnalog:
       return true;
     case SensorType::AS5600StringPotI2C:
+    case SensorType::AS5600AngleI2C:
+    case SensorType::AS5048BAngleI2C:
+    case SensorType::DANF10NGps:
     case SensorType::Unknown:
     default:
       return false;
@@ -99,7 +102,10 @@ void unlockSpi_() {
 }
 
 SPISettings spiSettings_(const AdsDevice& dev) {
-  const uint32_t hz = dev.cfg.spi_hz ? dev.cfg.spi_hz : 1000000UL;
+  const uint32_t boardDefaultHz = (s_board && s_board->spi.hz_default)
+    ? s_board->spi.hz_default
+    : 1000000UL;
+  const uint32_t hz = dev.cfg.spi_hz ? dev.cfg.spi_hz : boardDefaultHz;
   return SPISettings(hz, MSBFIRST, SPI_MODE1);
 }
 

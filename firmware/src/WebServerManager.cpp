@@ -2,6 +2,7 @@
 #include <WebServer.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <new>
 #include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -11,13 +12,10 @@
 #include "SensorManager.h"
 #include "SensorTypes.h"
 #include "Sensor.h"
-#include "TransformRegistry.h"
-#include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "PowerManager.h"
 #include "Routes_Files.h"
 #include "Routes_Config.h"
-#include "Routes_Transforms.h"
 #include "Routes_Api.h"
 #include "HtmlUtil.h"
 #include "DebugLog.h"
@@ -28,9 +26,6 @@ using namespace HtmlUtil;
 #define WS_LOGI(...) LOGI_TAG("WS", __VA_ARGS__)
 #define WS_LOGD(...) LOGD_TAG("WS", __VA_ARGS__)
 
-
-// gTransforms is defined in esp32_data_logger.ino (non-static there)
-extern TransformRegistry gTransforms;
 
 // --- Module state ---
 static WebServer* g_server = nullptr;
@@ -111,10 +106,12 @@ static void appendVfsProbe_(String& out, const char* label, const char* path) {
 // -------------------- public API --------------------
 void WebServerManager::begin(IsLoggingFn isLogging) {
   g_isLogging = isLogging;
+  (void)WebServerManager::prepareServer_();
 }
 
 void WebServerManager::attachConfig(LoggerConfig* cfg) {
   g_cfgPtr = cfg;
+  (void)WebServerManager::prepareServer_();
 }
 
 void WebServerManager::setStaConfig(const String& ssid, const String& password) {
@@ -154,10 +151,9 @@ bool WebServerManager::start() {
   IPAddress ip = WiFiManager::localAddress();
   WS_LOGI("start: starting on http://%s/\n", ip.toString().c_str());
 
-  // Allocate server and wire routes if first time
-  if (!g_server) {
-    g_server = new WebServer(80);
-    setupRoutes();  // registers all handlers
+  if (!prepareServer_()) {
+    WS_LOGE("start: failed to prepare web server\n");
+    return false;
   }
 
   g_server->begin();
@@ -179,6 +175,22 @@ void WebServerManager::stop() {
 }
 
 bool WebServerManager::isRunning() { return g_running; }
+
+bool WebServerManager::prepareServer_() {
+  if (g_server) return true;
+
+  g_server = new (std::nothrow) WebServer(80);
+  if (!g_server) {
+    WS_LOGE("prepareServer: WebServer allocation failed\n");
+    return false;
+  }
+
+  static const char* kHeaderKeys[] = { "Range" };
+  g_server->collectHeaders(kHeaderKeys, sizeof(kHeaderKeys) / sizeof(kHeaderKeys[0]));
+  setupRoutes();
+  WS_LOGI("prepareServer: routes registered\n");
+  return true;
+}
 
 /*
 void WebServerManager::loop() {
@@ -225,7 +237,6 @@ void WebServerManager::setupRoutes() {
   // Delegate
   registerFileRoutes(*g_server);
   registerConfigRoutes(*g_server);
-  registerTransformRoutes(*g_server);
   registerApiRoutes(*g_server);
 
 

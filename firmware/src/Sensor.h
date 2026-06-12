@@ -18,6 +18,25 @@ enum class OutputMode : uint8_t {
   LUT
 };
 
+enum class SensorSampleMode : uint8_t {
+  Synchronous = 0,
+  Asynchronous = 1,
+};
+
+enum class SensorGpsState : uint8_t {
+  Error = 0,
+  Acquiring,
+  Fixed,
+};
+
+struct SensorGpsStatus {
+  SensorGpsState state = SensorGpsState::Error;
+  bool valid = false;
+  uint8_t satellites = 0;
+  uint8_t fixType = 0;
+  uint32_t ageMs = 0;
+};
+
 // -------- Calibration/transform carrier (type-agnostic) --------
 struct CalibrationState {
   OutputMode mode = OutputMode::RAW;
@@ -58,6 +77,8 @@ struct SensorColumnDescriptor {
   char quantity[24] = {0};  // e.g. "raw", "disp", "ang_disp"; empty when unknown
   char unit[24] = {0};      // e.g. "counts", "mm", "deg"
   char source[24] = {0};    // e.g. "primary", "raw_counts", "linearized"
+  char kind[8] = {0};       // "", "raw", or "qc" for analysis signal registry
+  char processingRole[24] = {0};
   char calibrationId[32] = {0};
   char transformChain[64] = {0};
   char notes[64] = {0};
@@ -67,6 +88,7 @@ struct SensorColumnDescriptor {
   bool raw = false;
   bool calibrated = false;
   bool transformed = false;
+  bool semanticSelectionExcluded = false;
 };
 
 struct SensorMetadataDescriptor {
@@ -116,11 +138,14 @@ public:
   virtual void setOutputUnitsLabel(const char* u);
 
   // ----- CSV / sampling -----
+  virtual SensorSampleMode sampleMode() const { return SensorSampleMode::Synchronous; }
+  virtual uint16_t maxSampleRateHz() const { return 0; } // 0 = no sensor-imposed cap
   virtual uint8_t columnCount() const = 0;
   virtual void getColumnName(uint8_t idx, char* out, size_t cap) const = 0;
   virtual void sampleValues(float* out, uint8_t max) = 0;
   virtual bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const;
   virtual bool describeSensorMetadata(SensorMetadataDescriptor& out) const;
+  virtual bool gpsStatus(SensorGpsStatus& out) const { (void)out; return false; }
 
   // UI labels
   virtual const char* label() const { return "Sensor"; }

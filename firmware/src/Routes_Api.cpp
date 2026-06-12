@@ -13,11 +13,13 @@
 #include "StorageManager.h"
 #include "AnalogInputManager.h"
 #include "BoardSelect.h"
+#include "SensorRegistry.h"
 #include "UploadAckIndex.h"
 #include "UploadModeManager.h"
 #include "UploadSessionCleanup.h"
 #include "UploadSessionScanner.h"
 #include "WiFiManager.h"
+#include "HttpFileSender.h"
 
 namespace {
 
@@ -227,27 +229,10 @@ static void handleArchive_(WebServer& srv) {
     return;
   }
 
-  File f = SD_MMC.open(session.archivePath.c_str(), FILE_READ);
-  if (!f || f.isDirectory()) {
-    if (f) f.close();
-    sendError_(srv, 404, "archive_not_found", "The session archive is not available.");
-    return;
-  }
-
   const String filename = session.sessionId + F(".zip");
-  srv.sendHeader(F("Cache-Control"), F("no-store"));
-  srv.sendHeader(F("Content-Disposition"), String(F("attachment; filename=\"")) + filename + F("\""));
-  srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  srv.send(200, F("application/zip"), "");
-
-  static uint8_t buf[2048];
-  int n = 0;
-  while ((n = f.read(buf, sizeof(buf))) > 0) {
-    srv.sendContent_P(reinterpret_cast<const char*>(buf), n);
-    delay(0);
+  if (!HttpFileSender::sendSdFile(srv, session.archivePath, F("application/zip"), filename, F("no-store"))) {
+    sendError_(srv, 404, "archive_not_found", "The session archive is not available.");
   }
-  f.close();
-  srv.sendContent("");
 }
 
 static void handleData_(WebServer& srv) {
@@ -272,27 +257,10 @@ static void handleData_(WebServer& srv) {
     return;
   }
 
-  File f = SD_MMC.open(session.dataPath.c_str(), FILE_READ);
-  if (!f || f.isDirectory()) {
-    if (f) f.close();
-    sendError_(srv, 404, "data_not_found", "The session data file is not available.");
-    return;
-  }
-
   const String filename = session.sessionId + F(".bdq");
-  srv.sendHeader(F("Cache-Control"), F("no-store"));
-  srv.sendHeader(F("Content-Disposition"), String(F("attachment; filename=\"")) + filename + F("\""));
-  srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  srv.send(200, F("application/octet-stream"), "");
-
-  static uint8_t buf[2048];
-  int n = 0;
-  while ((n = f.read(buf, sizeof(buf))) > 0) {
-    srv.sendContent_P(reinterpret_cast<const char*>(buf), n);
-    delay(0);
+  if (!HttpFileSender::sendSdFile(srv, session.dataPath, F("application/octet-stream"), filename, F("no-store"))) {
+    sendError_(srv, 404, "data_not_found", "The session data file is not available.");
   }
-  f.close();
-  srv.sendContent("");
 }
 
 static bool readJsonBody_(WebServer& srv, JsonDocument& doc) {
@@ -443,6 +411,446 @@ static void handleDelete_(WebServer& srv) {
   sendJson_(srv, ok ? 200 : 500, doc);
 }
 
+static bool configEditLocked_() {
+  return LoggingManager::isRunning() || UploadModeManager::isActive();
+}
+
+static bool rejectConfigEditLocked_(WebServer& srv) {
+  if (!configEditLocked_()) return false;
+  sendError_(srv, 423, "config_locked", "Configuration is locked while logging or upload mode is active.");
+  return true;
+}
+
+static bool parseSensorTypeKey_(String text, SensorType& out) {
+  text.trim();
+  if (text.equalsIgnoreCase("analog_pot") || text.equalsIgnoreCase("pot")) {
+    out = SensorType::AnalogPot;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5600_string_pot_analog") || text.equalsIgnoreCase("as5600_pot_analog")) {
+    out = SensorType::AS5600StringPotAnalog;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5600_string_pot_i2c") || text.equalsIgnoreCase("as5600_pot_i2c")) {
+    out = SensorType::AS5600StringPotI2C;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5600_angle_i2c") || text.equalsIgnoreCase("as5600_rotary_i2c") ||
+      text.equalsIgnoreCase("as5600_rotary")) {
+    out = SensorType::AS5600AngleI2C;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5048b_angle_i2c") || text.equalsIgnoreCase("as5048b") ||
+      text.equalsIgnoreCase("as5048_angle_i2c")) {
+    out = SensorType::AS5048BAngleI2C;
+    return true;
+  }
+  if (text.equalsIgnoreCase("dan_f10n_gps_uart") || text.equalsIgnoreCase("dan_f10n_gps") ||
+      text.equalsIgnoreCase("gps_uart") || text.equalsIgnoreCase("gps")) {
+    out = SensorType::DANF10NGps;
+    return true;
+  }
+  return false;
+}
+
+static const char* paramTypeName_(ParamType type) {
+  switch (type) {
+    case ParamType::Bool: return "bool";
+    case ParamType::Int: return "int";
+    case ParamType::Float: return "float";
+    case ParamType::Enum: return "enum";
+    default: return "string";
+  }
+}
+
+static const char* loggerOutputModeName_(long value) {
+  return value == 0 ? "RAW" : "LINEAR";
+}
+
+static long parseLoggerOutputMode_(String text, long fallback = 1) {
+  text.trim();
+  text.toUpperCase();
+  if (text == "RAW" || text == "0") return 0;
+  if (text == "LINEAR" || text == "1") return 1;
+  return fallback == 0 ? 0 : 1;
+}
+
+static void addSensorParamsJson_(JsonObject obj, const SensorSpec& sp) {
+  JsonObject params = obj["params"].to<JsonObject>();
+  const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
+  size_t defCount = 0;
+  const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
+  for (size_t i = 0; defs && i < defCount; ++i) {
+    const ParamDef& pd = defs[i];
+    if (!pd.key || !*pd.key) continue;
+    if (strcasecmp(pd.key, "output_id") == 0) continue;
+    if (strcasecmp(pd.key, "output_mode") == 0) {
+      long mode = 0;
+      sp.params.getInt(pd.key, mode);
+      params[pd.key] = loggerOutputModeName_(mode);
+      continue;
+    }
+
+    if (pd.type == ParamType::Bool) {
+      bool b = false;
+      if (sp.params.getBool(pd.key, b)) params[pd.key] = b;
+      else if (pd.def) params[pd.key] = pd.def;
+    } else if (pd.type == ParamType::Int) {
+      long v = 0;
+      if (sp.params.getInt(pd.key, v)) params[pd.key] = v;
+      else if (pd.def) params[pd.key] = pd.def;
+    } else if (pd.type == ParamType::Float) {
+      double f = 0.0;
+      if (sp.params.getFloat(pd.key, f)) params[pd.key] = f;
+      else if (pd.def) params[pd.key] = pd.def;
+    } else {
+      String s;
+      if (sp.params.get(pd.key, s)) params[pd.key] = s;
+      else if (pd.def) params[pd.key] = pd.def;
+    }
+  }
+}
+
+static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, bool includeParams) {
+  obj["index"] = index;
+  obj["name"] = sp.name;
+  obj["type"] = SensorRegistry::typeKey(sp.type);
+  obj["type_label"] = SensorRegistry::typeLabel(sp.type);
+  obj["muted"] = sp.mutedDefault;
+  const CalModeMask supported = SensorRegistry::supportedCalMask(sp.type);
+  const CalModeMask allowed = ConfigManager::calAllowedMaskByIndex(index);
+  const CalModeMask effective = (allowed == 0xFF) ? supported : (supported & allowed);
+  String calMethods;
+  if (effective & CAL_ZERO) { if (calMethods.length()) calMethods += ","; calMethods += "ZERO"; }
+  if (effective & CAL_RANGE) { if (calMethods.length()) calMethods += ","; calMethods += "RANGE"; }
+  if (!calMethods.length()) calMethods = "NONE";
+  obj["calibration_methods"] = calMethods;
+  obj["calibration_methods_read_only"] = true;
+  if (includeParams) addSensorParamsJson_(obj, sp);
+}
+
+static void addConfigGlobalsJson_(JsonObject obj, const LoggerConfig& cfg) {
+  obj["logger_name"] = cfg.loggerName;
+  obj["sample_rate_hz"] = cfg.sampleRateHz;
+  obj["log_format"] = ConfigManager::logFormatKey(cfg.logFormat);
+  obj["omit_metadata"] = cfg.omitMetadata;
+  obj["timestamp_mode"] = cfg.timestampHuman ? "human" : "fast";
+  obj["tz"] = cfg.tz;
+  obj["auto_sleep_idle_ms"] = cfg.autoSleepIdleMs;
+  obj["wifi_idle_timeout_ms"] = cfg.wifiIdleTimeoutMs;
+  obj["wifi_mode"] = ConfigManager::wifiModeKey(cfg.wifiMode);
+  obj["wifi_enabled_default"] = cfg.wifiEnabledDefault;
+  obj["wifi_auto_time_on_rtc_invalid"] = cfg.wifiAutoTimeOnRtcInvalid;
+  obj["wifi_ap_ssid"] = cfg.wifiApSsid;
+  obj["ntp_servers"] = cfg.ntpServers;
+  obj["time_check_url"] = cfg.timeCheckUrl;
+  obj["sensor_count"] = cfg.sensorCount();
+}
+
+static void handleConfigGet_(WebServer& srv) {
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.config");
+  addLoggerIdentity_(doc);
+  JsonObject config = doc["config"].to<JsonObject>();
+  addConfigGlobalsJson_(config, ConfigManager::get());
+  sendJson_(srv, 200, doc);
+}
+
+static void handleConfigPut_(WebServer& srv) {
+  if (rejectConfigEditLocked_(srv)) return;
+
+  JsonDocument req;
+  if (!readJsonBody_(srv, req)) return;
+
+  LoggerConfig tmp = ConfigManager::get();
+
+  if (!req["logger_name"].isNull()) {
+    String s = req["logger_name"] | "";
+    s.trim();
+    s.toCharArray(tmp.loggerName, sizeof(tmp.loggerName));
+  }
+  if (!req["sample_rate_hz"].isNull()) {
+    long hz = req["sample_rate_hz"] | tmp.sampleRateHz;
+    if (hz >= 1 && hz <= 2000) tmp.sampleRateHz = (uint16_t)hz;
+  }
+  if (!req["log_format"].isNull()) {
+    String s = req["log_format"] | "";
+    LogFormat f;
+    if (ConfigManager::parseLogFormat(s.c_str(), f)) tmp.logFormat = f;
+  }
+  if (!req["omit_metadata"].isNull()) tmp.omitMetadata = req["omit_metadata"] | tmp.omitMetadata;
+  if (!req["timestamp_mode"].isNull()) {
+    String s = req["timestamp_mode"] | "";
+    s.trim();
+    s.toLowerCase();
+    if (s == "human") tmp.timestampHuman = true;
+    else if (s == "fast") tmp.timestampHuman = false;
+  }
+  if (!req["tz"].isNull()) {
+    String s = req["tz"] | "";
+    s.trim();
+    s.toCharArray(tmp.tz, sizeof(tmp.tz));
+  }
+  if (!req["auto_sleep_idle_ms"].isNull()) tmp.autoSleepIdleMs = req["auto_sleep_idle_ms"] | tmp.autoSleepIdleMs;
+  if (!req["wifi_idle_timeout_ms"].isNull()) tmp.wifiIdleTimeoutMs = req["wifi_idle_timeout_ms"] | tmp.wifiIdleTimeoutMs;
+  if (!req["wifi_mode"].isNull()) {
+    String s = req["wifi_mode"] | "";
+    WiFiMode mode;
+    if (ConfigManager::parseWifiMode(s.c_str(), mode)) tmp.wifiMode = mode;
+  }
+  if (!req["wifi_enabled_default"].isNull()) tmp.wifiEnabledDefault = req["wifi_enabled_default"] | tmp.wifiEnabledDefault;
+  if (!req["wifi_auto_time_on_rtc_invalid"].isNull()) tmp.wifiAutoTimeOnRtcInvalid = req["wifi_auto_time_on_rtc_invalid"] | tmp.wifiAutoTimeOnRtcInvalid;
+  if (!req["wifi_ap_ssid"].isNull()) {
+    String s = req["wifi_ap_ssid"] | "";
+    s.trim();
+    s.toCharArray(tmp.wifiApSsid, sizeof(tmp.wifiApSsid));
+  }
+  if (!req["wifi_ap_password"].isNull()) {
+    String s = req["wifi_ap_password"] | "";
+    s.trim();
+    s.toCharArray(tmp.wifiApPassword, sizeof(tmp.wifiApPassword));
+  }
+  if (!req["ntp_servers"].isNull()) {
+    String s = req["ntp_servers"] | "";
+    s.trim();
+    s.toCharArray(tmp.ntpServers, sizeof(tmp.ntpServers));
+  }
+  if (!req["time_check_url"].isNull()) {
+    String s = req["time_check_url"] | "";
+    s.trim();
+    s.toCharArray(tmp.timeCheckUrl, sizeof(tmp.timeCheckUrl));
+  }
+
+  if (!ConfigManager::save(tmp)) {
+    sendError_(srv, 500, "save_failed", "Failed to save configuration.");
+    return;
+  }
+  handleConfigGet_(srv);
+}
+
+static void handleSensorTypes_(WebServer& srv) {
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensor_types");
+  JsonArray arr = doc["sensor_types"].to<JsonArray>();
+
+  const SensorType types[] = {
+    SensorType::AnalogPot,
+    SensorType::AS5600StringPotAnalog,
+    SensorType::AS5600StringPotI2C,
+    SensorType::AS5048BAngleI2C,
+    SensorType::AS5600AngleI2C,
+    SensorType::DANF10NGps,
+  };
+  for (const auto type : types) {
+    const SensorTypeInfo* ti = SensorRegistry::lookup(type);
+    if (!ti) continue;
+    JsonObject item = arr.add<JsonObject>();
+    item["type"] = SensorRegistry::typeKey(type);
+    item["label"] = SensorRegistry::typeLabel(type);
+    item["supports_calibration"] = SensorRegistry::supportedCalMask(type) != CAL_NONE;
+    JsonArray params = item["params"].to<JsonArray>();
+    size_t defCount = 0;
+    const ParamDef* defs = ti->paramDefs(defCount);
+    for (size_t i = 0; defs && i < defCount; ++i) {
+      const ParamDef& pd = defs[i];
+      if (!pd.key || strcasecmp(pd.key, "output_id") == 0) continue;
+      JsonObject p = params.add<JsonObject>();
+      p["key"] = pd.key;
+      p["type"] = paramTypeName_(pd.type);
+      if (strcasecmp(pd.key, "units_label") == 0) p["read_only"] = true;
+      if (pd.def) p["default"] = pd.def;
+      if (pd.choices) p["choices"] = (strcasecmp(pd.key, "output_mode") == 0) ? "RAW,LINEAR" : pd.choices;
+      if (pd.help) p["help"] = pd.help;
+    }
+  }
+  sendJson_(srv, 200, doc);
+}
+
+static void handleSensorsGet_(WebServer& srv) {
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensors");
+  JsonArray arr = doc["sensors"].to<JsonArray>();
+  const uint8_t n = ConfigManager::sensorCount();
+  for (uint8_t i = 0; i < n; ++i) {
+    SensorSpec sp;
+    if (!ConfigManager::getSensorSpec(i, sp)) continue;
+    JsonObject item = arr.add<JsonObject>();
+    addSensorJson_(item, i, sp, false);
+  }
+  sendJson_(srv, 200, doc);
+}
+
+static bool readSensorIndexArg_(WebServer& srv, uint8_t& out) {
+  if (!srv.hasArg("id")) {
+    sendError_(srv, 400, "missing_sensor_id", "Missing required query argument: id.");
+    return false;
+  }
+  const int id = srv.arg("id").toInt();
+  if (id < 0 || id >= (int)ConfigManager::sensorCount()) {
+    sendError_(srv, 404, "unknown_sensor", "Sensor index is not configured.");
+    return false;
+  }
+  out = (uint8_t)id;
+  return true;
+}
+
+static void handleSensorGet_(WebServer& srv) {
+  uint8_t idx = 0;
+  if (!readSensorIndexArg_(srv, idx)) return;
+  SensorSpec sp;
+  if (!ConfigManager::getSensorSpec(idx, sp)) {
+    sendError_(srv, 404, "unknown_sensor", "Sensor index is not configured.");
+    return;
+  }
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensor");
+  JsonObject sensor = doc["sensor"].to<JsonObject>();
+  addSensorJson_(sensor, idx, sp, true);
+  sendJson_(srv, 200, doc);
+}
+
+static void seedSensorDefaults_(SensorSpec& sp) {
+  sp.params.clear();
+  const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
+  size_t defCount = 0;
+  const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
+  for (size_t i = 0; defs && i < defCount; ++i) {
+    const ParamDef& pd = defs[i];
+    if (!pd.key || !pd.def) continue;
+    if (strcasecmp(pd.key, "output_id") == 0) continue;
+    if (strcasecmp(pd.key, "output_mode") == 0) sp.params.setInt(pd.key, parseLoggerOutputMode_(pd.def, 0));
+    else sp.params.set(pd.key, String(pd.def));
+  }
+}
+
+static void handleSensorPut_(WebServer& srv) {
+  if (rejectConfigEditLocked_(srv)) return;
+
+  uint8_t idx = 0;
+  if (!readSensorIndexArg_(srv, idx)) return;
+
+  JsonDocument req;
+  if (!readJsonBody_(srv, req)) return;
+
+  LoggerConfig tmp = ConfigManager::get();
+  SensorSpec sp;
+  if (!tmp.getSensorSpec(idx, sp)) {
+    sendError_(srv, 404, "unknown_sensor", "Sensor index is not configured.");
+    return;
+  }
+
+  bool restartRecommended = false;
+  if (!req["type"].isNull()) {
+    String typeText = req["type"] | "";
+    SensorType newType = sp.type;
+    if (!parseSensorTypeKey_(typeText, newType) || !SensorRegistry::lookup(newType)) {
+      sendError_(srv, 400, "invalid_sensor_type", "Unknown sensor type.");
+      return;
+    }
+    if (newType != sp.type) {
+      sp.type = newType;
+      seedSensorDefaults_(sp);
+      restartRecommended = true;
+    }
+  }
+  if (!req["name"].isNull()) {
+    String name = req["name"] | "";
+    name.trim();
+    if (name.length()) name.toCharArray(sp.name, sizeof(sp.name));
+  }
+  if (!req["muted"].isNull()) sp.mutedDefault = req["muted"] | sp.mutedDefault;
+
+  JsonObjectConst params = req["params"].as<JsonObjectConst>();
+  for (JsonPairConst kv : params) {
+    const char* key = kv.key().c_str();
+    if (!key || !*key || strcasecmp(key, "output_id") == 0) continue;
+    if (strcasecmp(key, "units_label") == 0 || strcasecmp(key, "i2c_hz") == 0) continue;
+    if (strcasecmp(key, "output_mode") == 0) {
+      String text;
+      if (kv.value().is<const char*>()) text = kv.value().as<const char*>();
+      else text = String((long)(kv.value() | 1));
+      sp.params.setInt(key, parseLoggerOutputMode_(text));
+    } else if (kv.value().is<bool>()) {
+      sp.params.setBool(key, kv.value().as<bool>());
+    } else if (kv.value().is<long>() || kv.value().is<int>()) {
+      sp.params.setInt(key, kv.value().as<long>());
+    } else if (kv.value().is<double>() || kv.value().is<float>()) {
+      sp.params.setFloat(key, kv.value().as<double>());
+    } else {
+      String text = kv.value().as<String>();
+      sp.params.set(key, text);
+    }
+  }
+  sp.params.set("output_id", "identity");
+
+  tmp.sensors[idx].type = sp.type;
+  tmp.sensors[idx].mutedDefault = sp.mutedDefault;
+  strncpy(tmp.sensors[idx].name, sp.name, sizeof(tmp.sensors[idx].name) - 1);
+  tmp.sensors[idx].name[sizeof(tmp.sensors[idx].name) - 1] = '\0';
+  tmp.sensors[idx].params = sp.params;
+  ConfigManager::setSensorHeaderByIndex(idx, sp);
+
+  if (!ConfigManager::save(tmp)) {
+    sendError_(srv, 500, "save_failed", "Failed to save sensor configuration.");
+    return;
+  }
+
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensor");
+  doc["restart_recommended"] = restartRecommended;
+  JsonObject sensor = doc["sensor"].to<JsonObject>();
+  addSensorJson_(sensor, idx, sp, true);
+  sendJson_(srv, 200, doc);
+}
+
+static void handleSensorPost_(WebServer& srv) {
+  if (rejectConfigEditLocked_(srv)) return;
+
+  JsonDocument req;
+  if (!readJsonBody_(srv, req)) return;
+
+  String typeText = req["type"] | "analog_pot";
+  SensorType type = SensorType::AnalogPot;
+  if (!parseSensorTypeKey_(typeText, type) || !SensorRegistry::lookup(type)) {
+    sendError_(srv, 400, "invalid_sensor_type", "Unknown sensor type.");
+    return;
+  }
+
+  String name = req["name"] | "";
+  name.trim();
+  if (!ConfigManager::appendSensor(type, name.length() ? name.c_str() : nullptr) ||
+      !ConfigManager::save(ConfigManager::get())) {
+    sendError_(srv, 500, "add_sensor_failed", "Failed to add sensor.");
+    return;
+  }
+
+  const uint8_t idx = ConfigManager::sensorCount() - 1;
+  SensorSpec sp;
+  ConfigManager::getSensorSpec(idx, sp);
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensor");
+  doc["restart_recommended"] = true;
+  JsonObject sensor = doc["sensor"].to<JsonObject>();
+  addSensorJson_(sensor, idx, sp, true);
+  sendJson_(srv, 201, doc);
+}
+
+static void handleSensorDelete_(WebServer& srv) {
+  if (rejectConfigEditLocked_(srv)) return;
+
+  uint8_t idx = 0;
+  if (!readSensorIndexArg_(srv, idx)) return;
+  if (!ConfigManager::deleteSensorByIndex(idx) || !ConfigManager::save(ConfigManager::get())) {
+    sendError_(srv, 500, "delete_sensor_failed", "Failed to delete sensor.");
+    return;
+  }
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensor_deleted");
+  doc["deleted_index"] = idx;
+  doc["restart_recommended"] = true;
+  sendJson_(srv, 200, doc);
+}
+
 } // namespace
 
 void registerApiRoutes(WebServer& srv) {
@@ -456,6 +864,46 @@ void registerApiRoutes(WebServer& srv) {
   S->on("/api/v1/status", HTTP_GET, [S]() {
     noteHttpActivity_();
     handleStatus_(*S);
+  });
+
+  S->on("/api/v1/config", HTTP_GET, [S]() {
+    noteHttpActivity_();
+    handleConfigGet_(*S);
+  });
+
+  S->on("/api/v1/config", HTTP_PUT, [S]() {
+    noteHttpActivity_();
+    handleConfigPut_(*S);
+  });
+
+  S->on("/api/v1/sensor-types", HTTP_GET, [S]() {
+    noteHttpActivity_();
+    handleSensorTypes_(*S);
+  });
+
+  S->on("/api/v1/sensors", HTTP_GET, [S]() {
+    noteHttpActivity_();
+    handleSensorsGet_(*S);
+  });
+
+  S->on("/api/v1/sensors", HTTP_POST, [S]() {
+    noteHttpActivity_();
+    handleSensorPost_(*S);
+  });
+
+  S->on("/api/v1/sensor", HTTP_GET, [S]() {
+    noteHttpActivity_();
+    handleSensorGet_(*S);
+  });
+
+  S->on("/api/v1/sensor", HTTP_PUT, [S]() {
+    noteHttpActivity_();
+    handleSensorPut_(*S);
+  });
+
+  S->on("/api/v1/sensor", HTTP_DELETE, [S]() {
+    noteHttpActivity_();
+    handleSensorDelete_(*S);
   });
 
   S->on("/api/v1/upload-mode/enter", HTTP_POST, [S]() {

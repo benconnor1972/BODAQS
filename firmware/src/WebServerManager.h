@@ -21,6 +21,7 @@ public:
   // NEW: give the web server access to the live config struct
   static void attachConfig(LoggerConfig* cfg);
 private:
+  static bool prepareServer_();
   static void setupRoutes();
   static void handleRoot();
   static void handleNotFound();

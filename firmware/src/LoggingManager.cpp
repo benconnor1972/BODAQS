@@ -15,6 +15,7 @@
 #include "DebugTrace.h"
 #include "esp_timer.h"
 #include "DebugLog.h"
+#include "LoggerLimits.h"
 
 #define LOGGING_LOGE(...) LOGE_TAG("Logging", __VA_ARGS__)
 #define LOGGING_LOGW(...) LOGW_TAG("Logging", __VA_ARGS__)
@@ -117,11 +118,11 @@ static inline void sampleOnce_() {
   if (s_maxOutCached == 0 || (uint32_t)(now_ms - s_cacheT0_ms) >= 1000) {
     s_cacheT0_ms = now_ms;
     uint16_t cap = SensorManager::dynamicColumnCount(); // number of sensor columns (not including sample_id)
-    if (cap > 32) cap = 32;
+    if (cap > LoggerLimits::kMaxDynamicColumns) cap = LoggerLimits::kMaxDynamicColumns;
     s_maxOutCached = cap;
   }
 
-  float values[32];
+  float values[LoggerLimits::kMaxDynamicColumns];
   uint16_t nWritten = 0;
   SensorManager::sampleValues(values, s_maxOutCached, nWritten);
 
@@ -233,6 +234,7 @@ bool LoggingManager::start() {
   // Logging owns the device: take Wi-Fi (and therefore web server) down NOW.
   if (WebServerManager::isRunning()) {
     UI::println("Stopping web server for logging...", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
+    WebServerManager::stop();
   }
 
   const uint32_t wifiOffT0 = millis();
@@ -246,7 +248,15 @@ bool LoggingManager::start() {
   //SensorManager::debugDump("before-header");
 
   // sampling cadence
-  StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(*s_cfg, s_cfg->sampleRateHz));
+  uint16_t requestedHz = s_cfg->sampleRateHz;
+  const uint16_t syncCapHz = SensorManager::synchronousMaxSampleRateHz();
+  if (syncCapHz != 0 && requestedHz > syncCapHz) {
+    LOGGING_LOGW("Sample rate capped by synchronous sensor: requested=%u Hz cap=%u Hz\n",
+                 (unsigned)requestedHz,
+                 (unsigned)syncCapHz);
+    requestedHz = syncCapHz;
+  }
+  StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(*s_cfg, requestedHz));
   s_intervalMs = StorageManager_getSampleIntervalMs();
 
   TRACE("RTC sanity check begin");

@@ -7,6 +7,7 @@ namespace board {
 
 static constexpr uint8_t BOARD_MAX_BUTTONS = 6;
 static constexpr uint8_t BOARD_MAX_I2C_BUSES = 2;
+static constexpr uint8_t BOARD_MAX_UART_PORTS = 2;
 static constexpr uint8_t BOARD_MAX_ANALOG_INPUTS = 8;
 static constexpr uint8_t BOARD_MAX_EXTERNAL_ADCS = 2;
 
@@ -105,6 +106,13 @@ struct I2CProfile {
   uint32_t hz = 400000;
 };
 
+struct UARTProfile {
+  bool present = false;
+  int8_t tx = -1;
+  int8_t rx = -1;
+  uint32_t baud_default = 38400;
+};
+
 struct SPIProfile {
   bool present = false;
   int8_t sck = -1, miso = -1, mosi = -1;
@@ -200,6 +208,8 @@ struct BoardProfile {
   AnalogInputsProfile analog;
   I2CProfile i2c[BOARD_MAX_I2C_BUSES];
   uint8_t i2c_count = 0;
+  UARTProfile uart[BOARD_MAX_UART_PORTS];
+  uint8_t uart_count = 0;
   SPIProfile spi;
   ExternalAdcProfile external_adcs[BOARD_MAX_EXTERNAL_ADCS];
   uint8_t external_adc_count = 0;

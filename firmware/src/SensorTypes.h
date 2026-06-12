@@ -10,6 +10,9 @@ enum class SensorType : uint8_t {
   AnalogPot              = 1,
   AS5600StringPotAnalog  = 2,
   AS5600StringPotI2C     = 3,
+  AS5048BAngleI2C        = 4,
+  AS5600AngleI2C         = 5,
+  DANF10NGps             = 6,
   // StrainGauge = 2,
   // Accelerometer = 3,
 };

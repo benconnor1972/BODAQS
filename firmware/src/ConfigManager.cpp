@@ -89,6 +89,10 @@ namespace {
     // entries are tolerated on load but are not written back.
     if (strcasecmp(key, "raw_domain") == 0) return false;
 
+    // I2C clock is a board-profile bus property, not a per-sensor setting.
+    // Legacy sensor-level values are tolerated on load but are not written back.
+    if (strcasecmp(key, "i2c_hz") == 0) return false;
+
     // `pin` is a legacy fallback for analog sensors. When `ain` is present,
     // the physical GPIO is board-derived and `pin` becomes redundant noise.
     if (strcasecmp(key, "pin") == 0) {
@@ -110,6 +114,18 @@ namespace {
     }
     if (!strcasecmp(v, "as5600_string_pot_i2c") || !strcasecmp(v, "as5600_pot_i2c")) {
       return SensorType::AS5600StringPotI2C;
+    }
+    if (!strcasecmp(v, "as5600_angle_i2c") || !strcasecmp(v, "as5600_rotary_i2c") ||
+        !strcasecmp(v, "as5600_rotary")) {
+      return SensorType::AS5600AngleI2C;
+    }
+    if (!strcasecmp(v, "as5048b_angle_i2c") || !strcasecmp(v, "as5048b") ||
+        !strcasecmp(v, "as5048_angle_i2c")) {
+      return SensorType::AS5048BAngleI2C;
+    }
+    if (!strcasecmp(v, "dan_f10n_gps_uart") || !strcasecmp(v, "dan_f10n_gps") ||
+        !strcasecmp(v, "gps_uart") || !strcasecmp(v, "gps")) {
+      return SensorType::DANF10NGps;
     }
     return SensorType::AnalogPot;
   }
@@ -134,7 +150,8 @@ namespace {
       if (!pd.key || !*pd.key) continue;
       if (strcasecmp(pd.key, "ema_alpha") == 0 || strcasecmp(pd.key, "deadband") == 0) continue;
       if (strcasecmp(pd.key, "output_mode") == 0) {
-        store.set(pd.key, "0");
+        const bool numericDefault = pd.def && pd.def[0] >= '0' && pd.def[0] <= '9';
+        store.set(pd.key, numericDefault ? pd.def : "0");
       } else if (pd.def) {
         store.set(pd.key, pd.def);
       }

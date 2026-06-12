@@ -11,6 +11,7 @@
 #include "WiFiManager.h"
 #include "PowerManager.h"
 #include "WebServerManager.h"
+#include "HttpFileSender.h"
 #include "DebugLog.h"
 
 using namespace HtmlUtil;
@@ -169,24 +170,25 @@ static uint32_t crc32_update_(uint32_t crc, const uint8_t* data, size_t len) {
   return ~crc;
 }
 
-static void zipWrite_(WebServer& srv, const void* data, size_t len, uint32_t& bytesWritten) {
-  srv.sendContent_P((const char*)data, len);
+static bool zipWrite_(WebServer& srv, const void* data, size_t len, uint32_t& bytesWritten) {
+  const bool ok = HttpFileSender::writeResponseChunk(srv, data, len);
   bytesWritten += (uint32_t)len;
+  return ok;
 }
 
-static void zipWriteU16_(WebServer& srv, uint16_t v, uint32_t& bytesWritten) {
+static bool zipWriteU16_(WebServer& srv, uint16_t v, uint32_t& bytesWritten) {
   uint8_t b[2] = { (uint8_t)(v & 0xFF), (uint8_t)((v >> 8) & 0xFF) };
-  zipWrite_(srv, b, 2, bytesWritten);
+  return zipWrite_(srv, b, 2, bytesWritten);
 }
 
-static void zipWriteU32_(WebServer& srv, uint32_t v, uint32_t& bytesWritten) {
+static bool zipWriteU32_(WebServer& srv, uint32_t v, uint32_t& bytesWritten) {
   uint8_t b[4] = {
     (uint8_t)(v & 0xFF),
     (uint8_t)((v >> 8) & 0xFF),
     (uint8_t)((v >> 16) & 0xFF),
     (uint8_t)((v >> 24) & 0xFF),
   };
-  zipWrite_(srv, b, 4, bytesWritten);
+  return zipWrite_(srv, b, 4, bytesWritten);
 }
 
 static void zipDosTimeDate_(uint16_t& dosTime, uint16_t& dosDate) {
@@ -494,7 +496,7 @@ void registerFileRoutes(WebServer& srv) {
               "if(selAll){selAll.addEventListener('change',()=>{cbs().forEach(cb=>cb.checked=selAll.checked); refresh();});}"
               "document.addEventListener('change',(e)=>{if(e.target && e.target.classList && e.target.classList.contains('filecb')){"
               "const all=cbs(); if(selAll){ selAll.checked = all.length && all.every(cb=>cb.checked); } refresh(); }});"
-              "btnDl.addEventListener('click',async()=>{btnDl.disabled=true; if(btnZip) btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true;const status=document.getElementById('dl_status');const paths=cbs().filter(cb=>cb.checked).map(cb=>cb.value);if(!paths.length){refresh(); if(selAll) selAll.disabled=false; return;}if(status) status.textContent='Starting...';for(let i=0;i<paths.length;i++){const p=paths[i];const name=(p.split('/').pop()||p);if(status) status.textContent=`Fetching ${i+1}/${paths.length}: ${name}`;try{const url='/download?path='+encodeURIComponent(p);const resp=await fetch(url,{cache:'no-store'});if(!resp.ok) throw new Error('HTTP '+resp.status);const cd=resp.headers.get('Content-Disposition')||'';let fn=name;const mm=/filename\\s*=\\s*\"?([^\";]+)\"?/i.exec(cd);if(mm && mm[1]) fn=mm[1];const blob=await resp.blob();const a=document.createElement('a');const obj=URL.createObjectURL(blob);a.href=obj; a.download=fn; a.style.display='none';document.body.appendChild(a); a.click();setTimeout(()=>{URL.revokeObjectURL(obj); a.remove();},1500);}catch(err){console.error('Download failed for',p,err);if(status) status.textContent=`Failed: ${name}`;break;}await new Promise(r=>setTimeout(r,300));}if(status && !status.textContent.startsWith('Failed')) status.textContent='Done';refresh(); if(selAll) selAll.disabled=false;});"
+              "btnDl.addEventListener('click',()=>{btnDl.disabled=true; if(btnZip) btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true;const status=document.getElementById('dl_status');const paths=cbs().filter(cb=>cb.checked).map(cb=>cb.value);if(!paths.length){refresh(); if(selAll) selAll.disabled=false; return;}if(status) status.textContent='Starting downloads...';let i=0;function triggerNext(){if(i>=paths.length){if(status) status.textContent='Downloads started';setTimeout(()=>{refresh(); if(selAll) selAll.disabled=false;},1000);return;}const p=paths[i++];const name=(p.split('/').pop()||p);if(status) status.textContent=`Starting ${i}/${paths.length}: ${name}`;const a=document.createElement('a');a.href='/download?path='+encodeURIComponent(p);a.download=name;a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{a.remove();triggerNext();},900);}triggerNext();});"
               "if(btnZip){btnZip.addEventListener('click',()=>{btnDl.disabled=true; btnZip.disabled=true; btnDel.disabled=true; if(selAll) selAll.disabled=true; const prevAction=form.action; const prevTarget=form.target; form.action='/download_zip'; form.target='zipframe'; form.submit(); form.action=prevAction; form.target=prevTarget; setTimeout(()=>{refresh(); if(selAll) selAll.disabled=false;},500);});}btnDel.addEventListener('click',()=>{if(manualFileMutationBlocked)return; form.action='/delete_multi'; form.submit();});"
               "refresh();"
               "})();"
@@ -502,7 +504,7 @@ void registerFileRoutes(WebServer& srv) {
 
     html += htmlFooter();
 
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
   });
 
 
@@ -522,34 +524,10 @@ S->on("/download", HTTP_GET, [S](){
     return;
   }
 
-  // Open file
-  bool ok = false;
-
-  // Prepare headers
   const String filename = path.substring(path.lastIndexOf('/') + 1);
   String ctype = contentTypeFor(path);
-  String hdr = String(F("attachment; filename=\"")) + filename + F("\"");
-  srv.sendHeader(F("Content-Disposition"), hdr);
-  srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
-
-  static uint8_t buf[2048];
-  int32_t n;
-
-  File f = SD_MMC.open(path.c_str(), FILE_READ);
-  if (!f) {
+  if (!HttpFileSender::sendSdFile(srv, path, ctype, filename, F("no-store"))) {
     srv.send(404, F("text/plain"), F("Not found"));
-    return;
-  }
-  srv.send(200, ctype, "");
-  while ((n = f.read(buf, sizeof(buf))) > 0) {
-    srv.sendContent_P((const char*)buf, n);
-    delay(0);
-  }
-  f.close();
-  ok = true;
-
-  if (ok) {
-    srv.sendContent(""); // end chunked
   }
 });
 
@@ -632,7 +610,7 @@ S->on("/download_multi", HTTP_POST, [S](){
     html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>Back</a></p>");
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
     return;
   }
 
@@ -671,7 +649,7 @@ S->on("/download_multi", HTTP_POST, [S](){
   html += F("'>Back to files</a></p>");
   html += htmlFooter();
 
-  srv.send(200, F("text/html"), html);
+  HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
 });
 
 
@@ -707,7 +685,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
     html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>Back</a></p>");
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
     return;
   }
 
@@ -737,7 +715,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
     html += htmlEscape(urlEncodeQueryValue_(dir));
     html += F("'>Cancel</a></form>");
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
     return;
   }
 
@@ -788,7 +766,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
   html += F("'>Back to files</a></p>");
   html += htmlFooter();
 
-  srv.send(200, F("text/html"), html);
+  HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
 });
 
 // ---------- GET /rmdir?path=/dir/ [confirm=1] ----------
@@ -822,7 +800,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
       html += htmlEscape(urlEncodeQueryValue_(dir));
       html += F("'>Back</a></p>");
       html += htmlFooter();
-      srv.send(200, F("text/html"), html);
+      HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
       return;
     }
 
@@ -886,7 +864,10 @@ S->on("/delete_multi", HTTP_POST, [S](){
         while ((n = f.read(buf, sizeof(buf))) > 0) {
           crc = crc32_update_(crc, buf, (size_t)n);
           size += (uint32_t)n;
-          zipWrite_(srv, buf, (size_t)n, bytesWritten);
+          if (!zipWrite_(srv, buf, (size_t)n, bytesWritten)) {
+            f.close();
+            return;
+          }
           delay(0);
         }
         f.close();
@@ -965,7 +946,7 @@ S->on("/rmdir", HTTP_GET, [S](){
     html += htmlEscape(urlEncodeQueryValue_(parentDir(p)));
     html += F("'>Cancel</a></p>");
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
     return;
   }
 

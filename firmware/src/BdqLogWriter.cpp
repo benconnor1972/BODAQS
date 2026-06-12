@@ -2,9 +2,11 @@
 
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
 #include "FirmwareInfo.h"
 #include "SensorManager.h"
 #include "DebugLog.h"
+#include "LoggerLimits.h"
 
 #define BDQ_LOGE(...) LOGE_TAG("BDQ", __VA_ARGS__)
 #define BDQ_LOGW(...) LOGW_TAG("BDQ", __VA_ARGS__)
@@ -20,7 +22,7 @@ constexpr uint16_t kFormatMinor = 0;
 constexpr uint32_t kFileHeaderLen = 32;
 constexpr uint8_t kChunkMagic[4] = { 'B', 'D', 'Q', 'C' };
 constexpr uint16_t kChunkHeaderVersion = 1;
-constexpr uint16_t kMaxColumns = 32;
+constexpr uint16_t kMaxColumns = LoggerLimits::kMaxDynamicColumns;
 constexpr uint16_t kMaxFramesPerChunk = 512;
 constexpr uint16_t kDataPayloadHeaderLen = 20;
 
@@ -50,13 +52,18 @@ struct ColumnLayout {
   char field[64] = {0};
   char csvHeader[96] = {0};
   char sensorName[16] = {0};
+  char end[16] = {0};
+  char domain[24] = {0};
   char quantity[24] = {0};
   char unit[24] = {0};
   char source[24] = {0};
+  char kind[8] = {0};
+  char processingRole[24] = {0};
   StorageType storage = StorageType::Float32;
   uint16_t valueIndex = 0;
   uint16_t byteOffset = 0;
   bool raw = false;
+  bool semanticSelectionExcluded = false;
 };
 
 File* s_file = nullptr;
@@ -230,13 +237,7 @@ bool buildColumnLayout_() {
   s_columnCount = 0;
   s_frameSize = 4; // sample_id
 
-  SensorColumnDescriptor* descs = new SensorColumnDescriptor[kMaxColumns];
-  if (!descs) {
-    BDQ_LOGE("schema descriptor allocation failed\n");
-    return false;
-  }
-
-  const uint16_t total = SensorManager::describeSensorColumns(descs, kMaxColumns);
+  const uint16_t total = SensorManager::describeSensorColumns(nullptr, 0);
   const uint16_t n = (total > kMaxColumns) ? kMaxColumns : total;
 
   if (total > kMaxColumns) {
@@ -244,7 +245,9 @@ bool buildColumnLayout_() {
   }
 
   for (uint16_t i = 0; i < n; ++i) {
-    const SensorColumnDescriptor& desc = descs[i];
+    SensorColumnDescriptor desc;
+    if (!SensorManager::describeSensorColumnAt(i, desc)) continue;
+
     ColumnLayout& col = s_columns[s_columnCount];
     col = ColumnLayout{};
     col.storage = storageTypeFor_(desc);
@@ -253,9 +256,14 @@ bool buildColumnLayout_() {
     col.raw = desc.raw;
     copyField_(col.csvHeader, sizeof(col.csvHeader), desc.csvHeader);
     copyField_(col.sensorName, sizeof(col.sensorName), desc.sensorName);
+    copyField_(col.end, sizeof(col.end), desc.end);
+    copyField_(col.domain, sizeof(col.domain), desc.domain);
     copyField_(col.quantity, sizeof(col.quantity), desc.quantity);
     copyField_(col.unit, sizeof(col.unit), desc.unit);
     copyField_(col.source, sizeof(col.source), desc.source);
+    copyField_(col.kind, sizeof(col.kind), desc.kind);
+    copyField_(col.processingRole, sizeof(col.processingRole), desc.processingRole);
+    col.semanticSelectionExcluded = desc.semanticSelectionExcluded;
     const char* field = desc.columnId[0] ? desc.columnId : desc.csvHeader;
     copyField_(col.field, sizeof(col.field), field);
 
@@ -265,7 +273,6 @@ bool buildColumnLayout_() {
 
   // trailing flags
   s_frameSize += 2;
-  delete[] descs;
   return s_frameSize > 6;
 }
 
@@ -304,8 +311,13 @@ void appendChannelJson_(String& out,
                         const char* storageType,
                         uint16_t byteOffset,
                         const char* sensorName,
+                        const char* end,
+                        const char* domain,
                         const char* source,
+                        const char* kind,
+                        const char* processingRole,
                         bool raw,
+                        bool semanticSelectionExcluded,
                         bool comma) {
   out += F("    {\n");
   appendKeyString_(out, 3, "field", field);
@@ -314,7 +326,12 @@ void appendChannelJson_(String& out,
   appendKeyString_(out, 3, "storage_type", storageType);
   appendKeyUInt_(out, 3, "byte_offset", byteOffset);
   if (sensorName && *sensorName) appendKeyString_(out, 3, "sensor", sensorName);
+  if (end && *end) appendKeyString_(out, 3, "end", end);
+  if (domain && *domain) appendKeyString_(out, 3, "domain", domain);
   if (source && *source) appendKeyString_(out, 3, "source", source);
+  if ((kind && *kind) || raw) appendKeyString_(out, 3, "kind", kind && *kind ? kind : "raw");
+  if (processingRole && *processingRole) appendKeyString_(out, 3, "processing_role", processingRole);
+  if (semanticSelectionExcluded) appendKeyBool_(out, 3, "semantic_selection_excluded", true);
   appendKeyBool_(out, 3, "raw", raw, false);
   out += comma ? F("    },\n") : F("    }\n");
 }
@@ -339,7 +356,7 @@ String buildSchemaJson_() {
 
   appendKey_(out, 1, "channels");
   out += F("[\n");
-  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "frame", false, true);
+  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "frame", "", "", false, false, true);
 
   for (uint16_t i = 0; i < s_columnCount; ++i) {
     const ColumnLayout& col = s_columns[i];
@@ -353,12 +370,17 @@ String buildSchemaJson_() {
                        storageTypeName_(col.storage),
                        col.byteOffset,
                        col.sensorName,
+                       col.end,
+                       col.domain,
                        col.source,
+                       col.kind,
+                       col.processingRole,
                        col.raw,
+                       col.semanticSelectionExcluded,
                        comma);
   }
 
-  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "frame", false, false);
+  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "frame", "qc", "qc_metric", false, true, false);
   out += F("  ],\n");
 
   appendKey_(out, 1, "sample_flags");
@@ -415,7 +437,7 @@ void resetChunkState_() {
 }
 
 bool allocChunkBuffer_(uint32_t targetBytes) {
-  delete[] s_chunkPayload;
+  free(s_chunkPayload);
   s_chunkPayload = nullptr;
   s_chunkPayloadCapacity = 0;
   s_framesPerChunk = 0;
@@ -430,7 +452,7 @@ bool allocChunkBuffer_(uint32_t targetBytes) {
   if (frames > kMaxFramesPerChunk) frames = kMaxFramesPerChunk;
 
   const uint32_t payloadCapacity = kDataPayloadHeaderLen + frames * s_frameSize;
-  s_chunkPayload = new uint8_t[payloadCapacity];
+  s_chunkPayload = static_cast<uint8_t*>(malloc(payloadCapacity));
   if (!s_chunkPayload) {
     BDQ_LOGE("chunk buffer allocation failed bytes=%lu\n", (unsigned long)payloadCapacity);
     return false;
@@ -644,7 +666,7 @@ bool end(const BdqLogEndInfo& info) {
 }
 
 void reset() {
-  delete[] s_chunkPayload;
+  free(s_chunkPayload);
   s_chunkPayload = nullptr;
   s_chunkPayloadCapacity = 0;
   s_file = nullptr;

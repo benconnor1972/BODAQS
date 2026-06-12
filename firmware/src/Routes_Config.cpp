@@ -9,7 +9,6 @@
 #include "ConfigManager.h"
 #include "SensorManager.h"
 #include "SensorRegistry.h"
-#include "OutputTransform.h"
 #include "RTCManager.h"
 #include "WiFiManager.h"
 #include "PowerManager.h"
@@ -18,7 +17,7 @@
 #include "StorageManager.h"
 #include "ButtonManager.h"
 #include "BoardSelect.h" 
-#include "TransformRegistry.h"
+#include "HttpFileSender.h"
 #include "DebugLog.h"
 
 #define WEB_LOGW(...) LOGW_TAG("WEB", __VA_ARGS__)
@@ -89,25 +88,16 @@ static void applyLogSettingsLive_(const LoggerConfig& cfg) {
   }
 }
 
-static void reloadTransformsForSensor_(const char* sensorName) {
-  if (!sensorName || !*sensorName) return;
-
-  if (SD_MMC.cardType() != CARD_NONE) {
-    gTransforms.loadForSensor(sensorName, SD_MMC);
-  }
+static OutputMode loggerSupportedOutputMode_(long value) {
+  return (value == (long)OutputMode::RAW) ? OutputMode::RAW : OutputMode::LINEAR;
 }
 
-static String transformLabelForSelected_(const char* sensorName, const String& selectedId) {
-  if (!sensorName || !*sensorName) return String();
-
-  String trimmed = selectedId;
-  trimmed.trim();
-  if (!trimmed.length()) return String();
-
-  for (const auto& meta : gTransforms.list(sensorName)) {
-    if (meta.id == trimmed) return String(meta.label);
-  }
-  return String();
+static OutputMode parseLoggerOutputMode_(String text, OutputMode fallback = OutputMode::LINEAR) {
+  text.trim();
+  text.toUpperCase();
+  if (text == "RAW" || text == "0") return OutputMode::RAW;
+  if (text == "LINEAR" || text == "1") return OutputMode::LINEAR;
+  return fallback;
 }
 
 static Sensor* findLiveSensorByName_(const char* name) {
@@ -134,6 +124,21 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::AS5600StringPotI2C;
     return true;
   }
+  if (text.equalsIgnoreCase("as5600_angle_i2c") || text.equalsIgnoreCase("as5600_rotary_i2c") ||
+      text.equalsIgnoreCase("as5600_rotary")) {
+    out = SensorType::AS5600AngleI2C;
+    return true;
+  }
+  if (text.equalsIgnoreCase("as5048b_angle_i2c") || text.equalsIgnoreCase("as5048b") ||
+      text.equalsIgnoreCase("as5048_angle_i2c")) {
+    out = SensorType::AS5048BAngleI2C;
+    return true;
+  }
+  if (text.equalsIgnoreCase("dan_f10n_gps_uart") || text.equalsIgnoreCase("dan_f10n_gps") ||
+      text.equalsIgnoreCase("gps_uart") || text.equalsIgnoreCase("gps")) {
+    out = SensorType::DANF10NGps;
+    return true;
+  }
   return false;
 }
 
@@ -142,6 +147,9 @@ static const char* defaultNamePrefix_(SensorType type) {
     case SensorType::AnalogPot: return "analog";
     case SensorType::AS5600StringPotAnalog: return "as5600a";
     case SensorType::AS5600StringPotI2C: return "as5600i";
+    case SensorType::AS5048BAngleI2C: return "as5048";
+    case SensorType::AS5600AngleI2C: return "as5600r";
+    case SensorType::DANF10NGps: return "gps";
     default: return "sensor";
   }
 }
@@ -172,41 +180,454 @@ static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const Sens
 
   long om = 0;
   sp.params.getInt("output_mode", om);
-  const OutputMode mode = (OutputMode)om;
+  const OutputMode mode = loggerSupportedOutputMode_(om);
   live->setOutputMode(mode);
 
   bool inc = false;
   sp.params.getBool("include_raw", inc);
   live->setIncludeRaw(inc);
 
-  String selId;
-  sp.params.get("output_id", selId);
-  selId.trim();
-
-  reloadTransformsForSensor_(live->name());
-  if (mode == OutputMode::RAW) {
-    live->setSelectedTransformId("identity");
-  } else {
-    live->setSelectedTransformId(selId);
-  }
-  live->attachTransform(gTransforms);
+  live->setSelectedTransformId("identity");
 
   if (mode == OutputMode::RAW) {
     live->setOutputUnitsLabel("counts");
-  } else if (mode == OutputMode::LINEAR) {
+  } else {
     String explicitLabel;
     sp.params.get("units_label", explicitLabel);
     live->setOutputUnitsLabel(explicitLabel.c_str());
-  } else {
-    const String label = transformLabelForSelected_(live->name(), live->selectedTransformId());
-    live->setOutputUnitsLabel(label.c_str());
   }
 
   live->setAllowedCalMask(ConfigManager::calAllowedMaskByIndex(idx));
   return true;
 }
 
+class ChunkedHtmlResponse {
+public:
+  explicit ChunkedHtmlResponse(WebServer& srv) : srv_(srv) {
+    buf_.reserve(kFlushThreshold);
+  }
+
+  void begin(const String& contentType, const String& cacheControl) {
+    if (cacheControl.length()) {
+      srv_.sendHeader(F("Cache-Control"), cacheControl);
+    }
+    srv_.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    srv_.send(200, contentType, "");
+    begun_ = true;
+  }
+
+  void finish() {
+    flush();
+    if (begun_) {
+      srv_.sendContent("");
+      begun_ = false;
+    }
+  }
+
+  void flushIfLarge() {
+    if (buf_.length() >= kFlushThreshold) flush();
+  }
+
+  void flush() {
+    if (!begun_ || !buf_.length()) return;
+    srv_.sendContent(buf_);
+    buf_.remove(0);
+    delay(0);
+  }
+
+  ChunkedHtmlResponse& operator+=(const String& s) {
+    buf_ += s;
+    flushIfLarge();
+    return *this;
+  }
+
+  ChunkedHtmlResponse& operator+=(const __FlashStringHelper* s) {
+    buf_ += s;
+    flushIfLarge();
+    return *this;
+  }
+
+  ChunkedHtmlResponse& operator+=(const char* s) {
+    buf_ += s;
+    flushIfLarge();
+    return *this;
+  }
+
+  ChunkedHtmlResponse& operator+=(char c) {
+    buf_ += c;
+    flushIfLarge();
+    return *this;
+  }
+
+  operator String&() { return buf_; }
+
+private:
+  static constexpr size_t kFlushThreshold = 2048;
+  WebServer& srv_;
+  String buf_;
+  bool begun_ = false;
+};
+
 using namespace HtmlUtil;
+
+static const SensorType kEditableSensorTypes_[] = {
+  SensorType::AnalogPot,
+  SensorType::AS5600StringPotAnalog,
+  SensorType::AS5600StringPotI2C,
+  SensorType::AS5048BAngleI2C,
+  SensorType::AS5600AngleI2C,
+  SensorType::DANF10NGps,
+};
+
+static void emitSensorTypeOptions_(ChunkedHtmlResponse& html, SensorType selected) {
+  for (const auto typeChoice : kEditableSensorTypes_) {
+    const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
+    if (!tiChoice) continue;
+    const char* key = SensorRegistry::typeKey(typeChoice);
+    const char* label = SensorRegistry::typeLabel(typeChoice);
+    html += F("<option value='");
+    html += htmlEscape(String(key ? key : "unknown"));
+    html += F("'");
+    if (selected == typeChoice) html += F(" selected");
+    html += F(">");
+    html += htmlEscape(String(label ? label : "Unknown Sensor"));
+    html += F("</option>");
+  }
+}
+
+static const ParamDef* findParamDef_(const ParamDef* defs, size_t defCount, const char* key) {
+  if (!defs || !key) return nullptr;
+  for (size_t d = 0; d < defCount; ++d) {
+    if (defs[d].key && strcasecmp(defs[d].key, key) == 0) return &defs[d];
+  }
+  return nullptr;
+}
+
+static String paramValueAsString_(const SensorSpec& sp, const ParamDef* pd) {
+  String val;
+  if (!pd) return val;
+  if (pd->type == ParamType::Bool) {
+    bool b = false;
+    sp.params.getBool(pd->key, b);
+    val = b ? "true" : "false";
+  } else if (pd->type == ParamType::Int) {
+    long v = 0;
+    sp.params.getInt(pd->key, v);
+    val = String(v);
+  } else if (pd->type == ParamType::Float) {
+    double f = 0.0;
+    sp.params.getFloat(pd->key, f);
+    val = String(f, 6);
+  } else {
+    sp.params.get(pd->key, val);
+  }
+  return val;
+}
+
+static void emitParamRow_(ChunkedHtmlResponse& html,
+                          uint8_t idx,
+                          const SensorSpec& sp,
+                          const ParamDef* defs,
+                          size_t defCount,
+                          const char* key,
+                          const char* labelOverride,
+                          bool locked) {
+  const ParamDef* pd = findParamDef_(defs, defCount, key);
+  if (!pd) return;
+
+  String label = labelOverride ? String(labelOverride) : String(pd->key);
+  String field = String("s") + idx + "." + key;
+
+  html += F("<div class='row'><label>");
+  html += htmlEscape(label);
+  html += F("</label>");
+
+  if (pd->type == ParamType::Bool) {
+    String val = paramValueAsString_(sp, pd);
+    html += F("<input type='hidden' name='");
+    html += field;
+    html += F("' value='false'><input type='checkbox' name='");
+    html += field;
+    html += F("' value='true'");
+    if (val == "true") html += F(" checked");
+    if (locked) html += F(" disabled");
+    html += F(">");
+  } else if (pd->type == ParamType::Enum && pd->choices) {
+    String val = paramValueAsString_(sp, pd);
+    html += F("<select name='");
+    html += field;
+    html += F("'");
+    if (locked) html += F(" disabled");
+    html += F(">");
+    emitEnumOptions(html, pd->choices, val);
+    html += F("</select>");
+  } else {
+    String val = paramValueAsString_(sp, pd);
+    html += F("<input type='text' name='");
+    html += field;
+    html += F("' value='");
+    html += htmlEscape(val);
+    html += F("'");
+    if (locked) html += F(" disabled");
+    html += F(">");
+  }
+
+  if (pd->help) {
+    html += F("<small>");
+    html += pd->help;
+    html += F("</small>");
+  }
+  html += F("</div>");
+}
+
+static void emitAnalogInputRow_(ChunkedHtmlResponse& html,
+                                uint8_t idx,
+                                const SensorSpec& sp,
+                                const ParamDef* defs,
+                                size_t defCount,
+                                bool locked) {
+  const ParamDef* pd = findParamDef_(defs, defCount, "ain");
+  if (!pd) return;
+
+  String field = String("s") + idx + ".ain";
+  long curAin = -1;
+  sp.params.getInt("ain", curAin);
+
+  html += F("<div class='row'><label>Analog input</label>");
+  if (!board::gBoard) {
+    html += F("<em>No active board profile</em>");
+  } else {
+    const auto& bp = *board::gBoard;
+    if (bp.analog.count == 0) {
+      html += F("<em>No analog inputs on this board</em>");
+    } else {
+      html += F("<select name='");
+      html += field;
+      html += F("'");
+      if (locked) html += F(" disabled");
+      html += F("><option value='-1'");
+      if (curAin < 0) html += F(" selected");
+      html += F(">-- select --</option>");
+      for (uint8_t ai = 0; ai < bp.analog.count; ++ai) {
+        const int pin = bp.analog.pins[ai];
+        if (pin < 0) continue;
+        html += F("<option value='");
+        html += String((int)ai);
+        html += F("'");
+        if ((long)ai == curAin) html += F(" selected");
+        html += F(">AIN");
+        html += String((int)ai);
+        html += F(" (GPIO");
+        html += String(pin);
+        html += F(")</option>");
+      }
+      html += F("</select>");
+    }
+  }
+  html += F("</div>");
+}
+
+static void emitOutputModeRow_(ChunkedHtmlResponse& html, uint8_t idx, const SensorSpec& sp, bool locked) {
+  long stored = (long)OutputMode::RAW;
+  sp.params.getInt("output_mode", stored);
+  const OutputMode mode = loggerSupportedOutputMode_(stored);
+  const String field = String("s") + idx + ".output_mode";
+
+  html += F("<div class='row'><label>Output mode</label><select name='");
+  html += field;
+  html += F("'");
+  if (locked) html += F(" disabled");
+  html += F(">");
+  html += F("<option value='0'");
+  if (mode == OutputMode::RAW) html += F(" selected");
+  html += F(">RAW</option><option value='1'");
+  if (mode == OutputMode::LINEAR) html += F(" selected");
+  html += F(">LINEAR</option></select>");
+  html += F("<small>Complex transforms are applied downstream during import/analysis.");
+  if (stored == (long)OutputMode::POLY || stored == (long)OutputMode::LUT) {
+    html += F(" Legacy POLY/LUT config will be saved back as LINEAR.");
+  }
+  html += F("</small></div>");
+}
+
+static String effectiveUnitsLabel_(const SensorSpec& sp,
+                                   const ParamDef* defs,
+                                   size_t defCount) {
+  long stored = (long)OutputMode::LINEAR;
+  sp.params.getInt("output_mode", stored);
+  if (loggerSupportedOutputMode_(stored) == OutputMode::RAW) {
+    return String("counts");
+  }
+
+  String explicitLabel;
+  if (sp.params.get("units_label", explicitLabel)) {
+    explicitLabel.trim();
+    if (explicitLabel.length()) return explicitLabel;
+  }
+
+  const ParamDef* pd = findParamDef_(defs, defCount, "units_label");
+  if (pd && pd->def && pd->def[0]) {
+    return String(pd->def);
+  }
+  return String();
+}
+
+static void emitUnitsLabelRow_(ChunkedHtmlResponse& html,
+                               const SensorSpec& sp,
+                               const ParamDef* defs,
+                               size_t defCount) {
+  if (!findParamDef_(defs, defCount, "units_label")) return;
+
+  html += F("<div class='row'><label>Units label</label><input type='text' value='");
+  html += htmlEscape(effectiveUnitsLabel_(sp, defs, defCount));
+  html += F("' readonly><small>Read-only effective output unit; sensor type and calibration state determine this value.</small></div>");
+}
+
+static String calMaskText_(CalModeMask mask) {
+  String out;
+  if (mask & CAL_ZERO) {
+    if (out.length()) out += ",";
+    out += "ZERO";
+  }
+  if (mask & CAL_RANGE) {
+    if (out.length()) out += ",";
+    out += "RANGE";
+  }
+  if (!out.length()) out = "NONE";
+  return out;
+}
+
+static void emitCalMethodsRow_(ChunkedHtmlResponse& html, uint8_t idx, SensorType type) {
+  const CalModeMask supported = SensorRegistry::supportedCalMask(type);
+  const CalModeMask allowed = ConfigManager::calAllowedMaskByIndex(idx);
+  const CalModeMask effective = (allowed == 0xFF) ? supported : (supported & allowed);
+
+  html += F("<div class='row'><label>Calibration methods</label><input type='text' value='");
+  html += htmlEscape(calMaskText_(effective));
+  html += F("' readonly>");
+  html += F("<small>Read-only sensor capability. Calibration values below remain editable.</small></div>");
+}
+
+static bool keyInList_(const char* key, const char* const* list, size_t count) {
+  if (!key) return false;
+  for (size_t i = 0; i < count; ++i) {
+    if (strcasecmp(list[i], key) == 0) return true;
+  }
+  return false;
+}
+
+static void emitSensorEditor_(ChunkedHtmlResponse& html,
+                              uint8_t idx,
+                              const SensorSpec& sp,
+                              bool locked,
+                              const String& dis) {
+  const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
+  size_t defCount = 0;
+  const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
+  const char* typeLbl = SensorRegistry::typeLabel(sp.type);
+  const char* dispName = (sp.name && sp.name[0]) ? sp.name : "sensor";
+
+  html += F("<fieldset id='sensor-");
+  html += String(idx);
+  html += F("'><legend>");
+  html += htmlEscape(String(dispName));
+  html += F(" - ");
+  html += htmlEscape(String(typeLbl ? typeLbl : "Unknown Sensor"));
+  html += F("</legend>");
+
+  html += F("<h4>Basic</h4>");
+  html += F("<div class='row'><label>Name</label><input type='text' name='s");
+  html += String(idx);
+  html += F(".name' value='");
+  html += htmlEscape(String(sp.name));
+  html += F("'");
+  html += dis;
+  html += F("></div>");
+
+  html += F("<div class='row'><label>Type</label><select name='s");
+  html += String(idx);
+  html += F(".type'");
+  if (locked) html += F(" disabled");
+  html += F(">");
+  emitSensorTypeOptions_(html, sp.type);
+  html += F("</select> <button type='submit' name='apply_type_idx' value='");
+  html += String(idx);
+  html += F("'");
+  if (locked) html += F(" disabled");
+  html += F(">Apply Type</button><small>Rebuilds fields for this sensor type; restart after add/delete/type changes.</small></div>");
+
+  emitParamRow_(html, idx, sp, defs, defCount, "i2c_bus", "I2C bus", locked);
+  emitParamRow_(html, idx, sp, defs, defCount, "i2c_addr", "I2C address", locked);
+  emitAnalogInputRow_(html, idx, sp, defs, defCount, locked);
+
+  String mutedField = String("s") + idx + ".muted";
+  html += F("<div class='row'><label>Muted by default</label><input type='hidden' name='");
+  html += mutedField;
+  html += F("' value='false'><input type='checkbox' name='");
+  html += mutedField;
+  html += F("' value='true'");
+  if (sp.mutedDefault) html += F(" checked");
+  if (locked) html += F(" disabled");
+  html += F("></div>");
+
+  if (findParamDef_(defs, defCount, "output_mode")) {
+    html += F("<h4>Output</h4>");
+    emitOutputModeRow_(html, idx, sp, locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "include_raw", "Include raw column", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "sensor_full_travel_mm", "Sensor full travel (mm)", locked);
+    emitUnitsLabelRow_(html, sp, defs, defCount);
+  }
+
+  if (findParamDef_(defs, defCount, "end") ||
+      findParamDef_(defs, defCount, "primary_domain") ||
+      findParamDef_(defs, defCount, "primary_quantity")) {
+    html += F("<h4>Usage</h4>");
+    emitParamRow_(html, idx, sp, defs, defCount, "end", "End", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "primary_domain", "Primary domain", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "primary_quantity", "Primary quantity", locked);
+  }
+
+  html += F("<h4>Calibration</h4>");
+  emitCalMethodsRow_(html, idx, sp.type);
+  emitParamRow_(html, idx, sp, defs, defCount, "sensor_zero_count", "Sensor count at zero travel", locked);
+  emitParamRow_(html, idx, sp, defs, defCount, "sensor_full_count", "Sensor count at full travel", locked);
+  emitParamRow_(html, idx, sp, defs, defCount, "installed_zero_count", "Installed zero count", locked);
+  emitParamRow_(html, idx, sp, defs, defCount, "zero_count", "Zero count", locked);
+
+  if (findParamDef_(defs, defCount, "counts_per_turn") ||
+      findParamDef_(defs, defCount, "wrap_threshold_counts") ||
+      findParamDef_(defs, defCount, "assume_turn0_at_start")) {
+    html += F("<h4>Wrapping</h4>");
+    emitParamRow_(html, idx, sp, defs, defCount, "counts_per_turn", "Counts per turn", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "wrap_threshold_counts", "Wrap threshold (counts)", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "assume_turn0_at_start", "Assume turn 0 at log start", locked);
+  }
+
+  static const char* const shown[] = {
+    "ain","muted","i2c_bus","i2c_addr",
+    "output_mode","output_id","include_raw","sensor_full_travel_mm","units_label",
+    "end","primary_domain","primary_quantity","raw_domain",
+    "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count","zero_count",
+    "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start"
+  };
+  bool printedOther = false;
+  for (size_t d = 0; d < defCount; ++d) {
+    const ParamDef& pd = defs[d];
+    if (!pd.key || keyInList_(pd.key, shown, sizeof(shown) / sizeof(shown[0]))) continue;
+    if (!printedOther) {
+      html += F("<h4>Other</h4>");
+      printedOther = true;
+    }
+    emitParamRow_(html, idx, sp, defs, defCount, pd.key, nullptr, locked);
+  }
+
+  html += F("<div class='row'><label>Remove</label><button type='submit' name='delete_sensor_idx' value='");
+  html += String(idx);
+  html += F("'");
+  if (locked) html += F(" disabled");
+  html += F(">Delete this sensor</button><small>Removes the sensor from logger config only.</small></div>");
+  html += F("</fieldset>");
+}
 
 void registerConfigRoutes(WebServer& srv) {
   WebServer* S = &srv;
@@ -468,7 +889,7 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("</form>");
 
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    HttpFileSender::sendText(srv, 200, F("text/html"), html, F("no-store"));
   });
 
   // -------------------- GET /config/sensors --------------------
@@ -481,7 +902,9 @@ void registerConfigRoutes(WebServer& srv) {
     const bool locked = configEditLocked_(&lockedReason);
     const String dis  = locked ? F(" disabled") : F("");
 
-    String html = htmlHeader(F("Sensors"));
+    ChunkedHtmlResponse html(srv);
+    html.begin(F("text/html"), F("no-store"));
+    html += htmlHeader(F("Sensors"));
 
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
@@ -498,446 +921,109 @@ void registerConfigRoutes(WebServer& srv) {
       html += F(". Exit upload mode or stop logging to make changes.</p>");
     }
 
-    html += F("<form method='POST' action='/config/sensors'>");
-
-    // ---------- SENSORS ----------
     html += F("<h2>Sensors</h2>");
-
-    const uint8_t n = cfg.sensorCount();
-    if (n == 0) {
+    const uint8_t listCount = cfg.sensorCount();
+    if (listCount == 0) {
       html += F("<p><em>No sensors configured.</em></p>");
+    } else {
+      html += F("<table><thead><tr><th>#</th><th>Name</th><th>Type</th><th>State</th><th>Output</th><th></th></tr></thead><tbody>");
+      for (uint8_t i = 0; i < listCount; ++i) {
+        SensorSpec sp;
+        if (!cfg.getSensorSpec(i, sp)) continue;
+        long om = 0;
+        sp.params.getInt("output_mode", om);
+        const OutputMode mode = loggerSupportedOutputMode_(om);
+        html += F("<tr><td>");
+        html += String((int)i);
+        html += F("</td><td>");
+        html += htmlEscape(String(sp.name));
+        html += F("</td><td>");
+        html += htmlEscape(String(SensorRegistry::typeLabel(sp.type)));
+        html += F("</td><td>");
+        html += sp.mutedDefault ? F("muted") : F("active");
+        html += F("</td><td>");
+        html += (mode == OutputMode::RAW) ? F("RAW") : F("LINEAR");
+        html += F("</td><td><a href='/config/sensor?id=");
+        html += String((int)i);
+        html += F("'>Edit</a></td></tr>");
+      }
+      html += F("</tbody></table>");
     }
 
-      for (uint8_t i = 0; i < n; ++i) {
-        SensorSpec sp; 
-        if (!cfg.getSensorSpec(i, sp)) continue;
-        const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
-
-        // Type label
-        const char* typeLbl = SensorRegistry::typeLabel(sp.type);
-        const String typeLabelStr = htmlEscape(String(typeLbl ? typeLbl : "Unknown Sensor"));
-
-        // ParamDefs lookup helper
-        size_t defCount = 0;
-        const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
-        auto findDef = [&](const char* key)->const ParamDef* {
-          if (!defs) return nullptr;
-          for (size_t d = 0; d < defCount; ++d) {
-            if (strcasecmp(defs[d].key, key) == 0) return &defs[d];
-          }
-          return nullptr;
-        };
-        auto currentValAsString = [&](const ParamDef* pd)->String {
-          String val;
-          if (!pd) return val;
-          if      (pd->type == ParamType::Bool)  { bool b=false;  sp.params.getBool(pd->key, b);  val = b ? "true" : "false"; }
-          else if (pd->type == ParamType::Int)   { long v=0;      sp.params.getInt(pd->key, v);   val = String(v); }
-          else if (pd->type == ParamType::Float) { double f=0.0;  sp.params.getFloat(pd->key, f); val = String(f, 6); }
-          else { String s; sp.params.get(pd->key, s); val = s; }
-          return val;
-        };
-        auto emitParamRow = [&](const char* key, const char* labelOverride = nullptr) {
-          const ParamDef* pd = findDef(key);
-          if (!pd) return; // only render if defined by this sensor type
-          String label = labelOverride ? String(labelOverride) : String(pd->key);
-          html += "<div class='row'><label>";
-          html += htmlEscape(label);
-          html += "</label>";
-          String field = String("s") + i + "." + key;
-
-          if (pd->type == ParamType::Bool) {
-            String val = currentValAsString(pd);
-            html += "<input type='hidden' name='" + field + "' value='false'>";
-            html += "<input type='checkbox' name='" + field + "' value='true' ";
-            if (val == "true") html += "checked";
-            if (locked) html += " disabled";
-            html += ">";
-          } else if (pd->type == ParamType::Enum && pd->choices) {
-            String val = currentValAsString(pd);
-            html += "<select name='" + field + "'";
-            if (locked) html += " disabled";
-            html += ">";
-            emitEnumOptions(html, pd->choices, val);
-            html += "</select>";
-          } else {
-            String val = currentValAsString(pd);
-            html += "<input type='text' name='" + field + "' value='";
-            html += htmlEscape(val);
-            html += "'";
-            if (locked) html += " disabled";
-            html += ">";
-          }
-          if (pd->help) { html += "<small>"; html += pd->help; html += "</small>"; }
-          html += "</div>";
-        };
-
-        // --- Fieldset / legend
-        html += F("<fieldset id='sensor-");
-        html += String(i);
-        html += F("'><legend>");
-        const char* dispName = (sp.name && sp.name[0]) ? sp.name : "sensor";
-        html += htmlEscape(String(dispName));
-        html += F(" — ");
-        html += typeLabelStr;
-        html += F("</legend>");
-
-        // ---- Basic ----
-        html += F("<h4>Basic</h4>");
-        html += F("<div class='row'><label>Name</label>");
-        html += "<input type='text' name='s"; html += String(i); html += ".name' value='";
-        html += htmlEscape(String(sp.name)); html += "'"; html += dis; html += "></div>";
-
-        html += "<div class='row'><label>Type</label><select name='s";
-        html += String(i);
-        html += ".type'";
-        if (locked) html += " disabled";
-        html += ">";
-        const SensorType typeChoices[] = {
-          SensorType::AnalogPot,
-          SensorType::AS5600StringPotAnalog,
-          SensorType::AS5600StringPotI2C,
-        };
-        for (const auto typeChoice : typeChoices) {
-          const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
-          if (!tiChoice) continue; // only show implemented/registered types
-          const char* key = SensorRegistry::typeKey(typeChoice);
-          const char* label = SensorRegistry::typeLabel(typeChoice);
-          html += "<option value='";
-          html += htmlEscape(String(key ? key : "unknown"));
-          html += "'";
-          if (sp.type == typeChoice) html += " selected";
-          html += ">";
-          html += htmlEscape(String(label ? label : "Unknown Sensor"));
-          html += "</option>";
-        }
-        html += "</select> ";
-        html += "<button type='submit' name='apply_type_idx' value='";
-        html += String(i);
-        html += "'";
-        if (locked) html += " disabled";
-        html += ">Apply Type</button>";
-        html += "<small>Reloads fields for the selected type, prunes incompatible params, and takes effect after reboot.</small></div>";
-
-        emitParamRow("i2c_bus", "I2C bus");
-        emitParamRow("i2c_addr", "I2C address");
-
-        // Board-aware Analog Input selector (AIN ordinal)
-        {
-          const ParamDef* pd = findDef("ain");
-          if (pd) {
-            String field = String("s") + i + ".ain";
-            long curAin = -1;
-            sp.params.getInt("ain", curAin);
-
-            html += "<div class='row'><label>Analog input</label>";
-
-            if (!board::gBoard) {
-              html += "<em>No active board profile</em>";
-            } else {
-              const auto& bp = *board::gBoard;
-              if (bp.analog.count == 0) {
-                html += "<em>No analog inputs on this board</em>";
-              } else {
-                html += "<select name='" + field + "'";
-                if (locked) html += " disabled";
-                html += ">";
-
-                // Optional: allow “unset” (forces validation failure on save if required)
-                html += "<option value='-1'";
-                if (curAin < 0) html += " selected";
-                html += ">-- select --</option>";
-
-                for (uint8_t ai = 0; ai < bp.analog.count; ++ai) {
-                  const int pin = bp.analog.pins[ai];
-                  // Only show valid entries
-                  if (pin < 0) continue;
-
-                  html += "<option value='"; html += String((int)ai); html += "'";
-                  if ((long)ai == curAin) html += " selected";
-                  html += ">";
-                  html += "AIN"; html += String((int)ai);
-                  html += " (GPIO"; html += String(pin); html += ")";
-                  html += "</option>";
-                }
-
-                html += "</select>";
-              }
-            }
-
-            html += "</div>";
-          }
-        }
-
-        // Muted by default
-        {
-          String field = String("s") + i + ".muted";
-          html += "<div class='row'><label>Muted by default</label>";
-          html += "<input type='hidden' name='" + field + "' value='false'>";
-          html += "<input type='checkbox' name='" + field + "' value='true' ";
-          if (sp.mutedDefault) html += "checked";
-          if (locked) html += " disabled";
-          html += "></div>";
-        }
-
-        // ---- Output ----
-        html += F("<h4>Output</h4>");
-
-        // Output mode (RAW/LINEAR/POLY/LUT)
-        {
-          const ParamDef* pdOM = findDef("output_mode");
-          if (pdOM) {
-            int om = (int)OutputMode::RAW;
-            long vi;
-            if (sp.params.getInt("output_mode", vi)) om = (int)vi;
-
-            const String field = String("s") + i + ".output_mode";
-
-            html += "<div class='row'><label>Output mode</label><select name='";
-            html += field;
-            html += "' onchange=\"window.__xf_onModeChange('";
-            html += sp.name;
-            html += "', this.value)\"";
-            if (locked) html += " disabled";
-            html += ">";
-
-            auto addOpt = [&](OutputMode val, const char* label) {
-              html += "<option value='"; html += String((int)val); html += "'";
-              if (om == (int)val) html += " selected";
-              html += ">"; html += label; html += "</option>";
-            };
-            addOpt(OutputMode::RAW,    "RAW");
-            addOpt(OutputMode::LINEAR, "LINEAR");
-            addOpt(OutputMode::POLY,   "POLY");
-            addOpt(OutputMode::LUT,    "LUT");
-
-            html += "</select></div>";
-          }
-        }
-
-        emitParamRow("include_raw", "Include raw column");
-        emitParamRow("sensor_full_travel_mm", "Sensor full travel (mm)");
-        emitParamRow("units_label", "Units label");
-
-        // Transform picker (per sensor)
-        {
-          // use live sensor to preselect
-          const uint8_t liveN = SensorManager::count();
-          String currentId;
-          for (uint8_t j = 0; j < liveN; ++j) {
-            Sensor* ss = SensorManager::get(j);
-            if (ss && String(ss->name()) == String(dispName)) { currentId = ss->selectedTransformId(); break; }
-          }
-
-          html += F("<div class='row tr-block' data-sensor='");
-          html += htmlEscape(String(dispName));
-          html += F("' data-current='");
-          html += htmlEscape(currentId);
-          html += F("'>");
-          html += F("<label>Output transform</label>");
-          html += F("<select name='s"); html += i; html += F(".output_id'>");
-          html += F("</select> ");
-          html += F("<button class='apply'");  if (locked) html += F(" disabled"); html += F(">Apply</button> ");
-          html += F("<button class='reload'"); if (locked) html += F(" disabled"); html += F(">Reload</button> ");
-          html += F("<span class='status' style='margin-left:8px;color:#060'></span></div>");
-        }
-
-        // ---- Usage ----
-        html += F("<h4>Usage</h4>");
-        emitParamRow("end", "End");
-        emitParamRow("primary_domain", "Primary domain");
-        emitParamRow("primary_quantity", "Primary quantity");
-
-        // ---- Calibration ----
-        html += F("<h4>Calibration</h4>");
-        {
-          String field = String("s") + i + ".cal_allowed";
-          html += "<div class='row'><label>Calibration methods</label>";
-          html += "<input type='text' name='" + field + "' placeholder='ZERO,RANGE' value='";
-          CalModeMask allowMask2 = ConfigManager::calAllowedMaskByIndex(i);
-          String calCsv;
-          if (allowMask2 != 0xFF) {
-            if (allowMask2 & CAL_ZERO)  { if (calCsv.length()) calCsv += ","; calCsv += "ZERO"; }
-            if (allowMask2 & CAL_RANGE) { if (calCsv.length()) calCsv += ","; calCsv += "RANGE"; }
-            if (!calCsv.length()) calCsv = "NONE";
-          }
-          html += htmlEscape(calCsv);
-          html += "'";
-          if (locked) html += " disabled";
-          html += ">";
-          html += "<small>Leave blank to inherit type-supported methods.</small>";
-          html += "</div>";
-        }
-        emitParamRow("sensor_zero_count", "Sensor count at zero travel");
-        emitParamRow("sensor_full_count", "Sensor count at full travel");
-        emitParamRow("installed_zero_count", "Installed zero count");
-
-        // ---- Wrapping ----
-        if (findDef("counts_per_turn") || findDef("wrap_threshold_counts") || findDef("assume_turn0_at_start")) {
-          html += F("<h4>Wrapping</h4>");
-          emitParamRow("counts_per_turn", "Counts per turn");
-          emitParamRow("wrap_threshold_counts", "Wrap threshold (counts)");
-          emitParamRow("assume_turn0_at_start", "Assume turn 0 at log start");
-        }
-
-        // (Optional) render remaining params under "Other"
-        const char* shown[] = {
-          "ain","muted","i2c_bus","i2c_addr",
-          "output_mode","include_raw","sensor_full_travel_mm","units_label",
-          "end","primary_domain","primary_quantity","raw_domain",
-          "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count",
-          "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start"
-        };
-        auto isShown = [&](const char* key)->bool{
-          for (size_t k=0;k<sizeof(shown)/sizeof(shown[0]);++k){
-            if (strcasecmp(shown[k], key)==0) return true;
-          }
-          return false;
-        };
-        bool printedOther = false;
-        size_t defCount2 = 0;
-        const ParamDef* defs2 = ti ? ti->paramDefs(defCount2) : nullptr;
-        for (size_t d = 0; d < defCount2; ++d) {
-          const ParamDef& pd = defs2[d];
-          if (isShown(pd.key)) continue;
-          if (strcasecmp(pd.key, "name")==0 || strcasecmp(pd.key,"type")==0) continue;
-          if (!printedOther) { html += F("<h4>Other</h4>"); printedOther = true; }
-
-          // inline emit for this key
-          {
-            const ParamDef* pd2 = findDef(pd.key);
-            if (pd2) {
-              String label = String(pd2->key);
-              html += "<div class='row'><label>";
-              html += htmlEscape(label);
-              html += "</label>";
-              String field = String("s") + i + "." + pd.key;
-              if (pd2->type == ParamType::Bool) {
-                String val = currentValAsString(pd2);
-                html += "<input type='hidden' name='" + field + "' value='false'>";
-                html += "<input type='checkbox' name='" + field + "' value='true' ";
-                if (val == "true") html += "checked";
-                if (locked) html += " disabled";
-                html += ">";
-              } else if (pd2->type == ParamType::Enum && pd2->choices) {
-                String val = currentValAsString(pd2);
-                html += "<select name='" + field + "'";
-                if (locked) html += " disabled";
-                html += ">";
-                emitEnumOptions(html, pd2->choices, val);
-                html += "</select>";
-              } else {
-                String val = currentValAsString(pd2);
-                html += "<input type='text' name='" + field + "' value='";
-                html += htmlEscape(val);
-                html += "'";
-                if (locked) html += " disabled";
-                html += ">";
-              }
-              if (pd2->help) { html += "<small>"; html += pd2->help; html += "</small>"; }
-              html += "</div>";
-            }
-          }
-          delay(0);
-        }
-
-        html += "<div class='row'><label>Remove</label><button type='submit' name='delete_sensor_idx' value='";
-        html += String(i);
-        html += "'";
-        if (locked) html += " disabled";
-        html += ">Delete this sensor</button>";
-        html += "<small>Removes the sensor from logger config only; transform files are left in place.</small></div>";
-
-        html += F("</fieldset>");
-        delay(0);
-      }
-
-    html += F("<fieldset><legend>New sensor</legend>");
+    html += F("<form method='POST' action='/config/sensors'><fieldset><legend>New sensor</legend>");
     html += F("<div class='row'><label>Type</label><select name='add_sensor_type'");
     html += dis;
     html += F(">");
-    const SensorType addTypeChoices[] = {
-      SensorType::AnalogPot,
-      SensorType::AS5600StringPotAnalog,
-      SensorType::AS5600StringPotI2C,
-    };
-    for (const auto typeChoice : addTypeChoices) {
-      const SensorTypeInfo* tiChoice = SensorRegistry::lookup(typeChoice);
-      if (!tiChoice) continue;
-      const char* key = SensorRegistry::typeKey(typeChoice);
-      const char* label = SensorRegistry::typeLabel(typeChoice);
-      html += F("<option value='");
-      html += htmlEscape(String(key ? key : "unknown"));
-      html += F("'>");
-      html += htmlEscape(String(label ? label : "Unknown Sensor"));
-      html += F("</option>");
-    }
+    emitSensorTypeOptions_(html, SensorType::AnalogPot);
     html += F("</select></div>");
     html += F("<div class='row'><label>Name</label><input type='text' name='add_sensor_name' maxlength='15' placeholder='optional'");
     html += dis;
     html += F("><small>Leave blank to auto-name.</small></div>");
     html += F("<p><button type='submit' name='add_sensor' value='1'");
     html += dis;
-    html += F(">Add Sensor</button></p>");
-    html += F("</fieldset>");
-
-    
-
-    // --- per-sensor transform UI script (unchanged) ---
-    html += F(
-      "<script>\n"
-      "document.addEventListener('DOMContentLoaded',function(){\n"
-      "  function pickListShape(j){ var a=j.transforms||j.items||j.options||j.results||j.choices||j; if(Array.isArray(a)) return a; return []; }\n"
-      "  function populate(block, forcedMode){\n"
-      "    var sensor = block.getAttribute('data-sensor')||'';\n"
-      "    var current= block.getAttribute('data-current')||'';\n"
-      "    var sel    = block.querySelector('select'); if(!sel) return;\n"
-      "    var url = '/api/transforms/list?sensor='+encodeURIComponent(sensor)+'&_t='+Date.now();\n"
-      "    if(forcedMode!=null && forcedMode!=='') url += '&mode='+encodeURIComponent(forcedMode);\n"
-      "    fetch(url,{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){\n"
-      "      sel.innerHTML=''; pickListShape(j).forEach(function(t){\n"
-      "        var id=t.id||t.value||''; var label=(t.label||t.name||t.text||id||'?');\n"
-      "        if(t.type){ label+=' ('+t.type+(t.out_units?(', '+t.out_units):'')+')'; }\n"
-      "        var o=document.createElement('option'); o.value=id; o.textContent=label; if(current===id) o.selected=true; sel.appendChild(o);\n"
-      "      });\n"
-      "    }).catch(function(e){ console.error('load list',e); });\n"
-      "  }\n"
-      "  window.__xf_onModeChange=function(sensor,mode){\n"
-      "    var block=[].find.call(document.querySelectorAll('.tr-block'),function(el){return el.dataset&&el.dataset.sensor===sensor;});\n"
-      "    if(!block) return; block.dataset.current='identity'; populate(block, mode);\n"
-      "  };\n"
-      "  function getCurrentModeForSensor(sensor){\n"
-      "    var inputs = document.querySelectorAll('input[name$=\".name\"]');\n"
-      "    for (var i=0;i<inputs.length;i++){\n"
-      "      if ((inputs[i].value||'')===sensor){ var name = inputs[i].getAttribute('name'); var m = name && name.match(/^s(\\d+)\\.name$/);\n"
-      "        if (!m) break; var idx = m[1]; var sel = document.querySelector('select[name=\"s'+idx+'.output_mode\"]'); if (sel) return sel.value;\n"
-      "        var radios = document.querySelectorAll('input[type=radio][name=\"s'+idx+'.output_mode\"]');\n"
-      "        for (var r=0;r<radios.length;r++){ if (radios[r].checked) return radios[r].value; }\n"
-      "        var txt = document.querySelector('input[name=\"s'+idx+'.output_mode\"]'); if (txt) return txt.value; break; }\n"
-      "    }\n"
-      "    return '';\n"
-      "  }\n"
-      "  document.querySelectorAll('.reload').forEach(function(btn){\n"
-      "    btn.addEventListener('click', function(){\n"
-      "      var block = btn.closest('.tr-block'); var sensor = block && block.dataset ? block.dataset.sensor : '';\n"
-      "      var status = block ? block.querySelector('.status') : null;\n"
-      "      fetch('/api/transforms/reload',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'sensor='+encodeURIComponent(sensor)})\n"
-      "        .then(function(r){return r.json();}).then(function(j){ if(j && j.ok){ var mode = getCurrentModeForSensor(sensor); block.dataset.current='identity'; populate(block, mode); if(status){ status.style.color='#060'; status.textContent='Reloaded ✔'; } setTimeout(function(){ if(status) status.textContent=''; },1200); } else { if(status){ status.style.color='#900'; status.textContent='Error'; } } })\n"
-      "        .catch(function(){ if(status){ status.style.color='#900'; status.textContent='Error'; } });\n"
-      "    });\n"
-      "  });\n"
-      "  Array.prototype.forEach.call(document.querySelectorAll('.tr-block'), function(b){ populate(b); });\n"
-      "  document.addEventListener('change',function(ev){ var n=(ev.target&&ev.target.name)||''; var m=n.match(/^s(\\d+)\\.output_mode$/); if(!m) return; var idx=m[1]; var newMode=ev.target.value; var nameEl=document.querySelector('input[name=\"s'+idx+'.name\"]'); if(!nameEl) return; var sensor=nameEl.value||''; var block=Array.prototype.find.call(document.querySelectorAll('.tr-block'),function(el){return el.dataset&&el.dataset.sensor===sensor;}); if(block){ block.dataset.current='identity'; populate(block, newMode); } });\n"
-      "});\n"
-      "</script>\n"
-    );
-
-    html += F("<p><button type='submit'");
-    html += dis;
-    html += F(">Save Sensors</button></p>");
-    html += F("</form>");
+    html += F(">Add Sensor</button></p></fieldset></form>");
 
     html += htmlFooter();
-    srv.send(200, F("text/html"), html);
+    html.finish();
+    return;
+
+  });
+
+  // -------------------- GET /config/sensor?id=N --------------------
+  S->on("/config/sensor", HTTP_GET, [S](){
+    auto& srv = *S;
+    noteHttpActivity_();
+
+    if (!srv.hasArg("id")) {
+      srv.send(400, F("text/plain"), F("Missing sensor id"));
+      return;
+    }
+
+    const int id = srv.arg("id").toInt();
+    if (id < 0 || id >= (int)ConfigManager::sensorCount()) {
+      srv.send(404, F("text/plain"), F("Sensor not found"));
+      return;
+    }
+
+    SensorSpec sp;
+    if (!ConfigManager::getSensorSpec((uint8_t)id, sp)) {
+      srv.send(404, F("text/plain"), F("Sensor not found"));
+      return;
+    }
+
+    String lockedReason;
+    const bool locked = configEditLocked_(&lockedReason);
+    const String dis = locked ? F(" disabled") : F("");
+
+    ChunkedHtmlResponse html(srv);
+    html.begin(F("text/html"), F("no-store"));
+    html += htmlHeader(F("Sensor"));
+
+    if (srv.hasArg("ok")) {
+      html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
+    }
+    if (srv.hasArg("reboot")) {
+      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
+                "Restart the logger to rebuild the live sensor set.</p>");
+    }
+    if (locked) {
+      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
+                "Editing is disabled while ");
+      html += htmlEscape(lockedReason);
+      html += F(". Exit upload mode or stop logging to make changes.</p>");
+    }
+
+    html += F("<p><a href='/config/sensors'>Back to sensors</a></p>");
+    html += F("<form method='POST' action='/config/sensors'>");
+    html += F("<input type='hidden' name='return_to' value='/config/sensor?id=");
+    html += String(id);
+    html += F("'>");
+    emitSensorEditor_(html, (uint8_t)id, sp, locked, dis);
+    html += F("<p><button type='submit'");
+    html += dis;
+    html += F(">Save Sensor</button></p></form>");
+    html += htmlFooter();
+    html.finish();
   });
 
   // -------------------- POST /config/sensors --------------------
@@ -1111,13 +1197,8 @@ void registerConfigRoutes(WebServer& srv) {
         long newOm = oldOm; bool omChanged = false;
 
         if (getArgLast("output_mode", v)) {
-          v.trim(); 
-          v.toUpperCase(); 
-          long vi = v.toInt(); 
-          if (v=="RAW"||vi==0) newOm=0; 
-          else if (v=="LINEAR"||vi==1) newOm=1; 
-          else if (v=="POLY"||vi==2) newOm=2; 
-          else if (v=="LUT"||vi==3) newOm=3;
+          const OutputMode parsed = parseLoggerOutputMode_(v, loggerSupportedOutputMode_(oldOm));
+          newOm = (long)parsed;
           if (newOm != oldOm) omChanged = true;
           sp.params.setInt("output_mode", newOm);
         }
@@ -1128,12 +1209,11 @@ void registerConfigRoutes(WebServer& srv) {
         if (getArgLast("output_id", v)) {
           v.trim();
           if (v != oldId) idChanged = true;
-          sp.params.set("output_id", v);
+          sp.params.set("output_id", "identity");
         }
 
         { bool inc = false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
         if (getArgLast("sensor_full_travel_mm", v)) { double f = v.toFloat(); sp.params.setFloat("sensor_full_travel_mm", (float)f); }
-        if (getArgLast("units_label", v)) { sp.params.set("units_label", v); }
         if (getArgLast("end", v)) { v.trim(); sp.params.set("end", v); }
         if (getArgLast("primary_domain", v)) { v.trim(); sp.params.set("primary_domain", v); }
         if (getArgLast("primary_quantity", v)) { v.trim(); sp.params.set("primary_quantity", v); }
@@ -1146,24 +1226,10 @@ void registerConfigRoutes(WebServer& srv) {
       // Calibration
       {
         String v;
-        if (getArgLast("cal_allowed", v)) {
-          CalModeMask m = 0xFF; v.trim();
-          if (v.length()) {
-            m = 0; int start=0;
-            while (start < v.length()) {
-              int comma = v.indexOf(',', start);
-              String tok = (comma < 0) ? v.substring(start) : v.substring(start, comma);
-              tok.trim(); tok.toUpperCase();
-              if      (tok == "ZERO")  m |= CAL_ZERO;
-              else if (tok == "RANGE") m |= CAL_RANGE;
-              start = (comma < 0) ? v.length() : comma + 1;
-            }
-          }
-          ConfigManager::setCalAllowedByIndex(idx, m);
-        }
         if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
         if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
         if (getArgLast("installed_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("installed_zero_count", vi); }
+        if (getArgLast("zero_count", v)) { long vi = v.toInt(); sp.params.setInt("zero_count", vi); }
       }
 
       // Wrapping
@@ -1189,6 +1255,7 @@ void registerConfigRoutes(WebServer& srv) {
             pkey.equalsIgnoreCase("primary_quantity") || pkey.equalsIgnoreCase("raw_domain") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
             pkey.equalsIgnoreCase("sensor_full_count") || pkey.equalsIgnoreCase("installed_zero_count") ||
+            pkey.equalsIgnoreCase("zero_count") ||
             pkey.equalsIgnoreCase("counts_per_turn") || pkey.equalsIgnoreCase("wrap_threshold_counts") ||
             pkey.equalsIgnoreCase("assume_turn0_at_start") ||
             pkey.equalsIgnoreCase("ain") || pkey.equalsIgnoreCase("i2c_bus") ||
@@ -1236,7 +1303,15 @@ void registerConfigRoutes(WebServer& srv) {
       srv.send(500, F("text/plain"), F("Failed to save config"));
       return;
     }
-    String location = "/config/sensors?ok=1";
+    String location = "/config/sensors";
+    if (srv.hasArg("return_to")) {
+      String requested = srv.arg("return_to");
+      requested.trim();
+      if (requested.startsWith("/config/sensor") || requested.startsWith("/config/sensors")) {
+        location = requested;
+      }
+    }
+    location += (location.indexOf('?') >= 0) ? F("&ok=1") : F("?ok=1");
     if (applyTypeIdx >= 0) {
       location += "#sensor-";
       location += String(applyTypeIdx);

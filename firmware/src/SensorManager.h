@@ -45,12 +45,15 @@ namespace SensorManager {
 
   // CSV / sampling
   uint16_t dynamicColumnCount();
+  uint16_t synchronousMaxSampleRateHz();
   void buildHeader(char* out, size_t n, bool humanTs);
   void sampleValues(float* out, uint16_t maxOut, uint16_t& written);
   uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut);
+  bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out);
   uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut);
   uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut);
   bool resolveSynBikeRawBindings(SynBikeRawBindings& out);
+  bool gpsStatus(SensorGpsStatus& out);
 
   // debug
   void debugDump(const char* tag);
