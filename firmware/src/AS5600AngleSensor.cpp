@@ -63,6 +63,11 @@ AS5600AngleSensor::I2CReadMode parseReadMode_(const String& value) {
   return AS5600AngleSensor::I2CReadMode::RepeatedStart;
 }
 
+uint32_t busHz_(uint8_t busIndex) {
+  const board::I2CProfile* profile = I2CManager::profile(busIndex);
+  return (profile && profile->hz) ? profile->hz : 100000UL;
+}
+
 void loadParamsFromPack_(AS5600AngleSensor::Params& p,
                          const char* instanceName,
                          const ParamPack& params) {
@@ -74,7 +79,6 @@ void loadParamsFromPack_(AS5600AngleSensor::Params& p,
 
   if (params.getInt("i2c_bus", li))       p.busIndex = (li < 0) ? 0u : (uint8_t)li;
   if (params.getInt("i2c_addr", li))      p.i2cAddr = (li <= 0) ? kDefaultAddress : (uint8_t)li;
-  if (params.getInt("i2c_hz", li))        p.i2cHz = (li <= 0) ? 100000UL : (uint32_t)li;
   if (params.get("i2c_read_mode", s))     p.readMode = parseReadMode_(s);
   if (params.getInt("zero_count", li))    p.zeroCount = (int32_t)li;
   if (params.getBool("include_raw", b))   p.includeRawColumn = b;
@@ -104,7 +108,6 @@ void AS5600AngleSensor::applyParams(const Params& p) {
 
   m_busIndex = p.busIndex;
   m_i2cAddr = p.i2cAddr ? p.i2cAddr : kDefaultAddress;
-  m_i2cHz = p.i2cHz ? p.i2cHz : 100000UL;
   m_readMode = p.readMode;
   m_zeroCount = normalizeCount_(p.zeroCount);
   m_includeRaw = p.includeRawColumn;
@@ -153,7 +156,7 @@ void AS5600AngleSensor::begin() {
   uint16_t raw = 0;
   if (readRawAngle_(raw)) {
     refreshDiagnostics_(true);
-    AS5600A_LOGI("sensor '%s': ready at 0x%02X bus%u raw=%u status=0x%02X agc=%u mag=%u zero=%ld i2c_hz=%lu read_mode=%s\n",
+    AS5600A_LOGI("sensor '%s': ready at 0x%02X bus%u raw=%u status=0x%02X agc=%u mag=%u zero=%ld bus_hz=%lu read_mode=%s\n",
                  name(),
                  (unsigned)m_i2cAddr,
                  (unsigned)m_busIndex,
@@ -162,7 +165,7 @@ void AS5600AngleSensor::begin() {
                  (unsigned)m_lastAgc,
                  (unsigned)m_lastMagnitude,
                  (long)m_zeroCount,
-                 (unsigned long)m_i2cHz,
+                 (unsigned long)busHz_(m_busIndex),
                  (m_readMode == I2CReadMode::RepeatedStart) ? "repeated" : "stop");
   }
 }
@@ -180,23 +183,15 @@ bool AS5600AngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
 bool AS5600AngleSensor::probe_() const {
   if (!m_wire) return false;
   if (!I2CManager::lock(m_wire)) return false;
-  applyBusClock_();
   m_wire->beginTransmission(m_i2cAddr);
   const bool ok = (m_wire->endTransmission(true) == 0);
   I2CManager::unlock(m_wire);
   return ok;
 }
 
-void AS5600AngleSensor::applyBusClock_() const {
-  if (m_wire && m_i2cHz) {
-    m_wire->setClock(m_i2cHz);
-  }
-}
-
 bool AS5600AngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t len) const {
   if (!m_wire || !out || len == 0) return false;
 
-  applyBusClock_();
   m_wire->beginTransmission(m_i2cAddr);
   m_wire->write(reg);
   const bool stopAfterRegister = (m_readMode == I2CReadMode::StopThenRead);
@@ -337,8 +332,6 @@ void AS5600AngleSensor::logFailureProbe_() const {
     return;
   }
 
-  applyBusClock_();
-
   m_wire->beginTransmission(m_i2cAddr);
   const uint8_t pingConfigured = (uint8_t)m_wire->endTransmission(true);
 
@@ -365,12 +358,12 @@ void AS5600AngleSensor::logFailureProbe_() const {
   I2CManager::unlock(m_wire);
 
   const uint16_t raw = decode12_(b0, b1);
-  AS5600A_LOGW("sensor '%s': failure probe bus%u addr=0x%02X hz=%lu mode=%s "
+  AS5600A_LOGW("sensor '%s': failure probe bus%u addr=0x%02X bus_hz=%lu mode=%s "
                "ping_configured=%u ping_0x36=%u raw2{tx=%u got=%u bytes=%02X %02X raw=%u}\n",
                name(),
                (unsigned)m_busIndex,
                (unsigned)m_i2cAddr,
-               (unsigned long)m_i2cHz,
+               (unsigned long)busHz_(m_busIndex),
                (m_readMode == I2CReadMode::RepeatedStart) ? "repeated" : "stop",
                (unsigned)pingConfigured,
                (unsigned)pingDefault,
@@ -420,11 +413,11 @@ int AS5600AngleSensor::readRawAngleOnce_() const {
   }
 
   if (!m_warnedRead) {
-    AS5600A_LOGW("sensor '%s': read failed at 0x%02X on bus %u hz=%lu mode=%s; reusing last good sample\n",
+    AS5600A_LOGW("sensor '%s': read failed at 0x%02X on bus %u bus_hz=%lu mode=%s; reusing last good sample\n",
                  name(),
                  (unsigned)m_i2cAddr,
                  (unsigned)m_busIndex,
-                 (unsigned long)m_i2cHz,
+                 (unsigned long)busHz_(m_busIndex),
                  (m_readMode == I2CReadMode::RepeatedStart) ? "repeated" : "stop");
     m_warnedRead = true;
     logFailureProbe_();
@@ -738,7 +731,6 @@ const ParamDef* AS5600AngleSensor::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     {"i2c_bus",          ParamType::Enum,   "0",   nullptr, nullptr, "0,1", "I2C bus index"},
     {"i2c_addr",         ParamType::Int,    "54",  "1",     "127",   nullptr, "I2C address in decimal (default 54 = 0x36)"},
-    {"i2c_hz",           ParamType::Int,    "100000", "10000", "400000", nullptr, "I2C clock for AS5600 reads"},
     {"i2c_read_mode",    ParamType::Enum,   "repeated", nullptr, nullptr, "repeated,stop", "I2C register read transaction style"},
     {"zero_count",       ParamType::Int,    "0",   "0",     "4095", nullptr, "Firmware zero point in raw AS5600 counts"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},

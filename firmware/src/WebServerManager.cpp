@@ -12,13 +12,10 @@
 #include "SensorManager.h"
 #include "SensorTypes.h"
 #include "Sensor.h"
-#include "TransformRegistry.h"
-#include "OutputTransform.h"
 #include "WiFiManager.h"
 #include "PowerManager.h"
 #include "Routes_Files.h"
 #include "Routes_Config.h"
-#include "Routes_Transforms.h"
 #include "Routes_Api.h"
 #include "HtmlUtil.h"
 #include "DebugLog.h"
@@ -29,9 +26,6 @@ using namespace HtmlUtil;
 #define WS_LOGI(...) LOGI_TAG("WS", __VA_ARGS__)
 #define WS_LOGD(...) LOGD_TAG("WS", __VA_ARGS__)
 
-
-// gTransforms is defined in esp32_data_logger.ino (non-static there)
-extern TransformRegistry gTransforms;
 
 // --- Module state ---
 static WebServer* g_server = nullptr;
@@ -243,7 +237,6 @@ void WebServerManager::setupRoutes() {
   // Delegate
   registerFileRoutes(*g_server);
   registerConfigRoutes(*g_server);
-  registerTransformRoutes(*g_server);
   registerApiRoutes(*g_server);
 
 

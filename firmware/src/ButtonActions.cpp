@@ -378,9 +378,9 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
   }
 
   // Not up yet: start the configured Wi-Fi mode and show "starting..."
-  WiFiManager::connectNow();
   UI::println("Starting WiFi...", "WiFi\nstarting", UI::TARGET_BOTH, UI::LVL_INFO, 1500, 2);
   UI::status("WiFi...");
+  WiFiManager::connectNow();
 }
 
 void ButtonActions::onUploadModeToggle(ButtonEvent event) {

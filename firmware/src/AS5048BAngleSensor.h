@@ -18,7 +18,6 @@ public:
     const char* name = nullptr;
     uint8_t busIndex = 0;
     uint8_t i2cAddr = 0x40;
-    uint32_t i2cHz = 100000UL;
     I2CReadMode readMode = I2CReadMode::RepeatedStart;
     int32_t zeroCount = 0;
     bool includeRawColumn = true;
@@ -92,7 +91,6 @@ private:
   };
 
   void applyParams(const Params& p);
-  void applyBusClock_() const;
   bool probe_() const;
   bool readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t len) const;
   bool readOutputBlock_(OutputSample& out) const;
@@ -121,7 +119,6 @@ private:
 
   uint8_t m_busIndex = 0;
   uint8_t m_i2cAddr = 0x40;
-  uint32_t m_i2cHz = 100000UL;
   I2CReadMode m_readMode = I2CReadMode::RepeatedStart;
   int32_t m_zeroCount = 0;
   uint32_t m_diagnosticIntervalMs = 250;

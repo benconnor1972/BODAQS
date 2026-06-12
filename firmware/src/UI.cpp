@@ -210,6 +210,9 @@ void UI::loop() {
 
     // Middle: GPS state, only when a GPS sensor is configured.
     String middle = makeGpsFooterString_();
+    if (middle.length()) {
+      middle = " " + middle;
+    }
 
     // Right side: battery
     String right;

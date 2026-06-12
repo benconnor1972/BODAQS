@@ -89,6 +89,10 @@ namespace {
     // entries are tolerated on load but are not written back.
     if (strcasecmp(key, "raw_domain") == 0) return false;
 
+    // I2C clock is a board-profile bus property, not a per-sensor setting.
+    // Legacy sensor-level values are tolerated on load but are not written back.
+    if (strcasecmp(key, "i2c_hz") == 0) return false;
+
     // `pin` is a legacy fallback for analog sensors. When `ain` is present,
     // the physical GPIO is board-derived and `pin` becomes redundant noise.
     if (strcasecmp(key, "pin") == 0) {

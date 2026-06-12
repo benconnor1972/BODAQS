@@ -3,7 +3,6 @@
 #include "AnalogPotSensor.h"
 #include "ConfigManager.h"
 #include "SensorRegistry.h"
-#include "TransformRegistry.h"
 #include "StorageManager.h"
 #include "SensorTypes.h"
 #include "UI.h"
@@ -17,9 +16,6 @@
 #define SENS_LOGW(...) LOGW_TAG("SENS", __VA_ARGS__)
 #define SENS_LOGI(...) LOGI_TAG("SENS", __VA_ARGS__)
 #define SENS_LOGD(...) LOGD_TAG("SENS", __VA_ARGS__)
-#define XFORM_LOGW(...) LOGW_TAG("XFORM", __VA_ARGS__)
-#define XFORM_LOGI(...) LOGI_TAG("XFORM", __VA_ARGS__)
-#define XFORM_LOGD(...) LOGD_TAG("XFORM", __VA_ARGS__)
 #define SM_LOGI(...) LOGI_TAG("SM", __VA_ARGS__)
 
 //Debug
@@ -211,63 +207,9 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       continue;
     }
 
-    // Preload any transforms on disk for this sensor
-    if (SD_MMC.cardType() != CARD_NONE) {
-      gTransforms.loadForSensor(sp.name, SD_MMC);   // fs::FS&
-    } else {
-      XFORM_LOGW("SD_MMC not available -> skipping transform load\n");
-    }
-
-    {
-      auto metas = gTransforms.list(sp.name);
-      XFORM_LOGI("loaded %u transforms for sensor='%s':\n",
-                 (unsigned)metas.size(), sp.name);
-      for (const auto& m : metas) {
-        LOGI("  id='%s' label='%s'\n", m.id, m.label);
-      }
-    }
-
-    // Selected transform (shape) from config; identity if absent
-    {
-    String outId;
-    bool haveId = sp.params.get("output_id", outId) && outId.length();
-    if (!haveId) {
-      // If exactly one non-identity transform is available, auto-select it
-      auto metas = gTransforms.list(sp.name);
-      String onlyId;
-      for (const auto& m : metas) {
-        if (m.id == "identity") continue;
-        if (onlyId.length()) { onlyId = ""; break; } // >1, bail
-        onlyId = m.id;
-      }
-      if (onlyId.length()) {
-        outId = onlyId;
-        sp.params.set("output_id", outId);  // persist in-memory (optional file save later)
-      }
-    }
-
-    // NEW: strip filename extension (".lut", ".poly", etc)
-    int dot = outId.lastIndexOf('.');
-    if (dot > 0) outId = outId.substring(0, dot);
-
-    // sanitize and apply if present
-    if (outId.length()) {
-      outId.trim();
-      // strip trailing separators/spaces
-      while (outId.length()) {
-        char c = outId[outId.length()-1];
-        if (c == ',' || c == ';' || c <= ' ') outId.remove(outId.length()-1);
-        else break;
-      }
-
-
-      // Persist normalized id so future saves keep the clean value
-      ConfigManager::saveSensorParamByName(sp.name, "output_id", outId);
-      s->setSelectedTransformId(outId);
-    }
-    s->attachTransform(gTransforms);  // identity fallback if none selected
-
-    }
+    // Complex on-device transforms are retired. Keep legacy output_id fields
+    // loadable, but force runtime transform selection to identity.
+    s->setSelectedTransformId("identity");
 
     // -------- Apply runtime config from sp to the live sensor (boot defaults) --------
 
@@ -281,14 +223,14 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
       if (sp.params.getInt("output_mode", omInt)) {
         if      (omInt == (long)OutputMode::RAW)    mode = OutputMode::RAW;
         else if (omInt == (long)OutputMode::LINEAR) mode = OutputMode::LINEAR;
-        else if (omInt == (long)OutputMode::POLY)   mode = OutputMode::POLY;
-        else if (omInt == (long)OutputMode::LUT)    mode = OutputMode::LUT;
+        else if (omInt == (long)OutputMode::POLY)   mode = OutputMode::LINEAR;
+        else if (omInt == (long)OutputMode::LUT)    mode = OutputMode::LINEAR;
       } else if (sp.params.get("output_mode", omStr)) {
         omStr.trim(); omStr.toUpperCase();
         if      (omStr == "RAW"    || omStr == "0") mode = OutputMode::RAW;
         else if (omStr == "LINEAR" || omStr == "1") mode = OutputMode::LINEAR;
-        else if (omStr == "POLY"   || omStr == "2") mode = OutputMode::POLY;
-        else if (omStr == "LUT"    || omStr == "3") mode = OutputMode::LUT;
+        else if (omStr == "POLY"   || omStr == "2") mode = OutputMode::LINEAR;
+        else if (omStr == "LUT"    || omStr == "3") mode = OutputMode::LINEAR;
       }
       s->setOutputMode(mode);
       if (mode == OutputMode::RAW) {
@@ -303,19 +245,10 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
 
       // ----- Units label policy -----
       // RAW    => "counts"
-      // LINEAR => use user-specified units_label (if any)
-      // POLY/LUT => always use transform's label
+      // LINEAR => sensor default, with legacy explicit units_label honoured if present
+      // Legacy POLY/LUT values are normalized to LINEAR above; downstream tools
+      // now own complex transform application.
       {
-        auto getLabelFromSelected = [&](const char* sensorName, const char* selId) -> String {
-          if (!selId || !*selId) return String();
-          for (const auto& m : gTransforms.list(sensorName)) {
-            if (m.id == selId) {
-              return String(m.label);   // <-- use transform's label
-            }
-          }
-          return String();
-        };
-
         switch (mode) {
           case OutputMode::RAW: {
             s->setOutputUnitsLabel("counts");
@@ -329,9 +262,9 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
           }
           case OutputMode::POLY:
           case OutputMode::LUT: {
-            const String sel = s->selectedTransformId();
-            const String lab = getLabelFromSelected(sp.name, sel.c_str());
-            s->setOutputUnitsLabel(lab.c_str());   // empty if none
+            String ulabel;
+            sp.params.get("units_label", ulabel);
+            s->setOutputUnitsLabel(ulabel.c_str());
             break;
           }
         }
