@@ -415,9 +415,13 @@ class ImportAgentManagerController:
             raise ValueError("No enabled managed sources are available.")
         return ImportAgentSupervisor(sources)
 
-    def import_once(self) -> tuple[dict[str, Any], dict[str, Any]]:
+    def import_once(
+        self,
+        *,
+        progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         supervisor = self.make_enabled_supervisor()
-        report = supervisor.scan_all_once()
+        report = supervisor.scan_all_once(progress_callback=progress_callback)
         return report, supervisor.snapshot()
 
 
@@ -449,12 +453,21 @@ class ImportAgentWatchService:
             self._thread = None
         return stopped
 
+    def _queue_progress(self, progress: Mapping[str, Any]) -> None:
+        self.event_queue.put(
+            {
+                "kind": "import_progress",
+                "origin": "watch",
+                "progress": dict(progress),
+            }
+        )
+
     def _run(self) -> None:
         self.event_queue.put({"kind": "watch_started"})
         try:
             while not self._stop_event.is_set():
                 now_s = time.time()
-                reports = self.supervisor.scan_due(now_s=now_s)
+                reports = self.supervisor.scan_due(now_s=now_s, progress_callback=self._queue_progress)
                 if reports:
                     self.event_queue.put(
                         {
@@ -496,6 +509,7 @@ class ImportAgentManagerWindow:
         self.args = args
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.watch_service: Optional[ImportAgentWatchService] = None
+        self.import_now_thread: Optional[threading.Thread] = None
         self.tray_icon: Optional[ImportAgentTrayIcon] = None
         self.watch_state_var = tk.StringVar(value="Watcher stopped.")
         self.manager_status_var = tk.StringVar(value="Ready.")
@@ -1231,6 +1245,147 @@ class ImportAgentManagerWindow:
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _progress_int(self, progress: Mapping[str, Any], key: str, default: int = 0) -> int:
+        try:
+            return int(progress.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _source_status_from_progress(self, progress: Mapping[str, Any]) -> Optional[str]:
+        event = str(progress.get("event") or "")
+        if event == "source_scan_started":
+            return "scanning..."
+        if event == "remote_acquisition_started":
+            return "checking logger..."
+        if event == "remote_status":
+            state = str(progress.get("remote_state") or "unknown")
+            if state == "waiting_upload_mode":
+                return "waiting for upload mode"
+            if state == "error":
+                return f"error: {progress.get('error')}"
+            return state
+        if event == "remote_sessions_detected":
+            return f"{self._progress_int(progress, 'session_count')} remote session(s) detected"
+        if event == "remote_session_download_started":
+            return (
+                f"downloading remote {self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}"
+            )
+        if event == "remote_session_downloaded":
+            return (
+                f"downloaded remote {self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}"
+            )
+        if event == "remote_session_failed":
+            return (
+                f"remote failed {self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}"
+            )
+        if event == "archives_detected":
+            count = self._progress_int(progress, "archive_count")
+            return f"{count} archive(s) detected" if count else "no archives detected"
+        if event == "archive_deferred":
+            return (
+                f"deferred {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_processing_started":
+            return (
+                f"processing {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_imported":
+            return (
+                f"imported {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_failed":
+            return (
+                f"failed {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_skipped":
+            return (
+                f"skipped {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "source_scan_completed":
+            totals = progress.get("totals")
+            if isinstance(totals, Mapping):
+                return (
+                    f"complete: seen={totals.get('seen', 0)} imported={totals.get('imported', 0)} "
+                    f"failed={totals.get('failed', 0)}"
+                )
+        return None
+
+    def _format_import_progress_log(self, progress: Mapping[str, Any], *, origin: str) -> Optional[str]:
+        event = str(progress.get("event") or "")
+        source_id = str(progress.get("source_id") or "")
+        label = "Watch" if origin == "watch" else "Import"
+        archive_name = str(progress.get("archive_name") or "")
+        remote_session_id = str(progress.get("remote_session_id") or "")
+
+        if event == "remote_status":
+            state = str(progress.get("remote_state") or "unknown")
+            if origin == "watch" and state not in {"error"}:
+                return None
+            detail = progress.get("error") or progress.get("message") or state
+            return f"{label} source {source_id}: logger status {detail}."
+        if event == "remote_sessions_detected":
+            count = self._progress_int(progress, "session_count")
+            if origin == "watch" and count == 0:
+                return None
+            return f"{label} source {source_id}: detected {count} remote session(s)."
+        if event == "remote_session_download_started":
+            return (
+                f"{label} source {source_id}: downloading remote "
+                f"{self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}: {remote_session_id}"
+            )
+        if event == "remote_session_downloaded":
+            return f"{label} source {source_id}: downloaded remote session {remote_session_id}."
+        if event == "remote_session_failed":
+            return f"{label} source {source_id}: remote session {remote_session_id} failed: {progress.get('error')}"
+        if event == "remote_session_skipped":
+            return (
+                f"{label} source {source_id}: skipped remote session {remote_session_id} "
+                f"({progress.get('reason')})."
+            )
+        if event == "archives_detected":
+            count = self._progress_int(progress, "archive_count")
+            if origin == "watch" and count == 0:
+                return None
+            return f"{label} source {source_id}: detected {count} archive(s)."
+        if event == "archive_deferred":
+            return f"{label} source {source_id}: deferred {archive_name} while it settles."
+        if event == "archive_processing_started":
+            return (
+                f"{label} source {source_id}: processing "
+                f"{self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}: {archive_name}"
+            )
+        if event == "archive_imported":
+            session_id = progress.get("session_id")
+            suffix = f" -> {session_id}" if session_id else ""
+            return f"{label} source {source_id}: imported {archive_name}{suffix}."
+        if event == "archive_failed":
+            return f"{label} source {source_id}: failed {archive_name}: {progress.get('error')}"
+        if event == "archive_skipped":
+            return f"{label} source {source_id}: skipped {archive_name} ({progress.get('reason')})."
+        return None
+
+    def _handle_import_progress(self, progress: Mapping[str, Any], *, origin: str) -> None:
+        source_id = str(progress.get("source_id") or "")
+        status = self._source_status_from_progress(progress)
+        if source_id and status:
+            self._set_source_runtime_status(source_id, status)
+
+        message = self._format_import_progress_log(progress, origin=origin)
+        if message:
+            self.manager_status_var.set(message)
+            self._append_log(message)
+            self._refresh_tray()
 
     def _set_manager_status(self, message: str) -> None:
         self.manager_status_var.set(message)
@@ -3053,6 +3208,9 @@ class ImportAgentManagerWindow:
     def _watch_running(self) -> bool:
         return self.watch_service is not None and self.watch_service.running
 
+    def _import_now_running(self) -> bool:
+        return self.import_now_thread is not None and self.import_now_thread.is_alive()
+
     def _has_enabled_sources(self) -> bool:
         config = self.controller.app_config
         return bool(config and any(source.enabled for source in config.sources))
@@ -3067,6 +3225,18 @@ class ImportAgentManagerWindow:
                 f"Stop the watcher before running '{action_label}'.",
                 parent=parent or self.root,
             )
+            return False
+        return True
+
+    def _guard_import_now_inactive(self, *, action_label: str, parent: Optional[tk.Misc] = None) -> bool:
+        if self._import_now_running():
+            messagebox.showinfo(
+                _APP_DISPLAY_NAME,
+                f"Wait for the current import to finish before running '{action_label}'.",
+                parent=parent or self.root,
+            )
+            return False
+        if not self._guard_import_now_inactive(action_label=action_label, parent=parent):
             return False
         return True
 
@@ -3090,9 +3260,15 @@ class ImportAgentManagerWindow:
             "auto_start": bool(config.auto_start) if config is not None else False,
             "watch_running": self._watch_running(),
             "window_visible": self._window_visible(),
-            "can_start_watch": config is not None and self._has_enabled_sources() and not self._watch_running(),
+            "import_now_running": self._import_now_running(),
+            "can_start_watch": (
+                config is not None
+                and self._has_enabled_sources()
+                and not self._watch_running()
+                and not self._import_now_running()
+            ),
             "can_stop_watch": self._watch_running(),
-            "can_import_now": config is not None and not self._watch_running(),
+            "can_import_now": config is not None and not self._watch_running() and not self._import_now_running(),
             "source_count": len(config.sources) if config is not None else 0,
         }
 
@@ -3499,12 +3675,52 @@ class ImportAgentManagerWindow:
         if not self._guard_watch_inactive(action_label="Import Now"):
             return
         try:
-            report, snapshot = self.controller.import_once()
+            supervisor = self.controller.make_enabled_supervisor()
         except Exception as exc:
             self._set_manager_status(f"Import failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
+        self.import_now_thread = threading.Thread(
+            target=self._run_import_now_worker,
+            args=(supervisor,),
+            name="ImportAgentImportNow",
+            daemon=True,
+        )
+        self.import_now_thread.start()
+        self._set_manager_status("Import started.")
+        self._refresh_tray()
+
+    def _queue_import_now_progress(self, progress: Mapping[str, Any]) -> None:
+        self.event_queue.put(
+            {
+                "kind": "import_progress",
+                "origin": "import_now",
+                "progress": dict(progress),
+            }
+        )
+
+    def _run_import_now_worker(self, supervisor: ImportAgentSupervisor) -> None:
+        try:
+            report = supervisor.scan_all_once(progress_callback=self._queue_import_now_progress)
+            self.event_queue.put(
+                {
+                    "kind": "import_now_complete",
+                    "report": report,
+                    "snapshot": supervisor.snapshot(),
+                }
+            )
+        except Exception as exc:
+            self.event_queue.put(
+                {
+                    "kind": "import_now_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        finally:
+            self.event_queue.put({"kind": "import_now_finished"})
+
+    def _handle_import_now_complete(self, report: dict[str, Any], snapshot: dict[str, Any]) -> None:
         totals = report.get("totals", {})
         self._set_manager_status(
             "Import complete: "
@@ -3523,6 +3739,8 @@ class ImportAgentManagerWindow:
 
     def _start_watch(self, *, show_errors: bool = True) -> None:
         if self._watch_running():
+            return
+        if not self._guard_import_now_inactive(action_label="Start Watch"):
             return
         try:
             supervisor = self.controller.make_enabled_supervisor()
@@ -3669,6 +3887,24 @@ class ImportAgentManagerWindow:
                         f"seen={totals['seen']} imported={totals['imported']} "
                         f"deferred={totals['deferred_unsettled']} failed={totals['failed']}"
                     )
+            elif kind == "import_progress":
+                progress = item.get("progress", {})
+                if isinstance(progress, Mapping):
+                    self._handle_import_progress(
+                        progress,
+                        origin=str(item.get("origin") or ""),
+                    )
+            elif kind == "import_now_complete":
+                report = item.get("report", {})
+                snapshot = item.get("snapshot", {})
+                if isinstance(report, dict) and isinstance(snapshot, dict):
+                    self._handle_import_now_complete(report, snapshot)
+            elif kind == "import_now_error":
+                error = str(item.get("error") or "Unknown import error")
+                self._set_manager_status(f"Import failed: {error}")
+                messagebox.showerror(_APP_DISPLAY_NAME, error, parent=self.root)
+            elif kind == "import_now_finished":
+                self.import_now_thread = None
             elif kind == "watch_error":
                 self.watch_state_var.set("Watcher error.")
                 self._append_log(f"Watcher error: {item.get('error')}")

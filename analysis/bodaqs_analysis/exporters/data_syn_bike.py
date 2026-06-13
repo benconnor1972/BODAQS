@@ -16,6 +16,9 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+from ..gps_semantics import preferred_gps_source_name, resolve_gps_columns
+from ..resample import resample_to_time_grid
+
 
 DATA_SYN_BIKE_FORMAT = "data_syn_bike"
 
@@ -66,6 +69,7 @@ def default_data_syn_bike_export_config(**overrides: Any) -> dict[str, Any]:
         "time_format": "sample_count",
         "sample_count_origin": "session",
         "speed_multiplier": 3.6 / 1.852,
+        "gps_resample_max_gap_s": 5.0,
         "drop_inactive": True,
         "split_by_activity": False,
         "filename_template": DEFAULT_FILENAME_TEMPLATE,
@@ -110,9 +114,7 @@ def export_data_syn_bike_resolved(
         front_inverted, front_inversion_reason = _raw_inversion(front_col, front_info, "front", session, config)
         rear_inverted, rear_inversion_reason = _raw_inversion(rear_col, rear_info, "rear", session, config)
 
-    lat_col = _first_existing(df, LAT_COLS)
-    lon_col = _first_existing(df, LON_COLS)
-    speed_col = _first_existing(df, SPEED_COLS)
+    gps_source = _gps_source_for_export(session, df)
 
     active_mask = _active_rows_mask(df)
     inactive_rows_total = int((~active_mask).sum())
@@ -143,9 +145,7 @@ def export_data_syn_bike_resolved(
             rear_reason=rear_reason,
             rear_inverted=rear_inverted,
             rear_inversion_reason=rear_inversion_reason,
-            lat_col=lat_col,
-            lon_col=lon_col,
-            speed_col=speed_col,
+            gps_source=gps_source,
         )
         if export_df.empty:
             continue
@@ -181,9 +181,12 @@ def export_data_syn_bike_resolved(
         "rear_raw_reason": rear_reason,
         "rear_raw_inverted": rear_inverted,
         "rear_raw_inversion_reason": rear_inversion_reason,
-        "lat_col": lat_col,
-        "lon_col": lon_col,
-        "speed_col": speed_col,
+        "lat_col": _gps_source_column(gps_source, "lat_col"),
+        "lon_col": _gps_source_column(gps_source, "lon_col"),
+        "speed_col": _gps_source_column(gps_source, "speed_col"),
+        "gps_source_id": gps_source.get("source_id") if gps_source is not None else None,
+        "gps_source_kind": gps_source.get("source_kind") if gps_source is not None else None,
+        "gps_source_location": gps_source.get("location") if gps_source is not None else None,
         "raw_scale_mode": config["raw_scale_mode"],
         "adc_bit_count": config["adc_bit_count"],
         "adc_max_count": config["adc_max_count"],
@@ -383,9 +386,7 @@ def _build_export_frame_for_region(
     rear_reason: str,
     rear_inverted: bool,
     rear_inversion_reason: str,
-    lat_col: Optional[str],
-    lon_col: Optional[str],
-    speed_col: Optional[str],
+    gps_source: Optional[Mapping[str, Any]],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     columns = config["columns"]
 
@@ -409,19 +410,20 @@ def _build_export_frame_for_region(
         inverted=rear_inverted,
         inversion_reason=rear_inversion_reason,
     )
+    gps_values, gps_meta = _gps_values_for_region(
+        region_df,
+        gps_source=gps_source,
+        config=config,
+    )
 
     out = pd.DataFrame(
         {
             columns["time"]: _sample_time_for_export(region_df, source_start_row=source_start_row, config=config),
             columns["front_raw"]: front,
             columns["rear_raw"]: rear,
-            columns["lon"]: _numeric_or_blank(region_df, lon_col),
-            columns["lat"]: _numeric_or_blank(region_df, lat_col),
-            columns["speed"]: _numeric_or_blank(
-                region_df,
-                speed_col,
-                multiplier=float(config["speed_multiplier"]),
-            ),
+            columns["lon"]: gps_values["lon"],
+            columns["lat"]: gps_values["lat"],
+            columns["speed"]: gps_values["speed"],
         },
         index=region_df.index,
     )
@@ -443,9 +445,10 @@ def _build_export_frame_for_region(
         "rear_raw_inverted": bool(rear_inverted),
         "rear_raw_inversion_reason": rear_inversion_reason,
         "rear_raw_scale": rear_scale_meta,
-        "lat_col": lat_col,
-        "lon_col": lon_col,
-        "speed_col": speed_col,
+        "lat_col": _gps_source_column(gps_source, "lat_col"),
+        "lon_col": _gps_source_column(gps_source, "lon_col"),
+        "speed_col": _gps_source_column(gps_source, "speed_col"),
+        "gps_source": gps_meta,
         "time_format": config["time_format"],
         "sample_count_origin": config["sample_count_origin"],
         "rows": int(len(out)),
@@ -775,6 +778,256 @@ def _first_existing(df: pd.DataFrame, candidates: tuple[str, ...]) -> Optional[s
     return None
 
 
+def _gps_source_for_export(session: Mapping[str, Any], df: pd.DataFrame) -> Optional[dict[str, Any]]:
+    for source_id in _gps_source_candidate_ids(session):
+        source = _gps_source_from_id(session, df, source_id)
+        if source is not None:
+            return source
+    return None
+
+
+def _gps_source_candidate_ids(session: Mapping[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+
+    add(preferred_gps_source_name(session))
+    meta = session.get("meta") if isinstance(session.get("meta"), Mapping) else {}
+    gps_sources = meta.get("gps_sources") if isinstance(meta, Mapping) else None
+    sources = gps_sources.get("sources") if isinstance(gps_sources, Mapping) else None
+    if isinstance(sources, Sequence) and not isinstance(sources, (str, bytes, bytearray)):
+        for item in sources:
+            if isinstance(item, Mapping):
+                add(item.get("source_id"))
+
+    add("primary")
+    for stream_name in _stream_dfs(session):
+        add(stream_name)
+    return candidates
+
+
+def _gps_source_from_id(
+    session: Mapping[str, Any],
+    df: pd.DataFrame,
+    source_id: str,
+) -> Optional[dict[str, Any]]:
+    if source_id == "primary":
+        return _semantic_primary_gps_source(session, df) or _hardcoded_primary_gps_source(df)
+
+    stream_df = _stream_dfs(session).get(source_id)
+    if not isinstance(stream_df, pd.DataFrame):
+        return None
+    return _semantic_stream_gps_source(session, source_id, stream_df)
+
+
+def _semantic_primary_gps_source(session: Mapping[str, Any], df: pd.DataFrame) -> Optional[dict[str, Any]]:
+    meta = session.get("meta") if isinstance(session.get("meta"), Mapping) else {}
+    columns = resolve_gps_columns(meta, known_columns=set(map(str, df.columns)))
+    if columns is None:
+        return None
+    return {
+        "source_id": "primary",
+        "source_kind": columns.source_kind,
+        "location": "primary",
+        "selection": "gps_semantics",
+        "df": df,
+        "time_col": "time_s",
+        "lat_col": columns.latitude,
+        "lon_col": columns.longitude,
+        "speed_col": columns.speed,
+    }
+
+
+def _semantic_stream_gps_source(
+    session: Mapping[str, Any],
+    stream_name: str,
+    stream_df: pd.DataFrame,
+) -> Optional[dict[str, Any]]:
+    metadata = _secondary_stream_metadata(session, stream_name)
+    columns = resolve_gps_columns(metadata, known_columns=set(map(str, stream_df.columns)))
+    if columns is None:
+        return None
+
+    time_col = str(metadata.get("time_col") or "time_s")
+    if time_col not in stream_df.columns:
+        return None
+
+    return {
+        "source_id": stream_name,
+        "source_kind": str(metadata.get("source_kind") or columns.source_kind or "unknown"),
+        "location": "stream",
+        "selection": "gps_semantics",
+        "df": stream_df,
+        "time_col": time_col,
+        "lat_col": columns.latitude,
+        "lon_col": columns.longitude,
+        "speed_col": columns.speed,
+    }
+
+
+def _hardcoded_primary_gps_source(df: pd.DataFrame) -> Optional[dict[str, Any]]:
+    lat_col = _first_existing(df, LAT_COLS)
+    lon_col = _first_existing(df, LON_COLS)
+    speed_col = _first_existing(df, SPEED_COLS)
+    if lat_col is None and lon_col is None and speed_col is None:
+        return None
+
+    source_kind = "fit_enrichment" if any(
+        str(col or "").startswith("gps_fit_") for col in (lat_col, lon_col, speed_col)
+    ) else "unknown"
+    return {
+        "source_id": "primary",
+        "source_kind": source_kind,
+        "location": "primary",
+        "selection": "column-name fallback",
+        "df": df,
+        "time_col": "time_s",
+        "lat_col": lat_col,
+        "lon_col": lon_col,
+        "speed_col": speed_col,
+    }
+
+
+def _stream_dfs(session: Mapping[str, Any]) -> Mapping[str, Any]:
+    stream_dfs = session.get("stream_dfs") if isinstance(session, Mapping) else None
+    return stream_dfs if isinstance(stream_dfs, Mapping) else {}
+
+
+def _secondary_stream_metadata(session: Mapping[str, Any], stream_name: str) -> Mapping[str, Any]:
+    meta = session.get("meta") if isinstance(session.get("meta"), Mapping) else {}
+    secondary_streams = meta.get("secondary_streams") if isinstance(meta, Mapping) else None
+    stream_meta = secondary_streams.get(stream_name) if isinstance(secondary_streams, Mapping) else None
+    return stream_meta if isinstance(stream_meta, Mapping) else {}
+
+
+def _gps_values_for_region(
+    region_df: pd.DataFrame,
+    *,
+    gps_source: Optional[Mapping[str, Any]],
+    config: Mapping[str, Any],
+) -> tuple[dict[str, pd.Series], dict[str, Any]]:
+    blank = {
+        "lon": _blank_series(region_df.index),
+        "lat": _blank_series(region_df.index),
+        "speed": _blank_series(region_df.index),
+    }
+    if gps_source is None:
+        return blank, {"status": "missing_gps_source"}
+
+    source_id = str(gps_source.get("source_id") or "")
+    location = str(gps_source.get("location") or "")
+    source_df = gps_source.get("df")
+    if not isinstance(source_df, pd.DataFrame):
+        return blank, {"status": "invalid_gps_source", "source_id": source_id, "location": location}
+
+    if location == "primary":
+        values = {
+            "lon": _numeric_or_blank(region_df, _gps_source_raw_column(gps_source, "lon_col")),
+            "lat": _numeric_or_blank(region_df, _gps_source_raw_column(gps_source, "lat_col")),
+            "speed": _numeric_or_blank(
+                region_df,
+                _gps_source_raw_column(gps_source, "speed_col"),
+                multiplier=float(config["speed_multiplier"]),
+            ),
+        }
+        return values, _gps_source_metadata(gps_source, status="ok")
+
+    if location != "stream":
+        return blank, _gps_source_metadata(gps_source, status="unsupported_gps_source_location")
+
+    time_col = str(gps_source.get("time_col") or "time_s")
+    source_cols = [
+        col
+        for col in (
+            _gps_source_raw_column(gps_source, "lon_col"),
+            _gps_source_raw_column(gps_source, "lat_col"),
+            _gps_source_raw_column(gps_source, "speed_col"),
+        )
+        if col is not None and col in source_df.columns
+    ]
+    source_cols = list(dict.fromkeys(source_cols))
+    if time_col not in source_df.columns or not source_cols:
+        return blank, _gps_source_metadata(gps_source, status="missing_stream_columns")
+    if len(source_df.index) < 2:
+        return blank, _gps_source_metadata(gps_source, status="too_few_stream_points")
+
+    try:
+        resampled, resample_meta = resample_to_time_grid(
+            source_df,
+            src_time_col=time_col,
+            target_time_s=pd.to_numeric(region_df["time_s"], errors="coerce").to_numpy(dtype=float),
+            columns=source_cols,
+            method="linear",
+            allow_extrapolation=False,
+            max_gap_s=_gps_resample_max_gap_s(config),
+        )
+    except Exception as exc:
+        meta = _gps_source_metadata(gps_source, status="resample_failed")
+        meta["error"] = str(exc)
+        return blank, meta
+
+    values = {
+        "lon": _numeric_values_or_blank(
+            resampled,
+            _gps_source_raw_column(gps_source, "lon_col"),
+            index=region_df.index,
+        ),
+        "lat": _numeric_values_or_blank(
+            resampled,
+            _gps_source_raw_column(gps_source, "lat_col"),
+            index=region_df.index,
+        ),
+        "speed": _numeric_values_or_blank(
+            resampled,
+            _gps_source_raw_column(gps_source, "speed_col"),
+            index=region_df.index,
+            multiplier=float(config["speed_multiplier"]),
+        ),
+    }
+    meta = _gps_source_metadata(gps_source, status="ok")
+    meta["resampling"] = resample_meta
+    return values, meta
+
+
+def _gps_resample_max_gap_s(config: Mapping[str, Any]) -> Optional[float]:
+    value = config.get("gps_resample_max_gap_s")
+    if value is None:
+        return None
+    return float(value)
+
+
+def _gps_source_raw_column(gps_source: Mapping[str, Any], key: str) -> Optional[str]:
+    value = gps_source.get(key)
+    return str(value) if isinstance(value, str) and value.strip() else None
+
+
+def _gps_source_column(gps_source: Optional[Mapping[str, Any]], key: str) -> Optional[str]:
+    if gps_source is None:
+        return None
+    value = _gps_source_raw_column(gps_source, key)
+    if value is None:
+        return None
+    if str(gps_source.get("location") or "") == "stream":
+        return f"{gps_source.get('source_id')}.{value}"
+    return value
+
+
+def _gps_source_metadata(gps_source: Mapping[str, Any], *, status: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "source_id": str(gps_source.get("source_id") or ""),
+        "source_kind": str(gps_source.get("source_kind") or "unknown"),
+        "location": str(gps_source.get("location") or ""),
+        "selection": str(gps_source.get("selection") or ""),
+        "lat_col": _gps_source_column(gps_source, "lat_col"),
+        "lon_col": _gps_source_column(gps_source, "lon_col"),
+        "speed_col": _gps_source_column(gps_source, "speed_col"),
+    }
+
+
 def _numeric_or_blank(df: pd.DataFrame, col: Optional[str], *, multiplier: float = 1.0) -> pd.Series:
     if col is None or col not in df.columns:
         return _blank_series(df.index)
@@ -782,8 +1035,25 @@ def _numeric_or_blank(df: pd.DataFrame, col: Optional[str], *, multiplier: float
     return s.where(np.isfinite(s), "")
 
 
+def _numeric_values_or_blank(
+    df: pd.DataFrame,
+    col: Optional[str],
+    *,
+    index: pd.Index,
+    multiplier: float = 1.0,
+) -> pd.Series:
+    if col is None or col not in df.columns:
+        return _blank_series(index)
+    s = pd.Series(pd.to_numeric(df[col], errors="coerce").to_numpy(), index=index) * float(multiplier)
+    return s.where(np.isfinite(s), "")
+
+
 def _blank_series(index: pd.Index) -> pd.Series:
     return pd.Series([""] * len(index), index=index, dtype="object")
+
+
+def _zero_raw_counts_series(index: pd.Index) -> pd.Series:
+    return pd.Series(0, index=index, dtype="Int64")
 
 
 def _raw_counts_for_export(series: pd.Series) -> pd.Series:
@@ -802,13 +1072,22 @@ def _raw_counts_for_end(
     inverted: bool,
     inversion_reason: str,
 ) -> tuple[pd.Series, dict[str, Any]]:
+    raw_scale_mode = str(config["raw_scale_mode"])
     if col is None or col not in df.columns:
+        if raw_scale_mode == "processed_wheel_travel":
+            return _zero_raw_counts_series(df.index), {
+                "mode": raw_scale_mode,
+                "status": "missing_raw_column",
+                "source_col": col,
+                "adc_max_count": int(config["adc_max_count"]),
+                "zero_filled": True,
+            }
         return _blank_series(df.index), {
-            "mode": str(config["raw_scale_mode"]),
+            "mode": raw_scale_mode,
             "status": "missing_raw_column",
         }
 
-    if str(config["raw_scale_mode"]) == "processed_wheel_travel":
+    if raw_scale_mode == "processed_wheel_travel":
         return _processed_wheel_travel_raw_counts(
             df,
             col=col,
@@ -816,7 +1095,7 @@ def _raw_counts_for_end(
             config=config,
         )
 
-    if str(config["raw_scale_mode"]) == "calibrated_full_scale":
+    if raw_scale_mode == "calibrated_full_scale":
         scaled, meta = _calibrated_full_scale_raw_counts(
             session,
             df,
@@ -855,20 +1134,24 @@ def _processed_wheel_travel_raw_counts(
         calibration_full_travel=None,
     )
     if target_full_range is None or target_full_range <= 0:
-        return _blank_series(df.index), {
+        return _zero_raw_counts_series(df.index), {
             "mode": "processed_wheel_travel",
             "status": "missing_target_full_scale",
             "source_col": col,
             "adc_max_count": adc_max,
+            "zero_filled": True,
         }
 
     values = pd.to_numeric(df[col], errors="coerce").astype(float)
     scaled = values / float(target_full_range) * adc_max
     finite = np.isfinite(scaled)
+    non_finite_rows = int((~finite).sum())
     clipped_low = int(((scaled < 0) & finite).sum())
     clipped_high = int(((scaled > adc_max) & finite).sum())
     if bool(config["clip_raw_to_adc_range"]):
         scaled = scaled.clip(lower=0, upper=adc_max)
+    if non_finite_rows:
+        scaled = scaled.where(np.isfinite(scaled), 0)
 
     return _raw_counts_for_export(scaled), {
         "mode": "processed_wheel_travel",
@@ -881,6 +1164,7 @@ def _processed_wheel_travel_raw_counts(
         "clip_raw_to_adc_range": bool(config["clip_raw_to_adc_range"]),
         "clipped_low_rows": clipped_low if bool(config["clip_raw_to_adc_range"]) else 0,
         "clipped_high_rows": clipped_high if bool(config["clip_raw_to_adc_range"]) else 0,
+        "non_finite_rows_zero_filled": non_finite_rows,
     }
 
 
@@ -1258,6 +1542,18 @@ def _validate_export_config(config: Mapping[str, Any]) -> dict[str, Any]:
     except Exception:
         raise ValueError("data.syn.bike export config 'speed_multiplier' must be numeric") from None
 
+    gps_resample_max_gap_s = out.get("gps_resample_max_gap_s", 5.0)
+    if gps_resample_max_gap_s is None:
+        out["gps_resample_max_gap_s"] = None
+    else:
+        try:
+            gps_resample_max_gap_s = float(gps_resample_max_gap_s)
+        except Exception:
+            raise ValueError("data.syn.bike export config 'gps_resample_max_gap_s' must be numeric") from None
+        if not math.isfinite(gps_resample_max_gap_s) or gps_resample_max_gap_s <= 0:
+            raise ValueError("data.syn.bike export config 'gps_resample_max_gap_s' must be > 0")
+        out["gps_resample_max_gap_s"] = gps_resample_max_gap_s
+
     invert_raw_by_end = out.get("invert_raw_by_end", {})
     if not isinstance(invert_raw_by_end, Mapping):
         raise ValueError("data.syn.bike export config 'invert_raw_by_end' must be a mapping")
@@ -1287,6 +1583,7 @@ def _public_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "time_format": str(config["time_format"]),
         "sample_count_origin": str(config["sample_count_origin"]),
         "speed_multiplier": float(config["speed_multiplier"]),
+        "gps_resample_max_gap_s": config["gps_resample_max_gap_s"],
         "drop_inactive": bool(config["drop_inactive"]),
         "split_by_activity": bool(config["split_by_activity"]),
         "filename_template": str(config["filename_template"]),

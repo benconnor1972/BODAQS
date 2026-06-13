@@ -318,10 +318,7 @@ def iter_bdq_rows(path: str | Path) -> Iterator[dict[str, Any]]:
             row: dict[str, Any] = {}
             for field, offset, fmt in fields:
                 value = struct.unpack_from(fmt, chunk.payload, frame_offset + offset)[0]
-                if isinstance(value, float) and math.isnan(value):
-                    row[field] = ""
-                else:
-                    row[field] = value
+                row[field] = value
             row.setdefault("sample_id", first + i)
             yield row
 
@@ -513,6 +510,14 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "bdq_field": field,
             "raw": bool(channel.get("raw", False)),
         }
+        for key in (
+            "kind",
+            "processing_role",
+            "semantic_selection_excluded",
+            "semantic_selection_exclusion_reason",
+        ):
+            if key in channel:
+                entry[key] = channel.get(key)
         quantity = _text_or_none(channel.get("quantity"))
         if quantity is not None:
             entry["quantity"] = quantity

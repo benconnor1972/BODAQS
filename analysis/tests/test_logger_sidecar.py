@@ -24,6 +24,7 @@ from bodaqs_analysis.io_fit import (
     upsert_fit_binding,
     upsert_fit_binding_records,
 )
+from bodaqs_analysis.gps_semantics import build_logger_gps_route_stream
 from bodaqs_analysis.model import validate_session
 from bodaqs_analysis.pipeline import (
     build_session_from_dataframe,
@@ -33,6 +34,7 @@ from bodaqs_analysis.pipeline import (
     preprocess_session,
 )
 from bodaqs_analysis.signal_registry import build_signals_registry
+from bodaqs_analysis.signal_standardize import validate_signals_semantics
 from bodaqs_analysis.timebase import register_stream_metadata
 from bodaqs_analysis.ui.fit_bindings_editor import build_fit_candidate_summary
 from bodaqs_analysis.ui.preprocess_file_selector import PreprocessLogSelector
@@ -482,6 +484,262 @@ def test_load_session_preserves_sensor_calibration_for_raw_signal_metadata(tmp_p
     signal_info = session["meta"]["signals"][raw_col]
     assert signal_info["calibration"]["installed_zero_count"] == 3766
     assert signal_info["calibration"]["sensor_full_count"] == 4
+
+
+def test_load_session_preserves_logger_gps_qc_semantics(tmp_path):
+    csv_path = tmp_path / "gps_session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "time_s,gps0_lat [deg],gps0_lon [deg],gps0_valid,gps0_age [ms],gps0_seq",
+                "0.0,-32.0,116.0,1,100,1",
+                "0.5,-32.0,116.0,1,600,1",
+                "1.0,-32.1,116.1,0,1100,2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    log_metadata = {
+        "contract": {"name": "mtb_logger_timeseries", "version": "0.3.0"},
+        "data_file": {"delimiter": ",", "header": True},
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "time_s",
+                "time_encoding": "relative_s",
+                "time_unit": "s",
+                "sample_rate_hz": 2.0,
+            }
+        },
+        "columns": {
+            "time_s": {
+                "csv_ref": {"by": "header", "header": "time_s"},
+                "class": "time",
+                "stream": "primary",
+                "unit": "s",
+            },
+            "gps0_lat": {
+                "csv_ref": {"by": "header", "header": "gps0_lat [deg]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "domain": "world",
+                "source": "async_snapshot",
+                "quantity": "position_latitude",
+                "unit": "deg",
+                "kind": "raw",
+                "raw": False,
+            },
+            "gps0_lon": {
+                "csv_ref": {"by": "header", "header": "gps0_lon [deg]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "domain": "world",
+                "source": "async_snapshot",
+                "quantity": "position_longitude",
+                "unit": "deg",
+            },
+            "gps0_valid": {
+                "csv_ref": {"by": "header", "header": "gps0_valid"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "source": "async_snapshot",
+                "quantity": "valid",
+                "kind": "qc",
+                "processing_role": "qc_metric",
+                "semantic_selection_excluded": True,
+            },
+            "gps0_age": {
+                "csv_ref": {"by": "header", "header": "gps0_age [ms]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "source": "async_snapshot",
+                "quantity": "age",
+                "unit": "ms",
+                "kind": "qc",
+                "processing_role": "qc_metric",
+                "semantic_selection_excluded": True,
+            },
+            "gps0_seq": {
+                "csv_ref": {"by": "header", "header": "gps0_seq"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "source": "async_snapshot",
+                "quantity": "seq",
+                "kind": "qc",
+                "processing_role": "qc_metric",
+                "semantic_selection_excluded": True,
+            },
+        },
+    }
+    (tmp_path / "gps_session.json").write_text(json.dumps(log_metadata, indent=2), encoding="utf-8")
+
+    session = load_session(str(csv_path))
+    build_signals_registry(session)
+
+    age_col = "gps0_age [ms]"
+    assert session["meta"]["channel_info"][age_col]["kind"] == "qc"
+    assert session["meta"]["signals"][age_col]["kind"] == "qc"
+    assert session["meta"]["signals"][age_col]["processing_role"] == "qc_metric"
+    assert session["meta"]["signals"][age_col]["semantic_selection_excluded"] is True
+    lat_col = "gps0_position_latitude_dom_world [deg]"
+    assert session["meta"]["channel_info"][lat_col]["kind"] == "raw"
+    assert session["meta"]["signals"][lat_col]["kind"] == ""
+    assert session["meta"]["signals"][lat_col]["quantity"] == "position_latitude"
+    assert session["meta"]["signals"][lat_col]["domain"] == "world"
+    validate_signals_semantics(session)
+
+
+def test_load_session_repairs_out_of_order_time_with_initial_gps_nan(tmp_path):
+    csv_path = tmp_path / "gps_nan_out_of_order.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "timestamp,GPS0_lat [deg],GPS0_lon [deg],GPS0_alt [m],GPS0_speed [m/s],GPS0_heading [deg],GPS0_valid,GPS0_age [ms],GPS0_seq,mark",
+                "12:00:00.000,nan,nan,nan,nan,nan,0,nan,nan,0",
+                "12:00:00.002,nan,nan,nan,nan,nan,0,nan,nan,0",
+                "12:00:00.008,-32.1,116.1,101,4.1,181,1,100,2,0",
+                "12:00:00.004,-32.0,116.0,100,4.0,180,1,100,1,0",
+                "12:00:00.010,-32.2,116.2,102,4.2,182,1,100,3,0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    log_metadata = {
+        "contract": {"name": "mtb_logger_timeseries", "version": "0.3.0"},
+        "data_file": {"delimiter": ",", "header": True},
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "timestamp",
+                "time_encoding": "local_time",
+                "time_unit": "time_of_day",
+                "sample_rate_hz": 500.0,
+            }
+        },
+        "columns": {
+            "timestamp": {
+                "csv_ref": {"by": "header", "header": "timestamp"},
+                "class": "time",
+                "stream": "primary",
+                "unit": "time_of_day",
+            },
+            "gps0_lat": {
+                "csv_ref": {"by": "header", "header": "GPS0_lat [deg]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "domain": "world",
+                "source": "async_snapshot",
+                "quantity": "position_latitude",
+                "unit": "deg",
+            },
+            "gps0_lon": {
+                "csv_ref": {"by": "header", "header": "GPS0_lon [deg]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "domain": "world",
+                "source": "async_snapshot",
+                "quantity": "position_longitude",
+                "unit": "deg",
+            },
+            "gps0_alt": {
+                "csv_ref": {"by": "header", "header": "GPS0_alt [m]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "domain": "world",
+                "source": "async_snapshot",
+                "quantity": "altitude",
+                "unit": "m",
+            },
+            "gps0_speed": {
+                "csv_ref": {"by": "header", "header": "GPS0_speed [m/s]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "domain": "world",
+                "source": "async_snapshot",
+                "quantity": "speed",
+                "unit": "m/s",
+            },
+            "gps0_heading": {
+                "csv_ref": {"by": "header", "header": "GPS0_heading [deg]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "domain": "world",
+                "source": "async_snapshot",
+                "quantity": "heading",
+                "unit": "deg",
+            },
+            "gps0_valid": {
+                "csv_ref": {"by": "header", "header": "GPS0_valid"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "source": "async_snapshot",
+                "quantity": "valid",
+                "kind": "qc",
+                "processing_role": "qc_metric",
+                "semantic_selection_excluded": True,
+            },
+            "gps0_age": {
+                "csv_ref": {"by": "header", "header": "GPS0_age [ms]"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "source": "async_snapshot",
+                "quantity": "age",
+                "unit": "ms",
+                "kind": "qc",
+                "processing_role": "qc_metric",
+                "semantic_selection_excluded": True,
+            },
+            "gps0_seq": {
+                "csv_ref": {"by": "header", "header": "GPS0_seq"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "gps0",
+                "source": "async_snapshot",
+                "quantity": "seq",
+                "kind": "qc",
+                "processing_role": "qc_metric",
+                "semantic_selection_excluded": True,
+            },
+            "mark": {
+                "csv_ref": {"by": "header", "header": "mark"},
+                "class": "signal",
+                "stream": "primary",
+                "sensor": "mark",
+                "quantity": "mark",
+                "kind": "qc",
+                "processing_role": "qc_metric",
+                "semantic_selection_excluded": True,
+            },
+        },
+    }
+    (tmp_path / "gps_nan_out_of_order.json").write_text(json.dumps(log_metadata, indent=2), encoding="utf-8")
+
+    session = load_session(str(csv_path))
+
+    time_s = session["df"]["time_s"].to_numpy(dtype=float)
+    assert np.all(np.isfinite(time_s))
+    assert np.all(np.diff(time_s) > 0)
+    np.testing.assert_allclose(time_s, [0.002, 0.004, 0.008, 0.010])
+
+    build_logger_gps_route_stream(session)
+    route = session["stream_dfs"]["gps_logger"]
+
+    assert len(route) == 3
+    assert route["latitude_deg"].notna().all()
+    assert route["longitude_deg"].notna().all()
+    np.testing.assert_allclose(route["time_s"].to_numpy(dtype=float), [0.004, 0.008, 0.010])
 
 
 def test_parse_logger_log_metadata_accepts_mapping_text_and_bytes(tmp_path):
@@ -1356,6 +1614,141 @@ def test_enrich_session_with_fit_does_not_bridge_paused_gps_gap():
     assert gps_qc["raw_position_points_in_session_window"] == 0
     assert gps_qc["resampled_position_points"] == 0
     assert gps_qc["gap_rejected_samples"] == 6
+
+
+def test_preprocess_resolved_preserves_logger_and_fit_gps_sources():
+    logger_lat = "gps0_lat [deg]"
+    logger_lon = "gps0_lon [deg]"
+    session = {
+        "session_id": "gps_dual_source",
+        "source": {"filename": "gps_dual_source.csv"},
+        "meta": {
+            "t0_datetime": "2026-02-19T08:55:18+08:00",
+            "channel_info": {
+                logger_lat: {
+                    "unit": "deg",
+                    "sensor": "gps0",
+                    "domain": "world",
+                    "source": "async_snapshot",
+                    "quantity": "position_latitude",
+                },
+                logger_lon: {
+                    "unit": "deg",
+                    "sensor": "gps0",
+                    "domain": "world",
+                    "source": "async_snapshot",
+                    "quantity": "position_longitude",
+                },
+                "gps0_valid": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "valid",
+                    "kind": "qc",
+                    "processing_role": "qc_metric",
+                    "semantic_selection_excluded": True,
+                },
+                "gps0_age [ms]": {
+                    "unit": "ms",
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "age",
+                    "kind": "qc",
+                    "processing_role": "qc_metric",
+                    "semantic_selection_excluded": True,
+                },
+                "gps0_seq": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "seq",
+                    "kind": "qc",
+                    "processing_role": "qc_metric",
+                    "semantic_selection_excluded": True,
+                },
+            },
+        },
+        "qc": {"warnings": [], "transforms": {}},
+        "df": pd.DataFrame(
+            {
+                "time_s": np.array([0.0, 0.5, 1.0, 1.5]),
+                logger_lat: np.array([-32.0, -32.0, -32.01, -32.02]),
+                logger_lon: np.array([116.0, 116.0, 116.01, 116.02]),
+                "gps0_valid": np.array([1, 1, 1, 1]),
+                "gps0_age [ms]": np.array([100, 600, 100, 100]),
+                "gps0_seq": np.array([1, 1, 2, 3]),
+            }
+        ),
+    }
+    fit_lat = "gps_fit_position_latitude_dom_world [deg]"
+    fit_lon = "gps_fit_position_longitude_dom_world [deg]"
+    fit_df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                [
+                    "2026-02-19T00:55:18+00:00",
+                    "2026-02-19T00:55:19+00:00",
+                    "2026-02-19T00:55:20+00:00",
+                ],
+                utc=True,
+            ),
+            "time_s": np.array([0.0, 1.0, 2.0]),
+            fit_lat: np.array([-31.0, -31.01, -31.02]),
+            fit_lon: np.array([115.0, 115.01, 115.02]),
+        }
+    )
+    fit_meta = {
+        "filename": "ride.fit",
+        "fit_sha256": "fitsha",
+        "stream_name": "gps_fit",
+        "resample_columns": [fit_lat, fit_lon],
+        "channel_info": {
+            fit_lat: {
+                "unit": "deg",
+                "sensor": "gps_fit",
+                "role": "position_latitude",
+                "quantity": "position_latitude",
+                "domain": "world",
+                "source_kind": "fit_enrichment",
+            },
+            fit_lon: {
+                "unit": "deg",
+                "sensor": "gps_fit",
+                "role": "position_longitude",
+                "quantity": "position_longitude",
+                "domain": "world",
+                "source_kind": "fit_enrichment",
+            },
+        },
+    }
+
+    result = preprocess_resolved(
+        session,
+        normalize_ranges={},
+        fit_import={
+            "enabled": True,
+            "persist_raw_stream": True,
+            "resample_to_primary": False,
+        },
+        fit_stream={"df": fit_df, "meta": fit_meta},
+        gps_source_policy={
+            "preferred_source": "logger_then_fit",
+            "preserve_all_sources": True,
+            "build_logger_stream": True,
+            "logger_stream_name": "gps_logger",
+        },
+        active_signal_disp_selector=None,
+        active_signal_vel_selector=None,
+    )
+    out = result["session"]
+
+    assert "gps_logger" in out["stream_dfs"]
+    assert "gps_fit" in out["stream_dfs"]
+    assert len(out["stream_dfs"]["gps_logger"]) == 3
+    assert out["meta"]["secondary_streams"]["gps_logger"]["source_kind"] == "logger_sensor"
+    assert out["meta"]["secondary_streams"]["gps_fit"]["source_kind"] == "fit_enrichment"
+    assert out["meta"]["gps_sources"]["preferred_source"] == "gps_logger"
+    source_kinds = {source["source_id"]: source["kind"] for source in out["meta"]["gps_sources"]["sources"]}
+    assert source_kinds["gps_logger"] == "logger_sensor"
+    assert source_kinds["gps_fit"] == "fit_enrichment"
 
 
 def test_enrich_session_with_fit_accepts_in_memory_bindings(tmp_path, monkeypatch):

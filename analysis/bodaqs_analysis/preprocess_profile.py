@@ -34,6 +34,12 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
         "resample_method": "linear",
         "raw_stream_name": "gps_fit",
     },
+    "gps_source_policy": {
+        "preferred_source": "logger_then_fit",
+        "preserve_all_sources": True,
+        "build_logger_stream": True,
+        "logger_stream_name": "gps_logger",
+    },
     "zeroing_enabled": False,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,

@@ -28,6 +28,7 @@ from bodaqs_analysis.exporters.data_syn_bike import (
     default_data_syn_bike_export_config,
     export_data_syn_bike_resolved,
     render_data_syn_bike_manual_settings_text,
+    write_data_syn_bike_exports,
 )
 from bodaqs_analysis.import_agent import (
     ImportAgentSupervisor,
@@ -755,6 +756,209 @@ def test_data_syn_bike_export_can_emit_processed_wheel_travel_as_synthetic_raw()
     assert result["exports"][0]["metadata"]["rear_raw_scale"]["clipped_high_rows"] == 1
 
 
+def test_data_syn_bike_export_zero_fills_missing_processed_wheel_travel_end(tmp_path):
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01, 0.02],
+                "front_wheel_disp_dom_wheel [mm]": [0.0, 75.0, 150.0],
+            }
+        ),
+        "meta": {
+            "signals": {
+                "front_wheel_disp_dom_wheel [mm]": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "origin": "analysis",
+                    "processing_role": "primary_analysis",
+                },
+            }
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="processed_wheel_travel",
+        raw_full_scale_by_end={"front": 150, "rear": 165},
+        adc_bit_count=12,
+        drop_inactive=False,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+    write_result = write_data_syn_bike_exports(result, tmp_path)
+    written_rows = write_result["written"][0]["path"].read_text(encoding="utf-8").strip().splitlines()
+
+    assert exported["Front Raw"].tolist() == [0, 2048, 4095]
+    assert exported["Rear Raw"].tolist() == [0, 0, 0]
+    assert result["summary"]["rear_raw_col"] is None
+    assert result["exports"][0]["metadata"]["rear_raw_scale"]["status"] == "missing_raw_column"
+    assert result["exports"][0]["metadata"]["rear_raw_scale"]["zero_filled"] is True
+    assert [row.split(",")[2] for row in written_rows] == ["0", "0", "0"]
+
+
+def test_data_syn_bike_export_uses_logger_gps_columns_from_primary_dataframe():
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01],
+                "front_wheel_disp_dom_wheel [mm]": [0.0, 10.0],
+                "rear_wheel_disp_dom_wheel [mm]": [0.0, 12.0],
+                "gps0_position_latitude_dom_world [deg]": [-32.0, -32.1],
+                "gps0_position_longitude_dom_world [deg]": [116.0, 116.1],
+                "gps0_speed_dom_world [m/s]": [4.0, 4.1],
+            }
+        ),
+        "meta": {
+            "signals": {
+                "front_wheel_disp_dom_wheel [mm]": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "rear_wheel_disp_dom_wheel [mm]": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "gps0_position_latitude_dom_world [deg]": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "position_latitude",
+                    "domain": "world",
+                    "unit": "deg",
+                },
+                "gps0_position_longitude_dom_world [deg]": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "position_longitude",
+                    "domain": "world",
+                    "unit": "deg",
+                },
+                "gps0_speed_dom_world [m/s]": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "speed",
+                    "domain": "world",
+                    "unit": "m/s",
+                },
+            }
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="processed_wheel_travel",
+        raw_full_scale_by_end={"front": 150, "rear": 165},
+        adc_bit_count=12,
+        drop_inactive=False,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+
+    assert exported["Long"].tolist() == [116.0, 116.1]
+    assert exported["Lat"].tolist() == [-32.0, -32.1]
+    assert exported["Speed"].tolist() == pytest.approx([7.775377969762419, 7.969762419006479])
+    assert result["summary"]["gps_source_id"] == "primary"
+    assert result["summary"]["lat_col"] == "gps0_position_latitude_dom_world [deg]"
+
+
+def test_data_syn_bike_export_uses_preferred_logger_gps_stream():
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01, 0.02],
+                "front_wheel_disp_dom_wheel [mm]": [0.0, 10.0, 20.0],
+                "rear_wheel_disp_dom_wheel [mm]": [0.0, 12.0, 24.0],
+            }
+        ),
+        "stream_dfs": {
+            "gps_logger": pd.DataFrame(
+                {
+                    "time_s": [0.0, 0.02],
+                    "latitude_deg": [-32.0, -32.2],
+                    "longitude_deg": [116.0, 116.2],
+                    "speed_mps": [4.0, 4.2],
+                }
+            )
+        },
+        "meta": {
+            "signals": {
+                "front_wheel_disp_dom_wheel [mm]": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "rear_wheel_disp_dom_wheel [mm]": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+            },
+            "gps_sources": {
+                "preferred_source": "gps_logger",
+                "sources": [{"source_id": "gps_logger", "kind": "logger_sensor"}],
+            },
+            "secondary_streams": {
+                "gps_logger": {
+                    "stream_name": "gps_logger",
+                    "source_kind": "logger_sensor",
+                    "time_col": "time_s",
+                    "channel_info": {
+                        "latitude_deg": {
+                            "sensor": "gps0",
+                            "source": "logger_gps",
+                            "quantity": "position_latitude",
+                            "domain": "world",
+                            "unit": "deg",
+                        },
+                        "longitude_deg": {
+                            "sensor": "gps0",
+                            "source": "logger_gps",
+                            "quantity": "position_longitude",
+                            "domain": "world",
+                            "unit": "deg",
+                        },
+                        "speed_mps": {
+                            "sensor": "gps0",
+                            "source": "logger_gps",
+                            "quantity": "speed",
+                            "domain": "world",
+                            "unit": "m/s",
+                        },
+                    },
+                }
+            },
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="processed_wheel_travel",
+        raw_full_scale_by_end={"front": 150, "rear": 165},
+        adc_bit_count=12,
+        drop_inactive=False,
+        gps_resample_max_gap_s=1.0,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+    gps_meta = result["exports"][0]["metadata"]["gps_source"]
+
+    assert exported["Long"].tolist() == pytest.approx([116.0, 116.1, 116.2])
+    assert exported["Lat"].tolist() == pytest.approx([-32.0, -32.1, -32.2])
+    assert exported["Speed"].tolist() == pytest.approx([7.775377969762419, 7.969762419006479, 8.164146868250541])
+    assert result["summary"]["gps_source_id"] == "gps_logger"
+    assert result["summary"]["gps_source_location"] == "stream"
+    assert result["summary"]["lat_col"] == "gps_logger.latitude_deg"
+    assert gps_meta["status"] == "ok"
+    assert gps_meta["resampling"]["columns"] == ["longitude_deg", "latitude_deg", "speed_mps"]
+
+
 def test_data_syn_bike_manual_settings_reports_bike_profile_values():
     bike_profile = {
         "bike_profile_id": "example-bike",
@@ -1017,6 +1221,44 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
     assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_run_sources_once_emits_detection_and_archive_progress(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    archive_a = _write_session_archive(source_root / "inbox", stem="session_001")
+    archive_b = _write_session_archive(source_root / "inbox", stem="session_002")
+    _set_old_mtime(archive_a)
+    _set_old_mtime(archive_b)
+    events: list[dict[str, object]] = []
+
+    report = run_sources_once([source_root], progress_callback=lambda event: events.append(dict(event)))
+
+    assert report["totals"]["imported"] == 2
+    names = [str(event.get("event")) for event in events]
+    assert names[0] == "source_scan_started"
+    assert names[-1] == "source_scan_completed"
+
+    detected_index = names.index("archives_detected")
+    assert events[detected_index]["archive_count"] == 2
+
+    processing_indices = [index for index, name in enumerate(names) if name == "archive_processing_started"]
+    imported_indices = [index for index, name in enumerate(names) if name == "archive_imported"]
+    assert len(processing_indices) == 2
+    assert len(imported_indices) == 2
+    assert detected_index < processing_indices[0]
+    assert [events[index]["archive_index"] for index in processing_indices] == [1, 2]
+    assert [events[index]["archive_count"] for index in processing_indices] == [2, 2]
+    assert {events[index]["session_id"] for index in imported_indices} == {"session_001", "session_002"}
+    assert all(event.get("source_id") == "source_a" for event in events)
+    assert events[-1]["totals"] == {
+        "seen": 2,
+        "deferred_unsettled": 0,
+        "skipped_succeeded": 0,
+        "skipped_failed": 0,
+        "imported": 2,
+        "failed": 0,
+    }
 
 
 def test_run_sources_once_imports_bdq_and_moves_it_to_done(tmp_path):

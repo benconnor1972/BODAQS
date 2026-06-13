@@ -6,17 +6,12 @@ from typing import Any, Mapping, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-_LAT_COLS = ("gps_fit_position_latitude_dom_world [deg]",)
-_LON_COLS = ("gps_fit_position_longitude_dom_world [deg]",)
-_ALT_COLS = (
-    "gps_fit_enhanced_altitude_dom_world [m]",
-    "gps_fit_altitude_dom_world [m]",
+from bodaqs_analysis.gps_semantics import (
+    GPSColumnSet,
+    preferred_gps_source_name,
+    resolve_gps_columns,
 )
-_SPEED_COLS = (
-    "gps_fit_enhanced_speed_dom_world [m/s]",
-    "gps_fit_speed_dom_world [m/s]",
-)
-_DISTANCE_COLS = ("gps_fit_distance_dom_world [m]",)
+
 _DEFAULT_ROUTE_COLOR = "#2563eb"
 _DEFAULT_SPEED_BIN_EDGES_KMH = (0.0, 10.0, 20.0, 30.0, 40.0)
 _DEFAULT_SPEED_BIN_COLORS = (
@@ -62,34 +57,39 @@ def _to_numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce")
 
 
-def _first_existing(df: pd.DataFrame, candidates: Sequence[str]) -> Optional[str]:
-    for col in candidates:
-        if col in df.columns:
-            return str(col)
-    return None
-
-
 def _iter_candidate_frames(
     session: Mapping[str, Any],
     *,
     preferred_stream_name: str = "gps_fit",
-) -> list[tuple[str, pd.DataFrame]]:
-    frames: list[tuple[str, pd.DataFrame]] = []
+) -> list[tuple[str, pd.DataFrame, Mapping[str, Any]]]:
+    frames: list[tuple[str, pd.DataFrame, Mapping[str, Any]]] = []
+    meta = session.get("meta") if isinstance(session.get("meta"), Mapping) else {}
+    secondary_streams = meta.get("secondary_streams") if isinstance(meta, Mapping) else {}
+    preferred_name = preferred_gps_source_name(session, fallback=preferred_stream_name)
+
     stream_dfs = session.get("stream_dfs")
     if isinstance(stream_dfs, Mapping):
-        preferred = stream_dfs.get(preferred_stream_name)
+        preferred = stream_dfs.get(preferred_name) if preferred_name is not None else None
         if isinstance(preferred, pd.DataFrame):
-            frames.append((str(preferred_stream_name), preferred))
+            frames.append((str(preferred_name), preferred, _stream_metadata(secondary_streams, str(preferred_name))))
         for stream_name, df in stream_dfs.items():
-            if str(stream_name) == str(preferred_stream_name):
+            if preferred_name is not None and str(stream_name) == str(preferred_name):
                 continue
             if isinstance(df, pd.DataFrame):
-                frames.append((str(stream_name), df))
+                frames.append((str(stream_name), df, _stream_metadata(secondary_streams, str(stream_name))))
 
     primary_df = session.get("df")
     if isinstance(primary_df, pd.DataFrame):
-        frames.append(("primary", primary_df))
+        frames.append(("primary", primary_df, meta if isinstance(meta, Mapping) else {}))
     return frames
+
+
+def _stream_metadata(secondary_streams: Any, stream_name: str) -> Mapping[str, Any]:
+    if isinstance(secondary_streams, Mapping):
+        candidate = secondary_streams.get(stream_name)
+        if isinstance(candidate, Mapping):
+            return candidate
+    return {}
 
 
 def _interpolate_primary_col(
@@ -146,20 +146,21 @@ def extract_gps_view_data(
 
     chosen_name = None
     chosen_df: Optional[pd.DataFrame] = None
-    for stream_name, df in _iter_candidate_frames(session, preferred_stream_name=preferred_stream_name):
-        lat_col = _first_existing(df, _LAT_COLS)
-        lon_col = _first_existing(df, _LON_COLS)
-        if lat_col and lon_col and time_col in df.columns:
+    chosen_columns: Optional[GPSColumnSet] = None
+    for stream_name, df, metadata in _iter_candidate_frames(session, preferred_stream_name=preferred_stream_name):
+        columns = resolve_gps_columns(metadata, known_columns=set(map(str, df.columns)))
+        if columns is not None and columns.latitude in df.columns and columns.longitude in df.columns and time_col in df.columns:
             chosen_name = stream_name
             chosen_df = df.copy()
+            chosen_columns = columns
             break
 
-    if chosen_df is None or chosen_name is None:
+    if chosen_df is None or chosen_name is None or chosen_columns is None:
         return None
 
-    lat_col = _first_existing(chosen_df, _LAT_COLS)
-    lon_col = _first_existing(chosen_df, _LON_COLS)
-    if lat_col is None or lon_col is None or time_col not in chosen_df.columns:
+    lat_col = chosen_columns.latitude
+    lon_col = chosen_columns.longitude
+    if lat_col not in chosen_df.columns or lon_col not in chosen_df.columns or time_col not in chosen_df.columns:
         return None
 
     route_df = pd.DataFrame(
@@ -170,9 +171,9 @@ def extract_gps_view_data(
         }
     )
 
-    alt_col = _first_existing(chosen_df, _ALT_COLS)
-    speed_col = _first_existing(chosen_df, _SPEED_COLS)
-    distance_col = _first_existing(chosen_df, _DISTANCE_COLS)
+    alt_col = chosen_columns.altitude
+    speed_col = chosen_columns.speed
+    distance_col = chosen_columns.distance
 
     if alt_col is not None:
         route_df["altitude_m"] = _to_numeric_series(chosen_df, alt_col).to_numpy(dtype=float)
@@ -215,8 +216,10 @@ def extract_gps_view_data(
 
     target_time_s = route_df["time_s"].to_numpy(dtype=float)
     if primary_df is not None and not primary_df.empty:
+        primary_meta = session.get("meta") if isinstance(session.get("meta"), Mapping) else {}
+        primary_columns = resolve_gps_columns(primary_meta, known_columns=set(map(str, primary_df.columns)))
         if not np.isfinite(route_df["altitude_m"].to_numpy(dtype=float)).any():
-            primary_alt = _first_existing(primary_df, _ALT_COLS)
+            primary_alt = primary_columns.altitude if primary_columns is not None else None
             if primary_alt is not None:
                 route_df["altitude_m"] = _interpolate_primary_col(
                     primary_df,
@@ -226,7 +229,7 @@ def extract_gps_view_data(
                 )
 
         if not np.isfinite(route_df["speed_mps"].to_numpy(dtype=float)).any():
-            primary_speed = _first_existing(primary_df, _SPEED_COLS)
+            primary_speed = primary_columns.speed if primary_columns is not None else None
             if primary_speed is not None:
                 route_df["speed_mps"] = _interpolate_primary_col(
                     primary_df,

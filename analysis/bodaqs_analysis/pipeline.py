@@ -33,6 +33,10 @@ from .signal_standardize import (
 )
 from .signal_registry import build_signals_registry
 from .signal_selectors import resolve_signal_selector
+from .gps_semantics import (
+    build_logger_gps_route_stream,
+    refresh_gps_source_metadata,
+)
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
     apply_butterworth_smoothing,
@@ -183,7 +187,8 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
     for col_name, info in columns.items():
         if not isinstance(info, dict):
             continue
-        if info.get("class") != "signal":
+        column_kind = str(info.get("kind") or "").strip().lower()
+        if info.get("class") != "signal" and column_kind != "qc":
             continue
 
         bound = bound_columns.get(str(col_name))
@@ -213,6 +218,16 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         domain = info.get("domain")
         if isinstance(domain, str) and domain.strip():
             ch["domain"] = domain
+
+        for key in (
+            "kind",
+            "source",
+            "processing_role",
+            "semantic_selection_excluded",
+            "semantic_selection_exclusion_reason",
+        ):
+            if key in info:
+                ch[key] = info[key]
 
         source_columns = info.get("source_columns")
         if isinstance(source_columns, list):
@@ -1566,6 +1581,8 @@ def _enrich_session_with_fit_impl(
         }
 
     fit_meta["stream_name"] = stream_name
+    fit_meta.setdefault("source_kind", "fit_enrichment")
+    fit_meta.setdefault("source", "fit_enrichment")
 
     if bool(cfg.get("persist_raw_stream", True)):
         attach_fit_stream(session, fit_df=fit_df, fit_meta=fit_meta, stream_name=stream_name)
@@ -1699,6 +1716,7 @@ def _coerce_preprocess_config(
 def _preprocess_loaded_session(session: Dict[str, Any],
                                *,
                                preprocess_config: Optional[Mapping[str, Any]] = None,
+                               gps_source_policy: Optional[Mapping[str, Any]] = None,
                                normalize_ranges: Optional[Dict[str, float]] = None,
                                bike_profile: Optional[Mapping[str, Any]] = None,
                                bike_profile_path: Optional[str | Path] = None,
@@ -1746,6 +1764,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         elif "ignore_on_logger_transformations" in cfg:
             prefer_postprocessing_transformations = bool(cfg.get("ignore_on_logger_transformations"))
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
+        gps_source_policy = cfg.get("gps_source_policy", gps_source_policy)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
             cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
@@ -1783,6 +1802,8 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         domain_by_base=domain_by_base,
     )
     session = build_signals_registry(session, strict=False)
+    session = build_logger_gps_route_stream(session, gps_source_policy=gps_source_policy)
+    session = refresh_gps_source_metadata(session, gps_source_policy=gps_source_policy)
     logger_calibration_meta = _materialize_logger_linear_calibrations(session)
     transforms["logger_calibration"] = logger_calibration_meta
     if logger_calibration_meta.get("applied"):
@@ -2141,6 +2162,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         session,
         strict_registry_parse=True,
     )
+    session = refresh_gps_source_metadata(session, gps_source_policy=gps_source_policy)
     return session
 
      
@@ -2154,6 +2176,7 @@ def preprocess_resolved(
     fit_stream: Optional[Mapping[str, Any]] = None,
     fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
     fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
+    gps_source_policy: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
     zero_window_s: float = 1,
     zero_min_samples: int = 10,
@@ -2194,6 +2217,7 @@ def preprocess_resolved(
     )
     if cfg is not None:
         fit_import = fit_import if fit_import is not None else cfg.get("fit_import")
+        gps_source_policy = gps_source_policy if gps_source_policy is not None else cfg.get("gps_source_policy")
         sample_rate_hz = sample_rate_hz if sample_rate_hz is not None else cfg.get("sample_rate_hz")
         zeroing_enabled = bool(cfg.get("zeroing_enabled", zeroing_enabled))
         zero_window_s = float(cfg.get("zero_window_s", zero_window_s))
@@ -2248,6 +2272,7 @@ def preprocess_resolved(
     session_obj = _preprocess_loaded_session(
         session_obj,
         preprocess_config=cfg,
+        gps_source_policy=gps_source_policy,
         normalize_ranges=normalize_ranges,
         sample_rate_hz=sample_rate_hz,
         zeroing_enabled=zeroing_enabled,
@@ -2433,6 +2458,7 @@ def preprocess_session(
     fit_stream: Optional[Mapping[str, Any]] = None,
     fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
     fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
+    gps_source_policy: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
     zero_window_s: float = 1,
     zero_min_samples: int = 10,
@@ -2469,6 +2495,7 @@ def preprocess_session(
     if cfg is not None:
         schema_path = schema_path if schema_path is not None else cfg.get("schema_path")
         fit_import = fit_import if fit_import is not None else cfg.get("fit_import")
+        gps_source_policy = gps_source_policy if gps_source_policy is not None else cfg.get("gps_source_policy")
 
     if isinstance(schema_path, str) and not schema_path.strip():
         schema_path = None
@@ -2509,6 +2536,7 @@ def preprocess_session(
         fit_stream=fit_stream,
         fit_candidates=fit_candidates,
         fit_bindings=fit_bindings,
+        gps_source_policy=gps_source_policy,
         zeroing_enabled=zeroing_enabled,
         zero_window_s=zero_window_s,
         zero_min_samples=zero_min_samples,
