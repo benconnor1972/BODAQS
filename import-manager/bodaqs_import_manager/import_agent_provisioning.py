@@ -33,6 +33,7 @@ IMPORT_AGENT_LIBRARY_VERSION = 1
 DEFAULT_IMPORT_SOURCE_FILENAME = "import_source.json"
 DEFAULT_SETTINGS_DIRNAME = "settings"
 DEFAULT_BIKE_DIRNAME = "bike"
+DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME = "bike_profiles"
 DEFAULT_NOTES_DIRNAME = "notes"
 DEFAULT_LIBRARY_RUNS_DIRNAME = "runs"
 DEFAULT_LIBRARY_STATE_DIRNAME = "library"
@@ -144,6 +145,16 @@ def _write_source_target_library(source_root: Path, *, library_id: str, artifact
     _write_json(config_path, updated, overwrite=True)
 
 
+def _write_source_bike_profile_path(source_root: Path, *, bike_profile_path: Path) -> None:
+    config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    payload = _read_json(config_path, {})
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Import source config is not a JSON object: {config_path}")
+    updated = dict(payload)
+    updated["bike_profile_path"] = _portable_path_text(bike_profile_path, base_dir=source_root)
+    _write_json(config_path, updated, overwrite=True)
+
+
 def _write_source_logger_wifi(source_root: Path, *, logger_wifi: LoggerWifiSourceConfig) -> None:
     config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
     payload = _read_json(config_path, {})
@@ -183,6 +194,17 @@ def _safe_slug(value: str, *, fallback: str) -> str:
     return slug or fallback
 
 
+def library_bike_profiles_dir(library_root: str | Path) -> Path:
+    library_path = Path(library_root).expanduser().resolve()
+    return library_path.parent / DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME
+
+
+def _bike_profile_filename(profile: Mapping[str, Any], *, fallback: str = "bike_profile") -> str:
+    profile_id = _optional_text(profile.get("bike_profile_id"))
+    display_name = _optional_text(profile.get("display_name"))
+    return f"{_safe_slug(profile_id or display_name or fallback, fallback=fallback)}.json"
+
+
 def _display_name_from_slug(value: str, *, fallback: str) -> str:
     text = re.sub(r"[-_]+", " ", str(value or "").strip()).strip()
     return text.title() if text else fallback
@@ -202,6 +224,13 @@ def _read_json(path: Path, default: Any) -> Any:
     except Exception:
         pass
     return default
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected JSON object: {path}")
+    return payload
 
 
 def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
@@ -291,6 +320,29 @@ def _discover_bike_profile_asset() -> _DiscoveredImportAgentAsset:
     return _discover_single_json_asset(label="bike profile", validator=validate_bike_profile)
 
 
+def _load_bike_profile_file(path: str | Path) -> tuple[Path, dict[str, Any]]:
+    profile_path = Path(path).expanduser().resolve()
+    if not profile_path.is_file():
+        raise FileNotFoundError(f"Bike profile file does not exist: {profile_path}")
+    payload = _read_json_object(profile_path)
+    validate_bike_profile(payload, path=profile_path)
+    return profile_path, payload
+
+
+def _ensure_library_default_bike_profile(
+    artifacts_dir: str | Path,
+    *,
+    overwrite: bool,
+) -> tuple[Path, dict[str, Any]]:
+    asset = _discover_bike_profile_asset()
+    payload = dict(asset.payload)
+    profile_path = library_bike_profiles_dir(artifacts_dir) / _bike_profile_filename(payload)
+    if profile_path.exists() and not overwrite:
+        return _load_bike_profile_file(profile_path)
+    _write_json(profile_path, payload, overwrite=overwrite)
+    return profile_path, payload
+
+
 def _discover_session_note_template_asset() -> _DiscoveredImportAgentAsset:
     return _discover_single_json_asset(
         label="session note template",
@@ -341,6 +393,7 @@ class ProvisionedImportAgentLibrary:
     artifacts_dir: Path
     runs_dir: Path
     state_dir: Path
+    bike_profiles_dir: Path
     metadata_path: Path
     data_syn_bike_export_enabled: bool = False
 
@@ -1277,6 +1330,28 @@ def update_import_agent_source_library(
     return updated
 
 
+def update_import_agent_source_bike_profile(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+    bike_profile_path: str | Path,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+    found = next((source for source in config.sources if source.source_id == source_id), None)
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+
+    resolved_profile_path, _profile = _load_bike_profile_file(bike_profile_path)
+    _write_source_bike_profile_path(found.source_root, bike_profile_path=resolved_profile_path)
+
+    # The app-level source record stores library assignment and status flags only.
+    # Reloading keeps callers in sync while preserving the source record shape.
+    updated = load_import_agent_app_config(config_path)
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
 def update_import_agent_library_data_syn_bike_export_enabled(
     app_config_path: str | Path,
     *,
@@ -1532,6 +1607,7 @@ def provision_import_agent_library(
     artifacts_dir = resolved_root / safe_dirname
     runs_dir = artifacts_dir / DEFAULT_LIBRARY_RUNS_DIRNAME
     state_dir = artifacts_dir / DEFAULT_LIBRARY_STATE_DIRNAME
+    bike_profiles_dir = library_bike_profiles_dir(artifacts_dir)
     metadata_path = artifacts_dir / "library_definition.json"
 
     if artifacts_dir.exists() and not overwrite and any(artifacts_dir.iterdir()):
@@ -1539,6 +1615,8 @@ def provision_import_agent_library(
 
     runs_dir.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
+    bike_profiles_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_library_default_bike_profile(artifacts_dir, overwrite=False)
     _write_json(
         metadata_path,
         _library_metadata_payload(
@@ -1556,6 +1634,7 @@ def provision_import_agent_library(
         artifacts_dir=artifacts_dir,
         runs_dir=runs_dir,
         state_dir=state_dir,
+        bike_profiles_dir=bike_profiles_dir,
         metadata_path=metadata_path,
         data_syn_bike_export_enabled=bool(data_syn_bike_export_enabled),
     )
@@ -1603,7 +1682,10 @@ def provision_import_agent_source(
         )
     preprocess_asset = _discover_preprocess_profile_asset()
     schema_asset = _discover_single_schema_asset()
-    bike_asset = _discover_bike_profile_asset()
+    bike_profile_path, bike_profile_payload = _ensure_library_default_bike_profile(
+        artifacts_dir_path,
+        overwrite=False,
+    )
     note_template_asset = _discover_session_note_template_asset()
     setup_preset_asset = _discover_bike_setup_preset_asset()
 
@@ -1618,11 +1700,10 @@ def provision_import_agent_source(
     import_source_config_path = source_root_path / import_source_filename
     preprocess_profile_path = settings_dir / "preprocess_profile.json"
     event_schema_path = settings_dir / "event_schema.yaml"
-    bike_profile_path = bike_dir / "bike_profile.json"
     session_note_template_path = notes_dir / "session_note_template.json"
     bike_setup_preset_path = notes_dir / "bike_setup_preset.json"
 
-    for path in (settings_dir, bike_dir, notes_dir, fit_dir, inbox_dir, done_dir, failed_dir, staging_dir):
+    for path in (settings_dir, notes_dir, fit_dir, inbox_dir, done_dir, failed_dir, staging_dir):
         path.mkdir(parents=True, exist_ok=True)
 
     preprocess_profile = copy.deepcopy(dict(preprocess_asset.payload))
@@ -1631,8 +1712,6 @@ def provision_import_agent_source(
 
     _write_text(event_schema_path, str(schema_asset.payload), overwrite=overwrite)
     _write_json(preprocess_profile_path, preprocess_profile, overwrite=overwrite)
-    bike_profile_payload = dict(bike_asset.payload)
-    _write_json(bike_profile_path, bike_profile_payload, overwrite=overwrite)
     _write_json(session_note_template_path, dict(note_template_asset.payload), overwrite=overwrite)
     setup_preset_payload = copy.deepcopy(dict(setup_preset_asset.payload))
     setup_preset_payload["bike_profile_id"] = bike_profile_payload.get("bike_profile_id")
@@ -1651,7 +1730,7 @@ def provision_import_agent_source(
         "library_id": str(library_id).strip(),
         "artifacts_dir": _portable_path_text(artifacts_dir_path, base_dir=source_root_path),
         "preprocess_profile_path": settings_dir_name,
-        "bike_profile_path": bike_dir_name,
+        "bike_profile_path": _portable_path_text(bike_profile_path, base_dir=source_root_path),
         "session_note": {
             "attach_on_import": bool(attach_session_note_on_import),
             "template_path": notes_dir_name,

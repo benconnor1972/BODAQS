@@ -33,7 +33,7 @@
       "logger_stream_name": "gps_logger"
     },
     "zeroing_enabled": true,
-    "zero_window_s": 0.4,
+    "zero_window_s": 0.1,
     "zero_min_samples": 10,
     "clip_0_1": false,
     "prefer_postprocessing_transformations": true,

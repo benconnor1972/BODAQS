@@ -19,6 +19,7 @@ from bodaqs_analysis.session_notes import TEMPLATE_SCHEMA, TEMPLATE_VERSION, val
 
 
 DEFAULT_BIKE_DIRNAME = "bike"
+DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME = "bike_profiles"
 DEFAULT_NOTES_DIRNAME = "notes"
 DEFAULT_BIKE_PROFILE_FILENAME = "bike_profile.json"
 DEFAULT_SESSION_NOTE_TEMPLATE_FILENAME = "session_note_template.json"
@@ -120,16 +121,80 @@ def source_bike_dir(source_root: str | Path) -> Path:
     return Path(source_root).expanduser().resolve() / DEFAULT_BIKE_DIRNAME
 
 
+def library_bike_profiles_dir(library_root: str | Path) -> Path:
+    library_path = Path(library_root).expanduser().resolve()
+    return library_path.parent / DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME
+
+
 def source_notes_dir(source_root: str | Path) -> Path:
     return Path(source_root).expanduser().resolve() / DEFAULT_NOTES_DIRNAME
 
 
-def load_source_bike_profile(source_root: str | Path) -> tuple[Path, dict[str, Any]]:
+def load_bike_profile_path(path_or_dir: str | Path) -> tuple[Path, dict[str, Any]]:
+    path = Path(path_or_dir).expanduser().resolve()
+    if path.is_file():
+        payload = _read_json(path)
+        validate_bike_profile(payload)
+        return path, payload
     return _discover_single_valid_json_file(
-        source_bike_dir(source_root),
+        path,
         label="Bike profile",
         validator=lambda payload: validate_bike_profile(payload),
     )
+
+
+def discover_bike_profiles(path_or_dir: str | Path) -> list[tuple[Path, dict[str, Any]]]:
+    root = Path(path_or_dir).expanduser().resolve()
+    if not root.exists():
+        return []
+    if root.is_file():
+        try:
+            return [load_bike_profile_path(root)]
+        except Exception:
+            return []
+    if not root.is_dir():
+        return []
+
+    records: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            records.append(load_bike_profile_path(path))
+        except Exception:
+            continue
+    return sorted(
+        records,
+        key=lambda item: (
+            str(item[1].get("display_name") or item[1].get("bike_profile_id") or ""),
+            str(item[0].name),
+        ),
+    )
+
+
+def bike_profile_filename(profile: Mapping[str, Any], *, fallback: str = "bike_profile") -> str:
+    profile_id = _optional_text(profile.get("bike_profile_id"))
+    display_name = _optional_text(profile.get("display_name"))
+    return f"{_safe_slug(profile_id or display_name or fallback, fallback=fallback)}.json"
+
+
+def save_bike_profile_path(path: str | Path, profile: Mapping[str, Any]) -> Path:
+    validate_bike_profile(profile)
+    return _write_json(Path(path).expanduser().resolve(), profile)
+
+
+def _source_configured_bike_profile_path(source_root: str | Path) -> Optional[Path]:
+    try:
+        from bodaqs_analysis.import_agent import load_import_source_config
+
+        return load_import_source_config(source_root).bike_profile_path
+    except Exception:
+        return None
+
+
+def load_source_bike_profile(source_root: str | Path) -> tuple[Path, dict[str, Any]]:
+    configured = _source_configured_bike_profile_path(source_root)
+    if configured is not None:
+        return load_bike_profile_path(configured)
+    return load_bike_profile_path(source_bike_dir(source_root))
 
 
 def save_source_bike_profile(
@@ -145,7 +210,11 @@ def save_source_bike_profile(
         except Exception:
             target = source_bike_dir(source_root) / DEFAULT_BIKE_PROFILE_FILENAME
     else:
-        target = source_bike_dir(source_root) / filename
+        try:
+            current, _existing = load_source_bike_profile(source_root)
+            target = current.parent / filename
+        except Exception:
+            target = source_bike_dir(source_root) / filename
     return _write_json(target, profile)
 
 
@@ -801,6 +870,8 @@ def copy_source_bike_profile(from_source_root: str | Path, to_source_root: str |
     source_path, profile = load_source_bike_profile(from_source_root)
     try:
         target_path, _existing = load_source_bike_profile(to_source_root)
+        if source_path == target_path:
+            return target_path
         shutil.copy2(source_path, target_path)
         return target_path
     except Exception:

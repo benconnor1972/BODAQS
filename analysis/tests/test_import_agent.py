@@ -64,6 +64,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
+    update_import_agent_source_bike_profile,
     update_import_agent_source_display_name,
     update_import_agent_source_force_reprocess_enabled,
     update_import_agent_source_session_note_attach_enabled,
@@ -76,7 +77,6 @@ from bodaqs_import_manager.import_agent_profile_builders import (
     bike_profile_form_values,
     build_custom_session_note_field,
     build_session_note_template_from_field_ids,
-    copy_source_bike_profile,
     copy_source_note_assets,
     derive_profile_id,
     front_head_angle_from_profile,
@@ -87,6 +87,7 @@ from bodaqs_import_manager.import_agent_profile_builders import (
     normalize_rear_lut_with_endpoints,
     parse_lut_text,
     rear_wheel_lut_from_profile,
+    save_bike_profile_path,
     save_source_bike_profile,
     save_source_session_note_assets,
     set_rear_wheel_lut_transform,
@@ -1621,6 +1622,9 @@ def test_provision_import_agent_library_creates_artifact_store_dirs(tmp_path):
     assert library.library_id == "alice-library"
     assert library.runs_dir.exists()
     assert library.state_dir.exists()
+    assert library.bike_profiles_dir == libraries_root / "bike_profiles"
+    assert library.bike_profiles_dir.exists()
+    assert any(library.bike_profiles_dir.glob("*.json"))
     metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
     assert metadata["library_id"] == "alice-library"
     assert metadata["exports"]["data_syn_bike"]["enabled"] is False
@@ -1639,6 +1643,17 @@ def test_provision_import_agent_library_can_enable_data_syn_bike_exports(tmp_pat
     assert library.data_syn_bike_export_enabled is True
     assert metadata["exports"]["data_syn_bike"]["enabled"] is True
     assert metadata["exports"]["data_syn_bike"]["raw_scale_mode"] == "processed_wheel_travel"
+
+
+def test_provisioned_libraries_share_root_level_bike_profiles_dir(tmp_path):
+    libraries_root = tmp_path / "libraries"
+
+    first = provision_import_agent_library(libraries_root, display_name="Alice Library")
+    second = provision_import_agent_library(libraries_root, display_name="Ben Library")
+
+    assert first.bike_profiles_dir == libraries_root / "bike_profiles"
+    assert second.bike_profiles_dir == first.bike_profiles_dir
+    assert first.bike_profiles_dir.exists()
 
 
 def test_update_import_agent_library_data_syn_bike_export_enabled_updates_app_and_library_metadata(tmp_path):
@@ -1683,13 +1698,14 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     source_payload = json.loads(source.import_source_config_path.read_text(encoding="utf-8"))
 
     assert source.settings_dir.exists()
-    assert source.bike_dir.exists()
     assert source.notes_dir.exists()
     assert source.event_schema_path.exists()
+    assert source.bike_profile_path.exists()
+    assert source.bike_profile_path.parent == library.bike_profiles_dir
     assert source.session_note_template_path.exists()
     assert source.bike_setup_preset_path.exists()
     assert loaded.preprocess_profile_path == source.settings_dir
-    assert loaded.bike_profile_path == source.bike_dir
+    assert loaded.bike_profile_path == source.bike_profile_path
     assert loaded.session_note.template_path == source.notes_dir
     assert loaded.session_note.setup_preset_path == source.notes_dir
     assert loaded.artifacts_dir == library.artifacts_dir
@@ -1697,6 +1713,7 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     assert source_payload["display_name"] == "Alice Enduro"
     assert source_payload["source_type"] == SOURCE_TYPE_FILESYSTEM_ARCHIVE
     assert not Path(source_payload["artifacts_dir"]).is_absolute()
+    assert not Path(source_payload["bike_profile_path"]).is_absolute()
     assert source_payload["session_note"]["attach_on_import"] is False
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
 
@@ -1779,7 +1796,8 @@ def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp
 
     assert source.preprocess_profile_path.name == "preprocess_profile.json"
     assert source.event_schema_path.name == "event_schema.yaml"
-    assert source.bike_profile_path.name == "bike_profile.json"
+    assert source.bike_profile_path.parent == library.bike_profiles_dir
+    assert source.bike_profile_path.name == "import_agent_test_bike.json"
     assert source.session_note_template_path.name == "session_note_template.json"
     assert source.bike_setup_preset_path.name == "bike_setup_preset.json"
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
@@ -2365,6 +2383,7 @@ def test_update_import_agent_source_library_updates_app_and_source_config(tmp_pa
         app_config_path,
         display_name="Ben Library",
     )
+    original_bike_profile_path = load_import_source_config(provisioned.source.source_root).bike_profile_path
 
     updated = update_import_agent_source_library(
         app_config_path,
@@ -2378,8 +2397,12 @@ def test_update_import_agent_source_library_updates_app_and_source_config(tmp_pa
     assert managed_source.library_id == second_library.library_id
     assert source_payload["library_id"] == second_library.library_id
     assert not Path(source_payload["artifacts_dir"]).is_absolute()
+    assert not Path(source_payload["bike_profile_path"]).is_absolute()
     assert (provisioned.source.source_root / source_payload["artifacts_dir"]).resolve() == second_library.artifacts_dir
     assert loaded_source.artifacts_dir == second_library.artifacts_dir
+    assert second_library.bike_profiles_dir == provisioned.library.bike_profiles_dir
+    assert loaded_source.bike_profile_path == original_bike_profile_path
+    assert loaded_source.bike_profile_path.parent == second_library.bike_profiles_dir
 
 
 def test_update_import_agent_display_names_do_not_change_ids_or_paths(tmp_path):
@@ -2588,7 +2611,7 @@ def test_normalize_rear_lut_with_endpoints_rejects_out_of_range_interior_points(
         )
 
 
-def test_copy_source_bike_profile_writes_independent_target_file(tmp_path):
+def test_update_import_agent_source_bike_profile_links_shared_library_profile(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
     first = provision_import_agent_app_setup(
         sources_root=tmp_path / "sources",
@@ -2602,25 +2625,35 @@ def test_copy_source_bike_profile_writes_independent_target_file(tmp_path):
         library_id=first.library.library_id,
         display_name="Ben DH",
     )
-    _profile_path, first_profile = load_source_bike_profile(first.source.source_root)
-    first_profile = apply_bike_profile_form_values(
+    first_profile_path, first_profile = load_source_bike_profile(first.source.source_root)
+    second_profile_path, _second_profile = load_source_bike_profile(second.source_root)
+    assert first_profile_path == second_profile_path
+
+    ben_profile = apply_bike_profile_form_values(
         first_profile,
         {
-            "bike_profile_id": "alice-bike",
-            "display_name": "Alice Bike",
-            "front_fork_travel_mm": "170",
-            "rear_shock_travel_mm": "65",
-            "rear_wheel_travel_mm": "160",
+            "bike_profile_id": "ben-bike",
+            "display_name": "Ben Bike",
+            "front_fork_travel_mm": "180",
+            "rear_shock_travel_mm": "75",
+            "rear_wheel_travel_mm": "200",
         },
     )
-    save_source_bike_profile(first.source.source_root, first_profile)
+    ben_profile_path = first.library.bike_profiles_dir / "ben-bike.json"
+    save_bike_profile_path(ben_profile_path, ben_profile)
 
-    target_path = copy_source_bike_profile(first.source.source_root, second.source_root)
-    _target_profile_path, target_profile = load_source_bike_profile(second.source_root)
+    update_import_agent_source_bike_profile(
+        app_config_path,
+        source_id=second.source_id,
+        bike_profile_path=ben_profile_path,
+    )
+    source_payload = json.loads(second.import_source_config_path.read_text(encoding="utf-8"))
+    target_profile_path, target_profile = load_source_bike_profile(second.source_root)
 
-    assert target_path.parent == second.bike_dir
-    assert target_profile["bike_profile_id"] == "alice-bike"
-    assert target_path != first.source.bike_profile_path
+    assert not Path(source_payload["bike_profile_path"]).is_absolute()
+    assert target_profile_path == ben_profile_path
+    assert target_profile["bike_profile_id"] == "ben-bike"
+    assert load_source_bike_profile(first.source.source_root)[0] == first_profile_path
 
 
 def test_session_note_template_builder_and_copy_relinks_setup_preset_to_target_bike(tmp_path):

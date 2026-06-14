@@ -49,6 +49,7 @@ from .import_agent_provisioning import (
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
+    update_import_agent_source_bike_profile,
     update_import_agent_source_library,
     update_import_agent_source_display_name,
     update_import_agent_source_force_reprocess_enabled,
@@ -59,13 +60,15 @@ from .import_agent_provisioning import (
 )
 from .import_agent_profile_builders import (
     apply_bike_profile_form_values,
+    bike_profile_filename,
     bike_profile_form_values,
     build_custom_session_note_field,
     build_session_note_template_from_field_ids,
-    copy_source_bike_profile,
     copy_source_note_assets,
     derive_profile_id,
+    discover_bike_profiles,
     format_lut_text,
+    library_bike_profiles_dir,
     load_session_note_field_catalog,
     load_source_bike_setup_preset,
     load_source_bike_profile,
@@ -74,6 +77,7 @@ from .import_agent_profile_builders import (
     normalize_rear_lut_with_endpoints,
     parse_lut_text,
     rear_wheel_lut_from_profile,
+    save_bike_profile_path,
     save_source_bike_profile,
     save_source_session_note_assets,
     set_rear_wheel_lut_transform,
@@ -365,6 +369,15 @@ class ImportAgentManagerController:
             self.app_config_path,
             source_id=source_id,
             library_id=library_id,
+        )
+        self.app_config = updated
+        return updated
+
+    def set_source_bike_profile(self, source_id: str, bike_profile_path: Path) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_bike_profile(
+            self.app_config_path,
+            source_id=source_id,
+            bike_profile_path=bike_profile_path,
         )
         self.app_config = updated
         return updated
@@ -1680,6 +1693,88 @@ class ImportAgentManagerWindow:
         self.root.wait_window(dialog)
         return result["source"]
 
+    def _managed_library_bike_profile_choices(
+        self,
+        library_id: str,
+    ) -> tuple[list[str], dict[str, tuple[Path, dict[str, Any]]]]:
+        library = self._managed_library_config(library_id)
+        records = discover_bike_profiles(library_bike_profiles_dir(library.artifacts_dir))
+        choices: list[str] = []
+        choice_map: dict[str, tuple[Path, dict[str, Any]]] = {}
+        for path, profile in records:
+            display = str(profile.get("display_name") or profile.get("bike_profile_id") or path.stem).strip()
+            profile_id = str(profile.get("bike_profile_id") or path.stem).strip()
+            label = f"{display} ({profile_id})" if profile_id and profile_id != display else display
+            if label in choice_map:
+                label = f"{label} [{path.name}]"
+            suffix = 2
+            base_label = label
+            while label in choice_map:
+                label = f"{base_label} #{suffix}"
+                suffix += 1
+            choices.append(label)
+            choice_map[label] = (path, profile)
+        return choices, choice_map
+
+    def _choose_bike_profile_dialog(self, *, source: Any, title: str) -> Optional[tuple[Path, dict[str, Any]]]:
+        choices, choice_map = self._managed_library_bike_profile_choices(source.library_id)
+        if not choices:
+            messagebox.showinfo(
+                _APP_DISPLAY_NAME,
+                "No shared bike profiles are available in this workspace.",
+                parent=self.root,
+            )
+            return None
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        selected = tk.StringVar(value=choices[0])
+        try:
+            current_path, _current_profile = load_source_bike_profile(source.source_root)
+        except Exception:
+            current_path = None
+        if current_path is not None:
+            for label, (path, _profile) in choice_map.items():
+                if path == current_path:
+                    selected.set(label)
+                    break
+
+        ttk.Label(dialog, text="Choose the shared bike profile for this source.", justify="left").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(12, 6)
+        )
+        combo = ttk.Combobox(dialog, textvariable=selected, values=choices, state="readonly", width=64)
+        combo.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        result: dict[str, Optional[tuple[Path, dict[str, Any]]]] = {"profile": None}
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 12))
+
+        def accept() -> None:
+            result["profile"] = choice_map.get(selected.get())
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Apply", command=accept).grid(row=0, column=1)
+        combo.focus_set()
+        self.root.wait_window(dialog)
+        return result["profile"]
+
+    def _unique_library_bike_profile_path(self, profiles_dir: Path, profile: Mapping[str, Any]) -> Path:
+        candidate = profiles_dir / bike_profile_filename(profile)
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix_text = candidate.suffix
+        suffix = 2
+        while True:
+            candidate = profiles_dir / f"{stem}-{suffix}{suffix_text}"
+            if not candidate.exists():
+                return candidate
+            suffix += 1
+
     def _change_selected_source_library(self) -> None:
         if not self._guard_watch_inactive(action_label="Change Target Library"):
             return
@@ -1689,6 +1784,7 @@ class ImportAgentManagerWindow:
             if target_library_id is None or target_library_id == source.library_id:
                 return
             self.controller.set_source_library(source.source_id, target_library_id)
+            sync_source_bike_setup_preset(source.source_root)
         except Exception as exc:
             self._set_manager_status(f"Change target library failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
@@ -1697,6 +1793,69 @@ class ImportAgentManagerWindow:
         if self.sources_tree is not None and self.sources_tree.exists(source.source_id):
             self.sources_tree.selection_set(source.source_id)
         self._set_manager_status(f"Source '{source.source_id}' now targets library '{target_library_id}'.")
+
+    def _assign_selected_bike_profile(self) -> None:
+        if not self._guard_watch_inactive(action_label="Assign Bike Profile"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            selected = self._choose_bike_profile_dialog(source=source, title="Assign Bike Profile")
+            if selected is None:
+                return
+            profile_path, profile = selected
+            self.controller.set_source_bike_profile(source.source_id, profile_path)
+            sync_source_bike_setup_preset(source.source_root)
+        except Exception as exc:
+            self._set_manager_status(f"Assign bike profile failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.sources_tree is not None and self.sources_tree.exists(source.source_id):
+            self.sources_tree.selection_set(source.source_id)
+        profile_name = str(profile.get("display_name") or profile.get("bike_profile_id") or profile_path.stem)
+        self._set_manager_status(f"Assigned bike profile '{profile_name}' to source '{source.source_id}'.")
+
+    def _duplicate_selected_bike_profile(self) -> None:
+        if not self._guard_watch_inactive(action_label="Duplicate Bike Profile"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            _current_path, current_profile = load_source_bike_profile(source.source_root)
+            default_name = str(current_profile.get("display_name") or "Bike Profile").strip()
+            requested_name = simpledialog.askstring(
+                "Duplicate Bike Profile",
+                "New bike profile name:",
+                initialvalue=f"{default_name} Copy",
+                parent=self.root,
+            )
+            if requested_name is None:
+                return
+            display_name = requested_name.strip()
+            if not display_name:
+                raise ValueError("Bike profile name must be a non-empty string")
+            library = self._managed_library_config(source.library_id)
+            profiles_dir = library_bike_profiles_dir(library.artifacts_dir)
+            existing_ids = [
+                str(profile.get("bike_profile_id"))
+                for _path, profile in discover_bike_profiles(profiles_dir)
+                if str(profile.get("bike_profile_id") or "").strip()
+            ]
+            updated_profile = copy.deepcopy(dict(current_profile))
+            updated_profile["display_name"] = display_name
+            updated_profile["bike_profile_id"] = derive_profile_id(
+                display_name,
+                existing_ids=existing_ids,
+                fallback="bike-profile",
+            )
+            target_path = self._unique_library_bike_profile_path(profiles_dir, updated_profile)
+            save_bike_profile_path(target_path, updated_profile)
+        except Exception as exc:
+            self._set_manager_status(f"Duplicate bike profile failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._set_manager_status(
+            f"Created bike profile '{display_name}'. Use Assign bike profile to select it for a source."
+        )
 
     def _managed_source_asset_choices(
         self,
@@ -1803,13 +1962,9 @@ class ImportAgentManagerWindow:
         form = ttk.Frame(dialog, padding=(12, 12, 12, 4))
         form.grid(row=0, column=0, sticky="ew")
         form.columnconfigure(1, weight=1)
-        bike_choices, bike_choice_map = self._managed_source_asset_choices(
-            exclude_source_id=source.source_id,
-            loader=load_source_bike_profile,
-            label_fields=("display_name", "bike_profile_id"),
-        )
+        bike_choices, bike_choice_map = self._managed_library_bike_profile_choices(source.library_id)
         bike_create_from_var = tk.StringVar(value=bike_choices[0] if bike_choices else "")
-        ttk.Label(form, text="Create from").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Label(form, text="Load from").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
         create_from_frame = ttk.Frame(form)
         create_from_frame.grid(row=0, column=1, sticky="ew", pady=(0, 6))
         create_from_frame.columnconfigure(0, weight=1)
@@ -2137,11 +2292,11 @@ class ImportAgentManagerWindow:
             candidate = bike_choice_map.get(selected_label)
             if candidate is None:
                 return
-            candidate_source, candidate_profile = candidate
+            candidate_path, candidate_profile = candidate
             if not messagebox.askyesno(
                 _APP_DISPLAY_NAME,
                 f"Replace the bike profile currently shown with '{candidate_profile.get('display_name')}' "
-                f"from source '{candidate_source.display_name}'?",
+                f"from '{candidate_path.name}'?",
                 parent=dialog,
             ):
                 return
@@ -2149,7 +2304,7 @@ class ImportAgentManagerWindow:
 
         ttk.Button(
             create_from_frame,
-            text="Create",
+            text="Load",
             command=create_bike_from_selected,
             state=("normal" if bike_choices else "disabled"),
         ).grid(row=0, column=1, sticky="e", padx=(8, 0))
@@ -2723,20 +2878,7 @@ class ImportAgentManagerWindow:
         return saved["ok"]
 
     def _copy_selected_bike_profile_from_source(self) -> None:
-        if not self._guard_watch_inactive(action_label="Copy Bike Profile"):
-            return
-        try:
-            target = self._selected_managed_source_config()
-            source = self._choose_source_dialog(title="Copy Bike Profile", exclude_source_id=target.source_id)
-            if source is None:
-                return
-            copy_source_bike_profile(source.source_root, target.source_root)
-            sync_source_bike_setup_preset(target.source_root)
-        except Exception as exc:
-            self._set_manager_status(f"Copy bike profile failed: {exc}")
-            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
-            return
-        self._set_manager_status(f"Copied bike profile from '{source.source_id}' to '{target.source_id}'.")
+        self._duplicate_selected_bike_profile()
 
     def _copy_selected_note_template_from_source(self) -> None:
         if not self._guard_watch_inactive(action_label="Copy Note Template"):
@@ -2830,6 +2972,8 @@ class ImportAgentManagerWindow:
 
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="Edit bike", command=self._edit_selected_bike_profile)
+        menu.add_command(label="Assign bike profile", command=self._assign_selected_bike_profile)
+        menu.add_command(label="Duplicate bike profile", command=self._duplicate_selected_bike_profile)
         menu.add_command(label="Change target library", command=self._change_selected_source_library)
         menu.add_command(label="Details", command=self._show_selected_source_details)
         if source.source_type == SOURCE_TYPE_LOGGER_WIFI:

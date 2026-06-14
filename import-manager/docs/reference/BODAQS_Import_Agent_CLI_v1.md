@@ -33,8 +33,6 @@ Each watched source is a directory containing:
   settings/
     <exactly one valid preprocess profile JSON>
     event_schema.yaml
-  bike/
-    <exactly one valid bike profile JSON>
   notes/
     <exactly one valid session-note template JSON>
     <exactly one valid bike setup preset JSON>
@@ -48,8 +46,23 @@ Each watched source is a directory containing:
 Relative paths in `import_source.json` resolve relative to that file.
 The `preprocess_profile_path` and `bike_profile_path` fields may point either
 to a specific JSON file or to a directory. When a directory is used, it must
-contain exactly one valid JSON file for that profile type. The event schema YAML
-can live alongside the preprocess profile inside `settings/`.
+contain exactly one valid JSON file for that profile type. New Import Manager
+sources normally point `bike_profile_path` at a specific shared profile file
+under the common libraries root's `bike_profiles/` directory. Legacy source-local
+`bike/` directories remain valid if they contain exactly one bike profile JSON.
+The event schema YAML can live alongside the preprocess profile inside
+`settings/`.
+
+Managed workspaces created by the Import Manager include shared bike profiles:
+
+```text
+<libraries_root>/
+  bike_profiles/
+    <one or more valid bike profile JSON files>
+  <library>/
+    runs/
+    library/
+```
 
 If `session_note.attach_on_import` is enabled in `import_source.json`, the
 `notes/` directory is also used at import time. The agent creates a draft

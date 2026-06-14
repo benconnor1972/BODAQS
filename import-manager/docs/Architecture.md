@@ -163,8 +163,6 @@ Recommended app-managed roots:
     settings/
       preprocess_profile.json
       event_schema.yaml
-    bike/
-      bike_profile.json
     fit/
     inbox/
     done/
@@ -174,6 +172,8 @@ Recommended app-managed roots:
     ...
 
 <libraries_root>/
+  bike_profiles/
+    default_import_agent_bike.json
   Alice Library/
     runs/
     library/
@@ -183,13 +183,19 @@ Recommended app-managed roots:
     library/
 ```
 
-The product should ship with default assets for a new source:
+The product should ship with default assets for a new managed workspace:
 
 - one default preprocess profile
 - one default event schema
-- one example bike profile
+- one example bike profile, stored once under `<libraries_root>/bike_profiles/`
 - one default session-note template
 - one default bike setup preset
+
+New app-managed sources should point `bike_profile_path` at a specific profile
+JSON file in the common `<libraries_root>/bike_profiles/` directory. Existing
+source-local bike profile paths remain valid for compatibility: a source config
+may still point to a single JSON file or to a directory containing exactly one
+valid bike profile JSON.
 
 Each source also has a `fit/` directory. When FIT import is enabled in the
 preprocess profile, FIT files must be fully copied into this directory before
@@ -210,12 +216,13 @@ policy (`session_note.attach_on_import`) and stores a `notes/` directory with:
 - exactly one valid session-note template JSON file
 - exactly one valid bike setup preset JSON file
 
-The bike profile remains the processing-facing description of the bike, while
-the setup preset is the user-facing bridge from that bike profile to default
-session-note values. On import, the agent creates a draft note, records
-bike-profile and setup-preset provenance in `source_context`, and copies the
-template into the target library under `library/session_note_templates/` so the
-library manager can interpret the note even if the source folder later changes.
+The bike profile remains the processing-facing description of the bike and is
+shared by any sources that reference the same profile file. The setup preset is
+the user-facing bridge from that bike profile to default session-note values. On
+import, the agent creates a draft note, records bike-profile and setup-preset
+provenance in `source_context`, and copies the template into the target library
+under `library/session_note_templates/` so the library manager can interpret the
+note even if the source folder later changes.
 
 ## Configuration Layers
 
