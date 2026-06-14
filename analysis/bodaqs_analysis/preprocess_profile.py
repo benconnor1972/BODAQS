@@ -73,6 +73,51 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
     },
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": False,
+    "activity_detection": {
+        "enabled": True,
+        "combination": "any",
+        "fallback_to_legacy": True,
+        "candidates": [
+            {
+                "id": "gps_speed",
+                "type": "gps_speed",
+                "speed_threshold_mps": 0.5,
+                "max_gap_s": 5.0,
+            },
+            {
+                "id": "rear_wheel_motion",
+                "type": "wheel_motion",
+                "disp_selector": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "vel_selector": {
+                    "end": "rear",
+                    "quantity": "vel",
+                    "domain": "wheel",
+                    "unit": "mm/s",
+                },
+            },
+            {
+                "id": "front_wheel_motion",
+                "type": "wheel_motion",
+                "disp_selector": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "vel_selector": {
+                    "end": "front",
+                    "quantity": "vel",
+                    "domain": "wheel",
+                    "unit": "mm/s",
+                },
+            },
+        ],
+    },
     "active_signal_disp_selector": {
         "end": "rear",
         "quantity": "disp",
@@ -348,6 +393,7 @@ def validate_preprocess_config(config: Mapping[str, Any], *, label: str = "") ->
     if not isinstance(config.get("butterworth_generate_residuals"), bool):
         raise ValueError(f"Preprocess config 'butterworth_generate_residuals' must be boolean{label}")
     _validate_motion_derivation(config.get("motion_derivation"), label=label)
+    _validate_activity_detection(config.get("activity_detection"), label=label)
 
     for key in ("zero_window_s", "active_disp_thresh", "active_vel_thresh"):
         _require_number(config, key, label=label)
@@ -531,6 +577,86 @@ def _validate_motion_profile(profile: Mapping[str, Any], *, key: str, label: str
         _require_positive_number(profile, field, label=f"{label} ({key})")
     for field in required_positive_ints:
         _require_positive_int(profile, field, label=f"{label} ({key})")
+
+
+def _validate_activity_detection(value: Any, *, label: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Preprocess config 'activity_detection' must be object or null{label}")
+
+    enabled = value.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"Preprocess config 'activity_detection.enabled' must be boolean{label}")
+    if "fallback_to_legacy" in value and not isinstance(value.get("fallback_to_legacy"), bool):
+        raise ValueError(f"Preprocess config 'activity_detection.fallback_to_legacy' must be boolean{label}")
+
+    combination = str(value.get("combination") or "any").strip().lower()
+    if combination not in {"any"}:
+        raise ValueError(
+            "Preprocess config 'activity_detection.combination' must be 'any'"
+            f"{label}"
+        )
+
+    candidates = value.get("candidates", [])
+    if not isinstance(candidates, list):
+        raise ValueError(f"Preprocess config 'activity_detection.candidates' must be a list{label}")
+
+    seen_ids: set[str] = set()
+    for idx, candidate in enumerate(candidates):
+        candidate_key = f"activity_detection.candidates[{idx}]"
+        if not isinstance(candidate, Mapping):
+            raise ValueError(f"Preprocess config '{candidate_key}' must be an object{label}")
+        candidate_id = candidate.get("id")
+        if not _nonempty_str(candidate_id):
+            raise ValueError(f"Preprocess config '{candidate_key}.id' must be a non-empty string{label}")
+        if str(candidate_id) in seen_ids:
+            raise ValueError(f"Duplicate activity detection candidate id{label}: {candidate_id!r}")
+        seen_ids.add(str(candidate_id))
+
+        candidate_type = str(candidate.get("type") or candidate.get("kind") or "motion_pair").strip().lower()
+        if candidate_type not in {"gps_speed", "motion_pair", "wheel_motion", "legacy_motion"}:
+            raise ValueError(
+                f"Preprocess config '{candidate_key}.type' has unsupported value {candidate_type!r}{label}"
+            )
+
+        if candidate_type == "gps_speed":
+            for numeric_key in ("speed_threshold_mps", "threshold_mps", "max_gap_s"):
+                if numeric_key in candidate:
+                    _require_positive_number(candidate, numeric_key, label=f"{label} ({candidate_key})")
+            for text_key in ("source_id", "stream_name", "speed_col"):
+                if text_key in candidate and not _nonempty_str(candidate.get(text_key)):
+                    raise ValueError(
+                        f"Preprocess config '{candidate_key}.{text_key}' must be a non-empty string{label}"
+                    )
+            continue
+
+        if candidate_type == "legacy_motion":
+            required_disp_selector = False
+        else:
+            required_disp_selector = "disp_col" not in candidate and "selector" not in candidate
+
+        disp_selector = candidate.get("disp_selector", candidate.get("selector"))
+        _validate_signal_selector(
+            disp_selector,
+            key=f"{candidate_key}.disp_selector",
+            label=label,
+            required=required_disp_selector,
+        )
+        _validate_signal_selector(
+            candidate.get("vel_selector"),
+            key=f"{candidate_key}.vel_selector",
+            label=label,
+            required=False,
+        )
+        for text_key in ("disp_col", "vel_col"):
+            if text_key in candidate and not _nonempty_str(candidate.get(text_key)):
+                raise ValueError(
+                    f"Preprocess config '{candidate_key}.{text_key}' must be a non-empty string{label}"
+                )
+        for numeric_key in ("disp_thresh", "vel_thresh"):
+            if numeric_key in candidate:
+                _require_number(candidate, numeric_key, label=f"{label} ({candidate_key})")
 
 
 def _validate_signal_selector(value: Any, *, key: str, label: str, required: bool) -> None:

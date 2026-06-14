@@ -1782,6 +1782,7 @@ class ImportAgentManagerWindow:
         dialog.rowconfigure(1, weight=1)
 
         profile_state: dict[str, dict[str, Any]] = {"profile": profile}
+        lut_input_unit_var = tk.StringVar(value=str(form_values.get("rear_shock_lut_input_unit") or "mm"))
 
         field_defs = [
             ("Display name", "display_name"),
@@ -1793,10 +1794,11 @@ class ImportAgentManagerWindow:
             ("Bike notes", "bike_notes"),
             ("Front fork travel (mm)", "front_fork_travel_mm"),
             ("Steering head angle (deg)", "front_head_angle_deg"),
-            ("Rear shock travel (mm)", "rear_shock_travel_mm"),
+            ("Rear sensor input range", "rear_shock_travel_mm"),
             ("Rear wheel travel (mm)", "rear_wheel_travel_mm"),
         ]
         variables: dict[str, tk.StringVar] = {}
+        field_labels: dict[str, ttk.Label] = {}
 
         form = ttk.Frame(dialog, padding=(12, 12, 12, 4))
         form.grid(row=0, column=0, sticky="ew")
@@ -1820,10 +1822,24 @@ class ImportAgentManagerWindow:
         bike_create_combo.grid(row=0, column=0, sticky="ew")
         field_start_row = 1
         for row, (label, key) in enumerate(field_defs, start=field_start_row):
-            ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+            label_widget = ttk.Label(form, text=label)
+            label_widget.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+            field_labels[key] = label_widget
             var = tk.StringVar(value=str(form_values.get(key, "")))
             variables[key] = var
             ttk.Entry(form, textvariable=var).grid(row=row, column=1, sticky="ew", pady=3)
+
+        unit_row = field_start_row + len(field_defs)
+        ttk.Label(form, text="Rear LUT input unit").grid(row=unit_row, column=0, sticky="w", padx=(0, 8), pady=(8, 3))
+        unit_frame = ttk.Frame(form)
+        unit_frame.grid(row=unit_row, column=1, sticky="w", pady=(8, 3))
+        ttk.Radiobutton(unit_frame, text="mm", variable=lut_input_unit_var, value="mm").grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(unit_frame, text="deg", variable=lut_input_unit_var, value="deg").grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(12, 0),
+        )
 
         def current_note_profile_label() -> str:
             try:
@@ -1836,7 +1852,7 @@ class ImportAgentManagerWindow:
                 or "Source bike setup"
             )
 
-        note_row = field_start_row + len(field_defs)
+        note_row = unit_row + 1
         note_name_var = tk.StringVar(value=current_note_profile_label())
         ttk.Label(form, text="Note profile").grid(row=note_row, column=0, sticky="w", padx=(0, 8), pady=(8, 3))
         note_frame = ttk.Frame(form)
@@ -1850,7 +1866,7 @@ class ImportAgentManagerWindow:
         lut_frame.rowconfigure(1, weight=1)
         ttk.Label(
             lut_frame,
-            text="Map rear shock travel to rear wheel travel. Select a row to edit it, or insert a new row before the selection.",
+            text="Map rear sensor travel to rear wheel travel. Select a row to edit it, or insert a new row before the selection.",
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
         table_frame = ttk.Frame(lut_frame)
@@ -1859,7 +1875,7 @@ class ImportAgentManagerWindow:
         table_frame.rowconfigure(0, weight=1)
         lut_sheet = Sheet(
             table_frame,
-            headers=["Shock mm", "Wheel mm"],
+            headers=[f"sensor {lut_input_unit_var.get() if lut_input_unit_var.get() == 'deg' else 'mm'}", "Wheel mm"],
             data=[[f"{point['input']:g}", f"{point['output']:g}"] for point in lut_rows],
             width=300,
             height=210,
@@ -1905,12 +1921,26 @@ class ImportAgentManagerWindow:
                 shock = float(variables["rear_shock_travel_mm"].get())
                 wheel = float(variables["rear_wheel_travel_mm"].get())
             except (TypeError, ValueError):
-                raise ValueError("Rear shock travel and rear wheel travel must be numeric") from None
+                raise ValueError("Rear sensor travel and rear wheel travel must be numeric") from None
             if not math.isfinite(shock) or shock <= 0.0:
-                raise ValueError("Rear shock travel must be greater than zero")
+                raise ValueError("Rear sensor travel must be greater than zero")
             if not math.isfinite(wheel) or wheel <= 0.0:
                 raise ValueError("Rear wheel travel must be greater than zero")
             return shock, wheel
+
+        def lut_input_unit() -> str:
+            return "deg" if str(lut_input_unit_var.get()).strip().lower() == "deg" else "mm"
+
+        def apply_lut_unit_labels(*_args: Any) -> None:
+            unit = lut_input_unit()
+            rear_label = field_labels.get("rear_shock_travel_mm")
+            if rear_label is not None:
+                rear_label.configure(text=f"Rear sensor input range ({unit})")
+            try:
+                lut_sheet.headers([f"sensor {unit}", "Wheel mm"], redraw=True)
+            except Exception:
+                pass
+            render_lut_graph()
 
         def apply_lut_endpoint_state() -> None:
             total_rows = lut_sheet.get_total_rows()
@@ -1974,7 +2004,7 @@ class ImportAgentManagerWindow:
             rows: list[dict[str, float]] = []
             for row_number, raw_row in enumerate(lut_sheet.get_sheet_data(), start=1):
                 if len(raw_row) < 2:
-                    raise ValueError(f"LUT row {row_number} must contain shock and wheel values")
+                    raise ValueError(f"LUT row {row_number} must contain sensor and wheel values")
                 if str(raw_row[0]).strip() == "" and str(raw_row[1]).strip() == "":
                     continue
                 try:
@@ -2005,7 +2035,13 @@ class ImportAgentManagerWindow:
             y1 = margin_top
             graph_canvas.create_line(x0, y0, x1, y0, fill="#777777")
             graph_canvas.create_line(x0, y0, x0, y1, fill="#777777")
-            graph_canvas.create_text((x0 + x1) / 2, height - 9, text="Shock mm", fill="#555555", font=("TkDefaultFont", 8))
+            graph_canvas.create_text(
+                (x0 + x1) / 2,
+                height - 9,
+                text=f"Sensor {lut_input_unit()}",
+                fill="#555555",
+                font=("TkDefaultFont", 8),
+            )
             graph_canvas.create_text(14, (y0 + y1) / 2, text="Wheel", fill="#555555", font=("TkDefaultFont", 8), angle=90)
             try:
                 points = current_lut_rows()
@@ -2071,7 +2107,7 @@ class ImportAgentManagerWindow:
             if index == 0 or index == lut_sheet.get_total_rows() - 1:
                 messagebox.showinfo(
                     _APP_DISPLAY_NAME,
-                    "The first and last LUT rows are set from rear shock and rear wheel travel.",
+                    "The first and last LUT rows are set from rear sensor and rear wheel travel.",
                     parent=dialog,
                 )
                 return
@@ -2086,11 +2122,13 @@ class ImportAgentManagerWindow:
             values = bike_profile_form_values(profile_state["profile"])
             for key, var in variables.items():
                 var.set(str(values.get(key, "")))
+            lut_input_unit_var.set(str(values.get("rear_shock_lut_input_unit") or "mm"))
             transform_payload = rear_wheel_lut_from_profile(profile_state["profile"])
             if transform_payload is None:
                 set_lut_sheet_rows([])
             else:
                 set_lut_sheet_rows(transform_payload.get("lut", []))
+            apply_lut_unit_labels()
 
         def create_bike_from_selected() -> None:
             selected_label = bike_create_from_var.get()
@@ -2122,9 +2160,11 @@ class ImportAgentManagerWindow:
         graph_canvas.bind("<Configure>", lambda _event: render_lut_graph())
         variables["rear_shock_travel_mm"].trace_add("write", sync_lut_endpoints_from_travel)
         variables["rear_wheel_travel_mm"].trace_add("write", sync_lut_endpoints_from_travel)
+        lut_input_unit_var.trace_add("write", apply_lut_unit_labels)
         set_lut_sheet_rows(lut_rows)
         if lut_rows:
             lut_sheet.select_cell(0, 0)
+        apply_lut_unit_labels()
         render_lut_graph()
 
         saved = {"ok": False}
@@ -2134,10 +2174,12 @@ class ImportAgentManagerWindow:
         def save_profile() -> bool:
             try:
                 values = {key: var.get() for key, var in variables.items()}
+                values["rear_shock_lut_input_unit"] = lut_input_unit()
                 updated = apply_bike_profile_form_values(profile_state["profile"], values)
                 updated = set_rear_wheel_lut_transform(
                     updated,
                     current_lut_rows(),
+                    input_unit=lut_input_unit(),
                     enabled=bool(lut_options["enabled"]),
                     interpolation=str(lut_options["interpolation"]),
                     extrapolation=str(lut_options["extrapolation"]),
@@ -2204,8 +2246,9 @@ class ImportAgentManagerWindow:
             source = self._selected_managed_source_config()
             _profile_path, profile = load_source_bike_profile(source.source_root)
             transform = rear_wheel_lut_from_profile(profile)
+            values = bike_profile_form_values(profile)
+            input_unit = str(values.get("rear_shock_lut_input_unit") or "mm")
             if transform is None:
-                values = bike_profile_form_values(profile)
                 shock_travel = float(values.get("rear_shock_travel_mm") or 1.0)
                 wheel_travel = float(values.get("rear_wheel_travel_mm") or shock_travel)
                 points = [{"input": 0.0, "output": 0.0}, {"input": shock_travel, "output": wheel_travel}]
@@ -2230,9 +2273,13 @@ class ImportAgentManagerWindow:
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(2, weight=1)
 
+        input_unit_var = tk.StringVar(value="deg" if input_unit == "deg" else "mm")
+        instruction_var = tk.StringVar(
+            value=f"Enter one LUT point per line as: rear sensor {input_unit_var.get()}, rear wheel mm"
+        )
         ttk.Label(
             dialog,
-            text="Enter one LUT point per line as: rear shock mm, rear wheel mm",
+            textvariable=instruction_var,
             justify="left",
         ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
         options = ttk.Frame(dialog)
@@ -2241,22 +2288,36 @@ class ImportAgentManagerWindow:
         interpolation_var = tk.StringVar(value=interpolation)
         extrapolation_var = tk.StringVar(value=extrapolation)
         ttk.Checkbutton(options, text="Enabled", variable=enabled_var).grid(row=0, column=0, sticky="w")
-        ttk.Label(options, text="Interpolation").grid(row=0, column=1, sticky="w", padx=(18, 6))
+        ttk.Label(options, text="Input").grid(row=0, column=1, sticky="w", padx=(18, 6))
+        ttk.Radiobutton(options, text="mm", variable=input_unit_var, value="mm").grid(row=0, column=2, sticky="w")
+        ttk.Radiobutton(options, text="deg", variable=input_unit_var, value="deg").grid(
+            row=0,
+            column=3,
+            sticky="w",
+            padx=(8, 0),
+        )
+        ttk.Label(options, text="Interpolation").grid(row=0, column=4, sticky="w", padx=(18, 6))
         ttk.Combobox(
             options,
             textvariable=interpolation_var,
             values=("linear", "nearest"),
             state="readonly",
             width=10,
-        ).grid(row=0, column=2, sticky="w")
-        ttk.Label(options, text="Extrapolation").grid(row=0, column=3, sticky="w", padx=(18, 6))
+        ).grid(row=0, column=5, sticky="w")
+        ttk.Label(options, text="Extrapolation").grid(row=0, column=6, sticky="w", padx=(18, 6))
         ttk.Combobox(
             options,
             textvariable=extrapolation_var,
             values=("linear", "clamp", "error"),
             state="readonly",
             width=10,
-        ).grid(row=0, column=4, sticky="w")
+        ).grid(row=0, column=7, sticky="w")
+        input_unit_var.trace_add(
+            "write",
+            lambda *_args: instruction_var.set(
+                f"Enter one LUT point per line as: rear sensor {input_unit_var.get()}, rear wheel mm"
+            ),
+        )
 
         text_frame = ttk.Frame(dialog)
         text_frame.grid(row=2, column=0, sticky="nsew", padx=12)
@@ -2279,6 +2340,7 @@ class ImportAgentManagerWindow:
                 updated = set_rear_wheel_lut_transform(
                     profile,
                     points,
+                    input_unit=input_unit_var.get(),
                     enabled=enabled_var.get(),
                     interpolation=interpolation_var.get(),
                     extrapolation=extrapolation_var.get(),

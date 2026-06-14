@@ -1249,6 +1249,7 @@ def test_run_sources_once_emits_detection_and_archive_progress(tmp_path):
     assert detected_index < processing_indices[0]
     assert [events[index]["archive_index"] for index in processing_indices] == [1, 2]
     assert [events[index]["archive_count"] for index in processing_indices] == [2, 2]
+    assert len({events[index]["run_id"] for index in processing_indices}) == 1
     assert {events[index]["session_id"] for index in imported_indices} == {"session_001", "session_002"}
     assert all(event.get("source_id") == "source_a" for event in events)
     assert events[-1]["totals"] == {
@@ -1259,6 +1260,72 @@ def test_run_sources_once_emits_detection_and_archive_progress(tmp_path):
         "imported": 2,
         "failed": 0,
     }
+
+
+def test_run_sources_once_imports_same_source_archives_into_one_run(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    archive_a = _write_session_archive(source_root / "inbox", stem="session_001")
+    archive_b = _write_session_archive(source_root / "inbox", stem="session_002")
+    _set_old_mtime(archive_a)
+    _set_old_mtime(archive_b)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 2
+    records = report["sources"][0]["imported"]
+    records_by_session = {record["session_id"]: record for record in records}
+    run_ids = {record["run_id"] for record in records}
+    assert len(run_ids) == 1
+
+    run_id = next(iter(run_ids))
+    run_dirs = [path for path in (artifacts_dir / "runs").iterdir() if path.is_dir()]
+    run_manifest = json.loads((artifacts_dir / "runs" / run_id / "manifest.json").read_text(encoding="utf-8"))
+    archive_import = run_manifest["pipeline_config"]["archive_import"]
+
+    assert len(run_dirs) == 1
+    assert set(run_manifest["sessions"]) == {"session_001", "session_002"}
+    assert archive_import["mode"] == "source_scan_batch_v1"
+    assert set(archive_import["sessions"]) == {"session_001", "session_002"}
+    assert (
+        archive_import["sessions"]["session_001"]["processing_key"]
+        == records_by_session["session_001"]["processing_key"]
+    )
+    for session_id in ("session_001", "session_002"):
+        assert (artifacts_dir / "runs" / run_id / "sessions" / session_id / "manifest.json").exists()
+
+
+def test_run_sources_once_keeps_successful_batch_session_when_later_archive_fails(tmp_path, monkeypatch):
+    import bodaqs_analysis.import_agent as import_agent_module
+
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    archive_good = _write_session_archive(source_root / "inbox", stem="session_good")
+    archive_bad = _write_session_archive(source_root / "inbox", stem="session_bad")
+    _set_old_mtime(archive_good)
+    _set_old_mtime(archive_bad)
+    real_preprocess_session = import_agent_module.preprocess_session
+
+    def fail_bad_archive(input_path, *args, **kwargs):
+        if Path(input_path).name == "session_bad.CSV":
+            raise ValueError("test preprocessing failure")
+        return real_preprocess_session(input_path, *args, **kwargs)
+
+    monkeypatch.setattr(import_agent_module, "preprocess_session", fail_bad_archive)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert report["totals"]["failed"] == 1
+    imported_record = report["sources"][0]["imported"][0]
+    run_id = imported_record["run_id"]
+    run_manifest = json.loads((artifacts_dir / "runs" / run_id / "manifest.json").read_text(encoding="utf-8"))
+
+    assert run_manifest["sessions"] == ["session_good"]
+    assert (artifacts_dir / "runs" / run_id / "sessions" / "session_good" / "manifest.json").exists()
+    assert not (artifacts_dir / "runs" / run_id / "sessions" / "session_bad").exists()
+    assert len(list((source_root / "done").glob("session_good*.zip"))) == 1
+    assert len(list((source_root / "failed").glob("session_bad*.zip"))) == 1
 
 
 def test_run_sources_once_imports_bdq_and_moves_it_to_done(tmp_path):
@@ -2413,6 +2480,56 @@ def test_import_agent_bike_profile_builder_updates_basic_fields_and_lut(tmp_path
     assert transform is not None
     assert transform["extrapolation"] == "clamp"
     assert transform["lut"][-1] == {"input": 55.0, "output": 150.0}
+
+
+def test_import_agent_bike_profile_builder_allows_degree_rear_lut_input(tmp_path):
+    library = provision_import_agent_library(tmp_path / "libraries", display_name="Alice Library")
+    source = provision_import_agent_source(
+        tmp_path / "sources" / "Alice Enduro",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice Enduro",
+    )
+    _profile_path, profile = load_source_bike_profile(source.source_root)
+
+    updated = apply_bike_profile_form_values(
+        profile,
+        {
+            "display_name": "Alice Enduro",
+            "front_fork_travel_mm": "160",
+            "rear_shock_lut_input_unit": "deg",
+            "rear_shock_travel_mm": "90",
+            "rear_wheel_travel_mm": "150",
+        },
+    )
+    updated = set_rear_wheel_lut_transform(
+        updated,
+        parse_lut_text("0, 0\n45, 80\n90, 150\n"),
+        input_unit="deg",
+    )
+    save_source_bike_profile(source.source_root, updated)
+    _reloaded_path, reloaded = load_source_bike_profile(source.source_root)
+    transform = rear_wheel_lut_from_profile(reloaded)
+    values = bike_profile_form_values(reloaded)
+
+    rear_shock_ranges = [
+        item
+        for item in reloaded["normalization_ranges"]
+        if item.get("id") == "rear_shock_travel_range"
+    ]
+    assert len(rear_shock_ranges) == 1
+    assert rear_shock_ranges[0]["signal"] == {
+        "end": "rear",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": "deg",
+    }
+    assert rear_shock_ranges[0]["full_range"] == pytest.approx(90.0)
+    assert transform is not None
+    assert transform["input"] == {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "deg"}
+    assert transform["output"] == {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"}
+    assert values["rear_shock_lut_input_unit"] == "deg"
+    assert values["rear_shock_travel_mm"] == pytest.approx(90.0)
 
 
 def test_import_agent_bike_profile_builder_reads_stored_head_angle(tmp_path):

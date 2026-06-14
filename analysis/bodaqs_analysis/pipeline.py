@@ -35,7 +35,9 @@ from .signal_registry import build_signals_registry
 from .signal_selectors import resolve_signal_selector
 from .gps_semantics import (
     build_logger_gps_route_stream,
+    preferred_gps_source_name,
     refresh_gps_source_metadata,
+    resolve_gps_columns,
 )
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
@@ -757,7 +759,7 @@ def _canonical_unit_label(value: Any) -> str:
 
 def _materialized_quantity_for_output_unit(unit: str) -> Optional[str]:
     clean = _canonical_unit_label(unit)
-    if clean == "mm":
+    if clean in {"mm", "deg"}:
         return "disp"
     return None
 
@@ -802,6 +804,11 @@ def _materialized_signal_name(
             ops=(),
         )
     )
+
+
+def _is_legacy_va_displacement_column(column: Any) -> bool:
+    match = _UNIT_RE.search(str(column))
+    return bool(match and (match.group(1) or "").strip() == "mm")
 
 
 def _signal_matches_semantics(signal_info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
@@ -875,7 +882,7 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
             continue
 
         calibration_type = str(calibration.get("type") or "linear").strip().lower()
-        if calibration_type != "linear":
+        if calibration_type not in {"linear", "zero_offset"}:
             report["skipped"].append(
                 {"source_column": column, "reason": "unsupported_calibration_type", "type": calibration_type}
             )
@@ -980,6 +987,11 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
         if invert_flag:
             materialized = -materialized
         df.loc[:, output_column] = materialized
+        derivation_method = (
+            "logger_zero_offset_calibration"
+            if calibration_type == "zero_offset"
+            else "logger_linear_calibration"
+        )
 
         channel_info_updates[output_column] = {
             "unit": output_unit,
@@ -994,8 +1006,9 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
             "calibration": dict(calibration),
             "origin": "analysis",
             "derivation": {
-                "method": "logger_linear_calibration",
+                "method": derivation_method,
                 "source_col": column,
+                "calibration_type": calibration_type,
                 "counts_per_output_unit": float(counts_per_output_unit),
                 "output_unit": output_unit,
                 "zero_reference": float(zero_reference),
@@ -1015,6 +1028,7 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
                 "domain": info.get("domain"),
                 "quantity": quantity,
                 "unit": output_unit,
+                "calibration_type": calibration_type,
                 "counts_per_output_unit": float(counts_per_output_unit),
                 "zero_reference": float(zero_reference),
                 "zero_reference_source": zero_reference_source,
@@ -1616,36 +1630,29 @@ def _enrich_session_with_fit_impl(
     )
     return session
     
-def _build_active_mask_from_time_s(
+def _soften_active_mask_from_time_s(
     df: pd.DataFrame,
+    base_active: Sequence[bool],
     *,
-    disp_col: str,
-    vel_col: str,
-    disp_thresh: float,
-    vel_thresh: float,
     window: str,
     padding: str,
     min_segment: str,
 ) -> pd.Series:
-    """
-    Return boolean mask aligned to df.index. Uses time_s to build a TimedeltaIndex internally.
-    Non-destructive: does not modify df.
-    """
+    """Apply the standard activity rolling/padding/min-segment policy."""
     if "time_s" not in df.columns:
         raise ValueError("Expected 'time_s' in df for activity mask")
 
-    if disp_col not in df.columns or vel_col not in df.columns:
-        # soft-fail: return all True so downstream behaves identically to "no masking"
-        return pd.Series(True, index=df.index, name=ACTIVE_MASK_COL)
-
-    # build a time index locally (do NOT mutate df index)
     t = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(dtype=float, copy=False)
-    td = pd.to_timedelta(t, unit="s")
+    base = np.asarray(base_active, dtype=bool)
+    if base.shape[0] != len(df.index):
+        raise ValueError("activity base mask must align to df rows")
 
-    disp_active = pd.Series(pd.to_numeric(df[disp_col], errors="coerce").to_numpy(), index=td).abs() > disp_thresh
-    vel_active  = pd.Series(pd.to_numeric(df[vel_col],  errors="coerce").to_numpy(), index=td).abs() > vel_thresh
+    finite_time = np.isfinite(t)
+    if not np.any(finite_time):
+        return pd.Series(False, index=df.index, name=ACTIVE_MASK_COL)
 
-    active = disp_active & vel_active   # keep your current AND policy (change to | if desired)
+    td = pd.to_timedelta(t[finite_time], unit="s")
+    active = pd.Series(base[finite_time], index=td).sort_index(kind="stable")
 
     # rolling soften
     active = active.rolling(window, min_periods=1).max().astype(bool)
@@ -1674,14 +1681,435 @@ def _build_active_mask_from_time_s(
 
         merged = [[s, e] for s, e in merged if (e - s) >= minseg]
 
-    # apply merged blocks to td index
-    keep_td = pd.Series(False, index=td)
+    original_td = pd.to_timedelta(t, unit="s")
+    keep_values = np.zeros(len(df.index), dtype=bool)
     for s, e in merged:
-        keep_td |= (keep_td.index >= s) & (keep_td.index <= e)
+        keep_values |= finite_time & (original_td >= s) & (original_td <= e)
 
-    # return aligned to df rows (original df index)
-    keep = pd.Series(keep_td.to_numpy(dtype=bool), index=df.index, name=ACTIVE_MASK_COL)
-    return keep
+    return pd.Series(keep_values, index=df.index, name=ACTIVE_MASK_COL)
+
+
+def _build_active_mask_from_time_s(
+    df: pd.DataFrame,
+    *,
+    disp_col: Optional[str],
+    vel_col: Optional[str],
+    disp_thresh: float,
+    vel_thresh: float,
+    window: str,
+    padding: str,
+    min_segment: str,
+) -> pd.Series:
+    """
+    Return boolean mask aligned to df.index. Uses time_s to build a TimedeltaIndex internally.
+    Non-destructive: does not modify df.
+    """
+    if "time_s" not in df.columns:
+        raise ValueError("Expected 'time_s' in df for activity mask")
+
+    if disp_col not in df.columns or vel_col not in df.columns:
+        # soft-fail: return all True so downstream behaves identically to "no masking"
+        return pd.Series(True, index=df.index, name=ACTIVE_MASK_COL)
+
+    disp = pd.to_numeric(df[disp_col], errors="coerce").to_numpy(dtype=float)
+    vel = pd.to_numeric(df[vel_col], errors="coerce").to_numpy(dtype=float)
+    active = np.isfinite(disp) & np.isfinite(vel) & (np.abs(disp) > disp_thresh) & (np.abs(vel) > vel_thresh)
+    return _soften_active_mask_from_time_s(
+        df,
+        active,
+        window=window,
+        padding=padding,
+        min_segment=min_segment,
+    )
+
+
+def _activity_detection_enabled(activity_detection: Optional[Mapping[str, Any]]) -> bool:
+    return isinstance(activity_detection, Mapping) and bool(activity_detection.get("enabled", False))
+
+
+def _activity_detection_candidates(activity_detection: Optional[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    if not isinstance(activity_detection, Mapping):
+        return []
+    raw = activity_detection.get("candidates")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return []
+    return [candidate for candidate in raw if isinstance(candidate, Mapping)]
+
+
+def _activity_candidate_id(candidate: Mapping[str, Any], index: int) -> str:
+    text = str(candidate.get("id") or "").strip()
+    return text or f"candidate_{index + 1}"
+
+
+def _activity_candidate_type(candidate: Mapping[str, Any]) -> str:
+    return str(candidate.get("type") or candidate.get("kind") or "motion_pair").strip().lower()
+
+
+def _resolve_activity_motion_columns(
+    session: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    purpose_prefix: str,
+) -> tuple[Optional[str], Optional[str], Optional[Mapping[str, Any]], Optional[Mapping[str, Any]]]:
+    disp_selector = candidate.get("disp_selector")
+    if disp_selector is None:
+        disp_selector = candidate.get("selector")
+    vel_selector = candidate.get("vel_selector")
+
+    disp_col = _optional_nonempty_str(candidate.get("disp_col"))
+    vel_col = _optional_nonempty_str(candidate.get("vel_col"))
+
+    if disp_col is None and isinstance(disp_selector, Mapping):
+        disp_col = resolve_signal_selector(
+            session,
+            disp_selector,
+            purpose=f"{purpose_prefix} displacement",
+        )
+    if vel_col is None and isinstance(vel_selector, Mapping):
+        vel_col = resolve_signal_selector(
+            session,
+            vel_selector,
+            purpose=f"{purpose_prefix} velocity",
+        )
+    if disp_col and not vel_col:
+        try:
+            vel_col = name_vel(disp_col)
+        except ValueError:
+            vel_col = None
+
+    return (
+        disp_col,
+        vel_col,
+        disp_selector if isinstance(disp_selector, Mapping) else None,
+        vel_selector if isinstance(vel_selector, Mapping) else None,
+    )
+
+
+def _activity_motion_displacement_cols_for_va(
+    session: Mapping[str, Any],
+    activity_detection: Optional[Mapping[str, Any]],
+) -> list[str]:
+    cols: list[str] = []
+    if not _activity_detection_enabled(activity_detection):
+        return cols
+    for index, candidate in enumerate(_activity_detection_candidates(activity_detection)):
+        candidate_type = _activity_candidate_type(candidate)
+        if candidate_type not in {"motion_pair", "wheel_motion", "legacy_motion"}:
+            continue
+        if candidate_type == "legacy_motion":
+            continue
+        candidate_id = _activity_candidate_id(candidate, index)
+        disp_col, _vel_col, _disp_selector, _vel_selector = _resolve_activity_motion_columns(
+            session,
+            candidate,
+            purpose_prefix=f"activity candidate {candidate_id}",
+        )
+        if disp_col and disp_col not in cols:
+            cols.append(disp_col)
+    return cols
+
+
+def _nearest_sample_distance_s(source_t: np.ndarray, target_t: np.ndarray) -> np.ndarray:
+    if source_t.size == 0:
+        return np.full_like(target_t, np.inf, dtype=float)
+    right = np.searchsorted(source_t, target_t, side="left")
+    left = np.clip(right - 1, 0, source_t.size - 1)
+    right = np.clip(right, 0, source_t.size - 1)
+    return np.minimum(np.abs(target_t - source_t[left]), np.abs(source_t[right] - target_t))
+
+
+def _positive_activity_float(value: Any, *, default: float) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return out if np.isfinite(out) and out > 0 else float(default)
+
+
+def _gps_activity_source(
+    session: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> tuple[Optional[str], Optional[pd.DataFrame], Mapping[str, Any]]:
+    requested_source = _optional_nonempty_str(candidate.get("source_id")) or _optional_nonempty_str(
+        candidate.get("stream_name")
+    )
+    source_id = requested_source or preferred_gps_source_name(session)
+
+    stream_dfs = session.get("stream_dfs")
+    meta = session.get("meta") if isinstance(session.get("meta"), Mapping) else {}
+    secondary_streams = meta.get("secondary_streams") if isinstance(meta.get("secondary_streams"), Mapping) else {}
+
+    if source_id and source_id != "primary" and isinstance(stream_dfs, Mapping):
+        stream_df = stream_dfs.get(source_id)
+        if isinstance(stream_df, pd.DataFrame):
+            stream_meta = secondary_streams.get(source_id) if isinstance(secondary_streams, Mapping) else {}
+            return source_id, stream_df, stream_meta if isinstance(stream_meta, Mapping) else {}
+
+    primary_df = session.get("df")
+    if isinstance(primary_df, pd.DataFrame):
+        if source_id in {None, "primary"}:
+            return "primary", primary_df, meta
+        columns = resolve_gps_columns(meta, known_columns=set(map(str, primary_df.columns)))
+        if columns is not None:
+            return "primary", primary_df, meta
+
+    if isinstance(stream_dfs, Mapping):
+        for fallback_id in ("gps_logger", "gps_fit"):
+            stream_df = stream_dfs.get(fallback_id)
+            if isinstance(stream_df, pd.DataFrame):
+                stream_meta = secondary_streams.get(fallback_id) if isinstance(secondary_streams, Mapping) else {}
+                return fallback_id, stream_df, stream_meta if isinstance(stream_meta, Mapping) else {}
+
+    return None, None, {}
+
+
+def _build_gps_speed_activity_candidate(
+    session: Mapping[str, Any],
+    df: pd.DataFrame,
+    candidate: Mapping[str, Any],
+    *,
+    candidate_id: str,
+    window: str,
+    padding: str,
+    min_segment: str,
+) -> tuple[Optional[pd.Series], dict[str, Any]]:
+    source_id, source_df, source_meta = _gps_activity_source(session, candidate)
+    speed_threshold = _positive_activity_float(
+        candidate.get("speed_threshold_mps", candidate.get("threshold_mps")),
+        default=0.5,
+    )
+    max_gap_s = _positive_activity_float(candidate.get("max_gap_s"), default=5.0)
+    meta: dict[str, Any] = {
+        "id": candidate_id,
+        "type": "gps_speed",
+        "source_id": source_id,
+        "speed_threshold_mps": float(speed_threshold),
+        "max_gap_s": float(max_gap_s),
+    }
+    if source_df is None or "time_s" not in source_df.columns:
+        meta.update({"status": "missing", "reason": "gps_source_missing"})
+        return None, meta
+
+    speed_col = _optional_nonempty_str(candidate.get("speed_col"))
+    if speed_col is None:
+        columns = resolve_gps_columns(source_meta, known_columns=set(map(str, source_df.columns)))
+        speed_col = columns.speed if columns is not None else None
+    if speed_col is None or speed_col not in source_df.columns:
+        meta.update({"status": "missing", "reason": "speed_column_missing", "speed_col": speed_col})
+        return None, meta
+
+    source_t_raw = pd.to_numeric(source_df["time_s"], errors="coerce").to_numpy(dtype=float)
+    source_speed_raw = pd.to_numeric(source_df[speed_col], errors="coerce").to_numpy(dtype=float)
+    source_valid = np.isfinite(source_t_raw) & np.isfinite(source_speed_raw)
+    if not np.any(source_valid):
+        meta.update({"status": "empty", "reason": "no_finite_speed_rows", "speed_col": speed_col})
+        return None, meta
+
+    source_t = source_t_raw[source_valid]
+    source_speed = source_speed_raw[source_valid]
+    order = np.argsort(source_t, kind="stable")
+    source_t = source_t[order]
+    source_speed = source_speed[order]
+    unique_t, unique_idx = np.unique(source_t, return_index=True)
+    source_t = unique_t
+    source_speed = source_speed[unique_idx]
+
+    target_t = pd.to_numeric(df["time_s"], errors="coerce").to_numpy(dtype=float)
+    target_valid = np.isfinite(target_t)
+    speed_on_primary = np.full(len(df.index), np.nan, dtype=float)
+    in_range = target_valid & (target_t >= source_t[0]) & (target_t <= source_t[-1])
+    if np.any(in_range):
+        speed_on_primary[in_range] = np.interp(target_t[in_range], source_t, source_speed)
+        nearest = _nearest_sample_distance_s(source_t, target_t[in_range])
+        too_far = nearest > max_gap_s
+        if np.any(too_far):
+            in_range_positions = np.flatnonzero(in_range)
+            speed_on_primary[in_range_positions[too_far]] = np.nan
+
+    finite_speed = np.isfinite(speed_on_primary)
+    active = finite_speed & (np.abs(speed_on_primary) > speed_threshold)
+    mask = _soften_active_mask_from_time_s(
+        df,
+        active,
+        window=window,
+        padding=padding,
+        min_segment=min_segment,
+    )
+    meta.update(
+        {
+            "status": "evaluated",
+            "speed_col": speed_col,
+            "valid_rows": int(np.count_nonzero(finite_speed)),
+            "active_rows": int(mask.sum()),
+        }
+    )
+    return mask, meta
+
+
+def _build_motion_activity_candidate(
+    session: Mapping[str, Any],
+    df: pd.DataFrame,
+    candidate: Mapping[str, Any],
+    *,
+    candidate_id: str,
+    disp_thresh: float,
+    vel_thresh: float,
+    window: str,
+    padding: str,
+    min_segment: str,
+) -> tuple[Optional[pd.Series], dict[str, Any]]:
+    disp_col, vel_col, disp_selector, vel_selector = _resolve_activity_motion_columns(
+        session,
+        candidate,
+        purpose_prefix=f"activity candidate {candidate_id}",
+    )
+    candidate_disp_thresh = float(candidate.get("disp_thresh", disp_thresh))
+    candidate_vel_thresh = float(candidate.get("vel_thresh", vel_thresh))
+    meta: dict[str, Any] = {
+        "id": candidate_id,
+        "type": _activity_candidate_type(candidate),
+        "disp_col": disp_col,
+        "vel_col": vel_col,
+        "disp_selector": dict(disp_selector) if isinstance(disp_selector, Mapping) else None,
+        "vel_selector": dict(vel_selector) if isinstance(vel_selector, Mapping) else None,
+        "disp_thresh": float(candidate_disp_thresh),
+        "vel_thresh": float(candidate_vel_thresh),
+    }
+    if disp_col not in df.columns or vel_col not in df.columns:
+        meta.update({"status": "missing", "reason": "motion_columns_missing"})
+        return None, meta
+
+    disp = pd.to_numeric(df[disp_col], errors="coerce").to_numpy(dtype=float)
+    vel = pd.to_numeric(df[vel_col], errors="coerce").to_numpy(dtype=float)
+    finite = np.isfinite(disp) & np.isfinite(vel)
+    active = finite & (np.abs(disp) > candidate_disp_thresh) & (np.abs(vel) > candidate_vel_thresh)
+    mask = _soften_active_mask_from_time_s(
+        df,
+        active,
+        window=window,
+        padding=padding,
+        min_segment=min_segment,
+    )
+    meta.update(
+        {
+            "status": "evaluated",
+            "valid_rows": int(np.count_nonzero(finite)),
+            "active_rows": int(mask.sum()),
+        }
+    )
+    return mask, meta
+
+
+def _build_activity_mask_from_policy(
+    session: Mapping[str, Any],
+    df: pd.DataFrame,
+    activity_detection: Mapping[str, Any],
+    *,
+    legacy_disp_col: Optional[str],
+    legacy_vel_col: Optional[str],
+    legacy_disp_selector: Optional[Mapping[str, Any]],
+    legacy_vel_selector: Optional[Mapping[str, Any]],
+    disp_thresh: float,
+    vel_thresh: float,
+    window: str,
+    padding: str,
+    min_segment: str,
+) -> tuple[pd.Series, dict[str, Any]]:
+    candidate_meta: list[dict[str, Any]] = []
+    candidate_masks: list[pd.Series] = []
+    candidates = _activity_detection_candidates(activity_detection)
+    for index, candidate in enumerate(candidates):
+        candidate_id = _activity_candidate_id(candidate, index)
+        candidate_type = _activity_candidate_type(candidate)
+        if candidate_type == "gps_speed":
+            mask, meta = _build_gps_speed_activity_candidate(
+                session,
+                df,
+                candidate,
+                candidate_id=candidate_id,
+                window=window,
+                padding=padding,
+                min_segment=min_segment,
+            )
+        elif candidate_type in {"motion_pair", "wheel_motion"}:
+            mask, meta = _build_motion_activity_candidate(
+                session,
+                df,
+                candidate,
+                candidate_id=candidate_id,
+                disp_thresh=disp_thresh,
+                vel_thresh=vel_thresh,
+                window=window,
+                padding=padding,
+                min_segment=min_segment,
+            )
+        elif candidate_type == "legacy_motion":
+            legacy_candidate = dict(candidate)
+            if legacy_disp_selector is not None:
+                legacy_candidate.setdefault("disp_selector", legacy_disp_selector)
+            if legacy_vel_selector is not None:
+                legacy_candidate.setdefault("vel_selector", legacy_vel_selector)
+            if legacy_disp_col is not None:
+                legacy_candidate.setdefault("disp_col", legacy_disp_col)
+            if legacy_vel_col is not None:
+                legacy_candidate.setdefault("vel_col", legacy_vel_col)
+            mask, meta = _build_motion_activity_candidate(
+                session,
+                df,
+                legacy_candidate,
+                candidate_id=candidate_id,
+                disp_thresh=disp_thresh,
+                vel_thresh=vel_thresh,
+                window=window,
+                padding=padding,
+                min_segment=min_segment,
+            )
+        else:
+            mask = None
+            meta = {"id": candidate_id, "type": candidate_type, "status": "skipped", "reason": "unsupported_type"}
+
+        candidate_meta.append(meta)
+        if mask is not None and meta.get("status") == "evaluated":
+            candidate_masks.append(mask.astype(bool))
+
+    if candidate_masks:
+        combined = candidate_masks[0].copy()
+        for mask in candidate_masks[1:]:
+            combined |= mask.astype(bool)
+        combined.name = ACTIVE_MASK_COL
+        source = "activity_detection"
+    elif bool(activity_detection.get("fallback_to_legacy", True)):
+        combined = _build_active_mask_from_time_s(
+            df,
+            disp_col=legacy_disp_col,
+            vel_col=legacy_vel_col,
+            disp_thresh=disp_thresh,
+            vel_thresh=vel_thresh,
+            window=window,
+            padding=padding,
+            min_segment=min_segment,
+        )
+        source = "legacy_fallback"
+    else:
+        combined = pd.Series(True, index=df.index, name=ACTIVE_MASK_COL)
+        source = "no_evaluable_candidates_soft_pass"
+
+    qc = {
+        "policy": "activity_detection_v1",
+        "source": source,
+        "enabled": True,
+        "combination": str(activity_detection.get("combination") or "any"),
+        "fallback_to_legacy": bool(activity_detection.get("fallback_to_legacy", True)),
+        "candidates": candidate_meta,
+        "evaluated_candidate_ids": [
+            str(item.get("id"))
+            for item in candidate_meta
+            if item.get("status") == "evaluated"
+        ],
+        "active_rows": int(combined.sum()),
+        "inactive_rows": int(len(combined.index) - int(combined.sum())),
+    }
+    return combined, qc
 
 
 def _validated_preprocess_config_copy(config: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1739,6 +2167,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
                                butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
                                butterworth_generate_residuals: bool = False,
                                motion_derivation: Optional[Mapping[str, Any]] = None,
+                               activity_detection: Optional[Mapping[str, Any]] = None,
                                va_cols: Optional[Sequence[str]] = None,
                                va_window_points: int = 11,
                                va_poly_order: int = 3,
@@ -1764,6 +2193,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         elif "ignore_on_logger_transformations" in cfg:
             prefer_postprocessing_transformations = bool(cfg.get("ignore_on_logger_transformations"))
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
+        activity_detection = cfg.get("activity_detection", activity_detection)
         gps_source_policy = cfg.get("gps_source_policy", gps_source_policy)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
@@ -2058,7 +2488,11 @@ def _preprocess_loaded_session(session: Dict[str, Any],
 
     # ---------------- Velocity/acceleration ----------------
     if va_cols is None:
-        va_cols = list(normalize_ranges.keys())
+        va_cols = [
+            col
+            for col in normalize_ranges.keys()
+            if _is_legacy_va_displacement_column(col)
+        ]
 
     motion_va_suppressed_cols = _motion_legacy_va_suppressed_columns(motion_meta)
     if motion_va_suppressed_cols:
@@ -2071,6 +2505,9 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         and active_signal_disp_col not in set(va_cols)
     ):
         va_cols = list(va_cols) + [active_signal_disp_col]
+    for activity_disp_col in _activity_motion_displacement_cols_for_va(session, activity_detection):
+        if activity_disp_col not in motion_va_suppressed_cols and activity_disp_col not in set(va_cols):
+            va_cols = list(va_cols) + [activity_disp_col]
 
     df3, va_meta = estimate_va(
         df2,
@@ -2098,17 +2535,41 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     # If user specified only displacement for activity mask, derive the velocity name
     if active_signal_disp_col and not active_signal_vel_col:
         active_signal_vel_col = name_vel(active_signal_disp_col)
-    
-    active_mask = _build_active_mask_from_time_s(
-        session["df"],
-        disp_col=active_signal_disp_col,
-        vel_col=active_signal_vel_col,
-        disp_thresh=active_disp_thresh,
-        vel_thresh=active_vel_thresh,
-        window=active_window,
-        padding=active_padding,
-        min_segment=active_min_seg,
-    )
+
+    activity_policy_qc: Dict[str, Any]
+    if _activity_detection_enabled(activity_detection):
+        active_mask, activity_policy_qc = _build_activity_mask_from_policy(
+            session,
+            session["df"],
+            activity_detection,
+            legacy_disp_col=active_signal_disp_col,
+            legacy_vel_col=active_signal_vel_col,
+            legacy_disp_selector=active_signal_disp_selector,
+            legacy_vel_selector=active_signal_vel_selector,
+            disp_thresh=active_disp_thresh,
+            vel_thresh=active_vel_thresh,
+            window=active_window,
+            padding=active_padding,
+            min_segment=active_min_seg,
+        )
+    else:
+        active_mask = _build_active_mask_from_time_s(
+            session["df"],
+            disp_col=active_signal_disp_col,
+            vel_col=active_signal_vel_col,
+            disp_thresh=active_disp_thresh,
+            vel_thresh=active_vel_thresh,
+            window=active_window,
+            padding=active_padding,
+            min_segment=active_min_seg,
+        )
+        activity_policy_qc = {
+            "policy": "legacy_single_pair_v0",
+            "enabled": False,
+            "source": "legacy",
+            "active_rows": int(active_mask.sum()),
+            "inactive_rows": int(len(active_mask.index) - int(active_mask.sum())),
+        }
 
     # Store as QC column (won't be in registry signals)
     session["df"][ACTIVE_MASK_COL] = active_mask
@@ -2131,6 +2592,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         "logic": "disp&vel",
         "version": "v0",
     }
+    qc["activity_mask"].update(activity_policy_qc)
 
     transforms["va"] = {
         "applied": True,
@@ -2199,6 +2661,7 @@ def preprocess_resolved(
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
+    activity_detection: Optional[Mapping[str, Any]] = None,
     include_events: bool = True,
     include_metrics: bool = True,
     strict: bool = True,
@@ -2235,6 +2698,7 @@ def preprocess_resolved(
         elif "ignore_on_logger_transformations" in cfg:
             prefer_postprocessing_transformations = bool(cfg.get("ignore_on_logger_transformations"))
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
+        activity_detection = cfg.get("activity_detection", activity_detection)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
             cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
@@ -2293,6 +2757,7 @@ def preprocess_resolved(
         bike_profile=resolved_bike_profile,
         bike_profile_path=bike_profile_path,
         motion_derivation=motion_derivation,
+        activity_detection=activity_detection,
         butterworth_smoothing=butterworth_smoothing,
         butterworth_generate_residuals=butterworth_generate_residuals,
         strict=strict,
@@ -2481,6 +2946,7 @@ def preprocess_session(
     butterworth_smoothing: Optional[Sequence[Dict[str, Any]]] = None,
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
+    activity_detection: Optional[Mapping[str, Any]] = None,
     timezone: Optional[str] = None,
     include_events: bool = True,
     include_metrics: bool = True,
@@ -2559,6 +3025,7 @@ def preprocess_session(
         butterworth_smoothing=butterworth_smoothing,
         butterworth_generate_residuals=butterworth_generate_residuals,
         motion_derivation=motion_derivation,
+        activity_detection=activity_detection,
         include_events=include_events,
         include_metrics=include_metrics,
         strict=strict,

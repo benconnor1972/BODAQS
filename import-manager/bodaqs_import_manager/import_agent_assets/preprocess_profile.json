@@ -74,6 +74,51 @@
     },
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": false,
+    "activity_detection": {
+      "enabled": true,
+      "combination": "any",
+      "fallback_to_legacy": true,
+      "candidates": [
+        {
+          "id": "gps_speed",
+          "type": "gps_speed",
+          "speed_threshold_mps": 0.5,
+          "max_gap_s": 5.0
+        },
+        {
+          "id": "rear_wheel_motion",
+          "type": "wheel_motion",
+          "disp_selector": {
+            "end": "rear",
+            "quantity": "disp",
+            "domain": "wheel",
+            "unit": "mm"
+          },
+          "vel_selector": {
+            "end": "rear",
+            "quantity": "vel",
+            "domain": "wheel",
+            "unit": "mm/s"
+          }
+        },
+        {
+          "id": "front_wheel_motion",
+          "type": "wheel_motion",
+          "disp_selector": {
+            "end": "front",
+            "quantity": "disp",
+            "domain": "wheel",
+            "unit": "mm"
+          },
+          "vel_selector": {
+            "end": "front",
+            "quantity": "vel",
+            "domain": "wheel",
+            "unit": "mm/s"
+          }
+        }
+      ]
+    },
     "active_signal_disp_selector": {
       "end": "rear",
       "quantity": "disp",

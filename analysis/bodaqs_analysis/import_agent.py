@@ -524,6 +524,22 @@ class ImportArchiveCandidate:
     processing_key: str
 
 
+@dataclass
+class ImportRunBatch:
+    run_id: Optional[str] = None
+    session_ids: list[str] = field(default_factory=list)
+    archive_import_by_session: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    def add_session(self, session_id: str, archive_import_config: Mapping[str, Any]) -> None:
+        if session_id not in self.session_ids:
+            self.session_ids.append(session_id)
+        self.archive_import_by_session[session_id] = dict(archive_import_config)
+
+    def remove_session(self, session_id: str) -> None:
+        self.session_ids = [item for item in self.session_ids if item != session_id]
+        self.archive_import_by_session.pop(session_id, None)
+
+
 @dataclass(frozen=True)
 class LoggerWifiArchiveAcquisition:
     remote_state_key: str
@@ -1749,6 +1765,82 @@ class ImportSourceRunner:
             **payload,
         )
 
+    def _ensure_import_batch_run(self, batch: ImportRunBatch) -> str:
+        if batch.run_id is None:
+            batch.run_id = self._make_unique_run_id()
+        if not batch.session_ids:
+            ensure_run_is_new(self.store, run_id=batch.run_id, force=False)
+        return batch.run_id
+
+    def _archive_import_config(
+        self,
+        *,
+        candidate: ImportArchiveCandidate,
+        preprocess_profile_path: Path,
+        bike_profile_path: Path,
+        data_syn_bike_export_record: Optional[Mapping[str, Any]],
+        session_note_record: Optional[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        archive_import_config = {
+            "schema": IMPORT_SOURCE_SCHEMA,
+            "version": IMPORT_SOURCE_VERSION,
+            "input_kind": candidate.input_kind,
+            "archive_sha256": candidate.archive_sha256,
+            "raw_session_identity": candidate.raw_session_identity,
+            "source_identity_kind": candidate.source_identity_kind,
+            "processing_key": candidate.processing_key,
+            "preprocess_profile_path": str(preprocess_profile_path),
+            "preprocess_profile_selection_path": str(self.source.preprocess_profile_path),
+            "preprocess_profile_sha256": self.preprocess_profile_sha256,
+            "bike_profile_path": str(bike_profile_path),
+            "bike_profile_selection_path": str(self.source.bike_profile_path),
+            "bike_profile_sha256": self.bike_profile_sha256,
+        }
+        if candidate.input_kind == "bdq":
+            archive_import_config["bdq_sha256"] = candidate.archive_sha256
+        if data_syn_bike_export_record is not None:
+            archive_import_config["data_syn_bike_export"] = dict(data_syn_bike_export_record)
+        if session_note_record is not None:
+            archive_import_config["session_note"] = dict(session_note_record)
+        return archive_import_config
+
+    def _archive_import_run_config(self, batch: ImportRunBatch) -> Dict[str, Any]:
+        sessions = {
+            session_id: dict(batch.archive_import_by_session[session_id])
+            for session_id in batch.session_ids
+            if session_id in batch.archive_import_by_session
+        }
+        if len(sessions) == 1:
+            config = dict(next(iter(sessions.values())))
+            config["sessions"] = sessions
+            return config
+        return {
+            "schema": IMPORT_SOURCE_SCHEMA,
+            "version": IMPORT_SOURCE_VERSION,
+            "mode": "source_scan_batch_v1",
+            "session_count": len(sessions),
+            "sessions": sessions,
+        }
+
+    def _write_import_run_manifest(self, batch: ImportRunBatch) -> None:
+        if batch.run_id is None or not batch.session_ids:
+            return
+        write_run_manifest(
+            self.store,
+            run_id=batch.run_id,
+            session_ids=list(batch.session_ids),
+            timezone_label=self.source.run_tz_label,
+            description=self.source.description,
+            pipeline_config={
+                "import_source": {
+                    "source_id": self.source.source_id,
+                    "source_type": self.source.source_type,
+                    "config_path": str(self.source.config_path),
+                },
+                "archive_import": self._archive_import_run_config(batch),
+            },
+        )
+
     def scan_once(self, *, progress_callback: Optional[ImportProgressCallback] = None) -> Dict[str, Any]:
         summary: Dict[str, Any] = {
             "source_id": self.source.source_id,
@@ -1769,6 +1861,7 @@ class ImportSourceRunner:
         )
 
         with self.lock:
+            batch = ImportRunBatch()
             remote_acquisitions = self._acquire_logger_wifi_archives(
                 summary,
                 progress_callback=progress_callback,
@@ -1894,15 +1987,17 @@ class ImportSourceRunner:
                         continue
 
                 try:
+                    run_id = self._ensure_import_batch_run(batch)
                     self._emit_progress(
                         progress_callback,
                         "archive_processing_started",
+                        run_id=run_id,
                         input_kind=candidate.input_kind,
                         archive_sha256=candidate.archive_sha256,
                         processing_key=candidate.processing_key,
                         **archive_progress,
                     )
-                    record = self.import_candidate(candidate)
+                    record = self.import_candidate(candidate, batch=batch)
                     self._postprocess_logger_wifi_import(
                         acquisition=remote_acquisition,
                         record=record,
@@ -1960,13 +2055,24 @@ class ImportSourceRunner:
         )
         return summary
 
-    def import_candidate(self, candidate: ImportArchiveCandidate) -> Dict[str, Any]:
+    def import_candidate(
+        self,
+        candidate: ImportArchiveCandidate,
+        *,
+        batch: Optional[ImportRunBatch] = None,
+    ) -> Dict[str, Any]:
         self._ensure_runtime_config_loaded()
+        if batch is None:
+            batch = ImportRunBatch()
         run_id: Optional[str] = None
+        session_id: Optional[str] = None
+        session_artifacts_started = False
+        added_to_batch = False
         preprocess_profile_path = self._resolve_preprocess_profile_path()
         bike_profile_path = self._resolve_bike_profile_path()
 
         try:
+            run_id = self._ensure_import_batch_run(batch)
             with tempfile.TemporaryDirectory(
                 prefix=f"{self.source.source_id}_",
                 dir=str(self.source.staging_dir),
@@ -1989,8 +2095,6 @@ class ImportSourceRunner:
 
                 session = results["session"]
                 session_id = str(session["session_id"])
-                run_id = self._make_unique_run_id()
-                ensure_run_is_new(self.store, run_id=run_id, force=False)
                 ensure_session_is_new(self.store, run_id=run_id, session_id=session_id, force=False)
 
                 source_input_name = "input.bdq" if candidate.input_kind == "bdq" else "input.csv"
@@ -2001,6 +2105,7 @@ class ImportSourceRunner:
                     input_path=input_path,
                     dest_name=source_input_name,
                 )
+                session_artifacts_started = True
 
                 save_session_artifacts(
                     self.store,
@@ -2114,43 +2219,16 @@ class ImportSourceRunner:
                     bike_profile_path=bike_profile_path,
                 )
 
-                archive_import_config = {
-                    "schema": IMPORT_SOURCE_SCHEMA,
-                    "version": IMPORT_SOURCE_VERSION,
-                    "input_kind": candidate.input_kind,
-                    "archive_sha256": candidate.archive_sha256,
-                    "raw_session_identity": candidate.raw_session_identity,
-                    "source_identity_kind": candidate.source_identity_kind,
-                    "processing_key": candidate.processing_key,
-                    "preprocess_profile_path": str(preprocess_profile_path),
-                    "preprocess_profile_selection_path": str(self.source.preprocess_profile_path),
-                    "preprocess_profile_sha256": self.preprocess_profile_sha256,
-                    "bike_profile_path": str(bike_profile_path),
-                    "bike_profile_selection_path": str(self.source.bike_profile_path),
-                    "bike_profile_sha256": self.bike_profile_sha256,
-                }
-                if candidate.input_kind == "bdq":
-                    archive_import_config["bdq_sha256"] = candidate.archive_sha256
-                if data_syn_bike_export_record is not None:
-                    archive_import_config["data_syn_bike_export"] = data_syn_bike_export_record
-                if session_note_record is not None:
-                    archive_import_config["session_note"] = session_note_record
-
-                write_run_manifest(
-                    self.store,
-                    run_id=run_id,
-                    session_ids=[session_id],
-                    timezone_label=self.source.run_tz_label,
-                    description=self.source.description,
-                    pipeline_config={
-                        "import_source": {
-                            "source_id": self.source.source_id,
-                            "source_type": self.source.source_type,
-                            "config_path": str(self.source.config_path),
-                        },
-                        "archive_import": archive_import_config,
-                    },
+                archive_import_config = self._archive_import_config(
+                    candidate=candidate,
+                    preprocess_profile_path=preprocess_profile_path,
+                    bike_profile_path=bike_profile_path,
+                    data_syn_bike_export_record=data_syn_bike_export_record,
+                    session_note_record=session_note_record,
                 )
+                batch.add_session(session_id, archive_import_config)
+                added_to_batch = True
+                self._write_import_run_manifest(batch)
 
             done_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.done_dir)
             record = {
@@ -2186,7 +2264,21 @@ class ImportSourceRunner:
             return record
 
         except Exception:
-            if run_id is not None:
+            if added_to_batch and session_id is not None:
+                batch.remove_session(session_id)
+                if batch.session_ids:
+                    try:
+                        self._write_import_run_manifest(batch)
+                    except Exception:
+                        logger.warning(
+                            "Failed to rewrite run manifest after removing failed session: run=%s session=%s",
+                            run_id,
+                            session_id,
+                            exc_info=True,
+                        )
+            if session_artifacts_started and run_id is not None and session_id is not None:
+                self._cleanup_failed_session(run_id, session_id)
+            if session_artifacts_started and run_id is not None and not batch.session_ids:
                 self._cleanup_failed_run(run_id)
             raise
 
@@ -2198,6 +2290,19 @@ class ImportSourceRunner:
             shutil.rmtree(run_dir)
         except Exception:
             logger.warning("Failed to clean up partial run directory after import error: %s", run_dir)
+
+    def _cleanup_failed_session(self, run_id: str, session_id: str) -> None:
+        session_dir = self.store.session_dir(run_id, session_id)
+        if not session_dir.exists():
+            return
+        try:
+            shutil.rmtree(session_dir)
+        except Exception:
+            logger.warning(
+                "Failed to clean up partial session directory after import error: run=%s session=%s",
+                run_id,
+                session_id,
+            )
 
     def _make_unique_run_id(self) -> str:
         base = _compact_import_run_id(self.source.source_id)
