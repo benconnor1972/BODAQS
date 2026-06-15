@@ -8,7 +8,13 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from bodaqs_analysis.sensor_aliases import canonical_end
-from bodaqs_analysis.widgets.contracts import RegistryPolicy, SessionLoader
+from bodaqs_analysis.widgets.contracts import (
+    ENTITY_KEY_COL,
+    ENTITY_KIND_COL,
+    SOURCE_SESSION_KEY_COL,
+    RegistryPolicy,
+    SessionLoader,
+)
 from bodaqs_analysis.widgets.registry_scope import (
     apply_registry_policy_to_registries,
     load_signal_registries_for_sessions,
@@ -57,10 +63,17 @@ def build_metric_viz_df(
         if c in events_df.columns and c not in left_cols:
             left_cols.append(c)
 
-    right_cols = [session_key_col, schema_id_col, event_id_col] + mcols
+    join_keys = [session_key_col, schema_id_col, event_id_col]
+    for c in (ENTITY_KEY_COL, SOURCE_SESSION_KEY_COL, ENTITY_KIND_COL):
+        if c in events_df.columns and c in metrics_df.columns and c not in join_keys:
+            join_keys.append(c)
+        if c in join_keys and c not in left_cols:
+            left_cols.append(c)
+
+    right_cols = join_keys + mcols
     viz_df = events_df[left_cols].merge(
         metrics_df[right_cols],
-        on=[session_key_col, schema_id_col, event_id_col],
+        on=join_keys,
         how="inner",
         validate="one_to_one",
     )

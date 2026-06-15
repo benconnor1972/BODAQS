@@ -387,18 +387,43 @@ def build_line_runs_from_segments(
                 "speeds_mps": [],
                 "coordinates": [],
                 "segment_count": 0,
+                "last_time_s": None,
+                "last_coordinate": None,
             }
             groups[key] = bucket
-        elif bucket["times_s"]:
-            bucket["times_s"].append(np.nan)
-            bucket["altitudes_m"].append(np.nan)
-            bucket["speeds_mps"].append(np.nan)
-            bucket["coordinates"].append((np.nan, np.nan))
 
-        bucket["times_s"].extend([t0, t1])
-        bucket["altitudes_m"].extend([a0, a1])
-        bucket["speeds_mps"].extend([speed_value, speed_value])
-        bucket["coordinates"].extend([p0, p1])
+        connected = False
+        if bucket["times_s"]:
+            last_coordinate = bucket.get("last_coordinate")
+            last_time_s = bucket.get("last_time_s")
+            connected = (
+                isinstance(last_coordinate, tuple)
+                and len(last_coordinate) == 2
+                and np.isfinite(float(last_coordinate[0]))
+                and np.isfinite(float(last_coordinate[1]))
+                and np.isclose(float(last_coordinate[0]), float(p0[0]), rtol=0.0, atol=1e-10)
+                and np.isclose(float(last_coordinate[1]), float(p0[1]), rtol=0.0, atol=1e-10)
+                and last_time_s is not None
+                and np.isclose(float(last_time_s), float(t0), rtol=0.0, atol=1e-9)
+            )
+            if not connected:
+                bucket["times_s"].append(np.nan)
+                bucket["altitudes_m"].append(np.nan)
+                bucket["speeds_mps"].append(np.nan)
+                bucket["coordinates"].append((np.nan, np.nan))
+
+        if connected:
+            bucket["times_s"].append(t1)
+            bucket["altitudes_m"].append(a1)
+            bucket["speeds_mps"].append(speed_value)
+            bucket["coordinates"].append(p1)
+        else:
+            bucket["times_s"].extend([t0, t1])
+            bucket["altitudes_m"].extend([a0, a1])
+            bucket["speeds_mps"].extend([speed_value, speed_value])
+            bucket["coordinates"].extend([p0, p1])
+        bucket["last_time_s"] = t1
+        bucket["last_coordinate"] = p1
         bucket["segment_count"] += 1
 
     runs: list[LineRun] = []

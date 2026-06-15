@@ -82,6 +82,9 @@ class ArtifactStore:
     def path_events_df(self, run_id: str, session_id: str, event_type: str) -> Path:
         return self.session_dir(run_id, session_id) / "events" / event_type / "events.parquet"
 
+    def path_events_schema(self, run_id: str, session_id: str, event_type: str) -> Path:
+        return self.session_dir(run_id, session_id) / "events" / event_type / "schema.yaml"
+
     def path_metrics_df(self, run_id: str, session_id: str, event_type: str) -> Path:
         return self.session_dir(run_id, session_id) / "metrics" / event_type / "metrics.parquet"
 
@@ -299,10 +302,14 @@ def _freeze_schema_yaml_for_event_type(*, run_id: str, session_id: str, event_ty
     store.ensure_dir(dst.parent)
     shutil.copy2(SCHEMA_PATH, dst)
 
-def _safe_folder_name(x) -> str:
+def safe_artifact_folder_name(x) -> str:
     s = "null" if x is None else str(x)
     # Keep folder names stable + filesystem-safe
     return "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in s)
+
+
+def _safe_folder_name(x) -> str:
+    return safe_artifact_folder_name(x)
 
 def write_events_partitioned_by_schema_id(
     *,

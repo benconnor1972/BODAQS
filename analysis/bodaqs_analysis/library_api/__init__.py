@@ -67,6 +67,7 @@ from .ids import (
 from .selection import (
     SELECTION_BRIDGE_SCHEMA,
     SELECTION_BRIDGE_VERSION,
+    make_study_set_selector_handle,
     study_set_to_selection_snapshot,
 )
 from .session_filters import (
@@ -77,6 +78,11 @@ from .session_filters import (
     list_session_filters,
     load_session_filter,
     update_session_filter,
+)
+from .session_descriptions import (
+    SESSION_DESCRIPTIONS_API_SCHEMA,
+    SESSION_DESCRIPTIONS_API_VERSION,
+    update_session_descriptions,
 )
 from .session_notes import (
     SESSION_NOTE_API_SCHEMA,
@@ -141,6 +147,8 @@ __all__ = [
     "SESSION_CATALOG_VERSION",
     "SESSION_GPS_POINTS_SCHEMA",
     "SESSION_GPS_POINTS_VERSION",
+    "SESSION_DESCRIPTIONS_API_SCHEMA",
+    "SESSION_DESCRIPTIONS_API_VERSION",
     "SESSION_NOTE_API_SCHEMA",
     "SESSION_NOTE_API_VERSION",
     "SESSION_NOTE_DOCUMENT_SCHEMA",
@@ -199,10 +207,12 @@ __all__ = [
     "load_trackpoint_match_query_results",
     "make_session_key",
     "make_session_ref_id",
+    "make_study_set_selector_handle",
     "make_unique_object_id",
     "parse_session_key",
     "study_set_to_selection_snapshot",
     "update_geospatial_policy",
+    "update_session_descriptions",
     "update_session_filter",
     "update_study_set",
     "update_track",

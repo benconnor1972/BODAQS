@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
@@ -52,6 +52,7 @@ def study_set_to_selection_snapshot(
         selected_entities=selected_entities,
         key_to_ref=key_to_ref,
         events_index_df=events_index_df,
+        reduce_grouped_overlaps=False,
     )
     selection_snapshot = SelectionSnapshot(
         key_to_ref=dict(entity_snapshot.key_to_ref),
@@ -76,6 +77,146 @@ def study_set_to_selection_snapshot(
         "entity_snapshot": entity_snapshot,
         "selector_handle": selector_handle,
     }
+
+
+def make_study_set_selector_handle(
+    study_set_bridge: Mapping[str, Any],
+    *,
+    title: str = "Study Set chart scope",
+    rows: int = 8,
+    select_first_by_default: bool = True,
+    auto_display: bool = False,
+) -> dict[str, Any]:
+    """Create an interactive selector handle for a loaded Study Set bridge.
+
+    The base bridge represents the whole Study Set. This wrapper lets notebooks
+    choose the subset of Study Set sessions/groupings currently being charted.
+    """
+
+    import ipywidgets as W
+    from IPython.display import display
+
+    store = study_set_bridge["store"]
+    base_snapshot = study_set_bridge["entity_snapshot"]
+    if not isinstance(base_snapshot, EntitySelectionSnapshot):
+        raise InvalidStudySetError("study_set_bridge['entity_snapshot'] must be an EntitySelectionSnapshot.")
+
+    available_entities = list(base_snapshot.selected_entities)
+    entity_by_key = {str(entity.entity_key): entity for entity in available_entities}
+    options = [(_entity_option_label(entity), str(entity.entity_key)) for entity in available_entities]
+    default_value: tuple[str, ...] = ()
+    if select_first_by_default and options:
+        default_value = (str(options[0][1]),)
+
+    entities_sel = W.SelectMultiple(
+        options=options,
+        value=default_value,
+        description="Chart",
+        rows=max(3, int(rows)),
+        layout=W.Layout(width="620px"),
+        style={"description_width": "70px"},
+    )
+    status = W.HTML()
+    select_all_btn = W.Button(description="Select all")
+    clear_btn = W.Button(description="Clear")
+
+    def _selected_entity_keys() -> list[str]:
+        return [str(value) for value in tuple(entities_sel.value or ())]
+
+    def _selected_entities() -> list[ScopeEntity]:
+        return [entity_by_key[key] for key in _selected_entity_keys() if key in entity_by_key]
+
+    def _snapshot() -> EntitySelectionSnapshot:
+        return build_entity_selection_snapshot(
+            selected_entities=_selected_entities(),
+            key_to_ref=base_snapshot.key_to_ref,
+            events_index_df=base_snapshot.events_index_df,
+            reduce_grouped_overlaps=False,
+        )
+
+    def _set_status(*_: Any) -> None:
+        snapshot = _snapshot()
+        entity_count = len(snapshot.selected_entities)
+        session_count = len(snapshot.key_to_ref)
+        status.value = (
+            f"<small>Selected chart scope: {entity_count} "
+            f"{'entity' if entity_count == 1 else 'entities'}, "
+            f"{session_count} {'session' if session_count == 1 else 'sessions'}.</small>"
+        )
+
+    def _bump_refresh(*_: Any) -> None:
+        _set_status()
+
+    def _on_select_all(_: Any) -> None:
+        entities_sel.value = tuple(value for _, value in options)
+
+    def _on_clear(_: Any) -> None:
+        entities_sel.value = ()
+
+    select_all_btn.on_click(_on_select_all)
+    clear_btn.on_click(_on_clear)
+    entities_sel.observe(_bump_refresh, names="value")
+    _set_status()
+
+    ui = W.VBox(
+        [
+            W.HTML(f"<h4 style='margin:0 0 6px 0'>{title}</h4>"),
+            entities_sel,
+            W.HBox([select_all_btn, clear_btn]),
+            status,
+        ]
+    )
+
+    def get_selected() -> list[dict[str, str]]:
+        return [
+            {"run_id": str(run_id), "session_id": str(session_id)}
+            for _, (run_id, session_id) in _snapshot().key_to_ref.items()
+        ]
+
+    def get_selected_entities() -> list[ScopeEntity]:
+        return list(_snapshot().selected_entities)
+
+    def get_key_to_ref() -> dict[str, tuple[str, str]]:
+        return dict(_snapshot().key_to_ref)
+
+    def get_events_index_df() -> pd.DataFrame:
+        return _snapshot().events_index_df.copy()
+
+    def get_entity_snapshot() -> EntitySelectionSnapshot:
+        snapshot = _snapshot()
+        return EntitySelectionSnapshot(
+            selected_entities=list(snapshot.selected_entities),
+            entity_to_effective_members={
+                str(key): list(map(str, value))
+                for key, value in snapshot.entity_to_effective_members.items()
+            },
+            expanded_session_keys=list(map(str, snapshot.expanded_session_keys)),
+            key_to_ref=dict(snapshot.key_to_ref),
+            events_index_df=snapshot.events_index_df.copy(),
+        )
+
+    handle = {
+        "ui": ui,
+        "store": store,
+        "entities_sel": entities_sel,
+        "get_selected": get_selected,
+        "get_selected_entities": get_selected_entities,
+        "get_key_to_ref": get_key_to_ref,
+        "get_events_index_df": get_events_index_df,
+        "get_entity_snapshot": get_entity_snapshot,
+        "study_set_bridge": dict(study_set_bridge),
+        "base_entity_snapshot": base_snapshot,
+    }
+    if auto_display:
+        display(ui)
+    return handle
+
+
+def _entity_option_label(entity: ScopeEntity) -> str:
+    kind = "group" if entity.kind == "study_set_grouping" else str(entity.kind).replace("_", " ")
+    count = len(tuple(entity.member_session_keys))
+    suffix = f"{count} sessions" if count != 1 else "1 session"
+    return f"{entity.label} ({kind}, {suffix})"
 
 
 def _key_to_ref_from_study_set(study_set: Mapping[str, Any]) -> dict[str, tuple[str, str]]:
@@ -117,7 +258,6 @@ def _selected_entities_from_study_set(
 ) -> list[ScopeEntity]:
     key_to_ref = _key_to_ref_from_study_set(study_set)
     session_labels = _session_labels(study_set)
-    grouped_session_keys: set[str] = set()
     entities: list[ScopeEntity] = []
 
     if include_groupings:
@@ -131,19 +271,16 @@ def _selected_entities_from_study_set(
             )
             if not member_keys:
                 continue
-            grouped_session_keys.update(member_keys)
             entities.append(
                 ScopeEntity(
                     entity_key=f"study_set:{study_set['study_set_id']}:grouping:{grouping_id}",
-                    kind="aggregation",
+                    kind="study_set_grouping",
                     label=str(display_name),
                     member_session_keys=member_keys,
                 )
             )
 
     for session_key in key_to_ref.keys():
-        if include_groupings and session_key in grouped_session_keys:
-            continue
         entities.append(
             ScopeEntity(
                 entity_key=session_key,
@@ -209,6 +346,15 @@ def _selector_handle(
     selection_snapshot: SelectionSnapshot,
     entity_snapshot: EntitySelectionSnapshot,
 ) -> dict[str, Any]:
+    def get_selected() -> list[dict[str, str]]:
+        return [
+            {"run_id": str(run_id), "session_id": str(session_id)}
+            for _, (run_id, session_id) in selection_snapshot.key_to_ref.items()
+        ]
+
+    def get_selected_entities() -> list[ScopeEntity]:
+        return list(entity_snapshot.selected_entities)
+
     def get_key_to_ref() -> dict[str, tuple[str, str]]:
         return dict(selection_snapshot.key_to_ref)
 
@@ -230,6 +376,8 @@ def _selector_handle(
     return {
         "ui": None,
         "store": store,
+        "get_selected": get_selected,
+        "get_selected_entities": get_selected_entities,
         "get_key_to_ref": get_key_to_ref,
         "get_events_index_df": get_events_index_df,
         "get_entity_snapshot": get_entity_snapshot,

@@ -36,6 +36,7 @@ _DEFAULT_ROUTE_COLOR = "#2563eb"
 _INACTIVE_ROUTE_COLOR = "#9ca3af"
 _POINT_COLOR = "#111827"
 _POINT_FILL_COLOR = "#f59e0b"
+_DEFAULT_MAX_ROUTE_POINTS = 8000
 
 _BASEMAP_OPTIONS: dict[str, Any] = {
     "OpenStreetMap": basemaps.OpenStreetMap.Mapnik,
@@ -194,6 +195,23 @@ def _fallback_zoom_from_bounds(bounds: Sequence[Sequence[float]]) -> Optional[in
     return int(np.clip(zoom, 2, 18))
 
 
+def _downsample_route_df(route_df: pd.DataFrame, *, max_points: int) -> tuple[pd.DataFrame, int]:
+    if route_df is None or route_df.empty:
+        return pd.DataFrame(), 0
+
+    original_count = len(route_df.index)
+    limit = int(max_points)
+    if limit <= 0 or original_count <= limit:
+        return route_df.reset_index(drop=True).copy(), int(original_count)
+
+    if limit == 1:
+        indices = np.asarray([0], dtype=int)
+    else:
+        indices = np.linspace(0, original_count - 1, num=limit, dtype=int)
+        indices = np.unique(indices)
+    return route_df.iloc[indices].reset_index(drop=True).copy(), int(original_count)
+
+
 def make_gps_browser_widget_for_loader(
     *,
     session_keys: Sequence[str],
@@ -204,6 +222,7 @@ def make_gps_browser_widget_for_loader(
     show_session_control: bool = True,
     map_height_px: int = 420,
     chart_height_px: int = 300,
+    max_route_points: int = _DEFAULT_MAX_ROUTE_POINTS,
     auto_display: bool = False,
 ) -> WidgetHandle:
     keys = sorted(str(x) for x in session_keys if str(x).strip())
@@ -295,6 +314,8 @@ def make_gps_browser_widget_for_loader(
     state: Dict[str, Any] = {
         "session": None,
         "gps_view": None,
+        "full_gps_view": None,
+        "route_original_point_count": 0,
         "segment_df": pd.DataFrame(),
         "selection_model": selection,
         "base_layer": base_layer,
@@ -533,6 +554,12 @@ def make_gps_browser_widget_for_loader(
         w_source.value = (
             f"<span style='color:#666;'>Source stream: <code>{gps_view.source_stream_name}</code></span>"
         )
+        original_count = int(state.get("route_original_point_count") or 0)
+        if original_count > len(gps_view.route_df.index):
+            w_source.value = (
+                f"<span style='color:#666;'>Source stream: <code>{gps_view.source_stream_name}</code>; "
+                f"preview downsampled from {original_count:,} to {len(gps_view.route_df.index):,} route points.</span>"
+            )
         if has_altitude_trace:
             _set_status("GPS route and altitude loaded.")
         else:
@@ -642,6 +669,22 @@ def make_gps_browser_widget_for_loader(
             preferred_stream_name=preferred_stream_name,
             time_col=time_col,
         )
+        state["full_gps_view"] = gps_view
+        if isinstance(gps_view, GPSViewData):
+            preview_route_df, original_count = _downsample_route_df(
+                gps_view.route_df,
+                max_points=int(max_route_points),
+            )
+            gps_view = GPSViewData(
+                session_key=gps_view.session_key,
+                source_stream_name=gps_view.source_stream_name,
+                route_df=preview_route_df,
+                has_altitude=gps_view.has_altitude,
+                has_speed=gps_view.has_speed,
+            )
+            state["route_original_point_count"] = int(original_count)
+        else:
+            state["route_original_point_count"] = 0
         state["gps_view"] = gps_view
         state["segment_df"] = build_route_segments(gps_view.route_df) if isinstance(gps_view, GPSViewData) else pd.DataFrame()
 

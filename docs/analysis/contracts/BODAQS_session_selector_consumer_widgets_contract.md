@@ -23,7 +23,7 @@ Key exported contracts/signatures (entity-aware):
 SessionKey = str
 SessionRef = tuple[str, str]  # (run_id, session_id)
 KeyToRef = Mapping[SessionKey, SessionRef]
-EntityKind = Literal["session", "aggregation"]
+EntityKind = Literal["session", "aggregation", "study_set_grouping"]
 EventSchemaPolicy = RegistryPolicy
 
 @dataclass(frozen=True)
@@ -111,7 +111,9 @@ class RegistryResolutionConfig:
 ```
 
 `session_key` remains the canonical physical-session identity across widget/service boundaries.
-`entity_key` adds a stable selection identity for session-aggregation workflows.
+`entity_key` adds a stable selection identity for session-group workflows.
+`aggregation` remains a legacy entity kind. New Study Set grouping consumers
+should use `study_set_grouping`.
 
 ---
 
@@ -251,9 +253,9 @@ Implementations may maintain cached internal state, but **must update that state
 - `sorted(get_events_index_df()["session_key"].unique()) == sorted(get_key_to_ref().keys())`
 
 4) **Entity overlap dedupe policy**  
-When both explicit session entities and aggregation entities are selected:
+When both explicit session entities and grouped entities are selected:
 - explicit sessions take precedence
-- overlapping members are removed from affected aggregation effective-member sets
+- overlapping members are removed from affected grouped-entity effective-member sets
 - selector should surface a warning message in `out`
 
 5) **Aggregation persistence**  

@@ -91,7 +91,7 @@ class SelectionSnapshot:
 
 RegistryPolicy = Literal["union", "intersection", "strict"]
 EventSchemaPolicy = RegistryPolicy
-EntityKind = Literal["session", "aggregation"]
+EntityKind = Literal["session", "aggregation", "study_set_grouping"]
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class SignalUniverse(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# Entity scope contracts (sessions + persisted aggregations)
+# Entity scope contracts (sessions + session groups)
 # ---------------------------------------------------------------------------
 
 
@@ -131,7 +131,7 @@ class AggregationDefinition:
 
 @dataclass(frozen=True)
 class ScopeEntity:
-    """Selectable scope entity: physical session or aggregation."""
+    """Selectable scope entity: physical session or session grouping."""
 
     entity_key: EntityKey
     kind: EntityKind

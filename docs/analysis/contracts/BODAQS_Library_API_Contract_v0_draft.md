@@ -933,7 +933,35 @@ sends a service-local filesystem path, the service validates/discovers that
 root, and subsequent calls use the new adapter state. This is not an Import
 Manager import/preprocessing operation.
 
-### 12.3 Study Sets
+### 12.3 Session Curation
+
+```text
+POST /api/v1/libraries/{library_id}/sessions/note
+PUT  /api/v1/libraries/{library_id}/sessions/note
+PUT  /api/v1/libraries/{library_id}/sessions/descriptions
+```
+
+`sessions/descriptions` updates the short manifest-backed run/session
+description fields for one session reference. `run_description` applies to the
+whole run; `session_description` applies only to the referenced session.
+
+Example request:
+
+```json
+{
+  "session_ref": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run-a::session-a",
+    "session_key": "run-a::session-a",
+    "run_id": "run-a",
+    "session_id": "session-a"
+  },
+  "run_description": "Morning shuttle laps",
+  "session_description": "Lower chute run"
+}
+```
+
+### 12.4 Study Sets
 
 ```text
 GET    /api/v1/study-sets
@@ -977,7 +1005,7 @@ Example update request:
 }
 ```
 
-### 12.4 Geospatial
+### 12.5 Geospatial
 
 Root-scoped tracks:
 
@@ -1042,7 +1070,7 @@ Broad query scopes should be described declaratively with `library_ids`,
 browser to enumerate every session. Narrow UI-driven requests may still provide
 explicit `session_refs`.
 
-### 12.5 Session Filters
+### 12.6 Session Filters
 
 Root-scoped persisted session filters:
 
@@ -1057,7 +1085,7 @@ DELETE /api/v1/session-filters/{filter_id}
 Session Filter endpoints are scoped to the configured libraries root, not to a
 single processed library. Filter writes should use revision checks.
 
-### 12.6 Signals, Events, Metrics, And Time-Series
+### 12.7 Signals, Events, Metrics, And Time-Series
 
 ```text
 POST /api/v1/libraries/{library_id}/signals/query
