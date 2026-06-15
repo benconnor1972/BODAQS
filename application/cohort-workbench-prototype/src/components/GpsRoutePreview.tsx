@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type PointerEvent } from 'react'
-import { gpsSourceLabel } from '../domain/geospatial'
+import { gpsSourceDisplay, gpsSourceLabel } from '../domain/geospatial'
 import type { SessionGpsPointSet, SessionRecord, TrackRecord } from '../domain/types'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { MapRoutePreview } from './MapRoutePreview'
@@ -37,7 +37,18 @@ export function GpsRoutePreview({
   const sessionKey = session ? `${session.libraryId}|||${session.sessionKey}` : ''
   const [requestState, setRequestState] = useState<RequestState | null>(null)
   const [mapHeight, setMapHeight] = useState(compact ? COMPACT_MAP_HEIGHT : DEFAULT_MAP_HEIGHT)
-  const hasLoadedCurrentSession = requestState?.sessionKey === sessionKey
+  const preferredSourceId = session?.gpsSummary.preferredSourceId ?? session?.gpsSummary.sources[0]?.sourceId ?? ''
+  const [selectedSourceId, setSelectedSourceId] = useState(preferredSourceId)
+  const sourceOptions = session?.gpsSummary.sources ?? []
+  const activeSourceId = sourceOptions.some((source) => source.sourceId === selectedSourceId)
+    ? selectedSourceId
+    : preferredSourceId
+  const requestKey = activeSourceId ? `${sessionKey}|||${activeSourceId}` : sessionKey
+  const hasLoadedCurrentSession = requestState?.sessionKey === requestKey
+
+  useEffect(() => {
+    setSelectedSourceId(preferredSourceId)
+  }, [preferredSourceId, sessionKey])
 
   useEffect(() => {
     if (!session || !dataSource.loadSessionGpsPoints) {
@@ -49,19 +60,19 @@ export function GpsRoutePreview({
       .then(() => {
         if (!cancelled) {
           setRequestState({
-            sessionKey,
+            sessionKey: requestKey,
             pointSet: null,
             loadState: { status: 'loading', message: `Loading GPS points for ${session.name}...` },
           })
         }
-        return dataSource.loadSessionGpsPoints?.(session)
+        return dataSource.loadSessionGpsPoints?.(session, activeSourceId || null)
       })
       .then((loadedPointSet) => {
         if (cancelled || !loadedPointSet) {
           return
         }
         setRequestState({
-          sessionKey,
+          sessionKey: requestKey,
           pointSet: loadedPointSet,
           loadState: {
             status: 'loaded',
@@ -75,7 +86,7 @@ export function GpsRoutePreview({
         }
         const message = error instanceof Error ? error.message : String(error)
         setRequestState({
-          sessionKey,
+          sessionKey: requestKey,
           pointSet: gpsPointSetFromSession(session),
           loadState: { status: 'error', message: `GPS points unavailable: ${message}` },
         })
@@ -84,7 +95,7 @@ export function GpsRoutePreview({
     return () => {
       cancelled = true
     }
-  }, [dataSource, session, sessionKey])
+  }, [activeSourceId, dataSource, requestKey, session])
 
   const fallbackPointSet = session ? gpsPointSetFromSession(session) : null
   const pointSet = hasLoadedCurrentSession
@@ -148,6 +159,18 @@ export function GpsRoutePreview({
           <span />
         </button>
       </div>
+      {sourceOptions.length > 1 && (
+        <label className="gps-source-select">
+          <span>GPS source</span>
+          <select value={activeSourceId} onChange={(event) => setSelectedSourceId(event.target.value)}>
+            {sourceOptions.map((source) => (
+              <option key={source.sourceId} value={source.sourceId}>
+                {gpsSourceDisplay(source.kind, source.sourceId)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <div className={`gps-route-status ${loadState.status}`}>
         <strong>{loadStateLabel(loadState.status)}</strong>
         <span>{loadState.message}</span>
@@ -171,8 +194,8 @@ function gpsPointSetStatusLine(pointSet: SessionGpsPointSet) {
 function gpsPointSetFromSession(session: SessionRecord): SessionGpsPointSet {
   return {
     present: session.gps.length > 0,
-    sourceId: session.gpsSummary.sources[0]?.sourceId ?? '',
-    sourceKind: session.gpsSummary.preferredSource ?? 'unknown',
+    sourceId: session.gpsSummary.preferredSourceId ?? session.gpsSummary.sources[0]?.sourceId ?? '',
+    sourceKind: session.gpsSummary.preferredSourceKind ?? 'unknown',
     streamName: session.gpsSummary.sources[0]?.streamName ?? '',
     samplingMode: 'catalog',
     sourcePoints: session.gpsSummary.positionPointCount,

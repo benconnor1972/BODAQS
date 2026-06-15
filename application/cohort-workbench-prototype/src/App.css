@@ -1290,6 +1290,33 @@ button {
   --gps-map-height: 240px;
 }
 
+.gps-source-select {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.gps-source-select select {
+  min-width: 190px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
 .gps-route-status {
   display: flex;
   flex-wrap: wrap;

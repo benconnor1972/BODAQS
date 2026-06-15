@@ -123,18 +123,35 @@ Example:
   "schema": "bodaqs.session_gps_summary",
   "version": 1,
   "present": true,
-  "preferred_source": "fit_enrichment",
+  "preferred_source": "gps_logger",
+  "preferred_source_id": "gps_logger",
+  "preferred_source_kind": "logger_sensor",
+  "source_selection_method": "gps_sources",
+  "gps_source_policy": {
+    "preferred_source": "logger_then_fit",
+    "preserve_all_sources": true
+  },
   "sources": [
     {
-      "source_id": "gps_fit",
-      "kind": "fit_enrichment",
-      "stream_name": "gps_fit",
+      "source_id": "gps_logger",
+      "kind": "logger_sensor",
+      "stream_name": "gps_logger",
       "timebase": "intermittent",
       "position_columns": {
-        "latitude": "gps_fit_position_latitude_dom_world [deg]",
-        "longitude": "gps_fit_position_longitude_dom_world [deg]"
+        "latitude": "latitude_deg",
+        "longitude": "longitude_deg"
       },
-      "elevation_column": "gps_fit_altitude_dom_world [m]",
+      "elevation_column": "altitude_m",
+      "quality_columns": {
+        "valid": "gps0_valid",
+        "seq": "gps0_seq",
+        "fresh": "gps0_fresh"
+      },
+      "route_reconstruction": {
+        "valid_filter_applied": true,
+        "dedupe_method": "seq",
+        "cached_async_snapshots": false
+      },
       "point_count": 1234,
       "nominal_sample_rate_hz": 1.0,
       "median_gap_s": 1.0,
@@ -150,6 +167,11 @@ Example:
   "warnings": []
 }
 ```
+
+`preferred_source_id` is the concrete source/stream id to use by default.
+`preferred_source_kind` carries the broad source kind. `preferred_source` is
+retained as a compatibility alias for `preferred_source_id` and should not be
+used to carry the kind.
 
 Recommended `kind` values:
 
@@ -241,7 +263,11 @@ Example:
     "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
-    "session_id": "2026-05-18_13-27-14"
+    "session_id": "2026-05-18_13-27-14",
+    "gps_source_id": "gps_logger",
+    "gps_source_kind": "logger_sensor",
+    "gps_stream_name": "gps_logger",
+    "gps_source_selection_method": "gps_sources"
   },
   "provenance": {
     "created_at": "2026-06-02T01:00:00Z",
@@ -477,7 +503,13 @@ Example:
     "derived_at": "2026-06-02T01:05:00Z",
     "derived_by": "bodaqs_analysis.geospatial",
     "algorithm": "session_track_match",
-    "algorithm_version": "0.1.0"
+    "algorithm_version": "0.1.0",
+    "gps_source": {
+      "source_id": "gps_logger",
+      "kind": "logger_sensor",
+      "stream_name": "gps_logger",
+      "source_selection_method": "gps_sources"
+    }
   }
 }
 ```
@@ -502,6 +534,8 @@ good | approximate | ambiguous | missing
 
 `SessionTrackMatch` is not part of the canonical processed session artifact
 contract. It is an analysis output that may be cached under the libraries root.
+Cache keys must include the selected GPS source id, source kind, and any source
+selection or reconstruction policy that can change the match result.
 
 ---
 
@@ -520,6 +554,8 @@ It is intentionally separate from `SessionTrackMatch`:
 - `SessionTrackMatch` describes one session against one track.
 - `TrackpointMatchQuery` describes a broad query over many candidate sessions
   and pages back the sessions that satisfy a trackpoint criterion.
+- Query identity should include the GPS source selector and a compact identity
+  of each candidate session's preferred GPS source at query creation time.
 
 Request example:
 

@@ -9,7 +9,9 @@ import type {
 
 export const emptyGpsSummary: SessionGpsSummary = {
   present: false,
-  preferredSource: null,
+  preferredSourceId: null,
+  preferredSourceKind: null,
+  sourceSelectionMethod: 'none',
   sources: [],
   sessionDurationS: 0,
   timeCoverageRatio: 0,
@@ -41,7 +43,7 @@ export function gpsQualityTone(quality: GpsQuality): 'good' | 'warning' | 'alert
   return 'alert'
 }
 
-export function gpsSourceLabel(value: SessionGpsSummary['preferredSource']) {
+export function gpsSourceLabel(value: SessionGpsSummary['preferredSourceKind']) {
   if (value === 'fit_enrichment') {
     return 'FIT enrichment'
   }
@@ -58,8 +60,13 @@ export function gpsSummaryLine(summary: SessionGpsSummary) {
   if (!summary.present) {
     return 'No GPS'
   }
-  const source = gpsSourceLabel(summary.preferredSource)
+  const source = gpsSourceDisplay(summary.preferredSourceKind, summary.preferredSourceId)
   return `${gpsQualityLabel(summary.quality)} ${source}, ${formatPercent(summary.timeCoverageRatio)} coverage`
+}
+
+export function gpsSourceDisplay(kind: SessionGpsSummary['preferredSourceKind'], sourceId?: string | null) {
+  const label = gpsSourceLabel(kind)
+  return sourceId ? `${label} (${sourceId})` : label
 }
 
 export function studySetGpsAdequacy(studySet: StudySet, sessions: SessionRecord[]) {

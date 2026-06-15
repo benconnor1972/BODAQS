@@ -195,17 +195,22 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
     return { ...query }
   }
 
-  async loadSessionGpsPoints(session: SessionRecord): Promise<SessionGpsPointSet> {
+  async loadSessionGpsPoints(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet> {
+    const source =
+      session.gpsSummary.sources.find((candidate) => candidate.sourceId === sourceId) ??
+      session.gpsSummary.sources.find((candidate) => candidate.sourceId === session.gpsSummary.preferredSourceId) ??
+      session.gpsSummary.sources[0]
     return {
       present: session.gps.length > 0,
-      sourceId: session.gpsSummary.sources[0]?.sourceId ?? '',
-      sourceKind: session.gpsSummary.preferredSource ?? 'unknown',
-      streamName: session.gpsSummary.sources[0]?.streamName ?? '',
+      sourceId: source?.sourceId ?? '',
+      sourceKind: source?.kind ?? session.gpsSummary.preferredSourceKind ?? 'unknown',
+      streamName: source?.streamName ?? '',
       samplingMode: 'fixture',
       sourcePoints: session.gpsSummary.positionPointCount,
       returnedPoints: session.gps.length,
       maxPoints: session.gps.length,
       stride: null,
+      sourceSelectionMethod: session.gpsSummary.sourceSelectionMethod,
       points: session.gps.map(([longitude, latitude], index) => ({
         timeS: index,
         longitude,

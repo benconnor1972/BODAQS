@@ -629,20 +629,35 @@ Example:
     "warning_count": 2,
     "error_count": 0
   },
+  "summary": {
+    "n_rows": 122480,
+    "t_start_s": 0.0,
+    "t_end_s": 612.4,
+    "duration_s": 612.4,
+    "duration_min": 10.2067,
+    "distance_km": 1.42
+  },
   "gps_summary": {
     "schema": "bodaqs.session_gps_summary",
     "version": 1,
     "present": true,
-    "preferred_source": "fit_enrichment",
+    "preferred_source": "gps_logger",
+    "preferred_source_id": "gps_logger",
+    "preferred_source_kind": "logger_sensor",
+    "source_selection_method": "gps_sources",
+    "gps_source_policy": {
+      "preferred_source": "logger_then_fit",
+      "preserve_all_sources": true
+    },
     "session_duration_s": 612.4,
     "time_coverage_ratio": 0.94,
     "position_point_count": 1234,
     "quality": "usable",
     "sources": [
       {
-        "source_id": "gps_fit",
-        "kind": "fit_enrichment",
-        "stream_name": "gps_fit",
+        "source_id": "gps_logger",
+        "kind": "logger_sensor",
+        "stream_name": "gps_logger",
         "timebase": "intermittent",
         "point_count": 1234,
         "nominal_sample_rate_hz": 1.0,
@@ -657,7 +672,12 @@ Example:
     "source_id": "prototype-f",
     "logger_id": "Prototype F",
     "archive_name": "2026-02-19_09-43-31_3.zip",
-    "processing_key": "7f273ed9348c54cdafe707412abcbd661b7dd3414a71f914efa830d237423918"
+    "processing_key": "7f273ed9348c54cdafe707412abcbd661b7dd3414a71f914efa830d237423918",
+    "preprocessing_profile": "suspension_default_v1",
+    "preprocess_profile_path": "sources/ben-stevo/preprocess_profile.json",
+    "firmware_version": "0.3.0",
+    "bike_profile_id": "ben-stevo",
+    "bike_profile_path": "../bike_profiles/ben-stevo.json"
   },
   "event_schema": {
     "schema_id": "basic_suspension_events",
@@ -998,12 +1018,13 @@ The GPS summary endpoint accepts a session reference in the request body and
 returns the `SessionGpsSummary` defined in
 `BODAQS_Geospatial_Contracts_v0_draft.md`.
 
-The GPS points endpoint accepts a session reference plus optional `max_points`
-and `window` fields, and returns downsampled longitude/latitude points for
-offline browser preview. The session catalog remains summary-only; full GPS
-geometry is loaded on demand. If `window` is omitted, the service must default
-to the processed session's own primary `time_s` bounds rather than returning an
-entire auxiliary GPS/FIT stream.
+The GPS points endpoint accepts a session reference plus optional `source_id`,
+`max_points`, and `window` fields, and returns downsampled longitude/latitude
+points for offline browser preview. If `source_id` is omitted, the service uses
+the `SessionGpsSummary.preferred_source_id`. The session catalog remains
+summary-only; full GPS geometry is loaded on demand. If `window` is omitted, the
+service must default to the processed session's own primary `time_s` bounds
+rather than returning an entire auxiliary GPS/FIT stream.
 
 Track and policy endpoints are scoped to the configured libraries root, not to
 one processed library. Track match endpoints may return cached derived matches

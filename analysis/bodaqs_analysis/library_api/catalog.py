@@ -17,6 +17,7 @@ from bodaqs_analysis.artifacts import (
     list_runs,
     list_sessions,
 )
+from bodaqs_analysis.gps_semantics import resolve_gps_columns
 
 from .errors import InvalidRequestError
 from .ids import derive_object_id, make_session_key, make_session_ref_id
@@ -157,6 +158,7 @@ def _build_session_catalog_row(
     provenance = _provenance_summary(
         run_manifest=run_manifest,
         session_manifest=session_manifest,
+        session_id=session_id,
     )
 
     run_description = _optional_text(run_manifest.get("description"))
@@ -185,6 +187,7 @@ def _build_session_catalog_row(
         "note_status": note_status,
         "note_fields": note_fields,
         "qc_summary": _qc_summary(session_meta, session_manifest),
+        "summary": _session_summary(session_manifest),
         "provenance": provenance,
         "event_schema": event_schema,
         "available_signals": _available_signals(
@@ -220,19 +223,20 @@ def _gps_summary(
     session_window = (session_start_s, session_end_s)
     warnings: list[str] = []
     sources: list[dict[str, Any]] = []
+    source_descriptors, source_selection = _gps_source_descriptors(
+        store,
+        run_id=run_id,
+        session_id=session_id,
+        session_meta=session_meta,
+    )
 
-    stream_names = _gps_stream_names(store, run_id=run_id, session_id=session_id, session_meta=session_meta)
-    streams_meta = session_meta.get("streams") if isinstance(session_meta.get("streams"), Mapping) else {}
-    for stream_name in stream_names:
-        stream_meta = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name))
-        if stream_meta is None and isinstance(streams_meta, Mapping):
-            raw_stream_meta = streams_meta.get(stream_name)
-            stream_meta = dict(raw_stream_meta) if isinstance(raw_stream_meta, Mapping) else {}
+    for descriptor in source_descriptors:
         source = _gps_source_summary(
-            source_id=stream_name,
-            stream_name=stream_name,
-            metadata=stream_meta or {},
-            dataframe_path=store.path_session_stream_df(run_id, session_id, stream_name),
+            source_id=descriptor["source_id"],
+            stream_name=descriptor["stream_name"],
+            metadata=descriptor["metadata"],
+            source_info=descriptor["source_info"],
+            dataframe_path=descriptor["dataframe_path"],
             session_duration_s=session_duration_s,
             window_range=session_window,
         )
@@ -241,24 +245,15 @@ def _gps_summary(
             sources.append(source)
 
     if not sources:
-        primary_source = _gps_source_summary(
-            source_id="primary",
-            stream_name="primary",
-            metadata=session_meta,
-            dataframe_path=store.path_session_df(run_id, session_id),
-            session_duration_s=session_duration_s,
-            window_range=session_window,
-        )
-        if primary_source is not None:
-            warnings.extend(primary_source.pop("_warnings", []))
-            sources.append(primary_source)
-
-    if not sources:
         return {
             "schema": SESSION_GPS_SUMMARY_SCHEMA,
             "version": SESSION_GPS_SUMMARY_VERSION,
             "present": False,
             "preferred_source": None,
+            "preferred_source_id": None,
+            "preferred_source_kind": None,
+            "source_selection_method": source_selection["method"],
+            "gps_source_policy": source_selection.get("policy"),
             "sources": [],
             "session_duration_s": session_duration_s,
             "time_coverage_ratio": 0.0,
@@ -267,13 +262,7 @@ def _gps_summary(
             "warnings": [],
         }
 
-    preferred = max(
-        sources,
-        key=lambda source: (
-            float(source.get("_coverage_ratio") or 0.0),
-            int(source.get("point_count") or 0),
-        ),
-    )
+    preferred = _preferred_gps_source(sources, source_selection)
     position_point_count = int(preferred.get("point_count") or 0)
     time_coverage_ratio = min(1.0, max(0.0, float(preferred.get("_coverage_ratio") or 0.0)))
     max_gap_s = preferred.get("max_gap_s")
@@ -301,7 +290,11 @@ def _gps_summary(
         "schema": SESSION_GPS_SUMMARY_SCHEMA,
         "version": SESSION_GPS_SUMMARY_VERSION,
         "present": position_point_count > 0,
-        "preferred_source": preferred.get("kind"),
+        "preferred_source": preferred.get("source_id"),
+        "preferred_source_id": preferred.get("source_id"),
+        "preferred_source_kind": preferred.get("kind"),
+        "source_selection_method": source_selection["method"],
+        "gps_source_policy": source_selection.get("policy"),
         "sources": public_sources,
         "session_duration_s": session_duration_s,
         "time_coverage_ratio": time_coverage_ratio,
@@ -318,6 +311,7 @@ def get_session_gps_points(
     library_id: str | None = None,
     max_points: int | None = None,
     window: Mapping[str, Any] | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
     """Return an on-demand GPS point set for one processed session."""
 
@@ -335,17 +329,25 @@ def get_session_gps_points(
     window_range = _normalized_time_window(window, default_range=(session_start_s, session_end_s))
 
     candidates: list[dict[str, Any]] = []
-    streams_meta = session_meta.get("streams") if isinstance(session_meta.get("streams"), Mapping) else {}
-    for stream_name in _gps_stream_names(store, run_id=run_id, session_id=session_id, session_meta=session_meta):
-        stream_meta = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name))
-        if stream_meta is None and isinstance(streams_meta, Mapping):
-            raw_stream_meta = streams_meta.get(stream_name)
-            stream_meta = dict(raw_stream_meta) if isinstance(raw_stream_meta, Mapping) else {}
+    source_descriptors, source_selection = _gps_source_descriptors(
+        store,
+        run_id=run_id,
+        session_id=session_id,
+        session_meta=session_meta,
+    )
+    requested_source_id = _optional_text(source_id)
+    for descriptor in source_descriptors:
+        if requested_source_id and requested_source_id not in {
+            descriptor["source_id"],
+            descriptor["stream_name"],
+        }:
+            continue
         candidate = _gps_point_source_candidate(
-            source_id=stream_name,
-            stream_name=stream_name,
-            metadata=stream_meta or {},
-            dataframe_path=store.path_session_stream_df(run_id, session_id, stream_name),
+            source_id=descriptor["source_id"],
+            stream_name=descriptor["stream_name"],
+            metadata=descriptor["metadata"],
+            source_info=descriptor["source_info"],
+            dataframe_path=descriptor["dataframe_path"],
             max_points=max_points,
             window_range=window_range,
             session_duration_s=session_duration_s,
@@ -354,19 +356,9 @@ def get_session_gps_points(
             candidates.append(candidate)
 
     if not candidates:
-        primary_candidate = _gps_point_source_candidate(
-            source_id="primary",
-            stream_name="primary",
-            metadata=session_meta,
-            dataframe_path=store.path_session_df(run_id, session_id),
-            max_points=max_points,
-            window_range=window_range,
-            session_duration_s=session_duration_s,
-        )
-        if primary_candidate is not None:
-            candidates.append(primary_candidate)
-
-    if not candidates:
+        warnings = ["gps_points_unavailable"]
+        if requested_source_id:
+            warnings.append("gps_requested_source_unavailable")
         return {
             "schema": SESSION_GPS_POINTS_SCHEMA,
             "version": SESSION_GPS_POINTS_VERSION,
@@ -383,16 +375,13 @@ def get_session_gps_points(
                 "window": _sampling_window(window_range),
             },
             "points": [],
-            "warnings": ["gps_points_unavailable"],
+            "warnings": warnings,
         }
 
-    best = max(
-        candidates,
-        key=lambda candidate: (
-            int(candidate["sampling"].get("source_points") or 0),
-            int(candidate["sampling"].get("returned_points") or 0),
-        ),
-    )
+    best = _preferred_gps_point_candidate(candidates, source_selection, requested_source_id=requested_source_id)
+    if isinstance(best.get("source"), dict):
+        best["source"]["source_selection_method"] = source_selection["method"]
+        best["source"]["gps_source_policy"] = source_selection.get("policy")
     return {
         "schema": SESSION_GPS_POINTS_SCHEMA,
         "version": SESSION_GPS_POINTS_VERSION,
@@ -411,6 +400,7 @@ def _gps_source_summary(
     source_id: str,
     stream_name: str,
     metadata: Mapping[str, Any],
+    source_info: Mapping[str, Any],
     dataframe_path: Path,
     session_duration_s: float,
     window_range: tuple[float | None, float | None],
@@ -437,7 +427,7 @@ def _gps_source_summary(
     except Exception as exc:
         return {
             "source_id": source_id,
-            "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+            "kind": _gps_source_kind(source_id, metadata, source_info=source_info, latitude_col=latitude_col),
             "stream_name": stream_name,
             "timebase": _gps_timebase(metadata),
             "position_columns": {
@@ -445,6 +435,9 @@ def _gps_source_summary(
                 "longitude": longitude_col,
             },
             "elevation_column": elevation_col,
+            "quality_columns": _gps_quality_columns(metadata, source_info),
+            "route_reconstruction": _gps_route_reconstruction(metadata, source_info),
+            **_gps_quality_summary(metadata, source_info),
             "point_count": 0,
             "nominal_sample_rate_hz": None,
             "median_gap_s": None,
@@ -487,7 +480,7 @@ def _gps_source_summary(
 
     return {
         "source_id": source_id,
-        "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+        "kind": _gps_source_kind(source_id, metadata, source_info=source_info, latitude_col=latitude_col),
         "stream_name": stream_name,
         "timebase": _gps_timebase(metadata),
         "position_columns": {
@@ -495,6 +488,9 @@ def _gps_source_summary(
             "longitude": longitude_col,
         },
         "elevation_column": elevation_col,
+        "quality_columns": _gps_quality_columns(metadata, source_info),
+        "route_reconstruction": _gps_route_reconstruction(metadata, source_info),
+        **_gps_quality_summary(metadata, source_info),
         "point_count": point_count,
         "nominal_sample_rate_hz": nominal_sample_rate_hz,
         "median_gap_s": median_gap_s,
@@ -511,6 +507,7 @@ def _gps_point_source_candidate(
     source_id: str,
     stream_name: str,
     metadata: Mapping[str, Any],
+    source_info: Mapping[str, Any],
     dataframe_path: Path,
     max_points: int,
     window_range: tuple[float | None, float | None],
@@ -539,17 +536,20 @@ def _gps_point_source_candidate(
         df = pd.read_parquet(dataframe_path, columns=read_columns)
     except Exception as exc:
         return {
-            "source": {
-                "source_id": source_id,
-                "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
-                "stream_name": stream_name,
-                "timebase": _gps_timebase(metadata),
-                "position_columns": {
+                "source": {
+                    "source_id": source_id,
+                    "kind": _gps_source_kind(source_id, metadata, source_info=source_info, latitude_col=latitude_col),
+                    "stream_name": stream_name,
+                    "timebase": _gps_timebase(metadata),
+                    "position_columns": {
                     "latitude": latitude_col,
                     "longitude": longitude_col,
+                    },
+                    "elevation_column": elevation_col,
+                    "quality_columns": _gps_quality_columns(metadata, source_info),
+                    "route_reconstruction": _gps_route_reconstruction(metadata, source_info),
+                    **_gps_quality_summary(metadata, source_info),
                 },
-                "elevation_column": elevation_col,
-            },
             "sampling": {
                 "mode": "error",
                 "source_points": 0,
@@ -585,17 +585,20 @@ def _gps_point_source_candidate(
     filtered = df.loc[valid].copy()
     if filtered.empty:
         return {
-            "source": {
-                "source_id": source_id,
-                "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
-                "stream_name": stream_name,
-                "timebase": _gps_timebase(metadata),
-                "position_columns": {
+                "source": {
+                    "source_id": source_id,
+                    "kind": _gps_source_kind(source_id, metadata, source_info=source_info, latitude_col=latitude_col),
+                    "stream_name": stream_name,
+                    "timebase": _gps_timebase(metadata),
+                    "position_columns": {
                     "latitude": latitude_col,
                     "longitude": longitude_col,
+                    },
+                    "elevation_column": elevation_col,
+                    "quality_columns": _gps_quality_columns(metadata, source_info),
+                    "route_reconstruction": _gps_route_reconstruction(metadata, source_info),
+                    **_gps_quality_summary(metadata, source_info),
                 },
-                "elevation_column": elevation_col,
-            },
             "sampling": {
                 "mode": "none",
                 "source_points": 0,
@@ -642,7 +645,7 @@ def _gps_point_source_candidate(
     return {
         "source": {
             "source_id": source_id,
-            "kind": _gps_source_kind(source_id, metadata, latitude_col=latitude_col),
+            "kind": _gps_source_kind(source_id, metadata, source_info=source_info, latitude_col=latitude_col),
             "stream_name": stream_name,
             "timebase": _gps_timebase(metadata),
             "position_columns": {
@@ -650,6 +653,9 @@ def _gps_point_source_candidate(
                 "longitude": longitude_col,
             },
             "elevation_column": elevation_col,
+            "quality_columns": _gps_quality_columns(metadata, source_info),
+            "route_reconstruction": _gps_route_reconstruction(metadata, source_info),
+            **_gps_quality_summary(metadata, source_info),
         },
         "sampling": {
             "mode": "stride" if stride > 1 else "raw",
@@ -682,7 +688,201 @@ def _gps_stream_names(
     return sorted(names)
 
 
+def _gps_source_descriptors(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+    session_meta: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    gps_sources = session_meta.get("gps_sources") if isinstance(session_meta.get("gps_sources"), Mapping) else None
+    if isinstance(gps_sources, Mapping):
+        descriptors: list[dict[str, Any]] = []
+        for raw_source in gps_sources.get("sources") or []:
+            if not isinstance(raw_source, Mapping):
+                continue
+            descriptor = _gps_source_descriptor(
+                store,
+                run_id=run_id,
+                session_id=session_id,
+                session_meta=session_meta,
+                source_info=raw_source,
+            )
+            if descriptor is not None:
+                descriptors.append(descriptor)
+        if descriptors:
+            policy = gps_sources.get("policy") if isinstance(gps_sources.get("policy"), Mapping) else {}
+            return descriptors, {
+                "method": "gps_sources",
+                "preferred_source_id": _optional_text(gps_sources.get("preferred_source")),
+                "preferred_source_kind": _optional_text(gps_sources.get("preferred_source_kind")),
+                "policy": dict(policy),
+            }
+
+    descriptors = [
+        _gps_source_descriptor(
+            store,
+            run_id=run_id,
+            session_id=session_id,
+            session_meta=session_meta,
+            source_info={"source_id": stream_name, "stream_name": stream_name},
+        )
+        for stream_name in _gps_stream_names(store, run_id=run_id, session_id=session_id, session_meta=session_meta)
+    ]
+    descriptors = [descriptor for descriptor in descriptors if descriptor is not None]
+    if not descriptors:
+        primary = _gps_source_descriptor(
+            store,
+            run_id=run_id,
+            session_id=session_id,
+            session_meta=session_meta,
+            source_info={"source_id": "primary", "stream_name": "primary"},
+        )
+        if primary is not None:
+            descriptors.append(primary)
+    return descriptors, {
+        "method": "legacy_heuristic",
+        "preferred_source_id": None,
+        "preferred_source_kind": None,
+        "policy": {"preferred_source": "legacy_heuristic"},
+    }
+
+
+def _gps_source_descriptor(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+    session_meta: Mapping[str, Any],
+    source_info: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    source_id = _first_text(source_info.get("source_id"), source_info.get("stream_name"))
+    if source_id is None:
+        return None
+    stream_name = _first_text(source_info.get("stream_name"), source_id) or source_id
+    if source_id == "primary" or stream_name == "primary":
+        return {
+            "source_id": source_id,
+            "stream_name": "primary",
+            "metadata": _merge_metadata(session_meta, source_info),
+            "source_info": dict(source_info),
+            "dataframe_path": store.path_session_df(run_id, session_id),
+        }
+
+    stream_meta = _gps_stream_metadata(store, run_id=run_id, session_id=session_id, stream_name=stream_name, session_meta=session_meta)
+    return {
+        "source_id": source_id,
+        "stream_name": stream_name,
+        "metadata": _merge_metadata(stream_meta, source_info),
+        "source_info": dict(source_info),
+        "dataframe_path": store.path_session_stream_df(run_id, session_id, stream_name),
+    }
+
+
+def _gps_stream_metadata(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+    stream_name: str,
+    session_meta: Mapping[str, Any],
+) -> dict[str, Any]:
+    streams_meta = session_meta.get("streams") if isinstance(session_meta.get("streams"), Mapping) else {}
+    secondary_streams = session_meta.get("secondary_streams") if isinstance(session_meta.get("secondary_streams"), Mapping) else {}
+    stream_meta = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name)) or {}
+    raw_stream_meta = streams_meta.get(stream_name) if isinstance(streams_meta, Mapping) else None
+    raw_secondary_meta = secondary_streams.get(stream_name) if isinstance(secondary_streams, Mapping) else None
+    return _merge_metadata(
+        raw_stream_meta if isinstance(raw_stream_meta, Mapping) else {},
+        raw_secondary_meta if isinstance(raw_secondary_meta, Mapping) else {},
+        stream_meta,
+    )
+
+
+def _merge_metadata(*values: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        for key, raw in value.items():
+            out[str(key)] = raw
+    return out
+
+
+def _preferred_gps_source(sources: list[dict[str, Any]], source_selection: Mapping[str, Any]) -> dict[str, Any]:
+    preferred_source_id = _optional_text(source_selection.get("preferred_source_id"))
+    if preferred_source_id:
+        for source in sources:
+            if preferred_source_id in {source.get("source_id"), source.get("stream_name")}:
+                return source
+    preferred_source_kind = _optional_text(source_selection.get("preferred_source_kind"))
+    if preferred_source_kind:
+        matching_kind = [source for source in sources if source.get("kind") == preferred_source_kind]
+        if matching_kind:
+            return max(matching_kind, key=lambda source: (float(source.get("_coverage_ratio") or 0.0), int(source.get("point_count") or 0)))
+    return max(
+        sources,
+        key=lambda source: (
+            float(source.get("_coverage_ratio") or 0.0),
+            int(source.get("point_count") or 0),
+        ),
+    )
+
+
+def _preferred_gps_point_candidate(
+    candidates: list[dict[str, Any]],
+    source_selection: Mapping[str, Any],
+    *,
+    requested_source_id: str | None,
+) -> dict[str, Any]:
+    if requested_source_id:
+        for candidate in candidates:
+            source = candidate.get("source") if isinstance(candidate.get("source"), Mapping) else {}
+            if requested_source_id in {source.get("source_id"), source.get("stream_name")}:
+                return candidate
+    preferred_source_id = _optional_text(source_selection.get("preferred_source_id"))
+    if preferred_source_id:
+        for candidate in candidates:
+            source = candidate.get("source") if isinstance(candidate.get("source"), Mapping) else {}
+            if preferred_source_id in {source.get("source_id"), source.get("stream_name")}:
+                return candidate
+    preferred_source_kind = _optional_text(source_selection.get("preferred_source_kind"))
+    if preferred_source_kind:
+        matching_kind = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate.get("source"), Mapping)
+            and candidate["source"].get("kind") == preferred_source_kind
+        ]
+        if matching_kind:
+            return max(
+                matching_kind,
+                key=lambda candidate: (
+                    int(candidate["sampling"].get("source_points") or 0),
+                    int(candidate["sampling"].get("returned_points") or 0),
+                ),
+            )
+    return max(
+        candidates,
+        key=lambda candidate: (
+            int(candidate["sampling"].get("source_points") or 0),
+            int(candidate["sampling"].get("returned_points") or 0),
+        ),
+    )
+
+
 def _gps_columns(metadata: Mapping[str, Any], known_columns: set[str] | None) -> tuple[str | None, str | None, str | None]:
+    position_columns = metadata.get("position_columns") if isinstance(metadata.get("position_columns"), Mapping) else {}
+    latitude = _known_column(_first_text(position_columns.get("latitude"), metadata.get("latitude_column")), known_columns)
+    longitude = _known_column(_first_text(position_columns.get("longitude"), metadata.get("longitude_column")), known_columns)
+    elevation = _known_column(_first_text(metadata.get("elevation_column"), position_columns.get("elevation")), known_columns)
+    if latitude and longitude:
+        return latitude, longitude, elevation
+
+    resolved = resolve_gps_columns(metadata, known_columns=known_columns)
+    if resolved is not None:
+        return resolved.latitude, resolved.longitude, resolved.altitude
+
     column_info: dict[str, Mapping[str, Any]] = {}
     for key in ("channel_info", "signals"):
         raw = metadata.get(key)
@@ -703,6 +903,14 @@ def _gps_columns(metadata: Mapping[str, Any], known_columns: set[str] | None) ->
     return latitude, longitude, elevation
 
 
+def _known_column(value: str | None, known_columns: set[str] | None) -> str | None:
+    if value is None:
+        return None
+    if known_columns is not None and value not in known_columns:
+        return None
+    return value
+
+
 def _first_matching_column(
     column_info: Mapping[str, Mapping[str, Any]],
     known_columns: set[str] | None,
@@ -716,7 +924,16 @@ def _first_matching_column(
             candidates.append(column)
     if not candidates:
         return None
-    return sorted(candidates, key=lambda value: (0 if "gps_fit" in value.lower() else 1, value.lower()))[0]
+    return sorted(candidates, key=_gps_column_sort_key)[0]
+
+
+def _gps_column_sort_key(value: str) -> tuple[int, str]:
+    lower = value.lower()
+    if "gps_logger" in lower:
+        return (0, lower)
+    if "gps_fit" in lower:
+        return (2, lower)
+    return (1, lower)
 
 
 def _is_latitude_column(column: str, info: Mapping[str, Any]) -> bool:
@@ -743,7 +960,16 @@ def _column_semantic_text(column: str, info: Mapping[str, Any]) -> str:
     return " ".join(parts).replace("-", "_").lower()
 
 
-def _gps_source_kind(source_id: str, metadata: Mapping[str, Any], *, latitude_col: str) -> str:
+def _gps_source_kind(
+    source_id: str,
+    metadata: Mapping[str, Any],
+    *,
+    source_info: Mapping[str, Any],
+    latitude_col: str,
+) -> str:
+    explicit = _first_text(source_info.get("kind"), source_info.get("source_kind"), metadata.get("source_kind"))
+    if explicit in {"logger_sensor", "fit_enrichment", "imported_route", "unknown"}:
+        return explicit
     text_parts = [source_id, latitude_col]
     for key in ("source_kind", "source", "sensor", "filename", "fit_filename"):
         value = metadata.get(key)
@@ -758,10 +984,49 @@ def _gps_source_kind(source_id: str, metadata: Mapping[str, Any], *, latitude_co
 
 
 def _gps_timebase(metadata: Mapping[str, Any]) -> str:
-    value = _optional_text(metadata.get("kind"))
+    value = _first_text(metadata.get("timebase"), metadata.get("kind"))
     if value in {"uniform", "intermittent"}:
         return value
     return "unknown"
+
+
+def _gps_quality_columns(metadata: Mapping[str, Any], source_info: Mapping[str, Any]) -> dict[str, str]:
+    raw = source_info.get("quality_columns")
+    if not isinstance(raw, Mapping):
+        raw = metadata.get("quality_columns")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in raw.items() if value is not None}
+
+
+def _gps_route_reconstruction(metadata: Mapping[str, Any], source_info: Mapping[str, Any]) -> dict[str, Any]:
+    raw = source_info.get("route_reconstruction")
+    if not isinstance(raw, Mapping):
+        raw = metadata.get("route_reconstruction")
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def _gps_quality_summary(metadata: Mapping[str, Any], source_info: Mapping[str, Any]) -> dict[str, Any]:
+    route = _gps_route_reconstruction(metadata, source_info)
+    out: dict[str, Any] = {}
+    for source_key, public_key in (
+        ("valid_filter_applied", "valid_filter_applied"),
+        ("dedupe_method", "dedupe_method"),
+        ("cached_async_snapshots", "cached_async_snapshots"),
+        ("duplicate_snapshot_rows_removed", "duplicate_snapshot_rows_removed"),
+        ("age_ms_median", "age_ms_median"),
+        ("age_ms_max", "age_ms_max"),
+        ("gap_s_median", "route_gap_s_median"),
+        ("gap_s_max", "route_gap_s_max"),
+    ):
+        value = route.get(source_key)
+        if value is not None:
+            out[public_key] = value
+    for key in ("valid_coverage_ratio", "fresh_coverage_ratio"):
+        value = source_info.get(key, metadata.get(key))
+        if value is not None:
+            out[key] = value
+    return out
 
 
 def _gps_coverage_ratio(times: list[float], session_duration_s: float, *, gap_threshold_s: float) -> float:
@@ -865,6 +1130,8 @@ def _available_signals(
             continue
         info = {str(k): v for k, v in dict(raw_info).items()}
         if str(info.get("kind") or "").strip().lower() == "qc":
+            continue
+        if bool(info.get("semantic_selection_excluded")):
             continue
 
         signal = {
@@ -1066,10 +1333,34 @@ def _qc_summary(
     }
 
 
+def _session_summary(session_manifest: Mapping[str, Any]) -> dict[str, Any]:
+    summary = session_manifest.get("summary")
+    summary = summary if isinstance(summary, Mapping) else {}
+    out = dict(summary)
+    start_s = _number_or_none(summary.get("t_start_s"))
+    end_s = _number_or_none(summary.get("t_end_s"))
+    duration_s = _number_or_none(summary.get("duration_s"))
+    if duration_s is None and start_s is not None and end_s is not None and end_s >= start_s:
+        duration_s = end_s - start_s
+    if duration_s is not None:
+        out.setdefault("duration_s", duration_s)
+        out.setdefault("duration_min", duration_s / 60.0)
+    distance_m = _first_number(
+        summary.get("distance_m"),
+        summary.get("gps_distance_m"),
+        summary.get("route_distance_m"),
+    )
+    if distance_m is not None:
+        out.setdefault("distance_m", distance_m)
+        out.setdefault("distance_km", distance_m / 1000.0)
+    return out
+
+
 def _provenance_summary(
     *,
     run_manifest: Mapping[str, Any],
     session_manifest: Mapping[str, Any],
+    session_id: str,
 ) -> dict[str, Any]:
     source = session_manifest.get("source")
     source = source if isinstance(source, Mapping) else {}
@@ -1079,8 +1370,12 @@ def _provenance_summary(
     import_source = import_source if isinstance(import_source, Mapping) else {}
     archive_import = pipeline_config.get("archive_import")
     archive_import = archive_import if isinstance(archive_import, Mapping) else {}
+    archive_sessions = archive_import.get("sessions")
+    archive_session = archive_sessions.get(session_id) if isinstance(archive_sessions, Mapping) else {}
+    archive_session = archive_session if isinstance(archive_session, Mapping) else {}
     remote_source = source.get("remote_source")
     remote_source = remote_source if isinstance(remote_source, Mapping) else {}
+    source_context = source.get("source_context") if isinstance(source.get("source_context"), Mapping) else {}
 
     out = {
         "source_type": _first_text(source.get("import_source_type"), import_source.get("source_type")),
@@ -1088,6 +1383,33 @@ def _provenance_summary(
         "logger_id": _first_text(remote_source.get("logger_id"), source.get("logger_id")),
         "archive_name": _optional_text(source.get("original_archive_filename")),
         "processing_key": _first_text(source.get("processing_key"), archive_import.get("processing_key")),
+        "preprocessing_profile": _first_text(
+            source.get("preprocess_profile_id"),
+            archive_session.get("preprocess_profile_id"),
+            archive_session.get("preprocess_profile_path"),
+            archive_import.get("preprocess_profile_path"),
+        ),
+        "preprocess_profile_path": _first_text(
+            source.get("preprocess_profile_path"),
+            archive_session.get("preprocess_profile_path"),
+            archive_import.get("preprocess_profile_path"),
+        ),
+        "firmware_version": _first_text(
+            source.get("firmware_version"),
+            source_context.get("firmware_version"),
+            archive_session.get("firmware_version"),
+        ),
+        "bike_profile_id": _first_text(
+            source.get("bike_profile_id"),
+            source_context.get("bike_profile_id"),
+            archive_session.get("bike_profile_id"),
+        ),
+        "bike_profile_path": _first_text(
+            source.get("bike_profile_path"),
+            source_context.get("bike_profile_path"),
+            archive_session.get("bike_profile_path"),
+            archive_import.get("bike_profile_path"),
+        ),
     }
     return {key: value for key, value in out.items() if value is not None}
 
@@ -1179,6 +1501,14 @@ def _first_text(*values: Any) -> str | None:
         text = _optional_text(value)
         if text is not None:
             return text
+    return None
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        number = _number_or_none(value)
+        if number is not None:
+            return number
     return None
 
 

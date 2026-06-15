@@ -296,8 +296,10 @@ function fieldValues(session: SessionRecord, field: SessionFilterField): Array<b
       return [session.gpsSummary.quality]
     case 'gps.source':
       return [
-        session.gpsSummary.preferredSource ?? '',
+        session.gpsSummary.preferredSourceId ?? '',
+        session.gpsSummary.preferredSourceKind ?? '',
         ...session.gpsSummary.sources.map((source) => source.kind),
+        ...session.gpsSummary.sources.map((source) => source.sourceId),
         ...session.gpsSummary.sources.map((source) => source.streamName),
       ]
     case 'note.status':

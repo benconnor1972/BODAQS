@@ -28,7 +28,7 @@ export interface LibraryDataSource {
   loadTrackpointMatchQuery?(queryId: string): Promise<TrackpointMatchQueryRecord>
   loadTrackpointMatchQueryResults?(queryId: string, cursor?: string | null, limit?: number): Promise<TrackpointMatchQueryResults>
   cancelTrackpointMatchQuery?(queryId: string): Promise<TrackpointMatchQueryRecord>
-  loadSessionGpsPoints?(session: SessionRecord): Promise<SessionGpsPointSet>
+  loadSessionGpsPoints?(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
 }

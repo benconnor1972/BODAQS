@@ -31,6 +31,7 @@ def create_trackpoint_match_query_record(
     track: Mapping[str, Any],
     policy: Mapping[str, Any],
     candidate_session_refs: list[Mapping[str, Any]],
+    candidate_gps_sources: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create or resume a persisted broad trackpoint match query."""
 
@@ -39,6 +40,7 @@ def create_trackpoint_match_query_record(
         track=track,
         policy=policy,
         candidate_session_refs=candidate_session_refs,
+        candidate_gps_sources=candidate_gps_sources or [],
     )
     query_id = normalized["query_id"]
     path = _trackpoint_match_query_path(libraries_root, query_id)
@@ -61,7 +63,9 @@ def create_trackpoint_match_query_record(
         "min_count": normalized["min_count"],
         "tolerance_m": normalized["tolerance_m"],
         "persist": normalized["persist"],
+        "gps_source_selector": normalized["gps_source_selector"],
         "candidate_session_count": len(candidate_session_refs),
+        "candidate_gps_sources": [dict(ref) for ref in candidate_gps_sources or []],
         "processed_session_count": 0,
         "matched_session_count": 0,
         "failed_session_count": 0,
@@ -203,6 +207,7 @@ def _normalized_request(
     track: Mapping[str, Any],
     policy: Mapping[str, Any],
     candidate_session_refs: list[Mapping[str, Any]],
+    candidate_gps_sources: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     if not isinstance(request, Mapping):
         raise InvalidRequestError("Trackpoint match query request must be a JSON object.")
@@ -232,6 +237,7 @@ def _normalized_request(
                 str(min_count),
                 f"{tolerance_m:g}",
                 _scope_identity(scope, candidate_session_refs),
+                _gps_sources_identity(candidate_gps_sources),
             ]
         ),
         fallback="trackpoint-query",
@@ -255,6 +261,7 @@ def _normalized_request(
         "min_count": min_count,
         "tolerance_m": tolerance_m,
         "persist": persist,
+        "gps_source_selector": _gps_source_selector(request, policy),
     }
 
 
@@ -304,6 +311,31 @@ def _scope_identity(scope: Mapping[str, Any], candidate_session_refs: list[Mappi
     if isinstance(library_ids, list) and library_ids:
         return "libraries:" + ",".join(str(item) for item in library_ids)
     return "sessions:" + ",".join(str(ref.get("session_ref_id") or ref.get("session_key")) for ref in candidate_session_refs)
+
+
+def _gps_source_selector(request: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
+    raw = request.get("gps_source_selector") if isinstance(request.get("gps_source_selector"), Mapping) else {}
+    matching_policy = policy.get("matching_policy") if isinstance(policy.get("matching_policy"), Mapping) else {}
+    selector = dict(raw)
+    selector.setdefault("mode", "preferred")
+    source_preference = matching_policy.get("position_source_preference")
+    if isinstance(source_preference, list):
+        selector.setdefault("position_source_preference", [str(item) for item in source_preference])
+    return selector
+
+
+def _gps_sources_identity(candidate_gps_sources: list[Mapping[str, Any]]) -> str:
+    identity = [
+        {
+            "session_ref_id": str(item.get("session_ref_id") or ""),
+            "source_id": item.get("source_id"),
+            "kind": item.get("kind"),
+            "selection_method": item.get("selection_method"),
+            "policy": item.get("policy"),
+        }
+        for item in candidate_gps_sources
+    ]
+    return json.dumps(identity, sort_keys=True, separators=(",", ":"))
 
 
 def _write_results(libraries_root: str | Path, query_id: str, results: list[Mapping[str, Any]]) -> None:

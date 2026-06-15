@@ -48,7 +48,7 @@ channel-binding details belong in log metadata rather than the bike profile.
 
 ## 3. Recommended Storage
 
-Recommended repository-local location:
+Recommended repository-local location for packaged/default examples:
 
 ```text
 analysis/config/bike_profiles/
@@ -65,6 +65,19 @@ Example:
 ```text
 analysis/config/bike_profiles/example_enduro_bike_v1.json
 ```
+
+Import Manager-managed libraries use a workspace-level shared profile store
+instead:
+
+```text
+<libraries_root>/
+  bike_profiles/
+    <bike_profile_id>.json
+```
+
+Downstream consumers should resolve the bike profile from session/import
+provenance or source configuration. They should not infer profile ownership from
+source-local folders or from one processed library root.
 
 ## 4. Top-Level JSON Object
 

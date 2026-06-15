@@ -127,12 +127,14 @@ class LibraryAdapter:
         max_points = raw_max_points if isinstance(raw_max_points, int) and not isinstance(raw_max_points, bool) else None
         raw_window = request.get("window") if isinstance(request, Mapping) else None
         window = raw_window if isinstance(raw_window, Mapping) else None
+        source_id = str(request.get("source_id") or request.get("gps_source_id") or "").strip() or None
         return catalog_get_session_gps_points(
             self._library_root(library_id),
             session_ref,
             library_id=library_id,
             max_points=max_points,
             window=window,
+            source_id=source_id,
         )
 
     def load_session_note(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
@@ -232,12 +234,14 @@ class LibraryAdapter:
         track = self.load_track(self._track_id_for_trackpoint_query(request))
         policy = self._policy_for_match_request(request)
         candidate_refs = self._session_refs_for_trackpoint_query(request)
+        candidate_gps_sources = [self._gps_source_ref_for_session(ref) for ref in candidate_refs]
         return create_trackpoint_match_query_record(
             self.libraries_root,
             request,
             track=track,
             policy=policy,
             candidate_session_refs=candidate_refs,
+            candidate_gps_sources=candidate_gps_sources,
         )
 
     def load_trackpoint_match_query(self, query_id: str) -> dict[str, Any]:
@@ -645,6 +649,20 @@ class LibraryAdapter:
         if persist:
             write_track_match(self.libraries_root, match)
         return match
+
+    def _gps_source_ref_for_session(self, session_ref: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            row = self._catalog_row_for_session(str(session_ref["library_id"]), session_ref)
+        except Exception:
+            return {"session_ref_id": session_ref.get("session_ref_id"), "source_id": None, "kind": None}
+        gps_summary = row.get("gps_summary") if isinstance(row.get("gps_summary"), Mapping) else {}
+        return {
+            "session_ref_id": session_ref.get("session_ref_id"),
+            "source_id": gps_summary.get("preferred_source_id") or gps_summary.get("preferred_source"),
+            "kind": gps_summary.get("preferred_source_kind"),
+            "selection_method": gps_summary.get("source_selection_method"),
+            "policy": gps_summary.get("gps_source_policy"),
+        }
 
     def _trackpoint_match_result(
         self,

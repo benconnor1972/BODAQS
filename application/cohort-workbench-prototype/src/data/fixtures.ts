@@ -382,18 +382,21 @@ function gpsSummary(
   maxGapS: number,
   warnings: string[] = [],
 ): SessionGpsSummary {
+  const preferredSourceId = preferredSource === 'logger_sensor' ? 'gps_logger' : 'gps_fit'
   return {
     present: true,
-    preferredSource,
+    preferredSourceId,
+    preferredSourceKind: preferredSource,
+    sourceSelectionMethod: 'fixture',
     sessionDurationS,
     timeCoverageRatio,
     positionPointCount: pointCount,
     quality,
     sources: [
       {
-        sourceId: preferredSource === 'logger_sensor' ? 'gps_logger' : 'gps_fit',
+        sourceId: preferredSourceId,
         kind: preferredSource,
-        streamName: preferredSource === 'logger_sensor' ? 'gps_logger' : 'gps_fit',
+        streamName: preferredSourceId,
         timebase: preferredSource === 'logger_sensor' ? 'uniform' : 'intermittent',
         pointCount,
         nominalSampleRateHz: medianGapS > 0 ? 1 / medianGapS : null,
@@ -410,7 +413,9 @@ function gpsSummary(
 function noGpsSummary(sessionDurationS: number): SessionGpsSummary {
   return {
     present: false,
-    preferredSource: null,
+    preferredSourceId: null,
+    preferredSourceKind: null,
+    sourceSelectionMethod: 'fixture',
     sources: [],
     sessionDurationS,
     timeCoverageRatio: 0,
