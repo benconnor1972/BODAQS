@@ -23,6 +23,7 @@ import bodaqs_import_manager.import_agent_provisioning as provisioning_module
 import bodaqs_import_manager.import_agent_single_instance as single_instance_module
 import bodaqs_import_manager.import_agent_startup as import_agent_startup_module
 import bodaqs_import_manager.import_agent_tray as import_agent_tray_module
+import bodaqs_analysis.library_preprocessing as library_preprocessing
 from bodaqs_analysis.exporters.data_syn_bike import (
     data_syn_bike_manual_settings,
     default_data_syn_bike_export_config,
@@ -36,6 +37,11 @@ from bodaqs_analysis.import_agent import (
     load_import_source_config,
     load_import_sources,
     run_sources_once,
+)
+from bodaqs_analysis.library_preprocessing import (
+    PreprocessBatchRequest,
+    batch_result_to_study_set,
+    preprocess_requested_sessions_to_library,
 )
 from bodaqs_analysis.import_agent_sources import (
     SOURCE_TYPE_FILESYSTEM_ARCHIVE,
@@ -582,6 +588,82 @@ def test_metadata_change_changes_archive_source_identity(tmp_path):
     second = _write_session_archive(second_dir, stem="session_001", metadata_note="second")
 
     assert session_input_identity(first).source_identity != session_input_identity(second).source_identity
+
+
+def test_manual_preprocessing_batch_writes_one_run_and_draft_notes(tmp_path, monkeypatch):
+    schema_path = _write_schema(tmp_path / "event_schema.yaml")
+    profile_path = _write_preprocess_profile(tmp_path / "preprocess_profile.json", schema_path=schema_path)
+    bike_profile_path = _write_bike_profile(tmp_path / "bike_profile.json")
+    template_path = _write_session_note_template(tmp_path / "note_template.json")
+    first_csv = tmp_path / "session_a.csv"
+    second_csv = tmp_path / "session_b.csv"
+    first_csv.write_text("time_s,value\n0,1\n1,2\n", encoding="utf-8")
+    second_csv.write_text("time_s,value\n0,3\n1,4\n", encoding="utf-8")
+
+    def fake_preprocess_session(csv_path, *_args, **_kwargs):
+        session_id = Path(csv_path).stem
+        return {
+            "session": {
+                "session_id": session_id,
+                "df": pd.DataFrame({"time_s": [0.0, 1.0], "value": [1.0, 2.0]}),
+                "meta": {"signals": {}},
+                "source": {},
+            },
+            "events": pd.DataFrame(),
+            "metrics": pd.DataFrame(),
+        }
+
+    monkeypatch.setattr(library_preprocessing, "preprocess_session", fake_preprocess_session)
+
+    result = preprocess_requested_sessions_to_library(
+        PreprocessBatchRequest(
+            artifacts_dir=tmp_path / "library",
+            input_paths=(first_csv, second_csv),
+            preprocess_profile_path=profile_path,
+            bike_profile_path=bike_profile_path,
+            run_description="Manual batch",
+            attach_draft_note=True,
+            session_note_template_path=template_path,
+        )
+    )
+
+    run_manifest = json.loads(Path(result["run_manifest_path"]).read_text(encoding="utf-8"))
+    assert run_manifest["description"] == "Manual batch"
+    assert run_manifest["sessions"] == ["session_a", "session_b"]
+    assert run_manifest["pipeline_config"]["batch_policy"] == "one_run_per_requested_batch"
+    assert run_manifest["pipeline_config"]["success_count"] == 2
+    assert run_manifest["pipeline_config"]["failure_count"] == 0
+
+    run_id = result["run_id"]
+    note_path = (
+        tmp_path
+        / "library"
+        / "runs"
+        / run_id
+        / "sessions"
+        / "session_a"
+        / "annotations"
+        / "session_notes.json"
+    )
+    note = json.loads(note_path.read_text(encoding="utf-8"))
+    assert note["draft"] is True
+    assert note["template_id"] == "import_agent_test_setup"
+    assert note["values"]["bike"] == ""
+    assert note["source_context"]["origin"] == "manual_preprocessing"
+
+    copied_template = (
+        tmp_path
+        / "library"
+        / "library"
+        / "session_note_templates"
+        / "import_agent_test_setup"
+        / "1.0.json"
+    )
+    assert copied_template.exists()
+
+    study_set = batch_result_to_study_set(result, library_id="default-library")
+    assert study_set["study_set_id"].startswith("unsaved-")
+    assert [row["session_id"] for row in study_set["sessions"]] == ["session_a", "session_b"]
 
 
 def test_data_syn_bike_export_can_scale_calibrated_raw_to_full_adc_range():

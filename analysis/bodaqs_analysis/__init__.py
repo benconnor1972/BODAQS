@@ -57,6 +57,12 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "save_preprocess_profile": (".preprocess_profile", "save_preprocess_profile"),
     "validate_preprocess_config": (".preprocess_profile", "validate_preprocess_config"),
     "validate_preprocess_profile": (".preprocess_profile", "validate_preprocess_profile"),
+    "PreprocessBatchRequest": (".library_preprocessing", "PreprocessBatchRequest"),
+    "batch_result_to_study_set": (".library_preprocessing", "batch_result_to_study_set"),
+    "preprocess_requested_sessions_to_library": (
+        ".library_preprocessing",
+        "preprocess_requested_sessions_to_library",
+    ),
     "ImportAgentAppConfig": ("bodaqs_import_manager.import_agent_provisioning", "ImportAgentAppConfig"),
     "ImportAgentLibraryConfig": ("bodaqs_import_manager.import_agent_provisioning", "ImportAgentLibraryConfig"),
     "ImportSourceConfig": (".import_agent", "ImportSourceConfig"),

@@ -13,6 +13,8 @@ Current self-scoped notebooks:
 - `bodaqs_simple_suspension_metrics_self_scoped.ipynb`
 - `bodaqs_data_syn_bike_export_self_scoped.ipynb`
 - `bodaqs_event_schema_test_harness_self_scoped.ipynb`
+- `bodaqs_batch_preprocessor_self_scoped.ipynb`
+- `bodaqs_one_step_suspension_metrics_self_scoped.ipynb`
 
 Conventions:
 
@@ -22,3 +24,7 @@ Conventions:
 - Schema-driven notebooks validate that selected sessions use one matching
   frozen event schema, with central-schema fallback warnings for old artifacts.
 - The data.syn.bike export notebook has an explicit `OUTPUT_DIR`.
+- Preprocessing notebooks take explicit input paths and create one run per
+  requested batch. They do not require or update Import Manager source state.
+- Draft session notes, when enabled, are created from an explicit
+  `SESSION_NOTE_TEMPLATE_PATH`.
