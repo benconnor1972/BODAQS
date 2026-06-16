@@ -577,24 +577,30 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
     """
     Phased threshold crossing trigger.
 
-    Looks for a NEG → ZERO → POS (for dir='rising') or
-    POS → ZERO → NEG (for dir='falling') pattern in the chosen signal,
-    constrained by:
+    Looks for an ordered phase sequence in the chosen signal, constrained by:
       - trigger.search.min_delay_s / max_delay_s (resolved via _resolve_search_window)
       - trigger.search.smooth_ms (optional smoothing window)
       - bands.<neg/zero/pos>.{min,max,dwell_samples}
       - cross_samples (minimum dwell in the final band)
 
+    Phase runs must be adjacent: once the first phase is accepted, each next
+    phase must start on the immediately following sample.
+
+    Backward compatibility:
+      - dir='rising' maps to phase_sequence='neg_zero_pos'
+      - dir='falling' maps to phase_sequence='pos_zero_neg'
+      - dir='either' scans both full three-phase sequences
+
     Works for both:
-      - primary triggers (base_t0_sec=None → search over whole frame or search window)
-      - secondary triggers (base_t0_sec = time of base trigger → windowed after base)
+      - primary triggers (base_t0_sec=None -> search over whole frame or search window)
+      - secondary triggers (base_t0_sec = time of base trigger -> windowed after base)
     """
     trig = ev["trigger"]
     signal = trig.get("signal")
     if not signal:
         return []
 
-    # signal → column
+    # signal -> column
     series_name = ev["inputs"].get(signal)
     y = _series_get(df, series_name).astype(float)
     n = len(y)
@@ -603,11 +609,10 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
 
     t = _to_seconds(df["time_s"])
 
-    value = float(trig.get("value", 0.0))  # currently unused, reserved for future relative semantics
-    direction = trig.get("dir", "rising")
     search = trig.get("search", {}) or {}
     bands = trig.get("bands", {}) or {}
     cross_samples = int(trig.get("cross_samples", 1) or 1)
+    trigger_point = str(trig.get("trigger_point", "zero_center") or "zero_center")
 
     # --- Search window in index space (shared helper) ---
     i0, i1 = _resolve_search_window(trig, t, base_t0_sec)
@@ -645,56 +650,156 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
 
     neg_mask, zero_mask, pos_mask, neg_dwell, zero_dwell, pos_dwell = _band_masks(bands)
 
-    def _scan(neg_m, zero_m, pos_m, neg_dw, zero_dw, pos_dw):
-        """Find all NEG→ZERO→POS sequences within [i0, i1)."""
+    masks = {
+        "neg": neg_mask,
+        "zero": zero_mask,
+        "pos": pos_mask,
+    }
+    dwells = {
+        "neg": neg_dwell,
+        "zero": zero_dwell,
+        "pos": pos_dwell,
+    }
+
+    sequence_aliases = {
+        "rising": ("neg", "zero", "pos"),
+        "falling": ("pos", "zero", "neg"),
+        "neg_zero_pos": ("neg", "zero", "pos"),
+        "pos_zero_neg": ("pos", "zero", "neg"),
+        "zero_pos": ("zero", "pos"),
+        "zero_neg": ("zero", "neg"),
+        "pos_zero": ("pos", "zero"),
+        "neg_zero": ("neg", "zero"),
+    }
+
+    def _norm_token(value):
+        return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+    def _sequences_from_trigger():
+        phase_sequence = trig.get("phase_sequence")
+        if phase_sequence is not None:
+            if isinstance(phase_sequence, str):
+                raw_items = [phase_sequence]
+            elif isinstance(phase_sequence, (list, tuple)):
+                raw_items = list(phase_sequence)
+            else:
+                raw_items = [phase_sequence]
+        else:
+            raw_items = [trig.get("dir", "rising")]
+
+        sequences = []
+        for raw in raw_items:
+            token = _norm_token(raw or "rising")
+            if token == "either":
+                sequences.extend([
+                    sequence_aliases["neg_zero_pos"],
+                    sequence_aliases["pos_zero_neg"],
+                ])
+            elif token in sequence_aliases:
+                sequences.append(sequence_aliases[token])
+            else:
+                logger.warning(
+                    "Unknown phased threshold phase_sequence/dir %r; using rising semantics",
+                    raw,
+                )
+                sequences.append(sequence_aliases["rising"])
+
+        deduped = []
+        seen = set()
+        for sequence in sequences:
+            if sequence not in seen:
+                seen.add(sequence)
+                deduped.append(sequence)
+        return deduped or [sequence_aliases["rising"]]
+
+    def _trigger_point_index(zero_span, final_span):
+        zero_start, zero_end = zero_span
+        final_start, _final_end = final_span
+        token = _norm_token(trigger_point)
+
+        if token == "zero_start":
+            return zero_start
+        if token in ("zero_center", "zero_centre", "center", "centre"):
+            return zero_start + (zero_end - zero_start - 1) // 2
+        if token == "zero_end":
+            return zero_end - 1
+        if token == "final_start":
+            return final_start
+
+        logger.warning(
+            "Unknown phased threshold trigger_point %r; using zero_center",
+            trigger_point,
+        )
+        return zero_start + (zero_end - zero_start - 1) // 2
+
+    def _scan(sequence):
+        """Find all requested adjacent phase sequences within [i0, i1)."""
         cands = []
         i = i0
         while i < i1:
-            # 1) NEG dwell
-            j = i
-            while j < i1 and not neg_m[j]:
-                j += 1
-            if j >= i1:
-                break
-            k = j
-            while k < i1 and neg_m[k]:
-                k += 1
-            if (k - j) < neg_dw:
-                i = j + 1
-                continue
-            neg_start, neg_end = j, k
+            runs = []
 
-            # 2) ZERO band
-            j = neg_end
-            while j < i1 and not zero_m[j]:
-                j += 1
-            if j >= i1:
+            first_phase = sequence[0]
+            first_mask = masks[first_phase]
+            first_start = i
+            while first_start < i1 and not first_mask[first_start]:
+                first_start += 1
+            if first_start >= i1:
                 break
-            k = j
-            while k < i1 and zero_m[k]:
-                k += 1
-            if (k - j) < max(zero_dw, 1):
-                i = j + 1
-                continue
-            zero_start, zero_end = j, k
 
-            # 3) POS dwell
-            j = zero_end
-            while j < i1 and not pos_m[j]:
-                j += 1
-            if j >= i1:
-                break
-            k = j
-            while k < i1 and pos_m[k]:
-                k += 1
-            # require final dwell and cross_samples
-            if (k - j) < max(pos_dw, cross_samples, 1):
-                i = j + 1
-                continue
-            pos_start, pos_end = j, k
+            first_end = first_start
+            while first_end < i1 and first_mask[first_end]:
+                first_end += 1
 
-            t0_idx = pos_start
-            strength = pos_end - pos_start  # length of final dwell as crude strength
+            required = max(dwells[first_phase], 1)
+            if first_phase == sequence[-1]:
+                required = max(required, cross_samples, 1)
+
+            if (first_end - first_start) < required:
+                i = first_end
+                continue
+
+            runs.append((first_phase, first_start, first_end))
+            cursor = first_end
+            ok = True
+
+            for phase in sequence[1:]:
+                mask = masks[phase]
+                if cursor >= i1 or not mask[cursor]:
+                    ok = False
+                    break
+
+                phase_start = cursor
+                phase_end = phase_start
+                while phase_end < i1 and mask[phase_end]:
+                    phase_end += 1
+
+                required = max(dwells[phase], 1)
+                if phase == sequence[-1]:
+                    required = max(required, cross_samples, 1)
+
+                if (phase_end - phase_start) < required:
+                    ok = False
+                    break
+
+                runs.append((phase, phase_start, phase_end))
+                cursor = phase_end
+
+            if not ok:
+                i = first_end
+                continue
+
+            zero_run = next(
+                ((start, end) for phase, start, end in runs if phase == "zero"),
+                None,
+            )
+            if zero_run is None:
+                i = runs[-1][2]
+                continue
+
+            final_span = (runs[-1][1], runs[-1][2])
+            t0_idx = _trigger_point_index(zero_run, final_span)
+            strength = runs[-1][2] - runs[-1][1]
             cands.append({
                 "t0_index": int(t0_idx),
                 "t0_time": float(t[t0_idx]),
@@ -703,58 +808,14 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
             })
 
             # continue search after this full sequence
-            i = pos_end
+            i = runs[-1][2]
         return cands
 
-    # --- Direction handling ---
-    all_cands = []
-    if direction in (None, "rising"):
-        # NEG → ZERO → POS in the given bands
-        all_cands.extend(_scan(neg_mask, zero_mask, pos_mask,
-                               neg_dwell, zero_dwell, pos_dwell))
-    elif direction == "falling":
-        # POS → ZERO → NEG (swap band roles)
-        all_cands.extend(_scan(pos_mask, zero_mask, neg_mask,
-                               pos_dwell, zero_dwell, neg_dwell))
-    elif direction == "either":
-        rising = _scan(neg_mask, zero_mask, pos_mask,
-                       neg_dwell, zero_dwell, pos_dwell)
-        falling = _scan(pos_mask, zero_mask, neg_mask,
-                        pos_dwell, zero_dwell, neg_dwell)
-        merged = {}
-        for c in rising + falling:
-            merged[c["t0_index"]] = c
-        all_cands = [merged[k] for k in sorted(merged.keys())]
-    else:
-        # unknown dir → default to rising semantics
-        all_cands.extend(_scan(neg_mask, zero_mask, pos_mask,
-                               neg_dwell, zero_dwell, pos_dwell))
-
-    return all_cands
-
-
-    # --- Direction handling ---
-    all_cands = []
-    if direction in (None, "rising"):
-        all_cands.extend(_scan(neg_mask, zero_mask, pos_mask,
-                               neg_dwell, zero_dwell, pos_dwell))
-    elif direction == "falling":
-        all_cands.extend(_scan(pos_mask, zero_mask, neg_mask,
-                               pos_dwell, zero_dwell, neg_dwell))
-    elif direction == "either":
-        rising = _scan(neg_mask, zero_mask, pos_mask,
-                       neg_dwell, zero_dwell, pos_dwell)
-        falling = _scan(pos_mask, zero_mask, neg_mask,
-                        pos_dwell, zero_dwell, neg_dwell)
-        merged = {}
-        for c in rising + falling:
-            merged[c["t0_index"]] = c
-        all_cands = [merged[k] for k in sorted(merged.keys())]
-    else:
-        all_cands.extend(_scan(neg_mask, zero_mask, pos_mask,
-                               neg_dwell, zero_dwell, pos_dwell))
-
-    return all_cands
+    merged = {}
+    for sequence in _sequences_from_trigger():
+        for cand in _scan(sequence):
+            merged[cand["t0_index"]] = cand
+    return [merged[k] for k in sorted(merged.keys())]
 
 def _eval_simple_tests(df, t0_idx, t, tests, inputs_map):
     def _sel(name): return df[inputs_map[name]].to_numpy()
@@ -1102,6 +1163,9 @@ def _compute_metrics(
 
                 elif op == "min":
                     out[key_base] = float(np.nanmin(y_s))
+
+                elif op == "range":
+                    out[key_base] = float(np.nanmax(y_s) - np.nanmin(y_s))
 
                 elif op == "peak":
                     if polarity == "neg_to_pos":

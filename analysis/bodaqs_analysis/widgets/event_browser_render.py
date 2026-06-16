@@ -51,3 +51,17 @@ def set_ylim_zero_at_frac(ax_i, data_min: float, data_max: float, frac0: float, 
     ymax = (1.0 - frac0) * rng
     ax_i.set_ylim(ymin, ymax)
 
+
+def set_ylim_data_range(ax_i, data_min: float, data_max: float, pad: float = 0.05) -> None:
+    """Choose compact y-lims around the displayed data range."""
+    if not np.isfinite(data_min) or not np.isfinite(data_max):
+        return
+    if data_min == data_max:
+        span = abs(data_min) if data_min != 0 else 1.0
+        data_min -= 0.5 * span
+        data_max += 0.5 * span
+
+    span = data_max - data_min
+    margin = span * pad
+    ax_i.set_ylim(data_min - margin, data_max + margin)
+

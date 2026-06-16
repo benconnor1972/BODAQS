@@ -606,6 +606,9 @@ POSITIVE → ZERO → NEGATIVE  (for falling direction)
 
 Each band must be occupied for a minimum dwell time before transition.
 
+Schemas may also specify shorter explicit phase sequences for movement entering
+or leaving an extended zero band.
+
 ---
 
 ## 5.3 Formal Definition
@@ -614,7 +617,9 @@ TriggerDef fields:
 
 type: phased_threshold_crossing  
 signal: role  
-dir: rising | falling  
+dir: rising | falling | either  
+phase_sequence: neg_zero_pos | pos_zero_neg | zero_pos | zero_neg | pos_zero | neg_zero | null
+trigger_point: zero_start | zero_center | zero_end | final_start | null
 bands:
   neg:
     max: float
@@ -687,9 +692,38 @@ POSITIVE dwell
 
 ---
 
+## 5.6a Explicit Phase Sequences
+
+phase_sequence may be used instead of dir when a schema needs to detect entry
+to or exit from the zero band without requiring all three phases.
+It may be a single value or a list of values; list results are merged by
+t0_index.
+
+Phases in a sequence must be adjacent runs. For example, zero_pos requires an
+accepted ZERO run immediately followed by an accepted POSITIVE run. An
+intervening NEGATIVE run, another ZERO run separated by non-matching samples, or
+any no-band gap resets the sequence.
+
+Supported values:
+
+neg_zero_pos: negative dwell -> zero dwell -> positive dwell  
+pos_zero_neg: positive dwell -> zero dwell -> negative dwell  
+zero_pos: zero dwell -> positive dwell  
+zero_neg: zero dwell -> negative dwell  
+pos_zero: positive dwell -> zero dwell  
+neg_zero: negative dwell -> zero dwell  
+
+If phase_sequence is absent, dir is retained as a backward compatibility alias:
+
+rising: neg_zero_pos  
+falling: pos_zero_neg  
+either: scans both neg_zero_pos and pos_zero_neg  
+
+---
+
 ## 5.7 Cross Confirmation
 
-cross_samples defines how many consecutive samples must satisfy the final band before the trigger is emitted.
+cross_samples defines how many consecutive samples must satisfy the final band before the transition is accepted.
 
 This further suppresses spurious transitions.
 
@@ -738,6 +772,20 @@ t0_time
 transition_strength  
 
 Where:
+
+By default, t0_index and t0_time are aligned to the midpoint sample of the
+accepted ZERO band. If the ZERO band contains an even number of samples, the
+lower midpoint sample is used.
+
+trigger_point may override this alignment:
+
+zero_start: first sample in the accepted ZERO band  
+zero_center: midpoint sample in the accepted ZERO band  
+zero_end: last sample in the accepted ZERO band  
+final_start: first sample in the accepted final band  
+
+Final-band dwell and cross_samples validate the transition. They only move t0
+into the final band when trigger_point is final_start.
 
 transition_strength is typically the magnitude of the final band excursion.
 
@@ -1783,6 +1831,7 @@ Supported ops:
 • mean  
 • max  
 • min  
+• range (max(y) - min(y))  
 • delta (y_end - y_start)  
 • integral (trapezoidal)  
 
