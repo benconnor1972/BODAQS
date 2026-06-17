@@ -39,6 +39,7 @@ from bodaqs_analysis.widgets.event_browser_options import (
 )
 from bodaqs_analysis.widgets.event_browser_render import (
     choose_active_sensor,
+    set_ylim_data_range,
     set_ylim_zero_at_frac,
 )
 from bodaqs_analysis.widgets.event_browser_scope import (
@@ -759,7 +760,7 @@ def make_event_browser_widget_for_loader(
                     if not matched_cols:
                         continue
                     role_name = f"{qty}__{sensor_name}__sel_{idx}"
-                    anchor_col = matched_cols[0] if bool(w_show_all_sensors.value) else None
+                    anchor_col = matched_cols[0]
                     selected_roles.append((role_name, sensor_name, semantic, anchor_col))
 
             if not selected_roles:
@@ -838,15 +839,39 @@ def make_event_browser_widget_for_loader(
                 frac0 = (0.0 - ymin0) / (ymax0 - ymin0) if ymax0 != ymin0 else 0.5
                 frac0 = float(np.clip(frac0, 0.05, 0.95))
 
-                for ax_i in axes:
+                x_min, x_max = ax.get_xlim()
+
+                for axis_index, ax_i in enumerate(axes):
                     lines = ax_i.get_lines()
                     if not lines:
                         continue
-                    y_all = np.concatenate([ln.get_ydata() for ln in lines if ln.get_ydata() is not None])
+                    visible_y = []
+                    for line in lines:
+                        x_data = line.get_xdata()
+                        y_data = line.get_ydata()
+                        if x_data is None or y_data is None:
+                            continue
+                        x_arr = np.asarray(x_data, dtype=float)
+                        y_arr = np.asarray(y_data, dtype=float)
+                        if x_arr.shape != y_arr.shape:
+                            continue
+                        visible_mask = np.isfinite(x_arr) & np.isfinite(y_arr) & (x_arr >= x_min) & (x_arr <= x_max)
+                        if np.any(visible_mask):
+                            visible_y.append(y_arr[visible_mask])
+                    if not visible_y:
+                        visible_y = [
+                            np.asarray(ln.get_ydata(), dtype=float)
+                            for ln in lines
+                            if ln.get_ydata() is not None
+                        ]
+                    y_all = np.concatenate(visible_y)
                     y_all = y_all[np.isfinite(y_all)]
                     if y_all.size == 0:
                         continue
-                    set_ylim_zero_at_frac(ax_i, float(y_all.min()), float(y_all.max()), frac0, pad=0.05)
+                    if axis_index == 0:
+                        set_ylim_zero_at_frac(ax_i, float(y_all.min()), float(y_all.max()), frac0, pad=0.05)
+                    else:
+                        set_ylim_data_range(ax_i, float(y_all.min()), float(y_all.max()), pad=0.05)
 
                 handles = []
                 labels = []

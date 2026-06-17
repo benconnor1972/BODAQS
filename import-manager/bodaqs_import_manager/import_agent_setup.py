@@ -49,6 +49,7 @@ from .import_agent_provisioning import (
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
+    update_import_agent_source_bike_profile,
     update_import_agent_source_library,
     update_import_agent_source_display_name,
     update_import_agent_source_force_reprocess_enabled,
@@ -59,13 +60,15 @@ from .import_agent_provisioning import (
 )
 from .import_agent_profile_builders import (
     apply_bike_profile_form_values,
+    bike_profile_filename,
     bike_profile_form_values,
     build_custom_session_note_field,
     build_session_note_template_from_field_ids,
-    copy_source_bike_profile,
     copy_source_note_assets,
     derive_profile_id,
+    discover_bike_profiles,
     format_lut_text,
+    library_bike_profiles_dir,
     load_session_note_field_catalog,
     load_source_bike_setup_preset,
     load_source_bike_profile,
@@ -74,6 +77,7 @@ from .import_agent_profile_builders import (
     normalize_rear_lut_with_endpoints,
     parse_lut_text,
     rear_wheel_lut_from_profile,
+    save_bike_profile_path,
     save_source_bike_profile,
     save_source_session_note_assets,
     set_rear_wheel_lut_transform,
@@ -369,6 +373,15 @@ class ImportAgentManagerController:
         self.app_config = updated
         return updated
 
+    def set_source_bike_profile(self, source_id: str, bike_profile_path: Path) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_bike_profile(
+            self.app_config_path,
+            source_id=source_id,
+            bike_profile_path=bike_profile_path,
+        )
+        self.app_config = updated
+        return updated
+
     def set_source_display_name(self, source_id: str, display_name: str) -> ImportAgentAppConfig:
         updated = update_import_agent_source_display_name(
             self.app_config_path,
@@ -415,9 +428,13 @@ class ImportAgentManagerController:
             raise ValueError("No enabled managed sources are available.")
         return ImportAgentSupervisor(sources)
 
-    def import_once(self) -> tuple[dict[str, Any], dict[str, Any]]:
+    def import_once(
+        self,
+        *,
+        progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         supervisor = self.make_enabled_supervisor()
-        report = supervisor.scan_all_once()
+        report = supervisor.scan_all_once(progress_callback=progress_callback)
         return report, supervisor.snapshot()
 
 
@@ -449,12 +466,21 @@ class ImportAgentWatchService:
             self._thread = None
         return stopped
 
+    def _queue_progress(self, progress: Mapping[str, Any]) -> None:
+        self.event_queue.put(
+            {
+                "kind": "import_progress",
+                "origin": "watch",
+                "progress": dict(progress),
+            }
+        )
+
     def _run(self) -> None:
         self.event_queue.put({"kind": "watch_started"})
         try:
             while not self._stop_event.is_set():
                 now_s = time.time()
-                reports = self.supervisor.scan_due(now_s=now_s)
+                reports = self.supervisor.scan_due(now_s=now_s, progress_callback=self._queue_progress)
                 if reports:
                     self.event_queue.put(
                         {
@@ -496,6 +522,7 @@ class ImportAgentManagerWindow:
         self.args = args
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.watch_service: Optional[ImportAgentWatchService] = None
+        self.import_now_thread: Optional[threading.Thread] = None
         self.tray_icon: Optional[ImportAgentTrayIcon] = None
         self.watch_state_var = tk.StringVar(value="Watcher stopped.")
         self.manager_status_var = tk.StringVar(value="Ready.")
@@ -1232,6 +1259,147 @@ class ImportAgentManagerWindow:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
+    def _progress_int(self, progress: Mapping[str, Any], key: str, default: int = 0) -> int:
+        try:
+            return int(progress.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _source_status_from_progress(self, progress: Mapping[str, Any]) -> Optional[str]:
+        event = str(progress.get("event") or "")
+        if event == "source_scan_started":
+            return "scanning..."
+        if event == "remote_acquisition_started":
+            return "checking logger..."
+        if event == "remote_status":
+            state = str(progress.get("remote_state") or "unknown")
+            if state == "waiting_upload_mode":
+                return "waiting for upload mode"
+            if state == "error":
+                return f"error: {progress.get('error')}"
+            return state
+        if event == "remote_sessions_detected":
+            return f"{self._progress_int(progress, 'session_count')} remote session(s) detected"
+        if event == "remote_session_download_started":
+            return (
+                f"downloading remote {self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}"
+            )
+        if event == "remote_session_downloaded":
+            return (
+                f"downloaded remote {self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}"
+            )
+        if event == "remote_session_failed":
+            return (
+                f"remote failed {self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}"
+            )
+        if event == "archives_detected":
+            count = self._progress_int(progress, "archive_count")
+            return f"{count} archive(s) detected" if count else "no archives detected"
+        if event == "archive_deferred":
+            return (
+                f"deferred {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_processing_started":
+            return (
+                f"processing {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_imported":
+            return (
+                f"imported {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_failed":
+            return (
+                f"failed {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "archive_skipped":
+            return (
+                f"skipped {self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}"
+            )
+        if event == "source_scan_completed":
+            totals = progress.get("totals")
+            if isinstance(totals, Mapping):
+                return (
+                    f"complete: seen={totals.get('seen', 0)} imported={totals.get('imported', 0)} "
+                    f"failed={totals.get('failed', 0)}"
+                )
+        return None
+
+    def _format_import_progress_log(self, progress: Mapping[str, Any], *, origin: str) -> Optional[str]:
+        event = str(progress.get("event") or "")
+        source_id = str(progress.get("source_id") or "")
+        label = "Watch" if origin == "watch" else "Import"
+        archive_name = str(progress.get("archive_name") or "")
+        remote_session_id = str(progress.get("remote_session_id") or "")
+
+        if event == "remote_status":
+            state = str(progress.get("remote_state") or "unknown")
+            if origin == "watch" and state not in {"error"}:
+                return None
+            detail = progress.get("error") or progress.get("message") or state
+            return f"{label} source {source_id}: logger status {detail}."
+        if event == "remote_sessions_detected":
+            count = self._progress_int(progress, "session_count")
+            if origin == "watch" and count == 0:
+                return None
+            return f"{label} source {source_id}: detected {count} remote session(s)."
+        if event == "remote_session_download_started":
+            return (
+                f"{label} source {source_id}: downloading remote "
+                f"{self._progress_int(progress, 'remote_session_index')}/"
+                f"{self._progress_int(progress, 'remote_session_count')}: {remote_session_id}"
+            )
+        if event == "remote_session_downloaded":
+            return f"{label} source {source_id}: downloaded remote session {remote_session_id}."
+        if event == "remote_session_failed":
+            return f"{label} source {source_id}: remote session {remote_session_id} failed: {progress.get('error')}"
+        if event == "remote_session_skipped":
+            return (
+                f"{label} source {source_id}: skipped remote session {remote_session_id} "
+                f"({progress.get('reason')})."
+            )
+        if event == "archives_detected":
+            count = self._progress_int(progress, "archive_count")
+            if origin == "watch" and count == 0:
+                return None
+            return f"{label} source {source_id}: detected {count} archive(s)."
+        if event == "archive_deferred":
+            return f"{label} source {source_id}: deferred {archive_name} while it settles."
+        if event == "archive_processing_started":
+            return (
+                f"{label} source {source_id}: processing "
+                f"{self._progress_int(progress, 'archive_index')}/"
+                f"{self._progress_int(progress, 'archive_count')}: {archive_name}"
+            )
+        if event == "archive_imported":
+            session_id = progress.get("session_id")
+            suffix = f" -> {session_id}" if session_id else ""
+            return f"{label} source {source_id}: imported {archive_name}{suffix}."
+        if event == "archive_failed":
+            return f"{label} source {source_id}: failed {archive_name}: {progress.get('error')}"
+        if event == "archive_skipped":
+            return f"{label} source {source_id}: skipped {archive_name} ({progress.get('reason')})."
+        return None
+
+    def _handle_import_progress(self, progress: Mapping[str, Any], *, origin: str) -> None:
+        source_id = str(progress.get("source_id") or "")
+        status = self._source_status_from_progress(progress)
+        if source_id and status:
+            self._set_source_runtime_status(source_id, status)
+
+        message = self._format_import_progress_log(progress, origin=origin)
+        if message:
+            self.manager_status_var.set(message)
+            self._append_log(message)
+            self._refresh_tray()
+
     def _set_manager_status(self, message: str) -> None:
         self.manager_status_var.set(message)
         self._append_log(message)
@@ -1525,6 +1693,88 @@ class ImportAgentManagerWindow:
         self.root.wait_window(dialog)
         return result["source"]
 
+    def _managed_library_bike_profile_choices(
+        self,
+        library_id: str,
+    ) -> tuple[list[str], dict[str, tuple[Path, dict[str, Any]]]]:
+        library = self._managed_library_config(library_id)
+        records = discover_bike_profiles(library_bike_profiles_dir(library.artifacts_dir))
+        choices: list[str] = []
+        choice_map: dict[str, tuple[Path, dict[str, Any]]] = {}
+        for path, profile in records:
+            display = str(profile.get("display_name") or profile.get("bike_profile_id") or path.stem).strip()
+            profile_id = str(profile.get("bike_profile_id") or path.stem).strip()
+            label = f"{display} ({profile_id})" if profile_id and profile_id != display else display
+            if label in choice_map:
+                label = f"{label} [{path.name}]"
+            suffix = 2
+            base_label = label
+            while label in choice_map:
+                label = f"{base_label} #{suffix}"
+                suffix += 1
+            choices.append(label)
+            choice_map[label] = (path, profile)
+        return choices, choice_map
+
+    def _choose_bike_profile_dialog(self, *, source: Any, title: str) -> Optional[tuple[Path, dict[str, Any]]]:
+        choices, choice_map = self._managed_library_bike_profile_choices(source.library_id)
+        if not choices:
+            messagebox.showinfo(
+                _APP_DISPLAY_NAME,
+                "No shared bike profiles are available in this workspace.",
+                parent=self.root,
+            )
+            return None
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        selected = tk.StringVar(value=choices[0])
+        try:
+            current_path, _current_profile = load_source_bike_profile(source.source_root)
+        except Exception:
+            current_path = None
+        if current_path is not None:
+            for label, (path, _profile) in choice_map.items():
+                if path == current_path:
+                    selected.set(label)
+                    break
+
+        ttk.Label(dialog, text="Choose the shared bike profile for this source.", justify="left").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(12, 6)
+        )
+        combo = ttk.Combobox(dialog, textvariable=selected, values=choices, state="readonly", width=64)
+        combo.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        result: dict[str, Optional[tuple[Path, dict[str, Any]]]] = {"profile": None}
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 12))
+
+        def accept() -> None:
+            result["profile"] = choice_map.get(selected.get())
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Apply", command=accept).grid(row=0, column=1)
+        combo.focus_set()
+        self.root.wait_window(dialog)
+        return result["profile"]
+
+    def _unique_library_bike_profile_path(self, profiles_dir: Path, profile: Mapping[str, Any]) -> Path:
+        candidate = profiles_dir / bike_profile_filename(profile)
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix_text = candidate.suffix
+        suffix = 2
+        while True:
+            candidate = profiles_dir / f"{stem}-{suffix}{suffix_text}"
+            if not candidate.exists():
+                return candidate
+            suffix += 1
+
     def _change_selected_source_library(self) -> None:
         if not self._guard_watch_inactive(action_label="Change Target Library"):
             return
@@ -1534,6 +1784,7 @@ class ImportAgentManagerWindow:
             if target_library_id is None or target_library_id == source.library_id:
                 return
             self.controller.set_source_library(source.source_id, target_library_id)
+            sync_source_bike_setup_preset(source.source_root)
         except Exception as exc:
             self._set_manager_status(f"Change target library failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
@@ -1542,6 +1793,69 @@ class ImportAgentManagerWindow:
         if self.sources_tree is not None and self.sources_tree.exists(source.source_id):
             self.sources_tree.selection_set(source.source_id)
         self._set_manager_status(f"Source '{source.source_id}' now targets library '{target_library_id}'.")
+
+    def _assign_selected_bike_profile(self) -> None:
+        if not self._guard_watch_inactive(action_label="Assign Bike Profile"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            selected = self._choose_bike_profile_dialog(source=source, title="Assign Bike Profile")
+            if selected is None:
+                return
+            profile_path, profile = selected
+            self.controller.set_source_bike_profile(source.source_id, profile_path)
+            sync_source_bike_setup_preset(source.source_root)
+        except Exception as exc:
+            self._set_manager_status(f"Assign bike profile failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.sources_tree is not None and self.sources_tree.exists(source.source_id):
+            self.sources_tree.selection_set(source.source_id)
+        profile_name = str(profile.get("display_name") or profile.get("bike_profile_id") or profile_path.stem)
+        self._set_manager_status(f"Assigned bike profile '{profile_name}' to source '{source.source_id}'.")
+
+    def _duplicate_selected_bike_profile(self) -> None:
+        if not self._guard_watch_inactive(action_label="Duplicate Bike Profile"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            _current_path, current_profile = load_source_bike_profile(source.source_root)
+            default_name = str(current_profile.get("display_name") or "Bike Profile").strip()
+            requested_name = simpledialog.askstring(
+                "Duplicate Bike Profile",
+                "New bike profile name:",
+                initialvalue=f"{default_name} Copy",
+                parent=self.root,
+            )
+            if requested_name is None:
+                return
+            display_name = requested_name.strip()
+            if not display_name:
+                raise ValueError("Bike profile name must be a non-empty string")
+            library = self._managed_library_config(source.library_id)
+            profiles_dir = library_bike_profiles_dir(library.artifacts_dir)
+            existing_ids = [
+                str(profile.get("bike_profile_id"))
+                for _path, profile in discover_bike_profiles(profiles_dir)
+                if str(profile.get("bike_profile_id") or "").strip()
+            ]
+            updated_profile = copy.deepcopy(dict(current_profile))
+            updated_profile["display_name"] = display_name
+            updated_profile["bike_profile_id"] = derive_profile_id(
+                display_name,
+                existing_ids=existing_ids,
+                fallback="bike-profile",
+            )
+            target_path = self._unique_library_bike_profile_path(profiles_dir, updated_profile)
+            save_bike_profile_path(target_path, updated_profile)
+        except Exception as exc:
+            self._set_manager_status(f"Duplicate bike profile failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._set_manager_status(
+            f"Created bike profile '{display_name}'. Use Assign bike profile to select it for a source."
+        )
 
     def _managed_source_asset_choices(
         self,
@@ -1627,6 +1941,7 @@ class ImportAgentManagerWindow:
         dialog.rowconfigure(1, weight=1)
 
         profile_state: dict[str, dict[str, Any]] = {"profile": profile}
+        lut_input_unit_var = tk.StringVar(value=str(form_values.get("rear_shock_lut_input_unit") or "mm"))
 
         field_defs = [
             ("Display name", "display_name"),
@@ -1638,21 +1953,18 @@ class ImportAgentManagerWindow:
             ("Bike notes", "bike_notes"),
             ("Front fork travel (mm)", "front_fork_travel_mm"),
             ("Steering head angle (deg)", "front_head_angle_deg"),
-            ("Rear shock travel (mm)", "rear_shock_travel_mm"),
+            ("Rear sensor input range", "rear_shock_travel_mm"),
             ("Rear wheel travel (mm)", "rear_wheel_travel_mm"),
         ]
         variables: dict[str, tk.StringVar] = {}
+        field_labels: dict[str, ttk.Label] = {}
 
         form = ttk.Frame(dialog, padding=(12, 12, 12, 4))
         form.grid(row=0, column=0, sticky="ew")
         form.columnconfigure(1, weight=1)
-        bike_choices, bike_choice_map = self._managed_source_asset_choices(
-            exclude_source_id=source.source_id,
-            loader=load_source_bike_profile,
-            label_fields=("display_name", "bike_profile_id"),
-        )
+        bike_choices, bike_choice_map = self._managed_library_bike_profile_choices(source.library_id)
         bike_create_from_var = tk.StringVar(value=bike_choices[0] if bike_choices else "")
-        ttk.Label(form, text="Create from").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Label(form, text="Load from").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
         create_from_frame = ttk.Frame(form)
         create_from_frame.grid(row=0, column=1, sticky="ew", pady=(0, 6))
         create_from_frame.columnconfigure(0, weight=1)
@@ -1665,10 +1977,24 @@ class ImportAgentManagerWindow:
         bike_create_combo.grid(row=0, column=0, sticky="ew")
         field_start_row = 1
         for row, (label, key) in enumerate(field_defs, start=field_start_row):
-            ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+            label_widget = ttk.Label(form, text=label)
+            label_widget.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+            field_labels[key] = label_widget
             var = tk.StringVar(value=str(form_values.get(key, "")))
             variables[key] = var
             ttk.Entry(form, textvariable=var).grid(row=row, column=1, sticky="ew", pady=3)
+
+        unit_row = field_start_row + len(field_defs)
+        ttk.Label(form, text="Rear LUT input unit").grid(row=unit_row, column=0, sticky="w", padx=(0, 8), pady=(8, 3))
+        unit_frame = ttk.Frame(form)
+        unit_frame.grid(row=unit_row, column=1, sticky="w", pady=(8, 3))
+        ttk.Radiobutton(unit_frame, text="mm", variable=lut_input_unit_var, value="mm").grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(unit_frame, text="deg", variable=lut_input_unit_var, value="deg").grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(12, 0),
+        )
 
         def current_note_profile_label() -> str:
             try:
@@ -1681,7 +2007,7 @@ class ImportAgentManagerWindow:
                 or "Source bike setup"
             )
 
-        note_row = field_start_row + len(field_defs)
+        note_row = unit_row + 1
         note_name_var = tk.StringVar(value=current_note_profile_label())
         ttk.Label(form, text="Note profile").grid(row=note_row, column=0, sticky="w", padx=(0, 8), pady=(8, 3))
         note_frame = ttk.Frame(form)
@@ -1695,7 +2021,7 @@ class ImportAgentManagerWindow:
         lut_frame.rowconfigure(1, weight=1)
         ttk.Label(
             lut_frame,
-            text="Map rear shock travel to rear wheel travel. Select a row to edit it, or insert a new row before the selection.",
+            text="Map rear sensor travel to rear wheel travel. Select a row to edit it, or insert a new row before the selection.",
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
         table_frame = ttk.Frame(lut_frame)
@@ -1704,7 +2030,7 @@ class ImportAgentManagerWindow:
         table_frame.rowconfigure(0, weight=1)
         lut_sheet = Sheet(
             table_frame,
-            headers=["Shock mm", "Wheel mm"],
+            headers=[f"sensor {lut_input_unit_var.get() if lut_input_unit_var.get() == 'deg' else 'mm'}", "Wheel mm"],
             data=[[f"{point['input']:g}", f"{point['output']:g}"] for point in lut_rows],
             width=300,
             height=210,
@@ -1750,12 +2076,26 @@ class ImportAgentManagerWindow:
                 shock = float(variables["rear_shock_travel_mm"].get())
                 wheel = float(variables["rear_wheel_travel_mm"].get())
             except (TypeError, ValueError):
-                raise ValueError("Rear shock travel and rear wheel travel must be numeric") from None
+                raise ValueError("Rear sensor travel and rear wheel travel must be numeric") from None
             if not math.isfinite(shock) or shock <= 0.0:
-                raise ValueError("Rear shock travel must be greater than zero")
+                raise ValueError("Rear sensor travel must be greater than zero")
             if not math.isfinite(wheel) or wheel <= 0.0:
                 raise ValueError("Rear wheel travel must be greater than zero")
             return shock, wheel
+
+        def lut_input_unit() -> str:
+            return "deg" if str(lut_input_unit_var.get()).strip().lower() == "deg" else "mm"
+
+        def apply_lut_unit_labels(*_args: Any) -> None:
+            unit = lut_input_unit()
+            rear_label = field_labels.get("rear_shock_travel_mm")
+            if rear_label is not None:
+                rear_label.configure(text=f"Rear sensor input range ({unit})")
+            try:
+                lut_sheet.headers([f"sensor {unit}", "Wheel mm"], redraw=True)
+            except Exception:
+                pass
+            render_lut_graph()
 
         def apply_lut_endpoint_state() -> None:
             total_rows = lut_sheet.get_total_rows()
@@ -1819,7 +2159,7 @@ class ImportAgentManagerWindow:
             rows: list[dict[str, float]] = []
             for row_number, raw_row in enumerate(lut_sheet.get_sheet_data(), start=1):
                 if len(raw_row) < 2:
-                    raise ValueError(f"LUT row {row_number} must contain shock and wheel values")
+                    raise ValueError(f"LUT row {row_number} must contain sensor and wheel values")
                 if str(raw_row[0]).strip() == "" and str(raw_row[1]).strip() == "":
                     continue
                 try:
@@ -1850,7 +2190,13 @@ class ImportAgentManagerWindow:
             y1 = margin_top
             graph_canvas.create_line(x0, y0, x1, y0, fill="#777777")
             graph_canvas.create_line(x0, y0, x0, y1, fill="#777777")
-            graph_canvas.create_text((x0 + x1) / 2, height - 9, text="Shock mm", fill="#555555", font=("TkDefaultFont", 8))
+            graph_canvas.create_text(
+                (x0 + x1) / 2,
+                height - 9,
+                text=f"Sensor {lut_input_unit()}",
+                fill="#555555",
+                font=("TkDefaultFont", 8),
+            )
             graph_canvas.create_text(14, (y0 + y1) / 2, text="Wheel", fill="#555555", font=("TkDefaultFont", 8), angle=90)
             try:
                 points = current_lut_rows()
@@ -1916,7 +2262,7 @@ class ImportAgentManagerWindow:
             if index == 0 or index == lut_sheet.get_total_rows() - 1:
                 messagebox.showinfo(
                     _APP_DISPLAY_NAME,
-                    "The first and last LUT rows are set from rear shock and rear wheel travel.",
+                    "The first and last LUT rows are set from rear sensor and rear wheel travel.",
                     parent=dialog,
                 )
                 return
@@ -1931,11 +2277,13 @@ class ImportAgentManagerWindow:
             values = bike_profile_form_values(profile_state["profile"])
             for key, var in variables.items():
                 var.set(str(values.get(key, "")))
+            lut_input_unit_var.set(str(values.get("rear_shock_lut_input_unit") or "mm"))
             transform_payload = rear_wheel_lut_from_profile(profile_state["profile"])
             if transform_payload is None:
                 set_lut_sheet_rows([])
             else:
                 set_lut_sheet_rows(transform_payload.get("lut", []))
+            apply_lut_unit_labels()
 
         def create_bike_from_selected() -> None:
             selected_label = bike_create_from_var.get()
@@ -1944,11 +2292,11 @@ class ImportAgentManagerWindow:
             candidate = bike_choice_map.get(selected_label)
             if candidate is None:
                 return
-            candidate_source, candidate_profile = candidate
+            candidate_path, candidate_profile = candidate
             if not messagebox.askyesno(
                 _APP_DISPLAY_NAME,
                 f"Replace the bike profile currently shown with '{candidate_profile.get('display_name')}' "
-                f"from source '{candidate_source.display_name}'?",
+                f"from '{candidate_path.name}'?",
                 parent=dialog,
             ):
                 return
@@ -1956,7 +2304,7 @@ class ImportAgentManagerWindow:
 
         ttk.Button(
             create_from_frame,
-            text="Create",
+            text="Load",
             command=create_bike_from_selected,
             state=("normal" if bike_choices else "disabled"),
         ).grid(row=0, column=1, sticky="e", padx=(8, 0))
@@ -1967,9 +2315,11 @@ class ImportAgentManagerWindow:
         graph_canvas.bind("<Configure>", lambda _event: render_lut_graph())
         variables["rear_shock_travel_mm"].trace_add("write", sync_lut_endpoints_from_travel)
         variables["rear_wheel_travel_mm"].trace_add("write", sync_lut_endpoints_from_travel)
+        lut_input_unit_var.trace_add("write", apply_lut_unit_labels)
         set_lut_sheet_rows(lut_rows)
         if lut_rows:
             lut_sheet.select_cell(0, 0)
+        apply_lut_unit_labels()
         render_lut_graph()
 
         saved = {"ok": False}
@@ -1979,10 +2329,12 @@ class ImportAgentManagerWindow:
         def save_profile() -> bool:
             try:
                 values = {key: var.get() for key, var in variables.items()}
+                values["rear_shock_lut_input_unit"] = lut_input_unit()
                 updated = apply_bike_profile_form_values(profile_state["profile"], values)
                 updated = set_rear_wheel_lut_transform(
                     updated,
                     current_lut_rows(),
+                    input_unit=lut_input_unit(),
                     enabled=bool(lut_options["enabled"]),
                     interpolation=str(lut_options["interpolation"]),
                     extrapolation=str(lut_options["extrapolation"]),
@@ -2049,8 +2401,9 @@ class ImportAgentManagerWindow:
             source = self._selected_managed_source_config()
             _profile_path, profile = load_source_bike_profile(source.source_root)
             transform = rear_wheel_lut_from_profile(profile)
+            values = bike_profile_form_values(profile)
+            input_unit = str(values.get("rear_shock_lut_input_unit") or "mm")
             if transform is None:
-                values = bike_profile_form_values(profile)
                 shock_travel = float(values.get("rear_shock_travel_mm") or 1.0)
                 wheel_travel = float(values.get("rear_wheel_travel_mm") or shock_travel)
                 points = [{"input": 0.0, "output": 0.0}, {"input": shock_travel, "output": wheel_travel}]
@@ -2075,9 +2428,13 @@ class ImportAgentManagerWindow:
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(2, weight=1)
 
+        input_unit_var = tk.StringVar(value="deg" if input_unit == "deg" else "mm")
+        instruction_var = tk.StringVar(
+            value=f"Enter one LUT point per line as: rear sensor {input_unit_var.get()}, rear wheel mm"
+        )
         ttk.Label(
             dialog,
-            text="Enter one LUT point per line as: rear shock mm, rear wheel mm",
+            textvariable=instruction_var,
             justify="left",
         ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
         options = ttk.Frame(dialog)
@@ -2086,22 +2443,36 @@ class ImportAgentManagerWindow:
         interpolation_var = tk.StringVar(value=interpolation)
         extrapolation_var = tk.StringVar(value=extrapolation)
         ttk.Checkbutton(options, text="Enabled", variable=enabled_var).grid(row=0, column=0, sticky="w")
-        ttk.Label(options, text="Interpolation").grid(row=0, column=1, sticky="w", padx=(18, 6))
+        ttk.Label(options, text="Input").grid(row=0, column=1, sticky="w", padx=(18, 6))
+        ttk.Radiobutton(options, text="mm", variable=input_unit_var, value="mm").grid(row=0, column=2, sticky="w")
+        ttk.Radiobutton(options, text="deg", variable=input_unit_var, value="deg").grid(
+            row=0,
+            column=3,
+            sticky="w",
+            padx=(8, 0),
+        )
+        ttk.Label(options, text="Interpolation").grid(row=0, column=4, sticky="w", padx=(18, 6))
         ttk.Combobox(
             options,
             textvariable=interpolation_var,
             values=("linear", "nearest"),
             state="readonly",
             width=10,
-        ).grid(row=0, column=2, sticky="w")
-        ttk.Label(options, text="Extrapolation").grid(row=0, column=3, sticky="w", padx=(18, 6))
+        ).grid(row=0, column=5, sticky="w")
+        ttk.Label(options, text="Extrapolation").grid(row=0, column=6, sticky="w", padx=(18, 6))
         ttk.Combobox(
             options,
             textvariable=extrapolation_var,
             values=("linear", "clamp", "error"),
             state="readonly",
             width=10,
-        ).grid(row=0, column=4, sticky="w")
+        ).grid(row=0, column=7, sticky="w")
+        input_unit_var.trace_add(
+            "write",
+            lambda *_args: instruction_var.set(
+                f"Enter one LUT point per line as: rear sensor {input_unit_var.get()}, rear wheel mm"
+            ),
+        )
 
         text_frame = ttk.Frame(dialog)
         text_frame.grid(row=2, column=0, sticky="nsew", padx=12)
@@ -2124,6 +2495,7 @@ class ImportAgentManagerWindow:
                 updated = set_rear_wheel_lut_transform(
                     profile,
                     points,
+                    input_unit=input_unit_var.get(),
                     enabled=enabled_var.get(),
                     interpolation=interpolation_var.get(),
                     extrapolation=extrapolation_var.get(),
@@ -2506,20 +2878,7 @@ class ImportAgentManagerWindow:
         return saved["ok"]
 
     def _copy_selected_bike_profile_from_source(self) -> None:
-        if not self._guard_watch_inactive(action_label="Copy Bike Profile"):
-            return
-        try:
-            target = self._selected_managed_source_config()
-            source = self._choose_source_dialog(title="Copy Bike Profile", exclude_source_id=target.source_id)
-            if source is None:
-                return
-            copy_source_bike_profile(source.source_root, target.source_root)
-            sync_source_bike_setup_preset(target.source_root)
-        except Exception as exc:
-            self._set_manager_status(f"Copy bike profile failed: {exc}")
-            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
-            return
-        self._set_manager_status(f"Copied bike profile from '{source.source_id}' to '{target.source_id}'.")
+        self._duplicate_selected_bike_profile()
 
     def _copy_selected_note_template_from_source(self) -> None:
         if not self._guard_watch_inactive(action_label="Copy Note Template"):
@@ -2613,6 +2972,8 @@ class ImportAgentManagerWindow:
 
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="Edit bike", command=self._edit_selected_bike_profile)
+        menu.add_command(label="Assign bike profile", command=self._assign_selected_bike_profile)
+        menu.add_command(label="Duplicate bike profile", command=self._duplicate_selected_bike_profile)
         menu.add_command(label="Change target library", command=self._change_selected_source_library)
         menu.add_command(label="Details", command=self._show_selected_source_details)
         if source.source_type == SOURCE_TYPE_LOGGER_WIFI:
@@ -3053,6 +3414,9 @@ class ImportAgentManagerWindow:
     def _watch_running(self) -> bool:
         return self.watch_service is not None and self.watch_service.running
 
+    def _import_now_running(self) -> bool:
+        return self.import_now_thread is not None and self.import_now_thread.is_alive()
+
     def _has_enabled_sources(self) -> bool:
         config = self.controller.app_config
         return bool(config and any(source.enabled for source in config.sources))
@@ -3067,6 +3431,18 @@ class ImportAgentManagerWindow:
                 f"Stop the watcher before running '{action_label}'.",
                 parent=parent or self.root,
             )
+            return False
+        return True
+
+    def _guard_import_now_inactive(self, *, action_label: str, parent: Optional[tk.Misc] = None) -> bool:
+        if self._import_now_running():
+            messagebox.showinfo(
+                _APP_DISPLAY_NAME,
+                f"Wait for the current import to finish before running '{action_label}'.",
+                parent=parent or self.root,
+            )
+            return False
+        if not self._guard_import_now_inactive(action_label=action_label, parent=parent):
             return False
         return True
 
@@ -3090,9 +3466,15 @@ class ImportAgentManagerWindow:
             "auto_start": bool(config.auto_start) if config is not None else False,
             "watch_running": self._watch_running(),
             "window_visible": self._window_visible(),
-            "can_start_watch": config is not None and self._has_enabled_sources() and not self._watch_running(),
+            "import_now_running": self._import_now_running(),
+            "can_start_watch": (
+                config is not None
+                and self._has_enabled_sources()
+                and not self._watch_running()
+                and not self._import_now_running()
+            ),
             "can_stop_watch": self._watch_running(),
-            "can_import_now": config is not None and not self._watch_running(),
+            "can_import_now": config is not None and not self._watch_running() and not self._import_now_running(),
             "source_count": len(config.sources) if config is not None else 0,
         }
 
@@ -3499,12 +3881,52 @@ class ImportAgentManagerWindow:
         if not self._guard_watch_inactive(action_label="Import Now"):
             return
         try:
-            report, snapshot = self.controller.import_once()
+            supervisor = self.controller.make_enabled_supervisor()
         except Exception as exc:
             self._set_manager_status(f"Import failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
 
+        self.import_now_thread = threading.Thread(
+            target=self._run_import_now_worker,
+            args=(supervisor,),
+            name="ImportAgentImportNow",
+            daemon=True,
+        )
+        self.import_now_thread.start()
+        self._set_manager_status("Import started.")
+        self._refresh_tray()
+
+    def _queue_import_now_progress(self, progress: Mapping[str, Any]) -> None:
+        self.event_queue.put(
+            {
+                "kind": "import_progress",
+                "origin": "import_now",
+                "progress": dict(progress),
+            }
+        )
+
+    def _run_import_now_worker(self, supervisor: ImportAgentSupervisor) -> None:
+        try:
+            report = supervisor.scan_all_once(progress_callback=self._queue_import_now_progress)
+            self.event_queue.put(
+                {
+                    "kind": "import_now_complete",
+                    "report": report,
+                    "snapshot": supervisor.snapshot(),
+                }
+            )
+        except Exception as exc:
+            self.event_queue.put(
+                {
+                    "kind": "import_now_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        finally:
+            self.event_queue.put({"kind": "import_now_finished"})
+
+    def _handle_import_now_complete(self, report: dict[str, Any], snapshot: dict[str, Any]) -> None:
         totals = report.get("totals", {})
         self._set_manager_status(
             "Import complete: "
@@ -3523,6 +3945,8 @@ class ImportAgentManagerWindow:
 
     def _start_watch(self, *, show_errors: bool = True) -> None:
         if self._watch_running():
+            return
+        if not self._guard_import_now_inactive(action_label="Start Watch"):
             return
         try:
             supervisor = self.controller.make_enabled_supervisor()
@@ -3669,6 +4093,24 @@ class ImportAgentManagerWindow:
                         f"seen={totals['seen']} imported={totals['imported']} "
                         f"deferred={totals['deferred_unsettled']} failed={totals['failed']}"
                     )
+            elif kind == "import_progress":
+                progress = item.get("progress", {})
+                if isinstance(progress, Mapping):
+                    self._handle_import_progress(
+                        progress,
+                        origin=str(item.get("origin") or ""),
+                    )
+            elif kind == "import_now_complete":
+                report = item.get("report", {})
+                snapshot = item.get("snapshot", {})
+                if isinstance(report, dict) and isinstance(snapshot, dict):
+                    self._handle_import_now_complete(report, snapshot)
+            elif kind == "import_now_error":
+                error = str(item.get("error") or "Unknown import error")
+                self._set_manager_status(f"Import failed: {error}")
+                messagebox.showerror(_APP_DISPLAY_NAME, error, parent=self.root)
+            elif kind == "import_now_finished":
+                self.import_now_thread = None
             elif kind == "watch_error":
                 self.watch_state_var.set("Watcher error.")
                 self._append_log(f"Watcher error: {item.get('error')}")

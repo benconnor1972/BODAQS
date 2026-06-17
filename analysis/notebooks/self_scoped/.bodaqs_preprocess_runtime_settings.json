@@ -1,0 +1,14 @@
+{
+  "artifacts_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-private\\event schema tuning\\artifacts",
+  "bike_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-private\\event schema tuning\\bike\\archie-megatower.json",
+  "fit_bindings_path": "C:\\Users\\benco\\dev\\BODAQS\\analysis\\config\\fit_bindings_v1.json",
+  "fit_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-local\\fit",
+  "generic_log_metadata_paths": [
+    "C:\\Users\\benco\\dev\\BODAQS\\analysis\\config\\log_metadata_examples"
+  ],
+  "log_dir": "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources",
+  "logger_timezone": "Australia/Perth",
+  "preprocess_profile_path": "C:\\Users\\benco\\OneDrive\\BODAQS-private\\event schema tuning\\preprocess\\preprocess_profile.json",
+  "prompt_for_descriptions": true,
+  "run_tz_label": "AWST"
+}

@@ -6,12 +6,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from pandas.errors import MergeError
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ANALYSIS_ROOT = _REPO_ROOT / "analysis"
 if str(_ANALYSIS_ROOT) not in sys.path:
     sys.path.insert(0, str(_ANALYSIS_ROOT))
 
+from bodaqs_analysis.artifacts import ArtifactStore
 from bodaqs_analysis.library_api import (
     InvalidRequestError,
     InvalidStudySetError,
@@ -25,12 +27,17 @@ from bodaqs_analysis.library_api import (
     export_library_fixture,
     make_session_key,
     make_session_ref_id,
+    make_study_set_selector_handle,
     make_unique_object_id,
     parse_session_key,
 )
 from bodaqs_analysis.library_api.catalog import discover_libraries
 from bodaqs_analysis.library_api_service import create_app
-from bodaqs_analysis.widgets.contracts import EntitySelectionSnapshot, SelectionSnapshot
+from bodaqs_analysis.widgets.contracts import EntitySelectionSnapshot, ScopeEntity, SelectionSnapshot
+from bodaqs_analysis.widgets.entity_scope import build_entity_selection_snapshot
+from bodaqs_analysis.widgets.metric_widget_data import build_metric_viz_df
+from bodaqs_analysis.widgets.session_selector import attach_refresh, make_session_selector
+from bodaqs_analysis.library.aggregations import make_default_aggregation_store
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -212,6 +219,29 @@ def _write_catalog_fixture_session(library_root: Path, *, library_id: str = "def
         }
     ).to_parquet(metrics_root / "metrics.parquet", index=False)
     return session_ref
+
+
+def test_session_selector_can_hide_legacy_aggregations(tmp_path: Path) -> None:
+    library_root = tmp_path / "default-library"
+    session_ref = _write_catalog_fixture_session(library_root)
+    store = make_default_aggregation_store(artifact_store=ArtifactStore(library_root))
+    store.create(
+        title="Legacy aggregation",
+        member_session_keys=[session_ref["session_key"]],
+        aggregation_key="legacy-aggregation",
+    )
+    store.save()
+
+    selector = make_session_selector(
+        artifacts_dir=library_root,
+        include_aggregations=False,
+        autosave_default=False,
+    )
+
+    entities = selector["get_selected_entities"]()
+    assert entities
+    assert {entity.kind for entity in entities} == {"session"}
+    assert all("aggregation" not in str(option).lower() for option in selector["entities_sel"].options)
 
 
 def _write_gps_fit_stream(
@@ -450,6 +480,55 @@ def test_library_adapter_loads_and_saves_session_note(tmp_path: Path) -> None:
     row = catalog["rows"][0]
     assert row["note_status"]["status"] == "edited"
     assert row["note_fields"]["bike"] == "Prototype G"
+
+
+def test_library_adapter_updates_session_descriptions_and_refreshes_catalog(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    original_catalog = adapter.get_catalog("default-library")
+    assert original_catalog["rows"][0]["display"]["run_label"] == "Prototype F import"
+    assert original_catalog["rows"][0]["display"]["session_label"] == "Rough descent"
+
+    updated = adapter.update_session_descriptions(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "run_description": "Morning shuttle run",
+            "session_description": "Lower chute lap",
+        },
+    )
+
+    assert updated["schema"] == "bodaqs.library_api.session_descriptions"
+    assert updated["updated_fields"] == ["run_description", "session_description"]
+    assert updated["run_description"] == "Morning shuttle run"
+    assert updated["session_description"] == "Lower chute lap"
+
+    catalog = adapter.get_catalog("default-library")
+    row = catalog["rows"][0]
+    assert row["display"]["run_label"] == "Morning shuttle run"
+    assert row["display"]["session_label"] == "Lower chute lap"
+
+    run_manifest = _read_json(library_root / "runs" / session_ref["run_id"] / "manifest.json")
+    session_manifest = _read_json(
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+        / "manifest.json"
+    )
+    assert run_manifest["description"] == "Morning shuttle run"
+    assert session_manifest["description"] == "Lower chute lap"
 
 
 def test_library_adapter_creates_loads_lists_and_deletes_study_set(
@@ -974,7 +1053,9 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
 
     assert summary["schema"] == "bodaqs.session_gps_summary"
     assert summary["present"] is True
-    assert summary["preferred_source"] == "fit_enrichment"
+    assert summary["preferred_source"] == "gps_fit"
+    assert summary["preferred_source_id"] == "gps_fit"
+    assert summary["preferred_source_kind"] == "fit_enrichment"
     assert summary["position_point_count"] == 2
     assert summary["quality"] == "limited"
     assert "gps_low_point_count" in summary["warnings"]
@@ -1605,11 +1686,137 @@ def test_study_set_selection_snapshot_bridge_for_plain_sessions(
 
     selector_handle = bridge["selector_handle"]
     assert selector_handle["store"].root == library_root
+    assert selector_handle["get_selected"]() == [
+        {"run_id": session_ref["run_id"], "session_id": session_ref["session_id"]}
+    ]
+    assert selector_handle["get_selected_entities"]()[0].kind == "session"
     assert selector_handle["get_key_to_ref"]() == bridge["key_to_ref"]
     assert selector_handle["get_events_index_df"]().equals(bridge["events_index_df"])
     entity_snapshot = selector_handle["get_entity_snapshot"]()
     assert entity_snapshot.expanded_session_keys == [session_ref["session_key"]]
     assert entity_snapshot.selected_entities[0].kind == "session"
+
+
+def test_study_set_selection_snapshot_bridge_resolves_display_name_input(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_study_set(
+        "default-library",
+        {
+            "study_set_id": "archie-evedon-26-v2",
+            "display_name": "Archie-Evedon-26_v2",
+            "sessions": [session_ref],
+        },
+    )
+
+    assert adapter.resolve_study_set_id("Archie-Evedon-26_v2", library_id="default-library") == (
+        "archie-evedon-26-v2"
+    )
+    assert adapter.resolve_study_set_id("archie-evedon-26_v2", library_id="default-library") == (
+        "archie-evedon-26-v2"
+    )
+    assert adapter.resolve_study_set_id("Archie Evedon 26 v2", library_id="default-library") == (
+        "archie-evedon-26-v2"
+    )
+
+    bridge = adapter.study_set_to_selection_snapshot(
+        "default-library",
+        "Archie-Evedon-26_v2",
+    )
+
+    assert bridge["study_set_id"] == "archie-evedon-26-v2"
+    assert bridge["key_to_ref"] == {
+        session_ref["session_key"]: (session_ref["run_id"], session_ref["session_id"])
+    }
+
+
+def test_static_study_set_selector_handle_accepts_refresh_attachment(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_study_set(
+        "default-library",
+        {
+            "study_set_id": "plain-study-set",
+            "display_name": "Plain Study Set",
+            "sessions": [session_ref],
+        },
+    )
+    bridge = adapter.study_set_to_selection_snapshot("default-library", "plain-study-set")
+
+    calls: list[str] = []
+    refresh_handle = attach_refresh(
+        bridge["selector_handle"],
+        rebuild_fns=[lambda: calls.append("rebuilt")],
+    )
+
+    refresh_handle["trigger"]()
+    refresh_handle["detach"]()
+    assert calls == ["rebuilt"]
+
+
+def test_study_set_chart_scope_selector_defaults_to_first_entity(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    first_ref = _write_catalog_fixture_session(library_root)
+    second_ref = _make_session(library_root, "run_2", "session_2")
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_study_set(
+        "default-library",
+        {
+            "study_set_id": "grouped-study-set",
+            "display_name": "Grouped Study Set",
+            "sessions": [first_ref, second_ref],
+            "groupings": [
+                {
+                    "grouping_id": "baseline",
+                    "display_name": "Baseline",
+                    "sessions": [first_ref],
+                }
+            ],
+        },
+    )
+    bridge = adapter.study_set_to_selection_snapshot("default-library", "grouped-study-set")
+
+    selector = make_study_set_selector_handle(bridge)
+
+    assert selector["get_key_to_ref"]() == {
+        first_ref["session_key"]: (first_ref["run_id"], first_ref["session_id"])
+    }
+    assert [entity.kind for entity in selector["get_selected_entities"]()] == [
+        "study_set_grouping"
+    ]
+
+    entities_sel = selector["entities_sel"]
+    entities_sel.value = tuple(value for _, value in entities_sel.options)
+    assert selector["get_key_to_ref"]() == {
+        first_ref["session_key"]: (first_ref["run_id"], first_ref["session_id"]),
+        second_ref["session_key"]: (second_ref["run_id"], second_ref["session_id"]),
+    }
 
 
 def test_study_set_selection_snapshot_bridge_maps_groupings_to_entities(
@@ -1648,7 +1855,8 @@ def test_study_set_selection_snapshot_bridge_maps_groupings_to_entities(
 
     entity_snapshot = bridge["entity_snapshot"]
     assert [entity.kind for entity in entity_snapshot.selected_entities] == [
-        "aggregation",
+        "study_set_grouping",
+        "session",
         "session",
     ]
     assert entity_snapshot.selected_entities[0].entity_key == (
@@ -1657,7 +1865,13 @@ def test_study_set_selection_snapshot_bridge_maps_groupings_to_entities(
     assert entity_snapshot.selected_entities[0].member_session_keys == (
         first_ref["session_key"],
     )
-    assert entity_snapshot.selected_entities[1].entity_key == second_ref["session_key"]
+    assert entity_snapshot.selected_entities[1].entity_key == first_ref["session_key"]
+    assert entity_snapshot.selected_entities[2].entity_key == second_ref["session_key"]
+    assert entity_snapshot.entity_to_effective_members == {
+        "study_set:grouped-study-set:grouping:baseline": [first_ref["session_key"]],
+        first_ref["session_key"]: [first_ref["session_key"]],
+        second_ref["session_key"]: [second_ref["session_key"]],
+    }
     assert entity_snapshot.expanded_session_keys == [
         first_ref["session_key"],
         second_ref["session_key"],
@@ -1676,6 +1890,159 @@ def test_study_set_selection_snapshot_bridge_maps_groupings_to_entities(
         "session",
         "session",
     ]
+
+
+def test_entity_selection_snapshot_deduplicates_study_set_grouping_members() -> None:
+    key_to_ref = {
+        "run_1::session_1": ("run_1", "session_1"),
+        "run_1::session_2": ("run_1", "session_2"),
+    }
+    events_index_df = pd.DataFrame(
+        [
+            {"session_key": "run_1::session_1", "run_id": "run_1", "session_id": "session_1"},
+            {"session_key": "run_1::session_2", "run_id": "run_1", "session_id": "session_2"},
+        ]
+    )
+    snapshot = build_entity_selection_snapshot(
+        selected_entities=[
+            ScopeEntity(
+                entity_key="study_set:demo:grouping:baseline",
+                kind="study_set_grouping",
+                label="Baseline",
+                member_session_keys=("run_1::session_1", "run_1::session_2"),
+            ),
+            ScopeEntity(
+                entity_key="run_1::session_1",
+                kind="session",
+                label="Session 1",
+                member_session_keys=("run_1::session_1",),
+            ),
+        ],
+        key_to_ref=key_to_ref,
+        events_index_df=events_index_df,
+    )
+
+    assert snapshot.entity_to_effective_members == {
+        "study_set:demo:grouping:baseline": ["run_1::session_2"],
+        "run_1::session_1": ["run_1::session_1"],
+    }
+    assert snapshot.expanded_session_keys == ["run_1::session_2", "run_1::session_1"]
+    assert snapshot.key_to_ref == key_to_ref
+
+    unreduced_snapshot = build_entity_selection_snapshot(
+        selected_entities=snapshot.selected_entities,
+        key_to_ref=key_to_ref,
+        events_index_df=events_index_df,
+        reduce_grouped_overlaps=False,
+    )
+    assert unreduced_snapshot.entity_to_effective_members[
+        "study_set:demo:grouping:baseline"
+    ] == ["run_1::session_1", "run_1::session_2"]
+
+
+def test_metric_viz_join_keeps_overlapping_entity_rows_distinct() -> None:
+    events_df = pd.DataFrame(
+        [
+            {
+                "session_key": "run_1::session_1",
+                "schema_id": "suspension",
+                "event_id": "event_1",
+                "signal_col": "front_travel_mm",
+                "entity_key": "study_set:demo:grouping:baseline",
+                "entity_kind": "study_set_grouping",
+                "source_session_key": "run_1::session_1",
+            },
+            {
+                "session_key": "run_1::session_1",
+                "schema_id": "suspension",
+                "event_id": "event_1",
+                "signal_col": "front_travel_mm",
+                "entity_key": "run_1::session_1",
+                "entity_kind": "session",
+                "source_session_key": "run_1::session_1",
+            },
+        ]
+    )
+    metrics_df = pd.DataFrame(
+        [
+            {
+                "session_key": "run_1::session_1",
+                "schema_id": "suspension",
+                "event_id": "event_1",
+                "entity_key": "study_set:demo:grouping:baseline",
+                "entity_kind": "study_set_grouping",
+                "source_session_key": "run_1::session_1",
+                "m_peak": 42.0,
+            },
+            {
+                "session_key": "run_1::session_1",
+                "schema_id": "suspension",
+                "event_id": "event_1",
+                "entity_key": "run_1::session_1",
+                "entity_kind": "session",
+                "source_session_key": "run_1::session_1",
+                "m_peak": 42.0,
+            },
+        ]
+    )
+
+    viz_df, metric_cols = build_metric_viz_df(
+        events_df=events_df,
+        metrics_df=metrics_df,
+        session_key_col="session_key",
+        event_id_col="event_id",
+        schema_id_col="schema_id",
+        event_type_col="schema_id",
+        signal_col="signal_col",
+        include_optional_event_cols=("entity_key", "entity_kind", "source_session_key"),
+    )
+
+    assert metric_cols == ["m_peak"]
+    assert viz_df["entity_key"].tolist() == [
+        "study_set:demo:grouping:baseline",
+        "run_1::session_1",
+    ]
+    assert viz_df["m_peak"].tolist() == [42.0, 42.0]
+
+
+def test_metric_viz_join_still_rejects_true_duplicate_event_metric_rows() -> None:
+    events_df = pd.DataFrame(
+        [
+            {
+                "session_key": "run_1::session_1",
+                "schema_id": "suspension",
+                "event_id": "event_1",
+                "signal_col": "front_travel_mm",
+            }
+        ]
+    )
+    metrics_df = pd.DataFrame(
+        [
+            {
+                "session_key": "run_1::session_1",
+                "schema_id": "suspension",
+                "event_id": "event_1",
+                "m_peak": 42.0,
+            },
+            {
+                "session_key": "run_1::session_1",
+                "schema_id": "suspension",
+                "event_id": "event_1",
+                "m_peak": 43.0,
+            },
+        ]
+    )
+
+    with pytest.raises(MergeError):
+        build_metric_viz_df(
+            events_df=events_df,
+            metrics_df=metrics_df,
+            session_key_col="session_key",
+            event_id_col="event_id",
+            schema_id_col="schema_id",
+            event_type_col="schema_id",
+            signal_col="signal_col",
+        )
 
 
 def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
@@ -1732,6 +2099,24 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert save_note_response.status_code == 200
     assert save_note_response.json()["note"]["values"]["rider"] == "Alex"
     assert save_note_response.json()["note"]["draft"] is False
+
+    description_response = client.put(
+        "/api/v1/libraries/default-library/sessions/descriptions",
+        json={
+            "session_ref": session_ref,
+            "run_description": "Service run description",
+            "session_description": "Service session description",
+        },
+    )
+    assert description_response.status_code == 200
+    assert description_response.json()["schema"] == "bodaqs.library_api.session_descriptions"
+    assert description_response.json()["run_description"] == "Service run description"
+    assert description_response.json()["session_description"] == "Service session description"
+
+    updated_catalog = client.get("/api/v1/libraries/default-library/catalog")
+    assert updated_catalog.status_code == 200
+    assert updated_catalog.json()["rows"][0]["display"]["run_label"] == "Service run description"
+    assert updated_catalog.json()["rows"][0]["display"]["session_label"] == "Service session description"
 
     other_libraries_root = tmp_path / "other-libraries"
     other_library_root = other_libraries_root / "field-library"

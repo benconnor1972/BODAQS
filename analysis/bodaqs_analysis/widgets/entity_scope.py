@@ -48,13 +48,14 @@ def expand_selected_entities(
     *,
     selected_entities: Sequence[ScopeEntity],
     key_to_ref: KeyToRef,
+    reduce_grouped_overlaps: bool = True,
 ) -> ExpandedEntityScope:
     """
     Expand selected entities to physical sessions.
 
     Overlap policy:
     - explicit session entities take precedence
-    - overlapping members are removed from aggregation effective members
+    - overlapping members are removed from grouped-entity effective members
     """
     valid_keys = {str(k) for k in key_to_ref.keys()}
 
@@ -73,7 +74,7 @@ def expand_selected_entities(
         entity_key = str(entity.entity_key)
         members = [sk for sk in _unique_in_order(entity.member_session_keys) if sk in valid_keys]
 
-        if entity.kind == "aggregation":
+        if reduce_grouped_overlaps and entity.kind in {"aggregation", "study_set_grouping"}:
             reduced = [sk for sk in members if sk in explicit_sessions]
             if reduced:
                 reduced_members_by_entity[entity_key] = reduced
@@ -101,8 +102,13 @@ def build_entity_selection_snapshot(
     selected_entities: Sequence[ScopeEntity],
     key_to_ref: KeyToRef,
     events_index_df: pd.DataFrame,
+    reduce_grouped_overlaps: bool = True,
 ) -> EntitySelectionSnapshot:
-    expanded = expand_selected_entities(selected_entities=selected_entities, key_to_ref=key_to_ref)
+    expanded = expand_selected_entities(
+        selected_entities=selected_entities,
+        key_to_ref=key_to_ref,
+        reduce_grouped_overlaps=reduce_grouped_overlaps,
+    )
     expanded_keys = set(expanded.expanded_session_keys)
 
     events_df = events_index_df.copy()

@@ -806,11 +806,46 @@ def canonicalize_logger_dataframe(
             .astype(float)
         )
 
-    # Drop NaNs and deduplicate by canonical time
-    df = df.dropna(subset=["time_s"]).drop_duplicates(subset="time_s", keep="first").reset_index(drop=True)
-    df = df[df["time_s"].diff().fillna(0) > 0]  # keep monotonic time
+    # Drop unusable times, deduplicate, and repair rare out-of-order rows.
+    df = _keep_strictly_increasing_time_rows(df, time_col="time_s")
 
     return df
+
+
+def _keep_strictly_increasing_time_rows(df: pd.DataFrame, *, time_col: str) -> pd.DataFrame:
+    """Drop non-finite duplicate times and stable-sort rows by canonical time."""
+    if time_col not in df.columns or df.empty:
+        return df
+
+    times = pd.to_numeric(df[time_col], errors="coerce").to_numpy(dtype=np.float64)
+    finite_mask = np.isfinite(times)
+    dropped_non_finite = int((~finite_mask).sum())
+    out = df.loc[finite_mask].copy()
+
+    reordered = False
+    if len(out.index) > 1:
+        out = out.sort_values(time_col, kind="stable")
+        reordered = not out.index.to_series().is_monotonic_increasing
+
+    before_dedupe = int(len(out.index))
+    out = out.drop_duplicates(subset=time_col, keep="first")
+    dropped_duplicate = before_dedupe - int(len(out.index))
+
+    # Preserve the historical diff() > 0 behavior, which drops the first
+    # canonical time row while retaining strictly increasing sample intervals.
+    if not out.empty:
+        out = out.iloc[1:].copy()
+
+    if dropped_non_finite or dropped_duplicate or reordered:
+        logger.warning(
+            "Logger CSV time repair applied: time_col=%s non_finite=%s duplicate_time=%s reordered=%s",
+            time_col,
+            dropped_non_finite,
+            dropped_duplicate,
+            reordered,
+        )
+
+    return out.reset_index(drop=True)
 
 
 def _canonicalize_loaded_logger_df(

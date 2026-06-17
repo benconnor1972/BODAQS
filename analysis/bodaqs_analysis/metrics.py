@@ -325,9 +325,6 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
 
     align_abs = ctx.segments["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
 
-    if min_delay_s > 0:
-        t0_abs = np.maximum(t0_abs, align_abs + min_delay_s)
-
     t0_rel = t0_abs - align_abs
     t1_rel = t1_abs - align_abs
 
@@ -336,6 +333,9 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
         tmp = t0_rel.copy()
         t0_rel[swapped] = t1_rel[swapped]
         t1_rel[swapped] = tmp[swapped]
+
+    if min_delay_s > 0:
+        t0_rel = t0_rel + min_delay_s
 
     grid = ctx.t_rel_s
     i0 = np.searchsorted(grid, t0_rel, side="left")
@@ -363,6 +363,8 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
             out[col] = _reduce_interval(y_smooth, i0, i1, np.nanmax)
         elif op == "min":
             out[col] = _reduce_interval(y_smooth, i0, i1, np.nanmin)
+        elif op == "range":
+            out[col] = _range_interval(y_smooth, i0, i1)
         elif op == "delta":
             out[col] = _delta_interval(y_smooth, i0, i1)
         elif op == "integral":
@@ -625,6 +627,18 @@ def _delta_interval(y: np.ndarray, i0: np.ndarray, i1: np.ndarray) -> np.ndarray
             continue
         end_idx = max(a, b - 1)
         out[r] = float(y[r, end_idx] - y[r, a])
+    return out
+
+
+def _range_interval(y: np.ndarray, i0: np.ndarray, i1: np.ndarray) -> np.ndarray:
+    n = y.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    for r in range(n):
+        a = int(i0[r]); b = int(i1[r])
+        if b <= a:
+            continue
+        seg = y[r, a:b]
+        out[r] = float(np.nanmax(seg) - np.nanmin(seg))
     return out
 
 

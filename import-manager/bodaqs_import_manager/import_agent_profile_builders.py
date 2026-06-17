@@ -19,6 +19,7 @@ from bodaqs_analysis.session_notes import TEMPLATE_SCHEMA, TEMPLATE_VERSION, val
 
 
 DEFAULT_BIKE_DIRNAME = "bike"
+DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME = "bike_profiles"
 DEFAULT_NOTES_DIRNAME = "notes"
 DEFAULT_BIKE_PROFILE_FILENAME = "bike_profile.json"
 DEFAULT_SESSION_NOTE_TEMPLATE_FILENAME = "session_note_template.json"
@@ -26,6 +27,8 @@ DEFAULT_BIKE_SETUP_PRESET_FILENAME = "bike_setup_preset.json"
 FRONT_VERTICAL_TRANSFORM_ID = "front_fork_to_front_vertical_wheel_travel"
 FRONT_VERTICAL_TRANSFORM_SOURCE = "import_agent_head_angle"
 FRONT_WHEEL_NORMALIZATION_RANGE_ID = "front_wheel_travel_range"
+DEFAULT_REAR_SHOCK_LUT_INPUT_UNIT = "mm"
+REAR_SHOCK_LUT_INPUT_UNITS = ("mm", "deg")
 
 _ASSET_PACKAGE = "bodaqs_import_manager.import_agent_assets"
 _FIELD_CATALOG_FILENAME = "session_note_field_catalog.json"
@@ -118,16 +121,80 @@ def source_bike_dir(source_root: str | Path) -> Path:
     return Path(source_root).expanduser().resolve() / DEFAULT_BIKE_DIRNAME
 
 
+def library_bike_profiles_dir(library_root: str | Path) -> Path:
+    library_path = Path(library_root).expanduser().resolve()
+    return library_path.parent / DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME
+
+
 def source_notes_dir(source_root: str | Path) -> Path:
     return Path(source_root).expanduser().resolve() / DEFAULT_NOTES_DIRNAME
 
 
-def load_source_bike_profile(source_root: str | Path) -> tuple[Path, dict[str, Any]]:
+def load_bike_profile_path(path_or_dir: str | Path) -> tuple[Path, dict[str, Any]]:
+    path = Path(path_or_dir).expanduser().resolve()
+    if path.is_file():
+        payload = _read_json(path)
+        validate_bike_profile(payload)
+        return path, payload
     return _discover_single_valid_json_file(
-        source_bike_dir(source_root),
+        path,
         label="Bike profile",
         validator=lambda payload: validate_bike_profile(payload),
     )
+
+
+def discover_bike_profiles(path_or_dir: str | Path) -> list[tuple[Path, dict[str, Any]]]:
+    root = Path(path_or_dir).expanduser().resolve()
+    if not root.exists():
+        return []
+    if root.is_file():
+        try:
+            return [load_bike_profile_path(root)]
+        except Exception:
+            return []
+    if not root.is_dir():
+        return []
+
+    records: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            records.append(load_bike_profile_path(path))
+        except Exception:
+            continue
+    return sorted(
+        records,
+        key=lambda item: (
+            str(item[1].get("display_name") or item[1].get("bike_profile_id") or ""),
+            str(item[0].name),
+        ),
+    )
+
+
+def bike_profile_filename(profile: Mapping[str, Any], *, fallback: str = "bike_profile") -> str:
+    profile_id = _optional_text(profile.get("bike_profile_id"))
+    display_name = _optional_text(profile.get("display_name"))
+    return f"{_safe_slug(profile_id or display_name or fallback, fallback=fallback)}.json"
+
+
+def save_bike_profile_path(path: str | Path, profile: Mapping[str, Any]) -> Path:
+    validate_bike_profile(profile)
+    return _write_json(Path(path).expanduser().resolve(), profile)
+
+
+def _source_configured_bike_profile_path(source_root: str | Path) -> Optional[Path]:
+    try:
+        from bodaqs_analysis.import_agent import load_import_source_config
+
+        return load_import_source_config(source_root).bike_profile_path
+    except Exception:
+        return None
+
+
+def load_source_bike_profile(source_root: str | Path) -> tuple[Path, dict[str, Any]]:
+    configured = _source_configured_bike_profile_path(source_root)
+    if configured is not None:
+        return load_bike_profile_path(configured)
+    return load_bike_profile_path(source_bike_dir(source_root))
 
 
 def save_source_bike_profile(
@@ -143,7 +210,11 @@ def save_source_bike_profile(
         except Exception:
             target = source_bike_dir(source_root) / DEFAULT_BIKE_PROFILE_FILENAME
     else:
-        target = source_bike_dir(source_root) / filename
+        try:
+            current, _existing = load_source_bike_profile(source_root)
+            target = current.parent / filename
+        except Exception:
+            target = source_bike_dir(source_root) / filename
     return _write_json(target, profile)
 
 
@@ -197,19 +268,62 @@ def save_source_bike_setup_preset(
     return _write_json(target, preset)
 
 
-def _normalization_range_specs() -> dict[str, dict[str, Any]]:
+def _coerce_rear_shock_lut_input_unit(value: Any) -> str:
+    text = "" if value is None else str(value).strip().lower()
+    if not text:
+        return DEFAULT_REAR_SHOCK_LUT_INPUT_UNIT
+    aliases = {
+        "degree": "deg",
+        "degrees": "deg",
+        "millimeter": "mm",
+        "millimeters": "mm",
+        "millimetre": "mm",
+        "millimetres": "mm",
+    }
+    text = aliases.get(text, text)
+    if text not in REAR_SHOCK_LUT_INPUT_UNITS:
+        raise ValueError("rear_shock_lut_input_unit must be 'mm' or 'deg'")
+    return text
+
+
+def _front_suspension_selector() -> dict[str, str]:
+    return {"end": "front", "quantity": "disp", "domain": "suspension", "unit": "mm"}
+
+
+def _front_wheel_selector() -> dict[str, str]:
+    return {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"}
+
+
+def _rear_suspension_selector(unit: Any = DEFAULT_REAR_SHOCK_LUT_INPUT_UNIT) -> dict[str, str]:
+    return {
+        "end": "rear",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": _coerce_rear_shock_lut_input_unit(unit),
+    }
+
+
+def _rear_wheel_selector() -> dict[str, str]:
+    return {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"}
+
+
+def _normalization_range_specs(
+    *,
+    rear_shock_lut_input_unit: Any = DEFAULT_REAR_SHOCK_LUT_INPUT_UNIT,
+) -> dict[str, dict[str, Any]]:
+    rear_shock_unit = _coerce_rear_shock_lut_input_unit(rear_shock_lut_input_unit)
     return {
         "front_fork_travel_mm": {
             "id": "front_fork_travel_range",
-            "signal": {"end": "front", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+            "signal": _front_suspension_selector(),
         },
         "rear_shock_travel_mm": {
             "id": "rear_shock_travel_range",
-            "signal": {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+            "signal": _rear_suspension_selector(rear_shock_unit),
         },
         "rear_wheel_travel_mm": {
             "id": "rear_wheel_travel_range",
-            "signal": {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+            "signal": _rear_wheel_selector(),
         },
     }
 
@@ -275,8 +389,14 @@ def _set_normalization_range_for_signal(
     ranges.append(payload)
 
 
-def _set_normalization_range(profile: dict[str, Any], *, key: str, value: Any) -> None:
-    spec = _normalization_range_specs()[key]
+def _set_normalization_range(
+    profile: dict[str, Any],
+    *,
+    key: str,
+    value: Any,
+    rear_shock_lut_input_unit: Any = DEFAULT_REAR_SHOCK_LUT_INPUT_UNIT,
+) -> None:
+    spec = _normalization_range_specs(rear_shock_lut_input_unit=rear_shock_lut_input_unit)[key]
     _set_normalization_range_for_signal(
         profile,
         range_id=spec["id"],
@@ -300,6 +420,48 @@ def _normalization_range_value(profile: Mapping[str, Any], selector: Mapping[str
     return None
 
 
+def _rear_shock_lut_input_unit_from_profile(profile: Mapping[str, Any]) -> str:
+    for transform in profile.get("signal_transforms", []) or []:
+        if not isinstance(transform, Mapping):
+            continue
+        input_selector = transform.get("input")
+        output_selector = transform.get("output")
+        if not isinstance(input_selector, Mapping) or not isinstance(output_selector, Mapping):
+            continue
+        if transform.get("id") != "rear_shock_to_rear_wheel_travel" and not _matches_signal_selector(
+            output_selector,
+            _rear_wheel_selector(),
+        ):
+            continue
+        if not all(
+            input_selector.get(key) == expected
+            for key, expected in {"end": "rear", "quantity": "disp", "domain": "suspension"}.items()
+        ):
+            continue
+        try:
+            return _coerce_rear_shock_lut_input_unit(input_selector.get("unit"))
+        except ValueError:
+            continue
+
+    for item in profile.get("normalization_ranges", []) or []:
+        if not isinstance(item, Mapping):
+            continue
+        signal = item.get("signal")
+        if not isinstance(signal, Mapping):
+            continue
+        if item.get("id") != "rear_shock_travel_range" and not all(
+            signal.get(key) == expected
+            for key, expected in {"end": "rear", "quantity": "disp", "domain": "suspension"}.items()
+        ):
+            continue
+        try:
+            return _coerce_rear_shock_lut_input_unit(signal.get("unit"))
+        except ValueError:
+            continue
+
+    return DEFAULT_REAR_SHOCK_LUT_INPUT_UNIT
+
+
 def _remove_managed_front_wheel_normalization_range(profile: dict[str, Any]) -> None:
     ranges = profile.get("normalization_ranges")
     if not isinstance(ranges, list):
@@ -316,14 +478,6 @@ def _remove_managed_front_wheel_normalization_range(profile: dict[str, Any]) -> 
                 continue
         retained.append(item)
     profile["normalization_ranges"] = retained
-
-
-def _front_suspension_selector() -> dict[str, str]:
-    return {"end": "front", "quantity": "disp", "domain": "suspension", "unit": "mm"}
-
-
-def _front_wheel_selector() -> dict[str, str]:
-    return {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"}
 
 
 def _is_managed_front_vertical_transform(transform: Mapping[str, Any]) -> bool:
@@ -440,6 +594,7 @@ def set_front_vertical_wheel_transform(profile: Mapping[str, Any], head_angle_de
 
 def bike_profile_form_values(profile: Mapping[str, Any]) -> dict[str, Any]:
     bike = profile.get("bike") if isinstance(profile.get("bike"), Mapping) else {}
+    rear_shock_lut_input_unit = _rear_shock_lut_input_unit_from_profile(profile)
     values: dict[str, Any] = {
         "bike_profile_id": profile.get("bike_profile_id", ""),
         "display_name": profile.get("display_name", ""),
@@ -450,11 +605,14 @@ def bike_profile_form_values(profile: Mapping[str, Any]) -> dict[str, Any]:
         "wheel_size": bike.get("wheel_size", ""),
         "bike_notes": bike.get("notes", ""),
         "front_head_angle_deg": "",
+        "rear_shock_lut_input_unit": rear_shock_lut_input_unit,
     }
     head_angle = front_head_angle_from_profile(profile)
     if head_angle is not None:
         values["front_head_angle_deg"] = f"{head_angle:g}"
-    for key, spec in _normalization_range_specs().items():
+    for key, spec in _normalization_range_specs(
+        rear_shock_lut_input_unit=rear_shock_lut_input_unit,
+    ).items():
         values[key] = ""
         for item in profile.get("normalization_ranges", []) or []:
             if isinstance(item, Mapping) and (
@@ -493,6 +651,12 @@ def apply_bike_profile_form_values(
     if _profile_id_should_follow_display_name(updated.get("bike_profile_id")):
         updated["bike_profile_id"] = derive_profile_id(str(updated.get("display_name") or "Bike profile"))
 
+    rear_shock_lut_input_unit = (
+        _coerce_rear_shock_lut_input_unit(values.get("rear_shock_lut_input_unit"))
+        if "rear_shock_lut_input_unit" in values
+        else _rear_shock_lut_input_unit_from_profile(updated)
+    )
+
     if "description" in values:
         updated["description"] = str(values.get("description") or "")
 
@@ -515,9 +679,14 @@ def apply_bike_profile_form_values(
             bike["steering_head_angle_deg"] = angle
     updated["bike"] = bike
 
-    for key in _normalization_range_specs():
+    for key in _normalization_range_specs(rear_shock_lut_input_unit=rear_shock_lut_input_unit):
         if key in values:
-            _set_normalization_range(updated, key=key, value=values[key])
+            _set_normalization_range(
+                updated,
+                key=key,
+                value=values[key],
+                rear_shock_lut_input_unit=rear_shock_lut_input_unit,
+            )
 
     if "front_head_angle_deg" in values:
         updated = set_front_vertical_wheel_transform(updated, values.get("front_head_angle_deg"))
@@ -635,12 +804,11 @@ def _is_rear_wheel_lut_transform(transform: Mapping[str, Any]) -> bool:
         return True
     input_selector = transform.get("input")
     output_selector = transform.get("output")
-    return _matches_signal_selector(
-        input_selector,
-        {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"},
-    ) and _matches_signal_selector(
-        output_selector,
-        {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+    if not _matches_signal_selector(output_selector, _rear_wheel_selector()):
+        return False
+    return any(
+        _matches_signal_selector(input_selector, _rear_suspension_selector(unit))
+        for unit in REAR_SHOCK_LUT_INPUT_UNITS
     )
 
 
@@ -655,11 +823,13 @@ def set_rear_wheel_lut_transform(
     profile: Mapping[str, Any],
     points: Sequence[Mapping[str, Any]],
     *,
+    input_unit: Any = DEFAULT_REAR_SHOCK_LUT_INPUT_UNIT,
     enabled: bool = True,
     interpolation: str = "linear",
     extrapolation: str = "linear",
 ) -> dict[str, Any]:
     normalized_points = normalize_lut_points(points)
+    rear_shock_lut_input_unit = _coerce_rear_shock_lut_input_unit(input_unit)
     if interpolation not in {"linear", "nearest"}:
         raise ValueError("interpolation must be 'linear' or 'nearest'")
     if extrapolation not in {"clamp", "linear", "error"}:
@@ -675,8 +845,8 @@ def set_rear_wheel_lut_transform(
         "id": "rear_shock_to_rear_wheel_travel",
         "description": "Rear shock travel to rear wheel travel LUT.",
         "enabled": bool(enabled),
-        "input": {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"},
-        "output": {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+        "input": _rear_suspension_selector(rear_shock_lut_input_unit),
+        "output": _rear_wheel_selector(),
         "method": "lut",
         "interpolation": interpolation,
         "extrapolation": extrapolation,
@@ -700,6 +870,8 @@ def copy_source_bike_profile(from_source_root: str | Path, to_source_root: str |
     source_path, profile = load_source_bike_profile(from_source_root)
     try:
         target_path, _existing = load_source_bike_profile(to_source_root)
+        if source_path == target_path:
+            return target_path
         shutil.copy2(source_path, target_path)
         return target_path
     except Exception:

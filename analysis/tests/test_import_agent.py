@@ -23,11 +23,13 @@ import bodaqs_import_manager.import_agent_provisioning as provisioning_module
 import bodaqs_import_manager.import_agent_single_instance as single_instance_module
 import bodaqs_import_manager.import_agent_startup as import_agent_startup_module
 import bodaqs_import_manager.import_agent_tray as import_agent_tray_module
+import bodaqs_analysis.library_preprocessing as library_preprocessing
 from bodaqs_analysis.exporters.data_syn_bike import (
     data_syn_bike_manual_settings,
     default_data_syn_bike_export_config,
     export_data_syn_bike_resolved,
     render_data_syn_bike_manual_settings_text,
+    write_data_syn_bike_exports,
 )
 from bodaqs_analysis.import_agent import (
     ImportAgentSupervisor,
@@ -35,6 +37,11 @@ from bodaqs_analysis.import_agent import (
     load_import_source_config,
     load_import_sources,
     run_sources_once,
+)
+from bodaqs_analysis.library_preprocessing import (
+    PreprocessBatchRequest,
+    batch_result_to_study_set,
+    preprocess_requested_sessions_to_library,
 )
 from bodaqs_analysis.import_agent_sources import (
     SOURCE_TYPE_FILESYSTEM_ARCHIVE,
@@ -63,6 +70,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     update_import_agent_app_auto_start,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
+    update_import_agent_source_bike_profile,
     update_import_agent_source_display_name,
     update_import_agent_source_force_reprocess_enabled,
     update_import_agent_source_session_note_attach_enabled,
@@ -75,7 +83,6 @@ from bodaqs_import_manager.import_agent_profile_builders import (
     bike_profile_form_values,
     build_custom_session_note_field,
     build_session_note_template_from_field_ids,
-    copy_source_bike_profile,
     copy_source_note_assets,
     derive_profile_id,
     front_head_angle_from_profile,
@@ -86,6 +93,7 @@ from bodaqs_import_manager.import_agent_profile_builders import (
     normalize_rear_lut_with_endpoints,
     parse_lut_text,
     rear_wheel_lut_from_profile,
+    save_bike_profile_path,
     save_source_bike_profile,
     save_source_session_note_assets,
     set_rear_wheel_lut_transform,
@@ -582,6 +590,82 @@ def test_metadata_change_changes_archive_source_identity(tmp_path):
     assert session_input_identity(first).source_identity != session_input_identity(second).source_identity
 
 
+def test_manual_preprocessing_batch_writes_one_run_and_draft_notes(tmp_path, monkeypatch):
+    schema_path = _write_schema(tmp_path / "event_schema.yaml")
+    profile_path = _write_preprocess_profile(tmp_path / "preprocess_profile.json", schema_path=schema_path)
+    bike_profile_path = _write_bike_profile(tmp_path / "bike_profile.json")
+    template_path = _write_session_note_template(tmp_path / "note_template.json")
+    first_csv = tmp_path / "session_a.csv"
+    second_csv = tmp_path / "session_b.csv"
+    first_csv.write_text("time_s,value\n0,1\n1,2\n", encoding="utf-8")
+    second_csv.write_text("time_s,value\n0,3\n1,4\n", encoding="utf-8")
+
+    def fake_preprocess_session(csv_path, *_args, **_kwargs):
+        session_id = Path(csv_path).stem
+        return {
+            "session": {
+                "session_id": session_id,
+                "df": pd.DataFrame({"time_s": [0.0, 1.0], "value": [1.0, 2.0]}),
+                "meta": {"signals": {}},
+                "source": {},
+            },
+            "events": pd.DataFrame(),
+            "metrics": pd.DataFrame(),
+        }
+
+    monkeypatch.setattr(library_preprocessing, "preprocess_session", fake_preprocess_session)
+
+    result = preprocess_requested_sessions_to_library(
+        PreprocessBatchRequest(
+            artifacts_dir=tmp_path / "library",
+            input_paths=(first_csv, second_csv),
+            preprocess_profile_path=profile_path,
+            bike_profile_path=bike_profile_path,
+            run_description="Manual batch",
+            attach_draft_note=True,
+            session_note_template_path=template_path,
+        )
+    )
+
+    run_manifest = json.loads(Path(result["run_manifest_path"]).read_text(encoding="utf-8"))
+    assert run_manifest["description"] == "Manual batch"
+    assert run_manifest["sessions"] == ["session_a", "session_b"]
+    assert run_manifest["pipeline_config"]["batch_policy"] == "one_run_per_requested_batch"
+    assert run_manifest["pipeline_config"]["success_count"] == 2
+    assert run_manifest["pipeline_config"]["failure_count"] == 0
+
+    run_id = result["run_id"]
+    note_path = (
+        tmp_path
+        / "library"
+        / "runs"
+        / run_id
+        / "sessions"
+        / "session_a"
+        / "annotations"
+        / "session_notes.json"
+    )
+    note = json.loads(note_path.read_text(encoding="utf-8"))
+    assert note["draft"] is True
+    assert note["template_id"] == "import_agent_test_setup"
+    assert note["values"]["bike"] == ""
+    assert note["source_context"]["origin"] == "manual_preprocessing"
+
+    copied_template = (
+        tmp_path
+        / "library"
+        / "library"
+        / "session_note_templates"
+        / "import_agent_test_setup"
+        / "1.0.json"
+    )
+    assert copied_template.exists()
+
+    study_set = batch_result_to_study_set(result, library_id="default-library")
+    assert study_set["study_set_id"].startswith("unsaved-")
+    assert [row["session_id"] for row in study_set["sessions"]] == ["session_a", "session_b"]
+
+
 def test_data_syn_bike_export_can_scale_calibrated_raw_to_full_adc_range():
     session = {
         "session_id": "session_001",
@@ -753,6 +837,209 @@ def test_data_syn_bike_export_can_emit_processed_wheel_travel_as_synthetic_raw()
     assert result["exports"][0]["metadata"]["front_raw_scale"]["mode"] == "processed_wheel_travel"
     assert result["exports"][0]["metadata"]["front_raw_scale"]["clipped_low_rows"] == 1
     assert result["exports"][0]["metadata"]["rear_raw_scale"]["clipped_high_rows"] == 1
+
+
+def test_data_syn_bike_export_zero_fills_missing_processed_wheel_travel_end(tmp_path):
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01, 0.02],
+                "front_wheel_disp_dom_wheel [mm]": [0.0, 75.0, 150.0],
+            }
+        ),
+        "meta": {
+            "signals": {
+                "front_wheel_disp_dom_wheel [mm]": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "origin": "analysis",
+                    "processing_role": "primary_analysis",
+                },
+            }
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="processed_wheel_travel",
+        raw_full_scale_by_end={"front": 150, "rear": 165},
+        adc_bit_count=12,
+        drop_inactive=False,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+    write_result = write_data_syn_bike_exports(result, tmp_path)
+    written_rows = write_result["written"][0]["path"].read_text(encoding="utf-8").strip().splitlines()
+
+    assert exported["Front Raw"].tolist() == [0, 2048, 4095]
+    assert exported["Rear Raw"].tolist() == [0, 0, 0]
+    assert result["summary"]["rear_raw_col"] is None
+    assert result["exports"][0]["metadata"]["rear_raw_scale"]["status"] == "missing_raw_column"
+    assert result["exports"][0]["metadata"]["rear_raw_scale"]["zero_filled"] is True
+    assert [row.split(",")[2] for row in written_rows] == ["0", "0", "0"]
+
+
+def test_data_syn_bike_export_uses_logger_gps_columns_from_primary_dataframe():
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01],
+                "front_wheel_disp_dom_wheel [mm]": [0.0, 10.0],
+                "rear_wheel_disp_dom_wheel [mm]": [0.0, 12.0],
+                "gps0_position_latitude_dom_world [deg]": [-32.0, -32.1],
+                "gps0_position_longitude_dom_world [deg]": [116.0, 116.1],
+                "gps0_speed_dom_world [m/s]": [4.0, 4.1],
+            }
+        ),
+        "meta": {
+            "signals": {
+                "front_wheel_disp_dom_wheel [mm]": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "rear_wheel_disp_dom_wheel [mm]": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "gps0_position_latitude_dom_world [deg]": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "position_latitude",
+                    "domain": "world",
+                    "unit": "deg",
+                },
+                "gps0_position_longitude_dom_world [deg]": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "position_longitude",
+                    "domain": "world",
+                    "unit": "deg",
+                },
+                "gps0_speed_dom_world [m/s]": {
+                    "sensor": "gps0",
+                    "source": "async_snapshot",
+                    "quantity": "speed",
+                    "domain": "world",
+                    "unit": "m/s",
+                },
+            }
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="processed_wheel_travel",
+        raw_full_scale_by_end={"front": 150, "rear": 165},
+        adc_bit_count=12,
+        drop_inactive=False,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+
+    assert exported["Long"].tolist() == [116.0, 116.1]
+    assert exported["Lat"].tolist() == [-32.0, -32.1]
+    assert exported["Speed"].tolist() == pytest.approx([7.775377969762419, 7.969762419006479])
+    assert result["summary"]["gps_source_id"] == "primary"
+    assert result["summary"]["lat_col"] == "gps0_position_latitude_dom_world [deg]"
+
+
+def test_data_syn_bike_export_uses_preferred_logger_gps_stream():
+    session = {
+        "session_id": "session_001",
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.01, 0.02],
+                "front_wheel_disp_dom_wheel [mm]": [0.0, 10.0, 20.0],
+                "rear_wheel_disp_dom_wheel [mm]": [0.0, 12.0, 24.0],
+            }
+        ),
+        "stream_dfs": {
+            "gps_logger": pd.DataFrame(
+                {
+                    "time_s": [0.0, 0.02],
+                    "latitude_deg": [-32.0, -32.2],
+                    "longitude_deg": [116.0, 116.2],
+                    "speed_mps": [4.0, 4.2],
+                }
+            )
+        },
+        "meta": {
+            "signals": {
+                "front_wheel_disp_dom_wheel [mm]": {
+                    "end": "front",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "rear_wheel_disp_dom_wheel [mm]": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+            },
+            "gps_sources": {
+                "preferred_source": "gps_logger",
+                "sources": [{"source_id": "gps_logger", "kind": "logger_sensor"}],
+            },
+            "secondary_streams": {
+                "gps_logger": {
+                    "stream_name": "gps_logger",
+                    "source_kind": "logger_sensor",
+                    "time_col": "time_s",
+                    "channel_info": {
+                        "latitude_deg": {
+                            "sensor": "gps0",
+                            "source": "logger_gps",
+                            "quantity": "position_latitude",
+                            "domain": "world",
+                            "unit": "deg",
+                        },
+                        "longitude_deg": {
+                            "sensor": "gps0",
+                            "source": "logger_gps",
+                            "quantity": "position_longitude",
+                            "domain": "world",
+                            "unit": "deg",
+                        },
+                        "speed_mps": {
+                            "sensor": "gps0",
+                            "source": "logger_gps",
+                            "quantity": "speed",
+                            "domain": "world",
+                            "unit": "m/s",
+                        },
+                    },
+                }
+            },
+        },
+    }
+    config = default_data_syn_bike_export_config(
+        raw_scale_mode="processed_wheel_travel",
+        raw_full_scale_by_end={"front": 150, "rear": 165},
+        adc_bit_count=12,
+        drop_inactive=False,
+        gps_resample_max_gap_s=1.0,
+    )
+
+    result = export_data_syn_bike_resolved(session, export_config=config)
+    exported = result["exports"][0]["dataframe"]
+    gps_meta = result["exports"][0]["metadata"]["gps_source"]
+
+    assert exported["Long"].tolist() == pytest.approx([116.0, 116.1, 116.2])
+    assert exported["Lat"].tolist() == pytest.approx([-32.0, -32.1, -32.2])
+    assert exported["Speed"].tolist() == pytest.approx([7.775377969762419, 7.969762419006479, 8.164146868250541])
+    assert result["summary"]["gps_source_id"] == "gps_logger"
+    assert result["summary"]["gps_source_location"] == "stream"
+    assert result["summary"]["lat_col"] == "gps_logger.latitude_deg"
+    assert gps_meta["status"] == "ok"
+    assert gps_meta["resampling"]["columns"] == ["longitude_deg", "latitude_deg", "speed_mps"]
 
 
 def test_data_syn_bike_manual_settings_reports_bike_profile_values():
@@ -1017,6 +1304,111 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
     assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_run_sources_once_emits_detection_and_archive_progress(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    archive_a = _write_session_archive(source_root / "inbox", stem="session_001")
+    archive_b = _write_session_archive(source_root / "inbox", stem="session_002")
+    _set_old_mtime(archive_a)
+    _set_old_mtime(archive_b)
+    events: list[dict[str, object]] = []
+
+    report = run_sources_once([source_root], progress_callback=lambda event: events.append(dict(event)))
+
+    assert report["totals"]["imported"] == 2
+    names = [str(event.get("event")) for event in events]
+    assert names[0] == "source_scan_started"
+    assert names[-1] == "source_scan_completed"
+
+    detected_index = names.index("archives_detected")
+    assert events[detected_index]["archive_count"] == 2
+
+    processing_indices = [index for index, name in enumerate(names) if name == "archive_processing_started"]
+    imported_indices = [index for index, name in enumerate(names) if name == "archive_imported"]
+    assert len(processing_indices) == 2
+    assert len(imported_indices) == 2
+    assert detected_index < processing_indices[0]
+    assert [events[index]["archive_index"] for index in processing_indices] == [1, 2]
+    assert [events[index]["archive_count"] for index in processing_indices] == [2, 2]
+    assert len({events[index]["run_id"] for index in processing_indices}) == 1
+    assert {events[index]["session_id"] for index in imported_indices} == {"session_001", "session_002"}
+    assert all(event.get("source_id") == "source_a" for event in events)
+    assert events[-1]["totals"] == {
+        "seen": 2,
+        "deferred_unsettled": 0,
+        "skipped_succeeded": 0,
+        "skipped_failed": 0,
+        "imported": 2,
+        "failed": 0,
+    }
+
+
+def test_run_sources_once_imports_same_source_archives_into_one_run(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    archive_a = _write_session_archive(source_root / "inbox", stem="session_001")
+    archive_b = _write_session_archive(source_root / "inbox", stem="session_002")
+    _set_old_mtime(archive_a)
+    _set_old_mtime(archive_b)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 2
+    records = report["sources"][0]["imported"]
+    records_by_session = {record["session_id"]: record for record in records}
+    run_ids = {record["run_id"] for record in records}
+    assert len(run_ids) == 1
+
+    run_id = next(iter(run_ids))
+    run_dirs = [path for path in (artifacts_dir / "runs").iterdir() if path.is_dir()]
+    run_manifest = json.loads((artifacts_dir / "runs" / run_id / "manifest.json").read_text(encoding="utf-8"))
+    archive_import = run_manifest["pipeline_config"]["archive_import"]
+
+    assert len(run_dirs) == 1
+    assert set(run_manifest["sessions"]) == {"session_001", "session_002"}
+    assert archive_import["mode"] == "source_scan_batch_v1"
+    assert set(archive_import["sessions"]) == {"session_001", "session_002"}
+    assert (
+        archive_import["sessions"]["session_001"]["processing_key"]
+        == records_by_session["session_001"]["processing_key"]
+    )
+    for session_id in ("session_001", "session_002"):
+        assert (artifacts_dir / "runs" / run_id / "sessions" / session_id / "manifest.json").exists()
+
+
+def test_run_sources_once_keeps_successful_batch_session_when_later_archive_fails(tmp_path, monkeypatch):
+    import bodaqs_analysis.import_agent as import_agent_module
+
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    archive_good = _write_session_archive(source_root / "inbox", stem="session_good")
+    archive_bad = _write_session_archive(source_root / "inbox", stem="session_bad")
+    _set_old_mtime(archive_good)
+    _set_old_mtime(archive_bad)
+    real_preprocess_session = import_agent_module.preprocess_session
+
+    def fail_bad_archive(input_path, *args, **kwargs):
+        if Path(input_path).name == "session_bad.CSV":
+            raise ValueError("test preprocessing failure")
+        return real_preprocess_session(input_path, *args, **kwargs)
+
+    monkeypatch.setattr(import_agent_module, "preprocess_session", fail_bad_archive)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert report["totals"]["failed"] == 1
+    imported_record = report["sources"][0]["imported"][0]
+    run_id = imported_record["run_id"]
+    run_manifest = json.loads((artifacts_dir / "runs" / run_id / "manifest.json").read_text(encoding="utf-8"))
+
+    assert run_manifest["sessions"] == ["session_good"]
+    assert (artifacts_dir / "runs" / run_id / "sessions" / "session_good" / "manifest.json").exists()
+    assert not (artifacts_dir / "runs" / run_id / "sessions" / "session_bad").exists()
+    assert len(list((source_root / "done").glob("session_good*.zip"))) == 1
+    assert len(list((source_root / "failed").glob("session_bad*.zip"))) == 1
 
 
 def test_run_sources_once_imports_bdq_and_moves_it_to_done(tmp_path):
@@ -1312,6 +1704,9 @@ def test_provision_import_agent_library_creates_artifact_store_dirs(tmp_path):
     assert library.library_id == "alice-library"
     assert library.runs_dir.exists()
     assert library.state_dir.exists()
+    assert library.bike_profiles_dir == libraries_root / "bike_profiles"
+    assert library.bike_profiles_dir.exists()
+    assert any(library.bike_profiles_dir.glob("*.json"))
     metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
     assert metadata["library_id"] == "alice-library"
     assert metadata["exports"]["data_syn_bike"]["enabled"] is False
@@ -1330,6 +1725,17 @@ def test_provision_import_agent_library_can_enable_data_syn_bike_exports(tmp_pat
     assert library.data_syn_bike_export_enabled is True
     assert metadata["exports"]["data_syn_bike"]["enabled"] is True
     assert metadata["exports"]["data_syn_bike"]["raw_scale_mode"] == "processed_wheel_travel"
+
+
+def test_provisioned_libraries_share_root_level_bike_profiles_dir(tmp_path):
+    libraries_root = tmp_path / "libraries"
+
+    first = provision_import_agent_library(libraries_root, display_name="Alice Library")
+    second = provision_import_agent_library(libraries_root, display_name="Ben Library")
+
+    assert first.bike_profiles_dir == libraries_root / "bike_profiles"
+    assert second.bike_profiles_dir == first.bike_profiles_dir
+    assert first.bike_profiles_dir.exists()
 
 
 def test_update_import_agent_library_data_syn_bike_export_enabled_updates_app_and_library_metadata(tmp_path):
@@ -1374,13 +1780,14 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     source_payload = json.loads(source.import_source_config_path.read_text(encoding="utf-8"))
 
     assert source.settings_dir.exists()
-    assert source.bike_dir.exists()
     assert source.notes_dir.exists()
     assert source.event_schema_path.exists()
+    assert source.bike_profile_path.exists()
+    assert source.bike_profile_path.parent == library.bike_profiles_dir
     assert source.session_note_template_path.exists()
     assert source.bike_setup_preset_path.exists()
     assert loaded.preprocess_profile_path == source.settings_dir
-    assert loaded.bike_profile_path == source.bike_dir
+    assert loaded.bike_profile_path == source.bike_profile_path
     assert loaded.session_note.template_path == source.notes_dir
     assert loaded.session_note.setup_preset_path == source.notes_dir
     assert loaded.artifacts_dir == library.artifacts_dir
@@ -1388,6 +1795,7 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     assert source_payload["display_name"] == "Alice Enduro"
     assert source_payload["source_type"] == SOURCE_TYPE_FILESYSTEM_ARCHIVE
     assert not Path(source_payload["artifacts_dir"]).is_absolute()
+    assert not Path(source_payload["bike_profile_path"]).is_absolute()
     assert source_payload["session_note"]["attach_on_import"] is False
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
 
@@ -1470,7 +1878,8 @@ def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp
 
     assert source.preprocess_profile_path.name == "preprocess_profile.json"
     assert source.event_schema_path.name == "event_schema.yaml"
-    assert source.bike_profile_path.name == "bike_profile.json"
+    assert source.bike_profile_path.parent == library.bike_profiles_dir
+    assert source.bike_profile_path.name == "import_agent_test_bike.json"
     assert source.session_note_template_path.name == "session_note_template.json"
     assert source.bike_setup_preset_path.name == "bike_setup_preset.json"
     assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
@@ -2056,6 +2465,7 @@ def test_update_import_agent_source_library_updates_app_and_source_config(tmp_pa
         app_config_path,
         display_name="Ben Library",
     )
+    original_bike_profile_path = load_import_source_config(provisioned.source.source_root).bike_profile_path
 
     updated = update_import_agent_source_library(
         app_config_path,
@@ -2069,8 +2479,12 @@ def test_update_import_agent_source_library_updates_app_and_source_config(tmp_pa
     assert managed_source.library_id == second_library.library_id
     assert source_payload["library_id"] == second_library.library_id
     assert not Path(source_payload["artifacts_dir"]).is_absolute()
+    assert not Path(source_payload["bike_profile_path"]).is_absolute()
     assert (provisioned.source.source_root / source_payload["artifacts_dir"]).resolve() == second_library.artifacts_dir
     assert loaded_source.artifacts_dir == second_library.artifacts_dir
+    assert second_library.bike_profiles_dir == provisioned.library.bike_profiles_dir
+    assert loaded_source.bike_profile_path == original_bike_profile_path
+    assert loaded_source.bike_profile_path.parent == second_library.bike_profiles_dir
 
 
 def test_update_import_agent_display_names_do_not_change_ids_or_paths(tmp_path):
@@ -2173,6 +2587,56 @@ def test_import_agent_bike_profile_builder_updates_basic_fields_and_lut(tmp_path
     assert transform["lut"][-1] == {"input": 55.0, "output": 150.0}
 
 
+def test_import_agent_bike_profile_builder_allows_degree_rear_lut_input(tmp_path):
+    library = provision_import_agent_library(tmp_path / "libraries", display_name="Alice Library")
+    source = provision_import_agent_source(
+        tmp_path / "sources" / "Alice Enduro",
+        artifacts_dir=library.artifacts_dir,
+        library_id=library.library_id,
+        display_name="Alice Enduro",
+    )
+    _profile_path, profile = load_source_bike_profile(source.source_root)
+
+    updated = apply_bike_profile_form_values(
+        profile,
+        {
+            "display_name": "Alice Enduro",
+            "front_fork_travel_mm": "160",
+            "rear_shock_lut_input_unit": "deg",
+            "rear_shock_travel_mm": "90",
+            "rear_wheel_travel_mm": "150",
+        },
+    )
+    updated = set_rear_wheel_lut_transform(
+        updated,
+        parse_lut_text("0, 0\n45, 80\n90, 150\n"),
+        input_unit="deg",
+    )
+    save_source_bike_profile(source.source_root, updated)
+    _reloaded_path, reloaded = load_source_bike_profile(source.source_root)
+    transform = rear_wheel_lut_from_profile(reloaded)
+    values = bike_profile_form_values(reloaded)
+
+    rear_shock_ranges = [
+        item
+        for item in reloaded["normalization_ranges"]
+        if item.get("id") == "rear_shock_travel_range"
+    ]
+    assert len(rear_shock_ranges) == 1
+    assert rear_shock_ranges[0]["signal"] == {
+        "end": "rear",
+        "quantity": "disp",
+        "domain": "suspension",
+        "unit": "deg",
+    }
+    assert rear_shock_ranges[0]["full_range"] == pytest.approx(90.0)
+    assert transform is not None
+    assert transform["input"] == {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "deg"}
+    assert transform["output"] == {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"}
+    assert values["rear_shock_lut_input_unit"] == "deg"
+    assert values["rear_shock_travel_mm"] == pytest.approx(90.0)
+
+
 def test_import_agent_bike_profile_builder_reads_stored_head_angle(tmp_path):
     library = provision_import_agent_library(tmp_path / "libraries", display_name="Alice Library")
     source = provision_import_agent_source(
@@ -2229,7 +2693,7 @@ def test_normalize_rear_lut_with_endpoints_rejects_out_of_range_interior_points(
         )
 
 
-def test_copy_source_bike_profile_writes_independent_target_file(tmp_path):
+def test_update_import_agent_source_bike_profile_links_shared_library_profile(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
     first = provision_import_agent_app_setup(
         sources_root=tmp_path / "sources",
@@ -2243,25 +2707,35 @@ def test_copy_source_bike_profile_writes_independent_target_file(tmp_path):
         library_id=first.library.library_id,
         display_name="Ben DH",
     )
-    _profile_path, first_profile = load_source_bike_profile(first.source.source_root)
-    first_profile = apply_bike_profile_form_values(
+    first_profile_path, first_profile = load_source_bike_profile(first.source.source_root)
+    second_profile_path, _second_profile = load_source_bike_profile(second.source_root)
+    assert first_profile_path == second_profile_path
+
+    ben_profile = apply_bike_profile_form_values(
         first_profile,
         {
-            "bike_profile_id": "alice-bike",
-            "display_name": "Alice Bike",
-            "front_fork_travel_mm": "170",
-            "rear_shock_travel_mm": "65",
-            "rear_wheel_travel_mm": "160",
+            "bike_profile_id": "ben-bike",
+            "display_name": "Ben Bike",
+            "front_fork_travel_mm": "180",
+            "rear_shock_travel_mm": "75",
+            "rear_wheel_travel_mm": "200",
         },
     )
-    save_source_bike_profile(first.source.source_root, first_profile)
+    ben_profile_path = first.library.bike_profiles_dir / "ben-bike.json"
+    save_bike_profile_path(ben_profile_path, ben_profile)
 
-    target_path = copy_source_bike_profile(first.source.source_root, second.source_root)
-    _target_profile_path, target_profile = load_source_bike_profile(second.source_root)
+    update_import_agent_source_bike_profile(
+        app_config_path,
+        source_id=second.source_id,
+        bike_profile_path=ben_profile_path,
+    )
+    source_payload = json.loads(second.import_source_config_path.read_text(encoding="utf-8"))
+    target_profile_path, target_profile = load_source_bike_profile(second.source_root)
 
-    assert target_path.parent == second.bike_dir
-    assert target_profile["bike_profile_id"] == "alice-bike"
-    assert target_path != first.source.bike_profile_path
+    assert not Path(source_payload["bike_profile_path"]).is_absolute()
+    assert target_profile_path == ben_profile_path
+    assert target_profile["bike_profile_id"] == "ben-bike"
+    assert load_source_bike_profile(first.source.source_root)[0] == first_profile_path
 
 
 def test_session_note_template_builder_and_copy_relinks_setup_preset_to_target_bike(tmp_path):

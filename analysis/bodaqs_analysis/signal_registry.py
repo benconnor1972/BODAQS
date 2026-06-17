@@ -175,6 +175,19 @@ def build_signals_registry(
             return "1"
         return unit
 
+    def _normalize_supplied_kind(kind: Any, hints: Dict[str, Any], unit: Optional[str]) -> Optional[str]:
+        if not isinstance(kind, str) or not kind.strip():
+            return None
+        normalized = kind.strip().lower()
+        if normalized != "raw":
+            return normalized
+
+        quantity = hints.get("quantity", hints.get("role"))
+        quantity_text = quantity.strip().lower() if isinstance(quantity, str) else ""
+        if quantity_text != "raw" and unit != RAW_UNIT_DEFAULT:
+            return ""
+        return normalized
+
     def _apply_channel_info_hints(col: str, info: Dict[str, Any]) -> Dict[str, Any]:
         hints = channel_info.get(col)
         if not isinstance(hints, dict):
@@ -184,6 +197,11 @@ def build_signals_registry(
         unit = _registry_unit_from_channel_info(hints.get("unit"))
         if unit is not None:
             merged["unit"] = unit
+
+        supplied_kind = hints.get("kind")
+        normalized_kind = _normalize_supplied_kind(supplied_kind, hints, unit or merged.get("unit"))
+        if normalized_kind is not None:
+            merged["kind"] = normalized_kind
 
         domain = hints.get("domain")
         if isinstance(domain, str) and domain.strip():
@@ -202,7 +220,7 @@ def build_signals_registry(
         quantity = hints.get("quantity", hints.get("role"))
         if isinstance(quantity, str) and quantity.strip():
             merged["quantity"] = quantity.strip()
-            if quantity.strip() == "raw":
+            if quantity.strip() == "raw" and merged.get("kind") != "qc":
                 merged["kind"] = "raw"
 
         for key in (
@@ -242,9 +260,12 @@ def build_signals_registry(
         end = hints.get("end")
         sensor_id = canonical_sensor_id(sensor) if isinstance(sensor, str) and sensor.strip() else None
         end_value = canonical_end(end) if isinstance(end, str) and end.strip() else ""
+        supplied_kind = hints.get("kind")
+        normalized_kind = _normalize_supplied_kind(supplied_kind, hints, unit)
+        kind = normalized_kind if normalized_kind is not None else ("raw" if quantity == "raw" else ("qc" if _is_boolish_series(s) else ""))
 
         info: Dict[str, Any] = {
-            "kind": "raw" if quantity == "raw" else ("qc" if _is_boolish_series(s) else ""),
+            "kind": kind,
             "unit": unit,
             "domain": domain.strip() if isinstance(domain, str) and domain.strip() else None,
             "op_chain": [],

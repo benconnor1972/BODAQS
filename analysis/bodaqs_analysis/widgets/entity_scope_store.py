@@ -230,7 +230,7 @@ def validate_persisted_selection(data: Mapping[str, Any]) -> None:
     if not isinstance(kinds, Mapping):
         raise EntityScopeStoreValidationError("selection.selected_entity_kinds must be an object")
     for entity_key, kind in kinds.items():
-        if str(kind) not in {"session", "aggregation"}:
+        if str(kind) not in {"session", "aggregation", "study_set_grouping"}:
             raise EntityScopeStoreValidationError(
                 f"invalid entity kind for {entity_key}: {kind!r}"
             )

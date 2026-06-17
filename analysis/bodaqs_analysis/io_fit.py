@@ -684,6 +684,11 @@ def parse_fit_stream(
                 "unit": _FIELD_SPECS.get(field_name, {}).get("unit", (units or None)),
                 "sensor": sensor,
                 "role": role,
+                "quantity": role,
+                "domain": "world",
+                "source": "fit_enrichment",
+                "origin": "fit",
+                "source_kind": "fit_enrichment",
                 "source_columns": [field_name],
             }
         out_rows.append(out)

@@ -210,6 +210,7 @@ class PreprocessProfileEditor:
         self.w_active_window = W.Text(description="Window", layout=W.Layout(width="220px"))
         self.w_active_padding = W.Text(description="Padding", layout=W.Layout(width="220px"))
         self.w_active_min_seg = W.Text(description="Min segment", layout=W.Layout(width="220px"))
+        self.w_activity_detection = W.Textarea(description="Policy", layout=_full_width_layout(height="170px"))
 
         # Actions
         self.b_validate = W.Button(description="Validate", button_style="info", icon="check")
@@ -319,6 +320,8 @@ class PreprocessProfileEditor:
                     self.w_active_vel_selector,
                     _row([self.w_active_disp_thresh, self.w_active_vel_thresh]),
                     _row([self.w_active_window, self.w_active_padding, self.w_active_min_seg]),
+                    W.HTML("<b>Activity detection policy</b> (JSON object, optional)"),
+                    self.w_activity_detection,
                 ],
             ),
             self._section(
@@ -399,6 +402,8 @@ class PreprocessProfileEditor:
         self.w_active_window.value = str(cfg.get("active_window") or "500ms")
         self.w_active_padding.value = str(cfg.get("active_padding") or "1s")
         self.w_active_min_seg.value = str(cfg.get("active_min_seg") or "3s")
+        activity = cfg.get("activity_detection")
+        self.w_activity_detection.value = _json_text(activity) if isinstance(activity, Mapping) else ""
 
     def load_profile(self, path: str | Path) -> Dict[str, Any]:
         profile = load_preprocess_profile(path)
@@ -438,6 +443,10 @@ class PreprocessProfileEditor:
             "primary": motion_primary,
             "secondary": motion_secondary,
         }
+        activity_detection = _parse_optional_json_object(
+            self.w_activity_detection.value,
+            field_name="activity_detection",
+        )
 
         config: Dict[str, Any] = {
             "schema_path": str(self.w_schema_path.value or "").strip(),
@@ -481,6 +490,8 @@ class PreprocessProfileEditor:
             "active_padding": str(self.w_active_padding.value or "").strip(),
             "active_min_seg": str(self.w_active_min_seg.value or "").strip(),
         }
+        if activity_detection is not None:
+            config["activity_detection"] = activity_detection
 
         validate_preprocess_config(config)
         return config

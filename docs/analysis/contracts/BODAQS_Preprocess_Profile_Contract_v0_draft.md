@@ -65,7 +65,7 @@ The following are notebook/runtime concerns and are explicitly **out of scope** 
 This contract depends on, or should be read alongside:
 
 - `docs/analysis/contracts/BODAQS_analysis_artifacts_specification_v0_2.md`
-- `docs/analysis/contracts/BODAQS_event_schema_specification_v0_1_2.md`
+- `docs/analysis/contracts/BODAQS_event_schema_specification_v0_2_0.md`
 - `docs/analysis/contracts/BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`
 - `docs/analysis/contracts/BODAQS_Bike_Profile_Contract_v0_draft.md`
 

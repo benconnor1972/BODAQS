@@ -20,11 +20,19 @@ export type SessionGpsSourceSummary = {
   maxGapS: number | null
   gapCountOverThreshold?: number
   gapThresholdS?: number
+  qualityColumns?: Record<string, string>
+  routeReconstruction?: Record<string, unknown>
+  validCoverageRatio?: number | null
+  freshCoverageRatio?: number | null
+  dedupeMethod?: string | null
+  cachedAsyncSnapshots?: boolean | null
 }
 
 export type SessionGpsSummary = {
   present: boolean
-  preferredSource: GpsSourceKind | null
+  preferredSourceId: string | null
+  preferredSourceKind: GpsSourceKind | null
+  sourceSelectionMethod: string
   sources: SessionGpsSourceSummary[]
   sessionDurationS: number
   timeCoverageRatio: number
@@ -50,6 +58,9 @@ export type SessionGpsPointSet = {
   returnedPoints: number
   maxPoints: number
   stride: number | null
+  sourceSelectionMethod?: string
+  sourcePolicy?: Record<string, unknown>
+  routeReconstruction?: Record<string, unknown>
   points: SessionGpsPoint[]
   path: Array<[number, number]>
   warnings: string[]
@@ -201,6 +212,10 @@ export type TrackRecord = {
     sessionKey?: string
     runId?: string
     sessionId?: string
+    gpsSourceId?: string
+    gpsSourceKind?: GpsSourceKind
+    gpsStreamName?: string
+    gpsSourceSelectionMethod?: string
   }
 }
 

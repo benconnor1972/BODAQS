@@ -90,9 +90,11 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
                     f"{col!r}: raw signal unit should be '{RAW_UNIT_DEFAULT}', got {unit!r}"
                 )
 
-        # QC: should be boolish
+        # QC may be a boolean flag or a numeric quality metric such as GPS age,
+        # sequence, fix type, or satellite count.
         if kind == "qc":
-            if not _is_boolish_series(s):
+            processing_role = str(info.get("processing_role") or "").strip().lower()
+            if not _is_boolish_series(s) and processing_role != "qc_metric":
                 errors.append(f"{col!r}: qc signal not bool/0-1 dtype={s.dtype}")
 
         # ------------------------------------------------------------------

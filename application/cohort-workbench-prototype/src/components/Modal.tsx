@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { formatPercent, gpsSourceLabel } from '../domain/geospatial'
+import { formatPercent, gpsSourceDisplay } from '../domain/geospatial'
 import { libraryName } from '../domain/sessionCatalog'
 import { noteSummary, sessionByRef, sessionRefId } from '../domain/studySets'
 import type { LibraryRecord, ModalState, SessionRecord, StudySet, TrackRecord } from '../domain/types'
@@ -104,7 +104,7 @@ function modalContent(
               <GpsBadge summary={summary} />
             </dd>
             <dt>Preferred source</dt>
-            <dd>{gpsSourceLabel(summary.preferredSource)}</dd>
+            <dd>{gpsSourceDisplay(summary.preferredSourceKind, summary.preferredSourceId)}</dd>
             <dt>Coverage</dt>
             <dd>{formatPercent(summary.timeCoverageRatio)}</dd>
             <dt>Position points</dt>

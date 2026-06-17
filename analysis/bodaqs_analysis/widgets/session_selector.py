@@ -645,6 +645,7 @@ def make_session_selector(
     *,
     artifacts_dir: str | Path = "artifacts",
     aggregation_store: AggregationStore | None = None,
+    include_aggregations: bool = True,
     default_run_id: str = "__ALL__",
     select_first_by_default: bool = True,
     rows: int = 12,
@@ -654,15 +655,18 @@ def make_session_selector(
     """
     Selection-only entity selector.
 
-    Aggregations are loaded from persisted local store and can be consumed even if
-    the aggregation editor cell has not been run in the current notebook session.
+    By default, aggregations are loaded from persisted local store and can be
+    consumed even if the aggregation editor cell has not been run in the current
+    notebook session. Set ``include_aggregations=False`` for self-scoped
+    notebooks that should expose physical sessions only.
     """
     store = ArtifactStore(Path(artifacts_dir))
     agg_store = aggregation_store or make_default_aggregation_store(artifact_store=store)
-    try:
-        agg_store.load()
-    except Exception:
-        pass
+    if include_aggregations:
+        try:
+            agg_store.load()
+        except Exception:
+            pass
 
     run_options = _build_run_options(store=store, show_ids=True)
     run_dd = W.Dropdown(
@@ -678,7 +682,10 @@ def make_session_selector(
         indent=False,
         layout=W.Layout(width="180px"),
     )
-    b_refresh = W.Button(description="Refresh", tooltip="Reload sessions and aggregations")
+    b_refresh = W.Button(
+        description="Refresh",
+        tooltip="Reload sessions and aggregations" if include_aggregations else "Reload sessions",
+    )
     b_save_selection = W.Button(
         description="Save selection",
         tooltip="Persist current entity selection for reuse in other notebooks",
@@ -700,7 +707,7 @@ def make_session_selector(
                 "Type",
                 "Created",
                 "Run description",
-                "Session / aggregation",
+                "Session / aggregation" if include_aggregations else "Session",
                 "Run ID",
                 "Session ID / key",
                 "Members",
@@ -716,7 +723,7 @@ def make_session_selector(
             "Type": 110,
             "Created": 165,
             "Run description": 220,
-            "Session / aggregation": 280,
+            "Session / aggregation" if include_aggregations else "Session": 280,
             "Run ID": 180,
             "Session ID / key": 220,
             "Members": 90,
@@ -830,10 +837,11 @@ def make_session_selector(
         run_dd.value = "__ALL__"
 
         prev_keys = {str(e.entity_key) for e in _selected_entities}
-        try:
-            agg_store.load()
-        except Exception:
-            pass
+        if include_aggregations:
+            try:
+                agg_store.load()
+            except Exception:
+                pass
 
         _, _, session_key_to_label = _build_session_index(
             store=store,
@@ -866,41 +874,42 @@ def make_session_selector(
                     "Type": "Session",
                     "Created": run_meta["created_at"],
                     "Run description": run_meta["description"],
-                    "Session / aggregation": session_desc,
+                    "Session / aggregation" if include_aggregations else "Session": session_desc,
                     "Run ID": str(run_id),
                     "Session ID / key": str(session_id),
                     "Members": 1,
                 }
             )
 
-        for agg in agg_store.list():
-            base = _format_aggregation_label(
-                aggregation_key=str(agg.aggregation_key),
-                title=str(agg.title),
-                n_members=len(agg.member_session_keys),
-                show_ids=True,
-            )
-            n = label_counts.get(base, 0) + 1
-            label_counts[base] = n
-            label = base if n == 1 else f"{base} [#{n}]"
-            mapping[label] = ScopeEntity(
-                entity_key=str(agg.aggregation_key),
-                kind="aggregation",
-                label=label,
-                member_session_keys=tuple(map(str, agg.member_session_keys)),
-            )
-            options.append(label)
-            rows_data.append(
-                {
-                    "Type": "Aggregation",
-                    "Created": "",
-                    "Run description": "",
-                    "Session / aggregation": str(agg.title or agg.aggregation_key),
-                    "Run ID": "",
-                    "Session ID / key": str(agg.aggregation_key),
-                    "Members": len(agg.member_session_keys),
-                }
-            )
+        if include_aggregations:
+            for agg in agg_store.list():
+                base = _format_aggregation_label(
+                    aggregation_key=str(agg.aggregation_key),
+                    title=str(agg.title),
+                    n_members=len(agg.member_session_keys),
+                    show_ids=True,
+                )
+                n = label_counts.get(base, 0) + 1
+                label_counts[base] = n
+                label = base if n == 1 else f"{base} [#{n}]"
+                mapping[label] = ScopeEntity(
+                    entity_key=str(agg.aggregation_key),
+                    kind="aggregation",
+                    label=label,
+                    member_session_keys=tuple(map(str, agg.member_session_keys)),
+                )
+                options.append(label)
+                rows_data.append(
+                    {
+                        "Type": "Aggregation",
+                        "Created": "",
+                        "Run description": "",
+                        "Session / aggregation": str(agg.title or agg.aggregation_key),
+                        "Run ID": "",
+                        "Session ID / key": str(agg.aggregation_key),
+                        "Members": len(agg.member_session_keys),
+                    }
+                )
 
         _entity_label_to_entity = mapping
         _entity_key_to_label = {
@@ -914,7 +923,7 @@ def make_session_selector(
                 "Type",
                 "Created",
                 "Run description",
-                "Session / aggregation",
+                "Session / aggregation" if include_aggregations else "Session",
                 "Run ID",
                 "Session ID / key",
                 "Members",
@@ -1161,9 +1170,6 @@ def attach_refresh(
     observed_widgets = [
         w for w in (run_dd, sessions_sel, entities_sel, show_ids_cb, refresh_signal) if w is not None
     ]
-    if not observed_widgets:
-        raise ValueError("selector handle must include at least one observable selector widget")
-
     in_fire = False  # re-entrancy guard
 
     def _fire(*_):
@@ -1179,6 +1185,11 @@ def attach_refresh(
                     print(f"[attach_refresh] rebuild failed: {e!r}")
         finally:
             in_fire = False
+
+    if not observed_widgets:
+        # Persisted Study Set handles are intentionally static: they expose a
+        # selection snapshot but no live selector widget to observe.
+        return {"detach": lambda: None, "trigger": _fire}
 
     for w in observed_widgets:
         w.observe(_fire, names="value")

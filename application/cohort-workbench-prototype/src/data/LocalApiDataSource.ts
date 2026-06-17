@@ -219,7 +219,7 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapTrackpointMatchQuery(response)
   }
 
-  async loadSessionGpsPoints(session: SessionRecord): Promise<SessionGpsPointSet> {
+  async loadSessionGpsPoints(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet> {
     const response = await requestJson<ApiObject>(
       `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/gps/points`,
       {
@@ -227,6 +227,7 @@ export class LocalApiDataSource implements LibraryDataSource {
         body: JSON.stringify({
           session_ref: toApiSessionRef(session),
           max_points: 1800,
+          ...(sourceId ? { source_id: sourceId } : {}),
         }),
       },
     )
@@ -383,6 +384,10 @@ function mapTrack(value: ApiObject): TrackRecord {
           sessionKey: textValue(source.session_key) || undefined,
           runId: textValue(source.run_id) || undefined,
           sessionId: textValue(source.session_id) || undefined,
+          gpsSourceId: textValue(source.gps_source_id) || undefined,
+          gpsSourceKind: gpsSourceKindOrNull(source.gps_source_kind) ?? undefined,
+          gpsStreamName: textValue(source.gps_stream_name) || undefined,
+          gpsSourceSelectionMethod: textValue(source.gps_source_selection_method) || undefined,
         }
       : undefined,
   }
@@ -470,13 +475,21 @@ function mapGpsSummary(value: ApiObject): SessionGpsSummary {
     maxGapS: nullableNumberValue(source.max_gap_s),
     gapCountOverThreshold: numberValue(source.gap_count_over_threshold),
     gapThresholdS: numberValue(source.gap_threshold_s),
+    qualityColumns: stringRecordValue(source.quality_columns),
+    routeReconstruction: objectRecordValue(source.route_reconstruction),
+    validCoverageRatio: nullableNumberValue(source.valid_coverage_ratio),
+    freshCoverageRatio: nullableNumberValue(source.fresh_coverage_ratio),
+    dedupeMethod: textValue(source.dedupe_method) || null,
+    cachedAsyncSnapshots: booleanOrNullValue(source.cached_async_snapshots),
   }))
   if (!value.present && sources.length === 0) {
     return emptyGpsSummary
   }
   return {
     present: Boolean(value.present),
-    preferredSource: gpsSourceKindOrNull(value.preferred_source),
+    preferredSourceId: textValue(value.preferred_source_id, textValue(value.preferred_source)) || null,
+    preferredSourceKind: gpsSourceKindOrNull(value.preferred_source_kind),
+    sourceSelectionMethod: textValue(value.source_selection_method, 'unknown'),
     sources,
     sessionDurationS: numberValue(value.session_duration_s),
     timeCoverageRatio: numberValue(value.time_coverage_ratio),
@@ -508,6 +521,9 @@ function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
     returnedPoints: numberValue(sampling.returned_points),
     maxPoints: numberValue(sampling.max_points),
     stride: nullableNumberValue(sampling.stride),
+    sourceSelectionMethod: textValue(source.source_selection_method),
+    sourcePolicy: objectRecordValue(source.gps_source_policy),
+    routeReconstruction: objectRecordValue(source.route_reconstruction),
     points,
     path: points.map((point) => [point.longitude, point.latitude] as [number, number]),
     warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
@@ -720,6 +736,10 @@ function toApiTrack(track: TrackRecord) {
       session_key: track.source.sessionKey,
       run_id: track.source.runId,
       session_id: track.source.sessionId,
+      gps_source_id: track.source.gpsSourceId,
+      gps_source_kind: track.source.gpsSourceKind,
+      gps_stream_name: track.source.gpsStreamName,
+      gps_source_selection_method: track.source.gpsSourceSelectionMethod,
     }
   }
   return payload
@@ -918,6 +938,23 @@ function jsonRecordValue(value: unknown): Record<string, SessionNoteValue> {
   return Object.fromEntries(
     Object.entries(raw).map(([key, item]) => [key, jsonNoteValue(item)]),
   )
+}
+
+function objectRecordValue(value: unknown): Record<string, unknown> {
+  return { ...objectValue(value) }
+}
+
+function stringRecordValue(value: unknown): Record<string, string> {
+  const raw = objectValue(value)
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      .map(([key, item]) => [key, item]),
+  )
+}
+
+function booleanOrNullValue(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
 }
 
 function jsonNoteValue(value: unknown): SessionNoteValue {

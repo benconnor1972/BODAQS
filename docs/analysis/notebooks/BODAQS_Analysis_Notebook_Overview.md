@@ -106,7 +106,7 @@ Semantic enrichment is a priority area for development / refinement. Current int
   - [`BODAQS_Public_API_Contract_v0.md`](../contracts/BODAQS_Public_API_Contract_v0.md)
   - [`BODAQS_Preprocess_Profile_Contract_v0_draft.md`](../contracts/BODAQS_Preprocess_Profile_Contract_v0_draft.md)
   - [`BODAQS_Bike_Profile_Contract_v0_draft.md`](../contracts/BODAQS_Bike_Profile_Contract_v0_draft.md)
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](../contracts/BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_event_schema_specification_v0_2_0.md`](../contracts/BODAQS_event_schema_specification_v0_2_0.md)
   - [`BODAQS_Time_Handling_Contract_v0.md`](../contracts/BODAQS_Time_Handling_Contract_v0.md)
 
 ### Step 4. Run the macro pipeline for each selected session
@@ -309,7 +309,7 @@ This cell can be omitted without affecting the functioning of the remainder of t
   - `~/.bodaqs/entity_scope_selection_v1.json`
 - **Contracts / documentation:**
   - [`BODAQS_session_selector_consumer_widgets_contract.md`](../contracts/BODAQS_session_selector_consumer_widgets_contract.md)
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](../contracts/BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_event_schema_specification_v0_2_0.md`](../contracts/BODAQS_event_schema_specification_v0_2_0.md)
 
 ### Step 3. Exercise the signal histogram widget
 
@@ -328,7 +328,7 @@ This cell can be omitted without affecting the functioning of the remainder of t
 - **Contracts / documentation:**
   - [`BODAQS_Event_Table_Contract_v0_1_3_draft.md`](../contracts/BODAQS_Event_Table_Contract_v0_1_3_draft.md)
   - [`BODAQS_Metrics_Table_Contract_v0_2.md`](../contracts/BODAQS_Metrics_Table_Contract_v0_2.md)
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](../contracts/BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_event_schema_specification_v0_2_0.md`](../contracts/BODAQS_event_schema_specification_v0_2_0.md)
 
 ### Step 5. Exercise the metric scatter and metric histogram widgets
 
@@ -402,7 +402,7 @@ This notebook is the single-file schema-tuning harness. It is designed for fast 
 - **Outputs:** a fully explicit test configuration for one CSV and one schema revision.
 - **Persisted artifacts:** none yet.
 - **Contracts / documentation:**
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](../contracts/BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_event_schema_specification_v0_2_0.md`](../contracts/BODAQS_event_schema_specification_v0_2_0.md)
   - [`BODAQS_Public_API_Contract_v0.md`](../contracts/BODAQS_Public_API_Contract_v0.md)
 
 ### Step 2. Run preprocessing for one session and persist the results
@@ -430,7 +430,7 @@ This notebook is the single-file schema-tuning harness. It is designed for fast 
 - **Outputs:** an event browser configured against the latest processed single-session artifacts.
 - **Persisted artifacts:** none beyond the preprocessing artifacts already written.
 - **Contracts / documentation:**
-  - [`BODAQS_event_schema_specification_v0_1_2.md`](../contracts/BODAQS_event_schema_specification_v0_1_2.md)
+  - [`BODAQS_event_schema_specification_v0_2_0.md`](../contracts/BODAQS_event_schema_specification_v0_2_0.md)
   - [`BODAQS_session_selector_consumer_widgets_contract.md`](../contracts/BODAQS_session_selector_consumer_widgets_contract.md)
 
 ### Step 4. Iterate on the schema revision

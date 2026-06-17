@@ -99,6 +99,7 @@ namespace {
   enum class CalUiPhase : uint8_t {
     Idle,          // shows: Zero / Start RANGE (Enter/Right inert)
     RangeActive,   // shows: Finish RANGE / Cancel (Enter/Right inert)
+    ZeroDirectionActive, // shows: Capture +move / Cancel
     ZeroCaptured,  // shows: Save / Cancel (Enter/Right act)
     RangeFinished  // shows: Save / Cancel (Enter/Right act)
   };
@@ -544,6 +545,11 @@ namespace {
         rows[rowCount++] = "Cancel";
         break;
 
+      case CalUiPhase::ZeroDirectionActive:
+        rows[rowCount++] = "Capture +move";
+        rows[rowCount++] = "Cancel";
+        break;
+
       case CalUiPhase::ZeroCaptured:
       case CalUiPhase::RangeFinished:
         rows[rowCount++] = "Save";
@@ -560,8 +566,10 @@ namespace {
       UI::oledText(0, y, line);
     }
 
-    // Live counts only while RANGE is active
-    if (s_calUiPhase == CalUiPhase::RangeActive && s->hasRawCounts()) {
+    // Live counts while waiting for the next calibration capture
+    if ((s_calUiPhase == CalUiPhase::RangeActive ||
+         s_calUiPhase == CalUiPhase::ZeroDirectionActive) &&
+        s->hasRawCounts()) {
       String hint = String("counts: ") + s->currentRawCounts();
       UI::oledText(0, 54, hint);
     }
@@ -774,7 +782,9 @@ namespace {
               s->updateCalibration(avg);
               showCalibrationCaptureToast_("Zero", avg);
               deferUiFor(2000);
-              s_calUiPhase = CalUiPhase::ZeroCaptured;
+              s_calUiPhase = s->calibrationNeedsPositiveMovement(CalMode::ZERO)
+                                ? CalUiPhase::ZeroDirectionActive
+                                : CalUiPhase::ZeroCaptured;
               s_calOptSel  = 0;
               drawCalibDetail_();
               return true;
@@ -817,6 +827,23 @@ namespace {
               s->finishCalibration(false);
               s_calUiPhase = CalUiPhase::Idle;
               s_lastRangeTrackMs = 0;
+              s_calOptSel  = 0;
+              drawCalibDetail_();
+            }
+            return true;
+
+          case CalUiPhase::ZeroDirectionActive:
+            if (s_calOptSel == 0) {
+              const int32_t avg = sampleAverageCounts(s, 100);
+              s->updateCalibration(avg);
+              showCalibrationCaptureToast_("+move", avg);
+              deferUiFor(2000);
+              s_calUiPhase = CalUiPhase::ZeroCaptured;
+              s_calOptSel  = 0;
+              drawCalibDetail_();
+            } else {
+              s->finishCalibration(false);
+              s_calUiPhase = CalUiPhase::Idle;
               s_calOptSel  = 0;
               drawCalibDetail_();
             }

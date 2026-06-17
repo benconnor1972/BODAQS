@@ -112,6 +112,52 @@ def _validate_debounce_block(prefix: str, deb: Any, issues: List[str]):
     if pref_max is not None and not isinstance(pref_max, bool):
         issues.append(f"{prefix}.debounce.prefer_max must be a boolean if present.")
 
+
+def _validate_metric_conditions(prefix: str, metric_conditions: Any, issues: List[str]) -> None:
+    if metric_conditions is None:
+        return
+    blocks = [metric_conditions] if isinstance(metric_conditions, dict) else metric_conditions
+    if not isinstance(blocks, list):
+        issues.append(f"{prefix}.metric_conditions must be a mapping or list of mappings if present.")
+        return
+
+    allowed_cmps = {">", ">=", "<", "<=", "==", "!="}
+    for i, block in enumerate(blocks):
+        bprefix = f"{prefix}.metric_conditions[{i}]"
+        if not isinstance(block, dict):
+            issues.append(f"{bprefix} must be a mapping.")
+            continue
+
+        tests = []
+        if "any_of" in block:
+            any_of = block.get("any_of")
+            if not isinstance(any_of, list):
+                issues.append(f"{bprefix}.any_of must be a list if present.")
+            else:
+                tests.extend(any_of)
+        if "all_of" in block:
+            all_of = block.get("all_of")
+            if not isinstance(all_of, list):
+                issues.append(f"{bprefix}.all_of must be a list if present.")
+            else:
+                tests.extend(all_of)
+        if "any_of" not in block and "all_of" not in block:
+            tests.append(block)
+
+        for j, test in enumerate(tests):
+            tprefix = f"{bprefix}.tests[{j}]"
+            if not isinstance(test, dict):
+                issues.append(f"{tprefix} must be a mapping.")
+                continue
+            metric = test.get("metric") or test.get("name") or test.get("id")
+            if not isinstance(metric, str) or not metric.strip():
+                issues.append(f"{tprefix}.metric must be a non-empty string.")
+            cmp_op = test.get("cmp")
+            if cmp_op not in allowed_cmps:
+                issues.append(f"{tprefix}.cmp must be one of {sorted(allowed_cmps)}.")
+            if "value" not in test:
+                issues.append(f"{tprefix}.value is required.")
+
 def basic_validate(schema: Dict[str, Any]) -> List[str]:
     """Lightweight sanity checks; returns a list of issues (empty if OK)."""
     issues: List[str] = []
@@ -326,6 +372,8 @@ def basic_validate(schema: Dict[str, Any]) -> List[str]:
                         # not strictly required, but helpful to flag obvious mistakes
                         if "end_trigger" not in m:
                             issues.append(f"{mprefix}: interval_stats should specify 'end_trigger'.")
+
+        _validate_metric_conditions(prefix, ev.get("metric_conditions", None), issues)
                             
         # ---- segment_defaults.roles (dict-form only) ----
         _validate_segment_defaults_roles(prefix, ev)

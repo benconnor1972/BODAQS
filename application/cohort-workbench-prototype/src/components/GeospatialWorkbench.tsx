@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Crosshair, Eye, MapPin, Plus, Route, Save, Trash2 } from 'lucide-react'
 import {
   formatPercent,
-  gpsSourceLabel,
+  gpsSourceDisplay,
   studySetGpsAdequacy,
   trackMatchForSession,
   trackMatchStatusLabel,
@@ -75,7 +75,7 @@ export function GeospatialWorkbench({
     setBusy(true)
     setMessage(`Creating ${displayName}...`)
     try {
-      const gpsPoints = await dataSource.loadSessionGpsPoints(primarySession)
+      const gpsPoints = await dataSource.loadSessionGpsPoints(primarySession, primarySession.gpsSummary.preferredSourceId)
       if (gpsPoints.path.length < 2) {
         setMessage('Primary session does not have enough GPS points to create a track.')
         return
@@ -100,6 +100,10 @@ export function GeospatialWorkbench({
           sessionKey: primarySession.sessionKey,
           runId: primarySession.runId,
           sessionId: primarySession.sessionId,
+          gpsSourceId: gpsPoints.sourceId,
+          gpsSourceKind: gpsPoints.sourceKind,
+          gpsStreamName: gpsPoints.streamName,
+          gpsSourceSelectionMethod: gpsPoints.sourceSelectionMethod,
         },
       })
       onTrackSaved(savedTrack)
@@ -271,7 +275,9 @@ export function GeospatialWorkbench({
             <dt>Session</dt>
             <dd>{primarySession.name}</dd>
             <dt>Source</dt>
-            <dd>{gpsSourceLabel(primarySession.gpsSummary.preferredSource)}</dd>
+            <dd>
+              {gpsSourceDisplay(primarySession.gpsSummary.preferredSourceKind, primarySession.gpsSummary.preferredSourceId)}
+            </dd>
             <dt>Coverage</dt>
             <dd>{formatPercent(primarySession.gpsSummary.timeCoverageRatio)}</dd>
             <dt>Points</dt>

@@ -151,11 +151,17 @@ unit-explicit form:
 - full count
 - installed zero count
 - full travel in output units
-- derived inversion where applicable, based on calibrated sensor endpoints
+- direction/polarity where applicable
+- derived inversion where required for legacy downstream consumers
 
 This may require sensor classes to carry slightly richer metadata than they do
 today. In particular, firmware should not rely on a display `units_label` alone
 to define calibration output units.
+
+Rotary angle sensors use an explicit `direction` value:
+`counts_increase_positive` or `counts_decrease_positive`. The sidecar currently
+also emits legacy `invert` for compatibility; for these sensors
+`invert=true` means `direction=counts_decrease_positive`.
 
 ### 4.5 String-pot special cases
 

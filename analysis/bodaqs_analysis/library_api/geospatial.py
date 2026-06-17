@@ -261,10 +261,12 @@ def _build_session_track_match_from_summary(
     """Build a conservative fallback SessionTrackMatch from catalog GPS summary data."""
 
     track_id = str(track.get("track_id") or "")
+    track_revision = track.get("revision")
     policy_id = str(policy.get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
     session_ref_id = str(session_ref.get("session_ref_id") or "")
+    gps_source_ref = _gps_source_ref(gps_summary=gps_summary)
     track_match_id = derive_object_id(
-        f"{session_ref_id} {track_id} {policy_id}",
+        f"{session_ref_id} {track_id} {track_revision} {policy_id} {_gps_source_identity(gps_source_ref)}",
         fallback="track-match",
     )
     path = track.get("path") if isinstance(track.get("path"), Mapping) else {}
@@ -342,6 +344,7 @@ def _build_session_track_match_from_summary(
             "derived_by": "bodaqs_analysis.library_api.geospatial",
             "algorithm": "session_track_match_catalog_summary_v0",
             "algorithm_version": "0.1.0",
+            "gps_source": gps_source_ref,
         },
     }
 
@@ -616,6 +619,33 @@ def _trackpoint_result(
     }
 
 
+def _gps_source_ref(
+    *,
+    gps_summary: Mapping[str, Any],
+    gps_points: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    point_source = gps_points.get("source") if isinstance(gps_points, Mapping) and isinstance(gps_points.get("source"), Mapping) else {}
+    return {
+        "source_id": point_source.get("source_id") or gps_summary.get("preferred_source_id") or gps_summary.get("preferred_source"),
+        "kind": point_source.get("kind") or gps_summary.get("preferred_source_kind"),
+        "stream_name": point_source.get("stream_name"),
+        "source_selection_method": point_source.get("source_selection_method") or gps_summary.get("source_selection_method"),
+        "gps_source_policy": point_source.get("gps_source_policy") or gps_summary.get("gps_source_policy"),
+        "route_reconstruction": point_source.get("route_reconstruction"),
+    }
+
+
+def _gps_source_identity(source_ref: Mapping[str, Any]) -> str:
+    identity = {
+        "source_id": source_ref.get("source_id"),
+        "kind": source_ref.get("kind"),
+        "source_selection_method": source_ref.get("source_selection_method"),
+        "gps_source_policy": source_ref.get("gps_source_policy"),
+        "route_reconstruction": source_ref.get("route_reconstruction"),
+    }
+    return json.dumps(identity, sort_keys=True, separators=(",", ":"))
+
+
 def _build_session_track_match_from_points(
     *,
     track: Mapping[str, Any],
@@ -689,10 +719,12 @@ def _build_session_track_match_from_points(
             warnings.append("session_gps_partial_track_overlap")
 
     track_id = str(track.get("track_id") or "")
+    track_revision = track.get("revision")
     policy_id = str(policy.get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
     session_ref_id = str(session_ref.get("session_ref_id") or "")
+    gps_source_ref = _gps_source_ref(gps_summary=gps_summary, gps_points=gps_points)
     track_match_id = derive_object_id(
-        f"{session_ref_id} {track_id} {policy_id}",
+        f"{session_ref_id} {track_id} {track_revision} {policy_id} {_gps_source_identity(gps_source_ref)}",
         fallback="track-match",
     )
     return {
@@ -728,6 +760,7 @@ def _build_session_track_match_from_points(
             "derived_by": "bodaqs_analysis.library_api.geospatial",
             "algorithm": "session_track_match_geometry_v0",
             "algorithm_version": "0.2.0",
+            "gps_source": gps_source_ref,
         },
     }
 
