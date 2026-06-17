@@ -104,6 +104,7 @@ struct SensorMetadataDescriptor {
   int32_t sensorZeroCount = 0;
   int32_t sensorFullCount = 0;
   float sensorFullTravel = 0.0f;
+  char direction[32] = {0};
   bool invert = false;
   bool hasCalibration = false;
   bool hasTracking = false;
@@ -177,6 +178,7 @@ public:
   virtual bool     updateCalibration(int32_t) { return false; }
   virtual bool     finishCalibration(bool) { return false; }
   virtual CalPhase currentCalPhase() const { return CalPhase::IDLE; }
+  virtual bool     calibrationNeedsPositiveMovement(CalMode) const { return false; }
 
   // Live raw access
   virtual bool    hasRawCounts()   const { return false; }

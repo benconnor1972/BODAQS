@@ -62,6 +62,7 @@ This document summarizes the major modules in the project, what each one is resp
 - Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
 - File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `zero_count`, `full_count`, `full_travel_mm`.
 - File format keys used by AS5600 string-pot sensors include `counts_per_turn`, `wrap_threshold_counts`, `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`, and `assume_turn0_at_start`.
+- File format keys used by AS5048B and AS5600 rotary angle sensors include `i2c_bus`, `i2c_addr`, `zero_count`, and `direction`. `direction` is `counts_increase_positive` or `counts_decrease_positive`; log metadata still emits legacy `invert` for downstream compatibility.
 
 ---
 
@@ -94,6 +95,21 @@ This document summarizes the major modules in the project, what each one is resp
 - Produces normalized and/or raw columns; column names include the sensor `name` (e.g. `pot1_norm`).
 - Measurement direction is derived from calibration endpoints. If the full-travel count is below the zero-travel count, the firmware treats the signal as inverted.
 - Honors **muted** state via `SensorManager` (muted sensors still tick but are skipped in log output).
+
+## `AS5048BAngleSensor` / `AS5600AngleSensor`
+
+**Purpose:** Acquire one-turn absolute rotary position over I2C and report raw counts or zeroed angular movement.
+
+**Key params (from ParamPack)**
+- `i2c_bus`, `i2c_addr`, `i2c_read_mode`
+- `zero_count`, `direction`
+- `output_mode`, `include_raw`, `include_diag`
+
+**Notes**
+- `ZERO` calibration captures the installed zero point and then asks for a small positive movement so the firmware can set `direction`.
+- `direction=counts_increase_positive` means increasing raw counts produce positive angular output; `counts_decrease_positive` reverses that polarity.
+- Metadata emits both `direction` and legacy `invert`; `invert=true` corresponds to `counts_decrease_positive`.
+- These angle sensors do not support multi-turn tracking.
 
 ## `AS5600StringPotSensorBase` / `AS5600StringPotAnalog`
 

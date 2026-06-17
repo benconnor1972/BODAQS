@@ -20,6 +20,7 @@ public:
     uint8_t i2cAddr = 0x36;
     I2CReadMode readMode = I2CReadMode::RepeatedStart;
     int32_t zeroCount = 0;
+    int8_t directionSign = 1;
     bool includeRawColumn = true;
     bool includeDiagColumns = false;
     uint32_t diagnosticIntervalMs = 250;
@@ -59,6 +60,7 @@ public:
   bool updateCalibration(int32_t latestCounts) override;
   bool finishCalibration(bool persist) override;
   CalPhase currentCalPhase() const override { return cal_.phase; }
+  bool calibrationNeedsPositiveMovement(CalMode mode) const override { return mode == CalMode::ZERO; }
 
   bool supportsCalibration() const override { return true; }
   bool hasRawCounts() const override { return true; }
@@ -86,6 +88,7 @@ private:
     CalMode mode = CalMode::NONE;
     CalPhase phase = CalPhase::IDLE;
     int32_t first_counts = INT32_MAX;
+    int32_t second_counts = INT32_MIN;
     uint32_t started_ms = 0;
     uint32_t samples = 0;
   };
@@ -121,6 +124,7 @@ private:
   uint8_t m_i2cAddr = 0x36;
   I2CReadMode m_readMode = I2CReadMode::RepeatedStart;
   int32_t m_zeroCount = 0;
+  int8_t m_directionSign = 1;
   uint32_t m_diagnosticIntervalMs = 250;
   bool m_muted = false;
   CalMask m_allowedMask = CAL_ZERO;

@@ -24,6 +24,7 @@ static constexpr uint16_t kCountsPerTurn = 16384;
 static constexpr uint16_t kHalfTurn = kCountsPerTurn / 2;
 static constexpr float kDegreesPerCount = 360.0f / float(kCountsPerTurn);
 static constexpr uint32_t kDefaultDiagnosticIntervalMs = 250;
+static constexpr int32_t kDirectionMinDeltaCounts = int32_t(kCountsPerTurn / 720); // about 0.5 deg
 
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
@@ -77,6 +78,23 @@ AS5048BAngleSensor::I2CReadMode parseReadMode_(const String& value) {
   return AS5048BAngleSensor::I2CReadMode::StopThenRead;
 }
 
+int8_t parseDirectionSign_(const String& value) {
+  String s = value;
+  s.trim();
+  s.toLowerCase();
+  s.replace("-", "_");
+
+  if (s == "counts_decrease_positive" || s == "decrease_positive" ||
+      s == "inverted" || s == "invert" || s == "reverse" || s == "-1" || s == "-") {
+    return -1;
+  }
+  return 1;
+}
+
+const char* directionName_(int8_t sign) {
+  return (sign < 0) ? "counts_decrease_positive" : "counts_increase_positive";
+}
+
 uint32_t busHz_(uint8_t busIndex) {
   const board::I2CProfile* profile = I2CManager::profile(busIndex);
   return (profile && profile->hz) ? profile->hz : 100000UL;
@@ -95,6 +113,7 @@ void loadParamsFromPack_(AS5048BAngleSensor::Params& p,
   if (params.getInt("i2c_addr", li))      p.i2cAddr = (li <= 0) ? kDefaultAddress : (uint8_t)li;
   if (params.get("i2c_read_mode", s))     p.readMode = parseReadMode_(s);
   if (params.getInt("zero_count", li))    p.zeroCount = (int32_t)li;
+  if (params.get("direction", s))          p.directionSign = parseDirectionSign_(s);
   if (params.getBool("include_raw", b))   p.includeRawColumn = b;
   if (params.getBool("include_diag", b))  p.includeDiagColumns = b;
   if (params.getInt("diag_interval_ms", li)) p.diagnosticIntervalMs = (li < 0) ? 0UL : (uint32_t)li;
@@ -120,6 +139,7 @@ void AS5048BAngleSensor::applyParams(const Params& p) {
   m_i2cAddr = p.i2cAddr ? p.i2cAddr : kDefaultAddress;
   m_readMode = p.readMode;
   m_zeroCount = normalizeCount_(p.zeroCount);
+  m_directionSign = (p.directionSign < 0) ? -1 : 1;
   m_includeRaw = p.includeRawColumn;
   m_includeDiagColumns = p.includeDiagColumns;
   m_diagnosticIntervalMs = p.diagnosticIntervalMs;
@@ -166,7 +186,7 @@ void AS5048BAngleSensor::begin() {
   uint16_t raw = 0;
   if (readRawAngle_(raw)) {
     refreshDiagnostics_(true);
-    AS5048_LOGI("sensor '%s': ready at 0x%02X bus%u raw=%u diag=0x%02X agc=%u mag=%u zero=%ld bus_hz=%lu read_mode=%s\n",
+    AS5048_LOGI("sensor '%s': ready at 0x%02X bus%u raw=%u diag=0x%02X agc=%u mag=%u zero=%ld direction=%s bus_hz=%lu read_mode=%s\n",
                 name(),
                 (unsigned)m_i2cAddr,
                 (unsigned)m_busIndex,
@@ -175,6 +195,7 @@ void AS5048BAngleSensor::begin() {
                 (unsigned)m_lastAgc,
                 (unsigned)m_lastMagnitude,
                 (long)m_zeroCount,
+                directionName_(m_directionSign),
                 (unsigned long)busHz_(m_busIndex),
                 (m_readMode == I2CReadMode::RepeatedStart) ? "repeated" : "stop");
   }
@@ -465,7 +486,7 @@ int32_t AS5048BAngleSensor::calibrationCountsFromRaw_(int raw) const {
 }
 
 float AS5048BAngleSensor::degreesFromRaw_(int raw) const {
-  return float(signedDeltaCounts_(raw, m_zeroCount)) * kDegreesPerCount;
+  return float(m_directionSign) * float(signedDeltaCounts_(raw, m_zeroCount)) * kDegreesPerCount;
 }
 
 void AS5048BAngleSensor::sample(float& primaryOut, int& rawOut) const {
@@ -654,7 +675,8 @@ bool AS5048BAngleSensor::describeSensorMetadata(SensorMetadataDescriptor& out) c
   out.sensorZeroCount = 0;
   out.sensorFullCount = kCountsPerTurn - 1;
   out.sensorFullTravel = 360.0f;
-  out.invert = false;
+  copyField_(out.direction, sizeof(out.direction), directionName_(m_directionSign));
+  out.invert = (m_directionSign < 0);
   out.hasCalibration = true;
   out.hasTracking = false;
   out.countsPerTurn = kCountsPerTurn;
@@ -686,7 +708,11 @@ bool AS5048BAngleSensor::beginCalibration(CalMode mode) {
 bool AS5048BAngleSensor::updateCalibration(int32_t latestCounts) {
   if (cal_.phase != CalPhase::ACTIVE || cal_.mode != CalMode::ZERO) return false;
   ++cal_.samples;
-  cal_.first_counts = normalizeCount_(latestCounts);
+  if (cal_.samples == 1) {
+    cal_.first_counts = latestCounts;
+  } else if (cal_.samples == 2) {
+    cal_.second_counts = latestCounts;
+  }
   return true;
 }
 
@@ -695,9 +721,24 @@ bool AS5048BAngleSensor::finishCalibration(bool persist) {
 
   if (cal_.mode == CalMode::ZERO) {
     const bool haveZero = (cal_.first_counts != INT32_MAX);
-    m_zeroCount = normalizeCount_(haveZero ? cal_.first_counts : currentRawCounts());
+    const bool haveDirection = (cal_.second_counts != INT32_MIN);
+    const int32_t zero = haveZero ? cal_.first_counts : currentRawCounts();
+    m_zeroCount = normalizeCount_(zero);
+
+    if (haveDirection) {
+      const int32_t delta = cal_.second_counts - zero;
+      const int32_t absDelta = (delta < 0) ? -delta : delta;
+      if (absDelta < kDirectionMinDeltaCounts) {
+        cal_.phase = CalPhase::COMPLETE;
+        cal_.mode = CalMode::NONE;
+        return false;
+      }
+      m_directionSign = (delta < 0) ? -1 : 1;
+    }
+
     if (persist) {
       ConfigManager::saveSensorParamByName(name(), "zero_count", String(m_zeroCount));
+      ConfigManager::saveSensorParamByName(name(), "direction", String(directionName_(m_directionSign)));
     }
   } else {
     cal_.phase = CalPhase::COMPLETE;
@@ -722,8 +763,8 @@ CalibrationState AS5048BAngleSensor::calibration() const {
   CalibrationState cs;
   cs.mode = m_mode;
   if (m_mode != OutputMode::RAW) {
-    cs.scale = kDegreesPerCount;
-    cs.offset = -float(m_zeroCount) * kDegreesPerCount;
+    cs.scale = float(m_directionSign) * kDegreesPerCount;
+    cs.offset = -float(m_zeroCount) * cs.scale;
   }
   return cs;
 }
@@ -747,6 +788,7 @@ const ParamDef* AS5048BAngleSensor::paramDefs(size_t& count) {
     {"i2c_addr",         ParamType::Int,    "64",  "1",     "127",   nullptr, "I2C address in decimal (default 64 = 0x40)"},
     {"i2c_read_mode",    ParamType::Enum,   "repeated", nullptr, nullptr, "repeated,stop", "I2C register read transaction style; repeated is the AS5048B datasheet path"},
     {"zero_count",       ParamType::Int,    "0",   "0",     "16383", nullptr, "Firmware zero point in raw AS5048B counts"},
+    {"direction",        ParamType::Enum,   "counts_increase_positive", nullptr, nullptr, "counts_increase_positive,counts_decrease_positive", "Raw-count direction for positive angular movement"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},
     {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5048B AGC, diagnostic flags, and magnitude columns"},

@@ -170,6 +170,7 @@ void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
     appendKeyInt_(out, 4, "sensor_zero_count", s.sensorZeroCount);
     appendKeyInt_(out, 4, "sensor_full_count", s.sensorFullCount);
     appendKeyFloat_(out, 4, "sensor_full_travel", s.sensorFullTravel);
+    if (hasText_(s.direction)) appendKeyString_(out, 4, "direction", s.direction);
     appendKeyBool_(out, 4, "invert", s.invert, false);
     appendIndent_(out, 3);
     out += F("}\n");
