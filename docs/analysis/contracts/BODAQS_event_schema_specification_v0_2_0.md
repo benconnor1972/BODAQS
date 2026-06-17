@@ -1,9 +1,9 @@
-# BODAQS Event Schema Specification v0.12 
+# BODAQS Event Schema Specification 0.2.0
 
 This document specifies the YAML schema used by the BODAQS analysis pipeline to define event detection,
 segmentation defaults, and metric extraction.
 
-This update uses **registry-first, no-fallback** event and segment role
+Specification 0.2.0 uses **registry-first, no-fallback** event and segment role
 definitions. Event `inputs` and `segment_defaults.roles[].prefer` are semantic
 selectors, usually constrained by `end`, `domain`, `quantity`, `unit`, and
 `processing_role`.
@@ -62,6 +62,7 @@ Each entry in `events` is an object with (common fields):
 - `preconditions` (optional constraints)
 - `window` (time window defaults for detection)
 - `metrics` (metric definitions)
+- `metric_conditions` (optional filters evaluated against computed metrics)
 - `tags` (optional)
 - `segment_defaults` (defaults used by `extract_segments` / segment viewer)
 
@@ -165,11 +166,43 @@ Expansion rules:
 5. Expansion is intentionally separate from selector matching: a selector should
    not resolve to multiple dataframe columns.
 
-The bundled `event_schema - Basic.yaml` uses this v0.1.2 `inputs` form from
+The bundled `event_schema - Basic.yaml` uses this 0.2.0 `inputs` form from
 schema file version `6` onward, and uses `expand.end: [rear, front]` from
 schema file version `7` onward. It keeps the historical event ids such as
 `compressions_all>25` and `rebounds_all>25` while moving signal binding away
 from shock/fork sensor expansion.
+
+### 3.3 Phased threshold crossing triggers
+
+`type: phased_threshold_crossing` detects ordered adjacent runs through named
+velocity bands. It is useful for stroke boundaries where a simple zero crossing
+is too sensitive to noise.
+
+Supported `phase_sequence` values are:
+
+- `neg_zero_pos`
+- `pos_zero_neg`
+- `zero_pos`
+- `zero_neg`
+- `pos_zero`
+- `neg_zero`
+- `neg_pos`
+- `pos_neg`
+
+`phase_sequence` may also be a list. List alternatives are scanned separately
+and merged by `t0_index`, for example:
+
+```yaml
+phase_sequence: [neg_zero, neg_pos]
+trigger_point: final_start
+```
+
+The direct forms `neg_pos` and `pos_neg` are for narrow zero bands where the
+sampled signal moves from one signed band to the other without an accepted
+zero-band sample. They still require adjacency and final-band `cross_samples`.
+Because there is no zero interval to mark, direct matches align to the first
+sample in the final band. When mixing direct and zero-mediated alternatives,
+`trigger_point: final_start` usually gives the most consistent alignment.
 
 ---
 
@@ -284,7 +317,39 @@ For these metric types:
 - `signal` refers to a **role** such as `disp`, `vel`, `acc`, `disp_norm`
 - `signal` must not refer to trigger metadata such as `t0_index`
 
-### 6.2 Trigger-derived metrics: `trigger_delta`
+Metric definitions may include `id` to produce stable output column names.
+Detector-side `interval_stats` with `id: stroke_disp` and `ops: [range]`
+emits `m_stroke_disp_range`. Without `id`, detector-side interval stats keep
+the legacy fallback name `m_int_<signal>_<op>`, for example
+`m_int_disp_range`.
+
+### 6.2 Interval metrics: `interval_stats`
+
+`interval_stats` computes statistics over a signal interval bounded by two
+resolved trigger ids.
+
+Definition:
+
+```yaml
+- id: <optional metric id>
+  type: interval_stats
+  signal: <role>
+  start_trigger: <trigger id>
+  end_trigger: <trigger id>
+  ops: [mean | max | min | range | delta | integral | peak]
+  smooth_ms: <optional smoothing window>
+  min_delay_s: <optional offset from start trigger>
+  return_debug: <optional bool, default false>
+```
+
+`range` is defined as `max(y) - min(y)` over the resolved interval. `delta` is
+the endpoint difference `y_end - y_start`.
+
+`min_delay_s`, when present, shifts the resolved interval start time by that
+amount. `smooth_ms`, when present, is applied to the source signal before the
+interval is sliced so short intervals do not pick up smoothing edge artifacts.
+
+### 6.3 Trigger-derived metrics: `trigger_delta`
 
 `trigger_delta` computes a scalar difference between two resolved trigger anchors for the same event instance.
 
@@ -331,6 +396,38 @@ metrics:
 
 This metric type is intended for trigger/index/time-derived quantities and should be preferred over treating
 trigger metadata as a fake signal role.
+
+---
+
+### 6.4 Metric conditions
+
+`metric_conditions` are optional event acceptance filters evaluated after
+metrics are computed and before the event row is written.
+
+Example:
+
+```yaml
+metrics:
+  - id: stroke_disp
+    type: interval_stats
+    signal: disp
+    start_trigger: compression_start
+    end_trigger: compression_end
+    ops: [range]
+
+metric_conditions:
+  all_of:
+    - metric: m_stroke_disp_range
+      cmp: ">"
+      value: 5.0
+```
+
+Rules:
+
+- supported comparisons are `>`, `>=`, `<`, `<=`, `==`, and `!=`
+- `all_of` and `any_of` have the same boolean meaning as condition blocks
+- missing metrics, non-numeric values, and NaN values fail closed
+- `metric_conditions` filter event candidates; they do not define new metrics
 
 ---
 

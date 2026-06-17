@@ -1,4 +1,4 @@
-# BODAQS Event Schema Specification — 
+# BODAQS Event Schema Specification 0.2.0
 ## Section 1 - Conceptual Model & Dataflow
 
 ### 1.1 Fundamental Objects
@@ -76,6 +76,7 @@ preconditions: list[ConditionBlock]
 postconditions: list[ConditionBlock]  
 window: WindowDef  
 metrics: list[MetricDef]  
+metric_conditions: MetricConditionBlock | list[MetricConditionBlock] | null  
 tags: list[string]  
 segment_defaults: SegmentDefaults  
 
@@ -390,7 +391,7 @@ End of Section 3
 
 ---
 
-# BODAQS Event Schema Specification — Section 4
+# BODAQS Event Schema Specification 0.2.0 - Section 4
 ## Trigger Engine: local_extrema
 
 This section defines the semantics of the local_extrema trigger engine, which detects local maxima or minima
@@ -578,7 +579,7 @@ End of Section 4
 
 ---
 
-# BODAQS Event Schema Specification — Section 5
+# BODAQS Event Schema Specification 0.2.0 - Section 5
 ## Trigger Engine: phased_threshold_crossing
 
 This section defines the phased_threshold_crossing trigger engine, a robust state-machine based detector designed
@@ -618,7 +619,7 @@ TriggerDef fields:
 type: phased_threshold_crossing  
 signal: role  
 dir: rising | falling | either  
-phase_sequence: neg_zero_pos | pos_zero_neg | zero_pos | zero_neg | pos_zero | neg_zero | null
+phase_sequence: neg_zero_pos | pos_zero_neg | zero_pos | zero_neg | pos_zero | neg_zero | neg_pos | pos_neg | null
 trigger_point: zero_start | zero_center | zero_end | final_start | null
 bands:
   neg:
@@ -712,6 +713,18 @@ zero_pos: zero dwell -> positive dwell
 zero_neg: zero dwell -> negative dwell  
 pos_zero: positive dwell -> zero dwell  
 neg_zero: negative dwell -> zero dwell  
+neg_pos: negative dwell -> positive dwell  
+pos_neg: positive dwell -> negative dwell  
+
+neg_pos and pos_neg are direct transition sequences. They are intended for
+cases where the zero band is narrow enough that the sampled signal moves
+directly from one signed band to the other without producing an accepted ZERO
+run. They still require adjacent accepted runs and final-band cross_samples.
+
+For schemas that should accept either a zero-mediated transition or a direct
+transition, use a list:
+
+phase_sequence: [neg_zero, neg_pos]
 
 If phase_sequence is absent, dir is retained as a backward compatibility alias:
 
@@ -787,6 +800,11 @@ final_start: first sample in the accepted final band
 Final-band dwell and cross_samples validate the transition. They only move t0
 into the final band when trigger_point is final_start.
 
+Direct sequences without a ZERO phase, currently neg_pos and pos_neg, have no
+zero interval to align to. For those matches the detector returns the first
+sample of the final band. When mixing zero-mediated and direct alternatives in
+one trigger, trigger_point: final_start gives the most consistent alignment.
+
 transition_strength is typically the magnitude of the final band excursion.
 
 ---
@@ -834,7 +852,7 @@ End of Section 5
 
 ---
 
-# BODAQS Event Schema Specification — Section 6
+# BODAQS Event Schema Specification 0.2.0 - Section 6
 ## Secondary Trigger Search & Debounce Semantics
 
 This section formalizes how secondary triggers are resolved relative to base triggers and how debounce clustering
@@ -1053,7 +1071,7 @@ End of Section 6
 
 ---
 
-# BODAQS Event Schema Specification — Section 7
+# BODAQS Event Schema Specification 0.2.0 - Section 7
 ## Conditions DSL (Preconditions & Postconditions)
 
 This section defines the domain-specific language used to constrain detected triggers using signal-based tests
@@ -1277,7 +1295,7 @@ End of Section 7
 
 ---
 
-# BODAQS Event Schema Specification — Section 8
+# BODAQS Event Schema Specification 0.2.0 - Section 8
 ## Window Semantics & Alignment
 
 This section defines how temporal windows are specified, how they are applied during detection and segmentation,
@@ -1461,7 +1479,7 @@ End of Section 8
 
 ---
 
-# BODAQS Event Schema Specification — Section 9
+# BODAQS Event Schema Specification 0.2.0 - Section 9
 ## Segment Extraction & Registry-First Role Binding Contract
 
 This section defines the formal contract for extracting waveform segments around events and the deterministic
@@ -1674,7 +1692,7 @@ End of Section 9
 
 ---
 
-# BODAQS Event Schema Specification — Section 10
+# BODAQS Event Schema Specification 0.2.0 - Section 10
 ## Metrics DSL & Computation Semantics
 
 This section defines the domain-specific language for metric extraction and the precise semantics of metric
@@ -1719,6 +1737,9 @@ If id is omitted, a stable id is auto-generated.
 Metrics are computed in the order defined in the schema.
 
 Each metric is independent; no metric may depend on the output of another.
+
+metric_conditions, if present, are evaluated after all metrics for the event
+candidate have been computed.
 
 ---
 
@@ -1812,6 +1833,9 @@ If min_delay_s is specified:
 
 t_start = t_start + min_delay_s
 
+If the shifted start time is no longer before t_end, the interval is empty and
+the metric is not emitted (or is NaN in segment-bundle metric output).
+
 ---
 
 ## 10.5.4 Smoothing
@@ -1821,6 +1845,9 @@ If smooth_ms is specified:
 A moving average filter is applied before statistics.
 
 Window size is computed from dt.
+
+The filter is applied to the source signal before interval slicing. This avoids
+short-interval edge artifacts from smoothing only the already-sliced interval.
 
 ---
 
@@ -1967,12 +1994,72 @@ metadata such as `t0_index` as a signal role.
 
 ---
 
+## 10.11 Metric Conditions
+
+metric_conditions are optional acceptance filters evaluated against computed
+metric columns for an event candidate.
+
+They are useful when an event definition should retain only events with a
+derived interval property, such as displacement range greater than 5 mm.
+
+Definition:
+
+metric_conditions:
+  all_of: list[MetricConditionTest]
+  any_of: list[MetricConditionTest]
+
+MetricConditionTest:
+
+metric: string  
+cmp: ">" | ">=" | "<" | "<=" | "==" | "!="  
+value: float  
+
+Example:
+
+```yaml
+metrics:
+  - id: stroke_disp
+    type: interval_stats
+    signal: disp
+    start_trigger: compression_start
+    end_trigger: compression_end
+    ops: [range]
+
+metric_conditions:
+  all_of:
+    - metric: m_stroke_disp_range
+      cmp: ">"
+      value: 5.0
+```
+
+Evaluation rules:
+
+1. Metrics are computed first.
+2. metric_conditions are evaluated against the computed metric dictionary.
+3. Missing metrics, non-numeric values, and NaN values fail closed.
+4. A failing metric condition rejects the event candidate before it is written
+   to the event table.
+5. metric_conditions do not define new metrics; they only filter candidates.
+
+Metric names must match output columns. For detector-side interval_stats,
+schemas should use `id` to make names stable:
+
+```yaml
+id: stroke_disp
+ops: [range]
+```
+
+emits `m_stroke_disp_range`. If `id` is omitted, the legacy detector fallback
+name is `m_int_<signal>_<op>`, for example `m_int_disp_range`.
+
+---
+
 End of Section 10
 
 
 ---
 
-# BODAQS Event Schema Specification — Section 11
+# BODAQS Event Schema Specification 0.2.0 - Section 11
 ## Trigger Time & Session Invariants
 
 This section formalizes the guarantees provided by preprocessing and the strict trigger-time contract relied upon
@@ -2112,7 +2199,7 @@ End of Section 11
 
 ---
 
-# BODAQS Event Schema Specification — Section 12
+# BODAQS Event Schema Specification 0.2.0 - Section 12
 ## Worked Event Walkthroughs
 
 This section provides concrete, end-to-end examples demonstrating how event schema definitions propagate
@@ -2341,7 +2428,7 @@ End of Section 12
 
 ---
 
-# BODAQS Event Schema Specification — Section 13
+# BODAQS Event Schema Specification 0.2.0 - Section 13
 ## Anti-Patterns & Debugging Guide
 
 This section documents common failure modes encountered when authoring event schemas and provides systematic
@@ -2551,7 +2638,7 @@ End of Section 13
 
 ---
 
-# BODAQS Event Schema Specification — Section 14
+# BODAQS Event Schema Specification 0.2.0 - Section 14
 ## Schema Design Best Practices
 
 This section provides practical guidance for authoring robust, scalable, and maintainable event schemas

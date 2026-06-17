@@ -11,7 +11,7 @@ from .catalog import (
     discover_libraries,
     get_session_gps_points as catalog_get_session_gps_points,
 )
-from .errors import InvalidRequestError, LibraryApiError, LibraryNotFoundError, SessionNotFoundError
+from .errors import InvalidRequestError, InvalidStudySetError, LibraryApiError, LibraryNotFoundError, SessionNotFoundError
 from .geospatial import (
     DEFAULT_GEOSPATIAL_POLICY_ID,
     build_session_track_match,
@@ -28,7 +28,7 @@ from .geospatial import (
     update_track,
     write_track_match,
 )
-from .ids import make_session_key, make_session_ref_id, parse_session_key
+from .ids import derive_object_id, is_valid_object_id, make_session_key, make_session_ref_id, parse_session_key
 from .models import default_capabilities
 from .selection import study_set_to_selection_snapshot
 from .session_filters import (
@@ -375,6 +375,82 @@ class LibraryAdapter:
         study_set_id = self._study_set_id_arg(*args)
         return load_study_set(self.libraries_root, study_set_id)
 
+    def resolve_study_set_id(self, study_set_ref: str, *, library_id: str | None = None) -> str:
+        text = str(study_set_ref or "").strip()
+        if not text:
+            raise InvalidStudySetError("Study Set id is required.", details={"study_set_id": text})
+
+        rows = self.list_study_sets(library_id=library_id)
+        available_ids = [
+            str(row.get("study_set_id"))
+            for row in rows
+            if isinstance(row, Mapping) and row.get("study_set_id")
+        ]
+        by_id = {study_set_id: study_set_id for study_set_id in available_ids}
+        if text in by_id:
+            return text
+
+        def _unique(matches: list[str], *, kind: str) -> str | None:
+            uniq = sorted(set(matches))
+            if len(uniq) == 1:
+                return uniq[0]
+            if len(uniq) > 1:
+                raise InvalidStudySetError(
+                    "Study Set reference is ambiguous.",
+                    details={
+                        "study_set_ref": text,
+                        "match_kind": kind,
+                        "matches": uniq,
+                    },
+                )
+            return None
+
+        exact_display = _unique(
+            [
+                str(row.get("study_set_id"))
+                for row in rows
+                if isinstance(row, Mapping)
+                and row.get("study_set_id")
+                and str(row.get("display_name") or "").strip() == text
+            ],
+            kind="display_name",
+        )
+        if exact_display:
+            return exact_display
+
+        folded = text.casefold()
+        folded_match = _unique(
+            [
+                str(row.get("study_set_id"))
+                for row in rows
+                if isinstance(row, Mapping)
+                and row.get("study_set_id")
+                and (
+                    str(row.get("study_set_id")).casefold() == folded
+                    or str(row.get("display_name") or "").strip().casefold() == folded
+                )
+            ],
+            kind="case_insensitive",
+        )
+        if folded_match:
+            return folded_match
+
+        candidate_id = derive_object_id(text, fallback="study-set")
+        if candidate_id in by_id:
+            return candidate_id
+
+        if is_valid_object_id(text):
+            return text
+
+        raise InvalidStudySetError(
+            "Study Set id is not filename-safe and did not match a saved Study Set display name.",
+            details={
+                "study_set_ref": text,
+                "candidate_id": candidate_id,
+                "available_study_set_ids": sorted(available_ids),
+            },
+        )
+
     def create_study_set(self, *args: Any) -> dict[str, Any]:
         payload = self._study_set_payload_arg(*args)
         return create_study_set(self.libraries_root, payload)
@@ -404,11 +480,10 @@ class LibraryAdapter:
         *,
         include_groupings: bool = True,
     ) -> dict[str, Any]:
+        study_set_id = self.resolve_study_set_id(study_set_id, library_id=library_id)
         study_set = self.load_study_set(study_set_id)
         for session in study_set.get("sessions") or []:
             if isinstance(session, dict) and session.get("library_id") != library_id:
-                from .errors import InvalidStudySetError
-
                 raise InvalidStudySetError(
                     "Selection snapshot bridge only supports one-library Study Sets.",
                     details={"library_id": library_id, "session_ref": session},

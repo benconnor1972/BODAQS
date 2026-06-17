@@ -325,9 +325,6 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
 
     align_abs = ctx.segments["trigger_time_s"].to_numpy(dtype=np.float64, copy=False)
 
-    if min_delay_s > 0:
-        t0_abs = np.maximum(t0_abs, align_abs + min_delay_s)
-
     t0_rel = t0_abs - align_abs
     t1_rel = t1_abs - align_abs
 
@@ -336,6 +333,9 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
         tmp = t0_rel.copy()
         t0_rel[swapped] = t1_rel[swapped]
         t1_rel[swapped] = tmp[swapped]
+
+    if min_delay_s > 0:
+        t0_rel = t0_rel + min_delay_s
 
     grid = ctx.t_rel_s
     i0 = np.searchsorted(grid, t0_rel, side="left")

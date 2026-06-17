@@ -1697,6 +1697,48 @@ def test_study_set_selection_snapshot_bridge_for_plain_sessions(
     assert entity_snapshot.selected_entities[0].kind == "session"
 
 
+def test_study_set_selection_snapshot_bridge_resolves_display_name_input(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_study_set(
+        "default-library",
+        {
+            "study_set_id": "archie-evedon-26-v2",
+            "display_name": "Archie-Evedon-26_v2",
+            "sessions": [session_ref],
+        },
+    )
+
+    assert adapter.resolve_study_set_id("Archie-Evedon-26_v2", library_id="default-library") == (
+        "archie-evedon-26-v2"
+    )
+    assert adapter.resolve_study_set_id("archie-evedon-26_v2", library_id="default-library") == (
+        "archie-evedon-26-v2"
+    )
+    assert adapter.resolve_study_set_id("Archie Evedon 26 v2", library_id="default-library") == (
+        "archie-evedon-26-v2"
+    )
+
+    bridge = adapter.study_set_to_selection_snapshot(
+        "default-library",
+        "Archie-Evedon-26_v2",
+    )
+
+    assert bridge["study_set_id"] == "archie-evedon-26-v2"
+    assert bridge["key_to_ref"] == {
+        session_ref["session_key"]: (session_ref["run_id"], session_ref["session_id"])
+    }
+
+
 def test_static_study_set_selector_handle_accepts_refresh_attachment(
     tmp_path: Path,
 ) -> None:

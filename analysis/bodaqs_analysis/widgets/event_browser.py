@@ -760,7 +760,7 @@ def make_event_browser_widget_for_loader(
                     if not matched_cols:
                         continue
                     role_name = f"{qty}__{sensor_name}__sel_{idx}"
-                    anchor_col = matched_cols[0] if bool(w_show_all_sensors.value) else None
+                    anchor_col = matched_cols[0]
                     selected_roles.append((role_name, sensor_name, semantic, anchor_col))
 
             if not selected_roles:

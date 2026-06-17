@@ -591,6 +591,11 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
       - dir='falling' maps to phase_sequence='pos_zero_neg'
       - dir='either' scans both full three-phase sequences
 
+    Direct two-phase sequences such as neg_pos and pos_neg are allowed for
+    cases where the signal steps across a narrow zero band without landing in
+    it. Since these matches have no zero run, they align to the first sample in
+    the final band.
+
     Works for both:
       - primary triggers (base_t0_sec=None -> search over whole frame or search window)
       - secondary triggers (base_t0_sec = time of base trigger -> windowed after base)
@@ -670,6 +675,8 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
         "zero_neg": ("zero", "neg"),
         "pos_zero": ("pos", "zero"),
         "neg_zero": ("neg", "zero"),
+        "neg_pos": ("neg", "pos"),
+        "pos_neg": ("pos", "neg"),
     }
 
     def _norm_token(value):
@@ -713,10 +720,13 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
         return deduped or [sequence_aliases["rising"]]
 
     def _trigger_point_index(zero_span, final_span):
-        zero_start, zero_end = zero_span
         final_start, _final_end = final_span
         token = _norm_token(trigger_point)
 
+        if zero_span is None:
+            return final_start
+
+        zero_start, zero_end = zero_span
         if token == "zero_start":
             return zero_start
         if token in ("zero_center", "zero_centre", "center", "centre"):
@@ -793,10 +803,6 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
                 ((start, end) for phase, start, end in runs if phase == "zero"),
                 None,
             )
-            if zero_run is None:
-                i = runs[-1][2]
-                continue
-
             final_span = (runs[-1][1], runs[-1][2])
             t0_idx = _trigger_point_index(zero_run, final_span)
             strength = runs[-1][2] - runs[-1][1]
@@ -993,6 +999,13 @@ def _resolve_interval_from_triggers(
         s_i, e_i = fallback_indices
         s_t = float(t[s_i])
         e_t = float(t[e_i - 1])
+        min_delay_s = float(metric_cfg.get("min_delay_s", 0.0) or 0.0)
+        if min_delay_s > 0:
+            s_t += min_delay_s
+            s_i = int(np.searchsorted(t, s_t, side="left"))
+            s_i, e_i = _clip_bounds(len(df), s_i, e_i)
+            if e_i <= s_i or e_t <= s_t:
+                return None
         return s_i, e_i, s_t, e_t
 
     # Look up trigger results
@@ -1008,21 +1021,130 @@ def _resolve_interval_from_triggers(
     if e_t <= s_t:
         return None
 
-    # Enforce minimum delay if requested
-    min_delay_s = float(metric_cfg.get("min_delay_s", 0.0))
-    if (e_t - s_t) < min_delay_s:
+    # Offset the interval start if requested.
+    min_delay_s = float(metric_cfg.get("min_delay_s", 0.0) or 0.0)
+    if min_delay_s > 0:
+        s_t += min_delay_s
+    if e_t <= s_t:
         return None
 
-    # Convert to indices
-    s_i = int(s_c.get("t0_index"))
-    e_i = int(e_c.get("t0_index"))
+    # Convert to indices from times so fractional delays land on the data grid.
+    s_i = int(np.searchsorted(t, s_t, side="left"))
+    e_i = int(np.searchsorted(t, e_t, side="right"))
     n = len(df)
     s_i, e_i = _clip_bounds(n, s_i, e_i)
     if e_i <= s_i:
         return None
 
     # Return [start, end_exclusive) + (start_time, end_time)
-    return s_i, e_i + 1, s_t, e_t
+    return s_i, e_i, s_t, e_t
+
+
+def _metric_prefix(metric_cfg: dict, fallback: str) -> str:
+    metric_id = str(metric_cfg.get("id", "")).strip()
+    if metric_id:
+        return f"m_{metric_id}"
+    return fallback
+
+
+def _metric_debug_prefix(metric_cfg: dict, fallback: str) -> str:
+    metric_id = str(metric_cfg.get("id", "")).strip()
+    if metric_id:
+        return f"d_{metric_id}"
+    return fallback
+
+
+def _moving_average_1d(y: np.ndarray, win: int) -> np.ndarray:
+    if win <= 1 or y.size == 0:
+        return y
+    win = min(int(win), int(y.size))
+
+    w = np.ones(win, dtype=float)
+    y0 = np.nan_to_num(y, nan=0.0)
+    mask = np.isfinite(y).astype(float)
+
+    summed = np.convolve(y0, w, mode="same")
+    counts = np.convolve(mask, w, mode="same")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return summed / np.where(counts == 0, np.nan, counts)
+
+
+def _compare_scalar(actual, cmp_op, expected) -> bool:
+    if actual is None:
+        return False
+    try:
+        a = float(actual)
+        b = float(expected)
+    except Exception:
+        return False
+    if not np.isfinite(a) or not np.isfinite(b):
+        return False
+
+    return {
+        ">": a > b,
+        ">=": a >= b,
+        "<": a < b,
+        "<=": a <= b,
+        "==": a == b,
+        "!=": a != b,
+    }.get(cmp_op, False)
+
+
+def _eval_metric_condition_tests(metric_values: dict, tests) -> bool:
+    for test in tests or []:
+        if not isinstance(test, dict):
+            return False
+        metric_name = test.get("metric") or test.get("name") or test.get("id")
+        if not metric_name:
+            return False
+        cmp_op = test.get("cmp")
+        if cmp_op is None:
+            raise ValueError("Metric condition missing required key 'cmp'.")
+        if "value" not in test:
+            raise ValueError("Metric condition missing required key 'value'.")
+        if not _compare_scalar(metric_values.get(str(metric_name)), str(cmp_op), test.get("value")):
+            return False
+    return True
+
+
+def _apply_metric_conditions(metric_values: dict, ev: dict) -> bool:
+    """
+    Evaluate metric_conditions against already-computed metric values.
+
+    Missing metrics and NaN values fail closed so metric filters cannot
+    accidentally admit events when a metric interval could not be resolved.
+    """
+    blocks = ev.get("metric_conditions") or []
+    if isinstance(blocks, dict):
+        blocks = [blocks]
+    if not blocks:
+        return True
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            return False
+        any_of = block.get("any_of")
+        all_of = block.get("all_of")
+
+        if any_of:
+            ok_any = False
+            for test in any_of:
+                if _eval_metric_condition_tests(metric_values, [test]):
+                    ok_any = True
+                    break
+            if not ok_any:
+                return False
+
+        if all_of:
+            if not _eval_metric_condition_tests(metric_values, all_of):
+                return False
+
+        if not any_of and not all_of:
+            if not _eval_metric_condition_tests(metric_values, [block]):
+                return False
+
+    return True
+
 
 def _compute_metrics(
     df: pd.DataFrame,
@@ -1051,7 +1173,11 @@ def _compute_metrics(
         if mtype == "integral" and y is not None:
             dx = dt if (np.isfinite(dt) and dt > 0) else 1.0
             val = np.trapezoid(np.abs(y), dx=dx) if m.get("abs", False) else np.trapezoid(y, dx=dx)
-            out[f"m_integral_{signal}{'_abs' if m.get('abs', False) else ''}"] = float(val)
+            key = _metric_prefix(
+                m,
+                f"m_integral_{signal}{'_abs' if m.get('abs', False) else ''}",
+            )
+            out[key] = float(val)
 
         elif mtype == "peak" and y is not None:
             kind = m.get("kind", "max")
@@ -1061,16 +1187,18 @@ def _compute_metrics(
             else:
                 idx_rel = int(np.nanargmin(y)) if len(y) else 0
                 val = float(np.nanmin(y)) if len(y) else np.nan
-            out[f"m_peak_{signal}"] = val
+            key = _metric_prefix(m, f"m_peak_{signal}")
+            out[key] = val
             if m.get("return_time", False):
-                out[f"m_peak_{signal}_t"] = float(t[start_idx + idx_rel] - t[t0_idx])
+                out[f"{key}_t"] = float(t[start_idx + idx_rel] - t[t0_idx])
 
         elif mtype == "time_above" and y is not None:
             thr = float(m.get("threshold", 0.0))
             dx = dt if (np.isfinite(dt) and dt > 0) else 1.0
             mask = y > thr
             val = float(np.sum(mask) * dx)
-            out[f"m_time_above_{signal}_{thr:g}"] = val
+            key = _metric_prefix(m, f"m_time_above_{signal}_{thr:g}")
+            out[key] = val
 
         elif mtype == "trigger_delta":
             if trig_results is None:
@@ -1133,27 +1261,28 @@ def _compute_metrics(
             if not col or col not in df.columns:
                 continue
 
-            y = df[col].to_numpy()[s_i:e_i]
-            if y.size == 0:
-                continue
+            y_full = df[col].to_numpy(dtype=float)
 
-            # optional smoothing
+            # optional smoothing: apply to the full signal before slicing the
+            # interval so short intervals are not biased by convolution edges.
             smooth_ms = m.get("smooth_ms", None)
             if smooth_ms is not None and np.isfinite(dt) and dt > 0:
                 win = int(round((smooth_ms / 1000.0) / dt))
-                if win > 1:
-                    kernel = np.ones(win, dtype=float) / win
-                    y_s = np.convolve(y, kernel, mode="same")
-                else:
-                    y_s = y
+                y_source = _moving_average_1d(y_full, win) if win > 1 else y_full
             else:
-                y_s = y
+                y_source = y_full
+
+            y_s = y_source[s_i:e_i]
+            if y_s.size == 0:
+                continue
 
             polarity = m.get("polarity", None)
             ops = m.get("ops") or []
+            metric_prefix = _metric_prefix(m, f"m_int_{signal_name}")
+            debug_prefix = _metric_debug_prefix(m, f"m_int_{signal_name}")
 
             for op in ops:
-                key_base = f"m_int_{signal_name}_{op}"
+                key_base = f"{metric_prefix}_{op}"
 
                 if op == "mean":
                     out[key_base] = float(np.nanmean(y_s))
@@ -1192,8 +1321,8 @@ def _compute_metrics(
                 # Optional: more ops here later (std, RMS, skew, etc.)
 
             if m.get("return_debug", False):
-                out[f"m_int_{signal_name}_t_start"] = float(s_t)
-                out[f"m_int_{signal_name}_t_end"]   = float(e_t)
+                out[f"{debug_prefix}_t_start"] = float(s_t)
+                out[f"{debug_prefix}_t_end"]   = float(e_t)
 
 
     return out
@@ -1525,7 +1654,7 @@ def detect_events_from_schema(
         post_n = _sec_to_samples_opt(post_s, dt) or 0
 
         kept = 0
-        rej = {"conditions": 0, "nan": 0, "clipped": 0, "saved": 0}
+        rej = {"conditions": 0, "metric_conditions": 0, "nan": 0, "clipped": 0, "saved": 0}
 
         for c in cands:
             t0_idx = c["t0_index"]
@@ -1668,6 +1797,15 @@ def detect_events_from_schema(
                 trig_results=trig_results,
                 primary_trigger_id=primary_id,
             )
+            if not _apply_metric_conditions(m, ev_resolved):
+                rej["metric_conditions"] += 1
+                logger.debug(
+                    "%s(%s): candidate t0_idx=%d failed metric_conditions",
+                    ev_id,
+                    event_context,
+                    t0_idx,
+                )
+                continue
 
             # ---- Contract mapping ----
             schema_id = ev_id                      # schema event definition id
