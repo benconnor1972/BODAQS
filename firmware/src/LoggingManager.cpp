@@ -74,10 +74,12 @@ namespace {
   // Stats: how often the sampler task woke up "late"
   static uint32_t s_lateTicks    = 0;
   static uint32_t s_lateMaxLagMs = 0;
+  static uint32_t s_missedSampleSlots = 0;
 
   static inline void resetLateStats_() {
     s_lateTicks = 0;
     s_lateMaxLagMs = 0;
+    s_missedSampleSlots = 0;
   }
 
   // One sample, no scheduling logic (task provides cadence)
@@ -138,6 +140,7 @@ static inline void sampleOnce_() {
 static void sampleTaskFn_(void* arg) {
   int64_t next_us = esp_timer_get_time();
   bool wasRunning = false;
+  bool blockedBeforeSample = false;
 
   for (;;) {
     if (!s_running) {
@@ -154,28 +157,41 @@ static void sampleTaskFn_(void* arg) {
     uint32_t intervalMs = s_intervalMs;
     if (intervalMs == 0) intervalMs = 1;
     const int64_t interval_us = (int64_t)intervalMs * 1000LL;
+    blockedBeforeSample = false;
 
-    next_us += interval_us;
-
-    // Wait until deadline, but ALWAYS block at least 1 tick so IDLE0 runs.
-    // This is crucial for the task watchdog.
+    // Wait for the next scheduled slot. If we are already late, skip missed
+    // slots instead of trying to catch up with a no-yield burst of samples.
     for (;;) {
       int64_t now_us = esp_timer_get_time();
       int64_t remaining_us = next_us - now_us;
 
-      if (remaining_us <= 0) break;
-
-      if (remaining_us > 1500) {
-        // Plenty of time: sleep 1 tick.
-        vTaskDelay(1);
-      } else {
-        // Very close: still sleep 1 tick occasionally to avoid starving IDLE0.
-        // For 2ms period, this will add some jitter but keeps system stable.
-        vTaskDelay(1);
+      if (remaining_us <= 0) {
+        const int64_t lag_us = -remaining_us;
+        if (lag_us >= 1000) {
+          ++s_lateTicks;
+          const uint32_t lag_ms = (uint32_t)((lag_us + 999LL) / 1000LL);
+          if (lag_ms > s_lateMaxLagMs) s_lateMaxLagMs = lag_ms;
+        }
+        if (lag_us >= interval_us) {
+          const uint32_t missed = (uint32_t)(lag_us / interval_us);
+          s_missedSampleSlots += missed;
+          s_sampleCount += missed;
+          next_us += (int64_t)missed * interval_us;
+        }
+        break;
       }
+
+      vTaskDelay(1);
+      blockedBeforeSample = true;
     }
 
     sampleOnce_();
+
+    next_us += interval_us;
+
+    if (!blockedBeforeSample) {
+      vTaskDelay(1);
+    }
   }
 }
 
@@ -355,6 +371,8 @@ void LoggingManager::stop() {
   LOGGING_LOGI("lateTicks=%lu maxLagMs=%lu\n",
                (unsigned long)s_lateTicks,
                (unsigned long)s_lateMaxLagMs);
+  LOGGING_LOGI("missedSampleSlots=%lu\n",
+               (unsigned long)s_missedSampleSlots);
 #endif
 }
 

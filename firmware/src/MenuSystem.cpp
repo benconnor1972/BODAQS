@@ -782,9 +782,14 @@ namespace {
               s->updateCalibration(avg);
               showCalibrationCaptureToast_("Zero", avg);
               deferUiFor(2000);
-              s_calUiPhase = s->calibrationNeedsPositiveMovement(CalMode::ZERO)
+              const bool needsPositiveMovement = s->calibrationNeedsPositiveMovement(CalMode::ZERO);
+              s_calUiPhase = needsPositiveMovement
                                 ? CalUiPhase::ZeroDirectionActive
                                 : CalUiPhase::ZeroCaptured;
+              if (needsPositiveMovement) {
+                s_swallowEnterRelease = true;
+                guardEnterRight();
+              }
               s_calOptSel  = 0;
               drawCalibDetail_();
               return true;
@@ -839,6 +844,8 @@ namespace {
               showCalibrationCaptureToast_("+move", avg);
               deferUiFor(2000);
               s_calUiPhase = CalUiPhase::ZeroCaptured;
+              s_swallowEnterRelease = true;
+              guardEnterRight();
               s_calOptSel  = 0;
               drawCalibDetail_();
             } else {
@@ -1160,15 +1167,25 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
       return true;
 
     case ButtonActions::ACT_MENU_NAV_ENTER:
+      if (ev == BUTTON_RELEASED && s_swallowEnterRelease) {
+        touch();
+        s_swallowEnterRelease = false;
+        return true;
+      }
       if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
       return true;
 
     case ButtonActions::ACT_MENU_SELECT:
+      if (ev == BUTTON_RELEASED && s_swallowEnterRelease) {
+        touch();
+        s_swallowEnterRelease = false;
+        return true;
+      }
       if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
       return true;
 
     case ButtonActions::ACT_MARK_EVENT:
-      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
+      touch();
       return true;
 
     case ButtonActions::ACT_LOGGING_TOGGLE:

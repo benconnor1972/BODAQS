@@ -380,6 +380,53 @@ static void emitParamRow_(ChunkedHtmlResponse& html,
   html += F("</div>");
 }
 
+static bool analogInputConfigured_(const board::BoardProfile& bp, uint8_t ain) {
+  if (ain >= bp.analog.count || ain >= board::BOARD_MAX_ANALOG_INPUTS) return false;
+
+  const auto& input = bp.analog.inputs[ain];
+  switch (input.source) {
+    case board::AnalogSourceType::InternalGpio:
+      return input.pin >= 0;
+    case board::AnalogSourceType::ExternalAdc:
+      return input.external_adc_index < bp.external_adc_count &&
+             input.external_adc_index < board::BOARD_MAX_EXTERNAL_ADCS &&
+             bp.external_adcs[input.external_adc_index].present &&
+             input.external_channel < bp.external_adcs[input.external_adc_index].channel_count;
+    case board::AnalogSourceType::None:
+    default:
+      return false;
+  }
+}
+
+static String analogInputLabel_(const board::BoardProfile& bp, uint8_t ain) {
+  String label = String(F("AIN")) + String((int)ain);
+  if (ain >= bp.analog.count || ain >= board::BOARD_MAX_ANALOG_INPUTS) return label;
+
+  const auto& input = bp.analog.inputs[ain];
+  switch (input.source) {
+    case board::AnalogSourceType::InternalGpio:
+      label += F(" (GPIO");
+      label += String((int)input.pin);
+      label += F(")");
+      break;
+    case board::AnalogSourceType::ExternalAdc:
+      label += F(" (ADS");
+      label += String((int)input.external_adc_index);
+      label += F(" CH");
+      label += String((int)input.external_channel);
+      if (input.differential && input.negative_channel >= 0) {
+        label += F("-");
+        label += String((int)input.negative_channel);
+      }
+      label += F(")");
+      break;
+    case board::AnalogSourceType::None:
+    default:
+      break;
+  }
+  return label;
+}
+
 static void emitAnalogInputRow_(ChunkedHtmlResponse& html,
                                 uint8_t idx,
                                 const SensorSpec& sp,
@@ -409,17 +456,14 @@ static void emitAnalogInputRow_(ChunkedHtmlResponse& html,
       if (curAin < 0) html += F(" selected");
       html += F(">-- select --</option>");
       for (uint8_t ai = 0; ai < bp.analog.count; ++ai) {
-        const int pin = bp.analog.pins[ai];
-        if (pin < 0) continue;
+        if (!analogInputConfigured_(bp, ai)) continue;
         html += F("<option value='");
         html += String((int)ai);
         html += F("'");
         if ((long)ai == curAin) html += F(" selected");
-        html += F(">AIN");
-        html += String((int)ai);
-        html += F(" (GPIO");
-        html += String(pin);
-        html += F(")</option>");
+        html += F(">");
+        html += analogInputLabel_(bp, ai);
+        html += F("</option>");
       }
       html += F("</select>");
     }
@@ -1173,7 +1217,7 @@ void registerConfigRoutes(WebServer& srv) {
           else {
             const auto& bp = *board::gBoard;
             if (ain < 0 || ain >= (long)bp.analog.count) ok = false;
-            else if (bp.analog.pins[(uint8_t)ain] < 0) ok = false;
+            else if (!analogInputConfigured_(bp, (uint8_t)ain)) ok = false;
           }
 
           if (!ok) {

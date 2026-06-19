@@ -12,6 +12,7 @@
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #endif
 
 #define AIN_LOGE(...) LOGE_TAG("AIN", __VA_ARGS__)
@@ -25,6 +26,10 @@ constexpr uint8_t ADS1220_CMD_RESET = 0x06;
 constexpr uint8_t ADS1220_CMD_START = 0x08;
 constexpr uint8_t ADS1220_CMD_RDATA = 0x10;
 constexpr uint8_t ADS1220_CMD_WREG  = 0x40;
+constexpr uint8_t kInvalidChannel = 0xFF;
+constexpr uint16_t kExternalAdcGlobalCapHz = 500;
+constexpr uint32_t kExternalAdcUtilizationPermille = 550;
+constexpr uint32_t kFastDrdyPollMaxUs = 1500;
 
 struct AdsRateSetting {
   uint16_t sps;
@@ -171,6 +176,26 @@ uint16_t snapDownRate_(uint16_t requestedHz, uint32_t maxHz) {
   return best;
 }
 
+uint32_t ceilDivU32_(uint32_t num, uint32_t den) {
+  if (den == 0) return num;
+  return (num + den - 1U) / den;
+}
+
+uint32_t adsMaxSps_(const AdsDevice& dev) {
+  return dev.cfg.max_sps ? dev.cfg.max_sps : 1UL;
+}
+
+uint32_t usableLoggerHzForAdc_(const AdsDevice& dev, uint8_t activeChannels) {
+  if (activeChannels == 0) return 0;
+  const uint32_t usableSps = (adsMaxSps_(dev) * kExternalAdcUtilizationPermille) / 1000UL;
+  return (usableSps ? usableSps : 1UL) / activeChannels;
+}
+
+uint32_t targetDataRateSps_(uint16_t loggerHz, uint8_t activeChannels) {
+  const uint32_t requiredSps = (uint32_t)loggerHz * (uint32_t)activeChannels;
+  return ceilDivU32_(requiredSps * 1000UL, kExternalAdcUtilizationPermille);
+}
+
 void adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len) {
   if (!s_spi || !tx || len == 0) return;
   s_spi->beginTransaction(spiSettings_(dev));
@@ -228,9 +253,22 @@ bool adsWaitReady_(const AdsDevice& dev, uint32_t timeoutUs) {
 
   const int readyLevel = dev.cfg.drdy_active_low ? LOW : HIGH;
   const uint32_t start = micros();
+  const uint16_t sps = dev.dataRateSps ? dev.dataRateSps : 20;
+  uint32_t fastPollUs = (1000000UL / sps) + 250UL;
+  if (fastPollUs > kFastDrdyPollMaxUs) fastPollUs = kFastDrdyPollMaxUs;
+
   while ((uint32_t)(micros() - start) < timeoutUs) {
     if (digitalRead((uint8_t)dev.cfg.drdy_pin) == readyLevel) return true;
-    delayMicroseconds(20);
+    const uint32_t elapsed = (uint32_t)(micros() - start);
+    if (elapsed < fastPollUs) {
+      delayMicroseconds(20);
+    } else {
+#if defined(ESP32)
+      vTaskDelay(1);
+#else
+      delay(1);
+#endif
+    }
   }
   return false;
 }
@@ -303,6 +341,16 @@ bool analogInputAvailable_(const board::AnalogInputHW& input) {
     default:
       return false;
   }
+}
+
+uint8_t nthActiveChannel_(const AdsDevice& dev, uint8_t ordinal) {
+  uint8_t seen = 0;
+  for (uint8_t ch = 0; ch < 4; ++ch) {
+    if (!dev.channelUsed[ch]) continue;
+    if (seen == ordinal) return ch;
+    ++seen;
+  }
+  return kInvalidChannel;
 }
 
 void clearCachedSamples_() {
@@ -457,6 +505,7 @@ uint16_t configureFromConfig(const LoggerConfig& cfg, uint16_t requestedHz) {
   }
 
   uint32_t maxHz = s_requestedHz;
+  bool anyExternalActive = false;
   for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
     AdsDevice& dev = s_ads[adc];
     if (!dev.present) continue;
@@ -467,10 +516,14 @@ uint16_t configureFromConfig(const LoggerConfig& cfg, uint16_t requestedHz) {
     }
     dev.activeChannels = active;
     if (active == 0) continue;
+    anyExternalActive = true;
 
-    const uint32_t adcMaxSps = dev.cfg.max_sps ? dev.cfg.max_sps : 1UL;
-    const uint32_t adcMaxHz = adcMaxSps / active;
+    const uint32_t adcMaxHz = usableLoggerHzForAdc_(dev, active);
     if (adcMaxHz < maxHz) maxHz = adcMaxHz;
+  }
+
+  if (anyExternalActive && maxHz > kExternalAdcGlobalCapHz) {
+    maxHz = kExternalAdcGlobalCapHz;
   }
 
   s_effectiveHz = snapDownRate_(s_requestedHz, maxHz);
@@ -481,14 +534,16 @@ uint16_t configureFromConfig(const LoggerConfig& cfg, uint16_t requestedHz) {
     if (!dev.present || dev.activeChannels == 0) continue;
 
     const uint32_t requiredSps = (uint32_t)s_effectiveHz * (uint32_t)dev.activeChannels;
-    const AdsRateSetting rate = selectRate_(requiredSps);
+    const uint32_t targetSps = targetDataRateSps_(s_effectiveHz, dev.activeChannels);
+    const AdsRateSetting rate = selectRate_(targetSps);
     dev.dataRateSps = rate.sps;
     dev.config1 = (uint8_t)((rate.drBits << 5) | (rate.modeBits << 3));
 
-    AIN_LOGI("ADS%u active_channels=%u required=%lu SPS configured=%u SPS\n",
+    AIN_LOGI("ADS%u active_channels=%u required=%lu SPS target=%lu SPS configured=%u SPS\n",
              (unsigned)adc,
              (unsigned)dev.activeChannels,
              (unsigned long)requiredSps,
+             (unsigned long)targetSps,
              (unsigned)dev.dataRateSps);
   }
 
@@ -532,22 +587,32 @@ void beginSample() {
   }
   if (!any) return;
 
-  for (uint8_t ch = 0; ch < 4; ++ch) {
-    bool channelStarted = false;
-
+  for (uint8_t pass = 0; pass < 4; ++pass) {
+    bool anyStarted = false;
+    uint8_t startedChannel[board::BOARD_MAX_EXTERNAL_ADCS];
     for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
-      AdsDevice& dev = s_ads[adc];
-      if (!dev.present || !dev.initialized || !dev.channelUsed[ch]) continue;
-      if (!configureAdsChannel_(dev, ch)) continue;
-      if (!adsCommand_(dev, ADS1220_CMD_START)) continue;
-      channelStarted = true;
+      startedChannel[adc] = kInvalidChannel;
     }
 
-    if (!channelStarted) continue;
+    for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+      AdsDevice& dev = s_ads[adc];
+      if (!dev.present || !dev.initialized || dev.activeChannels == 0) continue;
+
+      const uint8_t ch = nthActiveChannel_(dev, pass);
+      if (ch == kInvalidChannel) continue;
+
+      if (!configureAdsChannel_(dev, ch)) continue;
+      if (!adsCommand_(dev, ADS1220_CMD_START)) continue;
+      startedChannel[adc] = ch;
+      anyStarted = true;
+    }
+
+    if (!anyStarted) break;
 
     for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
       AdsDevice& dev = s_ads[adc];
-      if (!dev.present || !dev.initialized || !dev.channelUsed[ch]) continue;
+      const uint8_t ch = startedChannel[adc];
+      if (ch == kInvalidChannel || !dev.present || !dev.initialized) continue;
       if (!adsWaitReady_(dev, conversionTimeoutUs_(dev))) {
         AIN_LOGW("ADS%u channel%u DRDY timeout\n", (unsigned)adc, (unsigned)ch);
       }
@@ -555,7 +620,8 @@ void beginSample() {
 
     for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
       AdsDevice& dev = s_ads[adc];
-      if (!dev.present || !dev.initialized || !dev.channelUsed[ch]) continue;
+      const uint8_t ch = startedChannel[adc];
+      if (ch == kInvalidChannel || !dev.present || !dev.initialized) continue;
 
       int32_t raw24 = 0;
       if (!adsReadData_(dev, raw24)) continue;
