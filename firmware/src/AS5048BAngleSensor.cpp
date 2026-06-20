@@ -117,7 +117,6 @@ void loadParamsFromPack_(AS5048BAngleSensor::Params& p,
   if (params.getBool("include_raw", b))   p.includeRawColumn = b;
   if (params.getBool("include_diag", b))  p.includeDiagColumns = b;
   if (params.getInt("diag_interval_ms", li)) p.diagnosticIntervalMs = (li < 0) ? 0UL : (uint32_t)li;
-  if (params.get("units_label", s))       s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
   if (params.get("end", s))               s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
   if (params.get("primary_domain", s))    s.toCharArray(p.primaryDomain, sizeof(p.primaryDomain));
   if (params.get("primary_quantity", s))  s.toCharArray(p.primaryQuantity, sizeof(p.primaryQuantity));
@@ -144,7 +143,7 @@ void AS5048BAngleSensor::applyParams(const Params& p) {
   m_includeDiagColumns = p.includeDiagColumns;
   m_diagnosticIntervalMs = p.diagnosticIntervalMs;
 
-  copyField_(m_unitsLabel, sizeof(m_unitsLabel), p.unitsLabel[0] ? p.unitsLabel : "deg");
+  copyField_(m_unitsLabel, sizeof(m_unitsLabel), "deg");
   Sensor::setOutputUnitsLabel(m_unitsLabel);
   copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);
   copyField_(m_primaryDomain, sizeof(m_primaryDomain), p.primaryDomain);
@@ -793,7 +792,6 @@ const ParamDef* AS5048BAngleSensor::paramDefs(size_t& count) {
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},
     {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5048B AGC, diagnostic flags, and magnitude columns"},
     {"diag_interval_ms", ParamType::Int,    "250", "0",     "5000", nullptr, "Minimum interval between AS5048B diagnostic reads"},
-    {"units_label",      ParamType::String, "deg", nullptr, nullptr, nullptr, "Units suffix for angular output"},
     {"end",              ParamType::Enum,   "",    nullptr, nullptr, "front,rear", "Optional semantic end for log metadata"},
     {"primary_domain",   ParamType::Enum,   "",    nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
     {"primary_quantity", ParamType::Enum,   "ang_disp", nullptr, nullptr, "disp,ang_disp,force,pressure,temp,voltage,norm", "Optional semantic quantity for primary output"},

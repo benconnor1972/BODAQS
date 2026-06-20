@@ -1,13 +1,28 @@
 {
-  "schema": "bodaqs.preprocess_profile",
-  "version": 1,
-  "profile_id": "default_import_agent_settings",
-  "description": "Default preprocess profile seeded for new BODAQS import-agent sources.",
   "config": {
-    "schema_path": "event_schema.yaml",
-    "strict": false,
+    "active_disp_thresh": 20.0,
+    "active_min_seg": "3s",
+    "active_padding": "1s",
+    "active_signal_disp_selector": {
+      "domain": "wheel",
+      "end": "rear",
+      "quantity": "disp",
+      "unit": "mm"
+    },
+    "active_signal_vel_selector": {
+      "domain": "wheel",
+      "end": "rear",
+      "quantity": "vel",
+      "unit": "mm/s"
+    },
+    "active_vel_thresh": 50.0,
+    "active_window": "500ms",
+    "butterworth_generate_residuals": false,
+    "butterworth_smoothing": [],
+    "clip_0_1": false,
     "fit_import": {
-      "enabled": false,
+      "ambiguity_policy": "largest_overlap",
+      "enabled": true,
       "field_allowlist": [
         "position_lat",
         "position_long",
@@ -19,122 +34,56 @@
         "grade",
         "heading"
       ],
-      "ambiguity_policy": "largest_overlap",
       "partial_overlap": "allow",
       "persist_raw_stream": true,
-      "resample_to_primary": true,
+      "raw_stream_name": "gps_fit",
       "resample_method": "linear",
-      "raw_stream_name": "gps_fit"
+      "resample_to_primary": true
     },
-    "gps_source_policy": {
-      "preferred_source": "logger_then_fit",
-      "preserve_all_sources": true,
-      "build_logger_stream": true,
-      "logger_stream_name": "gps_logger"
-    },
-    "zeroing_enabled": true,
-    "zero_window_s": 0.1,
-    "zero_min_samples": 10,
-    "clip_0_1": false,
-    "prefer_postprocessing_transformations": true,
     "motion_derivation": {
       "enabled": true,
+      "primary": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window_ms": 40.0,
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "sg_polyorder": 3,
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window_ms": 20.0
+      },
+      "secondary": [],
       "sources": [
         {
           "id": "rear_wheel",
           "selector": {
+            "domain": "wheel",
             "end": "rear",
             "quantity": "disp",
-            "domain": "wheel",
             "unit": "mm"
           }
         },
         {
           "id": "front_wheel",
           "selector": {
+            "domain": "wheel",
             "end": "front",
             "quantity": "disp",
-            "domain": "wheel",
             "unit": "mm"
-          }
-        }
-      ],
-      "primary": {
-        "displacement_lowpass_hz": 80.0,
-        "displacement_lowpass_order": 4,
-        "velocity_sg_window_ms": 20.0,
-        "acceleration_sg_window_ms": 40.0,
-        "sg_polyorder": 3,
-        "velocity_lowpass_hz": 60.0,
-        "velocity_lowpass_order": 4,
-        "acceleration_lowpass_hz": 30.0,
-        "acceleration_lowpass_order": 4
-      },
-      "secondary": []
-    },
-    "butterworth_smoothing": [],
-    "butterworth_generate_residuals": false,
-    "activity_detection": {
-      "enabled": true,
-      "combination": "any",
-      "fallback_to_legacy": true,
-      "candidates": [
-        {
-          "id": "gps_speed",
-          "type": "gps_speed",
-          "speed_threshold_mps": 0.5,
-          "max_gap_s": 5.0
-        },
-        {
-          "id": "rear_wheel_motion",
-          "type": "wheel_motion",
-          "disp_selector": {
-            "end": "rear",
-            "quantity": "disp",
-            "domain": "wheel",
-            "unit": "mm"
-          },
-          "vel_selector": {
-            "end": "rear",
-            "quantity": "vel",
-            "domain": "wheel",
-            "unit": "mm/s"
-          }
-        },
-        {
-          "id": "front_wheel_motion",
-          "type": "wheel_motion",
-          "disp_selector": {
-            "end": "front",
-            "quantity": "disp",
-            "domain": "wheel",
-            "unit": "mm"
-          },
-          "vel_selector": {
-            "end": "front",
-            "quantity": "vel",
-            "domain": "wheel",
-            "unit": "mm/s"
           }
         }
       ]
     },
-    "active_signal_disp_selector": {
-      "end": "rear",
-      "quantity": "disp",
-      "domain": "wheel",
-      "unit": "mm"
-    },
-    "active_signal_vel_selector": {
-      "end": "rear",
-      "quantity": "vel",
-      "domain": "wheel",
-      "unit": "mm/s"
-    },
-    "active_disp_thresh": 20.0,
-    "active_vel_thresh": 50.0,
-    "active_window": "500ms",
-    "active_padding": "1s",
-    "active_min_seg": "3s"
-  }
+    "prefer_postprocessing_transformations": true,
+    "schema_path": "../event_schemas/event_schema_0.2.0 v1.yaml",
+    "strict": false,
+    "zero_min_samples": 10,
+    "zero_window_s": 0.1,
+    "zeroing_enabled": true
+  },
+  "description": "Default preprocess profile seeded for new BODAQS import-agent sources.",
+  "profile_id": "default_import_agent_settings",
+  "schema": "bodaqs.preprocess_profile",
+  "version": 1
 }

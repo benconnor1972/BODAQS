@@ -13,7 +13,7 @@ There are two related roots:
 
 - `libraries_root`: the workspace-level folder managed by Import Manager.
 - `library root` or `artifacts_dir`: one actual artifact library under
-  `libraries_root`.
+  `<libraries_root>/libraries/` in current managed workspaces.
 
 The current managed shape is:
 
@@ -21,21 +21,29 @@ The current managed shape is:
 <libraries_root>/
   bike_profiles/
     <shared bike profile JSON files>
-  <library_a>/
-    library_definition.json
-    runs/
-    library/
-    syn/
-  <library_b>/
-    library_definition.json
-    runs/
-    library/
-    syn/
+  preprocess_profiles/
+    <shared preprocess profile JSON files>
+  event_schemas/
+    <shared event schema YAML files>
+  libraries/
+    <library_a>/
+      library_definition.json
+      runs/
+      library/
+      syn/
+    <library_b>/
+      library_definition.json
+      runs/
+      library/
+      syn/
 ```
 
-`bike_profiles/` is deliberately at the `libraries_root` level, not inside an
-individual library. Profiles can therefore be reused by any library under the
-same `libraries_root`.
+`bike_profiles/`, `preprocess_profiles/`, and `event_schemas/` are deliberately
+at the `libraries_root` level, not inside an individual library. These shared
+configuration files can therefore be reused by any source/library under the same
+`libraries_root`. New managed libraries are deliberately stored under
+`<libraries_root>/libraries/`; older workspaces with library directories
+directly under `<libraries_root>/` remain readable as a legacy layout.
 
 ## Run And Session Structure
 
@@ -227,14 +235,86 @@ Existing source-local profiles remain valid if a source config points at them:
 Downstream consumers should not infer the bike profile from folder layout.
 Always use the resolved `bike_profile_path`/manifest provenance when available.
 
+## Preprocess Profiles And Event Schemas
+
+Preprocess profiles are no longer owned by individual import sources in the
+managed Import Manager model.
+
+Current managed locations:
+
+```text
+<libraries_root>/
+  preprocess_profiles/
+    preprocess_profile.json
+  event_schemas/
+    event_schema.yaml
+```
+
+Each import source still stores its selected preprocessing profile as
+`preprocess_profile_path` in `import_source.json`. New managed sources point
+this at a specific shared profile file under
+`<libraries_root>/preprocess_profiles/`.
+
+The selected preprocess profile owns its event-schema reference through
+`config.schema_path`. For shared managed profiles, this path is written relative
+to the preprocess profile file, for example:
+
+```json
+{
+  "preprocess_profile_path": "../../libraries/preprocess_profiles/preprocess_profile.json"
+}
+```
+
+```json
+{
+  "config": {
+    "schema_path": "../event_schemas/event_schema.yaml"
+  }
+}
+```
+
+Important behavior:
+
+- Multiple sources can point at the same preprocess profile file.
+- Multiple libraries under the same `libraries_root` can use the same
+  preprocess profile and event schema files.
+- Changing a source's target library does not imply changing its preprocess
+  profile.
+- Processed sessions still freeze the event schema under
+  `runs/<run_id>/sessions/<session_id>/events/<schema_id>/schema.yaml`.
+
+### Legacy Compatibility
+
+Existing source-local preprocessing settings remain valid if a source config
+points at them:
+
+```text
+<source_root>/
+  settings/
+    preprocess_profile.json
+    event_schema.yaml
+```
+
+`preprocess_profile_path` may still point to either:
+
+- a specific preprocess profile JSON file, or
+- a directory containing exactly one valid preprocess profile JSON file.
+
+Downstream consumers should use the resolved preprocessing profile and frozen
+per-session event schemas from provenance/artifacts rather than inferring them
+from source folder layout.
+
 ## What Downstream Code Should Do
 
 For library service and browser work:
 
-- Treat `libraries_root` as the workspace that owns shared bike profiles and
-  one or more libraries.
-- Treat each library root as the artifact store that owns `runs/`, `library/`,
-  and optional `syn/`.
+- Treat `libraries_root` as the workspace that owns shared bike profiles,
+  preprocess profiles, event schemas, and one or more libraries.
+- Discover current managed libraries under `<libraries_root>/libraries/`.
+- Treat older immediate-child libraries under `<libraries_root>/` as legacy
+  compatibility.
+- Treat each discovered library root as the artifact store that owns `runs/`,
+  `library/`, and optional `syn/`.
 - Build session catalogs by iterating `runs/<run_id>/manifest.json` and each
   `runs/<run_id>/sessions/<session_id>/manifest.json`.
 - Use `(run_id, session_id)` as the canonical physical-session address.
@@ -242,6 +322,8 @@ For library service and browser work:
   storage.
 - Resolve bike profile identity from session/import provenance rather than from
   a source-local `bike/` folder.
+- Resolve preprocessing profile identity from session/import provenance rather
+  than from a source-local `settings/` folder.
 - Be prepared for older libraries where most runs contain exactly one session
-  and where bike profiles may still be source-local.
+  and where bike/preprocess profiles may still be source-local.
 

@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -8,6 +9,13 @@ from PyInstaller.utils.hooks import collect_data_files
 import_manager_dir = Path.cwd()
 repo_root = import_manager_dir.parent
 analysis_dir = repo_root / "analysis"
+generated_dir = import_manager_dir / "build" / "generated"
+generated_dir.mkdir(parents=True, exist_ok=True)
+app_version = os.environ.get("BODAQS_IMPORT_MANAGER_APP_VERSION", "").strip()
+(generated_dir / "bodaqs_import_manager_build_version.py").write_text(
+    f"APP_VERSION = {app_version!r}\n",
+    encoding="utf-8",
+)
 setup_datas = collect_data_files("bodaqs_import_manager.import_agent_assets")
 app_icon_path = (import_manager_dir / "packaging" / "windows" / "bodaqs_import_agent.ico").resolve()
 setup_excludes = [
@@ -23,7 +31,7 @@ setup_excludes = [
 
 a = Analysis(
     ['bodaqs_import_agent_setup.py'],
-    pathex=[str(import_manager_dir), str(analysis_dir)],
+    pathex=[str(generated_dir), str(import_manager_dir), str(analysis_dir)],
     binaries=[],
     datas=setup_datas,
     hiddenimports=[

@@ -57,8 +57,7 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
   m_assumeTurn0AtStart = p.assumeTurn0AtStart;
   m_includeRaw = p.includeRawColumn;
 
-  strncpy(m_unitsLabel, p.unitsLabel, sizeof(m_unitsLabel) - 1);
-  m_unitsLabel[sizeof(m_unitsLabel) - 1] = '\0';
+  copyField_(m_unitsLabel, sizeof(m_unitsLabel), "mm");
   Sensor::setOutputUnitsLabel(m_unitsLabel);
 
   copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);

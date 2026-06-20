@@ -80,6 +80,8 @@ DEFAULT_DATA_SYN_BIKE_EXPORT_FILENAME_TEMPLATE = "{run_id}__{session_id}__{expor
 DEFAULT_DATA_SYN_BIKE_SETTINGS_FILENAME_TEMPLATE = "{run_id}__{session_id}__data_syn_bike_settings.txt"
 DATA_SYN_BIKE_LIBRARY_MANIFEST_FILENAME = "data_syn_bike_export_manifest.json"
 DEFAULT_SESSION_NOTE_DIRNAME = "notes"
+SESSION_NAMING_MODE_DEFAULT = "default"
+SESSION_NAMING_MODE_BASE_INDEX = "base_index"
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +466,71 @@ class ImportSourceSessionNoteConfig:
 
 
 @dataclass(frozen=True)
+class ImportSourceSessionNamingConfig:
+    enabled: bool = False
+    mode: str = SESSION_NAMING_MODE_DEFAULT
+    base: Optional[str] = None
+    index_start: int = 1
+    index_padding: int = 2
+
+    def __post_init__(self) -> None:
+        if self.mode not in {SESSION_NAMING_MODE_DEFAULT, SESSION_NAMING_MODE_BASE_INDEX}:
+            raise ValueError(f"Unsupported session naming mode: {self.mode!r}")
+        if int(self.index_start) < 0:
+            raise ValueError("session naming index_start must be >= 0")
+        if int(self.index_padding) < 0:
+            raise ValueError("session naming index_padding must be >= 0")
+        if self.enabled and self.mode == SESSION_NAMING_MODE_BASE_INDEX and _optional_text(self.base) is None:
+            raise ValueError("session naming base is required when base-index naming is enabled")
+
+
+@dataclass(frozen=True)
+class ImportSourceNamingConfig:
+    session_description: ImportSourceSessionNamingConfig = field(
+        default_factory=ImportSourceSessionNamingConfig
+    )
+
+
+def _parse_session_naming_config(raw: Any) -> ImportSourceSessionNamingConfig:
+    if raw is None:
+        return ImportSourceSessionNamingConfig()
+    if not isinstance(raw, Mapping):
+        raise ValueError("Import source naming.session_description must be an object when provided")
+
+    enabled = bool(raw.get("enabled", False))
+    mode = _optional_text(raw.get("mode"))
+    if mode is None:
+        mode = SESSION_NAMING_MODE_BASE_INDEX if enabled else SESSION_NAMING_MODE_DEFAULT
+
+    try:
+        index_start = int(raw.get("index_start", 1))
+    except (TypeError, ValueError):
+        raise ValueError("session naming index_start must be an integer") from None
+    try:
+        index_padding = int(raw.get("index_padding", 2))
+    except (TypeError, ValueError):
+        raise ValueError("session naming index_padding must be an integer") from None
+
+    return ImportSourceSessionNamingConfig(
+        enabled=enabled,
+        mode=mode,
+        base=_optional_text(raw.get("base")),
+        index_start=index_start,
+        index_padding=index_padding,
+    )
+
+
+def _parse_import_source_naming_config(raw: Any) -> ImportSourceNamingConfig:
+    if raw is None:
+        return ImportSourceNamingConfig()
+    if not isinstance(raw, Mapping):
+        raise ValueError("Import source naming must be an object when provided")
+    return ImportSourceNamingConfig(
+        session_description=_parse_session_naming_config(raw.get("session_description")),
+    )
+
+
+@dataclass(frozen=True)
 class ImportSourceConfig:
     config_path: Path
     source_root: Path
@@ -490,6 +557,7 @@ class ImportSourceConfig:
     library_id: Optional[str] = None
     logger_wifi: Optional[LoggerWifiSourceConfig] = None
     session_note: ImportSourceSessionNoteConfig = field(default_factory=ImportSourceSessionNoteConfig)
+    naming: ImportSourceNamingConfig = field(default_factory=ImportSourceNamingConfig)
 
     def __post_init__(self) -> None:
         if not self.source_id.strip():
@@ -527,6 +595,7 @@ class ImportArchiveCandidate:
 @dataclass
 class ImportRunBatch:
     run_id: Optional[str] = None
+    run_description_override: Optional[str] = None
     session_ids: list[str] = field(default_factory=list)
     archive_import_by_session: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
@@ -631,6 +700,8 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
             ),
         )
 
+    naming = _parse_import_source_naming_config(obj.get("naming"))
+
     return ImportSourceConfig(
         config_path=config_path,
         source_root=base_dir,
@@ -681,6 +752,7 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         library_id=_optional_text(obj.get("library_id")),
         logger_wifi=logger_wifi,
         session_note=session_note,
+        naming=naming,
     )
 
 
@@ -1109,6 +1181,8 @@ class ImportSourceRunner:
             result = discover_single_logger_wifi_source(
                 logger_id=config.logger_id,
                 timeout_s=timeout_s,
+                include_default_ap=True,
+                default_ap_timeout_s=1.0,
             )
         except LoggerWifiDiscoveryUnavailable as exc:
             remote_summary["discovery"] = {
@@ -1144,6 +1218,7 @@ class ImportSourceRunner:
             "upload_mode": result.upload_mode,
             "api_version": result.api_version,
             "addresses": list(result.addresses),
+            "method": "default_ap" if result.service_name == "default-ap" else "mdns",
         }
         return self._logger_wifi_client_for_base_url(result.base_url)
 
@@ -1825,12 +1900,15 @@ class ImportSourceRunner:
     def _write_import_run_manifest(self, batch: ImportRunBatch) -> None:
         if batch.run_id is None or not batch.session_ids:
             return
+        description = batch.run_description_override
+        if description is None:
+            description = self.source.description
         write_run_manifest(
             self.store,
             run_id=batch.run_id,
             session_ids=list(batch.session_ids),
             timezone_label=self.source.run_tz_label,
-            description=self.source.description,
+            description=description,
             pipeline_config={
                 "import_source": {
                     "source_id": self.source.source_id,
@@ -1841,7 +1919,26 @@ class ImportSourceRunner:
             },
         )
 
-    def scan_once(self, *, progress_callback: Optional[ImportProgressCallback] = None) -> Dict[str, Any]:
+    def _session_description_for_batch(self, batch: ImportRunBatch) -> Optional[str]:
+        naming = self.source.naming.session_description
+        if not naming.enabled or naming.mode != SESSION_NAMING_MODE_BASE_INDEX:
+            return None
+        base = _optional_text(naming.base)
+        if base is None:
+            return None
+        index = int(naming.index_start) + len(batch.session_ids)
+        if int(naming.index_padding) > 0:
+            suffix = f"{index:0{int(naming.index_padding)}d}"
+        else:
+            suffix = str(index)
+        return f"{base} {suffix}"
+
+    def scan_once(
+        self,
+        *,
+        progress_callback: Optional[ImportProgressCallback] = None,
+        run_description_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
         summary: Dict[str, Any] = {
             "source_id": self.source.source_id,
             "source_type": self.source.source_type,
@@ -1861,7 +1958,7 @@ class ImportSourceRunner:
         )
 
         with self.lock:
-            batch = ImportRunBatch()
+            batch = ImportRunBatch(run_description_override=_optional_text(run_description_override))
             remote_acquisitions = self._acquire_logger_wifi_archives(
                 summary,
                 progress_callback=progress_callback,
@@ -2181,10 +2278,12 @@ class ImportSourceRunner:
                 if aux_manifest:
                     source_manifest["aux_sources"] = aux_manifest
 
+                session_description = self._session_description_for_batch(batch)
                 write_session_manifest(
                     self.store,
                     run_id=run_id,
                     session_id=session_id,
+                    description=session_description,
                     contracts={"session": "v0.x", "events": "v0.x", "metrics": "v0.x"},
                     source=source_manifest,
                     summary=self._session_summary(session),
@@ -2374,13 +2473,17 @@ class ImportAgentSupervisor:
         now_s: Optional[float] = None,
         include_paused: bool = False,
         progress_callback: Optional[ImportProgressCallback] = None,
+        run_description_override: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         state = self.get_state(source_id)
         if state.paused and not include_paused:
             return None
 
         state.last_scan_started_at = _utcnow_iso()
-        report = state.runner.scan_once(progress_callback=progress_callback)
+        report = state.runner.scan_once(
+            progress_callback=progress_callback,
+            run_description_override=run_description_override,
+        )
         state.last_scan_completed_at = _utcnow_iso()
         state.last_report = report
         next_due_base = time.time() if now_s is None else float(now_s)
@@ -2393,6 +2496,7 @@ class ImportAgentSupervisor:
         include_paused: bool = False,
         now_s: Optional[float] = None,
         progress_callback: Optional[ImportProgressCallback] = None,
+        run_description_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         reports: list[Dict[str, Any]] = []
         skipped_paused: list[str] = []
@@ -2403,6 +2507,7 @@ class ImportAgentSupervisor:
                 now_s=now_s,
                 include_paused=include_paused,
                 progress_callback=progress_callback,
+                run_description_override=run_description_override,
             )
             if report is None:
                 skipped_paused.append(source_id)
@@ -2548,9 +2653,13 @@ def run_sources_once(
     paths_or_dirs: Sequence[str | Path],
     *,
     progress_callback: Optional[ImportProgressCallback] = None,
+    run_description_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     supervisor = ImportAgentSupervisor.from_paths(paths_or_dirs)
-    return supervisor.scan_all_once(progress_callback=progress_callback)
+    return supervisor.scan_all_once(
+        progress_callback=progress_callback,
+        run_description_override=run_description_override,
+    )
 
 
 def watch_sources(

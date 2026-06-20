@@ -245,7 +245,7 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
 
       // ----- Units label policy -----
       // RAW    => "counts"
-      // LINEAR => sensor default, with legacy explicit units_label honoured if present
+      // LINEAR => sensor class default. Units are no longer config-overridable.
       // Legacy POLY/LUT values are normalized to LINEAR above; downstream tools
       // now own complex transform application.
       {
@@ -255,16 +255,10 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
             break;
           }
           case OutputMode::LINEAR: {
-            String ulabel;
-            sp.params.get("units_label", ulabel);  // blank if unset
-            s->setOutputUnitsLabel(ulabel.c_str());
             break;
           }
           case OutputMode::POLY:
           case OutputMode::LUT: {
-            String ulabel;
-            sp.params.get("units_label", ulabel);
-            s->setOutputUnitsLabel(ulabel.c_str());
             break;
           }
         }

@@ -43,6 +43,7 @@ from .import_agent_provisioning import (
     provision_import_agent_app_setup,
     provision_import_agent_library_for_app,
     provision_import_agent_source_for_app,
+    remove_import_agent_library,
     remove_import_agent_source,
     runtime_import_agent_app_config_path,
     sync_import_agent_workspace_from_roots,
@@ -53,6 +54,8 @@ from .import_agent_provisioning import (
     update_import_agent_source_library,
     update_import_agent_source_display_name,
     update_import_agent_source_force_reprocess_enabled,
+    update_import_agent_source_preprocess_profile,
+    update_import_agent_source_session_naming,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
     update_import_agent_source_logger_wifi,
@@ -98,6 +101,11 @@ from .import_agent_startup import (
 )
 from .import_agent_tray import ImportAgentTrayIcon, tray_supported
 
+try:
+    from bodaqs_import_manager_build_version import APP_VERSION as _PACKAGED_APP_VERSION
+except Exception:
+    _PACKAGED_APP_VERSION = ""
+
 
 _ASSET_PACKAGE = "bodaqs_import_manager.import_agent_assets"
 _APP_DISPLAY_NAME = "BODAQS Import Manager"
@@ -119,6 +127,11 @@ _LOGGER_WIFI_CLEANUP_BY_LABEL = {
 }
 _SOURCE_ENABLED_CHECKED = "☑"
 _SOURCE_ENABLED_UNCHECKED = "☐"
+
+
+def _app_window_title() -> str:
+    version = str(_PACKAGED_APP_VERSION or "").strip()
+    return f"{_APP_DISPLAY_NAME} {version}" if version else _APP_DISPLAY_NAME
 
 
 def _default_workspace_root() -> Path:
@@ -241,7 +254,9 @@ class ImportAgentManagerController:
         data_syn_bike_export_enabled: bool,
         attach_session_note_on_import: bool,
         auto_start: bool,
-        overwrite: bool,
+        session_auto_name_enabled: bool = False,
+        session_name_base: str = "",
+        overwrite: bool = False,
     ) -> Any:
         result = provision_import_agent_app_setup(
             sources_root=sources_root,
@@ -254,6 +269,8 @@ class ImportAgentManagerController:
             run_tz_label=run_tz_label,
             data_syn_bike_export_enabled=data_syn_bike_export_enabled,
             attach_session_note_on_import=attach_session_note_on_import,
+            session_auto_name_enabled=session_auto_name_enabled,
+            session_name_base=session_name_base,
             auto_start=auto_start,
             overwrite=overwrite,
         )
@@ -313,7 +330,9 @@ class ImportAgentManagerController:
         logger_wifi: Optional[dict[str, Any]],
         run_tz_label: str,
         attach_session_note_on_import: bool,
-        overwrite: bool,
+        session_auto_name_enabled: bool = False,
+        session_name_base: str = "",
+        overwrite: bool = False,
     ) -> Any:
         updated, source = provision_import_agent_source_for_app(
             self.app_config_path,
@@ -323,6 +342,8 @@ class ImportAgentManagerController:
             logger_wifi=logger_wifi,
             run_tz_label=run_tz_label,
             attach_session_note_on_import=attach_session_note_on_import,
+            session_auto_name_enabled=session_auto_name_enabled,
+            session_name_base=session_name_base,
             overwrite=overwrite,
         )
         self.app_config = updated
@@ -355,6 +376,26 @@ class ImportAgentManagerController:
         self.app_config = updated
         return updated
 
+    def set_source_session_naming(
+        self,
+        source_id: str,
+        *,
+        enabled: bool,
+        base: str,
+        index_start: int = 1,
+        index_padding: int = 2,
+    ) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_session_naming(
+            self.app_config_path,
+            source_id=source_id,
+            enabled=enabled,
+            base=base,
+            index_start=index_start,
+            index_padding=index_padding,
+        )
+        self.app_config = updated
+        return updated
+
     def set_library_display_name(self, library_id: str, display_name: str) -> ImportAgentAppConfig:
         updated = update_import_agent_library_display_name(
             self.app_config_path,
@@ -382,6 +423,15 @@ class ImportAgentManagerController:
         self.app_config = updated
         return updated
 
+    def set_source_preprocess_profile(self, source_id: str, preprocess_profile_path: Path) -> ImportAgentAppConfig:
+        updated = update_import_agent_source_preprocess_profile(
+            self.app_config_path,
+            source_id=source_id,
+            preprocess_profile_path=preprocess_profile_path,
+        )
+        self.app_config = updated
+        return updated
+
     def set_source_display_name(self, source_id: str, display_name: str) -> ImportAgentAppConfig:
         updated = update_import_agent_source_display_name(
             self.app_config_path,
@@ -400,10 +450,20 @@ class ImportAgentManagerController:
         self.app_config = updated
         return updated
 
-    def remove_source(self, source_id: str) -> ImportAgentAppConfig:
+    def remove_source(self, source_id: str, *, delete_files: bool = False) -> ImportAgentAppConfig:
         updated = remove_import_agent_source(
             self.app_config_path,
             source_id=source_id,
+            delete_files=delete_files,
+        )
+        self.app_config = updated
+        return updated
+
+    def remove_library(self, library_id: str, *, delete_files: bool = False) -> ImportAgentAppConfig:
+        updated = remove_import_agent_library(
+            self.app_config_path,
+            library_id=library_id,
+            delete_files=delete_files,
         )
         self.app_config = updated
         return updated
@@ -432,9 +492,13 @@ class ImportAgentManagerController:
         self,
         *,
         progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
+        run_description_override: Optional[str] = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         supervisor = self.make_enabled_supervisor()
-        report = supervisor.scan_all_once(progress_callback=progress_callback)
+        report = supervisor.scan_all_once(
+            progress_callback=progress_callback,
+            run_description_override=run_description_override,
+        )
         return report, supervisor.snapshot()
 
 
@@ -513,7 +577,7 @@ class ImportAgentManagerWindow:
         self.root = tk.Tk()
         self._window_icon_image: Optional[tk.PhotoImage] = None
         self._apply_window_icon()
-        self.root.title(_APP_DISPLAY_NAME)
+        self.root.title(_app_window_title())
         self.root.geometry("1120x760")
         self.root.minsize(980, 680)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -537,6 +601,8 @@ class ImportAgentManagerWindow:
         self.run_tz_label_var = tk.StringVar(value=str(args.run_tz_label or "LOCAL"))
         self.data_syn_bike_export_var = tk.BooleanVar(value=bool(args.data_syn_bike_export))
         self.attach_session_note_var = tk.BooleanVar(value=bool(args.attach_session_note))
+        self.session_auto_name_var = tk.BooleanVar(value=False)
+        self.session_name_base_var = tk.StringVar(value="")
         self.auto_start_var = tk.BooleanVar(value=bool(args.auto_start))
         self.overwrite_var = tk.BooleanVar(value=bool(args.overwrite))
         self.source_library_choice_var = tk.StringVar(value="")
@@ -806,17 +872,31 @@ class ImportAgentManagerWindow:
         combo.grid(row=3, column=1, sticky="ew", pady=4, padx=(12, 8))
         self.library_choice_combo = combo
         self._add_text_row(parent=source_frame, row=4, label="Run TZ label", variable=self.run_tz_label_var)
+        session_naming_frame = ttk.Frame(source_frame)
+        session_naming_frame.grid(row=5, column=1, sticky="ew", pady=(6, 0), padx=(12, 8))
+        session_naming_frame.columnconfigure(2, weight=1)
+        ttk.Checkbutton(
+            session_naming_frame,
+            text="Auto-name sessions on import",
+            variable=self.session_auto_name_var,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(session_naming_frame, text="Session base name").grid(
+            row=0, column=1, sticky="w", padx=(18, 6)
+        )
+        ttk.Entry(session_naming_frame, textvariable=self.session_name_base_var).grid(
+            row=0, column=2, sticky="ew"
+        )
         ttk.Checkbutton(
             source_frame,
             text="Attach draft setup note on import",
             variable=self.attach_session_note_var,
-        ).grid(row=5, column=1, sticky="w", pady=(6, 0), padx=(12, 8))
+        ).grid(row=6, column=1, sticky="w", pady=(6, 0), padx=(12, 8))
 
         self.wifi_frame = self._build_wifi_provision_frame(source_frame)
-        self.wifi_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        self.wifi_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(10, 4))
 
         self.add_source_button = ttk.Button(source_frame, text="Add Source", command=self._add_source)
-        self.add_source_button.grid(row=7, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
+        self.add_source_button.grid(row=8, column=1, sticky="w", pady=(8, 0), padx=(12, 8))
 
         options = ttk.LabelFrame(parent, text="App options", padding=10)
         options.grid(row=3, column=0, sticky="ew", pady=(0, 10))
@@ -1061,7 +1141,11 @@ class ImportAgentManagerWindow:
                     5.0,
                 ),
             )
-            results = discover_logger_wifi_sources(timeout_s=timeout_s)
+            results = discover_logger_wifi_sources(
+                timeout_s=timeout_s,
+                include_default_ap=True,
+                default_ap_timeout_s=1.0,
+            )
             if not results:
                 message = "No BODAQS Wi-Fi loggers were discovered on the local network."
                 self.wifi_status_var.set(message)
@@ -1148,6 +1232,9 @@ class ImportAgentManagerWindow:
             session_part = f", sessions={session_count}"
         return f"upload_mode={'yes' if upload_mode else 'no'}{session_part}"
 
+    def _session_name_base_from_form(self) -> str:
+        return self.session_name_base_var.get().strip() or self.source_name_var.get().strip()
+
     def _selected_source_config(self) -> Any:
         source_id = self._selected_source_id()
         if source_id is None:
@@ -1184,6 +1271,8 @@ class ImportAgentManagerWindow:
         result = discover_single_logger_wifi_source(
             logger_id=source.logger_wifi.logger_id,
             timeout_s=max(1.0, min(float(source.logger_wifi.request_timeout_s), 5.0)),
+            include_default_ap=True,
+            default_ap_timeout_s=1.0,
         )
         if result is None:
             detail = (
@@ -1220,9 +1309,14 @@ class ImportAgentManagerWindow:
         self._source_runtime_status[source_id] = status
         if self.sources_tree is None or not self.sources_tree.exists(source_id):
             return
+        columns = tuple(str(column) for column in self.sources_tree["columns"])
+        try:
+            status_index = columns.index("status")
+        except ValueError:
+            return
         values = list(self.sources_tree.item(source_id, "values"))
-        if len(values) >= 4:
-            values[3] = status
+        if len(values) > status_index:
+            values[status_index] = status
             self.sources_tree.item(source_id, values=values)
 
     def _remote_report_status_text(self, remote: Any) -> Optional[str]:
@@ -1814,6 +1908,38 @@ class ImportAgentManagerWindow:
             self.sources_tree.selection_set(source.source_id)
         profile_name = str(profile.get("display_name") or profile.get("bike_profile_id") or profile_path.stem)
         self._set_manager_status(f"Assigned bike profile '{profile_name}' to source '{source.source_id}'.")
+
+    def _assign_selected_preprocess_profile(self) -> None:
+        if not self._guard_watch_inactive(action_label="Assign Preprocess Profile"):
+            return
+        try:
+            source = self._selected_managed_source_config()
+            source_config = load_import_source_config(source.source_root)
+            current_path = source_config.preprocess_profile_path
+            initialdir = current_path if current_path.is_dir() else current_path.parent
+            if not initialdir.exists():
+                initialdir = source.source_root
+            profile_path_text = filedialog.askopenfilename(
+                title="Assign Preprocess Profile",
+                initialdir=str(initialdir),
+                initialfile="" if current_path.is_dir() else current_path.name,
+                filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+                parent=self.root,
+            )
+            if not profile_path_text:
+                return
+            profile_path = Path(profile_path_text)
+            self.controller.set_source_preprocess_profile(source.source_id, profile_path)
+        except Exception as exc:
+            self._set_manager_status(f"Assign preprocess profile failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if self.sources_tree is not None and self.sources_tree.exists(source.source_id):
+            self.sources_tree.selection_set(source.source_id)
+        self._set_manager_status(
+            f"Assigned preprocess profile '{profile_path.name}' to source '{source.source_id}'."
+        )
 
     def _duplicate_selected_bike_profile(self) -> None:
         if not self._guard_watch_inactive(action_label="Duplicate Bike Profile"):
@@ -2951,6 +3077,8 @@ class ImportAgentManagerWindow:
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="Rename library", command=self._rename_selected_library)
         menu.add_command(label="Details", command=self._show_selected_library_details)
+        menu.add_separator()
+        menu.add_command(label="Remove Library", command=self._remove_selected_library)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -2974,7 +3102,9 @@ class ImportAgentManagerWindow:
         menu.add_command(label="Edit bike", command=self._edit_selected_bike_profile)
         menu.add_command(label="Assign bike profile", command=self._assign_selected_bike_profile)
         menu.add_command(label="Duplicate bike profile", command=self._duplicate_selected_bike_profile)
+        menu.add_command(label="Assign preprocess profile", command=self._assign_selected_preprocess_profile)
         menu.add_command(label="Change target library", command=self._change_selected_source_library)
+        menu.add_command(label="Import naming", command=self._edit_selected_source_naming)
         menu.add_command(label="Details", command=self._show_selected_source_details)
         if source.source_type == SOURCE_TYPE_LOGGER_WIFI:
             menu.add_separator()
@@ -2991,6 +3121,121 @@ class ImportAgentManagerWindow:
         finally:
             menu.grab_release()
         return "break"
+
+    def _choose_remove_mode_dialog(
+        self,
+        *,
+        title: str,
+        item_name: str,
+        folder_path: Path,
+        remove_only_text: str,
+        delete_text: str,
+        delete_note: str = "",
+    ) -> Optional[bool]:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+
+        ttk.Label(dialog, text=item_name, justify="left").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(12, 6)
+        )
+        mode_var = tk.StringVar(value="remove")
+        ttk.Radiobutton(
+            dialog,
+            text="Remove from Import Manager only",
+            variable=mode_var,
+            value="remove",
+        ).grid(row=1, column=0, sticky="w", padx=12, pady=(6, 0))
+        ttk.Label(dialog, text=remove_only_text, wraplength=640, justify="left").grid(
+            row=2, column=0, sticky="ew", padx=34, pady=(2, 8)
+        )
+        ttk.Radiobutton(
+            dialog,
+            text="Remove from Import Manager and delete folder",
+            variable=mode_var,
+            value="delete",
+        ).grid(row=3, column=0, sticky="w", padx=12, pady=(6, 0))
+        ttk.Label(dialog, text=delete_text, wraplength=640, justify="left").grid(
+            row=4, column=0, sticky="ew", padx=34, pady=(2, 4)
+        )
+        path_entry = ttk.Entry(dialog)
+        path_entry.insert(0, str(folder_path))
+        path_entry.configure(state="readonly")
+        path_entry.grid(row=5, column=0, sticky="ew", padx=34, pady=(0, 8))
+        if delete_note:
+            ttk.Label(dialog, text=delete_note, wraplength=640, justify="left").grid(
+                row=6, column=0, sticky="ew", padx=34, pady=(0, 8)
+            )
+
+        result: dict[str, Optional[bool]] = {"delete_files": None}
+
+        def accept() -> None:
+            result["delete_files"] = mode_var.get() == "delete"
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=7, column=0, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Remove", command=accept).grid(row=0, column=1)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.lift(self.root)
+        dialog.focus_force()
+        self.root.wait_window(dialog)
+        return result["delete_files"]
+
+    def _confirm_delete_from_disk(self, *, title: str, folder_path: Path) -> bool:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            dialog,
+            text=(
+                "This will permanently delete the folder below. "
+                "This cannot be undone by BODAQS Import Manager."
+            ),
+            wraplength=640,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
+        path_entry = ttk.Entry(dialog)
+        path_entry.insert(0, str(folder_path))
+        path_entry.configure(state="readonly")
+        path_entry.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        ttk.Label(dialog, text="Type DELETE to confirm.").grid(
+            row=2, column=0, sticky="w", padx=12, pady=(4, 4)
+        )
+        confirm_var = tk.StringVar(value="")
+        confirm_entry = ttk.Entry(dialog, textvariable=confirm_var)
+        confirm_entry.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
+        result = {"ok": False}
+
+        def accept() -> None:
+            if confirm_var.get() != "DELETE":
+                return
+            result["ok"] = True
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=4, column=0, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        delete_button = ttk.Button(buttons, text="Delete from disk", command=accept, state="disabled")
+        delete_button.grid(row=0, column=1)
+
+        def sync_delete_button(*_args: Any) -> None:
+            delete_button.configure(state="normal" if confirm_var.get() == "DELETE" else "disabled")
+
+        confirm_var.trace_add("write", sync_delete_button)
+        dialog.bind("<Return>", lambda _event: accept())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.lift(self.root)
+        dialog.focus_force()
+        confirm_entry.focus_set()
+        self.root.wait_window(dialog)
+        return bool(result["ok"])
 
     def _show_details_dialog(self, *, title: str, rows: Sequence[tuple[str, str]]) -> None:
         dialog = tk.Toplevel(self.root)
@@ -3037,15 +3282,26 @@ class ImportAgentManagerWindow:
             return
         try:
             source = self._managed_source_config(source_id)
+            source_config = load_import_source_config(source.source_root)
         except Exception as exc:
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
+        session_naming = source_config.naming.session_description
+        if session_naming.enabled and session_naming.mode == "base_index":
+            naming_text = (
+                f"{session_naming.base} + index "
+                f"(start={session_naming.index_start}, padding={session_naming.index_padding})"
+            )
+        else:
+            naming_text = "Default"
         self._show_details_dialog(
             title=f"Source Details - {source.display_name}",
             rows=(
                 ("Source ID", str(source.source_id)),
                 ("Library ID", str(source.library_id)),
                 ("Source Root", str(source.source_root)),
+                ("Preprocess Profile", str(source_config.preprocess_profile_path)),
+                ("Session Naming", naming_text),
             ),
         )
 
@@ -3175,7 +3431,12 @@ class ImportAgentManagerWindow:
                     ),
                 )
                 wanted_logger_id = logger_id_var.get().strip() or None
-                results = discover_logger_wifi_sources(logger_id=wanted_logger_id, timeout_s=timeout_s)
+                results = discover_logger_wifi_sources(
+                    logger_id=wanted_logger_id,
+                    timeout_s=timeout_s,
+                    include_default_ap=True,
+                    default_ap_timeout_s=1.0,
+                )
                 if not results:
                     status_var.set("No matching BODAQS Wi-Fi logger was discovered on the local network.")
                     return
@@ -3330,6 +3591,110 @@ class ImportAgentManagerWindow:
             self.sources_tree.selection_set(source.source_id)
         self._set_manager_status(f"Renamed source '{source.source_id}' to '{new_name}'.")
 
+    def _edit_selected_source_naming(self) -> None:
+        if not self._guard_watch_inactive(action_label="Edit Import Naming"):
+            return
+        source_id = self._selected_source_id()
+        if source_id is None:
+            messagebox.showinfo(_APP_DISPLAY_NAME, "Select a source first.", parent=self.root)
+            return
+        try:
+            managed_source = self._managed_source_config(source_id)
+            source_config = load_import_source_config(managed_source.source_root)
+        except Exception as exc:
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+
+        session_naming = source_config.naming.session_description
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Import Naming - {managed_source.display_name}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(1, weight=1)
+
+        enabled_var = tk.BooleanVar(
+            value=bool(session_naming.enabled and session_naming.mode == "base_index")
+        )
+        base_var = tk.StringVar(value=str(session_naming.base or managed_source.display_name or ""))
+        index_start_var = tk.StringVar(value=str(session_naming.index_start))
+        index_padding_var = tk.StringVar(value=str(session_naming.index_padding))
+        status_var = tk.StringVar(value="")
+
+        ttk.Checkbutton(
+            dialog,
+            text="Auto-name sessions on import",
+            variable=enabled_var,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 12), pady=(12, 6))
+
+        ttk.Label(dialog, text="Session base name").grid(row=1, column=0, sticky="w", padx=(12, 8), pady=4)
+        base_entry = ttk.Entry(dialog, textvariable=base_var)
+        base_entry.grid(row=1, column=1, sticky="ew", padx=(0, 12), pady=4)
+
+        ttk.Label(dialog, text="Index start").grid(row=2, column=0, sticky="w", padx=(12, 8), pady=4)
+        index_start_entry = ttk.Entry(dialog, textvariable=index_start_var, width=10)
+        index_start_entry.grid(row=2, column=1, sticky="w", padx=(0, 12), pady=4)
+
+        ttk.Label(dialog, text="Index padding").grid(row=3, column=0, sticky="w", padx=(12, 8), pady=4)
+        index_padding_entry = ttk.Entry(dialog, textvariable=index_padding_var, width=10)
+        index_padding_entry.grid(row=3, column=1, sticky="w", padx=(0, 12), pady=4)
+
+        ttk.Label(dialog, textvariable=status_var, foreground="#a33").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=12, pady=(4, 0)
+        )
+
+        def sync_entry_state(*_args: Any) -> None:
+            state = "normal" if bool(enabled_var.get()) else "disabled"
+            for widget in (base_entry, index_start_entry, index_padding_entry):
+                widget.configure(state=state)
+
+        def parse_nonnegative_int(value: str, *, label: str) -> int:
+            try:
+                number = int(str(value).strip())
+            except ValueError:
+                raise ValueError(f"{label} must be an integer") from None
+            if number < 0:
+                raise ValueError(f"{label} must be >= 0")
+            return number
+
+        def save() -> None:
+            try:
+                enabled = bool(enabled_var.get())
+                base = base_var.get().strip()
+                if enabled and not base:
+                    raise ValueError("Session base name is required when auto-naming is enabled.")
+                index_start = parse_nonnegative_int(index_start_var.get(), label="Index start")
+                index_padding = parse_nonnegative_int(index_padding_var.get(), label="Index padding")
+                self.controller.set_source_session_naming(
+                    source_id,
+                    enabled=enabled,
+                    base=base,
+                    index_start=index_start,
+                    index_padding=index_padding,
+                )
+            except Exception as exc:
+                status_var.set(str(exc))
+                return
+            dialog.destroy()
+            self._refresh_ui_from_config()
+            if self.sources_tree is not None and self.sources_tree.exists(source_id):
+                self.sources_tree.selection_set(source_id)
+            self._set_manager_status(f"Updated import naming for source '{source_id}'.")
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(buttons, text="Save", command=save).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=1)
+
+        enabled_var.trace_add("write", sync_entry_state)
+        sync_entry_state()
+        dialog.bind("<Return>", lambda _event: save())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.lift(self.root)
+        dialog.focus_force()
+        if bool(enabled_var.get()):
+            base_entry.focus_set()
+        self.root.wait_window(dialog)
+
     def _toggle_source_enabled(self, source_id: str) -> None:
         if not self._guard_watch_inactive(action_label="Toggle Source"):
             return
@@ -3441,8 +3806,6 @@ class ImportAgentManagerWindow:
                 f"Wait for the current import to finish before running '{action_label}'.",
                 parent=parent or self.root,
             )
-            return False
-        if not self._guard_import_now_inactive(action_label=action_label, parent=parent):
             return False
         return True
 
@@ -3593,6 +3956,8 @@ class ImportAgentManagerWindow:
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
                 data_syn_bike_export_enabled=bool(self.data_syn_bike_export_var.get()),
                 attach_session_note_on_import=bool(self.attach_session_note_var.get()),
+                session_auto_name_enabled=bool(self.session_auto_name_var.get()),
+                session_name_base=self._session_name_base_from_form(),
                 auto_start=bool(self.auto_start_var.get()),
                 overwrite=bool(self.overwrite_var.get()),
             )
@@ -3820,6 +4185,8 @@ class ImportAgentManagerWindow:
                 logger_wifi=logger_wifi,
                 run_tz_label=self.run_tz_label_var.get().strip() or "LOCAL",
                 attach_session_note_on_import=bool(self.attach_session_note_var.get()),
+                session_auto_name_enabled=bool(self.session_auto_name_var.get()),
+                session_name_base=self._session_name_base_from_form(),
                 overwrite=bool(self.overwrite_var.get()),
             )
         except Exception as exc:
@@ -3880,6 +4247,15 @@ class ImportAgentManagerWindow:
     def _import_now(self) -> None:
         if not self._guard_watch_inactive(action_label="Import Now"):
             return
+        run_description_override = simpledialog.askstring(
+            _APP_DISPLAY_NAME,
+            "Run description override for this Import Now\n\nLeave blank to use source defaults.",
+            initialvalue="",
+            parent=self.root,
+        )
+        if run_description_override is None:
+            return
+        run_description_override = run_description_override.strip() or None
         try:
             supervisor = self.controller.make_enabled_supervisor()
         except Exception as exc:
@@ -3889,7 +4265,7 @@ class ImportAgentManagerWindow:
 
         self.import_now_thread = threading.Thread(
             target=self._run_import_now_worker,
-            args=(supervisor,),
+            args=(supervisor, run_description_override),
             name="ImportAgentImportNow",
             daemon=True,
         )
@@ -3906,9 +4282,16 @@ class ImportAgentManagerWindow:
             }
         )
 
-    def _run_import_now_worker(self, supervisor: ImportAgentSupervisor) -> None:
+    def _run_import_now_worker(
+        self,
+        supervisor: ImportAgentSupervisor,
+        run_description_override: Optional[str],
+    ) -> None:
         try:
-            report = supervisor.scan_all_once(progress_callback=self._queue_import_now_progress)
+            report = supervisor.scan_all_once(
+                progress_callback=self._queue_import_now_progress,
+                run_description_override=run_description_override,
+            )
             self.event_queue.put(
                 {
                     "kind": "import_now_complete",
@@ -3975,6 +4358,73 @@ class ImportAgentManagerWindow:
             self.watch_state_var.set("Watcher stop requested; waiting for background loop to exit...")
         self._refresh_tray()
 
+    def _remove_selected_library(self) -> None:
+        if not self._guard_watch_inactive(action_label="Remove Library"):
+            return
+        library_id = self._selected_library_id()
+        if library_id is None:
+            messagebox.showinfo(_APP_DISPLAY_NAME, "Select a library first.", parent=self.root)
+            return
+        try:
+            library = self._managed_library_config(library_id)
+            config = self.controller.require_config()
+        except Exception as exc:
+            self._set_manager_status(f"Remove library failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+
+        linked_sources = [source for source in config.sources if source.library_id == library.library_id]
+        if linked_sources:
+            names = ", ".join(source.display_name for source in linked_sources)
+            messagebox.showinfo(
+                "Remove Library",
+                (
+                    f"Library '{library.display_name}' still has source(s) assigned to it:\n\n"
+                    f"{names}\n\n"
+                    "Reassign or remove those sources before removing the library."
+                ),
+                parent=self.root,
+            )
+            return
+
+        delete_files = self._choose_remove_mode_dialog(
+            title="Remove Library",
+            item_name=f"Remove library '{library.display_name}'?",
+            folder_path=library.artifacts_dir,
+            remove_only_text=(
+                "The library will be removed from the manager configuration. "
+                "The library data folder and files will be left on disk."
+            ),
+            delete_text="The library data folder below will also be deleted from disk.",
+            delete_note=(
+                "Shared bike profiles, preprocess profiles, and event schemas under the library root "
+                "will not be deleted."
+            ),
+        )
+        if delete_files is None:
+            return
+        if delete_files and not self._confirm_delete_from_disk(
+            title="Delete Library Data Folder",
+            folder_path=library.artifacts_dir,
+        ):
+            return
+        try:
+            self.controller.remove_library(library.library_id, delete_files=delete_files)
+        except Exception as exc:
+            self._refresh_ui_from_config()
+            self._set_manager_status(f"Remove library failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self._refresh_ui_from_config()
+        if delete_files:
+            self._set_manager_status(
+                f"Removed library '{library.library_id}' and deleted its data folder."
+            )
+        else:
+            self._set_manager_status(
+                f"Removed library '{library.library_id}' from the manager. Files were left in place."
+            )
+
     def _remove_selected_source(self) -> None:
         if not self._guard_watch_inactive(action_label="Remove Source"):
             return
@@ -3983,31 +4433,41 @@ class ImportAgentManagerWindow:
             messagebox.showinfo(_APP_DISPLAY_NAME, "Select a source first.", parent=self.root)
             return
         try:
-            source = self._selected_source_config()
+            source = self._managed_source_config(source_id)
         except Exception as exc:
             self._set_manager_status(f"Remove source failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
-        confirmed = messagebox.askyesno(
-            "Remove Source",
-            (
-                f"Remove source '{source.description or source.source_id}' from the manager?\n\n"
-                "This only removes the source from the app configuration. "
-                "Existing files and directories will not be deleted."
+        delete_files = self._choose_remove_mode_dialog(
+            title="Remove Source",
+            item_name=f"Remove source '{source.display_name}'?",
+            folder_path=source.source_root,
+            remove_only_text=(
+                "The source will be removed from the manager configuration. "
+                "The source folder and files will be left on disk."
             ),
-            parent=self.root,
+            delete_text="The source folder below will also be deleted from disk.",
         )
-        if not confirmed:
+        if delete_files is None:
+            return
+        if delete_files and not self._confirm_delete_from_disk(
+            title="Delete Source Folder",
+            folder_path=source.source_root,
+        ):
             return
         try:
-            self.controller.remove_source(source_id)
+            self.controller.remove_source(source_id, delete_files=delete_files)
         except Exception as exc:
+            self._refresh_ui_from_config()
             self._set_manager_status(f"Remove source failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
         self._source_runtime_status.pop(source_id, None)
         self._refresh_ui_from_config()
-        self._set_manager_status(f"Removed source '{source_id}' from the manager. Files were left in place.")
+        if delete_files:
+            self._set_manager_status(f"Removed source '{source_id}' and deleted its source folder.")
+        else:
+            self._set_manager_status(f"Removed source '{source_id}' from the manager. Files were left in place.")
 
     def _check_selected_logger(self) -> None:
         try:

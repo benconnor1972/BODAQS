@@ -657,7 +657,6 @@ static void handleSensorTypes_(WebServer& srv) {
       JsonObject p = params.add<JsonObject>();
       p["key"] = pd.key;
       p["type"] = paramTypeName_(pd.type);
-      if (strcasecmp(pd.key, "units_label") == 0) p["read_only"] = true;
       if (pd.def) p["default"] = pd.def;
       if (pd.choices) p["choices"] = (strcasecmp(pd.key, "output_mode") == 0) ? "RAW,LINEAR" : pd.choices;
       if (pd.help) p["help"] = pd.help;
