@@ -4,6 +4,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import struct
 import sys
 import zipfile
@@ -3086,6 +3087,67 @@ def test_remove_import_agent_source_can_delete_source_folder(tmp_path):
     assert not source_root.exists()
 
 
+def test_remove_import_agent_source_can_delete_readonly_source_folder(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    source_root = provisioned.source.source_root
+    done_dir = source_root / "done"
+    marker = done_dir / "delete_me.txt"
+    marker.write_text("delete me", encoding="utf-8")
+
+    try:
+        os.chmod(marker, stat.S_IREAD)
+        os.chmod(done_dir, stat.S_IREAD)
+        os.chmod(source_root, stat.S_IREAD)
+
+        updated = remove_import_agent_source(
+            app_config_path,
+            source_id=provisioned.source.source_id,
+            delete_files=True,
+        )
+    finally:
+        for path in (marker, done_dir, source_root):
+            if path.exists():
+                os.chmod(path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+
+    assert updated.sources == ()
+    assert load_import_agent_app_config(app_config_path).sources == ()
+    assert not source_root.exists()
+
+
+def test_remove_import_agent_source_delete_failure_keeps_app_config(tmp_path, monkeypatch):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    def fail_delete(*args, **kwargs):
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(provisioning_module, "_delete_directory_tree", fail_delete)
+
+    with pytest.raises(PermissionError, match="blocked"):
+        remove_import_agent_source(
+            app_config_path,
+            source_id=provisioned.source.source_id,
+            delete_files=True,
+        )
+
+    loaded = load_import_agent_app_config(app_config_path)
+    assert [source.source_id for source in loaded.sources] == [provisioned.source.source_id]
+    assert provisioned.source.source_root.exists()
+
+
 def test_remove_import_agent_library_requires_no_targeting_sources(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
     provisioned = provision_import_agent_app_setup(
@@ -3134,6 +3196,37 @@ def test_remove_import_agent_library_can_delete_library_data_without_shared_asse
     assert shared_bike_dir.exists()
     assert shared_preprocess_dir.exists()
     assert shared_schema_dir.exists()
+
+
+def test_remove_import_agent_library_delete_failure_keeps_app_config(tmp_path, monkeypatch):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    remove_import_agent_source(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+    )
+
+    def fail_delete(*args, **kwargs):
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(provisioning_module, "_delete_library_artifacts_dir", fail_delete)
+
+    with pytest.raises(PermissionError, match="blocked"):
+        remove_import_agent_library(
+            app_config_path,
+            library_id=provisioned.library.library_id,
+            delete_files=True,
+        )
+
+    loaded = load_import_agent_app_config(app_config_path)
+    assert [library.library_id for library in loaded.libraries] == [provisioned.library.library_id]
+    assert provisioned.library.artifacts_dir.exists()
 
 
 def test_update_import_agent_app_auto_start_persists(tmp_path):

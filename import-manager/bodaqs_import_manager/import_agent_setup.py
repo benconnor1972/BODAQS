@@ -101,6 +101,11 @@ from .import_agent_startup import (
 )
 from .import_agent_tray import ImportAgentTrayIcon, tray_supported
 
+try:
+    from bodaqs_import_manager_build_version import APP_VERSION as _PACKAGED_APP_VERSION
+except Exception:
+    _PACKAGED_APP_VERSION = ""
+
 
 _ASSET_PACKAGE = "bodaqs_import_manager.import_agent_assets"
 _APP_DISPLAY_NAME = "BODAQS Import Manager"
@@ -122,6 +127,11 @@ _LOGGER_WIFI_CLEANUP_BY_LABEL = {
 }
 _SOURCE_ENABLED_CHECKED = "☑"
 _SOURCE_ENABLED_UNCHECKED = "☐"
+
+
+def _app_window_title() -> str:
+    version = str(_PACKAGED_APP_VERSION or "").strip()
+    return f"{_APP_DISPLAY_NAME} {version}" if version else _APP_DISPLAY_NAME
 
 
 def _default_workspace_root() -> Path:
@@ -567,7 +577,7 @@ class ImportAgentManagerWindow:
         self.root = tk.Tk()
         self._window_icon_image: Optional[tk.PhotoImage] = None
         self._apply_window_icon()
-        self.root.title(_APP_DISPLAY_NAME)
+        self.root.title(_app_window_title())
         self.root.geometry("1120x760")
         self.root.minsize(980, 680)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 from dataclasses import dataclass, replace
 from importlib.resources import files
@@ -278,7 +279,7 @@ def _delete_directory_tree(path: Path, *, expected_parent: Path, label: str) -> 
         raise ValueError(f"Cannot delete {label}: path is not a directory: {target}")
     if target == parent or not _is_relative_to(target, parent):
         raise ValueError(f"Refusing to delete {label} outside the managed root: {target}")
-    shutil.rmtree(target)
+    _remove_directory_tree(target)
 
 
 def _delete_library_artifacts_dir(path: Path, *, libraries_root: Path) -> None:
@@ -302,7 +303,19 @@ def _delete_library_artifacts_dir(path: Path, *, libraries_root: Path) -> None:
     is_legacy_library = target.parent == root and target.name not in shared_names
     if not is_new_layout_library and not is_legacy_library:
         raise ValueError(f"Refusing to delete path that is not a managed library data folder: {target}")
-    shutil.rmtree(target)
+    _remove_directory_tree(target)
+
+
+def _remove_readonly_and_retry(func: Any, path: str, exc_info: tuple[type[BaseException], BaseException, Any]) -> None:
+    exc = exc_info[1]
+    if not isinstance(exc, PermissionError):
+        raise exc
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+    func(path)
+
+
+def _remove_directory_tree(path: Path) -> None:
+    shutil.rmtree(path, onerror=_remove_readonly_and_retry)
 
 
 def _safe_slug(value: str, *, fallback: str) -> str:
@@ -1816,6 +1829,12 @@ def remove_import_agent_source(
     if found is None:
         raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
     updated_sources = [source for source in config.sources if source.source_id != source_id]
+    if delete_files:
+        _delete_directory_tree(
+            found.source_root,
+            expected_parent=config.sources_root,
+            label=f"source folder for {source_id!r}",
+        )
 
     updated = make_import_agent_app_config(
         sources_root=config.sources_root,
@@ -1825,12 +1844,6 @@ def remove_import_agent_source(
         auto_start=config.auto_start,
     )
     save_import_agent_app_config(updated, config_path, overwrite=True)
-    if delete_files:
-        _delete_directory_tree(
-            found.source_root,
-            expected_parent=config.sources_root,
-            label=f"source folder for {source_id!r}",
-        )
     return updated
 
 
@@ -1854,6 +1867,8 @@ def remove_import_agent_library(
         )
 
     updated_libraries = [library for library in config.libraries if library.library_id != library_id]
+    if delete_files:
+        _delete_library_artifacts_dir(found.artifacts_dir, libraries_root=config.libraries_root)
     updated = make_import_agent_app_config(
         sources_root=config.sources_root,
         libraries_root=config.libraries_root,
@@ -1862,8 +1877,6 @@ def remove_import_agent_library(
         auto_start=config.auto_start,
     )
     save_import_agent_app_config(updated, config_path, overwrite=True)
-    if delete_files:
-        _delete_library_artifacts_dir(found.artifacts_dir, libraries_root=config.libraries_root)
     return updated
 
 

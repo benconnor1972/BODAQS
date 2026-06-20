@@ -122,6 +122,8 @@ if (-not $SkipPyInstallerBuild) {
 
 if (-not $SkipPyInstallerBuild) {
     Push-Location $importManagerDir
+    $previousAppVersionEnv = $env:BODAQS_IMPORT_MANAGER_APP_VERSION
+    $env:BODAQS_IMPORT_MANAGER_APP_VERSION = $AppVersion
     try {
         foreach ($buildTarget in $targets) {
             & $PythonExe -m PyInstaller `
@@ -132,6 +134,11 @@ if (-not $SkipPyInstallerBuild) {
                 $buildTarget.SpecPath
         }
     } finally {
+        if ($null -eq $previousAppVersionEnv) {
+            Remove-Item Env:\BODAQS_IMPORT_MANAGER_APP_VERSION -ErrorAction SilentlyContinue
+        } else {
+            $env:BODAQS_IMPORT_MANAGER_APP_VERSION = $previousAppVersionEnv
+        }
         Pop-Location
     }
 } else {
