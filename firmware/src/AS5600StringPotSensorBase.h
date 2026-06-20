@@ -14,6 +14,7 @@ public:
     int32_t  sensorFullCount = 4095;
     int32_t  installedZeroCount = 0;
     float    sensorFullTravelMm = 0.0f;
+    float    installedRange = 0.0f;
     bool     assumeTurn0AtStart = true;
     bool     includeRawColumn = true;
     char     semanticEnd[16] = "";
@@ -55,6 +56,8 @@ public:
   bool supportsCalibration() const override { return true; }
   bool hasRawCounts() const override { return true; }
   int32_t currentRawCounts() const override;
+  bool readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) override;
+  float installedRange() const override { return m_installedRange; }
 
   CalibrationState calibration() const override;
   bool setCalibration(const CalibrationState& s) override;
@@ -100,6 +103,7 @@ private:
   int32_t sensor_full_count_ = 4095;
   float   sensor_full_travel_mm_ = 0.0f;
   int32_t installed_zero_count_ = 0;
+  float   m_installedRange = 0.0f;
   double  counts_per_mm_ = 0.0;
 
   char    m_name[16] = "as5600";

@@ -582,6 +582,7 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
     emitOutputModeRow_(html, idx, sp, locked);
     emitParamRow_(html, idx, sp, defs, defCount, "include_raw", "Include raw column", locked);
     emitParamRow_(html, idx, sp, defs, defCount, "sensor_full_travel_mm", "Sensor full travel (mm)", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "installed_range", "Installed range", locked);
   }
 
   if (findParamDef_(defs, defCount, "end") ||
@@ -611,7 +612,7 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
 
   static const char* const shown[] = {
     "ain","muted","i2c_bus","i2c_addr",
-    "output_mode","output_id","include_raw","sensor_full_travel_mm",
+    "output_mode","output_id","include_raw","sensor_full_travel_mm","installed_range",
     "end","primary_domain","primary_quantity","raw_domain",
     "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count","zero_count",
     "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start"
@@ -1220,6 +1221,7 @@ void registerConfigRoutes(WebServer& srv) {
 
         { bool inc = false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
         if (getArgLast("sensor_full_travel_mm", v)) { double f = v.toFloat(); sp.params.setFloat("sensor_full_travel_mm", (float)f); }
+        if (getArgLast("installed_range", v)) { double f = v.toFloat(); sp.params.setFloat("installed_range", (float)f); }
         if (getArgLast("end", v)) { v.trim(); sp.params.set("end", v); }
         if (getArgLast("primary_domain", v)) { v.trim(); sp.params.set("primary_domain", v); }
         if (getArgLast("primary_quantity", v)) { v.trim(); sp.params.set("primary_quantity", v); }
@@ -1256,7 +1258,7 @@ void registerConfigRoutes(WebServer& srv) {
 
         if (pkey.equalsIgnoreCase("name") || pkey.equalsIgnoreCase("muted") ||
             pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
-            pkey.equalsIgnoreCase("sensor_full_travel_mm") ||
+            pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("installed_range") ||
             pkey.equalsIgnoreCase("end") || pkey.equalsIgnoreCase("primary_domain") ||
             pkey.equalsIgnoreCase("primary_quantity") || pkey.equalsIgnoreCase("raw_domain") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||

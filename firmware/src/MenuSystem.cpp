@@ -23,6 +23,7 @@
 #include "RTCManager.h"
 
 #include <esp_system.h>   // esp_restart()
+#include <math.h>
 
 
 // ---- Menu debug toggle ----
@@ -41,6 +42,7 @@ static const char* stateName(MenuSystem::State s) {
     case MenuSystem::State::UploadStatus: return "UploadStatus";
     case MenuSystem::State::CalibSensors:return "CalibSensors";
     case MenuSystem::State::CalibDetail: return "CalibDetail";
+    case MenuSystem::State::SagHelper:   return "SagHelper";
     case MenuSystem::State::Health:      return "Health";
     case MenuSystem::State::About:       return "About";
     default: return "?";
@@ -75,10 +77,11 @@ namespace {
     SensorsToggle,
     SampleRate,
     Calibration,
+    SagHelper,
     Sleep,
     Settings
   };
-  static inline uint8_t mainItemCount_() { return 7; }
+  static inline uint8_t mainItemCount_() { return 8; }
 
   enum class SettingsItem : uint8_t {
     WiFiMode = 0,
@@ -108,6 +111,15 @@ namespace {
   static uint8_t    s_calOptSel  = 0;              // selected row within screen
   static CalUiPhase s_calUiPhase = CalUiPhase::Idle;
   static unsigned long s_lastRangeTrackMs = 0;
+  static constexpr uint8_t SAG_MAX_ROWS = 4;
+  enum class SagDisplayMode : uint8_t { Raw = 0, Linear, Percent };
+  static SagDisplayMode s_sagMode = SagDisplayMode::Raw;
+  static bool s_sagFrozen = false;
+  static SagDisplayMode s_sagFrozenMode = SagDisplayMode::Raw;
+  static uint32_t s_sagFreezeStartMs = 0;
+  static uint32_t s_nextSagRedrawMs = 0;
+  static uint16_t s_sagFrozenTotal = 0;
+  static SensorManager::PreviewValue s_sagFrozenRows[SAG_MAX_ROWS];
 
   static unsigned long s_deferUiUntilMs = 0;
   static bool          s_deferRedraw    = false;
@@ -151,6 +163,8 @@ namespace {
   static void redraw_();
   static void drawCalibSensors_();
   static void drawCalibDetail_();
+  static void drawSagHelper_();
+  static void toggleSagFreeze_();
   static void drawHealth_();
   static void drawAbout_();
   static void toggleSelectedSensor_();
@@ -194,6 +208,8 @@ namespace {
       }
       case MainItem::Calibration:
         return "Calibration";
+      case MainItem::SagHelper:
+        return "Sag helper";
       case MainItem::Sleep:
         return "Sleep";
       case MainItem::Settings:
@@ -442,6 +458,23 @@ namespace {
         break;
       }
 
+      case MainItem::SagHelper: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+        if (LoggingManager::isRunning()) {
+          UI::toastModal("Stop log first", 1500, 1);
+          deferUiFor(1500);
+          drawMain_();
+          break;
+        }
+        s_sagMode = SagDisplayMode::Raw;
+        s_sagFrozen = false;
+        s_nextSagRedrawMs = millis() + 1000;
+        s_state = State::SagHelper;
+        drawSagHelper_();
+        break;
+      }
+
       case MainItem::Settings: {
         s_swallowEnterRelease = true;
         guardEnterRight();
@@ -583,6 +616,174 @@ namespace {
     return text.substring(0, maxChars - 1) + String("~");
   }
 
+  static uint8_t fittedTextSize_(const String& text, uint8_t preferred, uint8_t maxWidthPx) {
+    uint8_t size = preferred ? preferred : 1;
+    while (size > 1 && (text.length() * 6U * size) > maxWidthPx) --size;
+    return size;
+  }
+
+  static String formatSagValue_(float value, bool raw) {
+    if (!isfinite(value)) return String("--");
+    char buf[20];
+    if (raw) {
+      snprintf(buf, sizeof(buf), "%.0f", value);
+    } else {
+      const float av = fabsf(value);
+      if (av >= 1000.0f) {
+        snprintf(buf, sizeof(buf), "%.0f", value);
+      } else if (av >= 100.0f) {
+        snprintf(buf, sizeof(buf), "%.1f", value);
+      } else {
+        snprintf(buf, sizeof(buf), "%.2f", value);
+      }
+    }
+    return String(buf);
+  }
+
+  static bool sagFrozenValuesHidden_() {
+    if (!s_sagFrozen) return false;
+    const uint32_t elapsed = millis() - s_sagFreezeStartMs;
+    if (elapsed < 2000UL) return false;
+    return (elapsed % 2000UL) < 180UL;
+  }
+
+  static uint32_t sagNextRedrawDelayMs_() {
+    if (!s_sagFrozen) return 1000UL;
+    const uint32_t elapsed = millis() - s_sagFreezeStartMs;
+    if (elapsed < 2000UL) return 2000UL - elapsed;
+    const uint32_t phase = elapsed % 2000UL;
+    if (phase < 180UL) return 180UL - phase;
+    return 2000UL - phase;
+  }
+
+  static SensorManager::PreviewMode sagPreviewMode_(SagDisplayMode mode) {
+    switch (mode) {
+      case SagDisplayMode::Linear:  return SensorManager::PreviewMode::Linear;
+      case SagDisplayMode::Percent: return SensorManager::PreviewMode::SagPercent;
+      case SagDisplayMode::Raw:
+      default:                      return SensorManager::PreviewMode::Raw;
+    }
+  }
+
+  static const char* sagTitle_(SagDisplayMode mode) {
+    switch (mode) {
+      case SagDisplayMode::Linear:  return "Sag LINEAR";
+      case SagDisplayMode::Percent: return "Sag %";
+      case SagDisplayMode::Raw:
+      default:                      return "Sag RAW";
+    }
+  }
+
+  static const char* sagNoDataLine1_(SagDisplayMode mode) {
+    switch (mode) {
+      case SagDisplayMode::Linear:  return "No configured";
+      case SagDisplayMode::Percent: return "No installed";
+      case SagDisplayMode::Raw:
+      default:                      return "No active";
+    }
+  }
+
+  static const char* sagNoDataLine2_(SagDisplayMode mode) {
+    switch (mode) {
+      case SagDisplayMode::Linear:  return "linear susp.";
+      case SagDisplayMode::Percent: return "range";
+      case SagDisplayMode::Raw:
+      default:                      return "suspension";
+    }
+  }
+
+  static void cycleSagMode_(int8_t delta) {
+    int8_t next = static_cast<int8_t>(s_sagMode) + delta;
+    if (next < 0) next = 2;
+    if (next > 2) next = 0;
+    s_sagMode = static_cast<SagDisplayMode>(next);
+  }
+
+  static void drawSagHelper_() {
+    if ((long)(s_deferUiUntilMs - millis()) > 0) return;
+    UI::clear(UI::TARGET_OLED);
+
+    SensorManager::PreviewValue liveRows[SAG_MAX_ROWS];
+    const SagDisplayMode displayMode = s_sagFrozen ? s_sagFrozenMode : s_sagMode;
+    const SensorManager::PreviewMode previewMode = sagPreviewMode_(displayMode);
+    const bool raw = (displayMode == SagDisplayMode::Raw);
+    const SensorManager::PreviewValue* rows = s_sagFrozen ? s_sagFrozenRows : liveRows;
+    const uint16_t total = s_sagFrozen
+      ? s_sagFrozenTotal
+      : SensorManager::readSuspensionPreview(previewMode, liveRows, SAG_MAX_ROWS);
+    const uint8_t shown = (total < SAG_MAX_ROWS) ? (uint8_t)total : SAG_MAX_ROWS;
+    const bool hideValues = sagFrozenValuesHidden_();
+
+    DisplayManager::drawText(0, 0, sagTitle_(displayMode), 1);
+    DisplayManager::drawText(96, 0, s_sagFrozen ? "HOLD" : "U/D", 1);
+
+    if (total == 0) {
+      DisplayManager::drawText(0, 18, sagNoDataLine1_(displayMode), 1);
+      DisplayManager::drawText(0, 30, sagNoDataLine2_(displayMode), 1);
+      DisplayManager::drawText(0, 48, "< back", 1);
+      DisplayManager::present();
+      return;
+    }
+
+    if (shown == 1) {
+      const String name = truncateForOled_(String(rows[0].sensorName), 21);
+      const String value = formatSagValue_(rows[0].value, raw);
+      const uint8_t valueSize = fittedTextSize_(value, 3, 128);
+      DisplayManager::drawText(0, 13, name, 1);
+      if (!hideValues) DisplayManager::drawText(0, 27, value, valueSize);
+      DisplayManager::drawText(0, 55, rows[0].unit, 1);
+      DisplayManager::present();
+      return;
+    }
+
+    if (shown == 2) {
+      for (uint8_t i = 0; i < shown; ++i) {
+        const int y = 12 + i * 26;
+        const String name = truncateForOled_(String(rows[i].sensorName), 15);
+        const String value = formatSagValue_(rows[i].value, raw);
+        const uint8_t valueSize = fittedTextSize_(value, 2, 88);
+        DisplayManager::drawText(0, y, name, 1);
+        if (!hideValues) DisplayManager::drawText(0, y + 9, value, valueSize);
+        DisplayManager::drawText(94, y + 13, rows[i].unit, 1);
+      }
+      DisplayManager::present();
+      return;
+    }
+
+    for (uint8_t i = 0; i < shown; ++i) {
+      String line = truncateForOled_(String(rows[i].sensorName), 7);
+      if (!hideValues) {
+        line += " ";
+        line += formatSagValue_(rows[i].value, raw);
+        if (rows[i].unit[0]) {
+          line += " ";
+          line += rows[i].unit;
+        }
+      }
+      DisplayManager::drawText(0, 13 + i * 11, truncateForOled_(line, 21), 1);
+    }
+    if (total > shown) {
+      DisplayManager::drawText(102, 55, String("+") + String(total - shown), 1);
+    }
+    DisplayManager::present();
+  }
+
+  static void toggleSagFreeze_() {
+    if (s_sagFrozen) {
+      s_sagFrozen = false;
+      s_nextSagRedrawMs = millis() + 1000UL;
+      drawSagHelper_();
+      return;
+    }
+
+    s_sagFrozenMode = s_sagMode;
+    s_sagFrozenTotal = SensorManager::readSuspensionPreview(sagPreviewMode_(s_sagMode), s_sagFrozenRows, SAG_MAX_ROWS);
+    s_sagFrozen = true;
+    s_sagFreezeStartMs = millis();
+    s_nextSagRedrawMs = millis() + sagNextRedrawDelayMs_();
+    drawSagHelper_();
+  }
+
   static void drawHealth_() {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;
     UI::clear(UI::TARGET_OLED);
@@ -696,6 +897,7 @@ namespace {
       case State::UploadStatus: drawUploadStatus_(); break;
       case State::CalibSensors: drawCalibSensors_(); break;
       case State::CalibDetail:  drawCalibDetail_();  break;
+      case State::SagHelper:    drawSagHelper_();    break;
       case State::Health:       drawHealth_();       break;
       case State::About:        drawAbout_();        break;
       default: break;
@@ -1172,7 +1374,10 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
         s_swallowEnterRelease = false;
         return true;
       }
-      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
+      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) {
+        onNav(Dir::Enter, BUTTON_PRESSED);
+        if (ev == BUTTON_RELEASED) s_swallowEnterRelease = false;
+      }
       return true;
 
     case ButtonActions::ACT_MENU_SELECT:
@@ -1181,7 +1386,10 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
         s_swallowEnterRelease = false;
         return true;
       }
-      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) onNav(Dir::Enter, BUTTON_PRESSED);
+      if (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED) {
+        onNav(Dir::Enter, BUTTON_PRESSED);
+        if (ev == BUTTON_RELEASED) s_swallowEnterRelease = false;
+      }
       return true;
 
     case ButtonActions::ACT_MARK_EVENT:
@@ -1480,6 +1688,46 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       break;
     }
 
+    case State::SagHelper: {
+      if (LoggingManager::isRunning()) {
+        s_sagFrozen = false;
+        s_state = State::Main;
+        UI::toastModal("Logging active", 1500, 1);
+        deferUiFor(1500);
+        drawMain_();
+        return;
+      }
+
+      if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
+        s_sagFrozen = false;
+        s_state = State::Main;
+        drawMain_();
+        return;
+      }
+
+      if (ev == BUTTON_PRESSED && (d == Dir::Up || d == Dir::Down)) {
+        if (s_sagFrozen) {
+          drawSagHelper_();
+          return;
+        }
+        cycleSagMode_(d == Dir::Down ? 1 : -1);
+        s_nextSagRedrawMs = millis() + 1000;
+        drawSagHelper_();
+        return;
+      }
+
+      if (ev == BUTTON_PRESSED && d == Dir::Enter) {
+        toggleSagFreeze_();
+        return;
+      }
+
+      if (ev == BUTTON_PRESSED && d == Dir::Right) {
+        drawSagHelper_();
+        return;
+      }
+      break;
+    }
+
     case State::Health:
       if (d == Dir::Left) {
         s_state = State::Settings;
@@ -1568,6 +1816,21 @@ void MenuSystem::loop() {
   if (s_timeSyncPending && !WiFiManager::isRtcSyncPending()) {
     s_timeSyncPending = false;
     redraw_();
+  }
+
+  if (s_state == State::SagHelper) {
+    if (LoggingManager::isRunning()) {
+      s_sagFrozen = false;
+      s_state = State::Main;
+      UI::toastModal("Logging active", 1500, 1);
+      deferUiFor(1500);
+      drawMain_();
+      return;
+    }
+    if ((int32_t)(millis() - s_nextSagRedrawMs) >= 0) {
+      s_nextSagRedrawMs = millis() + sagNextRedrawDelayMs_();
+      drawSagHelper_();
+    }
   }
 
   if (s_state == State::Health) {

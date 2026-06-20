@@ -183,6 +183,8 @@ public:
   // Live raw access
   virtual bool    hasRawCounts()   const { return false; }
   virtual int32_t currentRawCounts() const { return 0; }
+  virtual bool    readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap);
+  virtual float   installedRange() const { return 0.0f; }
 
   // Re-apply a saved sensor spec to the live instance when the concrete type
   // is unchanged.

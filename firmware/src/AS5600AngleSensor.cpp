@@ -93,6 +93,7 @@ void loadParamsFromPack_(AS5600AngleSensor::Params& p,
 
   long li = 0;
   bool b = false;
+  double d = 0.0;
   String s;
 
   if (params.getInt("i2c_bus", li))       p.busIndex = (li < 0) ? 0u : (uint8_t)li;
@@ -100,6 +101,7 @@ void loadParamsFromPack_(AS5600AngleSensor::Params& p,
   if (params.get("i2c_read_mode", s))     p.readMode = parseReadMode_(s);
   if (params.getInt("zero_count", li))    p.zeroCount = (int32_t)li;
   if (params.get("direction", s))          p.directionSign = parseDirectionSign_(s);
+  if (params.getFloat("installed_range", d)) p.installedRange = (float)d;
   if (params.getBool("include_raw", b))   p.includeRawColumn = b;
   if (params.getBool("include_diag", b))  p.includeDiagColumns = b;
   if (params.getInt("diag_interval_ms", li)) p.diagnosticIntervalMs = (li < 0) ? 0UL : (uint32_t)li;
@@ -129,6 +131,7 @@ void AS5600AngleSensor::applyParams(const Params& p) {
   m_readMode = p.readMode;
   m_zeroCount = normalizeCount_(p.zeroCount);
   m_directionSign = (p.directionSign < 0) ? -1 : 1;
+  m_installedRange = p.installedRange;
   m_includeRaw = p.includeRawColumn;
   m_includeDiagColumns = p.includeDiagColumns;
   m_diagnosticIntervalMs = p.diagnosticIntervalMs;
@@ -744,6 +747,19 @@ int32_t AS5600AngleSensor::currentRawCounts() const {
   return raw;
 }
 
+bool AS5600AngleSensor::readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) {
+  if (mode == OutputMode::RAW) return Sensor::readPreviewValue(mode, value, unit, unitCap);
+  if (mode != OutputMode::LINEAR || m_mode != OutputMode::LINEAR || m_muted) return false;
+
+  float primary = 0.0f;
+  int raw = 0;
+  sample(primary, raw);
+  (void)raw;
+  value = primary;
+  copyField_(unit, unitCap, m_outputUnitsLabel[0] ? m_outputUnitsLabel : "deg");
+  return true;
+}
+
 CalibrationState AS5600AngleSensor::calibration() const {
   CalibrationState cs;
   cs.mode = m_mode;
@@ -774,6 +790,7 @@ const ParamDef* AS5600AngleSensor::paramDefs(size_t& count) {
     {"i2c_read_mode",    ParamType::Enum,   "repeated", nullptr, nullptr, "repeated,stop", "I2C register read transaction style"},
     {"zero_count",       ParamType::Int,    "0",   "0",     "4095", nullptr, "Firmware zero point in raw AS5600 counts"},
     {"direction",        ParamType::Enum,   "counts_increase_positive", nullptr, nullptr, "counts_increase_positive,counts_decrease_positive", "Raw-count direction for positive angular movement"},
+    {"installed_range",  ParamType::Float,  "0",   "0",     nullptr, nullptr, "Installed range in linear output units for sag percentage"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},
     {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5600 AGC, status flags, and magnitude columns"},
