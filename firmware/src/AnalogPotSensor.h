@@ -24,11 +24,7 @@ public:
     // Real-world span; if 1.0 => normalized output (0..1)
     float    sensorFullTravelMm = 0.0f;    // 0 => no scaling, 1 => normalized, >1 => mm
 
-    // Output policy
     bool     includeRawColumn = false;
-
-    // Short suffix used in CSV for LINEAR output (e.g., "mm","deg","N","norm")
-    char     unitsLabel[48] = "";
 
     // Optional signal semantics for generated log metadata. These do not affect
     // CSV output; they describe the primary engineered column when present.
@@ -122,7 +118,7 @@ private:
 
   // Identity / presentation
   char   m_name[16] = "pot";
-  char   m_unitsLabel[48] = "";
+  char   m_unitsLabel[48] = "mm";
   char   m_semanticEnd[16] = "";
   char   m_primaryDomain[24] = "";
   char   m_primaryQuantity[24] = "";

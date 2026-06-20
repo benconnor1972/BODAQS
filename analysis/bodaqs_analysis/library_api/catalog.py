@@ -25,6 +25,7 @@ from .models import library_payload
 
 
 LIBRARY_DEFINITION_FILENAME = "library_definition.json"
+LIBRARIES_DIRNAME = "libraries"
 RUNS_DIRNAME = "runs"
 SESSION_CATALOG_SCHEMA = "bodaqs.session_catalog"
 SESSION_CATALOG_VERSION = 1
@@ -55,7 +56,7 @@ def discover_libraries(libraries_root: str | Path) -> list[dict[str, Any]]:
 
     libraries: list[dict[str, Any]] = []
     seen_ids: dict[str, Path] = {}
-    for child in sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name.lower()):
+    for child in _iter_library_candidate_dirs(root):
         discovered = _discover_library_dir(child)
         if discovered is None:
             continue
@@ -75,6 +76,21 @@ def discover_libraries(libraries_root: str | Path) -> list[dict[str, Any]]:
         libraries.append(discovered)
 
     return libraries
+
+
+def _iter_library_candidate_dirs(root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    seen_paths: set[Path] = set()
+    for search_root in (root / LIBRARIES_DIRNAME, root):
+        if not search_root.exists() or not search_root.is_dir():
+            continue
+        for child in sorted((p for p in search_root.iterdir() if p.is_dir()), key=lambda p: p.name.lower()):
+            resolved = child.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            candidates.append(child)
+    return candidates
 
 
 def build_session_catalog(

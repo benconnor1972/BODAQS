@@ -5,9 +5,13 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
+from urllib.parse import urlparse
+
+from .import_agent_logger_wifi import LoggerWifiApiClient
 
 
 BODAQS_LOGGER_SERVICE_TYPE = "_bodaqs-logger._tcp.local."
+DEFAULT_LOGGER_WIFI_AP_BASE_URL = "http://192.168.4.1"
 
 
 class LoggerWifiDiscoveryUnavailable(RuntimeError):
@@ -108,6 +112,67 @@ def _base_url_for_address(address: str, port: int) -> str:
     return f"http://{host}{port_part}"
 
 
+def _host_port_from_base_url(base_url: str) -> tuple[str, int]:
+    parsed = urlparse(base_url)
+    host = parsed.hostname or ""
+    if parsed.port is not None:
+        port = int(parsed.port)
+    elif parsed.scheme == "https":
+        port = 443
+    else:
+        port = 80
+    return host, port
+
+
+def probe_logger_wifi_base_url(
+    base_url: str,
+    *,
+    logger_id: Optional[str] = None,
+    request_timeout_s: float = 1.0,
+    service_name: str = "direct",
+) -> Optional[LoggerWifiDiscoveryResult]:
+    if request_timeout_s <= 0:
+        raise ValueError("request_timeout_s must be > 0")
+
+    wanted_logger_id = _optional_text(logger_id)
+    try:
+        client = LoggerWifiApiClient(
+            base_url,
+            request_timeout_s=float(request_timeout_s),
+            download_timeout_s=max(float(request_timeout_s), 1.0),
+        )
+        device = client.get_device()
+        found_logger_id = _optional_text(device.get("logger_id"))
+        if wanted_logger_id is not None and found_logger_id != wanted_logger_id:
+            return None
+
+        try:
+            status = client.get_status()
+        except Exception:
+            status = {}
+
+        host, port = _host_port_from_base_url(client.base_url)
+        upload_mode = (
+            _bool_property(status.get("upload_mode"))
+            if isinstance(status, Mapping)
+            else None
+        )
+        return LoggerWifiDiscoveryResult(
+            service_name=service_name,
+            base_url=client.base_url,
+            addresses=(host,) if host else (),
+            port=port,
+            logger_id=found_logger_id,
+            display_name=_optional_text(device.get("display_name")) or found_logger_id,
+            hostname=_optional_text(device.get("hostname")),
+            api_version=_int_property(device.get("api_version")),
+            upload_mode=upload_mode,
+            properties={"probe": "direct"},
+        )
+    except Exception:
+        return None
+
+
 def logger_wifi_discovery_result_from_service_info(
     info: Any,
     *,
@@ -173,27 +238,51 @@ def discover_logger_wifi_sources(
     logger_id: Optional[str] = None,
     timeout_s: float = 3.0,
     service_type: str = BODAQS_LOGGER_SERVICE_TYPE,
+    include_default_ap: bool = False,
+    default_ap_base_url: str = DEFAULT_LOGGER_WIFI_AP_BASE_URL,
+    default_ap_timeout_s: float = 1.0,
 ) -> list[LoggerWifiDiscoveryResult]:
     if timeout_s <= 0:
         raise ValueError("timeout_s must be > 0")
 
     wanted_logger_id = _optional_text(logger_id)
-    ServiceBrowser, Zeroconf = _import_zeroconf_symbols()
-    zeroconf = Zeroconf()
-    listener = _BodaqsLoggerServiceListener()
-    browser = None
+    mdns_unavailable: Optional[LoggerWifiDiscoveryUnavailable] = None
+    results: list[LoggerWifiDiscoveryResult] = []
     try:
-        browser = ServiceBrowser(zeroconf, service_type, listener)
-        time.sleep(float(timeout_s))
-    finally:
-        if browser is not None and hasattr(browser, "cancel"):
-            browser.cancel()
-        zeroconf.close()
+        ServiceBrowser, Zeroconf = _import_zeroconf_symbols()
+        zeroconf = Zeroconf()
+        listener = _BodaqsLoggerServiceListener()
+        browser = None
+        try:
+            browser = ServiceBrowser(zeroconf, service_type, listener)
+            time.sleep(float(timeout_s))
+        finally:
+            if browser is not None and hasattr(browser, "cancel"):
+                browser.cancel()
+            zeroconf.close()
 
-    results = sorted(listener.results_by_name.values(), key=lambda item: (item.logger_id or "", item.base_url))
-    if wanted_logger_id is None:
-        return results
-    return [item for item in results if item.logger_id == wanted_logger_id]
+        results = sorted(listener.results_by_name.values(), key=lambda item: (item.logger_id or "", item.base_url))
+    except LoggerWifiDiscoveryUnavailable as exc:
+        if not include_default_ap:
+            raise
+        mdns_unavailable = exc
+
+    if wanted_logger_id is not None:
+        results = [item for item in results if item.logger_id == wanted_logger_id]
+
+    if include_default_ap and not results:
+        ap_result = probe_logger_wifi_base_url(
+            default_ap_base_url,
+            logger_id=wanted_logger_id,
+            request_timeout_s=float(default_ap_timeout_s),
+            service_name="default-ap",
+        )
+        if ap_result is not None:
+            results = [ap_result]
+
+    if mdns_unavailable is not None and not results:
+        raise mdns_unavailable
+    return results
 
 
 def discover_single_logger_wifi_source(
@@ -201,6 +290,9 @@ def discover_single_logger_wifi_source(
     logger_id: str,
     timeout_s: float = 3.0,
     service_type: str = BODAQS_LOGGER_SERVICE_TYPE,
+    include_default_ap: bool = False,
+    default_ap_base_url: str = DEFAULT_LOGGER_WIFI_AP_BASE_URL,
+    default_ap_timeout_s: float = 1.0,
 ) -> Optional[LoggerWifiDiscoveryResult]:
     wanted_logger_id = _optional_text(logger_id)
     if wanted_logger_id is None:
@@ -210,6 +302,9 @@ def discover_single_logger_wifi_source(
         logger_id=wanted_logger_id,
         timeout_s=timeout_s,
         service_type=service_type,
+        include_default_ap=include_default_ap,
+        default_ap_base_url=default_ap_base_url,
+        default_ap_timeout_s=default_ap_timeout_s,
     )
     if len(matches) > 1:
         raise LoggerWifiDiscoveryError(

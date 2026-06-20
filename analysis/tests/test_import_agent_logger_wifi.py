@@ -29,6 +29,7 @@ from bodaqs_analysis.import_agent_logger_wifi_discovery import (
     discover_logger_wifi_sources,
     discover_single_logger_wifi_source,
     logger_wifi_discovery_result_from_service_info,
+    probe_logger_wifi_base_url,
 )
 from bodaqs_import_manager.import_agent_provisioning import (
     provision_import_agent_library,
@@ -617,6 +618,93 @@ def test_logger_wifi_discovery_result_parses_mdns_service_info():
     assert result.api_version == 1
     assert result.upload_mode is True
     assert result.addresses == ("fe80::1234", "192.168.1.42")
+
+
+def test_logger_wifi_direct_probe_reads_device_and_status():
+    with _FakeLoggerServer(upload_mode=False) as server:
+        result = probe_logger_wifi_base_url(
+            server.base_url,
+            logger_id="Prototype E",
+            request_timeout_s=1.0,
+        )
+
+    assert result is not None
+    assert result.base_url == server.base_url
+    assert result.logger_id == "Prototype E"
+    assert result.hostname == "bodaqs-prototype-e"
+    assert result.upload_mode is False
+
+
+def test_logger_wifi_direct_probe_rejects_logger_id_mismatch():
+    with _FakeLoggerServer() as server:
+        result = probe_logger_wifi_base_url(
+            server.base_url,
+            logger_id="Other Logger",
+            request_timeout_s=1.0,
+        )
+
+    assert result is None
+
+
+def test_logger_wifi_discovery_can_fall_back_to_default_ap_probe(monkeypatch):
+    class EmptyServiceBrowser:
+        def __init__(self, _zeroconf, _service_type, _listener):
+            pass
+
+        def cancel(self):
+            pass
+
+    class EmptyZeroconf:
+        def close(self):
+            pass
+
+    def import_zeroconf_symbols():
+        return EmptyServiceBrowser, EmptyZeroconf
+
+    calls = []
+
+    def probe(base_url, **kwargs):
+        calls.append((base_url, kwargs))
+        return LoggerWifiDiscoveryResult(
+            service_name="default-ap",
+            base_url=base_url,
+            addresses=("192.168.4.1",),
+            port=80,
+            logger_id="Prototype E",
+            upload_mode=True,
+        )
+
+    monkeypatch.setattr(discovery_module, "_import_zeroconf_symbols", import_zeroconf_symbols)
+    monkeypatch.setattr(discovery_module, "probe_logger_wifi_base_url", probe)
+
+    results = discover_logger_wifi_sources(
+        logger_id="Prototype E",
+        timeout_s=0.01,
+        include_default_ap=True,
+        default_ap_base_url="http://192.168.4.1",
+        default_ap_timeout_s=0.25,
+    )
+
+    assert results == [
+        LoggerWifiDiscoveryResult(
+            service_name="default-ap",
+            base_url="http://192.168.4.1",
+            addresses=("192.168.4.1",),
+            port=80,
+            logger_id="Prototype E",
+            upload_mode=True,
+        )
+    ]
+    assert calls == [
+        (
+            "http://192.168.4.1",
+            {
+                "logger_id": "Prototype E",
+                "request_timeout_s": 0.25,
+                "service_name": "default-ap",
+            },
+        )
+    ]
 
 
 def test_logger_wifi_discovery_reports_unavailable_dependency(monkeypatch):

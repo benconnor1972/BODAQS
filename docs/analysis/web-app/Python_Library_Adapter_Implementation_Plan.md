@@ -214,15 +214,17 @@ libraries_root
 
 Recommended v0 discovery:
 
-1. Iterate immediate child directories under `libraries_root`.
-2. Treat a child as a library if it has:
+1. Iterate child directories under `<libraries_root>/libraries/`.
+2. Also scan immediate child directories under `libraries_root` for legacy
+   workspaces.
+3. Treat a child as a library if it has:
    - `library_definition.json`, or
    - a `runs/` directory with at least one run.
-3. Prefer `library_definition.json` for:
+4. Prefer `library_definition.json` for:
    - `library_id`
    - `display_name`
    - feature flags such as data.syn.bike export metadata if useful later.
-4. Fall back to directory name for `library_id` and display name.
+5. Fall back to directory name for `library_id` and display name.
 
 Output shape should align with:
 
@@ -230,7 +232,7 @@ Output shape should align with:
 {
   "library_id": "default-library",
   "display_name": "Default Library",
-  "root": "C:/Users/.../libraries/default-library",
+  "root": "C:/Users/.../workspace/libraries/default-library",
   "capabilities": {
     "read_processed_library": true,
     "read_parquet": true

@@ -21,6 +21,7 @@ for _package_root in (_REPO_ROOT / "analysis", _REPO_ROOT / "import-manager"):
 
 import bodaqs_import_manager.import_agent_provisioning as provisioning_module
 import bodaqs_import_manager.import_agent_single_instance as single_instance_module
+import bodaqs_import_manager.import_agent_setup as import_agent_setup_module
 import bodaqs_import_manager.import_agent_startup as import_agent_startup_module
 import bodaqs_import_manager.import_agent_tray as import_agent_tray_module
 import bodaqs_analysis.library_preprocessing as library_preprocessing
@@ -54,6 +55,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     adopt_import_agent_existing_workspace,
     check_import_agent_workspace_sync,
     default_import_agent_app_config_path,
+    discover_import_agent_libraries,
     load_managed_import_source_configs,
     load_import_agent_app_config,
     managed_import_agent_source_roots,
@@ -63,6 +65,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     provision_import_agent_library,
     provision_import_agent_source_for_app,
     provision_import_agent_source,
+    remove_import_agent_library,
     remove_import_agent_source,
     runtime_import_agent_app_config_path,
     save_import_agent_app_config,
@@ -73,6 +76,8 @@ from bodaqs_import_manager.import_agent_provisioning import (
     update_import_agent_source_bike_profile,
     update_import_agent_source_display_name,
     update_import_agent_source_force_reprocess_enabled,
+    update_import_agent_source_preprocess_profile,
+    update_import_agent_source_session_naming,
     update_import_agent_source_session_note_attach_enabled,
     update_import_agent_source_enabled,
     update_import_agent_source_library,
@@ -275,6 +280,7 @@ def _write_source_config(
     bike_profile_path: str = "bike_profile.json",
     session_note: dict | None = None,
     force_reprocess: bool = False,
+    naming: dict | None = None,
 ) -> Path:
     payload = {
         "schema": "bodaqs.import_source",
@@ -298,6 +304,8 @@ def _write_source_config(
     }
     if session_note is not None:
         payload["session_note"] = session_note
+    if naming is not None:
+        payload["naming"] = naming
     config_path = source_root / "import_source.json"
     config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return config_path
@@ -1241,6 +1249,38 @@ def test_load_import_source_config_from_directory(tmp_path):
     assert source.bike_profile_path == source_root / "bike"
 
 
+def test_load_import_source_config_parses_session_auto_naming(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = tmp_path / "source_named"
+    inbox_dir = source_root / "inbox"
+    inbox_dir.mkdir(parents=True)
+    schema_path = _write_schema(source_root / "schema.yaml")
+    _write_preprocess_profile(source_root / "preprocess_profile.json", schema_path=schema_path)
+    _write_bike_profile(source_root / "bike_profile.json")
+    _write_source_config(
+        source_root,
+        artifacts_dir=artifacts_dir,
+        naming={
+            "session_description": {
+                "enabled": True,
+                "mode": "base_index",
+                "base": "Lower chute",
+                "index_start": 3,
+                "index_padding": 2,
+            }
+        },
+    )
+
+    source = load_import_source_config(source_root)
+
+    session_naming = source.naming.session_description
+    assert session_naming.enabled is True
+    assert session_naming.mode == "base_index"
+    assert session_naming.base == "Lower chute"
+    assert session_naming.index_start == 3
+    assert session_naming.index_padding == 2
+
+
 def test_load_import_source_config_parses_logger_wifi_source(tmp_path):
     artifacts_dir = tmp_path / "artifacts"
     source_root = _prepare_source(tmp_path, "wifi_source", artifacts_dir)
@@ -1376,6 +1416,53 @@ def test_run_sources_once_imports_same_source_archives_into_one_run(tmp_path):
     )
     for session_id in ("session_001", "session_002"):
         assert (artifacts_dir / "runs" / run_id / "sessions" / session_id / "manifest.json").exists()
+
+
+def test_run_sources_once_applies_run_override_and_session_auto_names(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = tmp_path / "source_named"
+    inbox_dir = source_root / "inbox"
+    inbox_dir.mkdir(parents=True)
+    schema_path = _write_schema(source_root / "schema.yaml")
+    _write_preprocess_profile(source_root / "preprocess_profile.json", schema_path=schema_path)
+    _write_bike_profile(source_root / "bike_profile.json")
+    _write_source_config(
+        source_root,
+        artifacts_dir=artifacts_dir,
+        naming={
+            "session_description": {
+                "enabled": True,
+                "mode": "base_index",
+                "base": "Lower chute",
+                "index_start": 1,
+                "index_padding": 2,
+            }
+        },
+    )
+    archive_a = _write_session_archive(inbox_dir, stem="session_001")
+    archive_b = _write_session_archive(inbox_dir, stem="session_002")
+    _set_old_mtime(archive_a)
+    _set_old_mtime(archive_b)
+
+    report = run_sources_once([source_root], run_description_override="Morning shuttle laps")
+
+    assert report["totals"]["imported"] == 2
+    records = report["sources"][0]["imported"]
+    run_id = records[0]["run_id"]
+    assert {record["run_id"] for record in records} == {run_id}
+
+    run_manifest = json.loads((artifacts_dir / "runs" / run_id / "manifest.json").read_text(encoding="utf-8"))
+    assert run_manifest["description"] == "Morning shuttle laps"
+
+    descriptions = {}
+    for session_id in ("session_001", "session_002"):
+        manifest_path = artifacts_dir / "runs" / run_id / "sessions" / session_id / "manifest.json"
+        descriptions[session_id] = json.loads(manifest_path.read_text(encoding="utf-8"))["description"]
+
+    assert descriptions == {
+        "session_001": "Lower chute 01",
+        "session_002": "Lower chute 02",
+    }
 
 
 def test_run_sources_once_keeps_successful_batch_session_when_later_archive_fails(tmp_path, monkeypatch):
@@ -1702,9 +1789,12 @@ def test_provision_import_agent_library_creates_artifact_store_dirs(tmp_path):
     library = provision_import_agent_library(libraries_root, display_name="Alice Library")
 
     assert library.library_id == "alice-library"
+    assert library.artifacts_dir == libraries_root / "libraries" / "alice-library"
     assert library.runs_dir.exists()
     assert library.state_dir.exists()
     assert library.bike_profiles_dir == libraries_root / "bike_profiles"
+    assert library.preprocess_profiles_dir == libraries_root / "preprocess_profiles"
+    assert library.event_schemas_dir == libraries_root / "event_schemas"
     assert library.bike_profiles_dir.exists()
     assert any(library.bike_profiles_dir.glob("*.json"))
     metadata = json.loads(library.metadata_path.read_text(encoding="utf-8"))
@@ -1735,7 +1825,42 @@ def test_provisioned_libraries_share_root_level_bike_profiles_dir(tmp_path):
 
     assert first.bike_profiles_dir == libraries_root / "bike_profiles"
     assert second.bike_profiles_dir == first.bike_profiles_dir
+    assert first.preprocess_profiles_dir == libraries_root / "preprocess_profiles"
+    assert second.preprocess_profiles_dir == first.preprocess_profiles_dir
+    assert first.event_schemas_dir == libraries_root / "event_schemas"
+    assert second.event_schemas_dir == first.event_schemas_dir
+    assert first.artifacts_dir == libraries_root / "libraries" / "alice-library"
+    assert second.artifacts_dir == libraries_root / "libraries" / "ben-library"
     assert first.bike_profiles_dir.exists()
+
+
+def test_discover_import_agent_libraries_supports_new_and_legacy_layouts(tmp_path):
+    libraries_root = tmp_path / "libraries"
+    new_library = provision_import_agent_library(libraries_root, display_name="Alice Library")
+    legacy_library = libraries_root / "legacy-library"
+    legacy_library.mkdir(parents=True)
+    (legacy_library / "library_definition.json").write_text(
+        json.dumps(
+            {
+                "schema": "bodaqs.import_agent_library",
+                "version": 1,
+                "library_id": "legacy-library",
+                "display_name": "Legacy Library",
+                "artifacts_dir": str(legacy_library),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (legacy_library / "runs").mkdir()
+    (legacy_library / "library").mkdir()
+
+    discovered = discover_import_agent_libraries(libraries_root)
+
+    by_id = {library.library_id: library for library in discovered}
+    assert set(by_id) == {"alice-library", "legacy-library"}
+    assert by_id["alice-library"].artifacts_dir == new_library.artifacts_dir
+    assert by_id["legacy-library"].artifacts_dir == legacy_library.resolve()
 
 
 def test_update_import_agent_library_data_syn_bike_export_enabled_updates_app_and_library_metadata(tmp_path):
@@ -1779,14 +1904,17 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     preprocess_profile = json.loads(source.preprocess_profile_path.read_text(encoding="utf-8"))
     source_payload = json.loads(source.import_source_config_path.read_text(encoding="utf-8"))
 
-    assert source.settings_dir.exists()
+    assert not source.settings_dir.exists()
     assert source.notes_dir.exists()
     assert source.event_schema_path.exists()
+    assert source.event_schema_path.parent == library.event_schemas_dir
+    assert source.preprocess_profile_path.exists()
+    assert source.preprocess_profile_path.parent == library.preprocess_profiles_dir
     assert source.bike_profile_path.exists()
     assert source.bike_profile_path.parent == library.bike_profiles_dir
     assert source.session_note_template_path.exists()
     assert source.bike_setup_preset_path.exists()
-    assert loaded.preprocess_profile_path == source.settings_dir
+    assert loaded.preprocess_profile_path == source.preprocess_profile_path
     assert loaded.bike_profile_path == source.bike_profile_path
     assert loaded.session_note.template_path == source.notes_dir
     assert loaded.session_note.setup_preset_path == source.notes_dir
@@ -1795,9 +1923,10 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     assert source_payload["display_name"] == "Alice Enduro"
     assert source_payload["source_type"] == SOURCE_TYPE_FILESYSTEM_ARCHIVE
     assert not Path(source_payload["artifacts_dir"]).is_absolute()
+    assert not Path(source_payload["preprocess_profile_path"]).is_absolute()
     assert not Path(source_payload["bike_profile_path"]).is_absolute()
     assert source_payload["session_note"]["attach_on_import"] is False
-    assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
+    assert preprocess_profile["config"]["schema_path"] == "../event_schemas/event_schema.yaml"
 
 
 def test_provision_import_agent_source_can_seed_logger_wifi_config(tmp_path):
@@ -1878,11 +2007,13 @@ def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp
 
     assert source.preprocess_profile_path.name == "preprocess_profile.json"
     assert source.event_schema_path.name == "event_schema.yaml"
+    assert source.preprocess_profile_path.parent == library.preprocess_profiles_dir
+    assert source.event_schema_path.parent == library.event_schemas_dir
     assert source.bike_profile_path.parent == library.bike_profiles_dir
     assert source.bike_profile_path.name == "import_agent_test_bike.json"
     assert source.session_note_template_path.name == "session_note_template.json"
     assert source.bike_setup_preset_path.name == "bike_setup_preset.json"
-    assert preprocess_profile["config"]["schema_path"] == "event_schema.yaml"
+    assert preprocess_profile["config"]["schema_path"] == "../event_schemas/event_schema.yaml"
 
 
 def test_import_agent_app_config_round_trip(tmp_path):
@@ -2113,7 +2244,9 @@ def test_adopt_import_agent_existing_workspace_rebuilds_local_app_config_with_ne
     assert config.auto_start is True
     assert config.libraries[0].library_id == "alice-library"
     assert config.libraries[0].display_name == "Alice Library"
-    assert config.libraries[0].artifacts_dir == (second_workspace / "libraries" / "alice-library").resolve()
+    assert config.libraries[0].artifacts_dir == (
+        second_workspace / "libraries" / "libraries" / "alice-library"
+    ).resolve()
     assert config.libraries[0].data_syn_bike_export_enabled is True
     assert config.sources[0].source_id == "alice-enduro"
     assert config.sources[0].display_name == "Alice Enduro"
@@ -2452,6 +2585,41 @@ def test_update_import_agent_source_force_reprocess_updates_app_and_source_confi
     assert loaded_source.force_reprocess is True
 
 
+def test_update_import_agent_source_session_naming_updates_source_config(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    updated = update_import_agent_source_session_naming(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        enabled=True,
+        base="Flow trail",
+        index_start=5,
+        index_padding=3,
+    )
+    source_payload = json.loads(provisioned.source.import_source_config_path.read_text(encoding="utf-8"))
+    loaded_source = load_import_source_config(provisioned.source.source_root)
+
+    assert updated.sources[0].source_id == provisioned.source.source_id
+    assert source_payload["naming"]["session_description"] == {
+        "enabled": True,
+        "mode": "base_index",
+        "base": "Flow trail",
+        "index_start": 5,
+        "index_padding": 3,
+    }
+    assert loaded_source.naming.session_description.enabled is True
+    assert loaded_source.naming.session_description.base == "Flow trail"
+    assert loaded_source.naming.session_description.index_start == 5
+    assert loaded_source.naming.session_description.index_padding == 3
+
+
 def test_update_import_agent_source_library_updates_app_and_source_config(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
     provisioned = provision_import_agent_app_setup(
@@ -2738,6 +2906,46 @@ def test_update_import_agent_source_bike_profile_links_shared_library_profile(tm
     assert load_source_bike_profile(first.source.source_root)[0] == first_profile_path
 
 
+def test_update_import_agent_source_preprocess_profile_links_shared_profile(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    first = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    _updated, second = provision_import_agent_source_for_app(
+        app_config_path,
+        library_id=first.library.library_id,
+        display_name="Ben DH",
+    )
+    first_source_config = load_import_source_config(first.source.source_root)
+    second_source_config = load_import_source_config(second.source_root)
+    assert first_source_config.preprocess_profile_path == second_source_config.preprocess_profile_path
+
+    profile_config = default_preprocess_config()
+    profile_config["schema_path"] = "../event_schemas/event_schema.yaml"
+    profile_config["logger_timezone"] = "UTC"
+    custom_profile_path = first.library.preprocess_profiles_dir / "utc-preprocess-profile.json"
+    save_preprocess_profile(make_preprocess_profile("utc_preprocess", config=profile_config), custom_profile_path)
+
+    update_import_agent_source_preprocess_profile(
+        app_config_path,
+        source_id=second.source_id,
+        preprocess_profile_path=custom_profile_path,
+    )
+    source_payload = json.loads(second.import_source_config_path.read_text(encoding="utf-8"))
+    target_config = load_import_source_config(second.source_root)
+
+    assert not Path(source_payload["preprocess_profile_path"]).is_absolute()
+    assert target_config.preprocess_profile_path == custom_profile_path
+    assert (
+        load_import_source_config(first.source.source_root).preprocess_profile_path
+        == first_source_config.preprocess_profile_path
+    )
+
+
 def test_session_note_template_builder_and_copy_relinks_setup_preset_to_target_bike(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
     first = provision_import_agent_app_setup(
@@ -2852,6 +3060,80 @@ def test_remove_import_agent_source_only_updates_app_config(tmp_path):
     assert load_import_agent_app_config(app_config_path).sources == ()
     assert source_root.exists()
     assert marker.read_text(encoding="utf-8") == "do not delete"
+
+
+def test_remove_import_agent_source_can_delete_source_folder(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    source_root = provisioned.source.source_root
+    marker = source_root / "delete_me.txt"
+    marker.write_text("delete me", encoding="utf-8")
+
+    updated = remove_import_agent_source(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        delete_files=True,
+    )
+
+    assert updated.sources == ()
+    assert load_import_agent_app_config(app_config_path).sources == ()
+    assert not source_root.exists()
+
+
+def test_remove_import_agent_library_requires_no_targeting_sources(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+
+    with pytest.raises(ValueError, match="source\\(s\\) still target"):
+        remove_import_agent_library(
+            app_config_path,
+            library_id=provisioned.library.library_id,
+        )
+
+
+def test_remove_import_agent_library_can_delete_library_data_without_shared_assets(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    library_dir = provisioned.library.artifacts_dir
+    shared_bike_dir = provisioned.library.bike_profiles_dir
+    shared_preprocess_dir = provisioned.library.preprocess_profiles_dir
+    shared_schema_dir = provisioned.library.event_schemas_dir
+
+    remove_import_agent_source(
+        app_config_path,
+        source_id=provisioned.source.source_id,
+        delete_files=True,
+    )
+    updated = remove_import_agent_library(
+        app_config_path,
+        library_id=provisioned.library.library_id,
+        delete_files=True,
+    )
+
+    assert updated.libraries == ()
+    assert load_import_agent_app_config(app_config_path).libraries == ()
+    assert not library_dir.exists()
+    assert shared_bike_dir.exists()
+    assert shared_preprocess_dir.exists()
+    assert shared_schema_dir.exists()
 
 
 def test_update_import_agent_app_auto_start_persists(tmp_path):
@@ -3064,3 +3346,63 @@ def test_sync_windows_startup_registration_removes_legacy_value_name():
         import_agent_startup_module.WINDOWS_RUN_KEY_PATH,
         legacy_name,
     ) not in fake_reg.values
+
+
+def test_import_manager_import_now_guard_allows_watch_start_when_idle():
+    window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
+    window.import_now_thread = None
+
+    assert window._guard_import_now_inactive(action_label="Start Watch") is True
+
+
+class _FakeSourcesTree:
+    def __init__(self) -> None:
+        self.columns = (
+            "enabled",
+            "force_reprocess",
+            "display_name",
+            "source_type",
+            "status",
+            "library_name",
+            "bike_name",
+            "attach_note",
+        )
+        self.values = [
+            "✓",
+            "✓",
+            "Demo Source",
+            "Wi-Fi logger",
+            "not checked",
+            "Demo Library",
+            "Demo Bike",
+            "",
+        ]
+
+    def __getitem__(self, key: str):
+        if key == "columns":
+            return self.columns
+        raise KeyError(key)
+
+    def exists(self, source_id: str) -> bool:
+        return source_id == "source-a"
+
+    def item(self, source_id: str, option: str | None = None, **kwargs):
+        assert source_id == "source-a"
+        if "values" in kwargs:
+            self.values = list(kwargs["values"])
+            return None
+        if option == "values":
+            return tuple(self.values)
+        raise AssertionError(f"Unexpected item call: option={option!r}, kwargs={kwargs!r}")
+
+
+def test_import_manager_source_runtime_status_updates_status_column_not_type_column():
+    window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
+    window._source_runtime_status = {}
+    tree = _FakeSourcesTree()
+    window.sources_tree = tree
+
+    window._set_source_runtime_status("source-a", "waiting for upload mode")
+
+    assert tree.values[3] == "Wi-Fi logger"
+    assert tree.values[4] == "waiting for upload mode"

@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, replace
 from importlib.resources import files
@@ -33,7 +34,10 @@ IMPORT_AGENT_LIBRARY_VERSION = 1
 DEFAULT_IMPORT_SOURCE_FILENAME = "import_source.json"
 DEFAULT_SETTINGS_DIRNAME = "settings"
 DEFAULT_BIKE_DIRNAME = "bike"
+DEFAULT_LIBRARY_COLLECTION_DIRNAME = "libraries"
 DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME = "bike_profiles"
+DEFAULT_LIBRARY_PREPROCESS_PROFILES_DIRNAME = "preprocess_profiles"
+DEFAULT_LIBRARY_EVENT_SCHEMAS_DIRNAME = "event_schemas"
 DEFAULT_NOTES_DIRNAME = "notes"
 DEFAULT_LIBRARY_RUNS_DIRNAME = "runs"
 DEFAULT_LIBRARY_STATE_DIRNAME = "library"
@@ -107,6 +111,37 @@ def _source_force_reprocess_enabled(source_root: Path) -> bool:
     return bool(payload.get("force_reprocess", False))
 
 
+def _coerce_index_value(value: Any, *, field_name: str, default: int) -> int:
+    if value is None:
+        return int(default)
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be an integer") from None
+    if number < 0:
+        raise ValueError(f"{field_name} must be >= 0")
+    return number
+
+
+def _session_naming_payload(
+    *,
+    enabled: bool,
+    base: Optional[str],
+    index_start: int = 1,
+    index_padding: int = 2,
+) -> dict[str, Any]:
+    base_text = _optional_text(base)
+    if enabled and base_text is None:
+        raise ValueError("Session base name is required when session auto-naming is enabled")
+    return {
+        "enabled": bool(enabled),
+        "mode": "base_index" if enabled else "default",
+        "base": base_text or "",
+        "index_start": _coerce_index_value(index_start, field_name="session index start", default=1),
+        "index_padding": _coerce_index_value(index_padding, field_name="session index padding", default=2),
+    }
+
+
 def _write_source_session_note_attach_enabled(source_root: Path, *, enabled: bool) -> None:
     config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
     payload = _read_json(config_path, {})
@@ -134,6 +169,33 @@ def _write_source_force_reprocess_enabled(source_root: Path, *, enabled: bool) -
     _write_json(config_path, updated, overwrite=True)
 
 
+def _write_source_session_naming(
+    source_root: Path,
+    *,
+    enabled: bool,
+    base: Optional[str],
+    index_start: int = 1,
+    index_padding: int = 2,
+) -> None:
+    config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    payload = _read_json(config_path, {})
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Import source config is not a JSON object: {config_path}")
+    updated = dict(payload)
+    naming = updated.get("naming")
+    if not isinstance(naming, Mapping):
+        naming = {}
+    naming = dict(naming)
+    naming["session_description"] = _session_naming_payload(
+        enabled=enabled,
+        base=base,
+        index_start=index_start,
+        index_padding=index_padding,
+    )
+    updated["naming"] = naming
+    _write_json(config_path, updated, overwrite=True)
+
+
 def _write_source_target_library(source_root: Path, *, library_id: str, artifacts_dir: Path) -> None:
     config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
     payload = _read_json(config_path, {})
@@ -152,6 +214,16 @@ def _write_source_bike_profile_path(source_root: Path, *, bike_profile_path: Pat
         raise ValueError(f"Import source config is not a JSON object: {config_path}")
     updated = dict(payload)
     updated["bike_profile_path"] = _portable_path_text(bike_profile_path, base_dir=source_root)
+    _write_json(config_path, updated, overwrite=True)
+
+
+def _write_source_preprocess_profile_path(source_root: Path, *, preprocess_profile_path: Path) -> None:
+    config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    payload = _read_json(config_path, {})
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Import source config is not a JSON object: {config_path}")
+    updated = dict(payload)
+    updated["preprocess_profile_path"] = _portable_path_text(preprocess_profile_path, base_dir=source_root)
     _write_json(config_path, updated, overwrite=True)
 
 
@@ -189,14 +261,77 @@ def _portable_path_text(path: Path, *, base_dir: Path) -> str:
     return Path(relative).as_posix()
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _delete_directory_tree(path: Path, *, expected_parent: Path, label: str) -> None:
+    target = path.expanduser().resolve()
+    parent = expected_parent.expanduser().resolve()
+    if not target.exists():
+        return
+    if not target.is_dir():
+        raise ValueError(f"Cannot delete {label}: path is not a directory: {target}")
+    if target == parent or not _is_relative_to(target, parent):
+        raise ValueError(f"Refusing to delete {label} outside the managed root: {target}")
+    shutil.rmtree(target)
+
+
+def _delete_library_artifacts_dir(path: Path, *, libraries_root: Path) -> None:
+    target = path.expanduser().resolve()
+    root = libraries_root.expanduser().resolve()
+    if not target.exists():
+        return
+    if not target.is_dir():
+        raise ValueError(f"Cannot delete library data folder: path is not a directory: {target}")
+    if target == root or not _is_relative_to(target, root):
+        raise ValueError(f"Refusing to delete library data folder outside the libraries root: {target}")
+
+    managed_libraries_parent = import_agent_libraries_dir(root).resolve()
+    shared_names = {
+        DEFAULT_LIBRARY_COLLECTION_DIRNAME,
+        DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME,
+        DEFAULT_LIBRARY_PREPROCESS_PROFILES_DIRNAME,
+        DEFAULT_LIBRARY_EVENT_SCHEMAS_DIRNAME,
+    }
+    is_new_layout_library = target.parent == managed_libraries_parent
+    is_legacy_library = target.parent == root and target.name not in shared_names
+    if not is_new_layout_library and not is_legacy_library:
+        raise ValueError(f"Refusing to delete path that is not a managed library data folder: {target}")
+    shutil.rmtree(target)
+
+
 def _safe_slug(value: str, *, fallback: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._").lower()
     return slug or fallback
 
 
 def library_bike_profiles_dir(library_root: str | Path) -> Path:
+    return library_workspace_root(library_root) / DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME
+
+
+def library_preprocess_profiles_dir(library_root: str | Path) -> Path:
+    return library_workspace_root(library_root) / DEFAULT_LIBRARY_PREPROCESS_PROFILES_DIRNAME
+
+
+def library_event_schemas_dir(library_root: str | Path) -> Path:
     library_path = Path(library_root).expanduser().resolve()
-    return library_path.parent / DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME
+    return library_workspace_root(library_path) / DEFAULT_LIBRARY_EVENT_SCHEMAS_DIRNAME
+
+
+def import_agent_libraries_dir(libraries_root: str | Path) -> Path:
+    return Path(libraries_root).expanduser().resolve() / DEFAULT_LIBRARY_COLLECTION_DIRNAME
+
+
+def library_workspace_root(library_root: str | Path) -> Path:
+    library_path = Path(library_root).expanduser().resolve()
+    if library_path.parent.name == DEFAULT_LIBRARY_COLLECTION_DIRNAME:
+        return library_path.parent.parent
+    return library_path.parent
 
 
 def _bike_profile_filename(profile: Mapping[str, Any], *, fallback: str = "bike_profile") -> str:
@@ -329,6 +464,25 @@ def _load_bike_profile_file(path: str | Path) -> tuple[Path, dict[str, Any]]:
     return profile_path, payload
 
 
+def _load_preprocess_profile_file(path: str | Path) -> tuple[Path, dict[str, Any]]:
+    profile_path = Path(path).expanduser().resolve()
+    if not profile_path.is_file():
+        raise FileNotFoundError(f"Preprocess profile file does not exist: {profile_path}")
+    payload = _read_json_object(profile_path)
+    validate_preprocess_profile(payload, path=profile_path)
+    payload["config"] = normalize_preprocess_config_keys(payload["config"])
+    return profile_path, payload
+
+
+def _load_event_schema_file(path: str | Path) -> tuple[Path, str]:
+    schema_path = Path(path).expanduser().resolve()
+    if not schema_path.is_file():
+        raise FileNotFoundError(f"Event schema file does not exist: {schema_path}")
+    payload = schema_path.read_text(encoding="utf-8")
+    parse_event_schema(payload)
+    return schema_path, payload
+
+
 def _ensure_library_default_bike_profile(
     artifacts_dir: str | Path,
     *,
@@ -339,6 +493,39 @@ def _ensure_library_default_bike_profile(
     profile_path = library_bike_profiles_dir(artifacts_dir) / _bike_profile_filename(payload)
     if profile_path.exists() and not overwrite:
         return _load_bike_profile_file(profile_path)
+    _write_json(profile_path, payload, overwrite=overwrite)
+    return profile_path, payload
+
+
+def _ensure_library_default_event_schema(
+    artifacts_dir: str | Path,
+    *,
+    overwrite: bool,
+) -> tuple[Path, str]:
+    asset = _discover_single_schema_asset()
+    schema_path = library_event_schemas_dir(artifacts_dir) / "event_schema.yaml"
+    if schema_path.exists() and not overwrite:
+        return _load_event_schema_file(schema_path)
+    payload = str(asset.payload)
+    _write_text(schema_path, payload, overwrite=overwrite)
+    return schema_path, payload
+
+
+def _ensure_library_default_preprocess_profile(
+    artifacts_dir: str | Path,
+    *,
+    event_schema_path: Path,
+    overwrite: bool,
+) -> tuple[Path, dict[str, Any]]:
+    asset = _discover_preprocess_profile_asset()
+    profile_dir = library_preprocess_profiles_dir(artifacts_dir)
+    profile_path = profile_dir / "preprocess_profile.json"
+    if profile_path.exists() and not overwrite:
+        return _load_preprocess_profile_file(profile_path)
+
+    payload = copy.deepcopy(dict(asset.payload))
+    payload["config"] = normalize_preprocess_config_keys(payload["config"])
+    payload["config"]["schema_path"] = _portable_path_text(event_schema_path, base_dir=profile_dir)
     _write_json(profile_path, payload, overwrite=overwrite)
     return profile_path, payload
 
@@ -394,6 +581,8 @@ class ProvisionedImportAgentLibrary:
     runs_dir: Path
     state_dir: Path
     bike_profiles_dir: Path
+    preprocess_profiles_dir: Path
+    event_schemas_dir: Path
     metadata_path: Path
     data_syn_bike_export_enabled: bool = False
 
@@ -771,10 +960,11 @@ def _merge_managed_app_entries(
             "Existing import agent app config sources_root does not match the requested source root parent: "
             f"{base_config.sources_root} != {source.source_root.parent}"
         )
-    if base_config.libraries_root != library.artifacts_dir.parent:
+    library_workspace = library_workspace_root(library.artifacts_dir)
+    if base_config.libraries_root != library_workspace:
         raise ValueError(
             "Existing import agent app config libraries_root does not match the requested library root: "
-            f"{base_config.libraries_root} != {library.artifacts_dir.parent}"
+            f"{base_config.libraries_root} != {library_workspace}"
         )
 
     library_entries: dict[str, ImportAgentLibraryConfig] = {
@@ -897,7 +1087,7 @@ def discover_import_agent_libraries(libraries_root: str | Path) -> list[ImportAg
 
     libraries: list[ImportAgentLibraryConfig] = []
     seen_ids: set[str] = set()
-    for metadata_path in sorted(root.glob("*/library_definition.json")):
+    for metadata_path in _iter_import_agent_library_definition_paths(root):
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
             raise ValueError(f"Library definition must be a JSON object: {metadata_path}")
@@ -926,6 +1116,21 @@ def discover_import_agent_libraries(libraries_root: str | Path) -> list[ImportAg
             )
         )
     return libraries
+
+
+def _iter_import_agent_library_definition_paths(root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    seen_paths: set[Path] = set()
+    for search_root in (import_agent_libraries_dir(root), root):
+        if not search_root.exists() or not search_root.is_dir():
+            continue
+        for metadata_path in sorted(search_root.glob("*/library_definition.json")):
+            resolved = metadata_path.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            candidates.append(metadata_path)
+    return candidates
 
 
 def discover_import_agent_sources(
@@ -1352,6 +1557,31 @@ def update_import_agent_source_bike_profile(
     return updated
 
 
+def update_import_agent_source_preprocess_profile(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+    preprocess_profile_path: str | Path,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+    found = next((source for source in config.sources if source.source_id == source_id), None)
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+
+    resolved_profile_path, _profile = _load_preprocess_profile_file(preprocess_profile_path)
+    _write_source_preprocess_profile_path(
+        found.source_root,
+        preprocess_profile_path=resolved_profile_path,
+    )
+
+    # The app-level source record stores library assignment and status flags only.
+    # Reloading keeps callers in sync while preserving the source record shape.
+    updated = load_import_agent_app_config(config_path)
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    return updated
+
+
 def update_import_agent_library_data_syn_bike_export_enabled(
     app_config_path: str | Path,
     *,
@@ -1413,6 +1643,32 @@ def update_import_agent_library_data_syn_bike_export_enabled(
     )
     save_import_agent_app_config(updated, config_path, overwrite=True)
     return updated
+
+
+def update_import_agent_source_session_naming(
+    app_config_path: str | Path,
+    *,
+    source_id: str,
+    enabled: bool,
+    base: Optional[str] = None,
+    index_start: int = 1,
+    index_padding: int = 2,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+    found = next((source for source in config.sources if source.source_id == source_id), None)
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+
+    _write_source_session_naming(
+        found.source_root,
+        enabled=bool(enabled),
+        base=base,
+        index_start=index_start,
+        index_padding=index_padding,
+    )
+    save_import_agent_app_config(config, config_path, overwrite=True)
+    return config
 
 
 def update_import_agent_library_display_name(
@@ -1551,13 +1807,15 @@ def remove_import_agent_source(
     app_config_path: str | Path,
     *,
     source_id: str,
+    delete_files: bool = False,
 ) -> ImportAgentAppConfig:
     config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
     config = load_import_agent_app_config(config_path)
 
-    updated_sources = [source for source in config.sources if source.source_id != source_id]
-    if len(updated_sources) == len(config.sources):
+    found = next((source for source in config.sources if source.source_id == source_id), None)
+    if found is None:
         raise ValueError(f"Unknown managed import-agent source_id: {source_id!r}")
+    updated_sources = [source for source in config.sources if source.source_id != source_id]
 
     updated = make_import_agent_app_config(
         sources_root=config.sources_root,
@@ -1567,6 +1825,45 @@ def remove_import_agent_source(
         auto_start=config.auto_start,
     )
     save_import_agent_app_config(updated, config_path, overwrite=True)
+    if delete_files:
+        _delete_directory_tree(
+            found.source_root,
+            expected_parent=config.sources_root,
+            label=f"source folder for {source_id!r}",
+        )
+    return updated
+
+
+def remove_import_agent_library(
+    app_config_path: str | Path,
+    *,
+    library_id: str,
+    delete_files: bool = False,
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+
+    found = next((library for library in config.libraries if library.library_id == library_id), None)
+    if found is None:
+        raise ValueError(f"Unknown managed import-agent library_id: {library_id!r}")
+    linked_sources = [source.source_id for source in config.sources if source.library_id == library_id]
+    if linked_sources:
+        source_list = ", ".join(sorted(linked_sources))
+        raise ValueError(
+            f"Cannot remove library {library_id!r} while source(s) still target it: {source_list}"
+        )
+
+    updated_libraries = [library for library in config.libraries if library.library_id != library_id]
+    updated = make_import_agent_app_config(
+        sources_root=config.sources_root,
+        libraries_root=config.libraries_root,
+        libraries=updated_libraries,
+        sources=config.sources,
+        auto_start=config.auto_start,
+    )
+    save_import_agent_app_config(updated, config_path, overwrite=True)
+    if delete_files:
+        _delete_library_artifacts_dir(found.artifacts_dir, libraries_root=config.libraries_root)
     return updated
 
 
@@ -1604,10 +1901,12 @@ def provision_import_agent_library(
     resolved_root = Path(libraries_root).expanduser().resolve()
     safe_id = _safe_slug(library_id or display_name, fallback="library")
     safe_dirname = _safe_slug(directory_name or display_name, fallback=safe_id)
-    artifacts_dir = resolved_root / safe_dirname
+    artifacts_dir = import_agent_libraries_dir(resolved_root) / safe_dirname
     runs_dir = artifacts_dir / DEFAULT_LIBRARY_RUNS_DIRNAME
     state_dir = artifacts_dir / DEFAULT_LIBRARY_STATE_DIRNAME
     bike_profiles_dir = library_bike_profiles_dir(artifacts_dir)
+    preprocess_profiles_dir = library_preprocess_profiles_dir(artifacts_dir)
+    event_schemas_dir = library_event_schemas_dir(artifacts_dir)
     metadata_path = artifacts_dir / "library_definition.json"
 
     if artifacts_dir.exists() and not overwrite and any(artifacts_dir.iterdir()):
@@ -1616,7 +1915,18 @@ def provision_import_agent_library(
     runs_dir.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
     bike_profiles_dir.mkdir(parents=True, exist_ok=True)
+    preprocess_profiles_dir.mkdir(parents=True, exist_ok=True)
+    event_schemas_dir.mkdir(parents=True, exist_ok=True)
     _ensure_library_default_bike_profile(artifacts_dir, overwrite=False)
+    event_schema_path, _event_schema_payload = _ensure_library_default_event_schema(
+        artifacts_dir,
+        overwrite=False,
+    )
+    _ensure_library_default_preprocess_profile(
+        artifacts_dir,
+        event_schema_path=event_schema_path,
+        overwrite=False,
+    )
     _write_json(
         metadata_path,
         _library_metadata_payload(
@@ -1635,6 +1945,8 @@ def provision_import_agent_library(
         runs_dir=runs_dir,
         state_dir=state_dir,
         bike_profiles_dir=bike_profiles_dir,
+        preprocess_profiles_dir=preprocess_profiles_dir,
+        event_schemas_dir=event_schemas_dir,
         metadata_path=metadata_path,
         data_syn_bike_export_enabled=bool(data_syn_bike_export_enabled),
     )
@@ -1661,6 +1973,10 @@ def provision_import_agent_source(
     include_metrics: bool = True,
     attach_session_note_on_import: bool = False,
     force_reprocess: bool = False,
+    session_auto_name_enabled: bool = False,
+    session_name_base: Optional[str] = None,
+    session_name_index_start: int = 1,
+    session_name_index_padding: int = 2,
     overwrite: bool = False,
 ) -> ProvisionedImportAgentSource:
     source_root_path = Path(source_root).expanduser().resolve()
@@ -1680,8 +1996,15 @@ def provision_import_agent_source(
             if isinstance(logger_wifi, LoggerWifiSourceConfig)
             else parse_logger_wifi_source_config(logger_wifi)
         )
-    preprocess_asset = _discover_preprocess_profile_asset()
-    schema_asset = _discover_single_schema_asset()
+    event_schema_path, _event_schema_payload = _ensure_library_default_event_schema(
+        artifacts_dir_path,
+        overwrite=False,
+    )
+    preprocess_profile_path, _preprocess_profile_payload = _ensure_library_default_preprocess_profile(
+        artifacts_dir_path,
+        event_schema_path=event_schema_path,
+        overwrite=False,
+    )
     bike_profile_path, bike_profile_payload = _ensure_library_default_bike_profile(
         artifacts_dir_path,
         overwrite=False,
@@ -1698,20 +2021,12 @@ def provision_import_agent_source(
     failed_dir = source_root_path / "failed"
     staging_dir = source_root_path / "staging"
     import_source_config_path = source_root_path / import_source_filename
-    preprocess_profile_path = settings_dir / "preprocess_profile.json"
-    event_schema_path = settings_dir / "event_schema.yaml"
     session_note_template_path = notes_dir / "session_note_template.json"
     bike_setup_preset_path = notes_dir / "bike_setup_preset.json"
 
-    for path in (settings_dir, notes_dir, fit_dir, inbox_dir, done_dir, failed_dir, staging_dir):
+    for path in (notes_dir, fit_dir, inbox_dir, done_dir, failed_dir, staging_dir):
         path.mkdir(parents=True, exist_ok=True)
 
-    preprocess_profile = copy.deepcopy(dict(preprocess_asset.payload))
-    preprocess_profile["config"] = normalize_preprocess_config_keys(preprocess_profile["config"])
-    preprocess_profile["config"]["schema_path"] = event_schema_path.name
-
-    _write_text(event_schema_path, str(schema_asset.payload), overwrite=overwrite)
-    _write_json(preprocess_profile_path, preprocess_profile, overwrite=overwrite)
     _write_json(session_note_template_path, dict(note_template_asset.payload), overwrite=overwrite)
     setup_preset_payload = copy.deepcopy(dict(setup_preset_asset.payload))
     setup_preset_payload["bike_profile_id"] = bike_profile_payload.get("bike_profile_id")
@@ -1729,7 +2044,7 @@ def provision_import_agent_source(
         "description": f"Provisioned BODAQS import source for {display}.",
         "library_id": str(library_id).strip(),
         "artifacts_dir": _portable_path_text(artifacts_dir_path, base_dir=source_root_path),
-        "preprocess_profile_path": settings_dir_name,
+        "preprocess_profile_path": _portable_path_text(preprocess_profile_path, base_dir=source_root_path),
         "bike_profile_path": _portable_path_text(bike_profile_path, base_dir=source_root_path),
         "session_note": {
             "attach_on_import": bool(attach_session_note_on_import),
@@ -1747,6 +2062,15 @@ def provision_import_agent_source(
         "settle_time_s": float(settle_time_s),
         "force_reprocess": bool(force_reprocess),
     }
+    if session_auto_name_enabled:
+        import_source_payload["naming"] = {
+            "session_description": _session_naming_payload(
+                enabled=True,
+                base=session_name_base,
+                index_start=session_name_index_start,
+                index_padding=session_name_index_padding,
+            )
+        }
     if logger_wifi_config is not None:
         import_source_payload["logger_wifi"] = logger_wifi_source_config_to_jsonable(logger_wifi_config)
 
@@ -1795,6 +2119,10 @@ def provision_import_agent_app_setup(
     include_metrics: bool = True,
     attach_session_note_on_import: bool = False,
     force_reprocess: bool = False,
+    session_auto_name_enabled: bool = False,
+    session_name_base: Optional[str] = None,
+    session_name_index_start: int = 1,
+    session_name_index_padding: int = 2,
     auto_start: bool = False,
     overwrite: bool = False,
 ) -> ProvisionedImportAgentAppSetup:
@@ -1835,6 +2163,10 @@ def provision_import_agent_app_setup(
         include_metrics=include_metrics,
         attach_session_note_on_import=attach_session_note_on_import,
         force_reprocess=force_reprocess,
+        session_auto_name_enabled=session_auto_name_enabled,
+        session_name_base=session_name_base,
+        session_name_index_start=session_name_index_start,
+        session_name_index_padding=session_name_index_padding,
         overwrite=overwrite,
     )
 
@@ -1938,6 +2270,10 @@ def provision_import_agent_source_for_app(
     include_metrics: bool = True,
     attach_session_note_on_import: bool = False,
     force_reprocess: bool = False,
+    session_auto_name_enabled: bool = False,
+    session_name_base: Optional[str] = None,
+    session_name_index_start: int = 1,
+    session_name_index_padding: int = 2,
     overwrite: bool = False,
 ) -> tuple[ImportAgentAppConfig, ProvisionedImportAgentSource]:
     config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
@@ -1963,6 +2299,10 @@ def provision_import_agent_source_for_app(
         include_metrics=include_metrics,
         attach_session_note_on_import=attach_session_note_on_import,
         force_reprocess=force_reprocess,
+        session_auto_name_enabled=session_auto_name_enabled,
+        session_name_base=session_name_base,
+        session_name_index_start=session_name_index_start,
+        session_name_index_padding=session_name_index_padding,
         overwrite=overwrite,
     )
 

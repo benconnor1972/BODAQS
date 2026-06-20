@@ -16,7 +16,6 @@ public:
     float    sensorFullTravelMm = 0.0f;
     bool     assumeTurn0AtStart = true;
     bool     includeRawColumn = true;
-    char     unitsLabel[48] = "mm";
     char     semanticEnd[16] = "";
     char     primaryDomain[24] = "";
     char     primaryQuantity[24] = "";

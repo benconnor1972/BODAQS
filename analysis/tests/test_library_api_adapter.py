@@ -344,6 +344,22 @@ def test_discover_libraries_reads_library_definition(tmp_path: Path) -> None:
     assert library["capabilities"]["read_processed_library"] is True
 
 
+def test_discover_libraries_reads_library_definition_under_libraries_child(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "workspace"
+    library_root = libraries_root / "libraries" / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+
+    discovered = discover_libraries(libraries_root)
+
+    assert len(discovered) == 1
+    assert discovered[0]["library_id"] == "default-library"
+    assert discovered[0]["root"] == str(library_root.resolve())
+
+
 def test_discover_libraries_falls_back_to_runs_directory(tmp_path: Path) -> None:
     library_root = tmp_path / "libraries" / "Loose Library"
     (library_root / "runs" / "run_1").mkdir(parents=True)

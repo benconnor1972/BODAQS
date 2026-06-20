@@ -51,7 +51,6 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   if (params.getFloat("sensor_full_travel_mm", d))  p.sensorFullTravelMm = (float)d;
   if (params.getInt("installed_zero_count", li))    p.installedZeroCount = (int32_t)li;
   if (params.getBool("include_raw", b))             p.includeRawColumn = b;
-  if (params.get("units_label", s))                 s.toCharArray(p.unitsLabel, sizeof(p.unitsLabel));
   if (params.get("end", s))                         s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
   if (params.get("primary_domain", s))              s.toCharArray(p.primaryDomain, sizeof(p.primaryDomain));
   if (params.get("primary_quantity", s))            s.toCharArray(p.primaryQuantity, sizeof(p.primaryQuantity));
@@ -139,13 +138,7 @@ void AnalogPotSensor::applyParams(const Params& p) {
   // output policy
   m_includeRaw = p.includeRawColumn;
 
-  // units label (legacy LINEAR label for CSV header; transform label comes from base Sensor)
-  if (p.unitsLabel[0]) {
-    strncpy(m_unitsLabel, p.unitsLabel, sizeof(m_unitsLabel)-1);
-    m_unitsLabel[sizeof(m_unitsLabel)-1] = '\0';
-  } else {
-    m_unitsLabel[0] = '\0';
-  }
+  copyField_(m_unitsLabel, sizeof(m_unitsLabel), "mm");
   Sensor::setOutputUnitsLabel(m_unitsLabel);
 
   copyField_(m_semanticEnd, sizeof(m_semanticEnd), p.semanticEnd);
@@ -502,7 +495,6 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
     // Output policy
     {"output_mode", ParamType::Enum,"RAW,LINEAR,POLY,LUT", nullptr,nullptr,nullptr, "Output method: RAW, scaled (LINEAR) or transformed (POLY/LUT)."},
     {"include_raw",    ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Append RAW column after primary"},
-    {"units_label",    ParamType::String,"",     nullptr,nullptr,nullptr,"Units suffix for non RAW output (e.g., mm, deg, N, norm)"},
     {"end",            ParamType::Enum,  "",     nullptr,nullptr,"front,rear", "Optional semantic end for log metadata"},
     {"primary_domain", ParamType::Enum,  "",     nullptr,nullptr,"wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
     {"primary_quantity",ParamType::Enum, "",     nullptr,nullptr,"disp,ang_disp,force,pressure,temp,voltage,norm", "Optional semantic quantity for primary output"},

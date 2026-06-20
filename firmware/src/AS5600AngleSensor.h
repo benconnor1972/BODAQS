@@ -24,7 +24,6 @@ public:
     bool includeRawColumn = true;
     bool includeDiagColumns = false;
     uint32_t diagnosticIntervalMs = 250;
-    char unitsLabel[48] = "deg";
     char semanticEnd[16] = "";
     char primaryDomain[24] = "";
     char primaryQuantity[24] = "ang_disp";

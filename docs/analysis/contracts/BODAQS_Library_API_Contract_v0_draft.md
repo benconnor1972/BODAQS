@@ -84,6 +84,11 @@ Root-scoped application objects live under:
 
 ```text
 <libraries_root>/
+  libraries/
+    <library_id>/
+      library_definition.json
+      runs/
+      library/
   study_sets/
     <study_set_id>.json
   tracks/
@@ -107,8 +112,11 @@ needs to move between field and development workspaces.
 
 ### 4.1 Library
 
-A library is a processed BODAQS artifacts tree. Multiple libraries may live under
-one configured libraries root.
+A library is a processed BODAQS artifacts tree. Multiple libraries may live
+under one configured libraries root. Current managed workspaces store processed
+libraries under `<libraries_root>/libraries/`; older workspaces with library
+directories directly under `<libraries_root>/` remain readable as a legacy
+layout.
 
 The API identifies libraries by `library_id`. The exact discovery rule is
 implementation-defined for v0, but should prefer existing library metadata such

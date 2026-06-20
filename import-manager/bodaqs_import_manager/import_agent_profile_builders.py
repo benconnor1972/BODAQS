@@ -19,6 +19,7 @@ from bodaqs_analysis.session_notes import TEMPLATE_SCHEMA, TEMPLATE_VERSION, val
 
 
 DEFAULT_BIKE_DIRNAME = "bike"
+DEFAULT_LIBRARY_COLLECTION_DIRNAME = "libraries"
 DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME = "bike_profiles"
 DEFAULT_NOTES_DIRNAME = "notes"
 DEFAULT_BIKE_PROFILE_FILENAME = "bike_profile.json"
@@ -123,6 +124,8 @@ def source_bike_dir(source_root: str | Path) -> Path:
 
 def library_bike_profiles_dir(library_root: str | Path) -> Path:
     library_path = Path(library_root).expanduser().resolve()
+    if library_path.parent.name == DEFAULT_LIBRARY_COLLECTION_DIRNAME:
+        return library_path.parent.parent / DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME
     return library_path.parent / DEFAULT_LIBRARY_BIKE_PROFILES_DIRNAME
 
 

@@ -110,15 +110,17 @@ Recommended shape:
 
 ```text
 <libraries_root>/
-  rider-alice/
-    runs/
-    library/
-  rider-ben/
-    runs/
-    library/
+  libraries/
+    rider-alice/
+      runs/
+      library/
+    rider-ben/
+      runs/
+      library/
 ```
 
-Each import source should target one selected library under that common root.
+Each import source should target one selected library under
+`<libraries_root>/libraries/`.
 
 This suggests a future split between:
 
@@ -160,9 +162,6 @@ Recommended app-managed roots:
 <sources_root>/
   Alice Enduro/
     import_source.json
-    settings/
-      preprocess_profile.json
-      event_schema.yaml
     fit/
     inbox/
     done/
@@ -174,28 +173,46 @@ Recommended app-managed roots:
 <libraries_root>/
   bike_profiles/
     default_import_agent_bike.json
-  Alice Library/
-    runs/
-    library/
-    syn/
-  Ben Library/
-    runs/
-    library/
+  preprocess_profiles/
+    preprocess_profile.json
+  event_schemas/
+    event_schema.yaml
+  libraries/
+    Alice Library/
+      runs/
+      library/
+      syn/
+    Ben Library/
+      runs/
+      library/
 ```
 
 The product should ship with default assets for a new managed workspace:
 
-- one default preprocess profile
-- one default event schema
+- one default preprocess profile, stored once under `<libraries_root>/preprocess_profiles/`
+- one default event schema, stored once under `<libraries_root>/event_schemas/`
 - one example bike profile, stored once under `<libraries_root>/bike_profiles/`
 - one default session-note template
 - one default bike setup preset
+
+New app-managed sources should point `preprocess_profile_path` at a specific
+profile JSON file in the common `<libraries_root>/preprocess_profiles/`
+directory. The preprocess profile should reference its event schema with a
+profile-relative `config.schema_path`, usually pointing into
+`<libraries_root>/event_schemas/`. Existing source-local preprocessing settings
+remain valid for compatibility: a source config may still point to a single
+preprocess profile JSON file or to a directory containing exactly one valid
+preprocess profile JSON.
 
 New app-managed sources should point `bike_profile_path` at a specific profile
 JSON file in the common `<libraries_root>/bike_profiles/` directory. Existing
 source-local bike profile paths remain valid for compatibility: a source config
 may still point to a single JSON file or to a directory containing exactly one
 valid bike profile JSON.
+
+New app-managed libraries should be created under `<libraries_root>/libraries/`.
+Existing library directories directly under `<libraries_root>/` remain
+discoverable for compatibility with earlier development builds.
 
 Each source also has a `fit/` directory. When FIT import is enabled in the
 preprocess profile, FIT files must be fully copied into this directory before

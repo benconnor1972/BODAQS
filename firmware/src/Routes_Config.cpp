@@ -191,10 +191,6 @@ static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const Sens
 
   if (mode == OutputMode::RAW) {
     live->setOutputUnitsLabel("counts");
-  } else {
-    String explicitLabel;
-    sp.params.get("units_label", explicitLabel);
-    live->setOutputUnitsLabel(explicitLabel.c_str());
   }
 
   live->setAllowedCalMask(ConfigManager::calAllowedMaskByIndex(idx));
@@ -494,39 +490,6 @@ static void emitOutputModeRow_(ChunkedHtmlResponse& html, uint8_t idx, const Sen
   html += F("</small></div>");
 }
 
-static String effectiveUnitsLabel_(const SensorSpec& sp,
-                                   const ParamDef* defs,
-                                   size_t defCount) {
-  long stored = (long)OutputMode::LINEAR;
-  sp.params.getInt("output_mode", stored);
-  if (loggerSupportedOutputMode_(stored) == OutputMode::RAW) {
-    return String("counts");
-  }
-
-  String explicitLabel;
-  if (sp.params.get("units_label", explicitLabel)) {
-    explicitLabel.trim();
-    if (explicitLabel.length()) return explicitLabel;
-  }
-
-  const ParamDef* pd = findParamDef_(defs, defCount, "units_label");
-  if (pd && pd->def && pd->def[0]) {
-    return String(pd->def);
-  }
-  return String();
-}
-
-static void emitUnitsLabelRow_(ChunkedHtmlResponse& html,
-                               const SensorSpec& sp,
-                               const ParamDef* defs,
-                               size_t defCount) {
-  if (!findParamDef_(defs, defCount, "units_label")) return;
-
-  html += F("<div class='row'><label>Units label</label><input type='text' value='");
-  html += htmlEscape(effectiveUnitsLabel_(sp, defs, defCount));
-  html += F("' readonly><small>Read-only effective output unit; sensor type and calibration state determine this value.</small></div>");
-}
-
 static String calMaskText_(CalModeMask mask) {
   String out;
   if (mask & CAL_ZERO) {
@@ -619,7 +582,6 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
     emitOutputModeRow_(html, idx, sp, locked);
     emitParamRow_(html, idx, sp, defs, defCount, "include_raw", "Include raw column", locked);
     emitParamRow_(html, idx, sp, defs, defCount, "sensor_full_travel_mm", "Sensor full travel (mm)", locked);
-    emitUnitsLabelRow_(html, sp, defs, defCount);
   }
 
   if (findParamDef_(defs, defCount, "end") ||
@@ -649,7 +611,7 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
 
   static const char* const shown[] = {
     "ain","muted","i2c_bus","i2c_addr",
-    "output_mode","output_id","include_raw","sensor_full_travel_mm","units_label",
+    "output_mode","output_id","include_raw","sensor_full_travel_mm",
     "end","primary_domain","primary_quantity","raw_domain",
     "cal_allowed","sensor_zero_count","sensor_full_count","installed_zero_count","zero_count",
     "counts_per_turn","wrap_threshold_counts","assume_turn0_at_start"
@@ -1294,7 +1256,7 @@ void registerConfigRoutes(WebServer& srv) {
 
         if (pkey.equalsIgnoreCase("name") || pkey.equalsIgnoreCase("muted") ||
             pkey.equalsIgnoreCase("output_mode") || pkey.equalsIgnoreCase("include_raw") ||
-            pkey.equalsIgnoreCase("sensor_full_travel_mm") || pkey.equalsIgnoreCase("units_label") ||
+            pkey.equalsIgnoreCase("sensor_full_travel_mm") ||
             pkey.equalsIgnoreCase("end") || pkey.equalsIgnoreCase("primary_domain") ||
             pkey.equalsIgnoreCase("primary_quantity") || pkey.equalsIgnoreCase("raw_domain") ||
             pkey.equalsIgnoreCase("cal_allowed") || pkey.equalsIgnoreCase("sensor_zero_count") ||
