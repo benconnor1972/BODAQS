@@ -49,6 +49,7 @@ void loadParamsFromPack_(AnalogPotSensor::Params& p,
   if (params.getInt("sensor_zero_count", li))       p.sensorZeroCount = (int32_t)li;
   if (params.getInt("sensor_full_count", li))       p.sensorFullCount = (int32_t)li;
   if (params.getFloat("sensor_full_travel_mm", d))  p.sensorFullTravelMm = (float)d;
+  if (params.getFloat("installed_range", d))         p.installedRange = (float)d;
   if (params.getInt("installed_zero_count", li))    p.installedZeroCount = (int32_t)li;
   if (params.getBool("include_raw", b))             p.includeRawColumn = b;
   if (params.get("end", s))                         s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
@@ -120,6 +121,7 @@ void AnalogPotSensor::applyParams(const Params& p) {
   sensor_full_count_ = p.sensorFullCount;
   m_invert = (sensor_full_count_ < sensor_zero_count_);
   sensor_full_travel_mm_ = p.sensorFullTravelMm;
+  m_installedRange = p.installedRange;
   m_zero   = p.sensorZeroCount;
   m_full   = p.sensorFullCount;
   m_fullMm = p.sensorFullTravelMm;
@@ -490,6 +492,7 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
     {"sensor_zero_count",     ParamType::Int,   "0",    nullptr,nullptr,nullptr,"Counts at sensor 0 position"},
     {"sensor_full_count",     ParamType::Int,   "4095", nullptr,nullptr,nullptr,"Counts at sensor full scale position"},
     {"sensor_full_travel_mm", ParamType::Float, "0",    "0",   nullptr,nullptr, "If 1 => normalized; >1 => mm"},
+    {"installed_range",       ParamType::Float, "0",    "0",   nullptr,nullptr, "Installed range in linear output units for sag percentage"},
     {"installed_zero_count", ParamType::Int, "", nullptr, nullptr, nullptr, "Installed zero point (counts)"},
 
     // Output policy
@@ -527,6 +530,19 @@ static bool _reg_pot =
 
 int32_t AnalogPotSensor::currentRawCounts() const {
   return static_cast<int32_t>(readOnce());
+}
+
+bool AnalogPotSensor::readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) {
+  if (mode == OutputMode::RAW) return Sensor::readPreviewValue(mode, value, unit, unitCap);
+  if (mode != OutputMode::LINEAR || m_mode != OutputMode::LINEAR || m_muted) return false;
+
+  float selected = 0.0f;
+  int raw = 0;
+  sample(selected, raw);
+  (void)raw;
+  value = selected;
+  copyField_(unit, unitCap, m_outputUnitsLabel[0] ? m_outputUnitsLabel : "mm");
+  return true;
 }
 
 void AnalogPotSensor::applyLinearScalePrecompute() {

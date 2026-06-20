@@ -54,6 +54,7 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
   m_invert = (sensor_full_count_ < sensor_zero_count_);
   installed_zero_count_ = p.installedZeroCount;
   sensor_full_travel_mm_ = p.sensorFullTravelMm;
+  m_installedRange = p.installedRange;
   m_assumeTurn0AtStart = p.assumeTurn0AtStart;
   m_includeRaw = p.includeRawColumn;
 
@@ -405,6 +406,17 @@ bool AS5600StringPotSensorBase::finishCalibration(bool persist) {
 
 int32_t AS5600StringPotSensorBase::currentRawCounts() const {
   return captureSample_().unwrappedRaw;
+}
+
+bool AS5600StringPotSensorBase::readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) {
+  if (mode == OutputMode::RAW) return Sensor::readPreviewValue(mode, value, unit, unitCap);
+  if (mode != OutputMode::LINEAR || m_mode != OutputMode::LINEAR || m_muted) return false;
+
+  float out[1] = {0.0f};
+  sampleValues(out, 1);
+  value = out[0];
+  copyField_(unit, unitCap, m_outputUnitsLabel[0] ? m_outputUnitsLabel : "mm");
+  return true;
 }
 
 CalibrationState AS5600StringPotSensorBase::calibration() const {

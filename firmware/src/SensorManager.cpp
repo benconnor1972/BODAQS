@@ -455,6 +455,52 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     AnalogInputManager::endSample();
 }
 
+uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut) {
+  uint16_t total = 0;
+  uint16_t written = 0;
+
+  AnalogInputManager::beginSample();
+
+  for (auto* s : s_list) {
+    if (!s || s->muted()) continue;
+
+    SensorColumnDescriptor desc;
+    if (!s->describeColumn(0, desc)) continue;
+    if (strcasecmp(desc.domain, "suspension") != 0) continue;
+
+    float value = 0.0f;
+    char unit[24] = {0};
+    if (mode == PreviewMode::Raw) {
+      if (!s->readPreviewValue(OutputMode::RAW, value, unit, sizeof(unit))) continue;
+    } else if (mode == PreviewMode::Linear) {
+      if (!s->readPreviewValue(OutputMode::LINEAR, value, unit, sizeof(unit))) continue;
+    } else if (mode == PreviewMode::SagPercent) {
+      const float range = s->installedRange();
+      if (!(range > 0.0f)) continue;
+      if (!s->readPreviewValue(OutputMode::LINEAR, value, unit, sizeof(unit))) continue;
+      value = (value / range) * 100.0f;
+      snprintf(unit, sizeof(unit), "%%");
+    } else {
+      continue;
+    }
+
+    if (out && written < maxOut) {
+      PreviewValue& row = out[written];
+      row = PreviewValue{};
+      const char* name = desc.sensorName[0] ? desc.sensorName : s->name();
+      snprintf(row.sensorName, sizeof(row.sensorName), "%s", name ? name : "");
+      snprintf(row.unit, sizeof(row.unit), "%s", unit);
+      row.value = value;
+      ++written;
+    }
+
+    ++total;
+  }
+
+  AnalogInputManager::endSample();
+  return total;
+}
+
 uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut) {
   uint16_t total = 0;
   uint16_t written = 0;

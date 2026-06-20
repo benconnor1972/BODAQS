@@ -149,3 +149,10 @@ bool Sensor::describeSensorMetadata(SensorMetadataDescriptor& out) const {
   out.hasCalibration = supportsCalibration();
   return true;
 }
+
+bool Sensor::readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) {
+  if (mode != OutputMode::RAW || !hasRawCounts() || muted()) return false;
+  value = static_cast<float>(currentRawCounts());
+  copyField_(unit, unitCap, "counts");
+  return true;
+}

@@ -21,6 +21,7 @@ public:
     I2CReadMode readMode = I2CReadMode::RepeatedStart;
     int32_t zeroCount = 0;
     int8_t directionSign = 1;
+    float installedRange = 0.0f;
     bool includeRawColumn = true;
     bool includeDiagColumns = false;
     uint32_t diagnosticIntervalMs = 250;
@@ -64,6 +65,8 @@ public:
   bool supportsCalibration() const override { return true; }
   bool hasRawCounts() const override { return true; }
   int32_t currentRawCounts() const override;
+  bool readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) override;
+  float installedRange() const override { return m_installedRange; }
 
   CalibrationState calibration() const override;
   bool setCalibration(const CalibrationState& s) override;
@@ -124,6 +127,7 @@ private:
   I2CReadMode m_readMode = I2CReadMode::RepeatedStart;
   int32_t m_zeroCount = 0;
   int8_t m_directionSign = 1;
+  float m_installedRange = 0.0f;
   uint32_t m_diagnosticIntervalMs = 250;
   bool m_muted = false;
   CalMask m_allowedMask = CAL_ZERO;

@@ -26,6 +26,7 @@ void loadParamsFromPack_(AS5600StringPotAnalog::Params& p,
   if (params.getInt("sensor_zero_count", li))      p.sensorZeroCount = (int32_t)li;
   if (params.getInt("sensor_full_count", li))      p.sensorFullCount = (int32_t)li;
   if (params.getFloat("sensor_full_travel_mm", d)) p.sensorFullTravelMm = (float)d;
+  if (params.getFloat("installed_range", d))       p.installedRange = (float)d;
   if (params.getInt("installed_zero_count", li))   p.installedZeroCount = (int32_t)li;
   if (params.getBool("assume_turn0_at_start", b))  p.assumeTurn0AtStart = b;
   if (params.getBool("include_raw", b))            p.includeRawColumn = b;
@@ -95,6 +96,7 @@ const ParamDef* AS5600StringPotAnalog::paramDefs(size_t& count) {
     {"sensor_zero_count",     ParamType::Int,   "0",     nullptr, nullptr, nullptr, "Unwrapped counts at zero travel"},
     {"sensor_full_count",     ParamType::Int,   "4095",  nullptr, nullptr, nullptr, "Unwrapped counts at full travel"},
     {"sensor_full_travel_mm", ParamType::Float, "0",     "0",    nullptr, nullptr, "Full sensor travel in mm for RANGE scaling"},
+    {"installed_range",       ParamType::Float, "0",     "0",    nullptr, nullptr, "Installed range in linear output units for sag percentage"},
     {"installed_zero_count",  ParamType::Int,   "0",     nullptr, nullptr, nullptr, "Installed zero point in unwrapped counts"},
     {"assume_turn0_at_start", ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Reset unwrap state to turn 0 at each logging start"},
     {"output_mode",           ParamType::Enum,  "RAW,LINEAR,POLY,LUT", nullptr, nullptr, nullptr, "Output method: wrapped RAW, linear mm, or transformed mm"},

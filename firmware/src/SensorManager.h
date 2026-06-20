@@ -23,6 +23,18 @@ namespace SensorManager {
     SynBikeRawColumnBinding rear;
   };
 
+  struct PreviewValue {
+    char sensorName[16] = {0};
+    char unit[24] = {0};
+    float value = 0.0f;
+  };
+
+  enum class PreviewMode : uint8_t {
+    Raw,
+    Linear,
+    SagPercent
+  };
+
   // lifecycle
   void begin(const LoggerConfig* cfg);
   void buildSensorsFromConfig(const LoggerConfig& cfg);
@@ -52,6 +64,7 @@ namespace SensorManager {
   bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out);
   uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut);
   uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut);
+  uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut);
   bool resolveSynBikeRawBindings(SynBikeRawBindings& out);
   bool gpsStatus(SensorGpsStatus& out);
 

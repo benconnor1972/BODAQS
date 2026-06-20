@@ -23,6 +23,7 @@ public:
 
     // Real-world span; if 1.0 => normalized output (0..1)
     float    sensorFullTravelMm = 0.0f;    // 0 => no scaling, 1 => normalized, >1 => mm
+    float    installedRange = 0.0f;
 
     bool     includeRawColumn = false;
 
@@ -70,7 +71,9 @@ public:
   CalPhase  currentCalPhase() const override { return cal_.phase; }
 
   bool      hasRawCounts() const override { return true; }
-  int32_t   currentRawCounts() const;      // pre-EMA preferred for calibration
+  int32_t   currentRawCounts() const override;      // pre-EMA preferred for calibration
+  bool      readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) override;
+  float     installedRange() const override { return m_installedRange; }
 
   void      applyLinearScalePrecompute();  // recompute slope/intercept for LINEAR
 
@@ -112,6 +115,7 @@ private:
   int32_t sensor_full_count_ = 4095;      // counts at mechanical full
   float   sensor_full_travel_mm_ = 1.0f;  // 1.0 => normalized; >1 => mm
   int32_t installed_zero_count_ = 0;
+  float   m_installedRange = 0.0f;
   double counts_per_mm_ = 0.0;
 
 
