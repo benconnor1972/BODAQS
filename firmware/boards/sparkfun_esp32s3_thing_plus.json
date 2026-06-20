@@ -18,7 +18,8 @@
     "flash_mode": "dio",
     "variant": "sparkfun_esp32s3_thing_plus",
     "extra_flags": [
-      "-DSPARKFUN_ESP32S3_THING_PLUS"
+      "-DSPARKFUN_ESP32S3_THING_PLUS",
+      "-DARDUINO_USB_MODE=1"
     ]
   },
 

@@ -56,6 +56,16 @@ Environments are defined in `firmware/platformio.ini`. Each maps to a board + se
 
 Run `./build.sh list` for the current full list.
 
+## Multi-Board Workflows
+
+When building for multiple boards (e.g., Prototype F and Prototype 3), both environments produce the same output file (`bodaqs-firmware.bin`). Each build overwrites the previous binary — the filename gives no indication of which board it targets.
+
+To avoid confusion:
+
+- **Set per-env `OUTPUT_BIN`** in `build.conf` to keep separate binaries (e.g., `bodaqs-4f.bin` vs `bodaqs-v1rc3.bin`).
+- **Flash baud differs by board** — V1RC3 flashes at 460800, Thing Plus at 921600. The script auto-selects based on environment. Override with `FLASH_BAUD` in build.conf if needed.
+- **Always specify the env** when flashing: `./build.sh flash bodaqs_s3_mini_n4r2` rather than relying on the default.
+
 ## System Check
 
 `./build.sh check` runs a full diagnostic of the build environment. It does not require tools to be installed — it reports what's missing rather than exiting. Use it:
@@ -79,14 +89,13 @@ Exits with code 1 if any check fails, 0 if all pass. Warnings (build.conf missin
 
 ## Port Detection
 
-The script can auto-detect a connected ESP32-S3 by scanning `/dev/cu.*` and probing each port with esptool. This eliminates the need to know the exact port path.
+Auto-detection is enabled by default (`DEFAULT_PORT="auto"` in build.sh). The script scans `/dev/cu.*` and probes each port with esptool to find a connected ESP32-S3.
 
 **Standalone:** `./build.sh detect` — scans and reports all ESP32-S3 devices found.
 
-**With flash/check:** Use `--port auto` to trigger detection before the command runs:
+**With flash:** Auto-detection runs automatically before flashing. To override with a specific port:
 ```
-./build.sh flash --port auto
-./build.sh check --port auto
+./build.sh flash --port /dev/cu.usbmodem1101
 ```
 
 **How it works:**
@@ -96,4 +105,4 @@ The script can auto-detect a connected ESP32-S3 by scanning `/dev/cu.*` and prob
 4. If multiple respond, lists them all and uses the first (user can override with `--port`)
 5. If none respond, reports failure with a hint to check the connection
 
-**To make auto-detection the default**, set `DEFAULT_PORT="auto"` in build.sh or build.conf. Then `./build.sh flash` will auto-detect on every run without needing `--port auto`.
+To disable auto-detection, set `DEFAULT_PORT` to a specific port (e.g. `/dev/cu.usbmodem1101`) in build.sh or build.conf.

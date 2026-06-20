@@ -49,8 +49,10 @@ CHIP="esp32s3"
 # Common macOS values: /dev/cu.usbmodem1101, /dev/cu.SLAB_USBtoUART
 DEFAULT_PORT="auto"
 
-# Upload baud rate.
-FLASH_BAUD="921600"
+# Upload baud rate. Leave empty to auto-select per board
+# (V1RC3: 460800, Thing Plus: 921600). Set to a specific value to
+# force one rate for all boards.
+FLASH_BAUD=""
 
 # Flash layout offsets (standard ESP32 no_ota layout):
 #   0x00000  bootloader
@@ -219,6 +221,19 @@ resolve_port() {
   fi
 }
 
+# Resolve flash baud rate for the current environment.
+# If FLASH_BAUD is set (e.g. in build.conf), use it. Otherwise, pick based on env.
+resolve_flash_baud() {
+  if [[ -n "$FLASH_BAUD" ]]; then
+    RESOLVED_BAUD="$FLASH_BAUD"
+    return
+  fi
+  case "$ENV" in
+    bodaqs_s3_mini_n4r2*) RESOLVED_BAUD="460800" ;;
+    *)                    RESOLVED_BAUD="921600" ;;
+  esac
+}
+
 do_build() {
   echo "=== Building (env: ${ENV}) ==="
   echo ""
@@ -286,14 +301,16 @@ do_flash() {
     exit 1
   fi
 
+  resolve_flash_baud
+
   echo "=== Flashing ==="
   echo "  binary:  ${OUTPUT_BIN}"
   echo "  port:    ${PORT}"
-  echo "  baud:    ${FLASH_BAUD}"
+  echo "  baud:    ${RESOLVED_BAUD}"
   echo "  offset:  0x0"
   echo ""
 
-  esptool --chip "$CHIP" --port "$PORT" --baud "$FLASH_BAUD" \
+  esptool --chip "$CHIP" --port "$PORT" --baud "$RESOLVED_BAUD" \
     write-flash 0x0 "$output"
 
   echo ""
@@ -386,12 +403,21 @@ do_check() {
   else
     wa "No build.conf — using inline defaults from build.sh"
   fi
+
+  resolve_flash_baud
+  if [[ -n "$FLASH_BAUD" ]]; then
+    ok "Flash baud: ${RESOLVED_BAUD} (forced via FLASH_BAUD)"
+  else
+    ok "Flash baud: ${RESOLVED_BAUD} (auto-selected for '${ENV}')"
+  fi
   echo ""
 
   # --- Serial port ---
   echo "Serial Port"
   if [[ -n "$PORT" ]]; then
-    if [[ -e "$PORT" ]]; then
+    if [[ "$PORT" == "auto" ]]; then
+      ok "Port set to auto-detect (scans /dev/cu.* at flash time)"
+    elif [[ -e "$PORT" ]]; then
       ok "Port ${PORT} exists"
     else
       bad "Port ${PORT} does not exist"
@@ -405,7 +431,9 @@ do_check() {
 
   # --- Connected device ---
   echo "Device"
-  if [[ -n "$PORT" && -e "$PORT" ]]; then
+  if [[ "$PORT" == "auto" ]]; then
+    wa "Auto-detect mode — run './build.sh detect' to scan for devices"
+  elif [[ -n "$PORT" && -e "$PORT" ]]; then
     local chip_info
     if chip_info=$(esptool --chip "$CHIP" --port "$PORT" chip-id 2>&1); then
       local chip_type chip_mac
@@ -519,7 +547,6 @@ case "$COMMAND" in
     ;;
 
   check)
-    resolve_port
     do_check
     ;;
 
@@ -539,11 +566,12 @@ case "$COMMAND" in
           do_build
         fi
         do_merge
+        resolve_flash_baud
         echo "Done. Flash with:"
         echo "  ./build.sh flash"
         echo ""
         echo "Or manually:"
-        echo "  esptool --chip ${CHIP} --port ${PORT:-<port>} write-flash 0x0 ${SCRIPT_DIR}/${OUTPUT_BIN}"
+        echo "  esptool --chip ${CHIP} --port ${PORT:-<port>} --baud ${RESOLVED_BAUD} write-flash 0x0 ${SCRIPT_DIR}/${OUTPUT_BIN}"
         ;;
 
       merge)

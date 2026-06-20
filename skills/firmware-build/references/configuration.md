@@ -28,9 +28,9 @@ All configuration lives in the "Configuration" section at the top of `firmware/b
 
 **What it controls:** Serial port used for flashing when `--port` is not passed on the command line.
 
-**Default:** `/dev/cu.usbmodem1101`
+**Default:** `auto`
 
-**Special value:** Set to `auto` to auto-detect a connected ESP32-S3 on each run. The script scans `/dev/cu.*`, probes each port with esptool, and uses the first ESP32-S3 that responds. See the Port Detection section in SKILL.md.
+**Special value:** `auto` (the default) auto-detects a connected ESP32-S3 on each run. The script scans `/dev/cu.*`, probes each port with esptool, and uses the first ESP32-S3 that responds. See the Port Detection section in SKILL.md.
 
 **When to prompt the user:** When flashing fails with a port error, or when the user mentions a different USB port or device. Common macOS values:
 
@@ -45,9 +45,11 @@ To discover available ports: `ls /dev/cu.*` with the device plugged in, or run `
 
 **What it controls:** Upload baud rate for esptool flashing.
 
-**Default:** `921600`
+**Default:** Empty (auto-selected per board — 460800 for V1RC3, 921600 for Thing Plus)
 
-**When to change:** If flash uploads are unreliable, drop to `460800`. Higher speeds (`1500000`, `2000000`) work on some boards but can fail with long USB cables.
+**When to change:** Set to a specific value to force one rate for all boards. If flash uploads are unreliable, drop to `460800`. Higher speeds (`1500000`, `2000000`) work on some boards but can fail with long USB cables.
+
+**Board-specific note:** The V1RC3 board definition specifies 460800 in its board JSON. When `FLASH_BAUD` is empty, build.sh auto-selects this rate for `bodaqs_s3_mini_n4r2*` environments. Setting `FLASH_BAUD` explicitly overrides this for all boards.
 
 ### OFFSET_BOOTLOADER, OFFSET_PARTITIONS, OFFSET_FIRMWARE
 
@@ -69,7 +71,7 @@ To discover available ports: `ls /dev/cu.*` with the device plugged in, or run `
 
 **Default:** `bodaqs-firmware.bin`
 
-**When to change:** If building multiple environments and wanting to keep separate binaries (e.g., `bodaqs-4f.bin` vs `bodaqs-v1rc3.bin`).
+**When to change:** When building for multiple boards, set a per-env filename to avoid overwriting. Both environments produce the same `bodaqs-firmware.bin` by default — each build overwrites the previous binary. For multi-board workflows, use distinct names (e.g., `bodaqs-4f.bin` vs `bodaqs-v1rc3.bin`) via `build.conf`.
 
 ## Optional build.conf File
 
