@@ -11,270 +11,376 @@ import Lede from '@components/Lede.astro';
 import Flag from '@components/Flag.astro';
 
 <Lede>
-  The BODAQS logger has a small web interface for downloading log files and
-  editing configuration. You start it from the logger menu, then connect to it
-  from a browser on the same WiFi network.
+  The BODAQS logger has a small web interface for downloading log files and editing configuration. You can connect through a normal Wi-Fi
+  network, or put the logger into access-point mode and connect to it directly.
 </Lede>
 
-## Before you start
+
+## Before You Start
 
 The web interface is intended for setup, file transfer, and checking the logger
 between runs. It is not used while the logger is actively recording.
 
 <Aside type="caution" title="Logging has priority">
   The logger will not start the web server while logging is active. If the web
-  server is running and you start a log, WiFi and the web server are stopped so
+  server is running and you start a log, Wi-Fi and the web server are stopped so
   sampling has priority.
 </Aside>
 
-You will need:
+You will need one of:
 
-- A configured WiFi network that the logger can join.
-- A phone, tablet, or computer connected to the same network.
-- The logger powered on and not logging.
+- Station mode: a configured Wi-Fi network that the logger can join, plus a
+  phone, tablet, or computer on the same network.
+- Access-point mode: a phone, tablet, or computer that can connect directly to
+  the logger's own Wi-Fi network.
 
-## Starting the web interface
+The logger must be powered on and not logging.
 
-<Flag src="/src/assets/pics/connecting.png" alt="connecting">
+
+## Connection Modes
+
+The logger can run its web interface in two network modes.
+
+| Mode | Use When | Notes |
+| --- | --- | --- |
+| `Station` | You have a local Wi-Fi network that both the logger and your computer/phone can join. | Supports normal network workflows and NTP time sync. |
+| `Access point` | You want to connect directly to the logger without a router. | Useful in the field. Does not provide internet/NTP time sync. |
+
+You can change the mode from the OLED menu under `Settings` -> `WiFi mode`, or
+from the General configuration page in the web interface.
+
+
+## Starting The Web Interface
+
+<Flag src="/src/assets/pics/oled-wifi-starting.png" alt="Wi-Fi starting">
 <Steps>
   1. Open the logger main menu from the idle screen.
   2. Select the `WiFi` menu item.
-  3. Wait while the display shows `WiFi: CONNECTING`.
-  4. When the connection succeeds, the display changes to `WiFi: ON`.
-  5. Note the network name and IP address shown on the idle screen.
+  3. Wait while the menu shows `WiFi: STARTING`.
+  4. When the web server is running, the menu shows `WiFi: ON`.
+  5. Close the menu and note the network/AP name and IP address shown on the idle screen.
 </Steps>
 </Flag>
 
-
-Open a browser on the same network and enter the logger IP address, for example:
+In station mode, open a browser on the same network and enter the logger IP
+address, for example:
 
 ```text
 http://192.168.1.42/
 ```
 
+In access-point mode, first connect your phone, tablet, or computer to the
+logger's AP SSID, then open the IP address shown on the logger display. If the
+default ESP32 AP address is unchanged, this is typically:
+
+```text
+http://192.168.4.1/
+```
+
 The root page redirects to the file browser. You can also go directly to:
 
 ```text
-http://192.168.1.42/files
+http://<logger-ip>/files
 ```
 
 <Aside type="tip" title="Finding the logger">
-  The logger's idle screen shows the WiFi network and IP address while WiFi is
-  on. If the page does not load, check that your computer or phone is on the
-  same network as the logger.
+  The idle screen alternates between network/AP name and IP address while Wi-Fi
+  is running. If the page does not load, check that your computer or phone is on
+  the same network or connected to the logger access point.
 </Aside>
 
-Every web page shows, in the header:
+Every web page shows navigation links for `Files`, `General`, and `Sensors`.
 
-- The name of the connected data logger
-- the connected network and IP address
-- navigation links for `Files`, `General`, and `Sensors`
+<Aside type="note" title="Web editing locks">
+While logging is occurring or upload mode is active, configuration editing is disabled and manual file
+  changes are blocked. The web page shows a warning when editing is disabled.
+</Aside>
 
-The logger name is editable from the General configuration page.
 
-## Files page
+## Files Page
 
+{/* TODO screenshot: replace files.png with a current Files page showing the Logger upload panel. Add variants for normal mode and upload mode. */}
 <Flag src="/src/assets/pics/files.png" alt="files">
- The `Files` page is the home page of the web interface. It lets you browse the
+The `Files` page is the home page of the web interface. It lets you browse the
 SD card, download log files, upload files, create folders, and remove files or
-folders.
+folders when manual file changes are allowed.
+
+The page also includes a `Logger upload` panel showing upload mode, network/IP,
+hostname, and importable session counts.
+</Flag>
 
 Typical files produced by the logger are:
 
 - `.CSV` log files containing time-series data.
 - `.json` log metadata files with column semantics, run statistics, and other
   metadata.
-</Flag>
-
-
+- `.bdq` compact binary log files when BODAQS compact binary output is selected.
 
 <CardGrid>
   <Card title="Download logs" icon="download">
     Select one or more files with the checkboxes, then choose `Download selected`
-    or `Download ZIP`. Note fip files are *uncompressed* - this is just a file handling convenience.
+    or `Download ZIP`. ZIP downloads are for convenient packaging; the files are
+    not intended to be compressed for analysis.
   </Card>
   <Card title="Manage the SD card" icon="folder">
-    Use folder links and breadcrumbs to navigate. You can create folders, upload
-    files, delete selected files, or remove empty folders.
+    Use folder links and breadcrumbs to navigate. When allowed, you can create
+    folders, upload files, delete selected files, or remove empty folders.
   </Card>
 </CardGrid>
 
-### Downloading one or more files
+
+### Downloading One Or More Files
 
 To download logs:
 
 1. Open the `Files` page.
 2. Browse to the folder containing the log files.
 3. Tick the files you want.
-4. Select `Download selected` to download each file individually, or `Download ZIP`
-   to package them together.
+4. Select `Download selected` to download each file individually, or
+   `Download ZIP` to package them together.
 
-
-
-<Aside type="tip" title="Keep metadata with the CSV">
-Keep the `.CSV` file and its `.json` metadata
-file together. The JSON metadata file tells the analysis software what the CSV columns mean and tells it if the logger dropped any samples. It isn't essential to have it (the software can use defaults for column definitions) but it is preferred. If you move or copy logs manually, copy the CSV and JSON together.
+<Aside type="tip" title="Keep metadata with logs">
+  Keep each log file with its `.json` metadata file where one exists. The JSON
+  metadata tells downstream software what the logged columns mean and whether
+  the logger dropped samples.
 </Aside>
 
-### Uploading files
+
+### Upload Mode
+
+{/* TODO screenshot: add Files page screenshot with upload mode active and session counts visible. */}
+Upload mode is used by Import Manager and related session-transfer workflows.
+Enter it from the Files page or from the OLED main menu.
+
+When upload mode is active:
+
+- The upload workflow can enumerate and transfer completed sessions.
+- Manual upload/create/delete actions are disabled.
+- Configuration editing is disabled.
+- Logging cannot start until upload mode is exited.
+
+
+### Uploading And Deleting Files Manually
 
 The upload control is useful for restoring configuration files or putting
 supporting files onto the SD card. Choose one or more local files, then select
 `Upload`.
 
-### Deleting files
-
-Tick one or more files and select `Delete selected`. For folders, use the folder
-remove action shown on the file list.
+Tick one or more files and select `Delete selected` to remove files. For
+folders, use the folder remove action shown on the file list.
 
 <Aside type="caution" title="Deletion is permanent">
-  Deleting from the web interface removes files from the logger SD card. Download
-  anything you want to keep before deleting it.
+  Deleting from the web interface removes files from the logger SD card.
+  Download anything you want to keep before deleting it.
 </Aside>
 
-## General configuration
 
-<Flag src="/src/assets/pics/config.png" alt="config">
+## General Configuration
+
+{/* TODO screenshot: replace config.png with a current General page screenshot showing compact binary and current locking/banner styling. */}
+<Flag src="/src/assets/pics/config.png" alt="general configuration">
 Open `General` from the navigation bar to edit logger-wide settings. Changes are
-written to the logger configuration file when you press `Save`. If a page reports that a restart is required, restart the logger to ensure
-the change has taken effect.
+written to the logger configuration file when you press `Save`.
 
-The General page includes:
-
-- `Logger name`: the human-readable alias shown in the web page title bar.
-- `Sample rate`: the logging sample rate in Hz.
-- `Log format`: the output CSV format. In addition to its native format, the logger can produce data for analysis on data.syn.bike.
-- `Omit log metadata JSON`: disables generation of the JSON metadata file. 
-- `Timestamp mode`: controls whether the logger generates human-readable time or fast integer timestamps. Generally leave this set to 'fast'.
-- `Timezone`: your timezone code. Used by the logger when it sets its clock.
-- `Auto-sleep idle`: idle time before the logger goes to sleep.
-- `Wi-Fi idle timeout`: idle time before WiFi is stopped.
-
+If a page reports that restart is required, restart the logger before relying on
+the changed live behavior.
 </Flag>
+
+The General section includes:
+
+- `Logger name`: the human-readable logger alias.
+- `Sample rate`: the logging sample rate in Hz.
+- `Log format`: `BODAQS CSV`, `syn.bike CSV`, or `BODAQS compact binary`.
+- `Omit log metadata JSON`: disables generation of the JSON metadata file.
+- `Timestamp mode`: timestamp output policy.
+- `Timezone`: timezone rule used when the logger sets its clock.
+- `Auto-sleep idle`: idle time before sleep.
+- `Wi-Fi idle timeout`: idle time before Wi-Fi is stopped.
+
 <Aside type="caution" title="Metadata is recommended">
   Leave `Omit log metadata JSON` unchecked unless you have a specific reason to
-  disable metadata. If you have the metadata file, then log files generated for data.syn.bike can be processed by BODAQS. 
+  disable metadata. Metadata is the best way for downstream tools to understand
+  logger columns and run quality.
 </Aside>
 
-### Network and time settings
 
-<Flag src="/src/assets/pics/wifi.png" alt="wifi">
-The general configuration page also includes network and time settings:
+### Network And Time Settings
 
-- Whether WiFi should be enabled automatically when the logger is awake (recommended: OFF).
-- Whether WiFi may be auto-enabled to set the real-time clock (recommended: ON.
-- NTP servers used for time sync.
-- Up to five WiFi network slots.
-- Optional minimum RSSI and BSSID pinning for each network.
+{/* TODO screenshot: replace wifi.png with a current Network & NTP section showing Wi-Fi mode, AP SSID/password, and HTTP time check URL. */}
+<Flag src="/src/assets/pics/wifi.png" alt="network settings">
+The General configuration page also includes network and time settings:
+
+- Whether Wi-Fi should be enabled automatically when the logger is awake.
+- Wi-Fi mode: `Station` or `Access point`.
+- Access-point SSID and password.
+- Whether Wi-Fi may be auto-enabled for NTP if the RTC is invalid.
+- NTP servers.
+- HTTP time check URL.
+- Up to five station-mode Wi-Fi network slots.
+- Optional minimum RSSI and BSSID pinning for each station network.
 - Optional static IP settings.
-
 </Flag>
-The logger tries configured networks in priority order, with  preference for
-the most recently connected network if it is available.
+
+Station mode tries configured networks in priority order, with preference for
+the most recently connected suitable network.
+
+Access-point credential changes are saved immediately, but they take effect the
+next time Wi-Fi is restarted.
 
 <Aside type="tip" title="Static IPs">
-  Most users should use DHCP and leave static IP disabled. Static IP settings are
-  useful only if you deliberately want the logger to use a fixed address on a
-  known network.
+  Most users should use DHCP and leave static IP disabled. Static IP settings
+  are useful only if you deliberately want the logger to use a fixed address on
+  a known network.
 </Aside>
 
-After saving network settings, you will need to stop and restart WiFi from the
-logger menu before the new connection settings are used.
 
-## Sensor configuration
+## Sensor Configuration
 
 Open `Sensors` from the navigation bar to edit the logger's configured sensors.
-The page lists existing sensors first, followed by a `New sensor` block at the
-bottom for configuration of additional sensors.
 
-Sensor information is organized as follows:
+{/* TODO screenshot: add a current Sensors summary/list page screenshot. The old docs showed every sensor editor on one page, which is no longer accurate. */}
+The Sensors page now shows:
+
+- A summary table of configured sensors.
+- Each sensor's name, type, default state, and output mode.
+- An `Edit` link for each sensor.
+- A `New sensor` block for adding a sensor.
+
+Selecting `Edit` opens the sensor detail page for that one sensor.
+
+<Aside type="caution" title="Restart after add/delete/type changes">
+  If you add or delete a sensor, or change a sensor type, restart the logger
+  before relying on the live logging output. The web page will remind you when a
+  restart is needed.
+</Aside>
+
+
+### Supported Sensor Types
+
+The current firmware supports these user-facing sensor types:
+
+- `Analog Potentiometer`: the ubiquitous potentiometer - usually linear - used for measuring suspension displacement.
+- `AS5600 String Pot (Analog)` and `AS5600 String Pot (I2C)`: multi-turn string potentiometer based on AS5600 12-bit encoder. Can be read as either an analog device or via I2C (recommended).
+- `AS5600 Angle (I2C)`: A simple AS5600 single-turn sensor.
+- `AS5048B Angle (I2C)`: Another single turn sensor, but using an AS5048B 14-bit encoder.
+- `DAN-F10N GPS (UART)`: A modern GPS module with inbuilt patch antenna.
+
 
 ### Basic
 
-<Flag src="/src/assets/pics/sensorbasic.png" alt="sensorbasic">
+<Flag src="/src/assets/pics/sensorbasic.png" alt="sensor basic">
+The Basic section contains:
 
-The Basic information section contains: 
-- The sensor name. Generally the name should describe the physical sensor, e.g. `Miran 78mm linear pot`.
-- The sensor type, selected from the types supported by the logger.
-- How it is connected to the logger: either the analog input it is connected to, or its I2C bus and address. 
-- Whether it is muted (disabled) at startup. Muted sensors can be enabled on the logger if required.
-
-</Flag>
-<Flag src="/src/assets/pics/sensorbasici2c.png" alt="sensorbasici2c">
-Changing a sensor type reloads the available fields for that sensor. Adding or
-deleting sensors saves the configuration, but the live sensor set is rebuilt on
-restart.
+- The sensor name.
+- The sensor type.
+- Connection fields for that sensor, such as analog input, I2C bus/address, or
+  UART parameters.
+- Whether the sensor is muted by default.
 </Flag>
 
-<Aside type="caution" title="Restart after add/delete">
-  If you add or delete a sensor, restart the logger before relying on the live
-  logging output. The web page will remind you when a restart is needed.
-</Aside>
+Analog input selection is board-aware. On RC3 hardware, analog inputs may map to
+external ADC channels rather than ESP32 GPIO ADC pins.
+
+<Flag src="/src/assets/pics/sensorbasici2c.png" alt="I2C sensor basic">
+Changing a sensor type reloads the available fields for that sensor. Adding,
+deleting, or changing sensor type saves the configuration, but the live sensor
+set is rebuilt on restart.
+</Flag>
+
 
 ### Output
-<Flag src="/src/assets/pics/sensoroutput.png" alt="sensoroutput">
-The Output section controls what the logger writes for that sensor. In addition to the raw sensor output, the logger can scale the outputs linearly into real-world units, or apply a non-linear transformation specified either as a lookup table (LUT) or by a polynomial.
 
-- `Output mode`: controls what, if any, transformations will be applied to the raw output. Options are `Raw`, `Linear`, `LUT` or `Poly`.
-- `Include raw column`: for non-raw output modes, the raw output can additionally be included.
-- `Sensor full travel`: the full travel range, in real-world units (e.g. mm), used for linear scaling.
-- `Units label`: the units shown for linear output.
-- `Output transform`: the selected polynomial or lookup-table transform, where applicable.
+<Flag src="/src/assets/pics/sensoroutput.png" alt="sensor output">
+The Output section controls what the logger writes for that sensor.
+
+- `Output mode`: `RAW` or `LINEAR`.
+- `Include raw column`: adds a raw-count column alongside the primary output.
+- `Sensor full travel`: full sensor travel used for linear scaling where
+  applicable.
+- `Installed range`: installed travel/range in the sensor's linear output units,
+  used by the Sag Helper in percentage mode.
 </Flag>
 
-<Aside type="note" title="Transform files">
-Transforms are defined in a data file. These files must be placed in the `config/<sensor name>` directory before they can be assigned to a sensor.
+<Aside type="note" title="Transforms are downstream">
+  Logger-side LUT and polynomial output modes are no longer supported. Complex transformations, such as shock-to-wheel lookup tables, are applied during import.
 </Aside>
 
-<Aside type="caution" title="Applying transforms on the logger">
-It is generally preferable to do non-linear transformations (e.g. translating shock travel into wheel travel) in the analysis software. This approach means that the logger configuration does not need to change when the logger is moved from bike to bike, and zero-point calibration is unnecessary. For the time being the logger firmware supports transformations when the log is captured, but this functionality may be removed in the future.
-</Aside>
 
-### Usage
-<Flag src="/src/assets/pics/sensorusage.png" alt="sensorusage">
+### Usage And Signal Semantics
 
-The Usage section describes what the sensor is actually measuring. These fields are written into
-the JSON metadata file and help the analysis software choose the correct data, even if sensor names change. It also assists the logger to write the correct data when an alternative output format is chosen, e.g. for analysis on data.syn.bike.
+<Flag src="/src/assets/pics/sensorusage.png" alt="sensor usage">
+The Usage section describes what the sensor is measuring. These fields are
+written into metadata and help downstream software choose the correct data even
+if sensor names change.
 
-Usage is described in terms of:
+Usage is described using:
 
-- `End`: which end of the bike is being measured: `front` or `rear`.
-- `Primary domain`: which part of the bike is being measured, for example `wheel` or `suspension`.
-- `Primary quantity`: what physical quantity is being measured, for example `disp` for displacement.
+- `End`: for example `front` or `rear`.
+- `Primary domain`: for example `wheel`, `suspension`, or `brake`.
+- `Primary quantity`: for example displacement, angular displacement, pressure,
+  voltage, or similar quantity metadata.
 </Flag>
+
+The Sag Helper uses usage metadata. A sensor must be active and have
+`primary_domain=suspension` to appear in the Sag Helper screen.
+
+
+### GPS Sensors
+<Flag src="/src/assets/pics/gpssensor.png" alt="gps sensor">
+
+The DAN-F10N GPS sensor is logged differently from fixed-rate scalar sensors.
+GPS data arrives asynchronously at the GPS update rate and may be invalid while
+the receiver is acquiring a fix. The logger writes GPS signal age and quality data to assist downstream tools.
+
+</Flag>
+
 
 ### Calibration
-<Flag src="/src/assets/pics/sensorcalibration.png" alt="sensorcalibration">
 
-The Calibration section contains information required to translate raw sensor readings (e.g. 'counts' from the logger's analog-to-digital converter) into physically meaningful units. 
+<Flag src="/src/assets/pics/sensorcalibration.png" alt="sensor calibration">
+The Calibration section contains values used to translate raw sensor readings
+into physically meaningful units.
 
-The calibration parameters available depend on the type of sensor, but for linear-motion sensors (e.g. linear potentiometers) they are:
-
-- Sensor count at zero and full travel - the sensor output at the extremes of *sensor* travel. This information is used along with `sensor full travel` to translate raw output to displacement in mm.
-
-- Installed zero count - the sensor output when the installed sensor is at its zero position (e.g. sensor is installed and bike suspension is topped out). 
-
-Generally the on-device calibration workflow will set these fields, but the web page is useful for inspection.
+`Calibration methods` is read-only. It shows the effective calibration actions
+available for this sensor type. Calibration values below it remain editable
+where the sensor exposes them.
 </Flag>
+
+For linear displacement sensors, common fields include:
+
+- Sensor count at zero travel.
+- Sensor count at full travel.
+- Installed zero count.
+
+For rotary angle sensors, zero calibration may also set direction/polarity using
+the on-device `Capture +move` step. The firmware uses `direction` for rotary
+polarity and may still emit compatibility `invert` metadata for downstream
+tools.
+
 
 ### Wrapping
 
-<Flag src="/src/assets/pics/sensorwrapping.png" alt="sensorwrapping">
-Wrapping fields are shown only for string-pot sensors that can produce multi-turn (wrapped
-magnetic encoder counts). These settings describe how wrapped counts are
+<Flag src="/src/assets/pics/sensorwrapping.png" alt="sensor wrapping">
+Wrapping fields are shown only for sensors that can produce multi-turn or
+wrapped magnetic encoder counts. These settings describe how wrapped counts are
 unwrapped into continuous raw position.
 </Flag>
 
-### Removing a sensor
 
-The remove button is at the bottom of each sensor block. Removing a sensor
+### Other Fields
+
+Some sensor types expose additional fields in an `Other` section. These are
+type-specific advanced settings. Leave them at their defaults unless you have a
+specific setup reason to change them.
+
+
+### Removing A Sensor
+
+The remove button is at the bottom of the sensor detail page. Removing a sensor
 removes it from the logger configuration only.
 
-<Aside type="note" title="Transform files are left in place">
-  Deleting a sensor from the web page does not delete transform files or
-  transform folders from the SD card. If you no longer need those files, remove
-  them manually from the Files page.
+<Aside type="note" title="Supporting files are left in place">
+  Deleting a sensor from the web page does not delete supporting files or
+  folders from the SD card. If you no longer need those files, remove them
+  manually from the Files page when manual file changes are allowed.
 </Aside>
-
-
-

@@ -11,265 +11,355 @@ import Flag from '@components/Flag.astro';
 
 
 <Lede>
-  You interact with the BODAQS data logger using a keypad and small display on the device. Optionally, you can connect a handlebar-mounted switch to make on-bike interaction more convenient. To download files or do detailed configuration, the device connects to WiFi and you access it from a web browser.
+  You interact with the BODAQS data logger using the keypad and OLED display on
+  the device. A handlebar-mounted switch can also be configured for on-bike
+  actions such as marking events, toggling logging, or starting Wi-Fi. Detailed
+  configuration and file transfer are handled through the logger web interface.
 </Lede>
 
 
-## Display overview
+## Display Overview
 
-The logger's display shows current logger status and supports configuring and calibrating the logger through a menu system. The display shows the idle/status screen unless the menu is open.
+{/* TODO screenshot: add GPS acquiring/fixed idle variants if useful. */}
+<Flag src="/src/assets/pics/oled-idle-status.png" alt="idle status screen">
+The idle/status screen is shown whenever the menu is closed.
 
-<Flag src="/src/assets/pics/Idle.png" alt="idle">
-The idle/status screen shows:
+- The top row shows the current status. When Wi-Fi is running, it alternates
+  between the network name (or access point name, if the logger WiFi is in access point mode) and IP address. 
+- The middle rows show the configured sample rate and number of active sensor channels.
+- The bottom row shows the current time, GPS state and battery
+  percentage.
 
-- In the top row, the current status. When not logging, this row shows the WiFi state.
-- The sample rate.
-- The number of active sensor channels.
-- In the bottom row, the time and battery charge state.
+GPS state is only shown when a GPS sensor is configured:
 
-When logging is active, the main idle information blinks periodically providing visible indication that the logger is recording. (If you are using the bar switch, the LED on the switch is also on to indicate logging).
+- `GPS` means a fix has been achieved.
+- `.....` means the GPS is present and acquiring.
+- `NOGPS` means the GPS is absent, in error, or not producing usable data.
+
+The top status line can also temporarily show warnings, such as missing SD card,
+SD not ready, analog rail fault, low battery, or battery alert.
 </Flag>
 
-<Flag src="/src/assets/pics/logstart.png" alt="logstart">
-Short messages appear in the middle of the screen after actions such as starting
-a log, stopping a log, marking an event, saving calibration, or encountering an
+<Flag src="/src/assets/pics/oled-log-start.png" alt="log start message">
+Short messages appear after actions such as starting a log, stopping a log,
+marking an event, saving calibration, entering upload mode, or encountering an
 error.
+
+When logging is active, the idle display blinks periodically to make the
+recording state visible. If you are using a bar switch with an indicator LED,
+that LED may also be configured to indicate logging.
 
 The OLED dims after a period of inactivity to save power. Using the controls
 wakes it back to normal brightness.
 </Flag>
 
 
+## Shortcuts from the idle screen
 
-## Navigation model
+From the idle screen:
+- **Enter** (or a long press on the 'mark' button) starts **logging**.
+- **Right** enters the main **menu**
+- Long-press **left** puts the logger to **sleep** 
+- Long-press **down** toggles **WiFi**  on or off
+- Long-press **up** toggles **upload mode** on or off
 
+## Menu Navigation
 
-<Flag src="/src/assets/pics/mainmenu.png" alt="mainmenu">
-The user interface uses a simple menu model:
-- Move up and down to change the highlighted row.
-- Select or navigate right on the highlighted row to enter a submenu or apply an action.
-- Navigate left to return to the previous screen.
-- Navigate right from the idle/status screen to enter the menu. Navigate left from the top-level menu to return to the idle/status screen.
+<Flag src="/src/assets/pics/oled-main-menu-top.png" alt="main menu top">
+Menu navigation is simple:
 
-The selected row is shown with a leading `>` marker.
+- Right from the idle/status screen opens the menu.
+- Left from the top-level menu closes the menu.
+- Up and down move the highlighted row.
+- Enter or right selects the highlighted row.
+- Left returns to the previous screen.
 
-If a menu has more rows than can fit on the display, the visible list scrolls as
-you move through it.
-
-The menu closes automatically after a period of inactivity. If that happens,
-reopen the menu and continue from the top-level screen.
 </Flag>
 
+<Flag src="/src/assets/pics/oled-main-menu-bottom.png" alt="main menu lower scroll">
+The selected row is shown with a leading `>` marker. If a menu has more rows than
+fit on the display, the list scrolls as you move through it.
+The `v` and `^` markers shows that there are menu items below or above the current scroll window.
+</Flag>
+
+The menu closes automatically after a period of inactivity. If that happens,
+open the menu again from the idle screen.
 
 
-
-## Logging
-
-Logging is of course the main function of the data logger. When logging starts,
-the logger creates a new log file on the SD card and begins recording samples from
-the active sensors at the set sample rate.
+## Logging And Marks
 
 <CardGrid>
   <Card title="Starting a log" icon="play">
-    **Start logging by pressing the 'sel' (middle) button** on the logger when in the idle scree. Starting logging will stop WiFi and the web server if they are running. The logger shows `Log start` if the run starts successfully. If you are using the bar switch, a long press will toggle logging on.
+    From the idle screen, press the configured select/enter button to start
+    logging. Starting a log gives sampling ownership of the logger: Wi-Fi and
+    the web server are stopped if they are running. Upload mode must be off.
   </Card>
   <Card title="Stopping a log" icon="stop">
-    **Pressing the 'sel' button again stops stops logging**, closes the current log file, restores normal
-    controls, and shows a `Log stop` confirmation. If WiFi was active when the log was started, the logger will attempt to restore the connection. If you are using the bar switch, a long press will toggle logging off.
+    Press the configured select/enter button again to stop logging. The logger
+    closes the current log file, writes final metadata where applicable, and
+    returns to normal controls.
   </Card>
 </CardGrid>
 
-## Marking events
+When logging is active, the mark button writes an event marker
+into the log stream when pressed. Typical uses include:
 
-When logging is active, the user can mark an event of interest. A mark is written into the
-log stream so the event can be found later during analysis. Typical uses might include:
-
-- Beginning or ending a test section
-- A trail feature of interest
+- Beginning or ending a test section.
+- Marking a trail feature.
 - Noting unusual or interesting bike behaviour during a run.
 
-The display shows `Marked` when a mark is logged.
+The display shows `Marked` when a mark is made.
 
-<Aside type="caution" title="Requires bar switch">
-  Marks are logged by a short press of the bar switch, if you have one. For safety reasons you cannot log marks using the logger keypad.
+<Aside type="note" title="Button bindings are configurable">
+  The shipped configuration normally uses the handlebar switch for marks but, like all the button functionality, it is configurable.
 </Aside>
 
-## Main menu
+
+## Main Menu
+
+The main menu has the following items:
+
+| Item | Purpose |
+| --- | --- |
+| `WiFi: ON/OFF/STARTING` | Starts or stops the web interface in the selected Wi-Fi mode. |
+| `Upload: ON/OFF` | Enters or exits upload mode (used by the Import Manager for direct file downloads). |
+| `Mute sensors` | Mutes or unmutes sensors: muted sensors do not write data into log files. |
+| `Sample rate: <rate> Hz` | Sets the sample rate from one of the presets. |
+| `Calibration` | Runs on-device sensor calibration actions. |
+| `Sag helper` | Shows live suspension sensor values for setup. |
+| `Sleep` | Puts the logger into low-power 'sleep' mode. |
+| `Settings` | Opens the settings sub-menu: Wi-Fi mode, log format, time, health, restart, and about screens. |
 
 
+### Wi-Fi And Web Interface
 
-<Flag src="/src/assets/pics/mainmenu.png" alt="mainmenu">
-The main menu provides access to on-device settings and actions. The top-level items are:
+<Flag src="/src/assets/pics/oled-wifi-starting.png" alt="Wi-Fi starting">
+Selecting the Wi-Fi menu item starts or stops the web interface. The logger supports both Station and Access Point (AP) modes:
 
-- `WiFi: ON`, `WiFi: OFF`, or `WiFi: CONNECTING`: toggles WiFi on and off
-- `Mute sensors`: allows activation and deactivation of sensors
-- `Sample rate: <rate> Hz`: sets the logger sample rate
-- `Calibration`: runs calibration actions for sensors.
-- `Sleep`: powers the logger down.
-- `Reset time`: forces a re-sync of the real-time clock (RTC)
-- `Restart`: re-boots the logger.
+- `Station` mode connects the logger to an existing WiFi network. Up to five networks can be configured.
+- `Access point` mode makes the logger create its own Wi-Fi network to which other devices (phone, tablet, or computer) can connect.
+
+While Wi-Fi is starting, the menu row shows `WiFi: STARTING`. When the web server
+is running, it shows `WiFi: ON`.
 </Flag>
 
-
-#### WiFi and web interface
-
-<Flag src="/src/assets/pics/connecting.png" alt="connecting">
-Selecting or navigating right from the WiFi menu item starts or stops WiFi and the web interface. If using the bar switch, a double press on the switch will also toggle WiFi on or off.
-
-When WiFi is off, selecting the row starts a connection attempt. The display
-changes to `WiFi: CONNECTING` while the logger tries to connect. If the
-connection succeeds and the web server starts, the row changes to `WiFi: ON`.
-
-When WiFi is on, selecting the row stops the web server and disables WiFi. The
-row changes back to `WiFi: OFF`.
+<Flag src="/src/assets/pics/oled-ap-idle.png" alt="access point idle status">
+When Wi-Fi is running, the idle status line alternates between network/AP name
+and IP address. Navigate to the IP address in a browser to open the web interface.
 </Flag>
 
-<Flag src="/src/assets/pics/wifiip.png" alt="wifiip">
-The idle screen shows WiFi status in the top row, including the name of the network and the logger's IP address.
-
-</Flag>
-
-<Aside type="tip" title="Network selection">
-  The logger allows configuration of up to 5 WiFi networks. When connecting, it will prioritise the most network it was connected to, so long as it has sufficient signal.
-</Aside>
-<Aside type="caution" title="Logging has priority">
-  WiFi and logging are interlocked. The logger will not start the web server
-  while logging is active. If WiFi is running when logging starts, it is stopped
-  so that sampling has priority.
+<Aside type="note" title="Logging has priority">
+  Wi-Fi and logging are interlocked. The logger will not start the web server
+  while logging is active. If Wi-Fi is running when logging starts, it is stopped until logging is complete.
 </Aside>
 
-If WiFi cannot start, the display shows a short failure message such as
-`WiFi fail` or `WiFi timeout`.
 
-#### Mute sensors
+### Upload Mode
 
-<Flag src="/src/assets/pics/mute.png" alt="mute">
-The `Mute sensors` menu opens a list of configured sensors. This screen lets you
-enable or mute individual sensor channels without editing the configuration file.
+<Flag src="/src/assets/pics/oled-upload-mode-status.png" alt="upload mode status screen">
+Upload mode is a protected state used by the BODAQS Import Manager to collect log files. File transfer can occur automatically when, and only when, the logger is in upload mode.
 
-Each sensor appears by name. Muted sensors show `[M]` beside the name.
+When upload mode is active:
 
-Selecting a sensor toggles it between muted and active:
+- Logging cannot start.
+- Configuration edits are locked.
+- Manual upload, create, and delete actions on the Files page are disabled.
+- The web/API upload workflow can inspect and transfer completed sessions.
 
-- `Muted` means the sensor is excluded from active logging output.
-- Active sensors are included in the channel count and log data.
+You can enter or exit upload mode from the OLED main menu, from the Files page
+in the web interface, or from the Import Manager, but it is always a deliberate user action.
+</Flag>
 
-The display shows a short `Muted` or `Unmuted` confirmation after the change.
+<Flag src="/src/assets/pics/oled-upload-idle.png" alt="upload mode idle screen">
+When upload mode is active, the idle/status screen shows `UPLOAD MODE` so it is
+clear that the logger is in file-transfer mode rather than normal logging mode.
 </Flag>
 
 
-#### Sample rate
+### Mute Sensors
 
-<Flag src="/src/assets/pics/samplerate.png" alt="samplerate">
-The `Sample rate` menu opens a list of supported sample rates.
+<Flag src="/src/assets/pics/oled-sensor-mute.png" alt="sensor mute screen">
+The `Mute sensors` menu opens a list of configured sensors. Each sensor appears
+by name. Muted sensors show `[M]` beside the name.
 
-Supported rates range from 10Hz to 1000Hz. The current rate is shown with `[*]`. Other available rates are shown with `[ ]`.
-
-Select a rate to apply it. The logger saves the new rate and returns to the main
-menu after showing a confirmation such as `Rate: 500 Hz`.
+Selecting a sensor toggles it between muted and active. Muted sensors are excluded from active logging output and not appear in Sag Helper.
 </Flag>
 
 
-#### Calibration
+### Sample Rate
+
+<Flag src="/src/assets/pics/samplerate.png" alt="sample rate">
+The `Sample rate` menu opens a list of supported sample-rate presets:
+
+- `10 Hz`
+- `20 Hz`
+- `50 Hz`
+- `100 Hz`
+- `200 Hz`
+- `500 Hz`
+- `1000 Hz`
+
+The current rate is shown with `[*]`. Select a rate to apply it.
+</Flag>
+
+<Aside type="caution" title="Practical rate depends on sensors">
+  Sensors with maximum sample rates below the logger's configured sample rate, or asynchronous sensors, will be sampled in accordance with their own limitations. For boards with external ADCs, maximum total sample rates for all sensors on the same ADC may also apply.
+</Aside>
+
+
+### Calibration
 
 <Flag src="/src/assets/pics/calibration.png" alt="calibration">
-The `Calibration` menu exposes calibration helpers that are specific to the type of sensor. For linear motion-type sensors, `ZERO` and `RANGE` calibration methods are supported.
-
-The first calibration screen lists the configured sensors. Each row shows the
-sensor name and the calibration operations available for that sensor:
+The `Calibration` menu lists configured sensors and shows which on-device
+calibration actions each sensor supports:
 
 - `[Z]` means zero calibration is available.
 - `[R]` means range calibration is available.
-- `[Z|R]` means both zero and range calibration are available.
-- `[none]` means the sensor does not currently expose on-device calibration actions.
+- `[Z|R]` means both are available.
+- `[none]` means the sensor does not expose an on-device calibration action.
 
-Select a sensor to open its calibration detail screen.
+Select a sensor to open its calibration screen.
 </Flag>
 
-<Flag src="/src/assets/pics/rangestart.png" alt="rangestart">
-##### Range calibration
+<Flag src="/src/assets/pics/rangestart.png" alt="range start">
+#### Range Calibration
 
-Range calibration captures the sensor's travel range between a start position
-and a finish position.
+Range calibration captures the sensor's raw count at the start and finish of
+the sensor's travel range. This is mainly for linear displacement sensors such as linear potentiometers.
 
-Typical range calibration workflow:
+Typical workflow:
 
-1. Put the sensor or suspension component at the range start position.
+1. Put the sensor at the range start position.
 2. Open `Calibration`.
 3. Select the sensor.
 4. Select `Start RANGE`.
-5. Move the sensor or suspension component through the intended travel to the finish position.
+5. Move the sensor through its intended travel to the finish position.
 6. Select `Finish RANGE`.
-7. Check the captured count shown on the display.
-8. Select `Save` to keep the range, or `Cancel` to discard it.
+7. Select `Save` to keep the range, or `Cancel` to discard it.
 </Flag>
 
-<Flag src="/src/assets/pics/rangefinish.png" alt="rangefinish">
-
+<Flag src="/src/assets/pics/rangefinish.png" alt="range finish">
 While range calibration is active, the display shows live raw counts at the
-bottom of the screen. This helps confirm that the sensor is moving and that the
-logger is seeing the change.
-
-Saving a range calibration writes the range values to the logger configuration.
-For sensors where direction matters, the logger also updates the sensor's
-inversion setting based on the captured start and finish positions.
-
-<Aside type="caution" title="Range calibration definitely needed">
-Range calibration is important because it lets the logger translate sensor output into real-world units (like mm of travel). It should only have to be done once per sensor and can be done with the sensor off the bike - no letting air out or removing springs. Rejoice!
-</Aside>
+bottom of the screen. This helps confirm that the logger is seeing the sensor
+move.
 </Flag>
 
-<Flag src="" alt="">
-##### Zero calibration
-
-Zero calibration captures the sensor's current raw position and saves it as the
-installed zero point.
-
-Typical zero calibration workflow:
-
-1. Put the sensor or suspension component at the desired zero/reference position.
-2. Open `Calibration`.
-3. Select the sensor.
-4. Select `Zero`.
-5. Check the captured count shown on the display.
-6. Select `Save` to keep the value, or `Cancel` to discard it.
-
-
-After a zero capture, the display briefly shows the captured raw count. Saving
-writes the new calibration to the logger configuration.
-
-<Aside type="caution" title="Do I need to zero?">
-Having an accurately-set zero point is only necessary if you are applying output transformations in the logger - for example, if you are measuring shock movement and want the logger to output wheel movement. If you are not applying a transformation (say, for a fork) or you intend to do the transformation in the analysis software, the zero point can be detected automatically in the analysis software.
-
-More on this topic in [link to transformations]
+<Aside type="note" title="Range calibration highly recommended">
+It is recommended that youy do range calibration for all sensors that support it. This should be a one-time activity under normal circumstances. 
 </Aside>
+
+#### Zero Calibration
+
+<Flag src="/src/assets/pics/oled-zero-calibration.png" alt="zero calibration screen">
+Zero calibration marks the sensor's installed zero point.
+
+For simple linear sensors, zero calibration involves:
+
+1. Put the sensor or suspension component at the desired zero/reference
+   position, usually by lifting the bike off the ground. Forks may need to be pulled to full extension.
+2. Select `Zero`.
+3. Select `Save` to keep the captured value, or `Cancel` to discard it.
 </Flag>
+
+For rotary angle sensors, zero calibration has an extra `Capture +move`
+step. After the zero point is captured, move the sensor slightly in the
+positive direction (sit on the bike, say) and capture again. The logger uses this second capture to set
+the rotation positive direction.
+
+### Sag Helper
+<Flag src="/src/assets/pics/oled-sag-helper-percent.png" alt="Sag Helper percentage mode">
+The `Sag helper` screen is intended to assist with setting static sag during suspension setup. The Sag Helper shows live output from unmuted suspension sensors , updated once per second.
+
+When the Sag Helper is active, use the up/down buttons to cycle display modes:
+
+- `Sag LINEAR`: calibrated output units (mm or degrees), for sensors configured for linear
+  output.
+- `Sag %`: sag percentage. Note this is a straight percentage of the sensor's installed range and does not account for non-linear relationships between suspension movement and wheel movement. It is generally good enough for setting static sag however.
+- `Sag RAW`: raw ADC counts.
+
+Press enter or the  mark button to freeze the displayed values. Press
+again to unfreeze. While frozen, the screen shows `HOLD` and the values briefly
+flash off every two seconds.
+</Flag>
+
+
+### Settings
+
+<Flag src="/src/assets/pics/oled-settings-menu.png" alt="settings menu">
+The `Settings` submenu contains:
+
+| Item | Purpose |
+| --- | --- |
+| `WiFi mode: STA/AP` | Select station mode or access-point mode. |
+| `Log format` | Select BODAQS CSV, syn.bike CSV, or BODAQS compact binary. |
+| `Reset time` | Force an RTC time sync using station Wi-Fi/NTP. |
+| `Health` | Show SD, battery, analog rail, and sampling status. |
+| `Restart` | Restart the firmware. |
+| `About` | Show firmware/device information. |
+</Flag>
+
+#### Wi-Fi Mode
+
+<Flag src="/src/assets/pics/oled-wifi-mode-picker.png" alt="Wi-Fi mode picker">
+Use `WiFi mode` to choose between:
+
+- `Station`: the logger joins a configured Wi-Fi network.
+- `Access point`: the logger creates its own network for direct browser access.
+
+If Wi-Fi is already running and you change mode, the logger restarts Wi-Fi in
+the new mode.
+</Flag>
+
+#### Log Format
+
+<Flag src="/src/assets/pics/oled-log-format-picker.png" alt="log format picker">
+The logger supports:
+
+- `BODAQS CSV`: the normal logger CSV format.
+- `syn.bike CSV`: a compatibility output for data.syn.bike workflows.
+- `BODAQS compact binary`: compact `.bdq` logs for compatible downstream tools.
+
+</Flag>
+
+<Aside type="note" title="BODAQS compact binary recommended">
+It is generally recommended that you record your logs in BODAQS compact binary format. The files are smaller and all the metadata is embedded. If you are using the BODAQS Import Manager (which we also recommend), it just makes sense.
+
+If you want to manually inspect your files, then BODAQS CSV also works fine.
+
+syn.bike CSV is offered as an option but we generally think that if you want to visualize your data using syn.bike it's better to log in a BODAQS native format and have the Import Manager generate syn.bike files, as this method preserves the log metadata.
+</Aside>
+
+
+#### Reset Time
+
+`Reset time` forces a time sync using station Wi-Fi. Access-point mode is for
+direct local browser access and does not normally provide internet/NTP time
+sync.
+
+#### Health 
+
+<Flag src="/src/assets/pics/oled-health.png" alt="health screen">
+`Health` shows current board/logger health information, including SD state,
+battery state, analog rail state, RTC state, and effective sample rate.
+</Flag>
+#### About
+
+<Flag src="/src/assets/pics/oled-about.png" alt="about screen">
+`About` shows device and firmware information.
+</Flag>
+
 
 ### Sleep
 
-The `Sleep` menu item puts the logger into sleep mode. Use sleep when you want to conserve battery without fully disconnecting power. The logger will wake up when 'sel' is pressed.
+The `Sleep` menu item puts the logger into low-power sleep. Use sleep when you
+want to conserve battery without fully disconnecting power. The logger wakes
+when the configured wake/select button is pressed.
 
-A long press on the nav-left button from the idle screen will also put the logger to sleep.
+A long press on the nav-left button from the idle screen may also be configured
+to put the logger to sleep.
 
-<Aside type="caution" title="Proto-E funny">
-One of the foibles of the Proto-E PCB design is that the analog rail's power supply is connected directly to the battery and is always on. If you leave the logger unattended for long enough, it will completely drain (and thereby kill) the battery. This is what is known as 'not good design' and is fixed in Proto-F and later PCBs. The work-around is to leave your logger plugged in to a charger when not in use.
+<Aside type="note" title="Older Prototype E hardware">
+  Prototype E hardware had an analog-rail power limitation that could drain the
+  battery if left unattended. Proto F and later boards were designed to avoid
+  that issue. Keep this in mind if you are using older hardware.
 </Aside>
-
-#### Reset time
-
-The `Reset time` menu item forces a time sync using WiFi.
-
-When the logger boots, it attempts to connect to WiFi to set its internal real-time clock. If it cannot find a network connection, the clock status will remain `not set`. If this occurs, you can force a sync once you have WiFi access.
-
-If the sync starts, the menu row changes to `Time: SYNCING`. If the sync fails,
-the display shows `Time sync fail`.
-
-#### Restart
-
-The `Restart` menu item restarts the firmware.
-
-Use restart after configuration changes or if the logger is in an unexpected
-state. Restart is blocked while logging is active, so stop the current log first.
-
-
-
