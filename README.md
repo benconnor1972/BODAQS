@@ -68,18 +68,21 @@ If you're a tinkerer, engineer, developer, data scientist or uncategorised nerd,
 
 ## Enough of the pitch - where's this thing actually at?
 
-TL;DR: we've made a lot of progress and have a usable system, but we're not there yet.
+**TL;DR:** we've made a lot of progress and have a pretty usable system. It isn't there yet, but if you want to be a  beta tester, we're ready for you.
 
-As of April 2026 everything is pretty much at the 'beta testing' stage. The hardware works well within the limits of what we have tested and we think the user experience is pretty good. The analysis software is looking like an engineer's workbench rather than a polished consumer product. We have a long to-do list. But if you're interested, curious and not afraid of a soldering iron and a terminal window, we're ready for you.
+- The hardware works well within the limits of what we have tested and we think the user experience is pretty good. 
+- We support analog potentiometers, AS5600 (12-bit) and AS5048B (14-bit) rotary encoders for measuring linkage rotation, and GPS (either dedicated receiver or integrating data from Garmin devices).
+- We're compatible with [data.syn.bike](https://data.syn.bike) so you can see your data presented usefully straight away.
+- We have [sourcing](/hardware-guide/), [building](/hardware-guide/building/), and [user](/user-guide/) guides.
+- We have published packages for the [hardware](https://github.com/benconnor1972/BODAQS/tree/main/hardware/releases) and the 3d printed [case](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/Prototype%20E-F)
+- We have [import manager](/software-guide/setup-import-manager/) software for Windows (Mac coming soon) to easily handle import and pre-processing of log files by WiFi
+- We have a set of Jupyter Lab [analysis notebooks](https://github.com/benconnor1972/BODAQS/releases) for exploratory data analysis. The back end code is organised in Python modules and there is a documented [API](https://github.com/benconnor1972/BODAQS/blob/main/docs/analysis/contracts/BODAQS_Public_API_Contract_v0.md). 
 
-Our immediate priorities:
- - Getting a web-based analysis platform running so users can investigate their data without needing to install stuff on their computer
- - Publishing public APIs for the firmware and analysis software
- - Collecting feedback from our beta testers
- - Extending the range of supported sensors.
- 
-BODAQS is a project focused on making mountain-bike data acquisition and analysis accessible — allowing the curious to explore 
-and learn, and the driven a new tool to chase performance.
+What we're working on:
+- Our own web-based analysis platform. This is going to take some time: there are already some great analysis and visualisation tools ([syn.bike](https://data.syn.bike) for example) so we'll stay prototyping in Jupyter Lab until we have something with a genuine and useful point of difference.
+- Extending the range of supported sensors. We've gone heavy (overkill?) on our software design to make integration of additional sensor types simple, so now is the time to cash in. Our next priorities are wheel speed sensors and inertia-motion units.
+- Collecting build feedback from our beta testers. We're looking for people who want to help with this!
+- Getting the system under some faster riders - in the end, we want to do *data analysis*, not just build hardware and software.
 
 ## Ethos and inspiration
 
