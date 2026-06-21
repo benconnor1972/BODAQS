@@ -16,13 +16,47 @@ User-facing product name:
 
 Internal/module naming still uses `import_agent`:
 
-- package modules: `analysis/bodaqs_analysis/import_agent*.py`
+- manager modules: `import-manager/bodaqs_import_manager/import_agent*.py`
+- engine modules: `analysis/bodaqs_analysis/import_agent*.py`
 - app config filename: `import_agent_app.json`
 - default app config dir segment: `import-agent`
 - CLI executable: `bodaqs-import`
 - existing manager executable name on Windows: `bodaqs-import-setup`
 
 Do not mass-rename internals. The rebrand was intentionally user-facing only.
+
+## Module Layout (read this first)
+
+The manager implementation lives in the `bodaqs_import_manager` package:
+
+- `import-manager/bodaqs_import_manager/import_agent_*.py`
+
+The `analysis/bodaqs_analysis/` directory holds two kinds of `import_agent*`
+files:
+
+- thin re-export shims for the manager modules
+  (`import_agent_setup.py`, `import_agent_provisioning.py`,
+  `import_agent_startup.py`, `import_agent_tray.py`,
+  `import_agent_single_instance.py`, `import_agent_profile_builders.py`).
+  Each does `from bodaqs_import_manager.import_agent_* import *` after calling
+  `_ensure_import_manager_path()`.
+- the real import engine and Wi-Fi modules
+  (`import_agent.py`, `import_agent_logger_wifi.py`,
+  `import_agent_logger_wifi_discovery.py`, `import_agent_sources.py`).
+
+So when editing manager behavior, edit the files under
+`import-manager/bodaqs_import_manager/`, not the `analysis/bodaqs_analysis/`
+shims. Byte-compiling or grepping the shims will not surface bugs in the real
+modules.
+
+Two newer manager modules that were not present in the original handoff:
+
+- `import_agent_single_instance.py` — `SingleInstanceLock`, a per-config
+  exclusive file lock. It is **already cross-platform**: it uses `msvcrt` on
+  Windows and `fcntl.flock` elsewhere, so it needs no macOS-specific work. The
+  GUI acquires it in `main()` via `SingleInstanceLock.for_app_config(...)`.
+- `import_agent_profile_builders.py` — bike/preprocess profile and session-note
+  builder helpers used by the setup UI. No known macOS-specific concerns.
 
 ## High-Value Files To Inspect First
 
@@ -310,15 +344,16 @@ cd analysis
 python -m pytest tests/test_import_agent.py tests/test_import_agent_logger_wifi.py -q
 ```
 
-Compile changed modules:
+Compile changed modules (run from the repo root; compile the real modules, not
+the `analysis/bodaqs_analysis/` shims):
 
 ```bash
 python -m compileall \
-  bodaqs_analysis/import_agent_setup.py \
-  bodaqs_analysis/import_agent_provisioning.py \
-  bodaqs_analysis/import_agent_startup.py \
-  bodaqs_analysis/import_agent_tray.py \
-  bodaqs_analysis/import_agent_logger_wifi_discovery.py
+  import-manager/bodaqs_import_manager/import_agent_setup.py \
+  import-manager/bodaqs_import_manager/import_agent_provisioning.py \
+  import-manager/bodaqs_import_manager/import_agent_startup.py \
+  import-manager/bodaqs_import_manager/import_agent_tray.py \
+  analysis/bodaqs_analysis/import_agent_logger_wifi_discovery.py
 ```
 
 From repo root, check whitespace:
@@ -403,7 +438,9 @@ After signing/notarization:
 
 ## Things Not To Do
 
-- Do not rename `bodaqs_analysis.import_agent*` modules.
+- Do not rename `bodaqs_import_manager.import_agent*` or
+  `bodaqs_analysis.import_agent*` modules, and do not break the
+  `analysis/bodaqs_analysis/` re-export shims.
 - Do not remove Windows startup/tray behavior.
 - Do not make source/library paths live inside the `.app`.
 - Do not require admin privileges for v1.

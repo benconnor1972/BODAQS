@@ -27,6 +27,19 @@ Important entrypoints:
 - Startup integration, currently Windows-focused: `import-manager/bodaqs_import_manager/import_agent_startup.py`
 - Tray/menu integration, currently Windows-gated: `import-manager/bodaqs_import_manager/import_agent_tray.py`
 - App/source/library provisioning: `import-manager/bodaqs_import_manager/import_agent_provisioning.py`
+- Single-instance lock: `import-manager/bodaqs_import_manager/import_agent_single_instance.py`
+- Profile/note builders: `import-manager/bodaqs_import_manager/import_agent_profile_builders.py`
+
+Module layout note: the manager implementation lives in the
+`bodaqs_import_manager` package under `import-manager/`. The matching
+`analysis/bodaqs_analysis/import_agent_*.py` files are thin re-export shims, while
+the import engine and Wi-Fi modules (`import_agent.py`,
+`import_agent_logger_wifi*.py`, `import_agent_sources.py`) are the real modules
+in `bodaqs_analysis`. The GUI entry script at
+`import-manager/bodaqs_import_agent_setup.py` adds `analysis/` to `sys.path` and
+then imports `bodaqs_import_manager.import_agent_setup`. `SingleInstanceLock` is
+already cross-platform (`msvcrt` on Windows, `fcntl.flock` elsewhere), so it
+needs no macOS-specific work.
 
 Existing Windows packaging references:
 
@@ -129,10 +142,11 @@ python -m pip install -r requirements.txt
 python -m pip install pyinstaller pillow
 ```
 
-Run the manager from source:
+Run the manager from source (the GUI entry script lives in `import-manager`, not
+`analysis`):
 
 ```bash
-cd analysis
+cd import-manager
 python bodaqs_import_agent_setup.py
 ```
 
@@ -213,9 +227,9 @@ Required/strongly recommended fields:
 <key>CFBundleIdentifier</key>
 <string>org.bodaqs.importmanager</string>
 <key>CFBundleShortVersionString</key>
-<string>0.1.0-dev</string>
+<string>0.1.4-dev</string>
 <key>CFBundleVersion</key>
-<string>0.1.0-dev</string>
+<string>0.1.4-dev</string>
 <key>NSLocalNetworkUsageDescription</key>
 <string>BODAQS Import Manager uses the local network to discover and download sessions from BODAQS loggers.</string>
 <key>NSBonjourServices</key>
@@ -318,10 +332,14 @@ Do not let tray work block the first successful signed app build.
 
 ## Build Commands
 
-A first unsigned build will look roughly like:
+A first unsigned build will look roughly like the following. Run it from
+`import-manager`, not `analysis`: the specs derive `import_manager_dir` from
+`Path.cwd()` (and the Windows `build_import_manager.ps1` does
+`Push-Location $importManagerDir` before invoking PyInstaller), so the working
+directory must be `import-manager`.
 
 ```bash
-cd analysis
+cd import-manager
 python -m PyInstaller \
   --noconfirm \
   --clean \
@@ -422,7 +440,7 @@ hdiutil create \
   -srcfolder build/dmg-root \
   -ov \
   -format UDZO \
-  "dist/BODAQS-Import-Manager-0.1.0-dev.dmg"
+  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg"
 ```
 
 Then sign, notarize, and staple the DMG:
@@ -430,15 +448,15 @@ Then sign, notarize, and staple the DMG:
 ```bash
 codesign --force --timestamp \
   --sign "Developer ID Application: YOUR NAME (TEAMID)" \
-  "dist/BODAQS-Import-Manager-0.1.0-dev.dmg"
+  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg"
 
 xcrun notarytool submit \
-  "dist/BODAQS-Import-Manager-0.1.0-dev.dmg" \
+  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg" \
   --keychain-profile "BODAQS-notary" \
   --wait
 
 xcrun stapler staple \
-  "dist/BODAQS-Import-Manager-0.1.0-dev.dmg"
+  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg"
 ```
 
 Final release artifact:

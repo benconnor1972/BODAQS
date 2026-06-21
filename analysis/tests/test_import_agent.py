@@ -2101,6 +2101,11 @@ def test_import_agent_app_config_defaults_legacy_source_type(tmp_path):
     assert loaded.sources[0].source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="Windows path convention relies on ntpath semantics; pathlib.Path only "
+    "builds Windows-style paths on Windows.",
+)
 def test_default_import_agent_app_config_path_uses_windows_convention():
     win_path = default_import_agent_app_config_path(
         platform="win32",
@@ -2109,6 +2114,22 @@ def test_default_import_agent_app_config_path_uses_windows_convention():
     )
 
     assert win_path == Path(r"C:\Users\Test\AppData\Local\BODAQS\import-agent\import_agent_app.json")
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="macOS path convention relies on POSIX semantics; pathlib.Path.resolve() "
+    "anchors POSIX-style paths to a drive letter on Windows.",
+)
+def test_default_import_agent_app_config_path_uses_macos_convention():
+    macos_path = default_import_agent_app_config_path(
+        platform="darwin",
+        home="/Users/Test",
+    )
+
+    assert macos_path == Path(
+        "/Users/Test/Library/Application Support/BODAQS/import-agent/import_agent_app.json"
+    )
 
 
 def test_runtime_import_agent_app_config_path_prefers_writable_directory(tmp_path):
