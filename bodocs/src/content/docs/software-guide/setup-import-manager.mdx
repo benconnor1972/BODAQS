@@ -5,143 +5,211 @@ sidebar:
   order: 1
 ---
 
-import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
 import Flag from '@components/Flag.astro';
 import Lightbox from '@components/Lightbox.astro';
 
 <Lede>
-  BODAQS Import Manager is the desktop app for getting logger sessions into a
-  local BODAQS library without running Python or opening notebooks. It can watch
-  folders, download from Wi-Fi loggers, run preprocessing, and write processed
-  sessions into a library directory.
+  BODAQS Import Manager is the desktop app for getting logger sessions off the logger and into your library. It watches log sources (folders on your computer or loggers on WiFi), imports and processes the logs, and writes the results into a library directory.
 </Lede>
 
 <Lightbox thumbnailWidth={600} src="/src/assets/pics/import-manager.png" alt="import manager"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/import-manager-2.png" alt="import manager"/>
 
-To set up the BODAQS Import Manager you will need to:
 
-- Download and install the BODAQS Import Manager on your computer.
-- Use the Import Manager to set up a data source and a library.
-- Edit the bike profile to suit your bike.
 
-That's it.
 
-<Aside type="tip" title="Current platform">
-  The packaged app is currently Windows-first. The workflow is designed to be
-  portable, and macOS packaging is planned separately.
+<Aside type="tip" title="More info">
+This page covers initial setup: install the app, create or adopt a workspace,
+create your first library and source, configure the bike profile, and run a
+first import.
+
+A more complete description can be found in the [BODAQS Import Manager user guide](/user-guide/import-manager-user-guide/). For details of how the BODAQS workspace is organised, see the [folder and file structure appendix](/user-guide/import-manager-folder-structure-appendix/).
 </Aside>
 
-### Download and install the BODAQS Import Manager
+<Aside type="note" title="Current platform">
+  The packaged app is currently Windows-first; a macOS version is available but not fully tested.
+</Aside>
 
- <Flag src="/src/assets/pics/import-mgr-install.png" alt="install import manager">
-Most users should download the latest BODAQS Import Manager installer release to their computer as a `.exe` file and then run it.
+## Download and install the BODAQS Import Manager
 
-Go to the 'releases' page in the BODAQS github repository [here](https://github.com/benconnor1972/BODAQS/releases) and download the latest version of the BODAQS Import Manager executable.
+<Flag src="/src/assets/pics/import-mgr-install.png" alt="install import manager">
+Most users should download the latest BODAQS Import Manager installer release
+to their computer as a `.exe` file and then run it.
 
-Run the executable and follow the prompts. Launch the Import Manager when prompted to do so.
+Go to the releases page in the BODAQS GitHub repository [here](https://github.com/benconnor1972/BODAQS/releases)
+and download the latest BODAQS Import Manager installer.
 
+Run the installer and follow the prompts. Launch the Import Manager when
+prompted to do so.
 </Flag>
 
+## Create the first library and source
 
-### Set up a data source and library
- <Flag src="/src/assets/pics/import-mgr-provisioning.png" alt="provision import manager">
+<Flag src="/src/assets/pics/import-mgr-provisioning.png" alt="provision import manager">
 
 <Steps>
-  1. Choose a **Libraries root** and **Sources root**. These are the root directories for libraries and one for local-folder data sources. If you don't like the defaults you can specify other directories.
-  2. Enter a **Library name** and **Source name**. If you intend to have multiple source folders and/or libraries, change the library name and source name to something that describes its intended use.
-  3. Choose whether the library should generate data.syn.bike exports. If you are intending to use data.syn.bike to view your logs, then check this box. 
-  4. Choose a **Source type**. When you are first setting up the Import Manager, it is recommended you create a single source of type `local archive folder`. More information on Import Manager provisioning, including adding WiFi Sources, can be found [here](/user-guide/import-manager-user-guide/)
-  5. Choose the target library for the source. Files from the source will be processed into the target library. For initial setup, your one Source should be targeted at your one Library.
-  6. Choose whether the source should attach a draft setup note on import. If you want to automatically add bike setup notes from a template (see below) to your imported files, then check the box.
-  7. Select **Create initial setup**.
+  1. Choose a **Libraries root**. This is the workspace root for managed libraries and shared profiles.
+  2. Enter a **Library name** for your first library or accept the default. Separation of libraries is for convenience: you can put all your runs in one library, or use different libraries for different riders, bikes, test programs etc. It's up to you.
+  3. Choose whether the library should generate data.syn.bike exports. Enable this if you intend to view processed sessions to data.syn.bike.
+  4. Choose a **Sources root**. This is where source folders and local import workflow folders are created. Accept the default unless you have a particular reason to do otherwise.
+  5. Choose a **Source name** or accept the default. Suggested naming should reflect what the type of source and what it will be used for. For example, I have a source named Ben-Stevo-Local for import of data from my Stumpjumper Evo from a local folder (see below).  
+  6. Choose a **Source type**. For a first setup, **Local archive folder** is the simplest option. The Import Manager can watch local archive folders and automatically process log files you copy there. 
 </Steps>
+
+  <Aside type="tip" title="WiFi sources">
+  You can set up a **Wi-Fi logger** import source to download directly from your logger. Details can be found in the [BODAQS Import Manager user guide](/user-guide/import-manager-user-guide/)
+  </Aside>
+<Steps>
+
+  7. Choose the target library for the source. For initial setup, your one source should target your one library.
+  8. Optionally enable **Auto-name sessions on import** and enter a **Session base name**. By default, your imported logs will retain their date-time file names from logger. If you would like your logs to be sequentially numbered from a common base name ('Ben 001' etc) you can specify that here.
+  9. Choose whether the source should attach a draft setup note on import. We recommend you do this. Setup templates are explained below.
+  10. Select **Create Initial Library + Source**.
+</Steps>
+
+
 </Flag>
 
-
-
-
-
-<Aside type="note" title="Multiple sources, multiple libraries">
-The Import Manager supports multiple sources and source types. Those features can be used to direct log data for different bikes or riders into different libraries or to have them pre-processed with different bike data, setup notes or processing settings. 
+<Aside type="note" title="Already have a workspace?">
+  If the source and library folders already exist, use **Use Existing
+  Workspace** instead of creating a fresh setup. This rebuilds this computer's
+  local app settings from the shared folders without overwriting logs,
+  libraries, bike profiles, preprocess profiles, or notes.
 </Aside>
 
-The manager creates a source folder and a library folder. A typical source
-folder looks like this:
+The manager creates a source folder, a library folder, and shared profile
+folders. If the source and library roots are under the same data folder, the
+layout is typically:
 
 ```text
-<source>/
-  import_source.json
-  bike/
-  settings/
-  notes/
-  fit/
-  inbox/
-  done/
-  failed/
-  staging/
+<data-or-workspace-root>/
+  sources/
+    <source>/
+      import_source.json
+      notes/
+      fit/
+      inbox/
+      done/
+      failed/
+      staging/
+  bike_profiles/
+  preprocess_profiles/
+  event_schemas/
+  libraries/
+    <library>/
+      library_definition.json
+      runs/
+      library/
+      syn/
 ```
 
-Processed session artifacts are written under the target library:
+Your setup may keep the sources root and libraries root in different places.
+The appendix has the full path reference.
 
-```text
-<library>/
-  runs/
-  library/
-  syn/
-  library_definition.json
-```
+<Aside type="note" title="Multiple sources, multiple libraries">
+The Import Manager supports multiple sources and source types. Those features
+can direct log data for different bikes, riders, or test programs into
+different libraries, or process them with different shared bike and preprocess
+profiles.
+</Aside>
 
-The most important folder is `runs/`. Each import creates a run folder with one
-or more processed sessions inside it.
+## Configure the bike profile
 
-### Adding a bike profile
- <Flag src="/src/assets/pics/just-say-yes.png" alt="add a bike profile">
-The Import Manager needs to know some information about your bike to run pre-processing correctly. When you set up a new data source, you will be prompted to provide this information. (It is recommended you do this. If you say no,  generic defaults will be used). 
+After the first source is created, the Import Manager asks whether to open the
+bike-profile editor. Choose **Yes** for a new setup.
 
+If you skip this step, you can open it later from the **Manager** tab by
+right-clicking the source and selecting **Edit bike**.
+
+<Flag src="/src/assets/pics/just-say-yes.png" alt="add a bike profile">
+The bike profile tells preprocessing how to interpret suspension and bike
+geometry data. It is worth entering these values before your first import.
 </Flag>
 
+{/* TODO screenshot: replace bike-profile-complete.png with a current bike profile editor screenshot showing shared profile context, rear LUT unit controls, and the sensor mm/sensor deg heading. */}
 <Lightbox thumbnailWidth={600} src="/src/assets/pics/bike-profile-complete.png" alt="completed bike profile"/>
 
+### Bike details
 
-#### Bike details
-Provide some basic information aboutt your bike. The geometry information is important - make sure you enter it accurately.
+Provide the basic information about your bike. Geometry information is
+important, especially wheel travel, suspension travel, and head angle.
 
+### Rear wheel LUT
 
-#### Rear wheel LUT
-This section contains information on how to calculate wheel travel from suspension travel (AKA the 'suspension curve' or 'leverage curve'). The rear wheel suspension curve is expressed  as a **look-up table** (LUT).
+The rear wheel lookup table maps rear sensor travel to rear wheel travel. The
+sensor may measure shock movement directly, linkage rotation, or some indirect linear or rotational quantity.
 
-You can add as many rows as you like to the LUT but at a minimum, it needs two rows: one representing zero travel and one representing full travel. If you don't specify any additional points, the suspension curve will be a straight line. 
+At minimum, the LUT needs two rows: one representing zero travel and one
+representing full travel. If you do not specify additional points, the rear
+travel curve is treated as a straight line.
+
+The LUT input units can be millimetres or degrees. Choose the unit that matches
+your sensor: linear sensors in mm, rotational sensors in degrees.
 
 <Aside type="tip" title="Obtaining suspension curves">
 Some ways to get suspension curve data for your bike:
-- Google it. Someone else may have done the work.
-- Find your bike in the Linkage X3 library, if you or someone you know has access to Linkage X3 software, and read the values off the motion curve. (The hobby version of Linkage X3 is pretty inexpensive).
-- Find a manufacturer-published graph of the leverage curve and read values off the graph. You can also upload a picture to your favourite LLM and ask it to produce a LUT from the graph.
-- Measure your bike and calculate the curve yourself. Note: **not easy**.
 
-If nothing else, you can always run with just two points in the LUT, i.e. assume a linear relationship between shock and wheel travel. This isn't a great solution, but it's better than nothing.
+- Search for an existing curve for the bike.
+- Find your bike in the Linkage X3 library, if you or someone you know has access to Linkage X3 software, and read the values from the motion curve.
+- Find a manufacturer-published graph of the leverage curve and read values from the graph.
+- Measure your bike and calculate the curve yourself.
+
+If nothing else is available, use two LUT points and assume a linear
+relationship. This is not perfect, but you need something.
 </Aside>
 
 <Aside type="note" title="What about the front wheel?">
-By convention, wheel travel is measured vertically and although the fork moves in a straight line, it does not move vertically with respect to the bike. That is why the steering head angle is required on this page.
+By convention, wheel travel is measured vertically. The fork moves in a straight
+line, but it does not move vertically with respect to the bike. That is why the
+steering head angle is required.
 </Aside>
 
 <Aside type="tip" title="Editing bike profiles directly">
-Bike profile information lives in a .json file inside the `<source>/bike` directory. If you want, you can edit this file directly with a text editor.
+Bike profiles are JSON files under the shared `bike_profiles/` folder. Direct
+editing is possible, but use care: a shared profile can be used by more than
+one import source.
 </Aside>
 
-#### Editing the notes profile
+## Configure draft setup notes
 
-From the bike profile page you can **edit the notes profile** for the bike:
 <Lightbox thumbnailWidth={600} src="/src/assets/pics/edit-note-profile.png" alt="edit note profile"/>
 
-You have the option to automatically attach draft setup note to your logs when they are processed. You can specify both the fields you want, and a default value for each (if any). You might set up your notes profile with your standard or baseline settings, and then edit the notes after import to reflect what you actually ran (notes are tagged 'draft' when they are created so you can tell which ones need your attention).
+You can automatically attach a draft setup note when logs are processed. Use
+the note profile to choose the fields you want and the default value for each
+field.
 
-Select the fields you want in your notes, and enter default values if you want them.
-
-<Aside type="tip" title="Re-using notes profiles">
-You can select an existing notes profile to re-use in the `Create from` box at the top of the form. 
+<Aside type="note" title="Remember to edit your setup notes">
+Draft notes are meant to be reviewed after import. They are useful for standard
+or baseline setup values, but they may not exactly match the setup used for a
+particular session. The note carries information about its status - draft or edited - so downstream software can keep track of which notes need attention. 
 </Aside>
 
-Further information can be found in the [BODAQS Import Manager user guide](/user-guide/import-manager-user-guide/).
+Unlike bike profiles, note templates and presets are source-local. They live in
+the source `notes/` folder.
+
+## Run a first import
+
+For a local archive source:
+
+<Steps>
+  1. Copy a completed `.zip` session archive or supported logger file, such as a `.bdq` log, into the source `inbox/` folder.
+  2. Go to the **Manager** tab.
+  3. Make sure the source is enabled.
+  4. Select **Import Now**.
+  5. If the run-description prompt appears, enter a useful run name or leave it blank to use the default.
+  6. Watch the status log until the import completes.
+</Steps>
+
+On success, the input moves to `done/` and processed artifacts appear under the
+target library's `runs/` folder. If data.syn.bike export is enabled, export
+files are also written under the library `syn/` folder.
+
+For a Wi-Fi logger source, use **Check Logger** and **Request Upload Mode** from
+the source context menu before selecting **Import Now**.
+
+## Next steps
+
+- Use the [Import Manager user guide](/user-guide/import-manager-user-guide/) for watch mode, Wi-Fi logger details, shared profile assignment, reprocessing, naming, exports, and troubleshooting.
+- Use the [folder and file structure appendix](/user-guide/import-manager-folder-structure-appendix/) when you need exact paths or want to understand what is safe to edit manually.
