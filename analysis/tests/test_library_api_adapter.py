@@ -1468,6 +1468,53 @@ def test_library_adapter_returns_timeseries_window_for_semantic_signals(
     assert payload["warnings"] == []
 
 
+def test_library_adapter_queries_raw_signals_events_and_metrics(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    signals = adapter.query_signals(
+        "default-library",
+        {
+            "sessions": [session_ref],
+            "signals": [
+                {
+                    "role": "front_displacement",
+                    "column": "front_wheel_disp_dom_wheel [mm]",
+                },
+                {
+                    "role": "missing",
+                    "column": "not_a_real_signal",
+                },
+            ],
+        },
+    )
+
+    assert signals["schema"] == "bodaqs.signal_query"
+    assert signals["sessions"][0]["sampling"]["mode"] == "raw"
+    assert signals["sessions"][0]["sampling"]["distribution_correct"] is True
+    assert signals["sessions"][0]["signals"][0]["role"] == "front_displacement"
+    assert signals["sessions"][0]["signals"][0]["values"] == [0.0, 10.0, 20.0]
+    assert signals["warnings"][0]["role"] == "missing"
+    assert signals["warnings"][0]["code"] == "signal_not_found"
+
+    events = adapter.query_events("default-library", {"sessions": [session_ref]})
+    assert events["schema"] == "bodaqs.events_query"
+    assert events["row_count"] == 3
+    assert {row["event_type"] for row in events["rows"]} == {"bottom_out", "jump"}
+
+    metrics = adapter.query_metrics("default-library", {"sessions": [session_ref], "event_types": ["bottom_out"]})
+    assert metrics["schema"] == "bodaqs.metrics_query"
+    assert metrics["row_count"] == 1
+    assert metrics["rows"][0]["fields"]["peak_force"] == 123.0
+
+
 def test_library_adapter_timeseries_window_downsamples_concrete_columns(
     tmp_path: Path,
 ) -> None:
@@ -2333,6 +2380,32 @@ def test_library_api_service_timeseries_window_and_error_envelope(
         "jump",
         "jump",
     ]
+
+    signal_response = client.post(
+        "/api/v1/libraries/default-library/signals/query",
+        json={
+            "sessions": [session_ref],
+            "signals": [{"role": "front_displacement", "column": "front_wheel_disp_dom_wheel [mm]"}],
+        },
+    )
+    assert signal_response.status_code == 200
+    signal_payload = signal_response.json()
+    assert signal_payload["schema"] == "bodaqs.signal_query"
+    assert signal_payload["sessions"][0]["signals"][0]["values"] == [0.0, 10.0, 20.0]
+
+    event_response = client.post(
+        "/api/v1/libraries/default-library/events/query",
+        json={"sessions": [session_ref]},
+    )
+    assert event_response.status_code == 200
+    assert event_response.json()["row_count"] == 3
+
+    metric_response = client.post(
+        "/api/v1/libraries/default-library/metrics/query",
+        json={"sessions": [session_ref], "event_types": ["bottom_out"]},
+    )
+    assert metric_response.status_code == 200
+    assert metric_response.json()["rows"][0]["fields"]["peak_force"] == 123.0
 
     missing_response = client.get("/api/v1/libraries/missing-library")
     assert missing_response.status_code == 404

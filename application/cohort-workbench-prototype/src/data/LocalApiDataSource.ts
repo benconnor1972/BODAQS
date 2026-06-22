@@ -16,9 +16,16 @@ import type {
   SessionNoteValue,
   SessionRecord,
   SessionTrackMatchRecord,
+  SignalQueryRequest,
+  SignalQueryResponse,
+  SignalQuerySession,
+  SignalQuerySignal,
   StudyGrouping,
   StudySessionRef,
   StudySet,
+  TableQueryRequest,
+  TableQueryResponse,
+  TableQueryRow,
   TrackDirection,
   TrackMatchStatus,
   TrackpointMatchMode,
@@ -259,6 +266,39 @@ export class LocalApiDataSource implements LibraryDataSource {
       },
     )
     return mapSessionNote(response, note.sessionRef)
+  }
+
+  async querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/signals/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiSignalQueryRequest(request)),
+      },
+    )
+    return mapSignalQueryResponse(response)
+  }
+
+  async queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/events/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiTableQueryRequest(request)),
+      },
+    )
+    return mapTableQueryResponse(response)
+  }
+
+  async queryMetrics(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/metrics/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiTableQueryRequest(request)),
+      },
+    )
+    return mapTableQueryResponse(response)
   }
 }
 
@@ -576,14 +616,106 @@ function mapSessionNoteField(value: ApiObject): SessionNoteFieldDef {
   }
 }
 
+function mapSignalQueryResponse(value: ApiObject): SignalQueryResponse {
+  return {
+    sessions: arrayValue(value.sessions).filter(isObject).map(mapSignalQuerySession),
+    warnings: arrayValue(value.warnings).filter(isObject).map((warning) => ({ ...warning })),
+  }
+}
+
+function mapSignalQuerySession(value: ApiObject): SignalQuerySession {
+  const sampling = objectValue(value.sampling)
+  const time = objectValue(value.time)
+  const timeColumn = textValue(time.column)
+  const timeUnit = textValue(time.unit, 's')
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    time: timeColumn
+      ? {
+          column: timeColumn,
+          unit: 's',
+          values: normalizeTimeValues(arrayValue(time.values).map(nullableNumberValue), timeUnit),
+        }
+      : null,
+    sampling: {
+      mode: textValue(sampling.mode),
+      sourcePoints: numberValue(sampling.source_points),
+      returnedPoints: numberValue(sampling.returned_points),
+      distributionCorrect: Boolean(sampling.distribution_correct),
+    },
+    signals: arrayValue(value.signals).filter(isObject).map(mapSignalQuerySignal),
+  }
+}
+
+function mapSignalQuerySignal(value: ApiObject): SignalQuerySignal {
+  return {
+    role: textValue(value.role, 'signal'),
+    signalId: textValue(value.signal_id),
+    column: textValue(value.column),
+    displayName: textValue(value.display_name, textValue(value.column)),
+    end: textValue(value.end),
+    domain: textValue(value.domain),
+    quantity: textValue(value.quantity),
+    unit: textValue(value.unit),
+    processingRole: textValue(value.processing_role),
+    values: arrayValue(value.values).map(nullableNumberValue),
+  }
+}
+
+function normalizeTimeValues(values: Array<number | null>, unit: string) {
+  const factor = timeUnitToSecondsFactor(unit)
+  return values.map((value) => (typeof value === 'number' && Number.isFinite(value) ? value * factor : null))
+}
+
+function timeUnitToSecondsFactor(unit: string) {
+  const normalized = unit.trim().toLowerCase()
+  if (['ms', 'millisecond', 'milliseconds'].includes(normalized)) {
+    return 1 / 1000
+  }
+  if (['us', 'microsecond', 'microseconds'].includes(normalized)) {
+    return 1 / 1_000_000
+  }
+  if (['ns', 'nanosecond', 'nanoseconds'].includes(normalized)) {
+    return 1 / 1_000_000_000
+  }
+  if (['min', 'mins', 'minute', 'minutes'].includes(normalized)) {
+    return 60
+  }
+  return 1
+}
+
+function mapTableQueryResponse(value: ApiObject): TableQueryResponse {
+  return {
+    rowKind: value.row_kind === 'metric' ? 'metric' : 'event',
+    rowCount: numberValue(value.row_count),
+    rows: arrayValue(value.rows).filter(isObject).map(mapTableQueryRow),
+    warnings: arrayValue(value.warnings).filter(isObject).map((warning) => ({ ...warning })),
+  }
+}
+
+function mapTableQueryRow(value: ApiObject): TableQueryRow {
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    setId: textValue(value.event_set_id, textValue(value.metric_set_id)),
+    rowIndex: numberValue(value.row_index),
+    eventType: textValue(value.event_type),
+    signalRole: signalRoleValue(value.signal_role),
+    fields: objectRecordValue(value.fields),
+  }
+}
+
+function mapStudySessionRef(value: ApiObject): StudySessionRef {
+  return {
+    libraryId: textValue(value.library_id),
+    sessionKey: textValue(value.session_key),
+    runId: textValue(value.run_id),
+    sessionId: textValue(value.session_id),
+    label: textValue(value.label, textValue(value.session_id)),
+  }
+}
+
 function mapStudySet(value: ApiObject): StudySet {
-  const sessions = arrayValue(value.sessions).filter(isObject).map((sessionRef) => ({
-    libraryId: textValue(sessionRef.library_id),
-    sessionKey: textValue(sessionRef.session_key),
-    runId: textValue(sessionRef.run_id),
-    sessionId: textValue(sessionRef.session_id),
-    label: textValue(sessionRef.label, textValue(sessionRef.session_id)),
-  }))
+  const sessions = arrayValue(value.sessions).filter(isObject).map(mapStudySessionRef)
   const groupings = arrayValue(value.groupings).filter(isObject).map<StudyGrouping>((grouping, index) => ({
     id: textValue(grouping.grouping_id),
     name: textValue(grouping.display_name, textValue(grouping.grouping_id)),
@@ -792,6 +924,24 @@ function toApiStudySessionRef(sessionRef: StudySessionRef) {
   }
 }
 
+function toApiSignalQueryRequest(request: SignalQueryRequest) {
+  return {
+    sessions: request.sessions.map(toApiStudySessionRef),
+    signals: request.signals.map((signal) => ({
+      role: signal.role,
+      ...(signal.column ? { column: signal.column } : {}),
+      ...(signal.selector ? { selector: signal.selector } : {}),
+    })),
+  }
+}
+
+function toApiTableQueryRequest(request: TableQueryRequest) {
+  return {
+    sessions: request.sessions.map(toApiStudySessionRef),
+    ...(request.eventTypes?.length ? { event_types: request.eventTypes } : {}),
+  }
+}
+
 function toApiSessionNote(note: SessionNoteRecord) {
   return {
     schema: 'bodaqs.session_notes.document',
@@ -884,6 +1034,13 @@ function trackpointMatchQueryStatusValue(value: unknown): TrackpointMatchQuerySt
     return value
   }
   return 'queued'
+}
+
+function signalRoleValue(value: unknown): 'front' | 'rear' | 'unknown' {
+  if (value === 'front' || value === 'rear') {
+    return value
+  }
+  return 'unknown'
 }
 
 function qcLevelValue(value: unknown): QcLevel {

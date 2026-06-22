@@ -11,7 +11,12 @@ import type {
   SessionNoteRecord,
   SessionNoteValue,
   SessionRecord,
+  SignalQueryRequest,
+  SignalQueryResponse,
   StudySet,
+  TableQueryRequest,
+  TableQueryResponse,
+  TableQueryRow,
   TrackpointMatchQueryRecord,
   TrackpointMatchQueryRequest,
   TrackpointMatchQueryResult,
@@ -249,6 +254,161 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
     )
     return cloneSessionNote(saved)
   }
+
+  async querySignals(_libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse> {
+    return {
+      sessions: request.sessions.map((sessionRef) => ({
+        sessionRef: { ...sessionRef },
+        time: {
+          column: 'time_s',
+          unit: 's',
+          values: Array.from({ length: 900 }, (_value, index) => index),
+        },
+        sampling: {
+          mode: 'fixture_raw',
+          sourcePoints: 900,
+          returnedPoints: 900,
+          distributionCorrect: true,
+        },
+        signals: request.signals.map((signal) => {
+          const role = signal.role || 'signal'
+          const values = fixtureSignalValues(sessionRef.sessionKey, role, 900)
+          const unit = role.includes('velocity') ? 'mm/s' : role.includes('displacement') ? '1' : ''
+          return {
+            role,
+            signalId: `${sessionRef.sessionId}-${role}`,
+            column: `${role}_fixture`,
+            displayName: role.replace(/_/g, ' '),
+            end: role.startsWith('front') ? 'front' : role.startsWith('rear') ? 'rear' : '',
+            domain: 'suspension',
+            quantity: role.includes('velocity') ? 'vel' : 'disp_norm',
+            unit,
+            processingRole: 'primary_analysis',
+            values,
+          }
+        }),
+      })),
+      warnings: [],
+    }
+  }
+
+  async queryEvents(_libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse> {
+    const rows = request.sessions.flatMap((sessionRef) => fixtureEventRows(sessionRef))
+    return {
+      rowKind: 'event',
+      rowCount: rows.length,
+      rows,
+      warnings: [],
+    }
+  }
+
+  async queryMetrics(_libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse> {
+    const wanted = new Set(request.eventTypes ?? [])
+    const rows = request.sessions.flatMap((sessionRef) =>
+      fixtureMetricRows(sessionRef).filter((row) => wanted.size === 0 || eventTypeMatches(row.eventType, wanted)),
+    )
+    return {
+      rowKind: 'metric',
+      rowCount: rows.length,
+      rows,
+      warnings: [],
+    }
+  }
+}
+
+function fixtureSignalValues(sessionKey: string, role: string, count: number): number[] {
+  const seed = seededNumber(`${sessionKey}:${role}`)
+  const isVelocity = role.includes('velocity')
+  const isRear = role.startsWith('rear')
+  return Array.from({ length: count }, (_, index) => {
+    const t = index / Math.max(count - 1, 1)
+    const wave = Math.sin((t * 18 + seed) * Math.PI) + 0.4 * Math.sin((t * 73 + seed * 0.3) * Math.PI)
+    if (isVelocity) {
+      const scale = isRear ? 720 : 980
+      return wave * scale + (seed - 0.5) * 180
+    }
+    const base = isRear ? 0.31 : 0.24
+    const spread = isRear ? 0.26 : 0.22
+    return clamp(base + spread * Math.abs(wave) + (seed - 0.5) * 0.08, 0, 1)
+  })
+}
+
+function fixtureEventRows(sessionRef: { libraryId: string; sessionKey: string; runId: string; sessionId: string; label: string }): TableQueryRow[] {
+  const rows: TableQueryRow[] = []
+  for (const eventType of ['compressions_all', 'rebounds_all']) {
+    for (const role of ['front', 'rear'] as const) {
+      const count = 18 + Math.floor(seededNumber(`${sessionRef.sessionKey}:${eventType}:${role}`) * 46)
+      for (let index = 0; index < count; index += 1) {
+        rows.push({
+          sessionRef: { ...sessionRef },
+          setId: eventType,
+          rowIndex: rows.length,
+          eventType,
+          signalRole: role,
+          fields: {
+            event_id: `${sessionRef.sessionId}-${eventType}-${role}-${index}`,
+            schema_id: eventType,
+            end: role,
+          },
+        })
+      }
+    }
+  }
+  return rows
+}
+
+function fixtureMetricRows(sessionRef: { libraryId: string; sessionKey: string; runId: string; sessionId: string; label: string }): TableQueryRow[] {
+  const rows: TableQueryRow[] = []
+  for (const eventType of ['compressions_all', 'rebounds_all']) {
+    for (const role of ['front', 'rear'] as const) {
+      const count = 28 + Math.floor(seededNumber(`${sessionRef.sessionKey}:metrics:${eventType}:${role}`) * 28)
+      const roleOffset = role === 'rear' ? 6 : -3
+      for (let index = 0; index < count; index += 1) {
+        const seed = seededNumber(`${sessionRef.sessionKey}:${eventType}:${role}:${index}`)
+        const stroke = 18 + seed * 58 + roleOffset
+        const velocityMagnitude = 180 + seed * 1250 + (role === 'rear' ? 120 : 0)
+        rows.push({
+          sessionRef: { ...sessionRef },
+          setId: eventType,
+          rowIndex: rows.length,
+          eventType,
+          signalRole: role,
+          fields: {
+            event_id: `${sessionRef.sessionId}-${eventType}-${role}-${index}`,
+            schema_id: eventType,
+            end: role,
+            m_stroke_disp_max: stroke,
+            m_peak_disp_max: stroke,
+            m_interval_vel_max: velocityMagnitude,
+            m_interval_vel_min: -velocityMagnitude,
+          },
+        })
+      }
+    }
+  }
+  return rows
+}
+
+function eventTypeMatches(value: string, wanted: Set<string>) {
+  for (const candidate of wanted) {
+    if (value === candidate || value.startsWith(`${candidate}_`) || value.startsWith(`${candidate}>`)) {
+      return true
+    }
+  }
+  return false
+}
+
+function seededNumber(value: string) {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0) / 4294967295
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
 }
 
 function fixtureTrackpointResult(

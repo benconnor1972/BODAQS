@@ -241,6 +241,21 @@ def create_app(
         payload = await request.json()
         return _current_adapter(app).get_timeseries_window(library_id, payload)
 
+    @app.post("/api/v1/libraries/{library_id}/signals/query")
+    async def query_signals(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_signals(library_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/libraries/{library_id}/events/query")
+    async def query_events(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_events(library_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/libraries/{library_id}/metrics/query")
+    async def query_metrics(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_metrics(library_id, _json_object_payload(payload))
+
     @app.post("/api/v1/track-matches/query")
     async def query_track_matches(request: Request) -> dict[str, Any]:
         payload = await request.json()

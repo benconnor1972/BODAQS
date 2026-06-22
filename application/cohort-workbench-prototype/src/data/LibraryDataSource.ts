@@ -4,7 +4,11 @@ import type {
   SessionNoteRecord,
   SessionRecord,
   SessionTrackMatchRecord,
+  SignalQueryRequest,
+  SignalQueryResponse,
   StudySet,
+  TableQueryRequest,
+  TableQueryResponse,
   TrackpointMatchQueryRecord,
   TrackpointMatchQueryRequest,
   TrackpointMatchQueryResults,
@@ -31,4 +35,7 @@ export interface LibraryDataSource {
   loadSessionGpsPoints?(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
+  querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse>
+  queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
+  queryMetrics(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
 }

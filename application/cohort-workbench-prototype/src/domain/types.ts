@@ -8,6 +8,7 @@ export type GpsSourceKind = 'logger_sensor' | 'fit_enrichment' | 'imported_route
 export type GpsTimebase = 'uniform' | 'intermittent' | 'unknown'
 export type TrackMatchStatus = 'matched' | 'partial' | 'no_gps' | 'no_overlap' | 'ambiguous' | 'failed'
 export type TrackDirection = 'positive' | 'reverse' | 'unknown'
+export type SignalRole = 'front' | 'rear' | 'unknown'
 
 export type SessionGpsSourceSummary = {
   sourceId: string
@@ -266,6 +267,72 @@ export type StudySet = {
   groupings: StudyGrouping[]
   trackIds: string[]
   provenance: string
+}
+
+export type SignalQuerySignalRequest = {
+  role: string
+  selector?: Record<string, unknown>
+  column?: string
+}
+
+export type SignalQueryRequest = {
+  sessions: StudySessionRef[]
+  signals: SignalQuerySignalRequest[]
+}
+
+export type SignalQuerySignal = {
+  role: string
+  signalId: string
+  column: string
+  displayName: string
+  end: string
+  domain: string
+  quantity: string
+  unit: string
+  processingRole: string
+  values: Array<number | null>
+}
+
+export type SignalQuerySession = {
+  sessionRef: StudySessionRef
+  time: {
+    column: string
+    unit: string
+    values: Array<number | null>
+  } | null
+  sampling: {
+    mode: string
+    sourcePoints: number
+    returnedPoints: number
+    distributionCorrect: boolean
+  }
+  signals: SignalQuerySignal[]
+}
+
+export type SignalQueryResponse = {
+  sessions: SignalQuerySession[]
+  warnings: Array<Record<string, unknown>>
+}
+
+export type TableQueryRequest = {
+  sessions: StudySessionRef[]
+  eventTypes?: string[]
+}
+
+export type TableQueryRow = {
+  sessionRef: StudySessionRef
+  setId: string
+  rowIndex: number
+  eventType: string
+  signalRole: SignalRole
+  fields: Record<string, unknown>
+}
+
+export type TableQueryResponse = {
+  rowKind: 'event' | 'metric'
+  rowCount: number
+  rows: TableQueryRow[]
+  warnings: Array<Record<string, unknown>>
 }
 
 export type ColumnId =

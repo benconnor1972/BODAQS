@@ -30,6 +30,7 @@ from .geospatial import (
 )
 from .ids import derive_object_id, is_valid_object_id, make_session_key, make_session_ref_id, parse_session_key
 from .models import default_capabilities
+from .queries import query_events, query_metrics, query_signals
 from .selection import study_set_to_selection_snapshot
 from .session_filters import (
     create_session_filter,
@@ -102,6 +103,15 @@ class LibraryAdapter:
 
     def get_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return get_timeseries_window(self._library_root(library_id), request, library_id=library_id)
+
+    def query_signals(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return query_signals(self._library_root(library_id), request, library_id=library_id)
+
+    def query_events(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return query_events(self._library_root(library_id), request, library_id=library_id)
+
+    def query_metrics(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return query_metrics(self._library_root(library_id), request, library_id=library_id)
 
     def get_session_gps_summary(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         row = self._catalog_row_for_session(library_id, request)

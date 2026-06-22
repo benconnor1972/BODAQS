@@ -7,6 +7,7 @@ import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { IconButton } from './Common'
 import { GpsRoutePreview } from './GpsRoutePreview'
 import { GpsBadge, NoteBadge, QcBadge } from './StatusBadges'
+import { SuspensionVisualization } from './SuspensionVisualization'
 
 export function Modal({
   state,
@@ -29,7 +30,12 @@ export function Modal({
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+      <section
+        className={`modal${state.kind === 'study-set' && state.mode === 'analyze' ? ' suspension-viz-modal' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="modal-header">
           <h2>{modalTitle(state)}</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
@@ -225,27 +231,7 @@ function modalContent(
     )
   }
 
-  return (
-    <div>
-      <dl className="detail-list">
-        <dt>Study Set ID</dt>
-        <dd>{state.studySet.id ?? 'unsaved temporary Study Set'}</dd>
-        <dt>Revision</dt>
-        <dd>{state.studySet.saved ? state.studySet.revision : 'unsaved'}</dd>
-        <dt>Sessions</dt>
-        <dd>{state.studySet.sessions.length}</dd>
-        <dt>Groupings</dt>
-        <dd>{state.studySet.groupings.length}</dd>
-        <dt>Tracks</dt>
-        <dd>{state.studySet.trackIds.length}</dd>
-        <dt>Provenance</dt>
-        <dd>{state.studySet.provenance || 'Created interactively'}</dd>
-      </dl>
-      {state.mode === 'analyze' && (
-        <p className="modal-note">Analysis navigation is reserved for the next prototype pass.</p>
-      )}
-    </div>
-  )
+  return <SuspensionVisualization studySet={state.studySet} sessions={sessions} tracks={tracks} dataSource={dataSource} />
 }
 
 function StudySetView({
