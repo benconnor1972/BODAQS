@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as d3 from 'd3'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
@@ -45,6 +45,7 @@ type VisualizationData = {
   timeBySession: Record<string, number[]>
   signalsBySession: Record<string, Record<string, number[]>>
   events: TableQueryRow[]
+  eventTriggerTimeByKey: Record<string, number>
   metrics: TableQueryRow[]
   warnings: string[]
 }
@@ -60,6 +61,8 @@ type ScopeMode = 'whole_session' | 'sector'
 type SuspensionEnd = 'front' | 'rear'
 type DistributionChartKind = 'histogram' | 'mirrored_velocity'
 type MirroredMetricSpec = { compressionMetricName: string; reboundMetricName: string }
+type TimeWindow = { startS: number; endS: number }
+type TimeWindowsBySession = Record<string, TimeWindow>
 
 type TrackSector = {
   id: string
@@ -105,10 +108,12 @@ export function SuspensionVisualization({
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(() => studySetTracks[0]?.id ?? null)
   const [selectedEnds, setSelectedEnds] = useState<SuspensionEnd[]>(['front', 'rear'])
   const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>([])
+  const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>({})
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select entities to visualize.' })
 
   useEffect(() => {
     setSelectedEntityIds(visualizationEntities(studySet).filter((entity) => entity.kind === 'session').map((entity) => entity.id))
+    setTimeWindowsBySession({})
   }, [studySetKey])
 
   useEffect(() => {
@@ -154,11 +159,13 @@ export function SuspensionVisualization({
   }, [studySetKey, studySetTrackKey])
 
   const selectedEntities = entities.filter((entity) => selectedEntityIds.includes(entity.id))
-  const selectedEntityKey = selectedEntityIds.join('|')
   const selectedTrack = studySetTracks.find((track) => track.id === selectedTrackId) ?? studySetTracks[0] ?? null
   const sectors = selectedTrack ? trackSectors(selectedTrack) : []
   const sectorKey = sectors.map((sector) => sector.id).join('|')
   const selectedSectors = sectors.filter((sector) => selectedSectorIds.includes(sector.id))
+  const selectedSessionRefs = uniqueSessionRefs(selectedEntities.flatMap((entity) => entity.sessionRefs))
+  const studySetSessionRefs = useMemo(() => uniqueSessionRefs(studySet.sessions), [studySetKey])
+  const studySetSessionKey = studySetSessionRefs.map(sessionRefId).join('|')
 
   useEffect(() => {
     setSelectedSectorIds((current) => {
@@ -171,14 +178,13 @@ export function SuspensionVisualization({
   useEffect(() => {
     let cancelled = false
     async function loadData() {
-      const activeEntities = visualizationEntities(studySet).filter((entity) => selectedEntityIds.includes(entity.id))
-      if (activeEntities.length === 0) {
-        setLoadState({ status: 'idle', message: 'Select at least one session or grouping to visualize.' })
+      if (studySetSessionRefs.length === 0) {
+        setLoadState({ status: 'idle', message: 'Add at least one session to visualize suspension data.' })
         return
       }
       setLoadState({ status: 'loading', message: 'Loading suspension visualization data...' })
       try {
-        const data = await loadVisualizationData(activeEntities, dataSource)
+        const data = await loadVisualizationData(studySetSessionRefs, dataSource)
         if (!cancelled) {
           setLoadState({ status: 'ready', message: 'Visualization data loaded.', data })
         }
@@ -194,9 +200,14 @@ export function SuspensionVisualization({
     return () => {
       cancelled = true
     }
-  }, [dataSource, selectedEntityKey, studySet, studySetKey])
+  }, [dataSource, studySetSessionKey])
 
   const data = loadState.status === 'ready' ? loadState.data : null
+  const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
+  const scopedData = useMemo(
+    () => (data ? applyTimeWindows(data, deferredTimeWindowsBySession) : null),
+    [data, deferredTimeWindowsBySession],
+  )
 
   function toggleEntity(entityId: string) {
     setSelectedEntityIds((current) =>
@@ -220,6 +231,23 @@ export function SuspensionVisualization({
     setCollapsedPanels((current) =>
       current.includes(panelId) ? current.filter((id) => id !== panelId) : [...current, panelId],
     )
+  }
+
+  function setSessionTimeWindow(sessionRef: StudySessionRef, nextWindow: TimeWindow) {
+    const key = sessionRefId(sessionRef)
+    setTimeWindowsBySession((current) => ({
+      ...current,
+      [key]: nextWindow,
+    }))
+  }
+
+  function resetSessionTimeWindow(sessionRef: StudySessionRef) {
+    const key = sessionRefId(sessionRef)
+    setTimeWindowsBySession((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
   }
 
   return (
@@ -279,7 +307,19 @@ export function SuspensionVisualization({
         </div>
       )}
 
-      {data && (
+      {data && selectedSessionRefs.length > 0 && (
+        <TimeWindowManager
+          data={data}
+          sessionRefs={selectedSessionRefs}
+          sessions={sessions}
+          timeWindows={timeWindowsBySession}
+          onChange={setSessionTimeWindow}
+          onReset={resetSessionTimeWindow}
+          onResetAll={() => setTimeWindowsBySession({})}
+        />
+      )}
+
+      {data && scopedData && (
         <div className="viz-panel-stack">
           <VisualizationPanel
             id="displacement"
@@ -294,7 +334,8 @@ export function SuspensionVisualization({
                 layout={comparisonLayout}
                 entities={selectedEntities}
                 ends={selectedEnds}
-                data={data}
+                data={scopedData}
+                scaleData={data}
                 selectedTrack={selectedTrack}
                 sectors={selectedSectors}
                 allSectors={sectors}
@@ -324,7 +365,7 @@ export function SuspensionVisualization({
                 )}
                 sessions={sessions}
                 showStats
-                valueForEntityRole={(entity, role) => entitySignalValues(entity, data, role.signalRole)}
+                valueForEntityRole={(entity, role) => entitySignalValues(entity, scopedData, role.signalRole)}
               />
             )}
           </VisualizationPanel>
@@ -338,7 +379,8 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorMetricDistributionScaffold
-                data={data}
+                data={scopedData}
+                scaleData={data}
                 entities={selectedEntities}
                 ends={selectedEnds}
                 layout={comparisonLayout}
@@ -369,7 +411,7 @@ export function SuspensionVisualization({
                   'mirrored_velocity',
                 )}
                 sessions={sessions}
-                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, VELOCITY_METRIC_SPEC)}
+                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, scopedData, role.key, VELOCITY_METRIC_SPEC)}
               />
             )}
           </VisualizationPanel>
@@ -383,7 +425,8 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorMetricDistributionScaffold
-                data={data}
+                data={scopedData}
+                scaleData={data}
                 entities={selectedEntities}
                 ends={selectedEnds}
                 layout={comparisonLayout}
@@ -414,7 +457,7 @@ export function SuspensionVisualization({
                   'mirrored_velocity',
                 )}
                 sessions={sessions}
-                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, STROKE_LENGTH_METRIC_SPEC)}
+                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, scopedData, role.key, STROKE_LENGTH_METRIC_SPEC)}
               />
             )}
           </VisualizationPanel>
@@ -428,7 +471,7 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorScatterScaffold
-                data={data}
+                data={scopedData}
                 ends={selectedEnds}
                 entities={selectedEntities}
                 eventType={COMPRESSION_EVENT_TYPE}
@@ -445,7 +488,7 @@ export function SuspensionVisualization({
               <ScatterEntityStrip
                 layout={comparisonLayout}
                 entities={selectedEntities}
-                data={data}
+                data={scopedData}
                 eventType={COMPRESSION_EVENT_TYPE}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={COMPRESSION_Y_METRIC}
@@ -465,7 +508,7 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorScatterScaffold
-                data={data}
+                data={scopedData}
                 ends={selectedEnds}
                 entities={selectedEntities}
                 eventType={REBOUND_EVENT_TYPE}
@@ -482,7 +525,7 @@ export function SuspensionVisualization({
               <ScatterEntityStrip
                 layout={comparisonLayout}
                 entities={selectedEntities}
-                data={data}
+                data={scopedData}
                 eventType={REBOUND_EVENT_TYPE}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={REBOUND_Y_METRIC}
@@ -502,7 +545,7 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorEventCountScaffold
-                data={data}
+                data={scopedData}
                 ends={selectedEnds}
                 entities={selectedEntities}
                 selectedTrack={selectedTrack}
@@ -511,7 +554,7 @@ export function SuspensionVisualization({
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
-              <EventCountStrip entities={selectedEntities} data={data} ends={selectedEnds} />
+              <EventCountStrip entities={selectedEntities} data={scopedData} ends={selectedEnds} />
             )}
           </VisualizationPanel>
         </div>
@@ -553,6 +596,254 @@ function ComparisonLayoutToggle({
         </button>
       </div>
     </section>
+  )
+}
+
+function TimeWindowManager({
+  data,
+  sessionRefs,
+  sessions,
+  timeWindows,
+  onChange,
+  onReset,
+  onResetAll,
+}: {
+  data: VisualizationData
+  sessionRefs: StudySessionRef[]
+  sessions: SessionRecord[]
+  timeWindows: TimeWindowsBySession
+  onChange: (sessionRef: StudySessionRef, window: TimeWindow) => void
+  onReset: (sessionRef: StudySessionRef) => void
+  onResetAll: () => void
+}) {
+  const sessionKey = sessionRefs.map(sessionRefId).join('|')
+  const [activeSessionKey, setActiveSessionKey] = useState<string | null>(() =>
+    sessionRefs[0] ? sessionRefId(sessionRefs[0]) : null,
+  )
+
+  useEffect(() => {
+    setActiveSessionKey((current) => {
+      if (current && sessionRefs.some((sessionRef) => sessionRefId(sessionRef) === current)) {
+        return current
+      }
+      return sessionRefs[0] ? sessionRefId(sessionRefs[0]) : null
+    })
+  }, [sessionKey])
+
+  const activeSessionRef =
+    sessionRefs.find((sessionRef) => sessionRefId(sessionRef) === activeSessionKey) ?? sessionRefs[0] ?? null
+  const clippedCount = sessionRefs.filter((sessionRef) => Boolean(timeWindows[sessionRefId(sessionRef)])).length
+
+  if (!activeSessionRef) {
+    return null
+  }
+
+  return (
+    <section className="viz-time-window-manager" aria-label="Per-session time windows">
+      <div className="viz-time-window-manager-header">
+        <div>
+          <strong>Time windows</strong>
+          <span>
+            {clippedCount === 0
+              ? `${sessionRefs.length} selected session(s), all full length`
+              : `${clippedCount} of ${sessionRefs.length} selected session(s) clipped`}
+          </span>
+        </div>
+        <button type="button" onClick={onResetAll} disabled={clippedCount === 0}>
+          Reset all
+        </button>
+      </div>
+
+      <div className="viz-time-window-session-list">
+        {sessionRefs.map((sessionRef) => {
+          const key = sessionRefId(sessionRef)
+          const session = sessionByRef(sessionRef, sessions) ?? null
+          const window = timeWindows[key] ?? null
+          return (
+            <button
+              className={`viz-time-window-session-chip${key === sessionRefId(activeSessionRef) ? ' selected' : ''}${window ? ' clipped' : ''}`}
+              key={key}
+              type="button"
+              onClick={() => setActiveSessionKey(key)}
+            >
+              <span>{sessionRef.label || session?.name || sessionRef.sessionId}</span>
+              <small>{window ? `${formatTimeOffset(window.startS)} - ${formatTimeOffset(window.endS)}` : 'Full session'}</small>
+            </button>
+          )
+        })}
+      </div>
+
+      <TimeWindowNavigator
+        embedded
+        data={data}
+        sessionRef={activeSessionRef}
+        session={sessionByRef(activeSessionRef, sessions) ?? null}
+        window={timeWindows[sessionRefId(activeSessionRef)] ?? null}
+        onChange={(nextWindow) => onChange(activeSessionRef, nextWindow)}
+        onReset={() => onReset(activeSessionRef)}
+      />
+    </section>
+  )
+}
+
+function TimeWindowNavigator({
+  embedded = false,
+  data,
+  sessionRef,
+  session,
+  window,
+  onChange,
+  onReset,
+}: {
+  embedded?: boolean
+  data: VisualizationData
+  sessionRef: StudySessionRef
+  session: SessionRecord | null
+  window: TimeWindow | null
+  onChange: (window: TimeWindow) => void
+  onReset: () => void
+}) {
+  const durationS = sessionDurationS(data, sessionRef, session)
+  const disabled = durationS <= 0
+  const minWindowS = Math.max(0.1, durationS / 500)
+  const current = sanitizeTimeWindow(window ?? { startS: 0, endS: durationS }, durationS, minWindowS)
+  const [draftWindow, setDraftWindow] = useState<TimeWindow>(current)
+  const step = Math.max(0.1, durationS / 1000)
+  const active = Boolean(window)
+
+  useEffect(() => {
+    setDraftWindow(current)
+  }, [current.startS, current.endS, sessionRef.sessionKey])
+
+  function setStart(value: number) {
+    const startS = clamp(value, 0, Math.max(0, draftWindow.endS - minWindowS))
+    setDraftWindow(sanitizeTimeWindow({ startS, endS: draftWindow.endS }, durationS, minWindowS))
+  }
+
+  function setEnd(value: number) {
+    const endS = clamp(value, Math.min(durationS, draftWindow.startS + minWindowS), durationS)
+    setDraftWindow(sanitizeTimeWindow({ startS: draftWindow.startS, endS }, durationS, minWindowS))
+  }
+
+  function commitDraftWindow() {
+    const nextWindow = sanitizeTimeWindow(draftWindow, durationS, minWindowS)
+    if (nextWindow.startS !== current.startS || nextWindow.endS !== current.endS) {
+      onChange(nextWindow)
+    }
+  }
+
+  return (
+    <section className={`viz-time-window${embedded ? ' embedded' : ''}`} aria-label="Time window navigator">
+      <div className="viz-time-window-header">
+        <div>
+          <strong>Time window</strong>
+          <span>
+            {sessionRef.label || session?.name || sessionRef.sessionId}: {active ? 'clipped view' : 'full session'}
+          </span>
+        </div>
+        <button type="button" onClick={onReset} disabled={!active || disabled}>
+          Full session
+        </button>
+      </div>
+      {disabled ? (
+        <div className="viz-time-window-empty">No usable signal timebase is available for this session.</div>
+      ) : (
+        <>
+          <TimeWindowOverview data={data} durationS={durationS} sessionRef={sessionRef} window={draftWindow} />
+          <div className="viz-time-window-controls">
+            <label>
+              Start
+              <input
+                type="range"
+                min={0}
+                max={durationS}
+                step={step}
+                value={draftWindow.startS}
+                onChange={(event) => setStart(Number(event.target.value))}
+                onBlur={commitDraftWindow}
+                onKeyUp={commitDraftWindow}
+                onPointerUp={commitDraftWindow}
+              />
+              <span>{formatTimeOffset(draftWindow.startS)}</span>
+            </label>
+            <label>
+              End
+              <input
+                type="range"
+                min={0}
+                max={durationS}
+                step={step}
+                value={draftWindow.endS}
+                onChange={(event) => setEnd(Number(event.target.value))}
+                onBlur={commitDraftWindow}
+                onKeyUp={commitDraftWindow}
+                onPointerUp={commitDraftWindow}
+              />
+              <span>{formatTimeOffset(draftWindow.endS)}</span>
+            </label>
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+function TimeWindowOverview({
+  data,
+  durationS,
+  sessionRef,
+  window,
+}: {
+  data: VisualizationData
+  durationS: number
+  sessionRef: StudySessionRef
+  window: TimeWindow
+}) {
+  const width = 760
+  const height = 86
+  const margin = { top: 10, right: 12, bottom: 20, left: 28 }
+  const key = sessionRefId(sessionRef)
+  const times = data.timeBySession[key] ?? []
+  const signals = data.signalsBySession[key] ?? {}
+  const frontPoints = overviewPoints(times, signals.front_displacement ?? [], 520)
+  const rearPoints = overviewPoints(times, signals.rear_displacement ?? [], 520)
+  const x = d3.scaleLinear().domain([0, durationS || 1]).range([margin.left, width - margin.right])
+  const y = d3.scaleLinear().domain([0, 1]).range([height - margin.bottom, margin.top])
+  const line = d3
+    .line<{ timeS: number; value: number }>()
+    .x((point) => x(point.timeS))
+    .y((point) => y(point.value))
+    .curve(d3.curveMonotoneX)
+  const frontPath = line(frontPoints)
+  const rearPath = line(rearPoints)
+  const selectionX = x(window.startS)
+  const selectionWidth = Math.max(1, x(window.endS) - selectionX)
+  const empty = frontPoints.length === 0 && rearPoints.length === 0
+
+  return (
+    <svg className="viz-time-window-overview" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Session displacement overview">
+      <rect className="viz-time-window-range" x={selectionX} y={margin.top} width={selectionWidth} height={height - margin.top - margin.bottom} />
+      <line className="viz-axis" x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} />
+      <line className="viz-axis" x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} />
+      {frontPath && <path className="viz-time-window-line front" d={frontPath} />}
+      {rearPath && <path className="viz-time-window-line rear" d={rearPath} />}
+      {[0, 0.5, 1].map((tick) => {
+        const value = durationS * tick
+        return (
+          <g key={tick}>
+            <line className="viz-tick" x1={x(value)} x2={x(value)} y1={height - margin.bottom} y2={height - margin.bottom + 4} />
+            <text className="viz-axis-label" x={x(value)} y={height - 4} textAnchor="middle">
+              {formatTimeOffset(value)}
+            </text>
+          </g>
+        )
+      })}
+      {empty && (
+        <text className="viz-empty-chart" x={width / 2} y={height / 2 + 4} textAnchor="middle">
+          No displacement signal for overview
+        </text>
+      )}
+    </svg>
   )
 }
 
@@ -856,6 +1147,7 @@ function SectorDistributionScaffold({
   entities,
   ends,
   data,
+  scaleData,
   selectedTrack,
   sectors,
   allSectors,
@@ -871,6 +1163,7 @@ function SectorDistributionScaffold({
   entities: VisualizationEntity[]
   ends: SuspensionEnd[]
   data: VisualizationData
+  scaleData: VisualizationData
   selectedTrack: TrackRecord | null
   sectors: TrackSector[]
   allSectors: TrackSector[]
@@ -913,7 +1206,7 @@ function SectorDistributionScaffold({
   const yMax = distributionYMax(
     entities,
     roles,
-    (entity, role) => sectorValuesForEntityAcrossSectors(entity, data, selectedTrack, sectors, role.signalRole),
+    (entity, role) => sectorValuesForEntityAcrossSectors(entity, scaleData, selectedTrack, sectors, role.signalRole),
     xDomain,
     bins,
     chartKind,
@@ -921,7 +1214,7 @@ function SectorDistributionScaffold({
   const facetYMax = distributionYMax(
     entities,
     roles,
-    (entity, role) => sectors.flatMap((sector) => sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole)),
+    (entity, role) => sectors.flatMap((sector) => sectorValuesForEntity(entity, scaleData, selectedTrack, sector, role.signalRole)),
     xDomain,
     bins,
     chartKind,
@@ -1004,6 +1297,7 @@ function SectorDistributionScaffold({
 
 function SectorMetricDistributionScaffold({
   data,
+  scaleData,
   entities,
   ends,
   layout,
@@ -1017,6 +1311,7 @@ function SectorMetricDistributionScaffold({
   trackMatchesLoading,
 }: {
   data: VisualizationData
+  scaleData: VisualizationData
   entities: VisualizationEntity[]
   ends: SuspensionEnd[]
   layout: ComparisonLayout
@@ -1037,11 +1332,12 @@ function SectorMetricDistributionScaffold({
   const track = selectedTrack as TrackRecord
   const roles = distributionRoles('', '', ends)
   const overallRowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, sectors)
-  const xDomain = metricMagnitudeDomainFromRows(entities, roles, overallRowsForEntity, metricSpec, fallbackDomain)
+  const scaleRowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, scaleData.metrics, scaleData, track, sectors)
+  const xDomain = metricMagnitudeDomainFromRows(entities, roles, scaleRowsForEntity, metricSpec, fallbackDomain)
   const yMax = distributionYMax(
     entities,
     roles,
-    (entity, role) => metricMirroredValuesForRows(overallRowsForEntity(entity), role.key, metricSpec),
+    (entity, role) => metricMirroredValuesForRows(scaleRowsForEntity(entity), role.key, metricSpec),
     xDomain,
     bins,
     'mirrored_velocity',
@@ -2100,10 +2396,10 @@ function RoleStats({ color, label, values }: { color: string; label: string; val
 }
 
 async function loadVisualizationData(
-  entities: VisualizationEntity[],
+  requestedSessionRefs: StudySessionRef[],
   dataSource: LibraryDataSource,
 ): Promise<VisualizationData> {
-  const sessionRefs = uniqueSessionRefs(entities.flatMap((entity) => entity.sessionRefs))
+  const sessionRefs = uniqueSessionRefs(requestedSessionRefs)
   const refsByLibrary = groupRefsByLibrary(sessionRefs)
   const signalResponses: SignalQueryResponse[] = []
   const eventRows: TableQueryRow[] = []
@@ -2131,6 +2427,7 @@ async function loadVisualizationData(
     timeBySession: signalResponsesToTimeMap(signalResponses, warnings),
     signalsBySession: signalResponsesToMap(signalResponses, warnings),
     events: eventRows,
+    eventTriggerTimeByKey: eventTriggerTimeMap(eventRows),
     metrics: metricRows,
     warnings: warnings.filter(Boolean),
   }
@@ -2185,7 +2482,7 @@ function signalResponsesToTimeMap(responses: SignalQueryResponse[], warnings: st
         out[key] = []
         continue
       }
-      out[key] = numericValues(session.time.values)
+      out[key] = normalizeSignalTimes(numericValues(session.time.values))
     }
   }
   return out
@@ -2208,13 +2505,250 @@ function signalResponsesToMap(responses: SignalQueryResponse[], warnings: string
   return out
 }
 
+function eventTriggerTimeMap(rows: TableQueryRow[]) {
+  const out: Record<string, number> = {}
+  for (const row of rows) {
+    const key = tableRowEventKey(row)
+    if (!key || out[key] !== undefined) {
+      continue
+    }
+    const triggerTimeS = firstNumericField(
+      row.fields.trigger_time_s,
+      row.fields.primary_trigger_time_s,
+      row.fields.t0_time,
+      row.fields.time_s,
+    )
+    if (triggerTimeS !== null) {
+      out[key] = triggerTimeS
+    }
+  }
+  return out
+}
+
+function applyTimeWindows(data: VisualizationData, timeWindows: TimeWindowsBySession): VisualizationData {
+  const windowSessionKeys = Object.keys(timeWindows)
+  if (windowSessionKeys.length === 0) {
+    return data
+  }
+  const windowedSessions = new Set(windowSessionKeys)
+  const signalsBySession: Record<string, Record<string, number[]>> = {}
+  const timeBySession: Record<string, number[]> = {}
+  for (const [key, signals] of Object.entries(data.signalsBySession)) {
+    const times = data.timeBySession[key] ?? []
+    const window = timeWindows[key] ?? null
+    if (!window) {
+      signalsBySession[key] = signals
+      timeBySession[key] = times
+      continue
+    }
+    const range = timeWindowIndexRange(times, window)
+    timeBySession[key] = times.slice(range.startIndex, range.endIndex)
+    signalsBySession[key] = {}
+    for (const [role, values] of Object.entries(signals)) {
+      signalsBySession[key][role] = values.slice(range.startIndex, range.endIndex)
+    }
+  }
+  for (const [key, times] of Object.entries(data.timeBySession)) {
+    if (timeBySession[key]) {
+      continue
+    }
+    const window = timeWindows[key] ?? null
+    if (!window) {
+      timeBySession[key] = times
+      continue
+    }
+    const range = timeWindowIndexRange(times, window)
+    timeBySession[key] = times.slice(range.startIndex, range.endIndex)
+  }
+  return {
+    ...data,
+    timeBySession,
+    signalsBySession,
+    events: filterRowsByTimeWindows(data.events, data, timeWindows, windowedSessions),
+    metrics: filterRowsByTimeWindows(data.metrics, data, timeWindows, windowedSessions),
+  }
+}
+
+function timeWindowIndexRange(times: number[], window: TimeWindow) {
+  if (times.length === 0) {
+    return { startIndex: 0, endIndex: 0 }
+  }
+  if (!isMonotonicFinite(times)) {
+    return linearTimeWindowIndexRange(times, window)
+  }
+  return {
+    startIndex: lowerBound(times, window.startS),
+    endIndex: upperBound(times, window.endS),
+  }
+}
+
+function isMonotonicFinite(values: number[]) {
+  let previous = Number.NEGATIVE_INFINITY
+  for (const value of values) {
+    if (!Number.isFinite(value) || value < previous) {
+      return false
+    }
+    previous = value
+  }
+  return true
+}
+
+function linearTimeWindowIndexRange(times: number[], window: TimeWindow) {
+  let startIndex = -1
+  let endIndex = -1
+  for (let index = 0; index < times.length; index += 1) {
+    const time = times[index]
+    if (!Number.isFinite(time) || time < window.startS || time > window.endS) {
+      continue
+    }
+    if (startIndex < 0) {
+      startIndex = index
+    }
+    endIndex = index + 1
+  }
+  return startIndex < 0 ? { startIndex: 0, endIndex: 0 } : { startIndex, endIndex }
+}
+
+function lowerBound(values: number[], target: number) {
+  let low = 0
+  let high = values.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (values[mid] < target) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  return low
+}
+
+function upperBound(values: number[], target: number) {
+  let low = 0
+  let high = values.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (values[mid] <= target) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  return low
+}
+
+function filterRowsByTimeWindows(
+  rows: TableQueryRow[],
+  data: VisualizationData,
+  timeWindows: TimeWindowsBySession,
+  windowedSessions: Set<string>,
+) {
+  return rows.filter((row) => {
+    const sessionKey = sessionRefId(row.sessionRef)
+    if (!windowedSessions.has(sessionKey)) {
+      return true
+    }
+    return rowWithinTimeWindow(row, data, timeWindows[sessionKey])
+  })
+}
+
+function rowWithinTimeWindow(row: TableQueryRow, data: VisualizationData, window: TimeWindow | undefined) {
+  if (!window) {
+    return true
+  }
+  const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
+  return triggerTimeS !== null && triggerTimeS >= window.startS && triggerTimeS <= window.endS
+}
+
+function sessionDurationS(data: VisualizationData, sessionRef: StudySessionRef, session: SessionRecord | null) {
+  const key = sessionRefId(sessionRef)
+  const extent = finiteExtent(data.timeBySession[key] ?? [])
+  if (extent.count > 0) {
+    return extent.max
+  }
+  return session && Number.isFinite(session.durationMin) ? Math.max(0, session.durationMin * 60) : 0
+}
+
+function sanitizeTimeWindow(window: TimeWindow, durationS: number, minWindowS: number) {
+  if (durationS <= 0) {
+    return { startS: 0, endS: 0 }
+  }
+  const startS = clamp(Math.min(window.startS, window.endS), 0, durationS)
+  const endS = clamp(Math.max(window.startS, window.endS), 0, durationS)
+  if (endS - startS >= minWindowS) {
+    return { startS, endS }
+  }
+  const expandedEnd = clamp(startS + minWindowS, 0, durationS)
+  if (expandedEnd - startS >= minWindowS) {
+    return { startS, endS: expandedEnd }
+  }
+  return { startS: Math.max(0, durationS - minWindowS), endS: durationS }
+}
+
+function overviewPoints(times: number[], values: number[], maxPoints: number) {
+  const limit = Math.min(times.length, values.length)
+  const stride = Math.max(1, Math.ceil(limit / maxPoints))
+  const points: Array<{ timeS: number; value: number }> = []
+  for (let index = 0; index < limit; index += stride) {
+    const timeS = times[index]
+    const value = values[index]
+    if (Number.isFinite(timeS) && Number.isFinite(value)) {
+      points.push({ timeS, value })
+    }
+  }
+  return points
+}
+
+function normalizeSignalTimes(values: number[]) {
+  const extent = finiteExtent(values)
+  if (extent.count === 0 || extent.first === null) {
+    return values
+  }
+  const span = extent.max - extent.min
+  const scale =
+    span > 86_400 * 1_000_000 ? 1 / 1_000_000_000 : span > 86_400 * 1_000 ? 1 / 1_000_000 : span > 86_400 ? 1 / 1000 : 1
+  const offset = extent.first * scale
+  return values.map((value) => (Number.isFinite(value) ? value * scale - offset : Number.NaN))
+}
+
 function entitySignalValues(entity: VisualizationEntity, data: VisualizationData, role: string) {
   return entity.sessionRefs.flatMap((sessionRef) => data.signalsBySession[sessionRefId(sessionRef)]?.[role] ?? [])
 }
 
+const rowSessionGroupCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]>>()
+
+function rowsGroupedBySession(rows: TableQueryRow[]) {
+  const cached = rowSessionGroupCache.get(rows)
+  if (cached) {
+    return cached
+  }
+  const grouped = new Map<string, TableQueryRow[]>()
+  for (const row of rows) {
+    const key = sessionRefId(row.sessionRef)
+    const current = grouped.get(key)
+    if (current) {
+      current.push(row)
+    } else {
+      grouped.set(key, [row])
+    }
+  }
+  rowSessionGroupCache.set(rows, grouped)
+  return grouped
+}
+
 function entityRows(entity: VisualizationEntity, rows: TableQueryRow[]) {
-  const refs = new Set(entity.sessionRefs.map(sessionRefId))
-  return rows.filter((row) => refs.has(sessionRefId(row.sessionRef)))
+  const grouped = rowsGroupedBySession(rows)
+  if (entity.sessionRefs.length === 1) {
+    return grouped.get(sessionRefId(entity.sessionRefs[0])) ?? []
+  }
+  const out: TableQueryRow[] = []
+  for (const sessionRef of entity.sessionRefs) {
+    const sessionRows = grouped.get(sessionRefId(sessionRef))
+    if (sessionRows) {
+      out.push(...sessionRows)
+    }
+  }
+  return out
 }
 
 function metricMirroredValuesForEntityEnd(
@@ -2261,8 +2795,8 @@ function metricMagnitudeDomainFromRows(
   if (clean.length === 0) {
     return fallback
   }
-  const max = Math.max(...clean)
-  return [0, Math.max(fallback[1], max * 1.08)]
+  const extent = finiteExtent(clean)
+  return [0, Math.max(fallback[1], extent.max * 1.08)]
 }
 
 function metricMagnitudeDomain(
@@ -2279,8 +2813,8 @@ function metricMagnitudeDomain(
   if (clean.length === 0) {
     return fallback
   }
-  const max = Math.max(...clean)
-  return [0, Math.max(fallback[1], max * 1.08)]
+  const extent = finiteExtent(clean)
+  return [0, Math.max(fallback[1], extent.max * 1.08)]
 }
 
 function distributionRoles(frontRole: string, rearRole: string, selectedEnds: SuspensionEnd[]): DistributionRole[] {
@@ -2446,16 +2980,8 @@ function rowPrimaryTriggerTimeS(row: TableQueryRow, data: VisualizationData) {
   if (!key) {
     return null
   }
-  const eventRow = data.events.find((candidate) => tableRowEventKey(candidate) === key)
-  if (!eventRow) {
-    return null
-  }
-  return firstNumericField(
-    eventRow.fields.trigger_time_s,
-    eventRow.fields.primary_trigger_time_s,
-    eventRow.fields.t0_time,
-    eventRow.fields.time_s,
-  )
+  const fallbackTriggerTimeS = data.eventTriggerTimeByKey[key]
+  return typeof fallbackTriggerTimeS === 'number' && Number.isFinite(fallbackTriggerTimeS) ? fallbackTriggerTimeS : null
 }
 
 function tableRowEventKey(row: TableQueryRow) {
@@ -2735,13 +3261,31 @@ function quantile(values: number[], q: number) {
   return d3.quantileSorted(values, q) ?? null
 }
 
+function finiteExtent(values: number[]) {
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  let first: number | null = null
+  let count = 0
+  for (const value of values) {
+    if (!Number.isFinite(value)) {
+      continue
+    }
+    if (first === null) {
+      first = value
+    }
+    min = Math.min(min, value)
+    max = Math.max(max, value)
+    count += 1
+  }
+  return { count, first, min, max }
+}
+
 function paddedExtent(values: number[], fallback: [number, number]): [number, number] {
-  const clean = values.filter(Number.isFinite)
-  if (clean.length === 0) {
+  const extent = finiteExtent(values)
+  if (extent.count === 0) {
     return fallback
   }
-  const min = Math.min(...clean)
-  const max = Math.max(...clean)
+  const { min, max } = extent
   if (min === max) {
     const span = Math.abs(min) || 1
     return [min - span * 0.5, max + span * 0.5]
@@ -2756,6 +3300,10 @@ function numericValues(values: Array<number | null>) {
 
 function numericField(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
 }
 
 function firstNumericField(...values: unknown[]) {
@@ -2847,6 +3395,23 @@ function formatMetres(value: number) {
     return '-'
   }
   return value >= 1000 ? `${(value / 1000).toFixed(2)} km` : `${value.toFixed(0)} m`
+}
+
+function formatTimeOffset(value: number) {
+  if (!Number.isFinite(value)) {
+    return '-'
+  }
+  if (value >= 3600) {
+    const hours = Math.floor(value / 3600)
+    const minutes = Math.floor((value % 3600) / 60)
+    return `${hours}h ${minutes.toString().padStart(2, '0')}m`
+  }
+  if (value >= 60) {
+    const minutes = Math.floor(value / 60)
+    const seconds = Math.round(value % 60)
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)}s`
 }
 
 function formatRole(role: 'front' | 'rear' | 'unknown') {

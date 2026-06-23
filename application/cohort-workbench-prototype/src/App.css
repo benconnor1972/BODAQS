@@ -2614,6 +2614,203 @@ button {
   background: var(--surface);
 }
 
+.viz-time-window-manager {
+  display: grid;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.viz-time-window-manager-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.viz-time-window-manager-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.viz-time-window-manager-header strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.viz-time-window-manager-header span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.viz-time-window-manager-header button {
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--line-strong);
+  background: white;
+  color: var(--green);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.viz-time-window-manager-header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.viz-time-window-session-list {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.viz-time-window-session-chip {
+  flex: 0 0 184px;
+  display: grid;
+  gap: 2px;
+  min-height: 42px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-strong);
+  background: #fbfcfc;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.viz-time-window-session-chip.selected {
+  border-color: var(--green);
+  background: var(--teal-soft);
+}
+
+.viz-time-window-session-chip.clipped {
+  border-left: 3px solid var(--teal);
+}
+
+.viz-time-window-session-chip span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viz-time-window-session-chip small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.viz-time-window {
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.viz-time-window.embedded {
+  padding: 8px;
+  background: #fbfcfc;
+}
+
+.viz-time-window-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.viz-time-window-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.viz-time-window-header strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.viz-time-window-header span,
+.viz-time-window-empty {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.viz-time-window-header button {
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--line-strong);
+  background: white;
+  color: var(--green);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.viz-time-window-header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.viz-time-window-overview {
+  width: 100%;
+  min-height: 72px;
+  border: 1px solid var(--line);
+  background: #fbfcfc;
+}
+
+.viz-time-window-range {
+  fill: var(--teal-soft);
+  stroke: var(--teal-quiet);
+  stroke-width: 1;
+}
+
+.viz-time-window-line {
+  fill: none;
+  stroke-width: 1.6;
+}
+
+.viz-time-window-line.front {
+  stroke: var(--teal);
+}
+
+.viz-time-window-line.rear {
+  stroke: var(--ink);
+  stroke-opacity: 0.72;
+}
+
+.viz-time-window-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.viz-time-window-controls label {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) 54px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.viz-time-window-controls input {
+  width: 100%;
+  accent-color: var(--teal);
+}
+
+.viz-time-window-controls span {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-transform: none;
+}
+
 .viz-scope-main {
   display: flex;
   align-items: center;
