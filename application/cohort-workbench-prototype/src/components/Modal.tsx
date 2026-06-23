@@ -54,7 +54,7 @@ function modalTitle(state: NonNullable<ModalState>) {
     return state.track.name
   }
   if (state.mode === 'analyze') {
-    return `Analyze ${state.studySet.displayName || 'Study Set'}`
+    return 'Simple Suspension Analysis'
   }
   return `View ${state.studySet.displayName || 'Study Set'}`
 }

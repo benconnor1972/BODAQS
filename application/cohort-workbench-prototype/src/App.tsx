@@ -21,7 +21,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import { IconButton, PanelTitle, SummaryTile } from './components/Common'
+import { IconButton, InfoTip, PanelTitle, SummaryTile } from './components/Common'
 import { FilterPanel } from './components/FilterPanel'
 import { FilterManagerModal } from './components/FilterManagerModal'
 import { GeospatialWorkbench } from './components/GeospatialWorkbench'
@@ -1024,7 +1024,10 @@ function App() {
 
           <section className={`module collapsible-module${librarySelectorCollapsed ? ' collapsed' : ''}`}>
             <div className="module-header">
-              <h2>Library Selector</h2>
+              <h2 className="module-heading">
+                Library Selector
+                <InfoTip text="Choose which libraries from the configured library root are included in the session browser." />
+              </h2>
               <div className="module-header-actions">
                 <span className="subtle">{selectedLibraries.length} active</span>
                 <IconButton
@@ -1090,7 +1093,10 @@ function App() {
 
           <section className={`module session-selector collapsible-module${sessionSelectorCollapsed ? ' collapsed' : ''}`}>
             <div className="module-header">
-              <h2>Session Selector</h2>
+              <h2 className="module-heading">
+                Session Selector
+                <InfoTip text="Browse sessions from the selected libraries. Use filters from the filter panel or filter directly in the table to narrow the list." />
+              </h2>
               <div className="module-header-actions">
                 <span className="subtle">{visibleSessions.length} shown</span>
                 <IconButton
@@ -1255,7 +1261,10 @@ function App() {
             ) : (
               <section className="module map-module">
                 <div className="module-header">
-                  <h2>GPS Location</h2>
+                  <h2 className="module-heading">
+                    GPS Location
+                    <InfoTip text="Preview the selected session GPS path and any selected or attached tracks." />
+                  </h2>
                   <div className="module-header-actions">
                     <span className="subtle">{primarySession ? primarySession.name : 'No primary session'}</span>
                     <IconButton
@@ -1277,7 +1286,10 @@ function App() {
             <div className="support-stack">
               <section className={`module collapsible-module${filtersCollapsed ? ' collapsed' : ''}`}>
                 <div className="module-header">
-                  <h2>Filters</h2>
+                  <h2 className="module-heading">
+                    Filters
+                    <InfoTip text="Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering." />
+                  </h2>
                   <div className="module-header-actions">
                     <span className={activeSavedSessionFilters.length ? 'pill ok' : 'pill neutral'}>
                       {activeSavedSessionFilters.length ? `${activeSavedSessionFilters.length} saved active` : 'saved stack'}
@@ -1316,7 +1328,10 @@ function App() {
 
               <section className={`module collapsible-module${geospatialCollapsed ? ' collapsed' : ''}`}>
                 <div className="module-header">
-                  <h2>Geospatial Workbench</h2>
+                  <h2 className="module-heading">
+                    Geospatial Workbench
+                    <InfoTip text="Create and manage re-usable tracks and trackpoints and attach them to the current Study Set." />
+                  </h2>
                   <div className="module-header-actions">
                     <span className="pill neutral">v0 endpoints</span>
                     <IconButton
@@ -1369,7 +1384,10 @@ function App() {
 
           <section className="module current-study-set">
             <div className="module-header">
-              <h2>Current Study Set</h2>
+              <h2 className="module-heading">
+                Current Study Set
+                <InfoTip text="The working Study Set comprising sessions and optional groupings and tracks." />
+              </h2>
               <span className={currentStudySetStatus.className}>{currentStudySetStatus.label}</span>
             </div>
 
@@ -1415,8 +1433,10 @@ function App() {
 
             <section className="study-section">
               <div className="subsection-header">
-                <h3>Sessions</h3>
-                <span className="subtle">Sessions can appear in multiple groupings.</span>
+                <h3 className="subsection-heading">
+                  Sessions
+                  <InfoTip text="List of the sessions in this study set. Removing a session removes it from the Study Set, but not from the library." />
+                </h3>
               </div>
               <StudySessionTable
                 studySet={currentStudySet}
@@ -1459,8 +1479,10 @@ function App() {
 
             <section className="study-section">
               <div className="subsection-header">
-                <h3>Tracks</h3>
-                <span className="subtle">Attached root-level tracks for this Study Set.</span>
+                <h3 className="subsection-heading">
+                  Tracks
+                  <InfoTip text="Tracks are GPS paths with defined points that can be used for geospatial filtering and sector-based analysis." />
+                </h3>
               </div>
               <table className="tracks-table">
                 <thead>
@@ -1505,7 +1527,10 @@ function App() {
 
           <section className="module saved-study-sets">
             <div className="module-header">
-              <h2>Saved Study Sets</h2>
+              <h2 className="module-heading">
+                Saved Study Sets
+                <InfoTip text="Saved Study Sets can be loaded into the editor above, inspected, or opened directly in the analysis view." />
+              </h2>
               <span className="subtle">{savedStudySets.length} saved</span>
             </div>
             <table className="saved-table">
@@ -1527,7 +1552,7 @@ function App() {
                     <td>{studySet.groupings.length}</td>
                     <td>
                       <IconButton
-                        label="Analyze Study Set"
+                        label="Simple Suspension Analysis"
                         onClick={() => setModal({ kind: 'study-set', studySet, mode: 'analyze' })}
                         icon={<Play size={15} />}
                       />

@@ -20,6 +20,7 @@ import type {
   SessionRecord,
   SortDirection,
 } from '../domain/types'
+import { InfoTip } from './Common'
 import { SessionInfoButtons } from './SessionInfoButtons'
 
 export type SessionSelectionGesture = {
@@ -119,7 +120,8 @@ export function SessionTable({
   return (
     <>
       <p className="selection-hint">
-        Click a row to select it. Ctrl/Cmd-click toggles rows; Shift-click selects a range. The last selected row is primary.
+        Selection controls
+        <InfoTip text="Click a row to select it. Ctrl/Cmd-click toggles rows; Shift-click selects a range." />
       </p>
       <div className="table-shell">
         <table className="session-table" aria-label="Candidate sessions">

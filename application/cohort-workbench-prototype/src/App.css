@@ -178,6 +178,71 @@
   font-weight: 650;
 }
 
+.module-heading,
+.subsection-heading,
+.viz-heading,
+.inline-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.info-tip-button {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface-subtle);
+  color: var(--teal-strong);
+  cursor: help;
+}
+
+.info-tip-button:hover,
+.info-tip-button:focus-visible {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+  outline: none;
+}
+
+.info-tip-bubble {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 7px);
+  left: 50%;
+  width: min(300px, 78vw);
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: 0 14px 28px rgba(16, 24, 32, 0.16);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.42;
+  opacity: 0;
+  pointer-events: none;
+  text-transform: none;
+  transform: translate(-50%, -3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.info-tip:hover .info-tip-bubble,
+.info-tip:focus-within .info-tip-bubble {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .module-header.spaced {
   margin-top: 12px;
   border-top: 1px solid var(--line);
@@ -597,11 +662,15 @@ tbody tr.primary-row td {
 }
 
 .selection-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 0;
   padding: 6px 10px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 11px;
+  font-weight: 650;
 }
 
 .session-filter-status {
@@ -2493,24 +2562,67 @@ button {
   border-radius: 999px;
 }
 
-.viz-entity-selector,
+.viz-control-panel,
 .viz-panel,
 .viz-status {
   border: 1px solid var(--line);
   background: var(--surface);
 }
 
-.viz-entity-selector {
-  display: grid;
-  gap: 10px;
-  padding: 10px;
+.viz-control-panel {
+  overflow: hidden;
 }
 
-.viz-selector-header {
+.viz-control-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-warm);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.viz-control-panel.collapsed .viz-control-panel-header {
+  border-bottom: 0;
+}
+
+.viz-control-panel-header > span {
+  display: grid;
+  gap: 2px;
+}
+
+.viz-control-panel-header strong {
+  font-size: 13px;
+}
+
+.viz-control-panel-header small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 450;
+}
+
+.viz-control-panel-body {
+  display: grid;
+  gap: 10px;
+  padding: 8px;
+}
+
+.viz-entity-selector {
+  display: grid;
+  gap: 10px;
+  padding: 0 2px 2px;
+}
+
+.viz-control-mode-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(250px, 1fr));
+  gap: 10px;
+  align-items: start;
 }
 
 .viz-entity-chips {
@@ -2599,19 +2711,13 @@ button {
 .viz-layout-toggle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  background: var(--surface);
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 .viz-scope-control {
   display: grid;
   gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  background: var(--surface);
 }
 
 .viz-time-window-manager {
@@ -2760,12 +2866,28 @@ button {
   min-height: 72px;
   border: 1px solid var(--line);
   background: #fbfcfc;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.viz-time-window-overview.dragging {
+  cursor: grabbing;
 }
 
 .viz-time-window-range {
   fill: var(--teal-soft);
   stroke: var(--teal-quiet);
   stroke-width: 1;
+  cursor: grab;
+}
+
+.viz-time-window-handle {
+  fill: var(--teal);
+  fill-opacity: 0.84;
+  stroke: white;
+  stroke-width: 1;
+  cursor: ew-resize;
 }
 
 .viz-time-window-line {
@@ -2782,33 +2904,14 @@ button {
   stroke-opacity: 0.72;
 }
 
-.viz-time-window-controls {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.viz-time-window-controls label {
-  display: grid;
-  grid-template-columns: auto minmax(140px, 1fr) 54px;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
+.viz-time-window-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
   font-size: 11px;
   font-weight: 650;
-  text-transform: uppercase;
-}
-
-.viz-time-window-controls input {
-  width: 100%;
-  accent-color: var(--teal);
-}
-
-.viz-time-window-controls span {
-  color: var(--ink);
   font-variant-numeric: tabular-nums;
-  text-align: right;
-  text-transform: none;
 }
 
 .viz-scope-main {
@@ -2816,16 +2919,6 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.viz-scope-main > div:first-child {
-  display: grid;
-  gap: 2px;
-}
-
-.viz-layout-toggle > div:first-child {
-  display: grid;
-  gap: 2px;
 }
 
 .viz-scope-main strong,
@@ -2842,6 +2935,7 @@ button {
 
 .viz-layout-buttons {
   display: inline-flex;
+  width: 100%;
   gap: 5px;
   padding: 3px;
   border: 1px solid var(--line);
@@ -2850,6 +2944,7 @@ button {
 
 .viz-layout-buttons button {
   display: grid;
+  flex: 1 1 0;
   gap: 1px;
   min-height: 34px;
   padding: 5px 9px;
@@ -2984,6 +3079,10 @@ button {
   padding: 9px;
   border: 1px solid var(--line);
   background: #fbfcfc;
+}
+
+.viz-entity-strip.responsive > .viz-entity-tile {
+  flex-basis: max(var(--viz-min-tile-width, 352px), var(--viz-target-tile-width, 352px));
 }
 
 .viz-entity-tile.compact {
@@ -3157,8 +3256,10 @@ button {
   stroke-width: 1;
 }
 
-.viz-histogram-bar-rebound {
-  stroke-dasharray: 2 2;
+.viz-histogram-bar:hover,
+.viz-chart circle:hover {
+  stroke-width: 2;
+  filter: drop-shadow(0 0 3px rgba(0, 140, 149, 0.32));
 }
 
 .viz-fit-line {
@@ -3176,8 +3277,8 @@ button {
   stroke-opacity: 0.9;
 }
 
-.viz-series-line-rebound {
-  stroke-opacity: 0.74;
+.viz-series-line:hover {
+  stroke-width: 3;
 }
 
 .viz-mirror-label {
@@ -3352,6 +3453,7 @@ button {
   .library-root-control,
   .filter-manager-content,
   .filter-manager-row.two-columns,
+  .viz-control-mode-row,
   .note-editor-form {
     grid-template-columns: 1fr;
   }

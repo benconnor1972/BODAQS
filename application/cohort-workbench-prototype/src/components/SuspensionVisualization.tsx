@@ -1,11 +1,10 @@
-import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { sessionByRef, sessionRefId } from '../domain/studySets'
 import type {
   SessionRecord,
-  SignalQueryResponse,
   SignalQuerySignalRequest,
   SessionTrackMatchRecord,
   StudySessionRef,
@@ -14,6 +13,7 @@ import type {
   TrackRecord,
   TrackpointRecord,
 } from '../domain/types'
+import { InfoTip } from './Common'
 
 const FRONT_COLOR = '#008c95'
 const REAR_COLOR = '#101820'
@@ -27,6 +27,12 @@ const COMPRESSION_Y_METRIC = 'm_interval_vel_max'
 const REBOUND_Y_METRIC = 'm_interval_vel_min'
 const VELOCITY_METRIC_SPEC = { compressionMetricName: COMPRESSION_Y_METRIC, reboundMetricName: REBOUND_Y_METRIC }
 const STROKE_LENGTH_METRIC_SPEC = { compressionMetricName: STROKE_LENGTH_METRIC, reboundMetricName: STROKE_LENGTH_METRIC }
+const VELOCITY_DOMAIN_LIMITS = [1000, 2000, 5000, 10000]
+const STROKE_LENGTH_DOMAIN_LIMITS = [100, 150, 200, 250]
+const WHOLE_SESSION_DISTRIBUTION_BINS = 20
+const SECTOR_DISTRIBUTION_BINS = 15
+const VELOCITY_STATS_FORMATTER = formatMetricValueWithUnit('mm/s')
+const STROKE_LENGTH_STATS_FORMATTER = formatMetricValueWithUnit('mm')
 
 const SIGNAL_REQUESTS: SignalQuerySignalRequest[] = [
   { role: 'front_displacement', selector: { end: 'front', quantity: 'disp_norm', unit: '1' } },
@@ -64,6 +70,76 @@ type MirroredMetricSpec = { compressionMetricName: string; reboundMetricName: st
 type TimeWindow = { startS: number; endS: number }
 type TimeWindowsBySession = Record<string, TimeWindow>
 
+type SuspensionVisualizationSettings = {
+  selectedEntityIds: string[]
+  knownSessionEntityIds: string[]
+  collapsedPanels: string[]
+  comparisonLayout: ComparisonLayout
+  scopeMode: ScopeMode
+  selectedTrackId: string | null
+  selectedEnds: SuspensionEnd[]
+  selectedSectorIds: string[]
+  timeWindowsBySession: TimeWindowsBySession
+}
+
+type CachedSessionVisualizationData = {
+  sessionRef: StudySessionRef
+  time: number[]
+  signals: Record<string, number[]>
+  events: TableQueryRow[]
+  metrics: TableQueryRow[]
+  warnings: string[]
+}
+
+type TimedTableRow = {
+  row: TableQueryRow
+  triggerTimeS: number
+}
+
+type HistogramBin = {
+  x0: number
+  x1: number
+  proportion: number
+  count: number
+  total: number
+}
+
+type MirroredHistogramBins = {
+  compression: HistogramBin[]
+  rebound: HistogramBin[]
+}
+
+type ScatterPoint = {
+  x: number
+  y: number
+  role: 'front' | 'rear' | 'unknown'
+}
+
+type SectorInterval = {
+  startS: number
+  endS: number
+}
+
+const visualizationSettingsCache = new Map<string, SuspensionVisualizationSettings>()
+const visualizationSessionCacheByDataSource = new WeakMap<LibraryDataSource, Map<string, CachedSessionVisualizationData>>()
+const monotonicTimeArrayCache = new WeakMap<number[], boolean>()
+const rowTimeIndexCache = new WeakMap<TableQueryRow[], TimedTableRow[]>()
+const entitySignalValuesCache = new WeakMap<VisualizationData, Map<string, number[]>>()
+const rowSessionGroupCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]>>()
+const entityRowsCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]>>()
+const metricMirroredValueCache = new WeakMap<TableQueryRow[], Map<string, number[]>>()
+const histogramBinCache = new WeakMap<number[], Map<string, HistogramBin[]>>()
+const mirroredHistogramBinCache = new WeakMap<number[], Map<string, MirroredHistogramBins>>()
+const scatterPointCache = new WeakMap<TableQueryRow[], Map<string, ScatterPoint[]>>()
+const sectorValuesForSessionCache = new WeakMap<VisualizationData, Map<string, number[]>>()
+const sectorValuesForEntityCache = new WeakMap<VisualizationData, Map<string, number[]>>()
+const rowsInSectorsForEntityCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]>>()
+const percentValuesCache = new WeakMap<number[], number[]>()
+const sectorIntervalCache = new WeakMap<TrackRecord, Map<string, SectorInterval | null>>()
+const lastSectorIdCache = new WeakMap<TrackRecord, string | null>()
+const trackObjectIdCache = new WeakMap<TrackRecord, number>()
+let nextTrackObjectId = 1
+
 type TrackSector = {
   id: string
   label: string
@@ -99,22 +175,31 @@ export function SuspensionVisualization({
   const studySetTrackKey = studySetTracks.map((track) => `${track.id}:${track.revision}`).join('|')
   const studySetKey = stableStudySetKey(studySet)
   const trackMatchKey = stableTrackMatchKey(studySet)
+  const settingsCacheKey = visualizationSettingsKey(studySet)
+  const initialSettings = restoredVisualizationSettings(settingsCacheKey, entities, studySetTracks)
   const [selectedEntityIds, setSelectedEntityIds] = useState<string[]>(() =>
-    entities.filter((entity) => entity.kind === 'session').map((entity) => entity.id),
+    initialSettings.selectedEntityIds,
   )
-  const [collapsedPanels, setCollapsedPanels] = useState<string[]>([])
-  const [comparisonLayout, setComparisonLayout] = useState<ComparisonLayout>('entities')
-  const [scopeMode, setScopeMode] = useState<ScopeMode>('whole_session')
-  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(() => studySetTracks[0]?.id ?? null)
-  const [selectedEnds, setSelectedEnds] = useState<SuspensionEnd[]>(['front', 'rear'])
-  const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>([])
-  const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>({})
-  const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select entities to visualize.' })
+  const [collapsedPanels, setCollapsedPanels] = useState<string[]>(initialSettings.collapsedPanels)
+  const [comparisonLayout, setComparisonLayout] = useState<ComparisonLayout>(initialSettings.comparisonLayout)
+  const [scopeMode, setScopeMode] = useState<ScopeMode>(initialSettings.scopeMode)
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(() => initialSettings.selectedTrackId)
+  const [selectedEnds, setSelectedEnds] = useState<SuspensionEnd[]>(initialSettings.selectedEnds)
+  const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>(initialSettings.selectedSectorIds)
+  const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>(initialSettings.timeWindowsBySession)
+  const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select sessions or groups to visualize.' })
 
   useEffect(() => {
-    setSelectedEntityIds(visualizationEntities(studySet).filter((entity) => entity.kind === 'session').map((entity) => entity.id))
-    setTimeWindowsBySession({})
-  }, [studySetKey])
+    const restored = restoredVisualizationSettings(settingsCacheKey, visualizationEntities(studySet), studySetTracks)
+    setSelectedEntityIds(restored.selectedEntityIds)
+    setCollapsedPanels(restored.collapsedPanels)
+    setComparisonLayout(restored.comparisonLayout)
+    setScopeMode(restored.scopeMode)
+    setSelectedTrackId(restored.selectedTrackId)
+    setSelectedEnds(restored.selectedEnds)
+    setSelectedSectorIds(restored.selectedSectorIds)
+    setTimeWindowsBySession(restored.timeWindowsBySession)
+  }, [settingsCacheKey, studySetKey])
 
   useEffect(() => {
     if (!dataSource.listTrackMatches || studySet.sessions.length === 0 || studySet.trackIds.length === 0) {
@@ -176,6 +261,31 @@ export function SuspensionVisualization({
   }, [selectedTrack?.id, sectorKey])
 
   useEffect(() => {
+    visualizationSettingsCache.set(settingsCacheKey, {
+      selectedEntityIds,
+      knownSessionEntityIds: entities.filter((entity) => entity.kind === 'session').map((entity) => entity.id),
+      collapsedPanels,
+      comparisonLayout,
+      scopeMode,
+      selectedTrackId,
+      selectedEnds,
+      selectedSectorIds,
+      timeWindowsBySession,
+    })
+  }, [
+    settingsCacheKey,
+    studySetKey,
+    selectedEntityIds,
+    collapsedPanels,
+    comparisonLayout,
+    scopeMode,
+    selectedTrackId,
+    selectedEnds,
+    selectedSectorIds,
+    timeWindowsBySession,
+  ])
+
+  useEffect(() => {
     let cancelled = false
     async function loadData() {
       if (studySetSessionRefs.length === 0) {
@@ -208,6 +318,13 @@ export function SuspensionVisualization({
     () => (data ? applyTimeWindows(data, deferredTimeWindowsBySession) : null),
     [data, deferredTimeWindowsBySession],
   )
+  const controlsCollapsed = collapsedPanels.includes('select-filter')
+  const velocityDomain = data
+    ? metricMagnitudeCandidateDomain(selectedEntities, data, selectedEnds, VELOCITY_METRIC_SPEC, VELOCITY_DOMAIN_LIMITS)
+    : ([0, 2000] as [number, number])
+  const strokeLengthDomain = data
+    ? metricMagnitudeCandidateDomain(selectedEntities, data, selectedEnds, STROKE_LENGTH_METRIC_SPEC, STROKE_LENGTH_DOMAIN_LIMITS)
+    : ([0, 100] as [number, number])
 
   function toggleEntity(entityId: string) {
     setSelectedEntityIds((current) =>
@@ -254,12 +371,10 @@ export function SuspensionVisualization({
     <div className="suspension-viz">
       <header className="suspension-viz-hero">
         <div>
-          <p className="eyebrow">Browser-native quick view</p>
-          <h3>{studySet.displayName || 'Current Study Set'}</h3>
-          <p>
-            Suspension comparison using Study Set entities. Groupings are available but deselected by default and pool
-            their member sessions when enabled. Sector mode pools selected track sectors and can facet them vertically.
-          </p>
+          <h3 className="viz-heading">
+            {studySet.displayName || 'Current Study Set'}
+            <InfoTip text="Simple Suspension Metrics for one or more Study Set sessions or groups. Groups combine their member sessions." />
+          </h3>
         </div>
         <div className="suspension-viz-legend">
           <span>
@@ -273,28 +388,60 @@ export function SuspensionVisualization({
         </div>
       </header>
 
-      <VisualizationFilterChips
-        entities={entities}
-        scopeMode={scopeMode}
-        sectors={sectors}
-        selectedEndKeys={selectedEnds}
-        selectedEntityIds={selectedEntityIds}
-        selectedSectorIds={selectedSectorIds}
-        onToggleEnd={toggleEnd}
-        onToggleEntity={toggleEntity}
-        onToggleSector={toggleSector}
-      />
+      <section className={`viz-control-panel${controlsCollapsed ? ' collapsed' : ''}`} aria-label="Select and filter">
+        <button className="viz-control-panel-header" type="button" onClick={() => togglePanel('select-filter')}>
+          <span>
+            <strong>
+              Select and Filter
+              <InfoTip text="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed." />
+            </strong>
+            <small>
+              {selectedEntityIds.length} sessions/groups, {selectedEnds.length} ends, {selectedSectors.length} sectors
+            </small>
+          </span>
+          {controlsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        </button>
+        {!controlsCollapsed && (
+          <div className="viz-control-panel-body">
+            <VisualizationFilterChips
+              entities={entities}
+              scopeMode={scopeMode}
+              sectors={sectors}
+              selectedEndKeys={selectedEnds}
+              selectedEntityIds={selectedEntityIds}
+              selectedSectorIds={selectedSectorIds}
+              onToggleEnd={toggleEnd}
+              onToggleEntity={toggleEntity}
+              onToggleSector={toggleSector}
+            />
 
-      <ScopeModeControl
-        value={scopeMode}
-        onChange={setScopeMode}
-        tracks={studySetTracks}
-        selectedTrackId={selectedTrack?.id ?? null}
-        onTrackChange={setSelectedTrackId}
-        sectors={sectors}
-      />
+            <div className="viz-control-mode-row">
+              <ScopeModeControl
+                value={scopeMode}
+                onChange={setScopeMode}
+                tracks={studySetTracks}
+                selectedTrackId={selectedTrack?.id ?? null}
+                onTrackChange={setSelectedTrackId}
+                sectors={sectors}
+              />
 
-      <ComparisonLayoutToggle value={comparisonLayout} onChange={setComparisonLayout} />
+              <ComparisonLayoutToggle value={comparisonLayout} onChange={setComparisonLayout} />
+            </div>
+
+            {data && selectedSessionRefs.length > 0 && (
+              <TimeWindowManager
+                data={data}
+                sessionRefs={selectedSessionRefs}
+                sessions={sessions}
+                timeWindows={timeWindowsBySession}
+                onChange={setSessionTimeWindow}
+                onReset={resetSessionTimeWindow}
+                onResetAll={() => setTimeWindowsBySession({})}
+              />
+            )}
+          </div>
+        )}
+      </section>
 
       {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
       {loadState.status === 'error' && <div className="viz-status warning">Could not load visualization data: {loadState.message}</div>}
@@ -307,24 +454,12 @@ export function SuspensionVisualization({
         </div>
       )}
 
-      {data && selectedSessionRefs.length > 0 && (
-        <TimeWindowManager
-          data={data}
-          sessionRefs={selectedSessionRefs}
-          sessions={sessions}
-          timeWindows={timeWindowsBySession}
-          onChange={setSessionTimeWindow}
-          onReset={resetSessionTimeWindow}
-          onResetAll={() => setTimeWindowsBySession({})}
-        />
-      )}
-
       {data && scopedData && (
         <div className="viz-panel-stack">
           <VisualizationPanel
             id="displacement"
-            title="Displacement distribution"
-            subtitle="Normalized displacement, fixed 0-1 axis."
+            title="Wheel displacement distribution"
+            subtitle="Wheel displacement, % of maximum travel, frequency distribution."
             collapsed={collapsedPanels.includes('displacement')}
             onToggle={() => togglePanel('displacement')}
           >
@@ -341,10 +476,11 @@ export function SuspensionVisualization({
                 allSectors={sectors}
                 frontRole="front_displacement"
                 rearRole="rear_displacement"
-                xDomain={[0, 1]}
-                xLabel="Normalized displacement"
-                bins={32}
+                xDomain={[0, 100]}
+                xLabel="wheel displacement, % of max"
+                bins={SECTOR_DISTRIBUTION_BINS}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
+                valueTransform={percentValues}
               />
             ) : (
               <DistributionGrid
@@ -352,28 +488,29 @@ export function SuspensionVisualization({
                 layout={comparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('front_displacement', 'rear_displacement', selectedEnds)}
-                xDomain={[0, 1]}
-                xLabel="Normalized displacement"
-                bins={44}
+                xDomain={[0, 100]}
+                xLabel="wheel displacement, % of max"
+                bins={WHOLE_SESSION_DISTRIBUTION_BINS}
                 yMax={distributionYMax(
                   selectedEntities,
                   distributionRoles('front_displacement', 'rear_displacement', selectedEnds),
-                  (entity, role) => entitySignalValues(entity, data, role.signalRole),
-                  [0, 1],
-                  44,
+                  (entity, role) => percentValues(entitySignalValues(entity, data, role.signalRole)),
+                  [0, 100],
+                  WHOLE_SESSION_DISTRIBUTION_BINS,
                   'histogram',
                 )}
                 sessions={sessions}
                 showStats
-                valueForEntityRole={(entity, role) => entitySignalValues(entity, scopedData, role.signalRole)}
+                statsFormatter={formatPercentValue}
+                valueForEntityRole={(entity, role) => percentValues(entitySignalValues(entity, scopedData, role.signalRole))}
               />
             )}
           </VisualizationPanel>
 
           <VisualizationPanel
             id="velocity"
-            title="Velocity distribution"
-            subtitle={`${COMPRESSION_Y_METRIC} above baseline; ${REBOUND_Y_METRIC} mirrored below.`}
+            title="Wheel velocity distribution"
+            subtitle="Maximum vertical stroke velocity at the wheel, compression above the axis, rebound below the axis, frequency distribution."
             collapsed={collapsedPanels.includes('velocity')}
             onToggle={() => togglePanel('velocity')}
           >
@@ -388,9 +525,10 @@ export function SuspensionVisualization({
                 selectedTrack={selectedTrack}
                 sectors={selectedSectors}
                 allSectors={sectors}
-                xLabel="Interval velocity magnitude (mm/s)"
-                bins={36}
-                fallbackDomain={[0, 2000]}
+                xLabel="stroke maximum wheel velocity (mm/s)"
+                bins={SECTOR_DISTRIBUTION_BINS}
+                domainCandidates={VELOCITY_DOMAIN_LIMITS}
+                statsFormatter={VELOCITY_STATS_FORMATTER}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
@@ -399,18 +537,21 @@ export function SuspensionVisualization({
                 layout={comparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('', '', selectedEnds)}
-                xDomain={metricMagnitudeDomain(selectedEntities, data, selectedEnds, VELOCITY_METRIC_SPEC, [0, 2000])}
-                xLabel="Interval velocity magnitude (mm/s)"
-                bins={56}
+                xDomain={velocityDomain}
+                xLabel="stroke maximum wheel velocity (mm/s)"
+                bins={WHOLE_SESSION_DISTRIBUTION_BINS}
                 yMax={distributionYMax(
                   selectedEntities,
                   distributionRoles('', '', selectedEnds),
                   (entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, VELOCITY_METRIC_SPEC),
-                  metricMagnitudeDomain(selectedEntities, data, selectedEnds, VELOCITY_METRIC_SPEC, [0, 2000]),
-                  56,
+                  velocityDomain,
+                  WHOLE_SESSION_DISTRIBUTION_BINS,
                   'mirrored_velocity',
                 )}
                 sessions={sessions}
+                showStats
+                statsFormatter={VELOCITY_STATS_FORMATTER}
+                statsTransform={Math.abs}
                 valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, scopedData, role.key, VELOCITY_METRIC_SPEC)}
               />
             )}
@@ -418,8 +559,8 @@ export function SuspensionVisualization({
 
           <VisualizationPanel
             id="stroke-length"
-            title="Stroke length distribution"
-            subtitle={`${STROKE_LENGTH_METRIC}; compressions above baseline, rebounds mirrored below.`}
+            title="Wheel stroke length distribution"
+            subtitle="Vertical stroke length at the wheel, compression above the axis, rebound below the axis, frequency distribution."
             collapsed={collapsedPanels.includes('stroke-length')}
             onToggle={() => togglePanel('stroke-length')}
           >
@@ -434,9 +575,10 @@ export function SuspensionVisualization({
                 selectedTrack={selectedTrack}
                 sectors={selectedSectors}
                 allSectors={sectors}
-                xLabel="Stroke length (mm)"
-                bins={36}
-                fallbackDomain={[0, 100]}
+                xLabel="wheel stroke length (mm)"
+                bins={SECTOR_DISTRIBUTION_BINS}
+                domainCandidates={STROKE_LENGTH_DOMAIN_LIMITS}
+                statsFormatter={STROKE_LENGTH_STATS_FORMATTER}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
@@ -445,18 +587,21 @@ export function SuspensionVisualization({
                 layout={comparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('', '', selectedEnds)}
-                xDomain={metricMagnitudeDomain(selectedEntities, data, selectedEnds, STROKE_LENGTH_METRIC_SPEC, [0, 100])}
-                xLabel="Stroke length (mm)"
-                bins={44}
+                xDomain={strokeLengthDomain}
+                xLabel="wheel stroke length (mm)"
+                bins={WHOLE_SESSION_DISTRIBUTION_BINS}
                 yMax={distributionYMax(
                   selectedEntities,
                   distributionRoles('', '', selectedEnds),
                   (entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, STROKE_LENGTH_METRIC_SPEC),
-                  metricMagnitudeDomain(selectedEntities, data, selectedEnds, STROKE_LENGTH_METRIC_SPEC, [0, 100]),
-                  44,
+                  strokeLengthDomain,
+                  WHOLE_SESSION_DISTRIBUTION_BINS,
                   'mirrored_velocity',
                 )}
                 sessions={sessions}
+                showStats
+                statsFormatter={STROKE_LENGTH_STATS_FORMATTER}
+                statsTransform={Math.abs}
                 valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, scopedData, role.key, STROKE_LENGTH_METRIC_SPEC)}
               />
             )}
@@ -465,7 +610,7 @@ export function SuspensionVisualization({
           <VisualizationPanel
             id="compression"
             title="Compression metrics"
-            subtitle={`${SCATTER_X_METRIC} vs ${COMPRESSION_Y_METRIC}; front/rear on one chart.`}
+            subtitle="Compression stroke maximum displacement vs maximum velocity, at the wheel, front/rear on one chart."
             collapsed={collapsedPanels.includes('compression')}
             onToggle={() => togglePanel('compression')}
           >
@@ -481,7 +626,7 @@ export function SuspensionVisualization({
                 allSectors={sectors}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={COMPRESSION_Y_METRIC}
-                yLabel="Compression velocity"
+                yLabel="Compression velocity (mm/s)"
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
@@ -492,7 +637,7 @@ export function SuspensionVisualization({
                 eventType={COMPRESSION_EVENT_TYPE}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={COMPRESSION_Y_METRIC}
-                yLabel="Compression velocity"
+                yLabel="Compression velocity (mm/s)"
                 ends={selectedEnds}
                 showRegression
               />
@@ -502,7 +647,7 @@ export function SuspensionVisualization({
           <VisualizationPanel
             id="rebound"
             title="Rebound metrics"
-            subtitle={`${SCATTER_X_METRIC} vs ${REBOUND_Y_METRIC}; front/rear on one chart.`}
+            subtitle="Compression stroke maximum displacement vs maximum (negative) velocity, at the wheel, front/rear on one chart."
             collapsed={collapsedPanels.includes('rebound')}
             onToggle={() => togglePanel('rebound')}
           >
@@ -518,7 +663,7 @@ export function SuspensionVisualization({
                 allSectors={sectors}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={REBOUND_Y_METRIC}
-                yLabel="Rebound velocity"
+                yLabel="Rebound velocity (mm/s)"
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
@@ -529,7 +674,7 @@ export function SuspensionVisualization({
                 eventType={REBOUND_EVENT_TYPE}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={REBOUND_Y_METRIC}
-                yLabel="Rebound velocity"
+                yLabel="Rebound velocity (mm/s)"
                 ends={selectedEnds}
                 showRegression
               />
@@ -539,7 +684,7 @@ export function SuspensionVisualization({
           <VisualizationPanel
             id="events"
             title="Event counts"
-            subtitle="Tabular counts by event type and signal role."
+            subtitle="Counts of detected events by event type."
             collapsed={collapsedPanels.includes('events')}
             onToggle={() => togglePanel('events')}
           >
@@ -572,18 +717,14 @@ function ComparisonLayoutToggle({
   onChange: (value: ComparisonLayout) => void
 }) {
   return (
-    <section className="viz-layout-toggle" aria-label="Comparison layout">
-      <div>
-        <strong>Comparison layout</strong>
-        <span>Choose which dimension becomes the horizontal facet.</span>
-      </div>
+    <div className="viz-layout-toggle" aria-label="Comparison layout">
       <div className="viz-layout-buttons">
         <button
           className={value === 'entities' ? 'active' : ''}
           type="button"
           onClick={() => onChange('entities')}
         >
-          Entities as columns
+          Session vs session
           <small>Front/rear together</small>
         </button>
         <button
@@ -591,11 +732,11 @@ function ComparisonLayoutToggle({
           type="button"
           onClick={() => onChange('ends')}
         >
-          Ends as columns
-          <small>Entities together</small>
+          Front vs rear
+          <small>Sessions/groups together</small>
         </button>
       </div>
-    </section>
+    </div>
   )
 }
 
@@ -708,25 +849,15 @@ function TimeWindowNavigator({
   const minWindowS = Math.max(0.1, durationS / 500)
   const current = sanitizeTimeWindow(window ?? { startS: 0, endS: durationS }, durationS, minWindowS)
   const [draftWindow, setDraftWindow] = useState<TimeWindow>(current)
-  const step = Math.max(0.1, durationS / 1000)
   const active = Boolean(window)
 
   useEffect(() => {
     setDraftWindow(current)
   }, [current.startS, current.endS, sessionRef.sessionKey])
 
-  function setStart(value: number) {
-    const startS = clamp(value, 0, Math.max(0, draftWindow.endS - minWindowS))
-    setDraftWindow(sanitizeTimeWindow({ startS, endS: draftWindow.endS }, durationS, minWindowS))
-  }
-
-  function setEnd(value: number) {
-    const endS = clamp(value, Math.min(durationS, draftWindow.startS + minWindowS), durationS)
-    setDraftWindow(sanitizeTimeWindow({ startS: draftWindow.startS, endS }, durationS, minWindowS))
-  }
-
-  function commitDraftWindow() {
-    const nextWindow = sanitizeTimeWindow(draftWindow, durationS, minWindowS)
+  function commitDraftWindow(nextDraftWindow = draftWindow) {
+    const nextWindow = sanitizeTimeWindow(nextDraftWindow, durationS, minWindowS)
+    setDraftWindow(nextWindow)
     if (nextWindow.startS !== current.startS || nextWindow.endS !== current.endS) {
       onChange(nextWindow)
     }
@@ -749,38 +880,18 @@ function TimeWindowNavigator({
         <div className="viz-time-window-empty">No usable signal timebase is available for this session.</div>
       ) : (
         <>
-          <TimeWindowOverview data={data} durationS={durationS} sessionRef={sessionRef} window={draftWindow} />
-          <div className="viz-time-window-controls">
-            <label>
-              Start
-              <input
-                type="range"
-                min={0}
-                max={durationS}
-                step={step}
-                value={draftWindow.startS}
-                onChange={(event) => setStart(Number(event.target.value))}
-                onBlur={commitDraftWindow}
-                onKeyUp={commitDraftWindow}
-                onPointerUp={commitDraftWindow}
-              />
-              <span>{formatTimeOffset(draftWindow.startS)}</span>
-            </label>
-            <label>
-              End
-              <input
-                type="range"
-                min={0}
-                max={durationS}
-                step={step}
-                value={draftWindow.endS}
-                onChange={(event) => setEnd(Number(event.target.value))}
-                onBlur={commitDraftWindow}
-                onKeyUp={commitDraftWindow}
-                onPointerUp={commitDraftWindow}
-              />
-              <span>{formatTimeOffset(draftWindow.endS)}</span>
-            </label>
+          <TimeWindowOverview
+            data={data}
+            durationS={durationS}
+            minWindowS={minWindowS}
+            sessionRef={sessionRef}
+            window={draftWindow}
+            onChange={(nextWindow) => setDraftWindow(sanitizeTimeWindow(nextWindow, durationS, minWindowS))}
+            onCommit={commitDraftWindow}
+          />
+          <div className="viz-time-window-readout">
+            <span>Start {formatTimeOffset(draftWindow.startS)}</span>
+            <span>End {formatTimeOffset(draftWindow.endS)}</span>
           </div>
         </>
       )}
@@ -791,17 +902,31 @@ function TimeWindowNavigator({
 function TimeWindowOverview({
   data,
   durationS,
+  minWindowS,
   sessionRef,
   window,
+  onChange,
+  onCommit,
 }: {
   data: VisualizationData
   durationS: number
+  minWindowS: number
   sessionRef: StudySessionRef
   window: TimeWindow
+  onChange: (window: TimeWindow) => void
+  onCommit: (window: TimeWindow) => void
 }) {
   const width = 760
   const height = 86
   const margin = { top: 10, right: 12, bottom: 20, left: 28 }
+  type DragMode = 'start' | 'end' | 'move'
+  type TimeWindowDrag = {
+    mode: DragMode
+    pointerStartS: number
+    windowStartS: number
+    windowEndS: number
+  }
+  const [drag, setDrag] = useState<TimeWindowDrag | null>(null)
   const key = sessionRefId(sessionRef)
   const times = data.timeBySession[key] ?? []
   const signals = data.signalsBySession[key] ?? {}
@@ -818,10 +943,110 @@ function TimeWindowOverview({
   const rearPath = line(rearPoints)
   const selectionX = x(window.startS)
   const selectionWidth = Math.max(1, x(window.endS) - selectionX)
+  const handleWidth = 8
   const empty = frontPoints.length === 0 && rearPoints.length === 0
 
+  function pointerViewX(event: PointerEvent<SVGSVGElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    return ((event.clientX - bounds.left) / Math.max(1, bounds.width)) * width
+  }
+
+  function pointerTime(event: PointerEvent<SVGSVGElement>) {
+    return clamp(x.invert(pointerViewX(event)), 0, durationS)
+  }
+
+  function dragModeAt(viewX: number): DragMode | null {
+    const endX = selectionX + selectionWidth
+    const handleHitWidth = 12
+    if (Math.abs(viewX - selectionX) <= handleHitWidth) {
+      return 'start'
+    }
+    if (Math.abs(viewX - endX) <= handleHitWidth) {
+      return 'end'
+    }
+    if (viewX > selectionX && viewX < endX) {
+      return 'move'
+    }
+    return null
+  }
+
+  function windowForPointer(event: PointerEvent<SVGSVGElement>, activeDrag: TimeWindowDrag) {
+    const nextPointerS = pointerTime(event)
+    if (activeDrag.mode === 'start') {
+      return sanitizeTimeWindow(
+        { startS: clamp(nextPointerS, 0, activeDrag.windowEndS - minWindowS), endS: activeDrag.windowEndS },
+        durationS,
+        minWindowS,
+      )
+    }
+    if (activeDrag.mode === 'end') {
+      return sanitizeTimeWindow(
+        { startS: activeDrag.windowStartS, endS: clamp(nextPointerS, activeDrag.windowStartS + minWindowS, durationS) },
+        durationS,
+        minWindowS,
+      )
+    }
+    const windowWidthS = activeDrag.windowEndS - activeDrag.windowStartS
+    const deltaS = nextPointerS - activeDrag.pointerStartS
+    const startS = clamp(activeDrag.windowStartS + deltaS, 0, Math.max(0, durationS - windowWidthS))
+    return sanitizeTimeWindow({ startS, endS: startS + windowWidthS }, durationS, minWindowS)
+  }
+
+  function handlePointerDown(event: PointerEvent<SVGSVGElement>) {
+    const mode = dragModeAt(pointerViewX(event))
+    if (!mode) {
+      return
+    }
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setDrag({
+      mode,
+      pointerStartS: pointerTime(event),
+      windowStartS: window.startS,
+      windowEndS: window.endS,
+    })
+  }
+
+  function handlePointerMove(event: PointerEvent<SVGSVGElement>) {
+    if (!drag) {
+      return
+    }
+    event.preventDefault()
+    onChange(windowForPointer(event, drag))
+  }
+
+  function handlePointerUp(event: PointerEvent<SVGSVGElement>) {
+    if (!drag) {
+      return
+    }
+    event.preventDefault()
+    const nextWindow = windowForPointer(event, drag)
+    onChange(nextWindow)
+    onCommit(nextWindow)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    setDrag(null)
+  }
+
+  function handlePointerCancel(event: PointerEvent<SVGSVGElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    setDrag(null)
+  }
+
   return (
-    <svg className="viz-time-window-overview" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Session displacement overview">
+    <svg
+      className={`viz-time-window-overview${drag ? ' dragging' : ''}`}
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label="Session displacement overview"
+      onPointerCancel={handlePointerCancel}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+    >
       <rect className="viz-time-window-range" x={selectionX} y={margin.top} width={selectionWidth} height={height - margin.top - margin.bottom} />
       <line className="viz-axis" x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} />
       <line className="viz-axis" x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} />
@@ -843,6 +1068,20 @@ function TimeWindowOverview({
           No displacement signal for overview
         </text>
       )}
+      <rect
+        className="viz-time-window-handle"
+        x={selectionX - handleWidth / 2}
+        y={margin.top}
+        width={handleWidth}
+        height={height - margin.top - margin.bottom}
+      />
+      <rect
+        className="viz-time-window-handle"
+        x={selectionX + selectionWidth - handleWidth / 2}
+        y={margin.top}
+        width={handleWidth}
+        height={height - margin.top - margin.bottom}
+      />
     </svg>
   )
 }
@@ -870,16 +1109,13 @@ function VisualizationFilterChips({
 }) {
   const selectedSectorCount = sectors.filter((sector) => selectedSectorIds.includes(sector.id)).length
   return (
-    <section className="viz-entity-selector" aria-label="Visualization filters">
-      <div className="viz-selector-header">
-        <strong>Visualization filters</strong>
-        <span className="subtle">
-          {selectedEntityIds.length} entities, {selectedEndKeys.length} ends, {selectedSectorCount} sectors
-        </span>
-      </div>
+    <div
+      className="viz-entity-selector"
+      aria-label={`Visualization filters: ${selectedEntityIds.length} sessions/groups, ${selectedEndKeys.length} ends, ${selectedSectorCount} sectors`}
+    >
 
       <div className="viz-filter-group">
-        <strong>Entities</strong>
+        <strong>Sessions and groups</strong>
         <div className="viz-entity-chips">
           {entities.map((entity) => {
             const selected = selectedEntityIds.includes(entity.id)
@@ -918,10 +1154,16 @@ function VisualizationFilterChips({
       </div>
 
       <div className="viz-filter-group">
-        <strong>Sectors</strong>
-        <span className="viz-filter-hint">
-          {scopeMode === 'sector' ? 'Selected sectors define the overall and facet views.' : 'Held ready for by-sector scope.'}
-        </span>
+        <strong className="inline-heading">
+          Sectors
+          <InfoTip
+            text={
+              scopeMode === 'sector'
+                ? 'Selected sectors only are displayed and included in the overall view.'
+                : 'Sector selections applied only in sector scope.'
+            }
+          />
+        </strong>
         <div className="viz-entity-chips">
           {sectors.length === 0 && <span className="viz-filter-empty">No sectors available for the selected track.</span>}
           {sectors.map((sector) => {
@@ -940,7 +1182,7 @@ function VisualizationFilterChips({
           })}
         </div>
       </div>
-    </section>
+    </div>
   )
 }
 
@@ -961,16 +1203,8 @@ function ScopeModeControl({
 }) {
   const hasTracks = tracks.length > 0
   return (
-    <section className="viz-scope-control" aria-label="Visualization scope">
+    <div className="viz-scope-control" aria-label="Visualization scope">
       <div className="viz-scope-main">
-        <div>
-          <strong>Visualization scope</strong>
-          <span>
-            {value === 'sector'
-              ? 'Sector mode pools selected track sectors for the overall view and can facet each sector vertically.'
-              : 'Whole-session mode uses all matching samples/events from each selected entity.'}
-          </span>
-        </div>
         <div className="viz-layout-buttons">
           <button
             className={value === 'whole_session' ? 'active' : ''}
@@ -1013,7 +1247,7 @@ function ScopeModeControl({
           </div>
         </div>
       )}
-    </section>
+    </div>
   )
 }
 
@@ -1036,8 +1270,10 @@ function VisualizationPanel({
     <section className={`viz-panel${collapsed ? ' collapsed' : ''}`} aria-labelledby={`viz-panel-${id}`}>
       <button className="viz-panel-header" type="button" onClick={onToggle}>
         <span>
-          <strong id={`viz-panel-${id}`}>{title}</strong>
-          <small>{subtitle}</small>
+          <strong className="viz-heading" id={`viz-panel-${id}`}>
+            {title}
+            <InfoTip text={subtitle} />
+          </strong>
         </span>
         {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
       </button>
@@ -1054,10 +1290,13 @@ function DistributionGrid({
   valueForEntityRole,
   xDomain,
   xLabel,
+  yLabel = 'proportion',
   bins,
   yMax,
   sessions = [],
   showStats = false,
+  statsFormatter = formatPercentValue,
+  statsTransform = (value: number) => value,
 }: {
   chartKind: DistributionChartKind
   layout: ComparisonLayout
@@ -1066,10 +1305,13 @@ function DistributionGrid({
   valueForEntityRole: (entity: VisualizationEntity, role: DistributionRole) => number[]
   xDomain: [number, number]
   xLabel: string
+  yLabel?: string
   bins: number
   yMax: number
   sessions?: SessionRecord[]
   showStats?: boolean
+  statsFormatter?: (value: number | null) => string
+  statsTransform?: (value: number) => number
 }) {
   if (roles.length === 0) {
     return (
@@ -1082,7 +1324,7 @@ function DistributionGrid({
 
   if (layout === 'ends') {
     return (
-      <div className="viz-entity-strip">
+      <div className="viz-entity-strip responsive" style={responsiveStripStyle(roles.length, 382)}>
         {roles.map((role) => {
           const series = entities.map((entity, index) => ({
             id: entity.id,
@@ -1094,11 +1336,11 @@ function DistributionGrid({
             <article className="viz-entity-tile viz-end-tile" key={role.key}>
               <EndTileHeader label={role.label} />
               {chartKind === 'mirrored_velocity' ? (
-                <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+                <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
               ) : series.length <= 2 ? (
-                <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+                <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
               ) : (
-                <MultiHistogramChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+                <MultiHistogramChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
               )}
               <EntitySeriesLegend
                 series={series.map((item) => ({
@@ -1109,6 +1351,7 @@ function DistributionGrid({
                 }))}
                 emptyLabel="No matching signals"
               />
+              {showStats && <DistributionStats formatter={statsFormatter} series={series} transform={statsTransform} />}
             </article>
           )
         })}
@@ -1117,7 +1360,7 @@ function DistributionGrid({
   }
 
   return (
-    <div className="viz-entity-strip">
+    <div className="viz-entity-strip responsive" style={responsiveStripStyle(entities.length, 352)}>
       {entities.map((entity) => {
         const series = roles.map((role) => ({
           id: role.key,
@@ -1129,11 +1372,11 @@ function DistributionGrid({
           <article className="viz-entity-tile" key={entity.id}>
             <EntityTileHeader entity={entity} sessions={sessions} />
             {chartKind === 'mirrored_velocity' ? (
-              <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+              <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
             ) : (
-              <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+              <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
             )}
-            {showStats && <DistributionStats series={series} />}
+            {showStats && <DistributionStats formatter={statsFormatter} series={series} transform={statsTransform} />}
           </article>
         )
       })}
@@ -1157,6 +1400,7 @@ function SectorDistributionScaffold({
   xLabel,
   bins,
   trackMatchesLoading,
+  valueTransform = (values: number[]) => values,
 }: {
   quantity: 'displacement' | 'velocity'
   layout: ComparisonLayout
@@ -1173,6 +1417,7 @@ function SectorDistributionScaffold({
   xLabel: string
   bins: number
   trackMatchesLoading: boolean
+  valueTransform?: (values: number[]) => number[]
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
 
@@ -1206,7 +1451,7 @@ function SectorDistributionScaffold({
   const yMax = distributionYMax(
     entities,
     roles,
-    (entity, role) => sectorValuesForEntityAcrossSectors(entity, scaleData, selectedTrack, sectors, role.signalRole),
+    (entity, role) => valueTransform(sectorValuesForEntityAcrossSectors(entity, scaleData, selectedTrack, sectors, role.signalRole)),
     xDomain,
     bins,
     chartKind,
@@ -1214,7 +1459,8 @@ function SectorDistributionScaffold({
   const facetYMax = distributionYMax(
     entities,
     roles,
-    (entity, role) => sectors.flatMap((sector) => sectorValuesForEntity(entity, scaleData, selectedTrack, sector, role.signalRole)),
+    (entity, role) =>
+      sectors.flatMap((sector) => valueTransform(sectorValuesForEntity(entity, scaleData, selectedTrack, sector, role.signalRole))),
     xDomain,
     bins,
     chartKind,
@@ -1227,11 +1473,13 @@ function SectorDistributionScaffold({
     <div className="viz-sector-scaffold">
       <div className="viz-sector-scaffold-note">
         <div className="viz-sector-scaffold-note-text">
-          <strong>Selected-sector distribution</strong>
+          <strong className="inline-heading">
+            Selected-sector distribution
+            <InfoTip text="Overall charts pool only the selected sectors, not the whole session. Sector matching uses the available track-match intervals for each active session or group." />
+          </strong>
           <span>
-            {selectedTrack.name}: {sectors.length} of {allSectors.length} sector(s) selected. Overall charts pool only
-            the selected sectors, not the whole session. {intervalEntityCount} active entity/entities have usable sector
-            intervals and {sampledEntityCount} currently have selected-sector samples.
+            {selectedTrack.name}: {sectors.length} of {allSectors.length} sector(s) selected. {intervalEntityCount} active
+            session/group(s) have usable sector intervals and {sampledEntityCount} currently have selected-sector samples.
             {trackMatchesLoading ? ' Track matches are still loading.' : ''}
           </span>
         </div>
@@ -1249,7 +1497,7 @@ function SectorDistributionScaffold({
           layout={layout}
           roles={roles}
           valueForEntityRole={(entity, role) =>
-            sectorValuesForEntityAcrossSectors(entity, data, selectedTrack, sectors, role.signalRole)
+            valueTransform(sectorValuesForEntityAcrossSectors(entity, data, selectedTrack, sectors, role.signalRole))
           }
           xDomain={xDomain}
           xLabel={xLabel}
@@ -1280,7 +1528,7 @@ function SectorDistributionScaffold({
                   layout={layout}
                   roles={roles}
                   valueForEntityRole={(entity, role) =>
-                    sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole)
+                    valueTransform(sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole))
                   }
                   xDomain={xDomain}
                   xLabel={xLabel}
@@ -1307,7 +1555,8 @@ function SectorMetricDistributionScaffold({
   metricSpec,
   xLabel,
   bins,
-  fallbackDomain,
+  domainCandidates,
+  statsFormatter,
   trackMatchesLoading,
 }: {
   data: VisualizationData
@@ -1321,7 +1570,8 @@ function SectorMetricDistributionScaffold({
   metricSpec: MirroredMetricSpec
   xLabel: string
   bins: number
-  fallbackDomain: [number, number]
+  domainCandidates: number[]
+  statsFormatter: (value: number | null) => string
   trackMatchesLoading: boolean
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
@@ -1333,7 +1583,7 @@ function SectorMetricDistributionScaffold({
   const roles = distributionRoles('', '', ends)
   const overallRowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, sectors)
   const scaleRowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, scaleData.metrics, scaleData, track, sectors)
-  const xDomain = metricMagnitudeDomainFromRows(entities, roles, scaleRowsForEntity, metricSpec, fallbackDomain)
+  const xDomain = metricMagnitudeCandidateDomainFromRows(entities, roles, scaleRowsForEntity, metricSpec, domainCandidates)
   const yMax = distributionYMax(
     entities,
     roles,
@@ -1367,6 +1617,9 @@ function SectorMetricDistributionScaffold({
           entities={entities}
           layout={layout}
           roles={roles}
+          showStats
+          statsFormatter={statsFormatter}
+          statsTransform={Math.abs}
           valueForEntityRole={(entity, role) => metricMirroredValuesForRows(overallRowsForEntity(entity), role.key, metricSpec)}
           xDomain={xDomain}
           xLabel={xLabel}
@@ -1398,6 +1651,9 @@ function SectorMetricDistributionScaffold({
                     entities={entities}
                     layout={layout}
                     roles={roles}
+                    showStats
+                    statsFormatter={statsFormatter}
+                    statsTransform={Math.abs}
                     valueForEntityRole={(entity, role) => metricMirroredValuesForRows(rowsForEntity(entity), role.key, metricSpec)}
                     xDomain={xDomain}
                     xLabel={xLabel}
@@ -1624,10 +1880,13 @@ function SectorRowsNote({
   return (
     <div className="viz-sector-scaffold-note">
       <div className="viz-sector-scaffold-note-text">
-        <strong>{label}</strong>
+        <strong className="inline-heading">
+          {label}
+          <InfoTip text={`${rowKind[0].toUpperCase()}${rowKind.slice(1)} rows are assigned to selected sectors by primary trigger time.`} />
+        </strong>
         <span>
-          {selectedTrack.name}: {sectors.length} of {allSectors.length} sector(s) selected. {rowCount} {rowKind} row(s)
-          are assigned by primary trigger time. {intervalEntityCount} active entity/entities have usable sector intervals.
+          {selectedTrack.name}: {sectors.length} of {allSectors.length} sector(s) selected. {rowCount} {rowKind} row(s).
+          {intervalEntityCount} active session/group(s) have usable sector intervals.
           {trackMatchesLoading ? ' Track matches are still loading.' : ''}
         </span>
       </div>
@@ -1680,7 +1939,7 @@ function EventCountStrip({
   rowsForEntity?: (entity: VisualizationEntity) => TableQueryRow[]
 }) {
   return (
-    <div className="viz-entity-strip">
+    <div className="viz-entity-strip responsive" style={responsiveStripStyle(entities.length, 330)}>
       {entities.map((entity) => (
         <article className="viz-entity-tile compact" key={entity.id}>
           <EntityTileHeader entity={entity} />
@@ -1733,7 +1992,7 @@ function ScatterEntityStrip({
   }
 
   return (
-    <div className="viz-entity-strip">
+    <div className="viz-entity-strip responsive" style={responsiveStripStyle(entities.length, 352)}>
       {entities.map((entity) => {
         const points = scatterPoints(rowProvider(entity), eventType, xMetric, yMetric).filter(
           (point) => point.role !== 'unknown' && ends.includes(point.role),
@@ -1779,7 +2038,7 @@ function ScatterEndStrip({
 }) {
   const roles = distributionRoles('', '', ends)
   return (
-    <div className="viz-entity-strip">
+    <div className="viz-entity-strip responsive" style={responsiveStripStyle(roles.length, 382)}>
       {roles.map((role) => {
         const series = entities.map((entity, index) => ({
           id: entity.id,
@@ -1834,9 +2093,18 @@ function EndTileHeader({ label }: { label: string }) {
   return (
     <header className="viz-entity-tile-header viz-end-tile-header">
       <strong>{label}</strong>
-      <small>selected entities overlaid</small>
+      <small>selected sessions/groups overlaid</small>
     </header>
   )
+}
+
+function responsiveStripStyle(count: number, minTileWidth: number): CSSProperties {
+  const safeCount = Math.max(1, count)
+  const gapPx = 10
+  return {
+    '--viz-min-tile-width': `${minTileWidth}px`,
+    '--viz-target-tile-width': `calc((100% - ${(safeCount - 1) * gapPx}px) / ${safeCount})`,
+  } as CSSProperties
 }
 
 function histogramBarGeometry(
@@ -1856,16 +2124,41 @@ function histogramBarGeometry(
   }
 }
 
+function histogramBinTitle(label: string, bin: HistogramBin, xLabel: string, directionLabel = '') {
+  const direction = directionLabel ? `${directionLabel}\n` : ''
+  return `${label}\n${direction}${xLabel}: ${formatAxis(bin.x0)}-${formatAxis(bin.x1)}\nproportion: ${formatProportion(bin.proportion)}\ncount: ${bin.count}/${bin.total}`
+}
+
+function histogramSeriesTitle(label: string, bins: HistogramBin[], sampleCount: number, xLabel: string, directionLabel = '') {
+  const peak = bins.reduce<HistogramBin | null>((current, bin) => (!current || bin.proportion > current.proportion ? bin : current), null)
+  const direction = directionLabel ? `${directionLabel}\n` : ''
+  return peak
+    ? `${label}\n${direction}${sampleCount} sample(s)\npeak ${xLabel}: ${formatAxis(peak.x0)}-${formatAxis(peak.x1)}\npeak proportion: ${formatProportion(peak.proportion)}`
+    : `${label}\n${direction}No samples`
+}
+
+function scatterPointTitle(
+  label: string,
+  xLabel: string,
+  yLabel: string,
+  point: { x: number; y: number; role?: 'front' | 'rear' | 'unknown' },
+) {
+  const role = point.role ? `\nend: ${formatRole(point.role)}` : ''
+  return `${label}${role}\n${xLabel}: ${formatAxis(point.x)}\n${yLabel}: ${formatAxis(point.y)}`
+}
+
 function HistogramOverlayChart({
   series,
   xDomain,
   xLabel,
+  yLabel,
   bins,
   yMax,
 }: {
   series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
   xLabel: string
+  yLabel: string
   bins: number
   yMax: number
 }) {
@@ -1896,25 +2189,30 @@ function HistogramOverlayChart({
       })}
       {seriesBins.map((item, seriesIndex) =>
         item.bins.map((bin) => {
-          const bar = histogramBarGeometry(x, bin)
+          const bar = histogramBarGeometry(x, bin, seriesIndex, Math.max(1, seriesBins.length))
           return (
             <rect
               className="viz-histogram-bar"
               fill={item.color}
-              fillOpacity={seriesIndex === 0 ? 0.34 : 0.18}
+              fillOpacity={0.3}
               key={`${item.id}-${bin.x0}`}
               stroke={item.color}
-              strokeOpacity={seriesIndex === 0 ? 0.72 : 0.52}
+              strokeOpacity={0.66}
               width={bar.width}
               x={bar.x}
               y={y(bin.proportion)}
               height={height - margin.bottom - y(bin.proportion)}
-            />
+            >
+              <title>{histogramBinTitle(item.label, bin, xLabel)}</title>
+            </rect>
           )
         }),
       )}
       <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
         {xLabel}
+      </text>
+      <text className="viz-axis-title" transform={`translate(12 ${height / 2}) rotate(-90)`} textAnchor="middle">
+        {yLabel}
       </text>
       {allEmpty && (
         <text className="viz-empty-chart" x={width / 2} y={height / 2} textAnchor="middle">
@@ -1929,12 +2227,14 @@ function MultiHistogramChart({
   series,
   xDomain,
   xLabel,
+  yLabel,
   bins,
   yMax,
 }: {
   series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
   xLabel: string
+  yLabel: string
   bins: number
   yMax: number
 }) {
@@ -1971,11 +2271,16 @@ function MultiHistogramChart({
       {seriesBins.map((item) => {
         const path = line(item.bins)
         return path ? (
-          <path className="viz-series-line" d={path} key={item.id} stroke={item.color} />
+          <path className="viz-series-line" d={path} key={item.id} stroke={item.color}>
+            <title>{histogramSeriesTitle(item.label, item.bins, item.values.length, xLabel)}</title>
+          </path>
         ) : null
       })}
       <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
         {xLabel}
+      </text>
+      <text className="viz-axis-title" transform={`translate(12 ${height / 2}) rotate(-90)`} textAnchor="middle">
+        {yLabel}
       </text>
       {allEmpty && (
         <text className="viz-empty-chart" x={width / 2} y={height / 2} textAnchor="middle">
@@ -1990,12 +2295,14 @@ function MirroredVelocityChart({
   series,
   xDomain,
   xLabel,
+  yLabel,
   bins,
   yMax,
 }: {
   series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
   xLabel: string
+  yLabel: string
   bins: number
   yMax: number
 }) {
@@ -2040,7 +2347,7 @@ function MirroredVelocityChart({
         Compression
       </text>
       <text className="viz-mirror-label" x={margin.left + 4} y={height - margin.bottom - 8}>
-        Rebound mirrored
+        Rebound
       </text>
       {renderBars
         ? mirroredBins.map((item, seriesIndex) => (
@@ -2059,24 +2366,28 @@ function MirroredVelocityChart({
                     width={bar.width}
                     x={bar.x}
                     y={y(bin.proportion)}
-                  />
+                  >
+                    <title>{histogramBinTitle(item.label, bin, xLabel, 'Compression')}</title>
+                  </rect>
                 )
               })}
               {item.rebound.map((bin) => {
                 const bar = histogramBarGeometry(x, bin, seriesIndex, seriesCount)
                 return (
                   <rect
-                    className="viz-histogram-bar viz-histogram-bar-rebound"
+                    className="viz-histogram-bar"
                     fill={item.color}
-                    fillOpacity={0.22}
+                    fillOpacity={0.36}
                     height={y(-bin.proportion) - y(0)}
                     key={`rebound-${item.id}-${bin.x0}`}
                     stroke={item.color}
-                    strokeOpacity={0.58}
+                    strokeOpacity={0.7}
                     width={bar.width}
                     x={bar.x}
                     y={y(0)}
-                  />
+                  >
+                    <title>{histogramBinTitle(item.label, bin, xLabel, 'Rebound')}</title>
+                  </rect>
                 )
               })}
             </g>
@@ -2086,14 +2397,15 @@ function MirroredVelocityChart({
             const reboundPath = mirroredLine(item.rebound)
             return (
               <g key={item.id}>
-                {compressionPath && <path className="viz-series-line" d={compressionPath} stroke={item.color} />}
+                {compressionPath && (
+                  <path className="viz-series-line" d={compressionPath} stroke={item.color}>
+                    <title>{histogramSeriesTitle(item.label, item.compression, item.values.filter((value) => value >= 0).length, xLabel, 'Compression')}</title>
+                  </path>
+                )}
                 {reboundPath && (
-                  <path
-                    className="viz-series-line viz-series-line-rebound"
-                    d={reboundPath}
-                    stroke={item.color}
-                    strokeDasharray="3 3"
-                  />
+                  <path className="viz-series-line" d={reboundPath} stroke={item.color}>
+                    <title>{histogramSeriesTitle(item.label, item.rebound, item.values.filter((value) => value < 0).length, xLabel, 'Rebound')}</title>
+                  </path>
                 )}
               </g>
             )
@@ -2102,7 +2414,7 @@ function MirroredVelocityChart({
         {xLabel}
       </text>
       <text className="viz-axis-title" transform={`translate(12 ${height / 2}) rotate(-90)`} textAnchor="middle">
-        Proportion
+        {yLabel}
       </text>
       {allEmpty && (
         <text className="viz-empty-chart" x={width / 2} y={height / 2} textAnchor="middle">
@@ -2155,10 +2467,12 @@ function ScatterChart({
             cx={x(point.x)}
             cy={y(point.y)}
             fill={roleColor(point.role)}
-            fillOpacity={0.72}
+            fillOpacity={0.38}
             key={`${point.role}-${index}`}
             r={2.7}
-          />
+          >
+            <title>{scatterPointTitle(formatRole(point.role), xLabel, yLabel, point)}</title>
+          </circle>
         ))}
         <text className="viz-axis-title" x={width / 2} y={height - 6} textAnchor="middle">
           {xLabel}
@@ -2223,10 +2537,12 @@ function EntityScatterChart({
               cx={x(point.x)}
               cy={y(point.y)}
               fill={item.color}
-              fillOpacity={0.72}
+              fillOpacity={0.38}
               key={`${item.id}-${index}`}
               r={2.7}
-            />
+            >
+              <title>{scatterPointTitle(item.label, xLabel, yLabel, point)}</title>
+            </circle>
           )),
         )}
         <text className="viz-axis-title" x={width / 2} y={height - 6} textAnchor="middle">
@@ -2327,7 +2643,7 @@ function EntitySeriesLegend({
     return <div className="viz-series-legend muted">{emptyLabel}</div>
   }
   return (
-    <div className="viz-series-legend" aria-label="Entity series">
+    <div className="viz-series-legend" aria-label="Session and group series">
       {series.map((item) => (
         <div key={item.id}>
           <span style={{ background: item.color }} />
@@ -2370,27 +2686,47 @@ function EventCountTable({ rows, ends }: { rows: TableQueryRow[]; ends: Suspensi
   )
 }
 
-function DistributionStats({ series }: { series: Array<{ id: string; label: string; color: string; values: number[] }> }) {
+function DistributionStats({
+  formatter,
+  series,
+  transform,
+}: {
+  formatter: (value: number | null) => string
+  series: Array<{ id: string; label: string; color: string; values: number[] }>
+  transform: (value: number) => number
+}) {
   return (
     <div className="viz-stat-grid">
       {series.map((item) => (
-        <RoleStats color={item.color} key={item.id} label={item.label} values={item.values} />
+        <RoleStats color={item.color} formatter={formatter} key={item.id} label={item.label} transform={transform} values={item.values} />
       ))}
     </div>
   )
 }
 
-function RoleStats({ color, label, values }: { color: string; label: string; values: number[] }) {
-  const stats = distributionStats(values)
+function RoleStats({
+  color,
+  formatter,
+  label,
+  transform,
+  values,
+}: {
+  color: string
+  formatter: (value: number | null) => string
+  label: string
+  transform: (value: number) => number
+  values: number[]
+}) {
+  const stats = distributionStats(values.map(transform))
   return (
     <dl>
       <dt>
         <span style={{ backgroundColor: color }} />
         {label}
       </dt>
-      <dd>median {formatPercent(stats.median)}</dd>
-      <dd>95th {formatPercent(stats.p95)}</dd>
-      <dd>max {formatPercent(stats.max)}</dd>
+      <dd>median {formatter(stats.median)}</dd>
+      <dd>95th {formatter(stats.p95)}</dd>
+      <dd>max {formatter(stats.max)}</dd>
     </dl>
   )
 }
@@ -2400,13 +2736,10 @@ async function loadVisualizationData(
   dataSource: LibraryDataSource,
 ): Promise<VisualizationData> {
   const sessionRefs = uniqueSessionRefs(requestedSessionRefs)
-  const refsByLibrary = groupRefsByLibrary(sessionRefs)
-  const signalResponses: SignalQueryResponse[] = []
-  const eventRows: TableQueryRow[] = []
-  const metricRows: TableQueryRow[] = []
-  const warnings: string[] = []
+  const sessionCache = visualizationSessionCache(dataSource)
+  const missingSessionRefs = sessionRefs.filter((sessionRef) => !sessionCache.has(sessionRefId(sessionRef)))
 
-  for (const [libraryId, refs] of refsByLibrary.entries()) {
+  for (const [libraryId, refs] of groupRefsByLibrary(missingSessionRefs).entries()) {
     const [signals, events, metrics] = await Promise.all([
       dataSource.querySignals(libraryId, { sessions: refs, signals: SIGNAL_REQUESTS }),
       dataSource.queryEvents(libraryId, { sessions: refs }),
@@ -2415,21 +2748,90 @@ async function loadVisualizationData(
         eventTypes: [COMPRESSION_EVENT_TYPE, REBOUND_EVENT_TYPE],
       }),
     ])
-    signalResponses.push(signals)
-    eventRows.push(...events.rows)
-    metricRows.push(...metrics.rows)
-    warnings.push(...signals.warnings.map((warning) => warningMessage(warning)))
-    warnings.push(...events.warnings.map((warning) => warningMessage(warning)))
-    warnings.push(...metrics.warnings.map((warning) => warningMessage(warning)))
+    const requestWarnings = [
+      ...signals.warnings.map((warning) => warningMessage(warning)),
+      ...events.warnings.map((warning) => warningMessage(warning)),
+      ...metrics.warnings.map((warning) => warningMessage(warning)),
+    ].filter(Boolean)
+    const fetchedSessions = new Map<string, CachedSessionVisualizationData>()
+    for (const ref of refs) {
+      const key = sessionRefId(ref)
+      fetchedSessions.set(key, {
+        sessionRef: { ...ref },
+        time: [],
+        signals: {},
+        events: [],
+        metrics: [],
+        warnings: [...requestWarnings],
+      })
+    }
+    for (const session of signals.sessions) {
+      const key = sessionRefId(session.sessionRef)
+      const cached = fetchedSessions.get(key) ?? {
+        sessionRef: { ...session.sessionRef },
+        time: [],
+        signals: {},
+        events: [],
+        metrics: [],
+        warnings: [...requestWarnings],
+      }
+      if (!session.time) {
+        cached.warnings.push(`${session.sessionRef.label || key}: signal payload has no time column; sector mode is unavailable.`)
+        cached.time = []
+      } else {
+        cached.time = normalizeSignalTimes(numericValues(session.time.values))
+      }
+      if (!session.sampling.distributionCorrect) {
+        cached.warnings.push(`${session.sessionRef.label || key}: signal payload is not distribution-correct.`)
+      }
+      for (const signal of session.signals) {
+        cached.signals[signal.role] = numericValues(signal.values)
+      }
+      fetchedSessions.set(key, cached)
+    }
+
+    const eventRowsBySession = rowsGroupedBySession(events.rows)
+    const metricRowsBySession = rowsGroupedBySession(metrics.rows)
+    for (const [key, cached] of fetchedSessions.entries()) {
+      cached.events = eventRowsBySession.get(key) ?? []
+      cached.metrics = metricRowsBySession.get(key) ?? []
+      cached.warnings = uniqueStrings(cached.warnings)
+      sessionCache.set(key, cached)
+    }
   }
 
+  const cachedSessions = sessionRefs.map((sessionRef) => sessionCache.get(sessionRefId(sessionRef)) ?? emptyCachedSession(sessionRef))
+  const eventRows = cachedSessions.flatMap((session) => session.events)
+  const metricRows = cachedSessions.flatMap((session) => session.metrics)
+
   return {
-    timeBySession: signalResponsesToTimeMap(signalResponses, warnings),
-    signalsBySession: signalResponsesToMap(signalResponses, warnings),
+    timeBySession: Object.fromEntries(cachedSessions.map((session) => [sessionRefId(session.sessionRef), session.time])),
+    signalsBySession: Object.fromEntries(cachedSessions.map((session) => [sessionRefId(session.sessionRef), session.signals])),
     events: eventRows,
     eventTriggerTimeByKey: eventTriggerTimeMap(eventRows),
     metrics: metricRows,
-    warnings: warnings.filter(Boolean),
+    warnings: uniqueStrings(cachedSessions.flatMap((session) => session.warnings).filter(Boolean)),
+  }
+}
+
+function visualizationSessionCache(dataSource: LibraryDataSource) {
+  const cached = visualizationSessionCacheByDataSource.get(dataSource)
+  if (cached) {
+    return cached
+  }
+  const next = new Map<string, CachedSessionVisualizationData>()
+  visualizationSessionCacheByDataSource.set(dataSource, next)
+  return next
+}
+
+function emptyCachedSession(sessionRef: StudySessionRef): CachedSessionVisualizationData {
+  return {
+    sessionRef: { ...sessionRef },
+    time: [],
+    signals: {},
+    events: [],
+    metrics: [],
+    warnings: [],
   }
 }
 
@@ -2456,6 +2858,67 @@ function visualizationEntities(studySet: StudySet): VisualizationEntity[] {
   return [...sessionEntities, ...groupingEntities]
 }
 
+function visualizationSettingsKey(studySet: StudySet) {
+  if (studySet.id) {
+    return `study-set:${studySet.id}`
+  }
+  if (studySet.provenance.startsWith('Temporary one-session Study Set')) {
+    return `temporary:${stableStudySetKey(studySet)}`
+  }
+  const name = studySet.displayName.trim() || 'untitled'
+  const provenance = studySet.provenance.trim() || 'interactive'
+  return `unsaved:${name}:${provenance}`
+}
+
+function restoredVisualizationSettings(
+  cacheKey: string,
+  entities: VisualizationEntity[],
+  tracks: TrackRecord[],
+): SuspensionVisualizationSettings {
+  const cached = visualizationSettingsCache.get(cacheKey)
+  const defaultSelectedEntityIds = entities.filter((entity) => entity.kind === 'session').map((entity) => entity.id)
+  const selectedEntityIds = cached
+    ? normalizedSelectedEntityIds(cached.selectedEntityIds, cached.knownSessionEntityIds, defaultSelectedEntityIds, entities)
+    : defaultSelectedEntityIds
+  const validTrackIds = new Set(tracks.map((track) => track.id))
+  const selectedTrackId = cached?.selectedTrackId && validTrackIds.has(cached.selectedTrackId)
+    ? cached.selectedTrackId
+    : tracks[0]?.id ?? null
+  return {
+    selectedEntityIds,
+    knownSessionEntityIds: defaultSelectedEntityIds,
+    collapsedPanels: cached?.collapsedPanels ? [...cached.collapsedPanels] : [],
+    comparisonLayout: cached?.comparisonLayout ?? 'entities',
+    scopeMode: cached?.scopeMode ?? 'whole_session',
+    selectedTrackId,
+    selectedEnds: normalizedSelectedEnds(cached?.selectedEnds),
+    selectedSectorIds: cached?.selectedSectorIds ? [...cached.selectedSectorIds] : [],
+    timeWindowsBySession: cached?.timeWindowsBySession ? { ...cached.timeWindowsBySession } : {},
+  }
+}
+
+function normalizedSelectedEntityIds(
+  cachedEntityIds: string[],
+  knownSessionEntityIds: string[],
+  defaultSessionEntityIds: string[],
+  entities: VisualizationEntity[],
+) {
+  const validEntityIds = new Set(entities.map((entity) => entity.id))
+  const cachedEntityIdSet = new Set(cachedEntityIds)
+  const knownSessionEntityIdSet = new Set(knownSessionEntityIds)
+  const retained = cachedEntityIds.filter((entityId) => validEntityIds.has(entityId))
+  const addedSessionIds = defaultSessionEntityIds.filter(
+    (entityId) => !cachedEntityIdSet.has(entityId) && !knownSessionEntityIdSet.has(entityId),
+  )
+  return [...retained, ...addedSessionIds]
+}
+
+function normalizedSelectedEnds(value: SuspensionEnd[] | undefined) {
+  const validEnds = new Set<SuspensionEnd>(['front', 'rear'])
+  const ends = (value ?? ['front', 'rear']).filter((end): end is SuspensionEnd => validEnds.has(end))
+  return ends.length > 0 ? ends : (['front', 'rear'] as SuspensionEnd[])
+}
+
 function mergeTrackMatches(tracks: TrackRecord[], matches: SessionTrackMatchRecord[] | null) {
   if (matches === null) {
     return tracks
@@ -2470,39 +2933,6 @@ function mergeTrackMatches(tracks: TrackRecord[], matches: SessionTrackMatchReco
     ...track,
     matchSummaries: matchesByTrack.get(track.id) ?? [],
   }))
-}
-
-function signalResponsesToTimeMap(responses: SignalQueryResponse[], warnings: string[]) {
-  const out: Record<string, number[]> = {}
-  for (const response of responses) {
-    for (const session of response.sessions) {
-      const key = sessionRefId(session.sessionRef)
-      if (!session.time) {
-        warnings.push(`${session.sessionRef.label || key}: signal payload has no time column; sector mode is unavailable.`)
-        out[key] = []
-        continue
-      }
-      out[key] = normalizeSignalTimes(numericValues(session.time.values))
-    }
-  }
-  return out
-}
-
-function signalResponsesToMap(responses: SignalQueryResponse[], warnings: string[]) {
-  const out: Record<string, Record<string, number[]>> = {}
-  for (const response of responses) {
-    for (const session of response.sessions) {
-      const key = sessionRefId(session.sessionRef)
-      if (!session.sampling.distributionCorrect) {
-        warnings.push(`${session.sessionRef.label || key}: signal payload is not distribution-correct.`)
-      }
-      out[key] = out[key] ?? {}
-      for (const signal of session.signals) {
-        out[key][signal.role] = numericValues(signal.values)
-      }
-    }
-  }
-  return out
 }
 
 function eventTriggerTimeMap(rows: TableQueryRow[]) {
@@ -2573,13 +3003,23 @@ function timeWindowIndexRange(times: number[], window: TimeWindow) {
   if (times.length === 0) {
     return { startIndex: 0, endIndex: 0 }
   }
-  if (!isMonotonicFinite(times)) {
+  if (!monotonicFiniteTimeArray(times)) {
     return linearTimeWindowIndexRange(times, window)
   }
   return {
     startIndex: lowerBound(times, window.startS),
     endIndex: upperBound(times, window.endS),
   }
+}
+
+function monotonicFiniteTimeArray(values: number[]) {
+  const cached = monotonicTimeArrayCache.get(values)
+  if (cached !== undefined) {
+    return cached
+  }
+  const monotonic = isMonotonicFinite(values)
+  monotonicTimeArrayCache.set(values, monotonic)
+  return monotonic
 }
 
 function isMonotonicFinite(values: number[]) {
@@ -2643,21 +3083,71 @@ function filterRowsByTimeWindows(
   timeWindows: TimeWindowsBySession,
   windowedSessions: Set<string>,
 ) {
-  return rows.filter((row) => {
-    const sessionKey = sessionRefId(row.sessionRef)
+  const rowsBySession = rowsGroupedBySession(rows)
+  const filteredRows: TableQueryRow[] = []
+  for (const [sessionKey, sessionRows] of rowsBySession.entries()) {
     if (!windowedSessions.has(sessionKey)) {
-      return true
+      filteredRows.push(...sessionRows)
+      continue
     }
-    return rowWithinTimeWindow(row, data, timeWindows[sessionKey])
-  })
+    filteredRows.push(...tableRowsInTimeWindow(sessionRows, data, timeWindows[sessionKey]))
+  }
+  return filteredRows
 }
 
-function rowWithinTimeWindow(row: TableQueryRow, data: VisualizationData, window: TimeWindow | undefined) {
+function tableRowsInTimeWindow(rows: TableQueryRow[], data: VisualizationData, window: TimeWindow | undefined) {
   if (!window) {
-    return true
+    return rows
   }
-  const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
-  return triggerTimeS !== null && triggerTimeS >= window.startS && triggerTimeS <= window.endS
+  const timedRows = timedRowsForTableRows(rows, data)
+  const startIndex = lowerBoundTimedRows(timedRows, window.startS)
+  const endIndex = upperBoundTimedRows(timedRows, window.endS)
+  return timedRows.slice(startIndex, endIndex).map((item) => item.row)
+}
+
+function timedRowsForTableRows(rows: TableQueryRow[], data: VisualizationData) {
+  const cached = rowTimeIndexCache.get(rows)
+  if (cached) {
+    return cached
+  }
+  const timedRows: TimedTableRow[] = []
+  for (const row of rows) {
+    const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
+    if (triggerTimeS !== null) {
+      timedRows.push({ row, triggerTimeS })
+    }
+  }
+  timedRows.sort((a, b) => a.triggerTimeS - b.triggerTimeS)
+  rowTimeIndexCache.set(rows, timedRows)
+  return timedRows
+}
+
+function lowerBoundTimedRows(values: TimedTableRow[], target: number) {
+  let low = 0
+  let high = values.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (values[mid].triggerTimeS < target) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  return low
+}
+
+function upperBoundTimedRows(values: TimedTableRow[], target: number) {
+  let low = 0
+  let high = values.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (values[mid].triggerTimeS <= target) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  return low
 }
 
 function sessionDurationS(data: VisualizationData, sessionRef: StudySessionRef, session: SessionRecord | null) {
@@ -2712,10 +3202,26 @@ function normalizeSignalTimes(values: number[]) {
 }
 
 function entitySignalValues(entity: VisualizationEntity, data: VisualizationData, role: string) {
-  return entity.sessionRefs.flatMap((sessionRef) => data.signalsBySession[sessionRefId(sessionRef)]?.[role] ?? [])
+  if (entity.sessionRefs.length === 1) {
+    return data.signalsBySession[sessionRefId(entity.sessionRefs[0])]?.[role] ?? []
+  }
+  const key = `${entityCacheKey(entity)}|${role}`
+  const cached = entitySignalValuesCache.get(data)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
+  const values: number[] = []
+  for (const sessionRef of entity.sessionRefs) {
+    const sessionValues = data.signalsBySession[sessionRefId(sessionRef)]?.[role] ?? []
+    values.push(...sessionValues)
+  }
+  const nextCache = cached ?? new Map<string, number[]>()
+  nextCache.set(key, values)
+  if (!cached) {
+    entitySignalValuesCache.set(data, nextCache)
+  }
+  return values
 }
-
-const rowSessionGroupCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]>>()
 
 function rowsGroupedBySession(rows: TableQueryRow[]) {
   const cached = rowSessionGroupCache.get(rows)
@@ -2737,18 +3243,40 @@ function rowsGroupedBySession(rows: TableQueryRow[]) {
 }
 
 function entityRows(entity: VisualizationEntity, rows: TableQueryRow[]) {
-  const grouped = rowsGroupedBySession(rows)
-  if (entity.sessionRefs.length === 1) {
-    return grouped.get(sessionRefId(entity.sessionRefs[0])) ?? []
+  const key = entityCacheKey(entity)
+  const cached = entityRowsCache.get(rows)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
   }
-  const out: TableQueryRow[] = []
-  for (const sessionRef of entity.sessionRefs) {
-    const sessionRows = grouped.get(sessionRefId(sessionRef))
-    if (sessionRows) {
-      out.push(...sessionRows)
-    }
+  const grouped = rowsGroupedBySession(rows)
+  const out =
+    entity.sessionRefs.length === 1
+      ? grouped.get(sessionRefId(entity.sessionRefs[0])) ?? []
+      : entity.sessionRefs.flatMap((sessionRef) => grouped.get(sessionRefId(sessionRef)) ?? [])
+  const nextCache = cached ?? new Map<string, TableQueryRow[]>()
+  nextCache.set(key, out)
+  if (!cached) {
+    entityRowsCache.set(rows, nextCache)
   }
   return out
+}
+
+function entityCacheKey(entity: VisualizationEntity) {
+  return `${entity.id}|${entity.sessionRefs.map(sessionRefId).join(',')}`
+}
+
+function percentValues(values: number[]) {
+  const cached = percentValuesCache.get(values)
+  if (cached) {
+    return cached
+  }
+  const out = values.map((value) => (Number.isFinite(value) ? value * 100 : Number.NaN))
+  percentValuesCache.set(values, out)
+  return out
+}
+
+function metricSpecCacheKey(metricSpec: MirroredMetricSpec) {
+  return `${metricSpec.compressionMetricName}|${metricSpec.reboundMetricName}`
 }
 
 function metricMirroredValuesForEntityEnd(
@@ -2761,6 +3289,11 @@ function metricMirroredValuesForEntityEnd(
 }
 
 function metricMirroredValuesForRows(rows: TableQueryRow[], end: SuspensionEnd, metricSpec: MirroredMetricSpec) {
+  const key = `${end}|${metricSpecCacheKey(metricSpec)}`
+  const cached = metricMirroredValueCache.get(rows)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
   const values: number[] = []
   for (const row of rows) {
     if (row.signalRole !== end) {
@@ -2778,43 +3311,49 @@ function metricMirroredValuesForRows(rows: TableQueryRow[], end: SuspensionEnd, 
       }
     }
   }
+  const nextCache = cached ?? new Map<string, number[]>()
+  nextCache.set(key, values)
+  if (!cached) {
+    metricMirroredValueCache.set(rows, nextCache)
+  }
   return values
 }
 
-function metricMagnitudeDomainFromRows(
+function metricMagnitudeCandidateDomainFromRows(
   entities: VisualizationEntity[],
   roles: DistributionRole[],
   rowsForEntity: (entity: VisualizationEntity) => TableQueryRow[],
   metricSpec: MirroredMetricSpec,
-  fallback: [number, number],
+  candidates: number[],
 ): [number, number] {
   const values = entities.flatMap((entity) =>
     roles.flatMap((role) => metricMirroredValuesForRows(rowsForEntity(entity), role.key, metricSpec).map((value) => Math.abs(value))),
   )
-  const clean = values.filter(Number.isFinite)
-  if (clean.length === 0) {
-    return fallback
-  }
-  const extent = finiteExtent(clean)
-  return [0, Math.max(fallback[1], extent.max * 1.08)]
+  return candidateDomainContainingP95(values, candidates)
 }
 
-function metricMagnitudeDomain(
+function metricMagnitudeCandidateDomain(
   entities: VisualizationEntity[],
   data: VisualizationData,
   ends: SuspensionEnd[],
   metricSpec: MirroredMetricSpec,
-  fallback: [number, number],
+  candidates: number[],
 ): [number, number] {
   const values = entities.flatMap((entity) =>
     ends.flatMap((end) => metricMirroredValuesForEntityEnd(entity, data, end, metricSpec).map((value) => Math.abs(value))),
   )
-  const clean = values.filter(Number.isFinite)
+  return candidateDomainContainingP95(values, candidates)
+}
+
+function candidateDomainContainingP95(values: number[], candidates: number[]): [number, number] {
+  const limits = [...candidates].filter(Number.isFinite).sort((a, b) => a - b)
+  const fallback = limits[0] ?? 1
+  const clean = values.filter(Number.isFinite).sort((a, b) => a - b)
   if (clean.length === 0) {
-    return fallback
+    return [0, fallback]
   }
-  const extent = finiteExtent(clean)
-  return [0, Math.max(fallback[1], extent.max * 1.08)]
+  const p95 = quantile(clean, 0.95) ?? 0
+  return [0, limits.find((limit) => p95 <= limit) ?? limits[limits.length - 1] ?? fallback]
 }
 
 function distributionRoles(frontRole: string, rearRole: string, selectedEnds: SuspensionEnd[]): DistributionRole[] {
@@ -2852,21 +3391,61 @@ function distributionYMax(
   return yMax || 1
 }
 
-function mirroredVelocityBins(values: number[], xDomain: [number, number], bins: number) {
-  return {
-    compression: histogramBins(values.filter((value) => value >= 0), xDomain, bins),
-    rebound: histogramBins(values.filter((value) => value < 0).map((value) => -value), xDomain, bins),
+function mirroredVelocityBins(values: number[], xDomain: [number, number], bins: number): MirroredHistogramBins {
+  const key = histogramCacheKey(xDomain, bins)
+  const cached = mirroredHistogramBinCache.get(values)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? { compression: [], rebound: [] }
   }
+  const compressionValues: number[] = []
+  const reboundValues: number[] = []
+  for (const value of values) {
+    if (!Number.isFinite(value)) {
+      continue
+    }
+    if (value >= 0) {
+      compressionValues.push(value)
+    } else {
+      reboundValues.push(-value)
+    }
+  }
+  const mirrored = {
+    compression: histogramBins(compressionValues, xDomain, bins),
+    rebound: histogramBins(reboundValues, xDomain, bins),
+  }
+  const nextCache = cached ?? new Map<string, MirroredHistogramBins>()
+  nextCache.set(key, mirrored)
+  if (!cached) {
+    mirroredHistogramBinCache.set(values, nextCache)
+  }
+  return mirrored
 }
 
-function histogramBins(values: number[], xDomain: [number, number], bins: number) {
+function histogramBins(values: number[], xDomain: [number, number], bins: number): HistogramBin[] {
+  const key = histogramCacheKey(xDomain, bins)
+  const cached = histogramBinCache.get(values)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
   const clean = values.filter((value) => Number.isFinite(value) && value >= xDomain[0] && value <= xDomain[1])
   const generator = d3.bin().domain(xDomain).thresholds(bins)
-  return generator(clean).map((bin) => ({
+  const out = generator(clean).map((bin) => ({
     x0: bin.x0 ?? xDomain[0],
     x1: bin.x1 ?? xDomain[1],
+    count: bin.length,
+    total: clean.length,
     proportion: clean.length ? bin.length / clean.length : 0,
   }))
+  const nextCache = cached ?? new Map<string, HistogramBin[]>()
+  nextCache.set(key, out)
+  if (!cached) {
+    histogramBinCache.set(values, nextCache)
+  }
+  return out
+}
+
+function histogramCacheKey(xDomain: [number, number], bins: number) {
+  return `${xDomain[0]}|${xDomain[1]}|${bins}`
 }
 
 function scatterPanelExtent(
@@ -2888,17 +3467,29 @@ function scatterPanelExtent(
   }
 }
 
-function scatterPoints(rows: TableQueryRow[], eventType: string, xMetric: string, yMetric: string) {
-  return rows
-    .filter((row) => eventTypeMatches(row.eventType, eventType))
-    .map((row) => ({
-      x: numericField(row.fields[xMetric]),
-      y: numericField(row.fields[yMetric]),
-      role: row.signalRole,
-    }))
-    .filter((point): point is { x: number; y: number; role: 'front' | 'rear' | 'unknown' } =>
-      Number.isFinite(point.x) && Number.isFinite(point.y),
-    )
+function scatterPoints(rows: TableQueryRow[], eventType: string, xMetric: string, yMetric: string): ScatterPoint[] {
+  const key = `${eventType}|${xMetric}|${yMetric}`
+  const cached = scatterPointCache.get(rows)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
+  const points: ScatterPoint[] = []
+  for (const row of rows) {
+    if (!eventTypeMatches(row.eventType, eventType)) {
+      continue
+    }
+    const x = numericField(row.fields[xMetric])
+    const y = numericField(row.fields[yMetric])
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      points.push({ x, y, role: row.signalRole })
+    }
+  }
+  const nextCache = cached ?? new Map<string, ScatterPoint[]>()
+  nextCache.set(key, points)
+  if (!cached) {
+    scatterPointCache.set(rows, nextCache)
+  }
+  return points
 }
 
 function trackSectors(track: TrackRecord): TrackSector[] {
@@ -2926,7 +3517,21 @@ function sectorValuesForEntity(
   sector: TrackSector,
   role: string,
 ) {
-  return entity.sessionRefs.flatMap((sessionRef) => sectorValuesForSession(sessionRef, data, track, sector, role))
+  const key = `${entityCacheKey(entity)}|${trackObjectId(track)}|${sector.id}|${role}`
+  const cached = sectorValuesForEntityCache.get(data)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
+  const values: number[] = []
+  for (const sessionRef of entity.sessionRefs) {
+    values.push(...sectorValuesForSession(sessionRef, data, track, sector, role))
+  }
+  const nextCache = cached ?? new Map<string, number[]>()
+  nextCache.set(key, values)
+  if (!cached) {
+    sectorValuesForEntityCache.set(data, nextCache)
+  }
+  return values
 }
 
 function sectorValuesForEntityAcrossSectors(
@@ -2936,7 +3541,21 @@ function sectorValuesForEntityAcrossSectors(
   sectors: TrackSector[],
   role: string,
 ) {
-  return sectors.flatMap((sector) => sectorValuesForEntity(entity, data, track, sector, role))
+  const key = `${entityCacheKey(entity)}|${trackObjectId(track)}|${sectors.map((sector) => sector.id).join(',')}|${role}`
+  const cached = sectorValuesForEntityCache.get(data)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
+  const values: number[] = []
+  for (const sector of sectors) {
+    values.push(...sectorValuesForEntity(entity, data, track, sector, role))
+  }
+  const nextCache = cached ?? new Map<string, number[]>()
+  nextCache.set(key, values)
+  if (!cached) {
+    sectorValuesForEntityCache.set(data, nextCache)
+  }
+  return values
 }
 
 function rowsInSectorsForEntity(
@@ -2946,24 +3565,54 @@ function rowsInSectorsForEntity(
   track: TrackRecord,
   sectors: TrackSector[],
 ) {
-  return entityRows(entity, rows).filter((row) => rowInAnySector(row, data, track, sectors))
+  const key = `${entityCacheKey(entity)}|${trackObjectId(track)}|${sectors.map((sector) => sector.id).join(',')}`
+  const cached = rowsInSectorsForEntityCache.get(rows)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
+  const sectorIntervalsBySession = sectorIntervalsForEntity(entity, track, sectors)
+  const filtered = entityRows(entity, rows).filter((row) => rowInAnySectorInterval(row, data, sectorIntervalsBySession))
+  const nextCache = cached ?? new Map<string, TableQueryRow[]>()
+  nextCache.set(key, filtered)
+  if (!cached) {
+    rowsInSectorsForEntityCache.set(rows, nextCache)
+  }
+  return filtered
 }
 
-function rowInAnySector(row: TableQueryRow, data: VisualizationData, track: TrackRecord, sectors: TrackSector[]) {
-  return sectors.some((sector) => rowInSector(row, data, track, sector))
+function sectorIntervalsForEntity(entity: VisualizationEntity, track: TrackRecord, sectors: TrackSector[]) {
+  const intervalsBySession = new Map<string, Array<SectorInterval & { endInclusive: boolean }>>()
+  for (const sessionRef of entity.sessionRefs) {
+    const sessionIntervals: Array<SectorInterval & { endInclusive: boolean }> = []
+    for (const sector of sectors) {
+      const interval = sectorTimeInterval(track, sessionRef, sector)
+      if (interval) {
+        sessionIntervals.push({ ...interval, endInclusive: isLastSector(track, sector) })
+      }
+    }
+    intervalsBySession.set(sessionRefId(sessionRef), sessionIntervals)
+  }
+  return intervalsBySession
 }
 
-function rowInSector(row: TableQueryRow, data: VisualizationData, track: TrackRecord, sector: TrackSector) {
-  const interval = sectorTimeInterval(track, row.sessionRef, sector)
-  if (!interval) {
+function rowInAnySectorInterval(
+  row: TableQueryRow,
+  data: VisualizationData,
+  intervalsBySession: Map<string, Array<SectorInterval & { endInclusive: boolean }>>,
+) {
+  const intervals = intervalsBySession.get(sessionRefId(row.sessionRef))
+  if (!intervals || intervals.length === 0) {
     return false
   }
   const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
   if (triggerTimeS === null) {
     return false
   }
-  const endInclusive = isLastSector(track, sector)
-  return triggerTimeS >= interval.startS && (endInclusive ? triggerTimeS <= interval.endS : triggerTimeS < interval.endS)
+  return intervals.some(
+    (interval) =>
+      triggerTimeS >= interval.startS &&
+      (interval.endInclusive ? triggerTimeS <= interval.endS : triggerTimeS < interval.endS),
+  )
 }
 
 function rowPrimaryTriggerTimeS(row: TableQueryRow, data: VisualizationData) {
@@ -3029,8 +3678,19 @@ function sectorValuesForSession(
     return []
   }
   const endInclusive = isLastSector(track, sector)
+  const cacheKey = `${key}|${trackObjectId(track)}|${sector.id}|${role}|${interval.startS}|${interval.endS}|${endInclusive}`
+  const cached = sectorValuesForSessionCache.get(data)
+  if (cached?.has(cacheKey)) {
+    return cached.get(cacheKey) ?? []
+  }
   const limit = Math.min(values.length, times.length)
-  return bestSectorValues(times, values, limit, interval, endInclusive)
+  const sectorValues = bestSectorValues(times, values, limit, interval, endInclusive)
+  const nextCache = cached ?? new Map<string, number[]>()
+  nextCache.set(cacheKey, sectorValues)
+  if (!cached) {
+    sectorValuesForSessionCache.set(data, nextCache)
+  }
+  return sectorValues
 }
 
 function bestSectorValues(
@@ -3082,18 +3742,36 @@ function collectSectorValues(
 }
 
 function sectorTimeInterval(track: TrackRecord, sessionRef: StudySessionRef, sector: TrackSector) {
+  const key = `${sessionRefId(sessionRef)}|${sector.id}`
+  const cached = sectorIntervalCache.get(track)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? null
+  }
   const match = trackMatchForSession(track, sessionRef)
   if (!match || !['matched', 'partial', 'ambiguous'].includes(match.status)) {
+    cacheSectorInterval(track, key, null)
     return null
   }
   const start = crossingTime(match, sector.startTrackpoint.id)
   const end = crossingTime(match, sector.endTrackpoint.id)
   if (start === null || end === null || start === end) {
+    cacheSectorInterval(track, key, null)
     return null
   }
-  return {
+  const interval = {
     startS: Math.min(start, end),
     endS: Math.max(start, end),
+  }
+  cacheSectorInterval(track, key, interval)
+  return interval
+}
+
+function cacheSectorInterval(track: TrackRecord, key: string, interval: SectorInterval | null) {
+  const cached = sectorIntervalCache.get(track)
+  if (cached) {
+    cached.set(key, interval)
+  } else {
+    sectorIntervalCache.set(track, new Map([[key, interval]]))
   }
 }
 
@@ -3110,8 +3788,24 @@ function crossingTime(match: NonNullable<ReturnType<typeof trackMatchForSession>
 }
 
 function isLastSector(track: TrackRecord, sector: TrackSector) {
-  const sectors = trackSectors(track)
-  return sectors[sectors.length - 1]?.id === sector.id
+  let lastSectorId = lastSectorIdCache.get(track)
+  if (lastSectorId === undefined) {
+    const sectors = trackSectors(track)
+    lastSectorId = sectors[sectors.length - 1]?.id ?? null
+    lastSectorIdCache.set(track, lastSectorId)
+  }
+  return lastSectorId === sector.id
+}
+
+function trackObjectId(track: TrackRecord) {
+  const cached = trackObjectIdCache.get(track)
+  if (cached !== undefined) {
+    return cached
+  }
+  const next = nextTrackObjectId
+  nextTrackObjectId += 1
+  trackObjectIdCache.set(track, next)
+  return next
 }
 
 type LinearRegressionFit = {
@@ -3241,6 +3935,19 @@ function groupRefsByLibrary(refs: StudySessionRef[]) {
   const out = new Map<string, StudySessionRef[]>()
   for (const ref of refs) {
     out.set(ref.libraryId, [...(out.get(ref.libraryId) ?? []), ref])
+  }
+  return out
+}
+
+function uniqueStrings(values: string[]) {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue
+    }
+    seen.add(value)
+    out.push(value)
   }
   return out
 }
@@ -3379,8 +4086,26 @@ function warningMessage(warning: Record<string, unknown>) {
   return `${session}${role}${message}`
 }
 
-function formatPercent(value: number | null) {
-  return value === null ? '-' : `${(value * 100).toFixed(0)}%`
+function formatPercentValue(value: number | null) {
+  return value === null ? '-' : `${value.toFixed(0)}%`
+}
+
+function formatMetricValue(value: number | null) {
+  if (value === null) {
+    return '-'
+  }
+  if (Math.abs(value) >= 100) {
+    return value.toFixed(0)
+  }
+  return value.toFixed(1)
+}
+
+function formatMetricValueWithUnit(unit: string) {
+  return (value: number | null) => (value === null ? '-' : `${formatMetricValue(value)} ${unit}`)
+}
+
+function formatProportion(value: number) {
+  return `${(value * 100).toFixed(1)}%`
 }
 
 function formatAxis(value: number) {

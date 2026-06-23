@@ -1,5 +1,6 @@
 import { Copy, Filter, SlidersHorizontal, Trash2, X } from 'lucide-react'
 import { savedFilterCategoryLabel, type SavedSessionFilterRecord } from '../domain/sessionFilters'
+import { InfoTip } from './Common'
 
 export function FilterPanel({
   savedFilters,
@@ -59,7 +60,7 @@ export function FilterPanel({
           <span className="pill neutral">AND</span>
         </div>
         {activeSavedFilters.length === 0 ? (
-          <p className="empty-note">No saved filters active. Session selector starts from all selected-library sessions.</p>
+          <p className="empty-note">No saved filters active.</p>
         ) : (
           <div className="filter-chip-list">
             {activeSavedFilters.map((filter) => (
@@ -108,9 +109,6 @@ export function FilterPanel({
         <div className="filter-library-title">
           <div>
             <strong>Saved filter library</strong>
-            <span className="subtle">
-              {canManageSavedFilters ? 'Writable saved filters.' : 'Read-only prototype entries.'}
-            </span>
           </div>
           <button className="ghost-action compact-filter-action" onClick={onManageSavedFilters} type="button">
             <SlidersHorizontal size={13} />
@@ -130,7 +128,7 @@ export function FilterPanel({
                 />
                 <button className="saved-filter-summary" onClick={() => onToggleSavedFilter(filter.id)} type="button">
                   <strong>{filter.displayName}</strong>
-                  <small>{filter.description}</small>
+                  {filter.description && <InfoTip label={`${filter.displayName} description`} text={filter.description} />}
                 </button>
                 <button
                   className="icon-button"

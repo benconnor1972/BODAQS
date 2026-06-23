@@ -7,6 +7,7 @@ import type {
   TrackpointCrossingFilterValue,
 } from '../domain/sessionFilters'
 import type { TrackRecord } from '../domain/types'
+import { InfoTip } from './Common'
 
 const defaultPredicate: SessionFilterPredicate = { field: 'rider', op: 'contains', value: '' }
 
@@ -60,7 +61,7 @@ const fieldDefinitions: FieldDefinition[] = [
   {
     field: 'note.status',
     label: 'Note status',
-    help: 'Filters by session note state.',
+    help: 'Filters by session note state: draft, edited or missing.',
     operators: ['eq', 'in'],
     values: [
       { value: 'missing', label: 'Missing' },
@@ -381,10 +382,6 @@ export function FilterManagerModal({
             )}
 
             <div className="filter-builder-footer">
-              <p className="modal-note">
-                Visual filters are saved as the same persisted predicate contract. Trackpoint filters will run async
-                library queries when applied.
-              </p>
               <button
                 className="ghost-action compact-filter-action"
                 onClick={toggleEditorMode}
@@ -486,7 +483,10 @@ function VisualFilterBuilder({
 
             <div className="condition-main-grid">
               <label>
-                Field
+                <span className="inline-heading">
+                  Field
+                  <InfoTip text={definitionForField(condition.field).help} />
+                </span>
                 <select
                   value={condition.field}
                   onChange={(event) => {
@@ -516,7 +516,6 @@ function VisualFilterBuilder({
                 />
               )}
             </div>
-            <p className="condition-help">{definitionForField(condition.field).help}</p>
           </div>
         ))}
       </div>

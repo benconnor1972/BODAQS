@@ -9,7 +9,7 @@ import type {
   SessionRecord,
   StudySet,
 } from '../domain/types'
-import { IconButton } from './Common'
+import { IconButton, InfoTip } from './Common'
 import type { SessionSelectionGesture } from './SessionTable'
 import { SessionInfoButtons } from './SessionInfoButtons'
 
@@ -38,7 +38,8 @@ export function StudySessionTable({
   return (
     <>
       <p className="selection-hint">
-        Click rows to choose sessions for grouping. Ctrl/Cmd-click toggles rows; Shift-click selects a range.
+        Selection controls
+        <InfoTip text="Click rows to choose sessions for grouping. Ctrl/Cmd-click toggles rows; Shift-click selects a range." />
       </p>
       <div className="table-shell study-table-shell">
         <table className="session-table study-session-table">

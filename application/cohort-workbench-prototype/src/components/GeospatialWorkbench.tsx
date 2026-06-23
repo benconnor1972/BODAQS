@@ -11,7 +11,7 @@ import { candidateId, sessionByRef, slugify, uniqueId } from '../domain/studySet
 import { pointAtStationM, routeLengthM } from '../domain/trackGeometry'
 import type { SessionRecord, StudySet, TrackpointMatchQueryRecord, TrackpointMatchQueryResults, TrackRecord, TrackpointRecord } from '../domain/types'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
-import { IconButton } from './Common'
+import { IconButton, InfoTip } from './Common'
 import { GpsBadge } from './StatusBadges'
 
 export function GeospatialWorkbench({
@@ -267,7 +267,10 @@ export function GeospatialWorkbench({
       <div className="geo-card primary-gps-card">
         <div className="geo-card-title">
           <MapPin size={16} />
-          <strong>Primary GPS</strong>
+          <strong className="inline-heading">
+            Primary GPS
+            <InfoTip text="Shows GPS source and coverage for the selected session." />
+          </strong>
           {primarySession && <GpsBadge summary={primarySession.gpsSummary} />}
         </div>
         {primarySession ? (
@@ -291,7 +294,10 @@ export function GeospatialWorkbench({
       <div className="geo-card">
         <div className="geo-card-title">
           <Crosshair size={16} />
-          <strong>Study Set GPS</strong>
+          <strong className="inline-heading">
+            Study Set GPS
+            <InfoTip text="Summarizes GPS quality for Study Set sessions." />
+          </strong>
           <span className="pill neutral">catalog adequacy</span>
         </div>
         <div className="geo-adequacy-grid">
@@ -305,7 +311,10 @@ export function GeospatialWorkbench({
       <div className="geo-card">
         <div className="geo-card-title">
           <Route size={16} />
-          <strong>Track Manager</strong>
+          <strong className="inline-heading">
+            Track Manager
+            <InfoTip text="Tracks are GPS paths with defined points that can be used for geospatial filtering and sector-based analysis." />
+          </strong>
           <span className="subtle">{tracks.length} available</span>
         </div>
         <div className="track-list compact-track-list">
@@ -413,17 +422,12 @@ export function GeospatialWorkbench({
             <p className="empty-note">Create or manage a track to add simple station-based trackpoints.</p>
           )}
         </div>
-        <div className="geo-policy-note">
-          Default cutlines are policy-generated. Trackpoint rows show only explicit overrides.
-        </div>
-        <div className="geo-policy-note">
-          Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance.
-        </div>
         <div className="action-row tight">
           <button className="secondary-action" disabled={!canRunTrackpointQuery} onClick={() => void runTrackpointQuery()} type="button">
             <Crosshair size={16} />
             Run trackpoint query
           </button>
+          <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
           <button
             className="ghost-action"
             disabled={!trackpointQuery || !dataSource.cancelTrackpointMatchQuery || busy}
@@ -471,7 +475,10 @@ export function GeospatialWorkbench({
       <div className="geo-card">
         <div className="geo-card-title">
           <Crosshair size={16} />
-          <strong>Match Preview</strong>
+          <strong className="inline-heading">
+            Match Preview
+            <InfoTip text="Match preview shows current session/track coverage using available track-match summaries." />
+          </strong>
           <span className="pill neutral">derived preview</span>
         </div>
         {studySessions.length === 0 || currentStudyTracks.length === 0 ? (
