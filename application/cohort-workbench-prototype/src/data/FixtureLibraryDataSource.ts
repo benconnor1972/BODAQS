@@ -339,6 +339,7 @@ function fixtureEventRows(sessionRef: { libraryId: string; sessionKey: string; r
     for (const role of ['front', 'rear'] as const) {
       const count = 18 + Math.floor(seededNumber(`${sessionRef.sessionKey}:${eventType}:${role}`) * 46)
       for (let index = 0; index < count; index += 1) {
+        const seed = seededNumber(`${sessionRef.sessionKey}:${eventType}:${role}:event:${index}`)
         rows.push({
           sessionRef: { ...sessionRef },
           setId: eventType,
@@ -349,6 +350,7 @@ function fixtureEventRows(sessionRef: { libraryId: string; sessionKey: string; r
             event_id: `${sessionRef.sessionId}-${eventType}-${role}-${index}`,
             schema_id: eventType,
             end: role,
+            trigger_time_s: 20 + seed * 850,
           },
         })
       }
@@ -377,7 +379,9 @@ function fixtureMetricRows(sessionRef: { libraryId: string; sessionKey: string; 
             event_id: `${sessionRef.sessionId}-${eventType}-${role}-${index}`,
             schema_id: eventType,
             end: role,
+            trigger_time_s: 20 + seed * 850,
             m_stroke_disp_max: stroke,
+            m_stroke_disp_range: stroke * (0.72 + seed * 0.24),
             m_peak_disp_max: stroke,
             m_interval_vel_max: velocityMagnitude,
             m_interval_vel_min: -velocityMagnitude,

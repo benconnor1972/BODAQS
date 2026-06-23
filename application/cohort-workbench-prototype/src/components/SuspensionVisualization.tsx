@@ -18,17 +18,19 @@ import type {
 const FRONT_COLOR = '#008c95'
 const REAR_COLOR = '#101820'
 const UNKNOWN_COLOR = '#8b9793'
+const ENTITY_SERIES_COLORS = ['#008c95', '#101820', '#4f7477', '#6faeaa', '#6f7b80', '#b88a43', '#2d5f64', '#9aa7a3']
 const COMPRESSION_EVENT_TYPE = 'compressions_all'
 const REBOUND_EVENT_TYPE = 'rebounds_all'
 const SCATTER_X_METRIC = 'm_stroke_disp_max'
+const STROKE_LENGTH_METRIC = 'm_stroke_disp_range'
 const COMPRESSION_Y_METRIC = 'm_interval_vel_max'
 const REBOUND_Y_METRIC = 'm_interval_vel_min'
+const VELOCITY_METRIC_SPEC = { compressionMetricName: COMPRESSION_Y_METRIC, reboundMetricName: REBOUND_Y_METRIC }
+const STROKE_LENGTH_METRIC_SPEC = { compressionMetricName: STROKE_LENGTH_METRIC, reboundMetricName: STROKE_LENGTH_METRIC }
 
 const SIGNAL_REQUESTS: SignalQuerySignalRequest[] = [
   { role: 'front_displacement', selector: { end: 'front', quantity: 'disp_norm', unit: '1' } },
   { role: 'rear_displacement', selector: { end: 'rear', quantity: 'disp_norm', unit: '1' } },
-  { role: 'front_velocity', selector: { end: 'front', quantity: 'vel', unit: 'mm/s' } },
-  { role: 'rear_velocity', selector: { end: 'rear', quantity: 'vel', unit: 'mm/s' } },
 ]
 
 type VisualizationEntity = {
@@ -55,6 +57,9 @@ type LoadState =
 
 type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
+type SuspensionEnd = 'front' | 'rear'
+type DistributionChartKind = 'histogram' | 'mirrored_velocity'
+type MirroredMetricSpec = { compressionMetricName: string; reboundMetricName: string }
 
 type TrackSector = {
   id: string
@@ -65,14 +70,11 @@ type TrackSector = {
   lengthM: number
 }
 
-type SectorExpansionConfig = {
-  quantity: 'displacement' | 'velocity'
-  title: string
-  frontRole: string
-  rearRole: string
-  xDomain: [number, number]
-  xLabel: string
-  bins: number
+type DistributionRole = {
+  key: SuspensionEnd
+  label: string
+  signalRole: string
+  color: string
 }
 
 export function SuspensionVisualization({
@@ -101,7 +103,8 @@ export function SuspensionVisualization({
   const [comparisonLayout, setComparisonLayout] = useState<ComparisonLayout>('entities')
   const [scopeMode, setScopeMode] = useState<ScopeMode>('whole_session')
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(() => studySetTracks[0]?.id ?? null)
-  const [expandedSectorPanel, setExpandedSectorPanel] = useState<SectorExpansionConfig | null>(null)
+  const [selectedEnds, setSelectedEnds] = useState<SuspensionEnd[]>(['front', 'rear'])
+  const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>([])
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select entities to visualize.' })
 
   useEffect(() => {
@@ -154,6 +157,16 @@ export function SuspensionVisualization({
   const selectedEntityKey = selectedEntityIds.join('|')
   const selectedTrack = studySetTracks.find((track) => track.id === selectedTrackId) ?? studySetTracks[0] ?? null
   const sectors = selectedTrack ? trackSectors(selectedTrack) : []
+  const sectorKey = sectors.map((sector) => sector.id).join('|')
+  const selectedSectors = sectors.filter((sector) => selectedSectorIds.includes(sector.id))
+
+  useEffect(() => {
+    setSelectedSectorIds((current) => {
+      const validIds = new Set(sectors.map((sector) => sector.id))
+      const retained = current.filter((sectorId) => validIds.has(sectorId))
+      return retained.length > 0 ? retained : sectors.map((sector) => sector.id)
+    })
+  }, [selectedTrack?.id, sectorKey])
 
   useEffect(() => {
     let cancelled = false
@@ -191,6 +204,18 @@ export function SuspensionVisualization({
     )
   }
 
+  function toggleEnd(end: SuspensionEnd) {
+    setSelectedEnds((current) =>
+      current.includes(end) ? current.filter((item) => item !== end) : [...current, end],
+    )
+  }
+
+  function toggleSector(sectorId: string) {
+    setSelectedSectorIds((current) =>
+      current.includes(sectorId) ? current.filter((id) => id !== sectorId) : [...current, sectorId],
+    )
+  }
+
   function togglePanel(panelId: string) {
     setCollapsedPanels((current) =>
       current.includes(panelId) ? current.filter((id) => id !== panelId) : [...current, panelId],
@@ -205,7 +230,7 @@ export function SuspensionVisualization({
           <h3>{studySet.displayName || 'Current Study Set'}</h3>
           <p>
             Suspension comparison using Study Set entities. Groupings are available but deselected by default and pool
-            their member sessions when enabled. Sector mode is scaffolded as the next comparison layer.
+            their member sessions when enabled. Sector mode pools selected track sectors and can facet them vertically.
           </p>
         </div>
         <div className="suspension-viz-legend">
@@ -220,30 +245,17 @@ export function SuspensionVisualization({
         </div>
       </header>
 
-      <section className="viz-entity-selector" aria-label="Visualization entities">
-        <div className="viz-selector-header">
-          <strong>Visualization entities</strong>
-          <span className="subtle">{selectedEntities.length} active</span>
-        </div>
-        <div className="viz-entity-chips">
-          {entities.map((entity) => {
-            const selected = selectedEntityIds.includes(entity.id)
-            return (
-              <button
-                className={`viz-entity-chip${selected ? ' selected' : ''}${entity.kind === 'grouping' ? ' grouping' : ''}`}
-                key={entity.id}
-                type="button"
-                onClick={() => toggleEntity(entity.id)}
-                style={entity.color ? { borderColor: entity.color } : undefined}
-              >
-                {entity.color && <span className="color-dot" style={{ backgroundColor: entity.color }} />}
-                <span>{entity.label}</span>
-                <small>{entity.kind === 'grouping' ? `${entity.sessionRefs.length} pooled` : 'session'}</small>
-              </button>
-            )
-          })}
-        </div>
-      </section>
+      <VisualizationFilterChips
+        entities={entities}
+        scopeMode={scopeMode}
+        sectors={sectors}
+        selectedEndKeys={selectedEnds}
+        selectedEntityIds={selectedEntityIds}
+        selectedSectorIds={selectedSectorIds}
+        onToggleEnd={toggleEnd}
+        onToggleEntity={toggleEntity}
+        onToggleSector={toggleSector}
+      />
 
       <ScopeModeControl
         value={scopeMode}
@@ -279,41 +291,40 @@ export function SuspensionVisualization({
             {scopeMode === 'sector' ? (
               <SectorDistributionScaffold
                 quantity="displacement"
+                layout={comparisonLayout}
                 entities={selectedEntities}
+                ends={selectedEnds}
                 data={data}
                 selectedTrack={selectedTrack}
-                sectors={sectors}
+                sectors={selectedSectors}
+                allSectors={sectors}
                 frontRole="front_displacement"
                 rearRole="rear_displacement"
                 xDomain={[0, 1]}
                 xLabel="Normalized displacement"
                 bins={32}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
-                onExpand={() =>
-                  setExpandedSectorPanel({
-                    quantity: 'displacement',
-                    title: 'Displacement sector distributions',
-                    frontRole: 'front_displacement',
-                    rearRole: 'rear_displacement',
-                    xDomain: [0, 1],
-                    xLabel: 'Normalized displacement',
-                    bins: 44,
-                  })
-                }
               />
             ) : (
-              <DistributionEntityStrip
+              <DistributionGrid
+                chartKind="histogram"
                 layout={comparisonLayout}
                 entities={selectedEntities}
-                data={data}
-                frontRole="front_displacement"
-                rearRole="rear_displacement"
+                roles={distributionRoles('front_displacement', 'rear_displacement', selectedEnds)}
                 xDomain={[0, 1]}
                 xLabel="Normalized displacement"
                 bins={44}
-                yMax={panelHistogramYMax(selectedEntities, data, ['front_displacement', 'rear_displacement'], [0, 1], 44)}
+                yMax={distributionYMax(
+                  selectedEntities,
+                  distributionRoles('front_displacement', 'rear_displacement', selectedEnds),
+                  (entity, role) => entitySignalValues(entity, data, role.signalRole),
+                  [0, 1],
+                  44,
+                  'histogram',
+                )}
                 sessions={sessions}
                 showStats
+                valueForEntityRole={(entity, role) => entitySignalValues(entity, data, role.signalRole)}
               />
             )}
           </VisualizationPanel>
@@ -321,59 +332,91 @@ export function SuspensionVisualization({
           <VisualizationPanel
             id="velocity"
             title="Velocity distribution"
-            subtitle="Velocity histograms use a shared symmetric axis."
+            subtitle={`${COMPRESSION_Y_METRIC} above baseline; ${REBOUND_Y_METRIC} mirrored below.`}
             collapsed={collapsedPanels.includes('velocity')}
             onToggle={() => togglePanel('velocity')}
           >
             {scopeMode === 'sector' ? (
-              <SectorDistributionScaffold
-                quantity="velocity"
-                entities={selectedEntities}
+              <SectorMetricDistributionScaffold
                 data={data}
+                entities={selectedEntities}
+                ends={selectedEnds}
+                layout={comparisonLayout}
+                metricSpec={VELOCITY_METRIC_SPEC}
                 selectedTrack={selectedTrack}
-                sectors={sectors}
-                frontRole="front_velocity"
-                rearRole="rear_velocity"
-                xDomain={[-2000, 2000]}
-                xLabel="Velocity (mm/s)"
+                sectors={selectedSectors}
+                allSectors={sectors}
+                xLabel="Interval velocity magnitude (mm/s)"
                 bins={36}
+                fallbackDomain={[0, 2000]}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
-                onExpand={() =>
-                  setExpandedSectorPanel({
-                    quantity: 'velocity',
-                    title: 'Velocity sector distributions',
-                    frontRole: 'front_velocity',
-                    rearRole: 'rear_velocity',
-                    xDomain: [-2000, 2000],
-                    xLabel: 'Velocity (mm/s)',
-                    bins: 56,
-                  })
-                }
               />
             ) : (
-              <DistributionEntityStrip
+              <DistributionGrid
+                chartKind="mirrored_velocity"
                 layout={comparisonLayout}
                 entities={selectedEntities}
-                data={data}
-                frontRole="front_velocity"
-                rearRole="rear_velocity"
-                xDomain={[-2000, 2000]}
-                xLabel="Velocity (mm/s)"
+                roles={distributionRoles('', '', selectedEnds)}
+                xDomain={metricMagnitudeDomain(selectedEntities, data, selectedEnds, VELOCITY_METRIC_SPEC, [0, 2000])}
+                xLabel="Interval velocity magnitude (mm/s)"
                 bins={56}
-                yMax={panelHistogramYMax(selectedEntities, data, ['front_velocity', 'rear_velocity'], [-2000, 2000], 56)}
+                yMax={distributionYMax(
+                  selectedEntities,
+                  distributionRoles('', '', selectedEnds),
+                  (entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, VELOCITY_METRIC_SPEC),
+                  metricMagnitudeDomain(selectedEntities, data, selectedEnds, VELOCITY_METRIC_SPEC, [0, 2000]),
+                  56,
+                  'mirrored_velocity',
+                )}
                 sessions={sessions}
+                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, VELOCITY_METRIC_SPEC)}
               />
             )}
           </VisualizationPanel>
 
           <VisualizationPanel
-            id="events"
-            title="Event counts"
-            subtitle="Tabular counts by event type and signal role."
-            collapsed={collapsedPanels.includes('events')}
-            onToggle={() => togglePanel('events')}
+            id="stroke-length"
+            title="Stroke length distribution"
+            subtitle={`${STROKE_LENGTH_METRIC}; compressions above baseline, rebounds mirrored below.`}
+            collapsed={collapsedPanels.includes('stroke-length')}
+            onToggle={() => togglePanel('stroke-length')}
           >
-            <EventCountStrip entities={selectedEntities} data={data} />
+            {scopeMode === 'sector' ? (
+              <SectorMetricDistributionScaffold
+                data={data}
+                entities={selectedEntities}
+                ends={selectedEnds}
+                layout={comparisonLayout}
+                metricSpec={STROKE_LENGTH_METRIC_SPEC}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                allSectors={sectors}
+                xLabel="Stroke length (mm)"
+                bins={36}
+                fallbackDomain={[0, 100]}
+                trackMatchesLoading={visualizationTrackMatchesLoading}
+              />
+            ) : (
+              <DistributionGrid
+                chartKind="mirrored_velocity"
+                layout={comparisonLayout}
+                entities={selectedEntities}
+                roles={distributionRoles('', '', selectedEnds)}
+                xDomain={metricMagnitudeDomain(selectedEntities, data, selectedEnds, STROKE_LENGTH_METRIC_SPEC, [0, 100])}
+                xLabel="Stroke length (mm)"
+                bins={44}
+                yMax={distributionYMax(
+                  selectedEntities,
+                  distributionRoles('', '', selectedEnds),
+                  (entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, STROKE_LENGTH_METRIC_SPEC),
+                  metricMagnitudeDomain(selectedEntities, data, selectedEnds, STROKE_LENGTH_METRIC_SPEC, [0, 100]),
+                  44,
+                  'mirrored_velocity',
+                )}
+                sessions={sessions}
+                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, STROKE_LENGTH_METRIC_SPEC)}
+              />
+            )}
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -384,7 +427,20 @@ export function SuspensionVisualization({
             onToggle={() => togglePanel('compression')}
           >
             {scopeMode === 'sector' ? (
-              <SectorDeferredNotice label="Compression metrics" />
+              <SectorScatterScaffold
+                data={data}
+                ends={selectedEnds}
+                entities={selectedEntities}
+                eventType={COMPRESSION_EVENT_TYPE}
+                layout={comparisonLayout}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                allSectors={sectors}
+                xMetric={SCATTER_X_METRIC}
+                yMetric={COMPRESSION_Y_METRIC}
+                yLabel="Compression velocity"
+                trackMatchesLoading={visualizationTrackMatchesLoading}
+              />
             ) : (
               <ScatterEntityStrip
                 layout={comparisonLayout}
@@ -394,6 +450,7 @@ export function SuspensionVisualization({
                 xMetric={SCATTER_X_METRIC}
                 yMetric={COMPRESSION_Y_METRIC}
                 yLabel="Compression velocity"
+                ends={selectedEnds}
                 showRegression
               />
             )}
@@ -407,7 +464,20 @@ export function SuspensionVisualization({
             onToggle={() => togglePanel('rebound')}
           >
             {scopeMode === 'sector' ? (
-              <SectorDeferredNotice label="Rebound metrics" />
+              <SectorScatterScaffold
+                data={data}
+                ends={selectedEnds}
+                entities={selectedEntities}
+                eventType={REBOUND_EVENT_TYPE}
+                layout={comparisonLayout}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                allSectors={sectors}
+                xMetric={SCATTER_X_METRIC}
+                yMetric={REBOUND_Y_METRIC}
+                yLabel="Rebound velocity"
+                trackMatchesLoading={visualizationTrackMatchesLoading}
+              />
             ) : (
               <ScatterEntityStrip
                 layout={comparisonLayout}
@@ -417,24 +487,36 @@ export function SuspensionVisualization({
                 xMetric={SCATTER_X_METRIC}
                 yMetric={REBOUND_Y_METRIC}
                 yLabel="Rebound velocity"
+                ends={selectedEnds}
                 showRegression
               />
+            )}
+          </VisualizationPanel>
+
+          <VisualizationPanel
+            id="events"
+            title="Event counts"
+            subtitle="Tabular counts by event type and signal role."
+            collapsed={collapsedPanels.includes('events')}
+            onToggle={() => togglePanel('events')}
+          >
+            {scopeMode === 'sector' ? (
+              <SectorEventCountScaffold
+                data={data}
+                ends={selectedEnds}
+                entities={selectedEntities}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                allSectors={sectors}
+                trackMatchesLoading={visualizationTrackMatchesLoading}
+              />
+            ) : (
+              <EventCountStrip entities={selectedEntities} data={data} ends={selectedEnds} />
             )}
           </VisualizationPanel>
         </div>
       )}
 
-      {expandedSectorPanel && data && selectedTrack && (
-        <SectorExpansionModal
-          config={expandedSectorPanel}
-          data={data}
-          entities={selectedEntities}
-          onClose={() => setExpandedSectorPanel(null)}
-          sectors={sectors}
-          selectedTrack={selectedTrack}
-          trackMatchesLoading={visualizationTrackMatchesLoading}
-        />
-      )}
     </div>
   )
 }
@@ -474,6 +556,103 @@ function ComparisonLayoutToggle({
   )
 }
 
+function VisualizationFilterChips({
+  entities,
+  scopeMode,
+  sectors,
+  selectedEndKeys,
+  selectedEntityIds,
+  selectedSectorIds,
+  onToggleEnd,
+  onToggleEntity,
+  onToggleSector,
+}: {
+  entities: VisualizationEntity[]
+  scopeMode: ScopeMode
+  sectors: TrackSector[]
+  selectedEndKeys: SuspensionEnd[]
+  selectedEntityIds: string[]
+  selectedSectorIds: string[]
+  onToggleEnd: (end: SuspensionEnd) => void
+  onToggleEntity: (entityId: string) => void
+  onToggleSector: (sectorId: string) => void
+}) {
+  const selectedSectorCount = sectors.filter((sector) => selectedSectorIds.includes(sector.id)).length
+  return (
+    <section className="viz-entity-selector" aria-label="Visualization filters">
+      <div className="viz-selector-header">
+        <strong>Visualization filters</strong>
+        <span className="subtle">
+          {selectedEntityIds.length} entities, {selectedEndKeys.length} ends, {selectedSectorCount} sectors
+        </span>
+      </div>
+
+      <div className="viz-filter-group">
+        <strong>Entities</strong>
+        <div className="viz-entity-chips">
+          {entities.map((entity) => {
+            const selected = selectedEntityIds.includes(entity.id)
+            return (
+              <button
+                className={`viz-entity-chip${selected ? ' selected' : ''}${entity.kind === 'grouping' ? ' grouping' : ''}`}
+                key={entity.id}
+                type="button"
+                onClick={() => onToggleEntity(entity.id)}
+                style={entity.color ? { borderColor: entity.color } : undefined}
+              >
+                {entity.color && <span className="color-dot" style={{ backgroundColor: entity.color }} />}
+                <span>{entity.label}</span>
+                <small>{entity.kind === 'grouping' ? `${entity.sessionRefs.length} pooled` : 'session'}</small>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="viz-filter-group">
+        <strong>Ends</strong>
+        <div className="viz-entity-chips">
+          {(['front', 'rear'] as const).map((end) => (
+            <button
+              className={`viz-entity-chip end-chip${selectedEndKeys.includes(end) ? ' selected' : ''}`}
+              key={end}
+              type="button"
+              onClick={() => onToggleEnd(end)}
+            >
+              <span className="color-dot" style={{ backgroundColor: roleColor(end) }} />
+              <span>{formatRole(end)}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="viz-filter-group">
+        <strong>Sectors</strong>
+        <span className="viz-filter-hint">
+          {scopeMode === 'sector' ? 'Selected sectors define the overall and facet views.' : 'Held ready for by-sector scope.'}
+        </span>
+        <div className="viz-entity-chips">
+          {sectors.length === 0 && <span className="viz-filter-empty">No sectors available for the selected track.</span>}
+          {sectors.map((sector) => {
+            const selected = selectedSectorIds.includes(sector.id)
+            return (
+              <button
+                className={`viz-entity-chip sector-chip${selected ? ' selected' : ''}`}
+                key={sector.id}
+                type="button"
+                onClick={() => onToggleSector(sector.id)}
+              >
+                <span>{sector.label}</span>
+                <small>{formatMetres(sector.lengthM)}</small>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function ScopeModeControl({
   value,
   onChange,
@@ -497,7 +676,7 @@ function ScopeModeControl({
           <strong>Visualization scope</strong>
           <span>
             {value === 'sector'
-              ? 'Sector mode is scaffolded for displacement and velocity; chart slicing lands in the next slice.'
+              ? 'Sector mode pools selected track sectors for the overall view and can facet each sector vertically.'
               : 'Whole-session mode uses all matching samples/events from each selected entity.'}
           </span>
         </div>
@@ -576,115 +755,94 @@ function VisualizationPanel({
   )
 }
 
-function DistributionEntityStrip({
+function DistributionGrid({
+  chartKind,
   layout,
   entities,
-  data,
-  frontRole,
-  rearRole,
+  roles,
+  valueForEntityRole,
   xDomain,
   xLabel,
   bins,
   yMax,
-  sessions,
+  sessions = [],
   showStats = false,
 }: {
+  chartKind: DistributionChartKind
   layout: ComparisonLayout
   entities: VisualizationEntity[]
-  data: VisualizationData
-  frontRole: string
-  rearRole: string
+  roles: DistributionRole[]
+  valueForEntityRole: (entity: VisualizationEntity, role: DistributionRole) => number[]
   xDomain: [number, number]
   xLabel: string
   bins: number
   yMax: number
-  sessions: SessionRecord[]
+  sessions?: SessionRecord[]
   showStats?: boolean
 }) {
+  if (roles.length === 0) {
+    return (
+      <div className="viz-sector-empty">
+        <strong>No ends selected.</strong>
+        <span>Select front, rear, or both in the visualization filters.</span>
+      </div>
+    )
+  }
+
   if (layout === 'ends') {
     return (
-      <DistributionEndStrip
-        entities={entities}
-        data={data}
-        frontRole={frontRole}
-        rearRole={rearRole}
-        xDomain={xDomain}
-        xLabel={xLabel}
-        bins={bins}
-        yMax={yMax}
-      />
+      <div className="viz-entity-strip">
+        {roles.map((role) => {
+          const series = entities.map((entity, index) => ({
+            id: entity.id,
+            label: entity.label,
+            color: entityColor(entity, index),
+            values: valueForEntityRole(entity, role),
+          }))
+          return (
+            <article className="viz-entity-tile viz-end-tile" key={role.key}>
+              <EndTileHeader label={role.label} />
+              {chartKind === 'mirrored_velocity' ? (
+                <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+              ) : series.length <= 2 ? (
+                <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+              ) : (
+                <MultiHistogramChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+              )}
+              <EntitySeriesLegend
+                series={series.map((item) => ({
+                  id: item.id,
+                  label: item.label,
+                  color: item.color,
+                  count: item.values.length,
+                }))}
+                emptyLabel="No matching signals"
+              />
+            </article>
+          )
+        })}
+      </div>
     )
   }
 
   return (
     <div className="viz-entity-strip">
       {entities.map((entity) => {
-        const front = entitySignalValues(entity, data, frontRole)
-        const rear = entitySignalValues(entity, data, rearRole)
+        const series = roles.map((role) => ({
+          id: role.key,
+          label: role.label,
+          color: role.color,
+          values: valueForEntityRole(entity, role),
+        }))
         return (
           <article className="viz-entity-tile" key={entity.id}>
             <EntityTileHeader entity={entity} sessions={sessions} />
-            <HistogramOverlayChart
-              front={front}
-              rear={rear}
-              xDomain={xDomain}
-              xLabel={xLabel}
-              bins={bins}
-              yMax={yMax}
-            />
-            {showStats && <DisplacementStats front={front} rear={rear} />}
-          </article>
-        )
-      })}
-    </div>
-  )
-}
-
-function DistributionEndStrip({
-  entities,
-  data,
-  frontRole,
-  rearRole,
-  xDomain,
-  xLabel,
-  bins,
-  yMax,
-}: {
-  entities: VisualizationEntity[]
-  data: VisualizationData
-  frontRole: string
-  rearRole: string
-  xDomain: [number, number]
-  xLabel: string
-  bins: number
-  yMax: number
-}) {
-  const roles = [
-    { key: 'front', label: 'Front', signalRole: frontRole },
-    { key: 'rear', label: 'Rear', signalRole: rearRole },
-  ] as const
-  return (
-    <div className="viz-entity-strip">
-      {roles.map((role) => {
-        const series = entities.map((entity, index) => ({
-          id: entity.id,
-          label: entity.label,
-          color: entityColor(entity, index),
-          values: entitySignalValues(entity, data, role.signalRole),
-        }))
-        return (
-          <article className="viz-entity-tile viz-end-tile" key={role.key}>
-            <EndTileHeader label={role.label} />
-            <MultiHistogramChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
-            <EntitySeriesLegend
-              series={series.map((item) => ({
-                id: item.id,
-                label: item.label,
-                color: item.color,
-                count: item.values.length,
-              }))}
-              emptyLabel="No matching signals"
-            />
+            {chartKind === 'mirrored_velocity' ? (
+              <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+            ) : (
+              <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} bins={bins} yMax={yMax} />
+            )}
+            {showStats && <DistributionStats series={series} />}
           </article>
         )
       })}
@@ -694,31 +852,37 @@ function DistributionEndStrip({
 
 function SectorDistributionScaffold({
   quantity,
+  layout,
   entities,
+  ends,
   data,
   selectedTrack,
   sectors,
+  allSectors,
   frontRole,
   rearRole,
   xDomain,
   xLabel,
   bins,
   trackMatchesLoading,
-  onExpand,
 }: {
   quantity: 'displacement' | 'velocity'
+  layout: ComparisonLayout
   entities: VisualizationEntity[]
+  ends: SuspensionEnd[]
   data: VisualizationData
   selectedTrack: TrackRecord | null
   sectors: TrackSector[]
+  allSectors: TrackSector[]
   frontRole: string
   rearRole: string
   xDomain: [number, number]
   xLabel: string
   bins: number
   trackMatchesLoading: boolean
-  onExpand?: () => void
 }) {
+  const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+
   if (!selectedTrack) {
     return (
       <div className="viz-sector-empty">
@@ -727,7 +891,7 @@ function SectorDistributionScaffold({
       </div>
     )
   }
-  if (sectors.length === 0) {
+  if (allSectors.length === 0) {
     return (
       <div className="viz-sector-empty">
         <strong>{selectedTrack.name} has fewer than two ordered trackpoints.</strong>
@@ -735,399 +899,496 @@ function SectorDistributionScaffold({
       </div>
     )
   }
-  const yMax = sectorHistogramYMax(entities, data, selectedTrack, sectors, [frontRole, rearRole], xDomain, bins)
+  if (sectors.length === 0) {
+    return (
+      <div className="viz-sector-empty">
+        <strong>No sectors selected.</strong>
+        <span>Select at least one sector in the visualization filters to build sector-mode charts.</span>
+      </div>
+    )
+  }
+
+  const roles = distributionRoles(frontRole, rearRole, ends)
+  const chartKind: DistributionChartKind = quantity === 'velocity' ? 'mirrored_velocity' : 'histogram'
+  const yMax = distributionYMax(
+    entities,
+    roles,
+    (entity, role) => sectorValuesForEntityAcrossSectors(entity, data, selectedTrack, sectors, role.signalRole),
+    xDomain,
+    bins,
+    chartKind,
+  )
+  const facetYMax = distributionYMax(
+    entities,
+    roles,
+    (entity, role) => sectors.flatMap((sector) => sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole)),
+    xDomain,
+    bins,
+    chartKind,
+  )
   const intervalEntityCount = entities.filter((entity) => entityHasSectorIntervals(entity, selectedTrack, sectors)).length
+  const sampledEntityCount = entities.filter((entity) =>
+    entityHasSectorSamples(entity, data, selectedTrack, sectors, roles.map((role) => role.signalRole)),
+  ).length
   return (
     <div className="viz-sector-scaffold">
       <div className="viz-sector-scaffold-note">
         <div className="viz-sector-scaffold-note-text">
-          <strong>Sector chart scaffold</strong>
+          <strong>Selected-sector distribution</strong>
           <span>
-            {selectedTrack.name}: {sectors.length} sector(s), {entities.length} active entity/entities. Samples are
-            assigned from trackpoint crossing-time intervals. {intervalEntityCount} active entity/entities currently have
-            usable sector intervals.
+            {selectedTrack.name}: {sectors.length} of {allSectors.length} sector(s) selected. Overall charts pool only
+            the selected sectors, not the whole session. {intervalEntityCount} active entity/entities have usable sector
+            intervals and {sampledEntityCount} currently have selected-sector samples.
+            {trackMatchesLoading ? ' Track matches are still loading.' : ''}
           </span>
         </div>
-        {onExpand && (
-          <button className="viz-sector-expand-button" type="button" onClick={onExpand}>
-            Expand detail view
-          </button>
-        )}
       </div>
-      <div className="viz-entity-strip">
-        {entities.map((entity) => {
-          const hasSectorSamples = entityHasSectorSamples(entity, data, selectedTrack, sectors, [frontRole, rearRole])
-          const hasIntervals = entityHasSectorIntervals(entity, selectedTrack, sectors)
-          if (!hasSectorSamples && trackMatchesLoading && !hasIntervals) {
-            return (
-              <article className="viz-entity-tile viz-sector-tile" key={entity.id}>
-                <EntityTileHeader entity={entity} />
-                <div className="viz-sector-fallback-note">
-                  Loading sector match intervals for this entity...
-                </div>
-              </article>
-            )
+
+      <section className="viz-sector-overall">
+        <header className="viz-sector-section-heading">
+          <strong>Overall selected sectors</strong>
+          <span>{sectors.length} sector(s) pooled</span>
+        </header>
+        <DistributionGrid
+          bins={bins}
+          chartKind={chartKind}
+          entities={entities}
+          layout={layout}
+          roles={roles}
+          valueForEntityRole={(entity, role) =>
+            sectorValuesForEntityAcrossSectors(entity, data, selectedTrack, sectors, role.signalRole)
           }
-          if (!hasSectorSamples) {
-            const front = entitySignalValues(entity, data, frontRole)
-            const rear = entitySignalValues(entity, data, rearRole)
-            return (
-              <article className="viz-entity-tile viz-sector-tile" key={entity.id}>
-                <EntityTileHeader entity={entity} />
-                <div className="viz-sector-fallback-note">
-                  No sector samples were available for this entity, so the whole-session distribution is shown.
-                </div>
-                <HistogramOverlayChart
-                  front={front}
-                  rear={rear}
+          xDomain={xDomain}
+          xLabel={xLabel}
+          yMax={yMax}
+        />
+      </section>
+
+      <section className={`viz-sector-facets${facetsCollapsed ? ' collapsed' : ''}`}>
+        <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
+          <span>
+            <strong>Sector facets</strong>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+          </span>
+          {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        </button>
+        {!facetsCollapsed && (
+          <div className="viz-sector-facet-stack">
+            {sectors.map((sector) => (
+              <article className="viz-sector-facet" key={sector.id}>
+                <header className="viz-sector-section-heading">
+                  <strong>{sector.label}</strong>
+                  <span>{formatMetres(sector.lengthM)}</span>
+                </header>
+                <DistributionGrid
+                  bins={bins}
+                  chartKind={chartKind}
+                  entities={entities}
+                  layout={layout}
+                  roles={roles}
+                  valueForEntityRole={(entity, role) =>
+                    sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole)
+                  }
                   xDomain={xDomain}
                   xLabel={xLabel}
-                  bins={bins}
-                  yMax={panelHistogramYMax([entity], data, [frontRole, rearRole], xDomain, bins)}
+                  yMax={facetYMax}
                 />
               </article>
-            )
-          }
-          return (
-            <article className="viz-entity-tile viz-sector-tile" key={entity.id}>
-              <EntityTileHeader entity={entity} />
-              <div className="viz-sector-grid">
-                <div className="viz-sector-grid-head">Sector</div>
-                <div className="viz-sector-grid-head">Front</div>
-                <div className="viz-sector-grid-head">Rear</div>
-                {sectors.map((sector) => (
-                  <SectorDistributionRow
-                    bins={bins}
-                    data={data}
-                    entity={entity}
-                    frontRole={frontRole}
-                    key={sector.id}
-                    rearRole={rearRole}
-                    sector={sector}
-                    track={selectedTrack}
-                    xDomain={xDomain}
-                    yMax={yMax}
-                  />
-                ))}
-              </div>
-            </article>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function SectorExpansionModal({
-  config,
-  entities,
-  data,
-  selectedTrack,
-  sectors,
-  trackMatchesLoading,
-  onClose,
-}: {
-  config: SectorExpansionConfig
-  entities: VisualizationEntity[]
-  data: VisualizationData
-  selectedTrack: TrackRecord
-  sectors: TrackSector[]
-  trackMatchesLoading: boolean
-  onClose: () => void
-}) {
-  const yMax = sectorHistogramYMax(
-    entities,
-    data,
-    selectedTrack,
-    sectors,
-    [config.frontRole, config.rearRole],
-    config.xDomain,
-    config.bins,
-  )
-  const sampledEntityCount = entities.filter((entity) =>
-    entityHasSectorSamples(entity, data, selectedTrack, sectors, [config.frontRole, config.rearRole]),
-  ).length
-
-  return (
-    <div className="viz-expansion-backdrop" onClick={onClose} role="presentation">
-      <section
-        aria-label={config.title}
-        aria-modal="true"
-        className="viz-expansion-modal"
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-      >
-        <header className="viz-expansion-header">
-          <div>
-            <p className="eyebrow">Expanded sector view</p>
-            <h3>{config.title}</h3>
-            <p>
-              {selectedTrack.name}: {sectors.length} sector(s). {sampledEntityCount} of {entities.length} active
-              entity/entities currently have sector samples.
-            </p>
+            ))}
           </div>
-          <button className="viz-expansion-close" type="button" onClick={onClose}>
-            Close
-          </button>
-        </header>
-
-        <div className="viz-expansion-body">
-          {entities.map((entity) => {
-            const hasSectorSamples = entityHasSectorSamples(entity, data, selectedTrack, sectors, [
-              config.frontRole,
-              config.rearRole,
-            ])
-            const hasIntervals = entityHasSectorIntervals(entity, selectedTrack, sectors)
-            if (!hasSectorSamples && trackMatchesLoading && !hasIntervals) {
-              return (
-                <article className="viz-expansion-entity" key={entity.id}>
-                  <EntityTileHeader entity={entity} />
-                  <div className="viz-sector-fallback-note">Loading sector match intervals for this entity...</div>
-                </article>
-              )
-            }
-            if (!hasSectorSamples) {
-              const front = entitySignalValues(entity, data, config.frontRole)
-              const rear = entitySignalValues(entity, data, config.rearRole)
-              return (
-                <article className="viz-expansion-entity" key={entity.id}>
-                  <EntityTileHeader entity={entity} />
-                  <div className="viz-sector-fallback-note">
-                    No sector samples were available for this entity, so the whole-session distribution is shown.
-                  </div>
-                  <HistogramOverlayChart
-                    bins={config.bins}
-                    front={front}
-                    rear={rear}
-                    xDomain={config.xDomain}
-                    xLabel={config.xLabel}
-                    yMax={panelHistogramYMax([entity], data, [config.frontRole, config.rearRole], config.xDomain, config.bins)}
-                  />
-                </article>
-              )
-            }
-
-            return (
-              <article className="viz-expansion-entity" key={entity.id}>
-                <EntityTileHeader entity={entity} />
-                <div className="viz-expansion-sector-head">
-                  <span>Sector</span>
-                  <span>Front</span>
-                  <span>Rear</span>
-                </div>
-                <div className="viz-expansion-sector-stack">
-                  {sectors.map((sector) => (
-                    <ExpandedSectorRow
-                      bins={config.bins}
-                      data={data}
-                      entity={entity}
-                      frontRole={config.frontRole}
-                      key={sector.id}
-                      rearRole={config.rearRole}
-                      sector={sector}
-                      track={selectedTrack}
-                      xDomain={config.xDomain}
-                      xLabel={config.xLabel}
-                      yMax={yMax}
-                    />
-                  ))}
-                </div>
-              </article>
-            )
-          })}
-        </div>
+        )}
       </section>
     </div>
   )
 }
 
-function ExpandedSectorRow({
-  entity,
+function SectorMetricDistributionScaffold({
   data,
-  track,
-  sector,
-  frontRole,
-  rearRole,
-  xDomain,
+  entities,
+  ends,
+  layout,
+  selectedTrack,
+  sectors,
+  allSectors,
+  metricSpec,
   xLabel,
   bins,
-  yMax,
+  fallbackDomain,
+  trackMatchesLoading,
 }: {
-  entity: VisualizationEntity
   data: VisualizationData
-  track: TrackRecord
-  sector: TrackSector
-  frontRole: string
-  rearRole: string
-  xDomain: [number, number]
+  entities: VisualizationEntity[]
+  ends: SuspensionEnd[]
+  layout: ComparisonLayout
+  selectedTrack: TrackRecord | null
+  sectors: TrackSector[]
+  allSectors: TrackSector[]
+  metricSpec: MirroredMetricSpec
   xLabel: string
   bins: number
-  yMax: number
+  fallbackDomain: [number, number]
+  trackMatchesLoading: boolean
 }) {
-  const front = sectorValuesForEntity(entity, data, track, sector, frontRole)
-  const rear = sectorValuesForEntity(entity, data, track, sector, rearRole)
+  const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+  const empty = sectorPanelEmptyState(selectedTrack, sectors, allSectors, 'metric distribution')
+  if (empty) {
+    return empty
+  }
+  const track = selectedTrack as TrackRecord
+  const roles = distributionRoles('', '', ends)
+  const overallRowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, sectors)
+  const xDomain = metricMagnitudeDomainFromRows(entities, roles, overallRowsForEntity, metricSpec, fallbackDomain)
+  const yMax = distributionYMax(
+    entities,
+    roles,
+    (entity, role) => metricMirroredValuesForRows(overallRowsForEntity(entity), role.key, metricSpec),
+    xDomain,
+    bins,
+    'mirrored_velocity',
+  )
   return (
-    <div className="viz-expansion-sector-row">
-      <div className="viz-expansion-sector-label">
-        <strong>{sector.label}</strong>
-        <small>{formatMetres(sector.lengthM)}</small>
-      </div>
-      <ExpandedSectorHistogram
-        color={FRONT_COLOR}
-        sampleLabel="front"
-        values={front}
-        xDomain={xDomain}
-        xLabel={xLabel}
-        bins={bins}
-        yMax={yMax}
+    <div className="viz-sector-scaffold">
+      <SectorRowsNote
+        allSectors={allSectors}
+        data={data}
+        entities={entities}
+        label="Selected-sector metric distribution"
+        rowKind="metric"
+        rows={data.metrics}
+        sectors={sectors}
+        selectedTrack={track}
+        trackMatchesLoading={trackMatchesLoading}
       />
-      <ExpandedSectorHistogram
-        color={REAR_COLOR}
-        sampleLabel="rear"
-        values={rear}
-        xDomain={xDomain}
-        xLabel={xLabel}
-        bins={bins}
-        yMax={yMax}
-      />
+
+      <section className="viz-sector-overall">
+        <header className="viz-sector-section-heading">
+          <strong>Overall selected sectors</strong>
+          <span>{sectors.length} sector(s) pooled by primary trigger</span>
+        </header>
+        <DistributionGrid
+          bins={bins}
+          chartKind="mirrored_velocity"
+          entities={entities}
+          layout={layout}
+          roles={roles}
+          valueForEntityRole={(entity, role) => metricMirroredValuesForRows(overallRowsForEntity(entity), role.key, metricSpec)}
+          xDomain={xDomain}
+          xLabel={xLabel}
+          yMax={yMax}
+        />
+      </section>
+
+      <section className={`viz-sector-facets${facetsCollapsed ? ' collapsed' : ''}`}>
+        <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
+          <span>
+            <strong>Sector facets</strong>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+          </span>
+          {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        </button>
+        {!facetsCollapsed && (
+          <div className="viz-sector-facet-stack">
+            {sectors.map((sector) => {
+              const rowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, [sector])
+              return (
+                <article className="viz-sector-facet" key={sector.id}>
+                  <header className="viz-sector-section-heading">
+                    <strong>{sector.label}</strong>
+                    <span>{formatMetres(sector.lengthM)}</span>
+                  </header>
+                  <DistributionGrid
+                    bins={bins}
+                    chartKind="mirrored_velocity"
+                    entities={entities}
+                    layout={layout}
+                    roles={roles}
+                    valueForEntityRole={(entity, role) => metricMirroredValuesForRows(rowsForEntity(entity), role.key, metricSpec)}
+                    xDomain={xDomain}
+                    xLabel={xLabel}
+                    yMax={yMax}
+                  />
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </section>
     </div>
   )
 }
 
-function ExpandedSectorHistogram({
-  values,
-  xDomain,
-  xLabel,
-  bins,
-  yMax,
-  color,
-  sampleLabel,
-}: {
-  values: number[]
-  xDomain: [number, number]
-  xLabel: string
-  bins: number
-  yMax: number
-  color: string
-  sampleLabel: string
-}) {
-  const width = 360
-  const height = 132
-  const margin = { top: 14, right: 12, bottom: 34, left: 38 }
-  const clean = values.filter(Number.isFinite)
-  const histogram = histogramBins(clean, xDomain, bins)
-  const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
-  const y = d3.scaleLinear().domain([0, yMax || 1]).range([height - margin.bottom, margin.top])
-  const ticks = x.ticks(5)
-  return (
-    <svg
-      aria-label={`${sampleLabel} ${xLabel} histogram with ${clean.length} samples`}
-      className="viz-expanded-histogram"
-      role="img"
-      viewBox={`0 0 ${width} ${height}`}
-    >
-      <line className="viz-axis" x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
-      <line className="viz-axis" x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
-      {ticks.map((tick) => (
-        <g key={tick} transform={`translate(${x(tick)} 0)`}>
-          <line className="viz-tick" y1={height - margin.bottom} y2={height - margin.bottom + 4} />
-          <text className="viz-axis-label" textAnchor="middle" y={height - margin.bottom + 16}>
-            {formatAxis(tick)}
-          </text>
-        </g>
-      ))}
-      {histogram.map((bin, index) => {
-        const x0 = x(bin.x0)
-        const x1 = x(bin.x1)
-        const barWidth = Math.max(1, x1 - x0 - 1)
-        return (
-          <rect
-            fill={color}
-            fillOpacity={0.74}
-            height={height - margin.bottom - y(bin.proportion)}
-            key={`${bin.x0}-${index}`}
-            width={barWidth}
-            x={x0}
-            y={y(bin.proportion)}
-          />
-        )
-      })}
-      <text className="viz-axis-title" x={(margin.left + width - margin.right) / 2} y={height - 6} textAnchor="middle">
-        {xLabel}
-      </text>
-      <text className="viz-axis-title" transform={`translate(12 ${height / 2}) rotate(-90)`} textAnchor="middle">
-        Proportion
-      </text>
-      <text className="viz-expanded-sample-count" x={width - margin.right} y={margin.top + 5} textAnchor="end">
-        n={clean.length.toLocaleString()}
-      </text>
-      {clean.length === 0 && (
-        <text className="viz-empty-chart" x={width / 2} y={height / 2} textAnchor="middle">
-          No sector samples
-        </text>
-      )}
-    </svg>
-  )
-}
-
-function SectorDistributionRow({
-  entity,
+function SectorScatterScaffold({
   data,
-  track,
-  sector,
-  frontRole,
-  rearRole,
-  xDomain,
-  bins,
-  yMax,
+  ends,
+  entities,
+  eventType,
+  layout,
+  selectedTrack,
+  sectors,
+  allSectors,
+  xMetric,
+  yMetric,
+  yLabel,
+  trackMatchesLoading,
 }: {
-  entity: VisualizationEntity
   data: VisualizationData
-  track: TrackRecord
-  sector: TrackSector
-  frontRole: string
-  rearRole: string
-  xDomain: [number, number]
-  bins: number
-  yMax: number
+  ends: SuspensionEnd[]
+  entities: VisualizationEntity[]
+  eventType: string
+  layout: ComparisonLayout
+  selectedTrack: TrackRecord | null
+  sectors: TrackSector[]
+  allSectors: TrackSector[]
+  xMetric: string
+  yMetric: string
+  yLabel: string
+  trackMatchesLoading: boolean
 }) {
-  const front = sectorValuesForEntity(entity, data, track, sector, frontRole)
-  const rear = sectorValuesForEntity(entity, data, track, sector, rearRole)
+  const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+  const empty = sectorPanelEmptyState(selectedTrack, sectors, allSectors, 'metric scatter')
+  if (empty) {
+    return empty
+  }
+  const track = selectedTrack as TrackRecord
+  const overallRowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, sectors)
   return (
-    <>
-      <div className="viz-sector-label">
-        <strong>{sector.label}</strong>
-        <small>{formatMetres(sector.lengthM)}</small>
-      </div>
-      <div className="viz-sector-cell">
-        <MiniRidgeline values={front} xDomain={xDomain} bins={bins} yMax={yMax} color={FRONT_COLOR} />
-      </div>
-      <div className="viz-sector-cell">
-        <MiniRidgeline values={rear} xDomain={xDomain} bins={bins} yMax={yMax} color={REAR_COLOR} />
-      </div>
-    </>
-  )
-}
+    <div className="viz-sector-scaffold">
+      <SectorRowsNote
+        allSectors={allSectors}
+        data={data}
+        entities={entities}
+        label="Selected-sector metric scatter"
+        rowKind="metric"
+        rows={data.metrics}
+        sectors={sectors}
+        selectedTrack={track}
+        trackMatchesLoading={trackMatchesLoading}
+      />
 
-function SectorDeferredNotice({ label }: { label: string }) {
-  return (
-    <div className="viz-sector-empty">
-      <strong>{label} sector mode is deferred.</strong>
-      <span>
-        The first sector implementation will target displacement and velocity distributions. Metric scatter can be
-        faceted by sector later once the sample/event sector assignment contract is proven.
-      </span>
+      <section className="viz-sector-overall">
+        <header className="viz-sector-section-heading">
+          <strong>Overall selected sectors</strong>
+          <span>{sectors.length} sector(s) pooled by primary trigger</span>
+        </header>
+        <ScatterEntityStrip
+          data={data}
+          ends={ends}
+          entities={entities}
+          eventType={eventType}
+          layout={layout}
+          rowsForEntity={overallRowsForEntity}
+          showRegression
+          xMetric={xMetric}
+          yMetric={yMetric}
+          yLabel={yLabel}
+        />
+      </section>
+
+      <section className={`viz-sector-facets${facetsCollapsed ? ' collapsed' : ''}`}>
+        <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
+          <span>
+            <strong>Sector facets</strong>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+          </span>
+          {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        </button>
+        {!facetsCollapsed && (
+          <div className="viz-sector-facet-stack">
+            {sectors.map((sector) => {
+              const rowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, [sector])
+              return (
+                <article className="viz-sector-facet" key={sector.id}>
+                  <header className="viz-sector-section-heading">
+                    <strong>{sector.label}</strong>
+                    <span>{formatMetres(sector.lengthM)}</span>
+                  </header>
+                  <ScatterEntityStrip
+                    data={data}
+                    ends={ends}
+                    entities={entities}
+                    eventType={eventType}
+                    layout={layout}
+                    rowsForEntity={rowsForEntity}
+                    showRegression
+                    xMetric={xMetric}
+                    yMetric={yMetric}
+                    yLabel={yLabel}
+                  />
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </section>
     </div>
   )
 }
 
-function EventCountStrip({ entities, data }: { entities: VisualizationEntity[]; data: VisualizationData }) {
+function SectorEventCountScaffold({
+  data,
+  ends,
+  entities,
+  selectedTrack,
+  sectors,
+  allSectors,
+  trackMatchesLoading,
+}: {
+  data: VisualizationData
+  ends: SuspensionEnd[]
+  entities: VisualizationEntity[]
+  selectedTrack: TrackRecord | null
+  sectors: TrackSector[]
+  allSectors: TrackSector[]
+  trackMatchesLoading: boolean
+}) {
+  const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+  const empty = sectorPanelEmptyState(selectedTrack, sectors, allSectors, 'event counts')
+  if (empty) {
+    return empty
+  }
+  const track = selectedTrack as TrackRecord
+  const overallRowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.events, data, track, sectors)
+  return (
+    <div className="viz-sector-scaffold">
+      <SectorRowsNote
+        allSectors={allSectors}
+        data={data}
+        entities={entities}
+        label="Selected-sector event counts"
+        rowKind="event"
+        rows={data.events}
+        sectors={sectors}
+        selectedTrack={track}
+        trackMatchesLoading={trackMatchesLoading}
+      />
+
+      <section className="viz-sector-overall">
+        <header className="viz-sector-section-heading">
+          <strong>Overall selected sectors</strong>
+          <span>{sectors.length} sector(s) pooled by primary trigger</span>
+        </header>
+        <EventCountStrip data={data} ends={ends} entities={entities} rowsForEntity={overallRowsForEntity} />
+      </section>
+
+      <section className={`viz-sector-facets${facetsCollapsed ? ' collapsed' : ''}`}>
+        <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
+          <span>
+            <strong>Sector facets</strong>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+          </span>
+          {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        </button>
+        {!facetsCollapsed && (
+          <div className="viz-sector-facet-stack">
+            {sectors.map((sector) => {
+              const rowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.events, data, track, [sector])
+              return (
+                <article className="viz-sector-facet" key={sector.id}>
+                  <header className="viz-sector-section-heading">
+                    <strong>{sector.label}</strong>
+                    <span>{formatMetres(sector.lengthM)}</span>
+                  </header>
+                  <EventCountStrip data={data} ends={ends} entities={entities} rowsForEntity={rowsForEntity} />
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function SectorRowsNote({
+  allSectors,
+  data,
+  entities,
+  label,
+  rowKind,
+  rows,
+  sectors,
+  selectedTrack,
+  trackMatchesLoading,
+}: {
+  allSectors: TrackSector[]
+  data: VisualizationData
+  entities: VisualizationEntity[]
+  label: string
+  rowKind: string
+  rows: TableQueryRow[]
+  sectors: TrackSector[]
+  selectedTrack: TrackRecord
+  trackMatchesLoading: boolean
+}) {
+  const intervalEntityCount = entities.filter((entity) => entityHasSectorIntervals(entity, selectedTrack, sectors)).length
+  const rowCount = entities.reduce(
+    (total, entity) => total + rowsInSectorsForEntity(entity, rows, data, selectedTrack, sectors).length,
+    0,
+  )
+  return (
+    <div className="viz-sector-scaffold-note">
+      <div className="viz-sector-scaffold-note-text">
+        <strong>{label}</strong>
+        <span>
+          {selectedTrack.name}: {sectors.length} of {allSectors.length} sector(s) selected. {rowCount} {rowKind} row(s)
+          are assigned by primary trigger time. {intervalEntityCount} active entity/entities have usable sector intervals.
+          {trackMatchesLoading ? ' Track matches are still loading.' : ''}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function sectorPanelEmptyState(
+  selectedTrack: TrackRecord | null,
+  sectors: TrackSector[],
+  allSectors: TrackSector[],
+  label: string,
+) {
+  if (!selectedTrack) {
+    return (
+      <div className="viz-sector-empty">
+        <strong>No track attached to this Study Set.</strong>
+        <span>Attach a track in the workbench before sector-based {label} can be built.</span>
+      </div>
+    )
+  }
+  if (allSectors.length === 0) {
+    return (
+      <div className="viz-sector-empty">
+        <strong>{selectedTrack.name} has fewer than two ordered trackpoints.</strong>
+        <span>Sector charts need at least two trackpoints so the browser can form trackpoint-bounded sectors.</span>
+      </div>
+    )
+  }
+  if (sectors.length === 0) {
+    return (
+      <div className="viz-sector-empty">
+        <strong>No sectors selected.</strong>
+        <span>Select at least one sector in the visualization filters to build sector-mode {label}.</span>
+      </div>
+    )
+  }
+  return null
+}
+
+function EventCountStrip({
+  entities,
+  data,
+  ends,
+  rowsForEntity,
+}: {
+  entities: VisualizationEntity[]
+  data: VisualizationData
+  ends: SuspensionEnd[]
+  rowsForEntity?: (entity: VisualizationEntity) => TableQueryRow[]
+}) {
   return (
     <div className="viz-entity-strip">
       {entities.map((entity) => (
         <article className="viz-entity-tile compact" key={entity.id}>
           <EntityTileHeader entity={entity} />
-          <EventCountTable rows={entityRows(entity, data.events)} />
+          <EventCountTable rows={rowsForEntity ? rowsForEntity(entity) : entityRows(entity, data.events)} ends={ends} />
         </article>
       ))}
     </div>
@@ -1142,6 +1403,8 @@ function ScatterEntityStrip({
   xMetric,
   yMetric,
   yLabel,
+  ends,
+  rowsForEntity,
   showRegression = false,
 }: {
   layout: ComparisonLayout
@@ -1151,19 +1414,23 @@ function ScatterEntityStrip({
   xMetric: string
   yMetric: string
   yLabel: string
+  ends: SuspensionEnd[]
+  rowsForEntity?: (entity: VisualizationEntity) => TableQueryRow[]
   showRegression?: boolean
 }) {
-  const extent = scatterPanelExtent(entities, data, eventType, xMetric, yMetric)
+  const rowProvider = rowsForEntity ?? ((entity: VisualizationEntity) => entityRows(entity, data.metrics))
+  const extent = scatterPanelExtent(entities, eventType, xMetric, yMetric, ends, rowProvider)
   if (layout === 'ends') {
     return (
       <ScatterEndStrip
+        ends={ends}
         entities={entities}
-        data={data}
         eventType={eventType}
         xMetric={xMetric}
         yMetric={yMetric}
         yLabel={yLabel}
         extent={extent}
+        rowsForEntity={rowProvider}
         showRegression={showRegression}
       />
     )
@@ -1172,7 +1439,9 @@ function ScatterEntityStrip({
   return (
     <div className="viz-entity-strip">
       {entities.map((entity) => {
-        const points = scatterPoints(entityRows(entity, data.metrics), eventType, xMetric, yMetric)
+        const points = scatterPoints(rowProvider(entity), eventType, xMetric, yMetric).filter(
+          (point) => point.role !== 'unknown' && ends.includes(point.role),
+        )
         return (
           <article className="viz-entity-tile" key={entity.id}>
             <EntityTileHeader entity={entity} />
@@ -1192,28 +1461,27 @@ function ScatterEntityStrip({
 }
 
 function ScatterEndStrip({
+  ends,
   entities,
-  data,
   eventType,
   xMetric,
   yMetric,
   yLabel,
   extent,
+  rowsForEntity,
   showRegression,
 }: {
+  ends: SuspensionEnd[]
   entities: VisualizationEntity[]
-  data: VisualizationData
   eventType: string
   xMetric: string
   yMetric: string
   yLabel: string
   extent: { x: [number, number]; y: [number, number] }
+  rowsForEntity: (entity: VisualizationEntity) => TableQueryRow[]
   showRegression: boolean
 }) {
-  const roles = [
-    { key: 'front', label: 'Front' },
-    { key: 'rear', label: 'Rear' },
-  ] as const
+  const roles = distributionRoles('', '', ends)
   return (
     <div className="viz-entity-strip">
       {roles.map((role) => {
@@ -1221,7 +1489,7 @@ function ScatterEndStrip({
           id: entity.id,
           label: entity.label,
           color: entityColor(entity, index),
-          points: scatterPoints(entityRows(entity, data.metrics), eventType, xMetric, yMetric).filter(
+          points: scatterPoints(rowsForEntity(entity), eventType, xMetric, yMetric).filter(
             (point) => point.role === role.key,
           ),
         }))
@@ -1275,16 +1543,31 @@ function EndTileHeader({ label }: { label: string }) {
   )
 }
 
+function histogramBarGeometry(
+  x: d3.ScaleLinear<number, number>,
+  bin: { x0: number; x1: number },
+  seriesIndex = 0,
+  seriesCount = 1,
+) {
+  const binX0 = x(bin.x0)
+  const binX1 = x(bin.x1)
+  const fullWidth = Math.max(1, binX1 - binX0)
+  const gap = Math.min(1, fullWidth * 0.18)
+  const slotWidth = Math.max(1, (fullWidth - gap) / Math.max(1, seriesCount))
+  return {
+    width: slotWidth,
+    x: binX0 + gap / 2 + slotWidth * seriesIndex,
+  }
+}
+
 function HistogramOverlayChart({
-  front,
-  rear,
+  series,
   xDomain,
   xLabel,
   bins,
   yMax,
 }: {
-  front: number[]
-  rear: number[]
+  series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
   xLabel: string
   bins: number
@@ -1295,9 +1578,11 @@ function HistogramOverlayChart({
   const margin = { top: 12, right: 12, bottom: 34, left: 34 }
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
   const y = d3.scaleLinear().domain([0, yMax || 1]).range([height - margin.bottom, margin.top])
-  const frontBins = histogramBins(front, xDomain, bins)
-  const rearBins = histogramBins(rear, xDomain, bins)
-  const barWidth = Math.max(1, (width - margin.left - margin.right) / bins)
+  const seriesBins = series.map((item) => ({
+    ...item,
+    bins: histogramBins(item.values, xDomain, bins),
+  }))
+  const allEmpty = series.every((item) => item.values.length === 0)
   return (
     <svg className="viz-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={xLabel}>
       <line className="viz-axis" x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} />
@@ -1313,32 +1598,29 @@ function HistogramOverlayChart({
           </g>
         )
       })}
-      {rearBins.map((bin) => (
-        <rect
-          fill={REAR_COLOR}
-          fillOpacity={0.34}
-          key={`rear-${bin.x0}`}
-          x={x(bin.x0)}
-          y={y(bin.proportion)}
-          width={barWidth}
-          height={height - margin.bottom - y(bin.proportion)}
-        />
-      ))}
-      {frontBins.map((bin) => (
-        <rect
-          fill={FRONT_COLOR}
-          fillOpacity={0.52}
-          key={`front-${bin.x0}`}
-          x={x(bin.x0)}
-          y={y(bin.proportion)}
-          width={barWidth}
-          height={height - margin.bottom - y(bin.proportion)}
-        />
-      ))}
+      {seriesBins.map((item, seriesIndex) =>
+        item.bins.map((bin) => {
+          const bar = histogramBarGeometry(x, bin)
+          return (
+            <rect
+              className="viz-histogram-bar"
+              fill={item.color}
+              fillOpacity={seriesIndex === 0 ? 0.34 : 0.18}
+              key={`${item.id}-${bin.x0}`}
+              stroke={item.color}
+              strokeOpacity={seriesIndex === 0 ? 0.72 : 0.52}
+              width={bar.width}
+              x={bar.x}
+              y={y(bin.proportion)}
+              height={height - margin.bottom - y(bin.proportion)}
+            />
+          )
+        }),
+      )}
       <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
         {xLabel}
       </text>
-      {front.length === 0 && rear.length === 0 && (
+      {allEmpty && (
         <text className="viz-empty-chart" x={width / 2} y={height / 2} textAnchor="middle">
           No matching signals
         </text>
@@ -1408,40 +1690,127 @@ function MultiHistogramChart({
   )
 }
 
-function MiniRidgeline({
-  values,
+function MirroredVelocityChart({
+  series,
   xDomain,
+  xLabel,
   bins,
   yMax,
-  color,
 }: {
-  values: number[]
+  series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
+  xLabel: string
   bins: number
   yMax: number
-  color: string
 }) {
-  const width = 126
-  const height = 34
-  const margin = { top: 4, right: 4, bottom: 6, left: 4 }
-  const clean = values.filter(Number.isFinite)
+  const width = 324
+  const height = 202
+  const margin = { top: 22, right: 12, bottom: 34, left: 38 }
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
-  const y = d3.scaleLinear().domain([0, yMax || 1]).range([height - margin.bottom, margin.top])
-  const ridgelineBins = histogramBins(clean, xDomain, bins)
-  const area = d3
-    .area<{ x0: number; x1: number; proportion: number }>()
+  const y = d3.scaleLinear().domain([-(yMax || 1), yMax || 1]).range([height - margin.bottom, margin.top])
+  const line = d3
+    .line<{ x0: number; x1: number; proportion: number }>()
     .x((bin) => x((bin.x0 + bin.x1) / 2))
-    .y0(height - margin.bottom)
-    .y1((bin) => y(bin.proportion))
-    .curve(d3.curveBasis)
-  const path = area(ridgelineBins)
+    .y((bin) => y(bin.proportion))
+    .curve(d3.curveStepAfter)
+  const mirroredLine = d3
+    .line<{ x0: number; x1: number; proportion: number }>()
+    .x((bin) => x((bin.x0 + bin.x1) / 2))
+    .y((bin) => y(-bin.proportion))
+    .curve(d3.curveStepAfter)
+  const mirroredBins = series.map((item) => ({
+    ...item,
+    ...mirroredVelocityBins(item.values, xDomain, bins),
+  }))
+  const allEmpty = series.every((item) => item.values.length === 0)
+  const renderBars = series.length <= 2
+  const seriesCount = Math.max(1, series.length)
   return (
-    <svg className="viz-mini-ridgeline" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${clean.length} sector samples`}>
-      <line className="viz-mini-baseline" x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
-      {path && <path d={path} fill={color} fillOpacity={0.28} stroke={color} strokeOpacity={0.9} strokeWidth={1.4} />}
-      {clean.length === 0 && (
-        <text className="viz-mini-empty" x={width / 2} y={height / 2 + 3} textAnchor="middle">
-          no samples
+    <svg className="viz-chart viz-mirrored-velocity-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={xLabel}>
+      <line className="viz-axis" x1={margin.left} y1={y(0)} x2={width - margin.right} y2={y(0)} />
+      <line className="viz-axis" x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} />
+      {[0, 0.5, 1].map((tick) => {
+        const value = xDomain[0] + (xDomain[1] - xDomain[0]) * tick
+        return (
+          <g key={tick}>
+            <line className="viz-tick" x1={x(value)} x2={x(value)} y1={y(0)} y2={y(0) + 4} />
+            <text className="viz-axis-label" x={x(value)} y={height - 14} textAnchor="middle">
+              {formatAxis(value)}
+            </text>
+          </g>
+        )
+      })}
+      <text className="viz-mirror-label" x={margin.left + 4} y={margin.top + 3}>
+        Compression
+      </text>
+      <text className="viz-mirror-label" x={margin.left + 4} y={height - margin.bottom - 8}>
+        Rebound mirrored
+      </text>
+      {renderBars
+        ? mirroredBins.map((item, seriesIndex) => (
+            <g key={item.id}>
+              {item.compression.map((bin) => {
+                const bar = histogramBarGeometry(x, bin, seriesIndex, seriesCount)
+                return (
+                  <rect
+                    className="viz-histogram-bar"
+                    fill={item.color}
+                    fillOpacity={0.36}
+                    height={y(0) - y(bin.proportion)}
+                    key={`compression-${item.id}-${bin.x0}`}
+                    stroke={item.color}
+                    strokeOpacity={0.7}
+                    width={bar.width}
+                    x={bar.x}
+                    y={y(bin.proportion)}
+                  />
+                )
+              })}
+              {item.rebound.map((bin) => {
+                const bar = histogramBarGeometry(x, bin, seriesIndex, seriesCount)
+                return (
+                  <rect
+                    className="viz-histogram-bar viz-histogram-bar-rebound"
+                    fill={item.color}
+                    fillOpacity={0.22}
+                    height={y(-bin.proportion) - y(0)}
+                    key={`rebound-${item.id}-${bin.x0}`}
+                    stroke={item.color}
+                    strokeOpacity={0.58}
+                    width={bar.width}
+                    x={bar.x}
+                    y={y(0)}
+                  />
+                )
+              })}
+            </g>
+          ))
+        : mirroredBins.map((item) => {
+            const compressionPath = line(item.compression)
+            const reboundPath = mirroredLine(item.rebound)
+            return (
+              <g key={item.id}>
+                {compressionPath && <path className="viz-series-line" d={compressionPath} stroke={item.color} />}
+                {reboundPath && (
+                  <path
+                    className="viz-series-line viz-series-line-rebound"
+                    d={reboundPath}
+                    stroke={item.color}
+                    strokeDasharray="3 3"
+                  />
+                )}
+              </g>
+            )
+          })}
+      <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
+        {xLabel}
+      </text>
+      <text className="viz-axis-title" transform={`translate(12 ${height / 2}) rotate(-90)`} textAnchor="middle">
+        Proportion
+      </text>
+      {allEmpty && (
+        <text className="viz-empty-chart" x={width / 2} y={height / 2} textAnchor="middle">
+          No matching signals
         </text>
       )}
     </svg>
@@ -1674,29 +2043,29 @@ function EntitySeriesLegend({
   )
 }
 
-function EventCountTable({ rows }: { rows: TableQueryRow[] }) {
+function EventCountTable({ rows, ends }: { rows: TableQueryRow[]; ends: SuspensionEnd[] }) {
   const counts = eventCounts(rows)
   return (
     <table className="viz-count-table">
       <thead>
         <tr>
           <th>Event</th>
-          <th>Front</th>
-          <th>Rear</th>
+          {ends.includes('front') && <th>Front</th>}
+          {ends.includes('rear') && <th>Rear</th>}
           <th>Unknown</th>
         </tr>
       </thead>
       <tbody>
         {counts.length === 0 && (
           <tr>
-            <td colSpan={4}>No events</td>
+            <td colSpan={ends.length + 2}>No events</td>
           </tr>
         )}
         {counts.map((row) => (
           <tr key={row.eventType}>
             <td>{row.eventType}</td>
-            <td>{row.front || '-'}</td>
-            <td>{row.rear || '-'}</td>
+            {ends.includes('front') && <td>{row.front || '-'}</td>}
+            {ends.includes('rear') && <td>{row.rear || '-'}</td>}
             <td>{row.unknown || '-'}</td>
           </tr>
         ))}
@@ -1705,20 +2074,24 @@ function EventCountTable({ rows }: { rows: TableQueryRow[] }) {
   )
 }
 
-function DisplacementStats({ front, rear }: { front: number[]; rear: number[] }) {
+function DistributionStats({ series }: { series: Array<{ id: string; label: string; color: string; values: number[] }> }) {
   return (
     <div className="viz-stat-grid">
-      <RoleStats label="Front" values={front} />
-      <RoleStats label="Rear" values={rear} />
+      {series.map((item) => (
+        <RoleStats color={item.color} key={item.id} label={item.label} values={item.values} />
+      ))}
     </div>
   )
 }
 
-function RoleStats({ label, values }: { label: string; values: number[] }) {
+function RoleStats({ color, label, values }: { color: string; label: string; values: number[] }) {
   const stats = distributionStats(values)
   return (
     <dl>
-      <dt>{label}</dt>
+      <dt>
+        <span style={{ backgroundColor: color }} />
+        {label}
+      </dt>
       <dd>median {formatPercent(stats.median)}</dd>
       <dd>95th {formatPercent(stats.p95)}</dd>
       <dd>max {formatPercent(stats.max)}</dd>
@@ -1844,22 +2217,112 @@ function entityRows(entity: VisualizationEntity, rows: TableQueryRow[]) {
   return rows.filter((row) => refs.has(sessionRefId(row.sessionRef)))
 }
 
-function panelHistogramYMax(
+function metricMirroredValuesForEntityEnd(
+  entity: VisualizationEntity,
+  data: VisualizationData,
+  end: SuspensionEnd,
+  metricSpec: MirroredMetricSpec,
+) {
+  return metricMirroredValuesForRows(entityRows(entity, data.metrics), end, metricSpec)
+}
+
+function metricMirroredValuesForRows(rows: TableQueryRow[], end: SuspensionEnd, metricSpec: MirroredMetricSpec) {
+  const values: number[] = []
+  for (const row of rows) {
+    if (row.signalRole !== end) {
+      continue
+    }
+    if (eventTypeMatches(row.eventType, COMPRESSION_EVENT_TYPE)) {
+      const metricValue = numericField(row.fields[metricSpec.compressionMetricName])
+      if (Number.isFinite(metricValue)) {
+        values.push(Math.abs(metricValue))
+      }
+    } else if (eventTypeMatches(row.eventType, REBOUND_EVENT_TYPE)) {
+      const metricValue = numericField(row.fields[metricSpec.reboundMetricName])
+      if (Number.isFinite(metricValue)) {
+        values.push(-Math.abs(metricValue))
+      }
+    }
+  }
+  return values
+}
+
+function metricMagnitudeDomainFromRows(
+  entities: VisualizationEntity[],
+  roles: DistributionRole[],
+  rowsForEntity: (entity: VisualizationEntity) => TableQueryRow[],
+  metricSpec: MirroredMetricSpec,
+  fallback: [number, number],
+): [number, number] {
+  const values = entities.flatMap((entity) =>
+    roles.flatMap((role) => metricMirroredValuesForRows(rowsForEntity(entity), role.key, metricSpec).map((value) => Math.abs(value))),
+  )
+  const clean = values.filter(Number.isFinite)
+  if (clean.length === 0) {
+    return fallback
+  }
+  const max = Math.max(...clean)
+  return [0, Math.max(fallback[1], max * 1.08)]
+}
+
+function metricMagnitudeDomain(
   entities: VisualizationEntity[],
   data: VisualizationData,
-  roles: string[],
+  ends: SuspensionEnd[],
+  metricSpec: MirroredMetricSpec,
+  fallback: [number, number],
+): [number, number] {
+  const values = entities.flatMap((entity) =>
+    ends.flatMap((end) => metricMirroredValuesForEntityEnd(entity, data, end, metricSpec).map((value) => Math.abs(value))),
+  )
+  const clean = values.filter(Number.isFinite)
+  if (clean.length === 0) {
+    return fallback
+  }
+  const max = Math.max(...clean)
+  return [0, Math.max(fallback[1], max * 1.08)]
+}
+
+function distributionRoles(frontRole: string, rearRole: string, selectedEnds: SuspensionEnd[]): DistributionRole[] {
+  const roles: DistributionRole[] = [
+    { key: 'front', label: 'Front', signalRole: frontRole, color: FRONT_COLOR },
+    { key: 'rear', label: 'Rear', signalRole: rearRole, color: REAR_COLOR },
+  ]
+  return roles.filter((role) => selectedEnds.includes(role.key))
+}
+
+function distributionYMax(
+  entities: VisualizationEntity[],
+  roles: DistributionRole[],
+  valueForEntityRole: (entity: VisualizationEntity, role: DistributionRole) => number[],
   xDomain: [number, number],
   bins: number,
+  chartKind: DistributionChartKind,
 ) {
   let yMax = 0
   for (const entity of entities) {
     for (const role of roles) {
-      for (const bin of histogramBins(entitySignalValues(entity, data, role), xDomain, bins)) {
-        yMax = Math.max(yMax, bin.proportion)
+      const values = valueForEntityRole(entity, role)
+      if (chartKind === 'mirrored_velocity') {
+        const mirrored = mirroredVelocityBins(values, xDomain, bins)
+        for (const bin of [...mirrored.compression, ...mirrored.rebound]) {
+          yMax = Math.max(yMax, bin.proportion)
+        }
+      } else {
+        for (const bin of histogramBins(values, xDomain, bins)) {
+          yMax = Math.max(yMax, bin.proportion)
+        }
       }
     }
   }
   return yMax || 1
+}
+
+function mirroredVelocityBins(values: number[], xDomain: [number, number], bins: number) {
+  return {
+    compression: histogramBins(values.filter((value) => value >= 0), xDomain, bins),
+    rebound: histogramBins(values.filter((value) => value < 0).map((value) => -value), xDomain, bins),
+  }
 }
 
 function histogramBins(values: number[], xDomain: [number, number], bins: number) {
@@ -1874,12 +2337,17 @@ function histogramBins(values: number[], xDomain: [number, number], bins: number
 
 function scatterPanelExtent(
   entities: VisualizationEntity[],
-  data: VisualizationData,
   eventType: string,
   xMetric: string,
   yMetric: string,
+  ends: SuspensionEnd[],
+  rowsForEntity: (entity: VisualizationEntity) => TableQueryRow[],
 ) {
-  const points = entities.flatMap((entity) => scatterPoints(entityRows(entity, data.metrics), eventType, xMetric, yMetric))
+  const points = entities.flatMap((entity) =>
+    scatterPoints(rowsForEntity(entity), eventType, xMetric, yMetric).filter(
+      (point) => point.role !== 'unknown' && ends.includes(point.role),
+    ),
+  )
   return {
     x: paddedExtent(points.map((point) => point.x), [0, 100]),
     y: paddedExtent(points.map((point) => point.y), [-1500, 1500]),
@@ -1917,29 +2385,6 @@ function trackSectors(track: TrackRecord): TrackSector[] {
   return sectors
 }
 
-function sectorHistogramYMax(
-  entities: VisualizationEntity[],
-  data: VisualizationData,
-  track: TrackRecord,
-  sectors: TrackSector[],
-  roles: string[],
-  xDomain: [number, number],
-  bins: number,
-) {
-  let yMax = 0
-  for (const entity of entities) {
-    for (const sector of sectors) {
-      for (const role of roles) {
-        const values = sectorValuesForEntity(entity, data, track, sector, role)
-        for (const bin of histogramBins(values, xDomain, bins)) {
-          yMax = Math.max(yMax, bin.proportion)
-        }
-      }
-    }
-  }
-  return yMax || 1
-}
-
 function sectorValuesForEntity(
   entity: VisualizationEntity,
   data: VisualizationData,
@@ -1948,6 +2393,78 @@ function sectorValuesForEntity(
   role: string,
 ) {
   return entity.sessionRefs.flatMap((sessionRef) => sectorValuesForSession(sessionRef, data, track, sector, role))
+}
+
+function sectorValuesForEntityAcrossSectors(
+  entity: VisualizationEntity,
+  data: VisualizationData,
+  track: TrackRecord,
+  sectors: TrackSector[],
+  role: string,
+) {
+  return sectors.flatMap((sector) => sectorValuesForEntity(entity, data, track, sector, role))
+}
+
+function rowsInSectorsForEntity(
+  entity: VisualizationEntity,
+  rows: TableQueryRow[],
+  data: VisualizationData,
+  track: TrackRecord,
+  sectors: TrackSector[],
+) {
+  return entityRows(entity, rows).filter((row) => rowInAnySector(row, data, track, sectors))
+}
+
+function rowInAnySector(row: TableQueryRow, data: VisualizationData, track: TrackRecord, sectors: TrackSector[]) {
+  return sectors.some((sector) => rowInSector(row, data, track, sector))
+}
+
+function rowInSector(row: TableQueryRow, data: VisualizationData, track: TrackRecord, sector: TrackSector) {
+  const interval = sectorTimeInterval(track, row.sessionRef, sector)
+  if (!interval) {
+    return false
+  }
+  const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
+  if (triggerTimeS === null) {
+    return false
+  }
+  const endInclusive = isLastSector(track, sector)
+  return triggerTimeS >= interval.startS && (endInclusive ? triggerTimeS <= interval.endS : triggerTimeS < interval.endS)
+}
+
+function rowPrimaryTriggerTimeS(row: TableQueryRow, data: VisualizationData) {
+  const direct = firstNumericField(
+    row.fields.trigger_time_s,
+    row.fields.primary_trigger_time_s,
+    row.fields.t0_time,
+    row.fields.time_s,
+  )
+  if (direct !== null) {
+    return direct
+  }
+  const key = tableRowEventKey(row)
+  if (!key) {
+    return null
+  }
+  const eventRow = data.events.find((candidate) => tableRowEventKey(candidate) === key)
+  if (!eventRow) {
+    return null
+  }
+  return firstNumericField(
+    eventRow.fields.trigger_time_s,
+    eventRow.fields.primary_trigger_time_s,
+    eventRow.fields.t0_time,
+    eventRow.fields.time_s,
+  )
+}
+
+function tableRowEventKey(row: TableQueryRow) {
+  const eventId = textField(row.fields.event_id)
+  if (!eventId) {
+    return ''
+  }
+  const schemaId = textField(row.fields.schema_id) || row.setId || row.eventType
+  return `${sessionRefId(row.sessionRef)}|${schemaId}|${eventId}`
 }
 
 function entityHasSectorIntervals(entity: VisualizationEntity, track: TrackRecord, sectors: TrackSector[]) {
@@ -2241,6 +2758,32 @@ function numericField(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN
 }
 
+function firstNumericField(...values: unknown[]) {
+  for (const value of values) {
+    const numeric = numericField(value)
+    if (Number.isFinite(numeric)) {
+      return numeric
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+  }
+  return null
+}
+
+function textField(value: unknown) {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim()
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  return ''
+}
+
 function roleColor(role: 'front' | 'rear' | 'unknown') {
   if (role === 'front') {
     return FRONT_COLOR
@@ -2252,7 +2795,7 @@ function roleColor(role: 'front' | 'rear' | 'unknown') {
 }
 
 function entityColor(entity: VisualizationEntity, index: number) {
-  return entity.color || d3.schemeTableau10[index % d3.schemeTableau10.length] || UNKNOWN_COLOR
+  return entity.color || ENTITY_SERIES_COLORS[index % ENTITY_SERIES_COLORS.length] || UNKNOWN_COLOR
 }
 
 function eventTypeMatches(value: string, target: string) {
