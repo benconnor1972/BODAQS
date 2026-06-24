@@ -32,6 +32,7 @@ def default_capabilities() -> dict[str, Any]:
         "features": {
             "write_study_sets": True,
             "delete_study_sets": True,
+            "delete_sessions": True,
             "read_session_notes": True,
             "write_session_notes": True,
             "write_session_descriptions": True,
@@ -71,6 +72,7 @@ def library_payload(
             "read_parquet": True,
             "write_study_sets": True,
             "delete_study_sets": True,
+            "delete_sessions": True,
             "read_session_notes": True,
             "write_session_notes": True,
             "write_session_descriptions": True,

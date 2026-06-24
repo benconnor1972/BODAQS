@@ -135,6 +135,20 @@ def create_app(
         payload = await request.json()
         return _current_adapter(app).update_session_descriptions(library_id, _json_object_payload(payload))
 
+    @app.delete("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}")
+    def delete_library_session(
+        library_id: str,
+        run_id: str,
+        session_id: str,
+        cleanup_memberships: bool = False,
+    ) -> dict[str, Any]:
+        return _current_adapter(app).delete_session(
+            library_id,
+            run_id,
+            session_id,
+            cleanup_memberships=cleanup_memberships,
+        )
+
     @app.get("/api/v1/tracks")
     def list_root_tracks() -> list[dict[str, Any]]:
         return _current_adapter(app).list_tracks()

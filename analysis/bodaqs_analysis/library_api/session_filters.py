@@ -142,7 +142,7 @@ def _normalized_session_filter_payload(
         raise InvalidSessionFilterError("Session filter id is not filename-safe.", details={"filter_id": doc["filter_id"]})
     doc["display_name"] = _required_text(doc.get("display_name"), field_name="display_name")
     doc["description"] = _optional_text(doc.get("description")) or ""
-    doc["category"] = _optional_text(doc.get("category")) or "custom"
+    doc["category"] = _optional_text(doc.get("category")) or ""
     if revision is not None:
         doc["revision"] = int(revision)
     elif not isinstance(doc.get("revision"), int) or isinstance(doc.get("revision"), bool):

@@ -81,6 +81,10 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
     return cloneStudySet(saved)
   }
 
+  async deleteStudySet(studySetId: string) {
+    this.savedStudySets = this.savedStudySets.filter((studySet) => studySet.id !== studySetId)
+  }
+
   async saveSavedSessionFilter(filter: SavedSessionFilterRecord) {
     const displayName = filter.displayName.trim()
     const existingIds = this.savedFilters.map((savedFilter) => savedFilter.id)

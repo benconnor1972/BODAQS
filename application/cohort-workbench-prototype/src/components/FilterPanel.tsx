@@ -1,13 +1,10 @@
-import { Copy, Filter, SlidersHorizontal, Trash2, X } from 'lucide-react'
+import { Copy, Filter, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { savedFilterCategoryLabel, type SavedSessionFilterRecord } from '../domain/sessionFilters'
 import { InfoTip } from './Common'
 
 export function FilterPanel({
   savedFilters,
   activeSavedFilterIds,
-  totalCount,
-  savedFilteredCount,
-  visibleCount,
   trackpointFilterStates,
   canManageSavedFilters,
   onToggleSavedFilter,
@@ -18,9 +15,6 @@ export function FilterPanel({
 }: {
   savedFilters: SavedSessionFilterRecord[]
   activeSavedFilterIds: string[]
-  totalCount: number
-  savedFilteredCount: number
-  visibleCount: number
   trackpointFilterStates: Array<{
     key: string
     label: string
@@ -37,48 +31,23 @@ export function FilterPanel({
   onCopySavedFilter: (filter: SavedSessionFilterRecord) => void
   onDeleteSavedFilter: (filter: SavedSessionFilterRecord) => void
 }) {
-  const activeSavedFilters = savedFilters.filter((filter) => activeSavedFilterIds.includes(filter.id))
   const filtersByCategory = groupedFilters(savedFilters)
 
   return (
     <div className="filter-panel">
-      <div className="filter-summary">
-        <div>
-          <strong>{savedFilteredCount}</strong>
-          <span>of {totalCount} match saved filters</span>
-        </div>
-        <div>
-          <strong>{visibleCount}</strong>
-          <span>shown in session selector</span>
-        </div>
-      </div>
-
-      <div className="active-filter-stack">
-        <div className="filter-stack-title">
-          <Filter size={15} />
-          <strong>Active saved filters</strong>
-          <span className="pill neutral">AND</span>
-        </div>
-        {activeSavedFilters.length === 0 ? (
-          <p className="empty-note">No saved filters active.</p>
-        ) : (
-          <div className="filter-chip-list">
-            {activeSavedFilters.map((filter) => (
-              <button
-                className="filter-chip"
-                key={filter.id}
-                onClick={() => onToggleSavedFilter(filter.id)}
-                type="button"
-              >
-                {filter.displayName}
-                <X size={13} />
-              </button>
-            ))}
-            <button className="ghost-action compact-filter-action" onClick={onClearSavedFilters} type="button">
-              Clear saved filters
-            </button>
-          </div>
-        )}
+      <div className="filter-panel-actions">
+        <button
+          className="ghost-action compact-filter-action"
+          disabled={activeSavedFilterIds.length === 0}
+          onClick={onClearSavedFilters}
+          type="button"
+        >
+          Clear all
+        </button>
+        <button className="ghost-action compact-filter-action" onClick={onManageSavedFilters} type="button">
+          <SlidersHorizontal size={13} />
+          Manage filters
+        </button>
       </div>
 
       {trackpointFilterStates.length > 0 && (
@@ -106,29 +75,22 @@ export function FilterPanel({
       )}
 
       <div className="filter-library">
-        <div className="filter-library-title">
-          <div>
-            <strong>Saved filter library</strong>
-          </div>
-          <button className="ghost-action compact-filter-action" onClick={onManageSavedFilters} type="button">
-            <SlidersHorizontal size={13} />
-            Manage
-          </button>
-        </div>
-        {filtersByCategory.map(({ category, items }) => (
+        {filtersByCategory.map(({ category, items, showHeading }) => (
           <fieldset className="filter-category" key={category}>
-            <legend>{savedFilterCategoryLabel(category)}</legend>
+            {showHeading && <legend>{savedFilterCategoryLabel(category)}</legend>}
             {items.map((filter) => (
-              <div className="check-row compact filter-row saved-filter-row" key={filter.id}>
+              <div className="check-row compact filter-row filter-list-row" key={filter.id}>
                 <input
                   aria-label={`Apply ${filter.displayName}`}
                   type="checkbox"
                   checked={activeSavedFilterIds.includes(filter.id)}
                   onChange={() => onToggleSavedFilter(filter.id)}
                 />
-                <button className="saved-filter-summary" onClick={() => onToggleSavedFilter(filter.id)} type="button">
-                  <strong>{filter.displayName}</strong>
+                <span className="filter-row-info-slot">
                   {filter.description && <InfoTip label={`${filter.displayName} description`} text={filter.description} />}
+                </span>
+                <button className="filter-list-summary" onClick={() => onToggleSavedFilter(filter.id)} type="button">
+                  <strong>{filter.displayName}</strong>
                 </button>
                 <button
                   className="icon-button"
@@ -158,14 +120,17 @@ export function FilterPanel({
 }
 
 function groupedFilters(filters: SavedSessionFilterRecord[]) {
+  const anyCategorized = filters.some((filter) => filter.category.trim())
   const groups = new Map<string, SavedSessionFilterRecord[]>()
   for (const filter of filters) {
-    const items = groups.get(filter.category) ?? []
+    const category = anyCategorized ? filter.category.trim() || 'custom' : ''
+    const items = groups.get(category) ?? []
     items.push(filter)
-    groups.set(filter.category, items)
+    groups.set(category, items)
   }
   return Array.from(groups.entries()).map(([category, items]) => ({
     category,
+    showHeading: anyCategorized,
     items: items.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' })),
   }))
 }

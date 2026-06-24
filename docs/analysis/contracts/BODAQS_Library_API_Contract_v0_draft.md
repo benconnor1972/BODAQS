@@ -340,6 +340,7 @@ Example:
   "features": {
     "write_study_sets": true,
     "delete_study_sets": true,
+    "delete_sessions": true,
     "read_session_gps_summaries": true,
     "read_tracks": true,
     "write_tracks": true,
@@ -947,11 +948,84 @@ Manager import/preprocessing operation.
 POST /api/v1/libraries/{library_id}/sessions/note
 PUT  /api/v1/libraries/{library_id}/sessions/note
 PUT  /api/v1/libraries/{library_id}/sessions/descriptions
+DELETE /api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}
 ```
 
 `sessions/descriptions` updates the short manifest-backed run/session
 description fields for one session reference. `run_description` applies to the
 whole run; `session_description` applies only to the referenced session.
+
+`DELETE .../runs/{run_id}/sessions/{session_id}` removes the processed session
+artifact directory from the selected library. It must not delete original source
+archives, FIT files, logger uploads, or other import-source material. By
+default, the service must refuse to delete a session that is still referenced by
+saved root-level objects, returning `409 session_delete_conflict` with reference
+details. If the caller explicitly supplies `cleanup_memberships=true`, the
+service may remove that session from saved Study Sets, remove bookmarks for that
+session, delete groupings that become empty, and then delete the processed
+session artifact.
+
+Example guarded delete:
+
+```text
+DELETE /api/v1/libraries/default-library/runs/run-a/sessions/session-a
+```
+
+Example delete with saved-membership cleanup:
+
+```text
+DELETE /api/v1/libraries/default-library/runs/run-a/sessions/session-a?cleanup_memberships=true
+```
+
+Example conflict response:
+
+```json
+{
+  "error": {
+    "code": "session_delete_conflict",
+    "message": "Session is still referenced by saved Study Sets.",
+    "details": {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "references": [
+        {
+          "study_set_id": "setup-comparison",
+          "display_name": "Setup comparison",
+          "session_member": true,
+          "groupings": [
+            {"grouping_id": "baseline", "display_name": "Baseline"}
+          ],
+          "bookmarks": []
+        }
+      ]
+    }
+  }
+}
+```
+
+Example successful cleanup response:
+
+```json
+{
+  "deleted": true,
+  "library_id": "default-library",
+  "run_id": "run-a",
+  "session_id": "session-a",
+  "session_key": "run-a::session-a",
+  "session_ref_id": "default-library|||run-a::session-a",
+  "cleanup_memberships": true,
+  "removed_paths": ["C:/BODAQS-data/default-library/runs/run-a/sessions/session-a"],
+  "updated_study_sets": [
+    {
+      "study_set_id": "setup-comparison",
+      "previous_revision": 3,
+      "revision": 4,
+      "removed_session": true,
+      "removed_groupings": [],
+      "removed_bookmark_count": 0
+    }
+  ]
+}
+```
 
 Example request:
 

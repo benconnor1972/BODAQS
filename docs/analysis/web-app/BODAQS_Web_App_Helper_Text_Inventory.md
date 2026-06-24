@@ -12,26 +12,26 @@ layout while making the wording easy to review and refine.
 | UI location | Helper text | Used for |
 | --- | --- | --- |
 | Library Selector heading | Choose which libraries from the configured library root are included in the session browser. | Explains library inclusion scope. |
-| Session Selector heading | Browse sessions from the selected libraries. Use filters from the filter panel or filter directly in the table to narrow the list. | Distinguishes browsing/filtering from Study Set membership. |
-| Session selector table selection controls | Click a row to select it. Ctrl/Cmd-click toggles rows; Shift-click selects a range. | Explains table multi-select and primary-session behavior. |
+| Session Selector heading | Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list. | Distinguishes browsing/filtering from Study Set membership. |
 | GPS Location heading | Preview the selected session GPS path and any selected or attached tracks. | Explains the GPS preview panel. |
-| Filters heading | Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering. | Explains saved filters versus ad hoc column filters. |
-| Saved filter row description | Dynamic: the saved filter's description field. | Provides per-filter context without adding a second visible row. |
+| Filters heading | Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering. | Explains reusable filters versus ad hoc column filters. |
+| Filter row description | Dynamic: the filter's description field. | Provides per-filter context inline with the filter name. |
 | Filter manager field selector | Dynamic: field-specific help text from the filter field definition. | Explains the selected condition field. |
 | Current Study Set heading | The working Study Set comprising sessions and optional groupings and tracks. | Explains the Study Set object. |
 | Study Set sessions subsection | List of the sessions in this study set. Removing a session removes it from the Study Set, but not from the library. | Explains session membership and safe removal. |
-| Study Set session table selection controls | Click rows to choose sessions for grouping. Ctrl/Cmd-click toggles rows; Shift-click selects a range. | Explains grouping selection behavior. |
+| Study Set groupings subsection | Named collections of Study Set sessions. Sessions can belong to more than one grouping. | Explains grouping membership within a Study Set. |
 | Study Set tracks subsection | Tracks are GPS paths with defined points that can be used for geospatial filtering and sector-based analysis. | Explains attached tracks. |
+| Study Set GPS Location heading | Preview the GPS paths for sessions in the current Study Set and any tracks attached to it. | Explains the Study Set scoped GPS map. |
 | Saved Study Sets heading | Saved Study Sets can be loaded into the editor above, inspected, or opened directly in the analysis view. | Explains saved Study Set actions. |
 
-## Geospatial Workbench
+## Geospatial Controls
 
 | UI location | Helper text | Used for |
 | --- | --- | --- |
-| Geospatial Workbench heading | Create and manage re-usable tracks and trackpoints and attach them to the current Study Set. | Explains the whole panel. |
-| Primary GPS card | Shows GPS source and coverage for the selected session. | Explains primary GPS summary. |
+| Selected session GPS card | Shows GPS source and coverage for the selected session. | Explains selected-session GPS summary. |
 | Study Set GPS card | Summarizes GPS quality for Study Set sessions. | Explains aggregate GPS adequacy. |
-| Track Manager card | Tracks are GPS paths with defined points that can be used for geospatial filtering and sector-based analysis. | Explains track ownership and cutline policy. |
+| Tracks card | Tracks are reusable GPS paths with defined points. Select a track to preview it, or add it to the current Study Set. | Explains reusable tracks and Study Set attachment. |
+| Track Manager modal | Guided track creation placeholder: this first cut creates a track from the current primary session GPS. | Explains the first-cut modal creation workflow. |
 | Run trackpoint query action | Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance. | Explains the prototype query behavior. |
 | Match Preview card | Match preview shows current session/track coverage using available track-match summaries. | Explains match preview source and purpose. |
 

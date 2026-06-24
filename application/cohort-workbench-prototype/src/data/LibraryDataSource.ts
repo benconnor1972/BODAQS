@@ -23,6 +23,11 @@ export interface LibraryDataSource {
   listStudySets(): Promise<StudySet[]>
   listSavedSessionFilters?(): Promise<SavedSessionFilterRecord[]>
   saveStudySet(studySet: StudySet): Promise<StudySet>
+  deleteStudySet?(studySetId: string): Promise<void>
+  deleteSession?(
+    session: SessionRecord,
+    options?: { cleanupMemberships?: boolean },
+  ): Promise<Record<string, unknown>>
   saveSavedSessionFilter?(filter: SavedSessionFilterRecord): Promise<SavedSessionFilterRecord>
   deleteSavedSessionFilter?(filterId: string): Promise<void>
   saveTrack?(track: TrackRecord): Promise<TrackRecord>

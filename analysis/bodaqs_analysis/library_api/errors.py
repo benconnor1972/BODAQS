@@ -47,6 +47,12 @@ class SessionNotFoundError(LibraryApiError):
     default_message = "Session was not found."
 
 
+class SessionDeleteConflictError(LibraryApiError):
+    code = "session_delete_conflict"
+    status_code = 409
+    default_message = "Session is still referenced by saved library objects."
+
+
 class StudySetNotFoundError(LibraryApiError):
     code = "study_set_not_found"
     status_code = 404

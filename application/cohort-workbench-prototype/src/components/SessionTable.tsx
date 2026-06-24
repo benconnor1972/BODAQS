@@ -20,7 +20,6 @@ import type {
   SessionRecord,
   SortDirection,
 } from '../domain/types'
-import { InfoTip } from './Common'
 import { SessionInfoButtons } from './SessionInfoButtons'
 
 export type SessionSelectionGesture = {
@@ -43,6 +42,7 @@ export function SessionTable({
   onSort,
   onSelect,
   onInspect,
+  onDeleteSession,
 }: {
   sessions: SessionRecord[]
   filterBaseSessions: SessionRecord[]
@@ -58,6 +58,7 @@ export function SessionTable({
   onSort: (columnId: ColumnId) => void
   onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
+  onDeleteSession?: (session: SessionRecord) => void
 }) {
   const [openFilterColumnId, setOpenFilterColumnId] = useState<ColumnId | null>(null)
   const [filterSearchText, setFilterSearchText] = useState('')
@@ -73,7 +74,14 @@ export function SessionTable({
     {
       id: 'info',
       header: 'Info',
-      cell: ({ row }) => <SessionInfoButtons session={row.original} onInspect={onInspect} />,
+      cell: ({ row }) => (
+        <SessionInfoButtons
+          session={row.original}
+          onInspect={onInspect}
+          showDelete
+          onDelete={onDeleteSession}
+        />
+      ),
       enableSorting: false,
     },
   ]
@@ -119,10 +127,6 @@ export function SessionTable({
 
   return (
     <>
-      <p className="selection-hint">
-        Selection controls
-        <InfoTip text="Click a row to select it. Ctrl/Cmd-click toggles rows; Shift-click selects a range." />
-      </p>
       <div className="table-shell">
         <table className="session-table" aria-label="Candidate sessions">
           <thead>
@@ -149,11 +153,14 @@ export function SessionTable({
                               event.stopPropagation()
                               toggleFilterMenu(columnId)
                             }}
-                            title={`Filter ${columnLabels[columnId]}`}
+                            title={
+                              selectedFilterValues.length
+                                ? `${columnLabels[columnId]} filter applied`
+                                : `Filter ${columnLabels[columnId]}`
+                            }
                             type="button"
                           >
                             <Filter size={13} />
-                            {selectedFilterValues.length > 0 && <span>{selectedFilterValues.length}</span>}
                           </button>
                           {openFilterColumnId === columnId && (
                             <ColumnFilterMenu

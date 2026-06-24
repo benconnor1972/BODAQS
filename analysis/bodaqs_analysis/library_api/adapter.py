@@ -41,6 +41,7 @@ from .session_filters import (
 )
 from .session_descriptions import update_session_descriptions as write_session_descriptions
 from .session_notes import load_session_note, save_session_note
+from .sessions import delete_session as delete_session_artifact
 from .study_sets import (
     create_study_set,
     delete_study_set,
@@ -166,6 +167,33 @@ class LibraryAdapter:
         updated = write_session_descriptions(self._library_root(library_id), session_ref, request)
         self._catalog_cache.pop(str(library_id).strip(), None)
         return updated
+
+    def delete_session(
+        self,
+        library_id: str,
+        run_id: str,
+        session_id: str,
+        *,
+        cleanup_memberships: bool = False,
+    ) -> dict[str, Any]:
+        self._catalog_row_for_session(
+            library_id,
+            {
+                "library_id": library_id,
+                "run_id": run_id,
+                "session_id": session_id,
+            },
+        )
+        deleted = delete_session_artifact(
+            self.libraries_root,
+            self._library_root(library_id),
+            library_id=library_id,
+            run_id=run_id,
+            session_id=session_id,
+            cleanup_memberships=cleanup_memberships,
+        )
+        self._catalog_cache.pop(str(library_id).strip(), None)
+        return deleted
 
     def list_tracks(self) -> list[dict[str, Any]]:
         return list_tracks(self.libraries_root)

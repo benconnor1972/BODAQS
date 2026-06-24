@@ -334,7 +334,7 @@ export function FilterManagerModal({
                 >
                   <strong>{filter.displayName}</strong>
                   <small>
-                    {filter.category || 'custom'} / {filter.origin === 'api_saved' ? `r${filter.revision}` : 'prototype'}
+                    {filter.category ? `${filter.category} / ` : ''}{filter.origin === 'api_saved' ? `r${filter.revision}` : 'prototype'}
                   </small>
                 </button>
               ))
@@ -687,7 +687,7 @@ function TrackpointConditionEditor({
             </label>
           ))
         ) : (
-          <span className="empty-note">Create a track in the Geospatial Workbench before using this condition.</span>
+          <span className="empty-note">Create a track from the Tracks controls before using this condition.</span>
         )}
       </div>
     </div>
@@ -699,7 +699,7 @@ function emptyFilter(): SavedSessionFilterRecord {
     id: '',
     displayName: '',
     description: '',
-    category: 'custom',
+    category: '',
     origin: 'api_saved',
     revision: 0,
     predicate: defaultPredicate,

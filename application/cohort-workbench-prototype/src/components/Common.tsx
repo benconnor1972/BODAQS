@@ -48,15 +48,6 @@ export function IconButton({
   )
 }
 
-export function SummaryTile({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="summary-tile">
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </div>
-  )
-}
-
 export function InfoTip({ label = 'More information', text }: { label?: string; text: string }) {
   return (
     <span className="info-tip">

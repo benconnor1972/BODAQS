@@ -20,6 +20,7 @@ from bodaqs_analysis.library_api import (
     LibraryAdapter,
     LibraryNotFoundError,
     RevisionConflictError,
+    SessionDeleteConflictError,
     SignalNotFoundError,
     StudySetNotFoundError,
     TimeseriesUnavailableError,
@@ -717,6 +718,81 @@ def test_library_adapter_study_sets_can_span_libraries(tmp_path: Path) -> None:
     assert adapter.list_study_sets()[0]["library_count"] == 2
 
 
+def test_library_adapter_delete_session_blocks_then_cleans_study_set_memberships(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _make_session(library_root, "run_1", "session_1")
+    kept_ref = _make_session(library_root, "run_1", "session_2")
+    adapter = LibraryAdapter(libraries_root)
+    created = adapter.create_study_set(
+        {
+            "display_name": "Delete Guard Study Set",
+            "sessions": [session_ref, kept_ref],
+            "groupings": [
+                {
+                    "grouping_id": "mixed",
+                    "display_name": "Mixed",
+                    "session_refs": [session_ref["session_ref_id"], kept_ref["session_ref_id"]],
+                },
+                {
+                    "grouping_id": "deleted-only",
+                    "display_name": "Deleted only",
+                    "session_refs": [session_ref["session_ref_id"]],
+                },
+            ],
+            "bookmarks": [
+                {
+                    "bookmark_id": "deleted-start",
+                    "display_name": "Deleted start",
+                    "session_ref": session_ref["session_ref_id"],
+                    "time_s": 0.0,
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(SessionDeleteConflictError) as exc:
+        adapter.delete_session("default-library", "run_1", "session_1")
+
+    assert exc.value.details["session_ref_id"] == session_ref["session_ref_id"]
+    assert exc.value.details["references"][0]["study_set_id"] == created["study_set_id"]
+    assert (library_root / "runs" / "run_1" / "sessions" / "session_1").exists()
+
+    deleted = adapter.delete_session(
+        "default-library",
+        "run_1",
+        "session_1",
+        cleanup_memberships=True,
+    )
+
+    assert deleted["deleted"] is True
+    assert deleted["cleanup_memberships"] is True
+    assert deleted["session_ref_id"] == session_ref["session_ref_id"]
+    assert deleted["updated_study_sets"][0]["study_set_id"] == created["study_set_id"]
+    assert deleted["updated_study_sets"][0]["removed_groupings"] == [
+        {"grouping_id": "deleted-only", "display_name": "Deleted only"}
+    ]
+    assert deleted["updated_study_sets"][0]["removed_bookmark_count"] == 1
+    assert not (library_root / "runs" / "run_1" / "sessions" / "session_1").exists()
+
+    updated = adapter.load_study_set(created["study_set_id"])
+    assert updated["revision"] == 2
+    assert [session["session_ref_id"] for session in updated["sessions"]] == [kept_ref["session_ref_id"]]
+    assert updated["groupings"] == [
+        {
+            "grouping_id": "mixed",
+            "display_name": "Mixed",
+            "session_refs": [kept_ref["session_ref_id"]],
+        }
+    ]
+    assert updated["bookmarks"] == []
+
+
 def test_library_adapter_updates_study_set_with_revision_check(
     tmp_path: Path,
 ) -> None:
@@ -812,6 +888,7 @@ def test_library_adapter_session_filter_crud_and_revision_check(tmp_path: Path) 
 
     updated_payload = dict(created)
     updated_payload["display_name"] = "Ben rides with usable GPS"
+    updated_payload["category"] = ""
     updated = adapter.update_session_filter(
         "ben-rides-with-gps",
         expected_revision=1,
@@ -819,6 +896,7 @@ def test_library_adapter_session_filter_crud_and_revision_check(tmp_path: Path) 
     )
     assert updated["revision"] == 2
     assert updated["display_name"] == "Ben rides with usable GPS"
+    assert updated["category"] == ""
 
     with pytest.raises(RevisionConflictError) as exc:
         adapter.update_session_filter(
@@ -2266,6 +2344,55 @@ def test_library_api_service_study_set_crud_and_revision_conflict(
     assert delete_response.json() == {"deleted": True, "study_set_id": "service-study-set"}
 
 
+def test_library_api_service_delete_session_conflict_and_cleanup(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _make_session(library_root, "run_1", "session_1")
+    client = TestClient(create_app(libraries_root))
+
+    create_response = client.post(
+        "/api/v1/study-sets",
+        json={
+            "display_name": "Delete Service Study Set",
+            "sessions": [session_ref],
+            "groupings": [
+                {
+                    "grouping_id": "only-session",
+                    "display_name": "Only session",
+                    "session_refs": [session_ref["session_ref_id"]],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    conflict_response = client.delete("/api/v1/libraries/default-library/runs/run_1/sessions/session_1")
+    assert conflict_response.status_code == 409
+    assert conflict_response.json()["error"]["code"] == "session_delete_conflict"
+    assert conflict_response.json()["error"]["details"]["references"][0]["study_set_id"] == "delete-service-study-set"
+
+    cleanup_response = client.delete(
+        "/api/v1/libraries/default-library/runs/run_1/sessions/session_1?cleanup_memberships=true"
+    )
+    assert cleanup_response.status_code == 200
+    cleanup_payload = cleanup_response.json()
+    assert cleanup_payload["deleted"] is True
+    assert cleanup_payload["updated_study_sets"][0]["removed_groupings"] == [
+        {"grouping_id": "only-session", "display_name": "Only session"}
+    ]
+    assert not (library_root / "runs" / "run_1" / "sessions" / "session_1").exists()
+
+    updated_response = client.get("/api/v1/study-sets/delete-service-study-set")
+    assert updated_response.status_code == 200
+    assert updated_response.json()["sessions"] == []
+    assert updated_response.json()["groupings"] == []
+
+
 def test_library_api_service_session_filter_crud_and_revision_conflict(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     client = TestClient(create_app(libraries_root))
@@ -2295,12 +2422,14 @@ def test_library_api_service_session_filter_crud_and_revision_conflict(tmp_path:
 
     updated_payload = dict(created)
     updated_payload["display_name"] = "Service Usable GPS Filter"
+    updated_payload["category"] = ""
     update_response = client.put(
         "/api/v1/session-filters/service-gps-filter",
         json={"expected_revision": 1, "session_filter": updated_payload},
     )
     assert update_response.status_code == 200
     assert update_response.json()["revision"] == 2
+    assert update_response.json()["category"] == ""
 
     conflict_response = client.put(
         "/api/v1/session-filters/service-gps-filter",

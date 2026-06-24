@@ -1,4 +1,4 @@
-import { AlertTriangle, FileText, Info, MapPin } from 'lucide-react'
+import { AlertTriangle, FileText, Info, MapPin, Trash2 } from 'lucide-react'
 import { gpsQualityTone, gpsSummaryLine } from '../domain/geospatial'
 import type { QcLevel, SessionInspectionTab, SessionRecord } from '../domain/types'
 import { IconButton } from './Common'
@@ -8,9 +8,13 @@ type InfoTone = 'good' | 'warning' | 'alert'
 export function SessionInfoButtons({
   session,
   onInspect,
+  showDelete = false,
+  onDelete,
 }: {
   session: SessionRecord
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
+  showDelete?: boolean
+  onDelete?: (session: SessionRecord) => void
 }) {
   return (
     <>
@@ -37,6 +41,15 @@ export function SessionInfoButtons({
         onClick={() => onInspect(session, 'metadata')}
         icon={<Info size={15} />}
       />
+      {showDelete && (
+        <IconButton
+          label={onDelete ? 'Delete session' : 'Delete session unavailable until library API support is added'}
+          onClick={onDelete ? () => onDelete(session) : undefined}
+          icon={<Trash2 size={15} />}
+          tone="alert"
+          disabled={!onDelete}
+        />
+      )}
     </>
   )
 }

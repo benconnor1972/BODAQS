@@ -190,6 +190,13 @@ For processed libraries, the browser can realistically perform much of the
 current notebook consumer experience, provided the local service supplies
 semantic catalog data and chart-ready time-series windows.
 
+Prototype-only UI preferences, such as session-table column visibility and
+column order, may initially use browser `localStorage` so iteration remains
+fast. Longer term, durable UI preferences that are associated with a configured
+libraries root should be exposed through the Library API as root-level
+namespaced preferences, not hidden in Study Sets unless they are genuinely
+Study Set-specific display state.
+
 ## Python Adapter And Local Service Responsibilities
 
 Python should remain authoritative for:
@@ -448,6 +455,10 @@ Work in this phase:
 - build a basic library selector
 - default to the configured local API URL and provide a Library Selector fallback for changing the active root
 - build a basic session catalog table
+- persist first-cut session table layout locally in the browser
+- add a follow-on Library API contract for root-level UI preferences, including
+  session table visibility/order and other app display preferences that should
+  follow the configured libraries root
 - load and display service capabilities
 
 Expected outcome:

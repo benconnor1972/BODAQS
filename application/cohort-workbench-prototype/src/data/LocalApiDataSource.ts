@@ -124,6 +124,24 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapStudySet(saved)
   }
 
+  async deleteStudySet(studySetId: string) {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/study-sets/${encodeURIComponent(studySetId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async deleteSession(session: SessionRecord, options: { cleanupMemberships?: boolean } = {}) {
+    const params = options.cleanupMemberships ? '?cleanup_memberships=true' : ''
+    return requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/runs/${encodeURIComponent(
+        session.runId,
+      )}/sessions/${encodeURIComponent(session.sessionId)}${params}`,
+      {
+        method: 'DELETE',
+      },
+    )
+  }
+
   async saveSavedSessionFilter(filter: SavedSessionFilterRecord) {
     const payload = toApiSessionFilter(filter)
     const saved =
@@ -741,7 +759,7 @@ function mapSavedSessionFilter(value: ApiObject): SavedSessionFilterRecord {
     id: filterId,
     displayName: textValue(value.display_name, filterId),
     description: textValue(value.description),
-    category: textValue(value.category, 'custom'),
+    category: textValue(value.category),
     origin: 'api_saved',
     revision: numberValue(value.revision),
     predicate: sessionFilterPredicateValue(value.predicate),
@@ -797,7 +815,7 @@ function toApiSessionFilter(filter: SavedSessionFilterRecord) {
     version: 1,
     display_name: filter.displayName.trim(),
     description: filter.description ?? '',
-    category: filter.category || 'custom',
+    category: filter.category.trim(),
     revision: filter.revision,
     predicate: filter.predicate as unknown as ApiObject,
     display_state: {

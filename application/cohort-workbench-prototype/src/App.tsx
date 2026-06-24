@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   BookOpen,
@@ -21,11 +21,12 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import { IconButton, InfoTip, PanelTitle, SummaryTile } from './components/Common'
+import { IconButton, InfoTip, PanelTitle } from './components/Common'
 import { FilterPanel } from './components/FilterPanel'
 import { FilterManagerModal } from './components/FilterManagerModal'
-import { GeospatialWorkbench } from './components/GeospatialWorkbench'
+import { GeospatialWorkbench, MatchPreviewCard, StudySetGpsCoverageCard } from './components/GeospatialWorkbench'
 import { GpsRoutePreview } from './components/GpsRoutePreview'
+import { MapRoutePreview } from './components/MapRoutePreview'
 import { Modal } from './components/Modal'
 import { SessionNoteEditorModal } from './components/SessionNoteEditorModal'
 import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
@@ -59,12 +60,13 @@ import {
   hasStudySetContent,
   isTemporaryStudySet,
   sessionRefId,
+  sessionByRef,
   sessionToStudyRef,
   slugify,
   studySetsEqual,
   uniqueId,
 } from './domain/studySets'
-import { applyTableColumnFilters, tableFilterLabel, type TableColumnFilter } from './domain/tableFilters'
+import { applyTableColumnFilters, type TableColumnFilter } from './domain/tableFilters'
 import type {
   ColumnId,
   LibraryRecord,
@@ -96,6 +98,8 @@ type GeoFilterQueryState = {
   error: string
 }
 
+const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
+
 function App() {
   const [localDataSource] = useState(() => new LocalApiDataSource())
   const [fixtureDataSource] = useState(() => new FixtureLibraryDataSource())
@@ -105,7 +109,7 @@ function App() {
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [tracks, setTracks] = useState<TrackRecord[]>([])
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([])
-  const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(defaultColumns)
+  const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(loadPersistedVisibleColumns)
   const [searchText, setSearchText] = useState('')
   const [sortColumn, setSortColumn] = useState<ColumnId>('started')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
@@ -126,7 +130,6 @@ function App() {
   const [sessionSelectorCollapsed, setSessionSelectorCollapsed] = useState(false)
   const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
-  const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
   const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
   const [geoFilterQueryStates, setGeoFilterQueryStates] = useState<Record<string, GeoFilterQueryState>>({})
   const [tableColumnFilters, setTableColumnFilters] = useState<TableColumnFilter[]>([])
@@ -295,6 +298,10 @@ function App() {
     }
   }, [columnMenuOpen])
 
+  useEffect(() => {
+    persistVisibleColumns(visibleColumns)
+  }, [visibleColumns])
+
   const selectedLibraries = libraries.filter((libraryItem) =>
     selectedLibraryIds.includes(libraryItem.id),
   )
@@ -337,6 +344,19 @@ function App() {
     .filter((session): session is SessionRecord => Boolean(session))
   const selectedTracks = tracks.filter((track) => selectedTrackIds.includes(track.id))
   const currentStudyTracks = tracks.filter((track) => currentStudySet.trackIds.includes(track.id))
+  const studySetMapSessionPaths = useMemo(
+    () =>
+      currentStudySet.sessions
+        .map((sessionRef) => sessionByRef(sessionRef, sessions))
+        .filter((session): session is SessionRecord => Boolean(session))
+        .map((session) => ({
+          id: candidateId(session),
+          label: session.name,
+          path: session.gps,
+        }))
+        .filter((sessionPath) => sessionPath.path.length > 0),
+    [currentStudySet.sessions, sessions],
+  )
 
   useEffect(() => {
     const specs = JSON.parse(activeTrackpointFilterSpecKey) as TrackpointCrossingSpec[]
@@ -575,7 +595,7 @@ function App() {
 
   async function saveSessionFilter(filter: SavedSessionFilterRecord) {
     if (!activeDataSource.saveSavedSessionFilter) {
-      throw new Error('The current data source does not support saved-filter writes.')
+      throw new Error('The current data source does not support filter writes.')
     }
     const saved = await activeDataSource.saveSavedSessionFilter(filter)
     setSavedSessionFilters((current) => {
@@ -584,8 +604,115 @@ function App() {
         a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }),
       )
     })
-    setStatusMessage(`Saved filter "${saved.displayName}".`)
+    setStatusMessage(`Filter saved: "${saved.displayName}".`)
     return saved
+  }
+
+  async function deleteSavedStudySet(studySet: StudySet) {
+    if (!studySet.id) {
+      setStatusMessage('Only saved Study Sets can be deleted.')
+      return
+    }
+    if (!activeDataSource.deleteStudySet) {
+      setStatusMessage('The current data source does not support Study Set deletes.')
+      return
+    }
+    if (!window.confirm(`Delete Study Set "${studySet.displayName}"? This cannot be undone.`)) {
+      return
+    }
+    try {
+      await activeDataSource.deleteStudySet(studySet.id)
+      setSavedStudySets((current) => current.filter((item) => item.id !== studySet.id))
+      if (currentStudySet.id === studySet.id) {
+        const empty = emptyStudySet()
+        setCurrentStudySet(empty)
+        setLastCommittedStudySet(cloneStudySet(empty))
+        setSelectedStudySessionIds([])
+        setSelectionAnchorStudySessionId(null)
+        setGroupingName('')
+      }
+      setStatusMessage(`Deleted Study Set "${studySet.displayName}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not delete Study Set: ${message}`)
+    }
+  }
+
+  async function deleteLibrarySession(session: SessionRecord) {
+    if (!activeDataSource.deleteSession) {
+      setStatusMessage('The current data source does not support session deletes.')
+      return
+    }
+    if (
+      !window.confirm(
+        `Delete processed session "${session.name}" from ${session.libraryId}? Source files will not be deleted.`,
+      )
+    ) {
+      return
+    }
+
+    try {
+      await activeDataSource.deleteSession(session)
+      await refreshAfterSessionDelete(session)
+      setStatusMessage(`Deleted session "${session.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.toLowerCase().includes('referenced')) {
+        setStatusMessage(`Could not delete session: ${message}`)
+        return
+      }
+      if (
+        !window.confirm(
+          `Session "${session.name}" is used by saved Study Sets. Remove it from those Study Sets, delete empty groupings, and delete the session?`,
+        )
+      ) {
+        setStatusMessage('Session delete cancelled; saved Study Set memberships were left unchanged.')
+        return
+      }
+      try {
+        await activeDataSource.deleteSession(session, { cleanupMemberships: true })
+        await refreshAfterSessionDelete(session)
+        setStatusMessage(`Deleted session "${session.name}" and cleaned saved Study Set memberships.`)
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        setStatusMessage(`Could not delete session with cleanup: ${cleanupMessage}`)
+      }
+    }
+  }
+
+  async function refreshAfterSessionDelete(session: SessionRecord) {
+    const deletedRefId = candidateId(session)
+    const loaded = await fetchWorkbenchData(activeDataSource)
+    setLibraries(loaded.libraries)
+    setSessions(loaded.sessions)
+    setTracks(loaded.tracks)
+    setSavedStudySets(loaded.studySets)
+    setSavedSessionFilters(loaded.savedFilters)
+    setSelectedCandidateIds((current) => current.filter((id) => id !== deletedRefId))
+    setPrimaryCandidateId((current) => (current === deletedRefId ? null : current))
+    setSelectionAnchorCandidateId((current) => (current === deletedRefId ? null : current))
+    setSelectedStudySessionIds((current) => current.filter((id) => id !== deletedRefId))
+    setSelectionAnchorStudySessionId((current) => (current === deletedRefId ? null : current))
+    setModal((current) =>
+      current?.kind === 'session' && candidateId(current.session) === deletedRefId ? null : current,
+    )
+    setNoteEditorSession((current) => (current && candidateId(current) === deletedRefId ? null : current))
+
+    if (currentStudySet.id && !isCurrentStudySetDirty) {
+      const refreshedStudySet = loaded.studySets.find((studySet) => studySet.id === currentStudySet.id)
+      if (refreshedStudySet) {
+        setCurrentStudySet(refreshedStudySet)
+        setLastCommittedStudySet(cloneStudySet(refreshedStudySet))
+        return
+      }
+    }
+    setCurrentStudySet((current) => removeSessionFromStudySetValue(current, deletedRefId, false))
+    const refreshedStudySet = currentStudySet.id
+      ? loaded.studySets.find((studySet) => studySet.id === currentStudySet.id)
+      : null
+    setLastCommittedStudySet((current) =>
+      refreshedStudySet ? cloneStudySet(refreshedStudySet) : removeSessionFromStudySetValue(current, deletedRefId, true),
+    )
   }
 
   async function copySessionFilter(filter: SavedSessionFilterRecord) {
@@ -600,13 +727,13 @@ function App() {
       setStatusMessage(`Copied filter "${filter.displayName}" to "${copied.displayName}".`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setStatusMessage(`Could not copy saved filter: ${message}`)
+      setStatusMessage(`Could not copy filter: ${message}`)
     }
   }
 
   async function deleteSessionFilter(filter: SavedSessionFilterRecord) {
     if (!activeDataSource.deleteSavedSessionFilter) {
-      throw new Error('The current data source does not support saved-filter deletes.')
+      throw new Error('The current data source does not support filter deletes.')
     }
     if (filter.origin !== 'api_saved') {
       throw new Error('Prototype filters cannot be deleted.')
@@ -632,11 +759,6 @@ function App() {
 
   function clearTableColumnFilter(columnId: ColumnId) {
     setTableColumnFilters((current) => current.filter((filter) => filter.columnId !== columnId))
-    clearSessionSelection()
-  }
-
-  function clearTableColumnFilters() {
-    setTableColumnFilters([])
     clearSessionSelection()
   }
 
@@ -733,6 +855,21 @@ function App() {
       }
     })
     setStatusMessage(`${selectedCandidateSessions.length} selected session(s) added to the current Study Set.`)
+  }
+
+  function addSessionRefToStudySet(sessionRef: StudySet['sessions'][number]) {
+    setCurrentStudySet((current) => {
+      const refId = sessionRefId(sessionRef)
+      if (current.sessions.some((item) => sessionRefId(item) === refId)) {
+        return current
+      }
+      return {
+        ...current,
+        sessions: [...current.sessions, sessionRef],
+        saved: false,
+      }
+    })
+    setStatusMessage(`${sessionRef.label || sessionRef.sessionId} added to the current Study Set.`)
   }
 
   function analyzeNow() {
@@ -845,13 +982,13 @@ function App() {
     })
   }
 
-  function addSelectedTracksToStudySet() {
+  function addTrackToStudySet(trackId: string) {
     setCurrentStudySet((current) => ({
       ...current,
-      saved: false,
-      trackIds: Array.from(new Set([...current.trackIds, ...selectedTrackIds])),
+      saved: current.trackIds.includes(trackId) ? current.saved : false,
+      trackIds: Array.from(new Set([...current.trackIds, trackId])),
     }))
-    setStatusMessage(`${selectedTrackIds.length} selected track(s) attached to the Study Set.`)
+    setStatusMessage('Track attached to the Study Set.')
   }
 
   function upsertTrack(track: TrackRecord) {
@@ -871,6 +1008,24 @@ function App() {
       trackIds: current.trackIds.filter((id) => id !== trackId),
     }))
     setModal((current) => (current?.kind === 'track' && current.track.id === trackId ? null : current))
+  }
+
+  async function deleteTrackFromLibrary(track: TrackRecord) {
+    if (!activeDataSource.deleteTrack) {
+      setStatusMessage('The current data source does not support track deletes.')
+      return
+    }
+    if (!window.confirm(`Delete track "${track.name}"? This removes the root-level track object.`)) {
+      return
+    }
+    try {
+      await activeDataSource.deleteTrack(track.id)
+      deleteTrackFromWorkbench(track.id)
+      setStatusMessage(`Deleted track "${track.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not delete track: ${message}`)
+    }
   }
 
   function removeTrack(trackId: string) {
@@ -1023,27 +1178,32 @@ function App() {
           />
 
           <section className={`module collapsible-module${librarySelectorCollapsed ? ' collapsed' : ''}`}>
-            <div className="module-header">
-              <h2 className="module-heading">
-                Library Selector
-                <InfoTip text="Choose which libraries from the configured library root are included in the session browser." />
-              </h2>
-              <div className="module-header-actions">
-                <span className="subtle">{selectedLibraries.length} active</span>
-                <IconButton
-                  label={librarySelectorCollapsed ? 'Expand Library Selector' : 'Collapse Library Selector'}
-                  onClick={() => setLibrarySelectorCollapsed((current) => !current)}
-                  icon={librarySelectorCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-                />
-              </div>
-            </div>
             {librarySelectorCollapsed ? (
-              <div className="collapsed-root-summary">
-                <span>Library root</span>
-                <strong>{libraryRootInput || 'No library root selected'}</strong>
-              </div>
+              <button className="collapsed-root-row" type="button" onClick={() => setLibrarySelectorCollapsed(false)}>
+                <span>
+                  <strong>Library root:</strong> {libraryRootInput || 'No library root selected'}
+                </span>
+                <span className="collapsed-root-count">
+                  {libraries.length} libraries / {selectedLibraries.length} selected
+                </span>
+                <ChevronDown size={16} />
+              </button>
             ) : (
               <>
+                <div className="module-header">
+                  <h2 className="module-heading">
+                    Library Selector
+                    <InfoTip text="Choose which libraries from the configured library root are included in the session browser." />
+                  </h2>
+                  <div className="module-header-actions">
+                    <span className="subtle">{selectedLibraries.length} active</span>
+                    <IconButton
+                      label="Collapse Library Selector"
+                      onClick={() => setLibrarySelectorCollapsed(true)}
+                      icon={<ChevronUp size={16} />}
+                    />
+                  </div>
+                </div>
                 <div className="library-root-control">
                   <label>
                     <span>Library root</span>
@@ -1095,10 +1255,12 @@ function App() {
             <div className="module-header">
               <h2 className="module-heading">
                 Session Selector
-                <InfoTip text="Browse sessions from the selected libraries. Use filters from the filter panel or filter directly in the table to narrow the list." />
+                <InfoTip text="Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list." />
               </h2>
               <div className="module-header-actions">
-                <span className="subtle">{visibleSessions.length} shown</span>
+                <span className="subtle session-selector-count">
+                  {libraryScopedSessions.length} total / {visibleSessions.length} filtered / {selectedCandidateIds.length} selected
+                </span>
                 <IconButton
                   label={sessionSelectorCollapsed ? 'Expand Session Selector' : 'Collapse Session Selector'}
                   onClick={() => setSessionSelectorCollapsed((current) => !current)}
@@ -1199,29 +1361,6 @@ function App() {
                     )}
                   </div>
                 </div>
-                <div className="session-filter-status">
-                  <span className="filter-status-label">Table filters</span>
-                  {activeTableColumnFilters.length === 0 ? (
-                    <span className="pill neutral">none</span>
-                  ) : (
-                    <>
-                      {activeTableColumnFilters.map((filter) => (
-                        <button
-                          className="filter-chip compact-session-filter-chip"
-                          key={filter.columnId}
-                          onClick={() => clearTableColumnFilter(filter.columnId)}
-                          type="button"
-                        >
-                          {columnLabels[filter.columnId]}: {tableFilterSummary(filter, libraries)}
-                          <X size={12} />
-                        </button>
-                      ))}
-                      <button className="ghost-action compact-filter-action" onClick={clearTableColumnFilters} type="button">
-                        Clear table filters
-                      </button>
-                    </>
-                  )}
-                </div>
                 <SessionTable
                   sessions={visibleSessions}
                   filterBaseSessions={savedFilteredSessions}
@@ -1237,6 +1376,7 @@ function App() {
                   onSort={setSort}
                   onSelect={selectCandidate}
                   onInspect={inspectSession}
+                  onDeleteSession={deleteLibrarySession}
                 />
                 <div className="action-row">
                   <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
@@ -1292,7 +1432,7 @@ function App() {
                   </h2>
                   <div className="module-header-actions">
                     <span className={activeSavedSessionFilters.length ? 'pill ok' : 'pill neutral'}>
-                      {activeSavedSessionFilters.length ? `${activeSavedSessionFilters.length} saved active` : 'saved stack'}
+                      {savedSessionFilters.length} available / {activeSavedSessionFilters.length} active
                     </span>
                     <IconButton
                       label={filtersCollapsed ? 'Expand Filters' : 'Collapse Filters'}
@@ -1305,9 +1445,6 @@ function App() {
                   <FilterPanel
                     savedFilters={savedSessionFilters}
                     activeSavedFilterIds={activeSavedFilterIds}
-                    totalCount={libraryScopedSessions.length}
-                    savedFilteredCount={savedFilteredSessions.length}
-                    visibleCount={visibleSessions.length}
                     trackpointFilterStates={activeGeoFilterStates}
                     canManageSavedFilters={Boolean(activeDataSource.saveSavedSessionFilter)}
                     onToggleSavedFilter={toggleSavedSessionFilter}
@@ -1315,10 +1452,10 @@ function App() {
                     onManageSavedFilters={() => setFilterManagerOpen(true)}
                     onCopySavedFilter={(filter) => void copySessionFilter(filter)}
                     onDeleteSavedFilter={(filter) => {
-                      if (window.confirm(`Delete saved filter "${filter.displayName}"?`)) {
+                      if (window.confirm(`Delete filter "${filter.displayName}"?`)) {
                         void deleteSessionFilter(filter).catch((error) => {
                           const message = error instanceof Error ? error.message : String(error)
-                          setStatusMessage(`Could not delete saved filter: ${message}`)
+                          setStatusMessage(`Could not delete filter: ${message}`)
                         })
                       }
                     }}
@@ -1326,38 +1463,20 @@ function App() {
                 )}
               </section>
 
-              <section className={`module collapsible-module${geospatialCollapsed ? ' collapsed' : ''}`}>
-                <div className="module-header">
-                  <h2 className="module-heading">
-                    Geospatial Workbench
-                    <InfoTip text="Create and manage re-usable tracks and trackpoints and attach them to the current Study Set." />
-                  </h2>
-                  <div className="module-header-actions">
-                    <span className="pill neutral">v0 endpoints</span>
-                    <IconButton
-                      label={geospatialCollapsed ? 'Expand Geospatial Workbench' : 'Collapse Geospatial Workbench'}
-                      onClick={() => setGeospatialCollapsed((current) => !current)}
-                      icon={geospatialCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-                    />
-                  </div>
-                </div>
-                {!geospatialCollapsed && (
-                  <GeospatialWorkbench
-                    primarySession={primarySession}
-                    currentStudySet={currentStudySet}
-                    sessions={sessions}
-                    tracks={tracks}
-                    selectedTrackIds={selectedTrackIds}
-                    currentStudyTracks={currentStudyTracks}
-                    dataSource={activeDataSource}
-                    onToggleTrack={toggleTrack}
-                    onAttachSelectedTracks={addSelectedTracksToStudySet}
-                    onInspectTrack={(track) => setModal({ kind: 'track', track })}
-                    onTrackSaved={upsertTrack}
-                    onTrackDeleted={deleteTrackFromWorkbench}
-                  />
-                )}
-              </section>
+              <GeospatialWorkbench
+                primarySession={primarySession}
+                currentStudySet={currentStudySet}
+                sessions={sessions}
+                tracks={tracks}
+                selectedTrackIds={selectedTrackIds}
+                dataSource={activeDataSource}
+                onToggleTrack={toggleTrack}
+                onAttachTrack={addTrackToStudySet}
+                onAttachSession={addSessionRefToStudySet}
+                onInspectTrack={(track) => setModal({ kind: 'track', track })}
+                onTrackSaved={upsertTrack}
+                onTrackDeleted={deleteTrackFromWorkbench}
+              />
             </div>
           </section>
         </aside>
@@ -1388,12 +1507,17 @@ function App() {
                 Current Study Set
                 <InfoTip text="The working Study Set comprising sessions and optional groupings and tracks." />
               </h2>
-              <span className={currentStudySetStatus.className}>{currentStudySetStatus.label}</span>
+              <div className="module-header-actions">
+                <span className="subtle study-set-count">
+                  {currentStudySet.sessions.length} sessions / {currentStudySet.groupings.length} groupings / {currentStudySet.trackIds.length} tracks
+                </span>
+                <span className={currentStudySetStatus.className}>{currentStudySetStatus.label}</span>
+              </div>
             </div>
 
             <div className="study-name-row">
               <label>
-                Study Set name
+                <span>Name</span>
                 <input
                   value={currentStudySet.displayName}
                   onChange={(event) => updateStudySetName(event.target.value)}
@@ -1401,34 +1525,24 @@ function App() {
                 />
               </label>
               <button
-                className="primary-action"
+                className="primary-action compact-row-action"
                 disabled={!canSaveCurrentStudySet}
                 onClick={() => void saveCurrentStudySet()}
               >
                 <Save size={17} />
                 Save
               </button>
-              <button className="danger-action" disabled={!currentStudySetHasContent} onClick={requestClearStudySet}>
+              <button className="danger-action compact-row-action" disabled={!currentStudySetHasContent} onClick={requestClearStudySet}>
                 <Trash2 size={17} />
                 Clear
               </button>
               <button
-                className="secondary-action"
+                className="secondary-action compact-row-action"
                 onClick={() => setModal({ kind: 'study-set', studySet: currentStudySet, mode: 'analyze' })}
               >
                 <BarChart3 size={17} />
                 Analyze
               </button>
-            </div>
-
-            <div className="study-summary-grid">
-              <SummaryTile label="Sessions" value={currentStudySet.sessions.length} />
-              <SummaryTile label="Groupings" value={currentStudySet.groupings.length} />
-              <SummaryTile label="Tracks" value={currentStudySet.trackIds.length} />
-              <SummaryTile
-                label="Libraries"
-                value={new Set(currentStudySet.sessions.map((item) => item.libraryId)).size}
-              />
             </div>
 
             <section className="study-section">
@@ -1448,16 +1562,25 @@ function App() {
                 onRemove={removeStudySession}
                 onInspect={inspectSession}
               />
+            </section>
+
+            <section className="study-section">
+              <div className="subsection-header">
+                <h3 className="subsection-heading">
+                  Groupings
+                  <InfoTip text="Named collections of Study Set sessions. Sessions can belong to more than one grouping." />
+                </h3>
+              </div>
               <div className="grouping-editor">
                 <label>
-                  New grouping
+                  <span>New grouping</span>
                   <input
                     value={groupingName}
                     onChange={(event) => setGroupingName(event.target.value)}
                     placeholder="Short name"
                   />
                 </label>
-                <button className="secondary-action" onClick={createGrouping}>
+                <button className="secondary-action compact-row-action" onClick={createGrouping}>
                   <GitBranch size={16} />
                   Add grouping
                 </button>
@@ -1517,6 +1640,13 @@ function App() {
                           onClick={() => removeTrack(track.id)}
                           icon={<Minus size={15} />}
                         />
+                        <IconButton
+                          label="Delete Track"
+                          disabled={!activeDataSource.deleteTrack}
+                          onClick={() => void deleteTrackFromLibrary(track)}
+                          icon={<Trash2 size={15} />}
+                          tone="alert"
+                        />
                       </td>
                     </tr>
                   ))}
@@ -1525,52 +1655,89 @@ function App() {
             </section>
           </section>
 
-          <section className="module saved-study-sets">
-            <div className="module-header">
-              <h2 className="module-heading">
-                Saved Study Sets
-                <InfoTip text="Saved Study Sets can be loaded into the editor above, inspected, or opened directly in the analysis view." />
-              </h2>
-              <span className="subtle">{savedStudySets.length} saved</span>
+          <section className="study-geo-grid">
+            <section className="module map-module study-map-module">
+              <div className="module-header">
+                <h2 className="module-heading">
+                  Study Set GPS Location
+                  <InfoTip text="Preview the GPS paths for sessions in the current Study Set and any tracks attached to it." />
+                </h2>
+                <span className="subtle">
+                  {studySetMapSessionPaths.length} session path(s) / {currentStudyTracks.length} track(s)
+                </span>
+              </div>
+              <div className="study-map-frame">
+                <MapRoutePreview
+                  primarySession={null}
+                  sessionPaths={studySetMapSessionPaths}
+                  selectedTracks={[]}
+                  currentTracks={currentStudyTracks}
+                />
+              </div>
+            </section>
+
+            <div className="support-stack study-geo-support">
+              <section className="module saved-study-sets">
+                <div className="module-header">
+                  <h2 className="module-heading">
+                    Saved Study Sets
+                    <InfoTip text="Saved Study Sets can be loaded into the editor above, inspected, or opened directly in the analysis view." />
+                  </h2>
+                  <span className="subtle">{savedStudySets.length} saved</span>
+                </div>
+                <table className="saved-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Sessions</th>
+                      <th>Tracks</th>
+                      <th>Groups</th>
+                      <th>Controls</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {savedStudySets.map((studySet) => (
+                      <tr key={studySet.id ?? studySet.displayName}>
+                        <td>{studySet.displayName}</td>
+                        <td>{studySet.sessions.length}</td>
+                        <td>{studySet.trackIds.length}</td>
+                        <td>{studySet.groupings.length}</td>
+                        <td>
+                          <IconButton
+                            label="Load Study Set"
+                            onClick={() => requestLoadStudySet(studySet)}
+                            icon={<FileText size={15} />}
+                          />
+                          <IconButton
+                            label="View Study Set"
+                            onClick={() => setModal({ kind: 'study-set', studySet, mode: 'view' })}
+                            icon={<Eye size={15} />}
+                          />
+                          <IconButton
+                            label="Simple Suspension Analysis"
+                            onClick={() => setModal({ kind: 'study-set', studySet, mode: 'analyze' })}
+                            icon={<Play size={15} />}
+                          />
+                          <IconButton
+                            label="Delete Study Set"
+                            disabled={!studySet.id || !activeDataSource.deleteStudySet}
+                            onClick={() => void deleteSavedStudySet(studySet)}
+                            icon={<Trash2 size={15} />}
+                            tone="alert"
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+              <StudySetGpsCoverageCard currentStudySet={currentStudySet} sessions={sessions} />
+              <MatchPreviewCard
+                currentStudySet={currentStudySet}
+                sessions={sessions}
+                currentStudyTracks={currentStudyTracks}
+              />
             </div>
-            <table className="saved-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Sessions</th>
-                  <th>Tracks</th>
-                  <th>Groups</th>
-                  <th>Controls</th>
-                </tr>
-              </thead>
-              <tbody>
-                {savedStudySets.map((studySet) => (
-                  <tr key={studySet.id ?? studySet.displayName}>
-                    <td>{studySet.displayName}</td>
-                    <td>{studySet.sessions.length}</td>
-                    <td>{studySet.trackIds.length}</td>
-                    <td>{studySet.groupings.length}</td>
-                    <td>
-                      <IconButton
-                        label="Simple Suspension Analysis"
-                        onClick={() => setModal({ kind: 'study-set', studySet, mode: 'analyze' })}
-                        icon={<Play size={15} />}
-                      />
-                      <IconButton
-                        label="View Study Set"
-                        onClick={() => setModal({ kind: 'study-set', studySet, mode: 'view' })}
-                        icon={<Eye size={15} />}
-                      />
-                      <IconButton
-                        label="Load Study Set"
-                        onClick={() => requestLoadStudySet(studySet)}
-                        icon={<FileText size={15} />}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </section>
         </aside>
 
@@ -1664,6 +1831,20 @@ async function fetchWorkbenchData(source: LibraryDataSource) {
   }
 }
 
+function removeSessionFromStudySetValue(studySet: StudySet, refId: string, preserveSavedFlag: boolean) {
+  return {
+    ...studySet,
+    saved: preserveSavedFlag ? studySet.saved : false,
+    sessions: studySet.sessions.filter((session) => sessionRefId(session) !== refId),
+    groupings: studySet.groupings
+      .map((grouping) => ({
+        ...grouping,
+        sessionRefs: grouping.sessionRefs.filter((sessionRef) => sessionRef !== refId),
+      }))
+      .filter((grouping) => grouping.sessionRefs.length > 0),
+  }
+}
+
 function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[]) {
   const sessionCounts = new Map<string, number>()
   for (const session of sessions) {
@@ -1732,11 +1913,39 @@ function uniqueStrings(values: string[]) {
   return Array.from(new Set(values))
 }
 
-function tableFilterSummary(filter: TableColumnFilter, libraries: LibraryRecord[]) {
-  if (filter.values.length === 1) {
-    return tableFilterLabel(filter.columnId, libraries, filter.values[0])
+function loadPersistedVisibleColumns(): ColumnId[] {
+  if (typeof window === 'undefined') {
+    return defaultColumns
   }
-  return `${filter.values.length} values`
+  try {
+    const raw = window.localStorage.getItem(SESSION_SELECTOR_COLUMNS_STORAGE_KEY)
+    if (!raw) {
+      return defaultColumns
+    }
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) {
+      return defaultColumns
+    }
+    const columnIds = parsed.filter(isColumnId)
+    return normalizeColumnSelection(columnIds)
+  } catch {
+    return defaultColumns
+  }
+}
+
+function persistVisibleColumns(columns: ColumnId[]) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(SESSION_SELECTOR_COLUMNS_STORAGE_KEY, JSON.stringify(columns))
+  } catch {
+    // Browser storage may be unavailable or full; column layout persistence is non-critical.
+  }
+}
+
+function isColumnId(value: unknown): value is ColumnId {
+  return typeof value === 'string' && value in columnLabels
 }
 
 function cloneSessionFilter(filter: SavedSessionFilterRecord): SavedSessionFilterRecord {

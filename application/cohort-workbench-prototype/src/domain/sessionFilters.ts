@@ -225,6 +225,8 @@ export function savedFilterCategoryLabel(category: string) {
       return 'People'
     case 'processing':
       return 'Processing'
+    case 'custom':
+      return 'Custom'
     default:
       return category
   }

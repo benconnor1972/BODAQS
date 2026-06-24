@@ -24,6 +24,7 @@ from .errors import (
     LibraryApiError,
     LibraryNotFoundError,
     RevisionConflictError,
+    SessionDeleteConflictError,
     SessionFilterNotFoundError,
     SessionNotFoundError,
     SignalNotFoundError,
@@ -92,6 +93,7 @@ from .session_notes import (
     load_session_note,
     save_session_note,
 )
+from .sessions import delete_session
 from .study_sets import (
     STUDY_SET_SCHEMA,
     STUDY_SET_VERSION,
@@ -139,6 +141,7 @@ __all__ = [
     "LibraryApiError",
     "LibraryNotFoundError",
     "RevisionConflictError",
+    "SessionDeleteConflictError",
     "SESSION_FILTER_SCHEMA",
     "SESSION_FILTER_VERSION",
     "SESSION_CATALOG_ROW_SCHEMA",
@@ -183,6 +186,7 @@ __all__ = [
     "create_study_set",
     "create_track",
     "delete_geospatial_policy",
+    "delete_session",
     "delete_session_filter",
     "delete_study_set",
     "delete_track",
