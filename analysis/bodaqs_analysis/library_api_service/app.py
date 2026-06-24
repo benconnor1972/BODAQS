@@ -250,6 +250,15 @@ def create_app(
     def delete_root_session_filter(filter_id: str) -> dict[str, Any]:
         return _current_adapter(app).delete_session_filter(filter_id)
 
+    @app.get("/api/v1/analysis-views")
+    def list_analysis_views() -> list[dict[str, Any]]:
+        return _current_adapter(app).list_analysis_views()
+
+    @app.post("/api/v1/analysis-views/{view_id}/adequacy")
+    async def get_analysis_view_adequacy(view_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).get_analysis_view_adequacy(view_id, _json_object_payload(payload))
+
     @app.post("/api/v1/libraries/{library_id}/timeseries/window")
     async def get_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()

@@ -6,6 +6,7 @@ import copy
 from pathlib import Path
 from typing import Any, Mapping
 
+from .analysis_views import evaluate_analysis_view_adequacy, list_analysis_views
 from .catalog import (
     build_session_catalog,
     discover_libraries,
@@ -404,6 +405,21 @@ class LibraryAdapter:
     def delete_session_filter(self, filter_id: str) -> dict[str, Any]:
         return delete_session_filter(self.libraries_root, filter_id)
 
+    def list_analysis_views(self) -> list[dict[str, Any]]:
+        return list_analysis_views()
+
+    def get_analysis_view_adequacy(self, view_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            raise InvalidRequestError("Analysis adequacy request body must be a JSON object.")
+        study_set = self._study_set_for_analysis_request(request)
+        session_refs = self._session_refs_for_match_request(request, study_set=study_set)
+        session_rows = [self._catalog_row_for_session(str(session["library_id"]), session) for session in session_refs]
+        return evaluate_analysis_view_adequacy(
+            view_id,
+            scope=self._analysis_scope_payload(request, study_set=study_set, session_refs=session_refs),
+            session_rows=session_rows,
+        )
+
     def list_study_sets(self, library_id: str | None = None) -> list[dict[str, Any]]:
         if library_id is not None:
             self.get_library(library_id)
@@ -629,6 +645,31 @@ class LibraryAdapter:
     def _study_set_for_match_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
         study_set_id = str(request.get("study_set_id") or "").strip()
         return self.load_study_set(study_set_id) if study_set_id else None
+
+    def _study_set_for_analysis_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        study_set = request.get("study_set")
+        if isinstance(study_set, Mapping):
+            return dict(study_set)
+        return self._study_set_for_match_request(request)
+
+    def _analysis_scope_payload(
+        self,
+        request: Mapping[str, Any],
+        *,
+        study_set: Mapping[str, Any] | None,
+        session_refs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if isinstance(study_set, Mapping):
+            return {
+                "kind": "study_set",
+                "study_set_id": str(study_set.get("study_set_id") or request.get("study_set_id") or ""),
+                "display_name": str(study_set.get("display_name") or ""),
+                "session_count": len(session_refs),
+            }
+        return {
+            "kind": "session_refs",
+            "session_count": len(session_refs),
+        }
 
     def _session_refs_for_match_request(
         self,

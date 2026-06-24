@@ -1,6 +1,16 @@
 """Python adapter foundation for the BODAQS Library API."""
 
 from .adapter import LibraryAdapter
+from .analysis_views import (
+    ANALYSIS_ADEQUACY_SCHEMA,
+    ANALYSIS_ADEQUACY_VERSION,
+    ANALYSIS_VIEW_REGISTRY_SCHEMA,
+    ANALYSIS_VIEW_REGISTRY_VERSION,
+    SIMPLE_SUSPENSION_VIEW_ID,
+    evaluate_analysis_view_adequacy,
+    get_analysis_view,
+    list_analysis_views,
+)
 from .catalog import (
     SESSION_CATALOG_ROW_SCHEMA,
     SESSION_CATALOG_ROW_VERSION,
@@ -13,6 +23,7 @@ from .catalog import (
     get_session_gps_points,
 )
 from .errors import (
+    AnalysisViewNotFoundError,
     CapabilityUnavailableError,
     GeospatialPolicyNotFoundError,
     GpsUnavailableError,
@@ -125,6 +136,11 @@ from .trackpoint_queries import (
 
 __all__ = [
     "CapabilityUnavailableError",
+    "ANALYSIS_ADEQUACY_SCHEMA",
+    "ANALYSIS_ADEQUACY_VERSION",
+    "ANALYSIS_VIEW_REGISTRY_SCHEMA",
+    "ANALYSIS_VIEW_REGISTRY_VERSION",
+    "AnalysisViewNotFoundError",
     "DEFAULT_GEOSPATIAL_POLICY_ID",
     "FIXTURE_SCHEMA",
     "FIXTURE_VERSION",
@@ -160,6 +176,7 @@ __all__ = [
     "SELECTION_BRIDGE_VERSION",
     "SESSION_TRACK_MATCH_SCHEMA",
     "SESSION_TRACK_MATCH_VERSION",
+    "SIMPLE_SUSPENSION_VIEW_ID",
     "SessionNotFoundError",
     "SessionFilterNotFoundError",
     "SignalNotFoundError",
@@ -194,6 +211,8 @@ __all__ = [
     "discover_libraries",
     "build_session_catalog",
     "export_library_fixture",
+    "evaluate_analysis_view_adequacy",
+    "get_analysis_view",
     "get_timeseries_window",
     "get_session_gps_points",
     "is_valid_object_id",
@@ -201,6 +220,7 @@ __all__ = [
     "list_session_filters",
     "list_study_sets",
     "list_tracks",
+    "list_analysis_views",
     "load_geospatial_policy",
     "load_session_filter",
     "load_session_note",

@@ -222,6 +222,96 @@ def _write_catalog_fixture_session(library_root: Path, *, library_id: str = "def
     return session_ref
 
 
+def _write_simple_suspension_fixture_session(
+    library_root: Path,
+    run_id: str,
+    session_id: str,
+    *,
+    library_id: str = "default-library",
+    ends: tuple[str, ...] = ("front", "rear"),
+    include_event_metrics: bool = True,
+    include_gps: bool = True,
+) -> dict:
+    session_ref = _make_session(library_root, run_id, session_id, library_id=library_id)
+    session_root = library_root / "runs" / run_id / "sessions" / session_id
+    _write_json(
+        library_root / "runs" / run_id / "manifest.json",
+        {
+            "run_id": run_id,
+            "created_at": "2026-06-24T10:00:00",
+            "description": "Suspension analysis fixture",
+        },
+    )
+    _write_json(
+        session_root / "manifest.json",
+        {
+            "session_id": session_id,
+            "description": session_id,
+            "summary": {"n_rows": 3, "t_start_s": 0.0, "t_end_s": 2.0},
+        },
+    )
+
+    signals = {
+        "time_s": {"quantity": "time", "unit": "s", "domain": "time"},
+    }
+    frame = {"time_s": [0.0, 1.0, 2.0]}
+    if "front" in ends:
+        signals["front_wheel_disp_norm_dom_wheel [1]"] = {
+            "end": "front",
+            "domain": "wheel",
+            "quantity": "disp_norm",
+            "unit": "1",
+        }
+        frame["front_wheel_disp_norm_dom_wheel [1]"] = [0.0, 0.2, 0.4]
+    if "rear" in ends:
+        signals["rear_wheel_disp_norm_dom_wheel [1]"] = {
+            "end": "rear",
+            "domain": "wheel",
+            "quantity": "disp_norm",
+            "unit": "1",
+        }
+        frame["rear_wheel_disp_norm_dom_wheel [1]"] = [0.0, 0.3, 0.6]
+    if include_gps:
+        signals["latitude"] = {"quantity": "latitude", "unit": "deg", "domain": "position"}
+        signals["longitude"] = {"quantity": "longitude", "unit": "deg", "domain": "position"}
+        frame["latitude"] = [-31.95, -31.9501, -31.9502]
+        frame["longitude"] = [115.86, 115.8601, 115.8602]
+
+    _write_json(session_root / "session" / "meta.json", {"signals": signals})
+    pd.DataFrame(frame).to_parquet(session_root / "session" / "df.parquet", index=False)
+
+    if include_event_metrics:
+        events_root = session_root / "events"
+        metrics_root = session_root / "metrics"
+        for event_type, event_id, velocity_metric in (
+            ("compressions_all", "compression:front:1", {"m_interval_vel_max": 820.0}),
+            ("rebounds_all", "rebound:front:1", {"m_interval_vel_min": -760.0}),
+        ):
+            (events_root / event_type).mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "event_id": [event_id],
+                    "schema_id": [event_type],
+                    "event_name": [event_type],
+                    "start_time_s": [0.5],
+                    "end_time_s": [0.8],
+                }
+            ).to_parquet(events_root / event_type / "events.parquet", index=False)
+            (metrics_root / event_type).mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "session_id": [session_id],
+                    "event_id": [event_id],
+                    "schema_id": [event_type],
+                    "m_stroke_disp_max": [42.0],
+                    "m_stroke_disp_range": [28.0],
+                    **velocity_metric,
+                }
+            ).to_parquet(metrics_root / event_type / "metrics.parquet", index=False)
+
+    return session_ref
+
+
 def test_session_selector_can_hide_legacy_aggregations(tmp_path: Path) -> None:
     library_root = tmp_path / "default-library"
     session_ref = _write_catalog_fixture_session(library_root)
@@ -1111,6 +1201,7 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert row["event_summary"]["by_type"] == {"bottom_out": 1, "jump": 2}
     assert row["metric_summary"] == {
         "metric_count": 2,
+        "metric_columns": ["duration_s", "peak_force"],
         "event_count_with_metrics": 1,
         "schema_ids": ["bottom_out"],
     }
@@ -1169,6 +1260,66 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
     assert points["sampling"]["returned_points"] == 2
     assert [point["time_s"] for point in points["points"]] == [0.0, 2.0]
     assert points["sampling"]["window"] == {"start_s": 0.0, "end_s": 2.0}
+
+
+def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_adequacy(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    ready_ref = _write_simple_suspension_fixture_session(library_root, "run_1", "ready")
+    warning_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "front-only",
+        ends=("front",),
+        include_event_metrics=False,
+        include_gps=False,
+    )
+    blocked_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "blocked",
+        ends=(),
+        include_event_metrics=False,
+        include_gps=False,
+    )
+    adapter = LibraryAdapter(libraries_root)
+
+    views = adapter.list_analysis_views()
+    assert views[0]["view_id"] == "simple-suspension"
+    assert views[0]["requirements"]["required"][0]["id"] == "wheel_displacement_signal"
+    assert views[0]["requirements"]["recommended"][0]["id"] == "both_ends"
+
+    ready = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [ready_ref]})
+    assert ready["status"] == "ready"
+    assert ready["usable_session_count"] == 1
+    assert len(ready["usable_units"]) == 2
+    assert ready["session_results"][0]["ends"]["front"]["usable"] is True
+    assert ready["session_results"][0]["ends"]["rear"]["usable"] is True
+
+    warning = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [warning_ref]})
+    assert warning["status"] == "warning"
+    assert warning["usable_session_count"] == 1
+    assert warning["session_results"][0]["missing_recommended"] == ["both_ends", "event_metrics"]
+    assert warning["session_results"][0]["missing_optional"] == ["gps"]
+    assert warning["session_results"][0]["ends"]["rear"]["missing_required"] == ["wheel_displacement_signal"]
+
+    partial = adapter.get_analysis_view_adequacy(
+        "simple-suspension",
+        {"sessions": [ready_ref, blocked_ref]},
+    )
+    assert partial["status"] == "partial"
+    assert partial["usable_session_count"] == 1
+    assert partial["blocked_session_count"] == 1
+    assert any(unit["session_ref_id"] == blocked_ref["session_ref_id"] for unit in partial["excluded_units"])
+
+    blocked = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [blocked_ref]})
+    assert blocked["status"] == "blocked"
+    assert blocked["usable_session_count"] == 0
 
 
 def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
@@ -2204,6 +2355,8 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     capabilities = client.get("/api/v1/capabilities")
     assert capabilities.status_code == 200
     assert capabilities.json()["features"]["write_study_sets"] is True
+    assert capabilities.json()["features"]["read_analysis_views"] is True
+    assert capabilities.json()["features"]["evaluate_analysis_adequacy"] is True
 
     libraries = client.get("/api/v1/libraries")
     assert libraries.status_code == 200
@@ -2216,6 +2369,26 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     catalog = client.get("/api/v1/libraries/default-library/catalog")
     assert catalog.status_code == 200
     assert catalog.json()["rows"][0]["session_key"] == session_ref["session_key"]
+
+    analysis_views = client.get("/api/v1/analysis-views")
+    assert analysis_views.status_code == 200
+    assert analysis_views.json()[0]["view_id"] == "simple-suspension"
+
+    adequacy = client.post(
+        "/api/v1/analysis-views/simple-suspension/adequacy",
+        json={"sessions": [session_ref]},
+    )
+    assert adequacy.status_code == 200
+    assert adequacy.json()["schema"] == "bodaqs.analysis_adequacy"
+    assert adequacy.json()["status"] == "warning"
+    assert adequacy.json()["usable_session_count"] == 1
+
+    missing_view = client.post(
+        "/api/v1/analysis-views/not-a-real-view/adequacy",
+        json={"sessions": [session_ref]},
+    )
+    assert missing_view.status_code == 404
+    assert missing_view.json()["error"]["code"] == "analysis_view_not_found"
 
     refresh = client.post("/api/v1/libraries/default-library/refresh")
     assert refresh.status_code == 200

@@ -89,6 +89,12 @@ class TrackpointMatchQueryNotFoundError(LibraryApiError):
     default_message = "Trackpoint match query was not found."
 
 
+class AnalysisViewNotFoundError(LibraryApiError):
+    code = "analysis_view_not_found"
+    status_code = 404
+    default_message = "Analysis view was not found."
+
+
 class InvalidRequestError(LibraryApiError):
     code = "invalid_request"
     status_code = 400

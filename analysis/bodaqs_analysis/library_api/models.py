@@ -50,6 +50,8 @@ def default_capabilities() -> dict[str, Any]:
             "cancel_trackpoint_match_queries": True,
             "read_filters": True,
             "write_filters": True,
+            "read_analysis_views": True,
+            "evaluate_analysis_adequacy": True,
             "export_static_bundle": False,
             "run_processing_jobs": False,
         },
@@ -90,6 +92,8 @@ def library_payload(
             "cancel_trackpoint_match_queries": True,
             "read_filters": True,
             "write_filters": True,
+            "read_analysis_views": True,
+            "evaluate_analysis_adequacy": True,
         },
     }
     if definition:

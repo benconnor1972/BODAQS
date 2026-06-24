@@ -1230,6 +1230,7 @@ def _metric_summary(
 
     return {
         "metric_count": len(metric_columns),
+        "metric_columns": sorted(metric_columns),
         "event_count_with_metrics": len(event_ids) if event_ids else row_count,
         "schema_ids": sorted(set(schema_ids)),
     }

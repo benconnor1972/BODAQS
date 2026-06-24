@@ -352,6 +352,8 @@ Example:
     "cancel_trackpoint_match_queries": true,
     "read_filters": true,
     "write_filters": true,
+    "read_analysis_views": true,
+    "evaluate_analysis_adequacy": true,
     "export_static_bundle": false,
     "run_processing_jobs": false
   }
@@ -1043,7 +1045,144 @@ Example request:
 }
 ```
 
-### 12.4 Study Sets
+### 12.4 Analysis Views And Adequacy
+
+```text
+GET  /api/v1/analysis-views
+POST /api/v1/analysis-views/{view_id}/adequacy
+```
+
+Analysis views are registered browser-facing analysis destinations. The first
+implemented view is `simple-suspension`. The registry is intentionally small in
+v0: it advertises discoverable view metadata and the requirements that are used
+by the adequacy endpoint.
+
+Adequacy checks distinguish the whole requested scope from individual sessions
+and analyzable units such as `session_end`. Status values are:
+
+- `ready`: the scope can run cleanly.
+- `warning`: all selected sessions have at least one usable analysis unit, but
+  recommended or optional features are missing.
+- `partial`: at least one session is usable and at least one selected session
+  is blocked or excluded.
+- `blocked`: no selected sessions have the required data needed to launch the
+  view meaningfully.
+
+Requirements are tiered:
+
+- `required`: needed for the view to have any meaningful output.
+- `recommended`: needed for the full intended comparison or chart set, but not
+  enough by itself to block launch.
+- `optional`: enriches the view or unlocks secondary features.
+
+For `simple-suspension`, the first adequacy policy treats wheel displacement
+for at least one suspension end as required. Both ends, compression/rebound
+event metrics, and GPS/sector support are treated as completeness features.
+
+Example registry response entry:
+
+```json
+{
+  "schema": "bodaqs.analysis_view",
+  "version": 1,
+  "view_id": "simple-suspension",
+  "display_name": "Simple Suspension Analysis",
+  "category": "Suspension",
+  "route": "/analysis/simple-suspension",
+  "scope_kinds": ["study_set", "session_refs"],
+  "adequacy_policy": "partial",
+  "requirements": {
+    "required": [
+      {
+        "id": "wheel_displacement_signal",
+        "applies_to": "session_end",
+        "minimum": "at_least_one_end"
+      }
+    ],
+    "recommended": [
+      {"id": "both_ends", "applies_to": "session"},
+      {"id": "event_metrics", "applies_to": "session"}
+    ],
+    "optional": [
+      {"id": "gps", "applies_to": "session"}
+    ]
+  }
+}
+```
+
+Example adequacy request using explicit sessions:
+
+```json
+{
+  "sessions": [
+    {
+      "library_id": "default-library",
+      "session_ref_id": "default-library|||run-a::session-a",
+      "session_key": "run-a::session-a",
+      "run_id": "run-a",
+      "session_id": "session-a"
+    }
+  ]
+}
+```
+
+Example adequacy request using a saved Study Set:
+
+```json
+{
+  "study_set_id": "setup-comparison"
+}
+```
+
+Example response:
+
+```json
+{
+  "schema": "bodaqs.analysis_adequacy",
+  "version": 1,
+  "view_id": "simple-suspension",
+  "status": "warning",
+  "policy": "partial",
+  "summary": "1 of 1 sessions can be analyzed with missing recommended or optional data.",
+  "total_session_count": 1,
+  "usable_session_count": 1,
+  "blocked_session_count": 0,
+  "usable_units": [
+    {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "unit_kind": "session_end",
+      "end": "front"
+    }
+  ],
+  "excluded_units": [
+    {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "unit_kind": "session_end",
+      "end": "rear",
+      "missing_required": ["wheel_displacement_signal"]
+    }
+  ],
+  "messages": [
+    {
+      "severity": "warning",
+      "code": "missing_event_metrics",
+      "message": "1 session(s) lack complete compression/rebound metric support."
+    }
+  ],
+  "session_results": [
+    {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "status": "warning",
+      "usable": true,
+      "usable_end_count": 1,
+      "missing_recommended": ["both_ends", "event_metrics"],
+      "missing_optional": ["gps"]
+    }
+  ]
+}
+```
+
+### 12.5 Study Sets
 
 ```text
 GET    /api/v1/study-sets
@@ -1087,7 +1226,7 @@ Example update request:
 }
 ```
 
-### 12.5 Geospatial
+### 12.6 Geospatial
 
 Root-scoped tracks:
 
@@ -1152,7 +1291,7 @@ Broad query scopes should be described declaratively with `library_ids`,
 browser to enumerate every session. Narrow UI-driven requests may still provide
 explicit `session_refs`.
 
-### 12.6 Session Filters
+### 12.7 Session Filters
 
 Root-scoped persisted session filters:
 
@@ -1167,7 +1306,7 @@ DELETE /api/v1/session-filters/{filter_id}
 Session Filter endpoints are scoped to the configured libraries root, not to a
 single processed library. Filter writes should use revision checks.
 
-### 12.7 Signals, Events, Metrics, And Time-Series
+### 12.8 Signals, Events, Metrics, And Time-Series
 
 ```text
 POST /api/v1/libraries/{library_id}/signals/query
