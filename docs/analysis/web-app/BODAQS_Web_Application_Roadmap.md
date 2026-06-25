@@ -178,6 +178,9 @@ The browser should own the product experience:
 
 - library selection from the service-reported library list
 - Study Set creation, editing, selection, and comparison
+- analysis-view launch, adequacy feedback, and addressable analysis tabs
+- reloadable analysis routes for saved Study Sets, with temporary browser-local
+  routes for unsaved analysis scopes
 - session catalog browsing
 - interactive helper filtering, searching, and sorting
 - comparison layout

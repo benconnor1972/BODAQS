@@ -17,7 +17,13 @@ from bodaqs_analysis.library_api.errors import LibraryApiError
 
 SERVICE_API_VERSION = "0"
 SERVICE_NAME = "BODAQS Library API"
-DEFAULT_ALLOW_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+DEFAULT_ALLOW_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+)
+LOOPBACK_ALLOW_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
 
 
 @dataclass(frozen=True)
@@ -54,11 +60,28 @@ def create_app(
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
+        allow_origin_regex=LOOPBACK_ALLOW_ORIGIN_REGEX,
     )
 
     @app.exception_handler(LibraryApiError)
     async def library_api_error_handler(_request: Request, exc: LibraryApiError) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content=exc.to_error_payload())
+
+    @app.exception_handler(Exception)
+    async def unexpected_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": "The Library API service hit an unexpected error.",
+                    "details": {
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                    },
+                }
+            },
+        )
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:

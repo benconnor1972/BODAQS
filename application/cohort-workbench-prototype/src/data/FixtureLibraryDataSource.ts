@@ -5,6 +5,8 @@ import {
   type SessionFilterPredicate,
 } from '../domain/sessionFilters'
 import type {
+  AnalysisAdequacyResult,
+  AnalysisViewRecord,
   SessionGpsPointSet,
   SessionGpsSummary,
   SessionNoteFieldDef,
@@ -53,6 +55,62 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
 
   async listStudySets() {
     return this.savedStudySets.map(cloneStudySet)
+  }
+
+  async loadStudySet(studySetId: string) {
+    const studySet = this.savedStudySets.find((item) => item.id === studySetId)
+    if (!studySet) {
+      throw new Error(`Fixture Study Set ${studySetId} was not found.`)
+    }
+    return cloneStudySet(studySet)
+  }
+
+  async listAnalysisViews(): Promise<AnalysisViewRecord[]> {
+    return [fixtureSimpleSuspensionAnalysisView()]
+  }
+
+  async evaluateAnalysisAdequacy(viewId: string, studySet: StudySet): Promise<AnalysisAdequacyResult> {
+    const view = fixtureSimpleSuspensionAnalysisView()
+    const totalSessionCount = studySet.sessions.length
+    const usableSessionCount = viewId === view.id ? totalSessionCount : 0
+    return {
+      viewId,
+      displayName: viewId === view.id ? view.displayName : viewId,
+      status: usableSessionCount > 0 ? 'warning' : 'blocked',
+      policy: 'fixture heuristic',
+      summary:
+        usableSessionCount > 0
+          ? 'Fixture sessions are treated as usable for prototype analysis; real adequacy comes from the library API.'
+          : 'No sessions are available in this Study Set.',
+      totalSessionCount,
+      usableSessionCount,
+      blockedSessionCount: totalSessionCount - usableSessionCount,
+      messages:
+        usableSessionCount > 0
+          ? [
+              {
+                level: 'warning',
+                code: 'fixture_adequacy',
+                message: 'Fixture adequacy is approximate and does not inspect real signal/event coverage.',
+              },
+            ]
+          : [
+              {
+                level: 'error',
+                code: 'empty_scope',
+                message: 'Add at least one session before opening an analysis view.',
+              },
+            ],
+      sessionResults: studySet.sessions.map((sessionRef) => ({
+        sessionRef: { ...sessionRef },
+        status: usableSessionCount > 0 ? 'warning' : 'blocked',
+        summary: usableSessionCount > 0 ? 'Fixture session assumed usable.' : 'No usable data.',
+        requiredPassed: usableSessionCount > 0,
+        recommendedMissing: ['real adequacy unavailable in fixture mode'],
+        optionalMissing: [],
+        units: {},
+      })),
+    }
   }
 
   async listSavedSessionFilters() {
@@ -276,18 +334,19 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
         },
         signals: request.signals.map((signal) => {
           const role = signal.role || 'signal'
-          const values = fixtureSignalValues(sessionRef.sessionKey, role, 900)
+          const column = fixtureSignalColumn(signal)
+          const values = fixtureSignalValues(sessionRef.sessionKey, column, 900)
           const unit = role.includes('velocity') ? 'mm/s' : role.includes('displacement') ? '1' : ''
           return {
             role,
             signalId: `${sessionRef.sessionId}-${role}`,
-            column: `${role}_fixture`,
+            column,
             displayName: role.replace(/_/g, ' '),
             end: role.startsWith('front') ? 'front' : role.startsWith('rear') ? 'rear' : '',
             domain: 'suspension',
-            quantity: role.includes('velocity') ? 'vel' : 'disp_norm',
+            quantity: column === 'active_mask_qc' ? 'mask' : role.includes('velocity') ? 'vel' : 'disp_norm',
             unit,
-            processingRole: 'primary_analysis',
+            processingRole: column === 'active_mask_qc' ? 'activity_mask' : 'primary_analysis',
             values,
           }
         }),
@@ -320,7 +379,24 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   }
 }
 
+function fixtureSignalColumn(signal: { role: string; selector?: Record<string, unknown>; column?: string }) {
+  if (signal.column) {
+    return signal.column
+  }
+  const selector = signal.selector ?? {}
+  if (selector.kind === 'qc' && selector.quantity === 'mask') {
+    return 'active_mask_qc'
+  }
+  return `${signal.role || 'signal'}_fixture`
+}
+
 function fixtureSignalValues(sessionKey: string, role: string, count: number): number[] {
+  if (role === 'inactive_mask_qc' || role === 'inactive_mask') {
+    return fixtureInactiveMask(sessionKey, count)
+  }
+  if (role === 'active_mask_qc') {
+    return fixtureInactiveMask(sessionKey, count).map((value) => (value ? 0 : 1))
+  }
   const seed = seededNumber(`${sessionKey}:${role}`)
   const isVelocity = role.includes('velocity')
   const isRear = role.startsWith('rear')
@@ -335,6 +411,17 @@ function fixtureSignalValues(sessionKey: string, role: string, count: number): n
     const spread = isRear ? 0.26 : 0.22
     return clamp(base + spread * Math.abs(wave) + (seed - 0.5) * 0.08, 0, 1)
   })
+}
+
+function fixtureInactiveMask(sessionKey: string, count: number): number[] {
+  const seed = seededNumber(`${sessionKey}:activity`)
+  const firstIdleEnd = Math.floor(count * (0.04 + seed * 0.04))
+  const middleIdleStart = Math.floor(count * (0.42 + seed * 0.16))
+  const middleIdleEnd = Math.min(count, middleIdleStart + Math.floor(count * (0.04 + seed * 0.03)))
+  const lastIdleStart = Math.floor(count * (0.92 - seed * 0.04))
+  return Array.from({ length: count }, (_, index) =>
+    index < firstIdleEnd || (index >= middleIdleStart && index < middleIdleEnd) || index >= lastIdleStart ? 1 : 0,
+  )
 }
 
 function fixtureEventRows(sessionRef: { libraryId: string; sessionKey: string; runId: string; sessionId: string; label: string }): TableQueryRow[] {
@@ -558,6 +645,49 @@ function noteValueText(value: SessionNoteValue | undefined) {
     return String(value)
   }
   return ''
+}
+
+function fixtureSimpleSuspensionAnalysisView(): AnalysisViewRecord {
+  return {
+    id: 'simple-suspension',
+    displayName: 'Simple Suspension Analysis',
+    category: 'Suspension',
+    description: 'Compare wheel displacement, wheel velocity, stroke length, event counts, and simple compression/rebound metrics.',
+    route: 'simple-suspension',
+    adequacyPolicy: 'fixture heuristic',
+    requirements: {
+      required: [
+        {
+          requirementId: 'wheel_motion_data',
+          label: 'Wheel motion data',
+          tier: 'required',
+          description: 'At least one suspension end needs usable displacement data and velocity evidence.',
+        },
+      ],
+      recommended: [
+        {
+          requirementId: 'event_metrics',
+          label: 'Event metrics',
+          tier: 'recommended',
+          description: 'Compression and rebound event metrics unlock the metric distributions and scatter plots.',
+        },
+        {
+          requirementId: 'both_ends',
+          label: 'Both ends',
+          tier: 'recommended',
+          description: 'Front and rear data enables the primary front-vs-rear comparisons.',
+        },
+      ],
+      optional: [
+        {
+          requirementId: 'gps_and_tracks',
+          label: 'GPS and tracks',
+          tier: 'optional',
+          description: 'GPS and track matches enable sector-based comparisons.',
+        },
+      ],
+    },
+  }
 }
 
 function cloneTrack(track: TrackRecord): TrackRecord {

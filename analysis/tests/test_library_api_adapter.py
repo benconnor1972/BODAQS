@@ -1,4 +1,5 @@
 import json
+import stat
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from bodaqs_analysis.library_api import (
     LibraryNotFoundError,
     RevisionConflictError,
     SessionDeleteConflictError,
+    SessionDeleteFailedError,
     SignalNotFoundError,
     StudySetNotFoundError,
     TimeseriesUnavailableError,
@@ -229,6 +231,7 @@ def _write_simple_suspension_fixture_session(
     *,
     library_id: str = "default-library",
     ends: tuple[str, ...] = ("front", "rear"),
+    include_velocity_signals: bool = False,
     include_event_metrics: bool = True,
     include_gps: bool = True,
 ) -> dict:
@@ -263,6 +266,14 @@ def _write_simple_suspension_fixture_session(
             "unit": "1",
         }
         frame["front_wheel_disp_norm_dom_wheel [1]"] = [0.0, 0.2, 0.4]
+        if include_velocity_signals:
+            signals["front_wheel_vel_dom_wheel [mm/s]"] = {
+                "end": "front",
+                "domain": "wheel",
+                "quantity": "vel",
+                "unit": "mm/s",
+            }
+            frame["front_wheel_vel_dom_wheel [mm/s]"] = [0.0, 120.0, -90.0]
     if "rear" in ends:
         signals["rear_wheel_disp_norm_dom_wheel [1]"] = {
             "end": "rear",
@@ -271,6 +282,14 @@ def _write_simple_suspension_fixture_session(
             "unit": "1",
         }
         frame["rear_wheel_disp_norm_dom_wheel [1]"] = [0.0, 0.3, 0.6]
+        if include_velocity_signals:
+            signals["rear_wheel_vel_dom_wheel [mm/s]"] = {
+                "end": "rear",
+                "domain": "wheel",
+                "quantity": "vel",
+                "unit": "mm/s",
+            }
+            frame["rear_wheel_vel_dom_wheel [mm/s]"] = [0.0, 140.0, -110.0]
     if include_gps:
         signals["latitude"] = {"quantity": "latitude", "unit": "deg", "domain": "position"}
         signals["longitude"] = {"quantity": "longitude", "unit": "deg", "domain": "position"}
@@ -883,6 +902,73 @@ def test_library_adapter_delete_session_blocks_then_cleans_study_set_memberships
     assert updated["bookmarks"] == []
 
 
+def test_library_adapter_delete_session_reports_filesystem_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bodaqs_analysis.library_api import sessions as session_mutations
+
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _make_session(library_root, "run_1", "session_1")
+    adapter = LibraryAdapter(libraries_root)
+    study_set = adapter.create_study_set(
+        {
+            "display_name": "Delete Failure Guard",
+            "sessions": [session_ref],
+            "groupings": [
+                {
+                    "grouping_id": "only-session",
+                    "display_name": "Only Session",
+                    "session_refs": [session_ref["session_ref_id"]],
+                }
+            ],
+        }
+    )
+
+    def fail_remove_session_dir(_path: Path) -> None:
+        raise PermissionError("file is locked")
+
+    monkeypatch.setattr(session_mutations, "_remove_session_dir", fail_remove_session_dir)
+
+    with pytest.raises(SessionDeleteFailedError) as exc:
+        adapter.delete_session("default-library", "run_1", "session_1", cleanup_memberships=True)
+
+    assert exc.value.details["session_ref_id"] == session_ref["session_ref_id"]
+    assert exc.value.details["exception_type"] == "PermissionError"
+    assert "file is locked" in exc.value.details["exception_message"]
+    assert exc.value.details["updated_study_sets"] == []
+    assert (library_root / "runs" / "run_1" / "sessions" / "session_1").exists()
+    assert adapter.load_study_set(study_set["study_set_id"])["sessions"][0]["session_ref_id"] == session_ref[
+        "session_ref_id"
+    ]
+
+
+def test_library_adapter_delete_session_clears_readonly_child_directories(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _make_session(library_root, "run_1", "session_1")
+    readonly_dir = library_root / "runs" / "run_1" / "sessions" / "session_1" / "annotations"
+    readonly_dir.mkdir()
+    readonly_dir.chmod(stat.S_IREAD)
+    adapter = LibraryAdapter(libraries_root)
+
+    deleted = adapter.delete_session("default-library", "run_1", "session_1")
+
+    assert deleted["deleted"] is True
+    assert not (library_root / "runs" / "run_1" / "sessions" / "session_1").exists()
+
+
 def test_library_adapter_updates_study_set_with_revision_check(
     tmp_path: Path,
 ) -> None:
@@ -1234,7 +1320,8 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
     _write_gps_fit_stream(library_root, session_ref, times=[-100.0, 0.0, 2.0, 100.0])
     adapter = LibraryAdapter(libraries_root)
 
-    summary = adapter.get_catalog("default-library")["rows"][0]["gps_summary"]
+    row = adapter.get_catalog("default-library")["rows"][0]
+    summary = row["gps_summary"]
 
     assert summary["schema"] == "bodaqs.session_gps_summary"
     assert summary["present"] is True
@@ -1244,6 +1331,9 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
     assert summary["position_point_count"] == 2
     assert summary["quality"] == "limited"
     assert "gps_low_point_count" in summary["warnings"]
+    assert summary["sources"][0]["route_distance_m"] > 0.0
+    assert row["summary"]["distance_m"] == summary["sources"][0]["route_distance_m"]
+    assert row["summary"]["distance_km"] == summary["sources"][0]["route_distance_m"] / 1000.0
     assert summary == adapter.get_session_gps_summary("default-library", session_ref)
 
     points = adapter.get_session_gps_points(
@@ -1276,6 +1366,7 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
         "run_1",
         "front-only",
         ends=("front",),
+        include_velocity_signals=True,
         include_event_metrics=False,
         include_gps=False,
     )
@@ -1291,7 +1382,7 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
 
     views = adapter.list_analysis_views()
     assert views[0]["view_id"] == "simple-suspension"
-    assert views[0]["requirements"]["required"][0]["id"] == "wheel_displacement_signal"
+    assert views[0]["requirements"]["required"][0]["id"] == "wheel_motion_data"
     assert views[0]["requirements"]["recommended"][0]["id"] == "both_ends"
 
     ready = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [ready_ref]})
@@ -1306,7 +1397,10 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert warning["usable_session_count"] == 1
     assert warning["session_results"][0]["missing_recommended"] == ["both_ends", "event_metrics"]
     assert warning["session_results"][0]["missing_optional"] == ["gps"]
-    assert warning["session_results"][0]["ends"]["rear"]["missing_required"] == ["wheel_displacement_signal"]
+    assert warning["session_results"][0]["ends"]["rear"]["missing_required"] == [
+        "wheel_displacement_signal",
+        "wheel_velocity_data",
+    ]
 
     partial = adapter.get_analysis_view_adequacy(
         "simple-suspension",
@@ -1732,6 +1826,24 @@ def test_library_adapter_queries_raw_signals_events_and_metrics(tmp_path: Path) 
     assert signals["sessions"][0]["signals"][0]["values"] == [0.0, 10.0, 20.0]
     assert signals["warnings"][0]["role"] == "missing"
     assert signals["warnings"][0]["code"] == "signal_not_found"
+
+    activity = adapter.query_signals(
+        "default-library",
+        {
+            "sessions": [session_ref],
+            "signals": [
+                {
+                    "role": "activity_mask",
+                    "selector": {"kind": "qc", "quantity": "mask"},
+                },
+            ],
+        },
+    )
+
+    assert activity["warnings"] == []
+    assert activity["sessions"][0]["signals"][0]["role"] == "activity_mask"
+    assert activity["sessions"][0]["signals"][0]["column"] == "active_mask_qc"
+    assert activity["sessions"][0]["signals"][0]["values"] == [True, True, True]
 
     events = adapter.query_events("default-library", {"sessions": [session_ref]})
     assert events["schema"] == "bodaqs.events_query"
@@ -2380,8 +2492,8 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     )
     assert adequacy.status_code == 200
     assert adequacy.json()["schema"] == "bodaqs.analysis_adequacy"
-    assert adequacy.json()["status"] == "warning"
-    assert adequacy.json()["usable_session_count"] == 1
+    assert adequacy.json()["status"] == "blocked"
+    assert adequacy.json()["usable_session_count"] == 0
 
     missing_view = client.post(
         "/api/v1/analysis-views/not-a-real-view/adequacy",

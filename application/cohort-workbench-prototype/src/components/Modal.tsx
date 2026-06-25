@@ -4,6 +4,7 @@ import { libraryName } from '../domain/sessionCatalog'
 import { noteSummary, sessionByRef, sessionRefId } from '../domain/studySets'
 import type { LibraryRecord, ModalState, SessionRecord, StudySet, TrackRecord } from '../domain/types'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
+import { AnalysisLauncher } from './AnalysisLauncher'
 import { IconButton } from './Common'
 import { GpsRoutePreview } from './GpsRoutePreview'
 import { GpsBadge, NoteBadge, QcBadge } from './StatusBadges'
@@ -16,6 +17,7 @@ export function Modal({
   tracks,
   dataSource,
   onClose,
+  onOpenAnalysis,
 }: {
   state: ModalState
   libraries: LibraryRecord[]
@@ -23,6 +25,7 @@ export function Modal({
   tracks: TrackRecord[]
   dataSource: LibraryDataSource
   onClose: () => void
+  onOpenAnalysis: (viewId: string, studySet: StudySet) => void
 }) {
   if (!state) {
     return null
@@ -31,7 +34,7 @@ export function Modal({
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
-        className={`modal${state.kind === 'study-set' && state.mode === 'analyze' ? ' suspension-viz-modal' : ''}`}
+        className={`modal${modalClassName(state)}`}
         role="dialog"
         aria-modal="true"
         onMouseDown={(event) => event.stopPropagation()}
@@ -40,10 +43,20 @@ export function Modal({
           <h2>{modalTitle(state)}</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
-        <div className="modal-content">{modalContent(state, libraries, sessions, tracks, dataSource)}</div>
+        <div className="modal-content">{modalContent(state, libraries, sessions, tracks, dataSource, onOpenAnalysis)}</div>
       </section>
     </div>
   )
+}
+
+function modalClassName(state: NonNullable<ModalState>) {
+  if (state.kind === 'study-set' && state.mode === 'analyze') {
+    return ' suspension-viz-modal'
+  }
+  if (state.kind === 'analysis-launcher') {
+    return ' analysis-launcher-modal'
+  }
+  return ''
 }
 
 function modalTitle(state: NonNullable<ModalState>) {
@@ -52,6 +65,9 @@ function modalTitle(state: NonNullable<ModalState>) {
   }
   if (state.kind === 'track') {
     return state.track.name
+  }
+  if (state.kind === 'analysis-launcher') {
+    return `Analyze ${state.studySet.displayName || 'Study Set'}`
   }
   if (state.mode === 'analyze') {
     return 'Simple Suspension Analysis'
@@ -65,6 +81,7 @@ function modalContent(
   sessions: SessionRecord[],
   tracks: TrackRecord[],
   dataSource: LibraryDataSource,
+  onOpenAnalysis: (viewId: string, studySet: StudySet) => void,
 ) {
   if (state.kind === 'session') {
     if (state.tab === 'note') {
@@ -218,6 +235,10 @@ function modalContent(
         </section>
       </div>
     )
+  }
+
+  if (state.kind === 'analysis-launcher') {
+    return <AnalysisLauncher studySet={state.studySet} dataSource={dataSource} onOpenAnalysis={onOpenAnalysis} />
   }
 
   if (state.mode === 'view') {

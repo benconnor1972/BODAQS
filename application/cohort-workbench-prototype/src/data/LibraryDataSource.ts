@@ -1,4 +1,6 @@
 import type {
+  AnalysisAdequacyResult,
+  AnalysisViewRecord,
   LibraryRecord,
   SessionGpsPointSet,
   SessionNoteRecord,
@@ -21,6 +23,9 @@ export interface LibraryDataSource {
   listSessions(): Promise<SessionRecord[]>
   listTracks(): Promise<TrackRecord[]>
   listStudySets(): Promise<StudySet[]>
+  loadStudySet?(studySetId: string): Promise<StudySet>
+  listAnalysisViews?(): Promise<AnalysisViewRecord[]>
+  evaluateAnalysisAdequacy?(viewId: string, studySet: StudySet): Promise<AnalysisAdequacyResult>
   listSavedSessionFilters?(): Promise<SavedSessionFilterRecord[]>
   saveStudySet(studySet: StudySet): Promise<StudySet>
   deleteStudySet?(studySetId: string): Promise<void>

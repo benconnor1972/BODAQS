@@ -1075,9 +1075,12 @@ Requirements are tiered:
   enough by itself to block launch.
 - `optional`: enriches the view or unlocks secondary features.
 
-For `simple-suspension`, the first adequacy policy treats wheel displacement
-for at least one suspension end as required. Both ends, compression/rebound
-event metrics, and GPS/sector support are treated as completeness features.
+For `simple-suspension`, the first adequacy policy treats wheel motion data
+for at least one suspension end as required. In this contract, wheel motion data
+means wheel displacement plus velocity evidence. Velocity evidence may come
+from a semantic velocity signal or from compression/rebound velocity metrics.
+Both ends, complete compression/rebound event metrics, and GPS/sector support
+are treated as completeness features.
 
 Example registry response entry:
 
@@ -1094,7 +1097,7 @@ Example registry response entry:
   "requirements": {
     "required": [
       {
-        "id": "wheel_displacement_signal",
+        "id": "wheel_motion_data",
         "applies_to": "session_end",
         "minimum": "at_least_one_end"
       }
@@ -1159,7 +1162,7 @@ Example response:
       "session_ref_id": "default-library|||run-a::session-a",
       "unit_kind": "session_end",
       "end": "rear",
-      "missing_required": ["wheel_displacement_signal"]
+      "missing_required": ["wheel_displacement_signal", "wheel_velocity_data"]
     }
   ],
   "messages": [

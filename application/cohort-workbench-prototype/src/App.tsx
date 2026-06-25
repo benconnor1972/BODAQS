@@ -31,6 +31,7 @@ import { Modal } from './components/Modal'
 import { SessionNoteEditorModal } from './components/SessionNoteEditorModal'
 import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
+import { SuspensionVisualization } from './components/SuspensionVisualization'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
 import { LocalApiDataSource } from './data/LocalApiDataSource'
@@ -99,10 +100,23 @@ type GeoFilterQueryState = {
 }
 
 const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
+const ANALYSIS_SCOPE_STORAGE_PREFIX = 'bodaqs.web.analysis-scope.v1.'
+
+type AnalysisRouteState = {
+  viewId: string
+  scopeToken: string | null
+  studySetId: string | null
+}
 
 function App() {
   const [localDataSource] = useState(() => new LocalApiDataSource())
   const [fixtureDataSource] = useState(() => new FixtureLibraryDataSource())
+  const [analysisRoute, setAnalysisRoute] = useState<AnalysisRouteState | null>(() => parseAnalysisRouteHash())
+  const [analysisRouteStudySet, setAnalysisRouteStudySet] = useState<StudySet | null>(null)
+  const [analysisRouteStudySetLoading, setAnalysisRouteStudySetLoading] = useState(() =>
+    Boolean(parseAnalysisRouteHash()?.studySetId),
+  )
+  const [analysisRouteStudySetError, setAnalysisRouteStudySetError] = useState('')
   const [activeDataSource, setActiveDataSource] = useState<LibraryDataSource>(localDataSource)
   const columnMenuRef = useRef<HTMLDivElement>(null)
   const [libraries, setLibraries] = useState<LibraryRecord[]>([])
@@ -129,6 +143,7 @@ function App() {
   const [librarySelectorCollapsed, setLibrarySelectorCollapsed] = useState(true)
   const [sessionSelectorCollapsed, setSessionSelectorCollapsed] = useState(false)
   const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
+  const [studyGpsCollapsed, setStudyGpsCollapsed] = useState(false)
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
   const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
   const [geoFilterQueryStates, setGeoFilterQueryStates] = useState<Record<string, GeoFilterQueryState>>({})
@@ -142,6 +157,20 @@ function App() {
   const [connectionMode, setConnectionMode] = useState<'local-api' | 'fixture'>('local-api')
   const [isChangingLibraryRoot, setIsChangingLibraryRoot] = useState(false)
   const [statusMessage, setStatusMessage] = useState('Connecting to configured BODAQS Library API...')
+
+  useEffect(() => {
+    function handleHashChange() {
+      const nextRoute = parseAnalysisRouteHash()
+      setAnalysisRoute(nextRoute)
+      setAnalysisRouteStudySetLoading(Boolean(nextRoute?.studySetId))
+      setAnalysisRouteStudySetError('')
+    }
+
+    window.addEventListener('hashchange', handleHashChange)
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -202,6 +231,60 @@ function App() {
       cancelled = true
     }
   }, [fixtureDataSource, localDataSource])
+
+  useEffect(() => {
+    if (!analysisRoute?.studySetId) {
+      setAnalysisRouteStudySet(null)
+      setAnalysisRouteStudySetLoading(false)
+      setAnalysisRouteStudySetError('')
+      return
+    }
+
+    let cancelled = false
+    const studySetId = analysisRoute.studySetId
+
+    async function loadRouteStudySet() {
+      const cachedStudySet = savedStudySets.find((studySet) => studySet.id === studySetId)
+      if (cachedStudySet) {
+        setAnalysisRouteStudySet(cloneStudySet(cachedStudySet))
+        setAnalysisRouteStudySetLoading(false)
+        setAnalysisRouteStudySetError('')
+        return
+      }
+
+      if (!activeDataSource.loadStudySet) {
+        setAnalysisRouteStudySet(null)
+        setAnalysisRouteStudySetLoading(false)
+        setAnalysisRouteStudySetError('This data source cannot load a Study Set directly by ID.')
+        return
+      }
+
+      setAnalysisRouteStudySetLoading(true)
+      setAnalysisRouteStudySetError('')
+      try {
+        const loaded = await activeDataSource.loadStudySet(studySetId)
+        if (cancelled) {
+          return
+        }
+        setAnalysisRouteStudySet(cloneStudySet(loaded))
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        setAnalysisRouteStudySet(null)
+        setAnalysisRouteStudySetError(error instanceof Error ? error.message : 'Could not load the Study Set.')
+      } finally {
+        if (!cancelled) {
+          setAnalysisRouteStudySetLoading(false)
+        }
+      }
+    }
+
+    void loadRouteStudySet()
+    return () => {
+      cancelled = true
+    }
+  }, [activeDataSource, analysisRoute?.studySetId, savedStudySets])
 
   const isCurrentStudySetDirty = !studySetsEqual(currentStudySet, lastCommittedStudySet)
   const currentStudySetHasContent = hasStudySetContent(currentStudySet)
@@ -683,8 +766,9 @@ function App() {
   async function refreshAfterSessionDelete(session: SessionRecord) {
     const deletedRefId = candidateId(session)
     const loaded = await fetchWorkbenchData(activeDataSource)
-    setLibraries(loaded.libraries)
-    setSessions(loaded.sessions)
+    const remainingSessions = loaded.sessions.filter((item) => candidateId(item) !== deletedRefId)
+    setLibraries(applySessionCounts(loaded.libraries, remainingSessions))
+    setSessions(remainingSessions)
     setTracks(loaded.tracks)
     setSavedStudySets(loaded.studySets)
     setSavedSessionFilters(loaded.savedFilters)
@@ -784,6 +868,41 @@ function App() {
       return
     }
     setModal({ kind: 'session', session, tab })
+  }
+
+  function showBothWorkbenchPanels() {
+    setLeftCollapsed(false)
+    setRightCollapsed(false)
+  }
+
+  function showStudySetPanelOnly() {
+    setLeftCollapsed(true)
+    setRightCollapsed(false)
+  }
+
+  function showLibraryPanelOnly() {
+    setLeftCollapsed(false)
+    setRightCollapsed(true)
+  }
+
+  function openAnalysisLauncher(studySet: StudySet) {
+    setModal({ kind: 'analysis-launcher', studySet: cloneStudySet(studySet) })
+  }
+
+  function openAnalysisView(viewId: string, studySet: StudySet) {
+    if (viewId === 'simple-suspension') {
+      const url = analysisRouteUrl(viewId, studySet)
+      const opened = window.open(url, '_blank')
+      if (!opened) {
+        window.location.href = url
+      } else {
+        opened.opener = null
+      }
+      setModal(null)
+      setStatusMessage(`Opened ${studySet.displayName || 'Study Set'} analysis in a browser tab.`)
+      return
+    }
+    setStatusMessage(`Analysis view "${viewId}" is not implemented in this prototype yet.`)
   }
 
   function updateSessionAfterNoteSave(updatedSession: SessionRecord) {
@@ -892,7 +1011,7 @@ function App() {
     setSelectedStudySessionIds([])
     setSelectionAnchorStudySessionId(null)
     setGroupingName('')
-    setModal({ kind: 'study-set', studySet: temporarySet, mode: 'analyze' })
+    openAnalysisLauncher(temporarySet)
     setStatusMessage('Created an unsaved one-session Study Set for analysis.')
   }
 
@@ -1145,6 +1264,23 @@ function App() {
     setStatusMessage('Kept the current Study Set open for editing.')
   }
 
+  if (analysisRoute) {
+    const routeStudySet = analysisRoute.scopeToken ? loadAnalysisScope(analysisRoute.scopeToken) : analysisRouteStudySet
+    return (
+      <AnalysisRoutePage
+        route={analysisRoute}
+        studySet={routeStudySet}
+        loadingScope={analysisRouteStudySetLoading}
+        scopeError={analysisRouteStudySetError}
+        sessions={sessions}
+        tracks={tracks}
+        dataSource={activeDataSource}
+        statusMessage={statusMessage}
+        connectionMode={connectionMode}
+      />
+    )
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -1168,13 +1304,7 @@ function App() {
           <PanelTitle
             icon={<Library size={18} />}
             title="Library Browser"
-            action={
-              <IconButton
-                label="Collapse Library Browser"
-                onClick={() => setLeftCollapsed(true)}
-                icon={<ChevronLeft size={18} />}
-              />
-            }
+            action={<span className="panel-title-spacer" />}
           />
 
           <section className={`module collapsible-module${librarySelectorCollapsed ? ' collapsed' : ''}`}>
@@ -1196,7 +1326,7 @@ function App() {
                     <InfoTip text="Choose which libraries from the configured library root are included in the session browser." />
                   </h2>
                   <div className="module-header-actions">
-                    <span className="subtle">{selectedLibraries.length} active</span>
+                    <span className="module-header-count">{selectedLibraries.length} active</span>
                     <IconButton
                       label="Collapse Library Selector"
                       onClick={() => setLibrarySelectorCollapsed(true)}
@@ -1258,7 +1388,7 @@ function App() {
                 <InfoTip text="Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list." />
               </h2>
               <div className="module-header-actions">
-                <span className="subtle session-selector-count">
+                <span className="module-header-count">
                   {libraryScopedSessions.length} total / {visibleSessions.length} filtered / {selectedCandidateIds.length} selected
                 </span>
                 <IconButton
@@ -1406,7 +1536,7 @@ function App() {
                     <InfoTip text="Preview the selected session GPS path and any selected or attached tracks." />
                   </h2>
                   <div className="module-header-actions">
-                    <span className="subtle">{primarySession ? primarySession.name : 'No primary session'}</span>
+                    <span className="module-header-count">{primarySession ? primarySession.name : 'No primary session'}</span>
                     <IconButton
                       label="Collapse GPS Location"
                       onClick={() => setGpsLocationCollapsed(true)}
@@ -1431,7 +1561,7 @@ function App() {
                     <InfoTip text="Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering." />
                   </h2>
                   <div className="module-header-actions">
-                    <span className={activeSavedSessionFilters.length ? 'pill ok' : 'pill neutral'}>
+                    <span className="module-header-count">
                       {savedSessionFilters.length} available / {activeSavedSessionFilters.length} active
                     </span>
                     <IconButton
@@ -1481,24 +1611,32 @@ function App() {
           </section>
         </aside>
 
-        {leftCollapsed && (
-          <button className="rail rail-left" onClick={() => setLeftCollapsed(false)}>
-            <ChevronRight size={18} />
-            Library Browser
-          </button>
-        )}
+        <div className="center-collapse-controls" aria-label="Workbench panel controls">
+          <IconButton
+            label="Show Study Set Builder only"
+            disabled={leftCollapsed && !rightCollapsed}
+            onClick={showStudySetPanelOnly}
+            icon={<ChevronLeft size={17} />}
+          />
+          <IconButton
+            label="Show both panels"
+            disabled={!leftCollapsed && !rightCollapsed}
+            onClick={showBothWorkbenchPanels}
+            icon={<Columns3 size={17} />}
+          />
+          <IconButton
+            label="Show Library Browser only"
+            disabled={rightCollapsed && !leftCollapsed}
+            onClick={showLibraryPanelOnly}
+            icon={<ChevronRight size={17} />}
+          />
+        </div>
 
         <aside className="panel study-panel" aria-label="Study Set Builder">
           <PanelTitle
             icon={<BookOpen size={18} />}
             title="Study Set Builder"
-            action={
-              <IconButton
-                label="Collapse Study Set Builder"
-                onClick={() => setRightCollapsed(true)}
-                icon={<ChevronRight size={18} />}
-              />
-            }
+            action={<span className="panel-title-spacer" />}
           />
 
           <section className="module current-study-set">
@@ -1508,7 +1646,7 @@ function App() {
                 <InfoTip text="The working Study Set comprising sessions and optional groupings and tracks." />
               </h2>
               <div className="module-header-actions">
-                <span className="subtle study-set-count">
+                <span className="module-header-count study-set-count">
                   {currentStudySet.sessions.length} sessions / {currentStudySet.groupings.length} groupings / {currentStudySet.trackIds.length} tracks
                 </span>
                 <span className={currentStudySetStatus.className}>{currentStudySetStatus.label}</span>
@@ -1538,7 +1676,7 @@ function App() {
               </button>
               <button
                 className="secondary-action compact-row-action"
-                onClick={() => setModal({ kind: 'study-set', studySet: currentStudySet, mode: 'analyze' })}
+                onClick={() => openAnalysisLauncher(currentStudySet)}
               >
                 <BarChart3 size={17} />
                 Analyze
@@ -1655,26 +1793,44 @@ function App() {
             </section>
           </section>
 
-          <section className="study-geo-grid">
-            <section className="module map-module study-map-module">
-              <div className="module-header">
-                <h2 className="module-heading">
-                  Study Set GPS Location
-                  <InfoTip text="Preview the GPS paths for sessions in the current Study Set and any tracks attached to it." />
-                </h2>
-                <span className="subtle">
-                  {studySetMapSessionPaths.length} session path(s) / {currentStudyTracks.length} track(s)
-                </span>
-              </div>
-              <div className="study-map-frame">
-                <MapRoutePreview
-                  primarySession={null}
-                  sessionPaths={studySetMapSessionPaths}
-                  selectedTracks={[]}
-                  currentTracks={currentStudyTracks}
-                />
-              </div>
-            </section>
+          <section className={`study-geo-grid${studyGpsCollapsed ? ' study-gps-collapsed' : ''}`}>
+            {studyGpsCollapsed ? (
+              <button
+                className="gps-rail study-gps-rail"
+                type="button"
+                onClick={() => setStudyGpsCollapsed(false)}
+              >
+                <ChevronRight size={18} />
+                Study Set GPS
+              </button>
+            ) : (
+              <section className="module map-module study-map-module">
+                <div className="module-header">
+                  <h2 className="module-heading">
+                    Study Set GPS Location
+                    <InfoTip text="Preview the GPS paths for sessions in the current Study Set and any tracks attached to it." />
+                  </h2>
+                  <div className="module-header-actions">
+                    <span className="module-header-count">
+                      {studySetMapSessionPaths.length} session path(s) / {currentStudyTracks.length} track(s)
+                    </span>
+                    <IconButton
+                      label="Collapse Study Set GPS"
+                      onClick={() => setStudyGpsCollapsed(true)}
+                      icon={<ChevronLeft size={16} />}
+                    />
+                  </div>
+                </div>
+                <div className="study-map-frame">
+                  <MapRoutePreview
+                    primarySession={null}
+                    sessionPaths={studySetMapSessionPaths}
+                    selectedTracks={[]}
+                    currentTracks={currentStudyTracks}
+                  />
+                </div>
+              </section>
+            )}
 
             <div className="support-stack study-geo-support">
               <section className="module saved-study-sets">
@@ -1683,7 +1839,7 @@ function App() {
                     Saved Study Sets
                     <InfoTip text="Saved Study Sets can be loaded into the editor above, inspected, or opened directly in the analysis view." />
                   </h2>
-                  <span className="subtle">{savedStudySets.length} saved</span>
+                  <span className="module-header-count">{savedStudySets.length} saved</span>
                 </div>
                 <table className="saved-table">
                   <thead>
@@ -1715,7 +1871,7 @@ function App() {
                           />
                           <IconButton
                             label="Simple Suspension Analysis"
-                            onClick={() => setModal({ kind: 'study-set', studySet, mode: 'analyze' })}
+                            onClick={() => openAnalysisLauncher(studySet)}
                             icon={<Play size={15} />}
                           />
                           <IconButton
@@ -1741,12 +1897,6 @@ function App() {
           </section>
         </aside>
 
-        {rightCollapsed && (
-          <button className="rail rail-right" onClick={() => setRightCollapsed(false)}>
-            Study Set Builder
-            <ChevronLeft size={18} />
-          </button>
-        )}
       </section>
 
       {modal && (
@@ -1757,6 +1907,7 @@ function App() {
           tracks={tracks}
           dataSource={activeDataSource}
           onClose={() => setModal(null)}
+          onOpenAnalysis={openAnalysisView}
         />
       )}
       {noteEditorSession && (
@@ -1803,6 +1954,75 @@ function studySetStatus(studySet: StudySet, isDirty: boolean) {
   return { className: 'pill neutral', label: 'empty' }
 }
 
+function AnalysisRoutePage({
+  route,
+  studySet,
+  loadingScope,
+  scopeError,
+  sessions,
+  tracks,
+  dataSource,
+  statusMessage,
+  connectionMode,
+}: {
+  route: AnalysisRouteState
+  studySet: StudySet | null
+  loadingScope: boolean
+  scopeError: string
+  sessions: SessionRecord[]
+  tracks: TrackRecord[]
+  dataSource: LibraryDataSource
+  statusMessage: string
+  connectionMode: 'local-api' | 'fixture'
+}) {
+  const viewTitle = route.viewId === 'simple-suspension' ? 'Simple Suspension Analysis' : route.viewId
+
+  return (
+    <main className="app-shell analysis-route-shell">
+      <header className="app-header analysis-route-header">
+        <div>
+          <p className="eyebrow">BODAQS Analysis</p>
+          <h1>{viewTitle}</h1>
+          <p className="analysis-route-subtitle">
+            {studySet?.displayName || 'Analysis scope not loaded'}
+            <span>{connectionMode === 'fixture' ? 'fixture data source' : statusMessage}</span>
+          </p>
+        </div>
+        <div className="analysis-route-actions">
+          <button className="secondary-action compact-row-action" type="button" onClick={openBrowserHomeInThisTab}>
+            <Library size={16} />
+            Browser
+          </button>
+        </div>
+      </header>
+
+      {loadingScope ? (
+        <section className="analysis-route-empty">
+          <h2>Loading analysis scope</h2>
+          <p>Loading saved Study Set {route.studySetId} from the Library API.</p>
+        </section>
+      ) : !studySet ? (
+        <section className="analysis-route-empty">
+          <h2>Analysis scope unavailable</h2>
+          <p>
+            {scopeError ||
+              'This analysis tab could not find its Study Set scope. Open the analysis again from the Library Browser or Study Set Builder.'}
+          </p>
+        </section>
+      ) : route.viewId === 'simple-suspension' ? (
+        <section className="analysis-route-content">
+          <SuspensionVisualization studySet={studySet} sessions={sessions} tracks={tracks} dataSource={dataSource} />
+        </section>
+      ) : (
+        <section className="analysis-route-empty">
+          <h2>Analysis view not implemented</h2>
+          <p>{route.viewId} is registered as a route, but this prototype does not have a renderer for it yet.</p>
+        </section>
+      )}
+    </main>
+  )
+}
+
 function pendingActionLabel(action: PendingStudySetAction) {
   if (action.kind === 'load') {
     return 'load another Study Set'
@@ -1811,6 +2031,88 @@ function pendingActionLabel(action: PendingStudySetAction) {
     return 'start Analyze now'
   }
   return 'clear the current Study Set'
+}
+
+function parseAnalysisRouteHash(): AnalysisRouteState | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const hash = window.location.hash
+  if (!hash.startsWith('#/analysis/')) {
+    return null
+  }
+  const hashBody = hash.slice(2)
+  const [path, query = ''] = hashBody.split('?')
+  const segments = path.split('/')
+  const viewId = segments[0] === 'analysis' ? decodeURIComponent(segments[1] ?? '') : ''
+  const params = new URLSearchParams(query)
+  const scopeToken = params.get('scope')
+  const studySetId = params.get('studySet')
+  if (!viewId || (!scopeToken && !studySetId)) {
+    return null
+  }
+  return { viewId, scopeToken, studySetId }
+}
+
+function analysisRouteUrl(viewId: string, studySet: StudySet) {
+  const baseUrl = `${window.location.origin}${window.location.pathname}${window.location.search}`
+  const params = new URLSearchParams()
+  if (studySet.id && studySet.saved) {
+    params.set('studySet', studySet.id)
+  } else {
+    params.set('scope', persistAnalysisScope(studySet))
+  }
+  return `${baseUrl}#/analysis/${encodeURIComponent(viewId)}?${params.toString()}`
+}
+
+function persistAnalysisScope(studySet: StudySet) {
+  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  window.localStorage.setItem(`${ANALYSIS_SCOPE_STORAGE_PREFIX}${token}`, JSON.stringify(cloneStudySet(studySet)))
+  pruneStoredAnalysisScopes()
+  return token
+}
+
+function loadAnalysisScope(scopeToken: string): StudySet | null {
+  if (!scopeToken) {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(`${ANALYSIS_SCOPE_STORAGE_PREFIX}${scopeToken}`)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw) as unknown
+    return isStoredStudySet(parsed) ? cloneStudySet(parsed) : null
+  } catch {
+    return null
+  }
+}
+
+function pruneStoredAnalysisScopes() {
+  const keys = Object.keys(window.localStorage)
+    .filter((key) => key.startsWith(ANALYSIS_SCOPE_STORAGE_PREFIX))
+    .sort()
+  const excess = keys.slice(0, Math.max(0, keys.length - 12))
+  for (const key of excess) {
+    window.localStorage.removeItem(key)
+  }
+}
+
+function isStoredStudySet(value: unknown): value is StudySet {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+  const candidate = value as Partial<StudySet>
+  return (
+    typeof candidate.displayName === 'string' &&
+    Array.isArray(candidate.sessions) &&
+    Array.isArray(candidate.groupings) &&
+    Array.isArray(candidate.trackIds)
+  )
+}
+
+function openBrowserHomeInThisTab() {
+  window.location.hash = ''
 }
 
 async function fetchWorkbenchData(source: LibraryDataSource) {

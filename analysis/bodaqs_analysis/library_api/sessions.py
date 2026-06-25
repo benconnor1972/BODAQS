@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
 from bodaqs_analysis.artifacts import ArtifactStore
 
-from .errors import InvalidRequestError, SessionDeleteConflictError, SessionNotFoundError
+from .errors import (
+    InvalidRequestError,
+    SessionDeleteConflictError,
+    SessionDeleteFailedError,
+    SessionNotFoundError,
+)
 from .ids import make_session_key, make_session_ref_id
 from .study_sets import find_study_set_session_references, remove_session_from_study_sets
 
@@ -56,8 +63,24 @@ def delete_session(
             },
         )
 
+    try:
+        _remove_session_dir(session_dir)
+    except OSError as exc:
+        raise SessionDeleteFailedError(
+            "Session artifact directory could not be removed.",
+            details={
+                "library_id": normalized_library_id,
+                "run_id": normalized_run_id,
+                "session_id": normalized_session_id,
+                "session_ref_id": session_ref_id,
+                "session_dir": str(session_dir),
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+                "cleanup_memberships": bool(cleanup_memberships),
+                "updated_study_sets": [],
+            },
+        ) from exc
     updated_study_sets = remove_session_from_study_sets(libraries_root, session_ref_id) if cleanup_memberships else []
-    shutil.rmtree(session_dir)
     return {
         "deleted": True,
         "library_id": normalized_library_id,
@@ -70,6 +93,34 @@ def delete_session(
         "blocking_references": references if references and not cleanup_memberships else [],
         "updated_study_sets": updated_study_sets,
     }
+
+
+def _remove_session_dir(session_dir: Path) -> None:
+    """Remove a session tree, retrying Windows read-only/OneDrive placeholders."""
+
+    def handle_remove_error(func: Any, path_text: str, exc_info: Any) -> None:
+        exc = exc_info[1]
+        if not isinstance(exc, PermissionError):
+            raise exc
+        path = Path(path_text)
+        _make_writable(path)
+        try:
+            func(path_text)
+        except OSError as retry_exc:
+            raise retry_exc from exc
+
+    shutil.rmtree(session_dir, onerror=handle_remove_error)
+
+
+def _make_writable(path: Path) -> None:
+    try:
+        mode = stat.S_IREAD | stat.S_IWRITE
+        if path.is_dir():
+            mode |= stat.S_IEXEC
+        os.chmod(path, mode)
+    except OSError:
+        # Preserve the original delete error if permission repair also fails.
+        return
 
 
 def _safe_session_dir(library_root: Path, candidate: Path) -> Path:

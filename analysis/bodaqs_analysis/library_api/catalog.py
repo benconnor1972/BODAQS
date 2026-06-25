@@ -186,6 +186,13 @@ def _build_session_catalog_row(
     ]
     display_label = " - ".join(part for part in label_parts if part) or session_key
 
+    gps_summary = _gps_summary(
+        store,
+        run_id=run_id,
+        session_id=session_id,
+        session_meta=session_meta,
+        session_manifest=session_manifest,
+    )
     row = {
         "schema": SESSION_CATALOG_ROW_SCHEMA,
         "version": SESSION_CATALOG_ROW_VERSION,
@@ -203,20 +210,14 @@ def _build_session_catalog_row(
         "note_status": note_status,
         "note_fields": note_fields,
         "qc_summary": _qc_summary(session_meta, session_manifest),
-        "summary": _session_summary(session_manifest),
+        "summary": _session_summary(session_manifest, gps_summary=gps_summary),
         "provenance": provenance,
         "event_schema": event_schema,
         "available_signals": _available_signals(
             session_meta,
             dataframe_path=store.path_session_df(run_id, session_id),
         ),
-        "gps_summary": _gps_summary(
-            store,
-            run_id=run_id,
-            session_id=session_id,
-            session_meta=session_meta,
-            session_manifest=session_manifest,
-        ),
+        "gps_summary": gps_summary,
         "event_summary": event_summary,
         "metric_summary": metric_summary,
     }
@@ -481,6 +482,10 @@ def _gps_source_summary(
     else:
         warnings.append("gps_time_column_missing")
     point_count = int(valid_position.sum())
+    route_distance_m = _gps_route_distance_m(
+        lat.loc[valid_position].to_list(),
+        lon.loc[valid_position].to_list(),
+    )
 
     times: list[float] = []
     if time_col in df.columns:
@@ -508,6 +513,7 @@ def _gps_source_summary(
         "route_reconstruction": _gps_route_reconstruction(metadata, source_info),
         **_gps_quality_summary(metadata, source_info),
         "point_count": point_count,
+        "route_distance_m": route_distance_m,
         "nominal_sample_rate_hz": nominal_sample_rate_hz,
         "median_gap_s": median_gap_s,
         "max_gap_s": max_gap_s,
@@ -1350,7 +1356,11 @@ def _qc_summary(
     }
 
 
-def _session_summary(session_manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _session_summary(
+    session_manifest: Mapping[str, Any],
+    *,
+    gps_summary: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     summary = session_manifest.get("summary")
     summary = summary if isinstance(summary, Mapping) else {}
     out = dict(summary)
@@ -1367,10 +1377,73 @@ def _session_summary(session_manifest: Mapping[str, Any]) -> dict[str, Any]:
         summary.get("gps_distance_m"),
         summary.get("route_distance_m"),
     )
+    gps_distance_m = _gps_summary_distance_m(gps_summary or {})
+    if (distance_m is None or distance_m <= 0) and gps_distance_m is not None:
+        distance_m = gps_distance_m
     if distance_m is not None:
-        out.setdefault("distance_m", distance_m)
-        out.setdefault("distance_km", distance_m / 1000.0)
+        current_distance_m = _number_or_none(out.get("distance_m"))
+        current_distance_km = _number_or_none(out.get("distance_km"))
+        if current_distance_m is None or current_distance_m <= 0:
+            out["distance_m"] = distance_m
+        if current_distance_km is None or current_distance_km <= 0:
+            out["distance_km"] = distance_m / 1000.0
     return out
+
+
+def _gps_summary_distance_m(gps_summary: Mapping[str, Any]) -> float | None:
+    sources = gps_summary.get("sources")
+    if not isinstance(sources, list):
+        return None
+    preferred_source_id = _optional_text(
+        gps_summary.get("preferred_source_id") or gps_summary.get("preferred_source")
+    )
+    ordered_sources = [
+        source
+        for source in sources
+        if isinstance(source, Mapping)
+        and preferred_source_id
+        and _optional_text(source.get("source_id")) == preferred_source_id
+    ]
+    ordered_sources.extend(
+        source for source in sources if isinstance(source, Mapping) and source not in ordered_sources
+    )
+    for source in ordered_sources:
+        distance_m = _first_number(source.get("route_distance_m"))
+        if distance_m is not None and distance_m > 0:
+            return distance_m
+    return None
+
+
+def _gps_route_distance_m(latitudes: list[Any], longitudes: list[Any]) -> float | None:
+    points: list[tuple[float, float]] = []
+    for lat, lon in zip(latitudes, longitudes):
+        try:
+            lat_f = float(lat)
+            lon_f = float(lon)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(lat_f) and math.isfinite(lon_f):
+            points.append((lat_f, lon_f))
+    if len(points) < 2:
+        return None
+    total = 0.0
+    for (lat1, lon1), (lat2, lon2) in zip(points, points[1:]):
+        total += _haversine_m(lat1, lon1, lat2, lon2)
+    return total
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    earth_radius_m = 6_371_000.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(d_phi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
+    )
+    a = min(1.0, max(0.0, a))
+    return 2.0 * earth_radius_m * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
 
 
 def _provenance_summary(

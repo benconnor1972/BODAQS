@@ -288,6 +288,9 @@ def _resolve_selector_request(
             matches.append((_selector_rank(info, column_text), column_text, info))
 
     if not matches:
+        fallback = _activity_mask_selector_fallback(selector, available_columns)
+        if fallback is not None:
+            return fallback
         raise SignalNotFoundError(
             "Signal selector did not match any available signal.",
             details={"selector": selector},
@@ -301,6 +304,27 @@ def _resolve_selector_request(
     return {"column": matches[0][1], "info": dict(matches[0][2])}
 
 
+def _activity_mask_selector_fallback(
+    selector: Mapping[str, Any],
+    available_columns: Sequence[str],
+) -> dict[str, Any] | None:
+    if _norm(selector.get("kind")) != "qc" or _norm(selector.get("quantity")) != "mask":
+        return None
+    available = {str(column) for column in available_columns}
+    for column in ("active_mask_qc", "inactive_mask_qc", "inactive_mask"):
+        if column in available:
+            return {
+                "column": column,
+                "info": {
+                    "kind": "qc",
+                    "quantity": "mask",
+                    "unit": None,
+                    "processing_role": "activity_mask",
+                },
+            }
+    return None
+
+
 def _selector_matches(info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
     for key, expected in selector.items():
         if _norm(info.get(key)) != _norm(expected):
@@ -312,7 +336,18 @@ def _selector_rank(info: Mapping[str, Any], column: str) -> tuple[int, str]:
     role_score = 0 if _norm(info.get("processing_role")) == "primary_analysis" else 1
     kind = _norm(info.get("kind"))
     kind_score = 0 if kind not in {"raw", "qc"} else 1
+    if kind == "qc" and _norm(info.get("quantity")) == "mask":
+        return (activity_mask_column_rank(column), column)
     return (role_score * 10 + kind_score, column)
+
+
+def activity_mask_column_rank(column: str) -> int:
+    ranks = {
+        "active_mask_qc": -3,
+        "inactive_mask_qc": -2,
+        "inactive_mask": -1,
+    }
+    return ranks.get(column, 1)
 
 
 def _parse_window(value: Any) -> dict[str, float | None]:

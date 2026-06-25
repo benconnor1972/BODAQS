@@ -23,6 +23,9 @@ layout while making the wording easy to review and refine.
 | Study Set tracks subsection | Tracks are GPS paths with defined points that can be used for geospatial filtering and sector-based analysis. | Explains attached tracks. |
 | Study Set GPS Location heading | Preview the GPS paths for sessions in the current Study Set and any tracks attached to it. | Explains the Study Set scoped GPS map. |
 | Saved Study Sets heading | Saved Study Sets can be loaded into the editor above, inspected, or opened directly in the analysis view. | Explains saved Study Set actions. |
+| Analysis launcher intro | Choose an analysis view for the current scope. The adequacy check reports whether the selected sessions have the required and recommended data for that view. Opening a view creates a separate browser tab so the Library Browser remains available. | Explains the analysis-view selection, adequacy-check step, and separate-tab analysis behavior. |
+| Analysis launcher route note | Dynamic: saved Study Sets open with reloadable analysis routes; unsaved scopes open with temporary browser-local routes. | Explains route durability for saved versus unsaved analysis scopes. |
+| Analysis route header | Browser | Returns the current analysis tab to the Library Browser by clearing the analysis route hash. |
 
 ## Geospatial Controls
 
@@ -41,6 +44,7 @@ layout while making the wording easy to review and refine.
 | --- | --- | --- |
 | Visualization hero heading | Simple Suspension Metrics for one or more Study Set sessions or groups. Groups combine their member sessions. | Explains the quick-view model. |
 | Select and Filter heading | Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed. | Explains the consolidated visualization controls and separates view state from canonical Study Set membership. |
+| Exclude inactive periods control | Uses preprocessing activity masks when available. | Explains the inactive-period exclusion checkbox. |
 | Sector filter group, sector mode | Selected sectors only are displayed and included in the overall view. | Explains sector filtering when sector mode is active. |
 | Sector filter group, whole-session mode | Sector selections applied only in sector scope. | Explains why sector chips remain visible outside sector mode. |
 | Wheel displacement distribution panel | Wheel displacement, % of maximum travel, frequency distribution. | Explains displacement chart domain. |

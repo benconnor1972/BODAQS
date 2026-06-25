@@ -37,7 +37,11 @@ const STROKE_LENGTH_STATS_FORMATTER = formatMetricValueWithUnit('mm')
 const SIGNAL_REQUESTS: SignalQuerySignalRequest[] = [
   { role: 'front_displacement', selector: { end: 'front', quantity: 'disp_norm', unit: '1' } },
   { role: 'rear_displacement', selector: { end: 'rear', quantity: 'disp_norm', unit: '1' } },
+  { role: 'activity_mask', selector: { kind: 'qc', quantity: 'mask' } },
 ]
+const ACTIVITY_SIGNAL_ROLES = new Set(['activity_mask', 'inactive_mask_qc', 'inactive_mask', 'active_mask_qc'])
+const INACTIVE_MASK_ROLES = ['inactive_mask_qc', 'inactive_mask']
+const ACTIVE_MASK_ROLES = ['active_mask_qc']
 
 type VisualizationEntity = {
   id: string
@@ -66,6 +70,7 @@ type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
 type SuspensionEnd = 'front' | 'rear'
 type DistributionChartKind = 'histogram' | 'mirrored_velocity'
+type DistributionStatsMode = 'basic' | 'displacement'
 type MirroredMetricSpec = { compressionMetricName: string; reboundMetricName: string }
 type TimeWindow = { startS: number; endS: number }
 type TimeWindowsBySession = Record<string, TimeWindow>
@@ -80,6 +85,7 @@ type SuspensionVisualizationSettings = {
   selectedEnds: SuspensionEnd[]
   selectedSectorIds: string[]
   timeWindowsBySession: TimeWindowsBySession
+  excludeInactivePeriods: boolean
 }
 
 type CachedSessionVisualizationData = {
@@ -107,6 +113,11 @@ type HistogramBin = {
 type MirroredHistogramBins = {
   compression: HistogramBin[]
   rebound: HistogramBin[]
+}
+
+type ActivityInterval = {
+  startS: number
+  endS: number
 }
 
 type ScatterPoint = {
@@ -138,6 +149,7 @@ const percentValuesCache = new WeakMap<number[], number[]>()
 const sectorIntervalCache = new WeakMap<TrackRecord, Map<string, SectorInterval | null>>()
 const lastSectorIdCache = new WeakMap<TrackRecord, string | null>()
 const trackObjectIdCache = new WeakMap<TrackRecord, number>()
+const activeMaskCache = new WeakMap<VisualizationData, Map<string, boolean[] | null>>()
 let nextTrackObjectId = 1
 
 type TrackSector = {
@@ -187,6 +199,7 @@ export function SuspensionVisualization({
   const [selectedEnds, setSelectedEnds] = useState<SuspensionEnd[]>(initialSettings.selectedEnds)
   const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>(initialSettings.selectedSectorIds)
   const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>(initialSettings.timeWindowsBySession)
+  const [excludeInactivePeriods, setExcludeInactivePeriods] = useState(initialSettings.excludeInactivePeriods)
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select sessions or groups to visualize.' })
 
   useEffect(() => {
@@ -199,6 +212,7 @@ export function SuspensionVisualization({
     setSelectedEnds(restored.selectedEnds)
     setSelectedSectorIds(restored.selectedSectorIds)
     setTimeWindowsBySession(restored.timeWindowsBySession)
+    setExcludeInactivePeriods(restored.excludeInactivePeriods)
   }, [settingsCacheKey, studySetKey])
 
   useEffect(() => {
@@ -271,6 +285,7 @@ export function SuspensionVisualization({
       selectedEnds,
       selectedSectorIds,
       timeWindowsBySession,
+      excludeInactivePeriods,
     })
   }, [
     settingsCacheKey,
@@ -283,6 +298,7 @@ export function SuspensionVisualization({
     selectedEnds,
     selectedSectorIds,
     timeWindowsBySession,
+    excludeInactivePeriods,
   ])
 
   useEffect(() => {
@@ -318,12 +334,22 @@ export function SuspensionVisualization({
     () => (data ? applyTimeWindows(data, deferredTimeWindowsBySession) : null),
     [data, deferredTimeWindowsBySession],
   )
+  const baseAnalysisData = useMemo(
+    () => (data && excludeInactivePeriods ? applyActivityMask(data) : data),
+    [data, excludeInactivePeriods],
+  )
+  const analysisData = useMemo(
+    () => (scopedData && excludeInactivePeriods ? applyActivityMask(scopedData) : scopedData),
+    [scopedData, excludeInactivePeriods],
+  )
   const controlsCollapsed = collapsedPanels.includes('select-filter')
-  const velocityDomain = data
-    ? metricMagnitudeCandidateDomain(selectedEntities, data, selectedEnds, VELOCITY_METRIC_SPEC, VELOCITY_DOMAIN_LIMITS)
+  const singleEntityDashboard = selectedEntities.length === 1 && scopeMode === 'whole_session'
+  const panelComparisonLayout: ComparisonLayout = singleEntityDashboard ? 'entities' : comparisonLayout
+  const velocityDomain = baseAnalysisData
+    ? metricMagnitudeCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, VELOCITY_METRIC_SPEC, VELOCITY_DOMAIN_LIMITS)
     : ([0, 2000] as [number, number])
-  const strokeLengthDomain = data
-    ? metricMagnitudeCandidateDomain(selectedEntities, data, selectedEnds, STROKE_LENGTH_METRIC_SPEC, STROKE_LENGTH_DOMAIN_LIMITS)
+  const strokeLengthDomain = baseAnalysisData
+    ? metricMagnitudeCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, STROKE_LENGTH_METRIC_SPEC, STROKE_LENGTH_DOMAIN_LIMITS)
     : ([0, 100] as [number, number])
 
   function toggleEntity(entityId: string) {
@@ -426,6 +452,8 @@ export function SuspensionVisualization({
               />
 
               <ComparisonLayoutToggle value={comparisonLayout} onChange={setComparisonLayout} />
+
+              <ActivityExclusionControl checked={excludeInactivePeriods} onChange={setExcludeInactivePeriods} />
             </div>
 
             {data && selectedSessionRefs.length > 0 && (
@@ -454,8 +482,8 @@ export function SuspensionVisualization({
         </div>
       )}
 
-      {data && scopedData && (
-        <div className="viz-panel-stack">
+      {data && analysisData && baseAnalysisData && (
+        <div className={`viz-panel-stack${singleEntityDashboard ? ' single-entity-dashboard' : ''}`}>
           <VisualizationPanel
             id="displacement"
             title="Wheel displacement distribution"
@@ -469,8 +497,8 @@ export function SuspensionVisualization({
                 layout={comparisonLayout}
                 entities={selectedEntities}
                 ends={selectedEnds}
-                data={scopedData}
-                scaleData={data}
+                data={analysisData}
+                scaleData={baseAnalysisData}
                 selectedTrack={selectedTrack}
                 sectors={selectedSectors}
                 allSectors={sectors}
@@ -481,11 +509,12 @@ export function SuspensionVisualization({
                 bins={SECTOR_DISTRIBUTION_BINS}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
                 valueTransform={percentValues}
+                statsMode="displacement"
               />
             ) : (
               <DistributionGrid
                 chartKind="histogram"
-                layout={comparisonLayout}
+                layout={panelComparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('front_displacement', 'rear_displacement', selectedEnds)}
                 xDomain={[0, 100]}
@@ -494,15 +523,16 @@ export function SuspensionVisualization({
                 yMax={distributionYMax(
                   selectedEntities,
                   distributionRoles('front_displacement', 'rear_displacement', selectedEnds),
-                  (entity, role) => percentValues(entitySignalValues(entity, data, role.signalRole)),
+                  (entity, role) => percentValues(entitySignalValues(entity, baseAnalysisData, role.signalRole)),
                   [0, 100],
                   WHOLE_SESSION_DISTRIBUTION_BINS,
                   'histogram',
                 )}
                 sessions={sessions}
                 showStats
+                statsMode="displacement"
                 statsFormatter={formatPercentValue}
-                valueForEntityRole={(entity, role) => percentValues(entitySignalValues(entity, scopedData, role.signalRole))}
+                valueForEntityRole={(entity, role) => percentValues(entitySignalValues(entity, analysisData, role.signalRole))}
               />
             )}
           </VisualizationPanel>
@@ -516,8 +546,8 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorMetricDistributionScaffold
-                data={scopedData}
-                scaleData={data}
+                data={analysisData}
+                scaleData={baseAnalysisData}
                 entities={selectedEntities}
                 ends={selectedEnds}
                 layout={comparisonLayout}
@@ -534,7 +564,7 @@ export function SuspensionVisualization({
             ) : (
               <DistributionGrid
                 chartKind="mirrored_velocity"
-                layout={comparisonLayout}
+                layout={panelComparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('', '', selectedEnds)}
                 xDomain={velocityDomain}
@@ -543,7 +573,7 @@ export function SuspensionVisualization({
                 yMax={distributionYMax(
                   selectedEntities,
                   distributionRoles('', '', selectedEnds),
-                  (entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, VELOCITY_METRIC_SPEC),
+                  (entity, role) => metricMirroredValuesForEntityEnd(entity, baseAnalysisData, role.key, VELOCITY_METRIC_SPEC),
                   velocityDomain,
                   WHOLE_SESSION_DISTRIBUTION_BINS,
                   'mirrored_velocity',
@@ -552,7 +582,7 @@ export function SuspensionVisualization({
                 showStats
                 statsFormatter={VELOCITY_STATS_FORMATTER}
                 statsTransform={Math.abs}
-                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, scopedData, role.key, VELOCITY_METRIC_SPEC)}
+                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, analysisData, role.key, VELOCITY_METRIC_SPEC)}
               />
             )}
           </VisualizationPanel>
@@ -566,8 +596,8 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorMetricDistributionScaffold
-                data={scopedData}
-                scaleData={data}
+                data={analysisData}
+                scaleData={baseAnalysisData}
                 entities={selectedEntities}
                 ends={selectedEnds}
                 layout={comparisonLayout}
@@ -584,7 +614,7 @@ export function SuspensionVisualization({
             ) : (
               <DistributionGrid
                 chartKind="mirrored_velocity"
-                layout={comparisonLayout}
+                layout={panelComparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('', '', selectedEnds)}
                 xDomain={strokeLengthDomain}
@@ -593,7 +623,7 @@ export function SuspensionVisualization({
                 yMax={distributionYMax(
                   selectedEntities,
                   distributionRoles('', '', selectedEnds),
-                  (entity, role) => metricMirroredValuesForEntityEnd(entity, data, role.key, STROKE_LENGTH_METRIC_SPEC),
+                  (entity, role) => metricMirroredValuesForEntityEnd(entity, baseAnalysisData, role.key, STROKE_LENGTH_METRIC_SPEC),
                   strokeLengthDomain,
                   WHOLE_SESSION_DISTRIBUTION_BINS,
                   'mirrored_velocity',
@@ -602,7 +632,7 @@ export function SuspensionVisualization({
                 showStats
                 statsFormatter={STROKE_LENGTH_STATS_FORMATTER}
                 statsTransform={Math.abs}
-                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, scopedData, role.key, STROKE_LENGTH_METRIC_SPEC)}
+                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, analysisData, role.key, STROKE_LENGTH_METRIC_SPEC)}
               />
             )}
           </VisualizationPanel>
@@ -616,7 +646,7 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorScatterScaffold
-                data={scopedData}
+                data={analysisData}
                 ends={selectedEnds}
                 entities={selectedEntities}
                 eventType={COMPRESSION_EVENT_TYPE}
@@ -631,9 +661,9 @@ export function SuspensionVisualization({
               />
             ) : (
               <ScatterEntityStrip
-                layout={comparisonLayout}
+                layout={panelComparisonLayout}
                 entities={selectedEntities}
-                data={scopedData}
+                data={analysisData}
                 eventType={COMPRESSION_EVENT_TYPE}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={COMPRESSION_Y_METRIC}
@@ -653,7 +683,7 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorScatterScaffold
-                data={scopedData}
+                data={analysisData}
                 ends={selectedEnds}
                 entities={selectedEntities}
                 eventType={REBOUND_EVENT_TYPE}
@@ -668,9 +698,9 @@ export function SuspensionVisualization({
               />
             ) : (
               <ScatterEntityStrip
-                layout={comparisonLayout}
+                layout={panelComparisonLayout}
                 entities={selectedEntities}
-                data={scopedData}
+                data={analysisData}
                 eventType={REBOUND_EVENT_TYPE}
                 xMetric={SCATTER_X_METRIC}
                 yMetric={REBOUND_Y_METRIC}
@@ -690,7 +720,7 @@ export function SuspensionVisualization({
           >
             {scopeMode === 'sector' ? (
               <SectorEventCountScaffold
-                data={scopedData}
+                data={analysisData}
                 ends={selectedEnds}
                 entities={selectedEntities}
                 selectedTrack={selectedTrack}
@@ -699,7 +729,7 @@ export function SuspensionVisualization({
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
-              <EventCountStrip entities={selectedEntities} data={scopedData} ends={selectedEnds} />
+              <EventCountStrip entities={selectedEntities} data={analysisData} ends={selectedEnds} />
             )}
           </VisualizationPanel>
         </div>
@@ -737,6 +767,24 @@ function ComparisonLayoutToggle({
         </button>
       </div>
     </div>
+  )
+}
+
+function ActivityExclusionControl({
+  checked,
+  onChange,
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="viz-activity-toggle">
+      <input checked={checked} onChange={(event) => onChange(event.target.checked)} type="checkbox" />
+      <span>
+        <strong>Exclude inactive periods</strong>
+        <small>Uses preprocessing activity masks when available.</small>
+      </span>
+    </label>
   )
 }
 
@@ -930,6 +978,7 @@ function TimeWindowOverview({
   const key = sessionRefId(sessionRef)
   const times = data.timeBySession[key] ?? []
   const signals = data.signalsBySession[key] ?? {}
+  const inactiveIntervals = inactiveIntervalsForSession(data, key)
   const frontPoints = overviewPoints(times, signals.front_displacement ?? [], 520)
   const rearPoints = overviewPoints(times, signals.rear_displacement ?? [], 520)
   const x = d3.scaleLinear().domain([0, durationS || 1]).range([margin.left, width - margin.right])
@@ -943,7 +992,7 @@ function TimeWindowOverview({
   const rearPath = line(rearPoints)
   const selectionX = x(window.startS)
   const selectionWidth = Math.max(1, x(window.endS) - selectionX)
-  const handleWidth = 8
+  const handleWidth = 5
   const empty = frontPoints.length === 0 && rearPoints.length === 0
 
   function pointerViewX(event: PointerEvent<SVGSVGElement>) {
@@ -1047,19 +1096,33 @@ function TimeWindowOverview({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
     >
+      {inactiveIntervals.map((interval, index) => (
+        <rect
+          className="viz-time-window-inactive"
+          height={height - margin.top - margin.bottom}
+          key={`${interval.startS}-${interval.endS}-${index}`}
+          width={Math.max(1, x(clamp(interval.endS, 0, durationS)) - x(clamp(interval.startS, 0, durationS)))}
+          x={x(clamp(interval.startS, 0, durationS))}
+          y={margin.top}
+        >
+          <title>Inactive period: {formatTimeOffset(interval.startS)} - {formatTimeOffset(interval.endS)}</title>
+        </rect>
+      ))}
       <rect className="viz-time-window-range" x={selectionX} y={margin.top} width={selectionWidth} height={height - margin.top - margin.bottom} />
       <line className="viz-axis" x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} />
       <line className="viz-axis" x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} />
       {frontPath && <path className="viz-time-window-line front" d={frontPath} />}
       {rearPath && <path className="viz-time-window-line rear" d={rearPath} />}
-      {[0, 0.5, 1].map((tick) => {
-        const value = durationS * tick
+      {timeWindowTicks(durationS).map((tick) => {
+        const value = tick.value
         return (
-          <g key={tick}>
+          <g key={value}>
             <line className="viz-tick" x1={x(value)} x2={x(value)} y1={height - margin.bottom} y2={height - margin.bottom + 4} />
-            <text className="viz-axis-label" x={x(value)} y={height - 4} textAnchor="middle">
-              {formatTimeOffset(value)}
-            </text>
+            {tick.label && (
+              <text className="viz-axis-label" x={x(value)} y={height - 4} textAnchor="middle">
+                {formatTimeOffset(value)}
+              </text>
+            )}
           </g>
         )
       })}
@@ -1295,6 +1358,7 @@ function DistributionGrid({
   yMax,
   sessions = [],
   showStats = false,
+  statsMode = 'basic',
   statsFormatter = formatPercentValue,
   statsTransform = (value: number) => value,
 }: {
@@ -1310,6 +1374,7 @@ function DistributionGrid({
   yMax: number
   sessions?: SessionRecord[]
   showStats?: boolean
+  statsMode?: DistributionStatsMode
   statsFormatter?: (value: number | null) => string
   statsTransform?: (value: number) => number
 }) {
@@ -1351,7 +1416,7 @@ function DistributionGrid({
                 }))}
                 emptyLabel="No matching signals"
               />
-              {showStats && <DistributionStats formatter={statsFormatter} series={series} transform={statsTransform} />}
+              {showStats && <DistributionStats formatter={statsFormatter} mode={statsMode} series={series} transform={statsTransform} />}
             </article>
           )
         })}
@@ -1376,7 +1441,7 @@ function DistributionGrid({
             ) : (
               <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
             )}
-            {showStats && <DistributionStats formatter={statsFormatter} series={series} transform={statsTransform} />}
+            {showStats && <DistributionStats formatter={statsFormatter} mode={statsMode} series={series} transform={statsTransform} />}
           </article>
         )
       })}
@@ -1400,6 +1465,7 @@ function SectorDistributionScaffold({
   xLabel,
   bins,
   trackMatchesLoading,
+  statsMode = 'basic',
   valueTransform = (values: number[]) => values,
 }: {
   quantity: 'displacement' | 'velocity'
@@ -1417,6 +1483,7 @@ function SectorDistributionScaffold({
   xLabel: string
   bins: number
   trackMatchesLoading: boolean
+  statsMode?: DistributionStatsMode
   valueTransform?: (values: number[]) => number[]
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
@@ -1496,6 +1563,8 @@ function SectorDistributionScaffold({
           entities={entities}
           layout={layout}
           roles={roles}
+          showStats={statsMode !== 'basic'}
+          statsMode={statsMode}
           valueForEntityRole={(entity, role) =>
             valueTransform(sectorValuesForEntityAcrossSectors(entity, data, selectedTrack, sectors, role.signalRole))
           }
@@ -1525,11 +1594,13 @@ function SectorDistributionScaffold({
                   bins={bins}
                   chartKind={chartKind}
                   entities={entities}
-                  layout={layout}
-                  roles={roles}
-                  valueForEntityRole={(entity, role) =>
-                    valueTransform(sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole))
-                  }
+                    layout={layout}
+                    roles={roles}
+                    showStats={statsMode !== 'basic'}
+                    statsMode={statsMode}
+                    valueForEntityRole={(entity, role) =>
+                      valueTransform(sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole))
+                    }
                   xDomain={xDomain}
                   xLabel={xLabel}
                   yMax={facetYMax}
@@ -2101,8 +2172,15 @@ function EndTileHeader({ label }: { label: string }) {
 function responsiveStripStyle(count: number, minTileWidth: number): CSSProperties {
   const safeCount = Math.max(1, count)
   const gapPx = 10
+  const maxTileWidth =
+    safeCount === 1
+      ? `clamp(${minTileWidth}px, 32%, 560px)`
+      : safeCount === 2
+        ? `clamp(${minTileWidth}px, 48%, 640px)`
+        : `var(--viz-target-tile-width)`
   return {
     '--viz-min-tile-width': `${minTileWidth}px`,
+    '--viz-max-tile-width': maxTileWidth,
     '--viz-target-tile-width': `calc((100% - ${(safeCount - 1) * gapPx}px) / ${safeCount})`,
   } as CSSProperties
 }
@@ -2166,11 +2244,13 @@ function HistogramOverlayChart({
   const height = 180
   const margin = { top: 12, right: 12, bottom: 34, left: 34 }
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
-  const y = d3.scaleLinear().domain([0, yMax || 1]).range([height - margin.bottom, margin.top])
   const seriesBins = series.map((item) => ({
     ...item,
     bins: histogramBins(item.values, xDomain, bins),
   }))
+  const localYMax =
+    Math.max(...seriesBins.flatMap((item) => item.bins.map((bin) => bin.proportion)), 0) || yMax || 1
+  const y = d3.scaleLinear().domain([0, localYMax]).range([height - margin.bottom, margin.top])
   const allEmpty = series.every((item) => item.values.length === 0)
   return (
     <svg className="viz-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={xLabel}>
@@ -2242,16 +2322,18 @@ function MultiHistogramChart({
   const height = 180
   const margin = { top: 12, right: 12, bottom: 34, left: 34 }
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
-  const y = d3.scaleLinear().domain([0, yMax || 1]).range([height - margin.bottom, margin.top])
+  const seriesBins = series.map((item) => ({
+    ...item,
+    bins: histogramBins(item.values, xDomain, bins),
+  }))
+  const localYMax =
+    Math.max(...seriesBins.flatMap((item) => item.bins.map((bin) => bin.proportion)), 0) || yMax || 1
+  const y = d3.scaleLinear().domain([0, localYMax]).range([height - margin.bottom, margin.top])
   const line = d3
     .line<{ x0: number; x1: number; proportion: number }>()
     .x((bin) => x((bin.x0 + bin.x1) / 2))
     .y((bin) => y(bin.proportion))
     .curve(d3.curveStepAfter)
-  const seriesBins = series.map((item) => ({
-    ...item,
-    bins: histogramBins(item.values, xDomain, bins),
-  }))
   const allEmpty = series.every((item) => item.values.length === 0)
   return (
     <svg className="viz-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={xLabel}>
@@ -2310,7 +2392,15 @@ function MirroredVelocityChart({
   const height = 202
   const margin = { top: 22, right: 12, bottom: 34, left: 38 }
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
-  const y = d3.scaleLinear().domain([-(yMax || 1), yMax || 1]).range([height - margin.bottom, margin.top])
+  const mirroredBins = series.map((item) => ({
+    ...item,
+    ...mirroredVelocityBins(item.values, xDomain, bins),
+  }))
+  const localYMax =
+    Math.max(...mirroredBins.flatMap((item) => [...item.compression, ...item.rebound].map((bin) => bin.proportion)), 0) ||
+    yMax ||
+    1
+  const y = d3.scaleLinear().domain([-localYMax, localYMax]).range([height - margin.bottom, margin.top])
   const line = d3
     .line<{ x0: number; x1: number; proportion: number }>()
     .x((bin) => x((bin.x0 + bin.x1) / 2))
@@ -2321,10 +2411,6 @@ function MirroredVelocityChart({
     .x((bin) => x((bin.x0 + bin.x1) / 2))
     .y((bin) => y(-bin.proportion))
     .curve(d3.curveStepAfter)
-  const mirroredBins = series.map((item) => ({
-    ...item,
-    ...mirroredVelocityBins(item.values, xDomain, bins),
-  }))
   const allEmpty = series.every((item) => item.values.length === 0)
   const renderBars = series.length <= 2
   const seriesCount = Math.max(1, series.length)
@@ -2688,17 +2774,27 @@ function EventCountTable({ rows, ends }: { rows: TableQueryRow[]; ends: Suspensi
 
 function DistributionStats({
   formatter,
+  mode = 'basic',
   series,
   transform,
 }: {
   formatter: (value: number | null) => string
+  mode?: DistributionStatsMode
   series: Array<{ id: string; label: string; color: string; values: number[] }>
   transform: (value: number) => number
 }) {
   return (
     <div className="viz-stat-grid">
       {series.map((item) => (
-        <RoleStats color={item.color} formatter={formatter} key={item.id} label={item.label} transform={transform} values={item.values} />
+        <RoleStats
+          color={item.color}
+          formatter={formatter}
+          key={item.id}
+          label={item.label}
+          mode={mode}
+          transform={transform}
+          values={item.values}
+        />
       ))}
     </div>
   )
@@ -2708,25 +2804,31 @@ function RoleStats({
   color,
   formatter,
   label,
+  mode,
   transform,
   values,
 }: {
   color: string
   formatter: (value: number | null) => string
   label: string
+  mode: DistributionStatsMode
   transform: (value: number) => number
   values: number[]
 }) {
   const stats = distributionStats(values.map(transform))
+  const displacementStats = mode === 'displacement'
   return (
     <dl>
       <dt>
         <span style={{ backgroundColor: color }} />
         {label}
       </dt>
+      {displacementStats && <dd>dynamic sag {formatter(stats.mean)}</dd>}
       <dd>median {formatter(stats.median)}</dd>
       <dd>95th {formatter(stats.p95)}</dd>
       <dd>max {formatter(stats.max)}</dd>
+      {displacementStats && <dd>IQR {formatter(stats.iqr)}</dd>}
+      {displacementStats && <dd>skew {formatSkew(stats.skew)}</dd>}
     </dl>
   )
 }
@@ -2749,7 +2851,7 @@ async function loadVisualizationData(
       }),
     ])
     const requestWarnings = [
-      ...signals.warnings.map((warning) => warningMessage(warning)),
+      ...signals.warnings.filter((warning) => !activitySignalWarning(warning)).map((warning) => warningMessage(warning)),
       ...events.warnings.map((warning) => warningMessage(warning)),
       ...metrics.warnings.map((warning) => warningMessage(warning)),
     ].filter(Boolean)
@@ -2785,7 +2887,8 @@ async function loadVisualizationData(
         cached.warnings.push(`${session.sessionRef.label || key}: signal payload is not distribution-correct.`)
       }
       for (const signal of session.signals) {
-        cached.signals[signal.role] = numericValues(signal.values)
+        const role = normalizedActivitySignalRole(signal.column, signal.role)
+        cached.signals[role] = numericValues(signal.values)
       }
       fetchedSessions.set(key, cached)
     }
@@ -2894,6 +2997,7 @@ function restoredVisualizationSettings(
     selectedEnds: normalizedSelectedEnds(cached?.selectedEnds),
     selectedSectorIds: cached?.selectedSectorIds ? [...cached.selectedSectorIds] : [],
     timeWindowsBySession: cached?.timeWindowsBySession ? { ...cached.timeWindowsBySession } : {},
+    excludeInactivePeriods: cached?.excludeInactivePeriods ?? true,
   }
 }
 
@@ -2997,6 +3101,201 @@ function applyTimeWindows(data: VisualizationData, timeWindows: TimeWindowsBySes
     events: filterRowsByTimeWindows(data.events, data, timeWindows, windowedSessions),
     metrics: filterRowsByTimeWindows(data.metrics, data, timeWindows, windowedSessions),
   }
+}
+
+function applyActivityMask(data: VisualizationData): VisualizationData {
+  const signalsBySession: Record<string, Record<string, number[]>> = {}
+  const timeBySession: Record<string, number[]> = {}
+  let changed = false
+  for (const [key, times] of Object.entries(data.timeBySession)) {
+    const signals = data.signalsBySession[key] ?? {}
+    const activeMask = activeMaskForSession(data, key)
+    if (!activeMask || times.length === 0) {
+      timeBySession[key] = times
+      signalsBySession[key] = signals
+      continue
+    }
+    const indexes = activeIndexes(activeMask, times.length)
+    if (indexes.length === times.length) {
+      timeBySession[key] = times
+      signalsBySession[key] = signals
+      continue
+    }
+    changed = true
+    timeBySession[key] = indexes.map((index) => times[index])
+    signalsBySession[key] = Object.fromEntries(
+      Object.entries(signals).map(([role, values]) => [role, indexes.map((index) => values[index] ?? Number.NaN)]),
+    )
+  }
+  for (const [key, signals] of Object.entries(data.signalsBySession)) {
+    if (!signalsBySession[key]) {
+      signalsBySession[key] = signals
+    }
+  }
+  if (!changed) {
+    return data
+  }
+  return {
+    ...data,
+    timeBySession,
+    signalsBySession,
+    events: filterRowsByActivity(data.events, data),
+    metrics: filterRowsByActivity(data.metrics, data),
+  }
+}
+
+function activeMaskForSession(data: VisualizationData, sessionKey: string): boolean[] | null {
+  const cached = activeMaskCache.get(data)
+  if (cached?.has(sessionKey)) {
+    return cached.get(sessionKey) ?? null
+  }
+  const signals = data.signalsBySession[sessionKey]
+  if (!signals) {
+    cacheActiveMask(data, sessionKey, null)
+    return null
+  }
+  for (const role of INACTIVE_MASK_ROLES) {
+    const values = signals[role]
+    if (hasUsableMask(values)) {
+      const mask = values.map((value) => !maskValueTruthy(value))
+      cacheActiveMask(data, sessionKey, mask)
+      return mask
+    }
+  }
+  for (const role of ACTIVE_MASK_ROLES) {
+    const values = signals[role]
+    if (hasUsableMask(values)) {
+      const mask = values.map(maskValueTruthy)
+      cacheActiveMask(data, sessionKey, mask)
+      return mask
+    }
+  }
+  cacheActiveMask(data, sessionKey, null)
+  return null
+}
+
+function cacheActiveMask(data: VisualizationData, sessionKey: string, mask: boolean[] | null) {
+  const cached = activeMaskCache.get(data)
+  if (cached) {
+    cached.set(sessionKey, mask)
+  } else {
+    activeMaskCache.set(data, new Map([[sessionKey, mask]]))
+  }
+}
+
+function normalizedActivitySignalRole(column: string, role: string) {
+  return ACTIVITY_SIGNAL_ROLES.has(column) ? column : role
+}
+
+function hasUsableMask(values: number[] | undefined) {
+  return Boolean(values?.some(Number.isFinite))
+}
+
+function maskValueTruthy(value: number) {
+  return Number.isFinite(value) && value !== 0
+}
+
+function activeIndexes(mask: boolean[], length: number) {
+  const limit = Math.min(mask.length, length)
+  const indexes: number[] = []
+  for (let index = 0; index < limit; index += 1) {
+    if (mask[index]) {
+      indexes.push(index)
+    }
+  }
+  return indexes
+}
+
+function filterRowsByActivity(rows: TableQueryRow[], data: VisualizationData) {
+  return rows.filter((row) => rowActiveAtTrigger(row, data))
+}
+
+function rowActiveAtTrigger(row: TableQueryRow, data: VisualizationData) {
+  const sessionKey = sessionRefId(row.sessionRef)
+  const mask = activeMaskForSession(data, sessionKey)
+  const times = data.timeBySession[sessionKey] ?? []
+  if (!mask || times.length === 0) {
+    return true
+  }
+  const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
+  if (triggerTimeS === null) {
+    return true
+  }
+  const index = nearestTimeIndex(times, triggerTimeS)
+  return index === null ? true : mask[index] ?? true
+}
+
+function nearestTimeIndex(times: number[], target: number) {
+  if (times.length === 0 || !Number.isFinite(target)) {
+    return null
+  }
+  if (!monotonicFiniteTimeArray(times)) {
+    let bestIndex = -1
+    let bestDelta = Number.POSITIVE_INFINITY
+    for (let index = 0; index < times.length; index += 1) {
+      const time = times[index]
+      if (!Number.isFinite(time)) {
+        continue
+      }
+      const delta = Math.abs(time - target)
+      if (delta < bestDelta) {
+        bestDelta = delta
+        bestIndex = index
+      }
+    }
+    return bestIndex < 0 ? null : bestIndex
+  }
+  const upperIndex = lowerBound(times, target)
+  if (upperIndex <= 0) {
+    return 0
+  }
+  if (upperIndex >= times.length) {
+    return times.length - 1
+  }
+  const previousDelta = Math.abs(target - times[upperIndex - 1])
+  const nextDelta = Math.abs(times[upperIndex] - target)
+  return previousDelta <= nextDelta ? upperIndex - 1 : upperIndex
+}
+
+function inactiveIntervalsForSession(data: VisualizationData, sessionKey: string): ActivityInterval[] {
+  const times = data.timeBySession[sessionKey] ?? []
+  const mask = activeMaskForSession(data, sessionKey)
+  if (!mask || times.length === 0) {
+    return []
+  }
+  const intervals: ActivityInterval[] = []
+  const limit = Math.min(mask.length, times.length)
+  const step = typicalTimeStep(times)
+  let startIndex: number | null = null
+  for (let index = 0; index < limit; index += 1) {
+    if (!mask[index] && startIndex === null) {
+      startIndex = index
+    }
+    if ((mask[index] || index === limit - 1) && startIndex !== null) {
+      const endIndex = mask[index] ? index - 1 : index
+      const startS = times[startIndex]
+      const endS = endIndex + 1 < times.length ? times[endIndex + 1] : times[endIndex] + step
+      if (Number.isFinite(startS) && Number.isFinite(endS) && endS > startS) {
+        intervals.push({ startS, endS })
+      }
+      startIndex = null
+    }
+  }
+  return intervals
+}
+
+function typicalTimeStep(times: number[]) {
+  const diffs: number[] = []
+  for (let index = 1; index < times.length; index += 1) {
+    const diff = times[index] - times[index - 1]
+    if (Number.isFinite(diff) && diff > 0) {
+      diffs.push(diff)
+      if (diffs.length >= 60) {
+        break
+      }
+    }
+  }
+  return d3.median(diffs) ?? 0.02
 }
 
 function timeWindowIndexRange(times: number[], window: TimeWindow) {
@@ -3954,10 +4253,17 @@ function uniqueStrings(values: string[]) {
 
 function distributionStats(values: number[]) {
   const clean = [...values].filter(Number.isFinite).sort((a, b) => a - b)
+  const q25 = quantile(clean, 0.25)
+  const median = quantile(clean, 0.5)
+  const q75 = quantile(clean, 0.75)
+  const iqr = q25 !== null && q75 !== null ? q75 - q25 : null
   return {
-    median: quantile(clean, 0.5),
+    mean: clean.length ? d3.mean(clean) ?? null : null,
+    median,
     p95: quantile(clean, 0.95),
     max: clean.length ? clean[clean.length - 1] : null,
+    iqr,
+    skew: iqr && iqr !== 0 && q25 !== null && q75 !== null && median !== null ? (q75 + q25 - 2 * median) / iqr : null,
   }
 }
 
@@ -4086,6 +4392,12 @@ function warningMessage(warning: Record<string, unknown>) {
   return `${session}${role}${message}`
 }
 
+function activitySignalWarning(warning: Record<string, unknown>) {
+  const role = textField(warning.role) || textField(warning.signal_role) || textField(warning.requested_role)
+  const column = textField(warning.column) || textField(warning.requested_column)
+  return ACTIVITY_SIGNAL_ROLES.has(role) || ACTIVITY_SIGNAL_ROLES.has(column)
+}
+
 function formatPercentValue(value: number | null) {
   return value === null ? '-' : `${value.toFixed(0)}%`
 }
@@ -4102,6 +4414,10 @@ function formatMetricValue(value: number | null) {
 
 function formatMetricValueWithUnit(unit: string) {
   return (value: number | null) => (value === null ? '-' : `${formatMetricValue(value)} ${unit}`)
+}
+
+function formatSkew(value: number | null) {
+  return value === null || !Number.isFinite(value) ? '-' : value.toFixed(2)
 }
 
 function formatProportion(value: number) {
@@ -4137,6 +4453,34 @@ function formatTimeOffset(value: number) {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`
   }
   return `${value.toFixed(value < 10 ? 1 : 0)}s`
+}
+
+function timeWindowTicks(durationS: number) {
+  const max = Math.max(0, durationS)
+  const ticks: Array<{ value: number; label: boolean }> = []
+  for (let value = 0; value <= max + 0.0001; value += 10) {
+    ticks.push({
+      value: Math.min(value, max),
+      label: shouldLabelTimeTick(value, max),
+    })
+  }
+  if (max > 0 && (ticks.length === 0 || Math.abs(ticks[ticks.length - 1].value - max) > 0.001)) {
+    ticks.push({ value: max, label: true })
+  }
+  return ticks
+}
+
+function shouldLabelTimeTick(value: number, durationS: number) {
+  if (value === 0 || Math.abs(value - durationS) < 0.001) {
+    return true
+  }
+  if (durationS <= 120) {
+    return true
+  }
+  if (durationS <= 600) {
+    return value % 30 === 0
+  }
+  return value % 60 === 0
 }
 
 function formatRole(role: 'front' | 'rear' | 'unknown') {

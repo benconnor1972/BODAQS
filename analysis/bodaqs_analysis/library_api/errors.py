@@ -53,6 +53,12 @@ class SessionDeleteConflictError(LibraryApiError):
     default_message = "Session is still referenced by saved library objects."
 
 
+class SessionDeleteFailedError(LibraryApiError):
+    code = "session_delete_failed"
+    status_code = 500
+    default_message = "Session could not be deleted."
+
+
 class StudySetNotFoundError(LibraryApiError):
     code = "study_set_not_found"
     status_code = 404

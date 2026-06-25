@@ -269,6 +269,57 @@ export type StudySet = {
   provenance: string
 }
 
+export type AnalysisAdequacyStatus = 'ready' | 'warning' | 'partial' | 'blocked' | 'unknown'
+export type AnalysisRequirementTier = 'required' | 'recommended' | 'optional'
+
+export type AnalysisRequirementRecord = {
+  requirementId: string
+  label: string
+  tier: AnalysisRequirementTier
+  description: string
+}
+
+export type AnalysisViewRecord = {
+  id: string
+  displayName: string
+  category: string
+  description: string
+  route: string
+  adequacyPolicy: string
+  requirements: Record<string, AnalysisRequirementRecord[]>
+}
+
+export type AnalysisAdequacyMessage = {
+  level: 'info' | 'warning' | 'error'
+  code: string
+  message: string
+  sessionRef?: StudySessionRef
+  detail?: Record<string, unknown>
+}
+
+export type AnalysisAdequacySessionResult = {
+  sessionRef: StudySessionRef
+  status: AnalysisAdequacyStatus
+  summary: string
+  requiredPassed: boolean
+  recommendedMissing: string[]
+  optionalMissing: string[]
+  units?: Record<string, unknown>
+}
+
+export type AnalysisAdequacyResult = {
+  viewId: string
+  displayName: string
+  status: AnalysisAdequacyStatus
+  policy: string
+  summary: string
+  totalSessionCount: number
+  usableSessionCount: number
+  blockedSessionCount: number
+  messages: AnalysisAdequacyMessage[]
+  sessionResults: AnalysisAdequacySessionResult[]
+}
+
 export type SignalQuerySignalRequest = {
   role: string
   selector?: Record<string, unknown>
@@ -356,5 +407,6 @@ export type ColumnId =
 export type ModalState =
   | { kind: 'session'; tab: SessionInspectionTab; session: SessionRecord }
   | { kind: 'track'; track: TrackRecord }
+  | { kind: 'analysis-launcher'; studySet: StudySet }
   | { kind: 'study-set'; studySet: StudySet; mode: StudySetModalMode }
   | null

@@ -71,11 +71,11 @@ def _simple_suspension_view_descriptor() -> dict[str, Any]:
         "requirements": {
             "required": [
                 {
-                    "id": "wheel_displacement_signal",
-                    "label": "Wheel displacement signal",
+                    "id": "wheel_motion_data",
+                    "label": "Wheel displacement and velocity data",
                     "applies_to": "session_end",
                     "minimum": "at_least_one_end",
-                    "description": "At least one suspension end must expose wheel displacement data.",
+                    "description": "At least one suspension end must expose wheel displacement and velocity evidence.",
                 }
             ],
             "recommended": [
@@ -176,13 +176,14 @@ def _simple_suspension_adequacy(
 
 def _simple_suspension_session_result(row: Mapping[str, Any]) -> dict[str, Any]:
     signals = [signal for signal in row.get("available_signals") or [] if isinstance(signal, Mapping)]
-    end_results = {end: _end_result(end, signals) for end in _SUSPENSION_ENDS}
+    has_event_metrics = _has_required_event_metrics(row)
+    end_results = {end: _end_result(end, signals, has_event_velocity_metrics=has_event_metrics) for end in _SUSPENSION_ENDS}
     usable_end_count = sum(1 for result in end_results.values() if result["usable"])
     missing_recommended = []
     missing_optional = []
     if usable_end_count < len(_SUSPENSION_ENDS):
         missing_recommended.append("both_ends")
-    if not _has_required_event_metrics(row):
+    if not has_event_metrics:
         missing_recommended.append("event_metrics")
     gps_summary = row.get("gps_summary") if isinstance(row.get("gps_summary"), Mapping) else {}
     if not bool(gps_summary.get("present")):
@@ -212,26 +213,49 @@ def _simple_suspension_session_result(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _end_result(end: str, signals: list[Mapping[str, Any]]) -> dict[str, Any]:
-    signal = _wheel_displacement_signal(end, signals)
-    if signal is None:
+def _end_result(
+    end: str,
+    signals: list[Mapping[str, Any]],
+    *,
+    has_event_velocity_metrics: bool,
+) -> dict[str, Any]:
+    displacement_signal = _wheel_displacement_signal(end, signals)
+    velocity_signal = _wheel_velocity_signal(end, signals)
+    missing_required = []
+    if displacement_signal is None:
+        missing_required.append("wheel_displacement_signal")
+    if velocity_signal is None and not has_event_velocity_metrics:
+        missing_required.append("wheel_velocity_data")
+    if missing_required:
         return {
             "status": "blocked",
             "usable": False,
-            "missing_required": ["wheel_displacement_signal"],
+            "missing_required": missing_required,
             "signals": [],
         }
+    signals_out = [
+        {
+            "role": "wheel_displacement",
+            "signal_id": displacement_signal.get("signal_id"),
+            "column": displacement_signal.get("column"),
+            "display_name": displacement_signal.get("display_name"),
+        }
+    ]
+    if velocity_signal is not None:
+        signals_out.append(
+            {
+                "role": "wheel_velocity",
+                "signal_id": velocity_signal.get("signal_id"),
+                "column": velocity_signal.get("column"),
+                "display_name": velocity_signal.get("display_name"),
+            }
+        )
     return {
         "status": "ready",
         "usable": True,
         "missing_required": [],
-        "signals": [
-            {
-                "signal_id": signal.get("signal_id"),
-                "column": signal.get("column"),
-                "display_name": signal.get("display_name"),
-            }
-        ],
+        "signals": signals_out,
+        "velocity_evidence": "signal" if velocity_signal is not None else "event_metrics",
     }
 
 
@@ -245,6 +269,18 @@ def _wheel_displacement_signal(end: str, signals: list[Mapping[str, Any]]) -> Ma
         if quantity == "disp_norm" and unit == "1":
             return signal
         if quantity == "disp" and domain == "wheel":
+            return signal
+    return None
+
+
+def _wheel_velocity_signal(end: str, signals: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    for signal in signals:
+        if _signal_text(signal, "end") != end:
+            continue
+        quantity = _signal_text(signal, "quantity")
+        unit = _signal_text(signal, "unit")
+        domain = _signal_text(signal, "domain")
+        if quantity == "vel" and unit in {"mm/s", "mmps"} and domain in {"wheel", "suspension", ""}:
             return signal
     return None
 
@@ -268,7 +304,7 @@ def _scope_summary(status: str, *, usable_sessions: int, total_sessions: int) ->
         return f"{usable_sessions} of {total_sessions} sessions can be analyzed with missing recommended or optional data."
     if status == "partial":
         return f"{usable_sessions} of {total_sessions} sessions can be analyzed; some sessions will be excluded."
-    return "No sessions in this scope have the required suspension displacement data."
+    return "No sessions in this scope have the required suspension motion data."
 
 
 def _scope_messages(session_results: list[Mapping[str, Any]], *, scope_status: str) -> list[dict[str, str]]:
@@ -281,7 +317,7 @@ def _scope_messages(session_results: list[Mapping[str, Any]], *, scope_status: s
             {
                 "severity": "warning" if scope_status == "partial" else "error",
                 "code": "blocked_sessions",
-                "message": f"{blocked_count} session(s) lack required suspension displacement data.",
+                "message": f"{blocked_count} session(s) lack required suspension motion data.",
             }
         )
     missing_metrics_count = sum(1 for result in session_results if "event_metrics" in result.get("missing_recommended", []))
@@ -316,7 +352,7 @@ def _session_messages(
             {
                 "severity": "error",
                 "code": "missing_required_motion_data",
-                "message": "No front or rear wheel displacement signal was found.",
+                "message": "No front or rear end has both wheel displacement and velocity evidence.",
             }
         ]
     messages: list[dict[str, str]] = []

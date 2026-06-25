@@ -2,6 +2,13 @@ import { candidateId, groupingColors, sessionRefId } from '../domain/studySets'
 import { emptyGpsSummary } from '../domain/geospatial'
 import type { SavedSessionFilterRecord, SessionFilterPredicate } from '../domain/sessionFilters'
 import type {
+  AnalysisAdequacyMessage,
+  AnalysisAdequacyResult,
+  AnalysisAdequacySessionResult,
+  AnalysisAdequacyStatus,
+  AnalysisRequirementRecord,
+  AnalysisRequirementTier,
+  AnalysisViewRecord,
   GpsQuality,
   GpsSourceKind,
   GpsTimebase,
@@ -100,6 +107,29 @@ export class LocalApiDataSource implements LibraryDataSource {
       }),
     )
     return studySets.map(mapStudySet)
+  }
+
+  async loadStudySet(studySetId: string) {
+    const studySet = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/study-sets/${encodeURIComponent(studySetId)}`)
+    return mapStudySet(studySet)
+  }
+
+  async listAnalysisViews() {
+    const views = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/analysis-views`)
+    return views.map(mapAnalysisView)
+  }
+
+  async evaluateAnalysisAdequacy(viewId: string, studySet: StudySet) {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/analysis-views/${encodeURIComponent(viewId)}/adequacy`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          study_set: toApiStudySet(studySet),
+        }),
+      },
+    )
+    return mapAnalysisAdequacy(response)
   }
 
   async listSavedSessionFilters() {
@@ -321,13 +351,23 @@ export class LocalApiDataSource implements LibraryDataSource {
 }
 
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers ?? {}),
-    },
-  })
+  const headers = new Headers(init.headers)
+  if (init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+    })
+  } catch (error) {
+    const method = init.method ?? 'GET'
+    const message = error instanceof Error ? error.message : String(error)
+    const origin = typeof window === 'undefined' ? 'unknown origin' : window.location.origin
+    throw new Error(`Network request failed (${method} ${url} from ${origin}): ${message}`)
+  }
 
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`
@@ -335,13 +375,23 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
       const payload = (await response.json()) as ApiObject
       const error = isObject(payload.error) ? payload.error : null
       const message = error ? textValue(error.message, detail) : detail
-      detail = message
+      const details = error && isObject(error.details) ? formatApiErrorDetails(error.details) : ''
+      detail = details ? `${message} ${details}` : message
     } catch {
       // Keep the HTTP status fallback.
     }
     throw new Error(detail)
   }
   return (await response.json()) as T
+}
+
+function formatApiErrorDetails(details: ApiObject) {
+  const fragments = [
+    textValue(details.exception_type),
+    textValue(details.exception_message),
+    textValue(details.session_dir),
+  ].filter(Boolean)
+  return fragments.length ? `(${fragments.join('; ')})` : ''
 }
 
 function mapLibrary(value: ApiObject): LibraryRecord {
@@ -729,6 +779,76 @@ function mapStudySessionRef(value: ApiObject): StudySessionRef {
     runId: textValue(value.run_id),
     sessionId: textValue(value.session_id),
     label: textValue(value.label, textValue(value.session_id)),
+  }
+}
+
+function mapAnalysisView(value: ApiObject): AnalysisViewRecord {
+  const viewId = textValue(value.view_id, textValue(value.id))
+  const requirements = objectValue(value.requirements)
+  return {
+    id: viewId,
+    displayName: textValue(value.display_name, viewId),
+    category: textValue(value.category),
+    description: textValue(value.description),
+    route: textValue(value.route),
+    adequacyPolicy: textValue(value.adequacy_policy),
+    requirements: Object.fromEntries(
+      Object.entries(requirements).map(([tier, items]) => [
+        tier,
+        arrayValue(items)
+          .filter(isObject)
+          .map((item) => mapAnalysisRequirement(item, requirementTierValue(tier))),
+      ]),
+    ),
+  }
+}
+
+function mapAnalysisRequirement(value: ApiObject, fallbackTier: AnalysisRequirementTier): AnalysisRequirementRecord {
+  const requirementId = textValue(value.requirement_id, textValue(value.id))
+  return {
+    requirementId,
+    label: textValue(value.label, requirementId),
+    tier: requirementTierValue(value.tier, fallbackTier),
+    description: textValue(value.description),
+  }
+}
+
+function mapAnalysisAdequacy(value: ApiObject): AnalysisAdequacyResult {
+  const viewId = textValue(value.view_id, textValue(value.id))
+  return {
+    viewId,
+    displayName: textValue(value.display_name, viewId),
+    status: adequacyStatusValue(value.status),
+    policy: textValue(value.policy, textValue(value.adequacy_policy)),
+    summary: textValue(value.summary),
+    totalSessionCount: numberValue(value.total_session_count),
+    usableSessionCount: numberValue(value.usable_session_count),
+    blockedSessionCount: numberValue(value.blocked_session_count),
+    messages: arrayValue(value.messages).filter(isObject).map(mapAnalysisAdequacyMessage),
+    sessionResults: arrayValue(value.session_results).filter(isObject).map(mapAnalysisAdequacySessionResult),
+  }
+}
+
+function mapAnalysisAdequacyMessage(value: ApiObject): AnalysisAdequacyMessage {
+  const sessionRef = objectValue(value.session_ref)
+  return {
+    level: messageLevelValue(value.level),
+    code: textValue(value.code),
+    message: textValue(value.message),
+    ...(Object.keys(sessionRef).length ? { sessionRef: mapStudySessionRef(sessionRef) } : {}),
+    detail: objectRecordValue(value.detail),
+  }
+}
+
+function mapAnalysisAdequacySessionResult(value: ApiObject): AnalysisAdequacySessionResult {
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session_ref)),
+    status: adequacyStatusValue(value.status),
+    summary: textValue(value.summary),
+    requiredPassed: value.required_passed === true,
+    recommendedMissing: arrayValue(value.recommended_missing).map((item) => textValue(item)).filter(Boolean),
+    optionalMissing: arrayValue(value.optional_missing).map((item) => textValue(item)).filter(Boolean),
+    units: objectRecordValue(value.units),
   }
 }
 
@@ -1162,6 +1282,27 @@ function sessionFilterPredicateValue(value: unknown): SessionFilterPredicate {
     return value as unknown as SessionFilterPredicate
   }
   return { field: 'rider', op: 'contains', value: '' }
+}
+
+function requirementTierValue(value: unknown, fallback: AnalysisRequirementTier = 'optional'): AnalysisRequirementTier {
+  if (value === 'required' || value === 'recommended' || value === 'optional') {
+    return value
+  }
+  return fallback
+}
+
+function adequacyStatusValue(value: unknown): AnalysisAdequacyStatus {
+  if (value === 'ready' || value === 'warning' || value === 'partial' || value === 'blocked') {
+    return value
+  }
+  return 'unknown'
+}
+
+function messageLevelValue(value: unknown): AnalysisAdequacyMessage['level'] {
+  if (value === 'warning' || value === 'error') {
+    return value
+  }
+  return 'info'
 }
 
 function coordinatePair(value: unknown): [number, number] | null {
