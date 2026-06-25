@@ -8,6 +8,7 @@ import { AnalysisLauncher } from './AnalysisLauncher'
 import { IconButton } from './Common'
 import { GpsRoutePreview } from './GpsRoutePreview'
 import { GpsBadge, NoteBadge, QcBadge } from './StatusBadges'
+import { SignalInspector } from './SignalInspector'
 import { SuspensionVisualization } from './SuspensionVisualization'
 
 export function Modal({
@@ -18,6 +19,7 @@ export function Modal({
   dataSource,
   onClose,
   onOpenAnalysis,
+  onOpenSignalInspector,
 }: {
   state: ModalState
   libraries: LibraryRecord[]
@@ -26,6 +28,7 @@ export function Modal({
   dataSource: LibraryDataSource
   onClose: () => void
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void
+  onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void
 }) {
   if (!state) {
     return null
@@ -43,7 +46,9 @@ export function Modal({
           <h2>{modalTitle(state)}</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
-        <div className="modal-content">{modalContent(state, libraries, sessions, tracks, dataSource, onOpenAnalysis)}</div>
+        <div className="modal-content">
+          {modalContent(state, libraries, sessions, tracks, dataSource, onOpenAnalysis, onOpenSignalInspector)}
+        </div>
       </section>
     </div>
   )
@@ -56,10 +61,16 @@ function modalClassName(state: NonNullable<ModalState>) {
   if (state.kind === 'analysis-launcher') {
     return ' analysis-launcher-modal'
   }
+  if (state.kind === 'signal-inspector') {
+    return ' signal-inspector-modal'
+  }
   return ''
 }
 
 function modalTitle(state: NonNullable<ModalState>) {
+  if (state.kind === 'signal-inspector') {
+    return `${state.session.name}: Signal Inspector`
+  }
   if (state.kind === 'session') {
     return `${state.session.name}: ${state.tab}`
   }
@@ -82,7 +93,12 @@ function modalContent(
   tracks: TrackRecord[],
   dataSource: LibraryDataSource,
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void,
+  onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void,
 ) {
+  if (state.kind === 'signal-inspector') {
+    return <SignalInspector session={state.session} dataSource={dataSource} initialWindow={state.initialWindow ?? null} />
+  }
+
   if (state.kind === 'session') {
     if (state.tab === 'note') {
       return (
@@ -252,7 +268,20 @@ function modalContent(
     )
   }
 
-  return <SuspensionVisualization studySet={state.studySet} sessions={sessions} tracks={tracks} dataSource={dataSource} />
+  return (
+    <SuspensionVisualization
+      studySet={state.studySet}
+      sessions={sessions}
+      tracks={tracks}
+      dataSource={dataSource}
+      onInspectSignals={(sessionRef, window) => {
+        const session = sessionByRef(sessionRef, sessions)
+        if (session) {
+          onOpenSignalInspector(session, window)
+        }
+      }}
+    />
+  )
 }
 
 function StudySetView({

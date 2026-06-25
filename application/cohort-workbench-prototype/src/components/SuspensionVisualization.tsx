@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { Activity, ChevronDown, ChevronUp } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { sessionByRef, sessionRefId } from '../domain/studySets'
 import type {
@@ -173,11 +173,13 @@ export function SuspensionVisualization({
   sessions,
   tracks,
   dataSource,
+  onInspectSignals,
 }: {
   studySet: StudySet
   sessions: SessionRecord[]
   tracks: TrackRecord[]
   dataSource: LibraryDataSource
+  onInspectSignals?: (sessionRef: StudySessionRef, window: TimeWindow) => void
 }) {
   const entities = visualizationEntities(studySet)
   const baseStudySetTracks = tracks.filter((track) => studySet.trackIds.includes(track.id))
@@ -465,6 +467,7 @@ export function SuspensionVisualization({
                 onChange={setSessionTimeWindow}
                 onReset={resetSessionTimeWindow}
                 onResetAll={() => setTimeWindowsBySession({})}
+                onInspectSignals={onInspectSignals}
               />
             )}
           </div>
@@ -796,6 +799,7 @@ function TimeWindowManager({
   onChange,
   onReset,
   onResetAll,
+  onInspectSignals,
 }: {
   data: VisualizationData
   sessionRefs: StudySessionRef[]
@@ -804,6 +808,7 @@ function TimeWindowManager({
   onChange: (sessionRef: StudySessionRef, window: TimeWindow) => void
   onReset: (sessionRef: StudySessionRef) => void
   onResetAll: () => void
+  onInspectSignals?: (sessionRef: StudySessionRef, window: TimeWindow) => void
 }) {
   const sessionKey = sessionRefs.map(sessionRefId).join('|')
   const [activeSessionKey, setActiveSessionKey] = useState<string | null>(() =>
@@ -870,6 +875,7 @@ function TimeWindowManager({
         window={timeWindows[sessionRefId(activeSessionRef)] ?? null}
         onChange={(nextWindow) => onChange(activeSessionRef, nextWindow)}
         onReset={() => onReset(activeSessionRef)}
+        onInspectSignals={onInspectSignals ? (window) => onInspectSignals(activeSessionRef, window) : undefined}
       />
     </section>
   )
@@ -883,6 +889,7 @@ function TimeWindowNavigator({
   window,
   onChange,
   onReset,
+  onInspectSignals,
 }: {
   embedded?: boolean
   data: VisualizationData
@@ -891,6 +898,7 @@ function TimeWindowNavigator({
   window: TimeWindow | null
   onChange: (window: TimeWindow) => void
   onReset: () => void
+  onInspectSignals?: (window: TimeWindow) => void
 }) {
   const durationS = sessionDurationS(data, sessionRef, session)
   const disabled = durationS <= 0
@@ -920,9 +928,17 @@ function TimeWindowNavigator({
             {sessionRef.label || session?.name || sessionRef.sessionId}: {active ? 'clipped view' : 'full session'}
           </span>
         </div>
-        <button type="button" onClick={onReset} disabled={!active || disabled}>
-          Full session
-        </button>
+        <div className="viz-time-window-actions">
+          {onInspectSignals && (
+            <button type="button" onClick={() => onInspectSignals(draftWindow)} disabled={disabled}>
+              <Activity size={13} />
+              Inspect signals
+            </button>
+          )}
+          <button type="button" onClick={onReset} disabled={!active || disabled}>
+            Full session
+          </button>
+        </div>
       </div>
       {disabled ? (
         <div className="viz-time-window-empty">No usable signal timebase is available for this session.</div>

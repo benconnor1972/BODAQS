@@ -1,7 +1,7 @@
 export type NoteStatus = 'missing' | 'draft' | 'edited'
 export type QcLevel = 'ok' | 'warning' | 'alert'
 export type SortDirection = 'asc' | 'desc'
-export type SessionInspectionTab = 'note' | 'qc' | 'gps' | 'metadata'
+export type SessionInspectionTab = 'note' | 'qc' | 'gps' | 'signals' | 'metadata'
 export type StudySetModalMode = 'view' | 'analyze'
 export type GpsQuality = 'absent' | 'limited' | 'usable' | 'invalid'
 export type GpsSourceKind = 'logger_sensor' | 'fit_enrichment' | 'imported_route' | 'unknown'
@@ -94,8 +94,23 @@ export type SessionRecord = {
   eventSchema: string
   sourceArchive: string
   signals: string[]
+  availableSignals?: SessionSignalSummary[]
   gps: Array<[number, number]>
   gpsSummary: SessionGpsSummary
+}
+
+export type SessionSignalSummary = {
+  signalId: string
+  column: string
+  displayName: string
+  end: string
+  domain: string
+  quantity: string
+  unit: string
+  processingRole: string
+  kind: string
+  sensor: string
+  origin: string
 }
 
 export type SessionNoteValue = string | number | boolean | string[] | null
@@ -365,6 +380,71 @@ export type SignalQueryResponse = {
   warnings: Array<Record<string, unknown>>
 }
 
+export type TimeseriesWindowSignalRequest = {
+  selector?: Record<string, unknown>
+  column?: string
+}
+
+export type TimeseriesWindowRequest = {
+  session: StudySessionRef
+  signals: TimeseriesWindowSignalRequest[]
+  window?: {
+    startS?: number | null
+    endS?: number | null
+  }
+  resolution?: {
+    targetPoints?: number
+  }
+  includeEvents?: boolean
+  includeMarks?: boolean
+}
+
+export type TimeseriesWindowSignal = SessionSignalSummary & {
+  values: Array<number | null>
+}
+
+export type TimeseriesWindowEvent = {
+  eventId: string
+  eventType: string
+  displayName: string
+  startS: number | null
+  endS: number | null
+  peakTimeS: number | null
+  end: string
+}
+
+export type TimeseriesWindowMark = {
+  markId: string
+  timeS: number
+  displayName: string
+  column: string
+}
+
+export type TimeseriesWindowResponse = {
+  sessionRef: StudySessionRef
+  window: {
+    requestedStartS: number | null
+    requestedEndS: number | null
+    returnedStartS: number | null
+    returnedEndS: number | null
+  }
+  sampling: {
+    mode: string
+    sourcePoints: number
+    returnedPoints: number
+    targetPoints: number
+  }
+  time: {
+    column: string
+    unit: string
+    values: Array<number | null>
+  }
+  signals: TimeseriesWindowSignal[]
+  events: TimeseriesWindowEvent[]
+  marks: TimeseriesWindowMark[]
+  warnings: string[]
+}
+
 export type TableQueryRequest = {
   sessions: StudySessionRef[]
   eventTypes?: string[]
@@ -406,6 +486,7 @@ export type ColumnId =
 
 export type ModalState =
   | { kind: 'session'; tab: SessionInspectionTab; session: SessionRecord }
+  | { kind: 'signal-inspector'; session: SessionRecord; initialWindow?: { startS: number; endS: number } | null }
   | { kind: 'track'; track: TrackRecord }
   | { kind: 'analysis-launcher'; studySet: StudySet }
   | { kind: 'study-set'; studySet: StudySet; mode: StudySetModalMode }

@@ -867,6 +867,10 @@ function App() {
       setNoteEditorSession(session)
       return
     }
+    if (tab === 'signals') {
+      setModal({ kind: 'signal-inspector', session, initialWindow: null })
+      return
+    }
     setModal({ kind: 'session', session, tab })
   }
 
@@ -1908,6 +1912,9 @@ function App() {
           dataSource={activeDataSource}
           onClose={() => setModal(null)}
           onOpenAnalysis={openAnalysisView}
+          onOpenSignalInspector={(session, initialWindow = null) =>
+            setModal({ kind: 'signal-inspector', session, initialWindow })
+          }
         />
       )}
       {noteEditorSession && (

@@ -13,12 +13,15 @@ import type {
   SessionNoteRecord,
   SessionNoteValue,
   SessionRecord,
+  SessionSignalSummary,
   SignalQueryRequest,
   SignalQueryResponse,
   StudySet,
   TableQueryRequest,
   TableQueryResponse,
   TableQueryRow,
+  TimeseriesWindowRequest,
+  TimeseriesWindowResponse,
   TrackpointMatchQueryRecord,
   TrackpointMatchQueryRequest,
   TrackpointMatchQueryResult,
@@ -317,6 +320,77 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
     return cloneSessionNote(saved)
   }
 
+  async loadTimeseriesWindow(_libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse> {
+    const session =
+      this.sessions.find((candidate) => candidate.sessionKey === request.session.sessionKey) ?? this.sessions[0]
+    if (!session) {
+      throw new Error('No fixture sessions are available.')
+    }
+    const durationS = Math.max(1, session.gpsSummary.sessionDurationS || session.durationMin * 60 || 900)
+    const startS = clamp(request.window?.startS ?? 0, 0, durationS)
+    const endS = clamp(request.window?.endS ?? durationS, startS, durationS)
+    const targetPoints = Math.max(80, Math.min(2500, request.resolution?.targetPoints ?? 1200))
+    const count = Math.max(2, Math.min(targetPoints, Math.ceil((endS - startS) * 8)))
+    const timeValues = Array.from({ length: count }, (_value, index) =>
+      startS + ((endS - startS) * index) / Math.max(count - 1, 1),
+    )
+    const availableSignals = signalSummariesForSession(session)
+    const signals = request.signals
+      .map((signal, index) => resolveFixtureWindowSignal(signal, availableSignals, index))
+      .filter((signal): signal is SessionSignalSummary => Boolean(signal))
+      .map((signal) => ({
+        ...signal,
+        values: fixtureSignalValues(session.sessionKey, signal.column, count),
+      }))
+    const events = request.includeEvents
+      ? fixtureEventRows(sessionToStudyRef(session))
+          .map((row) => {
+            const start = numberField(row.fields, 'start_time_s', numberField(row.fields, 'start_s', numberField(row.fields, 'trigger_time_s', 0)))
+            const end = numberField(row.fields, 'end_time_s', numberField(row.fields, 'end_s', start))
+            const peak = numberField(row.fields, 'peak_time_s', numberField(row.fields, 'trigger_time_s', start))
+            return {
+              eventId: String(row.fields.event_id ?? `${row.eventType}-${row.rowIndex}`),
+              eventType: row.eventType,
+              displayName: row.eventType.replace(/_/g, ' '),
+              startS: start,
+              endS: end,
+              peakTimeS: peak,
+              end: row.signalRole === 'unknown' ? '' : row.signalRole,
+            }
+          })
+          .filter((event) => {
+            const eventStart = event.startS ?? event.peakTimeS ?? 0
+            const eventEnd = event.endS ?? eventStart
+            return eventEnd >= startS && eventStart <= endS
+          })
+      : []
+    const marks = request.includeMarks ? fixtureMarksForSession(session.sessionKey, startS, endS, durationS) : []
+    return {
+      sessionRef: sessionToStudyRef(session),
+      window: {
+        requestedStartS: startS,
+        requestedEndS: endS,
+        returnedStartS: timeValues[0] ?? null,
+        returnedEndS: timeValues[timeValues.length - 1] ?? null,
+      },
+      sampling: {
+        mode: 'fixture_raw',
+        sourcePoints: count,
+        returnedPoints: count,
+        targetPoints,
+      },
+      time: {
+        column: 'time_s',
+        unit: 's',
+        values: timeValues,
+      },
+      signals,
+      events,
+      marks,
+      warnings: [],
+    }
+  }
+
   async querySignals(_libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse> {
     return {
       sessions: request.sessions.map((sessionRef) => ({
@@ -390,6 +464,132 @@ function fixtureSignalColumn(signal: { role: string; selector?: Record<string, u
   return `${signal.role || 'signal'}_fixture`
 }
 
+function resolveFixtureWindowSignal(
+  request: { selector?: Record<string, unknown>; column?: string },
+  availableSignals: SessionSignalSummary[],
+  index: number,
+) {
+  if (request.column) {
+    return availableSignals.find((signal) => signal.column === request.column) ?? {
+      signalId: `fixture-window-signal-${index}`,
+      column: request.column,
+      displayName: request.column.replace(/_/g, ' '),
+      end: request.column.startsWith('rear') ? 'rear' : request.column.startsWith('front') ? 'front' : '',
+      domain: 'suspension',
+      quantity: request.column.includes('velocity') ? 'vel' : 'disp_norm',
+      unit: request.column.includes('velocity') ? 'mm/s' : '1',
+      processingRole: 'primary_analysis',
+      kind: 'signal',
+      sensor: '',
+      origin: 'fixture',
+    }
+  }
+  const selector = request.selector ?? {}
+  const end = normalizedString(selector.end)
+  const quantity = normalizedString(selector.quantity)
+  const kind = normalizedString(selector.kind)
+  return (
+    availableSignals.find((signal) => {
+      if (kind && signal.kind !== kind) {
+        return false
+      }
+      if (end && signal.end !== end) {
+        return false
+      }
+      if (quantity && signal.quantity !== quantity) {
+        return false
+      }
+      return true
+    }) ?? availableSignals[index]
+  )
+}
+
+function signalSummariesForSession(session: SessionRecord): SessionSignalSummary[] {
+  if (session.availableSignals?.length) {
+    return session.availableSignals.map((signal) => ({ ...signal }))
+  }
+  const baseSignals: SessionSignalSummary[] = [
+    {
+      signalId: `${session.sessionKey}-front-displacement`,
+      column: 'front_wheel_displacement_norm',
+      displayName: 'Front wheel displacement',
+      end: 'front',
+      domain: 'suspension',
+      quantity: 'disp_norm',
+      unit: '1',
+      processingRole: 'primary_analysis',
+      kind: 'signal',
+      sensor: 'fixture',
+      origin: 'fixture',
+    },
+    {
+      signalId: `${session.sessionKey}-rear-displacement`,
+      column: 'rear_wheel_displacement_norm',
+      displayName: 'Rear wheel displacement',
+      end: 'rear',
+      domain: 'suspension',
+      quantity: 'disp_norm',
+      unit: '1',
+      processingRole: 'primary_analysis',
+      kind: 'signal',
+      sensor: 'fixture',
+      origin: 'fixture',
+    },
+    {
+      signalId: `${session.sessionKey}-front-velocity`,
+      column: 'front_wheel_velocity_mm_s',
+      displayName: 'Front wheel velocity',
+      end: 'front',
+      domain: 'suspension',
+      quantity: 'vel',
+      unit: 'mm/s',
+      processingRole: 'primary_analysis',
+      kind: 'signal',
+      sensor: 'fixture',
+      origin: 'fixture',
+    },
+    {
+      signalId: `${session.sessionKey}-rear-velocity`,
+      column: 'rear_wheel_velocity_mm_s',
+      displayName: 'Rear wheel velocity',
+      end: 'rear',
+      domain: 'suspension',
+      quantity: 'vel',
+      unit: 'mm/s',
+      processingRole: 'primary_analysis',
+      kind: 'signal',
+      sensor: 'fixture',
+      origin: 'fixture',
+    },
+  ]
+  const existingColumns = new Set(baseSignals.map((signal) => signal.column))
+  const catalogSignals = session.signals
+    .filter((column) => !existingColumns.has(column))
+    .map((column, index): SessionSignalSummary => ({
+      signalId: `${session.sessionKey}-catalog-${index}`,
+      column,
+      displayName: column.replace(/_/g, ' '),
+      end: column.startsWith('rear') ? 'rear' : column.startsWith('front') ? 'front' : '',
+      domain: 'fixture',
+      quantity: column.includes('velocity') ? 'vel' : 'signal',
+      unit: column.includes('velocity') ? 'mm/s' : '',
+      processingRole: 'supporting',
+      kind: 'signal',
+      sensor: 'fixture',
+      origin: 'fixture',
+    }))
+  return [...baseSignals, ...catalogSignals]
+}
+
+function normalizedString(value: unknown) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function numberField(fields: Record<string, unknown>, key: string, fallback: number) {
+  const value = fields[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
 function fixtureSignalValues(sessionKey: string, role: string, count: number): number[] {
   if (role === 'inactive_mask_qc' || role === 'inactive_mask') {
     return fixtureInactiveMask(sessionKey, count)
@@ -448,6 +648,21 @@ function fixtureEventRows(sessionRef: { libraryId: string; sessionKey: string; r
     }
   }
   return rows
+}
+
+function fixtureMarksForSession(sessionKey: string, startS: number, endS: number, durationS: number) {
+  const seed = seededNumber(`${sessionKey}:marks`)
+  const markTimes = [0.18, 0.36, 0.57, 0.74, 0.88].map((position, index) =>
+    clamp((position + (seed - 0.5) * 0.035 + index * 0.002) * durationS, 0, durationS),
+  )
+  return markTimes
+    .filter((timeS) => timeS >= startS && timeS <= endS)
+    .map((timeS, index) => ({
+      markId: `${sessionKey}-mark-${index + 1}`,
+      timeS,
+      displayName: `Mark ${index + 1}`,
+      column: 'mark',
+    }))
 }
 
 function fixtureMetricRows(sessionRef: { libraryId: string; sessionKey: string; runId: string; sessionId: string; label: string }): TableQueryRow[] {
@@ -569,6 +784,7 @@ function cloneSession(session: SessionRecord): SessionRecord {
     ...session,
     qcAlerts: [...session.qcAlerts],
     signals: [...session.signals],
+    availableSignals: session.availableSignals?.map((signal) => ({ ...signal })),
     gps: session.gps.map(([x, y]) => [x, y]),
     gpsSummary: cloneGpsSummary(session.gpsSummary),
   }

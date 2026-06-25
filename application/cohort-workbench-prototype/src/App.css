@@ -1973,6 +1973,10 @@ button {
   width: min(900px, calc(100vw - 32px));
 }
 
+.modal.signal-inspector-modal {
+  width: min(1540px, calc(100vw - 18px));
+}
+
 .modal.track-manager-modal {
   width: min(1040px, calc(100vw - 28px));
 }
@@ -3248,7 +3252,18 @@ button {
   font-size: var(--text-caption);
 }
 
+.viz-time-window-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 .viz-time-window-header button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-height: var(--control-height-md);
   padding: 4px 9px;
   border: var(--border-strong);
@@ -3336,6 +3351,537 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-5);
+}
+
+.signal-inspector {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.signal-inspector-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: 8px 10px;
+  border: var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.signal-inspector-window-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.signal-inspector-window-controls label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+}
+
+.signal-inspector-window-controls input {
+  width: 92px;
+  min-height: var(--control-height-md);
+  padding: 4px 7px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--ink);
+  font-size: var(--text-body);
+}
+
+.signal-inspector-window-controls button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: var(--control-height-md);
+  padding: 4px 9px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--green);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-window-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.signal-inspector-status {
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-inspector-layout {
+  display: grid;
+  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.signal-inspector-sidebar {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.signal-inspector-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: 10px;
+  border: var(--border-subtle);
+  background: var(--surface);
+}
+
+.signal-inspector-card h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-section-title);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.signal-inspector-card-header small {
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+}
+
+.signal-inspector-card p,
+.signal-inspector-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body);
+}
+
+.signal-inspector-message {
+  padding: 10px;
+  border: var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.signal-inspector-message.warning {
+  border-color: #d5b277;
+  background: #fff8e8;
+  color: #7c5522;
+}
+
+.signal-inspector-save-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.signal-inspector-save-row input {
+  min-width: 0;
+  min-height: var(--control-height-md);
+  padding: 4px 7px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--ink);
+  font-size: var(--text-body);
+}
+
+.signal-inspector-save-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: var(--control-height-md);
+  padding: 4px 9px;
+  border: var(--border-strong);
+  background: var(--teal);
+  color: white;
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-save-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.signal-inspector-bookmark-list {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 190px;
+  overflow: auto;
+}
+
+.signal-inspector-bookmark-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.signal-inspector-bookmark-list > div.active {
+  border-color: var(--green);
+  background: var(--teal-soft);
+}
+
+.signal-inspector-bookmark-list button {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.signal-inspector-bookmark-list > div > button:first-child {
+  display: grid;
+  gap: 2px;
+  padding: 6px 7px;
+  text-align: left;
+}
+
+.signal-inspector-bookmark-list strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-inspector-bookmark-list small {
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-inspector-delete-bookmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  color: var(--red) !important;
+}
+
+.signal-inspector-check-list {
+  display: grid;
+  gap: 7px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.signal-inspector-check-list label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  padding: 6px;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+  cursor: pointer;
+}
+
+.signal-inspector-check-list input {
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  accent-color: var(--teal);
+}
+
+.signal-inspector-check-list span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.signal-inspector-check-list strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-inspector-check-list small {
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-check-list i,
+.signal-inspector-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-pill);
+}
+
+.signal-inspector-mark-swatch {
+  background: var(--ink);
+  border-radius: 2px !important;
+}
+
+.signal-inspector-main {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.signal-inspector-chart-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: 10px;
+  border: var(--border-subtle);
+  background: white;
+}
+
+.signal-inspector-chart-hint {
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-chart-frame {
+  position: relative;
+  min-width: 0;
+}
+
+.signal-inspector-chart {
+  width: 100%;
+  min-height: 360px;
+  border: var(--border-subtle);
+  background: var(--surface);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.signal-inspector-chart.selecting {
+  cursor: ew-resize;
+}
+
+.signal-inspector-axis,
+.signal-inspector-tick {
+  stroke: var(--axis);
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-grid-line {
+  stroke: rgba(79, 116, 119, 0.15);
+  stroke-width: 0.65;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-axis-label,
+.signal-inspector-axis-title {
+  fill: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-line {
+  fill: none;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-opacity: 0.86;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-event-marker {
+  cursor: pointer;
+  stroke-width: 2.4;
+  stroke-dasharray: 4 3;
+  stroke-opacity: 0.44;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-event-marker:hover,
+.signal-inspector-event-marker.selected {
+  stroke-dasharray: none;
+  stroke-opacity: 0.92;
+}
+
+.signal-inspector-event-marker.selected {
+  stroke-width: 3.2;
+}
+
+.signal-inspector-mark-marker {
+  cursor: crosshair;
+}
+
+.signal-inspector-mark-guide {
+  stroke: var(--ink);
+  stroke-width: 0.7;
+  stroke-dasharray: 2 5;
+  stroke-opacity: 0.24;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-mark-cross {
+  stroke: var(--ink);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-opacity: 0.72;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-selection {
+  fill: var(--teal-soft);
+  fill-opacity: 0.58;
+  stroke: var(--teal);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-hover-line {
+  stroke: var(--ink);
+  stroke-width: 0.75;
+  stroke-dasharray: 3 3;
+  stroke-opacity: 0.42;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-hover-point {
+  fill: white;
+  stroke: var(--ink);
+  stroke-width: 0.9;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-interaction-layer {
+  fill: transparent;
+  cursor: crosshair;
+}
+
+.signal-inspector-readout {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+  max-width: min(560px, calc(100% - 24px));
+  padding: 6px 8px;
+  border: var(--border-subtle);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow-soft);
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.signal-inspector-readout strong {
+  color: var(--ink);
+  font-weight: var(--weight-bold);
+}
+
+.signal-inspector-readout span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.signal-inspector-readout i {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+}
+
+.signal-inspector-event-detail {
+  display: grid;
+  gap: var(--space-3);
+  padding: 8px 10px;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-event-detail.empty {
+  color: var(--muted);
+}
+
+.signal-inspector-event-detail > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.signal-inspector-event-detail strong {
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-event-detail dl {
+  display: grid;
+  grid-template-columns: repeat(4, auto minmax(0, 1fr));
+  gap: 3px 8px;
+  margin: 0;
+}
+
+.signal-inspector-event-detail dt {
+  color: var(--muted);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+}
+
+.signal-inspector-event-detail dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-inspector-event-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.signal-inspector-event-actions button {
+  min-height: var(--control-height-md);
+  padding: 4px 9px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--green);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .viz-scope-main strong,

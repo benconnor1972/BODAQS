@@ -11,6 +11,8 @@ import type {
   StudySet,
   TableQueryRequest,
   TableQueryResponse,
+  TimeseriesWindowRequest,
+  TimeseriesWindowResponse,
   TrackpointMatchQueryRecord,
   TrackpointMatchQueryRequest,
   TrackpointMatchQueryResults,
@@ -45,6 +47,7 @@ export interface LibraryDataSource {
   loadSessionGpsPoints?(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
+  loadTimeseriesWindow(libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse>
   querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse>
   queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
   queryMetrics(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>

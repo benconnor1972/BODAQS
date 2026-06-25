@@ -22,6 +22,7 @@ import type {
   SessionNoteRecord,
   SessionNoteValue,
   SessionRecord,
+  SessionSignalSummary,
   SessionTrackMatchRecord,
   SignalQueryRequest,
   SignalQueryResponse,
@@ -33,6 +34,11 @@ import type {
   TableQueryRequest,
   TableQueryResponse,
   TableQueryRow,
+  TimeseriesWindowEvent,
+  TimeseriesWindowMark,
+  TimeseriesWindowRequest,
+  TimeseriesWindowResponse,
+  TimeseriesWindowSignal,
   TrackDirection,
   TrackMatchStatus,
   TrackpointMatchMode,
@@ -316,6 +322,17 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapSessionNote(response, note.sessionRef)
   }
 
+  async loadTimeseriesWindow(libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/timeseries/window`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiTimeseriesWindowRequest(request)),
+      },
+    )
+    return mapTimeseriesWindowResponse(response)
+  }
+
   async querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse> {
     const response = await requestJson<ApiObject>(
       `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/signals/query`,
@@ -443,8 +460,25 @@ function mapSession(row: ApiObject): SessionRecord {
     eventSchema: textValue(eventSchema.display_name, textValue(eventSchema.schema_id)),
     sourceArchive: textValue(provenance.archive_name),
     signals: availableSignals.map((signal) => textValue(signal.display_name, textValue(signal.column))),
+    availableSignals: availableSignals.map(mapSessionSignalSummary),
     gps: [],
     gpsSummary: mapGpsSummary(gpsSummary),
+  }
+}
+
+function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
+  return {
+    signalId: textValue(value.signal_id, textValue(value.column)),
+    column: textValue(value.column),
+    displayName: textValue(value.display_name, textValue(value.column)),
+    end: textValue(value.end),
+    domain: textValue(value.domain),
+    quantity: textValue(value.quantity),
+    unit: textValue(value.unit),
+    processingRole: textValue(value.processing_role),
+    kind: textValue(value.kind),
+    sensor: textValue(value.sensor),
+    origin: textValue(value.origin),
   }
 }
 
@@ -727,6 +761,69 @@ function mapSignalQuerySignal(value: ApiObject): SignalQuerySignal {
     unit: textValue(value.unit),
     processingRole: textValue(value.processing_role),
     values: arrayValue(value.values).map(nullableNumberValue),
+  }
+}
+
+function mapTimeseriesWindowResponse(value: ApiObject): TimeseriesWindowResponse {
+  const sampling = objectValue(value.sampling)
+  const window = objectValue(value.window)
+  const time = objectValue(value.time)
+  const timeUnit = textValue(time.unit, 's')
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    window: {
+      requestedStartS: nullableNumberValue(window.requested_start_s),
+      requestedEndS: nullableNumberValue(window.requested_end_s),
+      returnedStartS: nullableNumberValue(window.returned_start_s),
+      returnedEndS: nullableNumberValue(window.returned_end_s),
+    },
+    sampling: {
+      mode: textValue(sampling.mode),
+      sourcePoints: numberValue(sampling.source_points),
+      returnedPoints: numberValue(sampling.returned_points),
+      targetPoints: numberValue(sampling.target_points),
+    },
+    time: {
+      column: textValue(time.column),
+      unit: 's',
+      values: normalizeTimeValues(arrayValue(time.values).map(nullableNumberValue), timeUnit),
+    },
+    signals: arrayValue(value.signals).filter(isObject).map(mapTimeseriesWindowSignal),
+    events: arrayValue(value.events).filter(isObject).map(mapTimeseriesWindowEvent),
+    marks: arrayValue(value.marks)
+      .filter(isObject)
+      .map((mark) => mapTimeseriesWindowMark(mark, timeUnit)),
+    warnings: arrayValue(value.warnings).map((warning) => textValue(warning)).filter(Boolean),
+  }
+}
+
+function mapTimeseriesWindowSignal(value: ApiObject): TimeseriesWindowSignal {
+  return {
+    ...mapSessionSignalSummary(value),
+    values: arrayValue(value.values).map(nullableNumberValue),
+  }
+}
+
+function mapTimeseriesWindowEvent(value: ApiObject): TimeseriesWindowEvent {
+  return {
+    eventId: textValue(value.event_id, textValue(value.id)),
+    eventType: textValue(value.event_type, textValue(value.schema_id)),
+    displayName: textValue(value.display_name, textValue(value.event_type, textValue(value.schema_id))),
+    startS: nullableNumberValue(value.start_s),
+    endS: nullableNumberValue(value.end_s),
+    peakTimeS: nullableNumberValue(value.peak_time_s),
+    end: textValue(value.end),
+  }
+}
+
+function mapTimeseriesWindowMark(value: ApiObject, timeUnit: string): TimeseriesWindowMark {
+  const factor = timeUnitToSecondsFactor(timeUnit)
+  const rawTimeS = nullableNumberValue(value.time_s)
+  return {
+    markId: textValue(value.mark_id, textValue(value.id)),
+    timeS: rawTimeS !== null ? rawTimeS * factor : Number.NaN,
+    displayName: textValue(value.display_name, 'Mark'),
+    column: textValue(value.column),
   }
 }
 
@@ -1070,6 +1167,33 @@ function toApiSignalQueryRequest(request: SignalQueryRequest) {
       ...(signal.column ? { column: signal.column } : {}),
       ...(signal.selector ? { selector: signal.selector } : {}),
     })),
+  }
+}
+
+function toApiTimeseriesWindowRequest(request: TimeseriesWindowRequest) {
+  return {
+    session: toApiStudySessionRef(request.session),
+    signals: request.signals.map((signal) => ({
+      ...(signal.column ? { column: signal.column } : {}),
+      ...(signal.selector ? { selector: signal.selector } : {}),
+    })),
+    ...(request.window
+      ? {
+          window: {
+            start_s: request.window.startS ?? null,
+            end_s: request.window.endS ?? null,
+          },
+        }
+      : {}),
+    ...(request.resolution?.targetPoints
+      ? {
+          resolution: {
+            target_points: request.resolution.targetPoints,
+          },
+        }
+      : {}),
+    include_events: Boolean(request.includeEvents),
+    include_marks: Boolean(request.includeMarks),
   }
 }
 

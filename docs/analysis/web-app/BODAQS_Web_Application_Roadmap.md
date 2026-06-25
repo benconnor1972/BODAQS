@@ -636,6 +636,9 @@ The following decisions will materially affect implementation detail:
 - exact min/max downsampling behavior for multiple signals
 - how much event detail should be included in first time-series overlays
 - what browser charting library George should use for dense time-series data
+- whether the Signal Inspector should migrate from first-cut SVG/D3 rendering
+  to `uPlot` for faster cursor readouts, zoom/pan, range selection, and
+  large-window navigation
 - whether Study Set files need additional migration/versioning helpers before wider use
 - when to add track CRUD and map support
 

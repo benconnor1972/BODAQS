@@ -813,13 +813,18 @@ Example request:
   "resolution": {
     "target_points": 2000
   },
-  "include_events": true
+  "include_events": true,
+  "include_marks": true
 }
 ```
 
 Signals may be requested by semantic selector or concrete column. UI flows should
 prefer semantic selectors. Concrete columns are useful for data-explorer and
 debugging views.
+
+`include_events` controls event-table overlays. `include_marks` controls
+logger/sample mark overlays from the processed session dataframe, normally the
+truthy/non-zero values in the `mark` column.
 
 The endpoint serves one session per request in v1. The path `library_id` must
 match `session.library_id` when that request field is present. Comparison views
@@ -890,6 +895,14 @@ Example response:
       "end_s": 12.56,
       "peak_time_s": 12.42,
       "end": "rear"
+    }
+  ],
+  "marks": [
+    {
+      "mark_id": "mark-1",
+      "time_s": 14.72,
+      "display_name": "Mark 1",
+      "column": "mark"
     }
   ],
   "warnings": []
