@@ -445,6 +445,29 @@ export type TimeseriesWindowResponse = {
   warnings: string[]
 }
 
+export type SessionBookmarkRecord = {
+  id: string
+  revision: number
+  title: string
+  description: string
+  sessionRef: StudySessionRef
+  window: {
+    startS: number
+    endS: number
+  }
+  viewState: {
+    signalInspector?: {
+      signalColumns: string[]
+      showMarks: boolean
+    }
+    [key: string]: unknown
+  }
+  tags: string[]
+  private: boolean
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
 export type TableQueryRequest = {
   sessions: StudySessionRef[]
   eventTypes?: string[]

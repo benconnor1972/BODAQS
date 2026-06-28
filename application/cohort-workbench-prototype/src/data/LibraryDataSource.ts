@@ -3,6 +3,7 @@ import type {
   AnalysisViewRecord,
   LibraryRecord,
   SessionGpsPointSet,
+  SessionBookmarkRecord,
   SessionNoteRecord,
   SessionRecord,
   SessionTrackMatchRecord,
@@ -47,6 +48,9 @@ export interface LibraryDataSource {
   loadSessionGpsPoints?(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
+  listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]>
+  saveSessionBookmark(bookmark: SessionBookmarkRecord): Promise<SessionBookmarkRecord>
+  deleteSessionBookmark(bookmarkId: string): Promise<void>
   loadTimeseriesWindow(libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse>
   querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse>
   queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>

@@ -56,6 +56,17 @@ layout while making the wording easy to review and refine.
 | Selected-sector distribution note | Overall charts pool only the selected sectors, not the whole session. Sector matching uses the available track-match intervals for each active session or group. | Explains sector distribution pooling. |
 | Selected-sector metric/event notes | Dynamic: "`Metric` rows are assigned to selected sectors by primary trigger time." or "`Event` rows are assigned to selected sectors by primary trigger time." | Explains sector row assignment. |
 
+## Signal Inspector
+
+| UI location | Helper text | Used for |
+| --- | --- | --- |
+| Bookmarks card | Save bookmarks to return to windows or exact points while inspecting this session. | Explains session-tied window and point bookmark creation. |
+| GPS card | Shows the session GPS path and highlights the portion covered by the current signal window when time-aligned GPS points are available. | Explains the read-only GPS context panel and current-window overlay. |
+| Signals card | Select which available time-series signals are displayed in the inspector. | Explains signal visibility controls. |
+| Events card | Select event overlays to show. | Explains event overlay controls. |
+| Logger marks row | Shows logger/sample marks from the processed session dataframe when available. | Explains mark overlay toggle. |
+| Selected event detail | Click an event marker to inspect its timing. Dense event groups remain hidden until selected in the Events list. | Explains event selection details. |
+
 ## Filter Field Help Text
 
 | Field | Helper text | Used for |

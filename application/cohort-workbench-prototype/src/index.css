@@ -62,6 +62,10 @@
   --control-height-md: 30px;
   --control-height-lg: 34px;
 
+  --signal-inspector-plot-min-width: 320px;
+  --signal-inspector-plot-max-width: 1180px;
+  --signal-inspector-plot-viewport-reserve: 532px;
+
   font-family: var(--font-ui);
   font-size: 14px;
   line-height: 1.3;

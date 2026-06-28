@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .analysis_views import evaluate_analysis_view_adequacy, list_analysis_views
+from .bookmarks import create_bookmark, delete_bookmark, list_bookmarks, load_bookmark, update_bookmark
 from .catalog import (
     build_session_catalog,
     discover_libraries,
@@ -404,6 +405,43 @@ class LibraryAdapter:
 
     def delete_session_filter(self, filter_id: str) -> dict[str, Any]:
         return delete_session_filter(self.libraries_root, filter_id)
+
+    def list_bookmarks(
+        self,
+        *,
+        library_id: str | None = None,
+        session_key: str | None = None,
+        session_ref_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return list_bookmarks(
+            self.libraries_root,
+            library_id=library_id,
+            session_key=session_key,
+            session_ref_id=session_ref_id,
+        )
+
+    def load_bookmark(self, bookmark_id: str) -> dict[str, Any]:
+        return load_bookmark(self.libraries_root, bookmark_id)
+
+    def create_bookmark(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return create_bookmark(self.libraries_root, payload)
+
+    def update_bookmark(
+        self,
+        bookmark_id: str,
+        *,
+        expected_revision: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return update_bookmark(
+            self.libraries_root,
+            bookmark_id,
+            expected_revision=expected_revision,
+            payload=payload,
+        )
+
+    def delete_bookmark(self, bookmark_id: str) -> dict[str, Any]:
+        return delete_bookmark(self.libraries_root, bookmark_id)
 
     def list_analysis_views(self) -> list[dict[str, Any]]:
         return list_analysis_views()

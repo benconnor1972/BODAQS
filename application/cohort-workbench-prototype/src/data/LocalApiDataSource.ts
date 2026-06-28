@@ -17,6 +17,7 @@ import type {
   QcLevel,
   SessionGpsPointSet,
   SessionGpsSummary,
+  SessionBookmarkRecord,
   SessionNoteFieldDef,
   SessionNoteFieldType,
   SessionNoteRecord,
@@ -320,6 +321,39 @@ export class LocalApiDataSource implements LibraryDataSource {
       },
     )
     return mapSessionNote(response, note.sessionRef)
+  }
+
+  async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
+    const params = new URLSearchParams({
+      library_id: session.libraryId,
+      session_key: session.sessionKey,
+    })
+    const response = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/bookmarks?${params}`)
+    return response.map(mapSessionBookmark)
+  }
+
+  async saveSessionBookmark(bookmark: SessionBookmarkRecord): Promise<SessionBookmarkRecord> {
+    const payload = toApiSessionBookmark(bookmark)
+    const saved =
+      bookmark.id && bookmark.revision > 0
+        ? await requestJson<ApiObject>(`${this.baseUrl}/api/v1/bookmarks/${encodeURIComponent(bookmark.id)}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              expected_revision: bookmark.revision,
+              bookmark: payload,
+            }),
+          })
+        : await requestJson<ApiObject>(`${this.baseUrl}/api/v1/bookmarks`, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          })
+    return mapSessionBookmark(saved)
+  }
+
+  async deleteSessionBookmark(bookmarkId: string): Promise<void> {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/bookmarks/${encodeURIComponent(bookmarkId)}`, {
+      method: 'DELETE',
+    })
   }
 
   async loadTimeseriesWindow(libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse> {
@@ -715,6 +749,36 @@ function mapSessionNoteField(value: ApiObject): SessionNoteFieldDef {
     unit: textValue(value.unit),
     helpText: textValue(value.help_text),
     enumOptions: arrayValue(value.enum_options).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
+function mapSessionBookmark(value: ApiObject): SessionBookmarkRecord {
+  const window = objectValue(value.window)
+  const provenance = objectValue(value.provenance)
+  const rawViewState = objectValue(value.view_state)
+  const rawInspectorState = objectValue(rawViewState.bodaqs_web_signal_inspector_v1)
+  const signalColumns = arrayValue(rawInspectorState.signal_columns).map((item) => textValue(item)).filter(Boolean)
+  return {
+    id: textValue(value.bookmark_id),
+    revision: numberValue(value.revision),
+    title: textValue(value.display_name, textValue(value.title, 'Bookmark')),
+    description: textValue(value.description),
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    window: {
+      startS: numberValue(window.start_s),
+      endS: numberValue(window.end_s),
+    },
+    viewState: {
+      ...rawViewState,
+      signalInspector: {
+        signalColumns,
+        showMarks: rawInspectorState.show_marks === false ? false : true,
+      },
+    },
+    tags: arrayValue(value.tags).map((item) => textValue(item)).filter(Boolean),
+    private: value.private === false ? false : true,
+    createdAtUtc: textValue(provenance.created_at),
+    updatedAtUtc: textValue(provenance.updated_at, textValue(provenance.created_at)),
   }
 }
 
@@ -1220,6 +1284,30 @@ function toApiSessionNote(note: SessionNoteRecord) {
     created_at_utc: note.createdAtUtc,
     updated_at_utc: note.updatedAtUtc,
     draft: note.draft,
+  }
+}
+
+function toApiSessionBookmark(bookmark: SessionBookmarkRecord) {
+  const existingViewState = { ...bookmark.viewState }
+  delete existingViewState.signalInspector
+  return {
+    ...(bookmark.id ? { bookmark_id: bookmark.id } : {}),
+    display_name: bookmark.title.trim() || 'Bookmark',
+    description: bookmark.description,
+    session: toApiStudySessionRef(bookmark.sessionRef),
+    window: {
+      start_s: bookmark.window.startS,
+      end_s: bookmark.window.endS,
+    },
+    view_state: {
+      ...existingViewState,
+      bodaqs_web_signal_inspector_v1: {
+        signal_columns: bookmark.viewState.signalInspector?.signalColumns ?? [],
+        show_marks: bookmark.viewState.signalInspector?.showMarks ?? true,
+      },
+    },
+    tags: bookmark.tags,
+    private: bookmark.private,
   }
 }
 

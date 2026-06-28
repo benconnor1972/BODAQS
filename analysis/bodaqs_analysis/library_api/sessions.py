@@ -17,6 +17,7 @@ from .errors import (
     SessionNotFoundError,
 )
 from .ids import make_session_key, make_session_ref_id
+from .bookmarks import find_bookmark_session_references, remove_session_from_bookmarks
 from .study_sets import find_study_set_session_references, remove_session_from_study_sets
 
 
@@ -49,10 +50,13 @@ def delete_session(
             },
         )
 
-    references = find_study_set_session_references(libraries_root, session_ref_id)
+    references = [
+        *find_study_set_session_references(libraries_root, session_ref_id),
+        *find_bookmark_session_references(libraries_root, session_ref_id),
+    ]
     if references and not cleanup_memberships:
         raise SessionDeleteConflictError(
-            "Session is still referenced by saved Study Sets.",
+            "Session is still referenced by saved library objects.",
             details={
                 "library_id": normalized_library_id,
                 "run_id": normalized_run_id,
@@ -78,9 +82,11 @@ def delete_session(
                 "exception_message": str(exc),
                 "cleanup_memberships": bool(cleanup_memberships),
                 "updated_study_sets": [],
+                "removed_bookmarks": [],
             },
         ) from exc
     updated_study_sets = remove_session_from_study_sets(libraries_root, session_ref_id) if cleanup_memberships else []
+    removed_bookmarks = remove_session_from_bookmarks(libraries_root, session_ref_id) if cleanup_memberships else []
     return {
         "deleted": True,
         "library_id": normalized_library_id,
@@ -92,6 +98,7 @@ def delete_session(
         "cleanup_memberships": bool(cleanup_memberships),
         "blocking_references": references if references and not cleanup_memberships else [],
         "updated_study_sets": updated_study_sets,
+        "removed_bookmarks": removed_bookmarks,
     }
 
 

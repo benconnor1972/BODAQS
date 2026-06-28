@@ -1974,7 +1974,13 @@ button {
 }
 
 .modal.signal-inspector-modal {
-  width: min(1540px, calc(100vw - 18px));
+  width: min(1540px, calc(100vw - 36px));
+  max-height: calc(100vh - 36px);
+  overflow: hidden;
+}
+
+.modal.signal-inspector-modal .modal-content {
+  overflow: hidden;
 }
 
 .modal.track-manager-modal {
@@ -3358,78 +3364,93 @@ button {
   gap: var(--space-4);
 }
 
-.signal-inspector-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5);
-  padding: 8px 10px;
-  border: var(--border-subtle);
-  background: var(--surface-subtle);
-}
-
-.signal-inspector-window-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: var(--space-3);
-}
-
-.signal-inspector-window-controls label {
-  display: grid;
-  gap: 3px;
-  color: var(--muted);
-  font-size: var(--text-label);
-  font-weight: var(--weight-bold);
-  text-transform: uppercase;
-}
-
-.signal-inspector-window-controls input {
-  width: 92px;
-  min-height: var(--control-height-md);
-  padding: 4px 7px;
-  border: var(--border-strong);
-  background: white;
-  color: var(--ink);
-  font-size: var(--text-body);
-}
-
-.signal-inspector-window-controls button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: var(--control-height-md);
-  padding: 4px 9px;
-  border: var(--border-strong);
-  background: white;
-  color: var(--green);
-  cursor: pointer;
-  font-size: var(--text-caption);
-  font-weight: var(--weight-semibold);
-}
-
-.signal-inspector-window-controls button:disabled {
-  cursor: not-allowed;
-  opacity: 0.46;
-}
-
-.signal-inspector-status {
-  color: var(--muted);
-  font-size: var(--text-caption);
-  font-weight: var(--weight-bold);
-  font-variant-numeric: tabular-nums;
-}
-
 .signal-inspector-layout {
   display: grid;
-  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 364px) minmax(210px, 260px) minmax(0, 1fr);
   gap: var(--space-4);
-  align-items: start;
+  align-items: stretch;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.signal-inspector-layout.controls-collapsed {
+  grid-template-columns: minmax(300px, 364px) 32px minmax(0, 1fr);
+}
+
+.signal-inspector-layout.sidebar-collapsed {
+  grid-template-columns: 32px minmax(210px, 260px) minmax(0, 1fr);
+}
+
+.signal-inspector-layout.sidebar-collapsed.controls-collapsed {
+  grid-template-columns: 32px 32px minmax(0, 1fr);
 }
 
 .signal-inspector-sidebar {
   display: grid;
   gap: var(--space-4);
+  align-self: start;
+  min-width: 0;
+}
+
+.signal-inspector-control-panel {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.signal-inspector-control-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--control-height-lg);
+  padding: 0 6px 0 10px;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-section-title);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-control-panel-header button,
+.signal-inspector-control-rail,
+.signal-inspector-side-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--green);
+  cursor: pointer;
+}
+
+.signal-inspector-control-panel-header button {
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+}
+
+.signal-inspector-control-rail,
+.signal-inspector-side-rail {
+  align-self: stretch;
+  gap: var(--space-2);
+  height: 100%;
+  min-height: 660px;
+  padding: var(--space-3) 0;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  writing-mode: vertical-rl;
+}
+
+.signal-inspector-control-rail svg,
+.signal-inspector-side-rail svg {
+  writing-mode: horizontal-tb;
+}
+
+.signal-inspector-control-panel-header button:hover,
+.signal-inspector-control-rail:hover,
+.signal-inspector-side-rail:hover {
+  border-color: var(--green);
+  background: var(--teal-soft);
 }
 
 .signal-inspector-card {
@@ -3441,6 +3462,9 @@ button {
 }
 
 .signal-inspector-card h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin: 0;
   color: var(--ink);
   font-size: var(--text-section-title);
@@ -3452,6 +3476,29 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+}
+
+.signal-inspector-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.signal-inspector-card-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--green);
+  cursor: pointer;
+}
+
+.signal-inspector-card-actions button:hover {
+  border-color: var(--green);
+  background: var(--teal-soft);
 }
 
 .signal-inspector-card-header small {
@@ -3479,13 +3526,15 @@ button {
   color: #7c5522;
 }
 
-.signal-inspector-save-row {
+.signal-inspector-save-row,
+.signal-inspector-point-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-2);
 }
 
-.signal-inspector-save-row input {
+.signal-inspector-save-row input,
+.signal-inspector-point-row input {
   min-width: 0;
   min-height: var(--control-height-md);
   padding: 4px 7px;
@@ -3495,10 +3544,22 @@ button {
   font-size: var(--text-body);
 }
 
-.signal-inspector-save-row button {
+.signal-inspector-point-row label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+}
+
+.signal-inspector-save-row button,
+.signal-inspector-point-row button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
+  min-width: 112px;
   min-height: var(--control-height-md);
   padding: 4px 9px;
   border: var(--border-strong);
@@ -3509,7 +3570,8 @@ button {
   font-weight: var(--weight-semibold);
 }
 
-.signal-inspector-save-row button:disabled {
+.signal-inspector-save-row button:disabled,
+.signal-inspector-point-row button:disabled {
   cursor: not-allowed;
   opacity: 0.46;
 }
@@ -3562,6 +3624,98 @@ button {
   color: var(--muted);
   font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
+}
+
+.signal-inspector-bookmark-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.signal-inspector-bookmark-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: var(--control-height-md);
+  padding: 4px 9px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--green);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-bookmark-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.signal-inspector-gps-card {
+  gap: var(--space-2);
+}
+
+.signal-inspector-gps-map {
+  --gps-map-height: 184px;
+  overflow: hidden;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.signal-inspector-gps-map .map-route-preview {
+  min-height: var(--gps-map-height);
+}
+
+.signal-inspector-gps-map .maplibregl-ctrl-top-right,
+.signal-inspector-gps-map .maplibregl-ctrl-bottom-right {
+  transform: scale(0.82);
+  transform-origin: top right;
+}
+
+.signal-inspector-gps-empty {
+  display: grid;
+  place-items: center;
+  gap: var(--space-2);
+  min-height: 184px;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+  color: var(--muted);
+  font-size: var(--text-caption);
+  text-align: center;
+}
+
+.signal-inspector-gps-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-gps-summary dt {
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+}
+
+.signal-inspector-gps-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-inspector-gps-status {
+  color: var(--muted);
+  font-size: var(--text-caption) !important;
+}
+
+.signal-inspector-gps-status.error,
+.signal-inspector-gps-status.warning {
+  color: #7c5522;
 }
 
 .signal-inspector-delete-bookmark {
@@ -3637,24 +3791,44 @@ button {
   display: grid;
   gap: var(--space-3);
   min-width: 0;
+  overflow: hidden;
 }
 
 .signal-inspector-chart-card {
   display: grid;
   gap: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
   padding: 10px;
   border: var(--border-subtle);
   background: white;
 }
 
-.signal-inspector-chart-hint {
-  color: var(--muted);
-  font-size: var(--text-caption);
-}
-
 .signal-inspector-chart-frame {
   position: relative;
+  box-sizing: border-box;
+  max-width: 100%;
   min-width: 0;
+  overflow: hidden;
+}
+
+.signal-inspector-full-session-control {
+  position: absolute;
+  top: 9px;
+  left: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: var(--control-height-md);
+  padding: 4px 9px;
+  border: var(--border-strong);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-floating-control);
+  color: var(--green);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
 }
 
 .signal-inspector-chart {
@@ -3665,6 +3839,103 @@ button {
   cursor: crosshair;
   touch-action: none;
   user-select: none;
+}
+
+.signal-inspector-uplot-host {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-height: 500px;
+  overflow: hidden;
+  border: var(--border-subtle);
+  background: var(--surface);
+  contain: layout paint;
+}
+
+.signal-inspector-uplot-host .uplot {
+  max-width: 100%;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-label);
+}
+
+.signal-inspector-uplot-host .u-wrap {
+  width: 100%;
+}
+
+.signal-inspector-uplot-host .u-over {
+  cursor: crosshair;
+}
+
+.signal-inspector-uplot-host .u-select {
+  background: rgba(0, 140, 149, 0.16);
+  border: 1px solid var(--teal);
+}
+
+.signal-inspector-uplot-host .u-cursor-x {
+  border-right: 1px dashed rgba(16, 24, 32, 0.42);
+}
+
+.signal-inspector-uplot-host .u-cursor-pt {
+  border-color: var(--ink) !important;
+}
+
+.signal-inspector-plot-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.signal-inspector-uplot-event {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 1.2px solid white;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 0 0 0 rgba(16, 24, 32, 0);
+  cursor: pointer;
+  opacity: 0.8;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+
+.signal-inspector-uplot-event:hover,
+.signal-inspector-uplot-event.selected {
+  border-color: var(--ink);
+  opacity: 1;
+}
+
+.signal-inspector-uplot-event.selected {
+  width: 11px;
+  height: 11px;
+}
+
+.signal-inspector-uplot-mark {
+  position: absolute;
+  width: 0;
+  border-left: 1px dashed rgba(16, 24, 32, 0.24);
+  pointer-events: none;
+}
+
+.signal-inspector-uplot-mark::before,
+.signal-inspector-uplot-mark::after {
+  position: absolute;
+  top: 10px;
+  left: -5px;
+  width: 10px;
+  height: 0;
+  border-top: 1.7px solid rgba(16, 24, 32, 0.72);
+  content: "";
+}
+
+.signal-inspector-uplot-mark::before {
+  transform: rotate(45deg);
+}
+
+.signal-inspector-uplot-mark::after {
+  transform: rotate(-45deg);
 }
 
 .signal-inspector-chart.selecting {
@@ -3702,20 +3973,20 @@ button {
 
 .signal-inspector-event-marker {
   cursor: pointer;
-  stroke-width: 2.4;
-  stroke-dasharray: 4 3;
-  stroke-opacity: 0.44;
+  stroke: white;
+  stroke-width: 1.1;
+  fill-opacity: 0.76;
   vector-effect: non-scaling-stroke;
 }
 
 .signal-inspector-event-marker:hover,
 .signal-inspector-event-marker.selected {
-  stroke-dasharray: none;
-  stroke-opacity: 0.92;
+  fill-opacity: 1;
+  stroke: var(--ink);
 }
 
 .signal-inspector-event-marker.selected {
-  stroke-width: 3.2;
+  stroke-width: 1.6;
 }
 
 .signal-inspector-mark-marker {
@@ -3779,7 +4050,7 @@ button {
   padding: 6px 8px;
   border: var(--border-subtle);
   background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow-floating-control);
   color: var(--muted);
   font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
@@ -3814,6 +4085,10 @@ button {
 }
 
 .signal-inspector-event-detail.empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   color: var(--muted);
 }
 
@@ -3882,6 +4157,76 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.signal-inspector-legend span.muted {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.signal-inspector-navigator-card {
+  padding: 10px;
+  border: var(--border-subtle);
+  background: white;
+}
+
+.signal-inspector-navigator-frame {
+  position: relative;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.signal-inspector-uplot-host-navigator {
+  width: 100%;
+  min-height: 88px;
+}
+
+.signal-inspector-uplot-host-navigator .u-over {
+  cursor: ew-resize;
+}
+
+.signal-inspector-uplot-navigator {
+  height: 108px;
+}
+
+.signal-inspector-navigator-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.signal-inspector-navigator-window,
+.signal-inspector-navigator-preview {
+  position: absolute;
+  border: 1px solid var(--teal);
+  background: rgba(0, 140, 149, 0.16);
+  pointer-events: none;
+}
+
+.signal-inspector-navigator-preview {
+  display: none;
+  background: rgba(0, 140, 149, 0.22);
+}
+
+.signal-inspector-navigator-handle {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 8px;
+  border-left: 2px solid var(--teal);
+}
+
+.signal-inspector-navigator-handle.start {
+  left: -1px;
+}
+
+.signal-inspector-navigator-handle.end {
+  right: -9px;
 }
 
 .viz-scope-main strong,

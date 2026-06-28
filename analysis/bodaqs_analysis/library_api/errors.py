@@ -71,6 +71,12 @@ class SessionFilterNotFoundError(LibraryApiError):
     default_message = "Session filter was not found."
 
 
+class BookmarkNotFoundError(LibraryApiError):
+    code = "bookmark_not_found"
+    status_code = 404
+    default_message = "Bookmark was not found."
+
+
 class TrackNotFoundError(LibraryApiError):
     code = "track_not_found"
     status_code = 404
@@ -117,6 +123,12 @@ class InvalidSessionFilterError(LibraryApiError):
     code = "invalid_session_filter"
     status_code = 400
     default_message = "Session filter is invalid."
+
+
+class InvalidBookmarkError(LibraryApiError):
+    code = "invalid_bookmark"
+    status_code = 400
+    default_message = "Bookmark is invalid."
 
 
 class InvalidTrackError(LibraryApiError):

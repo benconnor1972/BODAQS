@@ -9,6 +9,7 @@ import type {
   AnalysisViewRecord,
   SessionGpsPointSet,
   SessionGpsSummary,
+  SessionBookmarkRecord,
   SessionNoteFieldDef,
   SessionNoteRecord,
   SessionNoteValue,
@@ -43,6 +44,7 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   private sessions = fixtureSessions.map(cloneSession)
   private notes = new Map(this.sessions.map((session) => [sessionRefId(sessionToStudyRef(session)), sessionNoteFromSession(session)]))
   private tracks = fixtureTracks.map(cloneTrack)
+  private bookmarks: SessionBookmarkRecord[] = []
 
   async listLibraries() {
     return fixtureLibraries.map((libraryItem) => ({ ...libraryItem }))
@@ -318,6 +320,34 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
         : session,
     )
     return cloneSessionNote(saved)
+  }
+
+  async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
+    const wanted = sessionRefId(sessionToStudyRef(session))
+    return this.bookmarks.filter((bookmark) => sessionRefId(bookmark.sessionRef) === wanted).map(cloneSessionBookmark)
+  }
+
+  async saveSessionBookmark(bookmark: SessionBookmarkRecord): Promise<SessionBookmarkRecord> {
+    const now = new Date().toISOString()
+    const existingIndex = bookmark.id ? this.bookmarks.findIndex((candidate) => candidate.id === bookmark.id) : -1
+    const existing = existingIndex >= 0 ? this.bookmarks[existingIndex] : null
+    const saved: SessionBookmarkRecord = {
+      ...cloneSessionBookmark(bookmark),
+      id: bookmark.id || uniqueId('bookmark', this.bookmarks.map((candidate) => candidate.id)),
+      revision: existing ? existing.revision + 1 : 1,
+      createdAtUtc: existing?.createdAtUtc || bookmark.createdAtUtc || now,
+      updatedAtUtc: now,
+    }
+    if (existingIndex >= 0) {
+      this.bookmarks = this.bookmarks.map((candidate, index) => (index === existingIndex ? saved : candidate))
+    } else {
+      this.bookmarks = [...this.bookmarks, saved]
+    }
+    return cloneSessionBookmark(saved)
+  }
+
+  async deleteSessionBookmark(bookmarkId: string): Promise<void> {
+    this.bookmarks = this.bookmarks.filter((bookmark) => bookmark.id !== bookmarkId)
   }
 
   async loadTimeseriesWindow(_libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse> {
@@ -846,6 +876,16 @@ function cloneSessionNote(note: SessionNoteRecord): SessionNoteRecord {
     fields: note.fields.map((field) => ({ ...field, enumOptions: [...field.enumOptions] })),
     values: cloneNoteValues(note.values),
     customValues: cloneNoteValues(note.customValues),
+  }
+}
+
+function cloneSessionBookmark(bookmark: SessionBookmarkRecord): SessionBookmarkRecord {
+  return {
+    ...bookmark,
+    sessionRef: { ...bookmark.sessionRef },
+    window: { ...bookmark.window },
+    viewState: JSON.parse(JSON.stringify(bookmark.viewState)) as SessionBookmarkRecord['viewState'],
+    tags: [...bookmark.tags],
   }
 }
 

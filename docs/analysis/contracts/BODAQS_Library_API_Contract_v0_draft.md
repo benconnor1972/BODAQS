@@ -172,7 +172,7 @@ Study sets contain:
 - explicit session membership
 - study-set-local groupings
 - reusable track references
-- study-set-local bookmarks
+- optional references to root-level session bookmarks
 - structured provenance
 - optional namespaced display state
 
@@ -189,11 +189,21 @@ If reusable discovery logic is needed later, use filters rather than groupings.
 
 ### 4.5 Bookmark
 
-A bookmark is a study-set-local reference to a point or time window in one
-session.
+A bookmark is a root-level reference to a point or time window in one session.
+It is used by signal inspection and later by analysis views that need to filter
+or facet data by user-selected time windows.
 
-Bookmarks are not reusable library objects in v0 because their meaning is
-intrinsically tied to the study set where they were created.
+Canonical location:
+
+```text
+<libraries_root>/
+  bookmarks/
+    <bookmark_id>.json
+```
+
+Bookmarks must carry a concrete session reference. They are reusable by Study
+Sets and analysis views, but are not session metadata: deleting a bookmark does
+not modify the processed session artifact.
 
 ### 4.6 Track
 
@@ -998,7 +1008,7 @@ Example conflict response:
 {
   "error": {
     "code": "session_delete_conflict",
-    "message": "Session is still referenced by saved Study Sets.",
+    "message": "Session is still referenced by saved library objects.",
     "details": {
       "session_ref_id": "default-library|||run-a::session-a",
       "references": [
@@ -1010,6 +1020,11 @@ Example conflict response:
             {"grouping_id": "baseline", "display_name": "Baseline"}
           ],
           "bookmarks": []
+        },
+        {
+          "kind": "bookmark",
+          "bookmark_id": "big-compression-before-bridge",
+          "display_name": "Big compression before bridge"
         }
       ]
     }
@@ -1037,6 +1052,12 @@ Example successful cleanup response:
       "removed_session": true,
       "removed_groupings": [],
       "removed_bookmark_count": 0
+    }
+  ],
+  "removed_bookmarks": [
+    {
+      "bookmark_id": "big-compression-before-bridge",
+      "display_name": "Big compression before bridge"
     }
   ]
 }
@@ -1317,6 +1338,62 @@ POST   /api/v1/session-filters
 GET    /api/v1/session-filters/{filter_id}
 PUT    /api/v1/session-filters/{filter_id}
 DELETE /api/v1/session-filters/{filter_id}
+```
+
+### 12.8 Bookmarks
+
+Root-scoped persisted session bookmarks:
+
+```text
+GET    /api/v1/bookmarks
+POST   /api/v1/bookmarks
+GET    /api/v1/bookmarks/{bookmark_id}
+PUT    /api/v1/bookmarks/{bookmark_id}
+DELETE /api/v1/bookmarks/{bookmark_id}
+```
+
+`GET /api/v1/bookmarks` may be filtered by `library_id`, `session_key`, or
+`session_ref_id`. Bookmarks are stored under the configured libraries root and
+must carry a concrete `session` reference. They are intended for user-selected
+points or time windows, not for logger sample marks.
+
+Example bookmark:
+
+```json
+{
+  "schema": "bodaqs.session_bookmark",
+  "version": 1,
+  "bookmark_id": "big-compression-before-bridge",
+  "revision": 1,
+  "display_name": "Big compression before bridge",
+  "description": "",
+  "session": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run-a::session-a",
+    "session_key": "run-a::session-a",
+    "run_id": "run-a",
+    "session_id": "session-a",
+    "label": "Session A"
+  },
+  "session_ref_id": "default-library|||run-a::session-a",
+  "window": {
+    "start_s": 42.5,
+    "end_s": 48.0
+  },
+  "view_state": {
+    "bodaqs_web_signal_inspector_v1": {
+      "signal_columns": ["front_wheel_disp_dom_wheel [mm]"],
+      "show_marks": true
+    }
+  },
+  "tags": [],
+  "private": true,
+  "provenance": {
+    "created_at": "2026-06-26T01:00:00Z",
+    "created_by": "user",
+    "updated_at": "2026-06-26T01:00:00Z"
+  }
+}
 ```
 
 Session Filter endpoints are scoped to the configured libraries root, not to a

@@ -1,3 +1,4 @@
+import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { formatPercent, gpsSourceDisplay } from '../domain/geospatial'
 import { libraryName } from '../domain/sessionCatalog'
@@ -47,11 +48,68 @@ export function Modal({
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
         <div className="modal-content">
-          {modalContent(state, libraries, sessions, tracks, dataSource, onOpenAnalysis, onOpenSignalInspector)}
+          <ModalErrorBoundary resetKey={modalErrorBoundaryKey(state)}>
+            {modalContent(state, libraries, sessions, tracks, dataSource, onOpenAnalysis, onOpenSignalInspector)}
+          </ModalErrorBoundary>
         </div>
       </section>
     </div>
   )
+}
+
+type ModalErrorBoundaryProps = {
+  children: ReactNode
+  resetKey: string
+}
+
+type ModalErrorBoundaryState = {
+  error: Error | null
+}
+
+class ModalErrorBoundary extends Component<ModalErrorBoundaryProps, ModalErrorBoundaryState> {
+  state: ModalErrorBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: Error): ModalErrorBoundaryState {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Modal render failed', error, info)
+  }
+
+  componentDidUpdate(previousProps: ModalErrorBoundaryProps) {
+    if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null })
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="signal-inspector-message warning">
+          <strong>Could not render this view.</strong>
+          <span>{this.state.error.message || 'An unexpected browser-side error occurred.'}</span>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function modalErrorBoundaryKey(state: NonNullable<ModalState>) {
+  if (state.kind === 'signal-inspector') {
+    return `${state.kind}:${state.session.sessionKey}:${state.initialWindow?.startS ?? ''}:${state.initialWindow?.endS ?? ''}`
+  }
+  if (state.kind === 'session') {
+    return `${state.kind}:${state.session.sessionKey}:${state.tab}`
+  }
+  if (state.kind === 'track') {
+    return `${state.kind}:${state.track.id}`
+  }
+  if (state.kind === 'analysis-launcher') {
+    return `${state.kind}:${state.studySet.id ?? 'draft'}`
+  }
+  return `${state.kind}:${state.mode}:${state.studySet.id ?? 'draft'}`
 }
 
 function modalClassName(state: NonNullable<ModalState>) {

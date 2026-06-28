@@ -19,6 +19,7 @@ from .ids import make_session_key, make_session_ref_id
 TIMESERIES_WINDOW_SCHEMA = "bodaqs.timeseries_window"
 TIMESERIES_WINDOW_VERSION = 1
 DEFAULT_TARGET_POINTS = 2000
+WINDOW_BOUNDARY_WARNING_TOLERANCE_S = 0.25
 
 
 def get_timeseries_window(
@@ -595,11 +596,24 @@ def _window_warnings(
     if source_time.empty or returned_time.empty:
         return []
     warnings: list[str] = []
-    if requested_start_s is not None and float(requested_start_s) < float(source_time.min()):
+    tolerance_s = _window_warning_tolerance_s(source_time)
+    if requested_start_s is not None and float(requested_start_s) < float(source_time.min()) - tolerance_s:
         warnings.append("requested_window_starts_before_session")
-    if requested_end_s is not None and float(requested_end_s) > float(source_time.max()):
+    if requested_end_s is not None and float(requested_end_s) > float(source_time.max()) + tolerance_s:
         warnings.append("requested_window_ends_after_session")
     return warnings
+
+
+def _window_warning_tolerance_s(source_time: pd.Series) -> float:
+    ordered = source_time.sort_values()
+    deltas = ordered.diff().dropna()
+    positive_deltas = deltas[deltas > 0]
+    if positive_deltas.empty:
+        return WINDOW_BOUNDARY_WARNING_TOLERANCE_S
+    median_delta = float(positive_deltas.median())
+    if not np.isfinite(median_delta):
+        return WINDOW_BOUNDARY_WARNING_TOLERANCE_S
+    return max(WINDOW_BOUNDARY_WARNING_TOLERANCE_S, median_delta * 2.0)
 
 
 def _numeric_values(series: pd.Series) -> list[float | None]:

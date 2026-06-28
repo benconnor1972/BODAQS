@@ -1,6 +1,8 @@
 # BODAQS Bookmarks Specification (Per‑User Store) — v1
 
-**Status:** Proposed  
+**Status:** Superseded for the web app prototype by root-level Library API
+session bookmarks in `BODAQS_Library_API_Contract_v0_draft.md`; retained as
+historical notebook/widget context.
 **Scope:** Analysis UI / widgets (e.g., Session Window Browser)  
 **Persistence model:** **Per-user local store** (JSON on disk), independent of session artifacts.
 
