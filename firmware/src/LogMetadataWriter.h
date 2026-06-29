@@ -21,6 +21,9 @@ struct LogMetadataContext {
   uint32_t flushMaxMs = 0;
   uint64_t flushTotalMs = 0;
   uint32_t bufferSize = 0;
+  uint32_t samplerLateTicks = 0;
+  uint32_t samplerLateMaxLagMs = 0;
+  uint32_t missedSampleSlots = 0;
 };
 
 bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out);

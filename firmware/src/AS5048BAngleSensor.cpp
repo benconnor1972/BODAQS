@@ -586,10 +586,11 @@ bool AS5048BAngleSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out
     out.required = false;
     out.primary = false;
     out.raw = true;
+    out.diagnostic = true;
     out.calibrated = false;
     out.transformed = false;
-    copyField_(out.end, sizeof(out.end), m_semanticEnd);
-    copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+    out.end[0] = '\0';
+    out.domain[0] = '\0';
     copyField_(out.source, sizeof(out.source), "as5048_diagnostic");
 
     switch (idx - diagStart) {

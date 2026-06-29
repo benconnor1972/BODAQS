@@ -99,7 +99,7 @@ const ParamDef* AS5600StringPotAnalog::paramDefs(size_t& count) {
     {"installed_range",       ParamType::Float, "0",     "0",    nullptr, nullptr, "Installed range in linear output units for sag percentage"},
     {"installed_zero_count",  ParamType::Int,   "0",     nullptr, nullptr, nullptr, "Installed zero point in unwrapped counts"},
     {"assume_turn0_at_start", ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Reset unwrap state to turn 0 at each logging start"},
-    {"output_mode",           ParamType::Enum,  "RAW,LINEAR,POLY,LUT", nullptr, nullptr, nullptr, "Output method: wrapped RAW, linear mm, or transformed mm"},
+    {"output_mode",           ParamType::Enum,  "1",     nullptr, nullptr, "RAW,LINEAR", "Output method: wrapped RAW counts or linear mm"},
     {"include_raw",           ParamType::Bool,  "true",  nullptr, nullptr, nullptr, "Append wrapped and unwrapped RAW columns"},
     {"end",                   ParamType::Enum,  "",      nullptr, nullptr, "front,rear", "Optional semantic end for log metadata"},
     {"primary_domain",        ParamType::Enum,  "",      nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},

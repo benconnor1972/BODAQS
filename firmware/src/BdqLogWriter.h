@@ -24,6 +24,9 @@ struct BdqLogEndInfo {
   uint32_t flushCount = 0;
   uint32_t flushMaxMs = 0;
   uint64_t flushTotalMs = 0;
+  uint32_t samplerLateTicks = 0;
+  uint32_t samplerLateMaxLagMs = 0;
+  uint32_t missedSampleSlots = 0;
 };
 
 namespace BdqLogWriter {

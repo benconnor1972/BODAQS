@@ -358,6 +358,16 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
   s_lastSample = now - s_intervalMs;
 }
 
+LoggingManager::RuntimeStats LoggingManager::runtimeStats() {
+  RuntimeStats out;
+#if defined(ESP32)
+  out.samplerLateTicks = s_lateTicks;
+  out.samplerLateMaxLagMs = s_lateMaxLagMs;
+  out.missedSampleSlots = s_missedSampleSlots;
+#endif
+  return out;
+}
+
 void LoggingManager::stop() {
   s_running = false;
   SensorManager::onLoggingStop();

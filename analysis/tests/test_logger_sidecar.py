@@ -35,6 +35,7 @@ from bodaqs_analysis.pipeline import (
 )
 from bodaqs_analysis.preprocess_profile import default_preprocess_config, validate_preprocess_config
 from bodaqs_analysis.signal_registry import build_signals_registry
+from bodaqs_analysis.signal_selectors import resolve_signal_selector
 from bodaqs_analysis.signal_standardize import validate_signals_semantics
 from bodaqs_analysis.timebase import register_stream_metadata
 from bodaqs_analysis.ui.fit_bindings_editor import build_fit_candidate_summary
@@ -446,6 +447,101 @@ def _write_raw_rotary_sidecar_with_degree_zero_offset_calibration(
                 "dtype": "uint32",
                 "stream": "primary",
                 "sensor": "rear_shock",
+                "end": "rear",
+                "quantity": "raw",
+                "domain": "suspension",
+                "unit": "counts",
+            },
+        },
+    }
+    sidecar_path = tmp_path / name
+    sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+    return sidecar_path
+
+
+def _write_dual_rear_suspension_sidecar(
+    tmp_path,
+    *,
+    name: str = "dual_rear_suspension_sidecar.json",
+):
+    sidecar = {
+        "contract": {
+            "name": "mtb_logger_timeseries",
+            "version": "0.2.0",
+            "sidecar_kind": "generic",
+        },
+        "data_file": {
+            "delimiter": ",",
+            "header": False,
+        },
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "sample_id",
+                "time_encoding": "sample_index",
+                "time_unit": "sample",
+                "sample_rate_hz": 100.0,
+            }
+        },
+        "sensors": {
+            "rear_linear_pot": {
+                "name": "rear_linear_pot",
+                "type": "analog_pot",
+                "domain": "suspension",
+                "raw_unit": "counts",
+                "calibration": {
+                    "type": "linear",
+                    "input_unit": "counts",
+                    "output_unit": "mm",
+                    "installed_zero_count": 3000,
+                    "sensor_zero_count": 3000,
+                    "sensor_full_count": 2000,
+                    "sensor_full_travel": 50.0,
+                    "invert": True,
+                },
+            },
+            "rear_rotary": {
+                "name": "rear_rotary",
+                "type": "as5600_angle_i2c",
+                "domain": "suspension",
+                "raw_unit": "counts",
+                "calibration": {
+                    "type": "zero_offset",
+                    "input_unit": "counts",
+                    "output_unit": "deg",
+                    "installed_zero_count": 900,
+                    "sensor_zero_count": 0,
+                    "sensor_full_count": 3600,
+                    "sensor_full_travel": 360.0,
+                    "invert": False,
+                },
+            },
+        },
+        "columns": {
+            "sample_id": {
+                "csv_ref": {"by": "index", "index": 0},
+                "class": "time",
+                "dtype": "uint32",
+                "stream": "primary",
+                "unit": "sample",
+            },
+            "rear_linear_raw": {
+                "csv_ref": {"by": "index", "index": 1},
+                "class": "signal",
+                "dtype": "uint32",
+                "stream": "primary",
+                "sensor": "rear_linear_pot",
+                "end": "rear",
+                "quantity": "raw",
+                "domain": "suspension",
+                "unit": "counts",
+            },
+            "rear_rotary_raw": {
+                "csv_ref": {"by": "index", "index": 2},
+                "class": "signal",
+                "dtype": "uint32",
+                "stream": "primary",
+                "sensor": "rear_rotary",
                 "end": "rear",
                 "quantity": "raw",
                 "domain": "suspension",
@@ -921,6 +1017,195 @@ def test_session_sidecar_requires_every_physical_csv_column(tmp_path):
         load_session(str(csv_path))
 
 
+def test_session_sidecar_diagnostic_columns_do_not_enter_signal_semantics(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "sample_id,timestamp,rear_angle [deg],rear_angle_agc [counts],mark",
+                "0,08:35:11.000,1.5,59,0",
+                "1,08:35:11.002,1.6,59,0",
+                "2,08:35:11.004,1.7,59,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sidecar = {
+        "contract": {
+            "name": "mtb_logger_timeseries",
+            "version": "0.2.0",
+            "sidecar_kind": "session",
+        },
+        "data_file": {"delimiter": ",", "header": True},
+        "session": {
+            "session_id": "diagnostic_columns",
+            "started_at_local": "2026-02-19T08:35:11+08:00",
+            "timezone": "Australia/Perth",
+        },
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "timestamp",
+                "time_encoding": "local_time",
+                "time_unit": "time_of_day",
+                "sample_rate_hz": 500,
+            }
+        },
+        "columns": {
+            "sample_id": {
+                "csv_ref": {"by": "header", "header": "sample_id"},
+                "class": "index",
+                "dtype": "uint32",
+            },
+            "timestamp": {
+                "csv_ref": {"by": "header", "header": "timestamp"},
+                "class": "time",
+                "dtype": "string",
+                "stream": "primary",
+                "unit": "time_of_day",
+            },
+            "rear_suspension_ang_disp": {
+                "csv_ref": {"by": "header", "header": "rear_angle [deg]"},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "rear_angle",
+                "end": "rear",
+                "quantity": "ang_disp",
+                "domain": "suspension",
+                "unit": "deg",
+            },
+            "rear_angle_agc": {
+                "csv_ref": {"by": "header", "header": "rear_angle_agc [counts]"},
+                "class": "diagnostic",
+                "dtype": "uint32",
+                "stream": "primary",
+                "sensor": "rear_angle",
+                "metric": "agc",
+                "unit": "counts",
+                "source": "as5600_diagnostic",
+            },
+            "mark": {
+                "csv_ref": {"by": "header", "header": "mark"},
+                "class": "event_flag",
+                "dtype": "bool",
+                "stream": "primary",
+            },
+        },
+    }
+    (tmp_path / "session.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+
+    session = load_session(str(csv_path))
+    session = build_signals_registry(session, strict=False)
+    validate_signals_semantics(session)
+
+    assert "rear_angle_agc" in session["df"].columns
+    assert "rear_angle_agc" not in session["meta"]["signals"]
+    assert session["meta"]["channel_info"]["rear_angle_agc"]["class"] == "diagnostic"
+    assert session["meta"]["channel_info"]["rear_angle_agc"]["metric"] == "agc"
+
+
+def test_preprocess_session_preserves_diagnostic_channel_info_after_canonical_rename(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "sample_id,timestamp,Testing sensor [deg],Testing sensor_agc [counts],mark",
+                "0,08:35:11.000,1.5,59,0",
+                "1,08:35:11.002,1.6,59,0",
+                "2,08:35:11.004,1.7,59,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sidecar = {
+        "contract": {
+            "name": "mtb_logger_timeseries",
+            "version": "0.2.0",
+            "sidecar_kind": "session",
+        },
+        "data_file": {"delimiter": ",", "header": True},
+        "session": {
+            "session_id": "diagnostic_columns_after_rename",
+            "started_at_local": "2026-02-19T08:35:11+08:00",
+            "timezone": "Australia/Perth",
+        },
+        "streams": {
+            "primary": {
+                "type": "uniform",
+                "time_column": "timestamp",
+                "time_encoding": "local_time",
+                "time_unit": "time_of_day",
+                "sample_rate_hz": 500,
+            }
+        },
+        "columns": {
+            "sample_id": {
+                "csv_ref": {"by": "header", "header": "sample_id"},
+                "class": "index",
+                "dtype": "uint32",
+            },
+            "timestamp": {
+                "csv_ref": {"by": "header", "header": "timestamp"},
+                "class": "time",
+                "dtype": "string",
+                "stream": "primary",
+                "unit": "time_of_day",
+            },
+            "Testing sensor": {
+                "csv_ref": {"by": "header", "header": "Testing sensor [deg]"},
+                "class": "signal",
+                "dtype": "float64",
+                "stream": "primary",
+                "sensor": "testing_sensor",
+                "end": "rear",
+                "quantity": "ang_disp",
+                "domain": "suspension",
+                "unit": "deg",
+            },
+            "Testing sensor_agc": {
+                "csv_ref": {"by": "header", "header": "Testing sensor_agc [counts]"},
+                "class": "diagnostic",
+                "dtype": "uint32",
+                "stream": "primary",
+                "sensor": "testing_sensor",
+                "metric": "agc",
+                "unit": "counts",
+                "source": "as5600_diagnostic",
+            },
+            "mark": {
+                "csv_ref": {"by": "header", "header": "mark"},
+                "class": "event_flag",
+                "dtype": "bool",
+                "stream": "primary",
+            },
+        },
+    }
+    sidecar_path = tmp_path / "session.json"
+    sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+
+    result = preprocess_session(
+        str(csv_path),
+        log_metadata_path=sidecar_path,
+        fit_import={"enabled": False},
+        normalize_ranges={},
+        zeroing_enabled=False,
+        include_events=False,
+        include_metrics=False,
+        strict=False,
+    )
+
+    session = result["session"]
+
+    assert "testing_sensor_agc" in session["df"].columns
+    assert "Testing sensor_agc" not in session["meta"]["channel_info"]
+    assert session["meta"]["channel_info"]["testing_sensor_agc"]["class"] == "diagnostic"
+    assert session["meta"]["channel_info"]["testing_sensor_agc"]["metric"] == "agc"
+    assert "testing_sensor_agc" not in session["meta"]["signals"]
+
+
 def test_load_session_uses_single_generic_sidecar_permissively(tmp_path):
     csv_path = tmp_path / "session.csv"
     csv_path.write_text(
@@ -1210,6 +1495,196 @@ def test_preprocess_session_materializes_logger_degree_zero_offset_for_rotary_lu
         }
     ]
     assert session["meta"]["channel_info"][degree_col]["derivation"]["method"] == "logger_zero_offset_calibration"
+
+
+def test_preprocess_session_handles_dual_rear_suspension_sources(tmp_path):
+    csv_path = tmp_path / "session.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "0,3000,900",
+                "1,2900,1000",
+                "2,2800,1100",
+                "3,2700,1200",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    sidecar = _write_dual_rear_suspension_sidecar(tmp_path)
+    bike_profile = {
+        "schema": "bodaqs.bike_profile",
+        "version": 1,
+        "bike_profile_id": "dual-rear-suspension-test",
+        "display_name": "Dual Rear Suspension Test",
+        "normalization_ranges": [
+            {
+                "id": "linear_suspension_range",
+                "signal": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "suspension",
+                    "unit": "mm",
+                    "motion_source_id": "rear_linear_pot",
+                },
+                "full_range": 50.0,
+            },
+            {
+                "id": "rotary_suspension_range",
+                "signal": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "suspension",
+                    "unit": "deg",
+                    "motion_source_id": "rear_rotary",
+                },
+                "full_range": 30.0,
+            },
+            {
+                "id": "linear_rear_wheel_range",
+                "signal": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "motion_source_id": "rear_linear_pot",
+                },
+                "full_range": 150.0,
+            },
+            {
+                "id": "rotary_rear_wheel_range",
+                "signal": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "motion_source_id": "rear_rotary",
+                },
+                "full_range": 150.0,
+            },
+            {
+                "id": "generic_rear_wheel_primary_range",
+                "signal": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                },
+                "full_range": 150.0,
+            },
+        ],
+        "signal_transforms": [
+            {
+                "id": "linear_rear_suspension_to_wheel",
+                "enabled": True,
+                "method": "lut",
+                "input": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "suspension",
+                    "unit": "mm",
+                    "motion_source_id": "rear_linear_pot",
+                },
+                "output": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "motion_source_id": "rear_linear_pot",
+                },
+                "interpolation": "linear",
+                "extrapolation": "linear",
+                "lut": [
+                    {"input": 0.0, "output": 0.0},
+                    {"input": 50.0, "output": 150.0},
+                ],
+            },
+            {
+                "id": "rotary_rear_suspension_to_wheel",
+                "enabled": True,
+                "method": "lut",
+                "input": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "suspension",
+                    "unit": "deg",
+                    "motion_source_id": "rear_rotary",
+                },
+                "output": {
+                    "end": "rear",
+                    "quantity": "disp",
+                    "domain": "wheel",
+                    "unit": "mm",
+                    "motion_source_id": "rear_rotary",
+                },
+                "interpolation": "linear",
+                "extrapolation": "linear",
+                "lut": [
+                    {"input": 0.0, "output": 0.0},
+                    {"input": 30.0, "output": 150.0},
+                ],
+            },
+        ],
+    }
+
+    result = preprocess_session(
+        str(csv_path),
+        generic_log_metadata_paths=[sidecar],
+        bike_profile=bike_profile,
+        fit_import={"enabled": False},
+        zeroing_enabled=False,
+        include_events=False,
+        include_metrics=False,
+        strict=False,
+    )
+
+    session = result["session"]
+    df = session["df"]
+    raw_linear_col = "rear_suspension_raw_dom_suspension [counts]"
+    raw_rotary_col = "rear_suspension_rear_rotary_raw_dom_suspension [counts]"
+    linear_disp_col = "rear_suspension_disp_dom_suspension [mm]"
+    rotary_disp_col = "rear_suspension_disp_dom_suspension [deg]"
+    primary_wheel_col = "rear_wheel_disp_dom_wheel [mm]"
+    secondary_wheel_col = "rear_wheel_disp_rear_rotary_dom_wheel [mm]"
+
+    assert raw_linear_col in df.columns
+    assert raw_rotary_col in df.columns
+    assert linear_disp_col in df.columns
+    assert rotary_disp_col in df.columns
+    assert primary_wheel_col in df.columns
+    assert secondary_wheel_col in df.columns
+
+    np.testing.assert_allclose(df[linear_disp_col].to_numpy(dtype=float), [5.0, 10.0, 15.0])
+    np.testing.assert_allclose(df[rotary_disp_col].to_numpy(dtype=float), [10.0, 20.0, 30.0])
+    np.testing.assert_allclose(df[primary_wheel_col].to_numpy(dtype=float), [15.0, 30.0, 45.0])
+    np.testing.assert_allclose(df[secondary_wheel_col].to_numpy(dtype=float), [50.0, 100.0, 150.0])
+
+    bindings = session["qc"]["parse"]["log_metadata_column_bindings"]
+    assert bindings["rear_rotary_raw"]["canonical_dataframe_column"] == raw_linear_col
+    assert bindings["rear_rotary_raw"]["dataframe_column"] == raw_rotary_col
+    assert "log_metadata_dataframe_column_disambiguated:rear_rotary_raw" in session["qc"]["warnings"]
+
+    signals = session["meta"]["signals"]
+    assert signals[linear_disp_col]["motion_source_id"] == "rear_linear_pot"
+    assert signals[rotary_disp_col]["motion_source_id"] == "rear_rotary"
+    assert signals[primary_wheel_col]["processing_role"] == "primary_analysis"
+    assert signals[primary_wheel_col]["motion_source_id"] == "rear_linear_pot"
+    assert signals[secondary_wheel_col]["processing_role"] == "secondary_analysis"
+    assert signals[secondary_wheel_col]["motion_source_id"] == "rear_rotary"
+    assert signals[secondary_wheel_col]["canonical_dataframe_column"] == primary_wheel_col
+
+    generic_selector = {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"}
+    rotary_selector = dict(generic_selector, motion_source_id="rear_rotary")
+    assert resolve_signal_selector(session, generic_selector, purpose="test", allow_missing=False) == primary_wheel_col
+    assert resolve_signal_selector(session, rotary_selector, purpose="test", allow_missing=False) == secondary_wheel_col
+
+    resolved_ranges = session["qc"]["bike_profile"]["normalization_ranges"]
+    assert {item["range_id"]: item["column"] for item in resolved_ranges} == {
+        "linear_suspension_range": linear_disp_col,
+        "rotary_suspension_range": rotary_disp_col,
+        "linear_rear_wheel_range": primary_wheel_col,
+        "rotary_rear_wheel_range": secondary_wheel_col,
+        "generic_rear_wheel_primary_range": primary_wheel_col,
+    }
 
 
 def test_load_session_uses_filename_stem_anchor_without_sidecar(tmp_path):

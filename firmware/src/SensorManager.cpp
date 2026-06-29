@@ -50,6 +50,12 @@ namespace {
     out[len + i] = '\0';
   }
 
+  void appendCsv(String& out, const char* token) {
+    if (!token || !*token) return;
+    if (out.length()) out += ',';
+    out += token;
+  }
+
   static uint16_t countColumns() {
     uint16_t total = 0;
     for (auto* s : s_list) {
@@ -406,9 +412,14 @@ uint16_t synchronousMaxSampleRateHz() {
 
 void buildHeader(char* out, size_t n, bool humanTs) {
   if (!out || n == 0) return;
-  out[0] = '\0';
+  buildHeaderString(humanTs).toCharArray(out, n);
+}
 
-  appendCsv(out, n, humanTs ? "timestamp" : "timestamp_ms");
+String buildHeaderString(bool humanTs) {
+  String out;
+  out.reserve(128 + (countColumns() * 32));
+
+  appendCsv(out, humanTs ? "timestamp" : "timestamp_ms");
 
   for (auto* s : s_list) {
     if (!s || s->muted()) continue;
@@ -420,14 +431,15 @@ void buildHeader(char* out, size_t n, bool humanTs) {
       if (!nameBuf[0]) {
         char fb[32];
         snprintf(fb, sizeof(fb), "col%u", (unsigned)i);
-        appendCsv(out, n, fb);
+        appendCsv(out, fb);
       } else {
-        appendCsv(out, n, nameBuf);
+        appendCsv(out, nameBuf);
       }
     }
   }
 
-  appendCsv(out, n, "mark");
+  appendCsv(out, "mark");
+  return out;
 }
 
 void sampleValues(float* out, uint16_t cap, uint16_t& written) {

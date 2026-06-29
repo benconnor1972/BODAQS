@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#include <new>
 #include "FirmwareInfo.h"
 #include "SensorManager.h"
 #include "DebugLog.h"
@@ -59,6 +60,7 @@ struct ColumnLayout {
   char source[24] = {0};
   char kind[8] = {0};
   char processingRole[24] = {0};
+  char columnClass[16] = {0};
   StorageType storage = StorageType::Float32;
   uint16_t valueIndex = 0;
   uint16_t byteOffset = 0;
@@ -197,6 +199,22 @@ void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint64_t value,
   out += comma ? F(",\n") : F("\n");
 }
 
+void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[7];
+  snprintf(buf, sizeof(buf), "\"0x%02X\"", (unsigned)value);
+  out += buf;
+  out += comma ? F(",\n") : F("\n");
+}
+
+void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[9];
+  snprintf(buf, sizeof(buf), "\"0x%04X\"", (unsigned)value);
+  out += buf;
+  out += comma ? F(",\n") : F("\n");
+}
+
 void appendKeyBool_(String& out, uint8_t depth, const char* key, bool value, bool comma = true) {
   appendKey_(out, depth, key);
   out += value ? F("true") : F("false");
@@ -233,6 +251,84 @@ StorageType storageTypeFor_(const SensorColumnDescriptor& desc) {
   return isUnwrappedRaw_(desc) ? StorageType::Int32 : StorageType::UInt16;
 }
 
+void appendDeviceConfigObject_(String& out,
+                               const SensorDeviceConfigDescriptor& cfg,
+                               uint8_t depth,
+                               bool comma) {
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "kind", cfg.kind);
+  appendKeyString_(out, depth + 1, "policy", cfg.policy[0] ? cfg.policy : "read_only");
+  appendKeyString_(out, depth + 1, "status", cfg.status);
+  if (cfg.requestedSlowFilter[0]) appendKeyString_(out, depth + 1, "requested_slow_filter", cfg.requestedSlowFilter);
+  if (cfg.writeStatus[0]) appendKeyString_(out, depth + 1, "write_status", cfg.writeStatus);
+  appendKeyBool_(out, depth + 1, "read_ok", cfg.readOk);
+
+  appendKey_(out, depth + 1, "registers");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 2, "zpos", cfg.zpos);
+  appendKeyUInt_(out, depth + 2, "mpos", cfg.mpos);
+  appendKeyUInt_(out, depth + 2, "mang", cfg.mang);
+  appendKeyUInt_(out, depth + 2, "conf", cfg.conf);
+  appendKeyHex16_(out, depth + 2, "conf_hex", cfg.conf);
+  appendKeyUInt_(out, depth + 2, "raw_angle", cfg.rawAngle);
+  appendKeyUInt_(out, depth + 2, "angle", cfg.angle);
+  appendKeyUInt_(out, depth + 2, "status", cfg.statusReg);
+  appendKeyHex8_(out, depth + 2, "status_hex", cfg.statusReg);
+  appendKeyUInt_(out, depth + 2, "agc", cfg.agc);
+  appendKeyUInt_(out, depth + 2, "magnitude", cfg.magnitude, false);
+  for (uint8_t i = 0; i < depth + 1; ++i) out += F("  ");
+  out += F("},\n");
+
+  appendKey_(out, depth + 1, "decoded");
+  out += F("{\n");
+  appendKeyString_(out, depth + 2, "power_mode", cfg.readOk ? cfg.confPowerMode : "");
+  appendKeyString_(out, depth + 2, "hysteresis", cfg.readOk ? cfg.confHysteresis : "");
+  appendKeyString_(out, depth + 2, "output_stage", cfg.readOk ? cfg.confOutputStage : "");
+  appendKeyString_(out, depth + 2, "pwm_frequency", cfg.readOk ? cfg.confPwmFrequency : "");
+  appendKeyString_(out, depth + 2, "slow_filter", cfg.readOk ? cfg.confSlowFilter : "");
+  appendKeyString_(out, depth + 2, "fast_filter_threshold", cfg.readOk ? cfg.confFastFilterThreshold : "");
+  appendKeyBool_(out, depth + 2, "watchdog", cfg.readOk && cfg.confWatchdog, false);
+  for (uint8_t i = 0; i < depth + 1; ++i) out += F("  ");
+  out += F("}\n");
+
+  for (uint8_t i = 0; i < depth; ++i) out += F("  ");
+  out += comma ? F("},\n") : F("}\n");
+}
+
+bool appendDeviceConfigs_(String& out) {
+  const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
+  SensorMetadataDescriptor* sensors = sensorCount ? new (std::nothrow) SensorMetadataDescriptor[sensorCount] : nullptr;
+  if (sensorCount && !sensors) return false;
+
+  const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
+  uint16_t configCount = 0;
+  for (uint16_t i = 0; i < sensorsWritten; ++i) {
+    if (sensors[i].hasDeviceConfig) ++configCount;
+  }
+
+  if (configCount == 0) {
+    delete[] sensors;
+    return false;
+  }
+
+  appendKey_(out, 1, "device_configs");
+  out += F("{\n");
+  uint16_t written = 0;
+  for (uint16_t i = 0; i < sensorsWritten; ++i) {
+    const SensorMetadataDescriptor& sensor = sensors[i];
+    if (!sensor.hasDeviceConfig) continue;
+
+    out += F("    ");
+    appendJsonEscaped_(out, sensor.sensorId[0] ? sensor.sensorId : sensor.name);
+    out += F(": ");
+    appendDeviceConfigObject_(out, sensor.deviceConfig, 2, ++written < configCount);
+  }
+  out += F("  },\n");
+
+  delete[] sensors;
+  return true;
+}
+
 bool buildColumnLayout_() {
   s_columnCount = 0;
   s_frameSize = 4; // sample_id
@@ -263,6 +359,7 @@ bool buildColumnLayout_() {
     copyField_(col.source, sizeof(col.source), desc.source);
     copyField_(col.kind, sizeof(col.kind), desc.kind);
     copyField_(col.processingRole, sizeof(col.processingRole), desc.processingRole);
+    copyField_(col.columnClass, sizeof(col.columnClass), desc.diagnostic ? "diagnostic" : "signal");
     col.semanticSelectionExcluded = desc.semanticSelectionExcluded;
     const char* field = desc.columnId[0] ? desc.columnId : desc.csvHeader;
     copyField_(col.field, sizeof(col.field), field);
@@ -282,7 +379,7 @@ String buildMetadataJson_(const BdqLogSessionInfo& info) {
   const char* loggerId = loggerIdText.c_str();
 
   String out;
-  out.reserve(768);
+  out.reserve(1536);
   out += F("{\n");
   appendKeyString_(out, 1, "format", "bdq.v1");
   appendKeyString_(out, 1, "format_name", "BDQLOG v1");
@@ -299,6 +396,7 @@ String buildMetadataJson_(const BdqLogSessionInfo& info) {
   appendKeyString_(out, 1, "timezone", info.timezone && *info.timezone ? info.timezone : "unknown");
   appendKeyString_(out, 1, "started_at_utc", info.startedAtUtc);
   appendKeyString_(out, 1, "started_at_local", info.startedAtLocal);
+  appendDeviceConfigs_(out);
   appendKeyString_(out, 1, "log_format", cfg ? ConfigManager::logFormatKey(cfg->logFormat) : "bodaqs_compact_binary", false);
   out += F("}\n");
   return out;
@@ -316,11 +414,13 @@ void appendChannelJson_(String& out,
                         const char* source,
                         const char* kind,
                         const char* processingRole,
+                        const char* columnClass,
                         bool raw,
                         bool semanticSelectionExcluded,
                         bool comma) {
   out += F("    {\n");
   appendKeyString_(out, 3, "field", field);
+  if (columnClass && *columnClass) appendKeyString_(out, 3, "class", columnClass);
   appendKeyString_(out, 3, "quantity", quantity);
   appendKeyString_(out, 3, "unit", unit);
   appendKeyString_(out, 3, "storage_type", storageType);
@@ -356,7 +456,7 @@ String buildSchemaJson_() {
 
   appendKey_(out, 1, "channels");
   out += F("[\n");
-  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "frame", "", "", false, false, true);
+  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "frame", "", "", "index", false, false, true);
 
   for (uint16_t i = 0; i < s_columnCount; ++i) {
     const ColumnLayout& col = s_columns[i];
@@ -375,12 +475,13 @@ String buildSchemaJson_() {
                        col.source,
                        col.kind,
                        col.processingRole,
+                       col.columnClass,
                        col.raw,
                        col.semanticSelectionExcluded,
                        comma);
   }
 
-  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "frame", "qc", "qc_metric", false, true, false);
+  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "frame", "qc", "qc_metric", "qc_flag", false, true, false);
   out += F("  ],\n");
 
   appendKey_(out, 1, "sample_flags");
@@ -563,7 +664,10 @@ String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
   appendKeyUInt_(out, 1, "queue_depth", info.queueDepth);
   appendKeyUInt_(out, 1, "flush_count", info.flushCount);
   appendKeyUInt_(out, 1, "flush_max_ms", info.flushMaxMs);
-  appendKeyUInt_(out, 1, "flush_total_ms", info.flushTotalMs, false);
+  appendKeyUInt_(out, 1, "flush_total_ms", info.flushTotalMs);
+  appendKeyUInt_(out, 1, "sampler_late_ticks", info.samplerLateTicks);
+  appendKeyUInt_(out, 1, "sampler_late_max_lag_ms", info.samplerLateMaxLagMs);
+  appendKeyUInt_(out, 1, "missed_sample_slots", info.missedSampleSlots, false);
   out += F("}\n");
   return out;
 }

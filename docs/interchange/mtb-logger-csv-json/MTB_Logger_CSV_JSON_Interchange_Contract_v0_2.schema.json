@@ -226,6 +226,10 @@
         },
         "calibration": {
           "$ref": "#/$defs/calibration"
+        },
+        "device_config": {
+          "type": "object",
+          "additionalProperties": true
         }
       }
     },
@@ -353,6 +357,9 @@
           "$ref": "#/$defs/signal_column"
         },
         {
+          "$ref": "#/$defs/diagnostic_column"
+        },
+        {
           "$ref": "#/$defs/generic_column"
         }
       ]
@@ -374,6 +381,7 @@
           "enum": [
             "time",
             "signal",
+            "diagnostic",
             "index",
             "event_flag",
             "qc_flag"
@@ -400,6 +408,9 @@
           ]
         },
         "quantity": {
+          "type": "string"
+        },
+        "metric": {
           "type": "string"
         },
         "domain": {
@@ -470,6 +481,29 @@
           "properties": {
             "class": {
               "const": "signal"
+            }
+          }
+        }
+      ]
+    },
+    "diagnostic_column": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_column"
+        },
+        {
+          "type": "object",
+          "required": [
+            "class",
+            "dtype",
+            "stream",
+            "sensor",
+            "metric",
+            "unit"
+          ],
+          "properties": {
+            "class": {
+              "const": "diagnostic"
             }
           }
         }

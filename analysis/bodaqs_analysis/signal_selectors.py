@@ -6,7 +6,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from bodaqs_analysis.sensor_aliases import canonical_end
+from bodaqs_analysis.sensor_aliases import canonical_end, normalize_sensor_token
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,9 @@ def selector_matches_signal(signal_info: Mapping[str, Any], selector: Mapping[st
         elif key == "unit":
             if str(actual or "").strip() != str(expected).strip():
                 return False
+        elif key in {"motion_source_id", "motion_profile_id"}:
+            if normalize_sensor_token(actual) != normalize_sensor_token(expected):
+                return False
         else:
             if str(actual or "").strip().lower() != str(expected).strip().lower():
                 return False
@@ -84,5 +87,20 @@ def resolve_signal_selector(
             return None
         raise ValueError(f"{purpose} selector did not match any signal: selector={dict(selector)!r}")
     if len(matches) > 1:
+        primary_matches = [
+            col
+            for col in matches
+            if isinstance(signals.get(col), Mapping)
+            and str(signals[col].get("processing_role") or "").strip().lower() == "primary_analysis"
+        ]
+        if len(primary_matches) == 1:
+            logger.info(
+                "%s selector matched multiple signals and selected primary_analysis column: selector=%s column=%s matches=%s",
+                purpose,
+                dict(selector),
+                primary_matches[0],
+                matches,
+            )
+            return primary_matches[0]
         raise ValueError(f"{purpose} selector matched multiple signals: selector={dict(selector)!r} matches={matches}")
     return matches[0]

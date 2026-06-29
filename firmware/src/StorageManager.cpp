@@ -929,28 +929,14 @@ static void startLog() {
     // --- Build header (shared for both backends) ---
     //SensorManager::debugDump("startLog-beforeHeader");
 
-    char header[256];
     TRACE("Entering sensormanager::buildheader");
-    SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
+    String header = SensorManager::buildHeaderString(RTCManager_isHumanReadable());
     TRACE("Finished sensormanager::buildheader");
     headerMs = millis() - headerT0;
 
-    // ---- NEW: prepend sample_id column ----
-    const char* idPrefix = "sample_id,";
-    const size_t idLen   = strlen(idPrefix);
-    const size_t hLen    = strlen(header);
+    header = String(F("sample_id,")) + header;
 
-    if (idLen + hLen + 1 < sizeof(header)) {   // +1 for terminating '\0'
-      // Move existing header forward to make room for "sample_id,"
-      memmove(header + idLen, header, hLen + 1);  // include '\0'
-      // Copy the prefix at the start
-      memcpy(header, idPrefix, idLen);
-    } else {
-      // If this ever happens, we ran out of header buffer space
-      STOR_LOGW("Warning: header buffer too small for sample_id prefix\n");
-    }
-
-    STOR_LOGI("Header: %s\n", header);
+    STOR_LOGI("Header: %s\n", header.c_str());
     refreshValueColumnTypes_();
 
     const uint32_t flushT0 = millis();
@@ -1006,6 +992,7 @@ void StorageManager_stopLog() {
   }
 
   if (isCompactBinaryFormat_()) {
+    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
     BdqLogEndInfo endInfo;
     endInfo.samplesDropped = s_samplesDropped;
     endInfo.queueMax = s_qMax;
@@ -1013,6 +1000,9 @@ void StorageManager_stopLog() {
     endInfo.flushCount = s_flushCount;
     endInfo.flushMaxMs = s_flushMaxMs;
     endInfo.flushTotalMs = s_flushTotalMs;
+    endInfo.samplerLateTicks = stats.samplerLateTicks;
+    endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    endInfo.missedSampleSlots = stats.missedSampleSlots;
     if (!BdqLogWriter::end(endInfo)) {
       STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
     }
@@ -1022,6 +1012,7 @@ void StorageManager_stopLog() {
 
   if (!isCompactBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
+    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
     LogMetadataContext metaCtx;
     metaCtx.csvPath = s_currentLogPath.c_str();
     metaCtx.sessionId = s_currentSessionId.c_str();
@@ -1040,6 +1031,9 @@ void StorageManager_stopLog() {
     metaCtx.flushMaxMs = s_flushMaxMs;
     metaCtx.flushTotalMs = s_flushTotalMs;
     metaCtx.bufferSize = bufferSize;
+    metaCtx.samplerLateTicks = stats.samplerLateTicks;
+    metaCtx.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    metaCtx.missedSampleSlots = stats.missedSampleSlots;
 
     String metadata;
     if (LogMetadataWriter_build(metaCtx, metadata)) {
@@ -1117,6 +1111,7 @@ const char* StorageManager_lastStatus() {
 // Dynamic CSV logging: one FULL row per call, matching header
 // Columns: [timestamp, sensor values..., mark]
 static uint32_t formatRawForExport_(float raw, bool invert) {
+    if (!isfinite(raw)) return 0UL;
     const uint32_t rawInt = (raw <= 0.0f) ? 0UL : (uint32_t)lroundf(raw);
     if (!invert) return rawInt;
 

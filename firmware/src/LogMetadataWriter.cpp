@@ -60,6 +60,24 @@ void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint32_t value,
   out += '\n';
 }
 
+void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[7];
+  snprintf(buf, sizeof(buf), "\"0x%02X\"", (unsigned)value);
+  out += buf;
+  if (comma) out += ',';
+  out += '\n';
+}
+
+void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[9];
+  snprintf(buf, sizeof(buf), "\"0x%04X\"", (unsigned)value);
+  out += buf;
+  if (comma) out += ',';
+  out += '\n';
+}
+
 void appendKeyUInt64_(String& out, uint8_t depth, const char* key, uint64_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[24];
@@ -112,7 +130,10 @@ void appendRunStats_(String& out, uint8_t depth, const LogMetadataContext& ctx, 
   const float avgFlush = ctx.flushCount ? (float)((double)ctx.flushTotalMs / (double)ctx.flushCount) : 0.0f;
   appendKeyFloat_(out, depth + 1, "flush_avg_ms", avgFlush);
   appendKeyUInt64_(out, depth + 1, "flush_total_ms", ctx.flushTotalMs);
-  appendKeyUInt_(out, depth + 1, "buffer_size", ctx.bufferSize, false);
+  appendKeyUInt_(out, depth + 1, "buffer_size", ctx.bufferSize);
+  appendKeyUInt_(out, depth + 1, "sampler_late_ticks", ctx.samplerLateTicks);
+  appendKeyUInt_(out, depth + 1, "sampler_late_max_lag_ms", ctx.samplerLateMaxLagMs);
+  appendKeyUInt_(out, depth + 1, "missed_sample_slots", ctx.missedSampleSlots, false);
   appendIndent_(out, depth);
   out += comma ? F("},\n") : F("}\n");
 }
@@ -141,6 +162,48 @@ void makeUniqueColumnId_(const SensorColumnDescriptor* cols,
   }
 }
 
+void appendDeviceConfig_(String& out, const SensorDeviceConfigDescriptor& cfg) {
+  appendKey_(out, 3, "device_config");
+  out += F("{\n");
+  appendKeyString_(out, 4, "kind", cfg.kind);
+  appendKeyString_(out, 4, "policy", cfg.policy[0] ? cfg.policy : "read_only");
+  appendKeyString_(out, 4, "status", cfg.status);
+  if (hasText_(cfg.requestedSlowFilter)) appendKeyString_(out, 4, "requested_slow_filter", cfg.requestedSlowFilter);
+  if (hasText_(cfg.writeStatus)) appendKeyString_(out, 4, "write_status", cfg.writeStatus);
+  appendKeyBool_(out, 4, "read_ok", cfg.readOk);
+
+  appendKey_(out, 4, "registers");
+  out += F("{\n");
+  appendKeyUInt_(out, 5, "zpos", cfg.zpos);
+  appendKeyUInt_(out, 5, "mpos", cfg.mpos);
+  appendKeyUInt_(out, 5, "mang", cfg.mang);
+  appendKeyUInt_(out, 5, "conf", cfg.conf);
+  appendKeyHex16_(out, 5, "conf_hex", cfg.conf);
+  appendKeyUInt_(out, 5, "raw_angle", cfg.rawAngle);
+  appendKeyUInt_(out, 5, "angle", cfg.angle);
+  appendKeyUInt_(out, 5, "status", cfg.statusReg);
+  appendKeyHex8_(out, 5, "status_hex", cfg.statusReg);
+  appendKeyUInt_(out, 5, "agc", cfg.agc);
+  appendKeyUInt_(out, 5, "magnitude", cfg.magnitude, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
+
+  appendKey_(out, 4, "decoded");
+  out += F("{\n");
+  appendKeyString_(out, 5, "power_mode", cfg.readOk ? cfg.confPowerMode : "");
+  appendKeyString_(out, 5, "hysteresis", cfg.readOk ? cfg.confHysteresis : "");
+  appendKeyString_(out, 5, "output_stage", cfg.readOk ? cfg.confOutputStage : "");
+  appendKeyString_(out, 5, "pwm_frequency", cfg.readOk ? cfg.confPwmFrequency : "");
+  appendKeyString_(out, 5, "slow_filter", cfg.readOk ? cfg.confSlowFilter : "");
+  appendKeyString_(out, 5, "fast_filter_threshold", cfg.readOk ? cfg.confFastFilterThreshold : "");
+  appendKeyBool_(out, 5, "watchdog", cfg.readOk && cfg.confWatchdog, false);
+  appendIndent_(out, 4);
+  out += F("}\n");
+
+  appendIndent_(out, 3);
+  out += F("},\n");
+}
+
 void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
   appendIndent_(out, 2);
   appendJsonString_(out, s.sensorId);
@@ -158,6 +221,10 @@ void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
     appendKeyBool_(out, 4, "assume_turn0_at_start", s.assumeTurn0AtStart, false);
     appendIndent_(out, 3);
     out += F("},\n");
+  }
+
+  if (s.hasDeviceConfig) {
+    appendDeviceConfig_(out, s.deviceConfig);
   }
 
   if (s.hasCalibration) {
@@ -219,6 +286,32 @@ void appendSignalColumn_(String& out,
   }
 
   if (c.raw) appendKeyString_(out, 3, "raw_representation", c.source);
+  if (hasText_(c.notes)) appendKeyString_(out, 3, "notes", c.notes, false);
+  else appendKeyBool_(out, 3, "required", true, false);
+
+  appendIndent_(out, 2);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendDiagnosticColumn_(String& out,
+                             const SensorColumnDescriptor* cols,
+                             uint16_t idx,
+                             bool comma) {
+  const SensorColumnDescriptor& c = cols[idx];
+  char key[80];
+  makeUniqueColumnId_(cols, idx, c, key, sizeof(key));
+
+  appendIndent_(out, 2);
+  appendJsonString_(out, key);
+  out += F(": {\n");
+  appendCsvRefByHeader_(out, 3, c.csvHeader);
+  appendKeyString_(out, 3, "class", "diagnostic");
+  appendKeyString_(out, 3, "dtype", "uint32");
+  appendKeyString_(out, 3, "stream", "primary");
+  appendKeyString_(out, 3, "sensor", c.sensorName);
+  appendKeyString_(out, 3, "metric", c.quantity);
+  appendKeyString_(out, 3, "unit", c.unit[0] ? c.unit : "");
+  if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);
   if (hasText_(c.notes)) appendKeyString_(out, 3, "notes", c.notes, false);
   else appendKeyBool_(out, 3, "required", true, false);
 
@@ -352,7 +445,7 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
   const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
   String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
 
-  out.reserve(2048 + (sensorsWritten * 520));
+  out.reserve(2048 + (sensorsWritten * 900));
   out += F("{\n");
 
   appendKey_(out, 1, "contract");
@@ -495,7 +588,7 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   const char* timeDtype = ctx.humanReadableTime ? "string" : "uint64";
   String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
 
-  out.reserve(2048 + (columnsWritten * 520) + (sensorsWritten * 520));
+  out.reserve(2048 + (columnsWritten * 520) + (sensorsWritten * 900));
   out += F("{\n");
 
   appendKey_(out, 1, "contract");
@@ -574,7 +667,8 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   out += F("},\n");
 
   for (uint16_t i = 0; i < columnsWritten; ++i) {
-    appendSignalColumn_(out, columns, i, true);
+    if (columns[i].diagnostic) appendDiagnosticColumn_(out, columns, i, true);
+    else appendSignalColumn_(out, columns, i, true);
   }
 
   appendIndent_(out, 2);

@@ -242,6 +242,7 @@ Suggested sensor fields:
 - `domain`: string
 - `raw_unit`: string
 - `calibration`: object
+- `device_config`: object
 
 Suggested linear calibration fields:
 - `type`
@@ -256,6 +257,15 @@ Suggested linear calibration fields:
 Constraints:
 - if `calibration` is present, `type`, `input_unit`, and `output_unit` SHOULD be present
 - if `sensor_full_travel` is present, it is interpreted in `calibration.output_unit`
+- if `device_config` is present, it describes producer-observed device register
+  or configuration state at log start. Producers MUST NOT use this object to
+  imply that the device was reconfigured during logging unless they explicitly
+  include a write/action record or write-status fields. For read-only snapshots,
+  producers SHOULD set `policy: "read_only"` and a `status` such as `read_ok`,
+  `read_failed`, or `not_read`. For startup-time volatile configuration followed
+  by a register readback, producers SHOULD set
+  `policy: "volatile_write_then_read"` and include write fields such as
+  `write_status` and the requested setting where practical.
 
 ### 7.6 `transforms`
 
@@ -307,6 +317,7 @@ Generic sidecar rule:
 Supported `class` values:
 - `time`
 - `signal`
+- `diagnostic`
 - `index`
 - `event_flag`
 - `qc_flag`
@@ -323,6 +334,12 @@ Required for `class: "time"`:
 Required for `class: "signal"`:
 - `stream`
 - `quantity`
+- `unit`
+
+Required for `class: "diagnostic"`:
+- `stream`
+- `sensor`
+- `metric`
 - `unit`
 
 Optional signal fields:
@@ -371,6 +388,11 @@ Constraints:
 Interpretation rules:
 - `quantity: "raw"` identifies raw signal columns
 - engineered signals use any non-`raw` quantity, for example `disp`, `ang_disp`, `vel`, `acc`
+- diagnostic columns are not physical motion/pressure/etc signals; they use
+  `class: "diagnostic"` and `metric`, not `quantity`
+- diagnostic columns identify the source sensor with `sensor` and SHOULD NOT
+  inherit bike-level `end` or physical `domain` values from the sensor's primary
+  signal
 - `end`, when present, identifies front/rear bike location and SHOULD be one of `front` or `rear`
 - for front/rear suspension and wheel signals, `end` is used for bike-level
   semantic matching; `sensor` identifies only the logger/source sensor when
@@ -408,8 +430,9 @@ Suggested `time` fields:
 No fixed vocabulary is required for `warnings` in v0.2.
 
 Logger firmware should put runtime QC counters such as `samples_dropped`,
-`queue_max`, and `flush_count` in `qc.run_stats` rather than appending them to
-the CSV data file.
+`queue_max`, `flush_count`, `sampler_late_ticks`,
+`sampler_late_max_lag_ms`, and `missed_sample_slots` in `qc.run_stats` rather
+than appending them to the CSV data file.
 
 ### 7.9 `provenance`
 
@@ -468,18 +491,19 @@ A sidecar is structurally valid if all of the following hold:
 10. `columns` exists and is an object.
 11. Every column entry is an object.
 12. Every column entry contains `csv_ref`, `class`, and `dtype`.
-13. Every `class` value is one of `time`, `signal`, `index`, `event_flag`, `qc_flag`.
+13. Every `class` value is one of `time`, `signal`, `diagnostic`, `index`, `event_flag`, `qc_flag`.
 14. Every `csv_ref.by` value is one of `header` or `index`.
 15. Every `csv_ref.by == "header"` entry contains `header`.
 16. Every `csv_ref.by == "index"` entry contains `index`.
 17. Every `time` column entry contains `stream` and `unit`.
 18. Every `signal` column entry contains `stream`, `quantity`, and `unit`.
-19. If present, `transform_chain` MUST be an array of strings.
-20. If present, `source_columns` MUST be an array of strings.
-21. If present, `calibration_ref` MUST be a string.
-22. If present, `required` MUST be a boolean.
-23. If present, `sensors` MUST be an object.
-24. If present, `transforms` MUST be an object.
+19. Every `diagnostic` column entry contains `stream`, `sensor`, `metric`, and `unit`.
+20. If present, `transform_chain` MUST be an array of strings.
+21. If present, `source_columns` MUST be an array of strings.
+22. If present, `calibration_ref` MUST be a string.
+23. If present, `required` MUST be a boolean.
+24. If present, `sensors` MUST be an object.
+25. If present, `transforms` MUST be an object.
 
 ### 9.2 Cross-file validation
 
@@ -500,7 +524,7 @@ A session sidecar and CSV file pair is cross-file valid if all of the following 
 13. Every numeric time column contains only finite values.
 14. Every derived elapsed-time axis is monotonic non-decreasing.
 15. Every stream's time encoding is sufficient to derive elapsed time within the session.
-16. Every `signal` column is parseable as numeric or nullable numeric.
+16. Every `signal` and `diagnostic` column is parseable as numeric or nullable numeric.
 17. If `data_file.row_count` is present, it matches the number of CSV data rows.
 18. If `data_file.sha256` is present, it matches the CSV file content.
 

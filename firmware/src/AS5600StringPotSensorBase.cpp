@@ -8,6 +8,10 @@
 
 namespace {
 
+const char* linearUnit_(const char* configured) {
+  return (configured && configured[0]) ? configured : "mm";
+}
+
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
   if (!src) src = "";
@@ -192,7 +196,7 @@ void AS5600StringPotSensorBase::getColumnName(uint8_t idx, char* out, size_t cap
   }
 
   if (isLinearSecondaryColumn_(idx)) {
-    writeColumnLabel_(name(), m_unitsLabel, out, cap);
+    writeColumnLabel_(name(), linearUnit_(m_unitsLabel), out, cap);
     return;
   }
 
@@ -203,7 +207,7 @@ void AS5600StringPotSensorBase::getColumnName(uint8_t idx, char* out, size_t cap
   }
 
   if (idx == 0) {
-    writeColumnLabel_(name(), m_outputUnitsLabel, out, cap);
+    writeColumnLabel_(name(), linearUnit_(m_outputUnitsLabel), out, cap);
   }
 }
 
@@ -238,7 +242,7 @@ bool AS5600StringPotSensorBase::describeColumn(uint8_t idx, SensorColumnDescript
     }
   } else {
     copyField_(out.quantity, sizeof(out.quantity), m_primaryQuantity);
-    copyField_(out.unit, sizeof(out.unit), m_outputUnitsLabel);
+    copyField_(out.unit, sizeof(out.unit), linearUnit_(m_outputUnitsLabel));
     copyField_(out.source, sizeof(out.source),
                linearSecondary ? "linearized" : (out.transformed ? "transformed" : "linear_calibrated"));
     copyField_(out.calibrationId, sizeof(out.calibrationId), "linear_unwrapped");
@@ -276,7 +280,7 @@ bool AS5600StringPotSensorBase::describeSensorMetadata(SensorMetadataDescriptor&
   copyField_(out.rawUnit, sizeof(out.rawUnit), "counts");
   copyField_(out.calibrationType, sizeof(out.calibrationType), "linear");
   copyField_(out.calibrationInputUnit, sizeof(out.calibrationInputUnit), "counts");
-  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), m_outputUnitsLabel);
+  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), linearUnit_(m_outputUnitsLabel));
   out.installedZeroCount = installed_zero_count_;
   out.sensorZeroCount = sensor_zero_count_;
   out.sensorFullCount = sensor_full_count_;
@@ -440,5 +444,5 @@ void AS5600StringPotSensorBase::setIncludeRaw(bool b) {
 }
 
 void AS5600StringPotSensorBase::setOutputUnitsLabel(const char* u) {
-  Sensor::setOutputUnitsLabel(u);
+  Sensor::setOutputUnitsLabel(linearUnit_(u));
 }

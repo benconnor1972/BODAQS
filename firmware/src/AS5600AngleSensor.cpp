@@ -16,15 +16,24 @@
 namespace {
 
 static constexpr uint8_t kDefaultAddress = 0x36;
+static constexpr uint8_t kZposMsbReg = 0x01;
+static constexpr uint8_t kMposMsbReg = 0x03;
+static constexpr uint8_t kMangMsbReg = 0x05;
+static constexpr uint8_t kConfMsbReg = 0x07;
 static constexpr uint8_t kStatusReg = 0x0B;
 static constexpr uint8_t kRawAngleMsbReg = 0x0C;
+static constexpr uint8_t kAngleMsbReg = 0x0E;
 static constexpr uint8_t kAgcReg = 0x1A;
 static constexpr uint8_t kMagnitudeMsbReg = 0x1B;
 static constexpr uint16_t kCountsPerTurn = 4096;
 static constexpr uint16_t kHalfTurn = kCountsPerTurn / 2;
 static constexpr float kDegreesPerCount = 360.0f / float(kCountsPerTurn);
 static constexpr uint32_t kDefaultDiagnosticIntervalMs = 250;
+static constexpr uint32_t kDeviceConfigRetryMs = 2000;
 static constexpr int32_t kDirectionMinDeltaCounts = int32_t(kCountsPerTurn / 720); // about 0.5 deg
+static constexpr uint8_t kDiagnosticColumnCount = 7;
+static constexpr uint16_t kConfSlowFilterMask = 0x0300;
+static constexpr uint8_t kConfSlowFilterShift = 8;
 
 static constexpr uint8_t kStatusMagnetTooStrong = 0x08;
 static constexpr uint8_t kStatusMagnetTooWeak = 0x10;
@@ -81,6 +90,21 @@ const char* directionName_(int8_t sign) {
   return (sign < 0) ? "counts_decrease_positive" : "counts_increase_positive";
 }
 
+int8_t parseSlowFilterCode_(const String& value) {
+  String s = value;
+  s.trim();
+  s.toLowerCase();
+  s.replace("-", "_");
+  s.replace(" ", "");
+
+  if (!s.length() || s == "unchanged" || s == "default" || s == "none" || s == "-1") return -1;
+  if (s == "16x" || s == "16" || s == "0") return 0;
+  if (s == "8x" || s == "8" || s == "1") return 1;
+  if (s == "4x" || s == "4" || s == "2") return 2;
+  if (s == "2x" || s == "3") return 3;
+  return -1;
+}
+
 uint32_t busHz_(uint8_t busIndex) {
   const board::I2CProfile* profile = I2CManager::profile(busIndex);
   return (profile && profile->hz) ? profile->hz : 100000UL;
@@ -102,7 +126,9 @@ void loadParamsFromPack_(AS5600AngleSensor::Params& p,
   if (params.getInt("zero_count", li))    p.zeroCount = (int32_t)li;
   if (params.get("direction", s))          p.directionSign = parseDirectionSign_(s);
   if (params.getFloat("installed_range", d)) p.installedRange = (float)d;
+  if (params.get("slow_filter", s))        p.slowFilterCode = parseSlowFilterCode_(s);
   if (params.getBool("include_raw", b))   p.includeRawColumn = b;
+  if (params.getBool("include_angle", b)) p.includeAngleColumn = b;
   if (params.getBool("include_diag", b))  p.includeDiagColumns = b;
   if (params.getInt("diag_interval_ms", li)) p.diagnosticIntervalMs = (li < 0) ? 0UL : (uint32_t)li;
   if (params.get("end", s))               s.toCharArray(p.semanticEnd, sizeof(p.semanticEnd));
@@ -112,6 +138,73 @@ void loadParamsFromPack_(AS5600AngleSensor::Params& p,
 
 uint16_t decode12_(uint8_t msb, uint8_t lsb) {
   return (uint16_t(msb & 0x0Fu) << 8) | lsb;
+}
+
+uint16_t decode16_(uint8_t msb, uint8_t lsb) {
+  return (uint16_t(msb) << 8) | lsb;
+}
+
+const char* as5600PowerModeName_(uint8_t v) {
+  switch (v & 0x03u) {
+    case 0: return "nom";
+    case 1: return "lpm1";
+    case 2: return "lpm2";
+    case 3: return "lpm3";
+    default: return "";
+  }
+}
+
+const char* as5600HysteresisName_(uint8_t v) {
+  switch (v & 0x03u) {
+    case 0: return "off";
+    case 1: return "1_lsb";
+    case 2: return "2_lsb";
+    case 3: return "3_lsb";
+    default: return "";
+  }
+}
+
+const char* as5600OutputStageName_(uint8_t v) {
+  switch (v & 0x03u) {
+    case 0: return "analog_full";
+    case 1: return "analog_reduced";
+    case 2: return "pwm";
+    default: return "reserved";
+  }
+}
+
+const char* as5600PwmFrequencyName_(uint8_t v) {
+  switch (v & 0x03u) {
+    case 0: return "115hz";
+    case 1: return "230hz";
+    case 2: return "460hz";
+    case 3: return "920hz";
+    default: return "";
+  }
+}
+
+const char* as5600SlowFilterName_(uint8_t v) {
+  switch (v & 0x03u) {
+    case 0: return "16x";
+    case 1: return "8x";
+    case 2: return "4x";
+    case 3: return "2x";
+    default: return "";
+  }
+}
+
+const char* as5600FastFilterThresholdName_(uint8_t v) {
+  switch (v & 0x07u) {
+    case 0: return "slow_only";
+    case 1: return "6_lsb";
+    case 2: return "7_lsb";
+    case 3: return "9_lsb";
+    case 4: return "18_lsb";
+    case 5: return "21_lsb";
+    case 6: return "24_lsb";
+    case 7: return "10_lsb";
+    default: return "";
+  }
 }
 
 } // namespace
@@ -132,7 +225,9 @@ void AS5600AngleSensor::applyParams(const Params& p) {
   m_zeroCount = normalizeCount_(p.zeroCount);
   m_directionSign = (p.directionSign < 0) ? -1 : 1;
   m_installedRange = p.installedRange;
+  m_slowFilterCode = (p.slowFilterCode >= 0 && p.slowFilterCode <= 3) ? p.slowFilterCode : -1;
   m_includeRaw = p.includeRawColumn;
+  m_includeAngleColumn = p.includeAngleColumn;
   m_includeDiagColumns = p.includeDiagColumns;
   m_diagnosticIntervalMs = p.diagnosticIntervalMs;
 
@@ -159,7 +254,25 @@ void AS5600AngleSensor::begin() {
   m_lastStatus = 0;
   m_lastAgc = 0;
   m_lastMagnitude = 0;
+  m_lastReadOk = false;
+  m_lastReadReused = false;
+  m_rawReadFailures = 0;
   m_diagnosticReadFailures = 0;
+  m_configWriteAttempted = false;
+  m_configWriteOk = false;
+  m_nextConfigWriteMs = 0;
+  m_deviceConfigReadAttempted = false;
+  m_deviceConfigReadOk = false;
+  m_nextDeviceConfigReadMs = 0;
+  m_configRawAngle = 0;
+  m_configAngle = 0;
+  m_configZpos = 0;
+  m_configMpos = 0;
+  m_configMang = 0;
+  m_configConf = 0;
+  m_configStatus = 0;
+  m_configAgc = 0;
+  m_configMagnitude = 0;
   m_calUnwrapInit = false;
   m_calLastUnwrapped = 0;
 
@@ -175,9 +288,12 @@ void AS5600AngleSensor::begin() {
     return;
   }
 
+  maybeApplyVolatileConfig_();
+
   uint16_t raw = 0;
   if (readRawAngle_(raw)) {
     refreshDiagnostics_(true);
+    readDeviceConfig_();
     AS5600A_LOGI("sensor '%s': ready at 0x%02X bus%u raw=%u status=0x%02X agc=%u mag=%u zero=%ld direction=%s bus_hz=%lu read_mode=%s\n",
                  name(),
                  (unsigned)m_i2cAddr,
@@ -190,6 +306,8 @@ void AS5600AngleSensor::begin() {
                  directionName_(m_directionSign),
                  (unsigned long)busHz_(m_busIndex),
                  (m_readMode == I2CReadMode::RepeatedStart) ? "repeated" : "stop");
+  } else {
+    readDeviceConfig_();
   }
 }
 
@@ -239,6 +357,17 @@ bool AS5600AngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t l
   return true;
 }
 
+bool AS5600AngleSensor::writeRegBytesLocked_(uint8_t reg, const uint8_t* data, uint8_t len) const {
+  if (!m_wire || !data || len == 0) return false;
+
+  m_wire->beginTransmission(m_i2cAddr);
+  m_wire->write(reg);
+  for (uint8_t i = 0; i < len; ++i) {
+    m_wire->write(data[i]);
+  }
+  return m_wire->endTransmission(true) == 0;
+}
+
 bool AS5600AngleSensor::readOutputBlock_(OutputSample& out) const {
   out = OutputSample{};
   if (!m_wire) {
@@ -253,6 +382,23 @@ bool AS5600AngleSensor::readOutputBlock_(OutputSample& out) const {
   if (!ok) return false;
 
   out.angle = decode12_(bytes[0], bytes[1]);
+  return true;
+}
+
+bool AS5600AngleSensor::readAngleRegister_(uint16_t& out) const {
+  out = 0;
+  if (!m_wire) {
+    m_wire = I2CManager::bus(m_busIndex);
+  }
+  if (!m_wire) return false;
+  if (!I2CManager::lock(m_wire)) return false;
+
+  uint8_t bytes[2] = {0, 0};
+  const bool ok = readRegBytesLocked_(kAngleMsbReg, bytes, sizeof(bytes));
+  I2CManager::unlock(m_wire);
+  if (!ok) return false;
+
+  out = decode12_(bytes[0], bytes[1]);
   return true;
 }
 
@@ -281,6 +427,163 @@ bool AS5600AngleSensor::readDiagnostics_(OutputSample& out) const {
   out.agc = agc;
   out.magnitude = decode12_(magnitudeBytes[0], magnitudeBytes[1]);
   return true;
+}
+
+bool AS5600AngleSensor::applyVolatileConfig_() const {
+  m_configWriteAttempted = true;
+  m_configWriteOk = false;
+
+  if (m_slowFilterCode < 0) {
+    m_configWriteOk = true;
+    return true;
+  }
+
+  if (!m_wire) {
+    m_wire = I2CManager::bus(m_busIndex);
+  }
+  if (!m_wire) {
+    m_nextConfigWriteMs = millis() + kDeviceConfigRetryMs;
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    m_nextConfigWriteMs = millis() + kDeviceConfigRetryMs;
+    return false;
+  }
+
+  uint8_t confBytes[2] = {0, 0};
+  bool ok = readRegBytesLocked_(kConfMsbReg, confBytes, sizeof(confBytes));
+  uint16_t oldConf = ok ? decode16_(confBytes[0], confBytes[1]) : 0;
+  uint16_t newConf = oldConf;
+  if (ok) {
+    newConf = (uint16_t)((oldConf & ~kConfSlowFilterMask) |
+                         ((uint16_t(m_slowFilterCode) << kConfSlowFilterShift) & kConfSlowFilterMask));
+    if (newConf != oldConf) {
+      uint8_t outBytes[2] = {
+        (uint8_t)((newConf >> 8) & 0xFFu),
+        (uint8_t)(newConf & 0xFFu),
+      };
+      ok = writeRegBytesLocked_(kConfMsbReg, outBytes, sizeof(outBytes));
+    }
+  }
+
+  I2CManager::unlock(m_wire);
+
+  if (!ok) {
+    m_nextConfigWriteMs = millis() + kDeviceConfigRetryMs;
+    AS5600A_LOGW("sensor '%s': slow_filter=%s volatile config write failed at 0x%02X on bus %u\n",
+                 name(),
+                 as5600SlowFilterName_((uint8_t)m_slowFilterCode),
+                 (unsigned)m_i2cAddr,
+                 (unsigned)m_busIndex);
+    return false;
+  }
+
+  m_configWriteOk = true;
+  m_nextConfigWriteMs = 0;
+  m_deviceConfigReadOk = false;
+  m_nextDeviceConfigReadMs = 0;
+  AS5600A_LOGI("sensor '%s': slow_filter=%s volatile config conf 0x%04X -> 0x%04X\n",
+               name(),
+               as5600SlowFilterName_((uint8_t)m_slowFilterCode),
+               (unsigned)oldConf,
+               (unsigned)newConf);
+  return true;
+}
+
+bool AS5600AngleSensor::maybeApplyVolatileConfig_() const {
+  if (m_slowFilterCode < 0) return true;
+  if (m_configWriteOk) return true;
+
+  const uint32_t now = millis();
+  if (m_nextConfigWriteMs != 0 &&
+      (int32_t)(now - m_nextConfigWriteMs) < 0) {
+    return false;
+  }
+
+  return applyVolatileConfig_();
+}
+
+bool AS5600AngleSensor::readDeviceConfig_() const {
+  m_deviceConfigReadAttempted = true;
+  m_deviceConfigReadOk = false;
+
+  if (!m_wire) {
+    m_wire = I2CManager::bus(m_busIndex);
+  }
+  if (!m_wire) {
+    m_nextDeviceConfigReadMs = millis() + kDeviceConfigRetryMs;
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    m_nextDeviceConfigReadMs = millis() + kDeviceConfigRetryMs;
+    return false;
+  }
+
+  uint8_t zposBytes[2] = {0, 0};
+  uint8_t mposBytes[2] = {0, 0};
+  uint8_t mangBytes[2] = {0, 0};
+  uint8_t confBytes[2] = {0, 0};
+  uint8_t rawBytes[2] = {0, 0};
+  uint8_t angleBytes[2] = {0, 0};
+  uint8_t status = 0;
+  uint8_t agc = 0;
+  uint8_t magnitudeBytes[2] = {0, 0};
+
+  const bool ok =
+    readRegBytesLocked_(kZposMsbReg, zposBytes, sizeof(zposBytes)) &&
+    readRegBytesLocked_(kMposMsbReg, mposBytes, sizeof(mposBytes)) &&
+    readRegBytesLocked_(kMangMsbReg, mangBytes, sizeof(mangBytes)) &&
+    readRegBytesLocked_(kConfMsbReg, confBytes, sizeof(confBytes)) &&
+    readRegBytesLocked_(kRawAngleMsbReg, rawBytes, sizeof(rawBytes)) &&
+    readRegBytesLocked_(kAngleMsbReg, angleBytes, sizeof(angleBytes)) &&
+    readRegBytesLocked_(kStatusReg, &status, 1) &&
+    readRegBytesLocked_(kAgcReg, &agc, 1) &&
+    readRegBytesLocked_(kMagnitudeMsbReg, magnitudeBytes, sizeof(magnitudeBytes));
+
+  I2CManager::unlock(m_wire);
+  if (!ok) {
+    m_nextDeviceConfigReadMs = millis() + kDeviceConfigRetryMs;
+    AS5600A_LOGW("sensor '%s': read-only config snapshot failed at 0x%02X on bus %u\n",
+                 name(), (unsigned)m_i2cAddr, (unsigned)m_busIndex);
+    return false;
+  }
+
+  m_configZpos = decode12_(zposBytes[0], zposBytes[1]);
+  m_configMpos = decode12_(mposBytes[0], mposBytes[1]);
+  m_configMang = decode12_(mangBytes[0], mangBytes[1]);
+  m_configConf = decode16_(confBytes[0], confBytes[1]);
+  m_configRawAngle = decode12_(rawBytes[0], rawBytes[1]);
+  m_configAngle = decode12_(angleBytes[0], angleBytes[1]);
+  m_configStatus = status;
+  m_configAgc = agc;
+  m_configMagnitude = decode12_(magnitudeBytes[0], magnitudeBytes[1]);
+  m_deviceConfigReadOk = true;
+  m_nextDeviceConfigReadMs = 0;
+
+  AS5600A_LOGI("sensor '%s': config snapshot zpos=%u mpos=%u mang=%u conf=0x%04X raw=%u angle=%u status=0x%02X agc=%u mag=%u\n",
+               name(),
+               (unsigned)m_configZpos,
+               (unsigned)m_configMpos,
+               (unsigned)m_configMang,
+               (unsigned)m_configConf,
+               (unsigned)m_configRawAngle,
+               (unsigned)m_configAngle,
+               (unsigned)m_configStatus,
+               (unsigned)m_configAgc,
+               (unsigned)m_configMagnitude);
+  return true;
+}
+
+bool AS5600AngleSensor::maybeRefreshDeviceConfig_() const {
+  if (m_deviceConfigReadOk) return true;
+
+  const uint32_t now = millis();
+  if (m_nextDeviceConfigReadMs != 0 &&
+      (int32_t)(now - m_nextDeviceConfigReadMs) < 0) {
+    return false;
+  }
+
+  return readDeviceConfig_();
 }
 
 bool AS5600AngleSensor::refreshDiagnostics_(bool force) const {
@@ -404,6 +707,8 @@ bool AS5600AngleSensor::readRawAngle_(uint16_t& out) const {
   out = sample.angle;
   m_lastGoodRaw = int(sample.angle);
   m_haveLastGoodRaw = true;
+  m_lastReadOk = true;
+  m_lastReadReused = false;
   m_warnedRead = false;
   m_nextReadAttemptMs = 0;
   refreshDiagnostics_(false);
@@ -420,18 +725,28 @@ int AS5600AngleSensor::readRawAngleOnce_() const {
                    name(), (unsigned)m_busIndex);
       m_warnedNoBus = true;
     }
+    m_lastReadOk = false;
+    m_lastReadReused = m_haveLastGoodRaw;
+    ++m_rawReadFailures;
     return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
   }
 
   const uint32_t now = millis();
+  maybeApplyVolatileConfig_();
+
   if (m_nextReadAttemptMs != 0 &&
       (int32_t)(now - m_nextReadAttemptMs) < 0) {
+    m_lastReadOk = false;
+    m_lastReadReused = m_haveLastGoodRaw;
     return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
   }
 
   uint16_t raw = 0;
   for (uint8_t attempt = 0; attempt < 3; ++attempt) {
-    if (readRawAngle_(raw)) return int(raw);
+    if (readRawAngle_(raw)) {
+      maybeRefreshDeviceConfig_();
+      return int(raw);
+    }
     delayMicroseconds(150);
   }
 
@@ -445,6 +760,9 @@ int AS5600AngleSensor::readRawAngleOnce_() const {
     m_warnedRead = true;
     logFailureProbe_();
   }
+  ++m_rawReadFailures;
+  m_lastReadOk = false;
+  m_lastReadReused = m_haveLastGoodRaw;
   m_nextReadAttemptMs = now + (m_haveLastGoodRaw ? 250UL : 1000UL);
   return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
 }
@@ -498,7 +816,8 @@ void AS5600AngleSensor::sample(float& primaryOut, int& rawOut) const {
 
 uint8_t AS5600AngleSensor::columnCount() const {
   uint8_t count = (m_includeRaw && m_mode != OutputMode::RAW) ? 2 : 1;
-  if (m_includeDiagColumns) count += 3;
+  if (m_includeAngleColumn) ++count;
+  if (m_includeDiagColumns) count += kDiagnosticColumnCount;
   return count;
 }
 
@@ -522,13 +841,24 @@ void AS5600AngleSensor::getColumnName(uint8_t idx, char* out, size_t cap) const 
     return;
   }
 
-  const uint8_t diagStart = (m_includeRaw && m_mode != OutputMode::RAW) ? 2 : 1;
-  if (m_includeDiagColumns && idx >= diagStart && idx < diagStart + 3) {
+  const uint8_t angleIdx = (m_includeRaw && m_mode != OutputMode::RAW) ? 2 : 1;
+  if (m_includeAngleColumn && idx == angleIdx) {
+    String s = String(name()) + "_angle [counts]";
+    s.toCharArray(out, cap);
+    return;
+  }
+
+  const uint8_t diagStart = angleIdx + (m_includeAngleColumn ? 1 : 0);
+  if (m_includeDiagColumns && idx >= diagStart && idx < diagStart + kDiagnosticColumnCount) {
     String s = String(name());
     switch (idx - diagStart) {
       case 0: s += "_agc [counts]"; break;
       case 1: s += "_status [flags]"; break;
       case 2: s += "_mag [counts]"; break;
+      case 3: s += "_read_ok [flags]"; break;
+      case 4: s += "_reused [flags]"; break;
+      case 5: s += "_read_failures [count]"; break;
+      case 6: s += "_diag_failures [count]"; break;
       default: break;
     }
     s.toCharArray(out, cap);
@@ -547,6 +877,10 @@ void AS5600AngleSensor::sampleValues(float* out, uint8_t max) {
   if (m_includeRaw && m_mode != OutputMode::RAW && w < max) {
     out[w++] = float(raw);
   }
+  if (m_includeAngleColumn && w < max) {
+    uint16_t angle = 0;
+    out[w++] = readAngleRegister_(angle) ? float(angle) : NAN;
+  }
   if (m_includeDiagColumns && w < max) {
     refreshDiagnostics_(false);
     out[w++] = m_haveDiagnostics ? float(m_lastAgc) : NAN;
@@ -557,6 +891,18 @@ void AS5600AngleSensor::sampleValues(float* out, uint8_t max) {
   if (m_includeDiagColumns && w < max) {
     out[w++] = m_haveDiagnostics ? float(m_lastMagnitude) : NAN;
   }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = m_lastReadOk ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = m_lastReadReused ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = float(m_rawReadFailures);
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = float(m_diagnosticReadFailures);
+  }
 }
 
 bool AS5600AngleSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
@@ -564,18 +910,39 @@ bool AS5600AngleSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out)
   if (!Sensor::describeColumn(idx, out)) return false;
 
   const bool hasRawColumn = (m_includeRaw && m_mode != OutputMode::RAW);
-  const uint8_t diagStart = hasRawColumn ? 2 : 1;
-  const bool diagColumn = m_includeDiagColumns && idx >= diagStart && idx < diagStart + 3;
+  const uint8_t angleIdx = hasRawColumn ? 2 : 1;
+  if (m_includeAngleColumn && idx == angleIdx) {
+    copyField_(out.sensorName, sizeof(out.sensorName), name());
+    out.outputMode = OutputMode::RAW;
+    out.required = false;
+    out.primary = false;
+    out.raw = true;
+    out.diagnostic = true;
+    out.calibrated = false;
+    out.transformed = false;
+    out.end[0] = '\0';
+    out.domain[0] = '\0';
+    copyField_(out.source, sizeof(out.source), "as5600_angle_register");
+    copyField_(out.quantity, sizeof(out.quantity), "angle");
+    copyField_(out.unit, sizeof(out.unit), "counts");
+    snprintf(out.columnId, sizeof(out.columnId), "%s_angle", name());
+    copyField_(out.notes, sizeof(out.notes), "AS5600 ANGLE register readout");
+    return true;
+  }
+
+  const uint8_t diagStart = angleIdx + (m_includeAngleColumn ? 1 : 0);
+  const bool diagColumn = m_includeDiagColumns && idx >= diagStart && idx < diagStart + kDiagnosticColumnCount;
   if (diagColumn) {
     copyField_(out.sensorName, sizeof(out.sensorName), name());
     out.outputMode = OutputMode::RAW;
     out.required = false;
     out.primary = false;
     out.raw = true;
+    out.diagnostic = true;
     out.calibrated = false;
     out.transformed = false;
-    copyField_(out.end, sizeof(out.end), m_semanticEnd);
-    copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+    out.end[0] = '\0';
+    out.domain[0] = '\0';
     copyField_(out.source, sizeof(out.source), "as5600_diagnostic");
 
     switch (idx - diagStart) {
@@ -590,6 +957,22 @@ bool AS5600AngleSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out)
       case 2:
         copyField_(out.quantity, sizeof(out.quantity), "mag");
         copyField_(out.unit, sizeof(out.unit), "counts");
+        break;
+      case 3:
+        copyField_(out.quantity, sizeof(out.quantity), "read_ok");
+        copyField_(out.unit, sizeof(out.unit), "flags");
+        break;
+      case 4:
+        copyField_(out.quantity, sizeof(out.quantity), "reused");
+        copyField_(out.unit, sizeof(out.unit), "flags");
+        break;
+      case 5:
+        copyField_(out.quantity, sizeof(out.quantity), "read_failures");
+        copyField_(out.unit, sizeof(out.unit), "count");
+        break;
+      case 6:
+        copyField_(out.quantity, sizeof(out.quantity), "diag_failures");
+        copyField_(out.unit, sizeof(out.unit), "count");
         break;
       default:
         break;
@@ -670,6 +1053,41 @@ bool AS5600AngleSensor::describeSensorMetadata(SensorMetadataDescriptor& out) co
   out.countsPerTurn = kCountsPerTurn;
   out.wrapThresholdCounts = kHalfTurn;
   out.assumeTurn0AtStart = false;
+  out.hasDeviceConfig = true;
+  copyField_(out.deviceConfig.kind, sizeof(out.deviceConfig.kind), "as5600_registers");
+  copyField_(out.deviceConfig.policy, sizeof(out.deviceConfig.policy),
+             (m_slowFilterCode >= 0) ? "volatile_write_then_read" : "read_only");
+  copyField_(out.deviceConfig.status, sizeof(out.deviceConfig.status),
+             m_deviceConfigReadOk ? "read_ok" : (m_deviceConfigReadAttempted ? "read_failed" : "not_read"));
+  if (m_slowFilterCode >= 0) {
+    copyField_(out.deviceConfig.requestedSlowFilter, sizeof(out.deviceConfig.requestedSlowFilter),
+               as5600SlowFilterName_((uint8_t)m_slowFilterCode));
+    copyField_(out.deviceConfig.writeStatus, sizeof(out.deviceConfig.writeStatus),
+               m_configWriteOk ? "write_ok" : (m_configWriteAttempted ? "write_failed" : "not_attempted"));
+  }
+  out.deviceConfig.readOk = m_deviceConfigReadOk;
+  out.deviceConfig.rawAngle = m_configRawAngle;
+  out.deviceConfig.angle = m_configAngle;
+  out.deviceConfig.zpos = m_configZpos;
+  out.deviceConfig.mpos = m_configMpos;
+  out.deviceConfig.mang = m_configMang;
+  out.deviceConfig.conf = m_configConf;
+  out.deviceConfig.statusReg = m_configStatus;
+  out.deviceConfig.agc = m_configAgc;
+  out.deviceConfig.magnitude = m_configMagnitude;
+  copyField_(out.deviceConfig.confPowerMode, sizeof(out.deviceConfig.confPowerMode),
+             as5600PowerModeName_((uint8_t)(m_configConf & 0x03u)));
+  copyField_(out.deviceConfig.confHysteresis, sizeof(out.deviceConfig.confHysteresis),
+             as5600HysteresisName_((uint8_t)((m_configConf >> 2) & 0x03u)));
+  copyField_(out.deviceConfig.confOutputStage, sizeof(out.deviceConfig.confOutputStage),
+             as5600OutputStageName_((uint8_t)((m_configConf >> 4) & 0x03u)));
+  copyField_(out.deviceConfig.confPwmFrequency, sizeof(out.deviceConfig.confPwmFrequency),
+             as5600PwmFrequencyName_((uint8_t)((m_configConf >> 6) & 0x03u)));
+  copyField_(out.deviceConfig.confSlowFilter, sizeof(out.deviceConfig.confSlowFilter),
+             as5600SlowFilterName_((uint8_t)((m_configConf >> 8) & 0x03u)));
+  copyField_(out.deviceConfig.confFastFilterThreshold, sizeof(out.deviceConfig.confFastFilterThreshold),
+             as5600FastFilterThresholdName_((uint8_t)((m_configConf >> 10) & 0x07u)));
+  out.deviceConfig.confWatchdog = ((m_configConf >> 13) & 0x01u) != 0;
   return true;
 }
 
@@ -791,9 +1209,11 @@ const ParamDef* AS5600AngleSensor::paramDefs(size_t& count) {
     {"zero_count",       ParamType::Int,    "0",   "0",     "4095", nullptr, "Firmware zero point in raw AS5600 counts"},
     {"direction",        ParamType::Enum,   "counts_increase_positive", nullptr, nullptr, "counts_increase_positive,counts_decrease_positive", "Raw-count direction for positive angular movement"},
     {"installed_range",  ParamType::Float,  "0",   "0",     nullptr, nullptr, "Installed range in linear output units for sag percentage"},
+    {"slow_filter",      ParamType::Enum,   "unchanged", nullptr, nullptr, "unchanged,16x,8x,4x,2x", "Volatile AS5600 slow filter setting; not burned to OTP"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},
-    {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5600 AGC, status flags, and magnitude columns"},
+    {"include_angle",    ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5600 ANGLE register counts for diagnostics"},
+    {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5600 AGC, status, magnitude, read-state, and failure-counter columns"},
     {"diag_interval_ms", ParamType::Int,    "250", "0",     "5000", nullptr, "Minimum interval between AS5600 diagnostic reads"},
     {"end",              ParamType::Enum,   "",    nullptr, nullptr, "front,rear", "Optional semantic end for log metadata"},
     {"primary_domain",   ParamType::Enum,   "",    nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
