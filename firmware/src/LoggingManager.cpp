@@ -75,11 +75,25 @@ namespace {
   static uint32_t s_lateTicks    = 0;
   static uint32_t s_lateMaxLagMs = 0;
   static uint32_t s_missedSampleSlots = 0;
+  static TimingSummary s_sampleOnceUs;
+  static TimingSummary s_sensorSampleUs;
+  static TimingSummary s_enqueueUs;
+
+  static constexpr int64_t kSamplerCoarseSleepThresholdUs = 500;
+  static constexpr int64_t kSamplerFineWaitThresholdUs = 200;
+  static constexpr int64_t kSamplerFineWaitGuardUs = 100;
+  static constexpr int64_t kSamplerFineWaitMaxUs = 500;
+  static constexpr int64_t kSamplerMaxNoBlockUs = 50000;
 
   static inline void resetLateStats_() {
     s_lateTicks = 0;
     s_lateMaxLagMs = 0;
     s_missedSampleSlots = 0;
+#if BODAQS_TIMING_INSTRUMENTATION
+    TimingStats_reset(s_sampleOnceUs);
+    TimingStats_reset(s_sensorSampleUs);
+    TimingStats_reset(s_enqueueUs);
+#endif
   }
 
   // One sample, no scheduling logic (task provides cadence)
@@ -103,6 +117,9 @@ static inline void sampleOnce_() {
     s_prodCount = 0;
     s_prodT0_ms = now_ms;
   }
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t sampleT0 = micros();
+#endif
 
   // --------- Deterministic timestamp for THIS sample (grid-aligned) ---------
   uint32_t intervalMs = s_intervalMs;
@@ -126,38 +143,52 @@ static inline void sampleOnce_() {
 
   float values[LoggerLimits::kMaxDynamicColumns];
   uint16_t nWritten = 0;
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t sensorT0 = micros();
+#endif
   SensorManager::sampleValues(values, s_maxOutCached, nWritten);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(s_sensorSampleUs, (uint32_t)(micros() - sensorT0));
+#endif
 
   // --------- One mark per sample ---------
   uint64_t markTime = 0;
   bool markNow = dequeue(&markTime);
 
   // --------- Enqueue for StorageManager_loop() ---------
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t enqueueT0 = micros();
+#endif
   (void)StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, markNow);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(s_enqueueUs, (uint32_t)(micros() - enqueueT0));
+  TimingStats_record(s_sampleOnceUs, (uint32_t)(micros() - sampleT0));
+#endif
 }
 
 
 static void sampleTaskFn_(void* arg) {
   int64_t next_us = esp_timer_get_time();
+  int64_t lastBlockUs = next_us;
   bool wasRunning = false;
-  bool blockedBeforeSample = false;
 
   for (;;) {
     if (!s_running) {
       wasRunning = false;
       vTaskDelay(pdMS_TO_TICKS(10));
+      lastBlockUs = esp_timer_get_time();
       continue;
     }
 
     if (!wasRunning) {
       wasRunning = true;
       next_us = esp_timer_get_time();
+      lastBlockUs = next_us;
     }
 
     uint32_t intervalMs = s_intervalMs;
     if (intervalMs == 0) intervalMs = 1;
     const int64_t interval_us = (int64_t)intervalMs * 1000LL;
-    blockedBeforeSample = false;
 
     // Wait for the next scheduled slot. If we are already late, skip missed
     // slots instead of trying to catch up with a no-yield burst of samples.
@@ -181,17 +212,36 @@ static void sampleTaskFn_(void* arg) {
         break;
       }
 
-      vTaskDelay(1);
-      blockedBeforeSample = true;
+      if (remaining_us > kSamplerCoarseSleepThresholdUs) {
+        vTaskDelay(1);
+        lastBlockUs = esp_timer_get_time();
+      } else if ((now_us - lastBlockUs) >= kSamplerMaxNoBlockUs &&
+                 remaining_us > kSamplerFineWaitThresholdUs) {
+        // At high sample rates the task can spend long stretches in sub-tick
+        // waits. Take a real RTOS sleep periodically so CPU0's idle task can
+        // feed the watchdog, even if that costs a little sampling lateness.
+        vTaskDelay(1);
+        lastBlockUs = esp_timer_get_time();
+      } else if (remaining_us > kSamplerFineWaitThresholdUs) {
+        int64_t delay_us = remaining_us - kSamplerFineWaitGuardUs;
+        if (delay_us > kSamplerFineWaitMaxUs) delay_us = kSamplerFineWaitMaxUs;
+        if (delay_us > 0) delayMicroseconds((uint32_t)delay_us);
+      } else {
+        // Close to the deadline: stay on-core rather than risking a full RTOS
+        // tick of oversleep. Logging mode has Wi-Fi down, so this short spin is
+        // preferable to drifting a 2 ms sampling cadence.
+      }
     }
 
     sampleOnce_();
 
-    next_us += interval_us;
-
-    if (!blockedBeforeSample) {
+    const int64_t afterSampleUs = esp_timer_get_time();
+    if ((afterSampleUs - lastBlockUs) >= kSamplerMaxNoBlockUs) {
       vTaskDelay(1);
+      lastBlockUs = esp_timer_get_time();
     }
+
+    next_us += interval_us;
   }
 }
 
@@ -306,6 +356,7 @@ bool LoggingManager::start() {
   TRACE("storagemanager_startlog complete");
 
   const uint32_t sensorStartT0 = millis();
+  AnalogInputManager::onLoggingStart();
   SensorManager::onLoggingStart();
   const uint32_t sensorStartMs = millis() - sensorStartT0;
   s_running = true;
@@ -358,8 +409,24 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
   s_lastSample = now - s_intervalMs;
 }
 
+LoggingManager::RuntimeStats LoggingManager::runtimeStats() {
+  RuntimeStats out;
+#if defined(ESP32)
+  out.samplerLateTicks = s_lateTicks;
+  out.samplerLateMaxLagMs = s_lateMaxLagMs;
+  out.missedSampleSlots = s_missedSampleSlots;
+#if BODAQS_TIMING_INSTRUMENTATION
+  out.sampleOnceUs = s_sampleOnceUs;
+  out.sensorSampleUs = s_sensorSampleUs;
+  out.enqueueUs = s_enqueueUs;
+#endif
+#endif
+  return out;
+}
+
 void LoggingManager::stop() {
   s_running = false;
+  AnalogInputManager::onLoggingStop();
   SensorManager::onLoggingStop();
   IndicatorManager::ledOff();
   StorageManager_stopLog();

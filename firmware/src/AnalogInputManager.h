@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <stdint.h>
 #include "BoardProfile.h"
+#include "TimingStats.h"
 
 struct LoggerConfig;
 
@@ -23,6 +24,10 @@ namespace AnalogInputManager {
   uint16_t requestedSampleRateHz();
   uint8_t activeChannelCount(uint8_t externalAdcIndex);
   uint16_t configuredDataRateSps(uint8_t externalAdcIndex);
+  void resetTimingStats();
+  const ExternalAdcTimingStats& timingStats();
+  void onLoggingStart();
+  void onLoggingStop();
 
   // Called once around each logger sample so external ADC channels can be
   // converted once and then reused by all sensor columns in that row.

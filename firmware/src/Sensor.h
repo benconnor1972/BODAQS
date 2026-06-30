@@ -86,9 +86,37 @@ struct SensorColumnDescriptor {
   bool required = true;
   bool primary = false;
   bool raw = false;
+  bool diagnostic = false;
   bool calibrated = false;
   bool transformed = false;
   bool semanticSelectionExcluded = false;
+};
+
+struct SensorDeviceConfigDescriptor {
+  char kind[32] = {0};
+  char policy[24] = {0};
+  char status[24] = {0};
+  char requestedSlowFilter[12] = {0};
+  char writeStatus[24] = {0};
+  bool readOk = false;
+
+  uint16_t rawAngle = 0;
+  uint16_t angle = 0;
+  uint16_t zpos = 0;
+  uint16_t mpos = 0;
+  uint16_t mang = 0;
+  uint16_t conf = 0;
+  uint8_t statusReg = 0;
+  uint8_t agc = 0;
+  uint16_t magnitude = 0;
+
+  char confPowerMode[16] = {0};
+  char confHysteresis[16] = {0};
+  char confOutputStage[20] = {0};
+  char confPwmFrequency[16] = {0};
+  char confSlowFilter[12] = {0};
+  char confFastFilterThreshold[12] = {0};
+  bool confWatchdog = false;
 };
 
 struct SensorMetadataDescriptor {
@@ -111,6 +139,8 @@ struct SensorMetadataDescriptor {
   uint16_t countsPerTurn = 0;
   uint16_t wrapThresholdCounts = 0;
   bool assumeTurn0AtStart = false;
+  bool hasDeviceConfig = false;
+  SensorDeviceConfigDescriptor deviceConfig;
 };
 
 struct LoggerConfig;

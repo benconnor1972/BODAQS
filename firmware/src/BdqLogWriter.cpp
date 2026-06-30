@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#include <new>
+#include "BoardProfile.h"
 #include "FirmwareInfo.h"
 #include "SensorManager.h"
 #include "DebugLog.h"
@@ -59,6 +61,7 @@ struct ColumnLayout {
   char source[24] = {0};
   char kind[8] = {0};
   char processingRole[24] = {0};
+  char columnClass[16] = {0};
   StorageType storage = StorageType::Float32;
   uint16_t valueIndex = 0;
   uint16_t byteOffset = 0;
@@ -197,10 +200,295 @@ void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint64_t value,
   out += comma ? F(",\n") : F("\n");
 }
 
+void appendKeyInt_(String& out, uint8_t depth, const char* key, int32_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  out += String(value);
+  out += comma ? F(",\n") : F("\n");
+}
+
+void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[7];
+  snprintf(buf, sizeof(buf), "\"0x%02X\"", (unsigned)value);
+  out += buf;
+  out += comma ? F(",\n") : F("\n");
+}
+
+void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[9];
+  snprintf(buf, sizeof(buf), "\"0x%04X\"", (unsigned)value);
+  out += buf;
+  out += comma ? F(",\n") : F("\n");
+}
+
 void appendKeyBool_(String& out, uint8_t depth, const char* key, bool value, bool comma = true) {
   appendKey_(out, depth, key);
   out += value ? F("true") : F("false");
   out += comma ? F(",\n") : F("\n");
+}
+
+const TimingSummary& emptyTimingSummary_() {
+  static const TimingSummary empty;
+  return empty;
+}
+
+const StorageTimingStats& emptyStorageTiming_() {
+  static const StorageTimingStats empty;
+  return empty;
+}
+
+const ExternalAdcTimingStats& emptyExternalAdcTiming_() {
+  static const ExternalAdcTimingStats empty;
+  return empty;
+}
+
+const SensorTimingStats& emptySensorTiming_() {
+  static const SensorTimingStats empty;
+  return empty;
+}
+
+const I2CBusSchedulerTimingStats& emptyI2CSchedulerTiming_() {
+  static const I2CBusSchedulerTimingStats empty;
+  return empty;
+}
+
+void appendKeyFloat_(String& out, uint8_t depth, const char* key, float value, bool comma = true) {
+  appendKey_(out, depth, key);
+  out += String(value, 6);
+  out += comma ? F(",\n") : F("\n");
+}
+
+void appendIndent_(String& out, uint8_t depth) {
+  for (uint8_t i = 0; i < depth; ++i) out += F("  ");
+}
+
+void appendTimingSummary_(String& out, uint8_t depth, const char* key, const TimingSummary& s, bool comma = true) {
+  appendKey_(out, depth, key);
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "count", s.count);
+  appendKeyUInt_(out, depth + 1, "min_us", s.minUs);
+  appendKeyFloat_(out, depth + 1, "avg_us", TimingStats_avgUs(s));
+  appendKeyUInt_(out, depth + 1, "max_us", s.maxUs);
+  appendKeyUInt_(out, depth + 1, "total_us", s.totalUs);
+  appendKey_(out, depth + 1, "buckets_us");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 2, "lt_250", s.bucketLt250);
+  appendKeyUInt_(out, depth + 2, "250_500", s.bucket250To500);
+  appendKeyUInt_(out, depth + 2, "500_1000", s.bucket500To1000);
+  appendKeyUInt_(out, depth + 2, "1000_1500", s.bucket1000To1500);
+  appendKeyUInt_(out, depth + 2, "1500_2000", s.bucket1500To2000);
+  appendKeyUInt_(out, depth + 2, "ge_2000", s.bucketGe2000, false);
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendAdcTiming_(String& out, uint8_t depth, const ExternalAdcTimingStats& stats, bool comma = true) {
+  appendKey_(out, depth, "external_adc_timing");
+  out += F("{\n");
+  bool wroteAny = false;
+  for (uint8_t adc = 0; adc < ExternalAdcTimingStats::kMaxAdcs; ++adc) {
+    const auto& a = stats.adc[adc];
+    if (!a.present && a.activeChannels == 0 && a.scanUs.count == 0) continue;
+    if (wroteAny) out += F(",\n");
+    wroteAny = true;
+
+    char key[8];
+    snprintf(key, sizeof(key), "adc%u", (unsigned)adc);
+    appendKey_(out, depth + 1, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 2, "present", a.present);
+    appendKeyBool_(out, depth + 2, "async_running", a.asyncRunning);
+    appendKeyUInt_(out, depth + 2, "active_channels", a.activeChannels);
+    appendKeyUInt_(out, depth + 2, "configured_sps", a.configuredSps);
+    appendKeyUInt_(out, depth + 2, "wait_timeouts", a.waitTimeouts);
+    appendKeyUInt_(out, depth + 2, "drdy_already_ready", a.drdyAlreadyReady);
+    appendTimingSummary_(out, depth + 2, "scan_us", a.scanUs);
+    appendTimingSummary_(out, depth + 2, "async_loop_us", a.asyncLoopUs);
+    appendTimingSummary_(out, depth + 2, "config_us", a.configUs);
+    appendTimingSummary_(out, depth + 2, "start_us", a.startUs);
+    appendTimingSummary_(out, depth + 2, "wait_us", a.waitUs);
+    appendTimingSummary_(out, depth + 2, "read_us", a.readUs);
+    appendKey_(out, depth + 2, "channels");
+    out += F("{\n");
+    bool wroteChannel = false;
+    for (uint8_t ch = 0; ch < ExternalAdcTimingStats::kMaxChannels; ++ch) {
+      const auto& c = a.channel[ch];
+      if (c.totalUs.count == 0 && c.waitUs.count == 0 && c.rowUses == 0) continue;
+      if (wroteChannel) out += F(",\n");
+      wroteChannel = true;
+      char chKey[8];
+      snprintf(chKey, sizeof(chKey), "ch%u", (unsigned)ch);
+      appendKey_(out, depth + 3, chKey);
+      out += F("{\n");
+      appendTimingSummary_(out, depth + 4, "total_us", c.totalUs);
+      appendTimingSummary_(out, depth + 4, "wait_us", c.waitUs);
+      appendTimingSummary_(out, depth + 4, "row_age_us", c.rowAgeUs);
+      appendKeyUInt_(out, depth + 4, "acquire_ok", c.acquireOk);
+      appendKeyUInt_(out, depth + 4, "acquire_fail", c.acquireFail);
+      appendKeyUInt_(out, depth + 4, "row_uses", c.rowUses);
+      appendKeyUInt_(out, depth + 4, "row_fresh", c.rowFresh);
+      appendKeyUInt_(out, depth + 4, "row_reused", c.rowReused);
+      appendKeyUInt_(out, depth + 4, "row_no_sample", c.rowNoSample, false);
+      appendIndent_(out, depth + 3);
+      out += F("}");
+    }
+    if (wroteChannel) out += '\n';
+    appendIndent_(out, depth + 2);
+    out += F("}\n");
+    appendIndent_(out, depth + 1);
+    out += F("}");
+  }
+  if (wroteAny) out += '\n';
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendSensorTiming_(String& out, uint8_t depth, const SensorTimingStats& stats, bool comma = true) {
+  appendKey_(out, depth, "sensor_timing");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "sensor_count", stats.sensorCount);
+  appendKey_(out, depth + 1, "sensors");
+  out += F("{\n");
+
+  bool wroteAny = false;
+  for (uint8_t i = 0; i < SensorTimingStats::kMaxSensors; ++i) {
+    const auto& s = stats.sensor[i];
+    if (!s.present && s.sampleUs.count == 0) continue;
+    if (wroteAny) out += F(",\n");
+    wroteAny = true;
+
+    char key[12];
+    snprintf(key, sizeof(key), "sensor%u", (unsigned)i);
+    appendKey_(out, depth + 2, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 3, "present", s.present);
+    appendKeyBool_(out, depth + 3, "muted", s.muted);
+    appendKeyBool_(out, depth + 3, "synchronous", s.synchronous);
+    appendKeyString_(out, depth + 3, "name", s.name);
+    appendKeyString_(out, depth + 3, "label", s.label);
+    appendKeyUInt_(out, depth + 3, "column_count", s.columnCount);
+    appendTimingSummary_(out, depth + 3, "sample_us", s.sampleUs, false);
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+  if (wroteAny) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendI2CSchedulerTiming_(String& out,
+                               uint8_t depth,
+                               const I2CBusSchedulerTimingStats& stats,
+                               bool comma = true) {
+  appendKey_(out, depth, "i2c_scheduler_timing");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "client_count", stats.clientCount);
+
+  appendKey_(out, depth + 1, "buses");
+  out += F("{\n");
+  bool wroteBus = false;
+  for (uint8_t bus = 0; bus < I2CBusSchedulerTimingStats::kMaxBuses; ++bus) {
+    const auto& b = stats.bus[bus];
+    if (!b.present && !b.running && b.clientCount == 0 && b.acquireLoopUs.count == 0) continue;
+    if (wroteBus) out += F(",\n");
+    wroteBus = true;
+    char key[8];
+    snprintf(key, sizeof(key), "bus%u", (unsigned)bus);
+    appendKey_(out, depth + 2, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 3, "present", b.present);
+    appendKeyBool_(out, depth + 3, "running", b.running);
+    appendKeyUInt_(out, depth + 3, "client_count", b.clientCount);
+    appendKeyUInt_(out, depth + 3, "hz", b.hz);
+    appendTimingSummary_(out, depth + 3, "acquire_loop_us", b.acquireLoopUs, false);
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+  if (wroteBus) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("},\n");
+
+  appendKey_(out, depth + 1, "clients");
+  out += F("{\n");
+  bool wroteClient = false;
+  for (uint8_t i = 0; i < I2CBusSchedulerTimingStats::kMaxClients; ++i) {
+    const auto& c = stats.client[i];
+    if (!c.present && c.acquireUs.count == 0 && c.rowUses == 0) continue;
+    if (wroteClient) out += F(",\n");
+    wroteClient = true;
+    char key[12];
+    snprintf(key, sizeof(key), "client%u", (unsigned)i);
+    appendKey_(out, depth + 2, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 3, "present", c.present);
+    appendKeyBool_(out, depth + 3, "active", c.active);
+    appendKeyString_(out, depth + 3, "name", c.name);
+    appendKeyString_(out, depth + 3, "kind", c.kind);
+    appendKeyUInt_(out, depth + 3, "bus", c.busIndex);
+    appendKeyUInt_(out, depth + 3, "address", c.address);
+    appendKeyUInt_(out, depth + 3, "target_rate_hz", c.targetRateHz);
+    appendKeyUInt_(out, depth + 3, "period_us", c.periodUs);
+    appendKeyUInt_(out, depth + 3, "acquire_ok", c.acquireOk);
+    appendKeyUInt_(out, depth + 3, "acquire_fail", c.acquireFail);
+    appendKeyUInt_(out, depth + 3, "row_uses", c.rowUses);
+    appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
+    appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
+    appendKeyUInt_(out, depth + 3, "row_no_sample", c.rowNoSample);
+    appendTimingSummary_(out, depth + 3, "acquire_us", c.acquireUs);
+    appendTimingSummary_(out, depth + 3, "row_age_us", c.rowAgeUs, false);
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+  if (wroteClient) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendI2CBusDiagnostics_(String& out,
+                              uint8_t depth,
+                              const board::BoardProfile* bp,
+                              bool comma = true) {
+  appendKey_(out, depth, "i2c_buses");
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "board", bp ? bp->name : "");
+  appendKeyUInt_(out, depth + 1, "count", bp ? bp->i2c_count : 0);
+  appendKey_(out, depth + 1, "buses");
+  out += F("{\n");
+
+  bool wroteAny = false;
+  if (bp) {
+    const uint8_t count = (bp->i2c_count < board::BOARD_MAX_I2C_BUSES)
+      ? bp->i2c_count
+      : board::BOARD_MAX_I2C_BUSES;
+    for (uint8_t i = 0; i < count; ++i) {
+      const auto& bus = bp->i2c[i];
+      if (wroteAny) out += F(",\n");
+      wroteAny = true;
+
+      char key[8];
+      snprintf(key, sizeof(key), "bus%u", (unsigned)i);
+      appendKey_(out, depth + 2, key);
+      out += F("{\n");
+      appendKeyBool_(out, depth + 3, "present", bus.present);
+      appendKeyInt_(out, depth + 3, "sda", bus.sda);
+      appendKeyInt_(out, depth + 3, "scl", bus.scl);
+      appendKeyUInt_(out, depth + 3, "hz", bus.hz, false);
+      appendIndent_(out, depth + 2);
+      out += F("}");
+    }
+  }
+  if (wroteAny) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
 }
 
 const char* storageTypeName_(StorageType t) {
@@ -233,6 +521,84 @@ StorageType storageTypeFor_(const SensorColumnDescriptor& desc) {
   return isUnwrappedRaw_(desc) ? StorageType::Int32 : StorageType::UInt16;
 }
 
+void appendDeviceConfigObject_(String& out,
+                               const SensorDeviceConfigDescriptor& cfg,
+                               uint8_t depth,
+                               bool comma) {
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "kind", cfg.kind);
+  appendKeyString_(out, depth + 1, "policy", cfg.policy[0] ? cfg.policy : "read_only");
+  appendKeyString_(out, depth + 1, "status", cfg.status);
+  if (cfg.requestedSlowFilter[0]) appendKeyString_(out, depth + 1, "requested_slow_filter", cfg.requestedSlowFilter);
+  if (cfg.writeStatus[0]) appendKeyString_(out, depth + 1, "write_status", cfg.writeStatus);
+  appendKeyBool_(out, depth + 1, "read_ok", cfg.readOk);
+
+  appendKey_(out, depth + 1, "registers");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 2, "zpos", cfg.zpos);
+  appendKeyUInt_(out, depth + 2, "mpos", cfg.mpos);
+  appendKeyUInt_(out, depth + 2, "mang", cfg.mang);
+  appendKeyUInt_(out, depth + 2, "conf", cfg.conf);
+  appendKeyHex16_(out, depth + 2, "conf_hex", cfg.conf);
+  appendKeyUInt_(out, depth + 2, "raw_angle", cfg.rawAngle);
+  appendKeyUInt_(out, depth + 2, "angle", cfg.angle);
+  appendKeyUInt_(out, depth + 2, "status", cfg.statusReg);
+  appendKeyHex8_(out, depth + 2, "status_hex", cfg.statusReg);
+  appendKeyUInt_(out, depth + 2, "agc", cfg.agc);
+  appendKeyUInt_(out, depth + 2, "magnitude", cfg.magnitude, false);
+  for (uint8_t i = 0; i < depth + 1; ++i) out += F("  ");
+  out += F("},\n");
+
+  appendKey_(out, depth + 1, "decoded");
+  out += F("{\n");
+  appendKeyString_(out, depth + 2, "power_mode", cfg.readOk ? cfg.confPowerMode : "");
+  appendKeyString_(out, depth + 2, "hysteresis", cfg.readOk ? cfg.confHysteresis : "");
+  appendKeyString_(out, depth + 2, "output_stage", cfg.readOk ? cfg.confOutputStage : "");
+  appendKeyString_(out, depth + 2, "pwm_frequency", cfg.readOk ? cfg.confPwmFrequency : "");
+  appendKeyString_(out, depth + 2, "slow_filter", cfg.readOk ? cfg.confSlowFilter : "");
+  appendKeyString_(out, depth + 2, "fast_filter_threshold", cfg.readOk ? cfg.confFastFilterThreshold : "");
+  appendKeyBool_(out, depth + 2, "watchdog", cfg.readOk && cfg.confWatchdog, false);
+  for (uint8_t i = 0; i < depth + 1; ++i) out += F("  ");
+  out += F("}\n");
+
+  for (uint8_t i = 0; i < depth; ++i) out += F("  ");
+  out += comma ? F("},\n") : F("}\n");
+}
+
+bool appendDeviceConfigs_(String& out) {
+  const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
+  SensorMetadataDescriptor* sensors = sensorCount ? new (std::nothrow) SensorMetadataDescriptor[sensorCount] : nullptr;
+  if (sensorCount && !sensors) return false;
+
+  const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
+  uint16_t configCount = 0;
+  for (uint16_t i = 0; i < sensorsWritten; ++i) {
+    if (sensors[i].hasDeviceConfig) ++configCount;
+  }
+
+  if (configCount == 0) {
+    delete[] sensors;
+    return false;
+  }
+
+  appendKey_(out, 1, "device_configs");
+  out += F("{\n");
+  uint16_t written = 0;
+  for (uint16_t i = 0; i < sensorsWritten; ++i) {
+    const SensorMetadataDescriptor& sensor = sensors[i];
+    if (!sensor.hasDeviceConfig) continue;
+
+    out += F("    ");
+    appendJsonEscaped_(out, sensor.sensorId[0] ? sensor.sensorId : sensor.name);
+    out += F(": ");
+    appendDeviceConfigObject_(out, sensor.deviceConfig, 2, ++written < configCount);
+  }
+  out += F("  },\n");
+
+  delete[] sensors;
+  return true;
+}
+
 bool buildColumnLayout_() {
   s_columnCount = 0;
   s_frameSize = 4; // sample_id
@@ -263,6 +629,7 @@ bool buildColumnLayout_() {
     copyField_(col.source, sizeof(col.source), desc.source);
     copyField_(col.kind, sizeof(col.kind), desc.kind);
     copyField_(col.processingRole, sizeof(col.processingRole), desc.processingRole);
+    copyField_(col.columnClass, sizeof(col.columnClass), desc.diagnostic ? "diagnostic" : "signal");
     col.semanticSelectionExcluded = desc.semanticSelectionExcluded;
     const char* field = desc.columnId[0] ? desc.columnId : desc.csvHeader;
     copyField_(col.field, sizeof(col.field), field);
@@ -282,7 +649,7 @@ String buildMetadataJson_(const BdqLogSessionInfo& info) {
   const char* loggerId = loggerIdText.c_str();
 
   String out;
-  out.reserve(768);
+  out.reserve(1536);
   out += F("{\n");
   appendKeyString_(out, 1, "format", "bdq.v1");
   appendKeyString_(out, 1, "format_name", "BDQLOG v1");
@@ -299,6 +666,7 @@ String buildMetadataJson_(const BdqLogSessionInfo& info) {
   appendKeyString_(out, 1, "timezone", info.timezone && *info.timezone ? info.timezone : "unknown");
   appendKeyString_(out, 1, "started_at_utc", info.startedAtUtc);
   appendKeyString_(out, 1, "started_at_local", info.startedAtLocal);
+  appendDeviceConfigs_(out);
   appendKeyString_(out, 1, "log_format", cfg ? ConfigManager::logFormatKey(cfg->logFormat) : "bodaqs_compact_binary", false);
   out += F("}\n");
   return out;
@@ -316,11 +684,13 @@ void appendChannelJson_(String& out,
                         const char* source,
                         const char* kind,
                         const char* processingRole,
+                        const char* columnClass,
                         bool raw,
                         bool semanticSelectionExcluded,
                         bool comma) {
   out += F("    {\n");
   appendKeyString_(out, 3, "field", field);
+  if (columnClass && *columnClass) appendKeyString_(out, 3, "class", columnClass);
   appendKeyString_(out, 3, "quantity", quantity);
   appendKeyString_(out, 3, "unit", unit);
   appendKeyString_(out, 3, "storage_type", storageType);
@@ -356,7 +726,7 @@ String buildSchemaJson_() {
 
   appendKey_(out, 1, "channels");
   out += F("[\n");
-  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "frame", "", "", false, false, true);
+  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "frame", "", "", "index", false, false, true);
 
   for (uint16_t i = 0; i < s_columnCount; ++i) {
     const ColumnLayout& col = s_columns[i];
@@ -375,12 +745,13 @@ String buildSchemaJson_() {
                        col.source,
                        col.kind,
                        col.processingRole,
+                       col.columnClass,
                        col.raw,
                        col.semanticSelectionExcluded,
                        comma);
   }
 
-  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "frame", "qc", "qc_metric", false, true, false);
+  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "frame", "qc", "qc_metric", "qc_flag", false, true, false);
   out += F("  ],\n");
 
   appendKey_(out, 1, "sample_flags");
@@ -563,7 +934,28 @@ String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
   appendKeyUInt_(out, 1, "queue_depth", info.queueDepth);
   appendKeyUInt_(out, 1, "flush_count", info.flushCount);
   appendKeyUInt_(out, 1, "flush_max_ms", info.flushMaxMs);
+#if BODAQS_TIMING_INSTRUMENTATION
+  appendKeyUInt_(out, 1, "flush_total_ms", info.flushTotalMs);
+#else
   appendKeyUInt_(out, 1, "flush_total_ms", info.flushTotalMs, false);
+#endif
+#if BODAQS_TIMING_INSTRUMENTATION
+  appendKeyUInt_(out, 1, "sampler_late_ticks", info.samplerLateTicks);
+  appendKeyUInt_(out, 1, "sampler_late_max_lag_ms", info.samplerLateMaxLagMs);
+  appendKeyUInt_(out, 1, "missed_sample_slots", info.missedSampleSlots);
+  const StorageTimingStats& storageTiming = info.storageTiming ? *info.storageTiming : emptyStorageTiming_();
+  appendTimingSummary_(out, 1, "sample_once_us", info.sampleOnceUs ? *info.sampleOnceUs : emptyTimingSummary_());
+  appendTimingSummary_(out, 1, "sensor_sample_us", info.sensorSampleUs ? *info.sensorSampleUs : emptyTimingSummary_());
+  appendTimingSummary_(out, 1, "enqueue_us", info.enqueueUs ? *info.enqueueUs : emptyTimingSummary_());
+  appendTimingSummary_(out, 1, "storage_row_write_us", storageTiming.rowWriteUs);
+  appendTimingSummary_(out, 1, "storage_drain_loop_us", storageTiming.drainLoopUs);
+  appendKeyUInt_(out, 1, "storage_drain_loops", storageTiming.drainLoops);
+  appendKeyUInt_(out, 1, "storage_drain_rows", storageTiming.drainRows);
+  appendAdcTiming_(out, 1, info.externalAdcTiming ? *info.externalAdcTiming : emptyExternalAdcTiming_());
+  appendSensorTiming_(out, 1, info.sensorTiming ? *info.sensorTiming : emptySensorTiming_());
+  appendI2CSchedulerTiming_(out, 1, info.i2cSchedulerTiming ? *info.i2cSchedulerTiming : emptyI2CSchedulerTiming_());
+  appendI2CBusDiagnostics_(out, 1, info.boardProfile, false);
+#endif
   out += F("}\n");
   return out;
 }

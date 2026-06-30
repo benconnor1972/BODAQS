@@ -13,6 +13,8 @@
 #include "DebugTrace.h"
 #include "DebugLog.h"
 #include "LoggerLimits.h"
+#include "AnalogInputManager.h"
+#include "I2CBusScheduler.h"
 #include <math.h>
 #include <new>
 #include <time.h>
@@ -65,6 +67,7 @@ static SensorManager::SynBikeRawBindings s_synBikeRawBindings;
 static uint32_t s_flushCount    = 0;
 static uint32_t s_flushMaxMs    = 0;
 static uint64_t s_flushTotalMs  = 0;
+static StorageTimingStats s_storageTiming;
 
 
 // --- Sample row queue for non-blocking sampling ---
@@ -686,6 +689,10 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   return true;
 }
 
+StorageTimingStats StorageManager_timingStats() {
+  return s_storageTiming;
+}
+
 
 void StorageManager_begin(const board::BoardProfile& bp) {
   s_storage = &bp.storage;
@@ -816,6 +823,7 @@ static void startLog() {
   s_flushCount = 0;
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
+  s_storageTiming = StorageTimingStats{};
   s_rowsWritten = 0;
   s_currentLogPath = "";
   s_currentSessionId = "";
@@ -929,28 +937,14 @@ static void startLog() {
     // --- Build header (shared for both backends) ---
     //SensorManager::debugDump("startLog-beforeHeader");
 
-    char header[256];
     TRACE("Entering sensormanager::buildheader");
-    SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
+    String header = SensorManager::buildHeaderString(RTCManager_isHumanReadable());
     TRACE("Finished sensormanager::buildheader");
     headerMs = millis() - headerT0;
 
-    // ---- NEW: prepend sample_id column ----
-    const char* idPrefix = "sample_id,";
-    const size_t idLen   = strlen(idPrefix);
-    const size_t hLen    = strlen(header);
+    header = String(F("sample_id,")) + header;
 
-    if (idLen + hLen + 1 < sizeof(header)) {   // +1 for terminating '\0'
-      // Move existing header forward to make room for "sample_id,"
-      memmove(header + idLen, header, hLen + 1);  // include '\0'
-      // Copy the prefix at the start
-      memcpy(header, idPrefix, idLen);
-    } else {
-      // If this ever happens, we ran out of header buffer space
-      STOR_LOGW("Warning: header buffer too small for sample_id prefix\n");
-    }
-
-    STOR_LOGI("Header: %s\n", header);
+    STOR_LOGI("Header: %s\n", header.c_str());
     refreshValueColumnTypes_();
 
     const uint32_t flushT0 = millis();
@@ -979,14 +973,23 @@ bool StorageManager_startLog() {
 }
 
 static void StorageManager_logSampleRow_(const SampleRow& row) {
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t t0 = micros();
+#endif
   if (isCompactBinaryFormat_()) {
     if (BdqLogWriter::writeSample(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark)) {
       ++s_rowsWritten;
     }
+#if BODAQS_TIMING_INSTRUMENTATION
+    TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+#endif
     return;
   }
 
   StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+#endif
 }
 
 
@@ -1006,6 +1009,7 @@ void StorageManager_stopLog() {
   }
 
   if (isCompactBinaryFormat_()) {
+    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
     BdqLogEndInfo endInfo;
     endInfo.samplesDropped = s_samplesDropped;
     endInfo.queueMax = s_qMax;
@@ -1013,6 +1017,17 @@ void StorageManager_stopLog() {
     endInfo.flushCount = s_flushCount;
     endInfo.flushMaxMs = s_flushMaxMs;
     endInfo.flushTotalMs = s_flushTotalMs;
+    endInfo.samplerLateTicks = stats.samplerLateTicks;
+    endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    endInfo.missedSampleSlots = stats.missedSampleSlots;
+    endInfo.sampleOnceUs = &stats.sampleOnceUs;
+    endInfo.sensorSampleUs = &stats.sensorSampleUs;
+    endInfo.enqueueUs = &stats.enqueueUs;
+    endInfo.storageTiming = &s_storageTiming;
+    endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+    endInfo.sensorTiming = &SensorManager::timingStats();
+    endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+    endInfo.boardProfile = board::gBoard;
     if (!BdqLogWriter::end(endInfo)) {
       STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
     }
@@ -1022,6 +1037,7 @@ void StorageManager_stopLog() {
 
   if (!isCompactBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
+    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
     LogMetadataContext metaCtx;
     metaCtx.csvPath = s_currentLogPath.c_str();
     metaCtx.sessionId = s_currentSessionId.c_str();
@@ -1040,6 +1056,17 @@ void StorageManager_stopLog() {
     metaCtx.flushMaxMs = s_flushMaxMs;
     metaCtx.flushTotalMs = s_flushTotalMs;
     metaCtx.bufferSize = bufferSize;
+    metaCtx.samplerLateTicks = stats.samplerLateTicks;
+    metaCtx.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    metaCtx.missedSampleSlots = stats.missedSampleSlots;
+    metaCtx.sampleOnceUs = &stats.sampleOnceUs;
+    metaCtx.sensorSampleUs = &stats.sensorSampleUs;
+    metaCtx.enqueueUs = &stats.enqueueUs;
+    metaCtx.storageTiming = &s_storageTiming;
+    metaCtx.externalAdcTiming = &AnalogInputManager::timingStats();
+    metaCtx.sensorTiming = &SensorManager::timingStats();
+    metaCtx.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+    metaCtx.boardProfile = board::gBoard;
 
     String metadata;
     if (LogMetadataWriter_build(metaCtx, metadata)) {
@@ -1117,6 +1144,7 @@ const char* StorageManager_lastStatus() {
 // Dynamic CSV logging: one FULL row per call, matching header
 // Columns: [timestamp, sensor values..., mark]
 static uint32_t formatRawForExport_(float raw, bool invert) {
+    if (!isfinite(raw)) return 0UL;
     const uint32_t rawInt = (raw <= 0.0f) ? 0UL : (uint32_t)lroundf(raw);
     if (!invert) return rawInt;
 
@@ -1359,6 +1387,13 @@ void StorageManager_loop() {
 
     // Occasional drain diagnostics if this loop took a noticeable chunk of time
     uint32_t dt_us = micros() - t0_us;
+    if (processed > 0) {
+#if BODAQS_TIMING_INSTRUMENTATION
+      ++s_storageTiming.drainLoops;
+      s_storageTiming.drainRows += processed;
+      TimingStats_record(s_storageTiming.drainLoopUs, dt_us);
+#endif
+    }
     if (dt_us > 50000) { // >50ms spent draining (should be rare)
       DRAIN_LOGD("processed=%u dt=%lu ms bufIndex=%u qMax=%u/%u\n",
                  (unsigned)processed, (unsigned long)(dt_us / 1000UL),

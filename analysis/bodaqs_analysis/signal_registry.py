@@ -234,6 +234,8 @@ def build_signals_registry(
             "processing_role",
             "motion_source_id",
             "motion_profile_id",
+            "canonical_dataframe_column",
+            "dataframe_column_disambiguation_token",
             "derivation",
             "origin",
             "semantic_selection_excluded",
@@ -285,6 +287,8 @@ def build_signals_registry(
             "processing_role",
             "motion_source_id",
             "motion_profile_id",
+            "canonical_dataframe_column",
+            "dataframe_column_disambiguation_token",
             "derivation",
             "origin",
             "semantic_selection_excluded",
@@ -307,6 +311,9 @@ def build_signals_registry(
             continue
 
         s = df[col]
+        hints = channel_info.get(str(col))
+        if isinstance(hints, dict) and str(hints.get("class") or "").strip().lower() == "diagnostic":
+            continue
 
         # Only register numeric columns
         if not _is_numeric_series(s):

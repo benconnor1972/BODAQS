@@ -103,7 +103,17 @@ This document summarizes the major modules in the project, what each one is resp
 **Key params (from ParamPack)**
 - `i2c_bus`, `i2c_addr`, `i2c_read_mode`
 - `zero_count`, `direction`
-- `output_mode`, `include_raw`, `include_diag`
+- `slow_filter` optionally writes the AS5600 `CONF.SF` slow-filter bits at
+  startup as a volatile setting (`unchanged`, `16x`, `8x`, `4x`, or `2x`).
+- `output_mode`, `include_raw`, `include_angle`, `include_diag`
+- `include_angle` appends a diagnostic AS5600 `ANGLE` register column so it can
+  be compared with the normal raw `RAW_ANGLE` register readout.
+- For AS5600, `include_diag` adds AGC/status/magnitude plus read-state and
+  failure-counter columns (`read_ok`, `reused`, `read_failures`,
+  `diag_failures`).
+- AS5600 metadata includes a read-only startup snapshot of key device registers
+  (`ZPOS`, `MPOS`, `MANG`, `CONF`, `RAW ANGLE`, `ANGLE`, `STATUS`, `AGC`, and
+  `MAGNITUDE`) under `device_config`.
 
 **Notes**
 - `ZERO` calibration captures the installed zero point and then asks for a small positive movement so the firmware can set `direction`.

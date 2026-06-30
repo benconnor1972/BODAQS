@@ -149,6 +149,31 @@ class StandardizeReport:
     derived: List[str]
     notes: List[str]
 
+
+def _rename_channel_info_keys(session: Dict[str, Any], rename_map: Dict[str, str]) -> None:
+    if not rename_map:
+        return
+
+    meta = session.get("meta")
+    if not isinstance(meta, dict):
+        return
+    channel_info = meta.get("channel_info")
+    if not isinstance(channel_info, dict):
+        return
+
+    for old, new in rename_map.items():
+        if old == new or old not in channel_info:
+            continue
+
+        old_info = channel_info.pop(old)
+        if new in channel_info and isinstance(channel_info[new], dict) and isinstance(old_info, dict):
+            merged = dict(old_info)
+            merged.update(channel_info[new])
+            channel_info[new] = merged
+        else:
+            channel_info[new] = old_info
+
+
 def canonicalize_signal_names(
     session: Dict[str, Any],
     *,
@@ -178,6 +203,13 @@ def canonicalize_signal_names(
         domain_by_base=domain_by_base,
     )
     session["df"] = df2
+
+    rename_map = {
+        record.old: record.new
+        for record in rename_report
+        if record.status == "ok" and record.old != record.new
+    }
+    _rename_channel_info_keys(session, rename_map)
 
     qc["naming"]["legacy_renames"] = [r.__dict__ for r in rename_report]
     return session

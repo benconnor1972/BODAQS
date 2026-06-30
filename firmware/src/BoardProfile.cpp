@@ -142,7 +142,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D_UART_I2C1 = [] {
     .present = true,
     .sda = TX,
     .scl = RX,
-    .hz  = 100000
+    .hz  = 400000
   };
   p.i2c_count = 2;
   return p;
@@ -176,7 +176,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
     .present = true,
     .sda = 14,
     .scl = 16,
-    .hz  = 100000
+    .hz  = 400000
   };
   p.i2c_count = 2;
   p.uart[0] = MakeUART(true, kDefaultUartTxPin, kDefaultUartRxPin);
@@ -276,7 +276,7 @@ static const BoardProfile V1RC3_PROFILE = {
       .present = true,
       .sda = 4,
       .scl = 5,
-      .hz  = 100000
+      .hz  = 400000
     }
   },
   .i2c_count = 2,

@@ -8,6 +8,7 @@
 #include "Rates.h"
 #include "SensorTypes.h"
 #include "DebugLog.h"
+#include "esp_timer.h"
 
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
@@ -30,6 +31,9 @@ constexpr uint8_t kInvalidChannel = 0xFF;
 constexpr uint16_t kExternalAdcGlobalCapHz = 500;
 constexpr uint32_t kExternalAdcUtilizationPermille = 550;
 constexpr uint32_t kFastDrdyPollMaxUs = 1500;
+constexpr uint32_t kAsyncStopWaitMs = 100;
+constexpr uint32_t kAsyncTaskStackBytes = 4096;
+constexpr int64_t kAsyncMaxNoBlockUs = 50000;
 
 struct AdsRateSetting {
   uint16_t sps;
@@ -61,6 +65,17 @@ struct AdsDevice {
   uint8_t activeChannels = 0;
   int32_t cachedCounts[4] = {0, 0, 0, 0};
   bool cachedValid[4] = {false, false, false, false};
+  uint32_t cachedSeq[4] = {0, 0, 0, 0};
+  uint32_t lastRowSeq[4] = {0, 0, 0, 0};
+  uint64_t cachedAcquiredUs[4] = {0, 0, 0, 0};
+  bool cachedReadOk[4] = {false, false, false, false};
+  uint32_t nextSeq[4] = {0, 0, 0, 0};
+  uint8_t nextAsyncChannel = 0;
+#if defined(ESP32)
+  TaskHandle_t asyncTask = nullptr;
+  volatile bool asyncRun = false;
+  volatile bool asyncRunning = false;
+#endif
 };
 
 const board::BoardProfile* s_board = nullptr;
@@ -68,11 +83,14 @@ AdsDevice s_ads[board::BOARD_MAX_EXTERNAL_ADCS];
 SPIClass* s_spi = &SPI;
 bool s_spiReady = false;
 bool s_inSample = false;
+volatile bool s_asyncLoggingActive = false;
 uint16_t s_requestedHz = 100;
 uint16_t s_effectiveHz = 100;
+ExternalAdcTimingStats s_timingStats;
 
 #if defined(ESP32)
 SemaphoreHandle_t s_spiMutex = nullptr;
+portMUX_TYPE s_cacheMux = portMUX_INITIALIZER_UNLOCKED;
 #endif
 
 bool sensorUsesAnalogInput_(SensorType t) {
@@ -181,6 +199,22 @@ uint32_t ceilDivU32_(uint32_t num, uint32_t den) {
   return (num + den - 1U) / den;
 }
 
+void resetTimingStats_() {
+  s_timingStats = ExternalAdcTimingStats{};
+  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS && adc < ExternalAdcTimingStats::kMaxAdcs; ++adc) {
+    const AdsDevice& dev = s_ads[adc];
+    auto& stats = s_timingStats.adc[adc];
+    stats.present = dev.present;
+#if defined(ESP32)
+    stats.asyncRunning = dev.asyncRunning;
+#else
+    stats.asyncRunning = false;
+#endif
+    stats.activeChannels = dev.activeChannels;
+    stats.configuredSps = dev.dataRateSps;
+  }
+}
+
 uint32_t adsMaxSps_(const AdsDevice& dev) {
   return dev.cfg.max_sps ? dev.cfg.max_sps : 1UL;
 }
@@ -245,9 +279,15 @@ bool adsReadData_(AdsDevice& dev, int32_t& raw24) {
   return true;
 }
 
-bool adsWaitReady_(const AdsDevice& dev, uint32_t timeoutUs) {
+bool adsWaitReady_(const AdsDevice& dev, uint32_t timeoutUs,
+                   uint32_t* elapsedUs = nullptr,
+                   bool* readyImmediately = nullptr) {
+  if (elapsedUs) *elapsedUs = 0;
+  if (readyImmediately) *readyImmediately = false;
   if (dev.cfg.drdy_pin < 0) {
+    const uint32_t t0 = micros();
     delay((timeoutUs + 999UL) / 1000UL);
+    if (elapsedUs) *elapsedUs = (uint32_t)(micros() - t0);
     return true;
   }
 
@@ -258,7 +298,12 @@ bool adsWaitReady_(const AdsDevice& dev, uint32_t timeoutUs) {
   if (fastPollUs > kFastDrdyPollMaxUs) fastPollUs = kFastDrdyPollMaxUs;
 
   while ((uint32_t)(micros() - start) < timeoutUs) {
-    if (digitalRead((uint8_t)dev.cfg.drdy_pin) == readyLevel) return true;
+    const uint32_t elapsedAtTop = (uint32_t)(micros() - start);
+    if (digitalRead((uint8_t)dev.cfg.drdy_pin) == readyLevel) {
+      if (elapsedUs) *elapsedUs = (uint32_t)(micros() - start);
+      if (readyImmediately && elapsedAtTop < 25UL) *readyImmediately = true;
+      return true;
+    }
     const uint32_t elapsed = (uint32_t)(micros() - start);
     if (elapsed < fastPollUs) {
       delayMicroseconds(20);
@@ -270,6 +315,7 @@ bool adsWaitReady_(const AdsDevice& dev, uint32_t timeoutUs) {
 #endif
     }
   }
+  if (elapsedUs) *elapsedUs = (uint32_t)(micros() - start);
   return false;
 }
 
@@ -309,17 +355,51 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
   if (!validAdcIndex_(adcIndex)) return false;
   AdsDevice& dev = s_ads[adcIndex];
   if (!dev.initialized || !validChannel_(dev, channel)) return false;
+  auto& adcStats = s_timingStats.adc[adcIndex];
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t channelT0 = micros();
 
+  uint32_t t0 = micros();
+#endif
   if (!configureAdsChannel_(dev, channel)) return false;
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(adcStats.configUs, (uint32_t)(micros() - t0));
+
+  t0 = micros();
+#endif
   if (!adsCommand_(dev, ADS1220_CMD_START)) return false;
-  if (!adsWaitReady_(dev, conversionTimeoutUs_(dev))) {
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(adcStats.startUs, (uint32_t)(micros() - t0));
+#endif
+
+  uint32_t waitUs = 0;
+  bool readyImmediately = false;
+  const bool ready = adsWaitReady_(dev, conversionTimeoutUs_(dev), &waitUs, &readyImmediately);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(adcStats.waitUs, waitUs);
+  TimingStats_record(adcStats.channel[channel].waitUs, waitUs);
+  if (readyImmediately) ++adcStats.drdyAlreadyReady;
+#endif
+  if (!ready) {
+#if BODAQS_TIMING_INSTRUMENTATION
+    ++adcStats.waitTimeouts;
+#endif
     AIN_LOGW("ADS%u channel%u DRDY timeout\n", (unsigned)adcIndex, (unsigned)channel);
     return false;
   }
 
   int32_t raw24 = 0;
+#if BODAQS_TIMING_INSTRUMENTATION
+  t0 = micros();
+#endif
   if (!adsReadData_(dev, raw24)) return false;
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(adcStats.readUs, (uint32_t)(micros() - t0));
+#endif
   outCounts = scaleRaw24ToEffectiveBits_(raw24, dev.cfg.effective_bits);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(adcStats.channel[channel].totalUs, (uint32_t)(micros() - channelT0));
+#endif
   return true;
 }
 
@@ -353,14 +433,184 @@ uint8_t nthActiveChannel_(const AdsDevice& dev, uint8_t ordinal) {
   return kInvalidChannel;
 }
 
+uint8_t nextActiveChannel_(AdsDevice& dev) {
+  for (uint8_t i = 0; i < 4; ++i) {
+    const uint8_t ch = (uint8_t)((dev.nextAsyncChannel + i) % 4);
+    if (!dev.channelUsed[ch]) continue;
+    dev.nextAsyncChannel = (uint8_t)((ch + 1) % 4);
+    return ch;
+  }
+  return kInvalidChannel;
+}
+
+bool anyActiveExternalAdc_() {
+  for (const auto& dev : s_ads) {
+    if (dev.present && dev.initialized && dev.activeChannels > 0) return true;
+  }
+  return false;
+}
+
+struct CachedAdcSample {
+  bool valid = false;
+  int32_t counts = 0;
+  uint32_t seq = 0;
+  uint64_t acquiredUs = 0;
+};
+
 void clearCachedSamples_() {
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_cacheMux);
+#endif
   for (auto& dev : s_ads) {
     for (uint8_t ch = 0; ch < 4; ++ch) {
       dev.cachedValid[ch] = false;
       dev.cachedCounts[ch] = 0;
+      dev.cachedSeq[ch] = 0;
+      dev.lastRowSeq[ch] = 0;
+      dev.cachedAcquiredUs[ch] = 0;
+      dev.cachedReadOk[ch] = false;
+      dev.nextSeq[ch] = 0;
+    }
+    dev.nextAsyncChannel = 0;
+  }
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_cacheMux);
+#endif
+}
+
+void publishCachedSample_(uint8_t adcIndex, uint8_t channel, int32_t counts, bool ok) {
+  if (!validAdcIndex_(adcIndex) || channel >= 4) return;
+  AdsDevice& dev = s_ads[adcIndex];
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_cacheMux);
+#endif
+  if (ok) {
+    dev.cachedCounts[channel] = counts;
+    dev.cachedValid[channel] = true;
+    dev.cachedSeq[channel] = ++dev.nextSeq[channel];
+    dev.cachedAcquiredUs[channel] = (uint64_t)esp_timer_get_time();
+  }
+  dev.cachedReadOk[channel] = ok;
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_cacheMux);
+#endif
+}
+
+bool copyCachedSample_(uint8_t adcIndex, uint8_t channel, CachedAdcSample& out) {
+  if (!validAdcIndex_(adcIndex) || channel >= 4) return false;
+  const AdsDevice& dev = s_ads[adcIndex];
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_cacheMux);
+#endif
+  out.valid = dev.cachedValid[channel];
+  out.counts = dev.cachedCounts[channel];
+  out.seq = dev.cachedSeq[channel];
+  out.acquiredUs = dev.cachedAcquiredUs[channel];
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_cacheMux);
+#endif
+  return out.valid;
+}
+
+void recordCachedRowUse_(uint8_t adcIndex, uint8_t channel, bool haveSample, bool fresh, uint32_t ageUs) {
+#if BODAQS_TIMING_INSTRUMENTATION
+  if (adcIndex >= ExternalAdcTimingStats::kMaxAdcs ||
+      channel >= ExternalAdcTimingStats::kMaxChannels) {
+    return;
+  }
+
+  auto& chStats = s_timingStats.adc[adcIndex].channel[channel];
+  ++chStats.rowUses;
+  if (!haveSample) {
+    ++chStats.rowNoSample;
+    return;
+  }
+  if (fresh) ++chStats.rowFresh;
+  else ++chStats.rowReused;
+  TimingStats_record(chStats.rowAgeUs, ageUs);
+#else
+  (void)adcIndex;
+  (void)channel;
+  (void)haveSample;
+  (void)fresh;
+  (void)ageUs;
+#endif
+}
+
+bool acquireAndPublishChannel_(uint8_t adcIndex, uint8_t channel) {
+  int32_t counts = 0;
+  const bool ok = readAdsChannelLive_(adcIndex, channel, counts);
+  publishCachedSample_(adcIndex, channel, counts, ok);
+
+#if BODAQS_TIMING_INSTRUMENTATION
+  if (adcIndex < ExternalAdcTimingStats::kMaxAdcs &&
+      channel < ExternalAdcTimingStats::kMaxChannels) {
+    auto& chStats = s_timingStats.adc[adcIndex].channel[channel];
+    if (ok) ++chStats.acquireOk;
+    else ++chStats.acquireFail;
+  }
+#endif
+
+  return ok;
+}
+
+#if defined(ESP32)
+void adcTaskFn_(void* arg) {
+  const uint8_t adc = (uint8_t)(uintptr_t)arg;
+  if (adc >= board::BOARD_MAX_EXTERNAL_ADCS) {
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  AdsDevice& dev = s_ads[adc];
+  dev.asyncRunning = true;
+  if (adc < ExternalAdcTimingStats::kMaxAdcs) {
+    s_timingStats.adc[adc].asyncRunning = true;
+  }
+  AIN_LOGI("ADS%u async scheduler started\n", (unsigned)adc);
+
+  int64_t lastBlockUs = esp_timer_get_time();
+  while (dev.asyncRun) {
+    if (!dev.present || !dev.initialized || dev.activeChannels == 0) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      lastBlockUs = esp_timer_get_time();
+      continue;
+    }
+
+    const uint8_t ch = nextActiveChannel_(dev);
+    if (ch == kInvalidChannel) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      lastBlockUs = esp_timer_get_time();
+      continue;
+    }
+
+#if BODAQS_TIMING_INSTRUMENTATION
+    const uint32_t loopT0 = micros();
+#endif
+    (void)acquireAndPublishChannel_(adc, ch);
+#if BODAQS_TIMING_INSTRUMENTATION
+    if (adc < ExternalAdcTimingStats::kMaxAdcs) {
+      TimingStats_record(s_timingStats.adc[adc].asyncLoopUs,
+                         (uint32_t)(micros() - loopT0));
+    }
+#endif
+
+    const int64_t nowUs = esp_timer_get_time();
+    if ((nowUs - lastBlockUs) >= kAsyncMaxNoBlockUs) {
+      vTaskDelay(1);
+      lastBlockUs = esp_timer_get_time();
     }
   }
+
+  dev.asyncRunning = false;
+  dev.asyncTask = nullptr;
+  if (adc < ExternalAdcTimingStats::kMaxAdcs) {
+    s_timingStats.adc[adc].asyncRunning = false;
+  }
+  AIN_LOGI("ADS%u async scheduler stopped\n", (unsigned)adc);
+  vTaskDelete(nullptr);
 }
+#endif
 
 } // namespace
 
@@ -375,6 +625,7 @@ void begin(const board::BoardProfile& board) {
   for (auto& dev : s_ads) {
     dev = AdsDevice{};
   }
+  resetTimingStats_();
 
 #if defined(ESP32)
   if (!s_spiMutex) s_spiMutex = xSemaphoreCreateMutex();
@@ -427,6 +678,7 @@ void begin(const board::BoardProfile& board) {
              (unsigned long)cfg.max_sps,
              (unsigned)cfg.effective_bits);
   }
+  resetTimingStats_();
 }
 
 bool available(uint8_t ain) {
@@ -459,6 +711,30 @@ bool readCounts(uint8_t ain, int32_t& outCounts) {
     const uint8_t adc = input->external_adc_index;
     const uint8_t channel = input->external_channel;
     if (!validAdcIndex_(adc) || !validChannel_(s_ads[adc], channel)) return false;
+
+    if (s_asyncLoggingActive &&
+#if defined(ESP32)
+        (s_ads[adc].asyncTask || s_ads[adc].asyncRunning)
+#else
+        false
+#endif
+        ) {
+      CachedAdcSample sample;
+      const bool have = copyCachedSample_(adc, channel, sample);
+      bool fresh = false;
+      uint32_t ageUs = 0;
+      if (have) {
+        fresh = sample.seq != s_ads[adc].lastRowSeq[channel];
+        s_ads[adc].lastRowSeq[channel] = sample.seq;
+        const uint64_t nowUs = (uint64_t)esp_timer_get_time();
+        if (nowUs >= sample.acquiredUs) {
+          ageUs = (uint32_t)(nowUs - sample.acquiredUs);
+        }
+        outCounts = sample.counts;
+      }
+      recordCachedRowUse_(adc, channel, have, fresh, ageUs);
+      return have;
+    }
 
     if (s_inSample && s_ads[adc].cachedValid[channel]) {
       outCounts = s_ads[adc].cachedCounts[channel];
@@ -547,6 +823,8 @@ uint16_t configureFromConfig(const LoggerConfig& cfg, uint16_t requestedHz) {
              (unsigned)dev.dataRateSps);
   }
 
+  resetTimingStats_();
+
   if (s_effectiveHz != s_requestedHz) {
     AIN_LOGW("Sample rate throttled: requested=%u Hz effective=%u Hz\n",
              (unsigned)s_requestedHz,
@@ -574,8 +852,104 @@ uint16_t configuredDataRateSps(uint8_t externalAdcIndex) {
   return s_ads[externalAdcIndex].dataRateSps;
 }
 
+void resetTimingStats() {
+  resetTimingStats_();
+}
+
+const ExternalAdcTimingStats& timingStats() {
+  return s_timingStats;
+}
+
+void onLoggingStart() {
+  s_asyncLoggingActive = false;
+  clearCachedSamples_();
+
+  if (!anyActiveExternalAdc_()) return;
+
+  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+    AdsDevice& dev = s_ads[adc];
+    if (!dev.present || !dev.initialized || dev.activeChannels == 0) continue;
+    dev.nextAsyncChannel = 0;
+
+    for (uint8_t pass = 0; pass < 4; ++pass) {
+      const uint8_t ch = nthActiveChannel_(dev, pass);
+      if (ch == kInvalidChannel) continue;
+      (void)acquireAndPublishChannel_(adc, ch);
+    }
+  }
+
+#if defined(ESP32)
+  bool anyStarted = false;
+  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+    AdsDevice& dev = s_ads[adc];
+    if (!dev.present || !dev.initialized || dev.activeChannels == 0) continue;
+    if (dev.asyncTask) {
+      anyStarted = true;
+      continue;
+    }
+
+    dev.asyncRun = true;
+    const BaseType_t ok = xTaskCreatePinnedToCore(
+      adcTaskFn_,
+      "ADSAsync",
+      kAsyncTaskStackBytes,
+      (void*)(uintptr_t)adc,
+      2,
+      &dev.asyncTask,
+      0);
+
+    if (ok == pdPASS) {
+      anyStarted = true;
+    } else {
+      dev.asyncTask = nullptr;
+      dev.asyncRun = false;
+      AIN_LOGW("ADS%u async scheduler failed to start; falling back to synchronous scan\n",
+               (unsigned)adc);
+    }
+  }
+  s_asyncLoggingActive = anyStarted;
+#else
+  s_asyncLoggingActive = false;
+#endif
+}
+
+void onLoggingStop() {
+  s_asyncLoggingActive = false;
+
+#if defined(ESP32)
+  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+    s_ads[adc].asyncRun = false;
+  }
+
+  const uint32_t t0 = millis();
+  bool any = true;
+  while (any && (uint32_t)(millis() - t0) < kAsyncStopWaitMs) {
+    any = false;
+    for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+      if (s_ads[adc].asyncTask) {
+        any = true;
+        break;
+      }
+    }
+    if (any) vTaskDelay(1);
+  }
+
+  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+    if (adc < ExternalAdcTimingStats::kMaxAdcs) {
+      s_timingStats.adc[adc].asyncRunning = s_ads[adc].asyncRunning;
+    }
+  }
+#endif
+}
+
 void beginSample() {
   s_inSample = false;
+
+  if (s_asyncLoggingActive) {
+    s_inSample = true;
+    return;
+  }
+
   clearCachedSamples_();
 
   bool any = false;
@@ -587,11 +961,22 @@ void beginSample() {
   }
   if (!any) return;
 
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t scanT0 = micros();
+  bool scanRecorded[ExternalAdcTimingStats::kMaxAdcs] = {false, false, false, false};
+#endif
+
   for (uint8_t pass = 0; pass < 4; ++pass) {
     bool anyStarted = false;
     uint8_t startedChannel[board::BOARD_MAX_EXTERNAL_ADCS];
+#if BODAQS_TIMING_INSTRUMENTATION
+    uint32_t channelStartUs[board::BOARD_MAX_EXTERNAL_ADCS];
+#endif
     for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
       startedChannel[adc] = kInvalidChannel;
+#if BODAQS_TIMING_INSTRUMENTATION
+      channelStartUs[adc] = 0;
+#endif
     }
 
     for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
@@ -601,8 +986,23 @@ void beginSample() {
       const uint8_t ch = nthActiveChannel_(dev, pass);
       if (ch == kInvalidChannel) continue;
 
+      auto& adcStats = s_timingStats.adc[adc];
+#if BODAQS_TIMING_INSTRUMENTATION
+      channelStartUs[adc] = micros();
+
+      uint32_t t0 = micros();
+#endif
       if (!configureAdsChannel_(dev, ch)) continue;
+#if BODAQS_TIMING_INSTRUMENTATION
+      TimingStats_record(adcStats.configUs, (uint32_t)(micros() - t0));
+
+      t0 = micros();
+#endif
       if (!adsCommand_(dev, ADS1220_CMD_START)) continue;
+#if BODAQS_TIMING_INSTRUMENTATION
+      TimingStats_record(adcStats.startUs, (uint32_t)(micros() - t0));
+#endif
+
       startedChannel[adc] = ch;
       anyStarted = true;
     }
@@ -613,8 +1013,22 @@ void beginSample() {
       AdsDevice& dev = s_ads[adc];
       const uint8_t ch = startedChannel[adc];
       if (ch == kInvalidChannel || !dev.present || !dev.initialized) continue;
-      if (!adsWaitReady_(dev, conversionTimeoutUs_(dev))) {
+      auto& adcStats = s_timingStats.adc[adc];
+      uint32_t waitUs = 0;
+      bool readyImmediately = false;
+      if (!adsWaitReady_(dev, conversionTimeoutUs_(dev), &waitUs, &readyImmediately)) {
+#if BODAQS_TIMING_INSTRUMENTATION
+        TimingStats_record(adcStats.waitUs, waitUs);
+        TimingStats_record(adcStats.channel[ch].waitUs, waitUs);
+        ++adcStats.waitTimeouts;
+#endif
         AIN_LOGW("ADS%u channel%u DRDY timeout\n", (unsigned)adc, (unsigned)ch);
+      } else {
+#if BODAQS_TIMING_INSTRUMENTATION
+        TimingStats_record(adcStats.waitUs, waitUs);
+        TimingStats_record(adcStats.channel[ch].waitUs, waitUs);
+        if (readyImmediately) ++adcStats.drdyAlreadyReady;
+#endif
       }
     }
 
@@ -624,11 +1038,31 @@ void beginSample() {
       if (ch == kInvalidChannel || !dev.present || !dev.initialized) continue;
 
       int32_t raw24 = 0;
+      auto& adcStats = s_timingStats.adc[adc];
+#if BODAQS_TIMING_INSTRUMENTATION
+      const uint32_t t0 = micros();
+#endif
       if (!adsReadData_(dev, raw24)) continue;
+#if BODAQS_TIMING_INSTRUMENTATION
+      TimingStats_record(adcStats.readUs, (uint32_t)(micros() - t0));
+#endif
       dev.cachedCounts[ch] = scaleRaw24ToEffectiveBits_(raw24, dev.cfg.effective_bits);
       dev.cachedValid[ch] = true;
+#if BODAQS_TIMING_INSTRUMENTATION
+      if (ch < ExternalAdcTimingStats::kMaxChannels && channelStartUs[adc] != 0) {
+        TimingStats_record(adcStats.channel[ch].totalUs, (uint32_t)(micros() - channelStartUs[adc]));
+      }
+      if (adc < ExternalAdcTimingStats::kMaxAdcs) scanRecorded[adc] = true;
+#endif
     }
   }
+
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t scanUs = (uint32_t)(micros() - scanT0);
+  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS && adc < ExternalAdcTimingStats::kMaxAdcs; ++adc) {
+    if (scanRecorded[adc]) TimingStats_record(s_timingStats.adc[adc].scanUs, scanUs);
+  }
+#endif
 
   s_inSample = true;
 }

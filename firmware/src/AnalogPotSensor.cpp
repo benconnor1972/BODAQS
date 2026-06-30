@@ -12,6 +12,10 @@
 
 namespace {
 
+const char* linearUnit_(const char* configured) {
+  return (configured && configured[0]) ? configured : "mm";
+}
+
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
   if (!src) src = "";
@@ -375,13 +379,13 @@ void AnalogPotSensor::getColumnName(uint8_t col, char* out, size_t cap) const {
         return;
       }
       case OutputMode::LINEAR: {
-        writeColumnLabel_(name(), m_outputUnitsLabel, out, cap);
+        writeColumnLabel_(name(), linearUnit_(m_outputUnitsLabel), out, cap);
         return;
       }
       case OutputMode::POLY:
       case OutputMode::LUT: {
         // If you can access the selected transform’s outUnits, use them; else default to [mm]
-        writeColumnLabel_(name(), m_outputUnitsLabel, out, cap);
+        writeColumnLabel_(name(), linearUnit_(m_outputUnitsLabel), out, cap);
         // (Optional) replace outUnits with transform.meta.outUnits if you have it here.
         return;
       }
@@ -420,7 +424,7 @@ bool AnalogPotSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) c
     out.calibrated = false;
   } else {
     copyField_(out.quantity, sizeof(out.quantity), m_primaryQuantity);
-    copyField_(out.unit, sizeof(out.unit), m_outputUnitsLabel);
+    copyField_(out.unit, sizeof(out.unit), linearUnit_(m_outputUnitsLabel));
     copyField_(out.source, sizeof(out.source), out.transformed ? "transformed" : "linear_calibrated");
     copyField_(out.calibrationId, sizeof(out.calibrationId), "linear");
   }
@@ -456,7 +460,7 @@ bool AnalogPotSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   copyField_(out.rawUnit, sizeof(out.rawUnit), "counts");
   copyField_(out.calibrationType, sizeof(out.calibrationType), "linear");
   copyField_(out.calibrationInputUnit, sizeof(out.calibrationInputUnit), "counts");
-  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), m_outputUnitsLabel);
+  copyField_(out.calibrationOutputUnit, sizeof(out.calibrationOutputUnit), linearUnit_(m_outputUnitsLabel));
   out.installedZeroCount = installed_zero_count_;
   out.sensorZeroCount = sensor_zero_count_;
   out.sensorFullCount = sensor_full_count_;
@@ -496,7 +500,7 @@ const ParamDef* AnalogPotSensor::paramDefs(size_t& count) {
     {"installed_zero_count", ParamType::Int, "", nullptr, nullptr, nullptr, "Installed zero point (counts)"},
 
     // Output policy
-    {"output_mode", ParamType::Enum,"RAW,LINEAR,POLY,LUT", nullptr,nullptr,nullptr, "Output method: RAW, scaled (LINEAR) or transformed (POLY/LUT)."},
+    {"output_mode", ParamType::Enum,"1", nullptr,nullptr,"RAW,LINEAR", "Output method: RAW counts or linear mm."},
     {"include_raw",    ParamType::Bool,  "false",nullptr,nullptr,nullptr,"Append RAW column after primary"},
     {"end",            ParamType::Enum,  "",     nullptr,nullptr,"front,rear", "Optional semantic end for log metadata"},
     {"primary_domain", ParamType::Enum,  "",     nullptr,nullptr,"wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},
@@ -580,7 +584,6 @@ void AnalogPotSensor::setIncludeRaw(bool b) {
 }
 
 void AnalogPotSensor::setOutputUnitsLabel(const char* u) {
-  if (!u) u = "";
-  // Keep the sensor’s explicit units label for LINEAR/non-RAW
-  Sensor::setOutputUnitsLabel(u);
+  // Linear analog pots have a fixed native engineering unit.
+  Sensor::setOutputUnitsLabel(linearUnit_(u));
 }
