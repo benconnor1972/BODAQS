@@ -9,6 +9,7 @@
 #include "I2CManager.h"
 #include "SensorRegistry.h"
 #include "DebugLog.h"
+#include "esp_timer.h"
 
 #define AS5048_LOGI(...) LOGI_TAG("AS5048", __VA_ARGS__)
 #define AS5048_LOGW(...) LOGW_TAG("AS5048", __VA_ARGS__)
@@ -25,6 +26,7 @@ static constexpr uint16_t kHalfTurn = kCountsPerTurn / 2;
 static constexpr float kDegreesPerCount = 360.0f / float(kCountsPerTurn);
 static constexpr uint32_t kDefaultDiagnosticIntervalMs = 250;
 static constexpr int32_t kDirectionMinDeltaCounts = int32_t(kCountsPerTurn / 720); // about 0.5 deg
+static constexpr uint16_t kMaxAsyncRateHz = 1000;
 
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
@@ -116,6 +118,7 @@ void loadParamsFromPack_(AS5048BAngleSensor::Params& p,
   if (params.getInt("zero_count", li))    p.zeroCount = (int32_t)li;
   if (params.get("direction", s))          p.directionSign = parseDirectionSign_(s);
   if (params.getFloat("installed_range", d)) p.installedRange = (float)d;
+  if (params.getInt("async_rate_hz", li))  p.asyncRateHz = (li < 0) ? 0u : (uint16_t)li;
   if (params.getBool("include_raw", b))   p.includeRawColumn = b;
   if (params.getBool("include_diag", b))  p.includeDiagColumns = b;
   if (params.getInt("diag_interval_ms", li)) p.diagnosticIntervalMs = (li < 0) ? 0UL : (uint32_t)li;
@@ -142,6 +145,8 @@ void AS5048BAngleSensor::applyParams(const Params& p) {
   m_zeroCount = normalizeCount_(p.zeroCount);
   m_directionSign = (p.directionSign < 0) ? -1 : 1;
   m_installedRange = p.installedRange;
+  m_asyncRateHz = p.asyncRateHz;
+  if (m_asyncRateHz > kMaxAsyncRateHz) m_asyncRateHz = kMaxAsyncRateHz;
   m_includeRaw = p.includeRawColumn;
   m_includeDiagColumns = p.includeDiagColumns;
   m_diagnosticIntervalMs = p.diagnosticIntervalMs;
@@ -169,9 +174,16 @@ void AS5048BAngleSensor::begin() {
   m_lastDiagnostic = 0;
   m_lastAgc = 0;
   m_lastMagnitude = 0;
+  m_lastReadOk = false;
+  m_lastReadReused = false;
   m_diagnosticReadFailures = 0;
   m_calUnwrapInit = false;
   m_calLastUnwrapped = 0;
+  m_asyncLoggingActive = false;
+  m_asyncNextSeq = 0;
+  m_asyncLastLoggedSeq = 0;
+  resetAsyncSnapshot_();
+  I2CBusScheduler::registerClient(this);
 
   if (!m_wire) {
     AS5048_LOGW("sensor '%s': I2C bus %u unavailable\n",
@@ -211,6 +223,31 @@ bool AS5048BAngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
   applyParams(p);
   begin();
   return true;
+}
+
+void AS5048BAngleSensor::onLoggingStart() {
+  m_asyncLoggingActive = true;
+  m_asyncNextSeq = 0;
+  m_asyncLastLoggedSeq = 0;
+  resetAsyncSnapshot_();
+  (void)acquireAsyncSample_();
+}
+
+void AS5048BAngleSensor::onLoggingStop() {
+  m_asyncLoggingActive = false;
+}
+
+uint16_t AS5048BAngleSensor::asyncTargetRateHz() const {
+  if (m_asyncRateHz != 0) return m_asyncRateHz;
+  const LoggerConfig& cfg = ConfigManager::get();
+  uint16_t hz = cfg.sampleRateHz;
+  if (hz == 0) hz = 100;
+  if (hz > kMaxAsyncRateHz) hz = kMaxAsyncRateHz;
+  return hz;
+}
+
+bool AS5048BAngleSensor::asyncAcquire() {
+  return acquireAsyncSample_();
 }
 
 bool AS5048BAngleSensor::probe_() const {
@@ -421,6 +458,8 @@ bool AS5048BAngleSensor::readRawAngle_(uint16_t& out) const {
   out = sample.angle;
   m_lastGoodRaw = int(sample.angle);
   m_haveLastGoodRaw = true;
+  m_lastReadOk = true;
+  m_lastReadReused = false;
   m_warnedRead = false;
   m_nextReadAttemptMs = 0;
   refreshDiagnostics_(false);
@@ -437,12 +476,16 @@ int AS5048BAngleSensor::readRawAngleOnce_() const {
                   name(), (unsigned)m_busIndex);
       m_warnedNoBus = true;
     }
+    m_lastReadOk = false;
+    m_lastReadReused = m_haveLastGoodRaw;
     return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
   }
 
   const uint32_t now = millis();
   if (m_nextReadAttemptMs != 0 &&
       (int32_t)(now - m_nextReadAttemptMs) < 0) {
+    m_lastReadOk = false;
+    m_lastReadReused = m_haveLastGoodRaw;
     return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
   }
 
@@ -459,6 +502,8 @@ int AS5048BAngleSensor::readRawAngleOnce_() const {
     m_warnedRead = true;
     logFailureProbe_();
   }
+  m_lastReadOk = false;
+  m_lastReadReused = m_haveLastGoodRaw;
   m_nextReadAttemptMs = now + (m_haveLastGoodRaw ? 250UL : 1000UL);
   return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
 }
@@ -510,6 +555,58 @@ void AS5048BAngleSensor::sample(float& primaryOut, int& rawOut) const {
   }
 }
 
+void AS5048BAngleSensor::resetAsyncSnapshot_() const {
+  AsyncSnapshot empty;
+#if defined(ESP32)
+  portENTER_CRITICAL(&m_asyncMux);
+  m_asyncSnapshot = empty;
+  portEXIT_CRITICAL(&m_asyncMux);
+#else
+  m_asyncSnapshot = empty;
+#endif
+}
+
+void AS5048BAngleSensor::publishAsyncSnapshot_(const AsyncSnapshot& snapshot) const {
+#if defined(ESP32)
+  portENTER_CRITICAL(&m_asyncMux);
+  m_asyncSnapshot = snapshot;
+  portEXIT_CRITICAL(&m_asyncMux);
+#else
+  m_asyncSnapshot = snapshot;
+#endif
+}
+
+bool AS5048BAngleSensor::copyAsyncSnapshot_(AsyncSnapshot& snapshot) const {
+#if defined(ESP32)
+  portENTER_CRITICAL(&m_asyncMux);
+  snapshot = m_asyncSnapshot;
+  portEXIT_CRITICAL(&m_asyncMux);
+#else
+  snapshot = m_asyncSnapshot;
+#endif
+  return snapshot.have;
+}
+
+bool AS5048BAngleSensor::acquireAsyncSample_() const {
+  const int raw = readRawAngleOnce_();
+
+  AsyncSnapshot snapshot;
+  snapshot.have = m_haveLastGoodRaw || m_lastReadOk;
+  snapshot.raw = snapshot.have ? (uint16_t)normalizeCount_(raw) : 0;
+  snapshot.readOk = m_lastReadOk;
+  snapshot.reused = m_lastReadReused;
+  snapshot.haveDiagnostics = m_haveDiagnostics;
+  snapshot.diagnostic = m_lastDiagnostic;
+  snapshot.agc = m_lastAgc;
+  snapshot.magnitude = m_lastMagnitude;
+  snapshot.diagnosticReadFailures = m_diagnosticReadFailures;
+  snapshot.seq = ++m_asyncNextSeq;
+  snapshot.acquiredUs = (uint64_t)esp_timer_get_time();
+
+  publishAsyncSnapshot_(snapshot);
+  return snapshot.readOk;
+}
+
 uint8_t AS5048BAngleSensor::columnCount() const {
   uint8_t count = (m_includeRaw && m_mode != OutputMode::RAW) ? 2 : 1;
   if (m_includeDiagColumns) count += 3;
@@ -552,6 +649,11 @@ void AS5048BAngleSensor::getColumnName(uint8_t idx, char* out, size_t cap) const
 void AS5048BAngleSensor::sampleValues(float* out, uint8_t max) {
   if (!out || max == 0 || m_muted) return;
 
+  if (m_asyncLoggingActive) {
+    sampleValuesFromAsync_(out, max);
+    return;
+  }
+
   float primary = 0.0f;
   int raw = 0;
   sample(primary, raw);
@@ -570,6 +672,52 @@ void AS5048BAngleSensor::sampleValues(float* out, uint8_t max) {
   }
   if (m_includeDiagColumns && w < max) {
     out[w++] = m_haveDiagnostics ? float(m_lastMagnitude) : NAN;
+  }
+}
+
+void AS5048BAngleSensor::sampleValuesFromAsync_(float* out, uint8_t max) {
+  AsyncSnapshot snapshot;
+  const bool have = copyAsyncSnapshot_(snapshot);
+  const uint64_t nowUs = (uint64_t)esp_timer_get_time();
+  const uint32_t ageUs = (have && nowUs >= snapshot.acquiredUs)
+    ? (uint32_t)(nowUs - snapshot.acquiredUs)
+    : 0;
+  const bool fresh = have && snapshot.seq != m_asyncLastLoggedSeq;
+  if (have) m_asyncLastLoggedSeq = snapshot.seq;
+  I2CBusScheduler::recordRowUse(this, ageUs, fresh, have);
+
+  const int raw = have ? int(snapshot.raw) : 0;
+  float primary = NAN;
+  if (have) {
+    const float deg = degreesFromRaw_(raw);
+    switch (m_mode) {
+      case OutputMode::RAW:
+        primary = float(raw);
+        break;
+      case OutputMode::POLY:
+      case OutputMode::LUT:
+        primary = applyTransform(deg);
+        break;
+      case OutputMode::LINEAR:
+      default:
+        primary = deg;
+        break;
+    }
+  }
+
+  uint8_t w = 0;
+  out[w++] = primary;
+  if (m_includeRaw && m_mode != OutputMode::RAW && w < max) {
+    out[w++] = have ? float(raw) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.haveDiagnostics) ? float(snapshot.agc) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.haveDiagnostics) ? float(snapshot.diagnostic) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.haveDiagnostics) ? float(snapshot.magnitude) : NAN;
   }
 }
 
@@ -806,6 +954,7 @@ const ParamDef* AS5048BAngleSensor::paramDefs(size_t& count) {
     {"zero_count",       ParamType::Int,    "0",   "0",     "16383", nullptr, "Firmware zero point in raw AS5048B counts"},
     {"direction",        ParamType::Enum,   "counts_increase_positive", nullptr, nullptr, "counts_increase_positive,counts_decrease_positive", "Raw-count direction for positive angular movement"},
     {"installed_range",  ParamType::Float,  "0",   "0",     nullptr, nullptr, "Installed range in linear output units for sag percentage"},
+    {"async_rate_hz",    ParamType::Int,    "0",   "0",     "1000", nullptr, "Async I2C acquisition rate; 0 follows logger sample rate"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},
     {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5048B AGC, diagnostic flags, and magnitude columns"},

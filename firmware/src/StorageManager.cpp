@@ -13,6 +13,8 @@
 #include "DebugTrace.h"
 #include "DebugLog.h"
 #include "LoggerLimits.h"
+#include "AnalogInputManager.h"
+#include "I2CBusScheduler.h"
 #include <math.h>
 #include <new>
 #include <time.h>
@@ -65,6 +67,7 @@ static SensorManager::SynBikeRawBindings s_synBikeRawBindings;
 static uint32_t s_flushCount    = 0;
 static uint32_t s_flushMaxMs    = 0;
 static uint64_t s_flushTotalMs  = 0;
+static StorageTimingStats s_storageTiming;
 
 
 // --- Sample row queue for non-blocking sampling ---
@@ -686,6 +689,10 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   return true;
 }
 
+StorageTimingStats StorageManager_timingStats() {
+  return s_storageTiming;
+}
+
 
 void StorageManager_begin(const board::BoardProfile& bp) {
   s_storage = &bp.storage;
@@ -816,6 +823,7 @@ static void startLog() {
   s_flushCount = 0;
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
+  s_storageTiming = StorageTimingStats{};
   s_rowsWritten = 0;
   s_currentLogPath = "";
   s_currentSessionId = "";
@@ -965,14 +973,23 @@ bool StorageManager_startLog() {
 }
 
 static void StorageManager_logSampleRow_(const SampleRow& row) {
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t t0 = micros();
+#endif
   if (isCompactBinaryFormat_()) {
     if (BdqLogWriter::writeSample(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark)) {
       ++s_rowsWritten;
     }
+#if BODAQS_TIMING_INSTRUMENTATION
+    TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+#endif
     return;
   }
 
   StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+#endif
 }
 
 
@@ -1003,6 +1020,14 @@ void StorageManager_stopLog() {
     endInfo.samplerLateTicks = stats.samplerLateTicks;
     endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
     endInfo.missedSampleSlots = stats.missedSampleSlots;
+    endInfo.sampleOnceUs = &stats.sampleOnceUs;
+    endInfo.sensorSampleUs = &stats.sensorSampleUs;
+    endInfo.enqueueUs = &stats.enqueueUs;
+    endInfo.storageTiming = &s_storageTiming;
+    endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+    endInfo.sensorTiming = &SensorManager::timingStats();
+    endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+    endInfo.boardProfile = board::gBoard;
     if (!BdqLogWriter::end(endInfo)) {
       STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
     }
@@ -1034,6 +1059,14 @@ void StorageManager_stopLog() {
     metaCtx.samplerLateTicks = stats.samplerLateTicks;
     metaCtx.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
     metaCtx.missedSampleSlots = stats.missedSampleSlots;
+    metaCtx.sampleOnceUs = &stats.sampleOnceUs;
+    metaCtx.sensorSampleUs = &stats.sensorSampleUs;
+    metaCtx.enqueueUs = &stats.enqueueUs;
+    metaCtx.storageTiming = &s_storageTiming;
+    metaCtx.externalAdcTiming = &AnalogInputManager::timingStats();
+    metaCtx.sensorTiming = &SensorManager::timingStats();
+    metaCtx.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+    metaCtx.boardProfile = board::gBoard;
 
     String metadata;
     if (LogMetadataWriter_build(metaCtx, metadata)) {
@@ -1354,6 +1387,13 @@ void StorageManager_loop() {
 
     // Occasional drain diagnostics if this loop took a noticeable chunk of time
     uint32_t dt_us = micros() - t0_us;
+    if (processed > 0) {
+#if BODAQS_TIMING_INSTRUMENTATION
+      ++s_storageTiming.drainLoops;
+      s_storageTiming.drainRows += processed;
+      TimingStats_record(s_storageTiming.drainLoopUs, dt_us);
+#endif
+    }
     if (dt_us > 50000) { // >50ms spent draining (should be rare)
       DRAIN_LOGD("processed=%u dt=%lu ms bufIndex=%u qMax=%u/%u\n",
                  (unsigned)processed, (unsigned long)(dt_us / 1000UL),

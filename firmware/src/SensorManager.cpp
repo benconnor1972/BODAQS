@@ -8,6 +8,7 @@
 #include "UI.h"
 #include "BoardSelect.h" 
 #include "AnalogInputManager.h"
+#include "I2CBusScheduler.h"
 #include <cstring>
 #include "BoardSelect.h"
 #include "DebugLog.h"
@@ -26,10 +27,44 @@ namespace {
   Sensor*             s_list[MAX_SENSORS] = { nullptr };
   const LoggerConfig* s_cfg               = nullptr;
   AnalogPotSensor*    s_primaryPot        = nullptr;
+  SensorTimingStats   s_timingStats;
 
   int firstFree() {
     for (int i = 0; i < (int)MAX_SENSORS; ++i) if (!s_list[i]) return i;
     return -1;
+  }
+
+  void copyTimingText_(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return;
+    if (!src) src = "";
+    size_t n = strlen(src);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+  }
+
+  void refreshTimingSlot_(uint8_t idx, Sensor* s) {
+    if (idx >= SensorTimingStats::kMaxSensors) return;
+    auto& slot = s_timingStats.sensor[idx];
+    slot = SensorTimingStats::SensorStats{};
+    if (!s) return;
+
+    slot.present = true;
+    slot.muted = s->muted();
+    slot.synchronous = (s->sampleMode() == SensorSampleMode::Synchronous);
+    slot.columnCount = s->columnCount();
+    copyTimingText_(slot.name, sizeof(slot.name), s->name());
+    copyTimingText_(slot.label, sizeof(slot.label), s->label());
+  }
+
+  void resetTimingStats_() {
+#if BODAQS_TIMING_INSTRUMENTATION
+    s_timingStats = SensorTimingStats{};
+    for (uint8_t i = 0; i < MAX_SENSORS && i < SensorTimingStats::kMaxSensors; ++i) {
+      if (s_list[i]) ++s_timingStats.sensorCount;
+      refreshTimingSlot_(i, s_list[i]);
+    }
+#endif
   }
 
   void appendCsv(char* out, size_t cap, const char* token) {
@@ -316,10 +351,16 @@ void loop() {
 }
 
 void onLoggingStart() {
+#if BODAQS_TIMING_INSTRUMENTATION
+  resetTimingStats_();
+  I2CBusScheduler::resetTimingStats();
+#endif
   for (auto* s : s_list) if (s) s->onLoggingStart();
+  I2CBusScheduler::start();
 }
 
 void onLoggingStop() {
+  I2CBusScheduler::stop();
   for (auto* s : s_list) if (s) s->onLoggingStop();
 }
 
@@ -449,7 +490,8 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     //
     // 2. Write all sensor columns as before
     //
-    for (auto* s : s_list) {
+    for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
+        auto* s = s_list[sensorIndex];
         if (!s || s->muted()) continue;
 
         const uint8_t need = s->columnCount();
@@ -459,12 +501,35 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
         if (!room) break;
 
         const uint8_t toWrite = (need <= room) ? need : (uint8_t)room;
+#if BODAQS_TIMING_INSTRUMENTATION
+        if (sensorIndex < SensorTimingStats::kMaxSensors) {
+          auto& slot = s_timingStats.sensor[sensorIndex];
+          if (!slot.present) refreshTimingSlot_(sensorIndex, s);
+          slot.muted = s->muted();
+          slot.columnCount = need;
+        }
+        const uint32_t sensorT0 = micros();
+#endif
         s->sampleValues(out + written, toWrite);
+#if BODAQS_TIMING_INSTRUMENTATION
+        if (sensorIndex < SensorTimingStats::kMaxSensors) {
+          TimingStats_record(s_timingStats.sensor[sensorIndex].sampleUs,
+                             (uint32_t)(micros() - sensorT0));
+        }
+#endif
         written += toWrite;
 
         if (toWrite < need) break;
     }
     AnalogInputManager::endSample();
+}
+
+void resetTimingStats() {
+  resetTimingStats_();
+}
+
+const SensorTimingStats& timingStats() {
+  return s_timingStats;
 }
 
 uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut) {

@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "Sensor.h"
+#include "TimingStats.h"
 
 struct LoggerConfig;
 
@@ -68,6 +69,8 @@ namespace SensorManager {
   uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut);
   bool resolveSynBikeRawBindings(SynBikeRawBindings& out);
   bool gpsStatus(SensorGpsStatus& out);
+  void resetTimingStats();
+  const SensorTimingStats& timingStats();
 
   // debug
   void debugDump(const char* tag);

@@ -2,6 +2,9 @@
 
 #include <Arduino.h>
 #include "ConfigManager.h"
+#include "TimingStats.h"
+
+namespace board { struct BoardProfile; }
 
 struct LogMetadataContext {
   const char* csvPath = "";
@@ -24,6 +27,14 @@ struct LogMetadataContext {
   uint32_t samplerLateTicks = 0;
   uint32_t samplerLateMaxLagMs = 0;
   uint32_t missedSampleSlots = 0;
+  const TimingSummary* sampleOnceUs = nullptr;
+  const TimingSummary* sensorSampleUs = nullptr;
+  const TimingSummary* enqueueUs = nullptr;
+  const StorageTimingStats* storageTiming = nullptr;
+  const ExternalAdcTimingStats* externalAdcTiming = nullptr;
+  const SensorTimingStats* sensorTiming = nullptr;
+  const I2CBusSchedulerTimingStats* i2cSchedulerTiming = nullptr;
+  const board::BoardProfile* boardProfile = nullptr;
 };
 
 bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out);

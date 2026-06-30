@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "ConfigManager.h"
+#include "TimingStats.h"
 
 class AnalogPotSensor; // fwd
 
@@ -9,6 +10,9 @@ namespace LoggingManager {
     uint32_t samplerLateTicks = 0;
     uint32_t samplerLateMaxLagMs = 0;
     uint32_t missedSampleSlots = 0;
+    TimingSummary sampleOnceUs;
+    TimingSummary sensorSampleUs;
+    TimingSummary enqueueUs;
   };
 
   void begin(const LoggerConfig* cfg);

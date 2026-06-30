@@ -9,6 +9,7 @@
 #include "I2CManager.h"
 #include "SensorRegistry.h"
 #include "DebugLog.h"
+#include "esp_timer.h"
 
 #define AS5600A_LOGI(...) LOGI_TAG("AS5600", __VA_ARGS__)
 #define AS5600A_LOGW(...) LOGW_TAG("AS5600", __VA_ARGS__)
@@ -34,6 +35,7 @@ static constexpr int32_t kDirectionMinDeltaCounts = int32_t(kCountsPerTurn / 720
 static constexpr uint8_t kDiagnosticColumnCount = 7;
 static constexpr uint16_t kConfSlowFilterMask = 0x0300;
 static constexpr uint8_t kConfSlowFilterShift = 8;
+static constexpr uint16_t kMaxAsyncRateHz = 1000;
 
 static constexpr uint8_t kStatusMagnetTooStrong = 0x08;
 static constexpr uint8_t kStatusMagnetTooWeak = 0x10;
@@ -127,6 +129,7 @@ void loadParamsFromPack_(AS5600AngleSensor::Params& p,
   if (params.get("direction", s))          p.directionSign = parseDirectionSign_(s);
   if (params.getFloat("installed_range", d)) p.installedRange = (float)d;
   if (params.get("slow_filter", s))        p.slowFilterCode = parseSlowFilterCode_(s);
+  if (params.getInt("async_rate_hz", li))  p.asyncRateHz = (li < 0) ? 0u : (uint16_t)li;
   if (params.getBool("include_raw", b))   p.includeRawColumn = b;
   if (params.getBool("include_angle", b)) p.includeAngleColumn = b;
   if (params.getBool("include_diag", b))  p.includeDiagColumns = b;
@@ -226,6 +229,8 @@ void AS5600AngleSensor::applyParams(const Params& p) {
   m_directionSign = (p.directionSign < 0) ? -1 : 1;
   m_installedRange = p.installedRange;
   m_slowFilterCode = (p.slowFilterCode >= 0 && p.slowFilterCode <= 3) ? p.slowFilterCode : -1;
+  m_asyncRateHz = p.asyncRateHz;
+  if (m_asyncRateHz > kMaxAsyncRateHz) m_asyncRateHz = kMaxAsyncRateHz;
   m_includeRaw = p.includeRawColumn;
   m_includeAngleColumn = p.includeAngleColumn;
   m_includeDiagColumns = p.includeDiagColumns;
@@ -275,6 +280,11 @@ void AS5600AngleSensor::begin() {
   m_configMagnitude = 0;
   m_calUnwrapInit = false;
   m_calLastUnwrapped = 0;
+  m_asyncLoggingActive = false;
+  m_asyncNextSeq = 0;
+  m_asyncLastLoggedSeq = 0;
+  resetAsyncSnapshot_();
+  I2CBusScheduler::registerClient(this);
 
   if (!m_wire) {
     AS5600A_LOGW("sensor '%s': I2C bus %u unavailable\n",
@@ -319,6 +329,31 @@ bool AS5600AngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
   applyParams(p);
   begin();
   return true;
+}
+
+void AS5600AngleSensor::onLoggingStart() {
+  m_asyncLoggingActive = true;
+  m_asyncNextSeq = 0;
+  m_asyncLastLoggedSeq = 0;
+  resetAsyncSnapshot_();
+  (void)acquireAsyncSample_();
+}
+
+void AS5600AngleSensor::onLoggingStop() {
+  m_asyncLoggingActive = false;
+}
+
+uint16_t AS5600AngleSensor::asyncTargetRateHz() const {
+  if (m_asyncRateHz != 0) return m_asyncRateHz;
+  const LoggerConfig& cfg = ConfigManager::get();
+  uint16_t hz = cfg.sampleRateHz;
+  if (hz == 0) hz = 100;
+  if (hz > kMaxAsyncRateHz) hz = kMaxAsyncRateHz;
+  return hz;
+}
+
+bool AS5600AngleSensor::asyncAcquire() {
+  return acquireAsyncSample_();
 }
 
 bool AS5600AngleSensor::probe_() const {
@@ -795,23 +830,86 @@ float AS5600AngleSensor::degreesFromRaw_(int raw) const {
   return float(m_directionSign) * float(signedDeltaCounts_(raw, m_zeroCount)) * kDegreesPerCount;
 }
 
-void AS5600AngleSensor::sample(float& primaryOut, int& rawOut) const {
-  rawOut = readRawAngleOnce_();
-  const float deg = degreesFromRaw_(rawOut);
+float AS5600AngleSensor::primaryFromRaw_(int raw) const {
+  const float deg = degreesFromRaw_(raw);
 
   switch (m_mode) {
     case OutputMode::RAW:
-      primaryOut = float(rawOut);
-      break;
+      return float(raw);
     case OutputMode::POLY:
     case OutputMode::LUT:
-      primaryOut = applyTransform(deg);
-      break;
+      return applyTransform(deg);
     case OutputMode::LINEAR:
     default:
-      primaryOut = deg;
-      break;
+      return deg;
   }
+}
+
+void AS5600AngleSensor::sample(float& primaryOut, int& rawOut) const {
+  rawOut = readRawAngleOnce_();
+  primaryOut = primaryFromRaw_(rawOut);
+}
+
+void AS5600AngleSensor::resetAsyncSnapshot_() const {
+  AsyncSnapshot empty;
+#if defined(ESP32)
+  portENTER_CRITICAL(&m_asyncMux);
+  m_asyncSnapshot = empty;
+  portEXIT_CRITICAL(&m_asyncMux);
+#else
+  m_asyncSnapshot = empty;
+#endif
+}
+
+void AS5600AngleSensor::publishAsyncSnapshot_(const AsyncSnapshot& snapshot) const {
+#if defined(ESP32)
+  portENTER_CRITICAL(&m_asyncMux);
+  m_asyncSnapshot = snapshot;
+  portEXIT_CRITICAL(&m_asyncMux);
+#else
+  m_asyncSnapshot = snapshot;
+#endif
+}
+
+bool AS5600AngleSensor::copyAsyncSnapshot_(AsyncSnapshot& snapshot) const {
+#if defined(ESP32)
+  portENTER_CRITICAL(&m_asyncMux);
+  snapshot = m_asyncSnapshot;
+  portEXIT_CRITICAL(&m_asyncMux);
+#else
+  snapshot = m_asyncSnapshot;
+#endif
+  return snapshot.have;
+}
+
+bool AS5600AngleSensor::acquireAsyncSample_() const {
+  const int raw = readRawAngleOnce_();
+
+  AsyncSnapshot snapshot;
+  snapshot.have = m_haveLastGoodRaw || m_lastReadOk;
+  snapshot.raw = snapshot.have ? (uint16_t)normalizeCount_(raw) : 0;
+  snapshot.readOk = m_lastReadOk;
+  snapshot.reused = m_lastReadReused;
+  snapshot.haveDiagnostics = m_haveDiagnostics;
+  snapshot.status = m_lastStatus;
+  snapshot.agc = m_lastAgc;
+  snapshot.magnitude = m_lastMagnitude;
+  snapshot.rawReadFailures = m_rawReadFailures;
+  snapshot.diagnosticReadFailures = m_diagnosticReadFailures;
+  snapshot.seq = ++m_asyncNextSeq;
+  snapshot.acquiredUs = (uint64_t)esp_timer_get_time();
+
+  if (m_includeAngleColumn) {
+    uint16_t angle = 0;
+    snapshot.haveAngle = readAngleRegister_(angle);
+    snapshot.angle = angle;
+  } else {
+    snapshot.haveAngle = false;
+    snapshot.angle = snapshot.raw;
+  }
+
+  publishAsyncSnapshot_(snapshot);
+  return snapshot.readOk;
 }
 
 uint8_t AS5600AngleSensor::columnCount() const {
@@ -865,8 +963,58 @@ void AS5600AngleSensor::getColumnName(uint8_t idx, char* out, size_t cap) const 
   }
 }
 
+void AS5600AngleSensor::sampleValuesFromAsync_(float* out, uint8_t max) {
+  AsyncSnapshot snapshot;
+  const bool have = copyAsyncSnapshot_(snapshot);
+  const uint64_t nowUs = (uint64_t)esp_timer_get_time();
+  const uint32_t ageUs = (have && nowUs >= snapshot.acquiredUs)
+    ? (uint32_t)(nowUs - snapshot.acquiredUs)
+    : 0;
+  const bool fresh = have && snapshot.seq != m_asyncLastLoggedSeq;
+  if (have) m_asyncLastLoggedSeq = snapshot.seq;
+  I2CBusScheduler::recordRowUse(this, ageUs, fresh, have);
+
+  const int raw = have ? int(snapshot.raw) : 0;
+  const float primary = have ? primaryFromRaw_(raw) : NAN;
+
+  uint8_t w = 0;
+  out[w++] = primary;
+  if (m_includeRaw && m_mode != OutputMode::RAW && w < max) {
+    out[w++] = have ? float(raw) : NAN;
+  }
+  if (m_includeAngleColumn && w < max) {
+    out[w++] = (have && snapshot.haveAngle) ? float(snapshot.angle) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.haveDiagnostics) ? float(snapshot.agc) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.haveDiagnostics) ? float(snapshot.status) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.haveDiagnostics) ? float(snapshot.magnitude) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.readOk) ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.reused) ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = have ? float(snapshot.rawReadFailures) : float(m_rawReadFailures);
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = have ? float(snapshot.diagnosticReadFailures) : float(m_diagnosticReadFailures);
+  }
+}
+
 void AS5600AngleSensor::sampleValues(float* out, uint8_t max) {
   if (!out || max == 0 || m_muted) return;
+
+  if (m_asyncLoggingActive) {
+    sampleValuesFromAsync_(out, max);
+    return;
+  }
 
   float primary = 0.0f;
   int raw = 0;
@@ -1210,6 +1358,7 @@ const ParamDef* AS5600AngleSensor::paramDefs(size_t& count) {
     {"direction",        ParamType::Enum,   "counts_increase_positive", nullptr, nullptr, "counts_increase_positive,counts_decrease_positive", "Raw-count direction for positive angular movement"},
     {"installed_range",  ParamType::Float,  "0",   "0",     nullptr, nullptr, "Installed range in linear output units for sag percentage"},
     {"slow_filter",      ParamType::Enum,   "unchanged", nullptr, nullptr, "unchanged,16x,8x,4x,2x", "Volatile AS5600 slow filter setting; not burned to OTP"},
+    {"async_rate_hz",    ParamType::Int,    "0",   "0",     "1000", nullptr, "Async I2C acquisition rate; 0 follows logger sample rate"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},
     {"include_angle",    ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5600 ANGLE register counts for diagnostics"},
