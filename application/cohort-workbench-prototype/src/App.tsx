@@ -14,6 +14,7 @@ import {
   Minus,
   Play,
   Plus,
+  RefreshCw,
   Save,
   Search,
   Trash2,
@@ -179,7 +180,10 @@ function App() {
   const [libraryRootInput, setLibraryRootInput] = useState('')
   const [connectionMode, setConnectionMode] = useState<'local-api' | 'fixture'>('local-api')
   const [isChangingLibraryRoot, setIsChangingLibraryRoot] = useState(false)
+  const [isRefreshingWorkbenchData, setIsRefreshingWorkbenchData] = useState(false)
   const [statusMessage, setStatusMessage] = useState('Connecting to configured BODAQS Library API...')
+  const workbenchRefreshInFlightRef = useRef(false)
+  const lastAutomaticWorkbenchRefreshMs = useRef(0)
 
   useEffect(() => {
     function handleHashChange() {
@@ -258,6 +262,31 @@ function App() {
       cancelled = true
     }
   }, [fixtureDataSource, localDataSource])
+
+  useEffect(() => {
+    if (connectionMode !== 'local-api' || !activeDataSource.refreshLibrary || libraries.length === 0) {
+      return
+    }
+
+    function refreshIfReturningToWorkbench() {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+      const now = Date.now()
+      if (now - lastAutomaticWorkbenchRefreshMs.current < 15000) {
+        return
+      }
+      lastAutomaticWorkbenchRefreshMs.current = now
+      void refreshWorkbenchData({ quiet: true, automatic: true })
+    }
+
+    window.addEventListener('focus', refreshIfReturningToWorkbench)
+    document.addEventListener('visibilitychange', refreshIfReturningToWorkbench)
+    return () => {
+      window.removeEventListener('focus', refreshIfReturningToWorkbench)
+      document.removeEventListener('visibilitychange', refreshIfReturningToWorkbench)
+    }
+  }, [activeDataSource, connectionMode, libraries.length, refreshWorkbenchData, selectedLibraryIds, sessions.length])
 
   useEffect(() => {
     if (!analysisRoute?.studySetId) {
@@ -711,6 +740,78 @@ function App() {
       setStatusMessage(`Could not select library root through ${localDataSource.baseUrl}: ${message}`)
     } finally {
       setIsChangingLibraryRoot(false)
+    }
+  }
+
+  async function refreshWorkbenchData({
+    quiet = false,
+    automatic = false,
+  }: {
+    quiet?: boolean
+    automatic?: boolean
+  } = {}) {
+    if (workbenchRefreshInFlightRef.current || isChangingLibraryRoot) {
+      return
+    }
+
+    workbenchRefreshInFlightRef.current = true
+    if (!quiet) {
+      setIsRefreshingWorkbenchData(true)
+      setStatusMessage('Refreshing library catalog...')
+    }
+
+    const selectedAllLibraries =
+      libraries.length > 0 &&
+      selectedLibraryIds.length === libraries.length &&
+      libraries.every((libraryItem) => selectedLibraryIds.includes(libraryItem.id))
+
+    try {
+      const libraryIdsToRefresh = selectedLibraryIds.length
+        ? selectedLibraryIds
+        : libraries.map((libraryItem) => libraryItem.id)
+      if (activeDataSource.refreshLibrary && libraryIdsToRefresh.length) {
+        await Promise.all(libraryIdsToRefresh.map((libraryId) => activeDataSource.refreshLibrary?.(libraryId)))
+      }
+
+      const loaded = await fetchWorkbenchData(activeDataSource)
+      const loadedLibraryIds = new Set(loaded.libraries.map((libraryItem) => libraryItem.id))
+      const loadedCandidateIds = new Set(loaded.sessions.map(candidateId))
+
+      setLibraries(loaded.libraries)
+      setSessions(loaded.sessions)
+      setTracks(loaded.tracks)
+      setSavedStudySets(loaded.studySets)
+      setSavedSessionFilters(loaded.savedFilters)
+      setSelectedLibraryIds((current) => {
+        if (selectedAllLibraries) {
+          return loaded.libraries.map((libraryItem) => libraryItem.id)
+        }
+        return current.filter((libraryId) => loadedLibraryIds.has(libraryId))
+      })
+      setSelectedCandidateIds((current) => current.filter((id) => loadedCandidateIds.has(id)))
+      setPrimaryCandidateId((current) => (current && loadedCandidateIds.has(current) ? current : null))
+      setSelectionAnchorCandidateId((current) => (current && loadedCandidateIds.has(current) ? current : null))
+
+      if (!quiet) {
+        const sessionLabel = loaded.sessions.length === 1 ? 'session' : 'sessions'
+        setStatusMessage(`Refreshed library catalog: ${loaded.sessions.length} ${sessionLabel} available.`)
+      } else if (automatic) {
+        const newSessionCount = loaded.sessions.length - sessions.length
+        if (newSessionCount > 0) {
+          const sessionLabel = newSessionCount === 1 ? 'new session' : 'new sessions'
+          setStatusMessage(`Library catalog refreshed: ${newSessionCount} ${sessionLabel} found.`)
+        }
+      }
+    } catch (error) {
+      if (!quiet) {
+        const message = error instanceof Error ? error.message : String(error)
+        setStatusMessage(`Could not refresh library catalog: ${message}`)
+      }
+    } finally {
+      workbenchRefreshInFlightRef.current = false
+      if (!quiet) {
+        setIsRefreshingWorkbenchData(false)
+      }
     }
   }
 
@@ -1496,6 +1597,12 @@ function App() {
                 <span className="module-header-count">
                   {libraryScopedSessions.length} total / {visibleSessions.length} filtered / {selectedCandidateIds.length} selected
                 </span>
+                <IconButton
+                  label="Refresh Session Selector"
+                  onClick={() => void refreshWorkbenchData()}
+                  disabled={isRefreshingWorkbenchData || isChangingLibraryRoot}
+                  icon={<RefreshCw size={16} />}
+                />
                 <IconButton
                   label={sessionSelectorCollapsed ? 'Expand Session Selector' : 'Collapse Session Selector'}
                   onClick={() => setSessionSelectorCollapsed((current) => !current)}

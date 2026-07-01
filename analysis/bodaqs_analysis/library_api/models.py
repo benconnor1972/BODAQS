@@ -54,6 +54,9 @@ def default_capabilities() -> dict[str, Any]:
             "write_bookmarks": True,
             "read_analysis_views": True,
             "evaluate_analysis_adequacy": True,
+            "explain_analysis_adequacy_cache_keys": True,
+            "warm_analysis_adequacy": True,
+            "read_cache_diagnostics": True,
             "export_static_bundle": False,
             "run_processing_jobs": False,
         },
@@ -98,6 +101,9 @@ def library_payload(
             "write_bookmarks": True,
             "read_analysis_views": True,
             "evaluate_analysis_adequacy": True,
+            "explain_analysis_adequacy_cache_keys": True,
+            "warm_analysis_adequacy": True,
+            "read_cache_diagnostics": True,
         },
     }
     if definition:

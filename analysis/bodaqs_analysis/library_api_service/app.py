@@ -97,6 +97,10 @@ def create_app(
     def capabilities() -> dict[str, Any]:
         return _current_adapter(app).capabilities()
 
+    @app.get("/api/v1/cache/diagnostics")
+    def cache_diagnostics() -> dict[str, Any]:
+        return _current_adapter(app).cache_diagnostics()
+
     @app.post("/api/v1/config/libraries-root")
     async def set_libraries_root(request: Request) -> dict[str, Any]:
         payload = await request.json()
@@ -315,6 +319,11 @@ def create_app(
     async def get_analysis_view_adequacy(view_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         return _current_adapter(app).get_analysis_view_adequacy(view_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/analysis-views/{view_id}/adequacy/cache-key/explain")
+    async def explain_analysis_view_adequacy_cache_key(view_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).explain_analysis_view_adequacy_cache_key(view_id, _json_object_payload(payload))
 
     @app.post("/api/v1/libraries/{library_id}/timeseries/window")
     async def get_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:

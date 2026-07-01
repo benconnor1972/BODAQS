@@ -1416,6 +1416,290 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert blocked["usable_session_count"] == 0
 
 
+def test_library_adapter_caches_and_invalidates_analysis_view_adequacy(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "session_1",
+        include_velocity_signals=True,
+    )
+    request = {"sessions": [session_ref]}
+    adapter = LibraryAdapter(libraries_root)
+
+    cold_explain = adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", request)
+    assert cold_explain["schema"] == "bodaqs.library_api.analysis_adequacy_cache_key_explain"
+    assert cold_explain["namespace"] == "analysis_adequacy"
+    assert cold_explain["cached"] is False
+    assert cold_explain["dependencies"]["policy_version"] == 1
+    assert cold_explain["dependencies"]["scope"]["kind"] == "session_refs"
+    assert len(cold_explain["dependencies"]["sessions"][0]["available_signals"]) >= 5
+
+    first = adapter.get_analysis_view_adequacy("simple-suspension", request)
+    stats_after_first = adapter._cache.stats()
+    warm_explain = adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", request)
+    second = adapter.get_analysis_view_adequacy("simple-suspension", request)
+    stats_after_second = adapter._cache.stats()
+
+    assert warm_explain["cache_key"] == cold_explain["cache_key"]
+    assert warm_explain["cached"] is True
+    assert second == first
+    assert stats_after_second["hits"] == stats_after_first["hits"] + 1
+
+    second["status"] = "mutated-by-caller"
+    third = adapter.get_analysis_view_adequacy("simple-suspension", request)
+    assert third["status"] == first["status"]
+
+    meta_path = library_root / "runs" / "run_1" / "sessions" / "session_1" / "session" / "meta.json"
+    metadata = _read_json(meta_path)
+    metadata["signals"] = {"time_s": metadata["signals"]["time_s"]}
+    _write_json(meta_path, metadata)
+
+    cached_before_refresh = adapter.get_analysis_view_adequacy("simple-suspension", request)
+    assert cached_before_refresh["status"] == first["status"]
+
+    adapter.refresh_library("default-library")
+    refreshed_explain = adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", request)
+    refreshed = adapter.get_analysis_view_adequacy("simple-suspension", request)
+
+    assert refreshed_explain["cache_key"] != warm_explain["cache_key"]
+    assert refreshed_explain["cached"] is False
+    refreshed_signals = refreshed_explain["dependencies"]["sessions"][0]["available_signals"]
+    assert len(refreshed_signals) == 1
+    assert refreshed_signals[0]["column"] == "time_s"
+    assert refreshed_signals[0]["domain"] == "time"
+    assert refreshed_signals[0]["quantity"] == "time"
+    assert refreshed_signals[0]["unit"] == "s"
+    assert refreshed["status"] == "blocked"
+    assert refreshed["usable_session_count"] == 0
+
+
+def test_library_adapter_analysis_adequacy_cache_key_tracks_study_set_scope_dependencies(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "ready",
+        include_velocity_signals=True,
+    )
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_study_set(
+        "default-library",
+        {
+            "display_name": "Scope Study Set",
+            "sessions": [session_ref],
+        },
+    )
+    created_explain = adapter.explain_analysis_view_adequacy_cache_key(
+        "simple-suspension",
+        {"study_set_id": created["study_set_id"]},
+    )
+
+    assert created_explain["cached"] is True
+    assert created_explain["dependencies"]["scope"]["revision"] == 1
+    assert created_explain["dependencies"]["scope"]["groupings"] == []
+    assert created_explain["dependencies"]["scope"]["track_ids"] == []
+
+    updated = adapter.update_study_set(
+        "default-library",
+        created["study_set_id"],
+        expected_revision=created["revision"],
+        payload={
+            "display_name": created["display_name"],
+            "sessions": created["sessions"],
+            "groupings": [
+                {
+                    "grouping_id": "wet-laps",
+                    "display_name": "Wet laps",
+                    "session_refs": [session_ref["session_ref_id"]],
+                }
+            ],
+            "tracks": [{"track_id": "stevo-test-track"}],
+        },
+    )
+    updated_explain = adapter.explain_analysis_view_adequacy_cache_key(
+        "simple-suspension",
+        {"study_set_id": updated["study_set_id"]},
+    )
+
+    assert updated_explain["cache_key"] != created_explain["cache_key"]
+    assert updated_explain["cached"] is True
+    assert updated_explain["dependencies"]["scope"]["revision"] == 2
+    assert updated_explain["dependencies"]["scope"]["groupings"] == [
+        {
+            "display_name": "Wet laps",
+            "grouping_id": "wet-laps",
+            "session_refs": [session_ref["session_ref_id"]],
+        }
+    ]
+    assert updated_explain["dependencies"]["scope"]["track_ids"] == ["stevo-test-track"]
+
+
+def test_library_adapter_warms_analysis_adequacy_when_study_set_is_saved(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "ready",
+        include_velocity_signals=True,
+    )
+    adapter = LibraryAdapter(libraries_root)
+
+    created = adapter.create_study_set(
+        "default-library",
+        {
+            "display_name": "Ready Study Set",
+            "sessions": [session_ref],
+        },
+    )
+    diagnostics = adapter.cache_diagnostics()
+
+    assert diagnostics["schema"] == "bodaqs.library_api.cache_diagnostics"
+    assert diagnostics["cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+
+    stats_after_save = adapter._cache.stats()
+    adequacy = adapter.get_analysis_view_adequacy(
+        "simple-suspension",
+        {"study_set_id": created["study_set_id"]},
+    )
+    stats_after_adequacy = adapter._cache.stats()
+
+    assert adequacy["status"] == "ready"
+    assert stats_after_adequacy["hits"] == stats_after_save["hits"] + 1
+
+    warm_error = adapter.warm_analysis_adequacy_for_study_set(created, view_ids=["not-a-real-view"])
+    assert warm_error["warmed_count"] == 0
+    assert warm_error["error_count"] == 1
+    assert warm_error["errors"][0]["code"] == "analysis_view_not_found"
+
+
+def test_library_adapter_persists_analysis_adequacy_across_adapter_instances(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "ready",
+        include_velocity_signals=True,
+    )
+    request = {"sessions": [session_ref]}
+    adapter = LibraryAdapter(libraries_root)
+
+    computed = adapter.get_analysis_view_adequacy(
+        "simple-suspension",
+        {**request, "include_cache_status": True},
+    )
+    assert computed["cache_status"]["source"] == "computed"
+    adequacy = adapter.get_analysis_view_adequacy("simple-suspension", request)
+    assert "cache_status" not in adequacy
+    memory = adapter.get_analysis_view_adequacy(
+        "simple-suspension",
+        {**request, "include_cache_status": True},
+    )
+    diagnostics = adapter.cache_diagnostics()
+    explain = adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", request)
+
+    assert memory["cache_status"]["source"] == "memory"
+    assert diagnostics["persistent_cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+    assert diagnostics["persistent_cache"]["namespaces"]["analysis_adequacy"]["file_count"] == 1
+    assert explain["memory_cached"] is True
+    assert explain["persistent_cached"] is True
+
+    restarted_adapter = LibraryAdapter(libraries_root)
+    restarted_explain = restarted_adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", request)
+    stats_before_get = restarted_adapter._cache.stats()
+    restarted_adequacy = restarted_adapter.get_analysis_view_adequacy("simple-suspension", request)
+    stats_after_get = restarted_adapter._cache.stats()
+    restarted_adapter._cache.clear()
+    persisted_adequacy = restarted_adapter.get_analysis_view_adequacy(
+        "simple-suspension",
+        {**request, "include_cache_status": True},
+    )
+
+    assert restarted_explain["cache_key"] == explain["cache_key"]
+    assert restarted_explain["cached"] is True
+    assert restarted_explain["memory_cached"] is True
+    assert restarted_explain["persistent_cached"] is True
+    assert restarted_adequacy == adequacy
+    assert stats_after_get["hits"] == stats_before_get["hits"] + 1
+    assert persisted_adequacy["cache_status"]["source"] == "persistent"
+    assert {key: value for key, value in persisted_adequacy.items() if key != "cache_status"} == adequacy
+
+    restarted_adapter.refresh_library("default-library")
+    invalidated_diagnostics = restarted_adapter.cache_diagnostics()
+    invalidated_explain = restarted_adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", request)
+
+    assert invalidated_diagnostics["persistent_cache"]["entry_count"] == 0
+    assert invalidated_explain["cached"] is False
+    assert invalidated_explain["memory_cached"] is False
+    assert invalidated_explain["persistent_cached"] is False
+
+
+def test_library_adapter_prunes_persisted_analysis_adequacy_cache(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    first_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "first",
+        include_velocity_signals=True,
+    )
+    second_ref = _write_simple_suspension_fixture_session(
+        library_root,
+        "run_1",
+        "second",
+        include_velocity_signals=True,
+    )
+    adapter = LibraryAdapter(libraries_root)
+    adapter._ANALYSIS_ADEQUACY_PERSISTENT_CACHE_MAX_ENTRIES = 1
+
+    first_request = {"sessions": [first_ref]}
+    second_request = {"sessions": [second_ref]}
+    adapter.get_analysis_view_adequacy("simple-suspension", first_request)
+    first_explain = adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", first_request)
+    adapter.get_analysis_view_adequacy("simple-suspension", second_request)
+    second_explain = adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", second_request)
+    diagnostics = adapter.cache_diagnostics()
+
+    assert first_explain["memory_cached"] is True
+    assert first_explain["persistent_cached"] is True
+    assert second_explain["memory_cached"] is True
+    assert second_explain["persistent_cached"] is True
+    assert diagnostics["persistent_cache"]["entry_count"] == 1
+    assert diagnostics["persistent_cache"]["file_count"] == 1
+
+
 def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
     tmp_path: Path,
 ) -> None:
@@ -1827,6 +2111,51 @@ def test_library_adapter_queries_raw_signals_events_and_metrics(tmp_path: Path) 
     assert signals["warnings"][0]["role"] == "missing"
     assert signals["warnings"][0]["code"] == "signal_not_found"
 
+    stats_before_signal_hit = adapter._cache.stats()
+    signals_again = adapter.query_signals(
+        "default-library",
+        {
+            "sessions": [session_ref],
+            "signals": [
+                {
+                    "role": "front_displacement",
+                    "column": "front_wheel_disp_dom_wheel [mm]",
+                },
+                {
+                    "role": "missing",
+                    "column": "not_a_real_signal",
+                },
+            ],
+        },
+    )
+    stats_after_signal_hit = adapter._cache.stats()
+    assert signals_again == signals
+    assert stats_after_signal_hit["hits"] == stats_before_signal_hit["hits"] + 1
+
+    session_root = library_root / "runs" / session_ref["run_id"] / "sessions" / session_ref["session_id"]
+    signal_path = session_root / "session" / "df.parquet"
+    signal_df = pd.read_parquet(signal_path)
+    signal_df.loc[1, "front_wheel_disp_dom_wheel [mm]"] = 99.0
+    time.sleep(0.001)
+    signal_df.to_parquet(signal_path, index=False)
+    changed_signals = adapter.query_signals(
+        "default-library",
+        {
+            "sessions": [session_ref],
+            "signals": [
+                {
+                    "role": "front_displacement",
+                    "column": "front_wheel_disp_dom_wheel [mm]",
+                },
+                {
+                    "role": "missing",
+                    "column": "not_a_real_signal",
+                },
+            ],
+        },
+    )
+    assert changed_signals["sessions"][0]["signals"][0]["values"] == [0.0, 99.0, 20.0]
+
     activity = adapter.query_signals(
         "default-library",
         {
@@ -1850,10 +2179,33 @@ def test_library_adapter_queries_raw_signals_events_and_metrics(tmp_path: Path) 
     assert events["row_count"] == 3
     assert {row["event_type"] for row in events["rows"]} == {"bottom_out", "jump"}
 
+    stats_before_events_hit = adapter._cache.stats()
+    events_again = adapter.query_events("default-library", {"sessions": [session_ref]})
+    stats_after_events_hit = adapter._cache.stats()
+    assert events_again == events
+    assert stats_after_events_hit["hits"] == stats_before_events_hit["hits"] + 1
+
     metrics = adapter.query_metrics("default-library", {"sessions": [session_ref], "event_types": ["bottom_out"]})
     assert metrics["schema"] == "bodaqs.metrics_query"
     assert metrics["row_count"] == 1
     assert metrics["rows"][0]["fields"]["peak_force"] == 123.0
+
+    stats_before_metrics_hit = adapter._cache.stats()
+    metrics_again = adapter.query_metrics("default-library", {"sessions": [session_ref], "event_types": ["bottom_out"]})
+    stats_after_metrics_hit = adapter._cache.stats()
+    assert metrics_again == metrics
+    assert stats_after_metrics_hit["hits"] == stats_before_metrics_hit["hits"] + 1
+
+    metrics_path = session_root / "metrics" / "bottom_out" / "metrics.parquet"
+    metrics_df = pd.read_parquet(metrics_path)
+    metrics_df.loc[0, "peak_force"] = 456.0
+    time.sleep(0.001)
+    metrics_df.to_parquet(metrics_path, index=False)
+    changed_metrics = adapter.query_metrics(
+        "default-library",
+        {"sessions": [session_ref], "event_types": ["bottom_out"]},
+    )
+    assert changed_metrics["rows"][0]["fields"]["peak_force"] == 456.0
 
 
 def test_library_adapter_timeseries_window_downsamples_concrete_columns(
@@ -2469,6 +2821,9 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert capabilities.json()["features"]["write_study_sets"] is True
     assert capabilities.json()["features"]["read_analysis_views"] is True
     assert capabilities.json()["features"]["evaluate_analysis_adequacy"] is True
+    assert capabilities.json()["features"]["explain_analysis_adequacy_cache_keys"] is True
+    assert capabilities.json()["features"]["warm_analysis_adequacy"] is True
+    assert capabilities.json()["features"]["read_cache_diagnostics"] is True
 
     libraries = client.get("/api/v1/libraries")
     assert libraries.status_code == 200
@@ -2494,6 +2849,23 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert adequacy.json()["schema"] == "bodaqs.analysis_adequacy"
     assert adequacy.json()["status"] == "blocked"
     assert adequacy.json()["usable_session_count"] == 0
+
+    cache_explain = client.post(
+        "/api/v1/analysis-views/simple-suspension/adequacy/cache-key/explain",
+        json={"sessions": [session_ref]},
+    )
+    assert cache_explain.status_code == 200
+    assert cache_explain.json()["schema"] == "bodaqs.library_api.analysis_adequacy_cache_key_explain"
+    assert cache_explain.json()["cached"] is True
+    assert cache_explain.json()["memory_cached"] is True
+    assert cache_explain.json()["persistent_cached"] is True
+    assert cache_explain.json()["dependencies"]["view_id"] == "simple-suspension"
+
+    cache_diagnostics = client.get("/api/v1/cache/diagnostics")
+    assert cache_diagnostics.status_code == 200
+    assert cache_diagnostics.json()["schema"] == "bodaqs.library_api.cache_diagnostics"
+    assert cache_diagnostics.json()["cache"]["entry_count"] == 1
+    assert cache_diagnostics.json()["persistent_cache"]["entry_count"] == 1
 
     missing_view = client.post(
         "/api/v1/analysis-views/not-a-real-view/adequacy",

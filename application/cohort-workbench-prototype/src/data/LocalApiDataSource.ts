@@ -87,6 +87,17 @@ export class LocalApiDataSource implements LibraryDataSource {
     return libraries.map(mapLibrary)
   }
 
+  async refreshLibrary(libraryId: string) {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/refresh`,
+      {
+        method: 'POST',
+      },
+    )
+    const library = objectValue(response.library)
+    return mapLibrary(library)
+  }
+
   async listSessions() {
     const libraries = await this.listLibraries()
     const catalogs = await Promise.all(

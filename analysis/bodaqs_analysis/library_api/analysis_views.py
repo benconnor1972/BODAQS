@@ -11,6 +11,7 @@ ANALYSIS_VIEW_REGISTRY_SCHEMA = "bodaqs.analysis_view_registry"
 ANALYSIS_VIEW_REGISTRY_VERSION = 1
 ANALYSIS_ADEQUACY_SCHEMA = "bodaqs.analysis_adequacy"
 ANALYSIS_ADEQUACY_VERSION = 1
+ANALYSIS_ADEQUACY_POLICY_VERSION = 1
 
 SIMPLE_SUSPENSION_VIEW_ID = "simple-suspension"
 _SUSPENSION_ENDS = ("front", "rear")
@@ -38,6 +39,15 @@ def get_analysis_view(view_id: str) -> dict[str, Any]:
         "Analysis view was not found.",
         details={"view_id": normalized, "available_view_ids": [view["view_id"] for view in list_analysis_views()]},
     )
+
+
+def analysis_view_adequacy_policy_version(view_id: str) -> int:
+    """Return the cache-affecting adequacy policy version for a view."""
+
+    view = get_analysis_view(view_id)
+    if view["view_id"] == SIMPLE_SUSPENSION_VIEW_ID:
+        return ANALYSIS_ADEQUACY_POLICY_VERSION
+    return ANALYSIS_ADEQUACY_POLICY_VERSION
 
 
 def evaluate_analysis_view_adequacy(

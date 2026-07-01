@@ -23,6 +23,7 @@ import type { SavedSessionFilterRecord } from '../domain/sessionFilters'
 
 export interface LibraryDataSource {
   listLibraries(): Promise<LibraryRecord[]>
+  refreshLibrary?(libraryId: string): Promise<LibraryRecord | void>
   listSessions(): Promise<SessionRecord[]>
   listTracks(): Promise<TrackRecord[]>
   listStudySets(): Promise<StudySet[]>
