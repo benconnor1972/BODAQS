@@ -2,6 +2,18 @@ import { useDeferredValue, useEffect, useMemo, useState, type CSSProperties, typ
 import * as d3 from 'd3'
 import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
+import {
+  finishSuspensionCacheDiagnostics,
+  getSuspensionCacheEntry,
+  getSuspensionComposedCacheEntry,
+  setSuspensionCacheEntry,
+  setSuspensionComposedCacheEntry,
+  startSuspensionCacheDiagnostics,
+  suspensionCacheLoadMessage,
+  suspensionCacheNowMs,
+  suspensionSessionCache,
+  type SuspensionCacheDiagnostics,
+} from '../data/SuspensionAnalysisCache'
 import { sessionByRef, sessionRefId } from '../domain/studySets'
 import type {
   SessionRecord,
@@ -78,10 +90,10 @@ type VisualizationData = {
 }
 
 type LoadState =
-  | { status: 'idle'; message: string }
-  | { status: 'loading'; message: string }
-  | { status: 'ready'; message: string; data: VisualizationData }
-  | { status: 'error'; message: string }
+  | { status: 'idle'; message: string; data?: VisualizationData; diagnostics?: SuspensionCacheDiagnostics }
+  | { status: 'loading'; message: string; data?: VisualizationData; diagnostics?: SuspensionCacheDiagnostics }
+  | { status: 'ready'; message: string; data: VisualizationData; diagnostics: SuspensionCacheDiagnostics }
+  | { status: 'error'; message: string; data?: VisualizationData; diagnostics?: SuspensionCacheDiagnostics }
 
 type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
@@ -115,6 +127,11 @@ type CachedSessionVisualizationData = {
   events: TableQueryRow[]
   metrics: TableQueryRow[]
   warnings: string[]
+}
+
+type VisualizationLoadResult = {
+  data: VisualizationData
+  diagnostics: SuspensionCacheDiagnostics
 }
 
 type TimedTableRow = {
@@ -152,7 +169,6 @@ type SectorInterval = {
 }
 
 const visualizationSettingsCache = new Map<string, SuspensionVisualizationSettings>()
-const visualizationSessionCacheByDataSource = new WeakMap<LibraryDataSource, Map<string, CachedSessionVisualizationData>>()
 const monotonicTimeArrayCache = new WeakMap<number[], boolean>()
 const rowTimeIndexCache = new WeakMap<TableQueryRow[], TimedTableRow[]>()
 const entitySignalValuesCache = new WeakMap<VisualizationData, Map<string, number[]>>()
@@ -170,6 +186,7 @@ const sectorIntervalCache = new WeakMap<TrackRecord, Map<string, SectorInterval 
 const lastSectorIdCache = new WeakMap<TrackRecord, string | null>()
 const trackObjectIdCache = new WeakMap<TrackRecord, number>()
 const activeMaskCache = new WeakMap<VisualizationData, Map<string, boolean[] | null>>()
+const VISUALIZATION_SETTINGS_STORAGE_PREFIX = 'bodaqs.suspension-visualization.settings.'
 let nextTrackObjectId = 1
 
 type TrackSector = {
@@ -319,7 +336,7 @@ export function SuspensionVisualization({
   }, [selectedTrack?.id, sectorKey])
 
   useEffect(() => {
-    visualizationSettingsCache.set(settingsCacheKey, {
+    const settings = {
       selectedEntityIds,
       knownSessionEntityIds: entities.filter((entity) => entity.kind === 'session').map((entity) => entity.id),
       collapsedPanels,
@@ -331,7 +348,9 @@ export function SuspensionVisualization({
       timeWindowsBySession,
       excludeInactivePeriods,
       signalChoices,
-    })
+    }
+    visualizationSettingsCache.set(settingsCacheKey, settings)
+    persistVisualizationSettings(settingsCacheKey, settings)
   }, [
     settingsCacheKey,
     studySetKey,
@@ -354,16 +373,36 @@ export function SuspensionVisualization({
         setLoadState({ status: 'idle', message: 'Add at least one session to visualize suspension data.' })
         return
       }
-      setLoadState({ status: 'loading', message: 'Loading suspension visualization data...' })
+      const missCount = visualizationCacheMissCount(dataSource, studySetSessionRefs, resolvedSignalChoices)
+      setLoadState((current) => ({
+        status: 'loading',
+        message: current.data
+          ? missCount > 0
+            ? `Loading ${missCount} uncached session(s); showing existing visualization data.`
+            : 'Refreshing visualization data from browser cache...'
+          : 'Loading suspension visualization data...',
+        data: current.data,
+        diagnostics: current.diagnostics,
+      }))
       try {
-        const data = await loadVisualizationData(studySetSessionRefs, resolvedSignalChoices, sessions, dataSource)
+        const result = await loadVisualizationData(studySetSessionRefs, resolvedSignalChoices, sessions, dataSource)
         if (!cancelled) {
-          setLoadState({ status: 'ready', message: 'Visualization data loaded.', data })
+          setLoadState({
+            status: 'ready',
+            message: suspensionCacheLoadMessage(result.diagnostics),
+            data: result.data,
+            diagnostics: result.diagnostics,
+          })
         }
       } catch (error) {
         if (!cancelled) {
           const message = error instanceof Error ? error.message : String(error)
-          setLoadState({ status: 'error', message })
+          setLoadState((current) => ({
+            status: 'error',
+            message,
+            data: current.data,
+            diagnostics: current.diagnostics,
+          }))
         }
       }
     }
@@ -374,7 +413,7 @@ export function SuspensionVisualization({
     }
   }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature])
 
-  const data = loadState.status === 'ready' ? loadState.data : null
+  const data = loadState.data ?? null
   const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
   const scopedData = useMemo(
     () => (data ? applyTimeWindows(data, deferredTimeWindowsBySession) : null),
@@ -3210,6 +3249,18 @@ function visualizationSessionCacheKey(sessionRef: StudySessionRef, signalChoices
   return `v${VISUALIZATION_SESSION_CACHE_VERSION}|${refId}|front:${frontColumn}|rear:${rearColumn}`
 }
 
+function visualizationCacheMissCount(
+  dataSource: LibraryDataSource,
+  requestedSessionRefs: StudySessionRef[],
+  signalChoices: SignalChoiceSelections,
+) {
+  const sessionCache = suspensionSessionCache<CachedSessionVisualizationData>(dataSource)
+  return uniqueSessionRefs(requestedSessionRefs).filter((sessionRef) => {
+    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices)
+    return !sessionCache.entries.has(cacheKey) && !sessionCache.inFlight.has(cacheKey)
+  }).length
+}
+
 function signalRequestsForSession(
   sessionRef: StudySessionRef,
   signalChoices: SignalChoiceSelections,
@@ -3229,91 +3280,111 @@ async function loadVisualizationData(
   signalChoices: SignalChoiceSelections,
   sessions: SessionRecord[],
   dataSource: LibraryDataSource,
-): Promise<VisualizationData> {
+): Promise<VisualizationLoadResult> {
   const sessionRefs = uniqueSessionRefs(requestedSessionRefs)
-  const sessionCache = visualizationSessionCache(dataSource)
-  const missingSessionRefs = sessionRefs.filter((sessionRef) => !sessionCache.has(visualizationSessionCacheKey(sessionRef, signalChoices)))
+  const diagnostics = startSuspensionCacheDiagnostics(sessionRefs.length)
+  const sessionCache = suspensionSessionCache<CachedSessionVisualizationData>(dataSource)
+  const refsNeedingData: StudySessionRef[] = []
 
-  for (const [libraryId, refs] of groupRefsByLibrary(missingSessionRefs).entries()) {
-    const [signalResponses, events, metrics] = await Promise.all([
-      Promise.all(
-        refs.map((ref) =>
-          dataSource.querySignals(libraryId, {
-            sessions: [ref],
-            signals: signalRequestsForSession(ref, signalChoices),
-          }),
-        ),
-      ),
-      dataSource.queryEvents(libraryId, { sessions: refs }),
-      dataSource.queryMetrics(libraryId, {
-        sessions: refs,
-        eventTypes: [COMPRESSION_EVENT_TYPE, REBOUND_EVENT_TYPE],
-      }),
-    ])
-    const signalWarnings = signalResponses.flatMap((response) => response.warnings)
-    const signalSessions = signalResponses.flatMap((response) => response.sessions)
-    const requestWarnings = [
-      ...signalWarnings.filter((warning) => !activitySignalWarning(warning)).map((warning) => warningMessage(warning)),
-      ...events.warnings.map((warning) => warningMessage(warning)),
-      ...metrics.warnings.map((warning) => warningMessage(warning)),
-    ].filter(Boolean)
-    const fetchedSessions = new Map<string, CachedSessionVisualizationData>()
-    for (const ref of refs) {
-      const key = sessionRefId(ref)
-      fetchedSessions.set(key, {
-        sessionRef: { ...ref },
-        time: [],
-        signals: {},
-        events: [],
-        metrics: [],
-        warnings: [...requestWarnings],
-      })
-    }
-    for (const session of signalSessions) {
-      const key = sessionRefId(session.sessionRef)
-      const sessionRecord = sessionByRef(session.sessionRef, sessions)
-      const cached = fetchedSessions.get(key) ?? {
-        sessionRef: { ...session.sessionRef },
-        time: [],
-        signals: {},
-        events: [],
-        metrics: [],
-        warnings: [...requestWarnings],
-      }
-      if (!session.time) {
-        cached.warnings.push(`${session.sessionRef.label || key}: signal payload has no time column; sector mode is unavailable.`)
-        cached.time = []
-      } else {
-        cached.time = normalizeSignalTimes(numericValues(session.time.values))
-      }
-      if (!session.sampling.distributionCorrect) {
-        cached.warnings.push(`${session.sessionRef.label || key}: signal payload is not distribution-correct.`)
-      }
-      for (const signal of session.signals) {
-        const role = normalizedActivitySignalRole(signal.column, signal.role)
-        const values = numericValues(signal.values)
-        cached.signals[role] = normalizeDisplacementSignalValues(role, signal, values, sessionRecord)
-      }
-      fetchedSessions.set(key, cached)
-    }
-
-    const eventRowsBySession = rowsGroupedBySession(events.rows)
-    const metricRowsBySession = rowsGroupedBySession(metrics.rows)
-    for (const [key, cached] of fetchedSessions.entries()) {
-      cached.events = eventRowsBySession.get(key) ?? []
-      cached.metrics = metricRowsBySession.get(key) ?? []
-      cached.warnings = uniqueStrings(cached.warnings)
-      sessionCache.set(visualizationSessionCacheKey(cached.sessionRef, signalChoices), cached)
+  for (const sessionRef of sessionRefs) {
+    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices)
+    if (getSuspensionCacheEntry(sessionCache, cacheKey)) {
+      diagnostics.cacheHitCount += 1
+    } else if (sessionCache.inFlight.has(cacheKey)) {
+      diagnostics.inFlightHitCount += 1
+      refsNeedingData.push(sessionRef)
+    } else {
+      diagnostics.cacheMissCount += 1
+      refsNeedingData.push(sessionRef)
     }
   }
 
-  const cachedSessions = sessionRefs.map(
-    (sessionRef) => sessionCache.get(visualizationSessionCacheKey(sessionRef, signalChoices)) ?? emptyCachedSession(sessionRef),
-  )
+  for (const [libraryId, refs] of groupRefsByLibrary(refsNeedingData).entries()) {
+    const inFlightRequests: Promise<CachedSessionVisualizationData>[] = []
+    const refsToFetch: StudySessionRef[] = []
+
+    for (const ref of refs) {
+      const cacheKey = visualizationSessionCacheKey(ref, signalChoices)
+      const inFlight = sessionCache.inFlight.get(cacheKey)
+      if (inFlight) {
+        inFlightRequests.push(inFlight)
+      } else {
+        refsToFetch.push(ref)
+      }
+    }
+
+    if (refsToFetch.length > 0) {
+      const fetchStartedAtMs = suspensionCacheNowMs()
+      diagnostics.fetchBatchCount += 1
+      diagnostics.fetchedSessionCount += refsToFetch.length
+      let fetchDurationRecorded = false
+      const recordFetchDuration = () => {
+        if (!fetchDurationRecorded) {
+          diagnostics.fetchDurationMs += suspensionCacheNowMs() - fetchStartedAtMs
+          fetchDurationRecorded = true
+        }
+      }
+      const batchPromise = fetchVisualizationLibrarySessions(
+        libraryId,
+        refsToFetch,
+        signalChoices,
+        sessions,
+        dataSource,
+      ).then(
+        (fetchedSessions) => {
+          recordFetchDuration()
+          for (const cached of fetchedSessions.values()) {
+            setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices), cached)
+          }
+          return fetchedSessions
+        },
+        (error) => {
+          recordFetchDuration()
+          throw error
+        },
+      )
+
+      for (const ref of refsToFetch) {
+        const cacheKey = visualizationSessionCacheKey(ref, signalChoices)
+        sessionCache.inFlight.set(
+          cacheKey,
+          batchPromise.then((fetchedSessions) => fetchedSessions.get(sessionRefId(ref)) ?? emptyCachedSession(ref)),
+        )
+      }
+
+      try {
+        await batchPromise
+      } finally {
+        for (const ref of refsToFetch) {
+          sessionCache.inFlight.delete(visualizationSessionCacheKey(ref, signalChoices))
+        }
+      }
+    }
+
+    if (inFlightRequests.length > 0) {
+      const fetchedSessions = await Promise.all(inFlightRequests)
+      for (const cached of fetchedSessions) {
+        setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices), cached)
+      }
+    }
+  }
+
+  const sessionCacheKeys = sessionRefs.map((sessionRef) => visualizationSessionCacheKey(sessionRef, signalChoices))
+  const composedCacheKey = `visualization-data|${sessionCacheKeys.join('\n')}`
+  const composedData = getSuspensionComposedCacheEntry<VisualizationData>(sessionCache, composedCacheKey)
+  if (composedData) {
+    diagnostics.composedCacheHitCount += 1
+    finishSuspensionCacheDiagnostics(diagnostics)
+    return { data: composedData, diagnostics }
+  }
+
+  const composeStartedAtMs = suspensionCacheNowMs()
+  const cachedSessions = sessionRefs.map((sessionRef, index) => (
+    getSuspensionCacheEntry(sessionCache, sessionCacheKeys[index] ?? '') ?? emptyCachedSession(sessionRef)
+  ))
   const eventRows = cachedSessions.flatMap((session) => session.events)
   const metricRows = cachedSessions.flatMap((session) => session.metrics)
-
-  return {
+  const data = {
     timeBySession: Object.fromEntries(cachedSessions.map((session) => [sessionRefId(session.sessionRef), session.time])),
     signalsBySession: Object.fromEntries(cachedSessions.map((session) => [sessionRefId(session.sessionRef), session.signals])),
     events: eventRows,
@@ -3321,16 +3392,91 @@ async function loadVisualizationData(
     metrics: metricRows,
     warnings: uniqueStrings(cachedSessions.flatMap((session) => session.warnings).filter(Boolean)),
   }
+  setSuspensionComposedCacheEntry(sessionCache, composedCacheKey, data)
+  diagnostics.composeDurationMs += suspensionCacheNowMs() - composeStartedAtMs
+  finishSuspensionCacheDiagnostics(diagnostics)
+
+  return { data, diagnostics }
 }
 
-function visualizationSessionCache(dataSource: LibraryDataSource) {
-  const cached = visualizationSessionCacheByDataSource.get(dataSource)
-  if (cached) {
-    return cached
+async function fetchVisualizationLibrarySessions(
+  libraryId: string,
+  refs: StudySessionRef[],
+  signalChoices: SignalChoiceSelections,
+  sessions: SessionRecord[],
+  dataSource: LibraryDataSource,
+) {
+  const [signalResponses, events, metrics] = await Promise.all([
+    Promise.all(
+      refs.map((ref) =>
+        dataSource.querySignals(libraryId, {
+          sessions: [ref],
+          signals: signalRequestsForSession(ref, signalChoices),
+        }),
+      ),
+    ),
+    dataSource.queryEvents(libraryId, { sessions: refs }),
+    dataSource.queryMetrics(libraryId, {
+      sessions: refs,
+      eventTypes: [COMPRESSION_EVENT_TYPE, REBOUND_EVENT_TYPE],
+    }),
+  ])
+  const signalWarnings = signalResponses.flatMap((response) => response.warnings)
+  const signalSessions = signalResponses.flatMap((response) => response.sessions)
+  const requestWarnings = [
+    ...signalWarnings.filter((warning) => !activitySignalWarning(warning)).map((warning) => warningMessage(warning)),
+    ...events.warnings.map((warning) => warningMessage(warning)),
+    ...metrics.warnings.map((warning) => warningMessage(warning)),
+  ].filter(Boolean)
+  const fetchedSessions = new Map<string, CachedSessionVisualizationData>()
+  for (const ref of refs) {
+    const key = sessionRefId(ref)
+    fetchedSessions.set(key, {
+      sessionRef: { ...ref },
+      time: [],
+      signals: {},
+      events: [],
+      metrics: [],
+      warnings: [...requestWarnings],
+    })
   }
-  const next = new Map<string, CachedSessionVisualizationData>()
-  visualizationSessionCacheByDataSource.set(dataSource, next)
-  return next
+  for (const session of signalSessions) {
+    const key = sessionRefId(session.sessionRef)
+    const sessionRecord = sessionByRef(session.sessionRef, sessions)
+    const cached = fetchedSessions.get(key) ?? {
+      sessionRef: { ...session.sessionRef },
+      time: [],
+      signals: {},
+      events: [],
+      metrics: [],
+      warnings: [...requestWarnings],
+    }
+    if (!session.time) {
+      cached.warnings.push(`${session.sessionRef.label || key}: signal payload has no time column; sector mode is unavailable.`)
+      cached.time = []
+    } else {
+      cached.time = normalizeSignalTimes(numericValues(session.time.values))
+    }
+    if (!session.sampling.distributionCorrect) {
+      cached.warnings.push(`${session.sessionRef.label || key}: signal payload is not distribution-correct.`)
+    }
+    for (const signal of session.signals) {
+      const role = normalizedActivitySignalRole(signal.column, signal.role)
+      const values = numericValues(signal.values)
+      cached.signals[role] = normalizeDisplacementSignalValues(role, signal, values, sessionRecord)
+    }
+    fetchedSessions.set(key, cached)
+  }
+
+  const eventRowsBySession = rowsGroupedBySession(events.rows)
+  const metricRowsBySession = rowsGroupedBySession(metrics.rows)
+  for (const [key, cached] of fetchedSessions.entries()) {
+    cached.events = eventRowsBySession.get(key) ?? []
+    cached.metrics = metricRowsBySession.get(key) ?? []
+    cached.warnings = uniqueStrings(cached.warnings)
+  }
+
+  return fetchedSessions
 }
 
 function emptyCachedSession(sessionRef: StudySessionRef): CachedSessionVisualizationData {
@@ -3384,10 +3530,15 @@ function restoredVisualizationSettings(
   entities: VisualizationEntity[],
   tracks: TrackRecord[],
 ): SuspensionVisualizationSettings {
-  const cached = visualizationSettingsCache.get(cacheKey)
+  const cached = restoredVisualizationSettingsRecord(cacheKey)
   const defaultSelectedEntityIds = entities.filter((entity) => entity.kind === 'session').map((entity) => entity.id)
   const selectedEntityIds = cached
-    ? normalizedSelectedEntityIds(cached.selectedEntityIds, cached.knownSessionEntityIds, defaultSelectedEntityIds, entities)
+    ? normalizedSelectedEntityIds(
+        stringArrayValue(cached.selectedEntityIds),
+        stringArrayValue(cached.knownSessionEntityIds),
+        defaultSelectedEntityIds,
+        entities,
+      )
     : defaultSelectedEntityIds
   const validTrackIds = new Set(tracks.map((track) => track.id))
   const selectedTrackId = cached?.selectedTrackId && validTrackIds.has(cached.selectedTrackId)
@@ -3396,16 +3547,54 @@ function restoredVisualizationSettings(
   return {
     selectedEntityIds,
     knownSessionEntityIds: defaultSelectedEntityIds,
-    collapsedPanels: cached?.collapsedPanels ? [...cached.collapsedPanels] : ['select-filter'],
+    collapsedPanels: cached?.collapsedPanels ? stringArrayValue(cached.collapsedPanels) : ['select-filter'],
     comparisonLayout: cached?.comparisonLayout ?? 'entities',
     scopeMode: cached?.scopeMode ?? 'whole_session',
     selectedTrackId,
     selectedEnds: normalizedSelectedEnds(cached?.selectedEnds),
-    selectedSectorIds: cached?.selectedSectorIds ? [...cached.selectedSectorIds] : [],
+    selectedSectorIds: cached?.selectedSectorIds ? stringArrayValue(cached.selectedSectorIds) : [],
     timeWindowsBySession: cached?.timeWindowsBySession ? { ...cached.timeWindowsBySession } : {},
     excludeInactivePeriods: cached?.excludeInactivePeriods ?? true,
     signalChoices: cached?.signalChoices ? { ...cached.signalChoices } : {},
   }
+}
+
+function restoredVisualizationSettingsRecord(cacheKey: string): Partial<SuspensionVisualizationSettings> | null {
+  const cached = visualizationSettingsCache.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(`${VISUALIZATION_SETTINGS_STORAGE_PREFIX}${cacheKey}`)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+    return parsed as Partial<SuspensionVisualizationSettings>
+  } catch {
+    return null
+  }
+}
+
+function persistVisualizationSettings(cacheKey: string, settings: SuspensionVisualizationSettings) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(`${VISUALIZATION_SETTINGS_STORAGE_PREFIX}${cacheKey}`, JSON.stringify(settings))
+  } catch {
+    // Analysis settings are a convenience cache; storage failures should not block charting.
+  }
+}
+
+function stringArrayValue(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
 function normalizedSelectedEntityIds(

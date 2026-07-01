@@ -35,6 +35,13 @@ import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
 import { LocalApiDataSource } from './data/LocalApiDataSource'
 import type { LibraryDataSource } from './data/LibraryDataSource'
+import { invalidateSuspensionCacheForSession } from './data/SuspensionAnalysisCache'
+import {
+  broadcastSessionDeleted,
+  broadcastStudySetDeleted,
+  broadcastStudySetUpdated,
+  subscribeWorkbenchSync,
+} from './data/WorkbenchSync'
 import {
   columnGroups,
   columnLabels,
@@ -115,6 +122,12 @@ type AnalysisRouteState = {
   studySetId: string | null
 }
 
+type AnalysisScopeNotice = {
+  kind: 'study-set-updated' | 'study-set-deleted' | 'session-deleted'
+  message: string
+  refreshable: boolean
+}
+
 function App() {
   const [localDataSource] = useState(() => new LocalApiDataSource())
   const [fixtureDataSource] = useState(() => new FixtureLibraryDataSource())
@@ -124,6 +137,7 @@ function App() {
     Boolean(parseAnalysisRouteHash()?.studySetId),
   )
   const [analysisRouteStudySetError, setAnalysisRouteStudySetError] = useState('')
+  const [analysisScopeNotice, setAnalysisScopeNotice] = useState<AnalysisScopeNotice | null>(null)
   const [activeDataSource, setActiveDataSource] = useState<LibraryDataSource>(localDataSource)
   const columnMenuRef = useRef<HTMLDivElement>(null)
   const [libraries, setLibraries] = useState<LibraryRecord[]>([])
@@ -298,6 +312,47 @@ function App() {
       cancelled = true
     }
   }, [activeDataSource, analysisRoute?.studySetId, savedStudySets])
+
+  useEffect(() => {
+    return subscribeWorkbenchSync((message) => {
+      if (message.type === 'session-deleted') {
+        invalidateSuspensionCacheForSession(activeDataSource, message.sessionRefId)
+      }
+      if (!analysisRoute) {
+        return
+      }
+
+      const routeStudySet = analysisRoute.scopeToken
+        ? loadAnalysisScope(analysisRoute.scopeToken)
+        : analysisRouteStudySet
+
+      if (message.type === 'study-set-updated' && analysisRoute.studySetId === message.studySetId) {
+        setAnalysisScopeNotice({
+          kind: 'study-set-updated',
+          message: `Study Set "${message.displayName}" was changed in another tab.`,
+          refreshable: true,
+        })
+        return
+      }
+
+      if (message.type === 'study-set-deleted' && analysisRoute.studySetId === message.studySetId) {
+        setAnalysisScopeNotice({
+          kind: 'study-set-deleted',
+          message: `Study Set "${message.displayName}" was deleted in another tab.`,
+          refreshable: false,
+        })
+        return
+      }
+
+      if (message.type === 'session-deleted' && routeStudySet?.sessions.some((ref) => sessionRefId(ref) === message.sessionRefId)) {
+        setAnalysisScopeNotice({
+          kind: 'session-deleted',
+          message: `Session "${message.sessionName}" was deleted in another tab.`,
+          refreshable: Boolean(analysisRoute.studySetId),
+        })
+      }
+    })
+  }, [activeDataSource, analysisRoute, analysisRouteStudySet])
 
   const isCurrentStudySetDirty = !studySetsEqual(currentStudySet, lastCommittedStudySet)
   const currentStudySetHasContent = hasStudySetContent(currentStudySet)
@@ -749,6 +804,7 @@ function App() {
     }
     try {
       await activeDataSource.deleteStudySet(studySet.id)
+      broadcastStudySetDeleted(studySet)
       setSavedStudySets((current) => current.filter((item) => item.id !== studySet.id))
       if (currentStudySet.id === studySet.id) {
         const empty = emptyStudySet()
@@ -809,6 +865,8 @@ function App() {
 
   async function refreshAfterSessionDelete(session: SessionRecord) {
     const deletedRefId = candidateId(session)
+    invalidateSuspensionCacheForSession(activeDataSource, deletedRefId)
+    broadcastSessionDeleted(deletedRefId, session.name)
     const loaded = await fetchWorkbenchData(activeDataSource)
     const remainingSessions = loaded.sessions.filter((item) => candidateId(item) !== deletedRefId)
     setLibraries(applySessionCounts(loaded.libraries, remainingSessions))
@@ -1193,6 +1251,7 @@ function App() {
         ...currentStudySet,
         displayName,
       })
+      broadcastStudySetUpdated(saved)
       setSavedStudySets(await activeDataSource.listStudySets())
       setCurrentStudySet(saved)
       setLastCommittedStudySet(cloneStudySet(saved))
@@ -1278,6 +1337,35 @@ function App() {
     setStatusMessage('Kept the current Study Set open for editing.')
   }
 
+  async function refreshAnalysisRouteScope() {
+    if (!analysisRoute?.studySetId) {
+      setAnalysisScopeNotice(null)
+      return
+    }
+    const studySetId = analysisRoute.studySetId
+    setAnalysisRouteStudySetLoading(true)
+    setAnalysisRouteStudySetError('')
+    try {
+      const refreshed = activeDataSource.loadStudySet
+        ? await activeDataSource.loadStudySet(studySetId)
+        : savedStudySets.find((studySet) => studySet.id === studySetId)
+      if (!refreshed) {
+        setAnalysisRouteStudySet(null)
+        setAnalysisRouteStudySetError('The saved Study Set could not be refreshed.')
+        return
+      }
+      setAnalysisRouteStudySet(cloneStudySet(refreshed))
+      setAnalysisScopeNotice(null)
+      setStatusMessage(`Refreshed analysis scope "${refreshed.displayName}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setAnalysisRouteStudySetError(message)
+      setStatusMessage(`Could not refresh analysis scope: ${message}`)
+    } finally {
+      setAnalysisRouteStudySetLoading(false)
+    }
+  }
+
   if (analysisRoute) {
     const routeStudySet = analysisRoute.scopeToken ? loadAnalysisScope(analysisRoute.scopeToken) : analysisRouteStudySet
     return (
@@ -1286,11 +1374,14 @@ function App() {
         studySet={routeStudySet}
         loadingScope={analysisRouteStudySetLoading}
         scopeError={analysisRouteStudySetError}
+        scopeNotice={analysisScopeNotice}
         sessions={sessions}
         tracks={tracks}
         dataSource={activeDataSource}
         statusMessage={statusMessage}
         connectionMode={connectionMode}
+        onRefreshScope={() => void refreshAnalysisRouteScope()}
+        onDismissScopeNotice={() => setAnalysisScopeNotice(null)}
       />
     )
   }
@@ -1955,21 +2046,27 @@ function AnalysisRoutePage({
   studySet,
   loadingScope,
   scopeError,
+  scopeNotice,
   sessions,
   tracks,
   dataSource,
   statusMessage,
   connectionMode,
+  onRefreshScope,
+  onDismissScopeNotice,
 }: {
   route: AnalysisRouteState
   studySet: StudySet | null
   loadingScope: boolean
   scopeError: string
+  scopeNotice: AnalysisScopeNotice | null
   sessions: SessionRecord[]
   tracks: TrackRecord[]
   dataSource: LibraryDataSource
   statusMessage: string
   connectionMode: 'local-api' | 'fixture'
+  onRefreshScope: () => void
+  onDismissScopeNotice: () => void
 }) {
   const viewTitle = route.viewId === 'simple-suspension' ? 'Simple Suspension Analysis' : route.viewId
   const [routeModal, setRouteModal] = useState<ModalState>(null)
@@ -2003,6 +2100,21 @@ function AnalysisRoutePage({
         </section>
       ) : route.viewId === 'simple-suspension' ? (
         <section className="analysis-route-content">
+          {scopeNotice && (
+            <div className={`analysis-route-notice ${scopeNotice.kind}`}>
+              <span>{scopeNotice.message}</span>
+              <div className="analysis-route-notice-actions">
+                {scopeNotice.refreshable && (
+                  <button className="secondary-action compact" type="button" onClick={onRefreshScope}>
+                    Refresh analysis
+                  </button>
+                )}
+                <button className="secondary-action compact" type="button" onClick={onDismissScopeNotice}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
           <SuspensionVisualization
             studySet={studySet}
             sessions={sessions}

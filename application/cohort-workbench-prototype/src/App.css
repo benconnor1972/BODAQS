@@ -106,6 +106,27 @@
   padding: var(--space-4);
 }
 
+.analysis-route-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-strong);
+  background: #fff9e8;
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.analysis-route-notice-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 .analysis-route-content .suspension-viz {
   min-height: calc(100vh - 98px);
 }
@@ -1074,6 +1095,12 @@ button {
   border: var(--border-strong);
   background: var(--surface);
   color: var(--ink);
+}
+
+.secondary-action.compact {
+  min-height: var(--control-height-sm);
+  padding: 3px 8px;
+  font-size: var(--text-small);
 }
 
 .ghost-action {
