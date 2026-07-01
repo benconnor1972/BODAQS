@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type RefObject } from 'react'
 import * as d3 from 'd3'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
@@ -28,9 +28,9 @@ const EVENT_COLORS = ['#b66a2c', '#4d70a8', '#8a5a7b', '#6f7e2e', '#c46f58', '#2
 
 type LoadState =
   | { status: 'idle'; message: string }
-  | { status: 'loading'; message: string }
+  | { status: 'loading'; message: string; data?: TimeseriesWindowResponse }
   | { status: 'ready'; message: string; data: TimeseriesWindowResponse }
-  | { status: 'error'; message: string }
+  | { status: 'error'; message: string; data?: TimeseriesWindowResponse }
 
 type GpsPanelState =
   | { status: 'idle'; message: string; pointSet: SessionGpsPointSet | null }
@@ -81,6 +81,7 @@ type AxisConfig = {
 
 type ChartSignal = TimeseriesWindowResponse['signals'][number] & {
   axisId: AxisId
+  displayLabel: string
   originalIndex: number
   unitKey: string
 }
@@ -93,17 +94,24 @@ type SignalChartModel = {
   seriesValues: Array<Array<number | null>>
 }
 
+function loadStateData(state: LoadState) {
+  return state.status === 'ready' || state.status === 'loading' || state.status === 'error' ? state.data : undefined
+}
+
 export function SignalInspector({
   session,
   dataSource,
   initialWindow = null,
+  onBookmarksChanged,
 }: {
   session: SessionRecord
   dataSource: LibraryDataSource
   initialWindow?: { startS: number; endS: number } | null
+  onBookmarksChanged?: (session: SessionRecord) => void
 }) {
   const durationS = Math.max(1, session.gpsSummary.sessionDurationS || session.durationMin * 60 || 1)
   const signalOptions = useMemo(() => inspectorSignalOptions(session), [session])
+  const signalOptionLabels = useMemo(() => duplicateAwareSignalLabels(signalOptions), [signalOptions])
   const signalOptionColumns = useMemo(() => new Set(signalOptions.map((signal) => signal.column)), [signalOptions])
   const initialColumns = useMemo(() => defaultSignalColumns(signalOptions), [signalOptions])
   const [selectedColumns, setSelectedColumns] = useState<string[]>(initialColumns)
@@ -154,8 +162,10 @@ export function SignalInspector({
   }, [durationS, initialWindow?.endS, initialWindow?.startS, session.sessionKey, signalOptions])
 
   const requestWindow = sanitizeWindow(windowStartS, windowEndS, durationS)
-  const visibleWarnings =
-    loadState.status === 'ready' ? visibleWindowWarnings(loadState.data.warnings, requestWindow, durationS) : []
+  const displayedWindowData = loadStateData(loadState)
+  const visibleWarnings = displayedWindowData
+    ? visibleWindowWarnings(displayedWindowData.warnings, requestWindow, durationS)
+    : []
   const bookmarkWindow = {
     startS: sanitizeWindowBoundary(windowStartS, durationS),
     endS: sanitizeWindowBoundary(windowEndS, durationS),
@@ -204,7 +214,12 @@ export function SignalInspector({
         setLoadState({ status: 'idle', message: 'Select one or more signals to inspect.' })
         return
       }
-      setLoadState({ status: 'loading', message: 'Loading signal window...' })
+      setLoadState((current) => {
+        const data = loadStateData(current)
+        return data
+          ? { status: 'loading', message: 'Updating signal window...', data }
+          : { status: 'loading', message: 'Loading signal window...' }
+      })
       try {
         const data = await dataSource.loadTimeseriesWindow(session.libraryId, {
           session: sessionToStudyRef(session),
@@ -219,7 +234,11 @@ export function SignalInspector({
         }
       } catch (error) {
         if (!cancelled) {
-          setLoadState({ status: 'error', message: error instanceof Error ? error.message : String(error) })
+          setLoadState((current) => {
+            const data = loadStateData(current)
+            const message = error instanceof Error ? error.message : String(error)
+            return data ? { status: 'error', message, data } : { status: 'error', message }
+          })
         }
       }
     }
@@ -230,7 +249,7 @@ export function SignalInspector({
     }
   }, [dataSource, requestWindow.endS, requestWindow.startS, selectedColumns, session])
 
-  const markCount = loadState.status === 'ready' ? loadState.data.marks.length : 0
+  const markCount = displayedWindowData?.marks.length ?? 0
 
   useEffect(() => {
     let cancelled = false
@@ -312,12 +331,13 @@ export function SignalInspector({
   }, [dataSource, durationS, navigatorColumnKey, session.libraryId, session.sessionKey])
 
   useEffect(() => {
-    if (loadState.status !== 'ready') {
+    const data = loadStateData(loadState)
+    if (!data) {
       setSelectedEventId(null)
       return
     }
     setSelectedEventId((current) =>
-      current && loadState.data.events.some((event) => event.eventId === current) ? current : null,
+      current && data.events.some((event) => event.eventId === current) ? current : null,
     )
   }, [loadState])
 
@@ -383,6 +403,7 @@ export function SignalInspector({
       setActiveBookmarkId(saved.id)
       setBookmarkTitle('')
       setBookmarkMessage('')
+      onBookmarksChanged?.(session)
     } catch (error) {
       setBookmarkMessage(error instanceof Error ? `Could not save bookmark: ${error.message}` : 'Could not save bookmark.')
     }
@@ -409,6 +430,7 @@ export function SignalInspector({
     try {
       await dataSource.deleteSessionBookmark(bookmarkId)
       setBookmarkMessage('')
+      onBookmarksChanged?.(session)
     } catch (error) {
       setBookmarks(existing)
       setBookmarkMessage(error instanceof Error ? `Could not delete bookmark: ${error.message}` : 'Could not delete bookmark.')
@@ -432,12 +454,8 @@ export function SignalInspector({
     applyBookmark(nextBookmark)
   }
 
-  const inspectorStyle = {
-    '--signal-inspector-plot-viewport-reserve': `${signalInspectorViewportReserve(sidebarOpen, controlsOpen)}px`,
-  } as CSSProperties
-
   return (
-    <div className="signal-inspector" style={inspectorStyle}>
+    <div className="signal-inspector">
       <div
         className={`signal-inspector-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${
           controlsOpen ? '' : ' controls-collapsed'
@@ -552,7 +570,7 @@ export function SignalInspector({
               <p>No signal catalog is available for this session.</p>
             ) : (
               <div className="signal-inspector-check-list">
-                {signalOptions.map((signal) => (
+                {signalOptions.map((signal, index) => (
                   <label key={signal.column}>
                     <input
                       checked={selectedColumns.includes(signal.column)}
@@ -560,7 +578,7 @@ export function SignalInspector({
                       type="checkbox"
                     />
                     <span>
-                      <strong>{signal.displayName || signal.column}</strong>
+                      <strong>{signalOptionLabels[index]}</strong>
                       <small>
                         {[signal.end, signal.quantity, signal.unit].filter(Boolean).join(' / ') || signal.column}
                       </small>
@@ -623,15 +641,16 @@ export function SignalInspector({
         )}
 
         <section className="signal-inspector-main">
-          {loadState.status === 'loading' && <div className="signal-inspector-message">{loadState.message}</div>}
-          {loadState.status === 'error' && (
+          {loadState.status === 'loading' && !displayedWindowData && <div className="signal-inspector-message">{loadState.message}</div>}
+          {loadState.status === 'error' && !displayedWindowData && (
             <div className="signal-inspector-message warning">Could not load signals: {loadState.message}</div>
           )}
           {loadState.status === 'idle' && <div className="signal-inspector-message">{loadState.message}</div>}
-          {loadState.status === 'ready' && (
+          {displayedWindowData && (
             <>
+              {loadState.status === 'loading' && <div className="signal-inspector-update-pill">{loadState.message}</div>}
               <SignalWindowChart
-                data={loadState.data}
+                data={displayedWindowData}
                 durationS={durationS}
                 visibleEventGroups={visibleEventGroups}
                 showMarks={showMarks}
@@ -655,7 +674,7 @@ export function SignalInspector({
                 }}
               />
               <SelectedEventPanel
-                event={loadState.data.events.find((event) => event.eventId === selectedEventId) ?? null}
+                event={displayedWindowData.events.find((event) => event.eventId === selectedEventId) ?? null}
                 onClear={() => setSelectedEventId(null)}
                 onZoom={(window) => {
                   setWindowStartS(window.startS)
@@ -663,6 +682,9 @@ export function SignalInspector({
                   setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
                 }}
               />
+              {loadState.status === 'error' && (
+                <div className="signal-inspector-message warning">Could not update signals: {loadState.message}</div>
+              )}
               {visibleWarnings.length > 0 && (
                 <div className="signal-inspector-message warning">
                   {visibleWarnings.slice(0, 3).join(' | ')}
@@ -826,16 +848,16 @@ function SignalWindowChart({
   onSelectEvent: (eventId: string | null) => void
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
-  const frameRef = useRef<HTMLDivElement | null>(null)
   const plotHostRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
-  const frameWidth = useElementWidth(frameRef)
+  const onSelectWindowRef = useRef(onSelectWindow)
+  const hostWidth = useElementWidth(plotHostRef)
   const [hover, setHover] = useState<HoverReadout | null>(null)
   const hoverFrameRef = useRef<number | null>(null)
   const pendingHoverRef = useRef<HoverReadout | null>(null)
   const [plotVersion, setPlotVersion] = useState(0)
   const chartModel = useMemo(() => buildSignalChartModel(data), [data])
-  const plotWidth = boundedPlotWidth(frameWidth)
+  const plotWidth = boundedPlotWidth(hostWidth)
   const plotHeight = 500
   const chartValues = chartSignalValues(chartModel.chartSignals)
   const selectedEventGroups = new Set(visibleEventGroups)
@@ -844,6 +866,10 @@ function SignalWindowChart({
   const visibleEvents = data.events.filter((event) => selectedEventGroups.has(eventGroupKey(event)))
   const xDomain = d3.extent(chartModel.times)
   const visibleMarks = showMarks ? data.marks.filter((mark) => markInDomain(mark, xDomain)) : []
+
+  useEffect(() => {
+    onSelectWindowRef.current = onSelectWindow
+  }, [onSelectWindow])
 
   useEffect(
     () => () => {
@@ -881,7 +907,7 @@ function SignalWindowChart({
         width: plotWidth,
         height: plotHeight,
         onHover: scheduleHover,
-        onSelectWindow,
+        onSelectWindow: (window) => onSelectWindowRef.current(window),
       }),
       chartModel.alignedData,
       plotHostRef.current,
@@ -902,7 +928,7 @@ function SignalWindowChart({
         plotRef.current = null
       }
     }
-  }, [chartModel, chartValues.length, onSelectWindow, plotHeight, plotWidth])
+  }, [chartModel, chartValues.length, plotHeight, plotWidth])
 
   if (data.signals.length === 0 || chartModel.times.length === 0 || chartValues.length === 0) {
     return <div className="signal-inspector-message">No matching signal samples were returned for this window.</div>
@@ -910,7 +936,7 @@ function SignalWindowChart({
 
   return (
     <div className="signal-inspector-chart-card">
-      <div className="signal-inspector-chart-frame" ref={frameRef}>
+      <div className="signal-inspector-chart-frame">
         <button
           className="signal-inspector-full-session-control"
           type="button"
@@ -948,7 +974,7 @@ function SignalWindowChart({
         {chartModel.chartSignals.map((signal, index) => (
           <span key={signal.column}>
             <i style={{ background: SIGNAL_COLORS[(signal.originalIndex ?? index) % SIGNAL_COLORS.length] }} />
-            {signal.displayName || signal.column}
+            {signal.displayLabel}
             {signal.unit ? ` (${signal.unit})` : ''}
             {signal.axisId !== 'primary' ? `, ${axisLabel(signal.axisId)} axis` : ''}
           </span>
@@ -1101,7 +1127,7 @@ function signalUPlotOptions({
   const series: uPlot.Series[] = [
     {},
     ...model.chartSignals.map((signal, index): uPlot.Series => ({
-      label: signal.displayName || signal.column,
+      label: signal.displayLabel,
       scale: signal.axisId,
       stroke: SIGNAL_COLORS[(signal.originalIndex ?? index) % SIGNAL_COLORS.length],
       width: 1.35,
@@ -1137,7 +1163,7 @@ function signalUPlotOptions({
             timeS,
             values: model.chartSignals
               .map((signal, signalIndex) => ({
-                label: signal.displayName || signal.column,
+                label: signal.displayLabel,
                 value: model.seriesValues[signalIndex]?.[index],
                 unit: signal.unit,
                 color: SIGNAL_COLORS[(signal.originalIndex ?? signalIndex) % SIGNAL_COLORS.length],
@@ -1176,16 +1202,15 @@ function SignalNavigator({
   durationS: number
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
-  const frameRef = useRef<HTMLElement | null>(null)
   const plotHostRef = useRef<HTMLDivElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
   const dragRef = useRef<NavigatorDrag | null>(null)
-  const frameWidth = useElementWidth(frameRef)
+  const hostWidth = useElementWidth(plotHostRef)
   const [plotVersion, setPlotVersion] = useState(0)
   const data = state.status === 'ready' ? state.data : null
   const model = useMemo(() => (data ? buildSignalChartModel(data) : null), [data])
-  const plotWidth = boundedPlotWidth(frameWidth)
+  const plotWidth = boundedPlotWidth(hostWidth)
   const plotHeight = 108
   const minWindowS = Math.max(0.1, durationS / 1000)
 
@@ -1329,7 +1354,7 @@ function SignalNavigator({
   }
 
   return (
-    <section className="signal-inspector-navigator-card" ref={frameRef}>
+    <section className="signal-inspector-navigator-card">
       <div className="signal-inspector-navigator-frame">
         <div className="signal-inspector-uplot-host signal-inspector-uplot-host-navigator" ref={plotHostRef} />
         <div
@@ -1386,7 +1411,7 @@ function navigatorUPlotOptions({
     series: [
       {},
       ...model.chartSignals.map((signal, index): uPlot.Series => ({
-        label: signal.displayName || signal.column,
+        label: signal.displayLabel,
         scale: 'primary',
         stroke: SIGNAL_COLORS[(signal.originalIndex ?? index) % SIGNAL_COLORS.length],
         width: 0.95,
@@ -1512,7 +1537,9 @@ function inspectorSignalOptions(session: SessionRecord): SessionSignalSummary[] 
 function defaultSignalColumns(signals: SessionSignalSummary[]) {
   const primary = signals.filter((signal) => signal.processingRole === 'primary_analysis')
   const source = primary.length ? primary : signals
-  const displacement = source.filter(isDisplacementSignal)
+  const wheelDisplacement = primary.filter(isWheelDisplacementSignal)
+  const fallbackWheelDisplacement = wheelDisplacement.length ? wheelDisplacement : signals.filter(isWheelDisplacementSignal)
+  const displacement = fallbackWheelDisplacement.length ? fallbackWheelDisplacement : source.filter(isDisplacementSignal)
   const preferred = displacement.length ? preferEngineeringDisplacementSignals(displacement) : source
   return preferred.slice(0, 4).map((signal) => signal.column)
 }
@@ -1537,6 +1564,10 @@ function displacementPreferenceKey(signal: SessionSignalSummary) {
 function isDisplacementSignal(signal: SessionSignalSummary) {
   const text = normalizeSignalText([signal.quantity, signal.displayName, signal.column].join(' '))
   return text.includes('disp') || text.includes('travel')
+}
+
+function isWheelDisplacementSignal(signal: SessionSignalSummary) {
+  return isDisplacementSignal(signal) && normalizeSignalText(signal.domain) === 'wheel'
 }
 
 function isEngineeringUnitDisplacement(signal: SessionSignalSummary) {
@@ -1660,19 +1691,8 @@ function boundedPlotWidth(measuredWidth: number) {
   if (!Number.isFinite(measuredWidth) || measuredWidth <= 0) {
     return 0
   }
-  const minWidth = signalInspectorPlotToken('--signal-inspector-plot-min-width', 320)
-  const maxWidth = signalInspectorPlotToken('--signal-inspector-plot-max-width', 1180)
-  const viewportReserve = signalInspectorPlotToken('--signal-inspector-plot-viewport-reserve', 430)
-  const viewportBudget =
-    typeof window === 'undefined' ? maxWidth : Math.max(minWidth, window.innerWidth - viewportReserve)
-  return Math.floor(Math.max(0, Math.min(measuredWidth, viewportBudget, maxWidth)))
-}
-
-function signalInspectorViewportReserve(sidebarOpen: boolean, controlsOpen: boolean) {
-  const modalMarginsAndPadding = 92
-  const sidebarWidth = sidebarOpen ? 386 : 54
-  const controlsWidth = controlsOpen ? 282 : 54
-  return modalMarginsAndPadding + sidebarWidth + controlsWidth
+  const maxWidth = signalInspectorPlotToken('--signal-inspector-plot-max-width', 1800)
+  return Math.floor(Math.max(0, Math.min(measuredWidth, maxWidth)))
 }
 
 function signalInspectorPlotToken(name: string, fallback: number) {
@@ -1682,6 +1702,24 @@ function signalInspectorPlotToken(name: string, fallback: number) {
   const value = window.getComputedStyle(window.document.documentElement).getPropertyValue(name).trim()
   const parsed = Number.parseFloat(value)
   return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column' | 'displayName' | 'motionSourceId' | 'sensor'>>(
+  signals: T[],
+) {
+  const baseLabels = signals.map((signal) => signal.displayName || signal.column)
+  const counts = new Map<string, number>()
+  for (const label of baseLabels) {
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+  }
+  return signals.map((signal, index) => {
+    const label = baseLabels[index]
+    if ((counts.get(label) ?? 0) <= 1) {
+      return label
+    }
+    const sourceId = signal.motionSourceId?.trim() || signal.sensor?.trim()
+    return sourceId ? `${label} (${sourceId})` : label
+  })
 }
 
 function buildSignalChartModel(data: TimeseriesWindowResponse): SignalChartModel {
@@ -1695,13 +1733,15 @@ function buildSignalChartModel(data: TimeseriesWindowResponse): SignalChartModel
     }),
   )
   const axisIdByUnitKey = new Map(axisConfigs.map((axis) => [axis.unit.key, axis.id]))
-  const chartSignals = data.signals
+  const chartSignalsBase = data.signals
     .map((signal, originalIndex) => {
       const unitKey = signalUnitKey(signal)
       const axisId = axisIdByUnitKey.get(unitKey)
-      return axisId ? { ...signal, axisId, originalIndex, unitKey } : null
+      return axisId ? { ...signal, axisId, displayLabel: signal.displayName || signal.column, originalIndex, unitKey } : null
     })
     .filter((signal): signal is ChartSignal => signal !== null)
+  const signalLabels = duplicateAwareSignalLabels(chartSignalsBase)
+  const chartSignals = chartSignalsBase.map((signal, index) => ({ ...signal, displayLabel: signalLabels[index] }))
   const times: number[] = []
   const seriesValues = chartSignals.map((): Array<number | null> => [])
   for (let index = 0; index < data.time.values.length; index += 1) {

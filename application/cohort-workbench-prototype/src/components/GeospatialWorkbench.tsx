@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Crosshair, Eye, MapPin, Plus, Route, Save, Trash2, X } from 'lucide-react'
+import { Crosshair, MapPin, Plus, Route, Save, Trash2, X } from 'lucide-react'
 import {
   formatPercent,
   gpsSourceDisplay,
@@ -34,7 +34,6 @@ export function GeospatialWorkbench({
   onToggleTrack,
   onAttachTrack,
   onAttachSession,
-  onInspectTrack,
   onTrackSaved,
   onTrackDeleted,
 }: {
@@ -47,7 +46,6 @@ export function GeospatialWorkbench({
   onToggleTrack: (trackId: string) => void
   onAttachTrack: (trackId: string) => void
   onAttachSession: (sessionRef: StudySessionRef) => void
-  onInspectTrack: (track: TrackRecord) => void
   onTrackSaved: (track: TrackRecord) => void
   onTrackDeleted: (trackId: string) => void
 }) {
@@ -150,29 +148,6 @@ export function GeospatialWorkbench({
     setTrackpointQueryMessage('')
   }
 
-  async function deleteTrack(track: TrackRecord) {
-    if (!dataSource.deleteTrack) {
-      setTrackpointQueryMessage('Current data source cannot delete tracks.')
-      return
-    }
-    if (!window.confirm(`Delete track "${track.name}"? This removes the root-level track object.`)) {
-      return
-    }
-    setTrackpointQueryBusy(true)
-    try {
-      await dataSource.deleteTrack(track.id)
-      onTrackDeleted(track.id)
-      if (activeTrackId === track.id) {
-        setActiveTrackId(null)
-      }
-      setTrackpointQueryMessage(`Deleted track "${track.name}".`)
-    } catch (error) {
-      setTrackpointQueryMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setTrackpointQueryBusy(false)
-    }
-  }
-
   return (
     <section className="geospatial-workbench">
       <PrimaryGpsCard primarySession={primarySession} />
@@ -203,20 +178,12 @@ export function GeospatialWorkbench({
                     {track.trackpoints.length} trackpoints, {track.distanceKm.toFixed(1)} km, {track.defaultPolicyId}
                   </small>
                 </button>
-                <IconButton label="Inspect Track" onClick={() => onInspectTrack(track)} icon={<Eye size={16} />} />
                 <IconButton
                   label={attached ? 'Track already in Study Set' : 'Add Track to Study Set'}
                   disabled={attached}
                   onClick={() => onAttachTrack(track.id)}
                   icon={<Plus size={16} />}
                   tone="good"
-                />
-                <IconButton
-                  label="Delete Track"
-                  disabled={!dataSource.deleteTrack || trackpointQueryBusy}
-                  onClick={() => void deleteTrack(track)}
-                  icon={<Trash2 size={16} />}
-                  tone="alert"
                 />
               </div>
             )

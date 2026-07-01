@@ -31,7 +31,22 @@ export const columnLabels: Record<ColumnId, string> = {
   source: 'Source',
   signals: 'Signals',
   gps: 'GPS',
+  noteAction: 'Notes',
+  qaAction: 'QA',
+  gpsAction: 'GPS',
+  signalInspectorAction: 'Inspect signals',
+  metadataAction: 'Metadata',
 }
+
+export const infoActionColumns = [
+  'noteAction',
+  'qaAction',
+  'gpsAction',
+  'signalInspectorAction',
+  'metadataAction',
+] as const satisfies readonly ColumnId[]
+
+export type InfoActionColumn = (typeof infoActionColumns)[number]
 
 export const allColumns: ColumnId[] = [
   'name',
@@ -50,6 +65,7 @@ export const allColumns: ColumnId[] = [
   'source',
   'signals',
   'gps',
+  ...infoActionColumns,
 ]
 
 export const lockedColumns: ColumnId[] = []
@@ -61,6 +77,11 @@ export const defaultColumns: ColumnId[] = normalizeColumnSelection([
   'library',
   'bike',
   'rider',
+  'noteAction',
+  'qaAction',
+  'gpsAction',
+  'signalInspectorAction',
+  'metadataAction',
 ])
 
 export const columnGroups: ColumnGroup[] = [
@@ -83,6 +104,11 @@ export const columnGroups: ColumnGroup[] = [
     id: 'source-signals',
     label: 'Source and signals',
     columns: ['source', 'signals', 'gps'],
+  },
+  {
+    id: 'info',
+    label: 'Info',
+    columns: [...infoActionColumns],
   },
 ]
 
@@ -182,7 +208,21 @@ export function getColumnText(
       return session.signals.join(', ')
     case 'gps':
       return gpsSummaryLine(session.gpsSummary)
+    case 'noteAction':
+      return session.noteStatus
+    case 'qaAction':
+      return `${session.qcLevel} ${session.qcAlerts.length}`
+    case 'gpsAction':
+      return gpsSummaryLine(session.gpsSummary)
+    case 'signalInspectorAction':
+      return session.signals.join(', ')
+    case 'metadataAction':
+      return `${session.runId} ${session.sessionId} ${session.sourceArchive}`
   }
+}
+
+export function isInfoActionColumn(columnId: ColumnId): columnId is InfoActionColumn {
+  return (infoActionColumns as readonly ColumnId[]).includes(columnId)
 }
 
 export function sortSessions(

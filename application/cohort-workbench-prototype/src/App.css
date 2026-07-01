@@ -101,11 +101,6 @@
   border-left: 1px solid var(--line-strong);
 }
 
-.analysis-route-actions {
-  display: flex;
-  gap: 8px;
-}
-
 .analysis-route-content {
   min-width: 0;
   padding: var(--space-4);
@@ -493,12 +488,22 @@
 }
 
 .track-row {
-  grid-template-columns: 18px minmax(0, 1fr) 30px 30px 30px;
+  position: relative;
+  grid-template-columns: 18px minmax(0, 1fr) 30px;
 }
 
 .track-row.active-track {
   background: rgba(0, 140, 149, 0.08);
-  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.track-row.active-track::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--green);
+  content: '';
 }
 
 .track-row-summary {
@@ -514,6 +519,10 @@
 
 .track-row-summary:hover strong {
   color: var(--green);
+}
+
+.track-row > .icon-button {
+  justify-self: end;
 }
 
 .compact-track-list {
@@ -760,11 +769,14 @@ tbody tr:hover td {
 }
 
 tbody tr.selected td {
-  background: #e7f4f4;
+  background: rgba(0, 140, 149, 0.08);
 }
 
 tbody tr.primary-row td {
-  background: #cfe7e8;
+  background: rgba(0, 140, 149, 0.08);
+}
+
+tbody tr.primary-row td:first-child {
   box-shadow: inset 3px 0 0 var(--green);
 }
 
@@ -911,6 +923,55 @@ tbody tr.primary-row td {
   display: flex;
   gap: var(--space-1);
   align-items: center;
+}
+
+.info-action-heading,
+.info-action-cell {
+  width: 30px;
+  padding-right: 3px;
+  padding-left: 3px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.info-action-cell.icon-cluster {
+  display: table-cell;
+  justify-content: center;
+}
+
+.session-info-action-cell {
+  width: 1%;
+  min-width: 184px;
+  white-space: nowrap;
+}
+
+.session-info-action-cell.icon-cluster {
+  text-align: right;
+}
+
+.row-action-strip,
+.row-info-action-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.row-action-strip {
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.row-info-action-group {
+  justify-content: flex-end;
+}
+
+.info-action-cell > .icon-button {
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+
+.info-action-cell > .icon-button:first-child {
+  margin-left: 0;
 }
 
 .icon-button {
@@ -1110,6 +1171,7 @@ button {
 
 .filter-panel-actions {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 7px;
 }
@@ -1180,8 +1242,9 @@ button {
 }
 
 .compact-filter-action {
-  min-height: 26px;
-  padding: 4px 8px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 9px;
   font-size: 11px;
 }
 
@@ -1216,7 +1279,7 @@ button {
 }
 
 .filter-list-row {
-  grid-template-columns: 18px 22px minmax(0, 1fr) 28px 28px;
+  grid-template-columns: 18px 22px minmax(0, 1fr);
   cursor: default;
 }
 
@@ -1478,7 +1541,7 @@ button {
 
 .primary-gps-card {
   border-color: var(--teal-quiet);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(227, 242, 242, 0.72));
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .geo-card-title {
@@ -2892,6 +2955,7 @@ button {
 .suspension-viz {
   display: grid;
   gap: var(--space-5);
+  position: relative;
 }
 
 .suspension-viz-hero {
@@ -2937,6 +3001,64 @@ button {
   width: 10px;
   height: 10px;
   border-radius: var(--radius-pill);
+}
+
+.suspension-viz-workspace {
+  display: grid;
+  grid-template-columns: minmax(430px, 520px) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+  min-width: 0;
+}
+
+.suspension-viz-workspace.controls-collapsed {
+  grid-template-columns: 34px minmax(0, 1fr);
+}
+
+.suspension-viz-content {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.viz-control-drawer {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  max-height: 100vh;
+  min-width: 0;
+  overflow: auto;
+}
+
+.viz-control-drawer.collapsed {
+  overflow: visible;
+}
+
+.viz-control-drawer-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 34px;
+  height: 100vh;
+  min-height: 360px;
+  padding: var(--space-3) 0;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--green);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  writing-mode: vertical-rl;
+}
+
+.viz-control-drawer-rail svg {
+  writing-mode: horizontal-tb;
+}
+
+.viz-control-drawer-rail:hover {
+  border-color: var(--green);
+  background: var(--teal-soft);
 }
 
 .viz-control-panel,
@@ -3003,6 +3125,10 @@ button {
   align-items: start;
 }
 
+.viz-control-drawer .viz-control-mode-row {
+  grid-template-columns: 1fr;
+}
+
 .viz-entity-chips {
   display: flex;
   flex-wrap: wrap;
@@ -3030,6 +3156,83 @@ button {
 .viz-filter-hint {
   color: var(--muted);
   font-size: var(--text-caption);
+}
+
+.viz-signal-choice-panel {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.viz-signal-choice-panel > strong {
+  color: var(--green);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.viz-signal-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: var(--space-3);
+}
+
+.viz-signal-choice-group {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  padding: 7px;
+  border: var(--border-subtle);
+  background: var(--surface);
+}
+
+.viz-signal-choice-group legend {
+  display: inline-grid;
+  gap: 1px;
+  padding: 0 4px;
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.viz-signal-choice-group legend small,
+.viz-signal-choice-group label small {
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
+}
+
+.viz-signal-choice-group label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  padding: 5px 6px;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+  cursor: pointer;
+}
+
+.viz-signal-choice-group label:has(input:checked) {
+  border-color: var(--green);
+  background: var(--teal-soft);
+}
+
+.viz-signal-choice-group label span {
+  display: grid;
+  min-width: 0;
+}
+
+.viz-signal-choice-group label strong,
+.viz-signal-choice-group label small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .viz-entity-chip {
@@ -3258,10 +3461,11 @@ button {
   font-size: var(--text-caption);
 }
 
-.viz-time-window-actions {
+.viz-time-window-header .viz-time-window-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-direction: row;
   gap: var(--space-2);
 }
 
@@ -3283,6 +3487,44 @@ button {
 .viz-time-window-header button:disabled {
   cursor: not-allowed;
   opacity: 0.46;
+}
+
+.viz-time-window-bookmarks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.viz-time-window-bookmarks button {
+  display: inline-grid;
+  gap: 1px;
+  min-width: 118px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.viz-time-window-bookmarks button:hover {
+  border-color: var(--green);
+  background: var(--teal-soft);
+}
+
+.viz-time-window-bookmarks span {
+  max-width: 180px;
+  overflow: hidden;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viz-time-window-bookmarks small {
+  color: var(--muted);
+  font-size: var(--text-label);
 }
 
 .viz-time-window-overview {
@@ -3314,7 +3556,13 @@ button {
 }
 
 .viz-time-window-overview .viz-axis-label {
-  font-size: var(--text-body);
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+}
+
+.viz-time-window-overview .viz-time-window-tick-label {
+  font-size: 6px;
+  font-weight: var(--weight-medium);
 }
 
 .viz-time-window-handle {
@@ -3788,10 +4036,27 @@ button {
 }
 
 .signal-inspector-main {
+  position: relative;
   display: grid;
   gap: var(--space-3);
   min-width: 0;
   overflow: hidden;
+}
+
+.signal-inspector-update-pill {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 6;
+  padding: 5px 8px;
+  border: var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: rgba(255, 255, 255, 0.93);
+  box-shadow: var(--shadow-floating-control);
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  pointer-events: none;
 }
 
 .signal-inspector-chart-card {
@@ -3807,6 +4072,7 @@ button {
 .signal-inspector-chart-frame {
   position: relative;
   box-sizing: border-box;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -3842,17 +4108,20 @@ button {
 }
 
 .signal-inspector-uplot-host {
+  position: relative;
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
+  height: 500px;
   min-height: 500px;
   overflow: hidden;
   border: var(--border-subtle);
   background: var(--surface);
-  contain: layout paint;
+  contain: size layout paint;
 }
 
 .signal-inspector-uplot-host .uplot {
+  width: 100% !important;
   max-width: 100%;
   color: var(--muted);
   font-family: var(--font-ui);
@@ -4173,6 +4442,7 @@ button {
 .signal-inspector-navigator-frame {
   position: relative;
   box-sizing: border-box;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -4180,7 +4450,8 @@ button {
 
 .signal-inspector-uplot-host-navigator {
   width: 100%;
-  min-height: 88px;
+  height: 108px;
+  min-height: 108px;
 }
 
 .signal-inspector-uplot-host-navigator .u-over {
@@ -4340,11 +4611,17 @@ button {
 
 .viz-panel-stack.single-entity-dashboard {
   grid-template-columns: repeat(3, minmax(280px, 1fr));
-  align-items: start;
+  align-items: stretch;
 }
 
 .single-entity-dashboard .viz-panel {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+}
+
+.single-entity-dashboard .viz-panel > .viz-entity-strip {
+  flex: 1;
 }
 
 .single-entity-dashboard .viz-entity-strip {
@@ -4815,6 +5092,23 @@ button {
 
   .viz-panel-stack.single-entity-dashboard {
     grid-template-columns: 1fr;
+  }
+
+  .suspension-viz-workspace,
+  .suspension-viz-workspace.controls-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .viz-control-drawer {
+    position: static;
+    max-height: none;
+  }
+
+  .viz-control-drawer-rail {
+    width: 100%;
+    height: auto;
+    min-height: var(--control-height-lg);
+    writing-mode: horizontal-tb;
   }
 
 }

@@ -501,6 +501,8 @@ function mapSession(row: ApiObject): SessionRecord {
 }
 
 function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
+  const motionSource = objectValue(value.motion_source)
+  const derivation = objectRecordValue(value.derivation)
   return {
     signalId: textValue(value.signal_id, textValue(value.column)),
     column: textValue(value.column),
@@ -512,7 +514,9 @@ function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
     processingRole: textValue(value.processing_role),
     kind: textValue(value.kind),
     sensor: textValue(value.sensor),
+    motionSourceId: textValue(value.motion_source_id, textValue(motionSource.source_id, textValue(value.motion_source))),
     origin: textValue(value.origin),
+    ...(Object.keys(derivation).length ? { derivation } : {}),
   }
 }
 
@@ -814,6 +818,8 @@ function mapSignalQuerySession(value: ApiObject): SignalQuerySession {
 }
 
 function mapSignalQuerySignal(value: ApiObject): SignalQuerySignal {
+  const motionSource = objectValue(value.motion_source)
+  const derivation = objectRecordValue(value.derivation)
   return {
     role: textValue(value.role, 'signal'),
     signalId: textValue(value.signal_id),
@@ -824,6 +830,11 @@ function mapSignalQuerySignal(value: ApiObject): SignalQuerySignal {
     quantity: textValue(value.quantity),
     unit: textValue(value.unit),
     processingRole: textValue(value.processing_role),
+    kind: textValue(value.kind),
+    sensor: textValue(value.sensor),
+    motionSourceId: textValue(value.motion_source_id, textValue(motionSource.source_id, textValue(value.motion_source))),
+    origin: textValue(value.origin),
+    ...(Object.keys(derivation).length ? { derivation } : {}),
     values: arrayValue(value.values).map(nullableNumberValue),
   }
 }

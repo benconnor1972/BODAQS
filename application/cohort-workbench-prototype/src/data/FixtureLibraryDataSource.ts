@@ -451,6 +451,9 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
             quantity: column === 'active_mask_qc' ? 'mask' : role.includes('velocity') ? 'vel' : 'disp_norm',
             unit,
             processingRole: column === 'active_mask_qc' ? 'activity_mask' : 'primary_analysis',
+            kind: column === 'active_mask_qc' ? 'qc' : '',
+            sensor: role.startsWith('front') ? 'front_fixture' : role.startsWith('rear') ? 'rear_fixture' : '',
+            origin: 'fixture',
             values,
           }
         }),

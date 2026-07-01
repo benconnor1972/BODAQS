@@ -7,7 +7,6 @@ import {
   ChevronRight,
   ChevronUp,
   Columns3,
-  Eye,
   FileText,
   FolderOpen,
   GitBranch,
@@ -41,6 +40,7 @@ import {
   columnLabels,
   columnPresets,
   defaultColumns,
+  infoActionColumns,
   lockedColumns,
   matchesSearch,
   normalizeColumnSelection,
@@ -99,7 +99,14 @@ type GeoFilterQueryState = {
   error: string
 }
 
-const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
+type StudySetMapSessionPath = {
+  id: string
+  label: string
+  path: Array<[number, number]>
+}
+
+const LEGACY_SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
+const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v2'
 const ANALYSIS_SCOPE_STORAGE_PREFIX = 'bodaqs.web.analysis-scope.v1.'
 
 type AnalysisRouteState = {
@@ -137,6 +144,7 @@ function App() {
   const [savedSessionFilters, setSavedSessionFilters] = useState<SavedSessionFilterRecord[]>(prototypeSavedSessionFilters)
   const [currentStudySet, setCurrentStudySet] = useState<StudySet>(() => emptyStudySet())
   const [lastCommittedStudySet, setLastCommittedStudySet] = useState<StudySet>(() => emptyStudySet())
+  const [studySetMapSessionPaths, setStudySetMapSessionPaths] = useState<StudySetMapSessionPath[]>([])
   const [groupingName, setGroupingName] = useState('')
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
@@ -151,6 +159,7 @@ function App() {
   const [filterManagerOpen, setFilterManagerOpen] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
+  const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
   const [noteEditorSession, setNoteEditorSession] = useState<SessionRecord | null>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
   const [libraryRootInput, setLibraryRootInput] = useState('')
@@ -171,6 +180,10 @@ function App() {
       window.removeEventListener('hashchange', handleHashChange)
     }
   }, [])
+
+  useEffect(() => {
+    document.title = browserTabTitle(analysisRoute)
+  }, [analysisRoute])
 
   useEffect(() => {
     let cancelled = false
@@ -427,19 +440,50 @@ function App() {
     .filter((session): session is SessionRecord => Boolean(session))
   const selectedTracks = tracks.filter((track) => selectedTrackIds.includes(track.id))
   const currentStudyTracks = tracks.filter((track) => currentStudySet.trackIds.includes(track.id))
-  const studySetMapSessionPaths = useMemo(
+  const currentStudySetSessions = useMemo(
     () =>
       currentStudySet.sessions
         .map((sessionRef) => sessionByRef(sessionRef, sessions))
-        .filter((session): session is SessionRecord => Boolean(session))
-        .map((session) => ({
-          id: candidateId(session),
-          label: session.name,
-          path: session.gps,
-        }))
-        .filter((sessionPath) => sessionPath.path.length > 0),
+        .filter((session): session is SessionRecord => Boolean(session)),
     [currentStudySet.sessions, sessions],
   )
+  const currentStudySetSessionKey = currentStudySet.sessions.map(sessionRefId).join('|')
+
+  useEffect(() => {
+    let cancelled = false
+    const fallbackPaths = currentStudySetSessions.map((session) => studySetPathFromSession(session)).filter(hasMapPath)
+
+    if (currentStudySetSessions.length === 0) {
+      setStudySetMapSessionPaths([])
+      return
+    }
+
+    if (!activeDataSource.loadSessionGpsPoints) {
+      setStudySetMapSessionPaths(fallbackPaths)
+      return
+    }
+
+    setStudySetMapSessionPaths(fallbackPaths)
+    Promise.all(
+      currentStudySetSessions.map(async (session) => {
+        try {
+          const preferredSourceId = session.gpsSummary.preferredSourceId ?? session.gpsSummary.sources[0]?.sourceId ?? null
+          const pointSet = await activeDataSource.loadSessionGpsPoints?.(session, preferredSourceId)
+          return studySetPathFromSession(session, pointSet?.path ?? [])
+        } catch {
+          return studySetPathFromSession(session)
+        }
+      }),
+    ).then((paths) => {
+      if (!cancelled) {
+        setStudySetMapSessionPaths(paths.filter(hasMapPath))
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeDataSource, currentStudySetSessionKey, currentStudySetSessions])
 
   useEffect(() => {
     const specs = JSON.parse(activeTrackpointFilterSpecKey) as TrackpointCrossingSpec[]
@@ -799,22 +843,6 @@ function App() {
     )
   }
 
-  async function copySessionFilter(filter: SavedSessionFilterRecord) {
-    try {
-      const copied = await saveSessionFilter({
-        ...cloneSessionFilter(filter),
-        id: '',
-        displayName: `${filter.displayName} copy`,
-        origin: 'api_saved',
-        revision: 0,
-      })
-      setStatusMessage(`Copied filter "${filter.displayName}" to "${copied.displayName}".`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setStatusMessage(`Could not copy filter: ${message}`)
-    }
-  }
-
   async function deleteSessionFilter(filter: SavedSessionFilterRecord) {
     if (!activeDataSource.deleteSavedSessionFilter) {
       throw new Error('The current data source does not support filter deletes.')
@@ -1131,24 +1159,6 @@ function App() {
       trackIds: current.trackIds.filter((id) => id !== trackId),
     }))
     setModal((current) => (current?.kind === 'track' && current.track.id === trackId ? null : current))
-  }
-
-  async function deleteTrackFromLibrary(track: TrackRecord) {
-    if (!activeDataSource.deleteTrack) {
-      setStatusMessage('The current data source does not support track deletes.')
-      return
-    }
-    if (!window.confirm(`Delete track "${track.name}"? This removes the root-level track object.`)) {
-      return
-    }
-    try {
-      await activeDataSource.deleteTrack(track.id)
-      deleteTrackFromWorkbench(track.id)
-      setStatusMessage(`Deleted track "${track.name}".`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setStatusMessage(`Could not delete track: ${message}`)
-    }
   }
 
   function removeTrack(trackId: string) {
@@ -1580,19 +1590,9 @@ function App() {
                     savedFilters={savedSessionFilters}
                     activeSavedFilterIds={activeSavedFilterIds}
                     trackpointFilterStates={activeGeoFilterStates}
-                    canManageSavedFilters={Boolean(activeDataSource.saveSavedSessionFilter)}
                     onToggleSavedFilter={toggleSavedSessionFilter}
                     onClearSavedFilters={clearSavedSessionFilters}
                     onManageSavedFilters={() => setFilterManagerOpen(true)}
-                    onCopySavedFilter={(filter) => void copySessionFilter(filter)}
-                    onDeleteSavedFilter={(filter) => {
-                      if (window.confirm(`Delete filter "${filter.displayName}"?`)) {
-                        void deleteSessionFilter(filter).catch((error) => {
-                          const message = error instanceof Error ? error.message : String(error)
-                          setStatusMessage(`Could not delete filter: ${message}`)
-                        })
-                      }
-                    }}
                   />
                 )}
               </section>
@@ -1607,7 +1607,6 @@ function App() {
                 onToggleTrack={toggleTrack}
                 onAttachTrack={addTrackToStudySet}
                 onAttachSession={addSessionRefToStudySet}
-                onInspectTrack={(track) => setModal({ kind: 'track', track })}
                 onTrackSaved={upsertTrack}
                 onTrackDeleted={deleteTrackFromWorkbench}
               />
@@ -1700,6 +1699,7 @@ function App() {
                 sessions={sessions}
                 visibleColumns={visibleColumns}
                 selectedStudySessionIds={selectedStudySessionIds}
+                primaryStudySessionId={selectionAnchorStudySessionId}
                 onSelect={selectStudySession}
                 onRemove={removeStudySession}
                 onInspect={inspectSession}
@@ -1755,7 +1755,9 @@ function App() {
                     <th>Name</th>
                     <th>Trackpoints</th>
                     <th>Distance</th>
-                    <th>Controls</th>
+                    <th className="info-action-heading">
+                      <span title="Track actions" />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1771,23 +1773,11 @@ function App() {
                       <td>{track.name}</td>
                       <td>{track.trackpoints.length}</td>
                       <td>{track.distanceKm.toFixed(1)} km</td>
-                      <td>
-                        <IconButton
-                          label="Inspect Track"
-                          onClick={() => setModal({ kind: 'track', track })}
-                          icon={<Eye size={15} />}
-                        />
+                      <td className="icon-cluster info-action-cell">
                         <IconButton
                           label="Remove Track"
                           onClick={() => removeTrack(track.id)}
                           icon={<Minus size={15} />}
-                        />
-                        <IconButton
-                          label="Delete Track"
-                          disabled={!activeDataSource.deleteTrack}
-                          onClick={() => void deleteTrackFromLibrary(track)}
-                          icon={<Trash2 size={15} />}
-                          tone="alert"
                         />
                       </td>
                     </tr>
@@ -1852,7 +1842,9 @@ function App() {
                       <th>Sessions</th>
                       <th>Tracks</th>
                       <th>Groups</th>
-                      <th>Controls</th>
+                      <th className="info-action-heading">
+                        <span title="Study Set actions" />
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1862,16 +1854,11 @@ function App() {
                         <td>{studySet.sessions.length}</td>
                         <td>{studySet.trackIds.length}</td>
                         <td>{studySet.groupings.length}</td>
-                        <td>
+                        <td className="icon-cluster info-action-cell saved-study-set-action-cell">
                           <IconButton
                             label="Load Study Set"
                             onClick={() => requestLoadStudySet(studySet)}
                             icon={<FileText size={15} />}
-                          />
-                          <IconButton
-                            label="View Study Set"
-                            onClick={() => setModal({ kind: 'study-set', studySet, mode: 'view' })}
-                            icon={<Eye size={15} />}
                           />
                           <IconButton
                             label="Simple Suspension Analysis"
@@ -1910,11 +1897,13 @@ function App() {
           sessions={sessions}
           tracks={tracks}
           dataSource={activeDataSource}
+          bookmarkRefreshToken={bookmarkRefreshToken}
           onClose={() => setModal(null)}
           onOpenAnalysis={openAnalysisView}
           onOpenSignalInspector={(session, initialWindow = null) =>
             setModal({ kind: 'signal-inspector', session, initialWindow })
           }
+          onSessionBookmarksChanged={() => setBookmarkRefreshToken((current) => current + 1)}
         />
       )}
       {noteEditorSession && (
@@ -1983,6 +1972,8 @@ function AnalysisRoutePage({
   connectionMode: 'local-api' | 'fixture'
 }) {
   const viewTitle = route.viewId === 'simple-suspension' ? 'Simple Suspension Analysis' : route.viewId
+  const [routeModal, setRouteModal] = useState<ModalState>(null)
+  const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
 
   return (
     <main className="app-shell analysis-route-shell">
@@ -1994,12 +1985,6 @@ function AnalysisRoutePage({
             {studySet?.displayName || 'Analysis scope not loaded'}
             <span>{connectionMode === 'fixture' ? 'fixture data source' : statusMessage}</span>
           </p>
-        </div>
-        <div className="analysis-route-actions">
-          <button className="secondary-action compact-row-action" type="button" onClick={openBrowserHomeInThisTab}>
-            <Library size={16} />
-            Browser
-          </button>
         </div>
       </header>
 
@@ -2018,13 +2003,43 @@ function AnalysisRoutePage({
         </section>
       ) : route.viewId === 'simple-suspension' ? (
         <section className="analysis-route-content">
-          <SuspensionVisualization studySet={studySet} sessions={sessions} tracks={tracks} dataSource={dataSource} />
+          <SuspensionVisualization
+            studySet={studySet}
+            sessions={sessions}
+            tracks={tracks}
+            dataSource={dataSource}
+            bookmarkRefreshToken={bookmarkRefreshToken}
+            onInspectSignals={(sessionRef, window) => {
+              const session = sessionByRef(sessionRef, sessions)
+              if (session) {
+                setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
+              }
+            }}
+          />
         </section>
       ) : (
         <section className="analysis-route-empty">
           <h2>Analysis view not implemented</h2>
           <p>{route.viewId} is registered as a route, but this prototype does not have a renderer for it yet.</p>
         </section>
+      )}
+      {routeModal && (
+        <Modal
+          state={routeModal}
+          libraries={[]}
+          sessions={sessions}
+          tracks={tracks}
+          dataSource={dataSource}
+          bookmarkRefreshToken={bookmarkRefreshToken}
+          onClose={() => setRouteModal(null)}
+          onOpenAnalysis={(viewId, nextStudySet) => {
+            window.location.href = analysisRouteUrl(viewId, nextStudySet)
+          }}
+          onOpenSignalInspector={(session, initialWindow = null) =>
+            setRouteModal({ kind: 'signal-inspector', session, initialWindow })
+          }
+          onSessionBookmarksChanged={() => setBookmarkRefreshToken((current) => current + 1)}
+        />
       )}
     </main>
   )
@@ -2059,6 +2074,16 @@ function parseAnalysisRouteHash(): AnalysisRouteState | null {
     return null
   }
   return { viewId, scopeToken, studySetId }
+}
+
+function browserTabTitle(route: AnalysisRouteState | null) {
+  if (!route) {
+    return 'BODAQS library'
+  }
+  if (route.viewId === 'simple-suspension') {
+    return 'simple suspension analysis'
+  }
+  return route.viewId
 }
 
 function analysisRouteUrl(viewId: string, studySet: StudySet) {
@@ -2118,10 +2143,6 @@ function isStoredStudySet(value: unknown): value is StudySet {
   )
 }
 
-function openBrowserHomeInThisTab() {
-  window.location.hash = ''
-}
-
 async function fetchWorkbenchData(source: LibraryDataSource) {
   const [loadedLibraries, loadedSessions, loadedTracks, loadedStudySets, loadedSavedFilters] = await Promise.all([
     source.listLibraries(),
@@ -2163,6 +2184,18 @@ function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[
     ...libraryItem,
     sessionCount: sessionCounts.get(libraryItem.id) ?? libraryItem.sessionCount,
   }))
+}
+
+function studySetPathFromSession(session: SessionRecord, path: Array<[number, number]> = session.gps): StudySetMapSessionPath {
+  return {
+    id: candidateId(session),
+    label: session.name,
+    path,
+  }
+}
+
+function hasMapPath(sessionPath: StudySetMapSessionPath) {
+  return sessionPath.path.length > 0
 }
 
 function queuedGeoFilterState(spec: TrackpointCrossingSpec): GeoFilterQueryState {
@@ -2227,7 +2260,11 @@ function loadPersistedVisibleColumns(): ColumnId[] {
     return defaultColumns
   }
   try {
-    const raw = window.localStorage.getItem(SESSION_SELECTOR_COLUMNS_STORAGE_KEY)
+    let raw = window.localStorage.getItem(SESSION_SELECTOR_COLUMNS_STORAGE_KEY)
+    const usingLegacyLayout = !raw
+    if (!raw) {
+      raw = window.localStorage.getItem(LEGACY_SESSION_SELECTOR_COLUMNS_STORAGE_KEY)
+    }
     if (!raw) {
       return defaultColumns
     }
@@ -2236,7 +2273,7 @@ function loadPersistedVisibleColumns(): ColumnId[] {
       return defaultColumns
     }
     const columnIds = parsed.filter(isColumnId)
-    return normalizeColumnSelection(columnIds)
+    return normalizeColumnSelection(usingLegacyLayout ? [...columnIds, ...infoActionColumns] : columnIds)
   } catch {
     return defaultColumns
   }
@@ -2255,13 +2292,6 @@ function persistVisibleColumns(columns: ColumnId[]) {
 
 function isColumnId(value: unknown): value is ColumnId {
   return typeof value === 'string' && value in columnLabels
-}
-
-function cloneSessionFilter(filter: SavedSessionFilterRecord): SavedSessionFilterRecord {
-  return {
-    ...filter,
-    predicate: JSON.parse(JSON.stringify(filter.predicate)) as SavedSessionFilterRecord['predicate'],
-  }
 }
 
 export default App

@@ -1169,11 +1169,15 @@ def _available_signals(
             "processing_role",
             "kind",
             "sensor",
+            "motion_source_id",
             "origin",
         ):
             value = info.get(key)
             if value is not None:
                 signal[key] = value
+        derivation = info.get("derivation")
+        if isinstance(derivation, Mapping):
+            signal["derivation"] = {str(k): v for k, v in dict(derivation).items()}
         out.append(signal)
     return sorted(out, key=lambda item: str(item.get("column") or "").lower())
 

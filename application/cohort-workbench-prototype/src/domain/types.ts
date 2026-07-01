@@ -110,7 +110,9 @@ export type SessionSignalSummary = {
   processingRole: string
   kind: string
   sensor: string
+  motionSourceId?: string
   origin: string
+  derivation?: Record<string, unknown>
 }
 
 export type SessionNoteValue = string | number | boolean | string[] | null
@@ -356,6 +358,11 @@ export type SignalQuerySignal = {
   quantity: string
   unit: string
   processingRole: string
+  kind: string
+  sensor: string
+  motionSourceId?: string
+  origin: string
+  derivation?: Record<string, unknown>
   values: Array<number | null>
 }
 
@@ -506,6 +513,11 @@ export type ColumnId =
   | 'source'
   | 'signals'
   | 'gps'
+  | 'noteAction'
+  | 'qaAction'
+  | 'gpsAction'
+  | 'signalInspectorAction'
+  | 'metadataAction'
 
 export type ModalState =
   | { kind: 'session'; tab: SessionInspectionTab; session: SessionRecord }

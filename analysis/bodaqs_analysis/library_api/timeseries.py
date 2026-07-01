@@ -574,10 +574,13 @@ def _signal_payload(spec: Mapping[str, Any]) -> dict[str, Any]:
         "column": column,
         "display_name": _signal_display_name(column, info),
     }
-    for key in ("end", "domain", "quantity", "unit", "processing_role", "kind", "sensor", "origin"):
+    for key in ("end", "domain", "quantity", "unit", "processing_role", "kind", "sensor", "motion_source_id", "origin"):
         value = info.get(key) if isinstance(info, Mapping) else None
         if value is not None:
             payload[key] = value
+    derivation = info.get("derivation") if isinstance(info, Mapping) else None
+    if isinstance(derivation, Mapping):
+        payload["derivation"] = {str(k): v for k, v in dict(derivation).items()}
     return payload
 
 

@@ -6,7 +6,7 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table'
 import { Filter, X } from 'lucide-react'
-import { columnLabels, getColumnText } from '../domain/sessionCatalog'
+import { columnLabels, getColumnText, isInfoActionColumn } from '../domain/sessionCatalog'
 import { candidateId } from '../domain/studySets'
 import {
   tableColumnFilterOptions,
@@ -20,7 +20,12 @@ import type {
   SessionRecord,
   SortDirection,
 } from '../domain/types'
-import { SessionInfoButtons } from './SessionInfoButtons'
+import {
+  SessionDeleteButton,
+  SessionInfoButtons,
+  sessionInfoActionForColumn,
+  type SessionInfoAction,
+} from './SessionInfoButtons'
 
 export type SessionSelectionGesture = {
   extendRange: boolean
@@ -63,28 +68,32 @@ export function SessionTable({
   const [openFilterColumnId, setOpenFilterColumnId] = useState<ColumnId | null>(null)
   const [filterSearchText, setFilterSearchText] = useState('')
   const filterMenuRef = useRef<HTMLDivElement>(null)
-  const columns: ColumnDef<SessionRecord>[] = [
-    ...visibleColumns.map((columnId): ColumnDef<SessionRecord> => ({
+  const dataColumns = visibleColumns.filter((columnId) => !isInfoActionColumn(columnId))
+  const infoActions = visibleColumns
+    .map(sessionInfoActionForColumn)
+    .filter((action): action is SessionInfoAction => Boolean(action))
+  const columns: ColumnDef<SessionRecord>[] = dataColumns.map((columnId): ColumnDef<SessionRecord> => ({
       id: columnId,
       accessorFn: (session) => getColumnText(session, columnId, libraries),
       header: columnLabels[columnId],
       cell: (info) => String(info.getValue() ?? ''),
       enableSorting: true,
-    })),
-    {
-      id: 'info',
-      header: 'Info',
-      cell: ({ row }) => (
-        <SessionInfoButtons
-          session={row.original}
-          onInspect={onInspect}
-          showDelete
-          onDelete={onDeleteSession}
-        />
-      ),
-      enableSorting: false,
-    },
-  ]
+    }))
+  columns.push({
+    id: 'rowActions',
+    header: '',
+    cell: ({ row }) => (
+      <div className="row-action-strip">
+        {infoActions.length > 0 && (
+          <span className="row-info-action-group">
+            <SessionInfoButtons session={row.original} onInspect={onInspect} actions={infoActions} />
+          </span>
+        )}
+        <SessionDeleteButton session={row.original} onDelete={onDeleteSession} />
+      </div>
+    ),
+    enableSorting: false,
+  })
   // TanStack Table intentionally returns function-bearing instances; keep it local to this component.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -135,11 +144,12 @@ export function SessionTable({
                 {headerGroup.headers.map((header) => {
                   const columnId = header.column.id
                   const isSortableSessionColumn = isColumnId(columnId)
+                  const isInfoActionHeader = columnId === 'rowActions'
                   const selectedFilterValues = isSortableSessionColumn
                     ? tableColumnFilters.find((filter) => filter.columnId === columnId)?.values ?? []
                     : []
                   return (
-                    <th key={header.id}>
+                    <th className={isInfoActionHeader ? 'info-action-heading' : undefined} key={header.id}>
                       {isSortableSessionColumn ? (
                         <div className="column-header-control">
                           <button className="sort-button" onClick={() => onSort(columnId)} type="button">
@@ -177,6 +187,8 @@ export function SessionTable({
                             />
                           )}
                         </div>
+                      ) : isInfoActionHeader ? (
+                        <span title="Session info actions" />
                       ) : (
                         flexRender(header.column.columnDef.header, header.getContext())
                       )}
@@ -207,10 +219,10 @@ export function SessionTable({
                   tabIndex={0}
                 >
                   {row.getVisibleCells().map((cell) => {
-                    const isInfoCell = cell.column.id === 'info'
+                    const isInfoCell = cell.column.id === 'rowActions'
                     return (
                       <td
-                        className={isInfoCell ? 'icon-cluster' : undefined}
+                        className={isInfoCell ? 'icon-cluster info-action-cell session-info-action-cell' : undefined}
                         key={cell.id}
                         onClick={isInfoCell ? (event) => event.stopPropagation() : undefined}
                       >

@@ -1,10 +1,13 @@
 import { useDeferredValue, useEffect, useMemo, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
-import { Activity, ChevronDown, ChevronUp } from 'lucide-react'
+import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { sessionByRef, sessionRefId } from '../domain/studySets'
 import type {
   SessionRecord,
+  SessionBookmarkRecord,
+  SessionSignalSummary,
+  SignalQuerySignal,
   SignalQuerySignalRequest,
   SessionTrackMatchRecord,
   StudySessionRef,
@@ -31,14 +34,28 @@ const VELOCITY_DOMAIN_LIMITS = [1000, 2000, 5000, 10000]
 const STROKE_LENGTH_DOMAIN_LIMITS = [100, 150, 200, 250]
 const WHOLE_SESSION_DISTRIBUTION_BINS = 20
 const SECTOR_DISTRIBUTION_BINS = 15
+const VISUALIZATION_SESSION_CACHE_VERSION = 2
 const VELOCITY_STATS_FORMATTER = formatMetricValueWithUnit('mm/s')
 const STROKE_LENGTH_STATS_FORMATTER = formatMetricValueWithUnit('mm')
 
 const SIGNAL_REQUESTS: SignalQuerySignalRequest[] = [
-  { role: 'front_displacement', selector: { end: 'front', quantity: 'disp_norm', unit: '1' } },
-  { role: 'rear_displacement', selector: { end: 'rear', quantity: 'disp_norm', unit: '1' } },
   { role: 'activity_mask', selector: { kind: 'qc', quantity: 'mask' } },
 ]
+const DISPLACEMENT_SIGNAL_ROLE_CONFIGS = [
+  {
+    role: 'front_displacement',
+    label: 'Front wheel displacement',
+    end: 'front',
+    selector: { end: 'front', domain: 'wheel', quantity: 'disp_norm', unit: '1' },
+  },
+  {
+    role: 'rear_displacement',
+    label: 'Rear wheel displacement',
+    end: 'rear',
+    selector: { end: 'rear', domain: 'wheel', quantity: 'disp_norm', unit: '1' },
+  },
+] as const
+const DISPLACEMENT_SIGNAL_ROLES = new Set<string>(DISPLACEMENT_SIGNAL_ROLE_CONFIGS.map((config) => config.role))
 const ACTIVITY_SIGNAL_ROLES = new Set(['activity_mask', 'inactive_mask_qc', 'inactive_mask', 'active_mask_qc'])
 const INACTIVE_MASK_ROLES = ['inactive_mask_qc', 'inactive_mask']
 const ACTIVE_MASK_ROLES = ['active_mask_qc']
@@ -74,6 +91,8 @@ type DistributionStatsMode = 'basic' | 'displacement'
 type MirroredMetricSpec = { compressionMetricName: string; reboundMetricName: string }
 type TimeWindow = { startS: number; endS: number }
 type TimeWindowsBySession = Record<string, TimeWindow>
+type DisplacementSignalRole = (typeof DISPLACEMENT_SIGNAL_ROLE_CONFIGS)[number]['role']
+type SignalChoiceSelections = Record<string, string>
 
 type SuspensionVisualizationSettings = {
   selectedEntityIds: string[]
@@ -86,6 +105,7 @@ type SuspensionVisualizationSettings = {
   selectedSectorIds: string[]
   timeWindowsBySession: TimeWindowsBySession
   excludeInactivePeriods: boolean
+  signalChoices: SignalChoiceSelections
 }
 
 type CachedSessionVisualizationData = {
@@ -161,6 +181,15 @@ type TrackSector = {
   lengthM: number
 }
 
+type SignalChoiceGroup = {
+  key: string
+  role: DisplacementSignalRole
+  roleLabel: string
+  sessionLabel: string
+  selectedColumn: string
+  candidates: SessionSignalSummary[]
+}
+
 type DistributionRole = {
   key: SuspensionEnd
   label: string
@@ -173,12 +202,14 @@ export function SuspensionVisualization({
   sessions,
   tracks,
   dataSource,
+  bookmarkRefreshToken = 0,
   onInspectSignals,
 }: {
   studySet: StudySet
   sessions: SessionRecord[]
   tracks: TrackRecord[]
   dataSource: LibraryDataSource
+  bookmarkRefreshToken?: number
   onInspectSignals?: (sessionRef: StudySessionRef, window: TimeWindow) => void
 }) {
   const entities = visualizationEntities(studySet)
@@ -202,6 +233,7 @@ export function SuspensionVisualization({
   const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>(initialSettings.selectedSectorIds)
   const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>(initialSettings.timeWindowsBySession)
   const [excludeInactivePeriods, setExcludeInactivePeriods] = useState(initialSettings.excludeInactivePeriods)
+  const [signalChoices, setSignalChoices] = useState<SignalChoiceSelections>(initialSettings.signalChoices)
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select sessions or groups to visualize.' })
 
   useEffect(() => {
@@ -215,6 +247,7 @@ export function SuspensionVisualization({
     setSelectedSectorIds(restored.selectedSectorIds)
     setTimeWindowsBySession(restored.timeWindowsBySession)
     setExcludeInactivePeriods(restored.excludeInactivePeriods)
+    setSignalChoices(restored.signalChoices)
   }, [settingsCacheKey, studySetKey])
 
   useEffect(() => {
@@ -267,6 +300,15 @@ export function SuspensionVisualization({
   const selectedSessionRefs = uniqueSessionRefs(selectedEntities.flatMap((entity) => entity.sessionRefs))
   const studySetSessionRefs = useMemo(() => uniqueSessionRefs(studySet.sessions), [studySetKey])
   const studySetSessionKey = studySetSessionRefs.map(sessionRefId).join('|')
+  const resolvedSignalChoices = useMemo(
+    () => resolvedDisplacementSignalChoices(studySetSessionRefs, sessions, signalChoices),
+    [studySetSessionKey, sessions, signalChoices],
+  )
+  const signalChoiceGroups = useMemo(
+    () => duplicateDisplacementSignalChoiceGroups(studySetSessionRefs, sessions, resolvedSignalChoices),
+    [studySetSessionKey, sessions, resolvedSignalChoices],
+  )
+  const signalChoiceSignature = useMemo(() => signalChoiceSelectionSignature(resolvedSignalChoices), [resolvedSignalChoices])
 
   useEffect(() => {
     setSelectedSectorIds((current) => {
@@ -288,6 +330,7 @@ export function SuspensionVisualization({
       selectedSectorIds,
       timeWindowsBySession,
       excludeInactivePeriods,
+      signalChoices,
     })
   }, [
     settingsCacheKey,
@@ -301,6 +344,7 @@ export function SuspensionVisualization({
     selectedSectorIds,
     timeWindowsBySession,
     excludeInactivePeriods,
+    signalChoices,
   ])
 
   useEffect(() => {
@@ -312,7 +356,7 @@ export function SuspensionVisualization({
       }
       setLoadState({ status: 'loading', message: 'Loading suspension visualization data...' })
       try {
-        const data = await loadVisualizationData(studySetSessionRefs, dataSource)
+        const data = await loadVisualizationData(studySetSessionRefs, resolvedSignalChoices, sessions, dataSource)
         if (!cancelled) {
           setLoadState({ status: 'ready', message: 'Visualization data loaded.', data })
         }
@@ -328,7 +372,7 @@ export function SuspensionVisualization({
     return () => {
       cancelled = true
     }
-  }, [dataSource, studySetSessionKey])
+  }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature])
 
   const data = loadState.status === 'ready' ? loadState.data : null
   const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
@@ -395,6 +439,13 @@ export function SuspensionVisualization({
     })
   }
 
+  function setSignalChoice(key: string, column: string) {
+    setSignalChoices((current) => ({
+      ...current,
+      [key]: column,
+    }))
+  }
+
   return (
     <div className="suspension-viz">
       <header className="suspension-viz-hero">
@@ -416,77 +467,92 @@ export function SuspensionVisualization({
         </div>
       </header>
 
-      <section className={`viz-control-panel${controlsCollapsed ? ' collapsed' : ''}`} aria-label="Select and filter">
-        <button className="viz-control-panel-header" type="button" onClick={() => togglePanel('select-filter')}>
-          <span>
-            <strong>
-              Select and Filter
-              <InfoTip text="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed." />
-            </strong>
-            <small>
-              {selectedEntityIds.length} sessions/groups, {selectedEnds.length} ends, {selectedSectors.length} sectors
-            </small>
-          </span>
-          {controlsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-        </button>
-        {!controlsCollapsed && (
-          <div className="viz-control-panel-body">
-            <VisualizationFilterChips
-              entities={entities}
-              scopeMode={scopeMode}
-              sectors={sectors}
-              selectedEndKeys={selectedEnds}
-              selectedEntityIds={selectedEntityIds}
-              selectedSectorIds={selectedSectorIds}
-              onToggleEnd={toggleEnd}
-              onToggleEntity={toggleEntity}
-              onToggleSector={toggleSector}
-            />
+      <div className={`suspension-viz-workspace${controlsCollapsed ? ' controls-collapsed' : ''}`}>
+        <aside className={`viz-control-drawer${controlsCollapsed ? ' collapsed' : ''}`} aria-label="Select and filter">
+          {controlsCollapsed ? (
+            <button className="viz-control-drawer-rail" type="button" onClick={() => togglePanel('select-filter')}>
+              <ChevronRight size={15} />
+              <span>Select and filter</span>
+            </button>
+          ) : (
+            <section className="viz-control-panel">
+              <button className="viz-control-panel-header" type="button" onClick={() => togglePanel('select-filter')}>
+                <span>
+                  <strong>
+                    Select and Filter
+                    <InfoTip text="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed." />
+                  </strong>
+                  <small>
+                    {selectedEntityIds.length} sessions/groups, {selectedEnds.length} ends, {selectedSectors.length} sectors
+                  </small>
+                </span>
+                <ChevronLeft size={16} />
+              </button>
+              <div className="viz-control-panel-body">
+                <VisualizationFilterChips
+                  entities={entities}
+                  scopeMode={scopeMode}
+                  sectors={sectors}
+                  selectedEndKeys={selectedEnds}
+                  selectedEntityIds={selectedEntityIds}
+                  selectedSectorIds={selectedSectorIds}
+                  onToggleEnd={toggleEnd}
+                  onToggleEntity={toggleEntity}
+                  onToggleSector={toggleSector}
+                />
 
-            <div className="viz-control-mode-row">
-              <ScopeModeControl
-                value={scopeMode}
-                onChange={setScopeMode}
-                tracks={studySetTracks}
-                selectedTrackId={selectedTrack?.id ?? null}
-                onTrackChange={setSelectedTrackId}
-                sectors={sectors}
-              />
+                {signalChoiceGroups.length > 0 && (
+                  <SignalChoiceControl groups={signalChoiceGroups} onChange={setSignalChoice} />
+                )}
 
-              <ComparisonLayoutToggle value={comparisonLayout} onChange={setComparisonLayout} />
+                <div className="viz-control-mode-row">
+                  <ScopeModeControl
+                    value={scopeMode}
+                    onChange={setScopeMode}
+                    tracks={studySetTracks}
+                    selectedTrackId={selectedTrack?.id ?? null}
+                    onTrackChange={setSelectedTrackId}
+                    sectors={sectors}
+                  />
 
-              <ActivityExclusionControl checked={excludeInactivePeriods} onChange={setExcludeInactivePeriods} />
+                  <ComparisonLayoutToggle value={comparisonLayout} onChange={setComparisonLayout} />
+
+                  <ActivityExclusionControl checked={excludeInactivePeriods} onChange={setExcludeInactivePeriods} />
+                </div>
+
+                {data && selectedSessionRefs.length > 0 && (
+                  <TimeWindowManager
+                    data={data}
+                    dataSource={dataSource}
+                    bookmarkRefreshToken={bookmarkRefreshToken}
+                    sessionRefs={selectedSessionRefs}
+                    sessions={sessions}
+                    timeWindows={timeWindowsBySession}
+                    onChange={setSessionTimeWindow}
+                    onReset={resetSessionTimeWindow}
+                    onResetAll={() => setTimeWindowsBySession({})}
+                    onInspectSignals={onInspectSignals}
+                  />
+                )}
+              </div>
+            </section>
+          )}
+        </aside>
+
+        <div className="suspension-viz-content">
+          {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
+          {loadState.status === 'error' && <div className="viz-status warning">Could not load visualization data: {loadState.message}</div>}
+          {loadState.status === 'idle' && <div className="viz-status">{loadState.message}</div>}
+
+          {data && data.warnings.length > 0 && (
+            <div className="viz-status warning">
+              {data.warnings.slice(0, 3).map((warning) => String(warning)).join(' | ')}
+              {data.warnings.length > 3 ? ` | ${data.warnings.length - 3} more warning(s)` : ''}
             </div>
+          )}
 
-            {data && selectedSessionRefs.length > 0 && (
-              <TimeWindowManager
-                data={data}
-                sessionRefs={selectedSessionRefs}
-                sessions={sessions}
-                timeWindows={timeWindowsBySession}
-                onChange={setSessionTimeWindow}
-                onReset={resetSessionTimeWindow}
-                onResetAll={() => setTimeWindowsBySession({})}
-                onInspectSignals={onInspectSignals}
-              />
-            )}
-          </div>
-        )}
-      </section>
-
-      {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
-      {loadState.status === 'error' && <div className="viz-status warning">Could not load visualization data: {loadState.message}</div>}
-      {loadState.status === 'idle' && <div className="viz-status">{loadState.message}</div>}
-
-      {data && data.warnings.length > 0 && (
-        <div className="viz-status warning">
-          {data.warnings.slice(0, 3).map((warning) => String(warning)).join(' | ')}
-          {data.warnings.length > 3 ? ` | ${data.warnings.length - 3} more warning(s)` : ''}
-        </div>
-      )}
-
-      {data && analysisData && baseAnalysisData && (
-        <div className={`viz-panel-stack${singleEntityDashboard ? ' single-entity-dashboard' : ''}`}>
+          {data && analysisData && baseAnalysisData && (
+            <div className={`viz-panel-stack${singleEntityDashboard ? ' single-entity-dashboard' : ''}`}>
           <VisualizationPanel
             id="displacement"
             title="Wheel displacement distribution"
@@ -737,6 +803,8 @@ export function SuspensionVisualization({
           </VisualizationPanel>
         </div>
       )}
+        </div>
+      </div>
 
     </div>
   )
@@ -793,6 +861,8 @@ function ActivityExclusionControl({
 
 function TimeWindowManager({
   data,
+  dataSource,
+  bookmarkRefreshToken,
   sessionRefs,
   sessions,
   timeWindows,
@@ -802,6 +872,8 @@ function TimeWindowManager({
   onInspectSignals,
 }: {
   data: VisualizationData
+  dataSource: LibraryDataSource
+  bookmarkRefreshToken: number
   sessionRefs: StudySessionRef[]
   sessions: SessionRecord[]
   timeWindows: TimeWindowsBySession
@@ -870,6 +942,8 @@ function TimeWindowManager({
       <TimeWindowNavigator
         embedded
         data={data}
+        dataSource={dataSource}
+        bookmarkRefreshToken={bookmarkRefreshToken}
         sessionRef={activeSessionRef}
         session={sessionByRef(activeSessionRef, sessions) ?? null}
         window={timeWindows[sessionRefId(activeSessionRef)] ?? null}
@@ -884,6 +958,8 @@ function TimeWindowManager({
 function TimeWindowNavigator({
   embedded = false,
   data,
+  dataSource,
+  bookmarkRefreshToken,
   sessionRef,
   session,
   window,
@@ -893,6 +969,8 @@ function TimeWindowNavigator({
 }: {
   embedded?: boolean
   data: VisualizationData
+  dataSource: LibraryDataSource
+  bookmarkRefreshToken: number
   sessionRef: StudySessionRef
   session: SessionRecord | null
   window: TimeWindow | null
@@ -905,11 +983,37 @@ function TimeWindowNavigator({
   const minWindowS = Math.max(0.1, durationS / 500)
   const current = sanitizeTimeWindow(window ?? { startS: 0, endS: durationS }, durationS, minWindowS)
   const [draftWindow, setDraftWindow] = useState<TimeWindow>(current)
+  const [periodBookmarks, setPeriodBookmarks] = useState<SessionBookmarkRecord[]>([])
   const active = Boolean(window)
 
   useEffect(() => {
     setDraftWindow(current)
   }, [current.startS, current.endS, sessionRef.sessionKey])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!session) {
+      setPeriodBookmarks([])
+      return
+    }
+    setPeriodBookmarks([])
+    dataSource
+      .listSessionBookmarks(session)
+      .then((bookmarks) => {
+        if (!cancelled) {
+          setPeriodBookmarks(bookmarks.filter(isPeriodBookmark).sort(compareBookmarksByStart))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPeriodBookmarks([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [bookmarkRefreshToken, dataSource, session])
 
   function commitDraftWindow(nextDraftWindow = draftWindow) {
     const nextWindow = sanitizeTimeWindow(nextDraftWindow, durationS, minWindowS)
@@ -917,6 +1021,12 @@ function TimeWindowNavigator({
     if (nextWindow.startS !== current.startS || nextWindow.endS !== current.endS) {
       onChange(nextWindow)
     }
+  }
+
+  function applyBookmarkWindow(bookmark: SessionBookmarkRecord) {
+    const nextWindow = sanitizeTimeWindow(bookmark.window, durationS, minWindowS)
+    setDraftWindow(nextWindow)
+    onChange(nextWindow)
   }
 
   return (
@@ -929,21 +1039,33 @@ function TimeWindowNavigator({
           </span>
         </div>
         <div className="viz-time-window-actions">
-          {onInspectSignals && (
-            <button type="button" onClick={() => onInspectSignals(draftWindow)} disabled={disabled}>
-              <Activity size={13} />
-              Inspect signals
-            </button>
-          )}
           <button type="button" onClick={onReset} disabled={!active || disabled}>
             Full session
           </button>
+          {onInspectSignals && (
+            <button type="button" onClick={() => onInspectSignals(draftWindow)} disabled={disabled}>
+              <Activity size={13} />
+              Signal inspector...
+            </button>
+          )}
         </div>
       </div>
       {disabled ? (
         <div className="viz-time-window-empty">No usable signal timebase is available for this session.</div>
       ) : (
         <>
+          {periodBookmarks.length > 0 && (
+            <div className="viz-time-window-bookmarks" aria-label="Period bookmarks">
+              {periodBookmarks.map((bookmark) => (
+                <button key={bookmark.id} type="button" onClick={() => applyBookmarkWindow(bookmark)}>
+                  <span>{bookmark.title || 'Bookmark'}</span>
+                  <small>
+                    {formatTimeOffset(bookmark.window.startS)} - {formatTimeOffset(bookmark.window.endS)}
+                  </small>
+                </button>
+              ))}
+            </div>
+          )}
           <TimeWindowOverview
             data={data}
             durationS={durationS}
@@ -1135,7 +1257,7 @@ function TimeWindowOverview({
           <g key={value}>
             <line className="viz-tick" x1={x(value)} x2={x(value)} y1={height - margin.bottom} y2={height - margin.bottom + 4} />
             {tick.label && (
-              <text className="viz-axis-label" x={x(value)} y={height - 4} textAnchor="middle">
+              <text className="viz-axis-label viz-time-window-tick-label" x={x(value)} y={height - 5} textAnchor="middle">
                 {formatTimeOffset(value)}
               </text>
             )}
@@ -1260,6 +1382,44 @@ function VisualizationFilterChips({
             )
           })}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function SignalChoiceControl({
+  groups,
+  onChange,
+}: {
+  groups: SignalChoiceGroup[]
+  onChange: (key: string, column: string) => void
+}) {
+  return (
+    <div className="viz-signal-choice-panel">
+      <strong>Signal choices</strong>
+      <div className="viz-signal-choice-grid">
+        {groups.map((group) => (
+          <fieldset className="viz-signal-choice-group" key={group.key}>
+            <legend>
+              <span>{group.sessionLabel}</span>
+              <small>{group.roleLabel}</small>
+            </legend>
+            {group.candidates.map((signal) => (
+              <label key={signal.column}>
+                <input
+                  checked={group.selectedColumn === signal.column}
+                  name={group.key}
+                  onChange={() => onChange(group.key, signal.column)}
+                  type="radio"
+                />
+                <span>
+                  <strong>{signalChoiceLabel(signal)}</strong>
+                  <small>{signalChoiceDetail(signal)}</small>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        ))}
       </div>
     </div>
   )
@@ -1432,7 +1592,15 @@ function DistributionGrid({
                 }))}
                 emptyLabel="No matching signals"
               />
-              {showStats && <DistributionStats formatter={statsFormatter} mode={statsMode} series={series} transform={statsTransform} />}
+              {showStats && (
+                <DistributionStats
+                  formatter={statsFormatter}
+                  mode={statsMode}
+                  series={series}
+                  splitMirrored={chartKind === 'mirrored_velocity'}
+                  transform={statsTransform}
+                />
+              )}
             </article>
           )
         })}
@@ -1457,7 +1625,15 @@ function DistributionGrid({
             ) : (
               <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
             )}
-            {showStats && <DistributionStats formatter={statsFormatter} mode={statsMode} series={series} transform={statsTransform} />}
+            {showStats && (
+              <DistributionStats
+                formatter={statsFormatter}
+                mode={statsMode}
+                series={series}
+                splitMirrored={chartKind === 'mirrored_velocity'}
+                transform={statsTransform}
+              />
+            )}
           </article>
         )
       })}
@@ -2257,7 +2433,7 @@ function HistogramOverlayChart({
   yMax: number
 }) {
   const width = 324
-  const height = 180
+  const height = 205
   const margin = { top: 12, right: 12, bottom: 34, left: 34 }
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
   const seriesBins = series.map((item) => ({
@@ -2335,7 +2511,7 @@ function MultiHistogramChart({
   yMax: number
 }) {
   const width = 324
-  const height = 180
+  const height = 205
   const margin = { top: 12, right: 12, bottom: 34, left: 34 }
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
   const seriesBins = series.map((item) => ({
@@ -2792,26 +2968,51 @@ function DistributionStats({
   formatter,
   mode = 'basic',
   series,
+  splitMirrored = false,
   transform,
 }: {
   formatter: (value: number | null) => string
   mode?: DistributionStatsMode
   series: Array<{ id: string; label: string; color: string; values: number[] }>
+  splitMirrored?: boolean
   transform: (value: number) => number
 }) {
   return (
     <div className="viz-stat-grid">
-      {series.map((item) => (
-        <RoleStats
-          color={item.color}
-          formatter={formatter}
-          key={item.id}
-          label={item.label}
-          mode={mode}
-          transform={transform}
-          values={item.values}
-        />
-      ))}
+      {series.flatMap((item) =>
+        splitMirrored
+          ? [
+              <RoleStats
+                color={item.color}
+                formatter={formatter}
+                key={`${item.id}-compression`}
+                label={`${item.label} compression`}
+                mode={mode}
+                transform={transform}
+                values={item.values.filter((value) => value >= 0)}
+              />,
+              <RoleStats
+                color={item.color}
+                formatter={formatter}
+                key={`${item.id}-rebound`}
+                label={`${item.label} rebound`}
+                mode={mode}
+                transform={transform}
+                values={item.values.filter((value) => value < 0)}
+              />,
+            ]
+          : [
+              <RoleStats
+                color={item.color}
+                formatter={formatter}
+                key={item.id}
+                label={item.label}
+                mode={mode}
+                transform={transform}
+                values={item.values}
+              />,
+            ],
+      )}
     </div>
   )
 }
@@ -2849,25 +3050,210 @@ function RoleStats({
   )
 }
 
+function resolvedDisplacementSignalChoices(
+  sessionRefs: StudySessionRef[],
+  sessions: SessionRecord[],
+  selections: SignalChoiceSelections,
+): SignalChoiceSelections {
+  const resolved: SignalChoiceSelections = {}
+  for (const sessionRef of sessionRefs) {
+    const session = sessionByRef(sessionRef, sessions)
+    if (!session) {
+      continue
+    }
+    const refId = sessionRefId(sessionRef)
+    for (const config of DISPLACEMENT_SIGNAL_ROLE_CONFIGS) {
+      const candidates = displacementSignalCandidates(session, config.end)
+      if (candidates.length === 0) {
+        continue
+      }
+      const key = signalChoiceKey(refId, config.role)
+      const selected = selections[key]
+      resolved[key] = candidates.some((signal) => signal.column === selected) ? selected : candidates[0].column
+    }
+  }
+  return resolved
+}
+
+function duplicateDisplacementSignalChoiceGroups(
+  sessionRefs: StudySessionRef[],
+  sessions: SessionRecord[],
+  selections: SignalChoiceSelections,
+): SignalChoiceGroup[] {
+  const groups: SignalChoiceGroup[] = []
+  for (const sessionRef of sessionRefs) {
+    const session = sessionByRef(sessionRef, sessions)
+    if (!session) {
+      continue
+    }
+    const refId = sessionRefId(sessionRef)
+    for (const config of DISPLACEMENT_SIGNAL_ROLE_CONFIGS) {
+      const candidates = displacementSignalCandidates(session, config.end)
+      if (candidates.length <= 1) {
+        continue
+      }
+      const key = signalChoiceKey(refId, config.role)
+      groups.push({
+        key,
+        role: config.role,
+        roleLabel: config.label,
+        sessionLabel: session.name || sessionRef.label || sessionRef.sessionId,
+        selectedColumn: selections[key] ?? candidates[0].column,
+        candidates,
+      })
+    }
+  }
+  return groups
+}
+
+function displacementSignalCandidates(session: SessionRecord, end: SuspensionEnd) {
+  const candidates = [...(session.availableSignals ?? [])]
+    .filter((signal) => displacementSignalCandidateMatches(signal, end))
+    .sort(compareDisplacementSignalCandidates)
+  const groups = displacementSignalCandidateGroups(candidates)
+  const duplicateGroups = groups.filter((group) => group.length > 1)
+  return duplicateGroups[0] ?? groups[0] ?? []
+}
+
+function displacementSignalCandidateMatches(signal: SessionSignalSummary, end: SuspensionEnd) {
+  const quantity = normalizeSignalText(signal.quantity)
+  const unit = normalizeSignalText(signal.unit)
+  return (
+    normalizeSignalText(signal.end) === end &&
+    normalizeSignalText(signal.domain) === 'wheel' &&
+    ((quantity === 'disp_norm' && unit === '1') || (quantity === 'disp' && isMillimetreUnit(unit)))
+  )
+}
+
+function normalizeSignalText(value: unknown) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function isMillimetreUnit(unit: string) {
+  return ['mm', 'millimeter', 'millimeters', 'millimetre', 'millimetres'].includes(unit)
+}
+
+function displacementSignalCandidateGroups(candidates: SessionSignalSummary[]) {
+  const groups = new Map<string, SessionSignalSummary[]>()
+  for (const signal of candidates) {
+    const key = displacementSignalSemanticKey(signal)
+    groups.set(key, [...(groups.get(key) ?? []), signal])
+  }
+  return Array.from(groups.values()).sort(compareDisplacementSignalCandidateGroups)
+}
+
+function displacementSignalSemanticKey(signal: SessionSignalSummary) {
+  return [
+    normalizeSignalText(signal.end),
+    normalizeSignalText(signal.domain),
+    normalizeSignalText(signal.quantity),
+    normalizeSignalText(signal.unit),
+  ].join('|')
+}
+
+function compareDisplacementSignalCandidateGroups(left: SessionSignalSummary[], right: SessionSignalSummary[]) {
+  return (
+    displacementSignalCandidateGroupScore(left) - displacementSignalCandidateGroupScore(right) ||
+    displacementSignalSemanticKey(left[0]).localeCompare(displacementSignalSemanticKey(right[0]))
+  )
+}
+
+function displacementSignalCandidateGroupScore(group: SessionSignalSummary[]) {
+  const signal = group[0]
+  const quantity = normalizeSignalText(signal.quantity)
+  const unit = normalizeSignalText(signal.unit)
+  if (quantity === 'disp_norm' && unit === '1') {
+    return 0
+  }
+  if (quantity === 'disp' && isMillimetreUnit(unit)) {
+    return 1
+  }
+  return 99
+}
+
+function compareDisplacementSignalCandidates(left: SessionSignalSummary, right: SessionSignalSummary) {
+  return displacementSignalCandidateScore(left) - displacementSignalCandidateScore(right) || left.column.localeCompare(right.column)
+}
+
+function displacementSignalCandidateScore(signal: SessionSignalSummary) {
+  const roleScore = normalizeSignalText(signal.processingRole) === 'primary_analysis' ? 0 : 2
+  const kind = normalizeSignalText(signal.kind)
+  const kindScore = kind && !['raw', 'qc'].includes(kind) ? 0 : 1
+  return roleScore + kindScore
+}
+
+function signalChoiceLabel(signal: SessionSignalSummary) {
+  const base = signal.displayName || signal.column
+  const motionSource = signal.motionSourceId?.trim()
+  return motionSource ? `${base} (${motionSource})` : base
+}
+
+function signalChoiceDetail(signal: SessionSignalSummary) {
+  return [signal.domain, signal.quantity, signal.unit, signal.column].filter(Boolean).join(' / ')
+}
+
+function signalChoiceKey(sessionRefIdValue: string, role: DisplacementSignalRole) {
+  return `${sessionRefIdValue}|${role}`
+}
+
+function signalChoiceSelectionSignature(selections: SignalChoiceSelections) {
+  return Object.entries(selections)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, column]) => `${key}=${column}`)
+    .join(';')
+}
+
+function visualizationSessionCacheKey(sessionRef: StudySessionRef, signalChoices: SignalChoiceSelections) {
+  const refId = sessionRefId(sessionRef)
+  const frontColumn = signalChoices[signalChoiceKey(refId, 'front_displacement')] ?? ''
+  const rearColumn = signalChoices[signalChoiceKey(refId, 'rear_displacement')] ?? ''
+  return `v${VISUALIZATION_SESSION_CACHE_VERSION}|${refId}|front:${frontColumn}|rear:${rearColumn}`
+}
+
+function signalRequestsForSession(
+  sessionRef: StudySessionRef,
+  signalChoices: SignalChoiceSelections,
+): SignalQuerySignalRequest[] {
+  const refId = sessionRefId(sessionRef)
+  return [
+    ...DISPLACEMENT_SIGNAL_ROLE_CONFIGS.map((config): SignalQuerySignalRequest => {
+      const column = signalChoices[signalChoiceKey(refId, config.role)]
+      return column ? { role: config.role, column } : { role: config.role, selector: config.selector }
+    }),
+    ...SIGNAL_REQUESTS,
+  ]
+}
+
 async function loadVisualizationData(
   requestedSessionRefs: StudySessionRef[],
+  signalChoices: SignalChoiceSelections,
+  sessions: SessionRecord[],
   dataSource: LibraryDataSource,
 ): Promise<VisualizationData> {
   const sessionRefs = uniqueSessionRefs(requestedSessionRefs)
   const sessionCache = visualizationSessionCache(dataSource)
-  const missingSessionRefs = sessionRefs.filter((sessionRef) => !sessionCache.has(sessionRefId(sessionRef)))
+  const missingSessionRefs = sessionRefs.filter((sessionRef) => !sessionCache.has(visualizationSessionCacheKey(sessionRef, signalChoices)))
 
   for (const [libraryId, refs] of groupRefsByLibrary(missingSessionRefs).entries()) {
-    const [signals, events, metrics] = await Promise.all([
-      dataSource.querySignals(libraryId, { sessions: refs, signals: SIGNAL_REQUESTS }),
+    const [signalResponses, events, metrics] = await Promise.all([
+      Promise.all(
+        refs.map((ref) =>
+          dataSource.querySignals(libraryId, {
+            sessions: [ref],
+            signals: signalRequestsForSession(ref, signalChoices),
+          }),
+        ),
+      ),
       dataSource.queryEvents(libraryId, { sessions: refs }),
       dataSource.queryMetrics(libraryId, {
         sessions: refs,
         eventTypes: [COMPRESSION_EVENT_TYPE, REBOUND_EVENT_TYPE],
       }),
     ])
+    const signalWarnings = signalResponses.flatMap((response) => response.warnings)
+    const signalSessions = signalResponses.flatMap((response) => response.sessions)
     const requestWarnings = [
-      ...signals.warnings.filter((warning) => !activitySignalWarning(warning)).map((warning) => warningMessage(warning)),
+      ...signalWarnings.filter((warning) => !activitySignalWarning(warning)).map((warning) => warningMessage(warning)),
       ...events.warnings.map((warning) => warningMessage(warning)),
       ...metrics.warnings.map((warning) => warningMessage(warning)),
     ].filter(Boolean)
@@ -2883,8 +3269,9 @@ async function loadVisualizationData(
         warnings: [...requestWarnings],
       })
     }
-    for (const session of signals.sessions) {
+    for (const session of signalSessions) {
       const key = sessionRefId(session.sessionRef)
+      const sessionRecord = sessionByRef(session.sessionRef, sessions)
       const cached = fetchedSessions.get(key) ?? {
         sessionRef: { ...session.sessionRef },
         time: [],
@@ -2904,7 +3291,8 @@ async function loadVisualizationData(
       }
       for (const signal of session.signals) {
         const role = normalizedActivitySignalRole(signal.column, signal.role)
-        cached.signals[role] = numericValues(signal.values)
+        const values = numericValues(signal.values)
+        cached.signals[role] = normalizeDisplacementSignalValues(role, signal, values, sessionRecord)
       }
       fetchedSessions.set(key, cached)
     }
@@ -2915,11 +3303,13 @@ async function loadVisualizationData(
       cached.events = eventRowsBySession.get(key) ?? []
       cached.metrics = metricRowsBySession.get(key) ?? []
       cached.warnings = uniqueStrings(cached.warnings)
-      sessionCache.set(key, cached)
+      sessionCache.set(visualizationSessionCacheKey(cached.sessionRef, signalChoices), cached)
     }
   }
 
-  const cachedSessions = sessionRefs.map((sessionRef) => sessionCache.get(sessionRefId(sessionRef)) ?? emptyCachedSession(sessionRef))
+  const cachedSessions = sessionRefs.map(
+    (sessionRef) => sessionCache.get(visualizationSessionCacheKey(sessionRef, signalChoices)) ?? emptyCachedSession(sessionRef),
+  )
   const eventRows = cachedSessions.flatMap((session) => session.events)
   const metricRows = cachedSessions.flatMap((session) => session.metrics)
 
@@ -3006,7 +3396,7 @@ function restoredVisualizationSettings(
   return {
     selectedEntityIds,
     knownSessionEntityIds: defaultSelectedEntityIds,
-    collapsedPanels: cached?.collapsedPanels ? [...cached.collapsedPanels] : [],
+    collapsedPanels: cached?.collapsedPanels ? [...cached.collapsedPanels] : ['select-filter'],
     comparisonLayout: cached?.comparisonLayout ?? 'entities',
     scopeMode: cached?.scopeMode ?? 'whole_session',
     selectedTrackId,
@@ -3014,6 +3404,7 @@ function restoredVisualizationSettings(
     selectedSectorIds: cached?.selectedSectorIds ? [...cached.selectedSectorIds] : [],
     timeWindowsBySession: cached?.timeWindowsBySession ? { ...cached.timeWindowsBySession } : {},
     excludeInactivePeriods: cached?.excludeInactivePeriods ?? true,
+    signalChoices: cached?.signalChoices ? { ...cached.signalChoices } : {},
   }
 }
 
@@ -3490,6 +3881,18 @@ function sanitizeTimeWindow(window: TimeWindow, durationS: number, minWindowS: n
   return { startS: Math.max(0, durationS - minWindowS), endS: durationS }
 }
 
+function isPeriodBookmark(bookmark: SessionBookmarkRecord) {
+  return (
+    Number.isFinite(bookmark.window.startS) &&
+    Number.isFinite(bookmark.window.endS) &&
+    bookmark.window.endS > bookmark.window.startS
+  )
+}
+
+function compareBookmarksByStart(left: SessionBookmarkRecord, right: SessionBookmarkRecord) {
+  return left.window.startS - right.window.startS || left.title.localeCompare(right.title)
+}
+
 function overviewPoints(times: number[], values: number[], maxPoints: number) {
   const limit = Math.min(times.length, values.length)
   const stride = Math.max(1, Math.ceil(limit / maxPoints))
@@ -3588,6 +3991,87 @@ function percentValues(values: number[]) {
   const out = values.map((value) => (Number.isFinite(value) ? value * 100 : Number.NaN))
   percentValuesCache.set(values, out)
   return out
+}
+
+function normalizeDisplacementSignalValues(
+  role: string,
+  signal: SignalQuerySignal,
+  values: number[],
+  session: SessionRecord | undefined,
+) {
+  if (!DISPLACEMENT_SIGNAL_ROLES.has(role)) {
+    return values
+  }
+  const quantity = normalizeSignalText(signal.quantity)
+  const unit = normalizeSignalText(signal.unit)
+  if (quantity === 'disp_norm' && unit === '1') {
+    return values
+  }
+  if (quantity !== 'disp' || !isMillimetreUnit(unit)) {
+    return values
+  }
+  const fullRange = displacementFullRangeForSignal(signal, values, session)
+  if (fullRange === null || fullRange <= 0) {
+    return values
+  }
+  return values.map((value) => (Number.isFinite(value) ? value / fullRange : Number.NaN))
+}
+
+function displacementFullRangeForSignal(
+  signal: SignalQuerySignal,
+  values: number[],
+  session: SessionRecord | undefined,
+) {
+  const ownRange = fullRangeFromDerivation(signal.derivation)
+  if (ownRange !== null) {
+    return ownRange
+  }
+  const candidates = (session?.availableSignals ?? [])
+    .filter((candidate) => displacementNormalizationCandidateMatches(candidate, signal))
+    .sort((left, right) => displacementNormalizationCandidateScore(left, signal) - displacementNormalizationCandidateScore(right, signal))
+  for (const candidate of candidates) {
+    const range = fullRangeFromDerivation(candidate.derivation)
+    if (range !== null) {
+      return range
+    }
+  }
+  return observedPositiveMax(values)
+}
+
+function displacementNormalizationCandidateMatches(candidate: SessionSignalSummary, signal: SignalQuerySignal) {
+  return (
+    normalizeSignalText(candidate.end) === normalizeSignalText(signal.end) &&
+    normalizeSignalText(candidate.domain) === normalizeSignalText(signal.domain) &&
+    normalizeSignalText(candidate.quantity) === 'disp_norm' &&
+    normalizeSignalText(candidate.unit) === '1'
+  )
+}
+
+function displacementNormalizationCandidateScore(candidate: SessionSignalSummary, signal: SignalQuerySignal) {
+  const sameMotionSource =
+    normalizeSignalText(candidate.motionSourceId) &&
+    normalizeSignalText(candidate.motionSourceId) === normalizeSignalText(signal.motionSourceId)
+  const motionScore = sameMotionSource ? 0 : 20
+  const roleScore = normalizeSignalText(candidate.processingRole) === 'primary_analysis' ? 0 : 2
+  const rangeScore = fullRangeFromDerivation(candidate.derivation) !== null ? 0 : 4
+  return motionScore + roleScore + rangeScore
+}
+
+function fullRangeFromDerivation(derivation: Record<string, unknown> | undefined) {
+  const value = firstNumericField(derivation?.full_range, derivation?.fullRange, derivation?.full_range_mm, derivation?.fullRangeMm)
+  return value !== null && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function observedPositiveMax(values: number[]) {
+  const extent = finiteExtent(values)
+  if (extent.count === 0) {
+    return null
+  }
+  if (extent.max > 0) {
+    return extent.max
+  }
+  const absoluteMin = Math.abs(extent.min)
+  return absoluteMin > 0 ? absoluteMin : null
 }
 
 function metricSpecCacheKey(metricSpec: MirroredMetricSpec) {

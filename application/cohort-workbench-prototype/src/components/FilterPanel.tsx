@@ -1,4 +1,4 @@
-import { Copy, Filter, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { Filter, SlidersHorizontal } from 'lucide-react'
 import { savedFilterCategoryLabel, type SavedSessionFilterRecord } from '../domain/sessionFilters'
 import { InfoTip } from './Common'
 
@@ -6,12 +6,9 @@ export function FilterPanel({
   savedFilters,
   activeSavedFilterIds,
   trackpointFilterStates,
-  canManageSavedFilters,
   onToggleSavedFilter,
   onClearSavedFilters,
   onManageSavedFilters,
-  onCopySavedFilter,
-  onDeleteSavedFilter,
 }: {
   savedFilters: SavedSessionFilterRecord[]
   activeSavedFilterIds: string[]
@@ -24,12 +21,9 @@ export function FilterPanel({
     matchedSessionCount: number
     error: string
   }>
-  canManageSavedFilters: boolean
   onToggleSavedFilter: (filterId: string) => void
   onClearSavedFilters: () => void
   onManageSavedFilters: () => void
-  onCopySavedFilter: (filter: SavedSessionFilterRecord) => void
-  onDeleteSavedFilter: (filter: SavedSessionFilterRecord) => void
 }) {
   const filtersByCategory = groupedFilters(savedFilters)
 
@@ -91,24 +85,6 @@ export function FilterPanel({
                 </span>
                 <button className="filter-list-summary" onClick={() => onToggleSavedFilter(filter.id)} type="button">
                   <strong>{filter.displayName}</strong>
-                </button>
-                <button
-                  className="icon-button"
-                  disabled={!canManageSavedFilters}
-                  onClick={() => onCopySavedFilter(filter)}
-                  title="Copy filter"
-                  type="button"
-                >
-                  <Copy size={14} />
-                </button>
-                <button
-                  className="icon-button icon-alert"
-                  disabled={!canManageSavedFilters || filter.origin !== 'api_saved'}
-                  onClick={() => onDeleteSavedFilter(filter)}
-                  title={filter.origin === 'api_saved' ? 'Delete filter' : 'Prototype filters cannot be deleted'}
-                  type="button"
-                >
-                  <Trash2 size={14} />
                 </button>
               </div>
             ))}

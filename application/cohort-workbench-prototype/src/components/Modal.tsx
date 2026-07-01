@@ -21,6 +21,8 @@ export function Modal({
   onClose,
   onOpenAnalysis,
   onOpenSignalInspector,
+  onSessionBookmarksChanged,
+  bookmarkRefreshToken = 0,
 }: {
   state: ModalState
   libraries: LibraryRecord[]
@@ -30,6 +32,8 @@ export function Modal({
   onClose: () => void
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void
   onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void
+  onSessionBookmarksChanged?: (session: SessionRecord) => void
+  bookmarkRefreshToken?: number
 }) {
   if (!state) {
     return null
@@ -49,7 +53,17 @@ export function Modal({
         </div>
         <div className="modal-content">
           <ModalErrorBoundary resetKey={modalErrorBoundaryKey(state)}>
-            {modalContent(state, libraries, sessions, tracks, dataSource, onOpenAnalysis, onOpenSignalInspector)}
+            {modalContent(
+              state,
+              libraries,
+              sessions,
+              tracks,
+              dataSource,
+              onOpenAnalysis,
+              onOpenSignalInspector,
+              onSessionBookmarksChanged,
+              bookmarkRefreshToken,
+            )}
           </ModalErrorBoundary>
         </div>
       </section>
@@ -152,9 +166,18 @@ function modalContent(
   dataSource: LibraryDataSource,
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void,
   onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void,
+  onSessionBookmarksChanged: ((session: SessionRecord) => void) | undefined,
+  bookmarkRefreshToken: number,
 ) {
   if (state.kind === 'signal-inspector') {
-    return <SignalInspector session={state.session} dataSource={dataSource} initialWindow={state.initialWindow ?? null} />
+    return (
+      <SignalInspector
+        session={state.session}
+        dataSource={dataSource}
+        initialWindow={state.initialWindow ?? null}
+        onBookmarksChanged={onSessionBookmarksChanged}
+      />
+    )
   }
 
   if (state.kind === 'session') {
@@ -332,6 +355,7 @@ function modalContent(
       sessions={sessions}
       tracks={tracks}
       dataSource={dataSource}
+      bookmarkRefreshToken={bookmarkRefreshToken}
       onInspectSignals={(sessionRef, window) => {
         const session = sessionByRef(sessionRef, sessions)
         if (session) {
