@@ -777,7 +777,7 @@ function App() {
       const loadedLibraryIds = new Set(loaded.libraries.map((libraryItem) => libraryItem.id))
       const loadedCandidateIds = new Set(loaded.sessions.map(candidateId))
 
-      setLibraries(loaded.libraries)
+      setLibraries(applyStrictSessionCounts(loaded.libraries, loaded.sessions))
       setSessions(loaded.sessions)
       setTracks(loaded.tracks)
       setSavedStudySets(loaded.studySets)
@@ -937,11 +937,12 @@ function App() {
 
     try {
       await activeDataSource.deleteSession(session)
-      await refreshAfterSessionDelete(session)
+      applyOptimisticSessionDeletes([session])
+      void reconcileAfterSessionDeletes([session])
       setStatusMessage(`Deleted session "${session.name}".`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (!message.toLowerCase().includes('referenced')) {
+      if (!isReferencedSessionDeleteError(message)) {
         setStatusMessage(`Could not delete session: ${message}`)
         return
       }
@@ -955,7 +956,8 @@ function App() {
       }
       try {
         await activeDataSource.deleteSession(session, { cleanupMemberships: true })
-        await refreshAfterSessionDelete(session)
+        applyOptimisticSessionDeletes([session])
+        void reconcileAfterSessionDeletes([session])
         setStatusMessage(`Deleted session "${session.name}" and cleaned saved Study Set memberships.`)
       } catch (cleanupError) {
         const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
@@ -964,42 +966,168 @@ function App() {
     }
   }
 
-  async function refreshAfterSessionDelete(session: SessionRecord) {
-    const deletedRefId = candidateId(session)
-    invalidateSuspensionCacheForSession(activeDataSource, deletedRefId)
-    broadcastSessionDeleted(deletedRefId, session.name)
-    const loaded = await fetchWorkbenchData(activeDataSource)
-    const remainingSessions = loaded.sessions.filter((item) => candidateId(item) !== deletedRefId)
-    setLibraries(applySessionCounts(loaded.libraries, remainingSessions))
-    setSessions(remainingSessions)
-    setTracks(loaded.tracks)
-    setSavedStudySets(loaded.studySets)
-    setSavedSessionFilters(loaded.savedFilters)
-    setSelectedCandidateIds((current) => current.filter((id) => id !== deletedRefId))
-    setPrimaryCandidateId((current) => (current === deletedRefId ? null : current))
-    setSelectionAnchorCandidateId((current) => (current === deletedRefId ? null : current))
-    setSelectedStudySessionIds((current) => current.filter((id) => id !== deletedRefId))
-    setSelectionAnchorStudySessionId((current) => (current === deletedRefId ? null : current))
-    setModal((current) =>
-      current?.kind === 'session' && candidateId(current.session) === deletedRefId ? null : current,
-    )
-    setNoteEditorSession((current) => (current && candidateId(current) === deletedRefId ? null : current))
+  async function deleteSelectedLibrarySessions() {
+    if (!activeDataSource.deleteSession) {
+      setStatusMessage('The current data source does not support session deletes.')
+      return
+    }
+    if (selectedCandidateSessions.length === 0) {
+      setStatusMessage('Select one or more sessions before deleting.')
+      return
+    }
 
-    if (currentStudySet.id && !isCurrentStudySetDirty) {
-      const refreshedStudySet = loaded.studySets.find((studySet) => studySet.id === currentStudySet.id)
-      if (refreshedStudySet) {
-        setCurrentStudySet(refreshedStudySet)
-        setLastCommittedStudySet(cloneStudySet(refreshedStudySet))
-        return
+    const selectedCount = selectedCandidateSessions.length
+    const sessionLabel = selectedCount === 1 ? 'session' : 'sessions'
+    if (
+      !window.confirm(
+        `Delete ${selectedCount} selected processed ${sessionLabel}? This cannot be undone. Source files will not be deleted.`,
+      )
+    ) {
+      return
+    }
+
+    const deletedSessions: SessionRecord[] = []
+    const referencedSessions: SessionRecord[] = []
+    const failedDeletes: Array<{ session: SessionRecord; message: string }> = []
+
+    for (const session of selectedCandidateSessions) {
+      try {
+        await activeDataSource.deleteSession(session)
+        deletedSessions.push(session)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (isReferencedSessionDeleteError(message)) {
+          referencedSessions.push(session)
+        } else {
+          failedDeletes.push({ session, message })
+        }
       }
     }
-    setCurrentStudySet((current) => removeSessionFromStudySetValue(current, deletedRefId, false))
-    const refreshedStudySet = currentStudySet.id
-      ? loaded.studySets.find((studySet) => studySet.id === currentStudySet.id)
-      : null
-    setLastCommittedStudySet((current) =>
-      refreshedStudySet ? cloneStudySet(refreshedStudySet) : removeSessionFromStudySetValue(current, deletedRefId, true),
+
+    if (deletedSessions.length > 0) {
+      applyOptimisticSessionDeletes(deletedSessions)
+    }
+
+    if (referencedSessions.length > 0) {
+      const referencedCount = referencedSessions.length
+      const referencedLabel = referencedCount === 1 ? 'session is' : 'sessions are'
+      if (
+        window.confirm(
+          `${referencedCount} selected ${referencedLabel} used by saved Study Sets. Remove those memberships, delete empty groupings, and delete the ${referencedCount === 1 ? 'session' : 'sessions'}?`,
+        )
+      ) {
+        const cleanupDeletedSessions: SessionRecord[] = []
+        for (const session of referencedSessions) {
+          try {
+            await activeDataSource.deleteSession(session, { cleanupMemberships: true })
+            cleanupDeletedSessions.push(session)
+          } catch (error) {
+            failedDeletes.push({
+              session,
+              message: error instanceof Error ? error.message : String(error),
+            })
+          }
+        }
+        if (cleanupDeletedSessions.length > 0) {
+          applyOptimisticSessionDeletes(cleanupDeletedSessions)
+          deletedSessions.push(...cleanupDeletedSessions)
+        }
+      } else {
+        failedDeletes.push(
+          ...referencedSessions.map((session) => ({
+            session,
+            message: 'saved Study Set membership cleanup was not confirmed',
+          })),
+        )
+      }
+    }
+
+    if (deletedSessions.length > 0) {
+      void reconcileAfterSessionDeletes(deletedSessions)
+    }
+
+    const deletedCount = deletedSessions.length
+    if (failedDeletes.length > 0) {
+      const failureSummary = failedDeletes
+        .slice(0, 3)
+        .map((failure) => `${failure.session.name}: ${failure.message}`)
+        .join('; ')
+      const suffix = failedDeletes.length > 3 ? `; ${failedDeletes.length - 3} more failed` : ''
+      setStatusMessage(`Deleted ${deletedCount} selected ${deletedCount === 1 ? 'session' : 'sessions'}; ${failedDeletes.length} failed. ${failureSummary}${suffix}`)
+      return
+    }
+
+    setStatusMessage(`Deleted ${deletedCount} selected ${deletedCount === 1 ? 'session' : 'sessions'}.`)
+  }
+
+  function applyOptimisticSessionDeletes(deletedSessions: SessionRecord[]) {
+    if (deletedSessions.length === 0) {
+      return
+    }
+    const deletedRefIds = new Set(deletedSessions.map(candidateId))
+    for (const session of deletedSessions) {
+      const deletedRefId = candidateId(session)
+      invalidateSuspensionCacheForSession(activeDataSource, deletedRefId)
+      broadcastSessionDeleted(deletedRefId, session.name)
+    }
+    setSessions((current) => {
+      const remainingSessions = current.filter((session) => !deletedRefIds.has(candidateId(session)))
+      setLibraries((currentLibraries) => applySessionCounts(currentLibraries, remainingSessions))
+      return remainingSessions
+    })
+    setSelectedCandidateIds((current) => current.filter((id) => !deletedRefIds.has(id)))
+    setPrimaryCandidateId((current) => (current && deletedRefIds.has(current) ? null : current))
+    setSelectionAnchorCandidateId((current) => (current && deletedRefIds.has(current) ? null : current))
+    setSelectedStudySessionIds((current) => current.filter((id) => !deletedRefIds.has(id)))
+    setSelectionAnchorStudySessionId((current) => (current && deletedRefIds.has(current) ? null : current))
+    setModal((current) =>
+      current?.kind === 'session' && deletedRefIds.has(candidateId(current.session)) ? null : current,
     )
+    setNoteEditorSession((current) => (current && deletedRefIds.has(candidateId(current)) ? null : current))
+    setCurrentStudySet((current) => removeSessionsFromStudySetValue(current, deletedRefIds, false))
+    setLastCommittedStudySet((current) => removeSessionsFromStudySetValue(current, deletedRefIds, true))
+  }
+
+  async function reconcileAfterSessionDeletes(deletedSessions: SessionRecord[]) {
+    const deletedRefIds = new Set(deletedSessions.map(candidateId))
+    const affectedLibraryIds = [...new Set(deletedSessions.map((session) => session.libraryId))]
+    try {
+      if (activeDataSource.refreshLibrary) {
+        await Promise.all(affectedLibraryIds.map((libraryId) => activeDataSource.refreshLibrary?.(libraryId)))
+      }
+      const [loadedLibraries, loadedSessions, loadedStudySets] = await Promise.all([
+        activeDataSource.listLibraries(),
+        activeDataSource.listSessions(),
+        activeDataSource.listStudySets(),
+      ])
+      const remainingSessions = loadedSessions.filter((item) => !deletedRefIds.has(candidateId(item)))
+      setLibraries(applyStrictSessionCounts(loadedLibraries, remainingSessions))
+      setSessions(remainingSessions)
+      setSavedStudySets(loadedStudySets)
+      setSelectedCandidateIds((current) => current.filter((id) => candidateStillExists(id, remainingSessions)))
+      setPrimaryCandidateId((current) => (current && candidateStillExists(current, remainingSessions) ? current : null))
+      setSelectionAnchorCandidateId((current) =>
+        current && candidateStillExists(current, remainingSessions) ? current : null,
+      )
+
+      if (currentStudySet.id && !isCurrentStudySetDirty) {
+        const refreshedStudySet = loadedStudySets.find((studySet) => studySet.id === currentStudySet.id)
+        if (refreshedStudySet) {
+          setCurrentStudySet(refreshedStudySet)
+          setLastCommittedStudySet(cloneStudySet(refreshedStudySet))
+          return
+        }
+      }
+      const refreshedStudySet = currentStudySet.id
+        ? loadedStudySets.find((studySet) => studySet.id === currentStudySet.id)
+        : null
+      if (refreshedStudySet) {
+        setLastCommittedStudySet(cloneStudySet(refreshedStudySet))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Deleted ${deletedSessions.length} ${deletedSessions.length === 1 ? 'session' : 'sessions'}, but background refresh failed: ${message}`)
+    }
   }
 
   async function deleteSessionFilter(filter: SavedSessionFilterRecord) {
@@ -1100,6 +1228,74 @@ function App() {
     setSessions((current) =>
       current.map((session) => (candidateId(session) === candidateId(updatedSession) ? updatedSession : session)),
     )
+  }
+
+  async function renameLibrarySession(session: SessionRecord, nextName: string) {
+    const trimmedName = nextName.trim()
+    const currentName = (session.sessionLabel || session.name).trim()
+    if (!trimmedName || trimmedName === currentName) {
+      return
+    }
+    if (!activeDataSource.renameSession) {
+      const message = 'The current data source does not support session rename.'
+      setStatusMessage(message)
+      throw new Error(message)
+    }
+
+    try {
+      const renamed = await activeDataSource.renameSession(session, trimmedName)
+      applyRenamedSession(renamed)
+      void reconcileAfterSessionRename(renamed)
+      setStatusMessage(`Renamed session "${currentName}" to "${renamed.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not rename session: ${message}`)
+      throw error
+    }
+  }
+
+  function applyRenamedSession(renamedSession: SessionRecord) {
+    const renamedRefId = candidateId(renamedSession)
+    const renamedLabel = renamedSession.name
+    setSessions((current) =>
+      current.map((session) => (candidateId(session) === renamedRefId ? renamedSession : session)),
+    )
+    setCurrentStudySet((current) => renameStudySetSessionLabel(current, renamedRefId, renamedLabel, current.saved))
+    setLastCommittedStudySet((current) => renameStudySetSessionLabel(current, renamedRefId, renamedLabel, true))
+    setSavedStudySets((current) =>
+      current.map((studySet) => renameStudySetSessionLabel(studySet, renamedRefId, renamedLabel, studySet.saved)),
+    )
+    setModal((current) => {
+      if (current?.kind === 'session' && candidateId(current.session) === renamedRefId) {
+        return { ...current, session: renamedSession }
+      }
+      if (current?.kind === 'signal-inspector' && candidateId(current.session) === renamedRefId) {
+        return { ...current, session: renamedSession }
+      }
+      return current
+    })
+    setNoteEditorSession((current) =>
+      current && candidateId(current) === renamedRefId ? renamedSession : current,
+    )
+    setAnalysisRouteStudySet((current) =>
+      current ? renameStudySetSessionLabel(current, renamedRefId, renamedLabel, current.saved) : current,
+    )
+  }
+
+  async function reconcileAfterSessionRename(renamedSession: SessionRecord) {
+    try {
+      if (activeDataSource.refreshLibrary) {
+        await activeDataSource.refreshLibrary(renamedSession.libraryId)
+      }
+      const loadedSessions = await activeDataSource.listSessions()
+      const refreshedSession = loadedSessions.find((session) => candidateId(session) === candidateId(renamedSession))
+      if (refreshedSession) {
+        applyRenamedSession(refreshedSession)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Renamed session "${renamedSession.name}", but background refresh failed: ${message}`)
+    }
   }
 
   function selectCandidate(session: SessionRecord, gesture: SessionSelectionGesture) {
@@ -1719,15 +1915,27 @@ function App() {
                   onSelect={selectCandidate}
                   onInspect={inspectSession}
                   onDeleteSession={deleteLibrarySession}
+                  onRenameSession={activeDataSource.renameSession ? renameLibrarySession : undefined}
                 />
                 <div className="action-row">
-                  <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
-                    <Plus size={17} />
-                    Add to Study Set
-                  </button>
-                  <button className="secondary-action" onClick={analyzeNow}>
-                    <Play size={17} />
-                    Analyze now
+                  <div className="action-row-main">
+                    <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
+                      <Plus size={17} />
+                      Add to Study Set
+                    </button>
+                    <button className="secondary-action" onClick={analyzeNow}>
+                      <Play size={17} />
+                      Analyze now
+                    </button>
+                  </div>
+                  <button
+                    className="danger-action action-row-delete"
+                    disabled={!activeDataSource.deleteSession || selectedCandidateSessions.length === 0}
+                    onClick={() => void deleteSelectedLibrarySessions()}
+                    type="button"
+                  >
+                    <Trash2 size={17} />
+                    Delete selected
                   </button>
                 </div>
               </>
@@ -2380,18 +2588,37 @@ async function fetchWorkbenchData(source: LibraryDataSource) {
   }
 }
 
-function removeSessionFromStudySetValue(studySet: StudySet, refId: string, preserveSavedFlag: boolean) {
+function removeSessionsFromStudySetValue(studySet: StudySet, refIds: Set<string>, preserveSavedFlag: boolean) {
   return {
     ...studySet,
     saved: preserveSavedFlag ? studySet.saved : false,
-    sessions: studySet.sessions.filter((session) => sessionRefId(session) !== refId),
+    sessions: studySet.sessions.filter((session) => !refIds.has(sessionRefId(session))),
     groupings: studySet.groupings
       .map((grouping) => ({
         ...grouping,
-        sessionRefs: grouping.sessionRefs.filter((sessionRef) => sessionRef !== refId),
+        sessionRefs: grouping.sessionRefs.filter((sessionRef) => !refIds.has(sessionRef)),
       }))
       .filter((grouping) => grouping.sessionRefs.length > 0),
   }
+}
+
+function renameStudySetSessionLabel(
+  studySet: StudySet,
+  refId: string,
+  label: string,
+  preserveSavedFlag: boolean,
+) {
+  return {
+    ...studySet,
+    saved: preserveSavedFlag ? studySet.saved : false,
+    sessions: studySet.sessions.map((session) =>
+      sessionRefId(session) === refId ? { ...session, label } : session,
+    ),
+  }
+}
+
+function isReferencedSessionDeleteError(message: string) {
+  return message.toLowerCase().includes('referenced')
 }
 
 function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[]) {
@@ -2403,6 +2630,21 @@ function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[
     ...libraryItem,
     sessionCount: sessionCounts.get(libraryItem.id) ?? libraryItem.sessionCount,
   }))
+}
+
+function applyStrictSessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[]) {
+  const sessionCounts = new Map<string, number>()
+  for (const session of sessions) {
+    sessionCounts.set(session.libraryId, (sessionCounts.get(session.libraryId) ?? 0) + 1)
+  }
+  return libraries.map((libraryItem) => ({
+    ...libraryItem,
+    sessionCount: sessionCounts.get(libraryItem.id) ?? 0,
+  }))
+}
+
+function candidateStillExists(id: string, sessions: SessionRecord[]) {
+  return sessions.some((session) => candidateId(session) === id)
 }
 
 function studySetPathFromSession(session: SessionRecord, path: Array<[number, number]> = session.gps): StudySetMapSessionPath {

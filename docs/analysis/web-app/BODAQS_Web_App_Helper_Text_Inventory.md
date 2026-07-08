@@ -12,7 +12,7 @@ layout while making the wording easy to review and refine.
 | UI location | Helper text | Used for |
 | --- | --- | --- |
 | Library Selector heading | Choose which libraries from the configured library root are included in the session browser. | Explains library inclusion scope. |
-| Session Selector heading | Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list. | Distinguishes browsing/filtering from Study Set membership. |
+| Session Selector heading | Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list. Press F2, or right-click a session row, to rename the session label. | Distinguishes browsing/filtering from Study Set membership and documents the unobtrusive rename affordance. |
 | GPS Location heading | Preview the selected session GPS path and any selected or attached tracks. | Explains the GPS preview panel. |
 | Filters heading | Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering. | Explains reusable filters versus ad hoc column filters. |
 | Filter row description | Dynamic: the filter's description field. | Provides per-filter context inline with the filter name. |

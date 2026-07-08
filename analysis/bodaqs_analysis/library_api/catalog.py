@@ -180,11 +180,7 @@ def _build_session_catalog_row(
     run_description = _optional_text(run_manifest.get("description"))
     session_description = _optional_text(session_manifest.get("description"))
     session_label = session_description or session_id
-    label_parts = [
-        str(note_fields.get("bike")).strip() if note_fields.get("bike") is not None else "",
-        session_label,
-    ]
-    display_label = " - ".join(part for part in label_parts if part) or session_key
+    display_label = session_label or session_key
 
     gps_summary = _gps_summary(
         store,

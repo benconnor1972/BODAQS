@@ -769,6 +769,24 @@ void WiFiManager::maybeConnectForRTC() {
   if (!configuredNetworksExist_()) return;          // nowhere to connect
 
   bool haveValidTime = RTCManager_hasValidTime();
+  const bool externalRtcTrusted =
+      RTCManager_usingExternalRtc() &&
+      RTCManager_externalRtcLastReadOk() &&
+      !RTCManager_externalRtcPorf();
+
+  if (externalRtcTrusted && haveValidTime) {
+    if (s_forceRtcSyncOnBoot || s_invalidateRtcOnBoot) {
+      RTC_LOGI("RTC auto-sync: trusting external %s after reset=%s wake=%s; skipping forced network sync\n",
+               RTCManager_sourceLabel(),
+               resetReasonName_(s_bootResetReason),
+               wakeCauseName_(s_bootWakeCause));
+    }
+    s_forceRtcSyncOnBoot = false;
+    s_invalidateRtcOnBoot = false;
+    s_forceNetworkRtcSync = false;
+    return;
+  }
+
   if (s_invalidateRtcOnBoot && haveValidTime) {
     RTC_LOGI("RTC auto-sync: invalidating retained time after reset=%s wake=%s\n",
              resetReasonName_(s_bootResetReason),

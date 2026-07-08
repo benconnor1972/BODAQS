@@ -62,6 +62,27 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
     return this.savedStudySets.map(cloneStudySet)
   }
 
+  async renameSession(session: SessionRecord, name: string): Promise<SessionRecord> {
+    const trimmedName = name.trim()
+    if (!trimmedName) {
+      return cloneSession(session)
+    }
+    const id = sessionRefId(sessionToStudyRef(session))
+    const existing = this.sessions.find((item) => sessionRefId(sessionToStudyRef(item)) === id)
+    if (!existing) {
+      throw new Error(`Fixture session ${session.name} was not found.`)
+    }
+    const renamed: SessionRecord = {
+      ...existing,
+      name: trimmedName,
+      sessionLabel: trimmedName,
+    }
+    this.sessions = this.sessions.map((item) =>
+      sessionRefId(sessionToStudyRef(item)) === id ? renamed : item,
+    )
+    return cloneSession(renamed)
+  }
+
   async loadStudySet(studySetId: string) {
     const studySet = this.savedStudySets.find((item) => item.id === studySetId)
     if (!studySet) {

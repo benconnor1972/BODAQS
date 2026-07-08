@@ -979,6 +979,9 @@ DELETE /api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}
 `sessions/descriptions` updates the short manifest-backed run/session
 description fields for one session reference. `run_description` applies to the
 whole run; `session_description` applies only to the referenced session.
+Browser session rename is implemented by writing `session_description`. The
+catalog `display.label` is description-first and must not prepend bike metadata;
+consumers that want the bike should use the explicit bike field/column.
 
 `DELETE .../runs/{run_id}/sessions/{session_id}` removes the processed session
 artifact directory from the selected library. It must not delete original source
@@ -1076,6 +1079,23 @@ Example request:
   },
   "run_description": "Morning shuttle laps",
   "session_description": "Lower chute run"
+}
+```
+
+Equivalent nested description request:
+
+```json
+{
+  "session_ref": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run-a::session-a",
+    "session_key": "run-a::session-a",
+    "run_id": "run-a",
+    "session_id": "session-a"
+  },
+  "descriptions": {
+    "session_description": "Lower chute run"
+  }
 }
 ```
 

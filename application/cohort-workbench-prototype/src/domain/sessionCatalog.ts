@@ -255,8 +255,14 @@ export function matchesSearch(
 }
 
 function formatStartedAt(value: string) {
-  if (!value.trim()) {
+  const trimmed = value.trim()
+  if (!trimmed) {
     return ''
   }
-  return value.replace('T', ' ').replace(/\+.*$/, '').replace(/Z$/, '').slice(0, 16)
+  const timestamp = trimmed.replace('T', ' ').replace(/\+.*$/, '').replace(/Z$/, '').slice(0, 16)
+  return isUtcTimestamp(trimmed) ? `${timestamp} UTC` : timestamp
+}
+
+function isUtcTimestamp(value: string) {
+  return value.endsWith('Z') || value.includes('+00:00')
 }

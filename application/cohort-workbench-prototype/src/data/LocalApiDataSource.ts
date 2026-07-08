@@ -190,6 +190,28 @@ export class LocalApiDataSource implements LibraryDataSource {
     )
   }
 
+  async renameSession(session: SessionRecord, name: string): Promise<SessionRecord> {
+    const trimmedName = name.trim()
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/descriptions`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          session_ref: toApiSessionRef(session),
+          descriptions: {
+            session_description: trimmedName,
+          },
+        }),
+      },
+    )
+    const sessionLabel = textValue(response.session_description, trimmedName)
+    return {
+      ...session,
+      name: sessionLabel,
+      sessionLabel,
+    }
+  }
+
   async saveSavedSessionFilter(filter: SavedSessionFilterRecord) {
     const payload = toApiSessionFilter(filter)
     const saved =
@@ -484,6 +506,8 @@ function mapSession(row: ApiObject): SessionRecord {
   const qcLevel = qcLevelValue(qcSummary.status)
   const warningCount = numberValue(qcSummary.warning_count)
   const errorCount = numberValue(qcSummary.error_count)
+  const sessionLabel = textValue(display.session_label)
+  const sessionDisplayName = sessionLabel || textValue(display.label, sessionId || sessionKey)
 
   return {
     libraryId,
@@ -491,7 +515,8 @@ function mapSession(row: ApiObject): SessionRecord {
     runName: textValue(display.run_label, runId),
     sessionId,
     sessionKey,
-    name: textValue(display.label, textValue(display.session_label, sessionKey)),
+    name: sessionDisplayName,
+    sessionLabel: sessionLabel || sessionDisplayName,
     startedAt: textValue(timestamps.started_at_local, textValue(timestamps.started_at_utc)),
     bike: textValue(noteFields.bike),
     rider: textValue(noteFields.rider),

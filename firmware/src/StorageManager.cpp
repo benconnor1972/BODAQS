@@ -205,6 +205,122 @@ static String archivePathForCsv_(const String& csvPath) {
   return out;
 }
 
+static String csvPathForArchive_(const String& archivePath) {
+  if (!archivePath.endsWith(".zip")) return String();
+  String out = archivePath.substring(0, archivePath.length() - 4);
+  out += F(".CSV");
+  return out;
+}
+
+static String metadataPathForArchive_(const String& archivePath) {
+  if (!archivePath.endsWith(".zip")) return String();
+  String out = archivePath.substring(0, archivePath.length() - 4);
+  out += F(".json");
+  return out;
+}
+
+static bool fileSize_(const String& path, uint32_t& sizeOut) {
+  sizeOut = 0;
+  if (!path.length()) return false;
+
+  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    return false;
+  }
+
+  sizeOut = static_cast<uint32_t>(f.size());
+  f.close();
+  return true;
+}
+
+static bool completedZipFile_(const String& path) {
+  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    return false;
+  }
+
+  const uint32_t size = static_cast<uint32_t>(f.size());
+  if (size < 22 || !f.seek(size - 22)) {
+    f.close();
+    return false;
+  }
+
+  uint8_t sig[4] = {0, 0, 0, 0};
+  const int n = f.read(sig, sizeof(sig));
+  f.close();
+
+  return n == 4 &&
+         sig[0] == 0x50 &&
+         sig[1] == 0x4B &&
+         sig[2] == 0x05 &&
+         sig[3] == 0x06;
+}
+
+static bool copyFile_(const String& srcPath, const String& dstPath, String* error = nullptr) {
+  if (error) *error = "";
+  if (!srcPath.length() || !dstPath.length()) {
+    if (error) *error = F("missing source or destination");
+    return false;
+  }
+  if (SD_MMC.exists(dstPath.c_str())) {
+    if (error) *error = String(F("destination exists: ")) + dstPath;
+    return false;
+  }
+
+  File in = SD_MMC.open(srcPath.c_str(), FILE_READ);
+  if (!in || in.isDirectory()) {
+    if (in) in.close();
+    if (error) *error = String(F("source open failed: ")) + srcPath;
+    return false;
+  }
+
+  File out = SD_MMC.open(dstPath.c_str(), FILE_WRITE);
+  if (!out) {
+    in.close();
+    if (error) *error = String(F("destination open failed: ")) + dstPath;
+    return false;
+  }
+  out.seek(0);
+
+  static uint8_t buf[2048];
+  bool ok = true;
+  while (true) {
+    const int n = in.read(buf, sizeof(buf));
+    if (n < 0) {
+      ok = false;
+      if (error) *error = String(F("read failed: ")) + srcPath;
+      break;
+    }
+    if (n == 0) break;
+
+    const size_t written = out.write(buf, static_cast<size_t>(n));
+    if (written != static_cast<size_t>(n)) {
+      ok = false;
+      if (error) *error = String(F("short write: ")) + dstPath;
+      break;
+    }
+    delay(0);
+  }
+
+  out.flush();
+  out.close();
+  in.close();
+
+  uint32_t srcSize = 0;
+  uint32_t dstSize = 0;
+  if (ok && (!fileSize_(srcPath, srcSize) || !fileSize_(dstPath, dstSize) || srcSize != dstSize)) {
+    ok = false;
+    if (error) *error = F("copy size verification failed");
+  }
+
+  if (!ok) {
+    SD_MMC.remove(dstPath.c_str());
+  }
+  return ok;
+}
+
 static void removeArchivedSourceFile_(const String& path, const __FlashStringHelper* label) {
   if (!path.length()) return;
   if (!SD_MMC.exists(path.c_str())) return;
@@ -214,6 +330,101 @@ static void removeArchivedSourceFile_(const String& path, const __FlashStringHel
     STOR_LOGI("%s removed after archive: %s\n", labelText.c_str(), path.c_str());
   } else {
     STOR_LOGW("%s left in place after archive: %s\n", labelText.c_str(), path.c_str());
+  }
+}
+
+static bool commitArchiveTemp_(const String& tempPath, const String& archivePath) {
+  if (!tempPath.length() || !archivePath.length()) return false;
+
+  if (SD_MMC.exists(archivePath.c_str())) {
+    if (completedZipFile_(archivePath)) {
+      if (SD_MMC.exists(tempPath.c_str())) {
+        SD_MMC.remove(tempPath.c_str());
+      }
+      return true;
+    }
+
+    STOR_LOGW("Session archive final path exists but is not a complete ZIP: %s\n", archivePath.c_str());
+    return false;
+  }
+
+  if (!completedZipFile_(tempPath)) {
+    STOR_LOGW("Session archive temp is not a complete ZIP: %s\n", tempPath.c_str());
+    return false;
+  }
+
+  if (SD_MMC.rename(tempPath.c_str(), archivePath.c_str())) {
+    if (completedZipFile_(archivePath)) {
+      return true;
+    }
+    STOR_LOGW("Session archive rename produced incomplete final archive: %s\n", archivePath.c_str());
+    SD_MMC.remove(archivePath.c_str());
+    return false;
+  }
+
+  STOR_LOGW("Session archive rename failed, trying copy fallback: %s -> %s\n",
+            tempPath.c_str(),
+            archivePath.c_str());
+
+  String error;
+  if (!copyFile_(tempPath, archivePath, &error)) {
+    STOR_LOGW("Session archive copy fallback failed: %s\n", error.c_str());
+    return false;
+  }
+
+  if (!completedZipFile_(archivePath)) {
+    STOR_LOGW("Session archive copy fallback produced incomplete final archive: %s\n", archivePath.c_str());
+    SD_MMC.remove(archivePath.c_str());
+    return false;
+  }
+
+  if (!SD_MMC.remove(tempPath.c_str())) {
+    STOR_LOGW("Session archive temp left after copy fallback: %s\n", tempPath.c_str());
+  }
+  return true;
+}
+
+static void removeArchivedSourceFilesForArchive_(const String& archivePath) {
+  removeArchivedSourceFile_(csvPathForArchive_(archivePath), F("CSV source"));
+  removeArchivedSourceFile_(metadataPathForArchive_(archivePath), F("metadata source"));
+}
+
+static void promoteStaleSessionArchives_() {
+  File root = SD_MMC.open("/");
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
+    return;
+  }
+
+  uint8_t promoted = 0;
+  File entry = root.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      String name(entry.name());
+      String lower = name;
+      lower.toLowerCase();
+
+      if (lower.endsWith(".zip.tmp")) {
+        if (!name.startsWith("/")) name = "/" + name;
+        const String tempPath = name;
+        const String archivePath = tempPath.substring(0, tempPath.length() - 4);
+
+        if (commitArchiveTemp_(tempPath, archivePath)) {
+          STOR_LOGI("Recovered session archive: %s\n", archivePath.c_str());
+          removeArchivedSourceFilesForArchive_(archivePath);
+          ++promoted;
+        }
+      }
+    }
+
+    entry.close();
+    delay(0);
+    entry = root.openNextFile();
+  }
+  root.close();
+
+  if (promoted) {
+    STOR_LOGI("Recovered %u stale session archive(s)\n", (unsigned)promoted);
   }
 }
 
@@ -228,11 +439,23 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
 
   if (SD_MMC.exists(archivePath.c_str())) {
     STOR_LOGW("Session archive skipped: final archive already exists: %s\n", archivePath.c_str());
+    if (completedZipFile_(archivePath)) {
+      removeArchivedSourceFile_(csvPath, F("CSV source"));
+      removeArchivedSourceFile_(metadataPath, F("metadata source"));
+    }
     return;
   }
-  if (SD_MMC.exists(tempPath.c_str()) && !SD_MMC.remove(tempPath.c_str())) {
-    STOR_LOGW("Session archive skipped: could not remove stale temp archive: %s\n", tempPath.c_str());
-    return;
+  if (SD_MMC.exists(tempPath.c_str())) {
+    if (commitArchiveTemp_(tempPath, archivePath)) {
+      STOR_LOGI("Session archive recovered before rewrite: %s\n", archivePath.c_str());
+      removeArchivedSourceFile_(csvPath, F("CSV source"));
+      removeArchivedSourceFile_(metadataPath, F("metadata source"));
+      return;
+    }
+    if (!SD_MMC.remove(tempPath.c_str())) {
+      STOR_LOGW("Session archive skipped: could not remove stale temp archive: %s\n", tempPath.c_str());
+      return;
+    }
   }
 
   const String csvName = baseNameFromPath_(csvPath);
@@ -251,11 +474,8 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
     return;
   }
 
-  if (!SD_MMC.rename(tempPath.c_str(), archivePath.c_str())) {
-    STOR_LOGW("Session archive rename failed: %s -> %s\n", tempPath.c_str(), archivePath.c_str());
-    if (SD_MMC.exists(tempPath.c_str())) {
-      SD_MMC.remove(tempPath.c_str());
-    }
+  if (!commitArchiveTemp_(tempPath, archivePath)) {
+    STOR_LOGW("Session archive commit failed: %s -> %s\n", tempPath.c_str(), archivePath.c_str());
     return;
   }
 
@@ -436,6 +656,8 @@ static bool mountSdmmc_() {
 
   uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
   STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
+
+  promoteStaleSessionArchives_();
 
   STOR_LOGI("SD_MMC.begin OK.\n");
   return true;

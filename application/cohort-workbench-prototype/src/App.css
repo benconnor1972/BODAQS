@@ -811,6 +811,52 @@ tbody tr.primary-row td:first-child {
   outline-offset: -2px;
 }
 
+.session-inline-edit {
+  width: 100%;
+  min-width: 140px;
+  min-height: var(--control-height-sm);
+  padding: 2px 7px;
+  border: 1px solid var(--green);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  box-shadow: 0 0 0 2px rgba(0, 140, 149, 0.12);
+}
+
+.session-inline-edit:disabled {
+  opacity: 0.68;
+}
+
+.session-row-context-menu {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  min-width: 154px;
+  padding: 4px;
+  border: var(--border-subtle);
+  background: var(--surface);
+  box-shadow: var(--shadow-popover);
+}
+
+.session-row-context-menu button {
+  min-height: var(--control-height-sm);
+  padding: 3px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  text-align: left;
+}
+
+.session-row-context-menu button:hover {
+  background: var(--teal-soft);
+  color: var(--teal-strong);
+}
+
 .sort-button {
   display: inline-flex;
   align-items: center;
@@ -1055,9 +1101,22 @@ tbody tr.primary-row td:first-child {
 .action-row {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-3);
   padding: 8px var(--space-4);
   border-top: var(--border-subtle);
+}
+
+.action-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.action-row-delete {
+  margin-left: auto;
 }
 
 .action-row.tight {
@@ -1072,6 +1131,7 @@ button {
 .primary-action,
 .secondary-action,
 .ghost-action,
+.draft-action,
 .danger-action {
   display: inline-flex;
   align-items: center;
@@ -1109,6 +1169,12 @@ button {
   color: var(--muted);
 }
 
+.draft-action {
+  border: 1px solid #d3a14c;
+  background: #f5ead2;
+  color: #8a5a19;
+}
+
 .danger-action {
   border: 1px solid #c68c8c;
   background: #fff4f1;
@@ -1118,6 +1184,7 @@ button {
 .primary-action:disabled,
 .secondary-action:disabled,
 .ghost-action:disabled,
+.draft-action:disabled,
 .danger-action:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -2790,12 +2857,45 @@ button {
 }
 
 .note-editor-summary {
-  padding: 8px;
-  border: 1px solid rgba(174, 187, 181, 0.72);
-  border-radius: 5px;
-  background:
-    radial-gradient(circle at 8% 10%, rgba(0, 140, 149, 0.08), transparent 28%),
-    rgba(255, 255, 255, 0.88);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: var(--space-5);
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.note-editor-summary h3 {
+  margin: 2px 0 6px;
+  font-size: var(--text-analysis-title);
+  font-weight: var(--weight-semibold);
+}
+
+.note-editor-summary p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body);
+  line-height: 1.45;
+}
+
+.note-editor-status-summary {
+  min-width: 190px;
+}
+
+.note-editor-status-summary dt,
+.note-editor-status-summary dd {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
+}
+
+.note-editor-status-summary dt {
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.note-editor-status-summary dd {
+  color: var(--ink);
 }
 
 .note-editor-form {

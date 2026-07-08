@@ -48,6 +48,7 @@ export function SessionTable({
   onSelect,
   onInspect,
   onDeleteSession,
+  onRenameSession,
 }: {
   sessions: SessionRecord[]
   filterBaseSessions: SessionRecord[]
@@ -64,11 +65,18 @@ export function SessionTable({
   onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
   onDeleteSession?: (session: SessionRecord) => void
+  onRenameSession?: (session: SessionRecord, name: string) => Promise<void>
 }) {
   const [openFilterColumnId, setOpenFilterColumnId] = useState<ColumnId | null>(null)
   const [filterSearchText, setFilterSearchText] = useState('')
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [savingSessionId, setSavingSessionId] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ session: SessionRecord; x: number; y: number } | null>(null)
   const filterMenuRef = useRef<HTMLDivElement>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  const renameCommitInFlightRef = useRef<string | null>(null)
   const dataColumns = visibleColumns.filter((columnId) => !isInfoActionColumn(columnId))
+  const canRenameSessions = Boolean(onRenameSession) && dataColumns.includes('name')
   const infoActions = visibleColumns
     .map(sessionInfoActionForColumn)
     .filter((action): action is SessionInfoAction => Boolean(action))
@@ -76,7 +84,24 @@ export function SessionTable({
       id: columnId,
       accessorFn: (session) => getColumnText(session, columnId, libraries),
       header: columnLabels[columnId],
-      cell: (info) => String(info.getValue() ?? ''),
+      cell: (info) => {
+        const session = info.row.original
+        const sessionId = candidateId(session)
+        if (columnId === 'name' && editingSessionId === sessionId) {
+          return (
+            <SessionRenameInput
+              disabled={savingSessionId === sessionId}
+              initialValue={session.sessionLabel || session.name}
+              label={`Rename ${session.name}`}
+              onCancel={cancelRename}
+              onCommit={(value) => {
+                void commitRename(session, value)
+              }}
+            />
+          )
+        }
+        return String(info.getValue() ?? '')
+      },
       enableSorting: true,
     }))
   columns.push({
@@ -129,9 +154,79 @@ export function SessionTable({
     }
   }, [openFilterColumnId])
 
+  useEffect(() => {
+    if (!contextMenu) {
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+      if (contextMenuRef.current?.contains(target)) {
+        return
+      }
+      setContextMenu(null)
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setContextMenu(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [contextMenu])
+
   function toggleFilterMenu(columnId: ColumnId) {
     setFilterSearchText('')
     setOpenFilterColumnId((current) => (current === columnId ? null : columnId))
+  }
+
+  function startRename(session: SessionRecord) {
+    if (!canRenameSessions || !onRenameSession) {
+      return
+    }
+    setContextMenu(null)
+    setEditingSessionId(candidateId(session))
+  }
+
+  function cancelRename() {
+    renameCommitInFlightRef.current = null
+    setEditingSessionId(null)
+    setSavingSessionId(null)
+  }
+
+  async function commitRename(session: SessionRecord, nextName: string) {
+    if (!onRenameSession) {
+      cancelRename()
+      return
+    }
+    const sessionId = candidateId(session)
+    if (editingSessionId !== sessionId || savingSessionId === sessionId || renameCommitInFlightRef.current === sessionId) {
+      return
+    }
+    const trimmedName = nextName.trim()
+    const currentName = (session.sessionLabel || session.name).trim()
+    if (!trimmedName || trimmedName === currentName) {
+      cancelRename()
+      return
+    }
+    try {
+      renameCommitInFlightRef.current = sessionId
+      setSavingSessionId(sessionId)
+      await onRenameSession(session, trimmedName)
+      cancelRename()
+    } catch {
+      renameCommitInFlightRef.current = null
+      setSavingSessionId(null)
+    }
   }
 
   return (
@@ -215,7 +310,14 @@ export function SessionTable({
                   ].join(' ')}
                   key={id}
                   onClick={(event) => onSelect(session, mouseGesture(event))}
-                  onKeyDown={(event) => handleRowKeyDown(event, session, onSelect)}
+                  onContextMenu={(event) => {
+                    if (!canRenameSessions) {
+                      return
+                    }
+                    event.preventDefault()
+                    setContextMenu({ session, x: event.clientX, y: event.clientY })
+                  }}
+                  onKeyDown={(event) => handleRowKeyDown(event, session, onSelect, startRename)}
                   tabIndex={0}
                 >
                   {row.getVisibleCells().map((cell) => {
@@ -236,7 +338,74 @@ export function SessionTable({
           </tbody>
         </table>
       </div>
+      {contextMenu && (
+        <div
+          className="session-row-context-menu"
+          ref={contextMenuRef}
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button onClick={() => startRename(contextMenu.session)} type="button">
+            Rename session
+          </button>
+        </div>
+      )}
     </>
+  )
+}
+
+function SessionRenameInput({
+  disabled,
+  initialValue,
+  label,
+  onCancel,
+  onCommit,
+}: {
+  disabled: boolean
+  initialValue: string
+  label: string
+  onCancel: () => void
+  onCommit: (value: string) => void
+}) {
+  const [value, setValue] = useState(initialValue)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const skipBlurCommitRef = useRef(false)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  return (
+    <input
+      aria-label={label}
+      className="session-inline-edit"
+      disabled={disabled}
+      ref={inputRef}
+      value={value}
+      onBlur={() => {
+        if (skipBlurCommitRef.current) {
+          skipBlurCommitRef.current = false
+          return
+        }
+        onCommit(value)
+      }}
+      onChange={(event) => setValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        event.stopPropagation()
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          onCommit(value)
+          return
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          skipBlurCommitRef.current = true
+          onCancel()
+        }
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+    />
   )
 }
 
@@ -327,7 +496,13 @@ function handleRowKeyDown(
   event: KeyboardEvent<HTMLTableRowElement>,
   session: SessionRecord,
   onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void,
+  onRename?: (session: SessionRecord) => void,
 ) {
+  if (event.key === 'F2' && onRename) {
+    event.preventDefault()
+    onRename(session)
+    return
+  }
   if (event.key === 'Enter') {
     event.preventDefault()
     onSelect(session, { extendRange: event.shiftKey, toggle: event.ctrlKey || event.metaKey })

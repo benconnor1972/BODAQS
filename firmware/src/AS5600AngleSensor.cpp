@@ -1357,7 +1357,7 @@ const ParamDef* AS5600AngleSensor::paramDefs(size_t& count) {
     {"zero_count",       ParamType::Int,    "0",   "0",     "4095", nullptr, "Firmware zero point in raw AS5600 counts"},
     {"direction",        ParamType::Enum,   "counts_increase_positive", nullptr, nullptr, "counts_increase_positive,counts_decrease_positive", "Raw-count direction for positive angular movement"},
     {"installed_range",  ParamType::Float,  "0",   "0",     nullptr, nullptr, "Installed range in linear output units for sag percentage"},
-    {"slow_filter",      ParamType::Enum,   "unchanged", nullptr, nullptr, "unchanged,16x,8x,4x,2x", "Volatile AS5600 slow filter setting; not burned to OTP"},
+    {"slow_filter",      ParamType::Enum,   "2x",  nullptr, nullptr, "unchanged,16x,8x,4x,2x", "Volatile AS5600 slow filter setting; not burned to OTP"},
     {"async_rate_hz",    ParamType::Int,    "0",   "0",     "1000", nullptr, "Async I2C acquisition rate; 0 follows logger sample rate"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},

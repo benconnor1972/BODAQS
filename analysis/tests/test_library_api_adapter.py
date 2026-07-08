@@ -624,6 +624,7 @@ def test_library_adapter_updates_session_descriptions_and_refreshes_catalog(
     original_catalog = adapter.get_catalog("default-library")
     assert original_catalog["rows"][0]["display"]["run_label"] == "Prototype F import"
     assert original_catalog["rows"][0]["display"]["session_label"] == "Rough descent"
+    assert original_catalog["rows"][0]["display"]["label"] == "Rough descent"
 
     updated = adapter.update_session_descriptions(
         "default-library",
@@ -643,6 +644,7 @@ def test_library_adapter_updates_session_descriptions_and_refreshes_catalog(
     row = catalog["rows"][0]
     assert row["display"]["run_label"] == "Morning shuttle run"
     assert row["display"]["session_label"] == "Lower chute lap"
+    assert row["display"]["label"] == "Lower chute lap"
 
     run_manifest = _read_json(library_root / "runs" / session_ref["run_id"] / "manifest.json")
     session_manifest = _read_json(
@@ -1263,7 +1265,7 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert row["library_id"] == "default-library"
     assert row["session_key"] == session_ref["session_key"]
     assert row["session_ref_id"] == session_ref["session_ref_id"]
-    assert row["display"]["label"] == "Prototype F - Rough descent"
+    assert row["display"]["label"] == "Rough descent"
     assert row["timestamps"]["started_at_utc"] == "2026-05-18T05:27:14Z"
     assert row["timestamps"]["processed_at"] == "2026-05-25T13:57:10"
     assert row["note_status"]["status"] == "draft"
@@ -2915,6 +2917,7 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert updated_catalog.status_code == 200
     assert updated_catalog.json()["rows"][0]["display"]["run_label"] == "Service run description"
     assert updated_catalog.json()["rows"][0]["display"]["session_label"] == "Service session description"
+    assert updated_catalog.json()["rows"][0]["display"]["label"] == "Service session description"
 
     other_libraries_root = tmp_path / "other-libraries"
     other_library_root = other_libraries_root / "field-library"

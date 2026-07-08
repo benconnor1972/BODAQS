@@ -338,8 +338,8 @@ static const BoardProfile V1RC3_PROFILE = {
   .external_adc_count = 2,
 
   .indicators = {
-    .has_led = false,
-    .led_pin = -1,
+    .has_led = true,
+    .led_pin = 41,
     .led_active_high = true,
     .has_buzzer = false,
     .buzzer_pin = -1,

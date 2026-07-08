@@ -37,6 +37,7 @@ export interface LibraryDataSource {
     session: SessionRecord,
     options?: { cleanupMemberships?: boolean },
   ): Promise<Record<string, unknown>>
+  renameSession?(session: SessionRecord, name: string): Promise<SessionRecord>
   saveSavedSessionFilter?(filter: SavedSessionFilterRecord): Promise<SavedSessionFilterRecord>
   deleteSavedSessionFilter?(filterId: string): Promise<void>
   saveTrack?(track: TrackRecord): Promise<TrackRecord>

@@ -81,6 +81,7 @@ export type SessionRecord = {
   sessionId: string
   sessionKey: string
   name: string
+  sessionLabel?: string
   startedAt: string
   bike: string
   rider: string

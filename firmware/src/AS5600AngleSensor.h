@@ -23,7 +23,7 @@ public:
     int32_t zeroCount = 0;
     int8_t directionSign = 1;
     float installedRange = 0.0f;
-    int8_t slowFilterCode = -1; // -1 = leave AS5600 CONF.SF unchanged
+    int8_t slowFilterCode = 3; // AS5600 CONF.SF 3 = 2x; -1 leaves it unchanged
     uint16_t asyncRateHz = 0; // 0 = follow logger sample rate
     bool includeRawColumn = true;
     bool includeAngleColumn = false;
