@@ -13,6 +13,7 @@ layout while making the wording easy to review and refine.
 | --- | --- | --- |
 | Library Selector heading | Choose which libraries from the configured library root are included in the session browser. | Explains library inclusion scope. |
 | Session Selector heading | Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list. Press F2, or right-click a session row, to rename the session label. Use the right-click menu to inspect session details or copy and paste session notes. | Distinguishes browsing/filtering from Study Set membership and documents the unobtrusive rename, inspection, and note copy/paste affordances. |
+| Signal Preview heading | A read-only full-session preview of front and rear normalized wheel displacement for the primary selected session. | Explains the session-linked signal preview below the selector. |
 | GPS Location heading | Preview the selected session GPS path and any selected or attached tracks. | Explains the GPS preview panel. |
 | Filters heading | Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering. | Explains reusable filters versus ad hoc column filters. |
 | Filter row description | Dynamic: the filter's description field. | Provides per-filter context inline with the filter name. |

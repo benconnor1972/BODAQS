@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -27,6 +27,76 @@ import {
   type SessionInfoAction,
 } from './SessionInfoButtons'
 
+export type SessionColumnWidthId = ColumnId | 'rowActions'
+export type SessionColumnWidths = Partial<Record<SessionColumnWidthId, number>>
+
+const defaultColumnWidths: Record<ColumnId, number> = {
+  name: 230,
+  runName: 160,
+  started: 145,
+  library: 130,
+  runId: 170,
+  sessionId: 145,
+  bike: 150,
+  rider: 135,
+  duration: 92,
+  distance: 92,
+  profile: 140,
+  eventSchema: 150,
+  firmware: 105,
+  source: 165,
+  signals: 105,
+  gps: 92,
+  noteAction: 0,
+  qaAction: 0,
+  gpsAction: 0,
+  signalInspectorAction: 0,
+  metadataAction: 0,
+}
+
+const minColumnWidths: Record<ColumnId, number> = {
+  name: 54,
+  runName: 48,
+  started: 54,
+  library: 48,
+  runId: 48,
+  sessionId: 48,
+  bike: 42,
+  rider: 42,
+  duration: 42,
+  distance: 42,
+  profile: 48,
+  eventSchema: 48,
+  firmware: 42,
+  source: 48,
+  signals: 42,
+  gps: 36,
+  noteAction: 0,
+  qaAction: 0,
+  gpsAction: 0,
+  signalInspectorAction: 0,
+  metadataAction: 0,
+}
+
+function rowActionsWidth(actionCount: number) {
+  return Math.max(minRowActionsWidth(actionCount), 38 + actionCount * 28)
+}
+
+function minRowActionsWidth(actionCount: number) {
+  return Math.max(76, 34 + actionCount * 26)
+}
+
+function minColumnWidth(columnId: SessionColumnWidthId, actionCount: number) {
+  return columnId === 'rowActions' ? minRowActionsWidth(actionCount) : minColumnWidths[columnId]
+}
+
+function effectiveColumnWidth(columnId: SessionColumnWidthId, persistedWidth: number | undefined, actionCount: number) {
+  const minimum = minColumnWidth(columnId, actionCount)
+  const fallback = columnId === 'rowActions' ? rowActionsWidth(actionCount) : defaultColumnWidths[columnId]
+  const safeWidth = typeof persistedWidth === 'number' && Number.isFinite(persistedWidth) ? persistedWidth : fallback
+  return Math.max(minimum, Math.round(safeWidth))
+}
+
 export type SessionSelectionGesture = {
   extendRange: boolean
   toggle: boolean
@@ -37,6 +107,7 @@ export function SessionTable({
   filterBaseSessions,
   libraries,
   visibleColumns,
+  columnWidths,
   tableColumnFilters,
   selectedIds,
   primaryId,
@@ -44,8 +115,10 @@ export function SessionTable({
   sortDirection,
   onTableColumnFilterChange,
   onClearTableColumnFilter,
+  onColumnWidthsChange,
   onSort,
   onSelect,
+  onAnalyzeSession,
   onInspect,
   onDeleteSession,
   onRenameSession,
@@ -57,6 +130,7 @@ export function SessionTable({
   filterBaseSessions: SessionRecord[]
   libraries: LibraryRecord[]
   visibleColumns: ColumnId[]
+  columnWidths: SessionColumnWidths
   tableColumnFilters: TableColumnFilter[]
   selectedIds: string[]
   primaryId: string | null
@@ -64,8 +138,10 @@ export function SessionTable({
   sortDirection: SortDirection
   onTableColumnFilterChange: (columnId: ColumnId, values: string[]) => void
   onClearTableColumnFilter: (columnId: ColumnId) => void
+  onColumnWidthsChange: (widths: SessionColumnWidths) => void
   onSort: (columnId: ColumnId) => void
   onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void
+  onAnalyzeSession?: (session: SessionRecord) => void
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
   onDeleteSession?: (session: SessionRecord) => void
   onRenameSession?: (session: SessionRecord, name: string) => Promise<void>
@@ -87,6 +163,11 @@ export function SessionTable({
   const infoActions = visibleColumns
     .map(sessionInfoActionForColumn)
     .filter((action): action is SessionInfoAction => Boolean(action))
+  const visibleTableColumnIds: SessionColumnWidthId[] = [...dataColumns, 'rowActions']
+  const effectiveColumnWidths = Object.fromEntries(
+    visibleTableColumnIds.map((columnId) => [columnId, effectiveColumnWidth(columnId, columnWidths[columnId], infoActions.length)]),
+  ) as Record<SessionColumnWidthId, number>
+  const tableMinWidth = visibleTableColumnIds.reduce((total, columnId) => total + effectiveColumnWidths[columnId], 0)
   const columns: ColumnDef<SessionRecord>[] = dataColumns.map((columnId): ColumnDef<SessionRecord> => ({
       id: columnId,
       accessorFn: (session) => getColumnText(session, columnId, libraries),
@@ -196,6 +277,44 @@ export function SessionTable({
     setOpenFilterColumnId((current) => (current === columnId ? null : columnId))
   }
 
+  function startColumnResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    leftColumnId: SessionColumnWidthId,
+    rightColumnId: SessionColumnWidthId,
+  ) {
+    event.preventDefault()
+    event.stopPropagation()
+    setOpenFilterColumnId(null)
+    const startX = event.clientX
+    const leftStartWidth = effectiveColumnWidths[leftColumnId]
+    const rightStartWidth = effectiveColumnWidths[rightColumnId]
+    const leftMinWidth = minColumnWidth(leftColumnId, infoActions.length)
+    const rightMinWidth = minColumnWidth(rightColumnId, infoActions.length)
+    const minDelta = leftMinWidth - leftStartWidth
+    const maxDelta = rightStartWidth - rightMinWidth
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const requestedDelta = moveEvent.clientX - startX
+      const boundedDelta = Math.max(minDelta, Math.min(maxDelta, requestedDelta))
+      onColumnWidthsChange({
+        [leftColumnId]: Math.round(leftStartWidth + boundedDelta),
+        [rightColumnId]: Math.round(rightStartWidth - boundedDelta),
+      })
+    }
+
+    function handlePointerUp() {
+      document.body.classList.remove('is-resizing-session-column')
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      document.removeEventListener('pointercancel', handlePointerUp)
+    }
+
+    document.body.classList.add('is-resizing-session-column')
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', handlePointerUp)
+    document.addEventListener('pointercancel', handlePointerUp)
+  }
+
   function startRename(session: SessionRecord) {
     if (!canRenameSessions || !onRenameSession) {
       return
@@ -239,19 +358,30 @@ export function SessionTable({
   return (
     <>
       <div className="table-shell">
-        <table className="session-table" aria-label="Candidate sessions">
+        <table
+          className="session-table resizable-session-table"
+          aria-label="Candidate sessions"
+          style={{ minWidth: '100%', width: tableMinWidth }}
+        >
+          <colgroup>
+            {visibleTableColumnIds.map((columnId) => (
+              <col key={columnId} style={{ width: effectiveColumnWidths[columnId] }} />
+            ))}
+          </colgroup>
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => {
+                {headerGroup.headers.map((header, headerIndex) => {
                   const columnId = header.column.id
                   const isSortableSessionColumn = isColumnId(columnId)
                   const isInfoActionHeader = columnId === 'rowActions'
+                  const currentWidthId: SessionColumnWidthId = isSortableSessionColumn ? columnId : 'rowActions'
+                  const nextWidthId = visibleTableColumnIds[headerIndex + 1]
                   const selectedFilterValues = isSortableSessionColumn
                     ? tableColumnFilters.find((filter) => filter.columnId === columnId)?.values ?? []
                     : []
                   return (
-                    <th className={isInfoActionHeader ? 'info-action-heading' : undefined} key={header.id}>
+                    <th className={isInfoActionHeader ? 'info-action-heading resizable-column-header' : 'resizable-column-header'} key={header.id}>
                       {isSortableSessionColumn ? (
                         <div className="column-header-control">
                           <button className="sort-button" onClick={() => onSort(columnId)} type="button">
@@ -294,6 +424,15 @@ export function SessionTable({
                       ) : (
                         flexRender(header.column.columnDef.header, header.getContext())
                       )}
+                      {nextWidthId && (
+                        <button
+                          aria-label={`Resize boundary after ${isSortableSessionColumn ? columnLabels[columnId] : 'actions'}`}
+                          className="column-resize-handle"
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => startColumnResize(event, currentWidthId, nextWidthId)}
+                          type="button"
+                        />
+                      )}
                     </th>
                   )
                 })}
@@ -323,6 +462,7 @@ export function SessionTable({
                     event.preventDefault()
                     setContextMenu({ session, x: event.clientX, y: event.clientY })
                   }}
+                  onDoubleClick={(event) => handleRowDoubleClick(event, session, onAnalyzeSession)}
                   onKeyDown={(event) => handleRowKeyDown(event, session, onSelect, startRename)}
                   tabIndex={0}
                 >
@@ -564,6 +704,26 @@ function mouseGesture(event: MouseEvent<HTMLElement>): SessionSelectionGesture {
     extendRange: event.shiftKey,
     toggle: event.ctrlKey || event.metaKey,
   }
+}
+
+function handleRowDoubleClick(
+  event: MouseEvent<HTMLTableRowElement>,
+  session: SessionRecord,
+  onAnalyzeSession?: (session: SessionRecord) => void,
+) {
+  if (!onAnalyzeSession || isInteractiveDoubleClickTarget(event.target)) {
+    return
+  }
+  event.preventDefault()
+  onAnalyzeSession(session)
+}
+
+function isInteractiveDoubleClickTarget(target: EventTarget) {
+  return target instanceof Element && Boolean(
+    target.closest(
+      'button, input, select, textarea, a, [role="button"], .column-filter-popover, .session-info-action-cell',
+    ),
+  )
 }
 
 function handleRowKeyDown(

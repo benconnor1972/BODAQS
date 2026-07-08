@@ -33,7 +33,8 @@ import {
   sessionFromSavedNote,
   sessionNoteFromSession,
 } from './components/SessionNoteEditorModal'
-import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
+import { SessionSignalPreview } from './components/SessionSignalPreview'
+import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
 import { SuspensionVisualization } from './components/SuspensionVisualization'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
@@ -164,6 +165,7 @@ async function mapWithConcurrency<T, R>(
 
 const LEGACY_SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
 const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v2'
+const SESSION_SELECTOR_COLUMN_WIDTHS_STORAGE_KEY = 'bodaqs.web.session-selector.column-widths.v1'
 const ANALYSIS_SCOPE_STORAGE_PREFIX = 'bodaqs.web.analysis-scope.v1.'
 
 type AnalysisRouteState = {
@@ -196,6 +198,7 @@ function App() {
   const [tracks, setTracks] = useState<TrackRecord[]>([])
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([])
   const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(loadPersistedVisibleColumns)
+  const [sessionColumnWidths, setSessionColumnWidths] = useState<SessionColumnWidths>(loadPersistedSessionColumnWidths)
   const [searchText, setSearchText] = useState('')
   const [sortColumn, setSortColumn] = useState<ColumnId>('started')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
@@ -212,8 +215,7 @@ function App() {
   const [lastCommittedStudySet, setLastCommittedStudySet] = useState<StudySet>(() => emptyStudySet())
   const [studySetMapSessionPaths, setStudySetMapSessionPaths] = useState<StudySetMapSessionPath[]>([])
   const [groupingName, setGroupingName] = useState('')
-  const [leftCollapsed, setLeftCollapsed] = useState(false)
-  const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [studyDrawerOpen, setStudyDrawerOpen] = useState(false)
   const [librarySelectorCollapsed, setLibrarySelectorCollapsed] = useState(true)
   const [sessionSelectorCollapsed, setSessionSelectorCollapsed] = useState(false)
   const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
@@ -532,6 +534,10 @@ function App() {
   useEffect(() => {
     persistVisibleColumns(visibleColumns)
   }, [visibleColumns])
+
+  useEffect(() => {
+    persistSessionColumnWidths(sessionColumnWidths)
+  }, [sessionColumnWidths])
 
   const selectedLibraries = libraries.filter((libraryItem) =>
     selectedLibraryIds.includes(libraryItem.id),
@@ -990,6 +996,13 @@ function App() {
     return saved
   }
 
+  function setSessionColumnWidthsPatch(widths: SessionColumnWidths) {
+    setSessionColumnWidths((current) => ({
+      ...current,
+      ...widths,
+    }))
+  }
+
   async function deleteSavedStudySet(studySet: StudySet) {
     if (!studySet.id) {
       setStatusMessage('Only saved Study Sets can be deleted.')
@@ -1292,21 +1305,6 @@ function App() {
     setModal({ kind: 'session', session, tab })
   }
 
-  function showBothWorkbenchPanels() {
-    setLeftCollapsed(false)
-    setRightCollapsed(false)
-  }
-
-  function showStudySetPanelOnly() {
-    setLeftCollapsed(true)
-    setRightCollapsed(false)
-  }
-
-  function showLibraryPanelOnly() {
-    setLeftCollapsed(false)
-    setRightCollapsed(true)
-  }
-
   function openAnalysisLauncher(studySet: StudySet) {
     setModal({ kind: 'analysis-launcher', studySet: cloneStudySet(studySet) })
   }
@@ -1599,7 +1597,11 @@ function App() {
       setStatusMessage('Choose a primary session before using Analyze now.')
       return
     }
-    requestStudySetReplacement({ kind: 'analyze-now', session: primarySession })
+    analyzeSessionNow(primarySession)
+  }
+
+  function analyzeSessionNow(session: SessionRecord) {
+    requestStudySetReplacement({ kind: 'analyze-now', session })
   }
 
   function executeAnalyzeNow(session: SessionRecord) {
@@ -1914,8 +1916,7 @@ function App() {
       <section
         className={[
           'workbench',
-          leftCollapsed ? 'left-collapsed' : '',
-          rightCollapsed ? 'right-collapsed' : '',
+          studyDrawerOpen ? 'study-drawer-open' : 'study-drawer-closed',
         ].join(' ')}
       >
         <aside className="panel library-panel" aria-label="Library Browser">
@@ -2120,6 +2121,7 @@ function App() {
                   filterBaseSessions={savedFilteredSessions}
                   libraries={libraries}
                   visibleColumns={visibleColumns}
+                  columnWidths={sessionColumnWidths}
                   tableColumnFilters={tableColumnFilters}
                   selectedIds={selectedCandidateIds}
                   primaryId={primaryCandidateId}
@@ -2127,8 +2129,10 @@ function App() {
                   sortDirection={sortDirection}
                   onTableColumnFilterChange={setTableColumnFilter}
                   onClearTableColumnFilter={clearTableColumnFilter}
+                  onColumnWidthsChange={setSessionColumnWidthsPatch}
                   onSort={setSort}
                   onSelect={selectCandidate}
+                  onAnalyzeSession={analyzeSessionNow}
                   onInspect={inspectSession}
                   onDeleteSession={deleteLibrarySession}
                   onRenameSession={activeDataSource.renameSession ? renameLibrarySession : undefined}
@@ -2160,6 +2164,12 @@ function App() {
               </>
             )}
           </section>
+
+          <SessionSignalPreview
+            session={primarySession}
+            dataSource={activeDataSource}
+            onInspect={(session) => inspectSession(session, 'signals')}
+          />
 
           <section className={`lower-grid${gpsLocationCollapsed ? ' gps-collapsed' : ''}`}>
             {gpsLocationCollapsed ? (
@@ -2239,32 +2249,29 @@ function App() {
           </section>
         </aside>
 
-        <div className="center-collapse-controls" aria-label="Workbench panel controls">
-          <IconButton
-            label="Show Study Set Builder only"
-            disabled={leftCollapsed && !rightCollapsed}
-            onClick={showStudySetPanelOnly}
-            icon={<ChevronLeft size={17} />}
-          />
-          <IconButton
-            label="Show both panels"
-            disabled={!leftCollapsed && !rightCollapsed}
-            onClick={showBothWorkbenchPanels}
-            icon={<Columns3 size={17} />}
-          />
-          <IconButton
-            label="Show Library Browser only"
-            disabled={rightCollapsed && !leftCollapsed}
-            onClick={showLibraryPanelOnly}
-            icon={<ChevronRight size={17} />}
-          />
-        </div>
+        {!studyDrawerOpen && (
+          <button
+            className="study-drawer-rail"
+            type="button"
+            onClick={() => setStudyDrawerOpen(true)}
+            aria-label="Open Study Set Builder"
+          >
+            <ChevronLeft size={17} />
+            <span>Study Set Builder</span>
+          </button>
+        )}
 
         <aside className="panel study-panel" aria-label="Study Set Builder">
           <PanelTitle
             icon={<BookOpen size={18} />}
             title="Study Set Builder"
-            action={<span className="panel-title-spacer" />}
+            action={
+              <IconButton
+                label="Collapse Study Set Builder"
+                onClick={() => setStudyDrawerOpen(false)}
+                icon={<ChevronRight size={16} />}
+              />
+            }
           />
 
           <section className="module current-study-set">
@@ -2967,6 +2974,42 @@ function persistVisibleColumns(columns: ColumnId[]) {
   }
   try {
     window.localStorage.setItem(SESSION_SELECTOR_COLUMNS_STORAGE_KEY, JSON.stringify(columns))
+  } catch {
+    // Browser storage may be unavailable or full; column layout persistence is non-critical.
+  }
+}
+
+function loadPersistedSessionColumnWidths(): SessionColumnWidths {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+  try {
+    const raw = window.localStorage.getItem(SESSION_SELECTOR_COLUMN_WIDTHS_STORAGE_KEY)
+    if (!raw) {
+      return {}
+    }
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+    const widths: SessionColumnWidths = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if ((isColumnId(key) || key === 'rowActions') && typeof value === 'number' && Number.isFinite(value)) {
+        widths[key as SessionColumnWidthId] = value
+      }
+    }
+    return widths
+  } catch {
+    return {}
+  }
+}
+
+function persistSessionColumnWidths(widths: SessionColumnWidths) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(SESSION_SELECTOR_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(widths))
   } catch {
     // Browser storage may be unavailable or full; column layout persistence is non-critical.
   }
