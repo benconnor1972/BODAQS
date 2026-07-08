@@ -29,11 +29,15 @@ const SECTION_ORDER = ['overview', 'bike', 'front', 'rear', 'notes', 'custom']
 export function SessionNoteEditorModal({
   session,
   dataSource,
+  loadSessionNote,
+  saveSessionNote,
   onClose,
   onSaved,
 }: {
   session: SessionRecord
   dataSource: LibraryDataSource
+  loadSessionNote?: (session: SessionRecord) => Promise<SessionNoteRecord>
+  saveSessionNote?: (note: SessionNoteRecord) => Promise<SessionNoteRecord>
   onClose: () => void
   onSaved: (session: SessionRecord) => void
 }) {
@@ -43,7 +47,8 @@ export function SessionNoteEditorModal({
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
-  const canSave = Boolean(note && dataSource.saveSessionNote && !loading && !saving)
+  const persistNote = saveSessionNote ?? dataSource.saveSessionNote
+  const canSave = Boolean(note && persistNote && !loading && !saving)
   const groupedFields = note ? groupedNoteFields(note) : []
 
   useEffect(() => {
@@ -54,7 +59,9 @@ export function SessionNoteEditorModal({
       setError('')
       setMessage('')
       try {
-        const loaded = dataSource.loadSessionNote
+        const loaded = loadSessionNote
+          ? await loadSessionNote(session)
+          : dataSource.loadSessionNote
           ? await dataSource.loadSessionNote(session)
           : sessionNoteFromSession(session)
         if (cancelled) {
@@ -81,10 +88,10 @@ export function SessionNoteEditorModal({
     return () => {
       cancelled = true
     }
-  }, [dataSource, session])
+  }, [dataSource, loadSessionNote, session])
 
   async function saveNote(nextDraftStatus: boolean | 'preserve') {
-    if (!note || !dataSource.saveSessionNote) {
+    if (!note || !persistNote) {
       setError('This data source does not support note saves.')
       return
     }
@@ -100,7 +107,7 @@ export function SessionNoteEditorModal({
         freeTextNotes: draft.freeTextNotes,
         draft: nextDraftStatus === 'preserve' ? draft.draft : nextDraftStatus,
       }
-      const saved = await dataSource.saveSessionNote(nextNote)
+      const saved = await persistNote(nextNote)
       setNote(saved)
       setDraft(draftFromNote(saved))
       onSaved(sessionFromSavedNote(session, saved))
@@ -311,7 +318,7 @@ function NoteFieldEditor({
   )
 }
 
-function sessionNoteFromSession(session: SessionRecord): SessionNoteRecord {
+export function sessionNoteFromSession(session: SessionRecord): SessionNoteRecord {
   const now = new Date().toISOString()
   return {
     sessionRef: sessionToStudyRef(session),
@@ -345,7 +352,7 @@ function draftFromNote(note: SessionNoteRecord): NoteDraft {
   }
 }
 
-function sessionFromSavedNote(session: SessionRecord, note: SessionNoteRecord): SessionRecord {
+export function sessionFromSavedNote(session: SessionRecord, note: SessionNoteRecord): SessionRecord {
   return {
     ...session,
     bike: noteValueText(note.values.bike),

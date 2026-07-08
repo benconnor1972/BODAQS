@@ -13,7 +13,7 @@ const defaultPredicate: SessionFilterPredicate = { field: 'rider', op: 'contains
 
 type BuilderJoin = 'and' | 'or'
 type BuilderMode = 'visual' | 'advanced'
-type BuilderOperator = 'contains' | 'eq' | 'in' | 'present' | 'matches'
+type BuilderOperator = 'contains' | 'eq' | 'gte' | 'in' | 'lt' | 'present' | 'matches'
 
 type FieldDefinition = {
   field: SessionFilterField
@@ -57,6 +57,12 @@ const fieldDefinitions: FieldDefinition[] = [
     help: 'Matches the bike/profile label carried in the catalog.',
     operators: ['contains', 'eq', 'in'],
     placeholder: 'Prototype F',
+  },
+  {
+    field: 'started',
+    label: 'Started',
+    help: 'Filters by session start date and time. Pickers use local time; filters are stored as UTC.',
+    operators: ['gte', 'lt'],
   },
   {
     field: 'note.status',
@@ -555,6 +561,8 @@ function CatalogConditionEditor({
               <option value="false">Missing</option>
             </select>
           </label>
+        ) : condition.field === 'started' && (condition.op === 'gte' || condition.op === 'lt') ? (
+          <DateTimeConditionValue condition={condition} onChange={onChange} />
         ) : definition.values ? (
           <EnumConditionValue condition={condition} definition={definition} onChange={onChange} />
         ) : (
@@ -569,6 +577,43 @@ function CatalogConditionEditor({
         )}
       </div>
     </>
+  )
+}
+
+function DateTimeConditionValue({
+  condition,
+  onChange,
+}: {
+  condition: BuilderCondition
+  onChange: (updates: Partial<BuilderCondition>) => void
+}) {
+  const parts = isoToLocalDateTimeParts(condition.value)
+
+  function updatePart(updates: Partial<{ date: string; time: string }>) {
+    const nextDate = updates.date ?? parts.date
+    const nextTime = updates.time ?? parts.time
+    onChange({ value: localDateTimePartsToIso(nextDate, nextTime) })
+  }
+
+  return (
+    <div className="date-time-condition-value">
+      <label>
+        Date
+        <input
+          type="date"
+          value={parts.date}
+          onChange={(event) => updatePart({ date: event.target.value })}
+        />
+      </label>
+      <label>
+        Time
+        <input
+          type="time"
+          value={parts.time}
+          onChange={(event) => updatePart({ time: event.target.value })}
+        />
+      </label>
+    </div>
   )
 }
 
@@ -785,11 +830,12 @@ function defaultBuilder(): PredicateBuilder {
 function defaultCondition(field: SessionFilterField = 'rider'): BuilderCondition {
   const definition = definitionForField(field)
   const firstValue = definition.values?.[0]?.value ?? ''
+  const defaultValue = field === 'started' ? localMidnightIso() : firstValue
   return {
     id: nextConditionId(),
     field,
     op: definition.operators[0],
-    value: firstValue,
+    value: defaultValue,
     values: firstValue ? [firstValue] : [],
     boolValue: true,
     trackId: '',
@@ -862,6 +908,17 @@ function conditionToPredicate(condition: BuilderCondition): SessionFilterPredica
       value: values,
     }
   }
+  if (condition.op === 'gte' || condition.op === 'lt') {
+    const parsed = Date.parse(condition.value)
+    if (!Number.isFinite(parsed)) {
+      throw new Error('started date/time must be valid')
+    }
+    return {
+      field: condition.field,
+      op: condition.op,
+      value: new Date(parsed).toISOString(),
+    }
+  }
   if (condition.op === 'eq' || condition.op === 'contains') {
     return {
       field: condition.field,
@@ -908,8 +965,12 @@ function operatorLabel(operator: BuilderOperator) {
       return 'contains'
     case 'eq':
       return 'is'
+    case 'gte':
+      return 'on or after'
     case 'in':
       return 'is one of'
+    case 'lt':
+      return 'before'
     case 'present':
       return 'is'
     case 'matches':
@@ -933,6 +994,33 @@ function splitValues(value: string) {
 
 function textValue(value: unknown) {
   return String(value ?? '').trim()
+}
+
+function isoToLocalDateTimeParts(value: string) {
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) {
+    return { date: '', time: '00:00' }
+  }
+  const date = new Date(parsed)
+  const offsetMs = date.getTimezoneOffset() * 60_000
+  const local = new Date(date.getTime() - offsetMs).toISOString()
+  return {
+    date: local.slice(0, 10),
+    time: local.slice(11, 16),
+  }
+}
+
+function localDateTimePartsToIso(date: string, time: string) {
+  if (!date) {
+    return ''
+  }
+  const parsed = new Date(`${date}T${time || '00:00'}`)
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : ''
+}
+
+function localMidnightIso() {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString()
 }
 
 function numberValue(value: unknown, fallback: number) {

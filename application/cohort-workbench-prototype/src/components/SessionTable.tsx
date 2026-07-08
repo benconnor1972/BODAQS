@@ -49,6 +49,9 @@ export function SessionTable({
   onInspect,
   onDeleteSession,
   onRenameSession,
+  onCopyNote,
+  onPasteNote,
+  canPasteNote = false,
 }: {
   sessions: SessionRecord[]
   filterBaseSessions: SessionRecord[]
@@ -66,6 +69,9 @@ export function SessionTable({
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
   onDeleteSession?: (session: SessionRecord) => void
   onRenameSession?: (session: SessionRecord, name: string) => Promise<void>
+  onCopyNote?: (session: SessionRecord) => void
+  onPasteNote?: (session: SessionRecord) => void
+  canPasteNote?: boolean
 }) {
   const [openFilterColumnId, setOpenFilterColumnId] = useState<ColumnId | null>(null)
   const [filterSearchText, setFilterSearchText] = useState('')
@@ -77,6 +83,7 @@ export function SessionTable({
   const renameCommitInFlightRef = useRef<string | null>(null)
   const dataColumns = visibleColumns.filter((columnId) => !isInfoActionColumn(columnId))
   const canRenameSessions = Boolean(onRenameSession) && dataColumns.includes('name')
+  const hasContextMenu = canRenameSessions || Boolean(onInspect) || Boolean(onCopyNote) || Boolean(onPasteNote)
   const infoActions = visibleColumns
     .map(sessionInfoActionForColumn)
     .filter((action): action is SessionInfoAction => Boolean(action))
@@ -309,9 +316,8 @@ export function SessionTable({
                     isPrimary ? 'primary-row' : '',
                   ].join(' ')}
                   key={id}
-                  onClick={(event) => onSelect(session, mouseGesture(event))}
                   onContextMenu={(event) => {
-                    if (!canRenameSessions) {
+                    if (!hasContextMenu) {
                       return
                     }
                     event.preventDefault()
@@ -326,7 +332,13 @@ export function SessionTable({
                       <td
                         className={isInfoCell ? 'icon-cluster info-action-cell session-info-action-cell' : undefined}
                         key={cell.id}
-                        onClick={isInfoCell ? (event) => event.stopPropagation() : undefined}
+                        onClick={(event) => {
+                          if (isInfoCell) {
+                            event.stopPropagation()
+                            return
+                          }
+                          onSelect(session, mouseGesture(event))
+                        }}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
@@ -344,8 +356,70 @@ export function SessionTable({
           ref={contextMenuRef}
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <button onClick={() => startRename(contextMenu.session)} type="button">
+          <button
+            disabled={!canRenameSessions}
+            onClick={() => startRename(contextMenu.session)}
+            type="button"
+          >
             Rename session
+          </button>
+          <div className="session-row-context-menu-separator" />
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'signals')
+            }}
+            type="button"
+          >
+            Inspect signals
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'gps')
+            }}
+            type="button"
+          >
+            View GPS
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'metadata')
+            }}
+            type="button"
+          >
+            View metadata
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'qc')
+            }}
+            type="button"
+          >
+            View QA info
+          </button>
+          <div className="session-row-context-menu-separator" />
+          <button
+            disabled={!onCopyNote}
+            onClick={() => {
+              setContextMenu(null)
+              onCopyNote?.(contextMenu.session)
+            }}
+            type="button"
+          >
+            Copy note
+          </button>
+          <button
+            disabled={!canPasteNote || !onPasteNote}
+            onClick={() => {
+              setContextMenu(null)
+              onPasteNote?.(contextMenu.session)
+            }}
+            type="button"
+          >
+            Paste note
           </button>
         </div>
       )}
@@ -485,7 +559,7 @@ function isColumnId(value: string): value is ColumnId {
   return value in columnLabels
 }
 
-function mouseGesture(event: MouseEvent<HTMLTableRowElement>): SessionSelectionGesture {
+function mouseGesture(event: MouseEvent<HTMLElement>): SessionSelectionGesture {
   return {
     extendRange: event.shiftKey,
     toggle: event.ctrlKey || event.metaKey,

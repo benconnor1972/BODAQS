@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   BookOpen,
@@ -28,7 +28,11 @@ import { GeospatialWorkbench, MatchPreviewCard, StudySetGpsCoverageCard } from '
 import { GpsRoutePreview } from './components/GpsRoutePreview'
 import { MapRoutePreview } from './components/MapRoutePreview'
 import { Modal } from './components/Modal'
-import { SessionNoteEditorModal } from './components/SessionNoteEditorModal'
+import {
+  SessionNoteEditorModal,
+  sessionFromSavedNote,
+  sessionNoteFromSession,
+} from './components/SessionNoteEditorModal'
 import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
 import { SuspensionVisualization } from './components/SuspensionVisualization'
@@ -81,6 +85,7 @@ import type {
   LibraryRecord,
   ModalState,
   SessionInspectionTab,
+  SessionNoteRecord,
   SessionTrackMatchRecord,
   SessionRecord,
   SortDirection,
@@ -113,6 +118,50 @@ type StudySetMapSessionPath = {
   path: Array<[number, number]>
 }
 
+type NoteClipboard = {
+  sourceSession: SessionRecord
+  note: SessionNoteRecord
+}
+
+type NotePasteResult =
+  | { ok: true; session: SessionRecord }
+  | { ok: false; session: SessionRecord; message: string }
+
+const NOTE_PASTE_CONCURRENCY = 4
+
+function cloneSessionNoteRecord(note: SessionNoteRecord): SessionNoteRecord {
+  return JSON.parse(JSON.stringify(note)) as SessionNoteRecord
+}
+
+function sessionNoteCacheKey(session: SessionRecord) {
+  return sessionRefId(sessionToStudyRef(session))
+}
+
+function sessionNoteRecordCacheKey(note: SessionNoteRecord) {
+  return sessionRefId(note.sessionRef)
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  task: (item: T) => Promise<R>,
+) {
+  const results: R[] = []
+  let nextIndex = 0
+  const workerCount = Math.max(1, Math.min(concurrency, items.length))
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await task(items[index])
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
 const LEGACY_SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
 const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v2'
 const ANALYSIS_SCOPE_STORAGE_PREFIX = 'bodaqs.web.analysis-scope.v1.'
@@ -141,6 +190,7 @@ function App() {
   const [analysisScopeNotice, setAnalysisScopeNotice] = useState<AnalysisScopeNotice | null>(null)
   const [activeDataSource, setActiveDataSource] = useState<LibraryDataSource>(localDataSource)
   const columnMenuRef = useRef<HTMLDivElement>(null)
+  const noteCacheRef = useRef<Map<string, SessionNoteRecord>>(new Map())
   const [libraries, setLibraries] = useState<LibraryRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [tracks, setTracks] = useState<TrackRecord[]>([])
@@ -155,6 +205,7 @@ function App() {
   const [selectedStudySessionIds, setSelectedStudySessionIds] = useState<string[]>([])
   const [selectionAnchorStudySessionId, setSelectionAnchorStudySessionId] = useState<string | null>(null)
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([])
+  const [noteClipboard, setNoteClipboard] = useState<NoteClipboard | null>(null)
   const [savedStudySets, setSavedStudySets] = useState<StudySet[]>([])
   const [savedSessionFilters, setSavedSessionFilters] = useState<SavedSessionFilterRecord[]>(prototypeSavedSessionFilters)
   const [currentStudySet, setCurrentStudySet] = useState<StudySet>(() => emptyStudySet())
@@ -533,6 +584,45 @@ function App() {
   )
   const currentStudySetSessionKey = currentStudySet.sessions.map(sessionRefId).join('|')
 
+  const loadCachedSessionNote = useCallback(
+    async (session: SessionRecord) => {
+      const key = sessionNoteCacheKey(session)
+      const cached = noteCacheRef.current.get(key)
+      if (cached) {
+        return cloneSessionNoteRecord(cached)
+      }
+      const loaded = activeDataSource.loadSessionNote
+        ? await activeDataSource.loadSessionNote(session)
+        : sessionNoteFromSession(session)
+      noteCacheRef.current.set(key, cloneSessionNoteRecord(loaded))
+      return cloneSessionNoteRecord(loaded)
+    },
+    [activeDataSource],
+  )
+
+  const saveCachedSessionNote = useCallback(
+    async (note: SessionNoteRecord) => {
+      if (!activeDataSource.saveSessionNote) {
+        throw new Error('The current data source does not support note saves.')
+      }
+      const saved = await activeDataSource.saveSessionNote(note)
+      const cacheKey = sessionNoteRecordCacheKey(saved)
+      noteCacheRef.current.set(cacheKey, cloneSessionNoteRecord(saved))
+      setNoteClipboard((current) =>
+        current && sessionNoteCacheKey(current.sourceSession) === cacheKey
+          ? { ...current, note: cloneSessionNoteRecord(saved) }
+          : current,
+      )
+      return cloneSessionNoteRecord(saved)
+    },
+    [activeDataSource],
+  )
+
+  function clearNoteCache() {
+    noteCacheRef.current.clear()
+    setNoteClipboard(null)
+  }
+
   useEffect(() => {
     let cancelled = false
     const fallbackPaths = currentStudySetSessions.map((session) => studySetPathFromSession(session)).filter(hasMapPath)
@@ -722,6 +812,7 @@ function App() {
       setStatusMessage(`Connected to ${libraryCount} ${libraryLabel} under ${resolvedRoot}.`)
       setActiveDataSource(localDataSource)
       setConnectionMode('local-api')
+      clearNoteCache()
 
       const cleared = emptyStudySet()
       setCurrentStudySet(cleared)
@@ -776,6 +867,14 @@ function App() {
       const loaded = await fetchWorkbenchData(activeDataSource)
       const loadedLibraryIds = new Set(loaded.libraries.map((libraryItem) => libraryItem.id))
       const loadedCandidateIds = new Set(loaded.sessions.map(candidateId))
+      for (const cacheKey of noteCacheRef.current.keys()) {
+        if (!loadedCandidateIds.has(cacheKey)) {
+          noteCacheRef.current.delete(cacheKey)
+        }
+      }
+      setNoteClipboard((current) =>
+        current && !loadedCandidateIds.has(candidateId(current.sourceSession)) ? null : current,
+      )
 
       setLibraries(applyStrictSessionCounts(loaded.libraries, loaded.sessions))
       setSessions(loaded.sessions)
@@ -1067,9 +1166,13 @@ function App() {
     const deletedRefIds = new Set(deletedSessions.map(candidateId))
     for (const session of deletedSessions) {
       const deletedRefId = candidateId(session)
+      noteCacheRef.current.delete(sessionNoteCacheKey(session))
       invalidateSuspensionCacheForSession(activeDataSource, deletedRefId)
       broadcastSessionDeleted(deletedRefId, session.name)
     }
+    setNoteClipboard((current) =>
+      current && deletedRefIds.has(candidateId(current.sourceSession)) ? null : current,
+    )
     setSessions((current) => {
       const remainingSessions = current.filter((session) => !deletedRefIds.has(candidateId(session)))
       setLibraries((currentLibraries) => applySessionCounts(currentLibraries, remainingSessions))
@@ -1225,9 +1328,122 @@ function App() {
   }
 
   function updateSessionAfterNoteSave(updatedSession: SessionRecord) {
+    applyUpdatedSessions([updatedSession])
+  }
+
+  function applyUpdatedSessions(updatedSessions: SessionRecord[]) {
+    if (updatedSessions.length === 0) {
+      return
+    }
+    const updatesById = new Map(updatedSessions.map((session) => [candidateId(session), session]))
     setSessions((current) =>
-      current.map((session) => (candidateId(session) === candidateId(updatedSession) ? updatedSession : session)),
+      current.map((session) => updatesById.get(candidateId(session)) ?? session),
     )
+    setModal((current) => {
+      if (current?.kind === 'session') {
+        const updatedSession = updatesById.get(candidateId(current.session))
+        return updatedSession ? { ...current, session: updatedSession } : current
+      }
+      if (current?.kind === 'signal-inspector') {
+        const updatedSession = updatesById.get(candidateId(current.session))
+        return updatedSession ? { ...current, session: updatedSession } : current
+      }
+      return current
+    })
+    setNoteEditorSession((current) =>
+      current ? updatesById.get(candidateId(current)) ?? current : current,
+    )
+  }
+
+  async function copySessionNote(session: SessionRecord) {
+    try {
+      const loadedNote = await loadCachedSessionNote(session)
+      setNoteClipboard({
+        sourceSession: session,
+        note: cloneSessionNoteRecord(loadedNote),
+      })
+      setStatusMessage(`Copied note from "${session.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not copy note: ${message}`)
+    }
+  }
+
+  async function pasteSessionNote(anchorSession: SessionRecord) {
+    if (!noteClipboard) {
+      setStatusMessage('Copy a note before pasting.')
+      return
+    }
+    if (!activeDataSource.saveSessionNote) {
+      setStatusMessage('The current data source does not support note paste.')
+      return
+    }
+
+    const targets = notePasteTargets(anchorSession)
+    const targetsWithNotes = targets.filter((session) => session.noteStatus === 'draft' || session.noteStatus === 'edited')
+    if (targets.length > 1) {
+      const confirmed = window.confirm(
+        `Paste note from "${noteClipboard.sourceSession.name}" to ${targets.length} selected sessions? Existing notes on target sessions will be replaced.`,
+      )
+      if (!confirmed) {
+        return
+      }
+    } else if (targetsWithNotes.length > 0) {
+      const confirmed = window.confirm(
+        `Replace the existing note on "${targets[0].name}" with the copied note from "${noteClipboard.sourceSession.name}"?`,
+      )
+      if (!confirmed) {
+        return
+      }
+    }
+
+    setStatusMessage(targets.length === 1 ? 'Pasting note...' : `Pasting note to ${targets.length} sessions...`)
+    const sourceNote = cloneSessionNoteRecord(noteClipboard.note)
+    const results = await mapWithConcurrency(targets, NOTE_PASTE_CONCURRENCY, (target) =>
+      pasteNoteToSession(target, sourceNote),
+    )
+    const updatedSessions = results.flatMap((result) => (result.ok ? [result.session] : []))
+    const failures = results.flatMap((result) => (result.ok ? [] : [`${result.session.name}: ${result.message}`]))
+    if (failures.length > 0) {
+      const successPrefix = updatedSessions.length > 0 ? `${updatedSessions.length} note(s) pasted. ` : ''
+      setStatusMessage(`${successPrefix}${failures.length} paste operation(s) failed: ${failures.join('; ')}`)
+      return
+    }
+    setStatusMessage(
+      targets.length === 1
+        ? `Pasted note to "${targets[0].name}".`
+        : `Pasted note to ${targets.length} selected sessions.`,
+    )
+  }
+
+  async function pasteNoteToSession(target: SessionRecord, sourceNote: SessionNoteRecord): Promise<NotePasteResult> {
+    try {
+      const noteToSave: SessionNoteRecord = {
+        ...cloneSessionNoteRecord(sourceNote),
+        sessionRef: sessionToStudyRef(target),
+        present: true,
+        createdAtUtc: '',
+        updatedAtUtc: '',
+      }
+      const savedNote = await saveCachedSessionNote(noteToSave)
+      const updatedSession = sessionFromSavedNote(target, savedNote)
+      applyUpdatedSessions([updatedSession])
+      return { ok: true, session: updatedSession }
+    } catch (error) {
+      return {
+        ok: false,
+        session: target,
+        message: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  function notePasteTargets(anchorSession: SessionRecord) {
+    const anchorId = candidateId(anchorSession)
+    if (selectedCandidateIds.includes(anchorId) && selectedCandidateSessions.length > 0) {
+      return selectedCandidateSessions
+    }
+    return [anchorSession]
   }
 
   async function renameLibrarySession(session: SessionRecord, nextName: string) {
@@ -1916,6 +2132,9 @@ function App() {
                   onInspect={inspectSession}
                   onDeleteSession={deleteLibrarySession}
                   onRenameSession={activeDataSource.renameSession ? renameLibrarySession : undefined}
+                  onCopyNote={copySessionNote}
+                  onPasteNote={pasteSessionNote}
+                  canPasteNote={Boolean(noteClipboard && activeDataSource.saveSessionNote)}
                 />
                 <div className="action-row">
                   <div className="action-row-main">
@@ -2316,6 +2535,8 @@ function App() {
         <SessionNoteEditorModal
           session={noteEditorSession}
           dataSource={activeDataSource}
+          loadSessionNote={loadCachedSessionNote}
+          saveSessionNote={saveCachedSessionNote}
           onClose={() => setNoteEditorSession(null)}
           onSaved={updateSessionAfterNoteSave}
         />

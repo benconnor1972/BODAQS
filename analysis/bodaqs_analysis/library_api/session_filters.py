@@ -17,7 +17,7 @@ SESSION_FILTER_VERSION = 1
 SESSION_FILTERS_DIR = Path("session_filters")
 
 _GROUP_OPS = {"and", "or"}
-_LEAF_OPS = {"eq", "in", "contains", "present"}
+_LEAF_OPS = {"eq", "in", "contains", "present", "gte", "lt"}
 _TRACKPOINT_OPS = {"matches"}
 _FIELDS = {
     "bike",
@@ -32,6 +32,7 @@ _FIELDS = {
     "rider",
     "signals",
     "source.archive",
+    "started",
     "trackpoint.crossing",
 }
 
@@ -217,6 +218,16 @@ def _normalized_predicate(value: Any, *, context: str) -> dict[str, Any]:
         if "value" in value:
             out["value"] = bool(value.get("value"))
         return out
+    if op in {"gte", "lt"}:
+        if field != "started":
+            raise InvalidSessionFilterError(
+                f"{context}.op is only supported for started predicates.",
+                details={"field": field, "op": op},
+            )
+        if "value" not in value:
+            raise InvalidSessionFilterError(f"{context}.value is required for {op!r}.")
+        out["value"] = _normalized_datetime_value(value.get("value"), context=f"{context}.value")
+        return out
     if "value" not in value:
         raise InvalidSessionFilterError(f"{context}.value is required for {op!r}.")
     raw_value = value.get("value")
@@ -335,6 +346,18 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = value.strip()
     return text or None
+
+
+def _normalized_datetime_value(value: Any, *, context: str) -> str:
+    text = _optional_text(value)
+    if text is None:
+        raise InvalidSessionFilterError(f"{context} must be a non-empty ISO date/time string.")
+    parseable_text = text.replace("Z", "+00:00")
+    try:
+        datetime.fromisoformat(parseable_text)
+    except ValueError as exc:
+        raise InvalidSessionFilterError(f"{context} must be a parseable ISO date/time string.") from exc
+    return text
 
 
 def _number_or_none(value: Any) -> float | None:

@@ -857,6 +857,22 @@ tbody tr.primary-row td:first-child {
   color: var(--teal-strong);
 }
 
+.session-row-context-menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
+}
+
+.session-row-context-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.session-row-context-menu button:disabled:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
 .sort-button {
   display: inline-flex;
   align-items: center;
@@ -2756,6 +2772,12 @@ button {
 
 .condition-value-cell {
   min-width: 0;
+}
+
+.date-time-condition-value {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+  gap: 8px;
 }
 
 .condition-help {

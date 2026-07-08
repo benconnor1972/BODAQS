@@ -12,7 +12,7 @@ layout while making the wording easy to review and refine.
 | UI location | Helper text | Used for |
 | --- | --- | --- |
 | Library Selector heading | Choose which libraries from the configured library root are included in the session browser. | Explains library inclusion scope. |
-| Session Selector heading | Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list. Press F2, or right-click a session row, to rename the session label. | Distinguishes browsing/filtering from Study Set membership and documents the unobtrusive rename affordance. |
+| Session Selector heading | Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list. Press F2, or right-click a session row, to rename the session label. Use the right-click menu to inspect session details or copy and paste session notes. | Distinguishes browsing/filtering from Study Set membership and documents the unobtrusive rename, inspection, and note copy/paste affordances. |
 | GPS Location heading | Preview the selected session GPS path and any selected or attached tracks. | Explains the GPS preview panel. |
 | Filters heading | Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering. | Explains reusable filters versus ad hoc column filters. |
 | Filter row description | Dynamic: the filter's description field. | Provides per-filter context inline with the filter name. |
@@ -73,6 +73,7 @@ layout while making the wording easy to review and refine.
 | --- | --- | --- |
 | Rider | Matches the rider value from session notes/catalog metadata. | Filter condition builder field help. |
 | Bike | Matches the bike/profile label carried in the catalog. | Filter condition builder field help. |
+| Started | Filters by session start date and time. Pickers use local time; filters are stored as UTC. | Filter condition builder field help. |
 | Note status | Filters by session note state: draft, edited or missing. | Filter condition builder field help. |
 | QC severity | Filters by overall QC severity. | Filter condition builder field help. |
 | Has GPS | Filters sessions by whether any GPS source is present. | Filter condition builder field help. |
