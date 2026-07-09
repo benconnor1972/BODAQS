@@ -4036,8 +4036,15 @@ button {
 .signal-inspector-save-row,
 .signal-inspector-point-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-2);
+}
+
+.signal-inspector-save-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.signal-inspector-point-row {
+  grid-template-columns: minmax(0, 1fr) 82px auto;
 }
 
 .signal-inspector-save-row input,
@@ -4131,6 +4138,45 @@ button {
   color: var(--muted);
   font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
+}
+
+.signal-inspector-bookmark-rename {
+  min-width: 0;
+  margin: 5px 6px;
+  padding: 4px 6px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-bookmark-context-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 142px;
+  padding: 4px;
+  border: var(--border-strong);
+  background: white;
+  box-shadow: var(--shadow-floating-control);
+}
+
+.signal-inspector-bookmark-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  text-align: left;
+}
+
+.signal-inspector-bookmark-context-menu button:hover {
+  background: var(--teal-soft);
+  color: var(--green);
 }
 
 .signal-inspector-bookmark-actions {
@@ -4438,6 +4484,61 @@ button {
 .signal-inspector-uplot-event.selected {
   width: 11px;
   height: 11px;
+}
+
+.signal-inspector-bookmark-window {
+  position: absolute;
+  height: 11px;
+  border-right: 2px solid var(--teal);
+  border-left: 2px solid var(--teal);
+  border-bottom: 2px solid var(--teal);
+  border-radius: 0 0 var(--radius-control) var(--radius-control);
+  opacity: 0.68;
+  pointer-events: auto;
+}
+
+.signal-inspector-bookmark-window::before,
+.signal-inspector-bookmark-window::after {
+  position: absolute;
+  top: -2px;
+  width: 8px;
+  border-top: 2px solid var(--teal);
+  content: "";
+}
+
+.signal-inspector-bookmark-window::before {
+  left: -2px;
+}
+
+.signal-inspector-bookmark-window::after {
+  right: -2px;
+}
+
+.signal-inspector-bookmark-window.active {
+  border-color: var(--ink);
+  opacity: 0.95;
+}
+
+.signal-inspector-bookmark-window.active::before,
+.signal-inspector-bookmark-window.active::after {
+  border-color: var(--ink);
+}
+
+.signal-inspector-bookmark-point {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid white;
+  background: var(--teal);
+  box-shadow: 0 0 0 1px rgba(16, 24, 32, 0.2);
+  opacity: 0.82;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.signal-inspector-bookmark-point.active {
+  background: var(--ink);
+  opacity: 1;
 }
 
 .signal-inspector-uplot-mark {

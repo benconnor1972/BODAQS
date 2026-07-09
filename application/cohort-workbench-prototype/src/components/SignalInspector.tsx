@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react'
 import * as d3 from 'd3'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
@@ -120,9 +120,13 @@ export function SignalInspector({
   const [bookmarks, setBookmarks] = useState<SessionBookmarkRecord[]>([])
   const [activeBookmarkId, setActiveBookmarkId] = useState<string | null>(null)
   const [bookmarkTitle, setBookmarkTitle] = useState('')
+  const [bookmarkPointTitle, setBookmarkPointTitle] = useState('')
   const [bookmarkPointS, setBookmarkPointS] = useState(() =>
     roundForInput((sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS) + sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS)) / 2),
   )
+  const [bookmarkContextMenu, setBookmarkContextMenu] = useState<{ bookmark: SessionBookmarkRecord; x: number; y: number } | null>(null)
+  const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null)
+  const [savingBookmarkId, setSavingBookmarkId] = useState<string | null>(null)
   const [bookmarkMessage, setBookmarkMessage] = useState('')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [showMarks, setShowMarks] = useState(true)
@@ -139,6 +143,7 @@ export function SignalInspector({
     message: 'Navigator not loaded.',
   })
   const eventGroupsInitializedRef = useRef(false)
+  const bookmarkContextMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     setSelectedColumns(defaultSignalColumns(signalOptions))
@@ -146,6 +151,10 @@ export function SignalInspector({
     setWindowEndS(sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS))
     setActiveBookmarkId(null)
     setBookmarkTitle('')
+    setBookmarkPointTitle('')
+    setBookmarkContextMenu(null)
+    setEditingBookmarkId(null)
+    setSavingBookmarkId(null)
     setBookmarkPointS(
       roundForInput(
         (sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS) +
@@ -206,6 +215,36 @@ export function SignalInspector({
       cancelled = true
     }
   }, [dataSource, session])
+
+  useEffect(() => {
+    if (!bookmarkContextMenu) {
+      return
+    }
+
+    function handlePointerDown(event: globalThis.PointerEvent) {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+      if (bookmarkContextMenuRef.current?.contains(target)) {
+        return
+      }
+      setBookmarkContextMenu(null)
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setBookmarkContextMenu(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [bookmarkContextMenu])
 
   useEffect(() => {
     let cancelled = false
@@ -376,7 +415,7 @@ export function SignalInspector({
         ? { startS: pointS, endS: pointS }
         : { startS: requestWindow.startS, endS: requestWindow.endS }
     const title =
-      bookmarkTitle.trim() ||
+      (kind === 'point' ? bookmarkPointTitle.trim() : bookmarkTitle.trim()) ||
       (kind === 'point' ? `Point ${formatTime(pointS)}` : `Window ${formatTime(window.startS)}-${formatTime(window.endS)}`)
     const bookmark: SessionBookmarkRecord = {
       id: '',
@@ -401,7 +440,11 @@ export function SignalInspector({
       const saved = await dataSource.saveSessionBookmark(bookmark)
       setBookmarks((current) => [...current.filter((candidate) => candidate.id !== saved.id), saved])
       setActiveBookmarkId(saved.id)
-      setBookmarkTitle('')
+      if (kind === 'point') {
+        setBookmarkPointTitle('')
+      } else {
+        setBookmarkTitle('')
+      }
       setBookmarkMessage('')
       onBookmarksChanged?.(session)
     } catch (error) {
@@ -434,6 +477,28 @@ export function SignalInspector({
     } catch (error) {
       setBookmarks(existing)
       setBookmarkMessage(error instanceof Error ? `Could not delete bookmark: ${error.message}` : 'Could not delete bookmark.')
+    }
+  }
+
+  async function renameBookmark(bookmark: SessionBookmarkRecord, title: string) {
+    const trimmedTitle = title.trim()
+    if (!trimmedTitle || trimmedTitle === bookmark.title) {
+      setEditingBookmarkId(null)
+      setSavingBookmarkId(null)
+      return
+    }
+    setSavingBookmarkId(bookmark.id)
+    setBookmarkMessage('Renaming bookmark...')
+    try {
+      const saved = await dataSource.saveSessionBookmark({ ...bookmark, title: trimmedTitle })
+      setBookmarks((current) => current.map((candidate) => (candidate.id === saved.id ? saved : candidate)))
+      setEditingBookmarkId(null)
+      setSavingBookmarkId(null)
+      setBookmarkMessage('')
+      onBookmarksChanged?.(session)
+    } catch (error) {
+      setSavingBookmarkId(null)
+      setBookmarkMessage(error instanceof Error ? `Could not rename bookmark: ${error.message}` : 'Could not rename bookmark.')
     }
   }
 
@@ -490,6 +555,13 @@ export function SignalInspector({
             </div>
             <div className="signal-inspector-point-row">
               <input
+                aria-label="Point bookmark name"
+                type="text"
+                value={bookmarkPointTitle}
+                onChange={(event) => setBookmarkPointTitle(event.target.value)}
+                placeholder={`Point ${formatTime(bookmarkPointS)}`}
+              />
+              <input
                 aria-label="Bookmark point in seconds"
                 min={0}
                 max={durationS}
@@ -508,13 +580,34 @@ export function SignalInspector({
             ) : (
               <div className="signal-inspector-bookmark-list">
                 {sortedBookmarks.map((bookmark) => (
-                  <div className={bookmark.id === activeBookmarkId ? 'active' : ''} key={bookmark.id}>
-                    <button type="button" onClick={() => applyBookmark(bookmark)}>
-                      <strong>{bookmark.title}</strong>
-                      <small>
-                        {formatBookmarkWindow(bookmark.window)}
-                      </small>
-                    </button>
+                  <div
+                    className={bookmark.id === activeBookmarkId ? 'active' : ''}
+                    key={bookmark.id}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      setBookmarkContextMenu({ bookmark, x: event.clientX, y: event.clientY })
+                    }}
+                  >
+                    {editingBookmarkId === bookmark.id ? (
+                      <BookmarkRenameInput
+                        disabled={savingBookmarkId === bookmark.id}
+                        initialValue={bookmark.title}
+                        onCancel={() => {
+                          setEditingBookmarkId(null)
+                          setSavingBookmarkId(null)
+                        }}
+                        onCommit={(title) => {
+                          void renameBookmark(bookmark, title)
+                        }}
+                      />
+                    ) : (
+                      <button type="button" onClick={() => applyBookmark(bookmark)}>
+                        <strong>{bookmark.title}</strong>
+                        <small>
+                          {formatBookmarkWindow(bookmark.window)}
+                        </small>
+                      </button>
+                    )}
                     <button
                       aria-label={`Delete bookmark ${bookmark.title}`}
                       className="signal-inspector-delete-bookmark"
@@ -525,6 +618,23 @@ export function SignalInspector({
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+            {bookmarkContextMenu && (
+              <div
+                className="signal-inspector-bookmark-context-menu"
+                ref={bookmarkContextMenuRef}
+                style={{ left: bookmarkContextMenu.x, top: bookmarkContextMenu.y }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingBookmarkId(bookmarkContextMenu.bookmark.id)
+                    setBookmarkContextMenu(null)
+                  }}
+                >
+                  Rename bookmark
+                </button>
               </div>
             )}
             <div className="signal-inspector-bookmark-actions">
@@ -650,6 +760,8 @@ export function SignalInspector({
             <>
               {loadState.status === 'loading' && <div className="signal-inspector-update-pill">{loadState.message}</div>}
               <SignalWindowChart
+                activeBookmarkId={activeBookmarkId}
+                bookmarks={sortedBookmarks}
                 data={displayedWindowData}
                 durationS={durationS}
                 visibleEventGroups={visibleEventGroups}
@@ -662,6 +774,7 @@ export function SignalInspector({
                   setWindowEndS(window.endS)
                   setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
                 }}
+                onSelectPoint={(timeS) => setBookmarkPointS(roundForInput(timeS))}
               />
               <SignalNavigator
                 state={navigatorState}
@@ -696,6 +809,64 @@ export function SignalInspector({
         </section>
       </div>
     </div>
+  )
+}
+
+function BookmarkRenameInput({
+  disabled,
+  initialValue,
+  onCancel,
+  onCommit,
+}: {
+  disabled: boolean
+  initialValue: string
+  onCancel: () => void
+  onCommit: (value: string) => void
+}) {
+  const [value, setValue] = useState(initialValue)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const skipBlurCommitRef = useRef(false)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    event.stopPropagation()
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      skipBlurCommitRef.current = true
+      onCommit(value)
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      skipBlurCommitRef.current = true
+      onCancel()
+    }
+  }
+
+  return (
+    <input
+      aria-label="Rename bookmark"
+      className="signal-inspector-bookmark-rename"
+      disabled={disabled}
+      ref={inputRef}
+      value={value}
+      onBlur={() => {
+        if (skipBlurCommitRef.current) {
+          skipBlurCommitRef.current = false
+          return
+        }
+        onCommit(value)
+      }}
+      onChange={(event) => setValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
+      onKeyDown={handleKeyDown}
+      onPointerDown={(event) => event.stopPropagation()}
+    />
   )
 }
 
@@ -830,6 +1001,8 @@ function SignalInspectorGpsPanel({
 }
 
 function SignalWindowChart({
+  activeBookmarkId,
+  bookmarks,
   data,
   durationS,
   eventGroups,
@@ -837,8 +1010,11 @@ function SignalWindowChart({
   showMarks,
   visibleEventGroups,
   onSelectEvent,
+  onSelectPoint,
   onSelectWindow,
 }: {
+  activeBookmarkId: string | null
+  bookmarks: SessionBookmarkRecord[]
   data: TimeseriesWindowResponse
   durationS: number
   eventGroups: EventGroup[]
@@ -846,10 +1022,12 @@ function SignalWindowChart({
   showMarks: boolean
   visibleEventGroups: string[]
   onSelectEvent: (eventId: string | null) => void
+  onSelectPoint: (timeS: number) => void
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
   const plotHostRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
+  const onSelectPointRef = useRef(onSelectPoint)
   const onSelectWindowRef = useRef(onSelectWindow)
   const hostWidth = useElementWidth(plotHostRef)
   const [hover, setHover] = useState<HoverReadout | null>(null)
@@ -866,6 +1044,10 @@ function SignalWindowChart({
   const visibleEvents = data.events.filter((event) => selectedEventGroups.has(eventGroupKey(event)))
   const xDomain = d3.extent(chartModel.times)
   const visibleMarks = showMarks ? data.marks.filter((mark) => markInDomain(mark, xDomain)) : []
+
+  useEffect(() => {
+    onSelectPointRef.current = onSelectPoint
+  }, [onSelectPoint])
 
   useEffect(() => {
     onSelectWindowRef.current = onSelectWindow
@@ -907,6 +1089,7 @@ function SignalWindowChart({
         width: plotWidth,
         height: plotHeight,
         onHover: scheduleHover,
+        onSelectPoint: (timeS) => onSelectPointRef.current(timeS),
         onSelectWindow: (window) => onSelectWindowRef.current(window),
       }),
       chartModel.alignedData,
@@ -914,10 +1097,22 @@ function SignalWindowChart({
     )
     plotRef.current = plot
     const handleMouseLeave = () => scheduleHover(null)
+    const handleClick = (event: globalThis.MouseEvent) => {
+      if (plot.select.width >= 4) {
+        return
+      }
+      const rect = plot.over.getBoundingClientRect()
+      const timeS = plot.posToVal(event.clientX - rect.left, 'x')
+      const domainStart = chartModel.times[0] ?? 0
+      const domainEnd = chartModel.times.at(-1) ?? domainStart
+      onSelectPointRef.current(clamp(timeS, domainStart, domainEnd))
+    }
     plot.over.addEventListener('mouseleave', handleMouseLeave)
+    plot.over.addEventListener('click', handleClick)
     setPlotVersion((version) => version + 1)
     return () => {
       plot.over.removeEventListener('mouseleave', handleMouseLeave)
+      plot.over.removeEventListener('click', handleClick)
       if (hoverFrameRef.current !== null) {
         window.cancelAnimationFrame(hoverFrameRef.current)
         hoverFrameRef.current = null
@@ -947,6 +1142,8 @@ function SignalWindowChart({
         </button>
         <div className="signal-inspector-uplot-host" ref={plotHostRef} />
         <SignalPlotOverlay
+          activeBookmarkId={activeBookmarkId}
+          bookmarks={bookmarks}
           eventGroups={eventGroups}
           groupColorByKey={groupColorByKey}
           groupLaneByKey={groupLaneByKey}
@@ -991,6 +1188,8 @@ function SignalWindowChart({
 }
 
 function SignalPlotOverlay({
+  activeBookmarkId,
+  bookmarks,
   eventGroups,
   groupColorByKey,
   groupLaneByKey,
@@ -1001,6 +1200,8 @@ function SignalPlotOverlay({
   version,
   visibleEvents,
 }: {
+  activeBookmarkId: string | null
+  bookmarks: SessionBookmarkRecord[]
   eventGroups: EventGroup[]
   groupColorByKey: Map<string, string>
   groupLaneByKey: Map<string, number>
@@ -1022,6 +1223,54 @@ function SignalPlotOverlay({
   }
   return (
     <div className="signal-inspector-plot-overlay">
+      {bookmarks.map((bookmark) => {
+        const startS = bookmark.window.startS
+        const endS = bookmark.window.endS
+        if (!Number.isFinite(startS) || !Number.isFinite(endS)) {
+          return null
+        }
+        const isPoint = nearlyEqual(startS, endS)
+        const startLeft = plotValueX(plot, startS)
+        const endLeft = plotValueX(plot, endS)
+        const isActive = bookmark.id === activeBookmarkId
+        if (isPoint) {
+          if (startLeft === null) {
+            return null
+          }
+          return (
+            <span
+              aria-label={`Bookmark ${bookmark.title} at ${formatTime(startS)}`}
+              className={`signal-inspector-bookmark-point${isActive ? ' active' : ''}`}
+              key={bookmark.id || `${bookmark.title}-${startS}`}
+              role="img"
+              style={{
+                left: `${startLeft}px`,
+                top: `${geometry.bottom + 27}px`,
+              }}
+              title={`${bookmark.title}: ${formatTime(startS)}`}
+            />
+          )
+        }
+        if (startLeft === null || endLeft === null) {
+          return null
+        }
+        const left = Math.min(startLeft, endLeft)
+        const width = Math.max(4, Math.abs(endLeft - startLeft))
+        return (
+          <span
+            aria-label={`Bookmark ${bookmark.title} from ${formatTime(startS)} to ${formatTime(endS)}`}
+            className={`signal-inspector-bookmark-window${isActive ? ' active' : ''}`}
+            key={bookmark.id || `${bookmark.title}-${startS}-${endS}`}
+            role="img"
+            style={{
+              left: `${left}px`,
+              top: `${geometry.bottom + 25}px`,
+              width: `${width}px`,
+            }}
+            title={`${bookmark.title}: ${formatTime(startS)}-${formatTime(endS)}`}
+          />
+        )
+      })}
       {marks.map((mark) => {
         const left = plotValueX(plot, mark.timeS)
         if (left === null) {
@@ -1079,12 +1328,14 @@ function signalUPlotOptions({
   height,
   model,
   onHover,
+  onSelectPoint,
   onSelectWindow,
   width,
 }: {
   height: number
   model: SignalChartModel
   onHover: (hover: HoverReadout | null) => void
+  onSelectPoint: (timeS: number) => void
   onSelectWindow: (window: { startS: number; endS: number }) => void
   width: number
 }): uPlot.Options {
@@ -1104,7 +1355,7 @@ function signalUPlotOptions({
       scale: 'x',
       side: 2,
       label: 'Time (s)',
-      values: (_plot, splits) => splits.map((value) => formatTime(value)),
+      values: (_plot, splits) => formatTimeAxisLabels(splits),
       stroke: '#5b6670',
       grid: { show: false },
       ticks: { stroke: '#9fb0ad', width: 1, size: 5 },
@@ -1175,6 +1426,10 @@ function signalUPlotOptions({
       setSelect: [
         (plot) => {
           if (plot.select.width < 4) {
+            const index = plot.cursor.idx
+            if (index !== null && index !== undefined && index >= 0 && index < model.times.length) {
+              onSelectPoint(model.times[index])
+            }
             return
           }
           const startS = plot.posToVal(plot.select.left, 'x')
@@ -1399,7 +1654,7 @@ function navigatorUPlotOptions({
       {
         scale: 'x',
         side: 2,
-        values: (_plot, splits) => splits.map((value) => formatTime(value)),
+        values: (_plot, splits) => formatTimeAxisLabels(splits),
         stroke: '#5b6670',
         grid: { show: false },
         ticks: { stroke: '#9fb0ad', width: 1, size: 4 },
@@ -2025,6 +2280,34 @@ function formatTime(value: number) {
   const minutes = Math.floor(value / 60)
   const seconds = Math.round(value % 60)
   return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+function formatTimeAxisLabels(values: number[]) {
+  const finiteValues = values.filter((value) => Number.isFinite(value))
+  for (let decimals = 0; decimals <= 6; decimals += 1) {
+    const labels = values.map((value) => formatTimeAxisValue(value, decimals))
+    const finiteLabels = finiteValues.map((value) => formatTimeAxisValue(value, decimals))
+    if (new Set(finiteLabels).size === finiteLabels.length) {
+      return labels
+    }
+  }
+  return values.map((value) => formatTimeAxisValue(value, 6))
+}
+
+function formatTimeAxisValue(value: number, decimals: number) {
+  if (!Number.isFinite(value)) {
+    return '0:00'
+  }
+  const sign = value < 0 ? '-' : ''
+  const factor = 10 ** decimals
+  const roundedTotal = Math.round(Math.abs(value) * factor) / factor
+  const minutes = Math.floor(roundedTotal / 60)
+  const seconds = roundedTotal - minutes * 60
+  if (decimals === 0) {
+    return `${sign}${minutes}:${String(Math.round(seconds)).padStart(2, '0')}`
+  }
+  const secondsText = seconds.toFixed(decimals).padStart(3 + decimals, '0')
+  return `${sign}${minutes}:${secondsText}`
 }
 
 function formatBookmarkWindow(window: { startS: number; endS: number }) {
