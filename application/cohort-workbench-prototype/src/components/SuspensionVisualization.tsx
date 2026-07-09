@@ -44,30 +44,55 @@ const VELOCITY_METRIC_SPEC = { compressionMetricName: COMPRESSION_Y_METRIC, rebo
 const STROKE_LENGTH_METRIC_SPEC = { compressionMetricName: STROKE_LENGTH_METRIC, reboundMetricName: STROKE_LENGTH_METRIC }
 const VELOCITY_DOMAIN_LIMITS = [1000, 2000, 5000, 10000]
 const STROKE_LENGTH_DOMAIN_LIMITS = [100, 150, 200, 250]
+const DISPLACEMENT_MM_DOMAIN_LIMITS = [100, 120, 150, 180, 200, 250]
 const WHOLE_SESSION_DISTRIBUTION_BINS = 20
 const SECTOR_DISTRIBUTION_BINS = 15
-const VISUALIZATION_SESSION_CACHE_VERSION = 2
+const CUMULATIVE_DISTRIBUTION_MAX_POINTS = 900
+const VISUALIZATION_SESSION_CACHE_VERSION = 3
 const VELOCITY_STATS_FORMATTER = formatMetricValueWithUnit('mm/s')
 const STROKE_LENGTH_STATS_FORMATTER = formatMetricValueWithUnit('mm')
+const DISPLACEMENT_MM_STATS_FORMATTER = formatMetricValueWithUnit('mm')
 
 const SIGNAL_REQUESTS: SignalQuerySignalRequest[] = [
   { role: 'activity_mask', selector: { kind: 'qc', quantity: 'mask' } },
 ]
-const DISPLACEMENT_SIGNAL_ROLE_CONFIGS = [
+const NORMALIZED_DISPLACEMENT_SIGNAL_ROLE_CONFIGS = [
   {
     role: 'front_displacement',
     label: 'Front wheel displacement',
     end: 'front',
+    unitMode: 'normalized',
     selector: { end: 'front', domain: 'wheel', quantity: 'disp_norm', unit: '1' },
   },
   {
     role: 'rear_displacement',
     label: 'Rear wheel displacement',
     end: 'rear',
+    unitMode: 'normalized',
     selector: { end: 'rear', domain: 'wheel', quantity: 'disp_norm', unit: '1' },
   },
 ] as const
-const DISPLACEMENT_SIGNAL_ROLES = new Set<string>(DISPLACEMENT_SIGNAL_ROLE_CONFIGS.map((config) => config.role))
+const MM_DISPLACEMENT_SIGNAL_ROLE_CONFIGS = [
+  {
+    role: 'front_displacement_mm',
+    label: 'Front wheel displacement',
+    end: 'front',
+    unitMode: 'mm',
+    selector: { end: 'front', domain: 'wheel', quantity: 'disp', unit: 'mm' },
+  },
+  {
+    role: 'rear_displacement_mm',
+    label: 'Rear wheel displacement',
+    end: 'rear',
+    unitMode: 'mm',
+    selector: { end: 'rear', domain: 'wheel', quantity: 'disp', unit: 'mm' },
+  },
+] as const
+const DISPLACEMENT_SIGNAL_ROLE_CONFIGS = [
+  ...NORMALIZED_DISPLACEMENT_SIGNAL_ROLE_CONFIGS,
+  ...MM_DISPLACEMENT_SIGNAL_ROLE_CONFIGS,
+] as const
+const NORMALIZED_DISPLACEMENT_SIGNAL_ROLES = new Set<string>(NORMALIZED_DISPLACEMENT_SIGNAL_ROLE_CONFIGS.map((config) => config.role))
 const ACTIVITY_SIGNAL_ROLES = new Set(['activity_mask', 'inactive_mask_qc', 'inactive_mask', 'active_mask_qc'])
 const INACTIVE_MASK_ROLES = ['inactive_mask_qc', 'inactive_mask']
 const ACTIVE_MASK_ROLES = ['active_mask_qc']
@@ -99,12 +124,21 @@ type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
 type SuspensionEnd = 'front' | 'rear'
 type DistributionChartKind = 'histogram' | 'mirrored_velocity'
+type FrequencyDisplayMode = 'histogram' | 'cumulative'
+type DisplacementGlyphPlacement = 'top' | 'bottom'
+type DisplacementUnitMode = 'normalized' | 'mm'
 type DistributionStatsMode = 'basic' | 'displacement'
 type MirroredMetricSpec = { compressionMetricName: string; reboundMetricName: string }
 type TimeWindow = { startS: number; endS: number }
 type TimeWindowsBySession = Record<string, TimeWindow>
 type DisplacementSignalRole = (typeof DISPLACEMENT_SIGNAL_ROLE_CONFIGS)[number]['role']
+type DisplacementSignalRoleConfig = (typeof DISPLACEMENT_SIGNAL_ROLE_CONFIGS)[number]
 type SignalChoiceSelections = Record<string, string>
+type FrequencyDisplayModes = {
+  displacement: FrequencyDisplayMode
+  velocity: FrequencyDisplayMode
+  strokeLength: FrequencyDisplayMode
+}
 
 type SuspensionVisualizationSettings = {
   selectedEntityIds: string[]
@@ -118,6 +152,17 @@ type SuspensionVisualizationSettings = {
   timeWindowsBySession: TimeWindowsBySession
   excludeInactivePeriods: boolean
   signalChoices: SignalChoiceSelections
+  frequencyDisplayModes: FrequencyDisplayModes
+  showDisplacementMm: boolean
+  showDisplacementStatsOnChart: boolean
+  showVelocityStatsOnChart: boolean
+  showStrokeLengthStatsOnChart: boolean
+}
+
+const DEFAULT_FREQUENCY_DISPLAY_MODES: FrequencyDisplayModes = {
+  displacement: 'histogram',
+  velocity: 'histogram',
+  strokeLength: 'histogram',
 }
 
 type CachedSessionVisualizationData = {
@@ -145,6 +190,17 @@ type HistogramBin = {
   proportion: number
   count: number
   total: number
+}
+
+type CumulativeDistributionPoint = {
+  x: number
+  proportion: number
+}
+
+type CumulativeDistribution = {
+  points: CumulativeDistributionPoint[]
+  sortedValues: number[]
+  sampleCount: number
 }
 
 type MirroredHistogramBins = {
@@ -177,6 +233,7 @@ const entityRowsCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]
 const metricMirroredValueCache = new WeakMap<TableQueryRow[], Map<string, number[]>>()
 const histogramBinCache = new WeakMap<number[], Map<string, HistogramBin[]>>()
 const mirroredHistogramBinCache = new WeakMap<number[], Map<string, MirroredHistogramBins>>()
+const cumulativeDistributionCache = new WeakMap<number[], Map<string, CumulativeDistribution>>()
 const scatterPointCache = new WeakMap<TableQueryRow[], Map<string, ScatterPoint[]>>()
 const sectorValuesForSessionCache = new WeakMap<VisualizationData, Map<string, number[]>>()
 const sectorValuesForEntityCache = new WeakMap<VisualizationData, Map<string, number[]>>()
@@ -251,6 +308,11 @@ export function SuspensionVisualization({
   const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>(initialSettings.timeWindowsBySession)
   const [excludeInactivePeriods, setExcludeInactivePeriods] = useState(initialSettings.excludeInactivePeriods)
   const [signalChoices, setSignalChoices] = useState<SignalChoiceSelections>(initialSettings.signalChoices)
+  const [frequencyDisplayModes, setFrequencyDisplayModes] = useState<FrequencyDisplayModes>(initialSettings.frequencyDisplayModes)
+  const [showDisplacementMm, setShowDisplacementMm] = useState(initialSettings.showDisplacementMm)
+  const [showDisplacementStatsOnChart, setShowDisplacementStatsOnChart] = useState(initialSettings.showDisplacementStatsOnChart)
+  const [showVelocityStatsOnChart, setShowVelocityStatsOnChart] = useState(initialSettings.showVelocityStatsOnChart)
+  const [showStrokeLengthStatsOnChart, setShowStrokeLengthStatsOnChart] = useState(initialSettings.showStrokeLengthStatsOnChart)
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select sessions or groups to visualize.' })
 
   useEffect(() => {
@@ -265,6 +327,11 @@ export function SuspensionVisualization({
     setTimeWindowsBySession(restored.timeWindowsBySession)
     setExcludeInactivePeriods(restored.excludeInactivePeriods)
     setSignalChoices(restored.signalChoices)
+    setFrequencyDisplayModes(restored.frequencyDisplayModes)
+    setShowDisplacementMm(restored.showDisplacementMm)
+    setShowDisplacementStatsOnChart(restored.showDisplacementStatsOnChart)
+    setShowVelocityStatsOnChart(restored.showVelocityStatsOnChart)
+    setShowStrokeLengthStatsOnChart(restored.showStrokeLengthStatsOnChart)
   }, [settingsCacheKey, studySetKey])
 
   useEffect(() => {
@@ -316,14 +383,16 @@ export function SuspensionVisualization({
   const selectedSectors = sectors.filter((sector) => selectedSectorIds.includes(sector.id))
   const selectedSessionRefs = uniqueSessionRefs(selectedEntities.flatMap((entity) => entity.sessionRefs))
   const studySetSessionRefs = useMemo(() => uniqueSessionRefs(studySet.sessions), [studySetKey])
+  const displacementUnitMode: DisplacementUnitMode = showDisplacementMm ? 'mm' : 'normalized'
+  const displacementRoleConfigs = displacementSignalRoleConfigs(displacementUnitMode)
   const studySetSessionKey = studySetSessionRefs.map(sessionRefId).join('|')
   const resolvedSignalChoices = useMemo(
-    () => resolvedDisplacementSignalChoices(studySetSessionRefs, sessions, signalChoices),
-    [studySetSessionKey, sessions, signalChoices],
+    () => resolvedDisplacementSignalChoices(studySetSessionRefs, sessions, signalChoices, displacementRoleConfigs),
+    [studySetSessionKey, sessions, signalChoices, displacementRoleConfigs],
   )
   const signalChoiceGroups = useMemo(
-    () => duplicateDisplacementSignalChoiceGroups(studySetSessionRefs, sessions, resolvedSignalChoices),
-    [studySetSessionKey, sessions, resolvedSignalChoices],
+    () => duplicateDisplacementSignalChoiceGroups(studySetSessionRefs, sessions, resolvedSignalChoices, displacementRoleConfigs),
+    [studySetSessionKey, sessions, resolvedSignalChoices, displacementRoleConfigs],
   )
   const signalChoiceSignature = useMemo(() => signalChoiceSelectionSignature(resolvedSignalChoices), [resolvedSignalChoices])
 
@@ -348,6 +417,11 @@ export function SuspensionVisualization({
       timeWindowsBySession,
       excludeInactivePeriods,
       signalChoices,
+      frequencyDisplayModes,
+      showDisplacementMm,
+      showDisplacementStatsOnChart,
+      showVelocityStatsOnChart,
+      showStrokeLengthStatsOnChart,
     }
     visualizationSettingsCache.set(settingsCacheKey, settings)
     persistVisualizationSettings(settingsCacheKey, settings)
@@ -364,6 +438,11 @@ export function SuspensionVisualization({
     timeWindowsBySession,
     excludeInactivePeriods,
     signalChoices,
+    frequencyDisplayModes,
+    showDisplacementMm,
+    showDisplacementStatsOnChart,
+    showVelocityStatsOnChart,
+    showStrokeLengthStatsOnChart,
   ])
 
   useEffect(() => {
@@ -373,7 +452,7 @@ export function SuspensionVisualization({
         setLoadState({ status: 'idle', message: 'Add at least one session to visualize suspension data.' })
         return
       }
-      const missCount = visualizationCacheMissCount(dataSource, studySetSessionRefs, resolvedSignalChoices)
+      const missCount = visualizationCacheMissCount(dataSource, studySetSessionRefs, resolvedSignalChoices, displacementUnitMode)
       setLoadState((current) => ({
         status: 'loading',
         message: current.data
@@ -385,7 +464,7 @@ export function SuspensionVisualization({
         diagnostics: current.diagnostics,
       }))
       try {
-        const result = await loadVisualizationData(studySetSessionRefs, resolvedSignalChoices, sessions, dataSource)
+        const result = await loadVisualizationData(studySetSessionRefs, resolvedSignalChoices, displacementUnitMode, sessions, dataSource)
         if (!cancelled) {
           setLoadState({
             status: 'ready',
@@ -411,7 +490,7 @@ export function SuspensionVisualization({
     return () => {
       cancelled = true
     }
-  }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature])
+  }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature, displacementUnitMode])
 
   const data = loadState.data ?? null
   const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
@@ -436,6 +515,14 @@ export function SuspensionVisualization({
   const strokeLengthDomain = baseAnalysisData
     ? metricMagnitudeCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, STROKE_LENGTH_METRIC_SPEC, STROKE_LENGTH_DOMAIN_LIMITS)
     : ([0, 100] as [number, number])
+  const displacementFrontRole = showDisplacementMm ? 'front_displacement_mm' : 'front_displacement'
+  const displacementRearRole = showDisplacementMm ? 'rear_displacement_mm' : 'rear_displacement'
+  const displacementXDomain = showDisplacementMm && baseAnalysisData
+    ? displacementMmCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, DISPLACEMENT_MM_DOMAIN_LIMITS)
+    : ([0, 100] as [number, number])
+  const displacementXLabel = showDisplacementMm ? 'wheel displacement (mm)' : 'wheel displacement, % of max'
+  const displacementStatsFormatter = showDisplacementMm ? DISPLACEMENT_MM_STATS_FORMATTER : formatPercentValue
+  const displacementValueTransform = showDisplacementMm ? identityValues : percentValues
 
   function toggleEntity(entityId: string) {
     setSelectedEntityIds((current) =>
@@ -482,6 +569,13 @@ export function SuspensionVisualization({
     setSignalChoices((current) => ({
       ...current,
       [key]: column,
+    }))
+  }
+
+  function setFrequencyDisplayMode(quantity: keyof FrequencyDisplayModes, mode: FrequencyDisplayMode) {
+    setFrequencyDisplayModes((current) => ({
+      ...current,
+      [quantity]: mode,
     }))
   }
 
@@ -573,6 +667,19 @@ export function SuspensionVisualization({
                     onInspectSignals={onInspectSignals}
                   />
                 )}
+
+                <DisplayOptionsControl
+                  modes={frequencyDisplayModes}
+                  onChange={setFrequencyDisplayMode}
+                  onShowDisplacementMmChange={setShowDisplacementMm}
+                  onShowDisplacementStatsOnChartChange={setShowDisplacementStatsOnChart}
+                  onShowStrokeLengthStatsOnChartChange={setShowStrokeLengthStatsOnChart}
+                  onShowVelocityStatsOnChartChange={setShowVelocityStatsOnChart}
+                  showDisplacementMm={showDisplacementMm}
+                  showDisplacementStatsOnChart={showDisplacementStatsOnChart}
+                  showStrokeLengthStatsOnChart={showStrokeLengthStatsOnChart}
+                  showVelocityStatsOnChart={showVelocityStatsOnChart}
+                />
               </div>
             </section>
           )}
@@ -595,7 +702,7 @@ export function SuspensionVisualization({
           <VisualizationPanel
             id="displacement"
             title="Wheel displacement distribution"
-            subtitle="Wheel displacement, % of maximum travel, frequency distribution."
+            subtitle={showDisplacementMm ? 'Wheel displacement in engineering units, frequency distribution.' : 'Wheel displacement, % of maximum travel, frequency distribution.'}
             collapsed={collapsedPanels.includes('displacement')}
             onToggle={() => togglePanel('displacement')}
           >
@@ -610,37 +717,42 @@ export function SuspensionVisualization({
                 selectedTrack={selectedTrack}
                 sectors={selectedSectors}
                 allSectors={sectors}
-                frontRole="front_displacement"
-                rearRole="rear_displacement"
-                xDomain={[0, 100]}
-                xLabel="wheel displacement, % of max"
+                frontRole={displacementFrontRole}
+                rearRole={displacementRearRole}
+                displayMode={frequencyDisplayModes.displacement}
+                showDisplacementStatsOnChart={showDisplacementStatsOnChart}
+                xDomain={displacementXDomain}
+                xLabel={displacementXLabel}
                 bins={SECTOR_DISTRIBUTION_BINS}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
-                valueTransform={percentValues}
+                valueTransform={displacementValueTransform}
                 statsMode="displacement"
+                statsFormatter={displacementStatsFormatter}
               />
             ) : (
               <DistributionGrid
                 chartKind="histogram"
+                displayMode={frequencyDisplayModes.displacement}
                 layout={panelComparisonLayout}
                 entities={selectedEntities}
-                roles={distributionRoles('front_displacement', 'rear_displacement', selectedEnds)}
-                xDomain={[0, 100]}
-                xLabel="wheel displacement, % of max"
+                roles={distributionRoles(displacementFrontRole, displacementRearRole, selectedEnds)}
+                xDomain={displacementXDomain}
+                xLabel={displacementXLabel}
                 bins={WHOLE_SESSION_DISTRIBUTION_BINS}
                 yMax={distributionYMax(
                   selectedEntities,
-                  distributionRoles('front_displacement', 'rear_displacement', selectedEnds),
-                  (entity, role) => percentValues(entitySignalValues(entity, baseAnalysisData, role.signalRole)),
-                  [0, 100],
+                  distributionRoles(displacementFrontRole, displacementRearRole, selectedEnds),
+                  (entity, role) => displacementValueTransform(entitySignalValues(entity, baseAnalysisData, role.signalRole)),
+                  displacementXDomain,
                   WHOLE_SESSION_DISTRIBUTION_BINS,
                   'histogram',
                 )}
                 sessions={sessions}
                 showStats
+                showDisplacementStatsOnChart={showDisplacementStatsOnChart}
                 statsMode="displacement"
-                statsFormatter={formatPercentValue}
-                valueForEntityRole={(entity, role) => percentValues(entitySignalValues(entity, analysisData, role.signalRole))}
+                statsFormatter={displacementStatsFormatter}
+                valueForEntityRole={(entity, role) => displacementValueTransform(entitySignalValues(entity, analysisData, role.signalRole))}
               />
             )}
           </VisualizationPanel>
@@ -660,18 +772,21 @@ export function SuspensionVisualization({
                 ends={selectedEnds}
                 layout={comparisonLayout}
                 metricSpec={VELOCITY_METRIC_SPEC}
+                displayMode={frequencyDisplayModes.velocity}
                 selectedTrack={selectedTrack}
                 sectors={selectedSectors}
                 allSectors={sectors}
                 xLabel="stroke maximum wheel velocity (mm/s)"
                 bins={SECTOR_DISTRIBUTION_BINS}
                 domainCandidates={VELOCITY_DOMAIN_LIMITS}
+                showStatsOnChart={showVelocityStatsOnChart}
                 statsFormatter={VELOCITY_STATS_FORMATTER}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
               <DistributionGrid
                 chartKind="mirrored_velocity"
+                displayMode={frequencyDisplayModes.velocity}
                 layout={panelComparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('', '', selectedEnds)}
@@ -688,6 +803,7 @@ export function SuspensionVisualization({
                 )}
                 sessions={sessions}
                 showStats
+                showMirroredStatsOnChart={showVelocityStatsOnChart}
                 statsFormatter={VELOCITY_STATS_FORMATTER}
                 statsTransform={Math.abs}
                 valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, analysisData, role.key, VELOCITY_METRIC_SPEC)}
@@ -710,18 +826,21 @@ export function SuspensionVisualization({
                 ends={selectedEnds}
                 layout={comparisonLayout}
                 metricSpec={STROKE_LENGTH_METRIC_SPEC}
+                displayMode={frequencyDisplayModes.strokeLength}
                 selectedTrack={selectedTrack}
                 sectors={selectedSectors}
                 allSectors={sectors}
                 xLabel="wheel stroke length (mm)"
                 bins={SECTOR_DISTRIBUTION_BINS}
                 domainCandidates={STROKE_LENGTH_DOMAIN_LIMITS}
+                showStatsOnChart={showStrokeLengthStatsOnChart}
                 statsFormatter={STROKE_LENGTH_STATS_FORMATTER}
                 trackMatchesLoading={visualizationTrackMatchesLoading}
               />
             ) : (
               <DistributionGrid
                 chartKind="mirrored_velocity"
+                displayMode={frequencyDisplayModes.strokeLength}
                 layout={panelComparisonLayout}
                 entities={selectedEntities}
                 roles={distributionRoles('', '', selectedEnds)}
@@ -738,6 +857,7 @@ export function SuspensionVisualization({
                 )}
                 sessions={sessions}
                 showStats
+                showMirroredStatsOnChart={showStrokeLengthStatsOnChart}
                 statsFormatter={STROKE_LENGTH_STATS_FORMATTER}
                 statsTransform={Math.abs}
                 valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, analysisData, role.key, STROKE_LENGTH_METRIC_SPEC)}
@@ -895,6 +1015,138 @@ function ActivityExclusionControl({
         <small>Uses preprocessing activity masks when available.</small>
       </span>
     </label>
+  )
+}
+
+function DisplayOptionsControl({
+  modes,
+  onChange,
+  onShowDisplacementMmChange,
+  onShowDisplacementStatsOnChartChange,
+  onShowStrokeLengthStatsOnChartChange,
+  onShowVelocityStatsOnChartChange,
+  showDisplacementMm,
+  showDisplacementStatsOnChart,
+  showStrokeLengthStatsOnChart,
+  showVelocityStatsOnChart,
+}: {
+  modes: FrequencyDisplayModes
+  onChange: (quantity: keyof FrequencyDisplayModes, mode: FrequencyDisplayMode) => void
+  onShowDisplacementMmChange: (checked: boolean) => void
+  onShowDisplacementStatsOnChartChange: (checked: boolean) => void
+  onShowStrokeLengthStatsOnChartChange: (checked: boolean) => void
+  onShowVelocityStatsOnChartChange: (checked: boolean) => void
+  showDisplacementMm: boolean
+  showDisplacementStatsOnChart: boolean
+  showStrokeLengthStatsOnChart: boolean
+  showVelocityStatsOnChart: boolean
+}) {
+  return (
+    <section className="viz-display-options">
+      <strong>Display options</strong>
+      <fieldset className="viz-frequency-options">
+        <legend>Frequency data</legend>
+        <FrequencyModePair
+          extra={
+            <>
+              <label className="viz-frequency-extra-option">
+                <input
+                  checked={showDisplacementStatsOnChart}
+                  onChange={(event) => onShowDisplacementStatsOnChartChange(event.target.checked)}
+                  type="checkbox"
+                />
+                Show stats on chart
+              </label>
+              <label className="viz-frequency-extra-option">
+                <input
+                  checked={showDisplacementMm}
+                  onChange={(event) => onShowDisplacementMmChange(event.target.checked)}
+                  type="checkbox"
+                />
+                Show displacement in mm
+              </label>
+            </>
+          }
+          label="Wheel displacement"
+          name="frequency-displacement"
+          value={modes.displacement}
+          onChange={(mode) => onChange('displacement', mode)}
+        />
+        <FrequencyModePair
+          extra={
+            <label className="viz-frequency-extra-option">
+              <input
+                checked={showVelocityStatsOnChart}
+                onChange={(event) => onShowVelocityStatsOnChartChange(event.target.checked)}
+                type="checkbox"
+              />
+              Show stats on chart
+            </label>
+          }
+          label="Wheel velocity"
+          name="frequency-velocity"
+          value={modes.velocity}
+          onChange={(mode) => onChange('velocity', mode)}
+        />
+        <FrequencyModePair
+          extra={
+            <label className="viz-frequency-extra-option">
+              <input
+                checked={showStrokeLengthStatsOnChart}
+                onChange={(event) => onShowStrokeLengthStatsOnChartChange(event.target.checked)}
+                type="checkbox"
+              />
+              Show stats on chart
+            </label>
+          }
+          label="Wheel stroke length"
+          name="frequency-stroke-length"
+          value={modes.strokeLength}
+          onChange={(mode) => onChange('strokeLength', mode)}
+        />
+      </fieldset>
+    </section>
+  )
+}
+
+function FrequencyModePair({
+  extra,
+  label,
+  name,
+  value,
+  onChange,
+}: {
+  extra?: ReactNode
+  label: string
+  name: string
+  value: FrequencyDisplayMode
+  onChange: (mode: FrequencyDisplayMode) => void
+}) {
+  return (
+    <div className="viz-frequency-mode-row">
+      <span>{label}</span>
+      <span className="viz-frequency-mode-options">
+        <label>
+          <input
+            checked={value === 'histogram'}
+            name={name}
+            onChange={() => onChange('histogram')}
+            type="radio"
+          />
+          Histogram
+        </label>
+        <label>
+          <input
+            checked={value === 'cumulative'}
+            name={name}
+            onChange={() => onChange('cumulative')}
+            type="radio"
+          />
+          Cumulative frequency
+        </label>
+      </span>
+      {extra}
+    </div>
   )
 }
 
@@ -1562,6 +1814,7 @@ function VisualizationPanel({
 
 function DistributionGrid({
   chartKind,
+  displayMode,
   layout,
   entities,
   roles,
@@ -1573,11 +1826,14 @@ function DistributionGrid({
   yMax,
   sessions = [],
   showStats = false,
+  showDisplacementStatsOnChart = true,
+  showMirroredStatsOnChart = false,
   statsMode = 'basic',
   statsFormatter = formatPercentValue,
   statsTransform = (value: number) => value,
 }: {
   chartKind: DistributionChartKind
+  displayMode: FrequencyDisplayMode
   layout: ComparisonLayout
   entities: VisualizationEntity[]
   roles: DistributionRole[]
@@ -1589,10 +1845,14 @@ function DistributionGrid({
   yMax: number
   sessions?: SessionRecord[]
   showStats?: boolean
+  showDisplacementStatsOnChart?: boolean
+  showMirroredStatsOnChart?: boolean
   statsMode?: DistributionStatsMode
   statsFormatter?: (value: number | null) => string
   statsTransform?: (value: number) => number
 }) {
+  const yLabelForMode = displayMode === 'cumulative' ? 'cumulative frequency' : yLabel
+  const yMaxForMode = displayMode === 'cumulative' ? 1 : yMax
   if (roles.length === 0) {
     return (
       <div className="viz-sector-empty">
@@ -1616,11 +1876,29 @@ function DistributionGrid({
             <article className="viz-entity-tile viz-end-tile" key={role.key}>
               <EndTileHeader label={role.label} />
               {chartKind === 'mirrored_velocity' ? (
-                <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
-              ) : series.length <= 2 ? (
-                <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
+                <MirroredVelocityChart
+                  bins={bins}
+                  displayMode={displayMode}
+                  series={series}
+                  showStatsOnChart={showMirroredStatsOnChart}
+                  statsFormatter={statsFormatter}
+                  xDomain={xDomain}
+                  xLabel={xLabel}
+                  yLabel={yLabelForMode}
+                  yMax={yMaxForMode}
+                />
               ) : (
-                <MultiHistogramChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
+                <FrequencyChartBlock
+                  bins={bins}
+                  displacementStatsFormatter={statsFormatter}
+                  displayMode={displayMode}
+                  series={series}
+                  showDisplacementGlyphs={statsMode === 'displacement' && showDisplacementStatsOnChart}
+                  xDomain={xDomain}
+                  xLabel={xLabel}
+                  yLabel={yLabelForMode}
+                  yMax={yMaxForMode}
+                />
               )}
               <EntitySeriesLegend
                 series={series.map((item) => ({
@@ -1660,9 +1938,29 @@ function DistributionGrid({
           <article className="viz-entity-tile" key={entity.id}>
             <EntityTileHeader entity={entity} sessions={sessions} />
             {chartKind === 'mirrored_velocity' ? (
-              <MirroredVelocityChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
+              <MirroredVelocityChart
+                bins={bins}
+                displayMode={displayMode}
+                series={series}
+                showStatsOnChart={showMirroredStatsOnChart}
+                statsFormatter={statsFormatter}
+                xDomain={xDomain}
+                xLabel={xLabel}
+                yLabel={yLabelForMode}
+                yMax={yMaxForMode}
+              />
             ) : (
-              <HistogramOverlayChart series={series} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} bins={bins} yMax={yMax} />
+              <FrequencyChartBlock
+                bins={bins}
+                displacementStatsFormatter={statsFormatter}
+                displayMode={displayMode}
+                series={series}
+                showDisplacementGlyphs={statsMode === 'displacement' && showDisplacementStatsOnChart}
+                xDomain={xDomain}
+                xLabel={xLabel}
+                yLabel={yLabelForMode}
+                yMax={yMaxForMode}
+              />
             )}
             {showStats && (
               <DistributionStats
@@ -1692,11 +1990,14 @@ function SectorDistributionScaffold({
   allSectors,
   frontRole,
   rearRole,
+  displayMode,
   xDomain,
   xLabel,
   bins,
   trackMatchesLoading,
+  showDisplacementStatsOnChart = true,
   statsMode = 'basic',
+  statsFormatter = formatPercentValue,
   valueTransform = (values: number[]) => values,
 }: {
   quantity: 'displacement' | 'velocity'
@@ -1710,11 +2011,14 @@ function SectorDistributionScaffold({
   allSectors: TrackSector[]
   frontRole: string
   rearRole: string
+  displayMode: FrequencyDisplayMode
   xDomain: [number, number]
   xLabel: string
   bins: number
   trackMatchesLoading: boolean
+  showDisplacementStatsOnChart?: boolean
   statsMode?: DistributionStatsMode
+  statsFormatter?: (value: number | null) => string
   valueTransform?: (values: number[]) => number[]
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
@@ -1791,11 +2095,14 @@ function SectorDistributionScaffold({
         <DistributionGrid
           bins={bins}
           chartKind={chartKind}
+          displayMode={displayMode}
           entities={entities}
           layout={layout}
           roles={roles}
+          showDisplacementStatsOnChart={showDisplacementStatsOnChart}
           showStats={statsMode !== 'basic'}
           statsMode={statsMode}
+          statsFormatter={statsFormatter}
           valueForEntityRole={(entity, role) =>
             valueTransform(sectorValuesForEntityAcrossSectors(entity, data, selectedTrack, sectors, role.signalRole))
           }
@@ -1824,14 +2131,17 @@ function SectorDistributionScaffold({
                 <DistributionGrid
                   bins={bins}
                   chartKind={chartKind}
+                  displayMode={displayMode}
                   entities={entities}
-                    layout={layout}
-                    roles={roles}
-                    showStats={statsMode !== 'basic'}
-                    statsMode={statsMode}
-                    valueForEntityRole={(entity, role) =>
-                      valueTransform(sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole))
-                    }
+                  layout={layout}
+                  roles={roles}
+                  showDisplacementStatsOnChart={showDisplacementStatsOnChart}
+                  showStats={statsMode !== 'basic'}
+                  statsMode={statsMode}
+                  statsFormatter={statsFormatter}
+                  valueForEntityRole={(entity, role) =>
+                    valueTransform(sectorValuesForEntity(entity, data, selectedTrack, sector, role.signalRole))
+                  }
                   xDomain={xDomain}
                   xLabel={xLabel}
                   yMax={facetYMax}
@@ -1855,9 +2165,11 @@ function SectorMetricDistributionScaffold({
   sectors,
   allSectors,
   metricSpec,
+  displayMode,
   xLabel,
   bins,
   domainCandidates,
+  showStatsOnChart = false,
   statsFormatter,
   trackMatchesLoading,
 }: {
@@ -1870,9 +2182,11 @@ function SectorMetricDistributionScaffold({
   sectors: TrackSector[]
   allSectors: TrackSector[]
   metricSpec: MirroredMetricSpec
+  displayMode: FrequencyDisplayMode
   xLabel: string
   bins: number
   domainCandidates: number[]
+  showStatsOnChart?: boolean
   statsFormatter: (value: number | null) => string
   trackMatchesLoading: boolean
 }) {
@@ -1916,10 +2230,12 @@ function SectorMetricDistributionScaffold({
         <DistributionGrid
           bins={bins}
           chartKind="mirrored_velocity"
+          displayMode={displayMode}
           entities={entities}
           layout={layout}
           roles={roles}
           showStats
+          showMirroredStatsOnChart={showStatsOnChart}
           statsFormatter={statsFormatter}
           statsTransform={Math.abs}
           valueForEntityRole={(entity, role) => metricMirroredValuesForRows(overallRowsForEntity(entity), role.key, metricSpec)}
@@ -1950,10 +2266,12 @@ function SectorMetricDistributionScaffold({
                   <DistributionGrid
                     bins={bins}
                     chartKind="mirrored_velocity"
+                    displayMode={displayMode}
                     entities={entities}
                     layout={layout}
                     roles={roles}
                     showStats
+                    showMirroredStatsOnChart={showStatsOnChart}
                     statsFormatter={statsFormatter}
                     statsTransform={Math.abs}
                     valueForEntityRole={(entity, role) => metricMirroredValuesForRows(rowsForEntity(entity), role.key, metricSpec)}
@@ -2446,6 +2764,108 @@ function histogramSeriesTitle(label: string, bins: HistogramBin[], sampleCount: 
     : `${label}\n${direction}No samples`
 }
 
+function cumulativeSeriesTitle(label: string, sampleCount: number, xLabel: string, directionLabel = '') {
+  const direction = directionLabel ? `${directionLabel}\n` : ''
+  return sampleCount
+    ? `${label}\n${direction}${sampleCount} sample(s)\n${xLabel}: cumulative frequency`
+    : `${label}\n${direction}No samples`
+}
+
+function cumulativeDistribution(values: number[], xDomain: [number, number]): CumulativeDistribution {
+  const key = histogramCacheKey(xDomain, CUMULATIVE_DISTRIBUTION_MAX_POINTS)
+  const cached = cumulativeDistributionCache.get(values)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? { points: [], sortedValues: [], sampleCount: 0 }
+  }
+  const clean = values
+    .filter((value) => Number.isFinite(value) && value >= xDomain[0] && value <= xDomain[1])
+    .sort((left, right) => left - right)
+  if (clean.length === 0) {
+    const empty = { points: [], sortedValues: [], sampleCount: 0 }
+    const nextCache = cached ?? new Map<string, CumulativeDistribution>()
+    nextCache.set(key, empty)
+    if (!cached) {
+      cumulativeDistributionCache.set(values, nextCache)
+    }
+    return empty
+  }
+  const points: CumulativeDistributionPoint[] = [{ x: xDomain[0], proportion: 0 }]
+  let index = 0
+  while (index < clean.length) {
+    const value = clean[index]
+    while (index < clean.length && clean[index] === value) {
+      index += 1
+    }
+    points.push({ x: value, proportion: index / clean.length })
+  }
+  const lastPoint = points[points.length - 1]
+  if (lastPoint && lastPoint.x < xDomain[1]) {
+    points.push({ x: xDomain[1], proportion: 1 })
+  }
+  const distribution = {
+    points: downsampleCumulativePoints(points),
+    sortedValues: clean,
+    sampleCount: clean.length,
+  }
+  const nextCache = cached ?? new Map<string, CumulativeDistribution>()
+  nextCache.set(key, distribution)
+  if (!cached) {
+    cumulativeDistributionCache.set(values, nextCache)
+  }
+  return distribution
+}
+
+function cumulativeProportionAt(distribution: CumulativeDistribution, value: number) {
+  if (distribution.sampleCount === 0) {
+    return null
+  }
+  const count = upperBound(distribution.sortedValues, value)
+  return count / distribution.sampleCount
+}
+
+function pointerEventXValue(
+  event: PointerEvent<SVGSVGElement>,
+  chartWidth: number,
+  margin: { left: number; right: number },
+  xDomain: [number, number],
+) {
+  const rect = event.currentTarget.getBoundingClientRect()
+  const svgX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * chartWidth : margin.left
+  const clampedX = clamp(svgX, margin.left, chartWidth - margin.right)
+  const plotFraction = (clampedX - margin.left) / Math.max(1, chartWidth - margin.left - margin.right)
+  return xDomain[0] + plotFraction * (xDomain[1] - xDomain[0])
+}
+
+function cumulativeHoverTitle(value: number, xLabel: string) {
+  const unit = shortAxisUnit(xLabel)
+  return unit ? `${formatAxis(value)} ${unit}` : formatAxis(value)
+}
+
+function shortAxisUnit(label: string) {
+  const parenthesized = label.match(/\(([^)]+)\)\s*$/)
+  if (parenthesized) {
+    return parenthesized[1]
+  }
+  const commaIndex = label.lastIndexOf(',')
+  return commaIndex >= 0 ? label.slice(commaIndex + 1).trim() : ''
+}
+
+function compactSvgLabel(label: string, maxLength: number) {
+  return label.length > maxLength ? `${label.slice(0, Math.max(0, maxLength - 1))}...` : label
+}
+
+function downsampleCumulativePoints(points: CumulativeDistributionPoint[]) {
+  if (points.length <= CUMULATIVE_DISTRIBUTION_MAX_POINTS) {
+    return points
+  }
+  const out: CumulativeDistributionPoint[] = []
+  const lastIndex = points.length - 1
+  for (let index = 0; index < CUMULATIVE_DISTRIBUTION_MAX_POINTS; index += 1) {
+    out.push(points[Math.round((index / (CUMULATIVE_DISTRIBUTION_MAX_POINTS - 1)) * lastIndex)])
+  }
+  return out
+}
+
 function scatterPointTitle(
   label: string,
   xLabel: string,
@@ -2456,7 +2876,73 @@ function scatterPointTitle(
   return `${label}${role}\n${xLabel}: ${formatAxis(point.x)}\n${yLabel}: ${formatAxis(point.y)}`
 }
 
+function FrequencyChartBlock({
+  bins,
+  displacementStatsFormatter = formatPercentValue,
+  displayMode,
+  series,
+  showDisplacementGlyphs,
+  xDomain,
+  xLabel,
+  yLabel,
+  yMax,
+}: {
+  bins: number
+  displacementStatsFormatter?: (value: number | null) => string
+  displayMode: FrequencyDisplayMode
+  series: Array<{ id: string; label: string; color: string; values: number[] }>
+  showDisplacementGlyphs: boolean
+  xDomain: [number, number]
+  xLabel: string
+  yLabel: string
+  yMax: number
+}) {
+  const displacementGlyphPlacement: DisplacementGlyphPlacement | null = showDisplacementGlyphs
+    ? displayMode === 'cumulative'
+      ? 'bottom'
+      : 'top'
+    : null
+  return (
+    <div className="viz-frequency-chart-block">
+      {displayMode === 'cumulative' ? (
+        <CumulativeFrequencyChart
+          displacementGlyphPlacement={displacementGlyphPlacement}
+          displacementStatsFormatter={displacementStatsFormatter}
+          series={series}
+          xDomain={xDomain}
+          xLabel={xLabel}
+          yLabel={yLabel}
+        />
+      ) : series.length <= 2 ? (
+        <HistogramOverlayChart
+          bins={bins}
+          displacementGlyphPlacement={displacementGlyphPlacement}
+          displacementStatsFormatter={displacementStatsFormatter}
+          series={series}
+          xDomain={xDomain}
+          xLabel={xLabel}
+          yLabel={yLabel}
+          yMax={yMax}
+        />
+      ) : (
+        <MultiHistogramChart
+          bins={bins}
+          displacementGlyphPlacement={displacementGlyphPlacement}
+          displacementStatsFormatter={displacementStatsFormatter}
+          series={series}
+          xDomain={xDomain}
+          xLabel={xLabel}
+          yLabel={yLabel}
+          yMax={yMax}
+        />
+      )}
+    </div>
+  )
+}
+
 function HistogramOverlayChart({
+  displacementGlyphPlacement,
+  displacementStatsFormatter,
   series,
   xDomain,
   xLabel,
@@ -2464,6 +2950,8 @@ function HistogramOverlayChart({
   bins,
   yMax,
 }: {
+  displacementGlyphPlacement: DisplacementGlyphPlacement | null
+  displacementStatsFormatter: (value: number | null) => string
   series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
   xLabel: string
@@ -2519,6 +3007,17 @@ function HistogramOverlayChart({
           )
         }),
       )}
+      {displacementGlyphPlacement && (
+        <DisplacementStatsGlyphOverlay
+          formatter={displacementStatsFormatter}
+          height={height}
+          margin={margin}
+          placement={displacementGlyphPlacement}
+          series={series}
+          width={width}
+          xDomain={xDomain}
+        />
+      )}
       <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
         {xLabel}
       </text>
@@ -2535,6 +3034,8 @@ function HistogramOverlayChart({
 }
 
 function MultiHistogramChart({
+  displacementGlyphPlacement,
+  displacementStatsFormatter,
   series,
   xDomain,
   xLabel,
@@ -2542,6 +3043,8 @@ function MultiHistogramChart({
   bins,
   yMax,
 }: {
+  displacementGlyphPlacement: DisplacementGlyphPlacement | null
+  displacementStatsFormatter: (value: number | null) => string
   series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
   xLabel: string
@@ -2589,6 +3092,17 @@ function MultiHistogramChart({
           </path>
         ) : null
       })}
+      {displacementGlyphPlacement && (
+        <DisplacementStatsGlyphOverlay
+          formatter={displacementStatsFormatter}
+          height={height}
+          margin={margin}
+          placement={displacementGlyphPlacement}
+          series={series}
+          width={width}
+          xDomain={xDomain}
+        />
+      )}
       <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
         {xLabel}
       </text>
@@ -2604,6 +3118,158 @@ function MultiHistogramChart({
   )
 }
 
+function CumulativeFrequencyChart({
+  displacementGlyphPlacement,
+  displacementStatsFormatter,
+  series,
+  xDomain,
+  xLabel,
+  yLabel,
+}: {
+  displacementGlyphPlacement: DisplacementGlyphPlacement | null
+  displacementStatsFormatter: (value: number | null) => string
+  series: Array<{ id: string; label: string; color: string; values: number[] }>
+  xDomain: [number, number]
+  xLabel: string
+  yLabel: string
+}) {
+  const width = 324
+  const height = 205
+  const margin = { top: 12, right: 12, bottom: 34, left: 34 }
+  const [hoverX, setHoverX] = useState<number | null>(null)
+  const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+  const y = d3.scaleLinear().domain([0, 1]).range([height - margin.bottom, margin.top])
+  const distributions = series.map((item) => ({
+    ...item,
+    distribution: cumulativeDistribution(item.values, xDomain),
+  }))
+  const line = d3
+    .line<CumulativeDistributionPoint>()
+    .x((point) => x(point.x))
+    .y((point) => y(point.proportion))
+    .curve(d3.curveStepAfter)
+  const allEmpty = distributions.every((item) => item.distribution.sampleCount === 0)
+  const hoverItems = hoverX === null
+    ? []
+    : distributions
+        .map((item) => ({
+          id: item.id,
+          label: item.label,
+          color: item.color,
+          proportion: cumulativeProportionAt(item.distribution, hoverX),
+        }))
+        .filter((item): item is { id: string; label: string; color: string; proportion: number } => item.proportion !== null)
+  return (
+    <svg
+      className="viz-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={xLabel}
+      onPointerLeave={() => setHoverX(null)}
+      onPointerMove={(event) => setHoverX(pointerEventXValue(event, width, margin, xDomain))}
+    >
+      <line className="viz-axis" x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} />
+      <line className="viz-axis" x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} />
+      {[0, 0.5, 1].map((tick) => {
+        const value = xDomain[0] + (xDomain[1] - xDomain[0]) * tick
+        return (
+          <g key={tick}>
+            <line className="viz-tick" x1={x(value)} x2={x(value)} y1={height - margin.bottom} y2={height - margin.bottom + 4} />
+            <text className="viz-axis-label" x={x(value)} y={height - 14} textAnchor="middle">
+              {formatAxis(value)}
+            </text>
+          </g>
+        )
+      })}
+      {[0, 0.5, 1].map((tick) => (
+        <g key={`y-${tick}`}>
+          <line className="viz-grid-line" x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} />
+        </g>
+      ))}
+      {distributions.map((item) => {
+        const path = line(item.distribution.points)
+        return path ? (
+          <path className="viz-series-line" d={path} key={item.id} stroke={item.color}>
+            <title>{cumulativeSeriesTitle(item.label, item.distribution.sampleCount, xLabel)}</title>
+          </path>
+        ) : null
+      })}
+      {displacementGlyphPlacement && (
+        <DisplacementStatsGlyphOverlay
+          formatter={displacementStatsFormatter}
+          height={height}
+          margin={margin}
+          placement={displacementGlyphPlacement}
+          series={series}
+          width={width}
+          xDomain={xDomain}
+        />
+      )}
+      {hoverX !== null && hoverItems.length > 0 && (
+        <>
+          <line className="viz-cumulative-hover-line" x1={x(hoverX)} x2={x(hoverX)} y1={margin.top} y2={height - margin.bottom} />
+          <CumulativeHoverReadout
+            chartWidth={width}
+            items={hoverItems}
+            title={cumulativeHoverTitle(hoverX, xLabel)}
+            x={x(hoverX)}
+            y={margin.top + 8}
+          />
+        </>
+      )}
+      <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
+        {xLabel}
+      </text>
+      <text className="viz-axis-title" transform={`translate(12 ${height / 2}) rotate(-90)`} textAnchor="middle">
+        {yLabel}
+      </text>
+      {allEmpty && (
+        <text className="viz-empty-chart" x={width / 2} y={height / 2} textAnchor="middle">
+          No matching signals
+        </text>
+      )}
+    </svg>
+  )
+}
+
+function CumulativeHoverReadout({
+  chartWidth,
+  items,
+  title,
+  x,
+  y,
+}: {
+  chartWidth: number
+  items: Array<{ id: string; label: string; color: string; proportion: number }>
+  title: string
+  x: number
+  y: number
+}) {
+  const boxWidth = 142
+  const rowHeight = 12
+  const boxHeight = 20 + items.length * rowHeight
+  const boxX = clamp(x + 8, 6, chartWidth - boxWidth - 6)
+  return (
+    <g className="viz-cumulative-tooltip" transform={`translate(${boxX} ${y})`}>
+      <rect width={boxWidth} height={boxHeight} rx={3} />
+      <text className="viz-cumulative-tooltip-title" x={8} y={13}>
+        {title}
+      </text>
+      {items.map((item, index) => (
+        <g key={item.id} transform={`translate(8 ${24 + index * rowHeight})`}>
+          <circle cx={3} cy={-3} fill={item.color} r={2.5} />
+          <text x={10} y={0}>
+            {compactSvgLabel(item.label, 18)}
+          </text>
+          <text x={boxWidth - 16} y={0} textAnchor="end">
+            {formatProportion(item.proportion)}
+          </text>
+        </g>
+      ))}
+    </g>
+  )
+}
+
 function MirroredVelocityChart({
   series,
   xDomain,
@@ -2611,6 +3277,9 @@ function MirroredVelocityChart({
   yLabel,
   bins,
   yMax,
+  displayMode,
+  showStatsOnChart = false,
+  statsFormatter = formatMetricValue,
 }: {
   series: Array<{ id: string; label: string; color: string; values: number[] }>
   xDomain: [number, number]
@@ -2618,19 +3287,28 @@ function MirroredVelocityChart({
   yLabel: string
   bins: number
   yMax: number
+  displayMode: FrequencyDisplayMode
+  showStatsOnChart?: boolean
+  statsFormatter?: (value: number | null) => string
 }) {
   const width = 324
   const height = 202
   const margin = { top: 22, right: 12, bottom: 34, left: 38 }
+  const [hoverX, setHoverX] = useState<number | null>(null)
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
-  const mirroredBins = series.map((item) => ({
-    ...item,
-    ...mirroredVelocityBins(item.values, xDomain, bins),
-  }))
+  const mirroredBins =
+    displayMode === 'histogram'
+      ? series.map((item) => ({
+          ...item,
+          ...mirroredVelocityBins(item.values, xDomain, bins),
+        }))
+      : []
   const localYMax =
-    Math.max(...mirroredBins.flatMap((item) => [...item.compression, ...item.rebound].map((bin) => bin.proportion)), 0) ||
-    yMax ||
-    1
+    displayMode === 'cumulative'
+      ? 1
+      : Math.max(...mirroredBins.flatMap((item) => [...item.compression, ...item.rebound].map((bin) => bin.proportion)), 0) ||
+        yMax ||
+        1
   const y = d3.scaleLinear().domain([-localYMax, localYMax]).range([height - margin.bottom, margin.top])
   const line = d3
     .line<{ x0: number; x1: number; proportion: number }>()
@@ -2642,11 +3320,59 @@ function MirroredVelocityChart({
     .x((bin) => x((bin.x0 + bin.x1) / 2))
     .y((bin) => y(-bin.proportion))
     .curve(d3.curveStepAfter)
+  const cumulativeLine = d3
+    .line<CumulativeDistributionPoint>()
+    .x((point) => x(point.x))
+    .y((point) => y(point.proportion))
+    .curve(d3.curveStepAfter)
+  const mirroredCumulativeLine = d3
+    .line<CumulativeDistributionPoint>()
+    .x((point) => x(point.x))
+    .y((point) => y(-point.proportion))
+    .curve(d3.curveStepAfter)
   const allEmpty = series.every((item) => item.values.length === 0)
-  const renderBars = series.length <= 2
+  const renderBars = displayMode === 'histogram' && series.length <= 2
   const seriesCount = Math.max(1, series.length)
+  const cumulativeDistributions = displayMode === 'cumulative'
+    ? series.map((item) => ({
+        ...item,
+        compressionDistribution: cumulativeDistribution(
+          item.values.filter((value) => value >= 0),
+          xDomain,
+        ),
+        reboundDistribution: cumulativeDistribution(
+          item.values.filter((value) => value < 0).map((value) => -value),
+          xDomain,
+        ),
+      }))
+    : []
+  const hoverItems = hoverX === null
+    ? []
+    : cumulativeDistributions
+        .flatMap((item) => [
+          {
+            id: `${item.id}:compression`,
+            label: `${item.label} compression`,
+            color: item.color,
+            proportion: cumulativeProportionAt(item.compressionDistribution, hoverX),
+          },
+          {
+            id: `${item.id}:rebound`,
+            label: `${item.label} rebound`,
+            color: item.color,
+            proportion: cumulativeProportionAt(item.reboundDistribution, hoverX),
+          },
+        ])
+        .filter((item): item is { id: string; label: string; color: string; proportion: number } => item.proportion !== null)
   return (
-    <svg className="viz-chart viz-mirrored-velocity-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={xLabel}>
+    <svg
+      className="viz-chart viz-mirrored-velocity-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={xLabel}
+      onPointerLeave={() => setHoverX(null)}
+      onPointerMove={(event) => displayMode === 'cumulative' && setHoverX(pointerEventXValue(event, width, margin, xDomain))}
+    >
       <line className="viz-axis" x1={margin.left} y1={y(0)} x2={width - margin.right} y2={y(0)} />
       <line className="viz-axis" x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} />
       {[0, 0.5, 1].map((tick) => {
@@ -2666,7 +3392,26 @@ function MirroredVelocityChart({
       <text className="viz-mirror-label" x={margin.left + 4} y={height - margin.bottom - 8}>
         Rebound
       </text>
-      {renderBars
+      {displayMode === 'cumulative'
+        ? cumulativeDistributions.map((item) => {
+            const compressionPath = cumulativeLine(item.compressionDistribution.points)
+            const reboundPath = mirroredCumulativeLine(item.reboundDistribution.points)
+            return (
+              <g key={item.id}>
+                {compressionPath && (
+                  <path className="viz-series-line" d={compressionPath} stroke={item.color}>
+                    <title>{cumulativeSeriesTitle(item.label, item.compressionDistribution.sampleCount, xLabel, 'Compression')}</title>
+                  </path>
+                )}
+                {reboundPath && (
+                  <path className="viz-series-line" d={reboundPath} stroke={item.color}>
+                    <title>{cumulativeSeriesTitle(item.label, item.reboundDistribution.sampleCount, xLabel, 'Rebound')}</title>
+                  </path>
+                )}
+              </g>
+            )
+          })
+        : renderBars
         ? mirroredBins.map((item, seriesIndex) => (
             <g key={item.id}>
               {item.compression.map((bin) => {
@@ -2727,6 +3472,29 @@ function MirroredVelocityChart({
               </g>
             )
           })}
+      {showStatsOnChart && (
+        <MirroredStatsGlyphOverlay
+          formatter={statsFormatter}
+          height={height}
+          margin={margin}
+          series={series}
+          width={width}
+          xDomain={xDomain}
+          y={y}
+        />
+      )}
+      {displayMode === 'cumulative' && hoverX !== null && hoverItems.length > 0 && (
+        <>
+          <line className="viz-cumulative-hover-line" x1={x(hoverX)} x2={x(hoverX)} y1={margin.top} y2={height - margin.bottom} />
+          <CumulativeHoverReadout
+            chartWidth={width}
+            items={hoverItems}
+            title={cumulativeHoverTitle(hoverX, xLabel)}
+            x={x(hoverX)}
+            y={margin.top + 8}
+          />
+        </>
+      )}
       <text className="viz-axis-title" x={width / 2} y={height - 1} textAnchor="middle">
         {xLabel}
       </text>
@@ -3089,10 +3857,186 @@ function RoleStats({
   )
 }
 
+function DisplacementStatsGlyphOverlay({
+  formatter,
+  height,
+  margin,
+  placement,
+  series,
+  width,
+  xDomain,
+}: {
+  formatter: (value: number | null) => string
+  height: number
+  margin: { left: number; right: number; top: number; bottom: number }
+  placement: DisplacementGlyphPlacement
+  series: Array<{ id: string; label: string; color: string; values: number[] }>
+  width: number
+  xDomain: [number, number]
+}) {
+  const rows = series
+    .map((item) => ({
+      ...item,
+      stats: distributionStats(item.values),
+    }))
+    .filter((item) => item.stats.q25 !== null && item.stats.median !== null && item.stats.q75 !== null && item.stats.p95 !== null && item.stats.max !== null)
+  if (rows.length === 0) {
+    return null
+  }
+  const rowHeight = 10
+  const stackHeight = rows.length * rowHeight
+  const y = placement === 'top' ? margin.top + 7 : height - margin.bottom - stackHeight - 7
+  const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+  return (
+    <g className={`viz-displacement-glyph-overlay ${placement}`} aria-label="Displacement distribution summaries" transform={`translate(0 ${y})`}>
+      {rows.map((row, index) => (
+        <DisplacementStatsGlyph
+          color={row.color}
+          formatter={formatter}
+          key={row.id}
+          label={row.label}
+          stats={row.stats}
+          x={x}
+          xDomain={xDomain}
+          y={index * rowHeight}
+        />
+      ))}
+    </g>
+  )
+}
+
+function MirroredStatsGlyphOverlay({
+  formatter,
+  height,
+  margin,
+  series,
+  width,
+  xDomain,
+  y,
+}: {
+  formatter: (value: number | null) => string
+  height: number
+  margin: { left: number; right: number; top: number; bottom: number }
+  series: Array<{ id: string; label: string; color: string; values: number[] }>
+  width: number
+  xDomain: [number, number]
+  y: d3.ScaleLinear<number, number>
+}) {
+  const compressionRows = series
+    .map((item) => ({
+      color: item.color,
+      id: `${item.id}:compression`,
+      label: `${item.label} compression`,
+      stats: distributionStats(item.values.filter((value) => value >= 0)),
+    }))
+    .filter((item) => item.stats.q25 !== null && item.stats.median !== null && item.stats.q75 !== null && item.stats.p95 !== null && item.stats.max !== null)
+  const reboundRows = series
+    .map((item) => ({
+      color: item.color,
+      id: `${item.id}:rebound`,
+      label: `${item.label} rebound`,
+      stats: distributionStats(item.values.filter((value) => value < 0).map((value) => -value)),
+    }))
+    .filter((item) => item.stats.q25 !== null && item.stats.median !== null && item.stats.q75 !== null && item.stats.p95 !== null && item.stats.max !== null)
+  if (compressionRows.length === 0 && reboundRows.length === 0) {
+    return null
+  }
+  const rowHeight = 8
+  const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+  const zeroY = y(0)
+  const compressionY = Math.max(margin.top + 4, zeroY - compressionRows.length * rowHeight - 7)
+  const reboundY = Math.min(height - margin.bottom - reboundRows.length * rowHeight - 3, zeroY + 7)
+  return (
+    <g className="viz-displacement-glyph-overlay mirrored" aria-label="Mirrored distribution summaries">
+      <g transform={`translate(0 ${compressionY})`}>
+        {compressionRows.map((row, index) => (
+          <DisplacementStatsGlyph
+            color={row.color}
+            formatter={formatter}
+            key={row.id}
+            label={row.label}
+            stats={row.stats}
+            x={x}
+            xDomain={xDomain}
+            y={index * rowHeight}
+          />
+        ))}
+      </g>
+      <g transform={`translate(0 ${reboundY})`}>
+        {reboundRows.map((row, index) => (
+          <DisplacementStatsGlyph
+            color={row.color}
+            formatter={formatter}
+            key={row.id}
+            label={row.label}
+            stats={row.stats}
+            x={x}
+            xDomain={xDomain}
+            y={index * rowHeight}
+          />
+        ))}
+      </g>
+    </g>
+  )
+}
+
+function DisplacementStatsGlyph({
+  color,
+  formatter,
+  label,
+  stats,
+  x,
+  y,
+  xDomain,
+}: {
+  color: string
+  formatter: (value: number | null) => string
+  label: string
+  stats: ReturnType<typeof distributionStats>
+  x: d3.ScaleLinear<number, number>
+  y: number
+  xDomain: [number, number]
+}) {
+  if (
+    stats.q25 === null ||
+    stats.median === null ||
+    stats.q75 === null ||
+    stats.p95 === null ||
+    stats.max === null
+  ) {
+    return null
+  }
+  const q25 = clamp(stats.q25, xDomain[0], xDomain[1])
+  const median = clamp(stats.median, xDomain[0], xDomain[1])
+  const q75 = clamp(stats.q75, xDomain[0], xDomain[1])
+  const p95 = clamp(stats.p95, xDomain[0], xDomain[1])
+  const max = clamp(stats.max, xDomain[0], xDomain[1])
+  return (
+    <g className="viz-displacement-glyph-row" transform={`translate(0 ${y})`}>
+      <title>{`${label}\nmedian ${formatter(stats.median)}; IQR ${formatter(stats.iqr)}; P95 ${formatter(stats.p95)}; max ${formatter(stats.max)}`}</title>
+      <line className="viz-displacement-glyph-whisker" x1={x(q75)} x2={x(max)} y1={5} y2={5} />
+      <rect
+        className="viz-displacement-glyph-iqr"
+        fill={color}
+        height={3}
+        rx={1}
+        stroke={color}
+        width={Math.max(2, x(q75) - x(q25))}
+        x={x(q25)}
+        y={3.5}
+      />
+      <line className="viz-displacement-glyph-median" x1={x(median)} x2={x(median)} y1={2.5} y2={7.5} />
+      <line className="viz-displacement-glyph-p95" x1={x(p95)} x2={x(p95)} y1={2.5} y2={7.5} />
+      <line className="viz-displacement-glyph-max" x1={x(max)} x2={x(max)} y1={3} y2={7} />
+    </g>
+  )
+}
+
 function resolvedDisplacementSignalChoices(
   sessionRefs: StudySessionRef[],
   sessions: SessionRecord[],
   selections: SignalChoiceSelections,
+  configs: readonly DisplacementSignalRoleConfig[],
 ): SignalChoiceSelections {
   const resolved: SignalChoiceSelections = {}
   for (const sessionRef of sessionRefs) {
@@ -3101,8 +4045,8 @@ function resolvedDisplacementSignalChoices(
       continue
     }
     const refId = sessionRefId(sessionRef)
-    for (const config of DISPLACEMENT_SIGNAL_ROLE_CONFIGS) {
-      const candidates = displacementSignalCandidates(session, config.end)
+    for (const config of configs) {
+      const candidates = displacementSignalCandidates(session, config)
       if (candidates.length === 0) {
         continue
       }
@@ -3114,10 +4058,15 @@ function resolvedDisplacementSignalChoices(
   return resolved
 }
 
+function displacementSignalRoleConfigs(mode: DisplacementUnitMode): readonly DisplacementSignalRoleConfig[] {
+  return mode === 'mm' ? MM_DISPLACEMENT_SIGNAL_ROLE_CONFIGS : NORMALIZED_DISPLACEMENT_SIGNAL_ROLE_CONFIGS
+}
+
 function duplicateDisplacementSignalChoiceGroups(
   sessionRefs: StudySessionRef[],
   sessions: SessionRecord[],
   selections: SignalChoiceSelections,
+  configs: readonly DisplacementSignalRoleConfig[],
 ): SignalChoiceGroup[] {
   const groups: SignalChoiceGroup[] = []
   for (const sessionRef of sessionRefs) {
@@ -3126,8 +4075,8 @@ function duplicateDisplacementSignalChoiceGroups(
       continue
     }
     const refId = sessionRefId(sessionRef)
-    for (const config of DISPLACEMENT_SIGNAL_ROLE_CONFIGS) {
-      const candidates = displacementSignalCandidates(session, config.end)
+    for (const config of configs) {
+      const candidates = displacementSignalCandidates(session, config)
       if (candidates.length <= 1) {
         continue
       }
@@ -3145,22 +4094,25 @@ function duplicateDisplacementSignalChoiceGroups(
   return groups
 }
 
-function displacementSignalCandidates(session: SessionRecord, end: SuspensionEnd) {
+function displacementSignalCandidates(session: SessionRecord, config: DisplacementSignalRoleConfig) {
   const candidates = [...(session.availableSignals ?? [])]
-    .filter((signal) => displacementSignalCandidateMatches(signal, end))
+    .filter((signal) => displacementSignalCandidateMatches(signal, config))
     .sort(compareDisplacementSignalCandidates)
   const groups = displacementSignalCandidateGroups(candidates)
   const duplicateGroups = groups.filter((group) => group.length > 1)
   return duplicateGroups[0] ?? groups[0] ?? []
 }
 
-function displacementSignalCandidateMatches(signal: SessionSignalSummary, end: SuspensionEnd) {
+function displacementSignalCandidateMatches(signal: SessionSignalSummary, config: DisplacementSignalRoleConfig) {
   const quantity = normalizeSignalText(signal.quantity)
   const unit = normalizeSignalText(signal.unit)
+  const expectedQuantity = normalizeSignalText(config.selector.quantity)
+  const expectedUnit = normalizeSignalText(config.selector.unit)
   return (
-    normalizeSignalText(signal.end) === end &&
+    normalizeSignalText(signal.end) === config.end &&
     normalizeSignalText(signal.domain) === 'wheel' &&
-    ((quantity === 'disp_norm' && unit === '1') || (quantity === 'disp' && isMillimetreUnit(unit)))
+    quantity === expectedQuantity &&
+    (expectedUnit === 'mm' ? isMillimetreUnit(unit) : unit === expectedUnit)
   )
 }
 
@@ -3242,21 +4194,27 @@ function signalChoiceSelectionSignature(selections: SignalChoiceSelections) {
     .join(';')
 }
 
-function visualizationSessionCacheKey(sessionRef: StudySessionRef, signalChoices: SignalChoiceSelections) {
+function visualizationSessionCacheKey(
+  sessionRef: StudySessionRef,
+  signalChoices: SignalChoiceSelections,
+  displacementMode: DisplacementUnitMode,
+) {
   const refId = sessionRefId(sessionRef)
-  const frontColumn = signalChoices[signalChoiceKey(refId, 'front_displacement')] ?? ''
-  const rearColumn = signalChoices[signalChoiceKey(refId, 'rear_displacement')] ?? ''
-  return `v${VISUALIZATION_SESSION_CACHE_VERSION}|${refId}|front:${frontColumn}|rear:${rearColumn}`
+  const displacementChoices = displacementSignalRoleConfigs(displacementMode)
+    .map((config) => `${config.role}:${signalChoices[signalChoiceKey(refId, config.role)] ?? ''}`)
+    .join('|')
+  return `v${VISUALIZATION_SESSION_CACHE_VERSION}|${refId}|disp:${displacementMode}|${displacementChoices}`
 }
 
 function visualizationCacheMissCount(
   dataSource: LibraryDataSource,
   requestedSessionRefs: StudySessionRef[],
   signalChoices: SignalChoiceSelections,
+  displacementMode: DisplacementUnitMode,
 ) {
   const sessionCache = suspensionSessionCache<CachedSessionVisualizationData>(dataSource)
   return uniqueSessionRefs(requestedSessionRefs).filter((sessionRef) => {
-    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices)
+    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode)
     return !sessionCache.entries.has(cacheKey) && !sessionCache.inFlight.has(cacheKey)
   }).length
 }
@@ -3264,10 +4222,11 @@ function visualizationCacheMissCount(
 function signalRequestsForSession(
   sessionRef: StudySessionRef,
   signalChoices: SignalChoiceSelections,
+  displacementMode: DisplacementUnitMode,
 ): SignalQuerySignalRequest[] {
   const refId = sessionRefId(sessionRef)
   return [
-    ...DISPLACEMENT_SIGNAL_ROLE_CONFIGS.map((config): SignalQuerySignalRequest => {
+    ...displacementSignalRoleConfigs(displacementMode).map((config): SignalQuerySignalRequest => {
       const column = signalChoices[signalChoiceKey(refId, config.role)]
       return column ? { role: config.role, column } : { role: config.role, selector: config.selector }
     }),
@@ -3278,6 +4237,7 @@ function signalRequestsForSession(
 async function loadVisualizationData(
   requestedSessionRefs: StudySessionRef[],
   signalChoices: SignalChoiceSelections,
+  displacementMode: DisplacementUnitMode,
   sessions: SessionRecord[],
   dataSource: LibraryDataSource,
 ): Promise<VisualizationLoadResult> {
@@ -3287,7 +4247,7 @@ async function loadVisualizationData(
   const refsNeedingData: StudySessionRef[] = []
 
   for (const sessionRef of sessionRefs) {
-    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices)
+    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode)
     if (getSuspensionCacheEntry(sessionCache, cacheKey)) {
       diagnostics.cacheHitCount += 1
     } else if (sessionCache.inFlight.has(cacheKey)) {
@@ -3304,7 +4264,7 @@ async function loadVisualizationData(
     const refsToFetch: StudySessionRef[] = []
 
     for (const ref of refs) {
-      const cacheKey = visualizationSessionCacheKey(ref, signalChoices)
+      const cacheKey = visualizationSessionCacheKey(ref, signalChoices, displacementMode)
       const inFlight = sessionCache.inFlight.get(cacheKey)
       if (inFlight) {
         inFlightRequests.push(inFlight)
@@ -3328,13 +4288,14 @@ async function loadVisualizationData(
         libraryId,
         refsToFetch,
         signalChoices,
+        displacementMode,
         sessions,
         dataSource,
       ).then(
         (fetchedSessions) => {
           recordFetchDuration()
           for (const cached of fetchedSessions.values()) {
-            setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices), cached)
+            setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices, displacementMode), cached)
           }
           return fetchedSessions
         },
@@ -3345,7 +4306,7 @@ async function loadVisualizationData(
       )
 
       for (const ref of refsToFetch) {
-        const cacheKey = visualizationSessionCacheKey(ref, signalChoices)
+        const cacheKey = visualizationSessionCacheKey(ref, signalChoices, displacementMode)
         sessionCache.inFlight.set(
           cacheKey,
           batchPromise.then((fetchedSessions) => fetchedSessions.get(sessionRefId(ref)) ?? emptyCachedSession(ref)),
@@ -3356,7 +4317,7 @@ async function loadVisualizationData(
         await batchPromise
       } finally {
         for (const ref of refsToFetch) {
-          sessionCache.inFlight.delete(visualizationSessionCacheKey(ref, signalChoices))
+          sessionCache.inFlight.delete(visualizationSessionCacheKey(ref, signalChoices, displacementMode))
         }
       }
     }
@@ -3364,12 +4325,12 @@ async function loadVisualizationData(
     if (inFlightRequests.length > 0) {
       const fetchedSessions = await Promise.all(inFlightRequests)
       for (const cached of fetchedSessions) {
-        setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices), cached)
+        setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices, displacementMode), cached)
       }
     }
   }
 
-  const sessionCacheKeys = sessionRefs.map((sessionRef) => visualizationSessionCacheKey(sessionRef, signalChoices))
+  const sessionCacheKeys = sessionRefs.map((sessionRef) => visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode))
   const composedCacheKey = `visualization-data|${sessionCacheKeys.join('\n')}`
   const composedData = getSuspensionComposedCacheEntry<VisualizationData>(sessionCache, composedCacheKey)
   if (composedData) {
@@ -3403,6 +4364,7 @@ async function fetchVisualizationLibrarySessions(
   libraryId: string,
   refs: StudySessionRef[],
   signalChoices: SignalChoiceSelections,
+  displacementMode: DisplacementUnitMode,
   sessions: SessionRecord[],
   dataSource: LibraryDataSource,
 ) {
@@ -3411,7 +4373,7 @@ async function fetchVisualizationLibrarySessions(
       refs.map((ref) =>
         dataSource.querySignals(libraryId, {
           sessions: [ref],
-          signals: signalRequestsForSession(ref, signalChoices),
+          signals: signalRequestsForSession(ref, signalChoices, displacementMode),
         }),
       ),
     ),
@@ -3556,6 +4518,11 @@ function restoredVisualizationSettings(
     timeWindowsBySession: cached?.timeWindowsBySession ? { ...cached.timeWindowsBySession } : {},
     excludeInactivePeriods: cached?.excludeInactivePeriods ?? true,
     signalChoices: cached?.signalChoices ? { ...cached.signalChoices } : {},
+    frequencyDisplayModes: normalizedFrequencyDisplayModes(cached?.frequencyDisplayModes),
+    showDisplacementMm: cached?.showDisplacementMm ?? false,
+    showDisplacementStatsOnChart: cached?.showDisplacementStatsOnChart ?? true,
+    showVelocityStatsOnChart: cached?.showVelocityStatsOnChart ?? true,
+    showStrokeLengthStatsOnChart: cached?.showStrokeLengthStatsOnChart ?? true,
   }
 }
 
@@ -3617,6 +4584,22 @@ function normalizedSelectedEnds(value: SuspensionEnd[] | undefined) {
   const validEnds = new Set<SuspensionEnd>(['front', 'rear'])
   const ends = (value ?? ['front', 'rear']).filter((end): end is SuspensionEnd => validEnds.has(end))
   return ends.length > 0 ? ends : (['front', 'rear'] as SuspensionEnd[])
+}
+
+function normalizedFrequencyDisplayModes(value: unknown): FrequencyDisplayModes {
+  if (!value || typeof value !== 'object') {
+    return DEFAULT_FREQUENCY_DISPLAY_MODES
+  }
+  const modes = value as Partial<Record<keyof FrequencyDisplayModes, unknown>>
+  return {
+    displacement: normalizedFrequencyDisplayMode(modes.displacement),
+    velocity: normalizedFrequencyDisplayMode(modes.velocity),
+    strokeLength: normalizedFrequencyDisplayMode(modes.strokeLength),
+  }
+}
+
+function normalizedFrequencyDisplayMode(value: unknown): FrequencyDisplayMode {
+  return value === 'cumulative' ? 'cumulative' : 'histogram'
 }
 
 function mergeTrackMatches(tracks: TrackRecord[], matches: SessionTrackMatchRecord[] | null) {
@@ -4182,13 +5165,17 @@ function percentValues(values: number[]) {
   return out
 }
 
+function identityValues(values: number[]) {
+  return values
+}
+
 function normalizeDisplacementSignalValues(
   role: string,
   signal: SignalQuerySignal,
   values: number[],
   session: SessionRecord | undefined,
 ) {
-  if (!DISPLACEMENT_SIGNAL_ROLES.has(role)) {
+  if (!NORMALIZED_DISPLACEMENT_SIGNAL_ROLES.has(role)) {
     return values
   }
   const quantity = normalizeSignalText(signal.quantity)
@@ -4333,6 +5320,19 @@ function metricMagnitudeCandidateDomain(
   return candidateDomainContainingP95(values, candidates)
 }
 
+function displacementMmCandidateDomain(
+  entities: VisualizationEntity[],
+  data: VisualizationData,
+  ends: SuspensionEnd[],
+  candidates: number[],
+): [number, number] {
+  const roles = distributionRoles('front_displacement_mm', 'rear_displacement_mm', ends)
+  const values = entities.flatMap((entity) =>
+    roles.flatMap((role) => entitySignalValues(entity, data, role.signalRole)),
+  )
+  return candidateDomainContainingMax(values, candidates)
+}
+
 function candidateDomainContainingP95(values: number[], candidates: number[]): [number, number] {
   const limits = [...candidates].filter(Number.isFinite).sort((a, b) => a - b)
   const fallback = limits[0] ?? 1
@@ -4342,6 +5342,21 @@ function candidateDomainContainingP95(values: number[], candidates: number[]): [
   }
   const p95 = quantile(clean, 0.95) ?? 0
   return [0, limits.find((limit) => p95 <= limit) ?? limits[limits.length - 1] ?? fallback]
+}
+
+function candidateDomainContainingMax(values: number[], candidates: number[]): [number, number] {
+  const limits = [...candidates].filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b)
+  const fallback = limits[0] ?? 1
+  const clean = values.filter((value) => Number.isFinite(value) && value >= 0)
+  if (clean.length === 0) {
+    return [0, fallback]
+  }
+  const max = d3.max(clean) ?? 0
+  const candidate = limits.find((limit) => max <= limit)
+  if (candidate !== undefined) {
+    return [0, candidate]
+  }
+  return [0, Math.max(fallback, Math.ceil(max / 50) * 50)]
 }
 
 function distributionRoles(frontRole: string, rearRole: string, selectedEnds: SuspensionEnd[]): DistributionRole[] {
@@ -4948,7 +5963,9 @@ function distributionStats(values: number[]) {
   const iqr = q25 !== null && q75 !== null ? q75 - q25 : null
   return {
     mean: clean.length ? d3.mean(clean) ?? null : null,
+    q25,
     median,
+    q75,
     p95: quantile(clean, 0.95),
     max: clean.length ? clean[clean.length - 1] : null,
     iqr,
