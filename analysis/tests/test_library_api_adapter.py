@@ -2858,6 +2858,7 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     )
     assert cache_explain.status_code == 200
     assert cache_explain.json()["schema"] == "bodaqs.library_api.analysis_adequacy_cache_key_explain"
+
     assert cache_explain.json()["cached"] is True
     assert cache_explain.json()["memory_cached"] is True
     assert cache_explain.json()["persistent_cached"] is True
@@ -2948,6 +2949,48 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     switched_catalog = client.get("/api/v1/libraries/field-library/catalog")
     assert switched_catalog.status_code == 200
     assert switched_catalog.json()["rows"][0]["session_key"] == other_session_ref["session_key"]
+
+
+def test_library_api_service_serves_optional_web_app(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    web_root = tmp_path / "web"
+    web_root.mkdir()
+    (web_root / "index.html").write_text(
+        "<!doctype html><title>BODAQS</title><div id='root'></div>",
+        encoding="utf-8",
+    )
+    assets_dir = web_root / "assets"
+    assets_dir.mkdir()
+    (assets_dir / "app.js").write_text("window.__bodaqs = true;", encoding="utf-8")
+
+    client = TestClient(create_app(libraries_root, web_root=web_root))
+
+    health = client.get("/api/v1/health")
+    assert health.status_code == 200
+    assert health.json()["web_app"] == {
+        "enabled": True,
+        "web_root": str(web_root.resolve()),
+        "index_present": True,
+    }
+
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "BODAQS" in root.text
+
+    asset = client.get("/assets/app.js")
+    assert asset.status_code == 200
+    assert "window.__bodaqs" in asset.text
+
+    spa_route = client.get("/analysis/simple-suspension")
+    assert spa_route.status_code == 200
+    assert "BODAQS" in spa_route.text
+
+    missing_asset = client.get("/assets/missing.js")
+    assert missing_asset.status_code == 404
+
+    missing_api = client.get("/api/v1/not-a-route")
+    assert missing_api.status_code == 404
+    assert "BODAQS" not in missing_api.text
 
 
 def test_library_api_service_study_set_crud_and_revision_conflict(

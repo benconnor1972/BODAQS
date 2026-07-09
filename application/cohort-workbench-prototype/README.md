@@ -3,8 +3,12 @@
 Static React/Vite prototype for the BODAQS Library Browser and Study Set
 Builder.
 
-The current prototype is fixture-backed. It does not call the BODAQS Library API
-yet and does not persist Study Sets to disk.
+The prototype is designed to run in two local modes:
+
+- Vite development mode, with the browser app on `http://localhost:5173` and the
+  Library API service on `http://127.0.0.1:8765`.
+- Bundled local mode, where the Library API service serves the built web app and
+  API from the same origin.
 
 ## Run
 
@@ -14,12 +18,54 @@ npm install
 npm run dev
 ```
 
+Start the Library API service in a second terminal:
+
+```powershell
+cd C:\Users\benco\dev\BODAQS\analysis
+..\.venv\Scripts\python.exe -m bodaqs_analysis.library_api_service --libraries-root "C:\Users\benco\OneDrive\BODAQS-data" --host 127.0.0.1 --port 8765
+```
+
 If the current terminal does not know where Node.js is, open a fresh terminal or
 prepend the Node install path:
 
 ```powershell
 $env:Path = "C:\Program Files\nodejs;$env:Path"
 ```
+
+By default, dev and hosted builds call `http://127.0.0.1:8765`. Override that
+with `VITE_BODAQS_LIBRARY_API_URL` when needed:
+
+```powershell
+$env:VITE_BODAQS_LIBRARY_API_URL = "http://127.0.0.1:8766"
+npm run dev
+```
+
+## Bundled Local Smoke Test
+
+Build the web app:
+
+```powershell
+cd C:\Users\benco\dev\BODAQS\application\cohort-workbench-prototype
+npm run build
+```
+
+Serve the built app from the Library API service:
+
+```powershell
+cd C:\Users\benco\dev\BODAQS\analysis
+..\.venv\Scripts\python.exe -m bodaqs_analysis.library_api_service --libraries-root "C:\Users\benco\OneDrive\BODAQS-data" --host 127.0.0.1 --port 8765 --web-root "..\application\cohort-workbench-prototype\dist"
+```
+
+Open `http://127.0.0.1:8765/`. In this mode the web app uses the same origin for
+API calls, so no `VITE_BODAQS_LIBRARY_API_URL` setting is required.
+
+Optional health check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/api/v1/health | ConvertTo-Json -Depth 5
+```
+
+The `web_app` field should report `enabled: true` and `index_present: true`.
 
 ## Checks
 
@@ -30,13 +76,8 @@ npm run lint
 
 ## Current Scope
 
-- Select one or more libraries from fixture data.
-- Browse, sort, filter, and inspect fixture sessions.
-- Add selected sessions to the current Study Set.
-- Create overlapping Study Set-local groupings with short names.
-- Attach existing fixture tracks to the current Study Set.
-- Save/load/view Study Sets in in-memory mock state.
-- Use Analyze now to create an unsaved one-session Study Set.
-
-Track creation/editing, saved filter management, real Library API access, and
-chart navigation are reserved for later prototype passes.
+- Browse, sort, filter, inspect, rename, and delete library sessions.
+- Create, save, load, analyze, and manage Study Sets.
+- Manage saved filters, tracks, notes, bookmarks, GPS previews, and signal
+  inspection workflows through the Library API service.
+- Launch analysis views from the library browser or saved/current Study Sets.

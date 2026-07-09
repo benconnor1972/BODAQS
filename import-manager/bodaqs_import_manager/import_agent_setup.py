@@ -6,9 +6,12 @@ import copy
 import ctypes
 import math
 import queue
+import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -112,6 +115,9 @@ _APP_DISPLAY_NAME = "BODAQS Import Manager"
 _WINDOW_ICON_FILENAME = "app_icon.png"
 _WINDOW_ICON_ICO_FILENAME = "app_icon.ico"
 _WINDOWS_APP_USER_MODEL_ID = "BODAQS.ImportAgent.Manager"
+_LIBRARY_SERVICE_HOST = "127.0.0.1"
+_LIBRARY_SERVICE_PORT = 8765
+_LIBRARY_SERVICE_STARTUP_TIMEOUT_S = 12.0
 _SOURCE_TYPE_LABELS = {
     SOURCE_TYPE_FILESYSTEM_ARCHIVE: "Local archive folder",
     SOURCE_TYPE_LOGGER_WIFI: "Wi-Fi logger",
@@ -571,6 +577,150 @@ class ImportAgentWatchService:
             self.event_queue.put({"kind": "watch_stopped", "snapshot": self.supervisor.snapshot()})
 
 
+class LibraryApiServiceProcess:
+    def __init__(
+        self,
+        *,
+        libraries_root: str | Path,
+        host: str = _LIBRARY_SERVICE_HOST,
+        port: int = _LIBRARY_SERVICE_PORT,
+    ) -> None:
+        self.libraries_root = Path(libraries_root).expanduser().resolve()
+        self.host = host
+        self.port = int(port)
+        self.process: Optional[subprocess.Popen[Any]] = None
+        self.started_by_manager = False
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    @property
+    def health_url(self) -> str:
+        return f"{self.base_url}/api/v1/health"
+
+    @property
+    def web_url(self) -> str:
+        return f"{self.base_url}/"
+
+    def is_running(self) -> bool:
+        if self._health_available():
+            return True
+        if self.process is None:
+            return False
+        return self.process.poll() is None
+
+    def start(self) -> str:
+        if self._health_available():
+            return f"Library service already running at {self.base_url}."
+        if self.process is not None and self.process.poll() is None:
+            return f"Library service is starting at {self.base_url}."
+
+        command, cwd = self._launch_command()
+        self.process = subprocess.Popen(
+            command,
+            cwd=str(cwd) if cwd is not None else None,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_subprocess_creationflags(),
+        )
+        self.started_by_manager = True
+        deadline = time.monotonic() + _LIBRARY_SERVICE_STARTUP_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if self._health_available():
+                return f"Library service started at {self.base_url}."
+            if self.process.poll() is not None:
+                raise RuntimeError(
+                    f"Library service exited during startup with code {self.process.returncode}."
+                )
+            time.sleep(0.15)
+        raise TimeoutError(f"Timed out waiting for Library service at {self.base_url}.")
+
+    def stop(self, *, timeout_s: float = 5.0) -> bool:
+        if self.process is None or self.process.poll() is not None:
+            self.process = None
+            self.started_by_manager = False
+            return True
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            return False
+        self.process = None
+        self.started_by_manager = False
+        return True
+
+    def _health_available(self) -> bool:
+        try:
+            with urllib.request.urlopen(self.health_url, timeout=0.5) as response:
+                return 200 <= int(response.status) < 300
+        except (OSError, urllib.error.URLError, ValueError):
+            return False
+
+    def _launch_command(self) -> tuple[list[str], Path | None]:
+        service_exe = _packaged_library_service_exe()
+        web_root = _packaged_library_service_web_root()
+        if service_exe is not None:
+            command = [str(service_exe)]
+            cwd = service_exe.parent
+        else:
+            command = [
+                str(Path(sys.executable).resolve()),
+                str(_repo_library_service_script()),
+            ]
+            cwd = _repo_library_service_script().parent
+            web_root = _repo_web_app_dist()
+
+        command.extend(
+            [
+                "--libraries-root",
+                str(self.libraries_root),
+                "--host",
+                self.host,
+                "--port",
+                str(self.port),
+            ]
+        )
+        if web_root is not None and (web_root / "index.html").is_file():
+            command.extend(["--web-root", str(web_root)])
+        return command, cwd
+
+
+def _subprocess_creationflags() -> int:
+    if not sys.platform.startswith("win"):
+        return 0
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _packaged_library_service_exe() -> Path | None:
+    if not getattr(sys, "frozen", False):
+        return None
+    manager_dir = Path(sys.executable).resolve().parent
+    candidate = manager_dir.parent / "service" / "bodaqs-library-service.exe"
+    return candidate if candidate.is_file() else None
+
+
+def _packaged_library_service_web_root() -> Path | None:
+    if not getattr(sys, "frozen", False):
+        return None
+    manager_dir = Path(sys.executable).resolve().parent
+    candidate = manager_dir.parent / "service" / "web"
+    return candidate if (candidate / "index.html").is_file() else None
+
+
+def _repo_root_from_manager_module() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _repo_library_service_script() -> Path:
+    return _repo_root_from_manager_module() / "import-manager" / "bodaqs_library_service.py"
+
+
+def _repo_web_app_dist() -> Path | None:
+    candidate = _repo_root_from_manager_module() / "application" / "cohort-workbench-prototype" / "dist"
+    return candidate if (candidate / "index.html").is_file() else None
+
+
 class ImportAgentManagerWindow:
     def __init__(self, args: argparse.Namespace) -> None:
         _apply_windows_app_user_model_id()
@@ -586,9 +736,11 @@ class ImportAgentManagerWindow:
         self.args = args
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.watch_service: Optional[ImportAgentWatchService] = None
+        self.library_api_service: Optional[LibraryApiServiceProcess] = None
         self.import_now_thread: Optional[threading.Thread] = None
         self.tray_icon: Optional[ImportAgentTrayIcon] = None
         self.watch_state_var = tk.StringVar(value="Watcher stopped.")
+        self.library_service_state_var = tk.StringVar(value="Library web app stopped.")
         self.manager_status_var = tk.StringVar(value="Ready.")
         self.provision_status_var = tk.StringVar(value="Ready to provision or extend the managed setup.")
         self.summary_var = tk.StringVar(value="")
@@ -632,6 +784,8 @@ class ImportAgentManagerWindow:
         self.add_library_button: Optional[ttk.Button] = None
         self.add_source_button: Optional[ttk.Button] = None
         self.apply_app_settings_button: Optional[ttk.Button] = None
+        self.open_web_app_button: Optional[ttk.Button] = None
+        self.stop_web_app_button: Optional[ttk.Button] = None
         self.library_choice_combo: Optional[ttk.Combobox] = None
         self.source_type_combo: Optional[ttk.Combobox] = None
         self.wifi_frame: Optional[ttk.LabelFrame] = None
@@ -708,6 +862,9 @@ class ImportAgentManagerWindow:
         )
         ttk.Label(overview, textvariable=self.watch_state_var, wraplength=980, justify="left").grid(
             row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(overview, textvariable=self.library_service_state_var, wraplength=980, justify="left").grid(
+            row=2, column=0, sticky="w", pady=(4, 0)
         )
 
         lists = ttk.Frame(parent)
@@ -786,7 +943,7 @@ class ImportAgentManagerWindow:
 
         actions = ttk.Frame(parent)
         actions.grid(row=3, column=0, sticky="ew", pady=(10, 8))
-        for col in range(5):
+        for col in range(7):
             actions.columnconfigure(col, weight=0)
         ttk.Button(actions, text="Refresh", command=self._refresh_ui_from_config).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(actions, text="Sync Workspace", command=self._sync_workspace_from_roots).grid(
@@ -795,6 +952,10 @@ class ImportAgentManagerWindow:
         ttk.Button(actions, text="Import Now", command=self._import_now).grid(row=0, column=2, padx=(0, 8))
         ttk.Button(actions, text="Start Watch", command=self._start_watch).grid(row=0, column=3, padx=(0, 8))
         ttk.Button(actions, text="Stop Watch", command=self._stop_watch).grid(row=0, column=4, padx=(0, 8))
+        self.open_web_app_button = ttk.Button(actions, text="Open Web App", command=self._open_web_app)
+        self.open_web_app_button.grid(row=0, column=5, padx=(12, 8))
+        self.stop_web_app_button = ttk.Button(actions, text="Stop Web App", command=self._stop_web_app)
+        self.stop_web_app_button.grid(row=0, column=6, padx=(0, 8))
 
         logs = ttk.Frame(parent)
         logs.grid(row=4, column=0, sticky="nsew")
@@ -1511,6 +1672,7 @@ class ImportAgentManagerWindow:
                 "No managed app config exists yet. Use the Provision tab to create the first library and source."
             )
             self.watch_state_var.set("Watcher stopped.")
+            self.library_service_state_var.set("Library web app unavailable until a managed setup exists.")
             self._render_libraries([])
             self._render_sources([])
             self._library_choice_map = {}
@@ -1528,6 +1690,7 @@ class ImportAgentManagerWindow:
                 self.add_source_button.configure(state="disabled")
             if self.apply_app_settings_button is not None:
                 self.apply_app_settings_button.configure(state="disabled")
+            self._refresh_web_app_controls(has_config=False)
             if select_provision_when_missing and self.notebook is not None:
                 self.notebook.select(1)
             self._refresh_tray()
@@ -1566,7 +1729,26 @@ class ImportAgentManagerWindow:
             self.add_source_button.configure(state="normal")
         if self.apply_app_settings_button is not None:
             self.apply_app_settings_button.configure(state="normal")
+        self._refresh_web_app_controls(has_config=True)
         self._refresh_tray()
+
+    def _refresh_web_app_controls(self, *, has_config: bool) -> None:
+        if self.open_web_app_button is not None:
+            self.open_web_app_button.configure(state="normal" if has_config else "disabled")
+        if self.stop_web_app_button is not None:
+            self.stop_web_app_button.configure(
+                state="normal" if self.library_api_service is not None and self.library_api_service.is_running() else "disabled"
+            )
+        if not has_config:
+            return
+        service = self._library_api_service_for_current_config(create=False)
+        if service is not None and service.is_running():
+            self.library_service_state_var.set(f"Library web app available at {service.web_url}")
+        else:
+            base_url = f"http://{_LIBRARY_SERVICE_HOST}:{_LIBRARY_SERVICE_PORT}"
+            self.library_service_state_var.set(
+                f"Library web app stopped. Use Open Web App to start {base_url}."
+            )
 
     def _set_root_editable(self, editable: bool) -> None:
         state = "normal" if editable else "disabled"
@@ -3786,6 +3968,66 @@ class ImportAgentManagerWindow:
         config = self.controller.app_config
         return bool(config and any(source.enabled for source in config.sources))
 
+    def _library_api_service_for_current_config(self, *, create: bool) -> Optional[LibraryApiServiceProcess]:
+        config = self.controller.app_config
+        if config is None:
+            return None
+        libraries_root = Path(config.libraries_root).expanduser().resolve()
+        if self.library_api_service is not None:
+            if self.library_api_service.libraries_root == libraries_root:
+                return self.library_api_service
+            if self.library_api_service.is_running():
+                return self.library_api_service
+            self.library_api_service = None
+        if not create:
+            return None
+        self.library_api_service = LibraryApiServiceProcess(libraries_root=libraries_root)
+        return self.library_api_service
+
+    def _open_web_app(self) -> None:
+        if not self.controller.has_config():
+            messagebox.showinfo(
+                _APP_DISPLAY_NAME,
+                "Create or use an existing managed workspace first.",
+                parent=self.root,
+            )
+            return
+        service = self._library_api_service_for_current_config(create=True)
+        if service is None:
+            return
+        try:
+            message = service.start()
+            webbrowser.open(service.web_url)
+        except Exception as exc:
+            self.library_service_state_var.set("Library web app failed to start.")
+            self._set_manager_status(f"Open web app failed: {exc}")
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            self._refresh_web_app_controls(has_config=True)
+            return
+        self.library_service_state_var.set(f"Library web app available at {service.web_url}")
+        self._set_manager_status(f"{message} Opened {service.web_url}")
+        self._refresh_web_app_controls(has_config=True)
+
+    def _stop_web_app(self) -> None:
+        service = self._library_api_service_for_current_config(create=False)
+        if service is None or not service.is_running():
+            self.library_service_state_var.set("Library web app stopped.")
+            self._refresh_web_app_controls(has_config=self.controller.has_config())
+            return
+        if not service.started_by_manager:
+            self._set_manager_status(
+                f"Library service at {service.base_url} was not started by this Manager, so it was left running."
+            )
+            self._refresh_web_app_controls(has_config=self.controller.has_config())
+            return
+        if service.stop():
+            self._set_manager_status("Stopped Library web app service.")
+            self.library_service_state_var.set("Library web app stopped.")
+        else:
+            self._set_manager_status("Library web app stop requested; service is still shutting down.")
+            self.library_service_state_var.set(f"Library web app still running at {service.web_url}.")
+        self._refresh_web_app_controls(has_config=self.controller.has_config())
+
     def _window_visible(self) -> bool:
         return self.root.state() != "withdrawn"
 
@@ -3881,10 +4123,18 @@ class ImportAgentManagerWindow:
         if self.watch_service is not None:
             self.watch_service.stop(timeout_s=2.0)
             self.watch_service = None
+        self._shutdown_library_api_service()
         if self.tray_icon is not None:
             self.tray_icon.stop()
             self.tray_icon = None
         self.root.destroy()
+
+    def _shutdown_library_api_service(self) -> None:
+        if self.library_api_service is None:
+            return
+        if self.library_api_service.started_by_manager:
+            self.library_api_service.stop(timeout_s=2.0)
+        self.library_api_service = None
 
     def _sync_startup_registration(self, *, show_errors: bool, emit_status: bool) -> None:
         config = self.controller.app_config
@@ -4613,6 +4863,7 @@ class ImportAgentManagerWindow:
             return
         if self.watch_service is not None:
             self.watch_service.stop(timeout_s=2.0)
+        self._shutdown_library_api_service()
         self.root.destroy()
 
     def run(self) -> int:

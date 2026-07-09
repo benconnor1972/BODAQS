@@ -52,6 +52,33 @@ import type {
 import type { LibraryDataSource } from './LibraryDataSource'
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
+const VITE_DEV_PORTS = new Set(['5173', '4173'])
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+
+function normalizeApiBaseUrl(baseUrl: string) {
+  return String(baseUrl).replace(/\/+$/, '')
+}
+
+function isBundledLocalOrigin(location: Location) {
+  if (import.meta.env.DEV || VITE_DEV_PORTS.has(location.port)) {
+    return false
+  }
+  if (location.port === '8765') {
+    return true
+  }
+  return LOOPBACK_HOSTS.has(location.hostname)
+}
+
+export function defaultLibraryApiBaseUrl() {
+  const configuredBaseUrl = import.meta.env.VITE_BODAQS_LIBRARY_API_URL
+  if (configuredBaseUrl) {
+    return normalizeApiBaseUrl(configuredBaseUrl)
+  }
+  if (typeof window !== 'undefined' && window.location?.origin && isBundledLocalOrigin(window.location)) {
+    return normalizeApiBaseUrl(window.location.origin)
+  }
+  return DEFAULT_API_BASE_URL
+}
 
 type ApiObject = Record<string, unknown>
 
@@ -67,8 +94,8 @@ type ApiSetLibrariesRootResponse = {
 export class LocalApiDataSource implements LibraryDataSource {
   readonly baseUrl: string
 
-  constructor(baseUrl = import.meta.env.VITE_BODAQS_LIBRARY_API_URL || DEFAULT_API_BASE_URL) {
-    this.baseUrl = String(baseUrl).replace(/\/+$/, '')
+  constructor(baseUrl = defaultLibraryApiBaseUrl()) {
+    this.baseUrl = normalizeApiBaseUrl(baseUrl)
   }
 
   async getHealth() {

@@ -1,19 +1,34 @@
-# BODAQS Import Manager Windows Installer v1
+# BODAQS Desktop Windows Installer v1
 
 ## Purpose
 
-Phase 5A packages the existing manager and CLI bundles into a Windows installer
-so the import manager can be installed like a normal desktop application.
+Phase 5A packages BODAQS Desktop into a Windows installer so the local desktop
+tooling can be installed like a normal desktop application. The bundle stages
+the Import Manager, the Library API service, and the built BODAQS Workbench
+frontend together.
 
 ## What the Installer Includes
 
-- the windowed manager bundle at `manager/`
-- the CLI watcher bundle at `cli/`
+- BODAQS Import Manager at `manager/`
+- BODAQS Library Service at `service/`
+- BODAQS Workbench frontend at `service/web/`
+- component version metadata at `component_versions.json`
 - a Start Menu shortcut to the manager
 - an optional desktop shortcut to the manager
 
-The CLI is installed as a support/debug tool but is not exposed with a Start
-Menu shortcut by default.
+The service is installed as a support component and is not exposed with a Start
+Menu shortcut by default. The intended user-facing launch path is through the
+Import Manager.
+
+The Manager screen includes:
+
+- `Open Web App`, which starts the bundled Library API service if needed and
+  opens the Study Set Workbench in the user's default browser.
+- `Stop Web App`, which stops the service only when this Manager instance
+  started it.
+
+If another process is already serving the Library API on the configured local
+port, the Manager opens that existing service and leaves it running.
 
 ## Wi-Fi Logger Source Support
 
@@ -38,21 +53,44 @@ installer with:
 .\import-manager\build_import_manager.ps1 -Target installer
 ```
 
-You can also override the Inno Setup compiler path or the installer version:
+You can also override the Inno Setup compiler path, bundle version, or component
+versions:
 
 ```powershell
 .\import-manager\build_import_manager.ps1 -Target installer `
   -InnoSetupExe "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
-  -AppVersion "0.1.0-dev"
+  -BundleVersion "0.1.5-dev" `
+  -ImportManagerVersion "0.1.5-beta" `
+  -LibraryServiceVersion "0.1.0-dev" `
+  -WorkbenchVersion "0.1.0-dev"
 ```
 
-If the existing bundled CLI or manager outputs are already good and you only
+If the existing bundled manager and service outputs are already good and you only
 want to restage or recompile the installer, you can skip the PyInstaller
 rebuild:
 
 ```powershell
 .\import-manager\build_import_manager.ps1 -Target installer -SkipPyInstallerBuild
 ```
+
+If the service executable already exists and you only want to refresh the
+bundled web app assets, use:
+
+```powershell
+.\import-manager\build_import_manager.ps1 -Target service -SkipPyInstallerBuild
+```
+
+The staged service can be smoke-tested with:
+
+```powershell
+.\import-manager\dist\pyinstaller\bodaqs-library-service\bodaqs-library-service.exe `
+  --libraries-root "C:\Users\benco\OneDrive\BODAQS-data" `
+  --host 127.0.0.1 `
+  --port 8765 `
+  --web-root ".\import-manager\dist\pyinstaller\bodaqs-library-service\web"
+```
+
+Then open `http://127.0.0.1:8765/`.
 
 If `ISCC.exe` is not available, the build script still prepares the staged
 payload under:
@@ -68,7 +106,7 @@ and reports that installer compilation was skipped.
 - staged installer payload:
   `import-manager/build/installer/windows/staging/`
 - compiled installer:
-  `import-manager/dist/installer/windows/bodaqs-import-manager-setup-<version>.exe`
+  `import-manager/dist/installer/windows/bodaqs-desktop-setup-<version>.exe`
 
 ## Config Location Behavior
 

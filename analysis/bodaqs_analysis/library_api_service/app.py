@@ -7,15 +7,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from bodaqs_analysis.library_api import LibraryAdapter
 from bodaqs_analysis.library_api.errors import LibraryApiError
 
+try:
+    from bodaqs_library_service_build_version import SERVICE_VERSION as _PACKAGED_SERVICE_VERSION
+except Exception:
+    _PACKAGED_SERVICE_VERSION = ""
+
 
 SERVICE_API_VERSION = "0"
+SERVICE_COMPONENT_VERSION = str(_PACKAGED_SERVICE_VERSION or "0.1.0-dev")
 SERVICE_NAME = "BODAQS Library API"
 DEFAULT_ALLOW_ORIGINS = (
     "http://localhost:5173",
@@ -32,18 +38,22 @@ class LibraryApiServiceConfig:
 
     libraries_root: Path
     allow_origins: tuple[str, ...] = DEFAULT_ALLOW_ORIGINS
+    web_root: Path | None = None
 
 
 def create_app(
     libraries_root: str | Path,
     *,
     allow_origins: Sequence[str] | None = None,
+    web_root: str | Path | None = None,
 ) -> FastAPI:
     """Create a local-only FastAPI app backed by ``LibraryAdapter``."""
 
+    resolved_web_root = Path(web_root).expanduser().resolve() if web_root is not None else None
     config = LibraryApiServiceConfig(
         libraries_root=Path(libraries_root).expanduser(),
         allow_origins=tuple(allow_origins or DEFAULT_ALLOW_ORIGINS),
+        web_root=resolved_web_root,
     )
     app = FastAPI(
         title=SERVICE_NAME,
@@ -90,7 +100,9 @@ def create_app(
             "status": "ok",
             "service": SERVICE_NAME,
             "api_version": SERVICE_API_VERSION,
+            "service_version": SERVICE_COMPONENT_VERSION,
             "libraries_root": str(current_config.libraries_root),
+            "web_app": _web_app_status(current_config),
         }
 
     @app.get("/api/v1/capabilities")
@@ -110,6 +122,7 @@ def create_app(
         app.state.config = LibraryApiServiceConfig(
             libraries_root=Path(libraries_root).expanduser(),
             allow_origins=_current_config(app).allow_origins,
+            web_root=_current_config(app).web_root,
         )
         app.state.adapter = next_adapter
         app.state.trackpoint_query_threads = {}
@@ -387,7 +400,59 @@ def create_app(
     def cancel_trackpoint_match_query(query_id: str) -> dict[str, Any]:
         return _current_adapter(app).cancel_trackpoint_match_query(query_id)
 
+    if config.web_root is not None:
+
+        @app.get("/{request_path:path}", include_in_schema=False)
+        def serve_web_app(request_path: str) -> FileResponse:
+            return _web_app_response(_current_config(app), request_path)
+
     return app
+
+
+def _web_app_status(config: LibraryApiServiceConfig) -> dict[str, Any]:
+    web_root = config.web_root
+    if web_root is None:
+        return {"enabled": False}
+    index_path = web_root / "index.html"
+    return {
+        "enabled": True,
+        "web_root": str(web_root),
+        "index_present": index_path.is_file(),
+    }
+
+
+def _web_app_response(config: LibraryApiServiceConfig, request_path: str) -> FileResponse:
+    web_root = config.web_root
+    if web_root is None:
+        raise HTTPException(status_code=404)
+    normalized_path = request_path.strip("/")
+    if normalized_path == "api" or normalized_path.startswith("api/"):
+        raise HTTPException(status_code=404)
+
+    root = web_root.resolve()
+    index_path = root / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(status_code=404, detail="Web app index.html was not found.")
+
+    if not normalized_path:
+        return FileResponse(index_path)
+
+    requested = (root / normalized_path).resolve()
+    if not _path_is_within(requested, root):
+        raise HTTPException(status_code=404)
+    if requested.is_file():
+        return FileResponse(requested)
+    if Path(normalized_path).suffix:
+        raise HTTPException(status_code=404)
+    return FileResponse(index_path)
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _json_object_payload(payload: Any) -> dict[str, Any]:

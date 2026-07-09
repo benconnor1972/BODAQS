@@ -128,7 +128,10 @@ type NotePasteResult =
   | { ok: true; session: SessionRecord }
   | { ok: false; session: SessionRecord; message: string }
 
+type ConnectionStatus = 'connecting' | 'online' | 'offline'
+
 const NOTE_PASTE_CONCURRENCY = 4
+const LIBRARY_API_HEARTBEAT_MS = 5000
 
 function cloneSessionNoteRecord(note: SessionNoteRecord): SessionNoteRecord {
   return JSON.parse(JSON.stringify(note)) as SessionNoteRecord
@@ -235,6 +238,7 @@ function App() {
   const [isChangingLibraryRoot, setIsChangingLibraryRoot] = useState(false)
   const [isRefreshingWorkbenchData, setIsRefreshingWorkbenchData] = useState(false)
   const [statusMessage, setStatusMessage] = useState('Connecting to configured BODAQS Library API...')
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
   const workbenchRefreshInFlightRef = useRef(false)
   const lastAutomaticWorkbenchRefreshMs = useRef(0)
 
@@ -279,6 +283,7 @@ function App() {
         setSavedSessionFilters(loaded.savedFilters)
         setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
         setStatusMessage(`Connected to Library API at ${localDataSource.baseUrl}.`)
+        setConnectionStatus('online')
         setActiveDataSource(localDataSource)
         setConnectionMode('local-api')
       } catch (error) {
@@ -288,6 +293,7 @@ function App() {
         const message = error instanceof Error ? error.message : String(error)
         setActiveDataSource(fixtureDataSource)
         setConnectionMode('fixture')
+        setConnectionStatus('offline')
         try {
           const loaded = await fetchWorkbenchData(fixtureDataSource)
           if (cancelled) {
@@ -315,6 +321,37 @@ function App() {
       cancelled = true
     }
   }, [fixtureDataSource, localDataSource])
+
+  useEffect(() => {
+    if (connectionMode !== 'local-api') {
+      return
+    }
+    let cancelled = false
+
+    async function checkLibraryApiHealth() {
+      try {
+        await localDataSource.getHealth()
+        if (cancelled) {
+          return
+        }
+        setConnectionStatus('online')
+      } catch {
+        if (cancelled) {
+          return
+        }
+        setConnectionStatus('offline')
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void checkLibraryApiHealth()
+    }, LIBRARY_API_HEARTBEAT_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [connectionMode, localDataSource])
 
   useEffect(() => {
     if (connectionMode !== 'local-api' || !activeDataSource.refreshLibrary || libraries.length === 0) {
@@ -818,6 +855,7 @@ function App() {
       setStatusMessage(`Connected to ${libraryCount} ${libraryLabel} under ${resolvedRoot}.`)
       setActiveDataSource(localDataSource)
       setConnectionMode('local-api')
+      setConnectionStatus('online')
       clearNoteCache()
 
       const cleared = emptyStudySet()
@@ -835,6 +873,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setStatusMessage(`Could not select library root through ${localDataSource.baseUrl}: ${message}`)
+      setConnectionStatus('offline')
     } finally {
       setIsChangingLibraryRoot(false)
     }
@@ -900,6 +939,9 @@ function App() {
       if (!quiet) {
         const sessionLabel = loaded.sessions.length === 1 ? 'session' : 'sessions'
         setStatusMessage(`Refreshed library catalog: ${loaded.sessions.length} ${sessionLabel} available.`)
+        if (connectionMode === 'local-api') {
+          setConnectionStatus('online')
+        }
       } else if (automatic) {
         const newSessionCount = loaded.sessions.length - sessions.length
         if (newSessionCount > 0) {
@@ -908,6 +950,9 @@ function App() {
         }
       }
     } catch (error) {
+      if (connectionMode === 'local-api') {
+        setConnectionStatus('offline')
+      }
       if (!quiet) {
         const message = error instanceof Error ? error.message : String(error)
         setStatusMessage(`Could not refresh library catalog: ${message}`)
@@ -1872,10 +1917,16 @@ function App() {
       setAnalysisRouteStudySet(cloneStudySet(refreshed))
       setAnalysisScopeNotice(null)
       setStatusMessage(`Refreshed analysis scope "${refreshed.displayName}".`)
+      if (connectionMode === 'local-api') {
+        setConnectionStatus('online')
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setAnalysisRouteStudySetError(message)
       setStatusMessage(`Could not refresh analysis scope: ${message}`)
+      if (connectionMode === 'local-api') {
+        setConnectionStatus('offline')
+      }
     } finally {
       setAnalysisRouteStudySetLoading(false)
     }
@@ -1894,6 +1945,7 @@ function App() {
         tracks={tracks}
         dataSource={activeDataSource}
         statusMessage={statusMessage}
+        connectionStatus={connectionStatus}
         connectionMode={connectionMode}
         onRefreshScope={() => void refreshAnalysisRouteScope()}
         onDismissScopeNotice={() => setAnalysisScopeNotice(null)}
@@ -1908,9 +1960,11 @@ function App() {
           <p className="eyebrow">BODAQS application prototype</p>
           <h1>Library Browser and Study Set Builder</h1>
         </div>
-        <div className="header-status">
-          <span>{statusMessage}</span>
-        </div>
+        <HeaderStatus
+          baseUrl={localDataSource.baseUrl}
+          connectionStatus={connectionStatus}
+          message={statusMessage}
+        />
       </header>
 
       <section
@@ -2584,6 +2638,30 @@ function studySetStatus(studySet: StudySet, isDirty: boolean) {
   return { className: 'pill neutral', label: 'empty' }
 }
 
+function HeaderStatus({
+  baseUrl,
+  connectionStatus,
+  message,
+}: {
+  baseUrl: string
+  connectionStatus: ConnectionStatus
+  message: string
+}) {
+  if (connectionStatus === 'offline') {
+    return (
+      <div className="header-status offline" title={message}>
+        <strong>offline</strong>
+        <span>{baseUrl ? `Library API unavailable at ${baseUrl}.` : message}</span>
+      </div>
+    )
+  }
+  return (
+    <div className={`header-status ${connectionStatus}`}>
+      <span>{message}</span>
+    </div>
+  )
+}
+
 function AnalysisRoutePage({
   route,
   studySet,
@@ -2594,6 +2672,7 @@ function AnalysisRoutePage({
   tracks,
   dataSource,
   statusMessage,
+  connectionStatus,
   connectionMode,
   onRefreshScope,
   onDismissScopeNotice,
@@ -2607,6 +2686,7 @@ function AnalysisRoutePage({
   tracks: TrackRecord[]
   dataSource: LibraryDataSource
   statusMessage: string
+  connectionStatus: ConnectionStatus
   connectionMode: 'local-api' | 'fixture'
   onRefreshScope: () => void
   onDismissScopeNotice: () => void
@@ -2626,6 +2706,11 @@ function AnalysisRoutePage({
             <span>{connectionMode === 'fixture' ? 'fixture data source' : statusMessage}</span>
           </p>
         </div>
+        <HeaderStatus
+          baseUrl={dataSource instanceof LocalApiDataSource ? dataSource.baseUrl : ''}
+          connectionStatus={connectionStatus}
+          message={statusMessage}
+        />
       </header>
 
       {loadingScope ? (

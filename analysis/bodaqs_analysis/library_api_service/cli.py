@@ -25,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--port", type=int, default=8765, help="Port to bind.")
     parser.add_argument(
+        "--web-root",
+        default=None,
+        help="Optional directory containing a built BODAQS web app to serve at /.",
+    )
+    parser.add_argument(
         "--allow-origin",
         action="append",
         default=None,
@@ -38,6 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app = create_app(
         Path(args.libraries_root),
         allow_origins=tuple(args.allow_origin) if args.allow_origin else None,
+        web_root=Path(args.web_root) if args.web_root else None,
     )
     uvicorn.run(app, host=str(args.host), port=int(args.port))
     return 0
