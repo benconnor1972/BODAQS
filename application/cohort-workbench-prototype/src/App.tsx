@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   BookOpen,
@@ -7,7 +7,6 @@ import {
   ChevronRight,
   ChevronUp,
   Columns3,
-  Eye,
   FileText,
   FolderOpen,
   GitBranch,
@@ -15,30 +14,46 @@ import {
   Minus,
   Play,
   Plus,
+  RefreshCw,
   Save,
   Search,
   Trash2,
   X,
 } from 'lucide-react'
 import './App.css'
-import { IconButton, PanelTitle, SummaryTile } from './components/Common'
+import { IconButton, InfoTip, PanelTitle } from './components/Common'
 import { FilterPanel } from './components/FilterPanel'
 import { FilterManagerModal } from './components/FilterManagerModal'
-import { GeospatialWorkbench } from './components/GeospatialWorkbench'
+import { GeospatialWorkbench, MatchPreviewCard, StudySetGpsCoverageCard } from './components/GeospatialWorkbench'
 import { GpsRoutePreview } from './components/GpsRoutePreview'
+import { MapRoutePreview } from './components/MapRoutePreview'
 import { Modal } from './components/Modal'
-import { SessionNoteEditorModal } from './components/SessionNoteEditorModal'
-import { SessionTable, type SessionSelectionGesture } from './components/SessionTable'
+import {
+  SessionNoteEditorModal,
+  sessionFromSavedNote,
+  sessionNoteFromSession,
+} from './components/SessionNoteEditorModal'
+import { SessionSignalPreview } from './components/SessionSignalPreview'
+import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
+import { SuspensionVisualization } from './components/SuspensionVisualization'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
 import { LocalApiDataSource } from './data/LocalApiDataSource'
 import type { LibraryDataSource } from './data/LibraryDataSource'
+import { invalidateSuspensionCacheForSession } from './data/SuspensionAnalysisCache'
+import {
+  broadcastSessionDeleted,
+  broadcastStudySetDeleted,
+  broadcastStudySetUpdated,
+  subscribeWorkbenchSync,
+} from './data/WorkbenchSync'
 import {
   columnGroups,
   columnLabels,
   columnPresets,
   defaultColumns,
+  infoActionColumns,
   lockedColumns,
   matchesSearch,
   normalizeColumnSelection,
@@ -59,17 +74,19 @@ import {
   hasStudySetContent,
   isTemporaryStudySet,
   sessionRefId,
+  sessionByRef,
   sessionToStudyRef,
   slugify,
   studySetsEqual,
   uniqueId,
 } from './domain/studySets'
-import { applyTableColumnFilters, tableFilterLabel, type TableColumnFilter } from './domain/tableFilters'
+import { applyTableColumnFilters, type TableColumnFilter } from './domain/tableFilters'
 import type {
   ColumnId,
   LibraryRecord,
   ModalState,
   SessionInspectionTab,
+  SessionNoteRecord,
   SessionTrackMatchRecord,
   SessionRecord,
   SortDirection,
@@ -96,16 +113,92 @@ type GeoFilterQueryState = {
   error: string
 }
 
+type StudySetMapSessionPath = {
+  id: string
+  label: string
+  path: Array<[number, number]>
+}
+
+type NoteClipboard = {
+  sourceSession: SessionRecord
+  note: SessionNoteRecord
+}
+
+type NotePasteResult =
+  | { ok: true; session: SessionRecord }
+  | { ok: false; session: SessionRecord; message: string }
+
+const NOTE_PASTE_CONCURRENCY = 4
+
+function cloneSessionNoteRecord(note: SessionNoteRecord): SessionNoteRecord {
+  return JSON.parse(JSON.stringify(note)) as SessionNoteRecord
+}
+
+function sessionNoteCacheKey(session: SessionRecord) {
+  return sessionRefId(sessionToStudyRef(session))
+}
+
+function sessionNoteRecordCacheKey(note: SessionNoteRecord) {
+  return sessionRefId(note.sessionRef)
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  task: (item: T) => Promise<R>,
+) {
+  const results: R[] = []
+  let nextIndex = 0
+  const workerCount = Math.max(1, Math.min(concurrency, items.length))
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await task(items[index])
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
+const LEGACY_SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
+const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v2'
+const SESSION_SELECTOR_COLUMN_WIDTHS_STORAGE_KEY = 'bodaqs.web.session-selector.column-widths.v1'
+const ANALYSIS_SCOPE_STORAGE_PREFIX = 'bodaqs.web.analysis-scope.v1.'
+
+type AnalysisRouteState = {
+  viewId: string
+  scopeToken: string | null
+  studySetId: string | null
+}
+
+type AnalysisScopeNotice = {
+  kind: 'study-set-updated' | 'study-set-deleted' | 'session-deleted'
+  message: string
+  refreshable: boolean
+}
+
 function App() {
   const [localDataSource] = useState(() => new LocalApiDataSource())
   const [fixtureDataSource] = useState(() => new FixtureLibraryDataSource())
+  const [analysisRoute, setAnalysisRoute] = useState<AnalysisRouteState | null>(() => parseAnalysisRouteHash())
+  const [analysisRouteStudySet, setAnalysisRouteStudySet] = useState<StudySet | null>(null)
+  const [analysisRouteStudySetLoading, setAnalysisRouteStudySetLoading] = useState(() =>
+    Boolean(parseAnalysisRouteHash()?.studySetId),
+  )
+  const [analysisRouteStudySetError, setAnalysisRouteStudySetError] = useState('')
+  const [analysisScopeNotice, setAnalysisScopeNotice] = useState<AnalysisScopeNotice | null>(null)
   const [activeDataSource, setActiveDataSource] = useState<LibraryDataSource>(localDataSource)
   const columnMenuRef = useRef<HTMLDivElement>(null)
+  const noteCacheRef = useRef<Map<string, SessionNoteRecord>>(new Map())
   const [libraries, setLibraries] = useState<LibraryRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [tracks, setTracks] = useState<TrackRecord[]>([])
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([])
-  const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(defaultColumns)
+  const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(loadPersistedVisibleColumns)
+  const [sessionColumnWidths, setSessionColumnWidths] = useState<SessionColumnWidths>(loadPersistedSessionColumnWidths)
   const [searchText, setSearchText] = useState('')
   const [sortColumn, setSortColumn] = useState<ColumnId>('started')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
@@ -115,30 +208,53 @@ function App() {
   const [selectedStudySessionIds, setSelectedStudySessionIds] = useState<string[]>([])
   const [selectionAnchorStudySessionId, setSelectionAnchorStudySessionId] = useState<string | null>(null)
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([])
+  const [noteClipboard, setNoteClipboard] = useState<NoteClipboard | null>(null)
   const [savedStudySets, setSavedStudySets] = useState<StudySet[]>([])
   const [savedSessionFilters, setSavedSessionFilters] = useState<SavedSessionFilterRecord[]>(prototypeSavedSessionFilters)
   const [currentStudySet, setCurrentStudySet] = useState<StudySet>(() => emptyStudySet())
   const [lastCommittedStudySet, setLastCommittedStudySet] = useState<StudySet>(() => emptyStudySet())
+  const [studySetMapSessionPaths, setStudySetMapSessionPaths] = useState<StudySetMapSessionPath[]>([])
   const [groupingName, setGroupingName] = useState('')
-  const [leftCollapsed, setLeftCollapsed] = useState(false)
-  const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [studyDrawerOpen, setStudyDrawerOpen] = useState(false)
   const [librarySelectorCollapsed, setLibrarySelectorCollapsed] = useState(true)
   const [sessionSelectorCollapsed, setSessionSelectorCollapsed] = useState(false)
   const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
+  const [studyGpsCollapsed, setStudyGpsCollapsed] = useState(false)
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
-  const [geospatialCollapsed, setGeospatialCollapsed] = useState(false)
   const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
   const [geoFilterQueryStates, setGeoFilterQueryStates] = useState<Record<string, GeoFilterQueryState>>({})
   const [tableColumnFilters, setTableColumnFilters] = useState<TableColumnFilter[]>([])
   const [filterManagerOpen, setFilterManagerOpen] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
+  const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
   const [noteEditorSession, setNoteEditorSession] = useState<SessionRecord | null>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
   const [libraryRootInput, setLibraryRootInput] = useState('')
   const [connectionMode, setConnectionMode] = useState<'local-api' | 'fixture'>('local-api')
   const [isChangingLibraryRoot, setIsChangingLibraryRoot] = useState(false)
+  const [isRefreshingWorkbenchData, setIsRefreshingWorkbenchData] = useState(false)
   const [statusMessage, setStatusMessage] = useState('Connecting to configured BODAQS Library API...')
+  const workbenchRefreshInFlightRef = useRef(false)
+  const lastAutomaticWorkbenchRefreshMs = useRef(0)
+
+  useEffect(() => {
+    function handleHashChange() {
+      const nextRoute = parseAnalysisRouteHash()
+      setAnalysisRoute(nextRoute)
+      setAnalysisRouteStudySetLoading(Boolean(nextRoute?.studySetId))
+      setAnalysisRouteStudySetError('')
+    }
+
+    window.addEventListener('hashchange', handleHashChange)
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    document.title = browserTabTitle(analysisRoute)
+  }, [analysisRoute])
 
   useEffect(() => {
     let cancelled = false
@@ -199,6 +315,126 @@ function App() {
       cancelled = true
     }
   }, [fixtureDataSource, localDataSource])
+
+  useEffect(() => {
+    if (connectionMode !== 'local-api' || !activeDataSource.refreshLibrary || libraries.length === 0) {
+      return
+    }
+
+    function refreshIfReturningToWorkbench() {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+      const now = Date.now()
+      if (now - lastAutomaticWorkbenchRefreshMs.current < 15000) {
+        return
+      }
+      lastAutomaticWorkbenchRefreshMs.current = now
+      void refreshWorkbenchData({ quiet: true, automatic: true })
+    }
+
+    window.addEventListener('focus', refreshIfReturningToWorkbench)
+    document.addEventListener('visibilitychange', refreshIfReturningToWorkbench)
+    return () => {
+      window.removeEventListener('focus', refreshIfReturningToWorkbench)
+      document.removeEventListener('visibilitychange', refreshIfReturningToWorkbench)
+    }
+  }, [activeDataSource, connectionMode, libraries.length, refreshWorkbenchData, selectedLibraryIds, sessions.length])
+
+  useEffect(() => {
+    if (!analysisRoute?.studySetId) {
+      setAnalysisRouteStudySet(null)
+      setAnalysisRouteStudySetLoading(false)
+      setAnalysisRouteStudySetError('')
+      return
+    }
+
+    let cancelled = false
+    const studySetId = analysisRoute.studySetId
+
+    async function loadRouteStudySet() {
+      const cachedStudySet = savedStudySets.find((studySet) => studySet.id === studySetId)
+      if (cachedStudySet) {
+        setAnalysisRouteStudySet(cloneStudySet(cachedStudySet))
+        setAnalysisRouteStudySetLoading(false)
+        setAnalysisRouteStudySetError('')
+        return
+      }
+
+      if (!activeDataSource.loadStudySet) {
+        setAnalysisRouteStudySet(null)
+        setAnalysisRouteStudySetLoading(false)
+        setAnalysisRouteStudySetError('This data source cannot load a Study Set directly by ID.')
+        return
+      }
+
+      setAnalysisRouteStudySetLoading(true)
+      setAnalysisRouteStudySetError('')
+      try {
+        const loaded = await activeDataSource.loadStudySet(studySetId)
+        if (cancelled) {
+          return
+        }
+        setAnalysisRouteStudySet(cloneStudySet(loaded))
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        setAnalysisRouteStudySet(null)
+        setAnalysisRouteStudySetError(error instanceof Error ? error.message : 'Could not load the Study Set.')
+      } finally {
+        if (!cancelled) {
+          setAnalysisRouteStudySetLoading(false)
+        }
+      }
+    }
+
+    void loadRouteStudySet()
+    return () => {
+      cancelled = true
+    }
+  }, [activeDataSource, analysisRoute?.studySetId, savedStudySets])
+
+  useEffect(() => {
+    return subscribeWorkbenchSync((message) => {
+      if (message.type === 'session-deleted') {
+        invalidateSuspensionCacheForSession(activeDataSource, message.sessionRefId)
+      }
+      if (!analysisRoute) {
+        return
+      }
+
+      const routeStudySet = analysisRoute.scopeToken
+        ? loadAnalysisScope(analysisRoute.scopeToken)
+        : analysisRouteStudySet
+
+      if (message.type === 'study-set-updated' && analysisRoute.studySetId === message.studySetId) {
+        setAnalysisScopeNotice({
+          kind: 'study-set-updated',
+          message: `Study Set "${message.displayName}" was changed in another tab.`,
+          refreshable: true,
+        })
+        return
+      }
+
+      if (message.type === 'study-set-deleted' && analysisRoute.studySetId === message.studySetId) {
+        setAnalysisScopeNotice({
+          kind: 'study-set-deleted',
+          message: `Study Set "${message.displayName}" was deleted in another tab.`,
+          refreshable: false,
+        })
+        return
+      }
+
+      if (message.type === 'session-deleted' && routeStudySet?.sessions.some((ref) => sessionRefId(ref) === message.sessionRefId)) {
+        setAnalysisScopeNotice({
+          kind: 'session-deleted',
+          message: `Session "${message.sessionName}" was deleted in another tab.`,
+          refreshable: Boolean(analysisRoute.studySetId),
+        })
+      }
+    })
+  }, [activeDataSource, analysisRoute, analysisRouteStudySet])
 
   const isCurrentStudySetDirty = !studySetsEqual(currentStudySet, lastCommittedStudySet)
   const currentStudySetHasContent = hasStudySetContent(currentStudySet)
@@ -295,6 +531,14 @@ function App() {
     }
   }, [columnMenuOpen])
 
+  useEffect(() => {
+    persistVisibleColumns(visibleColumns)
+  }, [visibleColumns])
+
+  useEffect(() => {
+    persistSessionColumnWidths(sessionColumnWidths)
+  }, [sessionColumnWidths])
+
   const selectedLibraries = libraries.filter((libraryItem) =>
     selectedLibraryIds.includes(libraryItem.id),
   )
@@ -337,6 +581,89 @@ function App() {
     .filter((session): session is SessionRecord => Boolean(session))
   const selectedTracks = tracks.filter((track) => selectedTrackIds.includes(track.id))
   const currentStudyTracks = tracks.filter((track) => currentStudySet.trackIds.includes(track.id))
+  const currentStudySetSessions = useMemo(
+    () =>
+      currentStudySet.sessions
+        .map((sessionRef) => sessionByRef(sessionRef, sessions))
+        .filter((session): session is SessionRecord => Boolean(session)),
+    [currentStudySet.sessions, sessions],
+  )
+  const currentStudySetSessionKey = currentStudySet.sessions.map(sessionRefId).join('|')
+
+  const loadCachedSessionNote = useCallback(
+    async (session: SessionRecord) => {
+      const key = sessionNoteCacheKey(session)
+      const cached = noteCacheRef.current.get(key)
+      if (cached) {
+        return cloneSessionNoteRecord(cached)
+      }
+      const loaded = activeDataSource.loadSessionNote
+        ? await activeDataSource.loadSessionNote(session)
+        : sessionNoteFromSession(session)
+      noteCacheRef.current.set(key, cloneSessionNoteRecord(loaded))
+      return cloneSessionNoteRecord(loaded)
+    },
+    [activeDataSource],
+  )
+
+  const saveCachedSessionNote = useCallback(
+    async (note: SessionNoteRecord) => {
+      if (!activeDataSource.saveSessionNote) {
+        throw new Error('The current data source does not support note saves.')
+      }
+      const saved = await activeDataSource.saveSessionNote(note)
+      const cacheKey = sessionNoteRecordCacheKey(saved)
+      noteCacheRef.current.set(cacheKey, cloneSessionNoteRecord(saved))
+      setNoteClipboard((current) =>
+        current && sessionNoteCacheKey(current.sourceSession) === cacheKey
+          ? { ...current, note: cloneSessionNoteRecord(saved) }
+          : current,
+      )
+      return cloneSessionNoteRecord(saved)
+    },
+    [activeDataSource],
+  )
+
+  function clearNoteCache() {
+    noteCacheRef.current.clear()
+    setNoteClipboard(null)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    const fallbackPaths = currentStudySetSessions.map((session) => studySetPathFromSession(session)).filter(hasMapPath)
+
+    if (currentStudySetSessions.length === 0) {
+      setStudySetMapSessionPaths([])
+      return
+    }
+
+    if (!activeDataSource.loadSessionGpsPoints) {
+      setStudySetMapSessionPaths(fallbackPaths)
+      return
+    }
+
+    setStudySetMapSessionPaths(fallbackPaths)
+    Promise.all(
+      currentStudySetSessions.map(async (session) => {
+        try {
+          const preferredSourceId = session.gpsSummary.preferredSourceId ?? session.gpsSummary.sources[0]?.sourceId ?? null
+          const pointSet = await activeDataSource.loadSessionGpsPoints?.(session, preferredSourceId)
+          return studySetPathFromSession(session, pointSet?.path ?? [])
+        } catch {
+          return studySetPathFromSession(session)
+        }
+      }),
+    ).then((paths) => {
+      if (!cancelled) {
+        setStudySetMapSessionPaths(paths.filter(hasMapPath))
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeDataSource, currentStudySetSessionKey, currentStudySetSessions])
 
   useEffect(() => {
     const specs = JSON.parse(activeTrackpointFilterSpecKey) as TrackpointCrossingSpec[]
@@ -491,6 +818,7 @@ function App() {
       setStatusMessage(`Connected to ${libraryCount} ${libraryLabel} under ${resolvedRoot}.`)
       setActiveDataSource(localDataSource)
       setConnectionMode('local-api')
+      clearNoteCache()
 
       const cleared = emptyStudySet()
       setCurrentStudySet(cleared)
@@ -509,6 +837,86 @@ function App() {
       setStatusMessage(`Could not select library root through ${localDataSource.baseUrl}: ${message}`)
     } finally {
       setIsChangingLibraryRoot(false)
+    }
+  }
+
+  async function refreshWorkbenchData({
+    quiet = false,
+    automatic = false,
+  }: {
+    quiet?: boolean
+    automatic?: boolean
+  } = {}) {
+    if (workbenchRefreshInFlightRef.current || isChangingLibraryRoot) {
+      return
+    }
+
+    workbenchRefreshInFlightRef.current = true
+    if (!quiet) {
+      setIsRefreshingWorkbenchData(true)
+      setStatusMessage('Refreshing library catalog...')
+    }
+
+    const selectedAllLibraries =
+      libraries.length > 0 &&
+      selectedLibraryIds.length === libraries.length &&
+      libraries.every((libraryItem) => selectedLibraryIds.includes(libraryItem.id))
+
+    try {
+      const libraryIdsToRefresh = selectedLibraryIds.length
+        ? selectedLibraryIds
+        : libraries.map((libraryItem) => libraryItem.id)
+      if (activeDataSource.refreshLibrary && libraryIdsToRefresh.length) {
+        await Promise.all(libraryIdsToRefresh.map((libraryId) => activeDataSource.refreshLibrary?.(libraryId)))
+      }
+
+      const loaded = await fetchWorkbenchData(activeDataSource)
+      const loadedLibraryIds = new Set(loaded.libraries.map((libraryItem) => libraryItem.id))
+      const loadedCandidateIds = new Set(loaded.sessions.map(candidateId))
+      for (const cacheKey of noteCacheRef.current.keys()) {
+        if (!loadedCandidateIds.has(cacheKey)) {
+          noteCacheRef.current.delete(cacheKey)
+        }
+      }
+      setNoteClipboard((current) =>
+        current && !loadedCandidateIds.has(candidateId(current.sourceSession)) ? null : current,
+      )
+
+      setLibraries(applyStrictSessionCounts(loaded.libraries, loaded.sessions))
+      setSessions(loaded.sessions)
+      setTracks(loaded.tracks)
+      setSavedStudySets(loaded.studySets)
+      setSavedSessionFilters(loaded.savedFilters)
+      setSelectedLibraryIds((current) => {
+        if (selectedAllLibraries) {
+          return loaded.libraries.map((libraryItem) => libraryItem.id)
+        }
+        return current.filter((libraryId) => loadedLibraryIds.has(libraryId))
+      })
+      setSelectedCandidateIds((current) => current.filter((id) => loadedCandidateIds.has(id)))
+      setPrimaryCandidateId((current) => (current && loadedCandidateIds.has(current) ? current : null))
+      setSelectionAnchorCandidateId((current) => (current && loadedCandidateIds.has(current) ? current : null))
+
+      if (!quiet) {
+        const sessionLabel = loaded.sessions.length === 1 ? 'session' : 'sessions'
+        setStatusMessage(`Refreshed library catalog: ${loaded.sessions.length} ${sessionLabel} available.`)
+      } else if (automatic) {
+        const newSessionCount = loaded.sessions.length - sessions.length
+        if (newSessionCount > 0) {
+          const sessionLabel = newSessionCount === 1 ? 'new session' : 'new sessions'
+          setStatusMessage(`Library catalog refreshed: ${newSessionCount} ${sessionLabel} found.`)
+        }
+      }
+    } catch (error) {
+      if (!quiet) {
+        const message = error instanceof Error ? error.message : String(error)
+        setStatusMessage(`Could not refresh library catalog: ${message}`)
+      }
+    } finally {
+      workbenchRefreshInFlightRef.current = false
+      if (!quiet) {
+        setIsRefreshingWorkbenchData(false)
+      }
     }
   }
 
@@ -575,7 +983,7 @@ function App() {
 
   async function saveSessionFilter(filter: SavedSessionFilterRecord) {
     if (!activeDataSource.saveSavedSessionFilter) {
-      throw new Error('The current data source does not support saved-filter writes.')
+      throw new Error('The current data source does not support filter writes.')
     }
     const saved = await activeDataSource.saveSavedSessionFilter(filter)
     setSavedSessionFilters((current) => {
@@ -584,29 +992,263 @@ function App() {
         a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }),
       )
     })
-    setStatusMessage(`Saved filter "${saved.displayName}".`)
+    setStatusMessage(`Filter saved: "${saved.displayName}".`)
     return saved
   }
 
-  async function copySessionFilter(filter: SavedSessionFilterRecord) {
+  function setSessionColumnWidthsPatch(widths: SessionColumnWidths) {
+    setSessionColumnWidths((current) => ({
+      ...current,
+      ...widths,
+    }))
+  }
+
+  async function deleteSavedStudySet(studySet: StudySet) {
+    if (!studySet.id) {
+      setStatusMessage('Only saved Study Sets can be deleted.')
+      return
+    }
+    if (!activeDataSource.deleteStudySet) {
+      setStatusMessage('The current data source does not support Study Set deletes.')
+      return
+    }
+    if (!window.confirm(`Delete Study Set "${studySet.displayName}"? This cannot be undone.`)) {
+      return
+    }
     try {
-      const copied = await saveSessionFilter({
-        ...cloneSessionFilter(filter),
-        id: '',
-        displayName: `${filter.displayName} copy`,
-        origin: 'api_saved',
-        revision: 0,
-      })
-      setStatusMessage(`Copied filter "${filter.displayName}" to "${copied.displayName}".`)
+      await activeDataSource.deleteStudySet(studySet.id)
+      broadcastStudySetDeleted(studySet)
+      setSavedStudySets((current) => current.filter((item) => item.id !== studySet.id))
+      if (currentStudySet.id === studySet.id) {
+        const empty = emptyStudySet()
+        setCurrentStudySet(empty)
+        setLastCommittedStudySet(cloneStudySet(empty))
+        setSelectedStudySessionIds([])
+        setSelectionAnchorStudySessionId(null)
+        setGroupingName('')
+      }
+      setStatusMessage(`Deleted Study Set "${studySet.displayName}".`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setStatusMessage(`Could not copy saved filter: ${message}`)
+      setStatusMessage(`Could not delete Study Set: ${message}`)
+    }
+  }
+
+  async function deleteLibrarySession(session: SessionRecord) {
+    if (!activeDataSource.deleteSession) {
+      setStatusMessage('The current data source does not support session deletes.')
+      return
+    }
+    if (
+      !window.confirm(
+        `Delete processed session "${session.name}" from ${session.libraryId}? Source files will not be deleted.`,
+      )
+    ) {
+      return
+    }
+
+    try {
+      await activeDataSource.deleteSession(session)
+      applyOptimisticSessionDeletes([session])
+      void reconcileAfterSessionDeletes([session])
+      setStatusMessage(`Deleted session "${session.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!isReferencedSessionDeleteError(message)) {
+        setStatusMessage(`Could not delete session: ${message}`)
+        return
+      }
+      if (
+        !window.confirm(
+          `Session "${session.name}" is used by saved Study Sets. Remove it from those Study Sets, delete empty groupings, and delete the session?`,
+        )
+      ) {
+        setStatusMessage('Session delete cancelled; saved Study Set memberships were left unchanged.')
+        return
+      }
+      try {
+        await activeDataSource.deleteSession(session, { cleanupMemberships: true })
+        applyOptimisticSessionDeletes([session])
+        void reconcileAfterSessionDeletes([session])
+        setStatusMessage(`Deleted session "${session.name}" and cleaned saved Study Set memberships.`)
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        setStatusMessage(`Could not delete session with cleanup: ${cleanupMessage}`)
+      }
+    }
+  }
+
+  async function deleteSelectedLibrarySessions() {
+    if (!activeDataSource.deleteSession) {
+      setStatusMessage('The current data source does not support session deletes.')
+      return
+    }
+    if (selectedCandidateSessions.length === 0) {
+      setStatusMessage('Select one or more sessions before deleting.')
+      return
+    }
+
+    const selectedCount = selectedCandidateSessions.length
+    const sessionLabel = selectedCount === 1 ? 'session' : 'sessions'
+    if (
+      !window.confirm(
+        `Delete ${selectedCount} selected processed ${sessionLabel}? This cannot be undone. Source files will not be deleted.`,
+      )
+    ) {
+      return
+    }
+
+    const deletedSessions: SessionRecord[] = []
+    const referencedSessions: SessionRecord[] = []
+    const failedDeletes: Array<{ session: SessionRecord; message: string }> = []
+
+    for (const session of selectedCandidateSessions) {
+      try {
+        await activeDataSource.deleteSession(session)
+        deletedSessions.push(session)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (isReferencedSessionDeleteError(message)) {
+          referencedSessions.push(session)
+        } else {
+          failedDeletes.push({ session, message })
+        }
+      }
+    }
+
+    if (deletedSessions.length > 0) {
+      applyOptimisticSessionDeletes(deletedSessions)
+    }
+
+    if (referencedSessions.length > 0) {
+      const referencedCount = referencedSessions.length
+      const referencedLabel = referencedCount === 1 ? 'session is' : 'sessions are'
+      if (
+        window.confirm(
+          `${referencedCount} selected ${referencedLabel} used by saved Study Sets. Remove those memberships, delete empty groupings, and delete the ${referencedCount === 1 ? 'session' : 'sessions'}?`,
+        )
+      ) {
+        const cleanupDeletedSessions: SessionRecord[] = []
+        for (const session of referencedSessions) {
+          try {
+            await activeDataSource.deleteSession(session, { cleanupMemberships: true })
+            cleanupDeletedSessions.push(session)
+          } catch (error) {
+            failedDeletes.push({
+              session,
+              message: error instanceof Error ? error.message : String(error),
+            })
+          }
+        }
+        if (cleanupDeletedSessions.length > 0) {
+          applyOptimisticSessionDeletes(cleanupDeletedSessions)
+          deletedSessions.push(...cleanupDeletedSessions)
+        }
+      } else {
+        failedDeletes.push(
+          ...referencedSessions.map((session) => ({
+            session,
+            message: 'saved Study Set membership cleanup was not confirmed',
+          })),
+        )
+      }
+    }
+
+    if (deletedSessions.length > 0) {
+      void reconcileAfterSessionDeletes(deletedSessions)
+    }
+
+    const deletedCount = deletedSessions.length
+    if (failedDeletes.length > 0) {
+      const failureSummary = failedDeletes
+        .slice(0, 3)
+        .map((failure) => `${failure.session.name}: ${failure.message}`)
+        .join('; ')
+      const suffix = failedDeletes.length > 3 ? `; ${failedDeletes.length - 3} more failed` : ''
+      setStatusMessage(`Deleted ${deletedCount} selected ${deletedCount === 1 ? 'session' : 'sessions'}; ${failedDeletes.length} failed. ${failureSummary}${suffix}`)
+      return
+    }
+
+    setStatusMessage(`Deleted ${deletedCount} selected ${deletedCount === 1 ? 'session' : 'sessions'}.`)
+  }
+
+  function applyOptimisticSessionDeletes(deletedSessions: SessionRecord[]) {
+    if (deletedSessions.length === 0) {
+      return
+    }
+    const deletedRefIds = new Set(deletedSessions.map(candidateId))
+    for (const session of deletedSessions) {
+      const deletedRefId = candidateId(session)
+      noteCacheRef.current.delete(sessionNoteCacheKey(session))
+      invalidateSuspensionCacheForSession(activeDataSource, deletedRefId)
+      broadcastSessionDeleted(deletedRefId, session.name)
+    }
+    setNoteClipboard((current) =>
+      current && deletedRefIds.has(candidateId(current.sourceSession)) ? null : current,
+    )
+    setSessions((current) => {
+      const remainingSessions = current.filter((session) => !deletedRefIds.has(candidateId(session)))
+      setLibraries((currentLibraries) => applySessionCounts(currentLibraries, remainingSessions))
+      return remainingSessions
+    })
+    setSelectedCandidateIds((current) => current.filter((id) => !deletedRefIds.has(id)))
+    setPrimaryCandidateId((current) => (current && deletedRefIds.has(current) ? null : current))
+    setSelectionAnchorCandidateId((current) => (current && deletedRefIds.has(current) ? null : current))
+    setSelectedStudySessionIds((current) => current.filter((id) => !deletedRefIds.has(id)))
+    setSelectionAnchorStudySessionId((current) => (current && deletedRefIds.has(current) ? null : current))
+    setModal((current) =>
+      current?.kind === 'session' && deletedRefIds.has(candidateId(current.session)) ? null : current,
+    )
+    setNoteEditorSession((current) => (current && deletedRefIds.has(candidateId(current)) ? null : current))
+    setCurrentStudySet((current) => removeSessionsFromStudySetValue(current, deletedRefIds, false))
+    setLastCommittedStudySet((current) => removeSessionsFromStudySetValue(current, deletedRefIds, true))
+  }
+
+  async function reconcileAfterSessionDeletes(deletedSessions: SessionRecord[]) {
+    const deletedRefIds = new Set(deletedSessions.map(candidateId))
+    const affectedLibraryIds = [...new Set(deletedSessions.map((session) => session.libraryId))]
+    try {
+      if (activeDataSource.refreshLibrary) {
+        await Promise.all(affectedLibraryIds.map((libraryId) => activeDataSource.refreshLibrary?.(libraryId)))
+      }
+      const [loadedLibraries, loadedSessions, loadedStudySets] = await Promise.all([
+        activeDataSource.listLibraries(),
+        activeDataSource.listSessions(),
+        activeDataSource.listStudySets(),
+      ])
+      const remainingSessions = loadedSessions.filter((item) => !deletedRefIds.has(candidateId(item)))
+      setLibraries(applyStrictSessionCounts(loadedLibraries, remainingSessions))
+      setSessions(remainingSessions)
+      setSavedStudySets(loadedStudySets)
+      setSelectedCandidateIds((current) => current.filter((id) => candidateStillExists(id, remainingSessions)))
+      setPrimaryCandidateId((current) => (current && candidateStillExists(current, remainingSessions) ? current : null))
+      setSelectionAnchorCandidateId((current) =>
+        current && candidateStillExists(current, remainingSessions) ? current : null,
+      )
+
+      if (currentStudySet.id && !isCurrentStudySetDirty) {
+        const refreshedStudySet = loadedStudySets.find((studySet) => studySet.id === currentStudySet.id)
+        if (refreshedStudySet) {
+          setCurrentStudySet(refreshedStudySet)
+          setLastCommittedStudySet(cloneStudySet(refreshedStudySet))
+          return
+        }
+      }
+      const refreshedStudySet = currentStudySet.id
+        ? loadedStudySets.find((studySet) => studySet.id === currentStudySet.id)
+        : null
+      if (refreshedStudySet) {
+        setLastCommittedStudySet(cloneStudySet(refreshedStudySet))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Deleted ${deletedSessions.length} ${deletedSessions.length === 1 ? 'session' : 'sessions'}, but background refresh failed: ${message}`)
     }
   }
 
   async function deleteSessionFilter(filter: SavedSessionFilterRecord) {
     if (!activeDataSource.deleteSavedSessionFilter) {
-      throw new Error('The current data source does not support saved-filter deletes.')
+      throw new Error('The current data source does not support filter deletes.')
     }
     if (filter.origin !== 'api_saved') {
       throw new Error('Prototype filters cannot be deleted.')
@@ -635,11 +1277,6 @@ function App() {
     clearSessionSelection()
   }
 
-  function clearTableColumnFilters() {
-    setTableColumnFilters([])
-    clearSessionSelection()
-  }
-
   function clearSessionSelection() {
     setSelectedCandidateIds([])
     setPrimaryCandidateId(null)
@@ -661,13 +1298,218 @@ function App() {
       setNoteEditorSession(session)
       return
     }
+    if (tab === 'signals') {
+      setModal({ kind: 'signal-inspector', session, initialWindow: null })
+      return
+    }
     setModal({ kind: 'session', session, tab })
   }
 
+  function openAnalysisLauncher(studySet: StudySet) {
+    setModal({ kind: 'analysis-launcher', studySet: cloneStudySet(studySet) })
+  }
+
+  function openAnalysisView(viewId: string, studySet: StudySet) {
+    if (viewId === 'simple-suspension') {
+      const url = analysisRouteUrl(viewId, studySet)
+      const opened = window.open(url, '_blank')
+      if (!opened) {
+        window.location.href = url
+      } else {
+        opened.opener = null
+      }
+      setModal(null)
+      setStatusMessage(`Opened ${studySet.displayName || 'Study Set'} analysis in a browser tab.`)
+      return
+    }
+    setStatusMessage(`Analysis view "${viewId}" is not implemented in this prototype yet.`)
+  }
+
   function updateSessionAfterNoteSave(updatedSession: SessionRecord) {
+    applyUpdatedSessions([updatedSession])
+  }
+
+  function applyUpdatedSessions(updatedSessions: SessionRecord[]) {
+    if (updatedSessions.length === 0) {
+      return
+    }
+    const updatesById = new Map(updatedSessions.map((session) => [candidateId(session), session]))
     setSessions((current) =>
-      current.map((session) => (candidateId(session) === candidateId(updatedSession) ? updatedSession : session)),
+      current.map((session) => updatesById.get(candidateId(session)) ?? session),
     )
+    setModal((current) => {
+      if (current?.kind === 'session') {
+        const updatedSession = updatesById.get(candidateId(current.session))
+        return updatedSession ? { ...current, session: updatedSession } : current
+      }
+      if (current?.kind === 'signal-inspector') {
+        const updatedSession = updatesById.get(candidateId(current.session))
+        return updatedSession ? { ...current, session: updatedSession } : current
+      }
+      return current
+    })
+    setNoteEditorSession((current) =>
+      current ? updatesById.get(candidateId(current)) ?? current : current,
+    )
+  }
+
+  async function copySessionNote(session: SessionRecord) {
+    try {
+      const loadedNote = await loadCachedSessionNote(session)
+      setNoteClipboard({
+        sourceSession: session,
+        note: cloneSessionNoteRecord(loadedNote),
+      })
+      setStatusMessage(`Copied note from "${session.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not copy note: ${message}`)
+    }
+  }
+
+  async function pasteSessionNote(anchorSession: SessionRecord) {
+    if (!noteClipboard) {
+      setStatusMessage('Copy a note before pasting.')
+      return
+    }
+    if (!activeDataSource.saveSessionNote) {
+      setStatusMessage('The current data source does not support note paste.')
+      return
+    }
+
+    const targets = notePasteTargets(anchorSession)
+    const targetsWithNotes = targets.filter((session) => session.noteStatus === 'draft' || session.noteStatus === 'edited')
+    if (targets.length > 1) {
+      const confirmed = window.confirm(
+        `Paste note from "${noteClipboard.sourceSession.name}" to ${targets.length} selected sessions? Existing notes on target sessions will be replaced.`,
+      )
+      if (!confirmed) {
+        return
+      }
+    } else if (targetsWithNotes.length > 0) {
+      const confirmed = window.confirm(
+        `Replace the existing note on "${targets[0].name}" with the copied note from "${noteClipboard.sourceSession.name}"?`,
+      )
+      if (!confirmed) {
+        return
+      }
+    }
+
+    setStatusMessage(targets.length === 1 ? 'Pasting note...' : `Pasting note to ${targets.length} sessions...`)
+    const sourceNote = cloneSessionNoteRecord(noteClipboard.note)
+    const results = await mapWithConcurrency(targets, NOTE_PASTE_CONCURRENCY, (target) =>
+      pasteNoteToSession(target, sourceNote),
+    )
+    const updatedSessions = results.flatMap((result) => (result.ok ? [result.session] : []))
+    const failures = results.flatMap((result) => (result.ok ? [] : [`${result.session.name}: ${result.message}`]))
+    if (failures.length > 0) {
+      const successPrefix = updatedSessions.length > 0 ? `${updatedSessions.length} note(s) pasted. ` : ''
+      setStatusMessage(`${successPrefix}${failures.length} paste operation(s) failed: ${failures.join('; ')}`)
+      return
+    }
+    setStatusMessage(
+      targets.length === 1
+        ? `Pasted note to "${targets[0].name}".`
+        : `Pasted note to ${targets.length} selected sessions.`,
+    )
+  }
+
+  async function pasteNoteToSession(target: SessionRecord, sourceNote: SessionNoteRecord): Promise<NotePasteResult> {
+    try {
+      const noteToSave: SessionNoteRecord = {
+        ...cloneSessionNoteRecord(sourceNote),
+        sessionRef: sessionToStudyRef(target),
+        present: true,
+        createdAtUtc: '',
+        updatedAtUtc: '',
+      }
+      const savedNote = await saveCachedSessionNote(noteToSave)
+      const updatedSession = sessionFromSavedNote(target, savedNote)
+      applyUpdatedSessions([updatedSession])
+      return { ok: true, session: updatedSession }
+    } catch (error) {
+      return {
+        ok: false,
+        session: target,
+        message: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  function notePasteTargets(anchorSession: SessionRecord) {
+    const anchorId = candidateId(anchorSession)
+    if (selectedCandidateIds.includes(anchorId) && selectedCandidateSessions.length > 0) {
+      return selectedCandidateSessions
+    }
+    return [anchorSession]
+  }
+
+  async function renameLibrarySession(session: SessionRecord, nextName: string) {
+    const trimmedName = nextName.trim()
+    const currentName = (session.sessionLabel || session.name).trim()
+    if (!trimmedName || trimmedName === currentName) {
+      return
+    }
+    if (!activeDataSource.renameSession) {
+      const message = 'The current data source does not support session rename.'
+      setStatusMessage(message)
+      throw new Error(message)
+    }
+
+    try {
+      const renamed = await activeDataSource.renameSession(session, trimmedName)
+      applyRenamedSession(renamed)
+      void reconcileAfterSessionRename(renamed)
+      setStatusMessage(`Renamed session "${currentName}" to "${renamed.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not rename session: ${message}`)
+      throw error
+    }
+  }
+
+  function applyRenamedSession(renamedSession: SessionRecord) {
+    const renamedRefId = candidateId(renamedSession)
+    const renamedLabel = renamedSession.name
+    setSessions((current) =>
+      current.map((session) => (candidateId(session) === renamedRefId ? renamedSession : session)),
+    )
+    setCurrentStudySet((current) => renameStudySetSessionLabel(current, renamedRefId, renamedLabel, current.saved))
+    setLastCommittedStudySet((current) => renameStudySetSessionLabel(current, renamedRefId, renamedLabel, true))
+    setSavedStudySets((current) =>
+      current.map((studySet) => renameStudySetSessionLabel(studySet, renamedRefId, renamedLabel, studySet.saved)),
+    )
+    setModal((current) => {
+      if (current?.kind === 'session' && candidateId(current.session) === renamedRefId) {
+        return { ...current, session: renamedSession }
+      }
+      if (current?.kind === 'signal-inspector' && candidateId(current.session) === renamedRefId) {
+        return { ...current, session: renamedSession }
+      }
+      return current
+    })
+    setNoteEditorSession((current) =>
+      current && candidateId(current) === renamedRefId ? renamedSession : current,
+    )
+    setAnalysisRouteStudySet((current) =>
+      current ? renameStudySetSessionLabel(current, renamedRefId, renamedLabel, current.saved) : current,
+    )
+  }
+
+  async function reconcileAfterSessionRename(renamedSession: SessionRecord) {
+    try {
+      if (activeDataSource.refreshLibrary) {
+        await activeDataSource.refreshLibrary(renamedSession.libraryId)
+      }
+      const loadedSessions = await activeDataSource.listSessions()
+      const refreshedSession = loadedSessions.find((session) => candidateId(session) === candidateId(renamedSession))
+      if (refreshedSession) {
+        applyRenamedSession(refreshedSession)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Renamed session "${renamedSession.name}", but background refresh failed: ${message}`)
+    }
   }
 
   function selectCandidate(session: SessionRecord, gesture: SessionSelectionGesture) {
@@ -735,12 +1577,31 @@ function App() {
     setStatusMessage(`${selectedCandidateSessions.length} selected session(s) added to the current Study Set.`)
   }
 
+  function addSessionRefToStudySet(sessionRef: StudySet['sessions'][number]) {
+    setCurrentStudySet((current) => {
+      const refId = sessionRefId(sessionRef)
+      if (current.sessions.some((item) => sessionRefId(item) === refId)) {
+        return current
+      }
+      return {
+        ...current,
+        sessions: [...current.sessions, sessionRef],
+        saved: false,
+      }
+    })
+    setStatusMessage(`${sessionRef.label || sessionRef.sessionId} added to the current Study Set.`)
+  }
+
   function analyzeNow() {
     if (!primarySession) {
       setStatusMessage('Choose a primary session before using Analyze now.')
       return
     }
-    requestStudySetReplacement({ kind: 'analyze-now', session: primarySession })
+    analyzeSessionNow(primarySession)
+  }
+
+  function analyzeSessionNow(session: SessionRecord) {
+    requestStudySetReplacement({ kind: 'analyze-now', session })
   }
 
   function executeAnalyzeNow(session: SessionRecord) {
@@ -755,7 +1616,7 @@ function App() {
     setSelectedStudySessionIds([])
     setSelectionAnchorStudySessionId(null)
     setGroupingName('')
-    setModal({ kind: 'study-set', studySet: temporarySet, mode: 'analyze' })
+    openAnalysisLauncher(temporarySet)
     setStatusMessage('Created an unsaved one-session Study Set for analysis.')
   }
 
@@ -845,13 +1706,13 @@ function App() {
     })
   }
 
-  function addSelectedTracksToStudySet() {
+  function addTrackToStudySet(trackId: string) {
     setCurrentStudySet((current) => ({
       ...current,
-      saved: false,
-      trackIds: Array.from(new Set([...current.trackIds, ...selectedTrackIds])),
+      saved: current.trackIds.includes(trackId) ? current.saved : false,
+      trackIds: Array.from(new Set([...current.trackIds, trackId])),
     }))
-    setStatusMessage(`${selectedTrackIds.length} selected track(s) attached to the Study Set.`)
+    setStatusMessage('Track attached to the Study Set.')
   }
 
   function upsertTrack(track: TrackRecord) {
@@ -905,6 +1766,7 @@ function App() {
         ...currentStudySet,
         displayName,
       })
+      broadcastStudySetUpdated(saved)
       setSavedStudySets(await activeDataSource.listStudySets())
       setCurrentStudySet(saved)
       setLastCommittedStudySet(cloneStudySet(saved))
@@ -990,6 +1852,55 @@ function App() {
     setStatusMessage('Kept the current Study Set open for editing.')
   }
 
+  async function refreshAnalysisRouteScope() {
+    if (!analysisRoute?.studySetId) {
+      setAnalysisScopeNotice(null)
+      return
+    }
+    const studySetId = analysisRoute.studySetId
+    setAnalysisRouteStudySetLoading(true)
+    setAnalysisRouteStudySetError('')
+    try {
+      const refreshed = activeDataSource.loadStudySet
+        ? await activeDataSource.loadStudySet(studySetId)
+        : savedStudySets.find((studySet) => studySet.id === studySetId)
+      if (!refreshed) {
+        setAnalysisRouteStudySet(null)
+        setAnalysisRouteStudySetError('The saved Study Set could not be refreshed.')
+        return
+      }
+      setAnalysisRouteStudySet(cloneStudySet(refreshed))
+      setAnalysisScopeNotice(null)
+      setStatusMessage(`Refreshed analysis scope "${refreshed.displayName}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setAnalysisRouteStudySetError(message)
+      setStatusMessage(`Could not refresh analysis scope: ${message}`)
+    } finally {
+      setAnalysisRouteStudySetLoading(false)
+    }
+  }
+
+  if (analysisRoute) {
+    const routeStudySet = analysisRoute.scopeToken ? loadAnalysisScope(analysisRoute.scopeToken) : analysisRouteStudySet
+    return (
+      <AnalysisRoutePage
+        route={analysisRoute}
+        studySet={routeStudySet}
+        loadingScope={analysisRouteStudySetLoading}
+        scopeError={analysisRouteStudySetError}
+        scopeNotice={analysisScopeNotice}
+        sessions={sessions}
+        tracks={tracks}
+        dataSource={activeDataSource}
+        statusMessage={statusMessage}
+        connectionMode={connectionMode}
+        onRefreshScope={() => void refreshAnalysisRouteScope()}
+        onDismissScopeNotice={() => setAnalysisScopeNotice(null)}
+      />
+    )
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -1005,42 +1916,43 @@ function App() {
       <section
         className={[
           'workbench',
-          leftCollapsed ? 'left-collapsed' : '',
-          rightCollapsed ? 'right-collapsed' : '',
+          studyDrawerOpen ? 'study-drawer-open' : 'study-drawer-closed',
         ].join(' ')}
       >
         <aside className="panel library-panel" aria-label="Library Browser">
           <PanelTitle
             icon={<Library size={18} />}
             title="Library Browser"
-            action={
-              <IconButton
-                label="Collapse Library Browser"
-                onClick={() => setLeftCollapsed(true)}
-                icon={<ChevronLeft size={18} />}
-              />
-            }
+            action={<span className="panel-title-spacer" />}
           />
 
           <section className={`module collapsible-module${librarySelectorCollapsed ? ' collapsed' : ''}`}>
-            <div className="module-header">
-              <h2>Library Selector</h2>
-              <div className="module-header-actions">
-                <span className="subtle">{selectedLibraries.length} active</span>
-                <IconButton
-                  label={librarySelectorCollapsed ? 'Expand Library Selector' : 'Collapse Library Selector'}
-                  onClick={() => setLibrarySelectorCollapsed((current) => !current)}
-                  icon={librarySelectorCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-                />
-              </div>
-            </div>
             {librarySelectorCollapsed ? (
-              <div className="collapsed-root-summary">
-                <span>Library root</span>
-                <strong>{libraryRootInput || 'No library root selected'}</strong>
-              </div>
+              <button className="collapsed-root-row" type="button" onClick={() => setLibrarySelectorCollapsed(false)}>
+                <span>
+                  <strong>Library root:</strong> {libraryRootInput || 'No library root selected'}
+                </span>
+                <span className="collapsed-root-count">
+                  {libraries.length} libraries / {selectedLibraries.length} selected
+                </span>
+                <ChevronDown size={16} />
+              </button>
             ) : (
               <>
+                <div className="module-header">
+                  <h2 className="module-heading">
+                    Library Selector
+                    <InfoTip text="Choose which libraries from the configured library root are included in the session browser." />
+                  </h2>
+                  <div className="module-header-actions">
+                    <span className="module-header-count">{selectedLibraries.length} active</span>
+                    <IconButton
+                      label="Collapse Library Selector"
+                      onClick={() => setLibrarySelectorCollapsed(true)}
+                      icon={<ChevronUp size={16} />}
+                    />
+                  </div>
+                </div>
                 <div className="library-root-control">
                   <label>
                     <span>Library root</span>
@@ -1090,9 +2002,20 @@ function App() {
 
           <section className={`module session-selector collapsible-module${sessionSelectorCollapsed ? ' collapsed' : ''}`}>
             <div className="module-header">
-              <h2>Session Selector</h2>
+              <h2 className="module-heading">
+                Session Selector
+                <InfoTip text="Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list." />
+              </h2>
               <div className="module-header-actions">
-                <span className="subtle">{visibleSessions.length} shown</span>
+                <span className="module-header-count">
+                  {libraryScopedSessions.length} total / {visibleSessions.length} filtered / {selectedCandidateIds.length} selected
+                </span>
+                <IconButton
+                  label="Refresh Session Selector"
+                  onClick={() => void refreshWorkbenchData()}
+                  disabled={isRefreshingWorkbenchData || isChangingLibraryRoot}
+                  icon={<RefreshCw size={16} />}
+                />
                 <IconButton
                   label={sessionSelectorCollapsed ? 'Expand Session Selector' : 'Collapse Session Selector'}
                   onClick={() => setSessionSelectorCollapsed((current) => !current)}
@@ -1193,34 +2116,12 @@ function App() {
                     )}
                   </div>
                 </div>
-                <div className="session-filter-status">
-                  <span className="filter-status-label">Table filters</span>
-                  {activeTableColumnFilters.length === 0 ? (
-                    <span className="pill neutral">none</span>
-                  ) : (
-                    <>
-                      {activeTableColumnFilters.map((filter) => (
-                        <button
-                          className="filter-chip compact-session-filter-chip"
-                          key={filter.columnId}
-                          onClick={() => clearTableColumnFilter(filter.columnId)}
-                          type="button"
-                        >
-                          {columnLabels[filter.columnId]}: {tableFilterSummary(filter, libraries)}
-                          <X size={12} />
-                        </button>
-                      ))}
-                      <button className="ghost-action compact-filter-action" onClick={clearTableColumnFilters} type="button">
-                        Clear table filters
-                      </button>
-                    </>
-                  )}
-                </div>
                 <SessionTable
                   sessions={visibleSessions}
                   filterBaseSessions={savedFilteredSessions}
                   libraries={libraries}
                   visibleColumns={visibleColumns}
+                  columnWidths={sessionColumnWidths}
                   tableColumnFilters={tableColumnFilters}
                   selectedIds={selectedCandidateIds}
                   primaryId={primaryCandidateId}
@@ -1228,23 +2129,47 @@ function App() {
                   sortDirection={sortDirection}
                   onTableColumnFilterChange={setTableColumnFilter}
                   onClearTableColumnFilter={clearTableColumnFilter}
+                  onColumnWidthsChange={setSessionColumnWidthsPatch}
                   onSort={setSort}
                   onSelect={selectCandidate}
+                  onAnalyzeSession={analyzeSessionNow}
                   onInspect={inspectSession}
+                  onDeleteSession={deleteLibrarySession}
+                  onRenameSession={activeDataSource.renameSession ? renameLibrarySession : undefined}
+                  onCopyNote={copySessionNote}
+                  onPasteNote={pasteSessionNote}
+                  canPasteNote={Boolean(noteClipboard && activeDataSource.saveSessionNote)}
                 />
                 <div className="action-row">
-                  <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
-                    <Plus size={17} />
-                    Add to Study Set
-                  </button>
-                  <button className="secondary-action" onClick={analyzeNow}>
-                    <Play size={17} />
-                    Analyze now
+                  <div className="action-row-main">
+                    <button className="primary-action" onClick={addSelectedSessionsToStudySet}>
+                      <Plus size={17} />
+                      Add to Study Set
+                    </button>
+                    <button className="secondary-action" onClick={analyzeNow}>
+                      <Play size={17} />
+                      Analyze now
+                    </button>
+                  </div>
+                  <button
+                    className="danger-action action-row-delete"
+                    disabled={!activeDataSource.deleteSession || selectedCandidateSessions.length === 0}
+                    onClick={() => void deleteSelectedLibrarySessions()}
+                    type="button"
+                  >
+                    <Trash2 size={17} />
+                    Delete selected
                   </button>
                 </div>
               </>
             )}
           </section>
+
+          <SessionSignalPreview
+            session={primarySession}
+            dataSource={activeDataSource}
+            onInspect={(session) => inspectSession(session, 'signals')}
+          />
 
           <section className={`lower-grid${gpsLocationCollapsed ? ' gps-collapsed' : ''}`}>
             {gpsLocationCollapsed ? (
@@ -1255,9 +2180,12 @@ function App() {
             ) : (
               <section className="module map-module">
                 <div className="module-header">
-                  <h2>GPS Location</h2>
+                  <h2 className="module-heading">
+                    GPS Location
+                    <InfoTip text="Preview the selected session GPS path and any selected or attached tracks." />
+                  </h2>
                   <div className="module-header-actions">
-                    <span className="subtle">{primarySession ? primarySession.name : 'No primary session'}</span>
+                    <span className="module-header-count">{primarySession ? primarySession.name : 'No primary session'}</span>
                     <IconButton
                       label="Collapse GPS Location"
                       onClick={() => setGpsLocationCollapsed(true)}
@@ -1277,10 +2205,13 @@ function App() {
             <div className="support-stack">
               <section className={`module collapsible-module${filtersCollapsed ? ' collapsed' : ''}`}>
                 <div className="module-header">
-                  <h2>Filters</h2>
+                  <h2 className="module-heading">
+                    Filters
+                    <InfoTip text="Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering." />
+                  </h2>
                   <div className="module-header-actions">
-                    <span className={activeSavedSessionFilters.length ? 'pill ok' : 'pill neutral'}>
-                      {activeSavedSessionFilters.length ? `${activeSavedSessionFilters.length} saved active` : 'saved stack'}
+                    <span className="module-header-count">
+                      {savedSessionFilters.length} available / {activeSavedSessionFilters.length} active
                     </span>
                     <IconButton
                       label={filtersCollapsed ? 'Expand Filters' : 'Collapse Filters'}
@@ -1293,64 +2224,40 @@ function App() {
                   <FilterPanel
                     savedFilters={savedSessionFilters}
                     activeSavedFilterIds={activeSavedFilterIds}
-                    totalCount={libraryScopedSessions.length}
-                    savedFilteredCount={savedFilteredSessions.length}
-                    visibleCount={visibleSessions.length}
                     trackpointFilterStates={activeGeoFilterStates}
-                    canManageSavedFilters={Boolean(activeDataSource.saveSavedSessionFilter)}
                     onToggleSavedFilter={toggleSavedSessionFilter}
                     onClearSavedFilters={clearSavedSessionFilters}
                     onManageSavedFilters={() => setFilterManagerOpen(true)}
-                    onCopySavedFilter={(filter) => void copySessionFilter(filter)}
-                    onDeleteSavedFilter={(filter) => {
-                      if (window.confirm(`Delete saved filter "${filter.displayName}"?`)) {
-                        void deleteSessionFilter(filter).catch((error) => {
-                          const message = error instanceof Error ? error.message : String(error)
-                          setStatusMessage(`Could not delete saved filter: ${message}`)
-                        })
-                      }
-                    }}
                   />
                 )}
               </section>
 
-              <section className={`module collapsible-module${geospatialCollapsed ? ' collapsed' : ''}`}>
-                <div className="module-header">
-                  <h2>Geospatial Workbench</h2>
-                  <div className="module-header-actions">
-                    <span className="pill neutral">v0 endpoints</span>
-                    <IconButton
-                      label={geospatialCollapsed ? 'Expand Geospatial Workbench' : 'Collapse Geospatial Workbench'}
-                      onClick={() => setGeospatialCollapsed((current) => !current)}
-                      icon={geospatialCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-                    />
-                  </div>
-                </div>
-                {!geospatialCollapsed && (
-                  <GeospatialWorkbench
-                    primarySession={primarySession}
-                    currentStudySet={currentStudySet}
-                    sessions={sessions}
-                    tracks={tracks}
-                    selectedTrackIds={selectedTrackIds}
-                    currentStudyTracks={currentStudyTracks}
-                    dataSource={activeDataSource}
-                    onToggleTrack={toggleTrack}
-                    onAttachSelectedTracks={addSelectedTracksToStudySet}
-                    onInspectTrack={(track) => setModal({ kind: 'track', track })}
-                    onTrackSaved={upsertTrack}
-                    onTrackDeleted={deleteTrackFromWorkbench}
-                  />
-                )}
-              </section>
+              <GeospatialWorkbench
+                primarySession={primarySession}
+                currentStudySet={currentStudySet}
+                sessions={sessions}
+                tracks={tracks}
+                selectedTrackIds={selectedTrackIds}
+                dataSource={activeDataSource}
+                onToggleTrack={toggleTrack}
+                onAttachTrack={addTrackToStudySet}
+                onAttachSession={addSessionRefToStudySet}
+                onTrackSaved={upsertTrack}
+                onTrackDeleted={deleteTrackFromWorkbench}
+              />
             </div>
           </section>
         </aside>
 
-        {leftCollapsed && (
-          <button className="rail rail-left" onClick={() => setLeftCollapsed(false)}>
-            <ChevronRight size={18} />
-            Library Browser
+        {!studyDrawerOpen && (
+          <button
+            className="study-drawer-rail"
+            type="button"
+            onClick={() => setStudyDrawerOpen(true)}
+            aria-label="Open Study Set Builder"
+          >
+            <ChevronLeft size={17} />
+            <span>Study Set Builder</span>
           </button>
         )}
 
@@ -1361,21 +2268,29 @@ function App() {
             action={
               <IconButton
                 label="Collapse Study Set Builder"
-                onClick={() => setRightCollapsed(true)}
-                icon={<ChevronRight size={18} />}
+                onClick={() => setStudyDrawerOpen(false)}
+                icon={<ChevronRight size={16} />}
               />
             }
           />
 
           <section className="module current-study-set">
             <div className="module-header">
-              <h2>Current Study Set</h2>
-              <span className={currentStudySetStatus.className}>{currentStudySetStatus.label}</span>
+              <h2 className="module-heading">
+                Current Study Set
+                <InfoTip text="The working Study Set comprising sessions and optional groupings and tracks." />
+              </h2>
+              <div className="module-header-actions">
+                <span className="module-header-count study-set-count">
+                  {currentStudySet.sessions.length} sessions / {currentStudySet.groupings.length} groupings / {currentStudySet.trackIds.length} tracks
+                </span>
+                <span className={currentStudySetStatus.className}>{currentStudySetStatus.label}</span>
+              </div>
             </div>
 
             <div className="study-name-row">
               <label>
-                Study Set name
+                <span>Name</span>
                 <input
                   value={currentStudySet.displayName}
                   onChange={(event) => updateStudySetName(event.target.value)}
@@ -1383,40 +2298,32 @@ function App() {
                 />
               </label>
               <button
-                className="primary-action"
+                className="primary-action compact-row-action"
                 disabled={!canSaveCurrentStudySet}
                 onClick={() => void saveCurrentStudySet()}
               >
                 <Save size={17} />
                 Save
               </button>
-              <button className="danger-action" disabled={!currentStudySetHasContent} onClick={requestClearStudySet}>
+              <button className="danger-action compact-row-action" disabled={!currentStudySetHasContent} onClick={requestClearStudySet}>
                 <Trash2 size={17} />
                 Clear
               </button>
               <button
-                className="secondary-action"
-                onClick={() => setModal({ kind: 'study-set', studySet: currentStudySet, mode: 'analyze' })}
+                className="secondary-action compact-row-action"
+                onClick={() => openAnalysisLauncher(currentStudySet)}
               >
                 <BarChart3 size={17} />
                 Analyze
               </button>
             </div>
 
-            <div className="study-summary-grid">
-              <SummaryTile label="Sessions" value={currentStudySet.sessions.length} />
-              <SummaryTile label="Groupings" value={currentStudySet.groupings.length} />
-              <SummaryTile label="Tracks" value={currentStudySet.trackIds.length} />
-              <SummaryTile
-                label="Libraries"
-                value={new Set(currentStudySet.sessions.map((item) => item.libraryId)).size}
-              />
-            </div>
-
             <section className="study-section">
               <div className="subsection-header">
-                <h3>Sessions</h3>
-                <span className="subtle">Sessions can appear in multiple groupings.</span>
+                <h3 className="subsection-heading">
+                  Sessions
+                  <InfoTip text="List of the sessions in this study set. Removing a session removes it from the Study Set, but not from the library." />
+                </h3>
               </div>
               <StudySessionTable
                 studySet={currentStudySet}
@@ -1424,20 +2331,30 @@ function App() {
                 sessions={sessions}
                 visibleColumns={visibleColumns}
                 selectedStudySessionIds={selectedStudySessionIds}
+                primaryStudySessionId={selectionAnchorStudySessionId}
                 onSelect={selectStudySession}
                 onRemove={removeStudySession}
                 onInspect={inspectSession}
               />
+            </section>
+
+            <section className="study-section">
+              <div className="subsection-header">
+                <h3 className="subsection-heading">
+                  Groupings
+                  <InfoTip text="Named collections of Study Set sessions. Sessions can belong to more than one grouping." />
+                </h3>
+              </div>
               <div className="grouping-editor">
                 <label>
-                  New grouping
+                  <span>New grouping</span>
                   <input
                     value={groupingName}
                     onChange={(event) => setGroupingName(event.target.value)}
                     placeholder="Short name"
                   />
                 </label>
-                <button className="secondary-action" onClick={createGrouping}>
+                <button className="secondary-action compact-row-action" onClick={createGrouping}>
                   <GitBranch size={16} />
                   Add grouping
                 </button>
@@ -1459,8 +2376,10 @@ function App() {
 
             <section className="study-section">
               <div className="subsection-header">
-                <h3>Tracks</h3>
-                <span className="subtle">Attached root-level tracks for this Study Set.</span>
+                <h3 className="subsection-heading">
+                  Tracks
+                  <InfoTip text="Tracks are GPS paths with defined points that can be used for geospatial filtering and sector-based analysis." />
+                </h3>
               </div>
               <table className="tracks-table">
                 <thead>
@@ -1468,7 +2387,9 @@ function App() {
                     <th>Name</th>
                     <th>Trackpoints</th>
                     <th>Distance</th>
-                    <th>Controls</th>
+                    <th className="info-action-heading">
+                      <span title="Track actions" />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1484,12 +2405,7 @@ function App() {
                       <td>{track.name}</td>
                       <td>{track.trackpoints.length}</td>
                       <td>{track.distanceKm.toFixed(1)} km</td>
-                      <td>
-                        <IconButton
-                          label="Inspect Track"
-                          onClick={() => setModal({ kind: 'track', track })}
-                          icon={<Eye size={15} />}
-                        />
+                      <td className="icon-cluster info-action-cell">
                         <IconButton
                           label="Remove Track"
                           onClick={() => removeTrack(track.id)}
@@ -1503,58 +2419,107 @@ function App() {
             </section>
           </section>
 
-          <section className="module saved-study-sets">
-            <div className="module-header">
-              <h2>Saved Study Sets</h2>
-              <span className="subtle">{savedStudySets.length} saved</span>
+          <section className={`study-geo-grid${studyGpsCollapsed ? ' study-gps-collapsed' : ''}`}>
+            {studyGpsCollapsed ? (
+              <button
+                className="gps-rail study-gps-rail"
+                type="button"
+                onClick={() => setStudyGpsCollapsed(false)}
+              >
+                <ChevronRight size={18} />
+                Study Set GPS
+              </button>
+            ) : (
+              <section className="module map-module study-map-module">
+                <div className="module-header">
+                  <h2 className="module-heading">
+                    Study Set GPS Location
+                    <InfoTip text="Preview the GPS paths for sessions in the current Study Set and any tracks attached to it." />
+                  </h2>
+                  <div className="module-header-actions">
+                    <span className="module-header-count">
+                      {studySetMapSessionPaths.length} session path(s) / {currentStudyTracks.length} track(s)
+                    </span>
+                    <IconButton
+                      label="Collapse Study Set GPS"
+                      onClick={() => setStudyGpsCollapsed(true)}
+                      icon={<ChevronLeft size={16} />}
+                    />
+                  </div>
+                </div>
+                <div className="study-map-frame">
+                  <MapRoutePreview
+                    primarySession={null}
+                    sessionPaths={studySetMapSessionPaths}
+                    selectedTracks={[]}
+                    currentTracks={currentStudyTracks}
+                  />
+                </div>
+              </section>
+            )}
+
+            <div className="support-stack study-geo-support">
+              <section className="module saved-study-sets">
+                <div className="module-header">
+                  <h2 className="module-heading">
+                    Saved Study Sets
+                    <InfoTip text="Saved Study Sets can be loaded into the editor above, inspected, or opened directly in the analysis view." />
+                  </h2>
+                  <span className="module-header-count">{savedStudySets.length} saved</span>
+                </div>
+                <table className="saved-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Sessions</th>
+                      <th>Tracks</th>
+                      <th>Groups</th>
+                      <th className="info-action-heading">
+                        <span title="Study Set actions" />
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {savedStudySets.map((studySet) => (
+                      <tr key={studySet.id ?? studySet.displayName}>
+                        <td>{studySet.displayName}</td>
+                        <td>{studySet.sessions.length}</td>
+                        <td>{studySet.trackIds.length}</td>
+                        <td>{studySet.groupings.length}</td>
+                        <td className="icon-cluster info-action-cell saved-study-set-action-cell">
+                          <IconButton
+                            label="Load Study Set"
+                            onClick={() => requestLoadStudySet(studySet)}
+                            icon={<FileText size={15} />}
+                          />
+                          <IconButton
+                            label="Simple Suspension Analysis"
+                            onClick={() => openAnalysisLauncher(studySet)}
+                            icon={<Play size={15} />}
+                          />
+                          <IconButton
+                            label="Delete Study Set"
+                            disabled={!studySet.id || !activeDataSource.deleteStudySet}
+                            onClick={() => void deleteSavedStudySet(studySet)}
+                            icon={<Trash2 size={15} />}
+                            tone="alert"
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+              <StudySetGpsCoverageCard currentStudySet={currentStudySet} sessions={sessions} />
+              <MatchPreviewCard
+                currentStudySet={currentStudySet}
+                sessions={sessions}
+                currentStudyTracks={currentStudyTracks}
+              />
             </div>
-            <table className="saved-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Sessions</th>
-                  <th>Tracks</th>
-                  <th>Groups</th>
-                  <th>Controls</th>
-                </tr>
-              </thead>
-              <tbody>
-                {savedStudySets.map((studySet) => (
-                  <tr key={studySet.id ?? studySet.displayName}>
-                    <td>{studySet.displayName}</td>
-                    <td>{studySet.sessions.length}</td>
-                    <td>{studySet.trackIds.length}</td>
-                    <td>{studySet.groupings.length}</td>
-                    <td>
-                      <IconButton
-                        label="Analyze Study Set"
-                        onClick={() => setModal({ kind: 'study-set', studySet, mode: 'analyze' })}
-                        icon={<Play size={15} />}
-                      />
-                      <IconButton
-                        label="View Study Set"
-                        onClick={() => setModal({ kind: 'study-set', studySet, mode: 'view' })}
-                        icon={<Eye size={15} />}
-                      />
-                      <IconButton
-                        label="Load Study Set"
-                        onClick={() => requestLoadStudySet(studySet)}
-                        icon={<FileText size={15} />}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </section>
         </aside>
 
-        {rightCollapsed && (
-          <button className="rail rail-right" onClick={() => setRightCollapsed(false)}>
-            Study Set Builder
-            <ChevronLeft size={18} />
-          </button>
-        )}
       </section>
 
       {modal && (
@@ -1564,13 +2529,21 @@ function App() {
           sessions={sessions}
           tracks={tracks}
           dataSource={activeDataSource}
+          bookmarkRefreshToken={bookmarkRefreshToken}
           onClose={() => setModal(null)}
+          onOpenAnalysis={openAnalysisView}
+          onOpenSignalInspector={(session, initialWindow = null) =>
+            setModal({ kind: 'signal-inspector', session, initialWindow })
+          }
+          onSessionBookmarksChanged={() => setBookmarkRefreshToken((current) => current + 1)}
         />
       )}
       {noteEditorSession && (
         <SessionNoteEditorModal
           session={noteEditorSession}
           dataSource={activeDataSource}
+          loadSessionNote={loadCachedSessionNote}
+          saveSessionNote={saveCachedSessionNote}
           onClose={() => setNoteEditorSession(null)}
           onSaved={updateSessionAfterNoteSave}
         />
@@ -1611,6 +2584,122 @@ function studySetStatus(studySet: StudySet, isDirty: boolean) {
   return { className: 'pill neutral', label: 'empty' }
 }
 
+function AnalysisRoutePage({
+  route,
+  studySet,
+  loadingScope,
+  scopeError,
+  scopeNotice,
+  sessions,
+  tracks,
+  dataSource,
+  statusMessage,
+  connectionMode,
+  onRefreshScope,
+  onDismissScopeNotice,
+}: {
+  route: AnalysisRouteState
+  studySet: StudySet | null
+  loadingScope: boolean
+  scopeError: string
+  scopeNotice: AnalysisScopeNotice | null
+  sessions: SessionRecord[]
+  tracks: TrackRecord[]
+  dataSource: LibraryDataSource
+  statusMessage: string
+  connectionMode: 'local-api' | 'fixture'
+  onRefreshScope: () => void
+  onDismissScopeNotice: () => void
+}) {
+  const viewTitle = route.viewId === 'simple-suspension' ? 'Simple Suspension Analysis' : route.viewId
+  const [routeModal, setRouteModal] = useState<ModalState>(null)
+  const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
+
+  return (
+    <main className="app-shell analysis-route-shell">
+      <header className="app-header analysis-route-header">
+        <div>
+          <p className="eyebrow">BODAQS Analysis</p>
+          <h1>{viewTitle}</h1>
+          <p className="analysis-route-subtitle">
+            {studySet?.displayName || 'Analysis scope not loaded'}
+            <span>{connectionMode === 'fixture' ? 'fixture data source' : statusMessage}</span>
+          </p>
+        </div>
+      </header>
+
+      {loadingScope ? (
+        <section className="analysis-route-empty">
+          <h2>Loading analysis scope</h2>
+          <p>Loading saved Study Set {route.studySetId} from the Library API.</p>
+        </section>
+      ) : !studySet ? (
+        <section className="analysis-route-empty">
+          <h2>Analysis scope unavailable</h2>
+          <p>
+            {scopeError ||
+              'This analysis tab could not find its Study Set scope. Open the analysis again from the Library Browser or Study Set Builder.'}
+          </p>
+        </section>
+      ) : route.viewId === 'simple-suspension' ? (
+        <section className="analysis-route-content">
+          {scopeNotice && (
+            <div className={`analysis-route-notice ${scopeNotice.kind}`}>
+              <span>{scopeNotice.message}</span>
+              <div className="analysis-route-notice-actions">
+                {scopeNotice.refreshable && (
+                  <button className="secondary-action compact" type="button" onClick={onRefreshScope}>
+                    Refresh analysis
+                  </button>
+                )}
+                <button className="secondary-action compact" type="button" onClick={onDismissScopeNotice}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+          <SuspensionVisualization
+            studySet={studySet}
+            sessions={sessions}
+            tracks={tracks}
+            dataSource={dataSource}
+            bookmarkRefreshToken={bookmarkRefreshToken}
+            onInspectSignals={(sessionRef, window) => {
+              const session = sessionByRef(sessionRef, sessions)
+              if (session) {
+                setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
+              }
+            }}
+          />
+        </section>
+      ) : (
+        <section className="analysis-route-empty">
+          <h2>Analysis view not implemented</h2>
+          <p>{route.viewId} is registered as a route, but this prototype does not have a renderer for it yet.</p>
+        </section>
+      )}
+      {routeModal && (
+        <Modal
+          state={routeModal}
+          libraries={[]}
+          sessions={sessions}
+          tracks={tracks}
+          dataSource={dataSource}
+          bookmarkRefreshToken={bookmarkRefreshToken}
+          onClose={() => setRouteModal(null)}
+          onOpenAnalysis={(viewId, nextStudySet) => {
+            window.location.href = analysisRouteUrl(viewId, nextStudySet)
+          }}
+          onOpenSignalInspector={(session, initialWindow = null) =>
+            setRouteModal({ kind: 'signal-inspector', session, initialWindow })
+          }
+          onSessionBookmarksChanged={() => setBookmarkRefreshToken((current) => current + 1)}
+        />
+      )}
+    </main>
+  )
+}
+
 function pendingActionLabel(action: PendingStudySetAction) {
   if (action.kind === 'load') {
     return 'load another Study Set'
@@ -1619,6 +2708,94 @@ function pendingActionLabel(action: PendingStudySetAction) {
     return 'start Analyze now'
   }
   return 'clear the current Study Set'
+}
+
+function parseAnalysisRouteHash(): AnalysisRouteState | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const hash = window.location.hash
+  if (!hash.startsWith('#/analysis/')) {
+    return null
+  }
+  const hashBody = hash.slice(2)
+  const [path, query = ''] = hashBody.split('?')
+  const segments = path.split('/')
+  const viewId = segments[0] === 'analysis' ? decodeURIComponent(segments[1] ?? '') : ''
+  const params = new URLSearchParams(query)
+  const scopeToken = params.get('scope')
+  const studySetId = params.get('studySet')
+  if (!viewId || (!scopeToken && !studySetId)) {
+    return null
+  }
+  return { viewId, scopeToken, studySetId }
+}
+
+function browserTabTitle(route: AnalysisRouteState | null) {
+  if (!route) {
+    return 'BODAQS library'
+  }
+  if (route.viewId === 'simple-suspension') {
+    return 'simple suspension analysis'
+  }
+  return route.viewId
+}
+
+function analysisRouteUrl(viewId: string, studySet: StudySet) {
+  const baseUrl = `${window.location.origin}${window.location.pathname}${window.location.search}`
+  const params = new URLSearchParams()
+  if (studySet.id && studySet.saved) {
+    params.set('studySet', studySet.id)
+  } else {
+    params.set('scope', persistAnalysisScope(studySet))
+  }
+  return `${baseUrl}#/analysis/${encodeURIComponent(viewId)}?${params.toString()}`
+}
+
+function persistAnalysisScope(studySet: StudySet) {
+  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  window.localStorage.setItem(`${ANALYSIS_SCOPE_STORAGE_PREFIX}${token}`, JSON.stringify(cloneStudySet(studySet)))
+  pruneStoredAnalysisScopes()
+  return token
+}
+
+function loadAnalysisScope(scopeToken: string): StudySet | null {
+  if (!scopeToken) {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(`${ANALYSIS_SCOPE_STORAGE_PREFIX}${scopeToken}`)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw) as unknown
+    return isStoredStudySet(parsed) ? cloneStudySet(parsed) : null
+  } catch {
+    return null
+  }
+}
+
+function pruneStoredAnalysisScopes() {
+  const keys = Object.keys(window.localStorage)
+    .filter((key) => key.startsWith(ANALYSIS_SCOPE_STORAGE_PREFIX))
+    .sort()
+  const excess = keys.slice(0, Math.max(0, keys.length - 12))
+  for (const key of excess) {
+    window.localStorage.removeItem(key)
+  }
+}
+
+function isStoredStudySet(value: unknown): value is StudySet {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+  const candidate = value as Partial<StudySet>
+  return (
+    typeof candidate.displayName === 'string' &&
+    Array.isArray(candidate.sessions) &&
+    Array.isArray(candidate.groupings) &&
+    Array.isArray(candidate.trackIds)
+  )
 }
 
 async function fetchWorkbenchData(source: LibraryDataSource) {
@@ -1639,6 +2816,39 @@ async function fetchWorkbenchData(source: LibraryDataSource) {
   }
 }
 
+function removeSessionsFromStudySetValue(studySet: StudySet, refIds: Set<string>, preserveSavedFlag: boolean) {
+  return {
+    ...studySet,
+    saved: preserveSavedFlag ? studySet.saved : false,
+    sessions: studySet.sessions.filter((session) => !refIds.has(sessionRefId(session))),
+    groupings: studySet.groupings
+      .map((grouping) => ({
+        ...grouping,
+        sessionRefs: grouping.sessionRefs.filter((sessionRef) => !refIds.has(sessionRef)),
+      }))
+      .filter((grouping) => grouping.sessionRefs.length > 0),
+  }
+}
+
+function renameStudySetSessionLabel(
+  studySet: StudySet,
+  refId: string,
+  label: string,
+  preserveSavedFlag: boolean,
+) {
+  return {
+    ...studySet,
+    saved: preserveSavedFlag ? studySet.saved : false,
+    sessions: studySet.sessions.map((session) =>
+      sessionRefId(session) === refId ? { ...session, label } : session,
+    ),
+  }
+}
+
+function isReferencedSessionDeleteError(message: string) {
+  return message.toLowerCase().includes('referenced')
+}
+
 function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[]) {
   const sessionCounts = new Map<string, number>()
   for (const session of sessions) {
@@ -1648,6 +2858,33 @@ function applySessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[
     ...libraryItem,
     sessionCount: sessionCounts.get(libraryItem.id) ?? libraryItem.sessionCount,
   }))
+}
+
+function applyStrictSessionCounts(libraries: LibraryRecord[], sessions: SessionRecord[]) {
+  const sessionCounts = new Map<string, number>()
+  for (const session of sessions) {
+    sessionCounts.set(session.libraryId, (sessionCounts.get(session.libraryId) ?? 0) + 1)
+  }
+  return libraries.map((libraryItem) => ({
+    ...libraryItem,
+    sessionCount: sessionCounts.get(libraryItem.id) ?? 0,
+  }))
+}
+
+function candidateStillExists(id: string, sessions: SessionRecord[]) {
+  return sessions.some((session) => candidateId(session) === id)
+}
+
+function studySetPathFromSession(session: SessionRecord, path: Array<[number, number]> = session.gps): StudySetMapSessionPath {
+  return {
+    id: candidateId(session),
+    label: session.name,
+    path,
+  }
+}
+
+function hasMapPath(sessionPath: StudySetMapSessionPath) {
+  return sessionPath.path.length > 0
 }
 
 function queuedGeoFilterState(spec: TrackpointCrossingSpec): GeoFilterQueryState {
@@ -1707,18 +2944,79 @@ function uniqueStrings(values: string[]) {
   return Array.from(new Set(values))
 }
 
-function tableFilterSummary(filter: TableColumnFilter, libraries: LibraryRecord[]) {
-  if (filter.values.length === 1) {
-    return tableFilterLabel(filter.columnId, libraries, filter.values[0])
+function loadPersistedVisibleColumns(): ColumnId[] {
+  if (typeof window === 'undefined') {
+    return defaultColumns
   }
-  return `${filter.values.length} values`
+  try {
+    let raw = window.localStorage.getItem(SESSION_SELECTOR_COLUMNS_STORAGE_KEY)
+    const usingLegacyLayout = !raw
+    if (!raw) {
+      raw = window.localStorage.getItem(LEGACY_SESSION_SELECTOR_COLUMNS_STORAGE_KEY)
+    }
+    if (!raw) {
+      return defaultColumns
+    }
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) {
+      return defaultColumns
+    }
+    const columnIds = parsed.filter(isColumnId)
+    return normalizeColumnSelection(usingLegacyLayout ? [...columnIds, ...infoActionColumns] : columnIds)
+  } catch {
+    return defaultColumns
+  }
 }
 
-function cloneSessionFilter(filter: SavedSessionFilterRecord): SavedSessionFilterRecord {
-  return {
-    ...filter,
-    predicate: JSON.parse(JSON.stringify(filter.predicate)) as SavedSessionFilterRecord['predicate'],
+function persistVisibleColumns(columns: ColumnId[]) {
+  if (typeof window === 'undefined') {
+    return
   }
+  try {
+    window.localStorage.setItem(SESSION_SELECTOR_COLUMNS_STORAGE_KEY, JSON.stringify(columns))
+  } catch {
+    // Browser storage may be unavailable or full; column layout persistence is non-critical.
+  }
+}
+
+function loadPersistedSessionColumnWidths(): SessionColumnWidths {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+  try {
+    const raw = window.localStorage.getItem(SESSION_SELECTOR_COLUMN_WIDTHS_STORAGE_KEY)
+    if (!raw) {
+      return {}
+    }
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+    const widths: SessionColumnWidths = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if ((isColumnId(key) || key === 'rowActions') && typeof value === 'number' && Number.isFinite(value)) {
+        widths[key as SessionColumnWidthId] = value
+      }
+    }
+    return widths
+  } catch {
+    return {}
+  }
+}
+
+function persistSessionColumnWidths(widths: SessionColumnWidths) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(SESSION_SELECTOR_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(widths))
+  } catch {
+    // Browser storage may be unavailable or full; column layout persistence is non-critical.
+  }
+}
+
+function isColumnId(value: unknown): value is ColumnId {
+  return typeof value === 'string' && value in columnLabels
 }
 
 export default App

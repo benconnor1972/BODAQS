@@ -7,12 +7,19 @@ export type RoutePath = {
 
 export function projectPaths(paths: RoutePath[]) {
   const allPoints = paths.flatMap((path) => path.points)
-  const xs = allPoints.map(([x]) => x)
-  const ys = allPoints.map(([, y]) => y)
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
+  let minX = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (const [x, y] of allPoints) {
+    minX = Math.min(minX, x)
+    maxX = Math.max(maxX, x)
+    minY = Math.min(minY, y)
+    maxY = Math.max(maxY, y)
+  }
+  if (allPoints.length === 0) {
+    return paths
+  }
   const xSpan = maxX - minX || 1
   const ySpan = maxY - minY || 1
 

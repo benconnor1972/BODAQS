@@ -13,7 +13,7 @@ import pandas as pd
 
 from .sensor_aliases import canonical_end, normalize_sensor_token
 from .signal_registry import build_signals_registry
-from .signalname import SignalNameParts, format_signal_name
+from .signalname import SignalNameError, SignalNameParts, format_signal_name, parse_signal_name
 
 
 logger = logging.getLogger(__name__)
@@ -167,18 +167,28 @@ def apply_signal_transforms(
             )
             continue
 
-        if len(matches) > 1:
-            raise ValueError(
+        input_col = _single_signal_match(
+            matches,
+            signals,
+            error_message=(
                 "Bike profile signal transform matched multiple input signals: "
                 f"transform_id={transform_id!r} matches={matches}"
-            )
-
-        input_col = matches[0]
-        output_col = _output_column_name(output_semantics, fallback=transform_id)
+            ),
+            log_context=f"bike_profile_id={bike_profile.get('bike_profile_id')} transform_id={transform_id}",
+        )
+        input_info = signals.get(input_col)
+        input_source_id = _signal_source_identity(input_info) if isinstance(input_info, Mapping) else ""
+        output_source_id = normalize_sensor_token(output_semantics.get("motion_source_id")) or input_source_id
+        output_core_selector = {
+            key: output_semantics.get(key)
+            for key in ("end", "quantity", "domain", "unit")
+            if output_semantics.get(key) is not None
+        }
+        canonical_output_col = _output_column_name(output_semantics, fallback=transform_id)
         output_semantic_matches = [
             str(col)
             for col, info in signals.items()
-            if isinstance(info, Mapping) and _matches_selector(info, output_semantics)
+            if isinstance(info, Mapping) and _matches_selector(info, output_core_selector)
         ]
         logger_output_semantic_matches = [
             col
@@ -205,9 +215,14 @@ def apply_signal_transforms(
             )
             continue
 
+        explicit_processing_role = output_semantics.get("processing_role")
+        processing_role = str(explicit_processing_role).strip() if _nonempty_str(explicit_processing_role) else ""
+        if not processing_role:
+            processing_role = "secondary_analysis" if output_semantic_matches else "primary_analysis"
+
         if output_semantic_matches and output_conflict_policy == "prefer_analysis":
             for existing_col in output_semantic_matches:
-                if existing_col == output_col:
+                if existing_col == canonical_output_col:
                     continue
                 existing_info = signals.get(existing_col)
                 if isinstance(existing_info, Mapping) and _is_logger_origin_signal(existing_info):
@@ -216,6 +231,22 @@ def apply_signal_transforms(
                         existing_col,
                         reason=f"superseded_by_bike_profile_transform:{transform_id}",
                     )
+
+        output_col = canonical_output_col
+        if output_col in df.columns:
+            existing_info = signals.get(output_col)
+            may_overwrite_logger = (
+                output_conflict_policy == "prefer_analysis"
+                and isinstance(existing_info, Mapping)
+                and _is_logger_origin_signal(existing_info)
+            )
+            if not may_overwrite_logger:
+                output_col = _unique_signal_column_name(
+                    canonical_output_col,
+                    source_id=output_source_id,
+                    fallback=transform_id,
+                    existing_names=set(map(str, df.columns)),
+                )
 
         if output_col in df.columns:
             existing_info = signals.get(output_col)
@@ -253,6 +284,9 @@ def apply_signal_transforms(
                 output_semantics,
                 input_col=input_col,
                 transform_id=transform_id,
+                motion_source_id=output_source_id,
+                processing_role=processing_role,
+                canonical_output_col=canonical_output_col if output_col != canonical_output_col else None,
             ),
         )
         generated.append(
@@ -284,6 +318,88 @@ def apply_signal_transforms(
         warnings=warnings,
     )
     return session
+
+
+def _signal_source_identity(info: Mapping[str, Any]) -> str:
+    for key in ("motion_source_id", "sensor", "log_metadata_column_id", "sidecar_column_id"):
+        token = normalize_sensor_token(info.get(key))
+        if token:
+            return token
+    return ""
+
+
+def _source_qualified_signal_name(base_name: str, token: str) -> str:
+    token = normalize_sensor_token(token)
+    if not token:
+        return base_name
+    try:
+        parts = parse_signal_name(base_name)
+        base = parts.base
+        if base != token and not base.endswith(f"_{token}"):
+            base = f"{base}_{token}"
+        return format_signal_name(
+            SignalNameParts(
+                base=base,
+                kind=parts.kind,
+                domain=parts.domain,
+                unit=parts.unit,
+                ops=parts.ops,
+            )
+        )
+    except SignalNameError:
+        stem = normalize_sensor_token(base_name) or "signal"
+        return f"{stem}_{token}"
+
+
+def _unique_signal_column_name(base_name: str, *, source_id: str, fallback: str, existing_names: set[str]) -> str:
+    if base_name not in existing_names:
+        return base_name
+
+    tokens = [source_id, fallback]
+    seen: set[str] = set()
+    for token in tokens:
+        token = normalize_sensor_token(token)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        candidate = _source_qualified_signal_name(base_name, token)
+        if candidate not in existing_names:
+            return candidate
+
+    index = 2
+    while True:
+        candidate = _source_qualified_signal_name(base_name, f"{fallback}_{index}")
+        if candidate not in existing_names:
+            return candidate
+        index += 1
+
+
+def _single_signal_match(
+    matches: Sequence[str],
+    signals: Mapping[str, Any],
+    *,
+    error_message: str,
+    log_context: str,
+) -> str:
+    if len(matches) == 1:
+        return matches[0]
+
+    primary_matches = [
+        col
+        for col in matches
+        if isinstance(signals.get(col), Mapping)
+        and str(signals[col].get("processing_role") or "").strip().lower() == "primary_analysis"
+    ]
+    if len(primary_matches) == 1:
+        logger.info(
+            "Bike profile selector matched multiple signals and selected primary_analysis column: %s column=%s matches=%s",
+            log_context,
+            primary_matches[0],
+            list(matches),
+        )
+        return primary_matches[0]
+
+    raise ValueError(error_message)
 
 
 def _validate_normalization_ranges(ranges: Sequence[Any], *, label: str) -> None:
@@ -449,13 +565,15 @@ def resolve_normalization_ranges(
                 )
             continue
 
-        if len(matches) > 1:
-            raise ValueError(
+        column = _single_signal_match(
+            matches,
+            signals,
+            error_message=(
                 "Bike profile normalization range matched multiple session signals: "
                 f"range_id={range_id!r} matches={matches}"
-            )
-
-        column = matches[0]
+            ),
+            log_context=f"bike_profile_id={bike_profile.get('bike_profile_id')} range_id={range_id}",
+        )
         full_range = float(range_item.get("full_range"))
         if column in resolved and resolved[column] != full_range:
             raise ValueError(
@@ -605,6 +723,9 @@ def _channel_info_for_output(
     *,
     input_col: str,
     transform_id: str,
+    motion_source_id: str = "",
+    processing_role: str = "",
+    canonical_output_col: str | None = None,
 ) -> dict[str, Any]:
     info: dict[str, Any] = {
         "source_columns": [input_col],
@@ -620,6 +741,13 @@ def _channel_info_for_output(
                 info[key] = value.strip()
     if "quantity" in info:
         info["role"] = info["quantity"]
+    if motion_source_id:
+        info["motion_source_id"] = motion_source_id
+    if processing_role:
+        info["processing_role"] = processing_role
+    if canonical_output_col:
+        info["canonical_dataframe_column"] = canonical_output_col
+        info["dataframe_column_disambiguation_token"] = motion_source_id or transform_id
     return info
 
 
@@ -755,7 +883,7 @@ def _matches_selector(signal_info: Mapping[str, Any], selector: Mapping[str, Any
     if signal_info.get("semantic_selection_excluded"):
         return False
 
-    for key in ("end", "quantity", "domain", "unit"):
+    for key in ("end", "quantity", "domain", "unit", "processing_role", "motion_source_id", "motion_profile_id"):
         expected = selector.get(key)
         if expected is None or (isinstance(expected, str) and not expected.strip()):
             continue
@@ -766,6 +894,9 @@ def _matches_selector(signal_info: Mapping[str, Any], selector: Mapping[str, Any
                 return False
         elif key == "unit":
             if _clean_unit(actual) != _clean_unit(expected):
+                return False
+        elif key in {"motion_source_id", "motion_profile_id"}:
+            if normalize_sensor_token(actual) != normalize_sensor_token(expected):
                 return False
         else:
             if normalize_sensor_token(actual) != normalize_sensor_token(expected):

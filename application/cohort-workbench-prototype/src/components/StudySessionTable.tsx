@@ -1,6 +1,6 @@
 import type { KeyboardEvent, MouseEvent } from 'react'
 import { Trash2 } from 'lucide-react'
-import { columnLabels, getColumnText } from '../domain/sessionCatalog'
+import { columnLabels, getColumnText, isInfoActionColumn } from '../domain/sessionCatalog'
 import { sessionByRef, sessionRefId } from '../domain/studySets'
 import type {
   ColumnId,
@@ -11,7 +11,11 @@ import type {
 } from '../domain/types'
 import { IconButton } from './Common'
 import type { SessionSelectionGesture } from './SessionTable'
-import { SessionInfoButtons } from './SessionInfoButtons'
+import {
+  SessionInfoButtons,
+  sessionInfoActionForColumn,
+  type SessionInfoAction,
+} from './SessionInfoButtons'
 
 export function StudySessionTable({
   studySet,
@@ -19,6 +23,7 @@ export function StudySessionTable({
   sessions,
   visibleColumns,
   selectedStudySessionIds,
+  primaryStudySessionId,
   onSelect,
   onRemove,
   onInspect,
@@ -28,18 +33,19 @@ export function StudySessionTable({
   sessions: SessionRecord[]
   visibleColumns: ColumnId[]
   selectedStudySessionIds: string[]
+  primaryStudySessionId: string | null
   onSelect: (refId: string, gesture: SessionSelectionGesture) => void
   onRemove: (refId: string) => void
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
 }) {
-  const inheritedColumns = visibleColumns.filter((columnId) => columnId !== 'name')
+  const inheritedColumns = visibleColumns.filter((columnId) => columnId !== 'name' && !isInfoActionColumn(columnId))
+  const inheritedInfoActions = visibleColumns
+    .map(sessionInfoActionForColumn)
+    .filter((action): action is SessionInfoAction => Boolean(action))
   const emptyColSpan = inheritedColumns.length + 3
 
   return (
     <>
-      <p className="selection-hint">
-        Click rows to choose sessions for grouping. Ctrl/Cmd-click toggles rows; Shift-click selects a range.
-      </p>
       <div className="table-shell study-table-shell">
         <table className="session-table study-session-table">
           <thead>
@@ -49,7 +55,9 @@ export function StudySessionTable({
                 <th key={columnId}>{columnLabels[columnId]}</th>
               ))}
               <th>Groupings</th>
-              <th>Info</th>
+              <th className="info-action-heading">
+                <span title="Session actions" />
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -67,10 +75,12 @@ export function StudySessionTable({
                 grouping.sessionRefs.includes(refId),
               )
               const isSelected = selectedStudySessionIds.includes(refId)
+              const isPrimary = primaryStudySessionId === refId
               return (
                 <tr
+                  aria-current={isPrimary ? 'true' : undefined}
                   aria-selected={isSelected}
-                  className={['session-row', isSelected ? 'selected' : ''].join(' ')}
+                  className={['session-row', isSelected ? 'selected' : '', isPrimary ? 'primary-row' : ''].join(' ')}
                   key={refId}
                   onClick={(event) => onSelect(refId, mouseGesture(event))}
                   onKeyDown={(event) => handleRowKeyDown(event, refId, onSelect)}
@@ -90,9 +100,18 @@ export function StudySessionTable({
                       ))}
                     </div>
                   </td>
-                  <td className="icon-cluster" onClick={(event) => event.stopPropagation()}>
-                    {session && <SessionInfoButtons session={session} onInspect={onInspect} />}
-                    <IconButton label="Remove session" onClick={() => onRemove(refId)} icon={<Trash2 size={15} />} />
+                  <td
+                    className="icon-cluster info-action-cell session-info-action-cell"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className="row-action-strip">
+                      {session && inheritedInfoActions.length > 0 && (
+                        <span className="row-info-action-group">
+                          <SessionInfoButtons session={session} onInspect={onInspect} actions={inheritedInfoActions} />
+                        </span>
+                      )}
+                      <IconButton label="Remove session" onClick={() => onRemove(refId)} icon={<Trash2 size={15} />} />
+                    </div>
                   </td>
                 </tr>
               )

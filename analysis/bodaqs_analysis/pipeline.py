@@ -48,7 +48,7 @@ from .motion_derivation import derive_motion_channels
 from .bike_profile import apply_signal_transforms, load_bike_profile, parse_bike_profile, resolve_normalization_ranges
 from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
 from .sensor_aliases import canonical_end, canonical_sensor_id
-from .signalname import SignalNameParts, format_signal_name
+from .signalname import SignalNameError, SignalNameParts, format_signal_name, parse_signal_name
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_LONG_DATETIME_RE = re.compile(
@@ -124,6 +124,69 @@ def _firmware_dropped_sample_count(stats: Any) -> int:
         return 0
 
 
+def _source_identity_token(*values: Any) -> str:
+    for value in values:
+        token = canonical_sensor_id(value)
+        if token:
+            return token
+    return ""
+
+
+def _signal_source_identity(info: Mapping[str, Any]) -> str:
+    return _source_identity_token(
+        info.get("motion_source_id"),
+        info.get("sensor"),
+        info.get("log_metadata_column_id"),
+        info.get("sidecar_column_id"),
+    )
+
+
+def _source_qualified_signal_name(base_name: str, token: str) -> str:
+    token = canonical_sensor_id(token)
+    if not token:
+        return base_name
+    try:
+        parts = parse_signal_name(base_name)
+        base = parts.base
+        if base != token and not base.endswith(f"_{token}"):
+            base = f"{base}_{token}"
+        return format_signal_name(
+            SignalNameParts(
+                base=base,
+                kind=parts.kind,
+                domain=parts.domain,
+                unit=parts.unit,
+                ops=parts.ops,
+            )
+        )
+    except SignalNameError:
+        stem = canonical_sensor_id(base_name) or "signal"
+        return f"{stem}_{token}"
+
+
+def _unique_signal_column_name(base_name: str, *, source_id: str, fallback: str, existing_names: set[str]) -> str:
+    if base_name not in existing_names:
+        return base_name
+
+    tokens = [source_id, fallback]
+    seen: set[str] = set()
+    for token in tokens:
+        token = canonical_sensor_id(token)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        candidate = _source_qualified_signal_name(base_name, token)
+        if candidate not in existing_names:
+            return candidate
+
+    index = 2
+    while True:
+        candidate = _source_qualified_signal_name(base_name, f"{fallback}_{index}")
+        if candidate not in existing_names:
+            return candidate
+        index += 1
+
+
 def _declared_time_columns(sidecar: Dict[str, Any]) -> set[str]:
     out: set[str] = set()
     binding = _metadata_binding(sidecar)
@@ -189,8 +252,47 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
     for col_name, info in columns.items():
         if not isinstance(info, dict):
             continue
+        column_class = str(info.get("class") or "").strip().lower()
         column_kind = str(info.get("kind") or "").strip().lower()
-        if info.get("class") != "signal" and column_kind != "qc":
+        if column_class == "diagnostic":
+            bound = bound_columns.get(str(col_name))
+            dataframe_col = bound.get("dataframe_column") if isinstance(bound, dict) else str(col_name)
+            if not isinstance(dataframe_col, str) or not dataframe_col.strip():
+                dataframe_col = str(col_name)
+
+            ch: Dict[str, Any] = {
+                "class": "diagnostic",
+                "origin": "logger",
+                "semantic_selection_excluded": True,
+                "semantic_selection_exclusion_reason": "diagnostic_column",
+                "log_metadata_column_id": str(col_name),
+                "sidecar_column_id": str(col_name),
+            }
+
+            metric = info.get("metric")
+            if isinstance(metric, str) and metric.strip():
+                ch["metric"] = metric.strip()
+
+            unit = info.get("unit")
+            if isinstance(unit, str) and unit.strip():
+                ch["unit"] = "1" if unit.strip().lower() in {"norm", "normalized", "normalised", "unitless"} else unit
+
+            sensor = info.get("sensor")
+            if isinstance(sensor, str) and sensor.strip():
+                ch["sensor"] = canonical_sensor_id(sensor)
+
+            for key in ("source", "processing_role"):
+                if key in info:
+                    ch[key] = info[key]
+
+            if isinstance(bound, dict):
+                ch["csv_column"] = bound.get("physical_column_label")
+                ch["csv_ref"] = bound.get("csv_ref")
+
+            out[dataframe_col] = ch
+            continue
+
+        if column_class != "signal" and column_kind != "qc":
             continue
 
         bound = bound_columns.get(str(col_name))
@@ -225,6 +327,8 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
             "kind",
             "source",
             "processing_role",
+            "motion_source_id",
+            "motion_profile_id",
             "semantic_selection_excluded",
             "semantic_selection_exclusion_reason",
         ):
@@ -272,9 +376,19 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
 
         ch["log_metadata_column_id"] = str(col_name)
         ch["sidecar_column_id"] = str(col_name)
+        if "motion_source_id" not in ch:
+            motion_source_id = _source_identity_token(ch.get("sensor"), col_name)
+            if motion_source_id:
+                ch["motion_source_id"] = motion_source_id
         if isinstance(bound, dict):
             ch["csv_column"] = bound.get("physical_column_label")
             ch["csv_ref"] = bound.get("csv_ref")
+            token = bound.get("dataframe_column_disambiguation_token")
+            if isinstance(token, str) and token.strip():
+                ch["dataframe_column_disambiguation_token"] = token
+            canonical = bound.get("canonical_dataframe_column")
+            if isinstance(canonical, str) and canonical.strip():
+                ch["canonical_dataframe_column"] = canonical
 
         out[dataframe_col] = ch
 
@@ -815,7 +929,7 @@ def _signal_matches_semantics(signal_info: Mapping[str, Any], selector: Mapping[
     if signal_info.get("semantic_selection_excluded"):
         return False
 
-    for key in ("end", "quantity", "domain", "unit"):
+    for key in ("end", "quantity", "domain", "unit", "processing_role", "motion_source_id", "motion_profile_id"):
         expected = selector.get(key)
         if expected is None or (isinstance(expected, str) and not expected.strip()):
             continue
@@ -826,6 +940,9 @@ def _signal_matches_semantics(signal_info: Mapping[str, Any], selector: Mapping[
                 return False
         elif key == "unit":
             if _canonical_unit_label(actual) != _canonical_unit_label(expected):
+                return False
+        elif key in {"motion_source_id", "motion_profile_id"}:
+            if canonical_sensor_id(actual) != canonical_sensor_id(expected):
                 return False
         else:
             if canonical_sensor_id(actual) != canonical_sensor_id(expected):
@@ -864,6 +981,7 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
         return report
 
     channel_info_updates: Dict[str, Dict[str, Any]] = {}
+    generated_signal_infos: list[dict[str, Any]] = []
     for column, info in signals.items():
         if not isinstance(column, str) or not isinstance(info, Mapping):
             continue
@@ -925,33 +1043,29 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
         invert = calibration.get("invert")
         invert_flag = bool(invert) if isinstance(invert, bool) else bool(sensor_full_count < sensor_zero_count)
 
+        source_id = _signal_source_identity(info)
         selector = {
             "end": info.get("end"),
             "quantity": quantity,
             "domain": info.get("domain"),
             "unit": output_unit,
         }
+        same_source_selector = dict(selector)
+        if source_id:
+            same_source_selector["motion_source_id"] = source_id
 
         existing_matches = [
             str(existing_col)
             for existing_col, existing_info in signals.items()
             if isinstance(existing_info, Mapping)
             and str(existing_col) != column
-            and _signal_matches_semantics(existing_info, selector)
+            and _signal_matches_semantics(existing_info, same_source_selector if source_id else selector)
         ]
         generated_matches = [
             str(rec.get("output_column"))
-            for rec in report["generated"]
+            for rec in generated_signal_infos
             if isinstance(rec, Mapping)
-            and _signal_matches_semantics(
-                {
-                    "end": rec.get("end"),
-                    "quantity": rec.get("quantity"),
-                    "domain": rec.get("domain"),
-                    "unit": rec.get("unit"),
-                },
-                selector,
-            )
+            and _signal_matches_semantics(rec, same_source_selector if source_id else selector)
         ]
         if existing_matches or generated_matches:
             report["skipped"].append(
@@ -963,13 +1077,35 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
             )
             continue
 
-        output_column = _materialized_signal_name(
+        core_existing_matches = [
+            str(existing_col)
+            for existing_col, existing_info in signals.items()
+            if isinstance(existing_info, Mapping)
+            and str(existing_col) != column
+            and _signal_matches_semantics(existing_info, selector)
+        ]
+        core_generated_matches = [
+            str(rec.get("output_column"))
+            for rec in generated_signal_infos
+            if isinstance(rec, Mapping) and _signal_matches_semantics(rec, selector)
+        ]
+        processing_role = str(info.get("processing_role") or "").strip()
+        if not processing_role:
+            processing_role = "secondary_analysis" if (core_existing_matches or core_generated_matches) else "primary_analysis"
+
+        canonical_output_column = _materialized_signal_name(
             sensor=info.get("sensor"),
             end=info.get("end"),
             domain=info.get("domain"),
             quantity=quantity,
             unit=output_unit,
             fallback=column,
+        )
+        output_column = _unique_signal_column_name(
+            canonical_output_column,
+            source_id=source_id,
+            fallback=column,
+            existing_names=set(map(str, df.columns)) | set(channel_info_updates.keys()),
         )
         if output_column in df.columns:
             report["skipped"].append(
@@ -1005,6 +1141,7 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
             "calibration_ref": info.get("calibration_ref"),
             "calibration": dict(calibration),
             "origin": "analysis",
+            "processing_role": processing_role,
             "derivation": {
                 "method": derivation_method,
                 "source_col": column,
@@ -1016,6 +1153,13 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
                 "invert": invert_flag,
             },
         }
+        if source_id:
+            channel_info_updates[output_column]["motion_source_id"] = source_id
+        if "motion_profile_id" in info:
+            channel_info_updates[output_column]["motion_profile_id"] = info.get("motion_profile_id")
+        if output_column != canonical_output_column:
+            channel_info_updates[output_column]["canonical_dataframe_column"] = canonical_output_column
+            channel_info_updates[output_column]["dataframe_column_disambiguation_token"] = source_id or column
         if "nominal_rate_hz" in info:
             channel_info_updates[output_column]["nominal_rate_hz"] = info.get("nominal_rate_hz")
 
@@ -1033,6 +1177,17 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
                 "zero_reference": float(zero_reference),
                 "zero_reference_source": zero_reference_source,
                 "invert": invert_flag,
+            }
+        )
+        generated_signal_infos.append(
+            {
+                "output_column": output_column,
+                "end": info.get("end"),
+                "domain": info.get("domain"),
+                "quantity": quantity,
+                "unit": output_unit,
+                "motion_source_id": source_id,
+                "processing_role": processing_role,
             }
         )
 

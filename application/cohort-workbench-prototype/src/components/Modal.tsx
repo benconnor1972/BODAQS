@@ -1,12 +1,16 @@
+import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { formatPercent, gpsSourceDisplay } from '../domain/geospatial'
 import { libraryName } from '../domain/sessionCatalog'
 import { noteSummary, sessionByRef, sessionRefId } from '../domain/studySets'
 import type { LibraryRecord, ModalState, SessionRecord, StudySet, TrackRecord } from '../domain/types'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
+import { AnalysisLauncher } from './AnalysisLauncher'
 import { IconButton } from './Common'
 import { GpsRoutePreview } from './GpsRoutePreview'
 import { GpsBadge, NoteBadge, QcBadge } from './StatusBadges'
+import { SignalInspector } from './SignalInspector'
+import { SuspensionVisualization } from './SuspensionVisualization'
 
 export function Modal({
   state,
@@ -15,6 +19,10 @@ export function Modal({
   tracks,
   dataSource,
   onClose,
+  onOpenAnalysis,
+  onOpenSignalInspector,
+  onSessionBookmarksChanged,
+  bookmarkRefreshToken = 0,
 }: {
   state: ModalState
   libraries: LibraryRecord[]
@@ -22,6 +30,10 @@ export function Modal({
   tracks: TrackRecord[]
   dataSource: LibraryDataSource
   onClose: () => void
+  onOpenAnalysis: (viewId: string, studySet: StudySet) => void
+  onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void
+  onSessionBookmarksChanged?: (session: SessionRecord) => void
+  bookmarkRefreshToken?: number
 }) {
   if (!state) {
     return null
@@ -29,26 +41,119 @@ export function Modal({
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+      <section
+        className={`modal${modalClassName(state)}`}
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="modal-header">
           <h2>{modalTitle(state)}</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
-        <div className="modal-content">{modalContent(state, libraries, sessions, tracks, dataSource)}</div>
+        <div className="modal-content">
+          <ModalErrorBoundary resetKey={modalErrorBoundaryKey(state)}>
+            {modalContent(
+              state,
+              libraries,
+              sessions,
+              tracks,
+              dataSource,
+              onOpenAnalysis,
+              onOpenSignalInspector,
+              onSessionBookmarksChanged,
+              bookmarkRefreshToken,
+            )}
+          </ModalErrorBoundary>
+        </div>
       </section>
     </div>
   )
 }
 
+type ModalErrorBoundaryProps = {
+  children: ReactNode
+  resetKey: string
+}
+
+type ModalErrorBoundaryState = {
+  error: Error | null
+}
+
+class ModalErrorBoundary extends Component<ModalErrorBoundaryProps, ModalErrorBoundaryState> {
+  state: ModalErrorBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: Error): ModalErrorBoundaryState {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Modal render failed', error, info)
+  }
+
+  componentDidUpdate(previousProps: ModalErrorBoundaryProps) {
+    if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null })
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="signal-inspector-message warning">
+          <strong>Could not render this view.</strong>
+          <span>{this.state.error.message || 'An unexpected browser-side error occurred.'}</span>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function modalErrorBoundaryKey(state: NonNullable<ModalState>) {
+  if (state.kind === 'signal-inspector') {
+    return `${state.kind}:${state.session.sessionKey}:${state.initialWindow?.startS ?? ''}:${state.initialWindow?.endS ?? ''}`
+  }
+  if (state.kind === 'session') {
+    return `${state.kind}:${state.session.sessionKey}:${state.tab}`
+  }
+  if (state.kind === 'track') {
+    return `${state.kind}:${state.track.id}`
+  }
+  if (state.kind === 'analysis-launcher') {
+    return `${state.kind}:${state.studySet.id ?? 'draft'}`
+  }
+  return `${state.kind}:${state.mode}:${state.studySet.id ?? 'draft'}`
+}
+
+function modalClassName(state: NonNullable<ModalState>) {
+  if (state.kind === 'study-set' && state.mode === 'analyze') {
+    return ' suspension-viz-modal'
+  }
+  if (state.kind === 'analysis-launcher') {
+    return ' analysis-launcher-modal'
+  }
+  if (state.kind === 'signal-inspector') {
+    return ' signal-inspector-modal'
+  }
+  return ''
+}
+
 function modalTitle(state: NonNullable<ModalState>) {
+  if (state.kind === 'signal-inspector') {
+    return `${state.session.name}: Signal Inspector`
+  }
   if (state.kind === 'session') {
     return `${state.session.name}: ${state.tab}`
   }
   if (state.kind === 'track') {
     return state.track.name
   }
-  if (state.mode === 'analyze') {
+  if (state.kind === 'analysis-launcher') {
     return `Analyze ${state.studySet.displayName || 'Study Set'}`
+  }
+  if (state.mode === 'analyze') {
+    return 'Simple Suspension Analysis'
   }
   return `View ${state.studySet.displayName || 'Study Set'}`
 }
@@ -59,7 +164,22 @@ function modalContent(
   sessions: SessionRecord[],
   tracks: TrackRecord[],
   dataSource: LibraryDataSource,
+  onOpenAnalysis: (viewId: string, studySet: StudySet) => void,
+  onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void,
+  onSessionBookmarksChanged: ((session: SessionRecord) => void) | undefined,
+  bookmarkRefreshToken: number,
 ) {
+  if (state.kind === 'signal-inspector') {
+    return (
+      <SignalInspector
+        session={state.session}
+        dataSource={dataSource}
+        initialWindow={state.initialWindow ?? null}
+        onBookmarksChanged={onSessionBookmarksChanged}
+      />
+    )
+  }
+
   if (state.kind === 'session') {
     if (state.tab === 'note') {
       return (
@@ -214,6 +334,10 @@ function modalContent(
     )
   }
 
+  if (state.kind === 'analysis-launcher') {
+    return <AnalysisLauncher studySet={state.studySet} dataSource={dataSource} onOpenAnalysis={onOpenAnalysis} />
+  }
+
   if (state.mode === 'view') {
     return (
       <StudySetView
@@ -226,25 +350,19 @@ function modalContent(
   }
 
   return (
-    <div>
-      <dl className="detail-list">
-        <dt>Study Set ID</dt>
-        <dd>{state.studySet.id ?? 'unsaved temporary Study Set'}</dd>
-        <dt>Revision</dt>
-        <dd>{state.studySet.saved ? state.studySet.revision : 'unsaved'}</dd>
-        <dt>Sessions</dt>
-        <dd>{state.studySet.sessions.length}</dd>
-        <dt>Groupings</dt>
-        <dd>{state.studySet.groupings.length}</dd>
-        <dt>Tracks</dt>
-        <dd>{state.studySet.trackIds.length}</dd>
-        <dt>Provenance</dt>
-        <dd>{state.studySet.provenance || 'Created interactively'}</dd>
-      </dl>
-      {state.mode === 'analyze' && (
-        <p className="modal-note">Analysis navigation is reserved for the next prototype pass.</p>
-      )}
-    </div>
+    <SuspensionVisualization
+      studySet={state.studySet}
+      sessions={sessions}
+      tracks={tracks}
+      dataSource={dataSource}
+      bookmarkRefreshToken={bookmarkRefreshToken}
+      onInspectSignals={(sessionRef, window) => {
+        const session = sessionByRef(sessionRef, sessions)
+        if (session) {
+          onOpenSignalInspector(session, window)
+        }
+      }}
+    />
   )
 }
 

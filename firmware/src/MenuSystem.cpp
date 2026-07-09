@@ -1365,7 +1365,13 @@ bool MenuSystem::handleAction(ButtonActions::ActionId action, ButtonEvent ev) {
       return true;
 
     case ButtonActions::ACT_MENU_NAV_RIGHT:
-      if (ev == BUTTON_PRESSED) onNav(Dir::Right, BUTTON_PRESSED);
+      if (ev == BUTTON_PRESSED) {
+        onNav(Dir::Right, BUTTON_PRESSED);
+        // Right is press-bound in the shipped configs, so there is no matching
+        // release edge to consume. Do not let the next Enter/Select release
+        // inherit this swallow state after a Right-driven transition.
+        s_swallowEnterRelease = false;
+      }
       return true;
 
     case ButtonActions::ACT_MENU_NAV_ENTER:

@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include "SD_MMC.h"
 #include "BoardProfile.h"   // make sure this is available
+#include "TimingStats.h"
 
 namespace board { struct BoardProfile; }  // forward decl (your renamed namespace)
 
@@ -20,6 +21,7 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms, const floa
 
 bool StorageManager_loadTextFile(const char* path, String& out);
 bool StorageManager_saveTextFile(const char* path, const String& data);
+StorageTimingStats StorageManager_timingStats();
 
 bool StorageManager_cardDetected();
 bool StorageManager_isMounted();

@@ -138,6 +138,130 @@ def delete_study_set(libraries_root: str | Path, study_set_id: str) -> dict[str,
     return {"deleted": True, "study_set_id": str(study_set_id)}
 
 
+def find_study_set_session_references(
+    libraries_root: str | Path,
+    session_ref_id: str,
+) -> list[dict[str, Any]]:
+    """Return saved Study Set references to ``session_ref_id``."""
+
+    wanted = str(session_ref_id or "").strip()
+    if not wanted:
+        return []
+
+    references: list[dict[str, Any]] = []
+    for summary in list_study_sets(libraries_root):
+        study_set_id = str(summary.get("study_set_id") or "").strip()
+        if not study_set_id:
+            continue
+        doc = load_study_set(libraries_root, study_set_id)
+        session_refs = [
+            session
+            for session in doc.get("sessions") or []
+            if isinstance(session, Mapping) and session.get("session_ref_id") == wanted
+        ]
+        groupings = [
+            {
+                "grouping_id": str(grouping.get("grouping_id") or ""),
+                "display_name": str(grouping.get("display_name") or grouping.get("grouping_id") or ""),
+            }
+            for grouping in doc.get("groupings") or []
+            if isinstance(grouping, Mapping) and wanted in set(grouping.get("session_refs") or [])
+        ]
+        bookmarks = [
+            {
+                "bookmark_id": str(bookmark.get("bookmark_id") or ""),
+                "display_name": str(bookmark.get("display_name") or bookmark.get("bookmark_id") or ""),
+            }
+            for bookmark in doc.get("bookmarks") or []
+            if isinstance(bookmark, Mapping) and bookmark.get("session_ref") == wanted
+        ]
+        if session_refs or groupings or bookmarks:
+            references.append(
+                {
+                    "study_set_id": study_set_id,
+                    "display_name": str(doc.get("display_name") or study_set_id),
+                    "session_member": bool(session_refs),
+                    "groupings": groupings,
+                    "bookmarks": bookmarks,
+                }
+            )
+    return references
+
+
+def remove_session_from_study_sets(
+    libraries_root: str | Path,
+    session_ref_id: str,
+) -> list[dict[str, Any]]:
+    """Remove ``session_ref_id`` from saved Study Sets and return update summaries."""
+
+    wanted = str(session_ref_id or "").strip()
+    if not wanted:
+        return []
+
+    updates: list[dict[str, Any]] = []
+    now = _utcnow_iso()
+    for reference in find_study_set_session_references(libraries_root, wanted):
+        study_set_id = str(reference["study_set_id"])
+        doc = load_study_set(libraries_root, study_set_id)
+        previous_revision = int(doc.get("revision") or 0)
+
+        before_sessions = list(doc.get("sessions") or [])
+        doc["sessions"] = [
+            session
+            for session in before_sessions
+            if not (isinstance(session, Mapping) and session.get("session_ref_id") == wanted)
+        ]
+
+        removed_groupings: list[dict[str, str]] = []
+        kept_groupings: list[dict[str, Any]] = []
+        for grouping in doc.get("groupings") or []:
+            if not isinstance(grouping, Mapping):
+                continue
+            updated_grouping = dict(grouping)
+            updated_grouping["session_refs"] = [
+                session_ref for session_ref in list(grouping.get("session_refs") or []) if session_ref != wanted
+            ]
+            if updated_grouping["session_refs"]:
+                kept_groupings.append(updated_grouping)
+            else:
+                removed_groupings.append(
+                    {
+                        "grouping_id": str(grouping.get("grouping_id") or ""),
+                        "display_name": str(grouping.get("display_name") or grouping.get("grouping_id") or ""),
+                    }
+                )
+        doc["groupings"] = kept_groupings
+
+        before_bookmarks = list(doc.get("bookmarks") or [])
+        doc["bookmarks"] = [
+            bookmark
+            for bookmark in before_bookmarks
+            if not (isinstance(bookmark, Mapping) and bookmark.get("session_ref") == wanted)
+        ]
+        removed_bookmark_count = len(before_bookmarks) - len(doc["bookmarks"])
+
+        doc["revision"] = previous_revision + 1
+        provenance = doc.get("provenance")
+        doc["provenance"] = dict(provenance) if isinstance(provenance, Mapping) else {}
+        doc["provenance"]["updated_at"] = now
+        doc["provenance"]["updated_by"] = "library_api_session_delete_cleanup"
+
+        validate_study_set(libraries_root, doc)
+        _write_study_set(libraries_root, doc)
+        updates.append(
+            {
+                "study_set_id": study_set_id,
+                "display_name": str(doc.get("display_name") or study_set_id),
+                "previous_revision": previous_revision,
+                "revision": doc["revision"],
+                "removed_session": len(before_sessions) != len(doc["sessions"]),
+                "removed_groupings": removed_groupings,
+                "removed_bookmark_count": removed_bookmark_count,
+            }
+        )
+    return updates
+
+
 def validate_study_set(libraries_root: str | Path, payload: Mapping[str, Any]) -> None:
     if not isinstance(payload, Mapping):
         raise InvalidStudySetError("Study Set payload must be a JSON object.")

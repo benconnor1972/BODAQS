@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "Sensor.h"
+#include "TimingStats.h"
 
 struct LoggerConfig;
 
@@ -59,6 +60,7 @@ namespace SensorManager {
   uint16_t dynamicColumnCount();
   uint16_t synchronousMaxSampleRateHz();
   void buildHeader(char* out, size_t n, bool humanTs);
+  String buildHeaderString(bool humanTs);
   void sampleValues(float* out, uint16_t maxOut, uint16_t& written);
   uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut);
   bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out);
@@ -67,6 +69,8 @@ namespace SensorManager {
   uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut);
   bool resolveSynBikeRawBindings(SynBikeRawBindings& out);
   bool gpsStatus(SensorGpsStatus& out);
+  void resetTimingStats();
+  const SensorTimingStats& timingStats();
 
   // debug
   void debugDump(const char* tag);

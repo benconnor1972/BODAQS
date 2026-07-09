@@ -20,7 +20,23 @@ type PointProperties = {
   radius: number
 }
 
+type SessionPathOverlay = {
+  id: string
+  label: string
+  path: Array<[number, number]>
+}
+
+export type HighlightPathOverlay = {
+  id: string
+  label: string
+  path: Array<[number, number]>
+  color?: string
+  width?: number
+  opacity?: number
+}
+
 const SESSION_COLOR = '#101820'
+const STUDY_SESSION_COLOR = '#315a6d'
 const SELECTED_TRACK_COLOR = '#008c95'
 const STUDY_TRACK_COLOR = '#b66a2c'
 
@@ -49,18 +65,22 @@ const OSM_RASTER_STYLE: StyleSpecification = {
 export function MapRoutePreview({
   primarySession,
   primaryGpsPath,
+  sessionPaths = [],
+  highlightPaths = [],
   selectedTracks,
   currentTracks,
 }: {
   primarySession: SessionRecord | null
   primaryGpsPath?: Array<[number, number]>
+  sessionPaths?: SessionPathOverlay[]
+  highlightPaths?: HighlightPathOverlay[]
   selectedTracks: TrackRecord[]
   currentTracks: TrackRecord[]
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markerRef = useRef<maplibregl.Marker[]>([])
-  const visiblePoints = collectVisiblePositions(primarySession, primaryGpsPath, selectedTracks, currentTracks)
+  const visiblePoints = collectVisiblePositions(primarySession, primaryGpsPath, sessionPaths, highlightPaths, selectedTracks, currentTracks)
   const hasVisiblePoints = visiblePoints.length > 0
 
   useEffect(() => {
@@ -109,7 +129,7 @@ export function MapRoutePreview({
     const activeMap = map
 
     function applyOverlayData() {
-      const overlayData = buildOverlayData(primarySession, primaryGpsPath, selectedTracks, currentTracks)
+      const overlayData = buildOverlayData(primarySession, primaryGpsPath, sessionPaths, highlightPaths, selectedTracks, currentTracks)
       ensureOverlayLayers(activeMap, overlayData.lines)
       markerRef.current = syncPointMarkers(activeMap, markerRef.current, overlayData.points.features)
       fitMapToPoints(activeMap, overlayData.boundsPoints)
@@ -124,7 +144,7 @@ export function MapRoutePreview({
     return () => {
       activeMap.off('load', applyOverlayData)
     }
-  }, [currentTracks, hasVisiblePoints, primaryGpsPath, primarySession, selectedTracks])
+  }, [currentTracks, hasVisiblePoints, highlightPaths, primaryGpsPath, primarySession, selectedTracks, sessionPaths])
 
   if (!hasVisiblePoints) {
     return (
@@ -141,12 +161,16 @@ export function MapRoutePreview({
 function collectVisiblePositions(
   primarySession: SessionRecord | null,
   primaryGpsPath: Array<[number, number]> | undefined,
+  sessionPaths: SessionPathOverlay[],
+  highlightPaths: HighlightPathOverlay[],
   selectedTracks: TrackRecord[],
   currentTracks: TrackRecord[],
 ) {
   const primaryPoints = primaryGpsPath ?? primarySession?.gps ?? []
   return [
     ...primaryPoints,
+    ...sessionPaths.flatMap((sessionPath) => sessionPath.path),
+    ...highlightPaths.flatMap((highlightPath) => highlightPath.path),
     ...selectedTracks.flatMap((track) => track.points),
     ...selectedTracks.flatMap((track) => track.trackpoints.map((trackpoint) => trackpoint.position)),
     ...currentTracks.flatMap((track) => track.points),
@@ -157,6 +181,8 @@ function collectVisiblePositions(
 function buildOverlayData(
   primarySession: SessionRecord | null,
   primaryGpsPath: Array<[number, number]> | undefined,
+  sessionPaths: SessionPathOverlay[],
+  highlightPaths: HighlightPathOverlay[],
   selectedTracks: TrackRecord[],
   currentTracks: TrackRecord[],
 ) {
@@ -170,6 +196,33 @@ function buildOverlayData(
     addEndpointMarkers(pointFeatures, primaryPoints, SESSION_COLOR, 'Session')
     boundsPoints.push(...primaryPoints)
   }
+
+  sessionPaths.forEach((sessionPath, index) => {
+    const points = filterPositions(sessionPath.path)
+    if (points.length >= 2) {
+      lineFeatures.push(routeLineFeature(`study-session-${sessionPath.id}`, points, STUDY_SESSION_COLOR, 3, 0.54))
+      if (index === 0) {
+        addEndpointMarkers(pointFeatures, points, STUDY_SESSION_COLOR, 'Study Set')
+      }
+      boundsPoints.push(...points)
+    }
+  })
+
+  highlightPaths.forEach((highlightPath) => {
+    const points = filterPositions(highlightPath.path)
+    if (points.length >= 2) {
+      lineFeatures.push(
+        routeLineFeature(
+          `highlight-${highlightPath.id}`,
+          points,
+          highlightPath.color ?? SELECTED_TRACK_COLOR,
+          highlightPath.width ?? 6,
+          highlightPath.opacity ?? 0.95,
+        ),
+      )
+      boundsPoints.push(...points)
+    }
+  })
 
   selectedTracks.forEach((track) => {
     const points = filterPositions(track.points)

@@ -2,6 +2,13 @@ import { candidateId, groupingColors, sessionRefId } from '../domain/studySets'
 import { emptyGpsSummary } from '../domain/geospatial'
 import type { SavedSessionFilterRecord, SessionFilterPredicate } from '../domain/sessionFilters'
 import type {
+  AnalysisAdequacyMessage,
+  AnalysisAdequacyResult,
+  AnalysisAdequacySessionResult,
+  AnalysisAdequacyStatus,
+  AnalysisRequirementRecord,
+  AnalysisRequirementTier,
+  AnalysisViewRecord,
   GpsQuality,
   GpsSourceKind,
   GpsTimebase,
@@ -10,15 +17,29 @@ import type {
   QcLevel,
   SessionGpsPointSet,
   SessionGpsSummary,
+  SessionBookmarkRecord,
   SessionNoteFieldDef,
   SessionNoteFieldType,
   SessionNoteRecord,
   SessionNoteValue,
   SessionRecord,
+  SessionSignalSummary,
   SessionTrackMatchRecord,
+  SignalQueryRequest,
+  SignalQueryResponse,
+  SignalQuerySession,
+  SignalQuerySignal,
   StudyGrouping,
   StudySessionRef,
   StudySet,
+  TableQueryRequest,
+  TableQueryResponse,
+  TableQueryRow,
+  TimeseriesWindowEvent,
+  TimeseriesWindowMark,
+  TimeseriesWindowRequest,
+  TimeseriesWindowResponse,
+  TimeseriesWindowSignal,
   TrackDirection,
   TrackMatchStatus,
   TrackpointMatchMode,
@@ -66,6 +87,17 @@ export class LocalApiDataSource implements LibraryDataSource {
     return libraries.map(mapLibrary)
   }
 
+  async refreshLibrary(libraryId: string) {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/refresh`,
+      {
+        method: 'POST',
+      },
+    )
+    const library = objectValue(response.library)
+    return mapLibrary(library)
+  }
+
   async listSessions() {
     const libraries = await this.listLibraries()
     const catalogs = await Promise.all(
@@ -95,6 +127,29 @@ export class LocalApiDataSource implements LibraryDataSource {
     return studySets.map(mapStudySet)
   }
 
+  async loadStudySet(studySetId: string) {
+    const studySet = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/study-sets/${encodeURIComponent(studySetId)}`)
+    return mapStudySet(studySet)
+  }
+
+  async listAnalysisViews() {
+    const views = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/analysis-views`)
+    return views.map(mapAnalysisView)
+  }
+
+  async evaluateAnalysisAdequacy(viewId: string, studySet: StudySet) {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/analysis-views/${encodeURIComponent(viewId)}/adequacy`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          study_set: toApiStudySet(studySet),
+        }),
+      },
+    )
+    return mapAnalysisAdequacy(response)
+  }
+
   async listSavedSessionFilters() {
     const filters = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/session-filters`)
     return filters.map(mapSavedSessionFilter)
@@ -115,6 +170,46 @@ export class LocalApiDataSource implements LibraryDataSource {
           body: JSON.stringify(payload),
         })
     return mapStudySet(saved)
+  }
+
+  async deleteStudySet(studySetId: string) {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/study-sets/${encodeURIComponent(studySetId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async deleteSession(session: SessionRecord, options: { cleanupMemberships?: boolean } = {}) {
+    const params = options.cleanupMemberships ? '?cleanup_memberships=true' : ''
+    return requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/runs/${encodeURIComponent(
+        session.runId,
+      )}/sessions/${encodeURIComponent(session.sessionId)}${params}`,
+      {
+        method: 'DELETE',
+      },
+    )
+  }
+
+  async renameSession(session: SessionRecord, name: string): Promise<SessionRecord> {
+    const trimmedName = name.trim()
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/descriptions`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          session_ref: toApiSessionRef(session),
+          descriptions: {
+            session_description: trimmedName,
+          },
+        }),
+      },
+    )
+    const sessionLabel = textValue(response.session_description, trimmedName)
+    return {
+      ...session,
+      name: sessionLabel,
+      sessionLabel,
+    }
   }
 
   async saveSavedSessionFilter(filter: SavedSessionFilterRecord) {
@@ -260,16 +355,103 @@ export class LocalApiDataSource implements LibraryDataSource {
     )
     return mapSessionNote(response, note.sessionRef)
   }
+
+  async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
+    const params = new URLSearchParams({
+      library_id: session.libraryId,
+      session_key: session.sessionKey,
+    })
+    const response = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/bookmarks?${params}`)
+    return response.map(mapSessionBookmark)
+  }
+
+  async saveSessionBookmark(bookmark: SessionBookmarkRecord): Promise<SessionBookmarkRecord> {
+    const payload = toApiSessionBookmark(bookmark)
+    const saved =
+      bookmark.id && bookmark.revision > 0
+        ? await requestJson<ApiObject>(`${this.baseUrl}/api/v1/bookmarks/${encodeURIComponent(bookmark.id)}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              expected_revision: bookmark.revision,
+              bookmark: payload,
+            }),
+          })
+        : await requestJson<ApiObject>(`${this.baseUrl}/api/v1/bookmarks`, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          })
+    return mapSessionBookmark(saved)
+  }
+
+  async deleteSessionBookmark(bookmarkId: string): Promise<void> {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/bookmarks/${encodeURIComponent(bookmarkId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async loadTimeseriesWindow(libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/timeseries/window`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiTimeseriesWindowRequest(request)),
+      },
+    )
+    return mapTimeseriesWindowResponse(response)
+  }
+
+  async querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/signals/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiSignalQueryRequest(request)),
+      },
+    )
+    return mapSignalQueryResponse(response)
+  }
+
+  async queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/events/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiTableQueryRequest(request)),
+      },
+    )
+    return mapTableQueryResponse(response)
+  }
+
+  async queryMetrics(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/metrics/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify(toApiTableQueryRequest(request)),
+      },
+    )
+    return mapTableQueryResponse(response)
+  }
 }
 
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers ?? {}),
-    },
-  })
+  const headers = new Headers(init.headers)
+  if (init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+    })
+  } catch (error) {
+    const method = init.method ?? 'GET'
+    const message = error instanceof Error ? error.message : String(error)
+    const origin = typeof window === 'undefined' ? 'unknown origin' : window.location.origin
+    throw new Error(`Network request failed (${method} ${url} from ${origin}): ${message}`)
+  }
 
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`
@@ -277,13 +459,23 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
       const payload = (await response.json()) as ApiObject
       const error = isObject(payload.error) ? payload.error : null
       const message = error ? textValue(error.message, detail) : detail
-      detail = message
+      const details = error && isObject(error.details) ? formatApiErrorDetails(error.details) : ''
+      detail = details ? `${message} ${details}` : message
     } catch {
       // Keep the HTTP status fallback.
     }
     throw new Error(detail)
   }
   return (await response.json()) as T
+}
+
+function formatApiErrorDetails(details: ApiObject) {
+  const fragments = [
+    textValue(details.exception_type),
+    textValue(details.exception_message),
+    textValue(details.session_dir),
+  ].filter(Boolean)
+  return fragments.length ? `(${fragments.join('; ')})` : ''
 }
 
 function mapLibrary(value: ApiObject): LibraryRecord {
@@ -314,6 +506,8 @@ function mapSession(row: ApiObject): SessionRecord {
   const qcLevel = qcLevelValue(qcSummary.status)
   const warningCount = numberValue(qcSummary.warning_count)
   const errorCount = numberValue(qcSummary.error_count)
+  const sessionLabel = textValue(display.session_label)
+  const sessionDisplayName = sessionLabel || textValue(display.label, sessionId || sessionKey)
 
   return {
     libraryId,
@@ -321,7 +515,8 @@ function mapSession(row: ApiObject): SessionRecord {
     runName: textValue(display.run_label, runId),
     sessionId,
     sessionKey,
-    name: textValue(display.label, textValue(display.session_label, sessionKey)),
+    name: sessionDisplayName,
+    sessionLabel: sessionLabel || sessionDisplayName,
     startedAt: textValue(timestamps.started_at_local, textValue(timestamps.started_at_utc)),
     bike: textValue(noteFields.bike),
     rider: textValue(noteFields.rider),
@@ -335,8 +530,29 @@ function mapSession(row: ApiObject): SessionRecord {
     eventSchema: textValue(eventSchema.display_name, textValue(eventSchema.schema_id)),
     sourceArchive: textValue(provenance.archive_name),
     signals: availableSignals.map((signal) => textValue(signal.display_name, textValue(signal.column))),
+    availableSignals: availableSignals.map(mapSessionSignalSummary),
     gps: [],
     gpsSummary: mapGpsSummary(gpsSummary),
+  }
+}
+
+function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
+  const motionSource = objectValue(value.motion_source)
+  const derivation = objectRecordValue(value.derivation)
+  return {
+    signalId: textValue(value.signal_id, textValue(value.column)),
+    column: textValue(value.column),
+    displayName: textValue(value.display_name, textValue(value.column)),
+    end: textValue(value.end),
+    domain: textValue(value.domain),
+    quantity: textValue(value.quantity),
+    unit: textValue(value.unit),
+    processingRole: textValue(value.processing_role),
+    kind: textValue(value.kind),
+    sensor: textValue(value.sensor),
+    motionSourceId: textValue(value.motion_source_id, textValue(motionSource.source_id, textValue(value.motion_source))),
+    origin: textValue(value.origin),
+    ...(Object.keys(derivation).length ? { derivation } : {}),
   }
 }
 
@@ -576,14 +792,276 @@ function mapSessionNoteField(value: ApiObject): SessionNoteFieldDef {
   }
 }
 
+function mapSessionBookmark(value: ApiObject): SessionBookmarkRecord {
+  const window = objectValue(value.window)
+  const provenance = objectValue(value.provenance)
+  const rawViewState = objectValue(value.view_state)
+  const rawInspectorState = objectValue(rawViewState.bodaqs_web_signal_inspector_v1)
+  const signalColumns = arrayValue(rawInspectorState.signal_columns).map((item) => textValue(item)).filter(Boolean)
+  return {
+    id: textValue(value.bookmark_id),
+    revision: numberValue(value.revision),
+    title: textValue(value.display_name, textValue(value.title, 'Bookmark')),
+    description: textValue(value.description),
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    window: {
+      startS: numberValue(window.start_s),
+      endS: numberValue(window.end_s),
+    },
+    viewState: {
+      ...rawViewState,
+      signalInspector: {
+        signalColumns,
+        showMarks: rawInspectorState.show_marks === false ? false : true,
+      },
+    },
+    tags: arrayValue(value.tags).map((item) => textValue(item)).filter(Boolean),
+    private: value.private === false ? false : true,
+    createdAtUtc: textValue(provenance.created_at),
+    updatedAtUtc: textValue(provenance.updated_at, textValue(provenance.created_at)),
+  }
+}
+
+function mapSignalQueryResponse(value: ApiObject): SignalQueryResponse {
+  return {
+    sessions: arrayValue(value.sessions).filter(isObject).map(mapSignalQuerySession),
+    warnings: arrayValue(value.warnings).filter(isObject).map((warning) => ({ ...warning })),
+  }
+}
+
+function mapSignalQuerySession(value: ApiObject): SignalQuerySession {
+  const sampling = objectValue(value.sampling)
+  const time = objectValue(value.time)
+  const timeColumn = textValue(time.column)
+  const timeUnit = textValue(time.unit, 's')
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    time: timeColumn
+      ? {
+          column: timeColumn,
+          unit: 's',
+          values: normalizeTimeValues(arrayValue(time.values).map(nullableNumberValue), timeUnit),
+        }
+      : null,
+    sampling: {
+      mode: textValue(sampling.mode),
+      sourcePoints: numberValue(sampling.source_points),
+      returnedPoints: numberValue(sampling.returned_points),
+      distributionCorrect: Boolean(sampling.distribution_correct),
+    },
+    signals: arrayValue(value.signals).filter(isObject).map(mapSignalQuerySignal),
+  }
+}
+
+function mapSignalQuerySignal(value: ApiObject): SignalQuerySignal {
+  const motionSource = objectValue(value.motion_source)
+  const derivation = objectRecordValue(value.derivation)
+  return {
+    role: textValue(value.role, 'signal'),
+    signalId: textValue(value.signal_id),
+    column: textValue(value.column),
+    displayName: textValue(value.display_name, textValue(value.column)),
+    end: textValue(value.end),
+    domain: textValue(value.domain),
+    quantity: textValue(value.quantity),
+    unit: textValue(value.unit),
+    processingRole: textValue(value.processing_role),
+    kind: textValue(value.kind),
+    sensor: textValue(value.sensor),
+    motionSourceId: textValue(value.motion_source_id, textValue(motionSource.source_id, textValue(value.motion_source))),
+    origin: textValue(value.origin),
+    ...(Object.keys(derivation).length ? { derivation } : {}),
+    values: arrayValue(value.values).map(nullableNumberValue),
+  }
+}
+
+function mapTimeseriesWindowResponse(value: ApiObject): TimeseriesWindowResponse {
+  const sampling = objectValue(value.sampling)
+  const window = objectValue(value.window)
+  const time = objectValue(value.time)
+  const timeUnit = textValue(time.unit, 's')
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    window: {
+      requestedStartS: nullableNumberValue(window.requested_start_s),
+      requestedEndS: nullableNumberValue(window.requested_end_s),
+      returnedStartS: nullableNumberValue(window.returned_start_s),
+      returnedEndS: nullableNumberValue(window.returned_end_s),
+    },
+    sampling: {
+      mode: textValue(sampling.mode),
+      sourcePoints: numberValue(sampling.source_points),
+      returnedPoints: numberValue(sampling.returned_points),
+      targetPoints: numberValue(sampling.target_points),
+    },
+    time: {
+      column: textValue(time.column),
+      unit: 's',
+      values: normalizeTimeValues(arrayValue(time.values).map(nullableNumberValue), timeUnit),
+    },
+    signals: arrayValue(value.signals).filter(isObject).map(mapTimeseriesWindowSignal),
+    events: arrayValue(value.events).filter(isObject).map(mapTimeseriesWindowEvent),
+    marks: arrayValue(value.marks)
+      .filter(isObject)
+      .map((mark) => mapTimeseriesWindowMark(mark, timeUnit)),
+    warnings: arrayValue(value.warnings).map((warning) => textValue(warning)).filter(Boolean),
+  }
+}
+
+function mapTimeseriesWindowSignal(value: ApiObject): TimeseriesWindowSignal {
+  return {
+    ...mapSessionSignalSummary(value),
+    values: arrayValue(value.values).map(nullableNumberValue),
+  }
+}
+
+function mapTimeseriesWindowEvent(value: ApiObject): TimeseriesWindowEvent {
+  return {
+    eventId: textValue(value.event_id, textValue(value.id)),
+    eventType: textValue(value.event_type, textValue(value.schema_id)),
+    displayName: textValue(value.display_name, textValue(value.event_type, textValue(value.schema_id))),
+    startS: nullableNumberValue(value.start_s),
+    endS: nullableNumberValue(value.end_s),
+    peakTimeS: nullableNumberValue(value.peak_time_s),
+    end: textValue(value.end),
+  }
+}
+
+function mapTimeseriesWindowMark(value: ApiObject, timeUnit: string): TimeseriesWindowMark {
+  const factor = timeUnitToSecondsFactor(timeUnit)
+  const rawTimeS = nullableNumberValue(value.time_s)
+  return {
+    markId: textValue(value.mark_id, textValue(value.id)),
+    timeS: rawTimeS !== null ? rawTimeS * factor : Number.NaN,
+    displayName: textValue(value.display_name, 'Mark'),
+    column: textValue(value.column),
+  }
+}
+
+function normalizeTimeValues(values: Array<number | null>, unit: string) {
+  const factor = timeUnitToSecondsFactor(unit)
+  return values.map((value) => (typeof value === 'number' && Number.isFinite(value) ? value * factor : null))
+}
+
+function timeUnitToSecondsFactor(unit: string) {
+  const normalized = unit.trim().toLowerCase()
+  if (['ms', 'millisecond', 'milliseconds'].includes(normalized)) {
+    return 1 / 1000
+  }
+  if (['us', 'microsecond', 'microseconds'].includes(normalized)) {
+    return 1 / 1_000_000
+  }
+  if (['ns', 'nanosecond', 'nanoseconds'].includes(normalized)) {
+    return 1 / 1_000_000_000
+  }
+  if (['min', 'mins', 'minute', 'minutes'].includes(normalized)) {
+    return 60
+  }
+  return 1
+}
+
+function mapTableQueryResponse(value: ApiObject): TableQueryResponse {
+  return {
+    rowKind: value.row_kind === 'metric' ? 'metric' : 'event',
+    rowCount: numberValue(value.row_count),
+    rows: arrayValue(value.rows).filter(isObject).map(mapTableQueryRow),
+    warnings: arrayValue(value.warnings).filter(isObject).map((warning) => ({ ...warning })),
+  }
+}
+
+function mapTableQueryRow(value: ApiObject): TableQueryRow {
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    setId: textValue(value.event_set_id, textValue(value.metric_set_id)),
+    rowIndex: numberValue(value.row_index),
+    eventType: textValue(value.event_type),
+    signalRole: signalRoleValue(value.signal_role),
+    fields: objectRecordValue(value.fields),
+  }
+}
+
+function mapStudySessionRef(value: ApiObject): StudySessionRef {
+  return {
+    libraryId: textValue(value.library_id),
+    sessionKey: textValue(value.session_key),
+    runId: textValue(value.run_id),
+    sessionId: textValue(value.session_id),
+    label: textValue(value.label, textValue(value.session_id)),
+  }
+}
+
+function mapAnalysisView(value: ApiObject): AnalysisViewRecord {
+  const viewId = textValue(value.view_id, textValue(value.id))
+  const requirements = objectValue(value.requirements)
+  return {
+    id: viewId,
+    displayName: textValue(value.display_name, viewId),
+    category: textValue(value.category),
+    description: textValue(value.description),
+    route: textValue(value.route),
+    adequacyPolicy: textValue(value.adequacy_policy),
+    requirements: Object.fromEntries(
+      Object.entries(requirements).map(([tier, items]) => [
+        tier,
+        arrayValue(items)
+          .filter(isObject)
+          .map((item) => mapAnalysisRequirement(item, requirementTierValue(tier))),
+      ]),
+    ),
+  }
+}
+
+function mapAnalysisRequirement(value: ApiObject, fallbackTier: AnalysisRequirementTier): AnalysisRequirementRecord {
+  const requirementId = textValue(value.requirement_id, textValue(value.id))
+  return {
+    requirementId,
+    label: textValue(value.label, requirementId),
+    tier: requirementTierValue(value.tier, fallbackTier),
+    description: textValue(value.description),
+  }
+}
+
+function mapAnalysisAdequacy(value: ApiObject): AnalysisAdequacyResult {
+  const viewId = textValue(value.view_id, textValue(value.id))
+  return {
+    viewId,
+    displayName: textValue(value.display_name, viewId),
+    status: adequacyStatusValue(value.status),
+    policy: textValue(value.policy, textValue(value.adequacy_policy)),
+    summary: textValue(value.summary),
+    totalSessionCount: numberValue(value.total_session_count),
+    usableSessionCount: numberValue(value.usable_session_count),
+    blockedSessionCount: numberValue(value.blocked_session_count),
+    messages: arrayValue(value.messages).filter(isObject).map(mapAnalysisAdequacyMessage),
+    sessionResults: arrayValue(value.session_results).filter(isObject).map(mapAnalysisAdequacySessionResult),
+  }
+}
+
+function mapAnalysisAdequacyMessage(value: ApiObject): AnalysisAdequacyMessage {
+  const sessionRef = objectValue(value.session_ref)
+  return {
+    level: messageLevelValue(value.level),
+    code: textValue(value.code),
+    message: textValue(value.message),
+    ...(Object.keys(sessionRef).length ? { sessionRef: mapStudySessionRef(sessionRef) } : {}),
+    detail: objectRecordValue(value.detail),
+  }
+}
+
+function mapAnalysisAdequacySessionResult(value: ApiObject): AnalysisAdequacySessionResult {
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session_ref)),
+    status: adequacyStatusValue(value.status),
+    summary: textValue(value.summary),
+    requiredPassed: value.required_passed === true,
+    recommendedMissing: arrayValue(value.recommended_missing).map((item) => textValue(item)).filter(Boolean),
+    optionalMissing: arrayValue(value.optional_missing).map((item) => textValue(item)).filter(Boolean),
+    units: objectRecordValue(value.units),
+  }
+}
+
 function mapStudySet(value: ApiObject): StudySet {
-  const sessions = arrayValue(value.sessions).filter(isObject).map((sessionRef) => ({
-    libraryId: textValue(sessionRef.library_id),
-    sessionKey: textValue(sessionRef.session_key),
-    runId: textValue(sessionRef.run_id),
-    sessionId: textValue(sessionRef.session_id),
-    label: textValue(sessionRef.label, textValue(sessionRef.session_id)),
-  }))
+  const sessions = arrayValue(value.sessions).filter(isObject).map(mapStudySessionRef)
   const groupings = arrayValue(value.groupings).filter(isObject).map<StudyGrouping>((grouping, index) => ({
     id: textValue(grouping.grouping_id),
     name: textValue(grouping.display_name, textValue(grouping.grouping_id)),
@@ -609,7 +1087,7 @@ function mapSavedSessionFilter(value: ApiObject): SavedSessionFilterRecord {
     id: filterId,
     displayName: textValue(value.display_name, filterId),
     description: textValue(value.description),
-    category: textValue(value.category, 'custom'),
+    category: textValue(value.category),
     origin: 'api_saved',
     revision: numberValue(value.revision),
     predicate: sessionFilterPredicateValue(value.predicate),
@@ -665,7 +1143,7 @@ function toApiSessionFilter(filter: SavedSessionFilterRecord) {
     version: 1,
     display_name: filter.displayName.trim(),
     description: filter.description ?? '',
-    category: filter.category || 'custom',
+    category: filter.category.trim(),
     revision: filter.revision,
     predicate: filter.predicate as unknown as ApiObject,
     display_state: {
@@ -792,6 +1270,51 @@ function toApiStudySessionRef(sessionRef: StudySessionRef) {
   }
 }
 
+function toApiSignalQueryRequest(request: SignalQueryRequest) {
+  return {
+    sessions: request.sessions.map(toApiStudySessionRef),
+    signals: request.signals.map((signal) => ({
+      role: signal.role,
+      ...(signal.column ? { column: signal.column } : {}),
+      ...(signal.selector ? { selector: signal.selector } : {}),
+    })),
+  }
+}
+
+function toApiTimeseriesWindowRequest(request: TimeseriesWindowRequest) {
+  return {
+    session: toApiStudySessionRef(request.session),
+    signals: request.signals.map((signal) => ({
+      ...(signal.column ? { column: signal.column } : {}),
+      ...(signal.selector ? { selector: signal.selector } : {}),
+    })),
+    ...(request.window
+      ? {
+          window: {
+            start_s: request.window.startS ?? null,
+            end_s: request.window.endS ?? null,
+          },
+        }
+      : {}),
+    ...(request.resolution?.targetPoints
+      ? {
+          resolution: {
+            target_points: request.resolution.targetPoints,
+          },
+        }
+      : {}),
+    include_events: Boolean(request.includeEvents),
+    include_marks: Boolean(request.includeMarks),
+  }
+}
+
+function toApiTableQueryRequest(request: TableQueryRequest) {
+  return {
+    sessions: request.sessions.map(toApiStudySessionRef),
+    ...(request.eventTypes?.length ? { event_types: request.eventTypes } : {}),
+  }
+}
+
 function toApiSessionNote(note: SessionNoteRecord) {
   return {
     schema: 'bodaqs.session_notes.document',
@@ -808,6 +1331,30 @@ function toApiSessionNote(note: SessionNoteRecord) {
     created_at_utc: note.createdAtUtc,
     updated_at_utc: note.updatedAtUtc,
     draft: note.draft,
+  }
+}
+
+function toApiSessionBookmark(bookmark: SessionBookmarkRecord) {
+  const existingViewState = { ...bookmark.viewState }
+  delete existingViewState.signalInspector
+  return {
+    ...(bookmark.id ? { bookmark_id: bookmark.id } : {}),
+    display_name: bookmark.title.trim() || 'Bookmark',
+    description: bookmark.description,
+    session: toApiStudySessionRef(bookmark.sessionRef),
+    window: {
+      start_s: bookmark.window.startS,
+      end_s: bookmark.window.endS,
+    },
+    view_state: {
+      ...existingViewState,
+      bodaqs_web_signal_inspector_v1: {
+        signal_columns: bookmark.viewState.signalInspector?.signalColumns ?? [],
+        show_marks: bookmark.viewState.signalInspector?.showMarks ?? true,
+      },
+    },
+    tags: bookmark.tags,
+    private: bookmark.private,
   }
 }
 
@@ -884,6 +1431,13 @@ function trackpointMatchQueryStatusValue(value: unknown): TrackpointMatchQuerySt
     return value
   }
   return 'queued'
+}
+
+function signalRoleValue(value: unknown): 'front' | 'rear' | 'unknown' {
+  if (value === 'front' || value === 'rear') {
+    return value
+  }
+  return 'unknown'
 }
 
 function qcLevelValue(value: unknown): QcLevel {
@@ -987,6 +1541,27 @@ function sessionFilterPredicateValue(value: unknown): SessionFilterPredicate {
     return value as unknown as SessionFilterPredicate
   }
   return { field: 'rider', op: 'contains', value: '' }
+}
+
+function requirementTierValue(value: unknown, fallback: AnalysisRequirementTier = 'optional'): AnalysisRequirementTier {
+  if (value === 'required' || value === 'recommended' || value === 'optional') {
+    return value
+  }
+  return fallback
+}
+
+function adequacyStatusValue(value: unknown): AnalysisAdequacyStatus {
+  if (value === 'ready' || value === 'warning' || value === 'partial' || value === 'blocked') {
+    return value
+  }
+  return 'unknown'
+}
+
+function messageLevelValue(value: unknown): AnalysisAdequacyMessage['level'] {
+  if (value === 'warning' || value === 'error') {
+    return value
+  }
+  return 'info'
 }
 
 function coordinatePair(value: unknown): [number, number] | null {

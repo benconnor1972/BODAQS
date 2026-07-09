@@ -13,6 +13,7 @@ export type SessionFilterField =
   | 'rider'
   | 'signals'
   | 'source.archive'
+  | 'started'
   | 'trackpoint.crossing'
 
 export type TrackpointCrossingFilterValue = {
@@ -52,7 +53,7 @@ export type SessionFilterPredicate =
     }
   | {
       field: Exclude<SessionFilterField, 'trackpoint.crossing'>
-      op: 'contains' | 'eq' | 'in' | 'present'
+      op: 'contains' | 'eq' | 'gte' | 'in' | 'lt' | 'present'
       value?: boolean | string | string[]
     }
 
@@ -225,6 +226,8 @@ export function savedFilterCategoryLabel(category: string) {
       return 'People'
     case 'processing':
       return 'Processing'
+    case 'custom':
+      return 'Custom'
     default:
       return category
   }
@@ -279,6 +282,19 @@ function sessionMatchesPredicate(
     const expected = normalized(predicate.value)
     return values.some((value) => normalized(value).includes(expected))
   }
+  if (predicate.op === 'gte' || predicate.op === 'lt') {
+    const thresholdMs = dateMs(predicate.value)
+    if (thresholdMs === null) {
+      return false
+    }
+    return values.some((value) => {
+      const valueMs = dateMs(value)
+      if (valueMs === null) {
+        return false
+      }
+      return predicate.op === 'gte' ? valueMs >= thresholdMs : valueMs < thresholdMs
+    })
+  }
   return false
 }
 
@@ -314,6 +330,8 @@ function fieldValues(session: SessionRecord, field: SessionFilterField): Array<b
       return session.signals
     case 'source.archive':
       return [session.sourceArchive]
+    case 'started':
+      return [session.startedAt]
     case 'trackpoint.crossing':
       return []
   }
@@ -321,6 +339,15 @@ function fieldValues(session: SessionRecord, field: SessionFilterField): Array<b
 
 function normalized(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
+}
+
+function dateMs(value: unknown) {
+  const text = String(value ?? '').trim()
+  if (!text) {
+    return null
+  }
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function trackpointCrossingPredicates(predicate: SessionFilterPredicate): Array<Extract<SessionFilterPredicate, { field: 'trackpoint.crossing' }>> {

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .sensor_aliases import canonical_end, canonical_sensor_id, normalize_sensor_token
-from .signalname import SignalNameParts, format_signal_name, SignalNameError
+from .signalname import SignalNameParts, format_signal_name, parse_signal_name, SignalNameError
 
 
 _LOG_METADATA_BINDING_KEY = "_bodaqs_log_metadata_binding"
@@ -367,6 +367,79 @@ def _analysis_column_name(column_id: str, info: dict[str, Any]) -> str:
     return column_id
 
 
+def _column_disambiguation_token(column_id: str, info: Mapping[str, Any]) -> str:
+    for key in ("motion_source_id", "sensor", "source"):
+        token = normalize_sensor_token(info.get(key))
+        if token:
+            return token
+    return normalize_sensor_token(column_id) or "signal"
+
+
+def _source_qualified_signal_name(base_name: str, token: str) -> str:
+    token = normalize_sensor_token(token)
+    if not token:
+        return base_name
+    try:
+        parts = parse_signal_name(base_name)
+        base = parts.base
+        if base != token and not base.endswith(f"_{token}"):
+            base = f"{base}_{token}"
+        return format_signal_name(
+            SignalNameParts(
+                base=base,
+                kind=parts.kind,
+                domain=parts.domain,
+                unit=parts.unit,
+                ops=parts.ops,
+            )
+        )
+    except SignalNameError:
+        stem = normalize_sensor_token(base_name) or "signal"
+        return f"{stem}_{token}"
+
+
+def _unique_dataframe_column_name(
+    canonical_name: str,
+    *,
+    column_id: str,
+    info: Mapping[str, Any],
+    used_names: set[str],
+) -> tuple[str, dict[str, Any] | None]:
+    if canonical_name not in used_names:
+        used_names.add(canonical_name)
+        return canonical_name, None
+
+    tokens = [
+        _column_disambiguation_token(column_id, info),
+        normalize_sensor_token(column_id) or "",
+    ]
+    seen_tokens: set[str] = set()
+    for token in tokens:
+        if not token or token in seen_tokens:
+            continue
+        seen_tokens.add(token)
+        candidate = _source_qualified_signal_name(canonical_name, token)
+        if candidate not in used_names:
+            used_names.add(candidate)
+            return candidate, {
+                "canonical_dataframe_column": canonical_name,
+                "dataframe_column_disambiguated": True,
+                "dataframe_column_disambiguation_token": token,
+            }
+
+    index = 2
+    while True:
+        candidate = _source_qualified_signal_name(canonical_name, f"{column_id}_{index}")
+        if candidate not in used_names:
+            used_names.add(candidate)
+            return candidate, {
+                "canonical_dataframe_column": canonical_name,
+                "dataframe_column_disambiguated": True,
+                "dataframe_column_disambiguation_token": f"{column_id}_{index}",
+            }
+        index += 1
+
+
 def _is_required_sidecar_column(
     column_id: str,
     info: dict[str, Any],
@@ -414,6 +487,7 @@ def _bind_sidecar_columns(
     missing_required: list[str] = []
     missing_optional: list[str] = []
     warnings: list[str] = []
+    used_output_names: set[str] = set()
 
     for column_id_raw, info in columns.items():
         column_id = str(column_id_raw)
@@ -446,7 +520,13 @@ def _bind_sidecar_columns(
                 )
             continue
 
-        output = _analysis_column_name(column_id, info)
+        canonical_output = _analysis_column_name(column_id, info)
+        output, disambiguation = _unique_dataframe_column_name(
+            canonical_output,
+            column_id=column_id,
+            info=info,
+            used_names=used_output_names,
+        )
         resolved[column_id] = {
             "column_id": column_id,
             "class": info.get("class"),
@@ -456,6 +536,17 @@ def _bind_sidecar_columns(
             "physical_column_label": str(physical),
             "dataframe_column": output,
         }
+        if disambiguation is not None:
+            resolved[column_id].update(disambiguation)
+            warning = f"log_metadata_dataframe_column_disambiguated:{column_id}"
+            warnings.append(warning)
+            logger.info(
+                "Logger log metadata dataframe column disambiguated: metadata_column_id=%s canonical=%s dataframe_column=%s token=%s",
+                column_id,
+                canonical_output,
+                output,
+                disambiguation.get("dataframe_column_disambiguation_token"),
+            )
         selected_physical.append(physical)
         rename_map[physical] = output
 
@@ -468,11 +559,6 @@ def _bind_sidecar_columns(
     if len(selected_physical) != len(set(selected_physical)):
         duplicates = [str(x) for x in selected_physical if selected_physical.count(x) > 1]
         raise ValueError(f"Logger log metadata resolves multiple entries to the same CSV column: {sorted(set(duplicates))}")
-
-    output_names = list(rename_map.values())
-    if len(output_names) != len(set(output_names)):
-        duplicates = [x for x in output_names if output_names.count(x) > 1]
-        raise ValueError(f"Logger log metadata would create duplicate dataframe columns: {sorted(set(duplicates))}")
 
     resolved_by_physical = {bound["physical_column"]: bound for bound in resolved.values()}
     for physical in df.columns:

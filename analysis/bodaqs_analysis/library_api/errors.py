@@ -47,6 +47,18 @@ class SessionNotFoundError(LibraryApiError):
     default_message = "Session was not found."
 
 
+class SessionDeleteConflictError(LibraryApiError):
+    code = "session_delete_conflict"
+    status_code = 409
+    default_message = "Session is still referenced by saved library objects."
+
+
+class SessionDeleteFailedError(LibraryApiError):
+    code = "session_delete_failed"
+    status_code = 500
+    default_message = "Session could not be deleted."
+
+
 class StudySetNotFoundError(LibraryApiError):
     code = "study_set_not_found"
     status_code = 404
@@ -57,6 +69,12 @@ class SessionFilterNotFoundError(LibraryApiError):
     code = "session_filter_not_found"
     status_code = 404
     default_message = "Session filter was not found."
+
+
+class BookmarkNotFoundError(LibraryApiError):
+    code = "bookmark_not_found"
+    status_code = 404
+    default_message = "Bookmark was not found."
 
 
 class TrackNotFoundError(LibraryApiError):
@@ -83,6 +101,12 @@ class TrackpointMatchQueryNotFoundError(LibraryApiError):
     default_message = "Trackpoint match query was not found."
 
 
+class AnalysisViewNotFoundError(LibraryApiError):
+    code = "analysis_view_not_found"
+    status_code = 404
+    default_message = "Analysis view was not found."
+
+
 class InvalidRequestError(LibraryApiError):
     code = "invalid_request"
     status_code = 400
@@ -99,6 +123,12 @@ class InvalidSessionFilterError(LibraryApiError):
     code = "invalid_session_filter"
     status_code = 400
     default_message = "Session filter is invalid."
+
+
+class InvalidBookmarkError(LibraryApiError):
+    code = "invalid_bookmark"
+    status_code = 400
+    default_message = "Bookmark is invalid."
 
 
 class InvalidTrackError(LibraryApiError):

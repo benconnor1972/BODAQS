@@ -17,7 +17,13 @@ from bodaqs_analysis.library_api.errors import LibraryApiError
 
 SERVICE_API_VERSION = "0"
 SERVICE_NAME = "BODAQS Library API"
-DEFAULT_ALLOW_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+DEFAULT_ALLOW_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+)
+LOOPBACK_ALLOW_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
 
 
 @dataclass(frozen=True)
@@ -54,11 +60,28 @@ def create_app(
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
+        allow_origin_regex=LOOPBACK_ALLOW_ORIGIN_REGEX,
     )
 
     @app.exception_handler(LibraryApiError)
     async def library_api_error_handler(_request: Request, exc: LibraryApiError) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content=exc.to_error_payload())
+
+    @app.exception_handler(Exception)
+    async def unexpected_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": "The Library API service hit an unexpected error.",
+                    "details": {
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                    },
+                }
+            },
+        )
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
@@ -73,6 +96,10 @@ def create_app(
     @app.get("/api/v1/capabilities")
     def capabilities() -> dict[str, Any]:
         return _current_adapter(app).capabilities()
+
+    @app.get("/api/v1/cache/diagnostics")
+    def cache_diagnostics() -> dict[str, Any]:
+        return _current_adapter(app).cache_diagnostics()
 
     @app.post("/api/v1/config/libraries-root")
     async def set_libraries_root(request: Request) -> dict[str, Any]:
@@ -134,6 +161,20 @@ def create_app(
     async def update_session_descriptions(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         return _current_adapter(app).update_session_descriptions(library_id, _json_object_payload(payload))
+
+    @app.delete("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}")
+    def delete_library_session(
+        library_id: str,
+        run_id: str,
+        session_id: str,
+        cleanup_memberships: bool = False,
+    ) -> dict[str, Any]:
+        return _current_adapter(app).delete_session(
+            library_id,
+            run_id,
+            session_id,
+            cleanup_memberships=cleanup_memberships,
+        )
 
     @app.get("/api/v1/tracks")
     def list_root_tracks() -> list[dict[str, Any]]:
@@ -236,10 +277,73 @@ def create_app(
     def delete_root_session_filter(filter_id: str) -> dict[str, Any]:
         return _current_adapter(app).delete_session_filter(filter_id)
 
+    @app.get("/api/v1/bookmarks")
+    def list_root_bookmarks(
+        library_id: str | None = None,
+        session_key: str | None = None,
+        session_ref_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return _current_adapter(app).list_bookmarks(
+            library_id=library_id,
+            session_key=session_key,
+            session_ref_id=session_ref_id,
+        )
+
+    @app.post("/api/v1/bookmarks")
+    async def create_root_bookmark(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).create_bookmark(_bookmark_payload(payload))
+
+    @app.get("/api/v1/bookmarks/{bookmark_id}")
+    def load_root_bookmark(bookmark_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_bookmark(bookmark_id)
+
+    @app.put("/api/v1/bookmarks/{bookmark_id}")
+    async def update_root_bookmark(bookmark_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).update_bookmark(
+            bookmark_id,
+            expected_revision=_expected_revision(payload),
+            payload=_bookmark_payload(payload),
+        )
+
+    @app.delete("/api/v1/bookmarks/{bookmark_id}")
+    def delete_root_bookmark(bookmark_id: str) -> dict[str, Any]:
+        return _current_adapter(app).delete_bookmark(bookmark_id)
+
+    @app.get("/api/v1/analysis-views")
+    def list_analysis_views() -> list[dict[str, Any]]:
+        return _current_adapter(app).list_analysis_views()
+
+    @app.post("/api/v1/analysis-views/{view_id}/adequacy")
+    async def get_analysis_view_adequacy(view_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).get_analysis_view_adequacy(view_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/analysis-views/{view_id}/adequacy/cache-key/explain")
+    async def explain_analysis_view_adequacy_cache_key(view_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).explain_analysis_view_adequacy_cache_key(view_id, _json_object_payload(payload))
+
     @app.post("/api/v1/libraries/{library_id}/timeseries/window")
     async def get_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         return _current_adapter(app).get_timeseries_window(library_id, payload)
+
+    @app.post("/api/v1/libraries/{library_id}/signals/query")
+    async def query_signals(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_signals(library_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/libraries/{library_id}/events/query")
+    async def query_events(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_events(library_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/libraries/{library_id}/metrics/query")
+    async def query_metrics(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_metrics(library_id, _json_object_payload(payload))
 
     @app.post("/api/v1/track-matches/query")
     async def query_track_matches(request: Request) -> dict[str, Any]:
@@ -331,6 +435,16 @@ def _session_filter_payload(payload: Any) -> dict[str, Any]:
         from bodaqs_analysis.library_api.errors import InvalidRequestError
 
         raise InvalidRequestError("Session filter request body must include a JSON object.")
+    return value
+
+
+def _bookmark_payload(payload: Any) -> dict[str, Any]:
+    payload = _json_object_payload(payload)
+    value = payload.get("bookmark", payload)
+    if not isinstance(value, dict):
+        from bodaqs_analysis.library_api.errors import InvalidRequestError
+
+        raise InvalidRequestError("Bookmark request body must include a JSON object.")
     return value
 
 

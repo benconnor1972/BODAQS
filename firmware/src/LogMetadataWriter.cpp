@@ -1,5 +1,6 @@
 #include "LogMetadataWriter.h"
 
+#include "BoardProfile.h"
 #include "SensorManager.h"
 #include <new>
 
@@ -60,6 +61,24 @@ void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint32_t value,
   out += '\n';
 }
 
+void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[7];
+  snprintf(buf, sizeof(buf), "\"0x%02X\"", (unsigned)value);
+  out += buf;
+  if (comma) out += ',';
+  out += '\n';
+}
+
+void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
+  appendKey_(out, depth, key);
+  char buf[9];
+  snprintf(buf, sizeof(buf), "\"0x%04X\"", (unsigned)value);
+  out += buf;
+  if (comma) out += ',';
+  out += '\n';
+}
+
 void appendKeyUInt64_(String& out, uint8_t depth, const char* key, uint64_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[24];
@@ -101,6 +120,258 @@ bool hasText_(const char* s) {
   return s && *s;
 }
 
+const TimingSummary& emptyTimingSummary_() {
+  static const TimingSummary empty;
+  return empty;
+}
+
+const StorageTimingStats& emptyStorageTiming_() {
+  static const StorageTimingStats empty;
+  return empty;
+}
+
+const ExternalAdcTimingStats& emptyExternalAdcTiming_() {
+  static const ExternalAdcTimingStats empty;
+  return empty;
+}
+
+const SensorTimingStats& emptySensorTiming_() {
+  static const SensorTimingStats empty;
+  return empty;
+}
+
+const I2CBusSchedulerTimingStats& emptyI2CSchedulerTiming_() {
+  static const I2CBusSchedulerTimingStats empty;
+  return empty;
+}
+
+void appendTimingSummary_(String& out, uint8_t depth, const char* key, const TimingSummary& s, bool comma = true) {
+  appendKey_(out, depth, key);
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "count", s.count);
+  appendKeyUInt_(out, depth + 1, "min_us", s.minUs);
+  appendKeyFloat_(out, depth + 1, "avg_us", TimingStats_avgUs(s));
+  appendKeyUInt_(out, depth + 1, "max_us", s.maxUs);
+  appendKeyUInt64_(out, depth + 1, "total_us", s.totalUs);
+  appendKey_(out, depth + 1, "buckets_us");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 2, "lt_250", s.bucketLt250);
+  appendKeyUInt_(out, depth + 2, "250_500", s.bucket250To500);
+  appendKeyUInt_(out, depth + 2, "500_1000", s.bucket500To1000);
+  appendKeyUInt_(out, depth + 2, "1000_1500", s.bucket1000To1500);
+  appendKeyUInt_(out, depth + 2, "1500_2000", s.bucket1500To2000);
+  appendKeyUInt_(out, depth + 2, "ge_2000", s.bucketGe2000, false);
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendAdcTiming_(String& out, uint8_t depth, const ExternalAdcTimingStats& stats, bool comma = true) {
+  appendKey_(out, depth, "external_adc_timing");
+  out += F("{\n");
+  bool wroteAny = false;
+  for (uint8_t adc = 0; adc < ExternalAdcTimingStats::kMaxAdcs; ++adc) {
+    const auto& a = stats.adc[adc];
+    if (!a.present && a.activeChannels == 0 && a.scanUs.count == 0) continue;
+    if (wroteAny) out += F(",\n");
+    wroteAny = true;
+
+    char key[8];
+    snprintf(key, sizeof(key), "adc%u", (unsigned)adc);
+    appendKey_(out, depth + 1, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 2, "present", a.present);
+    appendKeyBool_(out, depth + 2, "async_running", a.asyncRunning);
+    appendKeyUInt_(out, depth + 2, "active_channels", a.activeChannels);
+    appendKeyUInt_(out, depth + 2, "configured_sps", a.configuredSps);
+    appendKeyUInt_(out, depth + 2, "wait_timeouts", a.waitTimeouts);
+    appendKeyUInt_(out, depth + 2, "drdy_already_ready", a.drdyAlreadyReady);
+    appendTimingSummary_(out, depth + 2, "scan_us", a.scanUs);
+    appendTimingSummary_(out, depth + 2, "async_loop_us", a.asyncLoopUs);
+    appendTimingSummary_(out, depth + 2, "config_us", a.configUs);
+    appendTimingSummary_(out, depth + 2, "start_us", a.startUs);
+    appendTimingSummary_(out, depth + 2, "wait_us", a.waitUs);
+    appendTimingSummary_(out, depth + 2, "read_us", a.readUs);
+    appendKey_(out, depth + 2, "channels");
+    out += F("{\n");
+    bool wroteChannel = false;
+    for (uint8_t ch = 0; ch < ExternalAdcTimingStats::kMaxChannels; ++ch) {
+      const auto& c = a.channel[ch];
+      if (c.totalUs.count == 0 && c.waitUs.count == 0 && c.rowUses == 0) continue;
+      if (wroteChannel) out += F(",\n");
+      wroteChannel = true;
+      char chKey[8];
+      snprintf(chKey, sizeof(chKey), "ch%u", (unsigned)ch);
+      appendKey_(out, depth + 3, chKey);
+      out += F("{\n");
+      appendTimingSummary_(out, depth + 4, "total_us", c.totalUs);
+      appendTimingSummary_(out, depth + 4, "wait_us", c.waitUs);
+      appendTimingSummary_(out, depth + 4, "row_age_us", c.rowAgeUs);
+      appendKeyUInt_(out, depth + 4, "acquire_ok", c.acquireOk);
+      appendKeyUInt_(out, depth + 4, "acquire_fail", c.acquireFail);
+      appendKeyUInt_(out, depth + 4, "row_uses", c.rowUses);
+      appendKeyUInt_(out, depth + 4, "row_fresh", c.rowFresh);
+      appendKeyUInt_(out, depth + 4, "row_reused", c.rowReused);
+      appendKeyUInt_(out, depth + 4, "row_no_sample", c.rowNoSample, false);
+      appendIndent_(out, depth + 3);
+      out += F("}");
+    }
+    if (wroteChannel) out += '\n';
+    appendIndent_(out, depth + 2);
+    out += F("}\n");
+    appendIndent_(out, depth + 1);
+    out += F("}");
+  }
+  if (wroteAny) out += '\n';
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendSensorTiming_(String& out, uint8_t depth, const SensorTimingStats& stats, bool comma = true) {
+  appendKey_(out, depth, "sensor_timing");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "sensor_count", stats.sensorCount);
+  appendKey_(out, depth + 1, "sensors");
+  out += F("{\n");
+
+  bool wroteAny = false;
+  for (uint8_t i = 0; i < SensorTimingStats::kMaxSensors; ++i) {
+    const auto& s = stats.sensor[i];
+    if (!s.present && s.sampleUs.count == 0) continue;
+    if (wroteAny) out += F(",\n");
+    wroteAny = true;
+
+    char key[12];
+    snprintf(key, sizeof(key), "sensor%u", (unsigned)i);
+    appendKey_(out, depth + 2, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 3, "present", s.present);
+    appendKeyBool_(out, depth + 3, "muted", s.muted);
+    appendKeyBool_(out, depth + 3, "synchronous", s.synchronous);
+    appendKeyString_(out, depth + 3, "name", s.name);
+    appendKeyString_(out, depth + 3, "label", s.label);
+    appendKeyUInt_(out, depth + 3, "column_count", s.columnCount);
+    appendTimingSummary_(out, depth + 3, "sample_us", s.sampleUs, false);
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+  if (wroteAny) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendI2CSchedulerTiming_(String& out,
+                               uint8_t depth,
+                               const I2CBusSchedulerTimingStats& stats,
+                               bool comma = true) {
+  appendKey_(out, depth, "i2c_scheduler_timing");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "client_count", stats.clientCount);
+
+  appendKey_(out, depth + 1, "buses");
+  out += F("{\n");
+  bool wroteBus = false;
+  for (uint8_t bus = 0; bus < I2CBusSchedulerTimingStats::kMaxBuses; ++bus) {
+    const auto& b = stats.bus[bus];
+    if (!b.present && !b.running && b.clientCount == 0 && b.acquireLoopUs.count == 0) continue;
+    if (wroteBus) out += F(",\n");
+    wroteBus = true;
+    char key[8];
+    snprintf(key, sizeof(key), "bus%u", (unsigned)bus);
+    appendKey_(out, depth + 2, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 3, "present", b.present);
+    appendKeyBool_(out, depth + 3, "running", b.running);
+    appendKeyUInt_(out, depth + 3, "client_count", b.clientCount);
+    appendKeyUInt_(out, depth + 3, "hz", b.hz);
+    appendTimingSummary_(out, depth + 3, "acquire_loop_us", b.acquireLoopUs, false);
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+  if (wroteBus) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("},\n");
+
+  appendKey_(out, depth + 1, "clients");
+  out += F("{\n");
+  bool wroteClient = false;
+  for (uint8_t i = 0; i < I2CBusSchedulerTimingStats::kMaxClients; ++i) {
+    const auto& c = stats.client[i];
+    if (!c.present && c.acquireUs.count == 0 && c.rowUses == 0) continue;
+    if (wroteClient) out += F(",\n");
+    wroteClient = true;
+    char key[12];
+    snprintf(key, sizeof(key), "client%u", (unsigned)i);
+    appendKey_(out, depth + 2, key);
+    out += F("{\n");
+    appendKeyBool_(out, depth + 3, "present", c.present);
+    appendKeyBool_(out, depth + 3, "active", c.active);
+    appendKeyString_(out, depth + 3, "name", c.name);
+    appendKeyString_(out, depth + 3, "kind", c.kind);
+    appendKeyUInt_(out, depth + 3, "bus", c.busIndex);
+    appendKeyUInt_(out, depth + 3, "address", c.address);
+    appendKeyUInt_(out, depth + 3, "target_rate_hz", c.targetRateHz);
+    appendKeyUInt_(out, depth + 3, "period_us", c.periodUs);
+    appendKeyUInt_(out, depth + 3, "acquire_ok", c.acquireOk);
+    appendKeyUInt_(out, depth + 3, "acquire_fail", c.acquireFail);
+    appendKeyUInt_(out, depth + 3, "row_uses", c.rowUses);
+    appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
+    appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
+    appendKeyUInt_(out, depth + 3, "row_no_sample", c.rowNoSample);
+    appendTimingSummary_(out, depth + 3, "acquire_us", c.acquireUs);
+    appendTimingSummary_(out, depth + 3, "row_age_us", c.rowAgeUs, false);
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+  if (wroteClient) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendI2CBusDiagnostics_(String& out,
+                              uint8_t depth,
+                              const board::BoardProfile* bp,
+                              bool comma = true) {
+  appendKey_(out, depth, "i2c_buses");
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "board", bp ? bp->name : "");
+  appendKeyUInt_(out, depth + 1, "count", bp ? bp->i2c_count : 0);
+  appendKey_(out, depth + 1, "buses");
+  out += F("{\n");
+
+  bool wroteAny = false;
+  if (bp) {
+    const uint8_t count = (bp->i2c_count < board::BOARD_MAX_I2C_BUSES)
+      ? bp->i2c_count
+      : board::BOARD_MAX_I2C_BUSES;
+    for (uint8_t i = 0; i < count; ++i) {
+      const auto& bus = bp->i2c[i];
+      if (wroteAny) out += F(",\n");
+      wroteAny = true;
+      char key[8];
+      snprintf(key, sizeof(key), "bus%u", (unsigned)i);
+      appendKey_(out, depth + 2, key);
+      out += F("{\n");
+      appendKeyBool_(out, depth + 3, "present", bus.present);
+      appendKeyInt_(out, depth + 3, "sda", bus.sda);
+      appendKeyInt_(out, depth + 3, "scl", bus.scl);
+      appendKeyUInt_(out, depth + 3, "hz", bus.hz, false);
+      appendIndent_(out, depth + 2);
+      out += F("}");
+    }
+  }
+  if (wroteAny) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
 void appendRunStats_(String& out, uint8_t depth, const LogMetadataContext& ctx, bool comma = true) {
   appendKey_(out, depth, "run_stats");
   out += F("{\n");
@@ -112,7 +383,26 @@ void appendRunStats_(String& out, uint8_t depth, const LogMetadataContext& ctx, 
   const float avgFlush = ctx.flushCount ? (float)((double)ctx.flushTotalMs / (double)ctx.flushCount) : 0.0f;
   appendKeyFloat_(out, depth + 1, "flush_avg_ms", avgFlush);
   appendKeyUInt64_(out, depth + 1, "flush_total_ms", ctx.flushTotalMs);
+#if BODAQS_TIMING_INSTRUMENTATION
+  appendKeyUInt_(out, depth + 1, "buffer_size", ctx.bufferSize);
+  appendKeyUInt_(out, depth + 1, "sampler_late_ticks", ctx.samplerLateTicks);
+  appendKeyUInt_(out, depth + 1, "sampler_late_max_lag_ms", ctx.samplerLateMaxLagMs);
+  appendKeyUInt_(out, depth + 1, "missed_sample_slots", ctx.missedSampleSlots);
+  const StorageTimingStats& storageTiming = ctx.storageTiming ? *ctx.storageTiming : emptyStorageTiming_();
+  appendTimingSummary_(out, depth + 1, "sample_once_us", ctx.sampleOnceUs ? *ctx.sampleOnceUs : emptyTimingSummary_());
+  appendTimingSummary_(out, depth + 1, "sensor_sample_us", ctx.sensorSampleUs ? *ctx.sensorSampleUs : emptyTimingSummary_());
+  appendTimingSummary_(out, depth + 1, "enqueue_us", ctx.enqueueUs ? *ctx.enqueueUs : emptyTimingSummary_());
+  appendTimingSummary_(out, depth + 1, "storage_row_write_us", storageTiming.rowWriteUs);
+  appendTimingSummary_(out, depth + 1, "storage_drain_loop_us", storageTiming.drainLoopUs);
+  appendKeyUInt_(out, depth + 1, "storage_drain_loops", storageTiming.drainLoops);
+  appendKeyUInt_(out, depth + 1, "storage_drain_rows", storageTiming.drainRows);
+  appendAdcTiming_(out, depth + 1, ctx.externalAdcTiming ? *ctx.externalAdcTiming : emptyExternalAdcTiming_());
+  appendSensorTiming_(out, depth + 1, ctx.sensorTiming ? *ctx.sensorTiming : emptySensorTiming_());
+  appendI2CSchedulerTiming_(out, depth + 1, ctx.i2cSchedulerTiming ? *ctx.i2cSchedulerTiming : emptyI2CSchedulerTiming_());
+  appendI2CBusDiagnostics_(out, depth + 1, ctx.boardProfile, false);
+#else
   appendKeyUInt_(out, depth + 1, "buffer_size", ctx.bufferSize, false);
+#endif
   appendIndent_(out, depth);
   out += comma ? F("},\n") : F("}\n");
 }
@@ -141,6 +431,48 @@ void makeUniqueColumnId_(const SensorColumnDescriptor* cols,
   }
 }
 
+void appendDeviceConfig_(String& out, const SensorDeviceConfigDescriptor& cfg) {
+  appendKey_(out, 3, "device_config");
+  out += F("{\n");
+  appendKeyString_(out, 4, "kind", cfg.kind);
+  appendKeyString_(out, 4, "policy", cfg.policy[0] ? cfg.policy : "read_only");
+  appendKeyString_(out, 4, "status", cfg.status);
+  if (hasText_(cfg.requestedSlowFilter)) appendKeyString_(out, 4, "requested_slow_filter", cfg.requestedSlowFilter);
+  if (hasText_(cfg.writeStatus)) appendKeyString_(out, 4, "write_status", cfg.writeStatus);
+  appendKeyBool_(out, 4, "read_ok", cfg.readOk);
+
+  appendKey_(out, 4, "registers");
+  out += F("{\n");
+  appendKeyUInt_(out, 5, "zpos", cfg.zpos);
+  appendKeyUInt_(out, 5, "mpos", cfg.mpos);
+  appendKeyUInt_(out, 5, "mang", cfg.mang);
+  appendKeyUInt_(out, 5, "conf", cfg.conf);
+  appendKeyHex16_(out, 5, "conf_hex", cfg.conf);
+  appendKeyUInt_(out, 5, "raw_angle", cfg.rawAngle);
+  appendKeyUInt_(out, 5, "angle", cfg.angle);
+  appendKeyUInt_(out, 5, "status", cfg.statusReg);
+  appendKeyHex8_(out, 5, "status_hex", cfg.statusReg);
+  appendKeyUInt_(out, 5, "agc", cfg.agc);
+  appendKeyUInt_(out, 5, "magnitude", cfg.magnitude, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
+
+  appendKey_(out, 4, "decoded");
+  out += F("{\n");
+  appendKeyString_(out, 5, "power_mode", cfg.readOk ? cfg.confPowerMode : "");
+  appendKeyString_(out, 5, "hysteresis", cfg.readOk ? cfg.confHysteresis : "");
+  appendKeyString_(out, 5, "output_stage", cfg.readOk ? cfg.confOutputStage : "");
+  appendKeyString_(out, 5, "pwm_frequency", cfg.readOk ? cfg.confPwmFrequency : "");
+  appendKeyString_(out, 5, "slow_filter", cfg.readOk ? cfg.confSlowFilter : "");
+  appendKeyString_(out, 5, "fast_filter_threshold", cfg.readOk ? cfg.confFastFilterThreshold : "");
+  appendKeyBool_(out, 5, "watchdog", cfg.readOk && cfg.confWatchdog, false);
+  appendIndent_(out, 4);
+  out += F("}\n");
+
+  appendIndent_(out, 3);
+  out += F("},\n");
+}
+
 void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
   appendIndent_(out, 2);
   appendJsonString_(out, s.sensorId);
@@ -158,6 +490,10 @@ void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
     appendKeyBool_(out, 4, "assume_turn0_at_start", s.assumeTurn0AtStart, false);
     appendIndent_(out, 3);
     out += F("},\n");
+  }
+
+  if (s.hasDeviceConfig) {
+    appendDeviceConfig_(out, s.deviceConfig);
   }
 
   if (s.hasCalibration) {
@@ -219,6 +555,32 @@ void appendSignalColumn_(String& out,
   }
 
   if (c.raw) appendKeyString_(out, 3, "raw_representation", c.source);
+  if (hasText_(c.notes)) appendKeyString_(out, 3, "notes", c.notes, false);
+  else appendKeyBool_(out, 3, "required", true, false);
+
+  appendIndent_(out, 2);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendDiagnosticColumn_(String& out,
+                             const SensorColumnDescriptor* cols,
+                             uint16_t idx,
+                             bool comma) {
+  const SensorColumnDescriptor& c = cols[idx];
+  char key[80];
+  makeUniqueColumnId_(cols, idx, c, key, sizeof(key));
+
+  appendIndent_(out, 2);
+  appendJsonString_(out, key);
+  out += F(": {\n");
+  appendCsvRefByHeader_(out, 3, c.csvHeader);
+  appendKeyString_(out, 3, "class", "diagnostic");
+  appendKeyString_(out, 3, "dtype", "uint32");
+  appendKeyString_(out, 3, "stream", "primary");
+  appendKeyString_(out, 3, "sensor", c.sensorName);
+  appendKeyString_(out, 3, "metric", c.quantity);
+  appendKeyString_(out, 3, "unit", c.unit[0] ? c.unit : "");
+  if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);
   if (hasText_(c.notes)) appendKeyString_(out, 3, "notes", c.notes, false);
   else appendKeyBool_(out, 3, "required", true, false);
 
@@ -352,7 +714,7 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
   const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
   String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
 
-  out.reserve(2048 + (sensorsWritten * 520));
+  out.reserve(2048 + (sensorsWritten * 900));
   out += F("{\n");
 
   appendKey_(out, 1, "contract");
@@ -495,7 +857,7 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   const char* timeDtype = ctx.humanReadableTime ? "string" : "uint64";
   String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
 
-  out.reserve(2048 + (columnsWritten * 520) + (sensorsWritten * 520));
+  out.reserve(2048 + (columnsWritten * 520) + (sensorsWritten * 900));
   out += F("{\n");
 
   appendKey_(out, 1, "contract");
@@ -574,7 +936,8 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   out += F("},\n");
 
   for (uint16_t i = 0; i < columnsWritten; ++i) {
-    appendSignalColumn_(out, columns, i, true);
+    if (columns[i].diagnostic) appendDiagnosticColumn_(out, columns, i, true);
+    else appendSignalColumn_(out, columns, i, true);
   }
 
   appendIndent_(out, 2);

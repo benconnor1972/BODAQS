@@ -1,3 +1,4 @@
+import { Info } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 export function PanelTitle({
@@ -47,11 +48,15 @@ export function IconButton({
   )
 }
 
-export function SummaryTile({ label, value }: { label: string; value: number }) {
+export function InfoTip({ label = 'More information', text }: { label?: string; text: string }) {
   return (
-    <div className="summary-tile">
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </div>
+    <span className="info-tip">
+      <span className="info-tip-button" role="img" aria-label={label} title={text}>
+        <Info size={13} />
+      </span>
+      <span className="info-tip-bubble" role="tooltip">
+        {text}
+      </span>
+    </span>
   )
 }

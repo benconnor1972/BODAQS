@@ -178,6 +178,9 @@ The browser should own the product experience:
 
 - library selection from the service-reported library list
 - Study Set creation, editing, selection, and comparison
+- analysis-view launch, adequacy feedback, and addressable analysis tabs
+- reloadable analysis routes for saved Study Sets, with temporary browser-local
+  routes for unsaved analysis scopes
 - session catalog browsing
 - interactive helper filtering, searching, and sorting
 - comparison layout
@@ -189,6 +192,13 @@ The browser should own the product experience:
 For processed libraries, the browser can realistically perform much of the
 current notebook consumer experience, provided the local service supplies
 semantic catalog data and chart-ready time-series windows.
+
+Prototype-only UI preferences, such as session-table column visibility and
+column order, may initially use browser `localStorage` so iteration remains
+fast. Longer term, durable UI preferences that are associated with a configured
+libraries root should be exposed through the Library API as root-level
+namespaced preferences, not hidden in Study Sets unless they are genuinely
+Study Set-specific display state.
 
 ## Python Adapter And Local Service Responsibilities
 
@@ -448,6 +458,10 @@ Work in this phase:
 - build a basic library selector
 - default to the configured local API URL and provide a Library Selector fallback for changing the active root
 - build a basic session catalog table
+- persist first-cut session table layout locally in the browser
+- add a follow-on Library API contract for root-level UI preferences, including
+  session table visibility/order and other app display preferences that should
+  follow the configured libraries root
 - load and display service capabilities
 
 Expected outcome:
@@ -622,6 +636,9 @@ The following decisions will materially affect implementation detail:
 - exact min/max downsampling behavior for multiple signals
 - how much event detail should be included in first time-series overlays
 - what browser charting library George should use for dense time-series data
+- whether the Signal Inspector should migrate from first-cut SVG/D3 rendering
+  to `uPlot` for faster cursor readouts, zoom/pan, range selection, and
+  large-window navigation
 - whether Study Set files need additional migration/versioning helpers before wider use
 - when to add track CRUD and map support
 

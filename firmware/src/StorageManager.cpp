@@ -13,6 +13,8 @@
 #include "DebugTrace.h"
 #include "DebugLog.h"
 #include "LoggerLimits.h"
+#include "AnalogInputManager.h"
+#include "I2CBusScheduler.h"
 #include <math.h>
 #include <new>
 #include <time.h>
@@ -65,6 +67,7 @@ static SensorManager::SynBikeRawBindings s_synBikeRawBindings;
 static uint32_t s_flushCount    = 0;
 static uint32_t s_flushMaxMs    = 0;
 static uint64_t s_flushTotalMs  = 0;
+static StorageTimingStats s_storageTiming;
 
 
 // --- Sample row queue for non-blocking sampling ---
@@ -202,6 +205,122 @@ static String archivePathForCsv_(const String& csvPath) {
   return out;
 }
 
+static String csvPathForArchive_(const String& archivePath) {
+  if (!archivePath.endsWith(".zip")) return String();
+  String out = archivePath.substring(0, archivePath.length() - 4);
+  out += F(".CSV");
+  return out;
+}
+
+static String metadataPathForArchive_(const String& archivePath) {
+  if (!archivePath.endsWith(".zip")) return String();
+  String out = archivePath.substring(0, archivePath.length() - 4);
+  out += F(".json");
+  return out;
+}
+
+static bool fileSize_(const String& path, uint32_t& sizeOut) {
+  sizeOut = 0;
+  if (!path.length()) return false;
+
+  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    return false;
+  }
+
+  sizeOut = static_cast<uint32_t>(f.size());
+  f.close();
+  return true;
+}
+
+static bool completedZipFile_(const String& path) {
+  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    return false;
+  }
+
+  const uint32_t size = static_cast<uint32_t>(f.size());
+  if (size < 22 || !f.seek(size - 22)) {
+    f.close();
+    return false;
+  }
+
+  uint8_t sig[4] = {0, 0, 0, 0};
+  const int n = f.read(sig, sizeof(sig));
+  f.close();
+
+  return n == 4 &&
+         sig[0] == 0x50 &&
+         sig[1] == 0x4B &&
+         sig[2] == 0x05 &&
+         sig[3] == 0x06;
+}
+
+static bool copyFile_(const String& srcPath, const String& dstPath, String* error = nullptr) {
+  if (error) *error = "";
+  if (!srcPath.length() || !dstPath.length()) {
+    if (error) *error = F("missing source or destination");
+    return false;
+  }
+  if (SD_MMC.exists(dstPath.c_str())) {
+    if (error) *error = String(F("destination exists: ")) + dstPath;
+    return false;
+  }
+
+  File in = SD_MMC.open(srcPath.c_str(), FILE_READ);
+  if (!in || in.isDirectory()) {
+    if (in) in.close();
+    if (error) *error = String(F("source open failed: ")) + srcPath;
+    return false;
+  }
+
+  File out = SD_MMC.open(dstPath.c_str(), FILE_WRITE);
+  if (!out) {
+    in.close();
+    if (error) *error = String(F("destination open failed: ")) + dstPath;
+    return false;
+  }
+  out.seek(0);
+
+  static uint8_t buf[2048];
+  bool ok = true;
+  while (true) {
+    const int n = in.read(buf, sizeof(buf));
+    if (n < 0) {
+      ok = false;
+      if (error) *error = String(F("read failed: ")) + srcPath;
+      break;
+    }
+    if (n == 0) break;
+
+    const size_t written = out.write(buf, static_cast<size_t>(n));
+    if (written != static_cast<size_t>(n)) {
+      ok = false;
+      if (error) *error = String(F("short write: ")) + dstPath;
+      break;
+    }
+    delay(0);
+  }
+
+  out.flush();
+  out.close();
+  in.close();
+
+  uint32_t srcSize = 0;
+  uint32_t dstSize = 0;
+  if (ok && (!fileSize_(srcPath, srcSize) || !fileSize_(dstPath, dstSize) || srcSize != dstSize)) {
+    ok = false;
+    if (error) *error = F("copy size verification failed");
+  }
+
+  if (!ok) {
+    SD_MMC.remove(dstPath.c_str());
+  }
+  return ok;
+}
+
 static void removeArchivedSourceFile_(const String& path, const __FlashStringHelper* label) {
   if (!path.length()) return;
   if (!SD_MMC.exists(path.c_str())) return;
@@ -211,6 +330,101 @@ static void removeArchivedSourceFile_(const String& path, const __FlashStringHel
     STOR_LOGI("%s removed after archive: %s\n", labelText.c_str(), path.c_str());
   } else {
     STOR_LOGW("%s left in place after archive: %s\n", labelText.c_str(), path.c_str());
+  }
+}
+
+static bool commitArchiveTemp_(const String& tempPath, const String& archivePath) {
+  if (!tempPath.length() || !archivePath.length()) return false;
+
+  if (SD_MMC.exists(archivePath.c_str())) {
+    if (completedZipFile_(archivePath)) {
+      if (SD_MMC.exists(tempPath.c_str())) {
+        SD_MMC.remove(tempPath.c_str());
+      }
+      return true;
+    }
+
+    STOR_LOGW("Session archive final path exists but is not a complete ZIP: %s\n", archivePath.c_str());
+    return false;
+  }
+
+  if (!completedZipFile_(tempPath)) {
+    STOR_LOGW("Session archive temp is not a complete ZIP: %s\n", tempPath.c_str());
+    return false;
+  }
+
+  if (SD_MMC.rename(tempPath.c_str(), archivePath.c_str())) {
+    if (completedZipFile_(archivePath)) {
+      return true;
+    }
+    STOR_LOGW("Session archive rename produced incomplete final archive: %s\n", archivePath.c_str());
+    SD_MMC.remove(archivePath.c_str());
+    return false;
+  }
+
+  STOR_LOGW("Session archive rename failed, trying copy fallback: %s -> %s\n",
+            tempPath.c_str(),
+            archivePath.c_str());
+
+  String error;
+  if (!copyFile_(tempPath, archivePath, &error)) {
+    STOR_LOGW("Session archive copy fallback failed: %s\n", error.c_str());
+    return false;
+  }
+
+  if (!completedZipFile_(archivePath)) {
+    STOR_LOGW("Session archive copy fallback produced incomplete final archive: %s\n", archivePath.c_str());
+    SD_MMC.remove(archivePath.c_str());
+    return false;
+  }
+
+  if (!SD_MMC.remove(tempPath.c_str())) {
+    STOR_LOGW("Session archive temp left after copy fallback: %s\n", tempPath.c_str());
+  }
+  return true;
+}
+
+static void removeArchivedSourceFilesForArchive_(const String& archivePath) {
+  removeArchivedSourceFile_(csvPathForArchive_(archivePath), F("CSV source"));
+  removeArchivedSourceFile_(metadataPathForArchive_(archivePath), F("metadata source"));
+}
+
+static void promoteStaleSessionArchives_() {
+  File root = SD_MMC.open("/");
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
+    return;
+  }
+
+  uint8_t promoted = 0;
+  File entry = root.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      String name(entry.name());
+      String lower = name;
+      lower.toLowerCase();
+
+      if (lower.endsWith(".zip.tmp")) {
+        if (!name.startsWith("/")) name = "/" + name;
+        const String tempPath = name;
+        const String archivePath = tempPath.substring(0, tempPath.length() - 4);
+
+        if (commitArchiveTemp_(tempPath, archivePath)) {
+          STOR_LOGI("Recovered session archive: %s\n", archivePath.c_str());
+          removeArchivedSourceFilesForArchive_(archivePath);
+          ++promoted;
+        }
+      }
+    }
+
+    entry.close();
+    delay(0);
+    entry = root.openNextFile();
+  }
+  root.close();
+
+  if (promoted) {
+    STOR_LOGI("Recovered %u stale session archive(s)\n", (unsigned)promoted);
   }
 }
 
@@ -225,11 +439,23 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
 
   if (SD_MMC.exists(archivePath.c_str())) {
     STOR_LOGW("Session archive skipped: final archive already exists: %s\n", archivePath.c_str());
+    if (completedZipFile_(archivePath)) {
+      removeArchivedSourceFile_(csvPath, F("CSV source"));
+      removeArchivedSourceFile_(metadataPath, F("metadata source"));
+    }
     return;
   }
-  if (SD_MMC.exists(tempPath.c_str()) && !SD_MMC.remove(tempPath.c_str())) {
-    STOR_LOGW("Session archive skipped: could not remove stale temp archive: %s\n", tempPath.c_str());
-    return;
+  if (SD_MMC.exists(tempPath.c_str())) {
+    if (commitArchiveTemp_(tempPath, archivePath)) {
+      STOR_LOGI("Session archive recovered before rewrite: %s\n", archivePath.c_str());
+      removeArchivedSourceFile_(csvPath, F("CSV source"));
+      removeArchivedSourceFile_(metadataPath, F("metadata source"));
+      return;
+    }
+    if (!SD_MMC.remove(tempPath.c_str())) {
+      STOR_LOGW("Session archive skipped: could not remove stale temp archive: %s\n", tempPath.c_str());
+      return;
+    }
   }
 
   const String csvName = baseNameFromPath_(csvPath);
@@ -248,11 +474,8 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
     return;
   }
 
-  if (!SD_MMC.rename(tempPath.c_str(), archivePath.c_str())) {
-    STOR_LOGW("Session archive rename failed: %s -> %s\n", tempPath.c_str(), archivePath.c_str());
-    if (SD_MMC.exists(tempPath.c_str())) {
-      SD_MMC.remove(tempPath.c_str());
-    }
+  if (!commitArchiveTemp_(tempPath, archivePath)) {
+    STOR_LOGW("Session archive commit failed: %s -> %s\n", tempPath.c_str(), archivePath.c_str());
     return;
   }
 
@@ -433,6 +656,8 @@ static bool mountSdmmc_() {
 
   uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
   STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
+
+  promoteStaleSessionArchives_();
 
   STOR_LOGI("SD_MMC.begin OK.\n");
   return true;
@@ -686,6 +911,10 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   return true;
 }
 
+StorageTimingStats StorageManager_timingStats() {
+  return s_storageTiming;
+}
+
 
 void StorageManager_begin(const board::BoardProfile& bp) {
   s_storage = &bp.storage;
@@ -816,6 +1045,7 @@ static void startLog() {
   s_flushCount = 0;
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
+  s_storageTiming = StorageTimingStats{};
   s_rowsWritten = 0;
   s_currentLogPath = "";
   s_currentSessionId = "";
@@ -929,28 +1159,14 @@ static void startLog() {
     // --- Build header (shared for both backends) ---
     //SensorManager::debugDump("startLog-beforeHeader");
 
-    char header[256];
     TRACE("Entering sensormanager::buildheader");
-    SensorManager::buildHeader(header, sizeof(header), RTCManager_isHumanReadable());
+    String header = SensorManager::buildHeaderString(RTCManager_isHumanReadable());
     TRACE("Finished sensormanager::buildheader");
     headerMs = millis() - headerT0;
 
-    // ---- NEW: prepend sample_id column ----
-    const char* idPrefix = "sample_id,";
-    const size_t idLen   = strlen(idPrefix);
-    const size_t hLen    = strlen(header);
+    header = String(F("sample_id,")) + header;
 
-    if (idLen + hLen + 1 < sizeof(header)) {   // +1 for terminating '\0'
-      // Move existing header forward to make room for "sample_id,"
-      memmove(header + idLen, header, hLen + 1);  // include '\0'
-      // Copy the prefix at the start
-      memcpy(header, idPrefix, idLen);
-    } else {
-      // If this ever happens, we ran out of header buffer space
-      STOR_LOGW("Warning: header buffer too small for sample_id prefix\n");
-    }
-
-    STOR_LOGI("Header: %s\n", header);
+    STOR_LOGI("Header: %s\n", header.c_str());
     refreshValueColumnTypes_();
 
     const uint32_t flushT0 = millis();
@@ -979,14 +1195,23 @@ bool StorageManager_startLog() {
 }
 
 static void StorageManager_logSampleRow_(const SampleRow& row) {
+#if BODAQS_TIMING_INSTRUMENTATION
+  const uint32_t t0 = micros();
+#endif
   if (isCompactBinaryFormat_()) {
     if (BdqLogWriter::writeSample(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark)) {
       ++s_rowsWritten;
     }
+#if BODAQS_TIMING_INSTRUMENTATION
+    TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+#endif
     return;
   }
 
   StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+#endif
 }
 
 
@@ -1006,6 +1231,7 @@ void StorageManager_stopLog() {
   }
 
   if (isCompactBinaryFormat_()) {
+    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
     BdqLogEndInfo endInfo;
     endInfo.samplesDropped = s_samplesDropped;
     endInfo.queueMax = s_qMax;
@@ -1013,6 +1239,17 @@ void StorageManager_stopLog() {
     endInfo.flushCount = s_flushCount;
     endInfo.flushMaxMs = s_flushMaxMs;
     endInfo.flushTotalMs = s_flushTotalMs;
+    endInfo.samplerLateTicks = stats.samplerLateTicks;
+    endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    endInfo.missedSampleSlots = stats.missedSampleSlots;
+    endInfo.sampleOnceUs = &stats.sampleOnceUs;
+    endInfo.sensorSampleUs = &stats.sensorSampleUs;
+    endInfo.enqueueUs = &stats.enqueueUs;
+    endInfo.storageTiming = &s_storageTiming;
+    endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+    endInfo.sensorTiming = &SensorManager::timingStats();
+    endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+    endInfo.boardProfile = board::gBoard;
     if (!BdqLogWriter::end(endInfo)) {
       STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
     }
@@ -1022,6 +1259,7 @@ void StorageManager_stopLog() {
 
   if (!isCompactBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
+    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
     LogMetadataContext metaCtx;
     metaCtx.csvPath = s_currentLogPath.c_str();
     metaCtx.sessionId = s_currentSessionId.c_str();
@@ -1040,6 +1278,17 @@ void StorageManager_stopLog() {
     metaCtx.flushMaxMs = s_flushMaxMs;
     metaCtx.flushTotalMs = s_flushTotalMs;
     metaCtx.bufferSize = bufferSize;
+    metaCtx.samplerLateTicks = stats.samplerLateTicks;
+    metaCtx.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    metaCtx.missedSampleSlots = stats.missedSampleSlots;
+    metaCtx.sampleOnceUs = &stats.sampleOnceUs;
+    metaCtx.sensorSampleUs = &stats.sensorSampleUs;
+    metaCtx.enqueueUs = &stats.enqueueUs;
+    metaCtx.storageTiming = &s_storageTiming;
+    metaCtx.externalAdcTiming = &AnalogInputManager::timingStats();
+    metaCtx.sensorTiming = &SensorManager::timingStats();
+    metaCtx.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+    metaCtx.boardProfile = board::gBoard;
 
     String metadata;
     if (LogMetadataWriter_build(metaCtx, metadata)) {
@@ -1117,6 +1366,7 @@ const char* StorageManager_lastStatus() {
 // Dynamic CSV logging: one FULL row per call, matching header
 // Columns: [timestamp, sensor values..., mark]
 static uint32_t formatRawForExport_(float raw, bool invert) {
+    if (!isfinite(raw)) return 0UL;
     const uint32_t rawInt = (raw <= 0.0f) ? 0UL : (uint32_t)lroundf(raw);
     if (!invert) return rawInt;
 
@@ -1359,6 +1609,13 @@ void StorageManager_loop() {
 
     // Occasional drain diagnostics if this loop took a noticeable chunk of time
     uint32_t dt_us = micros() - t0_us;
+    if (processed > 0) {
+#if BODAQS_TIMING_INSTRUMENTATION
+      ++s_storageTiming.drainLoops;
+      s_storageTiming.drainRows += processed;
+      TimingStats_record(s_storageTiming.drainLoopUs, dt_us);
+#endif
+    }
     if (dt_us > 50000) { // >50ms spent draining (should be rare)
       DRAIN_LOGD("processed=%u dt=%lu ms bufIndex=%u qMax=%u/%u\n",
                  (unsigned)processed, (unsigned long)(dt_us / 1000UL),

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -6,7 +6,7 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table'
 import { Filter, X } from 'lucide-react'
-import { columnLabels, getColumnText } from '../domain/sessionCatalog'
+import { columnLabels, getColumnText, isInfoActionColumn } from '../domain/sessionCatalog'
 import { candidateId } from '../domain/studySets'
 import {
   tableColumnFilterOptions,
@@ -20,7 +20,82 @@ import type {
   SessionRecord,
   SortDirection,
 } from '../domain/types'
-import { SessionInfoButtons } from './SessionInfoButtons'
+import {
+  SessionDeleteButton,
+  SessionInfoButtons,
+  sessionInfoActionForColumn,
+  type SessionInfoAction,
+} from './SessionInfoButtons'
+
+export type SessionColumnWidthId = ColumnId | 'rowActions'
+export type SessionColumnWidths = Partial<Record<SessionColumnWidthId, number>>
+
+const defaultColumnWidths: Record<ColumnId, number> = {
+  name: 230,
+  runName: 160,
+  started: 145,
+  library: 130,
+  runId: 170,
+  sessionId: 145,
+  bike: 150,
+  rider: 135,
+  duration: 92,
+  distance: 92,
+  profile: 140,
+  eventSchema: 150,
+  firmware: 105,
+  source: 165,
+  signals: 105,
+  gps: 92,
+  noteAction: 0,
+  qaAction: 0,
+  gpsAction: 0,
+  signalInspectorAction: 0,
+  metadataAction: 0,
+}
+
+const minColumnWidths: Record<ColumnId, number> = {
+  name: 54,
+  runName: 48,
+  started: 54,
+  library: 48,
+  runId: 48,
+  sessionId: 48,
+  bike: 42,
+  rider: 42,
+  duration: 42,
+  distance: 42,
+  profile: 48,
+  eventSchema: 48,
+  firmware: 42,
+  source: 48,
+  signals: 42,
+  gps: 36,
+  noteAction: 0,
+  qaAction: 0,
+  gpsAction: 0,
+  signalInspectorAction: 0,
+  metadataAction: 0,
+}
+
+function rowActionsWidth(actionCount: number) {
+  return Math.max(minRowActionsWidth(actionCount), 38 + actionCount * 28)
+}
+
+function minRowActionsWidth(actionCount: number) {
+  return Math.max(76, 34 + actionCount * 26)
+}
+
+function minColumnWidth(columnId: SessionColumnWidthId, actionCount: number) {
+  return columnId === 'rowActions' ? minRowActionsWidth(actionCount) : minColumnWidths[columnId]
+}
+
+function effectiveColumnWidth(columnId: SessionColumnWidthId, persistedWidth: number | undefined, actionCount: number) {
+  const minimum = minColumnWidth(columnId, actionCount)
+  const fallback = columnId === 'rowActions' ? rowActionsWidth(actionCount) : defaultColumnWidths[columnId]
+  const safeWidth = typeof persistedWidth === 'number' && Number.isFinite(persistedWidth) ? persistedWidth : fallback
+  return Math.max(minimum, Math.round(safeWidth))
+}
 
 export type SessionSelectionGesture = {
   extendRange: boolean
@@ -32,6 +107,7 @@ export function SessionTable({
   filterBaseSessions,
   libraries,
   visibleColumns,
+  columnWidths,
   tableColumnFilters,
   selectedIds,
   primaryId,
@@ -39,14 +115,22 @@ export function SessionTable({
   sortDirection,
   onTableColumnFilterChange,
   onClearTableColumnFilter,
+  onColumnWidthsChange,
   onSort,
   onSelect,
+  onAnalyzeSession,
   onInspect,
+  onDeleteSession,
+  onRenameSession,
+  onCopyNote,
+  onPasteNote,
+  canPasteNote = false,
 }: {
   sessions: SessionRecord[]
   filterBaseSessions: SessionRecord[]
   libraries: LibraryRecord[]
   visibleColumns: ColumnId[]
+  columnWidths: SessionColumnWidths
   tableColumnFilters: TableColumnFilter[]
   selectedIds: string[]
   primaryId: string | null
@@ -54,28 +138,75 @@ export function SessionTable({
   sortDirection: SortDirection
   onTableColumnFilterChange: (columnId: ColumnId, values: string[]) => void
   onClearTableColumnFilter: (columnId: ColumnId) => void
+  onColumnWidthsChange: (widths: SessionColumnWidths) => void
   onSort: (columnId: ColumnId) => void
   onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void
+  onAnalyzeSession?: (session: SessionRecord) => void
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
+  onDeleteSession?: (session: SessionRecord) => void
+  onRenameSession?: (session: SessionRecord, name: string) => Promise<void>
+  onCopyNote?: (session: SessionRecord) => void
+  onPasteNote?: (session: SessionRecord) => void
+  canPasteNote?: boolean
 }) {
   const [openFilterColumnId, setOpenFilterColumnId] = useState<ColumnId | null>(null)
   const [filterSearchText, setFilterSearchText] = useState('')
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [savingSessionId, setSavingSessionId] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ session: SessionRecord; x: number; y: number } | null>(null)
   const filterMenuRef = useRef<HTMLDivElement>(null)
-  const columns: ColumnDef<SessionRecord>[] = [
-    ...visibleColumns.map((columnId): ColumnDef<SessionRecord> => ({
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  const renameCommitInFlightRef = useRef<string | null>(null)
+  const dataColumns = visibleColumns.filter((columnId) => !isInfoActionColumn(columnId))
+  const canRenameSessions = Boolean(onRenameSession) && dataColumns.includes('name')
+  const hasContextMenu = canRenameSessions || Boolean(onInspect) || Boolean(onCopyNote) || Boolean(onPasteNote)
+  const infoActions = visibleColumns
+    .map(sessionInfoActionForColumn)
+    .filter((action): action is SessionInfoAction => Boolean(action))
+  const visibleTableColumnIds: SessionColumnWidthId[] = [...dataColumns, 'rowActions']
+  const effectiveColumnWidths = Object.fromEntries(
+    visibleTableColumnIds.map((columnId) => [columnId, effectiveColumnWidth(columnId, columnWidths[columnId], infoActions.length)]),
+  ) as Record<SessionColumnWidthId, number>
+  const tableMinWidth = visibleTableColumnIds.reduce((total, columnId) => total + effectiveColumnWidths[columnId], 0)
+  const columns: ColumnDef<SessionRecord>[] = dataColumns.map((columnId): ColumnDef<SessionRecord> => ({
       id: columnId,
       accessorFn: (session) => getColumnText(session, columnId, libraries),
       header: columnLabels[columnId],
-      cell: (info) => String(info.getValue() ?? ''),
+      cell: (info) => {
+        const session = info.row.original
+        const sessionId = candidateId(session)
+        if (columnId === 'name' && editingSessionId === sessionId) {
+          return (
+            <SessionRenameInput
+              disabled={savingSessionId === sessionId}
+              initialValue={session.sessionLabel || session.name}
+              label={`Rename ${session.name}`}
+              onCancel={cancelRename}
+              onCommit={(value) => {
+                void commitRename(session, value)
+              }}
+            />
+          )
+        }
+        return String(info.getValue() ?? '')
+      },
       enableSorting: true,
-    })),
-    {
-      id: 'info',
-      header: 'Info',
-      cell: ({ row }) => <SessionInfoButtons session={row.original} onInspect={onInspect} />,
-      enableSorting: false,
-    },
-  ]
+    }))
+  columns.push({
+    id: 'rowActions',
+    header: '',
+    cell: ({ row }) => (
+      <div className="row-action-strip">
+        {infoActions.length > 0 && (
+          <span className="row-info-action-group">
+            <SessionInfoButtons session={row.original} onInspect={onInspect} actions={infoActions} />
+          </span>
+        )}
+        <SessionDeleteButton session={row.original} onDelete={onDeleteSession} />
+      </div>
+    ),
+    enableSorting: false,
+  })
   // TanStack Table intentionally returns function-bearing instances; keep it local to this component.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -111,29 +242,146 @@ export function SessionTable({
     }
   }, [openFilterColumnId])
 
+  useEffect(() => {
+    if (!contextMenu) {
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+      if (contextMenuRef.current?.contains(target)) {
+        return
+      }
+      setContextMenu(null)
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setContextMenu(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [contextMenu])
+
   function toggleFilterMenu(columnId: ColumnId) {
     setFilterSearchText('')
     setOpenFilterColumnId((current) => (current === columnId ? null : columnId))
   }
 
+  function startColumnResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    leftColumnId: SessionColumnWidthId,
+    rightColumnId: SessionColumnWidthId,
+  ) {
+    event.preventDefault()
+    event.stopPropagation()
+    setOpenFilterColumnId(null)
+    const startX = event.clientX
+    const leftStartWidth = effectiveColumnWidths[leftColumnId]
+    const rightStartWidth = effectiveColumnWidths[rightColumnId]
+    const leftMinWidth = minColumnWidth(leftColumnId, infoActions.length)
+    const rightMinWidth = minColumnWidth(rightColumnId, infoActions.length)
+    const minDelta = leftMinWidth - leftStartWidth
+    const maxDelta = rightStartWidth - rightMinWidth
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const requestedDelta = moveEvent.clientX - startX
+      const boundedDelta = Math.max(minDelta, Math.min(maxDelta, requestedDelta))
+      onColumnWidthsChange({
+        [leftColumnId]: Math.round(leftStartWidth + boundedDelta),
+        [rightColumnId]: Math.round(rightStartWidth - boundedDelta),
+      })
+    }
+
+    function handlePointerUp() {
+      document.body.classList.remove('is-resizing-session-column')
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      document.removeEventListener('pointercancel', handlePointerUp)
+    }
+
+    document.body.classList.add('is-resizing-session-column')
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', handlePointerUp)
+    document.addEventListener('pointercancel', handlePointerUp)
+  }
+
+  function startRename(session: SessionRecord) {
+    if (!canRenameSessions || !onRenameSession) {
+      return
+    }
+    setContextMenu(null)
+    setEditingSessionId(candidateId(session))
+  }
+
+  function cancelRename() {
+    renameCommitInFlightRef.current = null
+    setEditingSessionId(null)
+    setSavingSessionId(null)
+  }
+
+  async function commitRename(session: SessionRecord, nextName: string) {
+    if (!onRenameSession) {
+      cancelRename()
+      return
+    }
+    const sessionId = candidateId(session)
+    if (editingSessionId !== sessionId || savingSessionId === sessionId || renameCommitInFlightRef.current === sessionId) {
+      return
+    }
+    const trimmedName = nextName.trim()
+    const currentName = (session.sessionLabel || session.name).trim()
+    if (!trimmedName || trimmedName === currentName) {
+      cancelRename()
+      return
+    }
+    try {
+      renameCommitInFlightRef.current = sessionId
+      setSavingSessionId(sessionId)
+      await onRenameSession(session, trimmedName)
+      cancelRename()
+    } catch {
+      renameCommitInFlightRef.current = null
+      setSavingSessionId(null)
+    }
+  }
+
   return (
     <>
-      <p className="selection-hint">
-        Click a row to select it. Ctrl/Cmd-click toggles rows; Shift-click selects a range. The last selected row is primary.
-      </p>
       <div className="table-shell">
-        <table className="session-table" aria-label="Candidate sessions">
+        <table
+          className="session-table resizable-session-table"
+          aria-label="Candidate sessions"
+          style={{ minWidth: '100%', width: tableMinWidth }}
+        >
+          <colgroup>
+            {visibleTableColumnIds.map((columnId) => (
+              <col key={columnId} style={{ width: effectiveColumnWidths[columnId] }} />
+            ))}
+          </colgroup>
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => {
+                {headerGroup.headers.map((header, headerIndex) => {
                   const columnId = header.column.id
                   const isSortableSessionColumn = isColumnId(columnId)
+                  const isInfoActionHeader = columnId === 'rowActions'
+                  const currentWidthId: SessionColumnWidthId = isSortableSessionColumn ? columnId : 'rowActions'
+                  const nextWidthId = visibleTableColumnIds[headerIndex + 1]
                   const selectedFilterValues = isSortableSessionColumn
                     ? tableColumnFilters.find((filter) => filter.columnId === columnId)?.values ?? []
                     : []
                   return (
-                    <th key={header.id}>
+                    <th className={isInfoActionHeader ? 'info-action-heading resizable-column-header' : 'resizable-column-header'} key={header.id}>
                       {isSortableSessionColumn ? (
                         <div className="column-header-control">
                           <button className="sort-button" onClick={() => onSort(columnId)} type="button">
@@ -147,11 +395,14 @@ export function SessionTable({
                               event.stopPropagation()
                               toggleFilterMenu(columnId)
                             }}
-                            title={`Filter ${columnLabels[columnId]}`}
+                            title={
+                              selectedFilterValues.length
+                                ? `${columnLabels[columnId]} filter applied`
+                                : `Filter ${columnLabels[columnId]}`
+                            }
                             type="button"
                           >
                             <Filter size={13} />
-                            {selectedFilterValues.length > 0 && <span>{selectedFilterValues.length}</span>}
                           </button>
                           {openFilterColumnId === columnId && (
                             <ColumnFilterMenu
@@ -168,8 +419,19 @@ export function SessionTable({
                             />
                           )}
                         </div>
+                      ) : isInfoActionHeader ? (
+                        <span title="Session info actions" />
                       ) : (
                         flexRender(header.column.columnDef.header, header.getContext())
+                      )}
+                      {nextWidthId && (
+                        <button
+                          aria-label={`Resize boundary after ${isSortableSessionColumn ? columnLabels[columnId] : 'actions'}`}
+                          className="column-resize-handle"
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => startColumnResize(event, currentWidthId, nextWidthId)}
+                          type="button"
+                        />
                       )}
                     </th>
                   )
@@ -193,17 +455,30 @@ export function SessionTable({
                     isPrimary ? 'primary-row' : '',
                   ].join(' ')}
                   key={id}
-                  onClick={(event) => onSelect(session, mouseGesture(event))}
-                  onKeyDown={(event) => handleRowKeyDown(event, session, onSelect)}
+                  onContextMenu={(event) => {
+                    if (!hasContextMenu) {
+                      return
+                    }
+                    event.preventDefault()
+                    setContextMenu({ session, x: event.clientX, y: event.clientY })
+                  }}
+                  onDoubleClick={(event) => handleRowDoubleClick(event, session, onAnalyzeSession)}
+                  onKeyDown={(event) => handleRowKeyDown(event, session, onSelect, startRename)}
                   tabIndex={0}
                 >
                   {row.getVisibleCells().map((cell) => {
-                    const isInfoCell = cell.column.id === 'info'
+                    const isInfoCell = cell.column.id === 'rowActions'
                     return (
                       <td
-                        className={isInfoCell ? 'icon-cluster' : undefined}
+                        className={isInfoCell ? 'icon-cluster info-action-cell session-info-action-cell' : undefined}
                         key={cell.id}
-                        onClick={isInfoCell ? (event) => event.stopPropagation() : undefined}
+                        onClick={(event) => {
+                          if (isInfoCell) {
+                            event.stopPropagation()
+                            return
+                          }
+                          onSelect(session, mouseGesture(event))
+                        }}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
@@ -215,7 +490,136 @@ export function SessionTable({
           </tbody>
         </table>
       </div>
+      {contextMenu && (
+        <div
+          className="session-row-context-menu"
+          ref={contextMenuRef}
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            disabled={!canRenameSessions}
+            onClick={() => startRename(contextMenu.session)}
+            type="button"
+          >
+            Rename session
+          </button>
+          <div className="session-row-context-menu-separator" />
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'signals')
+            }}
+            type="button"
+          >
+            Inspect signals
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'gps')
+            }}
+            type="button"
+          >
+            View GPS
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'metadata')
+            }}
+            type="button"
+          >
+            View metadata
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'qc')
+            }}
+            type="button"
+          >
+            View QA info
+          </button>
+          <div className="session-row-context-menu-separator" />
+          <button
+            disabled={!onCopyNote}
+            onClick={() => {
+              setContextMenu(null)
+              onCopyNote?.(contextMenu.session)
+            }}
+            type="button"
+          >
+            Copy note
+          </button>
+          <button
+            disabled={!canPasteNote || !onPasteNote}
+            onClick={() => {
+              setContextMenu(null)
+              onPasteNote?.(contextMenu.session)
+            }}
+            type="button"
+          >
+            Paste note
+          </button>
+        </div>
+      )}
     </>
+  )
+}
+
+function SessionRenameInput({
+  disabled,
+  initialValue,
+  label,
+  onCancel,
+  onCommit,
+}: {
+  disabled: boolean
+  initialValue: string
+  label: string
+  onCancel: () => void
+  onCommit: (value: string) => void
+}) {
+  const [value, setValue] = useState(initialValue)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const skipBlurCommitRef = useRef(false)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  return (
+    <input
+      aria-label={label}
+      className="session-inline-edit"
+      disabled={disabled}
+      ref={inputRef}
+      value={value}
+      onBlur={() => {
+        if (skipBlurCommitRef.current) {
+          skipBlurCommitRef.current = false
+          return
+        }
+        onCommit(value)
+      }}
+      onChange={(event) => setValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        event.stopPropagation()
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          onCommit(value)
+          return
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          skipBlurCommitRef.current = true
+          onCancel()
+        }
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+    />
   )
 }
 
@@ -295,18 +699,44 @@ function isColumnId(value: string): value is ColumnId {
   return value in columnLabels
 }
 
-function mouseGesture(event: MouseEvent<HTMLTableRowElement>): SessionSelectionGesture {
+function mouseGesture(event: MouseEvent<HTMLElement>): SessionSelectionGesture {
   return {
     extendRange: event.shiftKey,
     toggle: event.ctrlKey || event.metaKey,
   }
 }
 
+function handleRowDoubleClick(
+  event: MouseEvent<HTMLTableRowElement>,
+  session: SessionRecord,
+  onAnalyzeSession?: (session: SessionRecord) => void,
+) {
+  if (!onAnalyzeSession || isInteractiveDoubleClickTarget(event.target)) {
+    return
+  }
+  event.preventDefault()
+  onAnalyzeSession(session)
+}
+
+function isInteractiveDoubleClickTarget(target: EventTarget) {
+  return target instanceof Element && Boolean(
+    target.closest(
+      'button, input, select, textarea, a, [role="button"], .column-filter-popover, .session-info-action-cell',
+    ),
+  )
+}
+
 function handleRowKeyDown(
   event: KeyboardEvent<HTMLTableRowElement>,
   session: SessionRecord,
   onSelect: (session: SessionRecord, gesture: SessionSelectionGesture) => void,
+  onRename?: (session: SessionRecord) => void,
 ) {
+  if (event.key === 'F2' && onRename) {
+    event.preventDefault()
+    onRename(session)
+    return
+  }
   if (event.key === 'Enter') {
     event.preventDefault()
     onSelect(session, { extendRange: event.shiftKey, toggle: event.ctrlKey || event.metaKey })

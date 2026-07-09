@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Crosshair, Eye, MapPin, Plus, Route, Save, Trash2 } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Crosshair, MapPin, Plus, Route, Save, Trash2, X } from 'lucide-react'
 import {
   formatPercent,
   gpsSourceDisplay,
@@ -7,12 +7,22 @@ import {
   trackMatchForSession,
   trackMatchStatusLabel,
 } from '../domain/geospatial'
-import { candidateId, sessionByRef, slugify, uniqueId } from '../domain/studySets'
+import { candidateId, sessionByRef, sessionRefId, slugify, uniqueId } from '../domain/studySets'
 import { pointAtStationM, routeLengthM } from '../domain/trackGeometry'
-import type { SessionRecord, StudySet, TrackpointMatchQueryRecord, TrackpointMatchQueryResults, TrackRecord, TrackpointRecord } from '../domain/types'
+import type {
+  SessionRecord,
+  StudySessionRef,
+  StudySet,
+  TrackpointMatchQueryRecord,
+  TrackpointMatchQueryResults,
+  TrackRecord,
+  TrackpointRecord,
+} from '../domain/types'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
-import { IconButton } from './Common'
+import { IconButton, InfoTip } from './Common'
 import { GpsBadge } from './StatusBadges'
+
+type TrackManagerMode = 'manage' | 'new'
 
 export function GeospatialWorkbench({
   primarySession,
@@ -20,11 +30,10 @@ export function GeospatialWorkbench({
   sessions,
   tracks,
   selectedTrackIds,
-  currentStudyTracks,
   dataSource,
   onToggleTrack,
-  onAttachSelectedTracks,
-  onInspectTrack,
+  onAttachTrack,
+  onAttachSession,
   onTrackSaved,
   onTrackDeleted,
 }: {
@@ -33,28 +42,385 @@ export function GeospatialWorkbench({
   sessions: SessionRecord[]
   tracks: TrackRecord[]
   selectedTrackIds: string[]
-  currentStudyTracks: TrackRecord[]
   dataSource: LibraryDataSource
   onToggleTrack: (trackId: string) => void
-  onAttachSelectedTracks: () => void
-  onInspectTrack: (track: TrackRecord) => void
+  onAttachTrack: (trackId: string) => void
+  onAttachSession: (sessionRef: StudySessionRef) => void
+  onTrackSaved: (track: TrackRecord) => void
+  onTrackDeleted: (trackId: string) => void
+}) {
+  const [activeTrackId, setActiveTrackId] = useState<string | null>(tracks[0]?.id ?? null)
+  const [trackManagerMode, setTrackManagerMode] = useState<TrackManagerMode | null>(null)
+  const [trackpointQuery, setTrackpointQuery] = useState<TrackpointMatchQueryRecord | null>(null)
+  const [trackpointQueryResults, setTrackpointQueryResults] = useState<TrackpointMatchQueryResults | null>(null)
+  const [trackpointQueryMessage, setTrackpointQueryMessage] = useState('')
+  const [trackpointQueryBusy, setTrackpointQueryBusy] = useState(false)
+  const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? tracks[0] ?? null
+  const canRunTrackpointQuery = Boolean(
+    activeTrack &&
+      activeTrack.trackpoints.length > 0 &&
+      dataSource.createTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQueryResults &&
+      !trackpointQueryBusy,
+  )
+  const currentStudySessionIds = new Set(currentStudySet.sessions.map(sessionRefId))
+
+  function openManageTracks() {
+    if (!activeTrackId && tracks[0]) {
+      setActiveTrackId(tracks[0].id)
+    }
+    setTrackManagerMode('manage')
+  }
+
+  function openNewTrack() {
+    setTrackManagerMode('new')
+  }
+
+  async function runTrackpointQuery() {
+    if (
+      !activeTrack ||
+      !dataSource.createTrackpointMatchQuery ||
+      !dataSource.loadTrackpointMatchQuery ||
+      !dataSource.loadTrackpointMatchQueryResults
+    ) {
+      setTrackpointQueryMessage('Current data source cannot run trackpoint match queries.')
+      return
+    }
+    const trackpointIds = activeTrack.trackpoints.map((trackpoint) => trackpoint.id)
+    if (trackpointIds.length === 0) {
+      setTrackpointQueryMessage('Add at least one trackpoint before running a trackpoint query.')
+      return
+    }
+    setTrackpointQueryBusy(true)
+    setTrackpointQueryResults(null)
+    setTrackpointQueryMessage(`Starting trackpoint query for ${activeTrack.name}...`)
+    try {
+      let query = await dataSource.createTrackpointMatchQuery({
+        trackId: activeTrack.id,
+        trackpointIds,
+        matchMode: 'all',
+        toleranceM: 5,
+        scope: {
+          libraryIds: uniqueStrings(sessions.map((session) => session.libraryId)),
+        },
+        persist: true,
+      })
+      setTrackpointQuery(query)
+      for (let attempt = 0; attempt < 40 && (query.status === 'queued' || query.status === 'running'); attempt += 1) {
+        await delay(300)
+        query = await dataSource.loadTrackpointMatchQuery(query.queryId)
+        setTrackpointQuery(query)
+      }
+      if (query.status === 'completed') {
+        const results = await dataSource.loadTrackpointMatchQueryResults(query.queryId, null, 50)
+        setTrackpointQueryResults(results)
+        setTrackpointQueryMessage(`Trackpoint query complete: ${results.resultCount} matching session(s).`)
+      } else {
+        setTrackpointQueryMessage(`Trackpoint query is ${query.status}.`)
+      }
+    } catch (error) {
+      setTrackpointQueryMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setTrackpointQueryBusy(false)
+    }
+  }
+
+  async function cancelTrackpointQuery() {
+    if (!trackpointQuery || !dataSource.cancelTrackpointMatchQuery) {
+      return
+    }
+    setTrackpointQueryBusy(true)
+    try {
+      const query = await dataSource.cancelTrackpointMatchQuery(trackpointQuery.queryId)
+      setTrackpointQuery(query)
+      setTrackpointQueryMessage(`Trackpoint query ${query.status}.`)
+    } catch (error) {
+      setTrackpointQueryMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setTrackpointQueryBusy(false)
+    }
+  }
+
+  function clearTrackpointQuery() {
+    setTrackpointQuery(null)
+    setTrackpointQueryResults(null)
+    setTrackpointQueryMessage('')
+  }
+
+  return (
+    <section className="geospatial-workbench">
+      <PrimaryGpsCard primarySession={primarySession} />
+
+      <div className="geo-card">
+        <div className="geo-card-title">
+          <Route size={16} />
+          <strong className="inline-heading">
+            Tracks
+            <InfoTip text="Tracks are reusable GPS paths with defined points. Select a track to preview it, or add it to the current Study Set." />
+          </strong>
+          <span className="subtle">{tracks.length} available</span>
+        </div>
+        <div className="track-list compact-track-list">
+          {tracks.map((track) => {
+            const attached = currentStudySet.trackIds.includes(track.id)
+            return (
+              <div className={`check-row compact track-row${activeTrack?.id === track.id ? ' active-track' : ''}`} key={track.id}>
+                <input
+                  aria-label={`Preview ${track.name}`}
+                  type="checkbox"
+                  checked={selectedTrackIds.includes(track.id)}
+                  onChange={() => onToggleTrack(track.id)}
+                />
+                <button className="track-row-summary" onClick={() => setActiveTrackId(track.id)} type="button">
+                  <strong>{track.name}</strong>
+                  <small>
+                    {track.trackpoints.length} trackpoints, {track.distanceKm.toFixed(1)} km, {track.defaultPolicyId}
+                  </small>
+                </button>
+                <IconButton
+                  label={attached ? 'Track already in Study Set' : 'Add Track to Study Set'}
+                  disabled={attached}
+                  onClick={() => onAttachTrack(track.id)}
+                  icon={<Plus size={16} />}
+                  tone="good"
+                />
+              </div>
+            )
+          })}
+          {tracks.length === 0 && <p className="empty-note">No tracks yet. Use New to create one from primary GPS.</p>}
+        </div>
+        <div className="action-row tight">
+          <button className="secondary-action" disabled={!canRunTrackpointQuery} onClick={() => void runTrackpointQuery()} type="button">
+            <Crosshair size={16} />
+            Run trackpoint query
+          </button>
+          <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
+          <button
+            className="ghost-action"
+            disabled={!trackpointQuery || !dataSource.cancelTrackpointMatchQuery || trackpointQueryBusy}
+            onClick={() => void cancelTrackpointQuery()}
+            type="button"
+          >
+            Cancel query
+          </button>
+          <button
+            className="ghost-action"
+            disabled={!trackpointQuery && !trackpointQueryResults && !trackpointQueryMessage}
+            onClick={clearTrackpointQuery}
+            type="button"
+          >
+            Clear
+          </button>
+        </div>
+        {trackpointQuery && (
+          <p className="track-manager-message">
+            Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
+            {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
+          </p>
+        )}
+        {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
+          <div className="match-preview-list compact-query-results">
+            {trackpointQueryResults.results.map((result) => (
+              <article className="match-row" key={result.sessionRef.sessionKey}>
+                <div>
+                  <strong>{result.sessionRef.label || result.sessionRef.sessionId}</strong>
+                  <small>{result.sessionRef.libraryId}</small>
+                </div>
+                <span className="pill ok">{result.quality}</span>
+                <span>{result.matchedTrackpointIds.length} matched</span>
+                <span>{result.missingTrackpointIds.length} missing</span>
+                <IconButton
+                  label={currentStudySessionIds.has(sessionRefId(result.sessionRef)) ? 'Session already in Study Set' : 'Add Session to Study Set'}
+                  disabled={currentStudySessionIds.has(sessionRefId(result.sessionRef))}
+                  onClick={() => onAttachSession(result.sessionRef)}
+                  icon={<Plus size={14} />}
+                  tone="good"
+                />
+              </article>
+            ))}
+          </div>
+        )}
+        {trackpointQueryMessage && <p className="track-manager-message">{trackpointQueryMessage}</p>}
+        <div className="action-row tight">
+          <button className="secondary-action" disabled={tracks.length === 0} onClick={openManageTracks} type="button">
+            <Route size={16} />
+            Manage
+          </button>
+          <button className="secondary-action" onClick={openNewTrack} type="button">
+            <Plus size={16} />
+            New
+          </button>
+        </div>
+      </div>
+
+      {trackManagerMode && (
+        <TrackManagerModal
+          mode={trackManagerMode}
+          primarySession={primarySession}
+          sessions={sessions}
+          tracks={tracks}
+          activeTrack={activeTrack}
+          dataSource={dataSource}
+          onActiveTrackChange={setActiveTrackId}
+          onClose={() => setTrackManagerMode(null)}
+          onTrackSaved={onTrackSaved}
+          onTrackDeleted={onTrackDeleted}
+        />
+      )}
+    </section>
+  )
+}
+
+export function StudySetGpsCoverageCard({
+  currentStudySet,
+  sessions,
+}: {
+  currentStudySet: StudySet
+  sessions: SessionRecord[]
+}) {
+  const adequacy = studySetGpsAdequacy(currentStudySet, sessions)
+
+  return (
+    <div className="geo-card">
+      <div className="geo-card-title">
+        <Crosshair size={16} />
+        <strong className="inline-heading">
+          Study Set GPS
+          <InfoTip text="Summarizes GPS quality for Study Set sessions." />
+        </strong>
+      </div>
+      <div className="geo-adequacy-grid">
+        <Metric label="usable" value={adequacy.usableCount} />
+        <Metric label="limited" value={adequacy.limitedCount} />
+        <Metric label="absent" value={adequacy.absentCount} />
+        <Metric label="coverage" value={formatPercent(adequacy.averageCoverageRatio)} />
+      </div>
+    </div>
+  )
+}
+
+export function MatchPreviewCard({
+  currentStudySet,
+  sessions,
+  currentStudyTracks,
+}: {
+  currentStudySet: StudySet
+  sessions: SessionRecord[]
+  currentStudyTracks: TrackRecord[]
+}) {
+  const studySessions = useMemo(
+    () =>
+      currentStudySet.sessions
+        .map((sessionRef) => sessionByRef(sessionRef, sessions))
+        .filter((session): session is SessionRecord => Boolean(session)),
+    [currentStudySet.sessions, sessions],
+  )
+
+  return (
+    <div className="geo-card">
+      <div className="geo-card-title">
+        <Crosshair size={16} />
+        <strong className="inline-heading">
+          Match Preview
+          <InfoTip text="Match preview shows current session/track coverage using available track-match summaries." />
+        </strong>
+      </div>
+      {studySessions.length === 0 || currentStudyTracks.length === 0 ? (
+        <p className="empty-note">Add sessions and attach a track to preview coverage.</p>
+      ) : (
+        <div className="match-preview-list">
+          {currentStudyTracks.flatMap((track) =>
+            studySessions.map((session) => {
+              const match = trackMatchForSession(track, session)
+              const crossedCount = match?.trackpointResults.filter((result) => result.crossed).length ?? 0
+              const refId = candidateId(session)
+
+              return (
+                <article className="match-row" key={`${track.id}-${refId}`}>
+                  <div>
+                    <strong>{session.name}</strong>
+                    <small>{track.name}</small>
+                  </div>
+                  <span className={matchStatusClassName(match?.status)}>
+                    {match ? trackMatchStatusLabel(match.status) : 'not computed'}
+                  </span>
+                  <span>{match ? formatPercent(match.coverageRatio) : '-'}</span>
+                  <span>
+                    {crossedCount}/{track.trackpoints.length} trackpoints
+                  </span>
+                </article>
+              )
+            }),
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PrimaryGpsCard({ primarySession }: { primarySession: SessionRecord | null }) {
+  return (
+    <div className="geo-card primary-gps-card">
+      <div className="geo-card-title">
+        <MapPin size={16} />
+        <strong className="inline-heading">
+          Selected session GPS
+          <InfoTip text="Shows GPS source and coverage for the selected session." />
+        </strong>
+        {primarySession && <GpsBadge summary={primarySession.gpsSummary} />}
+      </div>
+      {primarySession ? (
+        <dl className="geo-metrics">
+          <dt>Session</dt>
+          <dd>{primarySession.name}</dd>
+          <dt>Source</dt>
+          <dd>
+            {gpsSourceDisplay(primarySession.gpsSummary.preferredSourceKind, primarySession.gpsSummary.preferredSourceId)}
+          </dd>
+          <dt>Coverage</dt>
+          <dd>{formatPercent(primarySession.gpsSummary.timeCoverageRatio)}</dd>
+          <dt>Points</dt>
+          <dd>{primarySession.gpsSummary.positionPointCount}</dd>
+        </dl>
+      ) : (
+        <p className="empty-note">Select a primary session to inspect GPS adequacy.</p>
+      )}
+    </div>
+  )
+}
+
+function TrackManagerModal({
+  mode,
+  primarySession,
+  sessions,
+  tracks,
+  activeTrack,
+  dataSource,
+  onActiveTrackChange,
+  onClose,
+  onTrackSaved,
+  onTrackDeleted,
+}: {
+  mode: TrackManagerMode
+  primarySession: SessionRecord | null
+  sessions: SessionRecord[]
+  tracks: TrackRecord[]
+  activeTrack: TrackRecord | null
+  dataSource: LibraryDataSource
+  onActiveTrackChange: (trackId: string | null) => void
+  onClose: () => void
   onTrackSaved: (track: TrackRecord) => void
   onTrackDeleted: (trackId: string) => void
 }) {
   const [trackName, setTrackName] = useState('')
   const [trackDescription, setTrackDescription] = useState('')
-  const [activeTrackId, setActiveTrackId] = useState<string | null>(null)
   const [trackpointName, setTrackpointName] = useState('')
   const [trackpointStationM, setTrackpointStationM] = useState('')
   const [trackpointQuery, setTrackpointQuery] = useState<TrackpointMatchQueryRecord | null>(null)
   const [trackpointQueryResults, setTrackpointQueryResults] = useState<TrackpointMatchQueryResults | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
-  const adequacy = studySetGpsAdequacy(currentStudySet, sessions)
-  const studySessions = currentStudySet.sessions
-    .map((sessionRef) => sessionByRef(sessionRef, sessions))
-    .filter((session): session is SessionRecord => Boolean(session))
-  const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? null
   const canCreateTrack = Boolean(primarySession && dataSource.loadSessionGpsPoints && dataSource.saveTrack && !busy)
   const canEditTrack = Boolean(activeTrack && dataSource.saveTrack && !busy)
   const canRunTrackpointQuery = Boolean(
@@ -107,7 +473,7 @@ export function GeospatialWorkbench({
         },
       })
       onTrackSaved(savedTrack)
-      setActiveTrackId(savedTrack.id)
+      onActiveTrackChange(savedTrack.id)
       setTrackName('')
       setTrackDescription('')
       setMessage(`Created ${savedTrack.name}.`)
@@ -169,7 +535,7 @@ export function GeospatialWorkbench({
     try {
       await dataSource.deleteTrack(activeTrack.id)
       onTrackDeleted(activeTrack.id)
-      setActiveTrackId(null)
+      onActiveTrackChange(null)
       setMessage(`Deleted ${activeTrack.name}.`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -188,7 +554,7 @@ export function GeospatialWorkbench({
     try {
       const savedTrack = await dataSource.saveTrack(track)
       onTrackSaved(savedTrack)
-      setActiveTrackId(savedTrack.id)
+      onActiveTrackChange(savedTrack.id)
       setMessage(successMessage)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -263,248 +629,168 @@ export function GeospatialWorkbench({
   }
 
   return (
-    <section className="geospatial-workbench">
-      <div className="geo-card primary-gps-card">
-        <div className="geo-card-title">
-          <MapPin size={16} />
-          <strong>Primary GPS</strong>
-          {primarySession && <GpsBadge summary={primarySession.gpsSummary} />}
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="modal track-manager-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{mode === 'new' ? 'New Track' : 'Track Manager'}</h2>
+          <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
-        {primarySession ? (
-          <dl className="geo-metrics">
-            <dt>Session</dt>
-            <dd>{primarySession.name}</dd>
-            <dt>Source</dt>
-            <dd>
-              {gpsSourceDisplay(primarySession.gpsSummary.preferredSourceKind, primarySession.gpsSummary.preferredSourceId)}
-            </dd>
-            <dt>Coverage</dt>
-            <dd>{formatPercent(primarySession.gpsSummary.timeCoverageRatio)}</dd>
-            <dt>Points</dt>
-            <dd>{primarySession.gpsSummary.positionPointCount}</dd>
-          </dl>
-        ) : (
-          <p className="empty-note">Select a primary session to inspect GPS adequacy.</p>
-        )}
-      </div>
-
-      <div className="geo-card">
-        <div className="geo-card-title">
-          <Crosshair size={16} />
-          <strong>Study Set GPS</strong>
-          <span className="pill neutral">catalog adequacy</span>
-        </div>
-        <div className="geo-adequacy-grid">
-          <Metric label="usable" value={adequacy.usableCount} />
-          <Metric label="limited" value={adequacy.limitedCount} />
-          <Metric label="absent" value={adequacy.absentCount} />
-          <Metric label="coverage" value={formatPercent(adequacy.averageCoverageRatio)} />
-        </div>
-      </div>
-
-      <div className="geo-card">
-        <div className="geo-card-title">
-          <Route size={16} />
-          <strong>Track Manager</strong>
-          <span className="subtle">{tracks.length} available</span>
-        </div>
-        <div className="track-list compact-track-list">
-          {tracks.map((track) => (
-            <div className={`check-row compact track-row${activeTrack?.id === track.id ? ' active-track' : ''}`} key={track.id}>
-              <input
-                aria-label={`Select ${track.name}`}
-                type="checkbox"
-                checked={selectedTrackIds.includes(track.id)}
-                onChange={() => onToggleTrack(track.id)}
-              />
-              <button className="track-row-summary" onClick={() => setActiveTrackId(track.id)} type="button">
-                <strong>{track.name}</strong>
-                <small>
-                  {track.trackpoints.length} trackpoints, {track.distanceKm.toFixed(1)} km, {track.defaultPolicyId}
-                </small>
+        <div className="modal-content track-manager-modal-content">
+          <section className="modal-section">
+            <h3>{mode === 'new' ? 'Create from primary GPS' : 'Create track'}</h3>
+            <div className="track-create-form">
+              <label>
+                New track name
+                <input
+                  value={trackName}
+                  onChange={(event) => setTrackName(event.target.value)}
+                  placeholder={primarySession ? `${primarySession.name} track` : 'Select a primary session first'}
+                />
+              </label>
+              <label>
+                Description
+                <input
+                  value={trackDescription}
+                  onChange={(event) => setTrackDescription(event.target.value)}
+                  placeholder="Optional context for this reusable track"
+                />
+              </label>
+              <button className="secondary-action" disabled={!canCreateTrack} onClick={() => void createTrackFromPrimaryGps()} type="button">
+                <Plus size={16} />
+                Create from primary GPS
               </button>
-              <IconButton label="Inspect Track" onClick={() => onInspectTrack(track)} icon={<Eye size={16} />} />
-              <IconButton label="Manage Track" onClick={() => setActiveTrackId(track.id)} icon={<Route size={16} />} />
             </div>
-          ))}
-          {tracks.length === 0 && <p className="empty-note">No tracks yet. Create one from primary GPS.</p>}
-        </div>
-        <div className="track-create-form">
-          <label>
-            New track name
-            <input
-              value={trackName}
-              onChange={(event) => setTrackName(event.target.value)}
-              placeholder={primarySession ? `${primarySession.name} track` : 'Select a primary session first'}
-            />
-          </label>
-          <label>
-            Description
-            <input
-              value={trackDescription}
-              onChange={(event) => setTrackDescription(event.target.value)}
-              placeholder="Optional context for this reusable track"
-            />
-          </label>
-          <button className="secondary-action" disabled={!canCreateTrack} onClick={() => void createTrackFromPrimaryGps()} type="button">
-            <Plus size={16} />
-            Create from primary GPS
-          </button>
-        </div>
-        <div className="trackpoint-editor">
-          <div className="trackpoint-editor-header">
-            <strong>{activeTrack ? `Manage ${activeTrack.name}` : 'No track selected'}</strong>
-            {activeTrack && (
-              <button
-                className="danger-action compact-danger"
-                disabled={!dataSource.deleteTrack || busy}
-                onClick={() => void deleteActiveTrack()}
-                type="button"
-              >
-                <Trash2 size={14} />
-                Delete
-              </button>
+            {mode === 'new' && (
+              <p className="track-manager-message">
+                Guided track creation placeholder: this first cut creates a track from the current primary session GPS.
+              </p>
             )}
-          </div>
-          {activeTrack ? (
-            <>
-              <div className="trackpoint-form">
-                <label>
-                  Trackpoint
-                  <input
-                    value={trackpointName}
-                    onChange={(event) => setTrackpointName(event.target.value)}
-                    placeholder="e.g. Rock garden entry"
-                  />
-                </label>
-                <label>
-                  Station m
-                  <input
-                    value={trackpointStationM}
-                    onChange={(event) => setTrackpointStationM(event.target.value)}
-                    placeholder={`0-${activeTrack.lengthM.toFixed(0)}`}
-                  />
-                </label>
-                <button className="secondary-action" disabled={!canEditTrack} onClick={() => void addTrackpoint()} type="button">
-                  <Save size={15} />
-                  Add point
-                </button>
-              </div>
-              <div className="trackpoint-list">
-                {activeTrack.trackpoints.length === 0 && <span className="subtle">No trackpoints yet.</span>}
-                {activeTrack.trackpoints.map((trackpoint) => (
-                  <div className="trackpoint-row" key={trackpoint.id}>
-                    <span>
-                      <strong>{trackpoint.name}</strong>
-                      <small>{trackpoint.stationM.toFixed(0)} m</small>
-                    </span>
-                    <IconButton
-                      label={`Delete ${trackpoint.name}`}
-                      disabled={!canEditTrack}
-                      onClick={() => void deleteTrackpoint(trackpoint.id)}
-                      icon={<Trash2 size={14} />}
-                      tone="alert"
-                    />
-                  </div>
+          </section>
+
+          <section className="track-manager-modal-grid">
+            <aside className="track-manager-side">
+              <h3>Tracks</h3>
+              <div className="track-list compact-track-list">
+                {tracks.map((track) => (
+                  <button
+                    className={`track-manager-list-item${activeTrack?.id === track.id ? ' active-track' : ''}`}
+                    key={track.id}
+                    onClick={() => onActiveTrackChange(track.id)}
+                    type="button"
+                  >
+                    <strong>{track.name}</strong>
+                    <small>
+                      {track.trackpoints.length} trackpoints, {track.distanceKm.toFixed(1)} km
+                    </small>
+                  </button>
                 ))}
+                {tracks.length === 0 && <p className="empty-note">No tracks yet.</p>}
               </div>
-            </>
-          ) : (
-            <p className="empty-note">Create or manage a track to add simple station-based trackpoints.</p>
-          )}
-        </div>
-        <div className="geo-policy-note">
-          Default cutlines are policy-generated. Trackpoint rows show only explicit overrides.
-        </div>
-        <div className="geo-policy-note">
-          Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance.
-        </div>
-        <div className="action-row tight">
-          <button className="secondary-action" disabled={!canRunTrackpointQuery} onClick={() => void runTrackpointQuery()} type="button">
-            <Crosshair size={16} />
-            Run trackpoint query
-          </button>
-          <button
-            className="ghost-action"
-            disabled={!trackpointQuery || !dataSource.cancelTrackpointMatchQuery || busy}
-            onClick={() => void cancelTrackpointQuery()}
-            type="button"
-          >
-            Cancel query
-          </button>
-        </div>
-        {trackpointQuery && (
-          <p className="track-manager-message">
-            Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
-            {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
-          </p>
-        )}
-        {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
-          <div className="match-preview-list compact-query-results">
-            {trackpointQueryResults.results.map((result) => (
-              <article className="match-row" key={result.sessionRef.sessionKey}>
-                <div>
-                  <strong>{result.sessionRef.label || result.sessionRef.sessionId}</strong>
-                  <small>{result.sessionRef.libraryId}</small>
+            </aside>
+
+            <section className="trackpoint-editor">
+              <div className="trackpoint-editor-header">
+                <strong>{activeTrack ? `Manage ${activeTrack.name}` : 'No track selected'}</strong>
+                {activeTrack && (
+                  <button
+                    className="danger-action compact-danger"
+                    disabled={!dataSource.deleteTrack || busy}
+                    onClick={() => void deleteActiveTrack()}
+                    type="button"
+                  >
+                    <Trash2 size={14} />
+                    Delete
+                  </button>
+                )}
+              </div>
+              {activeTrack ? (
+                <>
+                  <div className="trackpoint-form">
+                    <label>
+                      Trackpoint
+                      <input
+                        value={trackpointName}
+                        onChange={(event) => setTrackpointName(event.target.value)}
+                        placeholder="e.g. Rock garden entry"
+                      />
+                    </label>
+                    <label>
+                      Station m
+                      <input
+                        value={trackpointStationM}
+                        onChange={(event) => setTrackpointStationM(event.target.value)}
+                        placeholder={`0-${activeTrack.lengthM.toFixed(0)}`}
+                      />
+                    </label>
+                    <button className="secondary-action" disabled={!canEditTrack} onClick={() => void addTrackpoint()} type="button">
+                      <Save size={15} />
+                      Add point
+                    </button>
+                  </div>
+                  <div className="trackpoint-list">
+                    {activeTrack.trackpoints.length === 0 && <span className="subtle">No trackpoints yet.</span>}
+                    {activeTrack.trackpoints.map((trackpoint) => (
+                      <div className="trackpoint-row" key={trackpoint.id}>
+                        <span>
+                          <strong>{trackpoint.name}</strong>
+                          <small>{trackpoint.stationM.toFixed(0)} m</small>
+                        </span>
+                        <IconButton
+                          label={`Delete ${trackpoint.name}`}
+                          disabled={!canEditTrack}
+                          onClick={() => void deleteTrackpoint(trackpoint.id)}
+                          icon={<Trash2 size={14} />}
+                          tone="alert"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="action-row tight">
+                    <button className="secondary-action" disabled={!canRunTrackpointQuery} onClick={() => void runTrackpointQuery()} type="button">
+                      <Crosshair size={16} />
+                      Run trackpoint query
+                    </button>
+                    <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
+                    <button
+                      className="ghost-action"
+                      disabled={!trackpointQuery || !dataSource.cancelTrackpointMatchQuery || busy}
+                      onClick={() => void cancelTrackpointQuery()}
+                      type="button"
+                    >
+                      Cancel query
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="empty-note">Create or choose a track to add simple station-based trackpoints.</p>
+              )}
+              {trackpointQuery && (
+                <p className="track-manager-message">
+                  Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
+                  {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
+                </p>
+              )}
+              {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
+                <div className="match-preview-list compact-query-results">
+                  {trackpointQueryResults.results.map((result) => (
+                    <article className="match-row" key={result.sessionRef.sessionKey}>
+                      <div>
+                        <strong>{result.sessionRef.label || result.sessionRef.sessionId}</strong>
+                        <small>{result.sessionRef.libraryId}</small>
+                      </div>
+                      <span className="pill ok">{result.quality}</span>
+                      <span>{result.matchedTrackpointIds.length} matched</span>
+                      <span>{result.missingTrackpointIds.length} missing</span>
+                    </article>
+                  ))}
                 </div>
-                <span className="pill ok">{result.quality}</span>
-                <span>{result.matchedTrackpointIds.length} matched</span>
-                <span>{result.missingTrackpointIds.length} missing</span>
-              </article>
-            ))}
-          </div>
-        )}
-        {message && <p className="track-manager-message">{message}</p>}
-        <div className="action-row tight">
-          <button
-            className="secondary-action"
-            disabled={selectedTrackIds.length === 0}
-            onClick={onAttachSelectedTracks}
-            type="button"
-          >
-            <Plus size={16} />
-            Attach track
-          </button>
+              )}
+              {message && <p className="track-manager-message">{message}</p>}
+            </section>
+          </section>
         </div>
-      </div>
-
-      <div className="geo-card">
-        <div className="geo-card-title">
-          <Crosshair size={16} />
-          <strong>Match Preview</strong>
-          <span className="pill neutral">derived preview</span>
-        </div>
-        {studySessions.length === 0 || currentStudyTracks.length === 0 ? (
-          <p className="empty-note">Add sessions and attach a track to preview coverage.</p>
-        ) : (
-          <div className="match-preview-list">
-            {currentStudyTracks.flatMap((track) =>
-              studySessions.map((session) => {
-                const match = trackMatchForSession(track, session)
-                const crossedCount = match?.trackpointResults.filter((result) => result.crossed).length ?? 0
-                const refId = candidateId(session)
-
-                return (
-                  <article className="match-row" key={`${track.id}-${refId}`}>
-                    <div>
-                      <strong>{session.name}</strong>
-                      <small>{track.name}</small>
-                    </div>
-                    <span className={matchStatusClassName(match?.status)}>
-                      {match ? trackMatchStatusLabel(match.status) : 'not computed'}
-                    </span>
-                    <span>{match ? formatPercent(match.coverageRatio) : '-'}</span>
-                    <span>
-                      {crossedCount}/{track.trackpoints.length} trackpoints
-                    </span>
-                  </article>
-                )
-              }),
-            )}
-          </div>
-        )}
-      </div>
-    </section>
+      </section>
+    </div>
   )
 }
 

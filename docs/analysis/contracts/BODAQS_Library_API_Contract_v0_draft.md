@@ -172,7 +172,7 @@ Study sets contain:
 - explicit session membership
 - study-set-local groupings
 - reusable track references
-- study-set-local bookmarks
+- optional references to root-level session bookmarks
 - structured provenance
 - optional namespaced display state
 
@@ -189,11 +189,21 @@ If reusable discovery logic is needed later, use filters rather than groupings.
 
 ### 4.5 Bookmark
 
-A bookmark is a study-set-local reference to a point or time window in one
-session.
+A bookmark is a root-level reference to a point or time window in one session.
+It is used by signal inspection and later by analysis views that need to filter
+or facet data by user-selected time windows.
 
-Bookmarks are not reusable library objects in v0 because their meaning is
-intrinsically tied to the study set where they were created.
+Canonical location:
+
+```text
+<libraries_root>/
+  bookmarks/
+    <bookmark_id>.json
+```
+
+Bookmarks must carry a concrete session reference. They are reusable by Study
+Sets and analysis views, but are not session metadata: deleting a bookmark does
+not modify the processed session artifact.
 
 ### 4.6 Track
 
@@ -340,6 +350,7 @@ Example:
   "features": {
     "write_study_sets": true,
     "delete_study_sets": true,
+    "delete_sessions": true,
     "read_session_gps_summaries": true,
     "read_tracks": true,
     "write_tracks": true,
@@ -351,6 +362,8 @@ Example:
     "cancel_trackpoint_match_queries": true,
     "read_filters": true,
     "write_filters": true,
+    "read_analysis_views": true,
+    "evaluate_analysis_adequacy": true,
     "export_static_bundle": false,
     "run_processing_jobs": false
   }
@@ -810,13 +823,18 @@ Example request:
   "resolution": {
     "target_points": 2000
   },
-  "include_events": true
+  "include_events": true,
+  "include_marks": true
 }
 ```
 
 Signals may be requested by semantic selector or concrete column. UI flows should
 prefer semantic selectors. Concrete columns are useful for data-explorer and
 debugging views.
+
+`include_events` controls event-table overlays. `include_marks` controls
+logger/sample mark overlays from the processed session dataframe, normally the
+truthy/non-zero values in the `mark` column.
 
 The endpoint serves one session per request in v1. The path `library_id` must
 match `session.library_id` when that request field is present. Comparison views
@@ -889,6 +907,14 @@ Example response:
       "end": "rear"
     }
   ],
+  "marks": [
+    {
+      "mark_id": "mark-1",
+      "time_s": 14.72,
+      "display_name": "Mark 1",
+      "column": "mark"
+    }
+  ],
   "warnings": []
 }
 ```
@@ -947,11 +973,98 @@ Manager import/preprocessing operation.
 POST /api/v1/libraries/{library_id}/sessions/note
 PUT  /api/v1/libraries/{library_id}/sessions/note
 PUT  /api/v1/libraries/{library_id}/sessions/descriptions
+DELETE /api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}
 ```
 
 `sessions/descriptions` updates the short manifest-backed run/session
 description fields for one session reference. `run_description` applies to the
 whole run; `session_description` applies only to the referenced session.
+Browser session rename is implemented by writing `session_description`. The
+catalog `display.label` is description-first and must not prepend bike metadata;
+consumers that want the bike should use the explicit bike field/column.
+
+`DELETE .../runs/{run_id}/sessions/{session_id}` removes the processed session
+artifact directory from the selected library. It must not delete original source
+archives, FIT files, logger uploads, or other import-source material. By
+default, the service must refuse to delete a session that is still referenced by
+saved root-level objects, returning `409 session_delete_conflict` with reference
+details. If the caller explicitly supplies `cleanup_memberships=true`, the
+service may remove that session from saved Study Sets, remove bookmarks for that
+session, delete groupings that become empty, and then delete the processed
+session artifact.
+
+Example guarded delete:
+
+```text
+DELETE /api/v1/libraries/default-library/runs/run-a/sessions/session-a
+```
+
+Example delete with saved-membership cleanup:
+
+```text
+DELETE /api/v1/libraries/default-library/runs/run-a/sessions/session-a?cleanup_memberships=true
+```
+
+Example conflict response:
+
+```json
+{
+  "error": {
+    "code": "session_delete_conflict",
+    "message": "Session is still referenced by saved library objects.",
+    "details": {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "references": [
+        {
+          "study_set_id": "setup-comparison",
+          "display_name": "Setup comparison",
+          "session_member": true,
+          "groupings": [
+            {"grouping_id": "baseline", "display_name": "Baseline"}
+          ],
+          "bookmarks": []
+        },
+        {
+          "kind": "bookmark",
+          "bookmark_id": "big-compression-before-bridge",
+          "display_name": "Big compression before bridge"
+        }
+      ]
+    }
+  }
+}
+```
+
+Example successful cleanup response:
+
+```json
+{
+  "deleted": true,
+  "library_id": "default-library",
+  "run_id": "run-a",
+  "session_id": "session-a",
+  "session_key": "run-a::session-a",
+  "session_ref_id": "default-library|||run-a::session-a",
+  "cleanup_memberships": true,
+  "removed_paths": ["C:/BODAQS-data/default-library/runs/run-a/sessions/session-a"],
+  "updated_study_sets": [
+    {
+      "study_set_id": "setup-comparison",
+      "previous_revision": 3,
+      "revision": 4,
+      "removed_session": true,
+      "removed_groupings": [],
+      "removed_bookmark_count": 0
+    }
+  ],
+  "removed_bookmarks": [
+    {
+      "bookmark_id": "big-compression-before-bridge",
+      "display_name": "Big compression before bridge"
+    }
+  ]
+}
+```
 
 Example request:
 
@@ -969,7 +1082,164 @@ Example request:
 }
 ```
 
-### 12.4 Study Sets
+Equivalent nested description request:
+
+```json
+{
+  "session_ref": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run-a::session-a",
+    "session_key": "run-a::session-a",
+    "run_id": "run-a",
+    "session_id": "session-a"
+  },
+  "descriptions": {
+    "session_description": "Lower chute run"
+  }
+}
+```
+
+### 12.4 Analysis Views And Adequacy
+
+```text
+GET  /api/v1/analysis-views
+POST /api/v1/analysis-views/{view_id}/adequacy
+```
+
+Analysis views are registered browser-facing analysis destinations. The first
+implemented view is `simple-suspension`. The registry is intentionally small in
+v0: it advertises discoverable view metadata and the requirements that are used
+by the adequacy endpoint.
+
+Adequacy checks distinguish the whole requested scope from individual sessions
+and analyzable units such as `session_end`. Status values are:
+
+- `ready`: the scope can run cleanly.
+- `warning`: all selected sessions have at least one usable analysis unit, but
+  recommended or optional features are missing.
+- `partial`: at least one session is usable and at least one selected session
+  is blocked or excluded.
+- `blocked`: no selected sessions have the required data needed to launch the
+  view meaningfully.
+
+Requirements are tiered:
+
+- `required`: needed for the view to have any meaningful output.
+- `recommended`: needed for the full intended comparison or chart set, but not
+  enough by itself to block launch.
+- `optional`: enriches the view or unlocks secondary features.
+
+For `simple-suspension`, the first adequacy policy treats wheel motion data
+for at least one suspension end as required. In this contract, wheel motion data
+means wheel displacement plus velocity evidence. Velocity evidence may come
+from a semantic velocity signal or from compression/rebound velocity metrics.
+Both ends, complete compression/rebound event metrics, and GPS/sector support
+are treated as completeness features.
+
+Example registry response entry:
+
+```json
+{
+  "schema": "bodaqs.analysis_view",
+  "version": 1,
+  "view_id": "simple-suspension",
+  "display_name": "Simple Suspension Analysis",
+  "category": "Suspension",
+  "route": "/analysis/simple-suspension",
+  "scope_kinds": ["study_set", "session_refs"],
+  "adequacy_policy": "partial",
+  "requirements": {
+    "required": [
+      {
+        "id": "wheel_motion_data",
+        "applies_to": "session_end",
+        "minimum": "at_least_one_end"
+      }
+    ],
+    "recommended": [
+      {"id": "both_ends", "applies_to": "session"},
+      {"id": "event_metrics", "applies_to": "session"}
+    ],
+    "optional": [
+      {"id": "gps", "applies_to": "session"}
+    ]
+  }
+}
+```
+
+Example adequacy request using explicit sessions:
+
+```json
+{
+  "sessions": [
+    {
+      "library_id": "default-library",
+      "session_ref_id": "default-library|||run-a::session-a",
+      "session_key": "run-a::session-a",
+      "run_id": "run-a",
+      "session_id": "session-a"
+    }
+  ]
+}
+```
+
+Example adequacy request using a saved Study Set:
+
+```json
+{
+  "study_set_id": "setup-comparison"
+}
+```
+
+Example response:
+
+```json
+{
+  "schema": "bodaqs.analysis_adequacy",
+  "version": 1,
+  "view_id": "simple-suspension",
+  "status": "warning",
+  "policy": "partial",
+  "summary": "1 of 1 sessions can be analyzed with missing recommended or optional data.",
+  "total_session_count": 1,
+  "usable_session_count": 1,
+  "blocked_session_count": 0,
+  "usable_units": [
+    {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "unit_kind": "session_end",
+      "end": "front"
+    }
+  ],
+  "excluded_units": [
+    {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "unit_kind": "session_end",
+      "end": "rear",
+      "missing_required": ["wheel_displacement_signal", "wheel_velocity_data"]
+    }
+  ],
+  "messages": [
+    {
+      "severity": "warning",
+      "code": "missing_event_metrics",
+      "message": "1 session(s) lack complete compression/rebound metric support."
+    }
+  ],
+  "session_results": [
+    {
+      "session_ref_id": "default-library|||run-a::session-a",
+      "status": "warning",
+      "usable": true,
+      "usable_end_count": 1,
+      "missing_recommended": ["both_ends", "event_metrics"],
+      "missing_optional": ["gps"]
+    }
+  ]
+}
+```
+
+### 12.5 Study Sets
 
 ```text
 GET    /api/v1/study-sets
@@ -1013,7 +1283,7 @@ Example update request:
 }
 ```
 
-### 12.5 Geospatial
+### 12.6 Geospatial
 
 Root-scoped tracks:
 
@@ -1078,7 +1348,7 @@ Broad query scopes should be described declaratively with `library_ids`,
 browser to enumerate every session. Narrow UI-driven requests may still provide
 explicit `session_refs`.
 
-### 12.6 Session Filters
+### 12.7 Session Filters
 
 Root-scoped persisted session filters:
 
@@ -1090,10 +1360,66 @@ PUT    /api/v1/session-filters/{filter_id}
 DELETE /api/v1/session-filters/{filter_id}
 ```
 
+### 12.8 Bookmarks
+
+Root-scoped persisted session bookmarks:
+
+```text
+GET    /api/v1/bookmarks
+POST   /api/v1/bookmarks
+GET    /api/v1/bookmarks/{bookmark_id}
+PUT    /api/v1/bookmarks/{bookmark_id}
+DELETE /api/v1/bookmarks/{bookmark_id}
+```
+
+`GET /api/v1/bookmarks` may be filtered by `library_id`, `session_key`, or
+`session_ref_id`. Bookmarks are stored under the configured libraries root and
+must carry a concrete `session` reference. They are intended for user-selected
+points or time windows, not for logger sample marks.
+
+Example bookmark:
+
+```json
+{
+  "schema": "bodaqs.session_bookmark",
+  "version": 1,
+  "bookmark_id": "big-compression-before-bridge",
+  "revision": 1,
+  "display_name": "Big compression before bridge",
+  "description": "",
+  "session": {
+    "library_id": "default-library",
+    "session_ref_id": "default-library|||run-a::session-a",
+    "session_key": "run-a::session-a",
+    "run_id": "run-a",
+    "session_id": "session-a",
+    "label": "Session A"
+  },
+  "session_ref_id": "default-library|||run-a::session-a",
+  "window": {
+    "start_s": 42.5,
+    "end_s": 48.0
+  },
+  "view_state": {
+    "bodaqs_web_signal_inspector_v1": {
+      "signal_columns": ["front_wheel_disp_dom_wheel [mm]"],
+      "show_marks": true
+    }
+  },
+  "tags": [],
+  "private": true,
+  "provenance": {
+    "created_at": "2026-06-26T01:00:00Z",
+    "created_by": "user",
+    "updated_at": "2026-06-26T01:00:00Z"
+  }
+}
+```
+
 Session Filter endpoints are scoped to the configured libraries root, not to a
 single processed library. Filter writes should use revision checks.
 
-### 12.7 Signals, Events, Metrics, And Time-Series
+### 12.8 Signals, Events, Metrics, And Time-Series
 
 ```text
 POST /api/v1/libraries/{library_id}/signals/query

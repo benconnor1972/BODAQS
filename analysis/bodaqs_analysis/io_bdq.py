@@ -441,10 +441,16 @@ def _infer_domain_from_field(field: str) -> Optional[str]:
 
 
 def _bdq_column_class(channel: Mapping[str, Any]) -> str:
+    explicit_class = _text_or_none(channel.get("class"))
+    if explicit_class is not None:
+        normalized = explicit_class.strip().lower()
+        if normalized in {"signal", "diagnostic", "index", "event_flag", "qc_flag"}:
+            return normalized
+
     quantity = _text_or_none(channel.get("quantity"))
     field = _text_or_none(channel.get("field"))
     if quantity == "sample_index" or field == "sample_id":
-        return "sample_index"
+        return "index"
     if quantity == "flags" or field == "flags" or field == "mark":
         return "event_flag"
     return "signal"
@@ -508,7 +514,7 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "source": _text_or_none(channel.get("source")),
             "source_columns": [field],
             "bdq_field": field,
-            "raw": bool(channel.get("raw", False)),
+            "raw": False if column_class == "diagnostic" else bool(channel.get("raw", False)),
         }
         for key in (
             "kind",
@@ -516,11 +522,19 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "semantic_selection_excluded",
             "semantic_selection_exclusion_reason",
         ):
+            if column_class == "diagnostic" and key == "kind":
+                continue
             if key in channel:
                 entry[key] = channel.get(key)
+        metric = _text_or_none(channel.get("metric"))
+        if column_class == "diagnostic" and metric is not None:
+            entry["metric"] = metric
         quantity = _text_or_none(channel.get("quantity"))
         if quantity is not None:
-            entry["quantity"] = quantity
+            if column_class == "diagnostic":
+                entry.setdefault("metric", quantity)
+            else:
+                entry["quantity"] = quantity
         sensor = _text_or_none(channel.get("sensor"))
         if sensor is not None:
             entry["sensor"] = sensor

@@ -29,11 +29,15 @@ const SECTION_ORDER = ['overview', 'bike', 'front', 'rear', 'notes', 'custom']
 export function SessionNoteEditorModal({
   session,
   dataSource,
+  loadSessionNote,
+  saveSessionNote,
   onClose,
   onSaved,
 }: {
   session: SessionRecord
   dataSource: LibraryDataSource
+  loadSessionNote?: (session: SessionRecord) => Promise<SessionNoteRecord>
+  saveSessionNote?: (note: SessionNoteRecord) => Promise<SessionNoteRecord>
   onClose: () => void
   onSaved: (session: SessionRecord) => void
 }) {
@@ -43,7 +47,8 @@ export function SessionNoteEditorModal({
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
-  const canSave = Boolean(note && dataSource.saveSessionNote && !loading && !saving)
+  const persistNote = saveSessionNote ?? dataSource.saveSessionNote
+  const canSave = Boolean(note && persistNote && !loading && !saving)
   const groupedFields = note ? groupedNoteFields(note) : []
 
   useEffect(() => {
@@ -54,7 +59,9 @@ export function SessionNoteEditorModal({
       setError('')
       setMessage('')
       try {
-        const loaded = dataSource.loadSessionNote
+        const loaded = loadSessionNote
+          ? await loadSessionNote(session)
+          : dataSource.loadSessionNote
           ? await dataSource.loadSessionNote(session)
           : sessionNoteFromSession(session)
         if (cancelled) {
@@ -81,10 +88,10 @@ export function SessionNoteEditorModal({
     return () => {
       cancelled = true
     }
-  }, [dataSource, session])
+  }, [dataSource, loadSessionNote, session])
 
-  async function saveNote() {
-    if (!note || !dataSource.saveSessionNote) {
+  async function saveNote(nextDraftStatus: boolean | 'preserve') {
+    if (!note || !persistNote) {
       setError('This data source does not support note saves.')
       return
     }
@@ -98,13 +105,14 @@ export function SessionNoteEditorModal({
         values: draft.values,
         customValues: draft.customValues,
         freeTextNotes: draft.freeTextNotes,
-        draft: draft.draft,
+        draft: nextDraftStatus === 'preserve' ? draft.draft : nextDraftStatus,
       }
-      const saved = await dataSource.saveSessionNote(nextNote)
+      const saved = await persistNote(nextNote)
       setNote(saved)
       setDraft(draftFromNote(saved))
       onSaved(sessionFromSavedNote(session, saved))
-      setMessage('Note saved.')
+      setMessage(nextDraftStatus === false ? 'Note saved.' : 'Draft note saved.')
+      onClose()
     } catch (saveError) {
       setError(`Could not save note: ${errorMessage(saveError)}`)
     } finally {
@@ -132,24 +140,24 @@ export function SessionNoteEditorModal({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="modal-header">
-          <div>
-            <h2>View/edit note</h2>
-            <p className="modal-kicker">{session.name}</p>
-          </div>
+          <h2>View/edit note</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
 
         <div className="modal-content note-editor-content">
           <section className="note-editor-summary">
-            <dl className="detail-list compact-detail-list">
+            <div>
+              <p className="modal-kicker">Session description</p>
+              <h3>{session.name}</h3>
+              <p>Session ID {session.sessionId}</p>
+            </div>
+            <dl className="analysis-scope-summary note-editor-status-summary">
               <dt>Status</dt>
               <dd>
                 <NoteBadge status={draft.draft ? 'draft' : note?.present ? 'edited' : session.noteStatus} />
               </dd>
               <dt>Run</dt>
               <dd>{session.runName}</dd>
-              <dt>Session ID</dt>
-              <dd>{session.sessionId}</dd>
               <dt>Template</dt>
               <dd>{note?.templateId ? `${note.templateId} ${note.templateVersion}` : 'not set'}</dd>
             </dl>
@@ -165,17 +173,6 @@ export function SessionNoteEditorModal({
                   value={draft.title}
                   onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
                 />
-              </label>
-
-              <label>
-                Status
-                <select
-                  value={draft.draft ? 'draft' : 'reviewed'}
-                  onChange={(event) => setDraft((current) => ({ ...current, draft: event.target.value === 'draft' }))}
-                >
-                  <option value="draft">Draft</option>
-                  <option value="reviewed">Reviewed / edited</option>
-                </select>
               </label>
 
               {note?.templateStatus === 'missing' && (
@@ -230,9 +227,13 @@ export function SessionNoteEditorModal({
           <button className="secondary-action" onClick={onClose} type="button">
             Close
           </button>
-          <button className="primary-action" disabled={!canSave} onClick={() => void saveNote()} type="button">
+          <button className="draft-action" disabled={!canSave} onClick={() => void saveNote('preserve')} type="button">
             <Save size={16} />
-            {saving ? 'Saving...' : 'Save note'}
+            {saving ? 'Saving...' : 'Save Draft'}
+          </button>
+          <button className="primary-action" disabled={!canSave} onClick={() => void saveNote(false)} type="button">
+            <Save size={16} />
+            {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
       </section>
@@ -317,7 +318,7 @@ function NoteFieldEditor({
   )
 }
 
-function sessionNoteFromSession(session: SessionRecord): SessionNoteRecord {
+export function sessionNoteFromSession(session: SessionRecord): SessionNoteRecord {
   const now = new Date().toISOString()
   return {
     sessionRef: sessionToStudyRef(session),
@@ -351,7 +352,7 @@ function draftFromNote(note: SessionNoteRecord): NoteDraft {
   }
 }
 
-function sessionFromSavedNote(session: SessionRecord, note: SessionNoteRecord): SessionRecord {
+export function sessionFromSavedNote(session: SessionRecord, note: SessionNoteRecord): SessionRecord {
   return {
     ...session,
     bike: noteValueText(note.values.bike),

@@ -19,6 +19,7 @@ from .ids import make_session_key, make_session_ref_id
 TIMESERIES_WINDOW_SCHEMA = "bodaqs.timeseries_window"
 TIMESERIES_WINDOW_VERSION = 1
 DEFAULT_TARGET_POINTS = 2000
+WINDOW_BOUNDARY_WARNING_TOLERANCE_S = 0.25
 
 
 def get_timeseries_window(
@@ -66,8 +67,12 @@ def get_timeseries_window(
         meta=meta,
         available_columns=available_columns,
     )
+    include_marks = bool(request.get("include_marks", False))
+    mark_column = _resolve_mark_column(meta, available_columns) if include_marks else None
 
     read_columns = [time_column, *[spec["column"] for spec in signal_specs]]
+    if mark_column is not None:
+        read_columns.append(mark_column)
     read_columns = list(dict.fromkeys(read_columns))
     try:
         df = pd.read_parquet(df_path, columns=read_columns)
@@ -161,6 +166,7 @@ def get_timeseries_window(
             if bool(request.get("include_events", False))
             else []
         ),
+        "marks": _mark_overlays(windowed, time_column=time_column, mark_column=mark_column) if mark_column else [],
         "warnings": warnings,
     }
 
@@ -288,6 +294,9 @@ def _resolve_selector_request(
             matches.append((_selector_rank(info, column_text), column_text, info))
 
     if not matches:
+        fallback = _activity_mask_selector_fallback(selector, available_columns)
+        if fallback is not None:
+            return fallback
         raise SignalNotFoundError(
             "Signal selector did not match any available signal.",
             details={"selector": selector},
@@ -301,6 +310,27 @@ def _resolve_selector_request(
     return {"column": matches[0][1], "info": dict(matches[0][2])}
 
 
+def _activity_mask_selector_fallback(
+    selector: Mapping[str, Any],
+    available_columns: Sequence[str],
+) -> dict[str, Any] | None:
+    if _norm(selector.get("kind")) != "qc" or _norm(selector.get("quantity")) != "mask":
+        return None
+    available = {str(column) for column in available_columns}
+    for column in ("active_mask_qc", "inactive_mask_qc", "inactive_mask"):
+        if column in available:
+            return {
+                "column": column,
+                "info": {
+                    "kind": "qc",
+                    "quantity": "mask",
+                    "unit": None,
+                    "processing_role": "activity_mask",
+                },
+            }
+    return None
+
+
 def _selector_matches(info: Mapping[str, Any], selector: Mapping[str, Any]) -> bool:
     for key, expected in selector.items():
         if _norm(info.get(key)) != _norm(expected):
@@ -312,7 +342,18 @@ def _selector_rank(info: Mapping[str, Any], column: str) -> tuple[int, str]:
     role_score = 0 if _norm(info.get("processing_role")) == "primary_analysis" else 1
     kind = _norm(info.get("kind"))
     kind_score = 0 if kind not in {"raw", "qc"} else 1
+    if kind == "qc" and _norm(info.get("quantity")) == "mask":
+        return (activity_mask_column_rank(column), column)
     return (role_score * 10 + kind_score, column)
+
+
+def activity_mask_column_rank(column: str) -> int:
+    ranks = {
+        "active_mask_qc": -3,
+        "inactive_mask_qc": -2,
+        "inactive_mask": -1,
+    }
+    return ranks.get(column, 1)
 
 
 def _parse_window(value: Any) -> dict[str, float | None]:
@@ -460,6 +501,71 @@ def _event_overlaps_window(
     return True
 
 
+def _resolve_mark_column(meta: Mapping[str, Any], available_columns: Sequence[str]) -> str | None:
+    available = {str(column) for column in available_columns}
+    if "mark" in available:
+        return "mark"
+
+    signals = meta.get("signals")
+    if isinstance(signals, Mapping):
+        for column, info in signals.items():
+            column_text = str(column)
+            if column_text not in available or not isinstance(info, Mapping):
+                continue
+            if _norm(column_text) == "mark":
+                return column_text
+            if _norm(info.get("field")) == "mark" or _norm(info.get("quantity")) == "mark":
+                return column_text
+            if _norm(info.get("class")) == "event_flag" and "mark" in _norm(info.get("source")):
+                return column_text
+
+    for candidate in ("logger_mark", "sample_mark", "marked"):
+        if candidate in available:
+            return candidate
+    return None
+
+
+def _mark_overlays(
+    df: pd.DataFrame,
+    *,
+    time_column: str,
+    mark_column: str,
+) -> list[dict[str, Any]]:
+    if mark_column not in df.columns or time_column not in df.columns:
+        return []
+
+    times = pd.to_numeric(df[time_column], errors="coerce")
+    mask = _mark_mask(df[mark_column]) & times.notna()
+    if not bool(mask.any()):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for index, time_s in enumerate(times.loc[mask].to_numpy(dtype=float), start=1):
+        if not np.isfinite(time_s):
+            continue
+        out.append(
+            {
+                "mark_id": f"mark-{index}",
+                "time_s": float(time_s),
+                "display_name": f"Mark {index}",
+                "column": mark_column,
+            }
+        )
+    return out
+
+
+def _mark_mask(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False).astype(bool)
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    if bool(numeric.notna().any()):
+        return numeric.fillna(0) != 0
+
+    text = series.astype(str).str.strip().str.lower()
+    return text.isin({"1", "true", "t", "yes", "y", "mark", "marked"})
+
+
 def _signal_payload(spec: Mapping[str, Any]) -> dict[str, Any]:
     column = str(spec["column"])
     info = spec.get("info") if isinstance(spec.get("info"), Mapping) else {}
@@ -468,10 +574,13 @@ def _signal_payload(spec: Mapping[str, Any]) -> dict[str, Any]:
         "column": column,
         "display_name": _signal_display_name(column, info),
     }
-    for key in ("end", "domain", "quantity", "unit", "processing_role", "kind", "sensor", "origin"):
+    for key in ("end", "domain", "quantity", "unit", "processing_role", "kind", "sensor", "motion_source_id", "origin"):
         value = info.get(key) if isinstance(info, Mapping) else None
         if value is not None:
             payload[key] = value
+    derivation = info.get("derivation") if isinstance(info, Mapping) else None
+    if isinstance(derivation, Mapping):
+        payload["derivation"] = {str(k): v for k, v in dict(derivation).items()}
     return payload
 
 
@@ -490,11 +599,24 @@ def _window_warnings(
     if source_time.empty or returned_time.empty:
         return []
     warnings: list[str] = []
-    if requested_start_s is not None and float(requested_start_s) < float(source_time.min()):
+    tolerance_s = _window_warning_tolerance_s(source_time)
+    if requested_start_s is not None and float(requested_start_s) < float(source_time.min()) - tolerance_s:
         warnings.append("requested_window_starts_before_session")
-    if requested_end_s is not None and float(requested_end_s) > float(source_time.max()):
+    if requested_end_s is not None and float(requested_end_s) > float(source_time.max()) + tolerance_s:
         warnings.append("requested_window_ends_after_session")
     return warnings
+
+
+def _window_warning_tolerance_s(source_time: pd.Series) -> float:
+    ordered = source_time.sort_values()
+    deltas = ordered.diff().dropna()
+    positive_deltas = deltas[deltas > 0]
+    if positive_deltas.empty:
+        return WINDOW_BOUNDARY_WARNING_TOLERANCE_S
+    median_delta = float(positive_deltas.median())
+    if not np.isfinite(median_delta):
+        return WINDOW_BOUNDARY_WARNING_TOLERANCE_S
+    return max(WINDOW_BOUNDARY_WARNING_TOLERANCE_S, median_delta * 2.0)
 
 
 def _numeric_values(series: pd.Series) -> list[float | None]:
