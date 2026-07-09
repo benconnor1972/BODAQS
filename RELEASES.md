@@ -14,7 +14,7 @@ logger files, and running the local preprocessing workflow.
 
 Latest alpha:
 
-- [BODAQS Import Manager 0.1.2-alpha](https://github.com/benconnor1972/BODAQS/releases/tag/import-manager-v0.1.2-alpha)
+- [BODAQS Import Manager 0.1.4-beta](https://github.com/benconnor1972/BODAQS/releases/tag/import-manager-v0.1.4-beta))
 
 ## Firmware
 
