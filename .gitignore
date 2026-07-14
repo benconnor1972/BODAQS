@@ -67,3 +67,11 @@ import-manager/build-*/
 import-manager/dist-*/
 import-manager/packages/
 firmware/packages/
+
+# Generated demo-library payloads
+demo-assets/demo_manifest.json
+demo-assets/bookmarks/
+demo-assets/libraries/
+demo-assets/session_filters/
+demo-assets/study_sets/
+demo-assets/tracks/

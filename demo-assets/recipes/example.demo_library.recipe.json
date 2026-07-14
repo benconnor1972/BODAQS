@@ -1,0 +1,32 @@
+{
+  "anonymize": {
+    "remove_absolute_paths": true,
+    "replace_text": {
+      "Original Rider": "Demo Rider"
+    }
+  },
+  "bookmarks": [],
+  "demo_display_name": "BODAQS Demo Library",
+  "demo_library_id": "bodaqs-demo",
+  "include_bookmarks_for_sessions": true,
+  "include_referenced_sessions": true,
+  "output_root": "C:/Users/you/dev/BODAQS/demo-assets",
+  "runs": [
+    {
+      "run_id": "example-run-id"
+    }
+  ],
+  "schema": "bodaqs.demo_library_recipe",
+  "session_filters": [],
+  "sessions": [
+    {
+      "run_id": "example-run-id",
+      "session_id": "example-session-id"
+    }
+  ],
+  "source_libraries_root": "C:/Users/you/BODAQS-data",
+  "source_library_id": "default-library",
+  "study_sets": [],
+  "tracks": [],
+  "version": 1
+}

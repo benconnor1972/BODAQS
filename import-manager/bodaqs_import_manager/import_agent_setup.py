@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+import configparser
 import copy
 import ctypes
+import hashlib
+import json
 import math
+import os
 import queue
+import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -121,6 +127,11 @@ _WINDOWS_APP_USER_MODEL_ID = "BODAQS.ImportAgent.Manager"
 _LIBRARY_SERVICE_HOST = "127.0.0.1"
 _LIBRARY_SERVICE_PORT = 8765
 _LIBRARY_SERVICE_STARTUP_TIMEOUT_S = 12.0
+_DEMO_ASSETS_DIRNAME = "demo-assets"
+_DEMO_LIBRARY_DEFINITION_FILENAME = "library_definition.json"
+_DEMO_INSTALL_POLICY_FILENAME = "install_policy.ini"
+_DEMO_INSTALL_STATE_FILENAME = "demo_install_state.json"
+_DEMO_INSTALL_DIRS = ("study_sets", "tracks", "bookmarks", "session_filters")
 _DEFAULT_WORKSPACE_LIBRARY_NAME = "Default Library"
 _DEFAULT_WORKSPACE_SOURCE_NAME = "Default Source"
 _SOURCE_TYPE_LABELS = {
@@ -807,6 +818,7 @@ class ImportAgentManagerWindow:
         self._refresh_ui_from_config(select_provision_when_missing=False)
         self.root.after(100, self._apply_window_icon)
         self.root.after(150, self._maybe_show_first_run_workspace_modal)
+        self.root.after(220, self._maybe_apply_packaged_demo_install_policy)
         self._start_tray_icon()
         self._sync_startup_registration(show_errors=False, emit_status=False)
         self.root.after(250, self._poll_event_queue)
@@ -1842,6 +1854,277 @@ class ImportAgentManagerWindow:
             return sources_root.parent
         return _default_workspace_root()
 
+    def _packaged_demo_assets_root(self) -> Optional[Path]:
+        candidates: list[Path] = []
+        try:
+            exe_path = Path(sys.executable).resolve()
+            candidates.append(exe_path.parent.parent / _DEMO_ASSETS_DIRNAME)
+            candidates.append(exe_path.parent / _DEMO_ASSETS_DIRNAME)
+        except Exception:
+            pass
+        try:
+            module_path = Path(__file__).resolve()
+            candidates.append(module_path.parents[2] / _DEMO_ASSETS_DIRNAME)
+            candidates.append(module_path.parents[1] / _DEMO_ASSETS_DIRNAME)
+        except Exception:
+            pass
+
+        seen: set[Path] = set()
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if self._demo_assets_root_has_libraries(resolved):
+                return resolved
+        return None
+
+    def _demo_assets_root_has_libraries(self, root: Path) -> bool:
+        libraries_dir = root / "libraries"
+        if not libraries_dir.exists() or not libraries_dir.is_dir():
+            return False
+        return any(library_definition.is_file() for library_definition in libraries_dir.glob(f"*/{_DEMO_LIBRARY_DEFINITION_FILENAME}"))
+
+    def _read_packaged_demo_install_policy(self) -> Optional[dict[str, bool]]:
+        template_root = self._packaged_demo_assets_root()
+        if template_root is None:
+            return None
+        policy_path = template_root / _DEMO_INSTALL_POLICY_FILENAME
+        if not policy_path.exists():
+            return None
+        parser = configparser.ConfigParser()
+        parser.read(policy_path, encoding="utf-8")
+        install = parser.getboolean("demo_library", "install", fallback=False)
+        if not install:
+            return {"install": False, "overwrite": False}
+        overwrite = parser.getboolean("demo_library", "overwrite", fallback=False)
+        return {"install": True, "overwrite": overwrite}
+
+    def _workspace_root_from_libraries_root(self, libraries_root: str | Path) -> Path:
+        resolved_libraries_root = Path(libraries_root).expanduser().resolve()
+        if resolved_libraries_root.name.lower() == "libraries":
+            return resolved_libraries_root.parent
+        return resolved_libraries_root
+
+    def _remove_demo_tree(self, target_dir: Path) -> None:
+        def make_writable_and_retry(function: Callable[..., Any], path: str, _exc_info: object) -> None:
+            try:
+                os.chmod(path, stat.S_IWRITE)
+            except OSError:
+                pass
+            function(path)
+
+        shutil.rmtree(target_dir, onerror=make_writable_and_retry)
+
+    def _copy_demo_tree(self, source_dir: Path, target_dir: Path, *, overwrite_existing: bool) -> dict[str, int]:
+        counts = {"copied": 0, "overwritten": 0, "skipped": 0}
+        for source_path in sorted(source_dir.rglob("*")):
+            relative = source_path.relative_to(source_dir)
+            target_path = target_dir / relative
+            if source_path.is_dir():
+                target_path.mkdir(parents=True, exist_ok=True)
+                continue
+            if target_path.exists():
+                if not overwrite_existing:
+                    counts["skipped"] += 1
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, target_path)
+                counts["overwritten"] += 1
+                continue
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            counts["copied"] += 1
+        return counts
+
+    def _install_packaged_demo_assets(self, libraries_root: str | Path, *, overwrite_existing: bool = False) -> str:
+        template_root = self._packaged_demo_assets_root()
+        if template_root is None:
+            return "No packaged demo library was found."
+
+        target_root = self._workspace_root_from_libraries_root(libraries_root)
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        copied_libraries: list[Path] = []
+        overwritten_libraries: list[str] = []
+        skipped_libraries: list[str] = []
+        copied_files = 0
+        overwritten_files = 0
+        skipped_files = 0
+
+        template_libraries_dir = template_root / "libraries"
+        target_libraries_dir = target_root / "libraries"
+        target_libraries_dir.mkdir(parents=True, exist_ok=True)
+        template_library_dirs = [
+            path
+            for path in sorted(template_libraries_dir.iterdir())
+            if path.is_dir() and (path / _DEMO_LIBRARY_DEFINITION_FILENAME).exists()
+        ]
+        existing_demo_libraries = [
+            target_libraries_dir / source_library_dir.name
+            for source_library_dir in template_library_dirs
+            if (target_libraries_dir / source_library_dir.name).exists()
+        ]
+        if existing_demo_libraries and not overwrite_existing:
+            return (
+                "Demo library: existing demo librar"
+                f"{'y is' if len(existing_demo_libraries) == 1 else 'ies are'} present; nothing copied."
+            )
+        for source_library_dir in template_library_dirs:
+            target_library_dir = target_libraries_dir / source_library_dir.name
+            if target_library_dir.exists():
+                if overwrite_existing:
+                    self._remove_demo_tree(target_library_dir)
+                    overwritten_libraries.append(source_library_dir.name)
+                else:
+                    skipped_libraries.append(source_library_dir.name)
+                    continue
+            shutil.copytree(source_library_dir, target_library_dir)
+            self._patch_demo_library_definition(target_library_dir)
+            copied_libraries.append(target_library_dir)
+
+        for dirname in _DEMO_INSTALL_DIRS:
+            source_dir = template_root / dirname
+            if not source_dir.exists() or not source_dir.is_dir():
+                continue
+            target_dir = target_root / dirname
+            counts = self._copy_demo_tree(source_dir, target_dir, overwrite_existing=overwrite_existing)
+            copied_files += counts["copied"]
+            overwritten_files += counts["overwritten"]
+            skipped_files += counts["skipped"]
+
+        parts: list[str] = []
+        if copied_libraries:
+            parts.append(
+                "installed demo librar"
+                f"{'y' if len(copied_libraries) == 1 else 'ies'}: "
+                + ", ".join(path.name for path in copied_libraries)
+            )
+        if overwritten_libraries:
+            parts.append(
+                "refreshed existing demo librar"
+                f"{'y' if len(overwritten_libraries) == 1 else 'ies'}: "
+                + ", ".join(overwritten_libraries)
+            )
+        if skipped_libraries:
+            parts.append(
+                "left existing demo librar"
+                f"{'y' if len(skipped_libraries) == 1 else 'ies'} unchanged: "
+                + ", ".join(skipped_libraries)
+            )
+        if copied_files:
+            parts.append(f"copied {copied_files} companion file(s)")
+        if overwritten_files:
+            parts.append(f"refreshed {overwritten_files} companion file(s)")
+        if skipped_files:
+            parts.append(f"left {skipped_files} existing companion file(s) unchanged")
+        return "Demo library: " + ("; ".join(parts) if parts else "nothing to copy.")
+
+    def _patch_demo_library_definition(self, library_root: Path) -> None:
+        definition_path = library_root / _DEMO_LIBRARY_DEFINITION_FILENAME
+        payload = json.loads(definition_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Demo library definition is not a JSON object: {definition_path}")
+        payload["artifacts_dir"] = str(library_root.resolve())
+        definition_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _install_demo_assets_after_workspace_setup(
+        self,
+        *,
+        requested: bool,
+        libraries_root: Path,
+        overwrite_existing: bool = False,
+    ) -> str:
+        if not requested:
+            return ""
+        message = self._install_packaged_demo_assets(libraries_root, overwrite_existing=overwrite_existing)
+        try:
+            self.controller.sync_workspace_from_roots()
+        except Exception as exc:
+            return f"{message} Workspace sync failed after demo install: {exc}"
+        return message
+
+    def _demo_install_state_path(self) -> Path:
+        return self.controller.app_config_path.parent / _DEMO_INSTALL_STATE_FILENAME
+
+    def _packaged_demo_install_stamp(self, *, libraries_root: Path, overwrite_existing: bool) -> Optional[str]:
+        template_root = self._packaged_demo_assets_root()
+        if template_root is None:
+            return None
+        digest = hashlib.sha256()
+        manifest_path = template_root / "demo_manifest.json"
+        if manifest_path.exists():
+            digest.update(manifest_path.read_bytes())
+        else:
+            for definition_path in sorted((template_root / "libraries").glob(f"*/{_DEMO_LIBRARY_DEFINITION_FILENAME}")):
+                digest.update(str(definition_path.relative_to(template_root)).encode("utf-8"))
+                digest.update(definition_path.read_bytes())
+        workspace_root = self._workspace_root_from_libraries_root(libraries_root)
+        payload = {
+            "demo_hash": digest.hexdigest(),
+            "overwrite_existing": bool(overwrite_existing),
+            "workspace_root": str(workspace_root.resolve()),
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def _demo_install_state_has_stamp(self, stamp: str) -> bool:
+        state_path = self._demo_install_state_path()
+        if not state_path.exists():
+            return False
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        applied = payload.get("applied") if isinstance(payload, dict) else None
+        return isinstance(applied, dict) and stamp in applied
+
+    def _record_demo_install_state_stamp(self, stamp: str) -> None:
+        state_path = self._demo_install_state_path()
+        payload: dict[str, Any] = {}
+        if state_path.exists():
+            try:
+                loaded = json.loads(state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    payload = loaded
+            except Exception:
+                payload = {}
+        applied = payload.get("applied")
+        if not isinstance(applied, dict):
+            applied = {}
+            payload["applied"] = applied
+        applied[stamp] = {"applied_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _maybe_apply_packaged_demo_install_policy(self) -> None:
+        if self._first_run_workspace_modal_shown or not self.controller.has_config():
+            return
+        policy = self._read_packaged_demo_install_policy()
+        if not policy or not policy.get("install"):
+            return
+        config = self.controller.app_config
+        if config is None:
+            return
+        overwrite_existing = bool(policy.get("overwrite"))
+        stamp = self._packaged_demo_install_stamp(
+            libraries_root=config.libraries_root,
+            overwrite_existing=overwrite_existing,
+        )
+        if stamp is not None and self._demo_install_state_has_stamp(stamp):
+            return
+        try:
+            message = self._install_demo_assets_after_workspace_setup(
+                requested=True,
+                libraries_root=config.libraries_root,
+                overwrite_existing=overwrite_existing,
+            )
+            if stamp is not None:
+                self._record_demo_install_state_stamp(stamp)
+            self._refresh_ui_from_config(select_provision_when_missing=False)
+            self._set_manager_status(message)
+        except Exception as exc:
+            self._set_manager_status(f"Demo library install failed: {exc}")
+
     def _probe_workspace_roots(self, *, sources_root: Path, libraries_root: Path) -> tuple[str, str]:
         try:
             libraries = discover_import_agent_libraries(libraries_root) if libraries_root.exists() else []
@@ -1882,6 +2165,14 @@ class ImportAgentManagerWindow:
         workspace_var = tk.StringVar(value=str(self._initial_workspace_root_for_modal()))
         status_var = tk.StringVar(value="")
         roots_var = tk.StringVar(value="")
+        demo_available = self._packaged_demo_assets_root() is not None
+        demo_policy = self._read_packaged_demo_install_policy()
+        demo_install_var = tk.BooleanVar(
+            value=bool(demo_available and (demo_policy.get("install") if demo_policy is not None else True))
+        )
+        demo_overwrite_var = tk.BooleanVar(
+            value=bool(demo_policy.get("overwrite") if demo_policy is not None else True)
+        )
 
         body = ttk.Frame(dialog, padding=16)
         body.grid(row=0, column=0, sticky="nsew")
@@ -1918,12 +2209,26 @@ class ImportAgentManagerWindow:
         ttk.Label(body, textvariable=roots_var, wraplength=620, justify="left").grid(
             row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0)
         )
+        demo_overwrite_check: Optional[ttk.Checkbutton] = None
+        if demo_available:
+            demo_install_check = ttk.Checkbutton(
+                body,
+                text="Install BODAQS Demo Library so the Workbench can be explored without a logger.",
+                variable=demo_install_var,
+            )
+            demo_install_check.grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            demo_overwrite_check = ttk.Checkbutton(
+                body,
+                text="Overwrite existing demo library if present.",
+                variable=demo_overwrite_var,
+            )
+            demo_overwrite_check.grid(row=5, column=0, columnspan=3, sticky="w", padx=(28, 0), pady=(2, 0))
         ttk.Label(body, textvariable=status_var, wraplength=620, justify="left").grid(
-            row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+            row=6, column=0, columnspan=3, sticky="ew", pady=(8, 0)
         )
 
         actions = ttk.Frame(body)
-        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(16, 0))
+        actions.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(16, 0))
         actions.columnconfigure(0, weight=1)
         use_existing_button = ttk.Button(actions, text="Use Existing Workspace")
         create_button = ttk.Button(actions, text="Create Default Workspace")
@@ -1942,6 +2247,8 @@ class ImportAgentManagerWindow:
             status_var.set(message)
             use_existing_button.configure(state="normal" if mode == "adoptable" else "disabled")
             create_button.configure(state="normal" if mode == "empty" else "disabled")
+            if demo_overwrite_check is not None:
+                demo_overwrite_check.configure(state="normal" if demo_install_var.get() else "disabled")
 
         def create_default_workspace() -> None:
             sources_root = state.get("sources_root")
@@ -1973,14 +2280,27 @@ class ImportAgentManagerWindow:
             except Exception as exc:
                 status_var.set(f"Could not create default workspace: {exc}")
                 return
+            demo_status = ""
+            if demo_available and demo_install_var.get():
+                try:
+                    demo_status = self._install_demo_assets_after_workspace_setup(
+                        requested=True,
+                        libraries_root=libraries_root,
+                        overwrite_existing=bool(demo_overwrite_var.get()),
+                    )
+                except Exception as exc:
+                    demo_status = f"Demo library install failed: {exc}"
             self.sources_root_var.set(str(sources_root))
             self.libraries_root_var.set(str(libraries_root))
             self._refresh_ui_from_config()
             self._sync_startup_registration(show_errors=True, emit_status=False)
-            self._set_provision_status(
+            status_text = (
                 f"Created default workspace with library '{result.library.display_name}' "
                 f"and source '{result.source.display_name}'."
             )
+            if demo_status:
+                status_text = f"{status_text} {demo_status}"
+            self._set_provision_status(status_text)
             if self.notebook is not None:
                 self.notebook.select(0)
             dialog.destroy()
@@ -2000,14 +2320,28 @@ class ImportAgentManagerWindow:
             except Exception as exc:
                 status_var.set(f"Could not use existing workspace: {exc}")
                 return
+            demo_status = ""
+            if demo_available and demo_install_var.get():
+                try:
+                    demo_status = self._install_demo_assets_after_workspace_setup(
+                        requested=True,
+                        libraries_root=libraries_root,
+                        overwrite_existing=bool(demo_overwrite_var.get()),
+                    )
+                except Exception as exc:
+                    demo_status = f"Demo library install failed: {exc}"
             self.sources_root_var.set(str(sources_root))
             self.libraries_root_var.set(str(libraries_root))
             self._refresh_ui_from_config()
             self._sync_startup_registration(show_errors=True, emit_status=False)
-            self._set_provision_status(
+            config = self.controller.app_config or result.app_config
+            status_text = (
                 "Using existing workspace: "
-                f"libraries={len(result.app_config.libraries)} sources={len(result.app_config.sources)}."
+                f"libraries={len(config.libraries)} sources={len(config.sources)}."
             )
+            if demo_status:
+                status_text = f"{status_text} {demo_status}"
+            self._set_provision_status(status_text)
             if self.notebook is not None:
                 self.notebook.select(0)
             dialog.destroy()
@@ -2015,6 +2349,7 @@ class ImportAgentManagerWindow:
         create_button.configure(command=create_default_workspace)
         use_existing_button.configure(command=use_existing_workspace)
         workspace_var.trace_add("write", refresh_state)
+        demo_install_var.trace_add("write", refresh_state)
         refresh_state()
 
         dialog.update_idletasks()

@@ -1,0 +1,49 @@
+{
+  "schema": "bodaqs.demo_library_recipe",
+  "version": 1,
+  "source_libraries_root": "C:/Users/benco/OneDrive/BODAQS-data",
+  "source_library_id": "default-library",
+  "output_root": "C:/Users/benco/dev/BODAQS/demo-assets",
+  "demo_library_id": "bodaqs-demo",
+  "demo_display_name": "BODAQS Demo Library",
+  "include_referenced_sessions": true,
+  "include_bookmarks_for_sessions": true,
+  "runs": [
+    {
+      "run_id": "ben-stevo-rc3001_260630_162343",
+      "description": "stevo wet weekend recut"
+    },
+    {
+      "run_id": "ben-stevo-local_260619_173304",
+      "description": "John Forrest STEVO shakedown"
+    },
+    {
+      "run_id": "ben-stevo-rc3001_260710_155930",
+      "description": "Valley Sunday with GPS the final"
+    },
+    {
+      "run_id": "ben-stevo-local_260703_193401",
+      "description": "Valley with Gav - shock clickers undone"
+    }
+  ],
+  "sessions": [],
+  "study_sets": [
+    "jly-three-ways",
+    "stevo-shakedown",
+    "valley-clickers-undone"
+  ],
+  "tracks": [
+    "jesus-loves-you-backwards"
+  ],
+  "bookmarks": [],
+  "session_filters": [
+    "good-gps-data"
+  ],
+  "anonymize": {
+    "remove_absolute_paths": true,
+    "replace_text": {
+      "Ben Connor": "Demo Rider",
+      "Ben's STEVO": "Demo Bike"
+    }
+  }
+}

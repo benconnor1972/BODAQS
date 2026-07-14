@@ -272,6 +272,14 @@ if ($installerRequested) {
     New-Item -ItemType Directory -Force -Path $serviceStageDir | Out-Null
     Copy-Item (Join-Path $distDir "bodaqs-library-service\*") $serviceStageDir -Recurse -Force
 
+    $repoRoot = Split-Path -Parent $importManagerDir
+    $demoAssetsSourceDir = Join-Path $repoRoot "demo-assets"
+    $demoAssetsStageDir = Join-Path $installerStageDir "demo-assets"
+    New-Item -ItemType Directory -Force -Path $demoAssetsStageDir | Out-Null
+    if (Test-Path $demoAssetsSourceDir) {
+        Copy-Item (Join-Path $demoAssetsSourceDir "*") $demoAssetsStageDir -Recurse -Force
+    }
+
     $componentVersions = [ordered]@{
         bundle = [ordered]@{
             name = "BODAQS Desktop"
@@ -308,14 +316,19 @@ if ($installerRequested) {
         Write-Host "Stage contents:" $installerStageDir
     } else {
         Write-Host "Using Inno Setup compiler:" $resolvedInnoSetupExe
-        & $resolvedInnoSetupExe `
-            "/DStageRoot=$installerStageDir" `
-            "/DAppVersion=$BundleVersion" `
-            "/DImportManagerVersion=$ImportManagerVersion" `
-            "/DLibraryServiceVersion=$LibraryServiceVersion" `
-            "/DWorkbenchVersion=$WorkbenchVersion" `
-            "/DInstallerOutputDir=$installerOutputDir" `
-            $installerScript
+        $innoArgs = @(
+            "/DStageRoot=$installerStageDir",
+            "/DAppVersion=$BundleVersion",
+            "/DImportManagerVersion=$ImportManagerVersion",
+            "/DLibraryServiceVersion=$LibraryServiceVersion",
+            "/DWorkbenchVersion=$WorkbenchVersion",
+            "/DInstallerOutputDir=$installerOutputDir"
+        )
+        if (Test-Path (Join-Path $demoAssetsStageDir "libraries\*\library_definition.json")) {
+            $innoArgs += "/DHasDemoLibrary=1"
+        }
+        $innoArgs += $installerScript
+        & $resolvedInnoSetupExe @innoArgs
         Write-Host "Installer output:" $finalInstallerPath
     }
 }
