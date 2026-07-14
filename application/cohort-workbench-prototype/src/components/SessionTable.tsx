@@ -395,6 +395,9 @@ export function SessionTable({
                               event.stopPropagation()
                               toggleFilterMenu(columnId)
                             }}
+                            onPointerDown={(event) => {
+                              event.stopPropagation()
+                            }}
                             title={
                               selectedFilterValues.length
                                 ? `${columnLabels[columnId]} filter applied`

@@ -102,8 +102,8 @@ export function SessionNoteEditorModal({
       const nextNote: SessionNoteRecord = {
         ...note,
         title: draft.title.trim() || 'Session note',
-        values: draft.values,
-        customValues: draft.customValues,
+        values: coerceDraftValuesForSave(draft.values, note.fields),
+        customValues: coerceDraftValuesForSave(draft.customValues, note.fields),
         freeTextNotes: draft.freeTextNotes,
         draft: nextDraftStatus === 'preserve' ? draft.draft : nextDraftStatus,
       }
@@ -251,7 +251,6 @@ function NoteFieldEditor({
   onChange: (value: SessionNoteValue) => void
 }) {
   const label = `${field.label}${field.unit ? ` [${field.unit}]` : ''}`
-  const numericFieldType = field.fieldType === 'int' ? 'int' : 'float'
 
   return (
     <label className={field.fieldType === 'text' ? 'wide-field note-field-row' : 'note-field-row'}>
@@ -304,7 +303,7 @@ function NoteFieldEditor({
         <input
           inputMode="decimal"
           value={noteValueText(value)}
-          onChange={(event) => onChange(numberNoteValue(event.target.value, numericFieldType))}
+          onChange={(event) => onChange(event.target.value)}
         />
       ) : (
         <input
@@ -421,6 +420,25 @@ function numberNoteValue(value: string, fieldType: 'int' | 'float'): SessionNote
     return null
   }
   return fieldType === 'int' ? Math.trunc(parsed) : parsed
+}
+
+function coerceDraftValuesForSave(
+  values: Record<string, SessionNoteValue>,
+  fields: SessionNoteFieldDef[],
+): Record<string, SessionNoteValue> {
+  const fieldsById = new Map(fields.map((field) => [field.fieldId, field]))
+  return Object.fromEntries(
+    Object.entries(values).map(([fieldId, value]) => {
+      const fieldType = fieldsById.get(fieldId)?.fieldType
+      if (fieldType !== 'int' && fieldType !== 'float') {
+        return [fieldId, value]
+      }
+      if (typeof value === 'number' || value === null) {
+        return [fieldId, value]
+      }
+      return [fieldId, numberNoteValue(noteValueText(value), fieldType)]
+    }),
+  )
 }
 
 function noteValueText(value: SessionNoteValue | undefined) {

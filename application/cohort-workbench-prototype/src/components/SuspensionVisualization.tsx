@@ -3474,6 +3474,7 @@ function MirroredVelocityChart({
           })}
       {showStatsOnChart && (
         <MirroredStatsGlyphOverlay
+          displayMode={displayMode}
           formatter={statsFormatter}
           height={height}
           margin={margin}
@@ -3906,6 +3907,7 @@ function DisplacementStatsGlyphOverlay({
 }
 
 function MirroredStatsGlyphOverlay({
+  displayMode,
   formatter,
   height,
   margin,
@@ -3914,6 +3916,7 @@ function MirroredStatsGlyphOverlay({
   xDomain,
   y,
 }: {
+  displayMode: FrequencyDisplayMode
   formatter: (value: number | null) => string
   height: number
   margin: { left: number; right: number; top: number; bottom: number }
@@ -3944,8 +3947,16 @@ function MirroredStatsGlyphOverlay({
   const rowHeight = 8
   const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
   const zeroY = y(0)
-  const compressionY = Math.max(margin.top + 4, zeroY - compressionRows.length * rowHeight - 7)
-  const reboundY = Math.min(height - margin.bottom - reboundRows.length * rowHeight - 3, zeroY + 7)
+  const compressionStackHeight = compressionRows.length * rowHeight
+  const reboundStackHeight = reboundRows.length * rowHeight
+  const compressionY =
+    displayMode === 'histogram'
+      ? margin.top + 7
+      : Math.max(margin.top + 4, zeroY - compressionStackHeight - 7)
+  const reboundY =
+    displayMode === 'histogram'
+      ? height - margin.bottom - reboundStackHeight - 7
+      : Math.min(height - margin.bottom - reboundStackHeight - 3, zeroY + 7)
   return (
     <g className="viz-displacement-glyph-overlay mirrored" aria-label="Mirrored distribution summaries">
       <g transform={`translate(0 ${compressionY})`}>
