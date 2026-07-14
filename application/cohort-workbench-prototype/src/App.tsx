@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import {
   BarChart3,
   BookOpen,
@@ -2743,19 +2743,21 @@ function AnalysisRoutePage({
               </div>
             </div>
           )}
-          <SuspensionVisualization
-            studySet={studySet}
-            sessions={sessions}
-            tracks={tracks}
-            dataSource={dataSource}
-            bookmarkRefreshToken={bookmarkRefreshToken}
-            onInspectSignals={(sessionRef, window) => {
-              const session = sessionByRef(sessionRef, sessions)
-              if (session) {
-                setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
-              }
-            }}
-          />
+          <RouteErrorBoundary resetKey={analysisRouteErrorBoundaryKey(route, studySet)}>
+            <SuspensionVisualization
+              studySet={studySet}
+              sessions={sessions}
+              tracks={tracks}
+              dataSource={dataSource}
+              bookmarkRefreshToken={bookmarkRefreshToken}
+              onInspectSignals={(sessionRef, window) => {
+                const session = sessionByRef(sessionRef, sessions)
+                if (session) {
+                  setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
+                }
+              }}
+            />
+          </RouteErrorBoundary>
         </section>
       ) : (
         <section className="analysis-route-empty">
@@ -2783,6 +2785,55 @@ function AnalysisRoutePage({
       )}
     </main>
   )
+}
+
+type RouteErrorBoundaryProps = {
+  children: ReactNode
+  resetKey: string
+}
+
+type RouteErrorBoundaryState = {
+  error: Error | null
+}
+
+class RouteErrorBoundary extends Component<RouteErrorBoundaryProps, RouteErrorBoundaryState> {
+  state: RouteErrorBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: Error): RouteErrorBoundaryState {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Analysis route render failed', error, info)
+  }
+
+  componentDidUpdate(previousProps: RouteErrorBoundaryProps) {
+    if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null })
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="signal-inspector-message warning">
+          <strong>Could not render this analysis view.</strong>
+          <span>{this.state.error.message || 'An unexpected browser-side error occurred.'}</span>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function analysisRouteErrorBoundaryKey(route: AnalysisRouteState, studySet: StudySet) {
+  return `${route.viewId}:${JSON.stringify({
+    id: studySet.id,
+    revision: studySet.revision,
+    sessions: studySet.sessions.map(sessionRefId),
+    groupings: studySet.groupings.map((grouping) => [grouping.id, grouping.sessionRefs]),
+    trackIds: studySet.trackIds,
+  })}`
 }
 
 function pendingActionLabel(action: PendingStudySetAction) {

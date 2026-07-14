@@ -1004,6 +1004,7 @@ tbody tr.primary-row td:first-child {
 
 .column-filter-button {
   position: relative;
+  z-index: 12;
   display: inline-flex;
   align-items: center;
   justify-content: center;

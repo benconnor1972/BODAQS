@@ -40,6 +40,8 @@ from .import_agent_provisioning import (
     ImportAgentWorkspaceSyncReport,
     adopt_import_agent_existing_workspace,
     check_import_agent_workspace_sync,
+    discover_import_agent_libraries,
+    discover_import_agent_sources,
     load_import_agent_app_config,
     load_managed_import_source_configs,
     managed_import_agent_source_roots,
@@ -114,10 +116,13 @@ _ASSET_PACKAGE = "bodaqs_import_manager.import_agent_assets"
 _APP_DISPLAY_NAME = "BODAQS Import Manager"
 _WINDOW_ICON_FILENAME = "app_icon.png"
 _WINDOW_ICON_ICO_FILENAME = "app_icon.ico"
+_TRAY_ICON_FILENAME = "tray_icon.png"
 _WINDOWS_APP_USER_MODEL_ID = "BODAQS.ImportAgent.Manager"
 _LIBRARY_SERVICE_HOST = "127.0.0.1"
 _LIBRARY_SERVICE_PORT = 8765
 _LIBRARY_SERVICE_STARTUP_TIMEOUT_S = 12.0
+_DEFAULT_WORKSPACE_LIBRARY_NAME = "Default Library"
+_DEFAULT_WORKSPACE_SOURCE_NAME = "Default Source"
 _SOURCE_TYPE_LABELS = {
     SOURCE_TYPE_FILESYSTEM_ARCHIVE: "Local archive folder",
     SOURCE_TYPE_LOGGER_WIFI: "Wi-Fi logger",
@@ -216,8 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sources-root", default=str(_default_sources_root()))
     parser.add_argument("--libraries-root", default=str(_default_libraries_root()))
-    parser.add_argument("--library-name", default="Default Library")
-    parser.add_argument("--source-name", default="Default Source")
+    parser.add_argument("--library-name", default=_DEFAULT_WORKSPACE_LIBRARY_NAME)
+    parser.add_argument("--source-name", default=_DEFAULT_WORKSPACE_SOURCE_NAME)
     parser.add_argument("--run-tz-label", default="LOCAL")
     parser.add_argument("--data-syn-bike-export", action="store_true")
     parser.add_argument("--attach-session-note", action="store_true")
@@ -726,10 +731,10 @@ class ImportAgentManagerWindow:
         _apply_windows_app_user_model_id()
         self.root = tk.Tk()
         self._window_icon_image: Optional[tk.PhotoImage] = None
+        self._workbench_button_image: Optional[tk.PhotoImage] = None
         self._apply_window_icon()
         self.root.title(_app_window_title())
-        self.root.geometry("1120x760")
-        self.root.minsize(980, 680)
+        self._configure_initial_window_geometry()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.controller = ImportAgentManagerController(args.app_config)
@@ -740,7 +745,7 @@ class ImportAgentManagerWindow:
         self.import_now_thread: Optional[threading.Thread] = None
         self.tray_icon: Optional[ImportAgentTrayIcon] = None
         self.watch_state_var = tk.StringVar(value="Watcher stopped.")
-        self.library_service_state_var = tk.StringVar(value="Library web app stopped.")
+        self.library_service_state_var = tk.StringVar(value="BODAQS Workbench stopped.")
         self.manager_status_var = tk.StringVar(value="Ready.")
         self.provision_status_var = tk.StringVar(value="Ready to provision or extend the managed setup.")
         self.summary_var = tk.StringVar(value="")
@@ -772,6 +777,7 @@ class ImportAgentManagerWindow:
         self._close_notice_shown = False
         self._shutdown_requested = False
         self._startup_workspace_sync_checked = False
+        self._first_run_workspace_modal_shown = False
 
         self._library_choice_map: dict[str, str] = {}
         self._source_runtime_status: dict[str, str] = {}
@@ -798,13 +804,22 @@ class ImportAgentManagerWindow:
         self.notebook: Optional[ttk.Notebook] = None
 
         self._build()
-        self._refresh_ui_from_config(select_provision_when_missing=True)
+        self._refresh_ui_from_config(select_provision_when_missing=False)
         self.root.after(100, self._apply_window_icon)
+        self.root.after(150, self._maybe_show_first_run_workspace_modal)
         self._start_tray_icon()
         self._sync_startup_registration(show_errors=False, emit_status=False)
         self.root.after(250, self._poll_event_queue)
         self.root.after(400, self._apply_launch_behavior)
         self.root.after(900, self._check_workspace_sync_on_startup)
+
+    def _configure_initial_window_geometry(self) -> None:
+        screen_width = max(800, int(self.root.winfo_screenwidth()))
+        screen_height = max(600, int(self.root.winfo_screenheight()))
+        width = min(1120, max(820, screen_width - 96))
+        height = min(760, max(560, screen_height - 120))
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(min(980, width), min(620, height))
 
     def _apply_window_icon(self) -> None:
         try:
@@ -823,7 +838,27 @@ class ImportAgentManagerWindow:
         except Exception:
             self._window_icon_image = None
 
+    def _load_workbench_button_image(self) -> Optional[tk.PhotoImage]:
+        if self._workbench_button_image is not None:
+            return self._workbench_button_image
+        try:
+            png_asset = files(_ASSET_PACKAGE).joinpath(_TRAY_ICON_FILENAME)
+            icon_bytes = png_asset.read_bytes()
+            image = tk.PhotoImage(data=base64.b64encode(icon_bytes).decode("ascii"), format="png")
+            scale = max(1, math.ceil(max(image.width(), image.height()) / 22))
+            if scale > 1:
+                image = image.subsample(scale, scale)
+            self._workbench_button_image = image
+        except Exception:
+            self._workbench_button_image = None
+        return self._workbench_button_image
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self.root)
+        style.configure("Workbench.TButton", padding=(12, 10))
+
     def _build(self) -> None:
+        self._configure_styles()
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -943,8 +978,9 @@ class ImportAgentManagerWindow:
 
         actions = ttk.Frame(parent)
         actions.grid(row=3, column=0, sticky="ew", pady=(10, 8))
-        for col in range(7):
+        for col in range(8):
             actions.columnconfigure(col, weight=0)
+        actions.columnconfigure(5, weight=1)
         ttk.Button(actions, text="Refresh", command=self._refresh_ui_from_config).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(actions, text="Sync Workspace", command=self._sync_workspace_from_roots).grid(
             row=0, column=1, padx=(0, 8)
@@ -952,10 +988,23 @@ class ImportAgentManagerWindow:
         ttk.Button(actions, text="Import Now", command=self._import_now).grid(row=0, column=2, padx=(0, 8))
         ttk.Button(actions, text="Start Watch", command=self._start_watch).grid(row=0, column=3, padx=(0, 8))
         ttk.Button(actions, text="Stop Watch", command=self._stop_watch).grid(row=0, column=4, padx=(0, 8))
-        self.open_web_app_button = ttk.Button(actions, text="Open Web App", command=self._open_web_app)
-        self.open_web_app_button.grid(row=0, column=5, padx=(12, 8))
-        self.stop_web_app_button = ttk.Button(actions, text="Stop Web App", command=self._stop_web_app)
-        self.stop_web_app_button.grid(row=0, column=6, padx=(0, 8))
+        workbench_button_image = self._load_workbench_button_image()
+        open_button_options: dict[str, Any] = {
+            "text": "Open BODAQS Workbench",
+            "command": self._open_web_app,
+            "style": "Workbench.TButton",
+        }
+        if workbench_button_image is not None:
+            open_button_options.update({"image": workbench_button_image, "compound": "left"})
+        self.open_web_app_button = ttk.Button(actions, **open_button_options)
+        self.open_web_app_button.grid(row=0, column=6, sticky="e", padx=(12, 8))
+        self.stop_web_app_button = ttk.Button(
+            actions,
+            text="Stop BODAQS Workbench",
+            command=self._stop_web_app,
+            style="Workbench.TButton",
+        )
+        self.stop_web_app_button.grid(row=0, column=7, sticky="e", padx=(0, 8))
 
         logs = ttk.Frame(parent)
         logs.grid(row=4, column=0, sticky="nsew")
@@ -971,6 +1020,28 @@ class ImportAgentManagerWindow:
         )
 
     def _build_provision_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        content = ttk.Frame(canvas)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _sync_scroll_region(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _sync_content_width(event: tk.Event) -> None:
+            canvas.itemconfigure(content_window, width=event.width)
+
+        content.bind("<Configure>", _sync_scroll_region)
+        canvas.bind("<Configure>", _sync_content_width)
+
+        parent = content
         parent.columnconfigure(0, weight=1)
 
         ttk.Label(
@@ -1669,10 +1740,10 @@ class ImportAgentManagerWindow:
         config = self.controller.app_config
         if config is None:
             self.summary_var.set(
-                "No managed app config exists yet. Use the Provision tab to create the first library and source."
+                "No managed workspace is configured yet. Choose a workspace root to create or adopt a setup."
             )
             self.watch_state_var.set("Watcher stopped.")
-            self.library_service_state_var.set("Library web app unavailable until a managed setup exists.")
+            self.library_service_state_var.set("BODAQS Workbench unavailable until a managed setup exists.")
             self._render_libraries([])
             self._render_sources([])
             self._library_choice_map = {}
@@ -1743,12 +1814,216 @@ class ImportAgentManagerWindow:
             return
         service = self._library_api_service_for_current_config(create=False)
         if service is not None and service.is_running():
-            self.library_service_state_var.set(f"Library web app available at {service.web_url}")
+            self.library_service_state_var.set(f"BODAQS Workbench available at {service.web_url}")
         else:
             base_url = f"http://{_LIBRARY_SERVICE_HOST}:{_LIBRARY_SERVICE_PORT}"
             self.library_service_state_var.set(
-                f"Library web app stopped. Use Open Web App to start {base_url}."
+                f"BODAQS Workbench stopped. Use Open BODAQS Workbench to start {base_url}."
             )
+
+    def _maybe_show_first_run_workspace_modal(self) -> None:
+        if self._first_run_workspace_modal_shown or self.controller.has_config() or self.startup_launch:
+            return
+        self._first_run_workspace_modal_shown = True
+        self._show_first_run_workspace_modal()
+
+    def _workspace_roots_from_base(self, workspace_root: str | Path) -> tuple[Path, Path]:
+        base = Path(workspace_root).expanduser()
+        return base / "sources", base / "libraries"
+
+    def _initial_workspace_root_for_modal(self) -> Path:
+        sources_root = Path(self.sources_root_var.get()).expanduser()
+        libraries_root = Path(self.libraries_root_var.get()).expanduser()
+        if (
+            sources_root.name.lower() == "sources"
+            and libraries_root.name.lower() == "libraries"
+            and sources_root.parent == libraries_root.parent
+        ):
+            return sources_root.parent
+        return _default_workspace_root()
+
+    def _probe_workspace_roots(self, *, sources_root: Path, libraries_root: Path) -> tuple[str, str]:
+        try:
+            libraries = discover_import_agent_libraries(libraries_root) if libraries_root.exists() else []
+            sources = (
+                discover_import_agent_sources(
+                    sources_root,
+                    known_library_ids={library.library_id for library in libraries},
+                )
+                if sources_root.exists()
+                else []
+            )
+        except Exception as exc:
+            return "blocked", f"Existing workspace-like files need attention before setup can continue: {exc}"
+        if libraries and sources:
+            return "adoptable", (
+                f"Existing BODAQS workspace found: {len(libraries)} librar"
+                f"{'y' if len(libraries) == 1 else 'ies'}, {len(sources)} source"
+                f"{'' if len(sources) == 1 else 's'}."
+            )
+        if libraries or sources:
+            return "blocked", (
+                "A partial BODAQS workspace was found. Use a different folder, or repair/adopt the "
+                "workspace after both libraries and sources are present."
+            )
+        return "empty", (
+            "No BODAQS workspace found here. Create a default workspace with Default Library "
+            "and Default Source."
+        )
+
+    def _show_first_run_workspace_modal(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Set up BODAQS workspace")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(True, False)
+        dialog.columnconfigure(0, weight=1)
+
+        workspace_var = tk.StringVar(value=str(self._initial_workspace_root_for_modal()))
+        status_var = tk.StringVar(value="")
+        roots_var = tk.StringVar(value="")
+
+        body = ttk.Frame(dialog, padding=16)
+        body.grid(row=0, column=0, sticky="nsew")
+        body.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            body,
+            text="Choose a workspace root",
+            font=("", 11, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            body,
+            text=(
+                "BODAQS Desktop will use this folder to store local sources and processed libraries. "
+                "For a new setup it will create a Default Library and a local archive Default Source."
+            ),
+            wraplength=620,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 12))
+
+        ttk.Label(body, text="Workspace root").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(body, textvariable=workspace_var).grid(row=2, column=1, sticky="ew", padx=(12, 8), pady=4)
+
+        def browse() -> None:
+            selected = filedialog.askdirectory(
+                title="Choose BODAQS workspace root",
+                initialdir=workspace_var.get() or str(Path.home()),
+                parent=dialog,
+            )
+            if selected:
+                workspace_var.set(selected)
+
+        ttk.Button(body, text="Browse...", command=browse).grid(row=2, column=2, sticky="e", pady=4)
+        ttk.Label(body, textvariable=roots_var, wraplength=620, justify="left").grid(
+            row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+        )
+        ttk.Label(body, textvariable=status_var, wraplength=620, justify="left").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+
+        actions = ttk.Frame(body)
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(16, 0))
+        actions.columnconfigure(0, weight=1)
+        use_existing_button = ttk.Button(actions, text="Use Existing Workspace")
+        create_button = ttk.Button(actions, text="Create Default Workspace")
+        cancel_button = ttk.Button(actions, text="Cancel", command=dialog.destroy)
+        use_existing_button.grid(row=0, column=1, padx=(0, 8))
+        create_button.grid(row=0, column=2, padx=(0, 8))
+        cancel_button.grid(row=0, column=3)
+
+        state: dict[str, Any] = {"mode": "empty", "sources_root": None, "libraries_root": None}
+
+        def refresh_state(*_args: object) -> None:
+            sources_root, libraries_root = self._workspace_roots_from_base(workspace_var.get())
+            mode, message = self._probe_workspace_roots(sources_root=sources_root, libraries_root=libraries_root)
+            state.update({"mode": mode, "sources_root": sources_root, "libraries_root": libraries_root})
+            roots_var.set(f"Sources: {sources_root}\nLibraries: {libraries_root}")
+            status_var.set(message)
+            use_existing_button.configure(state="normal" if mode == "adoptable" else "disabled")
+            create_button.configure(state="normal" if mode == "empty" else "disabled")
+
+        def create_default_workspace() -> None:
+            sources_root = state.get("sources_root")
+            libraries_root = state.get("libraries_root")
+            if not isinstance(sources_root, Path) or not isinstance(libraries_root, Path):
+                refresh_state()
+                return
+            mode, message = self._probe_workspace_roots(sources_root=sources_root, libraries_root=libraries_root)
+            if mode != "empty":
+                status_var.set(message)
+                refresh_state()
+                return
+            try:
+                result = self.controller.create_initial_setup(
+                    sources_root=str(sources_root),
+                    libraries_root=str(libraries_root),
+                    library_display_name=_DEFAULT_WORKSPACE_LIBRARY_NAME,
+                    source_display_name=_DEFAULT_WORKSPACE_SOURCE_NAME,
+                    source_type=SOURCE_TYPE_FILESYSTEM_ARCHIVE,
+                    logger_wifi=None,
+                    run_tz_label="LOCAL",
+                    data_syn_bike_export_enabled=False,
+                    attach_session_note_on_import=False,
+                    session_auto_name_enabled=False,
+                    session_name_base="",
+                    auto_start=bool(self.auto_start_var.get()),
+                    overwrite=False,
+                )
+            except Exception as exc:
+                status_var.set(f"Could not create default workspace: {exc}")
+                return
+            self.sources_root_var.set(str(sources_root))
+            self.libraries_root_var.set(str(libraries_root))
+            self._refresh_ui_from_config()
+            self._sync_startup_registration(show_errors=True, emit_status=False)
+            self._set_provision_status(
+                f"Created default workspace with library '{result.library.display_name}' "
+                f"and source '{result.source.display_name}'."
+            )
+            if self.notebook is not None:
+                self.notebook.select(0)
+            dialog.destroy()
+
+        def use_existing_workspace() -> None:
+            sources_root = state.get("sources_root")
+            libraries_root = state.get("libraries_root")
+            if not isinstance(sources_root, Path) or not isinstance(libraries_root, Path):
+                refresh_state()
+                return
+            try:
+                result = self.controller.adopt_existing_workspace(
+                    sources_root=str(sources_root),
+                    libraries_root=str(libraries_root),
+                    auto_start=bool(self.auto_start_var.get()),
+                )
+            except Exception as exc:
+                status_var.set(f"Could not use existing workspace: {exc}")
+                return
+            self.sources_root_var.set(str(sources_root))
+            self.libraries_root_var.set(str(libraries_root))
+            self._refresh_ui_from_config()
+            self._sync_startup_registration(show_errors=True, emit_status=False)
+            self._set_provision_status(
+                "Using existing workspace: "
+                f"libraries={len(result.app_config.libraries)} sources={len(result.app_config.sources)}."
+            )
+            if self.notebook is not None:
+                self.notebook.select(0)
+            dialog.destroy()
+
+        create_button.configure(command=create_default_workspace)
+        use_existing_button.configure(command=use_existing_workspace)
+        workspace_var.trace_add("write", refresh_state)
+        refresh_state()
+
+        dialog.update_idletasks()
+        width = min(max(dialog.winfo_reqwidth(), 680), max(680, self.root.winfo_screenwidth() - 120))
+        height = dialog.winfo_reqheight()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - width) // 2)
+        y = self.root.winfo_rooty() + 90
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.focus_set()
 
     def _set_root_editable(self, editable: bool) -> None:
         state = "normal" if editable else "disabled"
@@ -3999,19 +4274,19 @@ class ImportAgentManagerWindow:
             message = service.start()
             webbrowser.open(service.web_url)
         except Exception as exc:
-            self.library_service_state_var.set("Library web app failed to start.")
-            self._set_manager_status(f"Open web app failed: {exc}")
+            self.library_service_state_var.set("BODAQS Workbench failed to start.")
+            self._set_manager_status(f"Open BODAQS Workbench failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             self._refresh_web_app_controls(has_config=True)
             return
-        self.library_service_state_var.set(f"Library web app available at {service.web_url}")
+        self.library_service_state_var.set(f"BODAQS Workbench available at {service.web_url}")
         self._set_manager_status(f"{message} Opened {service.web_url}")
         self._refresh_web_app_controls(has_config=True)
 
     def _stop_web_app(self) -> None:
         service = self._library_api_service_for_current_config(create=False)
         if service is None or not service.is_running():
-            self.library_service_state_var.set("Library web app stopped.")
+            self.library_service_state_var.set("BODAQS Workbench stopped.")
             self._refresh_web_app_controls(has_config=self.controller.has_config())
             return
         if not service.started_by_manager:
@@ -4021,11 +4296,11 @@ class ImportAgentManagerWindow:
             self._refresh_web_app_controls(has_config=self.controller.has_config())
             return
         if service.stop():
-            self._set_manager_status("Stopped Library web app service.")
-            self.library_service_state_var.set("Library web app stopped.")
+            self._set_manager_status("Stopped BODAQS Workbench service.")
+            self.library_service_state_var.set("BODAQS Workbench stopped.")
         else:
-            self._set_manager_status("Library web app stop requested; service is still shutting down.")
-            self.library_service_state_var.set(f"Library web app still running at {service.web_url}.")
+            self._set_manager_status("BODAQS Workbench stop requested; service is still shutting down.")
+            self.library_service_state_var.set(f"BODAQS Workbench still running at {service.web_url}.")
         self._refresh_web_app_controls(has_config=self.controller.has_config())
 
     def _window_visible(self) -> bool:
