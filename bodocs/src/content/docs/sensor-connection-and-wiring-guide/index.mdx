@@ -1,0 +1,79 @@
+---
+title: Sensor overview
+description: Placeholder overview of sensors supported by BODAQS.
+sidebar:
+  order: 1
+---
+
+import {Aside} from '@astrojs/starlight/components';
+import Flag from '@components/Flag.astro';
+
+BODAQS data loggers can currently read linear potentiometers, angle sensors and GPS, but will be capable of reading many more sensor types once some further firmware development is done.
+
+This section provides background on the sensor options for BODAQS loggers. Subsequent sections deal with practical wiring and configuration.
+
+### Types of sensors
+
+We classify sensors according to how they communicate with the data logger.
+#### Analog sensors
+Analog sensors present an electrical voltage that the data logger reads. The size of the voltage tells you what the sensor is doing. For example, with a linear potentiometer, the voltage tells you where in its travel the potentiometer is located. 
+
+Analog sensors typically have **three wires**:
+- **Ground** (or '-') and **Excitation** (or '+') are reference voltages supplied by the logger to the sensor. They represent the full range of possible sensor output.
+- **Signal** (or 'out') is the output from the sensor to the logger. It can take any value between '+' and '-' depending on what the sensor is doing.      
+
+Internally, the logger converts analog signals to a digital format using a device called an 'analog to digital converter' (ADC). The quality of a logger's ADCs in part determines how quickly and precisely analog sensors can be read.
+
+Analog inputs are extremely versatile: almost anything that produces a voltage in the correct range can be read using an analog input. But each input can only read *one thing*, and the logger can't give the sensor instructions.
+
+<Flag src="/src/assets/pics/a8-analog.png" alt="a8 analog"> 
+The two connectors on the right-hand side of the **A8 logger** are for analog inputs. Each connector is connected to a separate ADC. As is traditional in electronics, the inputs are numbered from 0: the top connector is for analog inputs 0 to 3, and the bottom connector for 4 to 7.
+
+Multiple analog connections can share ground and excitation pins.
+</Flag>
+
+<Flag src="/src/assets/pics/proto-f-analog.png" alt="proto f analog"> 
+The **Prototype F logger** can connect up to four analog inputs, each on a separate connector. 
+</Flag>
+
+
+#### Digital sensors
+Whereas analog sensors simply present a voltage for the logger to interpret, digital sensors can have a much more active conversation with the logger. The logger can tell the sensors to do things; and the sensors can report back a range of information including their current settings and status, as well as whatever they are there to sense. This is powerful but can get complicated.
+
+Different sensors speak different digital languages, known as 'protocols'. BODAQS loggers understand three different serial protocols ('serial' here meaning the data is transmitted in sequence down a single channel).
+
+**I2C ('inter-integrated-circuit')** is a protocol that can support multiple sensors (or other devices) all connected to the same two wires (plus power and ground, for four wires in total). Each sensor has its own 'address' so that data can be collected from or delivered to the correct device. This is called a 'bus cofiguration' and every sensor on the same bus must have its own unique address. 
+
+BODAQS loggers can connect sensors on two different I2C buses (named 'I2C0' and 'I2C1'). Internally, they use I2C0 to run the OLED display and the battery fuel gauge. Typical uses for I2C are reading rotary position sensors. 
+
+<Flag src="/src/assets/pics/a8-i2c.png" alt="a8 i2c"> 
+The lower left connector on the **A8 logger** is for I2C sensors. The I2C buses share the same power and ground pins.
+</Flag>
+
+<Flag src="/src/assets/pics/proto-f-i2c.png" alt="proto f i2c"> 
+The **Prototype F logger** can run up to 2 I2C buses, each on a separate connector. Because the Prototype F case only allows 6 connectors and but the logger can support up to 8, some tradeoffs may be required. For example, you could run 2 analog inputs, UART and the bar switch connector in the 4 connector positions at the top of the logger, and another analog input and I2C1 in the bottom positions. Or various other combinations.
+</Flag>
+
+
+**UART ('universal asynchronous receive and transmit')** is a protocol that can support a single connected device using two wires (plus power and ground, for four wires in total). It is not a 'bus' and only one device per wire pair can be used. BODAQS loggers use UART to connect external GPS sensors. 
+
+<Flag src="/src/assets/pics/a8-uart.png" alt="a8 uart"> 
+The upper left connector on the **A8 logger** is shared between the handlebar switch and a UART connection for GPS. Power, Ground, Tx (transmit) and Rx (receive) are required for UART.
+</Flag>
+
+<Flag src="/src/assets/pics/proto-f-uart.png" alt="proto f uart"> 
+The **Prototype F logger** has UART pins broken out on the PCB, but these do not have a dedicated connector position. If a UART connection is wanted, the connector can be placed in any of the available positions: those normally used for I2C connectors are ideal.
+</Flag>
+
+<Aside type="caution" title="Take care wiring UART">
+Normally when you are wiring sensors to the logger, you match things together - power to power, ground to ground, signal to signal, SCL to SCL and so on. *UART Tx and Rx aren't like that.* With UART, the Tx wire of the logger gets connected to the Rx wire of the sensor, and vice versa.
+</Aside>
+
+**SPI ('serial peripheral interface')** is a protocol that can support multiple sensors or other devices using three common wires and one unique wire per device (plus power and ground, for six wires in total at each device and 5+n wires at the logger, where n is the number of connected devices). The devices are not 'addressed' - each device's dedicated 'chip select' wire determines when it is talking to the logger. 
+
+BODAQS A8 loggers use SPI internally to communicate between the microcontroller and the ADCs, and expose one additional SPI input for experimental purposes. There are currently no external SPI sensors supported.
+
+<Flag src="/src/assets/pics/a8-spi.png" alt="a8 spi"> 
+The A8 breaks out 6 pins for a single SPI device. At the moment no SPI sensors are supported: this provision is for testing and experimentation
+</Flag>
+

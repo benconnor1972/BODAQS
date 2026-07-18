@@ -4,6 +4,12 @@ import starlight from '@astrojs/starlight';
 
 export default defineConfig({
   site: 'https://bodaqs.net',
+  redirects: {
+    '/hardware-guide': '/logger-build-guide',
+    '/hardware-guide/building': '/logger-build-guide/prototype-f/building-the-logger',
+    '/hardware-guide/preparing-the-dev-board': '/logger-build-guide/prototype-f/preparing-the-dev-board',
+    '/hardware-guide/installation': '/bike-installation-guide',
+  },
   integrations: [
     starlight({
       title: 'Bodocs',
@@ -37,8 +43,40 @@ export default defineConfig({
       sidebar: [
         { slug: 'what-is-bodaqs' },
         {
-          label: 'Hardware guide',
-          autogenerate: {directory: 'hardware-guide'},
+          label: 'Logger build guide',
+          items: [
+            {slug: 'logger-build-guide'},
+            {
+              label: 'BODAQS A8',
+              items: [
+                {slug: 'logger-build-guide/bodaqs-a8/sourcing-hardware'},
+                {slug: 'logger-build-guide/bodaqs-a8/preparing-the-dev-board'},
+                {slug: 'logger-build-guide/bodaqs-a8/building-the-logger'},
+              ],
+            },
+            {
+              label: 'Prototype F',
+              items: [
+                {slug: 'logger-build-guide/prototype-f/sourcing-hardware'},
+                {slug: 'logger-build-guide/prototype-f/preparing-the-dev-board'},
+                {slug: 'logger-build-guide/prototype-f/building-the-logger'},
+              ],
+            },
+          ],
+        }, {
+          label: 'Sensor connection and wiring guide',
+          items: [
+            {slug: 'sensor-connection-and-wiring-guide'},
+            {slug: 'sensor-connection-and-wiring-guide/connecting-and-configuring-sensors'},
+            {slug: 'sensor-connection-and-wiring-guide/wiring-and-connector-tips'},
+          ],
+        }, {
+          label: 'Bike installation guide',
+          items: [
+            {slug: 'bike-installation-guide'},
+            {slug: 'bike-installation-guide/mounting-sensors'},
+            {slug: 'bike-installation-guide/determining-leverage-curves'},
+          ],
         }, {
           label: 'Software setup guide',
           autogenerate: {directory: 'software-guide'},
