@@ -1,22 +1,585 @@
 ---
 title: Connecting and configuring sensors
-description: Placeholder guide for connecting sensors to the logger and configuring them in BODAQS.
+description: How to wire supported BODAQS sensors and configure them in the logger web interface.
 sidebar:
   order: 2
 ---
 
-import {Aside} from '@astrojs/starlight/components';
+import {Aside, Steps} from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+import Flag from '@components/Flag.astro';
 
-<Aside type="caution" title="Content still needed">
-  This page is a placeholder for sensor connection and configuration instructions.
+<Lede>
+  This guide covers connecting sensors to a BODAQS logger and configuring the logger to read the sensor correctly.
+  
+  The inputs on a BODAQS logger are *general purpose* - this means flexibility, but it also means some simple configuration is necessary when you first set up the logger, or when you want to attach additional sensors.
+</Lede>
+
+<Aside type="caution" title="Plugs that look the same but aren't">
+BODAQS loggers use the same physical connector type to do many jobs. All the plugs on an A8 logger have the same 6-pin design, but there are three different configurations: one for analog connectors, one for I2C and one for UART and the bar switch. Ideally, all of these connector types would be unique but I haven't been able to achieve that on a tight budget. It is recommended you color-code each male and female connector pair. Nail polish works well for this.
 </Aside>
 
-This page will describe how to connect sensors to the logger and configure the corresponding sensor definitions.
+## What 'Configuring' Means
 
-## Content to add
+Configuring a sensor means telling the logger:
 
-- Connector pinouts for each sensor input type.
-- Step-by-step setup for common analog sensors.
-- I2C sensor setup and address considerations.
-- Configuration file fields and examples.
-- Calibration and validation checks.
+- what type of sensor it is;
+- where it is connected, such as `AIN0`, `I2C1` address `54`, or `UART0`;
+- what the sensor is measuring, ('signal semantics') so downstream analysis tools know what to do with its output
+- how to translate the raw sensor output into real-world measurements (calibration information) 
+- for some sensors, additional settings particular to the type of sensor.
+
+Currently BODAQS loggers support the following sensor types:
+
+| Sensor type | Physical connection | Typical use |
+| --- | --- | --- |
+| `Analog Potentiometer` | Analog input | Linear potentiometers for suspension travel. |
+| `AS5600 Angle (I2C)` | I2C | Measurement of suspension linkage rotation for calculating rear wheel movement |
+| `AS5048B Angle (I2C)` | I2C | Linkage rotation, higher-resolution single-turn rotary angle measurement. |
+| `DAN-F10N GPS (UART)` | UART | On-logger GPS position, speed, and heading. |
+| `AS5600 String Pot (I2C)` | I2C | Multi-turn AS5600-based string potentiometer, digitally read. |
+| `AS5600 String Pot (Analog)` | Analog input | AS5600-based string potentiometer, read via analog. |
+
+
+
+{/* TODO diagram: add one overview drawing showing analog, I2C, and UART logical wiring. */}
+
+Configuration information lives in a file on the SD card inside your logger. Normally you change it by connecting to the logger via WiFi.
+
+As well as sensors, BODAQS loggers have an optional handlebar switch with an LED that can be used to start and stop logging and provide visual confirmation that logging is running. The switch does not require configuration: it just plugs in.\
+
+<Aside type="caution" title="Restart after structural changes">
+  Adding a sensor, deleting a sensor, or changing a sensor's type can be saved immediately, but will not take effect until the logger is re-started. Other sensor configuration changes are effective immediately on save.
+</Aside>
+
+## Analog Sensors
+
+Analog sensors use three logical wires:
+
+| Sensor wire | Connects to | Notes |
+| --- | --- | --- |
+| `+`, `VCC`, `excitation` | Logger sensor power | Use the logger's sensor supply, labelled '+3V0' on A8 loggers and '+3V3' on Prototype F loggers. |
+| `-`, `GND`, `0V` | Logger ground | Use the logger's Ground, labelled 'GND'. |
+| `signal`, `out`, `wiper` | One analog input | Analog inputs are labelled 'A0' or 'AIN0', 'A1' or 'AIN1' etc.   |
+
+See [Sensor Overview](/sensor-connection-and-wiring-guide/) to locate these pins on the logger. See [Wiring and Connector Tips](/sensor-connection-and-wiring-guide/wiring-and-connector-tips/) for practical wiring advice.
+
+### Analog Potentiometer
+
+Use `Analog Potentiometer` configuration for ordinary three-wire linear potentiometers, often used 
+as fork and shock displacement sensors. Connect each analog potentiometer per the table above. Multiple potentiometers can connect to the same logger + and - pins, but each one must have its own analog input.
+
+<Aside type="tip" title="+ and - wires can be swapped">
+It does not strictly matter which way around the + and - connections are wired: in one arrangement the sensor wil give maximum output at maximum travel; in the other, maximum output at minimum travel. Either is OK: the firmware infers polarity when range calibration is done.
+</Aside>
+
+<Aside type="tip" title="Choose sensible sensor travel">
+  The potentiometer must have more mechanical travel than the part it is
+  measuring. Do not rely on the sensor's internal end stops to limit suspension
+  movement.
+</Aside>
+
+{/* TODO picture: add a three-wire linear pot connected to an A8 analog connector. */}
+{/* TODO picture: add a Prototype F M8 analog connector wired to a linear pot. */}
+
+#### Analog potentiometer configuration
+
+Connect to the logger configuration web interface and navigate to the `Sensors` page, as described in the [User Guide](/user-guide/accessing-logs-and-configuration/)
+
+1. Add a new sensor of type `Analog Potentiometer`.
+2. Name it, for example `front_shock` or `rear_shock`.
+3. Edit the sensor and set `Analog input` to the AIN where the signal wire is
+   connected.
+4. Set `Output mode` to `LINEAR`.
+5. Enable `Include raw column` for setup.
+6. Set `Sensor full travel (mm)` to the measured usable travel of the
+   potentiometer.
+7. Set `Installed range` to the installed travel range you want Sag Helper to
+   use for percentages.
+8. Set usage metadata, usually `front` or `rear`, `suspension`, and `disp`.
+9. Save.
+10. Restart the logger after adding it.
+
+#### Calibrate And Check It
+
+1. Run `RANGE` calibration with the sensor at its zero-travel endpoint first.
+2. Move it to its full-travel endpoint and finish the range capture.
+3. Run `ZERO` calibration at the installed reference position.
+4. Open Sag Helper or make a short test log.
+5. Confirm the raw count changes smoothly and the linear value moves in the
+   expected direction.
+
+If the linear value is always zero, check that `Sensor full travel (mm)` is set
+and that range calibration captured two different counts.
+
+
+### I2C Buses
+
+I2C sensors use four logical wires:
+
+| Sensor wire | Connects to | Notes |
+| --- | --- | --- |
+| `VCC` | Logger 3.3 V | Use 3.3 V unless the sensor board explicitly level-shifts I2C. |
+| `GND` | Logger ground | Required for reliable communication. |
+| `SDA` | Logger SDA for the chosen bus | Do not swap with SCL. |
+| `SCL` | Logger SCL for the chosen bus | Do not swap with SDA. |
+
+The firmware exposes I2C bus indexes as `0` and `1`. Use the bus that matches
+the connector you wired.
+
+<Aside type="caution" title="AS5600 address conflict">
+  AS5600 sensors normally use I2C address `0x36`, which the web UI stores as
+  decimal `54`. The logger's fuel gauge also uses `0x36` on the internal I2C0
+  bus on current firmware profiles. Put AS5600 sensors on I2C1 where available,
+  or use an address translator or analog AS5600 output.
+</Aside>
+
+Every device on the same I2C bus needs a unique address. If two devices with the
+same address are on the same bus, neither one can be addressed cleanly by the
+logger.
+
+### UART For GPS
+
+UART sensors use four logical wires:
+
+| Logger wire | Connects to sensor | Notes |
+| --- | --- | --- |
+| `3.3V` | `VCC` | Use the voltage required by the GPS board. |
+| `GND` | `GND` | Common ground is required. |
+| `TX` | `RX` | UART transmit and receive cross over. |
+| `RX` | `TX` | UART transmit and receive cross over. |
+
+<Aside type="caution" title="UART is crossed">
+  Unlike power, ground, analog signal, SDA, or SCL, UART `TX` and `RX` are not
+  connected like-for-like. Logger `TX` goes to sensor `RX`, and logger `RX` goes
+  to sensor `TX`.
+</Aside>
+
+## Web Configuration Flow
+
+<Flag src="/src/assets/pics/sensorbasic.png" alt="sensor basic settings">
+The sensor detail page starts with the `Basic` section. This is where you name
+the sensor, choose its type, select its physical connection, and decide whether
+it should be muted by default.
+</Flag>
+
+The normal setup flow is:
+
+1. Open `Sensors`.
+2. In `New sensor`, choose the sensor type and give it a short name, such as
+   `front_shock`, `rear_shock`, `link_angle`, or `gps`.
+3. Select `Add Sensor`.
+4. Restart the logger.
+5. Return to `Sensors` and select `Edit`.
+6. Set the connection fields.
+7. Set output and usage fields.
+8. Save.
+9. Run calibration where applicable.
+
+Sensor names are stored in a short fixed field in firmware. Keep them under 16
+characters, use simple letters/numbers/underscores, and avoid changing them once
+you have downstream profiles or calibration files referring to them.
+
+
+
+### Output Settings
+
+<Flag src="/src/assets/pics/sensoroutput.png" alt="sensor output settings">
+For most install work, use `LINEAR` output and leave `Include raw column`
+enabled until the sensor has been checked. The raw column is useful for
+diagnosing wiring, clipping, noise, and calibration mistakes.
+</Flag>
+
+Common output fields:
+
+| Field | Use |
+| --- | --- |
+| `Output mode` | `LINEAR` writes calibrated mm or degrees. `RAW` writes counts. |
+| `Include raw column` | Adds raw count columns for diagnosis. |
+| `Sensor full travel (mm)` | The sensor's own usable travel, not wheel travel. |
+| `Installed range` | The installed travel/range used for Sag Helper percentages. |
+
+`Sensor full travel` is especially important for linear displacement sensors.
+If it is `0`, the logger cannot convert counts into mm and the linear output
+will not be useful.
+
+<Aside type="note" title="Transforms are applied downstream">
+  Logger-side LUT and polynomial output modes are retired in the current
+  firmware path. Use `LINEAR` on the logger, then apply linkage or wheel-travel
+  transforms during import/analysis.
+</Aside>
+
+### Usage Settings
+
+<Flag src="/src/assets/pics/sensorusage.png" alt="sensor usage settings">
+Usage fields tell BODAQS what the signal represents. They are written into log
+metadata and help downstream tools keep working even if sensor names change.
+</Flag>
+
+Recommended values for suspension sensors:
+
+| Measurement | `End` | `Primary domain` | `Primary quantity` |
+| --- | --- | --- | --- |
+| Front linear travel | `front` | `suspension` | `disp` |
+| Rear shock or linkage linear travel | `rear` | `suspension` | `disp` |
+| Front rotary linkage angle | `front` | `suspension` | `ang_disp` |
+| Rear rotary linkage angle | `rear` | `suspension` | `ang_disp` |
+
+The Sag Helper only shows active, unmuted sensors with `primary_domain` set to
+`suspension`.
+
+### Calibration Settings
+
+<Flag src="/src/assets/pics/sensorcalibration.png" alt="sensor calibration settings">
+The web page shows the calibration values stored for a sensor. The cleanest way
+to capture those values is usually the OLED `Calibration` menu, because it reads
+the sensor live while you move it.
+</Flag>
+
+There are two calibration concepts:
+
+- `RANGE` captures the raw count at the sensor's zero-travel endpoint and
+  full-travel endpoint. This sets the counts-to-mm scale.
+- `ZERO` captures the installed zero/reference point. For suspension this is
+  usually full extension with the bike unweighted, but choose the reference that
+  makes sense for your analysis.
+
+For rotary angle sensors, `ZERO` also has a `Capture +move` step. Capture the
+reference angle first, then move the linkage slightly in the positive direction
+and capture again. The firmware uses that second capture to set rotation
+direction.
+
+## Analog Potentiometer
+
+Use `Analog Potentiometer` for ordinary three-wire linear potentiometers, such
+as fork and shock displacement sensors.
+
+### Wire It
+
+Connect:
+
+| Potentiometer terminal | Logger connection |
+| --- | --- |
+| One end of resistive track | 3.3 V sensor excitation |
+| Other end of resistive track | Ground |
+| Wiper | Chosen analog input, such as `AIN0` |
+
+If moving the sensor in the desired positive direction makes the raw count go
+down instead of up, that is OK. The firmware infers polarity from range
+calibration when the full-travel count is below the zero-travel count.
+
+<Aside type="tip" title="Choose sensible sensor travel">
+  The potentiometer must have more mechanical travel than the part it is
+  measuring. Do not rely on the sensor's internal end stops to limit suspension
+  movement.
+</Aside>
+
+{/* TODO picture: add a three-wire linear pot connected to an A8 analog connector. */}
+{/* TODO picture: add a Prototype F M8 analog connector wired to a linear pot. */}
+
+### Configure It
+
+1. Add a new sensor of type `Analog Potentiometer`.
+2. Name it, for example `front_shock` or `rear_shock`.
+3. Restart the logger after adding it.
+4. Edit the sensor and set `Analog input` to the AIN where the signal wire is
+   connected.
+5. Set `Output mode` to `LINEAR`.
+6. Enable `Include raw column` for setup.
+7. Set `Sensor full travel (mm)` to the measured usable travel of the
+   potentiometer.
+8. Set `Installed range` to the installed travel range you want Sag Helper to
+   use for percentages.
+9. Set usage metadata, usually `front` or `rear`, `suspension`, and `disp`.
+10. Save.
+
+### Calibrate And Check It
+
+1. Run `RANGE` calibration with the sensor at its zero-travel endpoint first.
+2. Move it to its full-travel endpoint and finish the range capture.
+3. Run `ZERO` calibration at the installed reference position.
+4. Open Sag Helper or make a short test log.
+5. Confirm the raw count changes smoothly and the linear value moves in the
+   expected direction.
+
+If the linear value is always zero, check that `Sensor full travel (mm)` is set
+and that range calibration captured two different counts.
+
+## AS5600 String Pot (I2C)
+
+Use `AS5600 String Pot (I2C)` for an AS5600 magnetic encoder used as a
+multi-turn string potentiometer. This is the preferred AS5600 string-pot mode
+because it avoids analog ADC noise and reads the encoder digitally.
+
+### Wire It
+
+Connect the AS5600 board to the chosen I2C connector:
+
+| AS5600 pin | Logger connection |
+| --- | --- |
+| `VCC` | 3.3 V |
+| `GND` | Ground |
+| `SDA` | SDA on the chosen I2C bus |
+| `SCL` | SCL on the chosen I2C bus |
+
+Use I2C1 for AS5600 sensors where possible. The default AS5600 address is
+`0x36`, which is decimal `54` in the web UI.
+
+{/* TODO diagram: add AS5600 I2C string-pot wiring, including bus 1/address 54 note. */}
+
+### Configure It
+
+1. Add `AS5600 String Pot (I2C)`.
+2. Give it a short name.
+3. Restart the logger.
+4. Edit the sensor.
+5. Set `I2C bus` to the bus connected to the sensor, commonly `1` for AS5600.
+6. Set `I2C address` to `54` unless your hardware changes the address.
+7. Leave `Async I2C acquisition rate` at `0` so it follows the logger sample
+   rate.
+8. Leave `Counts per turn` at `4096`.
+9. Leave `Wrap threshold counts` at `2048` unless you are diagnosing false wrap
+   detection.
+10. Leave `Assume turn0 at start` enabled for normal string-pot installs.
+11. Set `Output mode` to `LINEAR`.
+12. Keep `Include raw column` enabled during setup. This writes wrapped and
+    unwrapped raw count columns.
+13. Set `Sensor full travel (mm)` to the string pot's measured draw length.
+14. Set usage metadata, usually `front` or `rear`, `suspension`, and `disp`.
+15. Save.
+
+### Calibrate And Check It
+
+Run range calibration across the installed string-pot travel, then zero
+calibration at the installed reference position.
+
+Watch the unwrapped raw column during a test log if values jump by roughly one
+turn. That usually points to a wrap-threshold issue, a magnet/encoder issue, or
+mechanical motion that crosses the wrap boundary unexpectedly.
+
+## AS5600 String Pot (Analog)
+
+Use `AS5600 String Pot (Analog)` only when I2C wiring is not practical or when
+you deliberately want to consume an analog input instead of an I2C bus.
+
+### Wire It
+
+Connect the AS5600 board's analog output to a logger analog input:
+
+| AS5600 board pin | Logger connection |
+| --- | --- |
+| `VCC` | 3.3 V |
+| `GND` | Ground |
+| `OUT` / analog output | Chosen analog input |
+
+Make sure the AS5600 board is configured for analog voltage output, not PWM
+output. The signal should sweep smoothly from near ground to near 3.3 V over one
+turn.
+
+{/* TODO picture: add AS5600 analog output wiring to an analog input. */}
+
+### Configure It
+
+1. Add `AS5600 String Pot (Analog)`.
+2. Restart the logger.
+3. Set `Analog input` to the chosen `AIN`.
+4. Leave `Counts per turn` at `4096` and `Wrap threshold counts` at `2048`.
+5. Leave `Assume turn0 at start` enabled.
+6. Set `Output mode` to `LINEAR`.
+7. Keep `Include raw column` enabled for setup.
+8. Set `Sensor full travel (mm)` to the string pot's measured draw length.
+9. Set usage metadata, usually `front` or `rear`, `suspension`, and `disp`.
+10. Save.
+
+### Calibrate And Check It
+
+Use the same range and zero calibration flow as the I2C AS5600 string pot. If
+the output is noisy, clips near either end, or jumps around at rest, check the
+analog output mode, signal voltage range, grounding, and cable shielding/routing.
+
+## AS5600 Angle (I2C)
+
+Use `AS5600 Angle (I2C)` for a single-turn rotary angle sensor, such as a linkage
+angle pickup. The logger writes degrees in `LINEAR` mode.
+
+### Wire It
+
+Connect:
+
+| AS5600 pin | Logger connection |
+| --- | --- |
+| `VCC` | 3.3 V |
+| `GND` | Ground |
+| `SDA` | SDA on the chosen I2C bus |
+| `SCL` | SCL on the chosen I2C bus |
+
+The magnet must be centred and spaced correctly over the AS5600. If the magnet
+is too far away, too close, or off-centre, angle readings may be unstable even
+when the wiring is correct.
+
+{/* TODO picture: add AS5600 angle sensor/magnet orientation and air-gap diagram. */}
+
+### Configure It
+
+1. Add `AS5600 Angle (I2C)`.
+2. Restart the logger.
+3. Set `I2C bus` to the connected bus.
+4. Set `I2C address` to `54` unless your hardware changes it.
+5. Leave `I2C read mode` at `repeated` unless troubleshooting a specific board.
+6. Leave `Slow filter` at its default unless you need a different response/noise
+   tradeoff.
+7. Leave `Async I2C acquisition rate` at `0` to follow the logger sample rate.
+8. Set `Output mode` to `LINEAR`.
+9. Keep `Include raw column` enabled during setup.
+10. Leave `Include angle` and `Include diag` disabled unless troubleshooting.
+11. Set usage metadata, usually `front` or `rear`, `suspension`, and
+    `ang_disp`.
+12. Save.
+
+### Calibrate And Check It
+
+1. Put the linkage at its reference angle.
+2. Run `ZERO` calibration.
+3. Capture the zero point.
+4. Move the linkage slightly in the direction you want to count as positive.
+5. Use `Capture +move`.
+6. Save the calibration.
+
+If the angle moves the wrong way after calibration, repeat zero calibration and
+make the second movement in the intended positive direction, or edit `Direction`
+in the web UI.
+
+## AS5048B Angle (I2C)
+
+Use `AS5048B Angle (I2C)` for a single-turn magnetic angle sensor with 14-bit
+raw resolution. It is configured much like the AS5600 angle sensor, but its
+default address and raw count range are different.
+
+### Wire It
+
+Connect:
+
+| AS5048B pin | Logger connection |
+| --- | --- |
+| `VCC` | 3.3 V |
+| `GND` | Ground |
+| `SDA` | SDA on the chosen I2C bus |
+| `SCL` | SCL on the chosen I2C bus |
+
+The AS5048 family also exists in other interface variants. Select the I2C
+variant or a breakout wired for I2C operation.
+
+{/* TODO picture: add AS5048B angle sensor/magnet orientation and air-gap diagram. */}
+
+### Configure It
+
+1. Add `AS5048B Angle (I2C)`.
+2. Restart the logger.
+3. Set `I2C bus` to the connected bus.
+4. Set `I2C address` to `64` for the default `0x40` address.
+5. Leave `I2C read mode` at `repeated`.
+6. Leave `Async I2C acquisition rate` at `0`.
+7. Set `Output mode` to `LINEAR`.
+8. Keep `Include raw column` enabled during setup.
+9. Leave `Include diag` disabled unless troubleshooting magnet strength or
+   communication.
+10. Set usage metadata, usually `front` or `rear`, `suspension`, and
+    `ang_disp`.
+11. Save.
+
+### Calibrate And Check It
+
+Use the same rotary zero workflow as the AS5600 angle sensor: capture the
+reference angle, move slightly in the positive direction, then capture the
+movement. The firmware stores `zero_count` and `direction`.
+
+## DAN-F10N GPS (UART)
+
+Use `DAN-F10N GPS (UART)` for an external u-blox based GPS module connected to
+the logger UART.
+
+### Wire It
+
+Connect:
+
+| GPS pin | Logger connection |
+| --- | --- |
+| `VCC` | 3.3 V or the GPS board's required input voltage |
+| `GND` | Ground |
+| `TX` | Logger `RX` |
+| `RX` | Logger `TX` |
+
+Mount the patch antenna facing the sky. Avoid hiding it under the battery,
+display, metal hardware, carbon frame sections, or dense wiring bundles.
+
+{/* TODO picture: add DAN-F10N GPS wiring to A8 UART connector. */}
+{/* TODO picture: add example GPS placement with patch antenna facing sky. */}
+
+### Configure It
+
+1. Add `DAN-F10N GPS (UART)`.
+2. Name it `gps`.
+3. Restart the logger.
+4. Set `UART port` to `0` for the standard logger UART.
+5. Leave `Baud` at `38400` for the DAN-F10N default.
+6. Start with `Update rate` at `1` Hz for bring-up. After it is working, use
+   `5` or `10` Hz if you want denser motion data.
+7. Leave `Validity policy` at `valid_only` for normal logs.
+8. Leave `Quality columns` at `minimal` unless you need full GPS diagnostics.
+9. Leave `Emit position`, `Emit altitude`, and `Emit motion` enabled unless you
+   deliberately want fewer columns.
+10. Leave `RX buffer bytes`, `Begin max wait`, and `Config max wait` at their
+    defaults unless troubleshooting.
+11. Save.
+
+### Check It
+
+The GPS status appears on the OLED idle screen when a GPS sensor is configured:
+
+- `GPS` means the logger has a usable fix.
+- `.....` means the receiver is present and acquiring.
+- `NOGPS` means the receiver is absent, in error, muted, or not producing usable
+  data.
+
+The GPS acquisition task may be deferred while the web interface or upload mode
+is active. After configuration, turn Wi-Fi off or restart the logger and give
+the receiver a clear sky view before judging fix performance.
+
+## Clean Install Checklist
+
+Before the first real ride:
+
+1. Label both ends of every sensor cable.
+2. Confirm power and ground continuity for each connector.
+3. Confirm no short exists between 3.3 V and ground.
+4. Check analog signal voltage while moving each analog sensor.
+5. Confirm each I2C sensor has a unique address on its bus.
+6. Confirm UART `TX` and `RX` are crossed for GPS.
+7. Add and configure one sensor at a time.
+8. Restart after adding or changing sensor types.
+9. Run range calibration for linear sensors.
+10. Run zero calibration for all installed suspension sensors.
+11. Keep raw columns enabled for the first test session.
+12. Make a short bench log and inspect the columns before routing cables
+    permanently.
+13. Add strain relief, waterproofing, and cable protection only after the
+    readings make sense.
+
+## Troubleshooting
+
+| Symptom | Likely causes | What to check |
+| --- | --- | --- |
+| Analog raw value is flat | Wrong AIN, bad ground, broken wiper, sensor not powered | Check AIN selection, continuity, and signal voltage. |
+| Analog raw value is stuck near 0 or full scale | Signal shorted to ground or excitation, travel beyond sensor range | Check connector pinout and mechanical end stops. |
+| Linear value is always 0 | `Sensor full travel (mm)` is 0, range calibration failed | Set sensor travel and repeat range calibration. |
+| Sensor does not appear in Sag Helper | Muted, usage metadata missing, not `suspension` | Unmute and set `Primary domain` to `suspension`. |
+| I2C sensor is not detected | Wrong bus/address, SDA/SCL swapped, address conflict | Check bus index, decimal address, wiring, and AS5600/fuel-gauge conflict. |
+| AS5600 string pot jumps by one turn | Wrap threshold issue, startup position issue, magnet/encoder issue | Enable raw columns and compare wrapped vs unwrapped counts. |
+| Rotary angle moves the wrong way | Direction calibration captured backwards | Repeat zero calibration and `Capture +move` in the positive direction. |
+| GPS never fixes | TX/RX not crossed, wrong baud, poor sky view, web/upload mode active | Check wiring, keep `38400` baud, turn Wi-Fi off, and move outside. |
+
+<Aside type="tip" title="Keep the first log boring">
+  The best first test is a slow, deliberate movement through each sensor's
+  installed range. It is much easier to debug a clean bench trace than a noisy
+  ride trace with unknown wiring, calibration, and mounting all mixed together.
+</Aside>
