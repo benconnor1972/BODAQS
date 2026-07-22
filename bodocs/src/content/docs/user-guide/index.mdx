@@ -21,7 +21,7 @@ import Flag from '@components/Flag.astro';
 ## Display Overview
 
 {/* TODO screenshot: add GPS acquiring/fixed idle variants if useful. */}
-<Flag src="/src/assets/pics/oled-idle-status.png" alt="idle status screen">
+<Flag src="/src/assets/pics/user-guide/oled-idle-status.png" alt="idle status screen">
 The idle/status screen is shown whenever the menu is closed.
 
 - The top row shows the current status. When Wi-Fi is running, it alternates
@@ -40,7 +40,7 @@ The top status line can also temporarily show warnings, such as missing SD card,
 SD not ready, analog rail fault, low battery, or battery alert.
 </Flag>
 
-<Flag src="/src/assets/pics/oled-log-start.png" alt="log start message">
+<Flag src="/src/assets/pics/user-guide/oled-log-start.png" alt="log start message">
 Short messages appear after actions such as starting a log, stopping a log,
 marking an event, saving calibration, entering upload mode, or encountering an
 error.
@@ -65,7 +65,7 @@ From the idle screen:
 
 ## Menu Navigation
 
-<Flag src="/src/assets/pics/oled-main-menu-top.png" alt="main menu top">
+<Flag src="/src/assets/pics/user-guide/oled-main-menu-top.png" alt="main menu top">
 Menu navigation is simple:
 
 - Right from the idle/status screen opens the menu.
@@ -76,7 +76,7 @@ Menu navigation is simple:
 
 </Flag>
 
-<Flag src="/src/assets/pics/oled-main-menu-bottom.png" alt="main menu lower scroll">
+<Flag src="/src/assets/pics/user-guide/oled-main-menu-bottom.png" alt="main menu lower scroll">
 The selected row is shown with a leading `>` marker. If a menu has more rows than
 fit on the display, the list scrolls as you move through it.
 The `v` and `^` markers shows that there are menu items below or above the current scroll window.
@@ -133,7 +133,7 @@ The main menu has the following items:
 
 ### Wi-Fi And Web Interface
 
-<Flag src="/src/assets/pics/oled-wifi-starting.png" alt="Wi-Fi starting">
+<Flag src="/src/assets/pics/user-guide/oled-wifi-starting.png" alt="Wi-Fi starting">
 Selecting the Wi-Fi menu item starts or stops the web interface. The logger supports both Station and Access Point (AP) modes:
 
 - `Station` mode connects the logger to an existing WiFi network. Up to five networks can be configured.
@@ -143,7 +143,7 @@ While Wi-Fi is starting, the menu row shows `WiFi: STARTING`. When the web serve
 is running, it shows `WiFi: ON`.
 </Flag>
 
-<Flag src="/src/assets/pics/oled-ap-idle.png" alt="access point idle status">
+<Flag src="/src/assets/pics/user-guide/oled-ap-idle.png" alt="access point idle status">
 When Wi-Fi is running, the idle status line alternates between network/AP name
 and IP address. Navigate to the IP address in a browser to open the web interface.
 </Flag>
@@ -156,7 +156,7 @@ and IP address. Navigate to the IP address in a browser to open the web interfac
 
 ### Upload Mode
 
-<Flag src="/src/assets/pics/oled-upload-mode-status.png" alt="upload mode status screen">
+<Flag src="/src/assets/pics/user-guide/oled-upload-mode-status.png" alt="upload mode status screen">
 Upload mode is a protected state used by the BODAQS Import Manager to collect log files. File transfer can occur automatically when, and only when, the logger is in upload mode.
 
 When upload mode is active:
@@ -170,7 +170,7 @@ You can enter or exit upload mode from the OLED main menu, from the Files page
 in the web interface, or from the Import Manager, but it is always a deliberate user action.
 </Flag>
 
-<Flag src="/src/assets/pics/oled-upload-idle.png" alt="upload mode idle screen">
+<Flag src="/src/assets/pics/user-guide/oled-upload-idle.png" alt="upload mode idle screen">
 When upload mode is active, the idle/status screen shows `UPLOAD MODE` so it is
 clear that the logger is in file-transfer mode rather than normal logging mode.
 </Flag>
@@ -178,7 +178,7 @@ clear that the logger is in file-transfer mode rather than normal logging mode.
 
 ### Mute Sensors
 
-<Flag src="/src/assets/pics/oled-sensor-mute.png" alt="sensor mute screen">
+<Flag src="/src/assets/pics/user-guide/oled-sensor-mute.png" alt="sensor mute screen">
 The `Mute sensors` menu opens a list of configured sensors. Each sensor appears
 by name. Muted sensors show `[M]` beside the name.
 
@@ -188,7 +188,7 @@ Selecting a sensor toggles it between muted and active. Muted sensors are exclud
 
 ### Sample Rate
 
-<Flag src="/src/assets/pics/samplerate.png" alt="sample rate">
+<Flag src="/src/assets/pics/user-guide/samplerate.png" alt="sample rate">
 The `Sample rate` menu opens a list of supported sample-rate presets:
 
 - `10 Hz`
@@ -209,7 +209,7 @@ The current rate is shown with `[*]`. Select a rate to apply it.
 
 ### Calibration
 
-<Flag src="/src/assets/pics/calibration.png" alt="calibration">
+<Flag src="/src/assets/pics/user-guide/calibration.png" alt="calibration">
 The `Calibration` menu lists configured sensors and shows which on-device
 calibration actions each sensor supports:
 
@@ -221,7 +221,7 @@ calibration actions each sensor supports:
 Select a sensor to open its calibration screen.
 </Flag>
 
-<Flag src="/src/assets/pics/rangestart.png" alt="range start">
+<Flag src="/src/assets/pics/user-guide/rangestart.png" alt="range start">
 #### Range Calibration
 
 Range calibration captures the sensor's raw count at the start and finish of
@@ -238,19 +238,19 @@ Typical workflow:
 7. Select `Save` to keep the range, or `Cancel` to discard it.
 </Flag>
 
-<Flag src="/src/assets/pics/rangefinish.png" alt="range finish">
+<Flag src="/src/assets/pics/user-guide/rangefinish.png" alt="range finish">
 While range calibration is active, the display shows live raw counts at the
 bottom of the screen. This helps confirm that the logger is seeing the sensor
 move.
 </Flag>
 
-<Aside type="note" title="Range calibration highly recommended">
-It is recommended that youy do range calibration for all sensors that support it. This should be a one-time activity under normal circumstances. 
+<Aside type="note" title="Range calibration required">
+It is strongly recommended that you do range calibration for all sensors that support it. This should be a one-time activity under normal circumstances. 
 </Aside>
 
 #### Zero Calibration
 
-<Flag src="/src/assets/pics/oled-zero-calibration.png" alt="zero calibration screen">
+<Flag src="/src/assets/pics/user-guide/oled-zero-calibration.png" alt="zero calibration screen">
 Zero calibration marks the sensor's installed zero point.
 
 For simple linear sensors, zero calibration involves:
@@ -267,7 +267,7 @@ positive direction (sit on the bike, say) and capture again. The logger uses thi
 the rotation positive direction.
 
 ### Sag Helper
-<Flag src="/src/assets/pics/oled-sag-helper-percent.png" alt="Sag Helper percentage mode">
+<Flag src="/src/assets/pics/user-guide/oled-sag-helper-percent.png" alt="Sag Helper percentage mode">
 The `Sag helper` screen is intended to assist with setting static sag during suspension setup. The Sag Helper shows live output from unmuted suspension sensors , updated once per second.
 
 When the Sag Helper is active, use the up/down buttons to cycle display modes:
@@ -285,7 +285,7 @@ flash off every two seconds.
 
 ### Settings
 
-<Flag src="/src/assets/pics/oled-settings-menu.png" alt="settings menu">
+<Flag src="/src/assets/pics/user-guide/oled-settings-menu.png" alt="settings menu">
 The `Settings` submenu contains:
 
 | Item | Purpose |
@@ -300,7 +300,7 @@ The `Settings` submenu contains:
 
 #### Wi-Fi Mode
 
-<Flag src="/src/assets/pics/oled-wifi-mode-picker.png" alt="Wi-Fi mode picker">
+<Flag src="/src/assets/pics/user-guide/oled-wifi-mode-picker.png" alt="Wi-Fi mode picker">
 Use `WiFi mode` to choose between:
 
 - `Station`: the logger joins a configured Wi-Fi network.
@@ -312,7 +312,7 @@ the new mode.
 
 #### Log Format
 
-<Flag src="/src/assets/pics/oled-log-format-picker.png" alt="log format picker">
+<Flag src="/src/assets/pics/user-guide/oled-log-format-picker.png" alt="log format picker">
 The logger supports:
 
 - `BODAQS CSV`: the normal logger CSV format.
@@ -338,13 +338,13 @@ sync.
 
 #### Health 
 
-<Flag src="/src/assets/pics/oled-health.png" alt="health screen">
+<Flag src="/src/assets/pics/user-guide/oled-health.png" alt="health screen">
 `Health` shows current board/logger health information, including SD state,
 battery state, analog rail state, RTC state, and effective sample rate.
 </Flag>
 #### About
 
-<Flag src="/src/assets/pics/oled-about.png" alt="about screen">
+<Flag src="/src/assets/pics/user-guide/oled-about.png" alt="about screen">
 `About` shows device and firmware information.
 </Flag>
 

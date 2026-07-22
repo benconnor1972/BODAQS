@@ -1,15 +1,23 @@
 ---
-import Lightbox, {type Props} from "./Lightbox.astro"
+import Lightbox from "./Lightbox.astro"
 import {toCssUnit} from "@src/util/toCssUnit.ts"
 
-const {src, alt, thumbnailWidth=200, maxWidth} = Astro.props
+interface Props {
+  src: string;
+  alt: string;
+  mediaType?: "image" | "video";
+  thumbnailWidth?: string | number;
+  maxWidth?: string | number;
+}
+
+const {src, alt, mediaType, thumbnailWidth=200, maxWidth} = Astro.props
 ---
 
 <div class="flag">
   <div
     style={`width: min(${toCssUnit(thumbnailWidth)}, 100%)`}
     >
-  <Lightbox class="img" src={src} alt={alt}
+  <Lightbox class="img" src={src} alt={alt} mediaType={mediaType}
     thumbnailWidth={thumbnailWidth} maxWidth={maxWidth} />
   </div>
   <div class="content"><slot/></div>

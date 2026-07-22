@@ -35,7 +35,7 @@ without.
 ## The device
 
 The BODAQS logger is a compact, hackable, open-source data logger you build yourself from widely available
-components using basic soldering skills and a 3D printer. It records inputs from suspension and other sensors, at up to 1000Hz, and stores the data as standard CSV files readable by almost anything. The device can connect to wifi to allow settings to be edited or log files downloaded using any device with a web browser.
+components using basic soldering skills and a 3D printer. It records inputs from suspension and other sensors, at up to 1000Hz, and stores the data as either as a standard CSV file readable by almost anything, or a compact binary that is fast to download. The device can connect to wifi to allow settings to be edited or log files downloaded using any device with a web browser.
 
 A small OLED screen and keypad make it simple to use, and an optional
 handlebar-mounted button lets you tag moments of interest mid-ride — a heavy landing, a sketchy
@@ -43,22 +43,22 @@ section — so they're easy to find later.
 
 The full design is open: PCB schematics and layouts, firmware, case, sensor mounts and more are all available to build, hack, and improve. There's a full bill of materials, build guide and advice on where to purchase the parts required.
 
-## The analysis
+## The software
 
 Recording data is an engineering problem. Deciding what it *means* is the harder part, and the part
 that actually matters for tuning.
 
-BODAQS uses a Python analysis framework built on widely used open tools. A preprocessing
-pipeline cleans and validates your logs into consistent, comparable sessions. Automated event
-detection finds the moments that matter: jump landings, deep compressions, whatever. Comparison tools let you visualise sessions, isolate events, and measure what happens when you change your setup. The framework is deliberately transparent: you can see every step from raw sensor signal to output metric. 
+The BODAQS software comprises two main components: 
+- the **Import Manager** imports data from one or more loggers via file copy or WiFi, applies bike geometry information, does pre-processing calculations, matches GPS data from external devices and manages setup notes. The processed files live in your personal run library.
+- the **BODAQS Workbench** gives you the visualization tools to dig deep into what your bike is doing.
 
-It isn't designed to hand you a suspension report card (but if we ever build one, you will be able to see exactly where its conclusions came from). It's designed to help you build real understanding of what your bike is actually doing when you are riding it, on your trails, the way you ride.
+The whole package can be installed on your computer and run with or without an internet connection.
 
 ## Who it's for
 
 BODAQS is designed to scale with the user — in both the build, and the analysis.
 
-If you're new to data acquisition, the hardware guide walks you through assembling the
+If you're new to data acquisition, the logger build guide walks you through assembling the
 logger, and you'll have something real to look at after your first ride with a couple of sensors - or even just one. 
 
 If you're a top-end rider, mechanic or suspension shop with your own battle-tested ideas on how a bike should be set up, you'll have something you can use to test out and validate your own ideas and work, race faster, or to add value to your customers. 
@@ -67,24 +67,23 @@ If you're a tinkerer, engineer, developer, data scientist or uncategorised nerd,
 
 ## Enough of the pitch - where's this thing actually at?
 
-**TL;DR:** we've made a lot of progress and have a pretty usable system. It isn't there yet, but if you want to be a  beta tester, we're ready for you.
+**TL;DR:** we've got a pretty usable first-generation system that runs from end to end: From sourcing and building your logger to analyzing your runs. There's still lots to do, but we think it can add value for most people in its current state.
 
 - The hardware works well within the limits of what we have tested and we think the user experience is pretty good. 
-- We support analog potentiometers, AS5600 (12-bit) and AS5048B (14-bit) rotary encoders for measuring linkage rotation, and GPS (either dedicated receiver or integrating data from Garmin devices).
-- We're compatible with [data.syn.bike](https://data.syn.bike) so you can see your data presented usefully straight away.
-- We have [sourcing](/hardware-guide/), [building](/hardware-guide/building/), and [user](/user-guide/) guides.
+- The system supports analog potentiometers for suspension displacement, AS5600 (12-bit) and AS5048B (14-bit) rotary encoders for measuring linkage rotation, and GPS (either dedicated receiver or integrating data from Garmin devices).
+- We have our own end-to-end software solution that you can download and test out. We're also compatible with [data.syn.bike](https://data.syn.bike) if you prefer to see your data presented that away.
+- We have [sourcing](/logger-build-guide/prototype-f/sourcing-hardware/), [building](/logger-build-guide/prototype-f/building-the-logger/), and [user](/user-guide/) guides.
 - We have published packages for the [hardware](https://github.com/benconnor1972/BODAQS/tree/main/hardware/releases) and the 3d printed [case](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/Prototype%20E-F)
-- We have [import manager](/software-guide/setup-import-manager/) software for Windows (Mac coming soon) to easily handle import and pre-processing of log files by WiFi
 - We have a set of Jupyter Lab [analysis notebooks](https://github.com/benconnor1972/BODAQS/releases) for exploratory data analysis. The back end code is organised in Python modules and there is a documented [API](https://github.com/benconnor1972/BODAQS/blob/main/docs/analysis/contracts/BODAQS_Public_API_Contract_v0.md). 
 
 What we're working on:
-- Our own web-based analysis platform. This is going to take some time: there are already some great analysis and visualisation tools ([syn.bike](https://data.syn.bike) for example) so we'll stay prototyping in Jupyter Lab until we have something with a genuine and useful point of difference.
+- Further development of the software. There is lots we want to do!
 - Extending the range of supported sensors. We've gone heavy (overkill?) on our software design to make integration of additional sensor types simple, so now is the time to cash in. Our next priorities are wheel speed sensors and inertia-motion units.
 - Collecting build feedback from our beta testers. We're looking for people who want to help with this!
 - Getting the system under some faster riders - in the end, we want to do *data analysis*, not just build hardware and software.
 
-<Flag src="/src/assets/pics/stringpot.jpg" alt="stringpot"> 
-We have a side project to design a low cost build-it-yourself string potentiometer too. We'll publish the design when it's been tested a bit more.
+<Flag src="/src/assets/pics/what-is-bodaqs/stringpot.jpg" alt="stringpot"> 
+We have a bunch of side projects too, including this design for a low cost build-it-yourself string potentiometer. We'll publish the design when it's been tested a bit more.
 </Flag>
 
 ---
@@ -92,7 +91,7 @@ We have a side project to design a low cost build-it-yourself string potentiomet
 <LinkCard
   title="Start building"
   description="Assemble your tools and components, and get to building your own logger."
-  href="/hardware-guide"
+  href="/logger-build-guide"
   icon="right-arrow"
   iconPlacement="end"
 />

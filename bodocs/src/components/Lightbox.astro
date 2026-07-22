@@ -6,51 +6,93 @@ export interface Props {
   src: string;
   alt: string;
   class?:string
+  mediaType?: 'image' | 'video';
   thumbnailWidth?: string | number;
   maxWidth?: string | number;
 }
 
-const { class:className,src, alt, thumbnailWidth = 200, maxWidth = '90vw' } = Astro.props;
+const {
+  class:className,
+  src,
+  alt,
+  mediaType,
+  thumbnailWidth = 200,
+  maxWidth = '90vw',
+} = Astro.props;
+
+const videoExtensionPattern = /\.(mp4|webm|ogg|ogv|mov)(?:[?#].*)?$/i;
+const isVideo = mediaType === 'video' || (!mediaType && videoExtensionPattern.test(src));
+
+function getVideoType(path: string) {
+  const cleanPath = path.split(/[?#]/)[0].toLowerCase();
+
+  if (cleanPath.endsWith('.webm')) return 'video/webm';
+  if (cleanPath.endsWith('.ogg') || cleanPath.endsWith('.ogv')) return 'video/ogg';
+  if (cleanPath.endsWith('.mov')) return 'video/quicktime';
+
+  return 'video/mp4';
+}
 
 // Vite builds this map at compile time; keys are project-root-relative paths.
 // Pass src as e.g. "/src/assets/pics/foo.png" to get image pipeline optimisation.
-// Any other string (remote URL, public path) falls back to a plain <img>.
+// Pass videos as e.g. "/src/assets/videos/foo.mp4" to get a built asset URL.
+// Any other image string (remote URL, public path) falls back to a plain <img>.
 const imageModules = import.meta.glob<{ default: ImageMetadata }>(
   '/src/assets/**/*.{png,jpg,jpeg,gif}'
 );
-const resolvedImage = imageModules[src] ? (await imageModules[src]()).default : null;
+const videoModules = import.meta.glob<{ default: string }>(
+  '/src/assets/**/*.{mp4,webm,ogg,ogv,mov}'
+);
+const resolvedImage = !isVideo && imageModules[src] ? (await imageModules[src]()).default : null;
+const resolvedVideo = isVideo && videoModules[src] ? (await videoModules[src]()).default : src;
 
 const id = `lb-${Math.random().toString(36).slice(2, 8)}`;
 
 ---
 <div class:list={["lb-wrap", className ] }>
-  <button
-    command="show-modal"
-    class="lb-trigger"
-    commandfor={id}
-    style={`width: min(${toCssUnit(thumbnailWidth)}, 100%)`}
-    aria-label={`View full size: ${alt}`}
-  >
-    {resolvedImage
-      ? <Image src={resolvedImage} alt={alt} class="lb-thumb" />
-      : <img src={src} alt={alt} class="lb-thumb" />
-    }
-  </button>
-
-  <dialog id={id} class="lb-popover"  closedby="any">
-    <!-- clicking the image closes the popover -->
-    <button
-      class="lb-img-btn"
-      commandfor={id}
-      command="close"
-      aria-label="Close image"
+  {isVideo ? (
+    <video
+      controls
+      playsinline
+      preload="metadata"
+      class="lb-thumb lb-video"
+      style={`width: min(${toCssUnit(thumbnailWidth)}, 100%)`}
+      aria-label={alt}
     >
-      {resolvedImage
-        ? <Image src={resolvedImage} alt={alt} class="lb-full" style={`max-width: ${toCssUnit(maxWidth)}`} />
-        : <img src={src} alt={alt} class="lb-full" style={`max-width: ${toCssUnit(maxWidth)}`} />
-      }
-    </button>
-  </dialog>
+      <source src={resolvedVideo} type={getVideoType(src)} />
+      {alt}
+    </video>
+  ) : (
+    <>
+      <button
+        command="show-modal"
+        class="lb-trigger"
+        commandfor={id}
+        style={`width: min(${toCssUnit(thumbnailWidth)}, 100%)`}
+        aria-label={`View full size: ${alt}`}
+      >
+        {resolvedImage
+          ? <Image src={resolvedImage} alt={alt} class="lb-thumb" />
+          : <img src={src} alt={alt} class="lb-thumb" />
+        }
+      </button>
+
+      <dialog id={id} class="lb-popover"  closedby="any">
+        <!-- clicking the image closes the popover -->
+        <button
+          class="lb-img-btn"
+          commandfor={id}
+          command="close"
+          aria-label="Close image"
+        >
+          {resolvedImage
+            ? <Image src={resolvedImage} alt={alt} class="lb-full" style={`max-width: ${toCssUnit(maxWidth)}`} />
+            : <img src={src} alt={alt} class="lb-full" style={`max-width: ${toCssUnit(maxWidth)}`} />
+          }
+        </button>
+      </dialog>
+    </>
+  )}
 </div>
 
 <style is:global>
@@ -77,6 +119,12 @@ const id = `lb-${Math.random().toString(36).slice(2, 8)}`;
 
   .lb-trigger:hover .lb-thumb {
     opacity: 0.85;
+  }
+
+  .lb-video {
+    max-width: 100%;
+    background: var(--sl-color-gray-6);
+    object-fit: contain;
   }
 
   /* ── popover ── */

@@ -1,0 +1,62 @@
+---
+title: Choosing a logger design
+description: Decide whether to build the Prototype F logger or the BODAQS A8 v1.0 logger.
+sidebar:
+  order: 1
+---
+
+import {Aside} from '@astrojs/starlight/components';
+import Lightbox from '@components/Lightbox.astro';
+
+<Aside type={"note"} title="Work in progress"  icon="seti:config">
+This build guide is getting a makeover in the run up to publication of the A8 design. It may have a few rough edges just now.
+</Aside>
+
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/logger-build-guide/f_vs_a8_outside.jpg" alt="Build-overview"/>
+
+Left: Prototype F.    Right: BODAQS A8.
+
+There are currently two BODAQS logger designs. Each has advantages and disadvantages, and your  choice will depend on what you want to do and what is most important to you.
+
+
+## Available logger designs
+
+| Design | Advantages | Disadvantages | Build this if... |
+| --- | --- | --- | --- |
+| BODAQS A8 | More input channels, more features, easier to build, more mechanically and electrically robust | More expensive if you get the PCB fabricated yourself, may be overkill | You plan on running lots of sensors, or you always go top-shelf |
+| Prototype F | Can be cheaper | Fewer channels, can be fiddly to build | A few channels is enough, cost minimization is key |
+
+## Why two designs? What's the difference?
+
+The BODAQS logger design has been through a lot of iterations. The early designs used an off-the-shelf ESP32 development board as the 'brains' of the logger, and a custom PCB that mostly just made it easier to wire connectors. As I learned more about electronics design and gained experience with data acquisition in the real world, some limitations became apparent. 
+
+#### Birth of the BODAQS A8
+The **BODAQS A8** is my first ground-up design where all the components are integrated directly onto a single PCB: 
+- It has a better power supply design for driving analog sensors. 
+- It has two precision analog-to-digital converters (ADCs) supporting up to 8 analog inputs. 
+- It has a real-time clock with its own backup power (this is a big deal if you want to combine GPS data from a Garmin device with your log data). 
+- It has the navigation buttons mounted directly on the PCB. 
+
+...and most importantly, **it has connectors soldered directly into the PCB**. By my estimate, that one thing **reduces the build time by about 60%** compared to the Prototype F. It probably improves reliability too.
+
+#### Prototype F: Not dead yet
+
+Why would you still build the earlier 'Prototype F' design then? Mostly it's a question of cost.
+
+Minimum order quantity for custom PCBs (from JLCPCB) is 5, which is more data loggers than most people need. With a simple design like the Prototype F, 5 is still cheap enough for most people not to really worry about. A lot of the hardware is on the plug-in development board, and you can buy those one at a time. 
+
+The BODAQS A8, on the other hand, has everything baked in. That means you're paying the complete hardware cost for 5 of them when you order from JLCPCB. That's more than most people are going to want to swallow, unless they really need 5 data loggers.
+
+Partly for this reason, **I'm selling single A8 boards and parts kits myself**. This ought to be a reasonably competitive option for people who want the newest (and best) design. 
+
+But I suspect some people may like the older approach better. As soon as I have the time, I'm planning to bring some ease-of-build improvements from the A8 to the older design (to be dubbed, creatively, the 'A4'). But don't hold your breath - it's a little way down my to-do list.    
+
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/logger-build-guide/f_vs_a8_inside.jpg" alt="Build-overview"/>
+
+Left: Prototype F.    Right: BODAQS A8.
+
+## Is there an upgrade path from the Prototype F to the A8?
+
+No. The designs are different in almost every way. 
+
+When the A4 arrives (I do intend to do this, but no promises on the date) it will be possible to upgrade from the Prototype F re-using dev board, keypad, battery and possibly case (but not connectors). 

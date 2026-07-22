@@ -1,6 +1,6 @@
 ---
 title: Building the logger
-
+description: Assembly instructions for the Prototype F logger.
 sidebar:
   order: 3
 ---
@@ -9,9 +9,8 @@ import Flag from '@components/Flag.astro';
 import MiniAside from '@components/MiniAside.astro';
 import Lightbox from '@components/Lightbox.astro';
 
-<Aside type={"caution"} title="These instructions are for Prototype E"  icon="seti:config">
-	
-	**Proto E is not the latest design: we recommend building Prototype F**.
+<Aside type={"caution"} title="These instructions are for Prototype F"  icon="seti:config">
+	These instructions cover the Prototype F logger design.
 </Aside>
 
 ## Prepare the MicroSD card
@@ -24,7 +23,7 @@ import Lightbox from '@components/Lightbox.astro';
 ## Build the logger
 
 Now the fun really begins. Check that you have all the things shown in the picture.
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/Build-overview.png" alt="Build-overview"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/logger-build-guide/Build-overview.png" alt="Build-overview"/>
 
 ### Solder headers to PCB and dev board
 <Aside title="Soldering">
@@ -33,16 +32,16 @@ Now the fun really begins. Check that you have all the things shown in the pictu
 </Aside>
 
 The dev board is installed in the PCB with a removeable pin/socket arrangement. This allows the dev board to be easily removed for re-use in later PCB revisions.
-<Flag src="/src/assets/pics/Pins_1.jpg" alt="Pins 1 ">
+<Flag src="/src/assets/pics/logger-build-guide/Pins_1.jpg" alt="Pins 1 ">
   **Cut two sections of pin header**, one with 12 pins and one with 16, for soldering into the dev
   board.
 </Flag>
- <Flag src="/src/assets/pics/Build-1.jpg" alt="Build-1 ">
+ <Flag src="/src/assets/pics/logger-build-guide/Build-1.jpg" alt="Build-1 ">
   **Install the pin headers.** Insert the short sides of the pin headers into the underside of the
   dev board (the side with no connectors). Solder *one pin* on each pin header to the dev board.
 </Flag>
 
-<Flag src="/src/assets/pics/Build-4.jpg" alt="Build-4">
+<Flag src="/src/assets/pics/logger-build-guide/Build-4.jpg" alt="Build-4">
   **Check the pin header alignment.** The pin headers should be square to the board. If necessary,
   gently bend the header around the soldered pin. Solder the rest of the pins.
   <MiniAside title="Use a breadboard if you have one">
@@ -51,49 +50,49 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   </MiniAside>
 </Flag>
 
-<Flag src="/src/assets/pics/Build-5E.png" alt="Build-5">
+<Flag src="/src/assets/pics/logger-build-guide/Build-5E.png" alt="Build-5">
   **Cut two sections of pin socket**, one with 12 holes and one with 16, for soldering into the PCB.
   Take care: unlike pin headers, these are not really made to be cut to length. Cut *through the
   next hole* rather than between the holes.
 </Flag>
 
-<Flag src="/src/assets/pics/Build-6.jpg" alt="Build-6">
+<Flag src="/src/assets/pics/logger-build-guide/Build-6.jpg" alt="Build-6">
   **Insert the pin sockets into the PCB**.
   Insert the pin headers on the dev board into the sockets to keep the sockets square and parallel
   while you solder them.
 </Flag>
-<Lightbox src="/src/assets/pics/Build-7.jpg" alt="Build-7"/>
+<Lightbox src="/src/assets/pics/logger-build-guide/Build-7.jpg" alt="Build-7"/>
 
-<Flag src="/src/assets/pics/Build-7BE.png" alt="Build-7B">
+<Flag src="/src/assets/pics/logger-build-guide/Build-7BE.png" alt="Build-7B">
   **Solder the pin sockets to the PCB.** Turn the assembly over and solder the pin sockets to the
   PCB from the underside.
 </Flag>
 
-<Flag src="/src/assets/pics/Build-7CE.png" alt="Build-7C">
+<Flag src="/src/assets/pics/logger-build-guide/Build-7CE.png" alt="Build-7C">
   **Install navigation pin headers.** Cut a section of pin header 6 pins long and solder it into the
   PCB in the holes labelled 'navigation'.
 </Flag>
 
 ### Solder QWIIC cable to OLED display
 
-<Flag src="/src/assets/pics/OLED-5.png" alt="OLED-5">
+<Flag src="/src/assets/pics/logger-build-guide/OLED-5.png" alt="OLED-5">
   **Cut the QWIIC cable**, leaving approx 100mm of cable on the connector. Strip approx 4mm from the
   end of each wire.
 </Flag>
 
-<Flag src="/src/assets/pics/OLED-3E.png" alt="OLED-3E">
+<Flag src="/src/assets/pics/logger-build-guide/OLED-3E.png" alt="OLED-3E">
   **Prepare the OLED display.** If your OLED display has pin headers installed, carefully pry off
   the plastic collar at the base of the pin headers with a craft knife and cut the headers to around
   half their original length. Cut 4 sections of heat shrink, approx 6mm long and thread one onto
   each wire of the QWIIC cable. If the display has no pin headers installed, no action is needed.
 </Flag>
 
-<Flag src="/src/assets/pics/Build-20E2.png" alt="Build-20E2">
+<Flag src="/src/assets/pics/logger-build-guide/Build-20E2.png" alt="Build-20E2">
   **Tin the ends of the wires** and solder them to the pin headers or into the connector holes as
   applicable. Take care to solder the wires in the correct positions. Slide the heat shrink pieces
   down over the pin headers (if applicable) and apply heat.
 </Flag>
-<Lightbox src="/src/assets/pics/OLED-1E.png" alt="OLED-1E"/>
+<Lightbox src="/src/assets/pics/logger-build-guide/OLED-1E.png" alt="OLED-1E"/>
 
 
 <Aside type={"caution"} title="Take care with the OLED display">
@@ -104,13 +103,13 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 
 
 ### Connect the keypad and screen and check the build so far
-<Flag src="/src/assets/pics/Build-9.jpg" alt="Build-9">
+<Flag src="/src/assets/pics/logger-build-guide/Build-9.jpg" alt="Build-9">
   **Connect the keypad and display.** Plug the QWIIC connector into the dev board. Connect the
   membrane keypad to the navigation headers on the PCB, ensuring the connector orientation matches
   the picture.
 </Flag>
 
-<Flag src="/src/assets/pics/Build-10.jpg" alt="Build-10">
+<Flag src="/src/assets/pics/logger-build-guide/Build-10.jpg" alt="Build-10">
   **Connect the dev board to a power supply** with a USB cable. Press the 'RST' button on the board.
   The OLED display should now show the home screen
   Check keypad operation. Pressing the right arrow should enter the menu system. Pressing the 'Sel'
@@ -125,7 +124,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   Using the suggested wire colors will make your life easier too.
 </Aside>
 
-<Flag src="/src/assets/pics/connector-overview-F.png" alt="Connector overview">
+<Flag src="/src/assets/pics/logger-build-guide/connector-overview-F.png" alt="Connector overview">
 
   **In this step you will be wiring the connectors to the PCB.**
   The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one
@@ -145,14 +144,14 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 
 
 
-<Flag src="/src/assets/pics/Build-11.jpg" alt="Build-11">
+<Flag src="/src/assets/pics/logger-build-guide/Build-11.jpg" alt="Build-11">
   **Install the connectors in the 3d printed end pieces** and tighten. Ensure that the connector
   o-rings are on the outside and sit in the chamfered edges of the holes.
   Place the connector assemblies face-down. If possible, secure them in a vise.
   'Tin' the pins on the back of each connector with a small amount of solder
 </Flag>
 
-<Flag src="/src/assets/pics/Build-12.jpg" alt="Build-12">
+<Flag src="/src/assets/pics/logger-build-guide/Build-12.jpg" alt="Build-12">
   **Prepare the hookup wires.** Cut and strip short sections of hookup wire for each connector in
   the recommended lengths. *Note the lengths are for the insulated portion of the wire*. Allow some
   extra to strip the ends.
@@ -178,21 +177,21 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 |           | SDA    | 17 mm         | Blue         |
 
 
-<Flag src="/src/assets/pics/Build-12AF.png" alt="Build-12">
+<Flag src="/src/assets/pics/logger-build-guide/Build-12AF.png" alt="Build-12">
   **Solder the wires to the connectors.** This is much easier if the connector pins and wire ends
   are tinned first. Use the soldering iron to heat the pin until the solder melts. Insert the wire
   end into the molten solder and withdraw the heat. Repeat for all wires.
   Check that all the wires are secure and excess solder is not present.
 </Flag>
-<Lightbox src="/src/assets/pics/Build-13.jpg" alt="Build-13"/>
+<Lightbox src="/src/assets/pics/logger-build-guide/Build-13.jpg" alt="Build-13"/>
 
-<Flag src="/src/assets/pics/Build-14.jpg" alt="Build-14">
+<Flag src="/src/assets/pics/logger-build-guide/Build-14.jpg" alt="Build-14">
   **Apply heat shrink.** Cut short sections (approx 6mm long) of 2.5mm heat shrink and pass one over
   each wire down to the soldered connector joint. When all are in place, apply heat to activate the
   heat shrink.
 </Flag>
 
-<Flag src="/src/assets/pics/connector-overview-F.png" alt="Connector overview">
+<Flag src="/src/assets/pics/logger-build-guide/connector-overview-F.png" alt="Connector overview">
   **Solder the connectors to the PCB.** Solder the free ends of the wires into the PCB so they enter the PCB from the
   top. Take care to ensure the wires are connected correctly as per the picture. Trim any
   excess wire sticking through the bottom of the board.
@@ -202,10 +201,10 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
     connectors are mounted in the case.
   </MiniAside>
 </Flag>
- <Lightbox src="/src/assets/pics/Build-15F.jpg" alt="Build-15"/>
+ <Lightbox src="/src/assets/pics/logger-build-guide/Build-15F.jpg" alt="Build-15"/>
 
 ### Prepare the case
-<Flag src="/src/assets/pics/Build-17.jpg" alt="Build-17">
+<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
   **Remove support material** from the case using a craft knife. If printed in the recommended
   orientation, the majority of support material will be for the shallow indent where the keypad
   sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since
@@ -218,7 +217,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 
 ### Install the components
 
-<Flag src="/src/assets/pics/Build-16F.jpg" alt="Build-16">
+<Flag src="/src/assets/pics/logger-build-guide/Build-16F.jpg" alt="Build-16">
   **Install the PCB and connectors**. Place the PCB into the lower half of the case, ensuring the
   right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the
   upper half of the case).
@@ -230,7 +229,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   don't force anything.
 </Aside>
 
-<Flag src="/src/assets/pics/Build-19.jpg" alt="Build-19">
+<Flag src="/src/assets/pics/logger-build-guide/Build-19.jpg" alt="Build-19">
   **Install the battery**. The battery sits in the slot on the right-hand side of the case with the
   wires facing to the front of the case.
   If necessary trim or extend the battery wires. The recommended wire length is 70 mm.
@@ -240,9 +239,9 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   Route the battery wires as shown and connect to the JST connector on the dev board.
 
 </Flag>
-  <Lightbox src="/src/assets/pics/Build-18A.png" alt="Build-18"/>
+  <Lightbox src="/src/assets/pics/logger-build-guide/Build-18A.png" alt="Build-18"/>
 
-<Flag src="/src/assets/pics/Build-21.jpg" alt="Build-21">
+<Flag src="/src/assets/pics/logger-build-guide/Build-21.jpg" alt="Build-21">
   **Assemble the keypad and display**. Gently remove the plastic shell from the end of the keypad's
   ribbon connector by gently prying up the front edges of the locking tabs with a craft knife. Pass
   the ribbon connector through the hole in the front of the case and re-install the plastic
@@ -251,7 +250,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
   Peel off the self-adhesive backing from the keypad and press it firmly down to the case.
 </Flag>
 
-<Flag src="/src/assets/pics/Build-21A.png" alt="Build-21A">
+<Flag src="/src/assets/pics/logger-build-guide/Build-21A.png" alt="Build-21A">
 
   Tuck the lower edge of the oled display into the slot at the bottom of the opening. Press firmly
   on the top corners of the display to lock it in place.
@@ -262,14 +261,14 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 
 ### Connect up and close
 
-<Flag src="/src/assets/pics/Build-22.jpg" alt="Build-22">
+<Flag src="/src/assets/pics/logger-build-guide/Build-22.jpg" alt="Build-22">
   **Connect the keypad and display.** Connect the loose ends of the QWIIC cable to the OLED display.
   Connect the other end to the QWIIC connector on the dev board.
 
   Connect the keypad connector the the navigation pins.
 </Flag>
 
-<Flag src="/src/assets/pics/Build-23.jpg" alt="Build-23">
+<Flag src="/src/assets/pics/logger-build-guide/Build-23.jpg" alt="Build-23">
   **Carefully close the case**. Take special care with the keypad ribbon connector. It can be bent,
   but minimise this if possible.
 

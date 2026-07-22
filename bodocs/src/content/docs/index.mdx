@@ -10,12 +10,13 @@ hero:
     dark: ../../assets/hero-dark.svg
   actions:
     - text: Start building
-      link: /hardware-guide
+      link: /logger-build-guide
       icon: right-arrow
 ---
 
 import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
+import {Aside} from '@astrojs/starlight/components';
 
 <Lede>
   **BODAQS** is a project focused on making mountain-bike data acquisition and analysis accessible — allowing the curious to explore and learn, and the driven a new tool to chase performance.
@@ -23,6 +24,11 @@ import Lede from '@components/Lede.astro';
   The project provides **open designs** for the hardware, software, analysis tools, and mechanical parts needed to collect and analyze mountain-bike data. It follows a build-it-yourself ethos, emphasising simplicity and low cost **without compromising functionality**.
 
 </Lede>
+
+<Aside type={"note"} title="Work in progress"  icon="seti:config">
+This site is getting a makeover in the run up to publication of the A8 design. It may have a few rough edges just now.
+</Aside>
+
 ## Next steps
 
 <CardGrid stagger>
@@ -37,10 +43,10 @@ import Lede from '@components/Lede.astro';
       Read the overview
     </LinkButton>
   </Card>
-  <Card title="Read the hardware guide" icon="setting">
-    Assemble your tools and components, and get to building your own data logger.
+  <Card title="Read the logger build guide" icon="setting">
+    Choose a logger design, assemble your tools and components, and build your own data logger.
     <LinkButton
-      href="/hardware-guide"
+      href="/logger-build-guide"
       variant="minimal"
       icon="right-arrow"
       iconPlacement="end"
@@ -75,7 +81,7 @@ import Lede from '@components/Lede.astro';
     on the BODAQS Discord server or follow us on Instagram.
 
     <LinkButton
-      href="https://discord.gg/BkWuT4S5kB"
+      href="https://discord.gg/6V9cujn7G"
       variant="minimal"
       icon="external"
       iconPlacement="start"
