@@ -1,22 +1,291 @@
 ---
 title: Wiring and connector tips
-description: Placeholder practical guide for sensor wiring, connectors, and cable reliability.
+description: Outline for choosing and building reliable BODAQS sensor wiring and connectors.
 sidebar:
   order: 3
 ---
 
 import {Aside} from '@astrojs/starlight/components';
+import Lede from '@components/Lede.astro';
+import Flag from '@components/Flag.astro';
+import Lightbox from '@components/Lightbox.astro';
 
-<Aside type="caution" title="Content still needed">
-  This page is a placeholder for wiring and connector guidance.
+<Lede>
+There are whole books dedicated to wiring and connector choices for industrial and motorsport applications. Fortunately, our needs are simpler, but there are some important details to note if you want robust, reliable connections from your sensors to the logger. 
+</Lede>
+
+
+
+## Decide how much flexibility you need
+
+#### Prototype F: one sensor per connector
+
+If you have or are building a Prototype F logger, it's fairly simple: other than I2C, each connector on the logger  connects one sensor. 
+
+It only gets complicated if you want to run more than one I2C sensor - and even then, only if you are running them on the same bus. See [I2C bus assignment](#i2c-bus-assignment) if this applies to you.
+
+<Aside type="tip" title="Picture placeholder">
+  Proposed picture: annotated Prototype F connector panel showing one sensor mapped to each connector.
 </Aside>
 
-This page will collect practical advice for making reliable sensor cables and connectors for use on a bike.
+#### BODAQS A8: direct wiring or intermediate connectors
 
-## Content to add
+A8 loggers make the wiring decision more interesting. Each logger connector can carry more than one signal, so you are not just deciding which sensor goes into which socket: you are designing a small wiring harness.
 
-- Cable choice and wire gauge.
-- M8 connector selection and pin numbering.
-- Soldering, heat shrink, sealing, and strain relief.
-- Continuity and polarity checks.
-- Field repair and labeling tips.
+The basic choice is whether to wire each sensor permanently into the logger connector, or to add intermediate connectors so parts of the harness can be changed later.
+
+Permanent wiring is simpler, smaller, easier to waterproof, and has fewer failure points. Intermediate connectors make the bike easier to reconfigure, repair, and experiment with, but every extra plug is another place that can be mislabelled, unplugged, damaged, or filled with water.
+
+Look at the options below and decide which one is right for you.
+
+##### Option 1: keep it sweet and simple with direct wiring
+
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/sensor-connection-and-wiring-guide/wiring-a8-direct.png" alt="wiring a8 direct"/>
+
+Direct wiring is the right choice when you know exactly the sensor setup you want and you do not expect to change it often. It is the most reliable and compact approach because each sensor cable can be built for one job and permanently connected to the relevant logger plug.
+
+For example, if I just want to run two linear potentiometers and a handlebar switch, I could have:
+
+- Two linear potentiometers permanently wired to one plug each, plugged into the two analog connectors.
+- Handlebar switch permanently wired into one plug, plugged into the switch / UART connector.
+
+If that's all you want, this is the cleanest approach and keeps the number of joints and plugs to a minimum. The downside is that it's harder to change if I want to add more sensors later. 
+
+<Aside type="tip" title="Picture placeholder">
+  Proposed diagram: simple A8 permanent harness with two analog pots into one ADC connector and the bar switch wired to the switch / UART connector.
+</Aside>
+
+##### Option 2: the sweet spot - permanent wiring with plug-in options
+
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/sensor-connection-and-wiring-guide/wiring-a8-mixed.png" alt="wiring a8 mixed"/>
+
+This is what I use myself and generally recommend. The sensors I always use are permanently wired, with additional connections broken out to compact waterproof plugs.
+
+For example (this is the configuration I am running):
+
+- Two linear potentiometers, each permanently wired to its own plug, so they plug into separate analog connectors.
+- Each one of those plugs has a second analog connection broken out through an M6 e-bike connector.
+- The switch / UART connector has a permanent connection to the handlebar switch, with the UART GPS connection broken out through an M6 e-bike connector (since I don't always run GPS).
+
+The same principle can be applied to the I2C connection. For example:
+- One I2C rotary sensor permanently wired to the I2C connector.
+- The second I2C bus broken out through an M6 e-bike connector.
+
+This keeps the core suspension setup solid and permanent, while leaving room to add, swap, or test extra analog sensors and UART devices without rebuilding the logger harness.
+
+
+###### Option 3: maximum flexibility
+
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/sensor-connection-and-wiring-guide/wiring-a8-flexible.png" alt="wiring a8 flexible"/>
+
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/wiring-a8-flexible-example.jpeg" alt="wiring a8 flexible example"> 
+
+This is the tinkerer's build. Every logger connector has Y-junctions that break spare signals out to M6 e-bike connectors.
+
+The advantage is obvious: almost everything can be changed, extended, or tested without rebuilding the main harness. This is useful if the logger is being moved across multiple bikes, for experimenting with setups or testing sensors back-to-back. 
+
+The disadvantage is just as obvious: it has the most connectors, the most labels, the most waterproofing work, and the most potential failure points. Build this way only if you will actually use the flexibility.
+
+</Flag> 
+
+
+## Decide how to use multiple ADCs and I2C buses
+
+#### ADC assignment
+
+<Aside type="note" title="BODAQS A8 loggers only">
+ADC assignment is a non-issue for Prototype F loggers: all their analog inputs are the same.
+</Aside>
+
+A8 loggers have two identical precision ADCs, each of which is capable of reading up to 4 inputs. Each ADC has a maximum total sample rate across all its inputs, so in theory **the highest sample rates could be achieved with inputs spread evenly over the two ADCs**.
+
+A8 loggers will comfortably read 2 inputs per ADC at 500Hz, which is more than sufficient for any analog input I can think of. So for a typical setup of 2 linear potentiometers, **wiring convenience rather than maximum sampling rate should probably drive your decision**. 
+
+On some bikes, the physical orientation of the logger and the way the cables leave the case may make one analog connection easier to use than the other. Prefer an arrangement that avoids tight bends, awkward loops having cables with zero slack in them.
+
+#### I2C bus assignment
+
+I2C devices share a bus, so bus assignment is mostly about avoiding address conflicts and keeping the wiring practical. 
+
+The important rule is that every device on the same I2C bus must have a unique address. Address-conflict issues are discussed in [Connecting and configuring sensors](/sensor-connection-and-wiring-guide/connecting-and-configuring-sensors/#i2c-sensors). Read that section before deciding where each I2C sensor will go.
+
+If there are no address conflicts, choose the bus assignment that gives the cleanest cable layout. If two I2C sensors are mounted close together, putting them on the same bus may make sense. If they sit on opposite ends of the bike, splitting them across buses may reduce cable length.
+
+<Aside type="note" title="bus capacity limits">
+I2C buses do have throughput limits, but for simple sensor configurations and sample rates up to 500Hz these are unlikely to be a concern. In the future, it is intended that BODAQS loggers will support multiple inertia-motion units (accelerometers): it is quite likely that bus throughput will become a consideration with four IMUs running simultaneously.
+</Aside>
+ 
+
+#### I2C wiring topology
+
+Multiple I2C sensors on the same bus should be wired in a 'daisychain'. In this layout, the cable runs from the logger to one I2C device, then continues to the next. (It is possible to wire each I2C device on its own branch, but this is usually undesirable).
+
+
+
+## Build the wiring
+
+In this section we discuss the practical aspects of building wiring such as insulation, waterproofing, strain relief and making junctions. You may also want to refer to the [soldering tips](/logger-build-guide/) from the logger build guide.
+
+<Aside type="caution" title="Fiddly work ahead">
+Like building the logger, the skills required to do sensor wiring aren't super-difficult - but they aren't trivial either. The combination of small stuff and unfamiliar processes can make this stage frustrating if you arrive here without some prior experience. Recognise that some learning and practice might be required, take it slow, and be kind to yourself. Not everyone was born with a soldering iron in their hand.
+</Aside>
+
+### Wire and connector recommendations
+
+#### Wire choice
+
+Ideally, use `26 AWG` wire. `28 AWG` is OK but harder to strip and a bit more delicate; `24 AWG` is also OK but stiffer. Power capacity is not a limiting factor here; sensors draw very little current. You want wiring that is robust enough and still slim and easy to bend. 
+
+Silicone-insulated wire is recommended. It is flexible, heat tolerant, and much easier to route cleanly than stiff PVC-insulated hookup wire. Shielded cable is not required for normal BODAQS sensor wiring, and usually adds bulk and stiffness without solving a real problem.
+
+I use [this](https://www.aliexpress.com/item/1005001568848822.html) in 26 AWG and 4 cores (for 3-wire connections you just ignore one of the cores). You can probably find an alternative at a local electronics hobby shop, or cannibalize an old USB cable.
+
+#### Connector choice
+
+BODAQS loggers use Amphenol-style M8 circular connectors. A8 loggers use four identical 6-pin logger connectors. Prototype F loggers use a mixture of 3-pin and 4-pin connectors. 
+
+<Aside type="note" title="Future connector direction">
+My intention is to standardize future logger designs, like the successor to the Prototype F, on the same 6-pin connectors used in the A8 as the ease-of-assembly advantages are overwhelming.
+</Aside>
+
+##### Name-brand or generic?
+
+One of the advantages of M8 circular connectors is the availability of low-priced clones on AliExpress and similar marketplaces. These are generally fine, with one caveat: **buy both the connector and the matching wire tail from the same vendor**. There is some variation in pin diameter and the dimensions of the plastic inserts between the originals and the clones, and between different clones.
+
+##### Connectors that look the same but aren't
+
+All connectors with the same pin count are identical. This is a compromise driven by availability and budget: using physically unique connectors for every electrical function would be better, but I could not find a way to do this at anything like a reasonable cost. Because identical connectors can be plugged into the wrong place, you should label your logger connectors  clearly.
+
+##### Intermediate connectors
+
+For intermediate connections, I favour generic plastic M6 or M8 push-in connectors, sold on AliExpress. They are low cost, compact, waterproof, and convenient when you want removable sensor sections or Y-connection branches.
+
+Their weakness is that they do not lock by themselves. You should be careful that cable movement (from turning the handlebars, say) cannot pull them apart, and either duct tape them together or [use this 3d-printed lock].
+
+### Making the connections
+
+All connections need to be **electrically insulated**, **strain relieved** and **waterproof**.
+
+#### Electrical insulation
+
+The best way to electrically insulate wiring joints is **heat shrink**. It is compact, reliable and usually easy to apply. It also provides some strain relief and, if adhesive-lined, waterproofing.
+
+Use individual heat-shrink sleeves over soldered conductors, then add an outer sleeve over the whole joint for strain relief and mechanical protection. For any moisture-exposed wiring (most things on a bike, use adhesive-lined heat shrink if possible. 
+
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/sensor-connection-and-wiring-guide/wire-shrink.jpg" alt="heat shrunk wiring"/>
+
+#### Strain relief
+
+Strain relief means keeping force and flex away from joints, connector pins, sensor bodies, and wire exits. Most wiring failures happen where a flexible cable meets something rigid.
+
+[Cable routing and retention](/bike-installation-guide/mounting-sensors/) are important, but so too is joint construction. Shrink sleeve provides some strain relief but the [y-joint designs below](#method-2-3d-printed-tpu-boot) provide more. 
+
+#### Waterproofing
+
+Every wire junction should be treated as a water-entry point. Even if the connector itself is waterproof, water can still enter through an unfinished splice, a poorly sealed branch, or a cable end that allows water to wick under the insulation.
+
+For straight wire-to-wire connections, adhesive-lined shrink sleeve usually provides sufficient waterproofing. Y-topology wiring is especially vulnerable however: it is hard to seal the crux where three cable paths meet using just shrink sleeve. The [solutions below](#method-2-3d-printed-tpu-boot) are intended to solve this problem.
+
+### Making straight connections
+
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/wire-colors.jpg" alt="wire colors"> 
+1. Check the wire colors. Make sure you are clear before you start which wire is being connected to which.
+</Flag> 
+
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/wire-cut-heatshrink.png" alt="wire strip"> 
+2. Strip the wires. Keep the stripped sections as short as practical, keeping in mind that you need somewhere to put the shrink sleeve while you are soldering the connections.
+
+</Flag> 
+
+<Flag
+  src="/src/assets/videos/wire-tin.mp4"
+  alt="wire tinning"
+  mediaType="video"
+  thumbnailWidth={200}
+>
+3. Tin the stripped ends of the wires. Tinning is coating the strands of the wire with a thin film of solder. Once tinned, wires are much easier to solder together. Refer to the [soldering guide] for more information.
+</Flag>
+
+
+<Flag
+  src="/src/assets/videos/wire-solder.mp4"
+  alt="wire soldering"
+  mediaType="video"
+  thumbnailWidth={200}
+>
+4. Thread on the heat shrink then solder the wires. A lot of on-line guides call for elaborate mechanical connection of the wire ends before applying solder. This is simply impractical for small gauge, compact wiring. Aim for a clean lap joint 3-4mm long.  
+
+</Flag> 
+
+<Flag
+  src="/src/assets/videos/wire-shrink.mp4"
+  alt="wire heatshrinking"
+  mediaType="video"
+  thumbnailWidth={200}
+>
+5. Heat-shrink the individual cores. Ensure the heat shrink covers the exposed conductor, then apply heat to shrink it. You will need a controlled local heat source (a cigarette lighter will do, but [one of these](/logger-build-guide/prototype-f/sourcing-hardware/#miniature-hot-air-gun) is better. Large hot air guns are not practical as they will affect all the heat shrink you aren't ready to shrink yet.
+
+</Flag> 
+
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/wire-finish.jpg" alt="wire finish"> 
+6. Heat-shrink the whole joint. Slide the larger heat shrink section over the whole joint - it should overlap the insulation at both ends. Apply heat.
+
+</Flag> 
+
+
+
+
+### Making Y-connections
+
+#### Method 1: shrink sleeve only
+
+This method requires only heat shrink and, optionally, some caulking silicone. Its major disadvantage is that the y-junctions end up being relatively long, due to the need to put the shrink sleeve somewhere when you are soldering the joints. 
+
+1. Check the wire colors. Make sure you are clear before you start which wire is being connected to which.
+2. Strip and tin the wires. Keep the stripped sections as short as practical, keeping in mind that you need somewhere to put the shrink sleeve while you are soldering the connections. For the wires that will be connected three ways (usually 3V3 and GND), strip a little more insulation.
+3. Cut and thread on heat shrink. Ideally you want heat shrink over each core connection; heat shrink from each leg of the 'y' down into the crux, and heat shrink from the stem of the 'y' over everything to finish. 
+4. Solder the wires. Do the three-way joints first.   
+5. Heat-shrink the individual cores. 
+6. Heat-shrink the Y legs down to the crux. OPTIONAL: carefully apply some caulking silicone to the crux. Be sparing: this is to waterproof the area where the legs of the 'y' come together, where the final heat shrink can't reach. 
+7. Heat shrink the whole joint.
+
+
+<Aside type="tip" title="Picture placeholder">
+  Proposed picture sequence: stripped wires, soldered Y-joint, insulated finished joint.
+</Aside>
+
+#### Method 2: 3D-printed TPU boot
+
+This method requires heat shrink, caulking silicone and a special 'boot' printed from flexible filament (TBU). Its advantage is that the y-junctions can be made waterproof and quite compact. The disadvantage is the special part needed. 
+
+1. Check the wire colors. Make sure you are clear before you start which wire is being connected to which.
+2. Strip and tin the wires. Keep the stripped sections as short as practical, you only need to allow for the individual-core  shrink sleeve. For the wires that will be connected three ways (usually 3V3 and GND), strip a little more insulation.
+3. 3D print one or more boots, following the instructions [here] (link to 3d printing)
+4. Poke the wires for the legs of the 'y' into their holes in the boot, and out through the stem hole.
+5. Cut and thread on the heat shrink for each core connection. 
+6. Solder the wires. Do the three-way joints first.   
+7. Heat-shrink the individual cores. 
+8. Carefully pull the joints back up into the boot. 
+9. Apply heat shrink to the stem of the boot.
+10. Squirt caulking silicone into the hole in the centre of the boot until it starts to come out the legs between the boot and the wires. Wait for the silicone to cure.
+
+<Aside type="tip" title="Picture placeholder">
+  Proposed picture: printed TPU boot with cables entering and finished Y-connection installed.
+</Aside>
+
+#### Method 3: junction PCB
+
+This method uses a small junction PCB to make it easier to make the soldered joints. It also uses heat shrink, caulking silicone and a 3d printed shell. **This is the easiest method** to make compact, waterproof and reliable joints, but it uses more special parts. 
+
+1. Check the wire colors. Make sure you are clear before you start which wire is being connected to which.
+2. Strip and tin the wires. Keep the stripped sections as short as practical: you don't need to allow for individual-core shrink sleeve, or for three-way soldered joints.
+3. 3D print one or more shells, following the instructions [here] (link to 3d printing)
+4. Solder the wires into the PCB according to the labels.
+5. Fit the two halves of the shell around the PCB assembly.
+6. Apply heat shrink to the stem of the shell.
+10. Squirt caulking silicone into the hole in the centre of the shell until it starts to come out the legs between the shell and the wires. Wait for the silicone to cure.
+
+<Aside type="tip" title="Picture placeholder">
+  Proposed picture: bare junction PCB, populated PCB, and sealed finished assembly.
+</Aside>
+

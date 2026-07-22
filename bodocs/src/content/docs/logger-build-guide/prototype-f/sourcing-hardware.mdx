@@ -29,29 +29,29 @@ Go to the 'releases' page in the BODAQS github repository [here](https://github.
 
 #### Ordering PCBs on JLCPCB
 
-<Flag src="/src/assets/pics/hardware_1.png" alt="hardware_1">
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
 First, [create an account](https://passport.jlcpcb.com/#/login) at JLCPCB (or log in if you already have an account). Then Select 'order now' from the top right of the [home screen](https://jlcpcb.com).
 </Flag>
 
-<Flag src="/src/assets/pics/hardware_2.png" alt="hardware_2">
+<Flag src="/src/assets/pics/logger-build-guide/hardware_2.png" alt="hardware_2">
 Select "Add gerber file" and navigate to the *_fab.zip file in the fabrication files package. When the file has uploaded, a picture of the PCB should appear in the box.
 </Flag>
 
-<Flag src="/src/assets/pics/hardware_3.png" alt="hardware_3">
+<Flag src="/src/assets/pics/logger-build-guide/hardware_3.png" alt="hardware_3">
 Scroll down to the bottom of the page, leaving the other settings unchanged. Click the 'PCB Assembly' slider ON. A set of new options should appear below. Leave these unchanged and click 'next'.
 
 A picture of the PCB should appear. Click 'next'.
 </Flag>
 
-<Flag src="/src/assets/pics/hardware_4.png" alt="hardware_4">
+<Flag src="/src/assets/pics/logger-build-guide/hardware_4.png" alt="hardware_4">
 Select "Add BOM file" and navigate to the *_BOM.csv file in the fabrication files package. Select "Add CPL file" and navigate to the *-top-pos.csv file in the fabrication files package. Click 'process BOM and CPL'.
 </Flag>
 
-<Flag src="/src/assets/pics/hardware_5.png" alt="hardware_5">
+<Flag src="/src/assets/pics/logger-build-guide/hardware_5.png" alt="hardware_5">
 You will be presented with the Bill of Materials and Component Placements. Click 'next' on each page.
 </Flag>
 
-<Flag src="/src/assets/pics/hardware_6.png" alt="hardware_6">
+<Flag src="/src/assets/pics/logger-build-guide/hardware_6.png" alt="hardware_6">
 Review the quote and select an appropriate product description (this is needed for shipping paperwork). Research/Education/DIY/Entertainment => DIY hobby circuit board is a good option. Select 'save to cart'.
 
 Select 'secure checkout' and complete checkout details.
@@ -66,24 +66,24 @@ Select 'secure checkout' and complete checkout details.
 ## Electronic parts
 #### Sparkfun ESP32 Thing Plus S3 development board.
 
-<Flag src="/src/assets/pics/thing_plus_s3.png" alt="Dev board ">
+<Flag src="/src/assets/pics/logger-build-guide/thing_plus_s3.png" alt="Dev board ">
   Make sure you purchase the correct variant: there are a wide range of ESP32 development boards even within the Sparkfun range. The correct board is [this one](https://www.sparkfun.com/sparkfun-thing-plus-esp32-s3.html). These are available from hobby electronics shops around the world, or from major global electronic distributors like Digikey and Mouser.
 </Flag>
 
 #### 0.96” OLED display
-<Flag  src="/src/assets/pics/OLED.png" alt="OLED pic">
+<Flag  src="/src/assets/pics/logger-build-guide/OLED.png" alt="OLED pic">
   These displays, based on an SSD1306 driver chip, are a commodity item and many vendors sell functionally equivalent versions. They do vary slightly in the physical dimensions of the board however, and some versions may require minor case modifications to install. [This vendor](https://www.aliexpress.com/item/1005009067594342.html) is one of many selling the module the case was built around. If the vendor posts an illustration like the one shown here, it’s probably the same one. If you buy something different, don’t worry – it can probably be installed with only minor modifications.
 </Flag>
-<Lightbox src="/src/assets/pics/OLED_dims.png" alt="OLED dims" />
+<Lightbox src="/src/assets/pics/logger-build-guide/OLED_dims.png" alt="OLED dims" />
 
 
 #### 5-key membrane keypad
-<Flag src="/src/assets/pics/keypad.png" alt="keypad ">
+<Flag src="/src/assets/pics/logger-build-guide/keypad.png" alt="keypad ">
   This is another commodity item available from many vendors on AliExpress, Amazon and Ebay, like [this one](https://www.aliexpress.com/item/1005006245093356.html). Search for variations of “5 button membrane keypad” or “5 key matrix keyboard”.
 </Flag>
 
 #### Li-ion battery
-<Flag src={"/src/assets/pics/battery.png"} alt="battery">
+<Flag src={"/src/assets/pics/logger-build-guide/battery.png"} alt="battery">
   The Li-ion battery is 18650 size, with JST-PH 2 pin connector. 18650 Li-ion cells are widely available as replacement parts from AliExpress, Amazon, Ebay and local vendors. For our purposes, all are equally good. However, make sure that:
     - The battery is an 18650
     - The battery’s capacity exceeds about 1000mAh
@@ -94,14 +94,14 @@ Select 'secure checkout' and complete checkout details.
 
   Not all battery connectors are wired with the same polarity. Check and double check that the positive and negative leads from your battery are correctly oriented. If they are not oriented as shown, gently lift the tabs on the plastic connector housing with a needle or the edge of a craft knife, withdraw the leads and re-install them in the correct positions. If the leads are not color-coded, then test the cell with a multi-meter to determine positive and negative.
 
-  <Lightbox thumbnailWidth={400} src={"/src/assets/pics/correct_polarity.png"} alt="battery polarity example showing correct and incorrect polarity"/>
+  <Lightbox thumbnailWidth={400} src={"/src/assets/pics/logger-build-guide/correct_polarity.png"} alt="battery polarity example showing correct and incorrect polarity"/>
 
   **Do not connect a battery with the incorrect or unknown polarity as it will probably damage the development board.**
 </Aside>
 
 
  #### QWIIC connector cable.
-<Flag src="/src/assets/pics/qwiic.png" alt="qwiic connector cable">
+<Flag src="/src/assets/pics/logger-build-guide/qwiic.png" alt="qwiic connector cable">
   The exact variation doesn’t matter: it just needs the QWIIC connector on one end. You will be cutting it and soldering the other ends to the OLED display. Available from AliExpress, Amazon and Ebay, or from major global electronic distributors like Digikey and Mouser.
 </Flag>
 
@@ -111,8 +111,8 @@ The BODAQS 4 logger has 6 external connectors: 4 analog inputs, one I2C bus and 
 - The 4 analog inputs and 1 remote switch use male 3-pin connectors, Amphenol 8-03PMMS-SH7001
 - The I2C bus connection uses a male 4-pin connector, Amphenol 8-04PMMS-SH7001
 
-<Lightbox src="/src/assets/pics/male_3_pin.png" alt="male 3 pin " />
-<Lightbox src="/src/assets/pics/male_4_pin.png" alt="male 4 pin " />
+<Lightbox src="/src/assets/pics/logger-build-guide/male_3_pin.png" alt="male 3 pin " />
+<Lightbox src="/src/assets/pics/logger-build-guide/male_4_pin.png" alt="male 4 pin " />
 
 <Aside  title="Optional">
   Not all the connectors need to be installed. If you are only intending to run two analog inputs (linear pots for suspension, say) and don’t want a handlebar-mounted switch, you could build the logger with just two connectors.
@@ -122,7 +122,7 @@ The BODAQS 4 logger has 6 external connectors: 4 analog inputs, one I2C bus and 
 </Aside>
 
 #### Plugs for the connectors.
-<Flag src="/src/assets/pics/plugs.png" alt="plugs">
+<Flag src="/src/assets/pics/logger-build-guide/plugs.png" alt="plugs">
 These need to match the connectors. It is easiest to buy these as sealed cable tails and solder them to your sensor wires. There are many Amphenol options, or search for M8 connectors on AliExpress, Amazon or e-bay and look for something like the picture.
 </Flag>
 
@@ -154,11 +154,11 @@ You will need the following printed parts:
  - Interface pattern: rectilinear
 
 
-<Flag src="/src/assets/pics/print-case.png" alt="print-case">
+<Flag src="/src/assets/pics/logger-build-guide/print-case.png" alt="print-case">
 **Printing cases with inlaid logo:** If you have access to a multi-color 3D printer and your slicer software supports it, the easiest way to do so is to import the parts as STEP files directly into your slicer (the STEP files are in the 'STEP' directory). Once the files are imported, assign the logo inlays with the colors of your choice. The official BODAQS colors are teal for the spring and either white or black for the bar, depending on the background.
 </Flag>
 
-<Flag src="/src/assets/pics/print-plate.png" alt="print-plate">
+<Flag src="/src/assets/pics/logger-build-guide/print-plate.png" alt="print-plate">
 **BambuLab-format project files** are also available in the '3mf' directory. `all parts - one material.3mf` has all the parts on a single plate - **delete the base and ends variants you don't need**. Each project file has two build plates - one for the base variant that uses brass inserts, and another for the one that uses nuts.
 
 `all parts - three colors.3mf` is actually set up to use *four* filments - three colors plus an interface material. It has the same items as the single-color project file but has alternate filament colors assigned to the logo inlays, interface material applied to support-interface surfaces, and the revised support settings described above. 
@@ -170,7 +170,7 @@ Bambulab and other vendors sell dedicated support-interface materials, but all y
 
 
 ### Sensors
-<Flag src="/src/assets/pics/linear_pots.png" alt="Linear Potentiometers">
+<Flag src="/src/assets/pics/logger-build-guide/linear_pots.png" alt="Linear Potentiometers">
 The best starting set of sensors is two linear potentiometers (pots).
 These sensors change their resistance according to how far they are compressed or extended, which makes them useful for measuring suspension movement.
 Linear pots are available from a range of suppliers including major international electronics distributors, specialist suppliers of instrumentation, motorsport suppliers and manufacturers.
@@ -192,8 +192,8 @@ The following tools are <Badge variant="danger" text="Required" /> or <Badge tex
 
 #### Soldering iron
 <Badge variant="danger" text="Required" /> You will be soldering pin headers into a PCB and short wires to connectors, so you will need a soldering iron suitable for electronics use and some solder around 0.8mm diameter.
-<Lightbox src="/src/assets/pics/soldering_iron_1.png" alt="A generic soldering iron" />
-<Lightbox src="/src/assets/pics/soldering_iron_2.png" alt="sThe TS101 premium iron" />
+<Lightbox src="/src/assets/pics/logger-build-guide/soldering_iron_1.png" alt="A generic soldering iron" />
+<Lightbox src="/src/assets/pics/logger-build-guide/soldering_iron_2.png" alt="sThe TS101 premium iron" />
 
 <Aside  title="Optional">
  The premium soldering iron option is a TS101 or Pinecil USB smart soldering iron. These feature a high power output, rapid heatup, and can be run with a lightweight cable, which makes them excellent for fine work. However, budget options can do the job just fine.
@@ -201,28 +201,28 @@ The following tools are <Badge variant="danger" text="Required" /> or <Badge tex
 
 #### Side cutters
 <Badge variant="danger" text="Required" /> You should get a small flush-cut set intended for electronics rather than a larger set intended for more general electrical work.
-<Lightbox src="/src/assets/pics/sidecutters.png" alt="side cutter " />
+<Lightbox src="/src/assets/pics/logger-build-guide/sidecutters.png" alt="side cutter " />
 
 #### 2.5mm allen key
 <Badge variant="danger" text="Required" /> For fitting the case together. If you don't have a decent set of allen keys, you can pick a set up from almost any hardware store
 
 #### Wire strippers
 <Badge text="Recommended" variant="caution"/> You can strip wire with side cutters if you are careful, or your teeth if you are a maniac, but these make it much easier.
-<Lightbox src="/src/assets/pics/wire_strippers.png" alt="wire stripper " />
+<Lightbox src="/src/assets/pics/logger-build-guide/wire_strippers.png" alt="wire stripper " />
 
 #### Multi-meter
 <Badge text="Recommended" variant="caution"/> For polarity & continuity testingm and fault finding. Even a basic model is sufficient for the needs of this project. Not needed if everything goes perfectly. (You'll probably need one)
-<Lightbox src="/src/assets/pics/multimeter.png" alt="multimeter " />
+<Lightbox src="/src/assets/pics/logger-build-guide/multimeter.png" alt="multimeter " />
 
 #### Miniature hot air gun
 <Badge text="Recommended" variant="caution"/> For heating shrink-sleeve. A match, cigarette lighter, or glossy print of the author (price on request) can be used instead if necessary.
-<Lightbox src="/src/assets/pics/hot_air.png" alt="hot air gun" />
+<Lightbox src="/src/assets/pics/logger-build-guide/hot_air.png" alt="hot air gun" />
 
 ### Minor components and consumables
 In addition, you will need:
-- Some light-gauge (22, 24 or 26 gauge) hookup wire, preferably in four colors – less than a metre in total. You can get this from electronics hobby shops, online, or scavenge it from an old network cable. {/* <Lightbox src="/src/assets/pics/wire.png" alt="wire pic" /> */}
-- 2.5mm shrink-sleeve for covering soldered joints{/*<Lightbox src="/src/assets/pics/shrink.png" alt="shrink pic" />*/}
-- Silicone sealant, for waterproofing {/*<Lightbox src="/src/assets/pics/silicone.png" alt="silicone pic" />*/}
+- Some light-gauge (22, 24 or 26 gauge) hookup wire, preferably in four colors – less than a metre in total. You can get this from electronics hobby shops, online, or scavenge it from an old network cable. {/* <Lightbox src="/src/assets/pics/logger-build-guide/wire.png" alt="wire pic" /> */}
+- 2.5mm shrink-sleeve for covering soldered joints{/*<Lightbox src="/src/assets/pics/logger-build-guide/shrink.png" alt="shrink pic" />*/}
+- Silicone sealant, for waterproofing {/*<Lightbox src="/src/assets/pics/logger-build-guide/silicone.png" alt="silicone pic" />*/}
 - 4 M3x16 socket-head cap screws and nuts to hold the case together
 - (Optional but recommended): a small section of thin, transparent rigid plastic for waterproofing the screen. I cut up an old visor for this.
 

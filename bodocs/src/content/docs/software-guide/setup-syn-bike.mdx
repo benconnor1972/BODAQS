@@ -14,13 +14,13 @@ import Lightbox from '@components/Lightbox.astro';
 </Lede>
 
 <Aside type="note" title="Don't change your log format">
-<Flag src="/src/assets/pics/logformat.jpg" alt="logformat">
+<Flag src="/src/assets/pics/software-guide/logformat.JPG" alt="logformat">
 On the logger menu, you may have noticed a `log format` item with the option to produce files in `syn.bike raw` (this can also be set via the logger's web UI). It is **not recommended** that you use this. While it is possible using this setting to produce files that can be read directly by data.syn.bike, we recommend you process your files with the BODAQS Import Manager with the 'syn.bike export' option checked. The BODAQS processing pipeline takes care of some minor issues that can prevent data from being scaled properly.
 </Flag>
 </Aside>
 
 ## Configuring data.syn.bike
-<Flag src="/src/assets/pics/synserver.png" alt="synserver">
+<Flag src="/src/assets/pics/software-guide/synserver.png" alt="synserver">
 [data.syn.bike](https://data.syn.bike/) uses a small local executable to process log files. Download it from the 'settings' tab and place it in a suitable directory.
 
 Double-click the executable to run it - a terminal window should open and the website will give you a message to show that the processing server is connected. As you use data.syn.bike this terminal window will report what it is doing (if you're interested).
@@ -28,11 +28,11 @@ Double-click the executable to run it - a terminal window should open and the we
 Whenever you use data.syn.bike you will need to have it running
 </Flag>
 
-<Flag src="/src/assets/pics/synsetup1.png" alt="synsetup">
+<Flag src="/src/assets/pics/software-guide/synsetup1.png" alt="synsetup">
 Go to the 'device' tab and ensure the fork travel and shock travel are correctly set. 
 </Flag>
 
-<Flag src="/src/assets/pics/synsetup.png" alt="synsetup">
+<Flag src="/src/assets/pics/software-guide/synsetup.png" alt="synsetup">
 Next, go to the 'settings' tab and ensure the following settings are correct:
 - Front and rear sensor travels: These should be the full-range travel figures for your sensors, *not* your bike's suspension travel.
 - Log frequency: This should match the sample rate at which you collected your data.

@@ -14,7 +14,7 @@ import Lightbox from '@components/Lightbox.astro';
 BODAQS Import Manager is the desktop app for getting logger sessions off the logger and into your library. It watches log sources (folders on your computer or loggers on WiFi), imports and processes the logs, and writes the results into a library directory.
 </Lede>
 
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/import-manager.png" alt="BODAQS Import Manager main window"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/software-guide/import-manager.png" alt="BODAQS Import Manager main window"/>
 
 <Aside type="tip" title="Looking for the quickest setup path?">
   If you have not installed the app or created your first source yet, start with
@@ -124,7 +124,7 @@ libraries and sources, exposes import actions, and writes a status log as work
 is performed.
 </Lede>
 
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/import-manager.png" alt="Import Manager window"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/software-guide/import-manager.png" alt="Import Manager window"/>
 
 ### Library list
 
@@ -161,7 +161,7 @@ in the source table.
 
 ### Source context menu
 
-<Flag src="/src/assets/pics/source-context-menu.png" alt="source context menu">
+<Flag src="/src/assets/pics/user-guide/source-context-menu.png" alt="source context menu">
 Right-click a source to open actions for that source. Stop watch mode before
 editing source settings. The manager will also block some editing actions while
 the watcher is active.
@@ -211,13 +211,13 @@ individual sessions remain separate inside it. The status log updates during det
 
 ## Run and session names
 
-<Flag src="/src/assets/pics/import-run-naming.png" alt="import run naming">
+<Flag src="/src/assets/pics/user-guide/import-run-naming.png" alt="import run naming">
 
 When you select **Import Now**, the manager will ask for a run description
 override. Supply one if you want to name this import run distinctively; leave the field blank to use default run naming.
 
 </Flag>
-<Flag src="/src/assets/pics/import-session-naming.png" alt="import session naming">
+<Flag src="/src/assets/pics/user-guide/import-session-naming.png" alt="import session naming">
 
 Use **Import naming** from the source context menu when you want the source to
 auto-name sessions. A common pattern is a base name plus an index, such as
@@ -242,7 +242,7 @@ or quit the manager.
 
 ## Adding libraries and sources
 
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/import-manager-2.png" alt="provision tab"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/software-guide/import-manager-2.png" alt="provision tab"/>
 
 Use the **Provision** tab when you need to add another destination library or
 another data source. You do not need to repeat the whole first-run setup.
@@ -296,7 +296,7 @@ pass can be grouped into the same import run while remaining separate sessions
 inside that run.
 
 ## Wi-Fi logger sources
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/wifi-discover-loggers.png" alt="provision tab"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/user-guide/wifi-discover-loggers.png" alt="provision tab"/>
 
 Choose **Wi-Fi logger** when you want the manager to talk directly to a BODAQS
 logger on the local network and download completed sessions.
@@ -352,7 +352,7 @@ library outputs are complete and the workflow is doing what you expect.
 
 ## Bike profiles
 
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/bike-profile-complete.png" alt="Completed bike profile editor"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/software-guide/bike-profile-complete.png" alt="Completed bike profile editor"/>
 
 Bike profiles are shared workspace files. A source is assigned to one bike
 profile, and multiple sources can use the same profile.
@@ -425,7 +425,7 @@ Each source points to one preprocess profile. Multiple sources can (and generall
 profile.
 ## Note profiles and draft setup notes
 
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/edit-note-profile.png" alt="Edit note profile"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/software-guide/edit-note-profile.png" alt="Edit note profile"/>
 
 The note profile controls which setup-note fields are created for imported
 sessions and what default values they start with.
@@ -456,7 +456,7 @@ writes data.syn.bike-compatible outputs into:
 ```text
 <library>/syn/
 ```
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/synoutputs.png" alt="data.syn.bike export outputs"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/user-guide/synoutputs.png" alt="data.syn.bike export outputs"/>
 
 The `syn/` folder contains exported CSV files, helper text files, and export
 metadata for sessions imported or reprocessed while export was enabled.
@@ -492,7 +492,7 @@ For Wi-Fi sources, status can also report upload mode, logger identity, and
 network errors.
 
 ## Removing sources and libraries
-<Lightbox thumbnailWidth={600} src="/src/assets/pics/remove-source.png" alt="remove-source"/>
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/user-guide/remove-source.png" alt="remove-source"/>
 
 Removing a source or library can mean two different things.
 

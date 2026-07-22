@@ -52,7 +52,7 @@ from the General configuration page in the web interface.
 
 ## Starting The Web Interface
 
-<Flag src="/src/assets/pics/oled-wifi-starting.png" alt="Wi-Fi starting">
+<Flag src="/src/assets/pics/user-guide/oled-wifi-starting.png" alt="Wi-Fi starting">
 <Steps>
   1. Open the logger main menu from the idle screen.
   2. Select the `WiFi` menu item.
@@ -100,7 +100,7 @@ While logging is occurring or upload mode is active, configuration editing is di
 ## Files Page
 
 {/* TODO screenshot: replace files.png with a current Files page showing the Logger upload panel. Add variants for normal mode and upload mode. */}
-<Flag src="/src/assets/pics/files.png" alt="files">
+<Flag src="/src/assets/pics/user-guide/files.png" alt="files">
 The `Files` page is the home page of the web interface. It lets you browse the
 SD card, download log files, upload files, create folders, and remove files or
 folders when manual file changes are allowed.
@@ -178,7 +178,7 @@ folders, use the folder remove action shown on the file list.
 ## General Configuration
 
 {/* TODO screenshot: replace config.png with a current General page screenshot showing compact binary and current locking/banner styling. */}
-<Flag src="/src/assets/pics/config.png" alt="general configuration">
+<Flag src="/src/assets/pics/user-guide/config.png" alt="general configuration">
 Open `General` from the navigation bar to edit logger-wide settings. Changes are
 written to the logger configuration file when you press `Save`.
 
@@ -207,7 +207,7 @@ The General section includes:
 ### Network And Time Settings
 
 {/* TODO screenshot: replace wifi.png with a current Network & NTP section showing Wi-Fi mode, AP SSID/password, and HTTP time check URL. */}
-<Flag src="/src/assets/pics/wifi.png" alt="network settings">
+<Flag src="/src/assets/pics/user-guide/wifi.png" alt="network settings">
 The General configuration page also includes network and time settings:
 
 - Whether Wi-Fi should be enabled automatically when the logger is awake.
@@ -268,7 +268,7 @@ The current firmware supports these user-facing sensor types:
 
 ### Basic
 
-<Flag src="/src/assets/pics/sensorbasic.png" alt="sensor basic">
+<Flag src="/src/assets/pics/user-guide/sensorbasic.png" alt="sensor basic">
 The Basic section contains:
 
 - The sensor name.
@@ -281,7 +281,7 @@ The Basic section contains:
 Analog input selection is board-aware. On RC3 hardware, analog inputs may map to
 external ADC channels rather than ESP32 GPIO ADC pins.
 
-<Flag src="/src/assets/pics/sensorbasici2c.png" alt="I2C sensor basic">
+<Flag src="/src/assets/pics/user-guide/sensorbasici2c.png" alt="I2C sensor basic">
 Changing a sensor type reloads the available fields for that sensor. Adding,
 deleting, or changing sensor type saves the configuration, but the live sensor
 set is rebuilt on restart.
@@ -290,7 +290,7 @@ set is rebuilt on restart.
 
 ### Output
 
-<Flag src="/src/assets/pics/sensoroutput.png" alt="sensor output">
+<Flag src="/src/assets/pics/user-guide/sensoroutput.png" alt="sensor output">
 The Output section controls what the logger writes for that sensor.
 
 - `Output mode`: `RAW` or `LINEAR`.
@@ -308,7 +308,7 @@ The Output section controls what the logger writes for that sensor.
 
 ### Usage And Signal Semantics
 
-<Flag src="/src/assets/pics/sensorusage.png" alt="sensor usage">
+<Flag src="/src/assets/pics/user-guide/sensorusage.png" alt="sensor usage">
 The Usage section describes what the sensor is measuring. These fields are
 written into metadata and help downstream software choose the correct data even
 if sensor names change.
@@ -326,7 +326,7 @@ The Sag Helper uses usage metadata. A sensor must be active and have
 
 
 ### GPS Sensors
-<Flag src="/src/assets/pics/gpssensor.png" alt="gps sensor">
+<Flag src="/src/assets/pics/user-guide/gpssensor.png" alt="gps sensor">
 
 The DAN-F10N GPS sensor is logged differently from fixed-rate scalar sensors.
 GPS data arrives asynchronously at the GPS update rate and may be invalid while
@@ -337,7 +337,7 @@ the receiver is acquiring a fix. The logger writes GPS signal age and quality da
 
 ### Calibration
 
-<Flag src="/src/assets/pics/sensorcalibration.png" alt="sensor calibration">
+<Flag src="/src/assets/pics/user-guide/sensorcalibration.png" alt="sensor calibration">
 The Calibration section contains values used to translate raw sensor readings
 into physically meaningful units.
 
@@ -360,7 +360,7 @@ tools.
 
 ### Wrapping
 
-<Flag src="/src/assets/pics/sensorwrapping.png" alt="sensor wrapping">
+<Flag src="/src/assets/pics/user-guide/sensorwrapping.png" alt="sensor wrapping">
 Wrapping fields are shown only for sensors that can produce multi-turn or
 wrapped magnetic encoder counts. These settings describe how wrapped counts are
 unwrapped into continuous raw position.

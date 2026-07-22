@@ -87,15 +87,15 @@ It does not strictly matter which way around the + and - connections are wired: 
 
 Connect to the logger configuration web interface and navigate to the `Sensors` page, as described in the [User Guide](/user-guide/accessing-logs-and-configuration/)
 
-<Flag src="/src/assets/pics/connection-and-wiring/sensor-config-add.png" alt="sensor config add"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/sensor-config-add.png" alt="sensor config add"> 
 Add a new sensor of type `Analog Potentiometer`. Give it a helpful name, for example `front_shock` or `rear_shock`. 
 </Flag> 
 
-<Flag src="/src/assets/pics/connection-and-wiring/sensor-config-edit.png" alt="sensor config edit"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/sensor-config-edit.png" alt="sensor config edit"> 
 Click 'Edit' to edit the sensor configuration.
 </Flag> 
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-analog-pot.png" alt="config analog pot"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-analog-pot.png" alt="config analog pot"> 
 
 Set configuration options for the sensor:
 1. Set `Analog input` to the AIN where the signal wire is connected.
@@ -136,7 +136,7 @@ It is generally preferable to use AS5600 sensors in I2C mode since it provides a
 It is not recommended that you run string pots in analog mode on Prototype F loggers due to limitations of the ESP32's on-board ADCs. 
 </Aside>
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-as5600-analog-wiring.png" alt="as5600 analog wiring"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-as5600-analog-wiring.png" alt="as5600 analog wiring"> 
 Wiring is generally the same as for other analog devices, but with some additional caveats:
 
 - The general rule that `+` and `-` can be reversed for analog devices **does not apply here**. An AS5600 is fundamentally a digital device, even if it can emulate an analog one. 
@@ -150,7 +150,7 @@ Wiring is generally the same as for other analog devices, but with some addition
 
 Connect to the logger configuration web interface and navigate to the `Sensors` page, as described in the [User Guide](/user-guide/accessing-logs-and-configuration/) Add a new sensor of type `AS5600 string pot (analog)`. Give it a helpful name, for example `front_shock` or `rear_shock`. Click 'Edit' to edit the sensor configuration.
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-analog-stringpot.png" alt="config analog stringpot"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-analog-stringpot.png" alt="config analog stringpot"> 
 
 Set configuration options for the sensor:
 1. Set `Analog input` to the AIN where the signal wire is connected.
@@ -203,7 +203,7 @@ This sensor configuration is intended for use with AS5600 magnetic encoders used
 The AS5600 is a 12-bit sensor, meaning it produces 4096 discrete outputs over a full cycle. For measuring linkages with a relatively small rotation, such as Santa Cruz VPP top linkages, consider a higher bit count encoder like the AS5048B.
 </Aside>
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-as5600-digital-wiring.png" alt="as5600 digital wiring"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-as5600-digital-wiring.png" alt="as5600 digital wiring"> 
 Wiring is generally the same as for other I2C devices. The AS5600's DIR pin must be connected to either `+` or '-' (not left floating).
 </Flag> 
 
@@ -213,7 +213,7 @@ Wiring is generally the same as for other I2C devices. The AS5600's DIR pin must
 
 Connect to the logger configuration web interface and navigate to the `Sensors` page, as described in the [User Guide](/user-guide/accessing-logs-and-configuration/) Add a new sensor of type `AS5600 angle (I2C)`. Give it a helpful name, for example `front_shock` or `rear_shock`. Click 'Edit' to edit the sensor configuration.
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-as5600-angle.png" alt="config as5600 angle"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-as5600-angle.png" alt="config as5600 angle"> 
 
 Set configuration options for the sensor:
 1. Set `I2C bus`. Normally for AS5600 sensors this will be 1 to avoid address conflict with the logger's fuel gauge on I2C0. Leave  `I2C address` unchanged.
@@ -249,7 +249,7 @@ The AS5600 is a 12-bit sensor with a fixed I2C address. It can emulate an analog
 
 </Aside>
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-as5048-wiring.png" alt="as5048 wiring"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-as5048-wiring.png" alt="as5048 wiring"> 
 In addition to wiring 3V3, GND, SCL and SDA to their matching inputs on the logger:
 - The AS5048's 3V3 and 5V pins must be connected together
 - The A1 and A2 pins must each be connected either to 3V3 or GND, with the combination chosen determining the device's I2C address.
@@ -261,7 +261,7 @@ In addition to wiring 3V3, GND, SCL and SDA to their matching inputs on the logg
 
 Connect to the logger configuration web interface and navigate to the `Sensors` page, as described in the [User Guide](/user-guide/accessing-logs-and-configuration/) Add a new sensor of type `AS5048B angle (I2C)`. Give it a helpful name, for example `front_shock` or `rear_shock`. Click 'Edit' to edit the sensor configuration.
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-as5048-angle.png" alt="config as5048 angle"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-as5048-angle.png" alt="config as5048 angle"> 
 
 Set configuration options for the sensor:
 1. Set `I2C bus` and `I2C address`. Choose the bus you are going to connect the sensor to. Choose the address based on how you have wired pins A1 and A2 on the sensor.
@@ -287,7 +287,7 @@ This sensor configuration is intended for use with the BODAQS string potentiomet
 AS5600 chips can be read either as I2C devices or as analog devices. This section covers configuration as an I2C device.
 
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-as5600-digital-wiring.png" alt="as5600 digital wiring"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-as5600-digital-wiring.png" alt="as5600 digital wiring"> 
 Wiring is generally the same as for other I2C devices. The AS5600's DIR pin must be connected to either `+` or '-' (not left floating).
 </Flag> 
 
@@ -296,7 +296,7 @@ Wiring is generally the same as for other I2C devices. The AS5600's DIR pin must
 
 Connect to the logger configuration web interface and navigate to the `Sensors` page, as described in the [User Guide](/user-guide/accessing-logs-and-configuration/) Add a new sensor of type `AS5600 string pot (I2C)`. Give it a helpful name, for example `front_shock` or `rear_shock`. Click 'Edit' to edit the sensor configuration.
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-i2c-stringpot.png" alt="config i2c stringpot"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-i2c-stringpot.png" alt="config i2c stringpot"> 
 
 Set configuration options for the sensor:
 1. Set `I2C bus`. Normally for AS5600 sensors this will be 1 to avoid address conflict with the logger's fuel gauge on I2C0. Leave  `I2C address` unchanged.
@@ -359,7 +359,7 @@ Connect:
 
 Connect to the logger configuration web interface and navigate to the `Sensors` page, as described in the [User Guide](/user-guide/accessing-logs-and-configuration/) Add a new sensor of type `DAN-F10N GPS (UART)`. Give it a helpful name, like 'GPS'. Click 'Edit' to edit the sensor configuration.
 
-<Flag src="/src/assets/pics/connection-and-wiring/config-gps.png" alt="config gps"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/config-gps.png" alt="config gps"> 
 
 Set configuration options for the sensor:
 1. Leave the `UART_port` set to 0. BODAQS loggers only have one UART connection.

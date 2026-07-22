@@ -26,13 +26,13 @@ Internally, the logger converts analog signals to a digital format using a devic
 
 Analog inputs are extremely versatile: almost anything that produces a voltage in the correct range can be read using an analog input. But each input can only read *one thing*, and the logger can't give the sensor instructions.
 
-<Flag src="/src/assets/pics/a8-analog.png" alt="a8 analog"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/a8-analog.png" alt="a8 analog"> 
 The two connectors on the right-hand side of the **A8 logger** are for analog inputs. Each connector is connected to a separate ADC. As is traditional in electronics, the inputs are numbered from 0: the top connector is for analog inputs 0 to 3, and the bottom connector for 4 to 7.
 
 Multiple analog connections can share ground and excitation pins.
 </Flag>
 
-<Flag src="/src/assets/pics/proto-f-analog.png" alt="proto f analog"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/proto-f-analog.png" alt="proto f analog"> 
 The **Prototype F logger** can connect up to four analog inputs, each on a separate connector. 
 </Flag>
 
@@ -46,22 +46,22 @@ Different sensors speak different digital languages, known as 'protocols'. BODAQ
 
 BODAQS loggers can connect sensors on two different I2C buses (named 'I2C0' and 'I2C1'). Internally, they use I2C0 to run the OLED display and the battery fuel gauge. Typical uses for I2C are reading rotary position sensors. 
 
-<Flag src="/src/assets/pics/a8-i2c.png" alt="a8 i2c"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/a8-i2c.png" alt="a8 i2c"> 
 The lower left connector on the **A8 logger** is for I2C sensors. The I2C buses share the same power and ground pins.
 </Flag>
 
-<Flag src="/src/assets/pics/proto-f-i2c.png" alt="proto f i2c"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/proto-f-i2c.png" alt="proto f i2c"> 
 The **Prototype F logger** can run up to 2 I2C buses, each on a separate connector. Because the Prototype F case only allows 6 connectors and but the logger can support up to 8, some tradeoffs may be required. For example, you could run 2 analog inputs, UART and the bar switch connector in the 4 connector positions at the top of the logger, and another analog input and I2C1 in the bottom positions. Or various other combinations.
 </Flag>
 
 
 **UART ('universal asynchronous receive and transmit')** is a protocol that can support a single connected device using two wires (plus power and ground, for four wires in total). It is not a 'bus' and only one device per wire pair can be used. BODAQS loggers use UART to connect external GPS sensors. 
 
-<Flag src="/src/assets/pics/a8-uart.png" alt="a8 uart"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/a8-uart.png" alt="a8 uart"> 
 The upper left connector on the **A8 logger** is shared between the handlebar switch and a UART connection for GPS. Power, Ground, Tx (transmit) and Rx (receive) are required for UART.
 </Flag>
 
-<Flag src="/src/assets/pics/proto-f-uart.png" alt="proto f uart"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/proto-f-uart.png" alt="proto f uart"> 
 The **Prototype F logger** has UART pins broken out on the PCB, but these do not have a dedicated connector position. If a UART connection is wanted, the connector can be placed in any of the available positions: those normally used for I2C connectors are ideal.
 </Flag>
 
@@ -73,7 +73,7 @@ Normally when you are wiring sensors to the logger, you match things together - 
 
 BODAQS A8 loggers use SPI internally to communicate between the microcontroller and the ADCs, and expose one additional SPI input for experimental purposes. There are currently no external SPI sensors supported.
 
-<Flag src="/src/assets/pics/a8-spi.png" alt="a8 spi"> 
+<Flag src="/src/assets/pics/sensor-connection-and-wiring-guide/a8-spi.png" alt="a8 spi"> 
 The A8 breaks out 6 pins for a single SPI device. At the moment no SPI sensors are supported: this provision is for testing and experimentation
 </Flag>
 
