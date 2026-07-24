@@ -1106,6 +1106,29 @@ def test_session_sidecar_diagnostic_columns_do_not_enter_signal_semantics(tmp_pa
     assert session["meta"]["channel_info"]["rear_angle_agc"]["metric"] == "agc"
 
 
+def test_derived_signal_registry_entries_inherit_end_from_canonical_base() -> None:
+    session = {
+        "df": pd.DataFrame(
+            {
+                "time_s": [0.0, 0.002, 0.004],
+                "front_suspension_disp_vel_dom_suspension [mm/s]": [0.0, 1.0, 2.0],
+                "front_suspension_disp_acc_dom_suspension [mm/s^2]": [0.0, 10.0, 20.0],
+                "rear_suspension_disp_vel_dom_suspension [mm/s]": [0.0, -1.0, -2.0],
+                "rear_suspension_disp_acc_dom_suspension [mm/s^2]": [0.0, -10.0, -20.0],
+            }
+        ),
+        "meta": {},
+    }
+
+    session = build_signals_registry(session, strict=False)
+    signals = session["meta"]["signals"]
+
+    assert signals["front_suspension_disp_vel_dom_suspension [mm/s]"]["end"] == "front"
+    assert signals["front_suspension_disp_acc_dom_suspension [mm/s^2]"]["end"] == "front"
+    assert signals["rear_suspension_disp_vel_dom_suspension [mm/s]"]["end"] == "rear"
+    assert signals["rear_suspension_disp_acc_dom_suspension [mm/s^2]"]["end"] == "rear"
+
+
 def test_preprocess_session_preserves_diagnostic_channel_info_after_canonical_rename(tmp_path):
     csv_path = tmp_path / "session.csv"
     csv_path.write_text(

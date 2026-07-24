@@ -239,6 +239,7 @@ function App() {
   const [isRefreshingWorkbenchData, setIsRefreshingWorkbenchData] = useState(false)
   const [statusMessage, setStatusMessage] = useState('Connecting to configured BODAQS Library API...')
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
+  const [libraryApiReadOnly, setLibraryApiReadOnly] = useState(false)
   const workbenchRefreshInFlightRef = useRef(false)
   const lastAutomaticWorkbenchRefreshMs = useRef(0)
 
@@ -272,6 +273,7 @@ function App() {
         if (health.libraries_root) {
           setLibraryRootInput(health.libraries_root)
         }
+        setLibraryApiReadOnly(Boolean(health.read_only))
         const loaded = await fetchWorkbenchData(localDataSource)
         if (cancelled) {
           return
@@ -282,7 +284,9 @@ function App() {
         setSavedStudySets(loaded.studySets)
         setSavedSessionFilters(loaded.savedFilters)
         setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
-        setStatusMessage(`Connected to Library API at ${localDataSource.baseUrl}.`)
+        setStatusMessage(
+          `Connected to Library API at ${localDataSource.baseUrl}${health.read_only ? ' (read-only).' : '.'}`,
+        )
         setConnectionStatus('online')
         setActiveDataSource(localDataSource)
         setConnectionMode('local-api')
@@ -294,6 +298,7 @@ function App() {
         setActiveDataSource(fixtureDataSource)
         setConnectionMode('fixture')
         setConnectionStatus('offline')
+        setLibraryApiReadOnly(false)
         try {
           const loaded = await fetchWorkbenchData(fixtureDataSource)
           if (cancelled) {
@@ -330,10 +335,11 @@ function App() {
 
     async function checkLibraryApiHealth() {
       try {
-        await localDataSource.getHealth()
+        const health = await localDataSource.getHealth()
         if (cancelled) {
           return
         }
+        setLibraryApiReadOnly(Boolean(health.read_only))
         setConnectionStatus('online')
       } catch {
         if (cancelled) {
@@ -476,9 +482,10 @@ function App() {
   const isCurrentStudySetDirty = !studySetsEqual(currentStudySet, lastCommittedStudySet)
   const currentStudySetHasContent = hasStudySetContent(currentStudySet)
   const currentStudySetStatus = studySetStatus(currentStudySet, isCurrentStudySetDirty)
+  const canWriteLibraryState = !(connectionMode === 'local-api' && libraryApiReadOnly)
   const canSaveCurrentStudySet =
-    isCurrentStudySetDirty || (!currentStudySet.id && currentStudySet.sessions.length > 0)
-  const canSavePendingAction = Boolean(currentStudySet.displayName.trim() && currentStudySet.sessions.length > 0)
+    canWriteLibraryState && (isCurrentStudySetDirty || (!currentStudySet.id && currentStudySet.sessions.length > 0))
+  const canSavePendingAction = canWriteLibraryState && Boolean(currentStudySet.displayName.trim() && currentStudySet.sessions.length > 0)
   const trackMatchRequestKey = JSON.stringify({
     sessions: currentStudySet.sessions,
     trackIds: currentStudySet.trackIds,
@@ -645,6 +652,9 @@ function App() {
 
   const saveCachedSessionNote = useCallback(
     async (note: SessionNoteRecord) => {
+      if (!canWriteLibraryState) {
+        throw new Error('The Library API is running in read-only mode.')
+      }
       if (!activeDataSource.saveSessionNote) {
         throw new Error('The current data source does not support note saves.')
       }
@@ -658,7 +668,7 @@ function App() {
       )
       return cloneSessionNoteRecord(saved)
     },
-    [activeDataSource],
+    [activeDataSource, canWriteLibraryState],
   )
 
   function clearNoteCache() {
@@ -1027,6 +1037,9 @@ function App() {
   }
 
   async function saveSessionFilter(filter: SavedSessionFilterRecord) {
+    if (!canWriteLibraryState) {
+      throw new Error('The Library API is running in read-only mode.')
+    }
     if (!activeDataSource.saveSavedSessionFilter) {
       throw new Error('The current data source does not support filter writes.')
     }
@@ -1049,6 +1062,10 @@ function App() {
   }
 
   async function deleteSavedStudySet(studySet: StudySet) {
+    if (!canWriteLibraryState) {
+      setStatusMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!studySet.id) {
       setStatusMessage('Only saved Study Sets can be deleted.')
       return
@@ -1080,6 +1097,10 @@ function App() {
   }
 
   async function deleteLibrarySession(session: SessionRecord) {
+    if (!canWriteLibraryState) {
+      setStatusMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!activeDataSource.deleteSession) {
       setStatusMessage('The current data source does not support session deletes.')
       return
@@ -1124,6 +1145,10 @@ function App() {
   }
 
   async function deleteSelectedLibrarySessions() {
+    if (!canWriteLibraryState) {
+      setStatusMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!activeDataSource.deleteSession) {
       setStatusMessage('The current data source does not support session deletes.')
       return
@@ -1292,6 +1317,9 @@ function App() {
   }
 
   async function deleteSessionFilter(filter: SavedSessionFilterRecord) {
+    if (!canWriteLibraryState) {
+      throw new Error('The Library API is running in read-only mode.')
+    }
     if (!activeDataSource.deleteSavedSessionFilter) {
       throw new Error('The current data source does not support filter deletes.')
     }
@@ -1417,6 +1445,10 @@ function App() {
       setStatusMessage('Copy a note before pasting.')
       return
     }
+    if (!canWriteLibraryState) {
+      setStatusMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!activeDataSource.saveSessionNote) {
       setStatusMessage('The current data source does not support note paste.')
       return
@@ -1494,6 +1526,11 @@ function App() {
     const currentName = (session.sessionLabel || session.name).trim()
     if (!trimmedName || trimmedName === currentName) {
       return
+    }
+    if (!canWriteLibraryState) {
+      const message = 'The Library API is running in read-only mode.'
+      setStatusMessage(message)
+      throw new Error(message)
     }
     if (!activeDataSource.renameSession) {
       const message = 'The current data source does not support session rename.'
@@ -1603,6 +1640,7 @@ function App() {
       return
     }
 
+    openStudyBuilderWhenAddingToEmptySet(currentStudySet)
     setCurrentStudySet((current) => {
       const existingIds = new Set(current.sessions.map(sessionRefId))
       const nextSessions = [...current.sessions]
@@ -1623,8 +1661,11 @@ function App() {
   }
 
   function addSessionRefToStudySet(sessionRef: StudySet['sessions'][number]) {
+    const refId = sessionRefId(sessionRef)
+    if (!currentStudySet.sessions.some((item) => sessionRefId(item) === refId)) {
+      openStudyBuilderWhenAddingToEmptySet(currentStudySet)
+    }
     setCurrentStudySet((current) => {
-      const refId = sessionRefId(sessionRef)
       if (current.sessions.some((item) => sessionRefId(item) === refId)) {
         return current
       }
@@ -1757,7 +1798,16 @@ function App() {
       saved: current.trackIds.includes(trackId) ? current.saved : false,
       trackIds: Array.from(new Set([...current.trackIds, trackId])),
     }))
+    if (!currentStudySet.trackIds.includes(trackId)) {
+      openStudyBuilderWhenAddingToEmptySet(currentStudySet)
+    }
     setStatusMessage('Track attached to the Study Set.')
+  }
+
+  function openStudyBuilderWhenAddingToEmptySet(studySet: StudySet) {
+    if (!studyDrawerOpen && studySet.sessions.length === 0 && studySet.groupings.length === 0 && studySet.trackIds.length === 0) {
+      setStudyDrawerOpen(true)
+    }
   }
 
   function upsertTrack(track: TrackRecord) {
@@ -1796,6 +1846,10 @@ function App() {
   }
 
   async function saveCurrentStudySet(): Promise<StudySet | null> {
+    if (!canWriteLibraryState) {
+      setStatusMessage('The Library API is running in read-only mode.')
+      return null
+    }
     const displayName = currentStudySet.displayName.trim()
     if (!displayName) {
       setStatusMessage('Name the Study Set before saving.')
@@ -2023,7 +2077,7 @@ function App() {
                   </label>
                   <button
                     className="secondary-action"
-                    disabled={isChangingLibraryRoot}
+                    disabled={isChangingLibraryRoot || !canWriteLibraryState}
                     onClick={() => void applyLibraryRoot()}
                     type="button"
                   >
@@ -2188,11 +2242,11 @@ function App() {
                   onSelect={selectCandidate}
                   onAnalyzeSession={analyzeSessionNow}
                   onInspect={inspectSession}
-                  onDeleteSession={deleteLibrarySession}
-                  onRenameSession={activeDataSource.renameSession ? renameLibrarySession : undefined}
+                  onDeleteSession={canWriteLibraryState ? deleteLibrarySession : undefined}
+                  onRenameSession={canWriteLibraryState && activeDataSource.renameSession ? renameLibrarySession : undefined}
                   onCopyNote={copySessionNote}
                   onPasteNote={pasteSessionNote}
-                  canPasteNote={Boolean(noteClipboard && activeDataSource.saveSessionNote)}
+                  canPasteNote={Boolean(canWriteLibraryState && noteClipboard && activeDataSource.saveSessionNote)}
                 />
                 <div className="action-row">
                   <div className="action-row-main">
@@ -2207,7 +2261,7 @@ function App() {
                   </div>
                   <button
                     className="danger-action action-row-delete"
-                    disabled={!activeDataSource.deleteSession || selectedCandidateSessions.length === 0}
+                    disabled={!canWriteLibraryState || !activeDataSource.deleteSession || selectedCandidateSessions.length === 0}
                     onClick={() => void deleteSelectedLibrarySessions()}
                     type="button"
                   >
@@ -2293,6 +2347,7 @@ function App() {
                 tracks={tracks}
                 selectedTrackIds={selectedTrackIds}
                 dataSource={activeDataSource}
+                canWrite={canWriteLibraryState}
                 onToggleTrack={toggleTrack}
                 onAttachTrack={addTrackToStudySet}
                 onAttachSession={addSessionRefToStudySet}
@@ -2553,7 +2608,7 @@ function App() {
                           />
                           <IconButton
                             label="Delete Study Set"
-                            disabled={!studySet.id || !activeDataSource.deleteStudySet}
+                            disabled={!canWriteLibraryState || !studySet.id || !activeDataSource.deleteStudySet}
                             onClick={() => void deleteSavedStudySet(studySet)}
                             icon={<Trash2 size={15} />}
                             tone="alert"
@@ -2598,6 +2653,7 @@ function App() {
           dataSource={activeDataSource}
           loadSessionNote={loadCachedSessionNote}
           saveSessionNote={saveCachedSessionNote}
+          canWrite={canWriteLibraryState}
           onClose={() => setNoteEditorSession(null)}
           onSaved={updateSessionAfterNoteSave}
         />
@@ -2606,7 +2662,7 @@ function App() {
         <FilterManagerModal
           filters={savedSessionFilters}
           tracks={tracks}
-          canWrite={Boolean(activeDataSource.saveSavedSessionFilter)}
+          canWrite={Boolean(canWriteLibraryState && activeDataSource.saveSavedSessionFilter)}
           onClose={() => setFilterManagerOpen(false)}
           onSave={saveSessionFilter}
           onDelete={deleteSessionFilter}

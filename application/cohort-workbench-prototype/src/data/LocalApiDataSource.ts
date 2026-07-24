@@ -77,6 +77,9 @@ export function defaultLibraryApiBaseUrl() {
   if (typeof window !== 'undefined' && window.location?.origin && isBundledLocalOrigin(window.location)) {
     return normalizeApiBaseUrl(window.location.origin)
   }
+  if (!import.meta.env.DEV && typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)) {
+    return normalizeApiBaseUrl(window.location.origin)
+  }
   return DEFAULT_API_BASE_URL
 }
 
@@ -84,6 +87,7 @@ type ApiObject = Record<string, unknown>
 
 type ApiHealth = {
   libraries_root?: string
+  read_only?: boolean
 }
 
 type ApiSetLibrariesRootResponse = {

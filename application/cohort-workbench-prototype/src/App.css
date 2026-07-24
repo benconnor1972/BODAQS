@@ -2282,7 +2282,9 @@ button {
 }
 
 .modal.signal-inspector-modal .modal-content {
-  overflow: hidden;
+  max-height: calc(100vh - 92px);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .modal.track-manager-modal {
@@ -4380,6 +4382,68 @@ button {
   color: #7c5522;
 }
 
+.signal-inspector-altitude-chart,
+.signal-inspector-altitude-empty {
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.signal-inspector-altitude-chart {
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+}
+
+.signal-inspector-altitude-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-altitude-title strong {
+  color: var(--ink);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-altitude-chart svg {
+  display: block;
+  width: 100%;
+  height: 96px;
+}
+
+.signal-inspector-altitude-chart line {
+  stroke: rgba(79, 116, 119, 0.34);
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-chart path {
+  fill: none;
+  stroke: var(--teal);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.45;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-chart text {
+  fill: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-altitude-empty {
+  display: grid;
+  place-items: center;
+  min-height: 58px;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  text-align: center;
+}
+
 .signal-inspector-delete-bookmark {
   display: inline-flex;
   align-items: center;
@@ -4444,6 +4508,41 @@ button {
   border-radius: var(--radius-pill);
 }
 
+.signal-inspector-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+}
+
+.signal-inspector-mode-toggle button {
+  display: grid;
+  gap: 2px;
+  min-height: var(--control-height-lg);
+  padding: 6px 8px;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.signal-inspector-mode-toggle button.active {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+  color: var(--green);
+}
+
+.signal-inspector-mode-toggle strong {
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-mode-toggle small {
+  color: inherit;
+  font-size: var(--text-caption);
+}
+
 .signal-inspector-mark-swatch {
   background: var(--ink);
   border-radius: 2px !important;
@@ -4483,6 +4582,63 @@ button {
   background: white;
 }
 
+.signal-inspector-chart-card.compact {
+  gap: var(--space-2);
+  padding: 7px;
+}
+
+.signal-inspector-chart-card.inline-legend {
+  gap: 0;
+}
+
+.signal-inspector-multi-stack {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.signal-inspector-hover-debug {
+  padding: 6px 8px;
+  border: var(--border-subtle);
+  background: #fffaf0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-hover-debug summary {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-hover-debug summary span {
+  color: var(--muted);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-inspector-hover-debug table {
+  width: 100%;
+  margin-top: 6px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-inspector-hover-debug th,
+.signal-inspector-hover-debug td {
+  padding: 2px 5px;
+  border-top: var(--border-subtle);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.signal-inspector-hover-debug-empty {
+  padding-top: 6px;
+}
+
 .signal-inspector-chart-frame {
   position: relative;
   box-sizing: border-box;
@@ -4490,6 +4646,11 @@ button {
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
+}
+
+.signal-inspector-chart-card.inline-legend .signal-inspector-chart-frame {
+  border: var(--border-subtle);
+  background: var(--surface);
 }
 
 .signal-inspector-full-session-control {
@@ -4534,6 +4695,10 @@ button {
   contain: size layout paint;
 }
 
+.signal-inspector-chart-card.inline-legend .signal-inspector-uplot-host {
+  border: 0;
+}
+
 .signal-inspector-uplot-host .uplot {
   width: 100% !important;
   max-width: 100%;
@@ -4563,10 +4728,25 @@ button {
   border-color: var(--ink) !important;
 }
 
+.signal-inspector-chart-card.inline-legend .u-cursor-x,
+.signal-inspector-chart-card.inline-legend .u-cursor-pt {
+  display: none !important;
+}
+
 .signal-inspector-plot-overlay {
   position: absolute;
   inset: 0;
   z-index: 2;
+  pointer-events: none;
+}
+
+.signal-inspector-synced-hover-line {
+  position: absolute;
+  top: 10px;
+  bottom: 34px;
+  z-index: 3;
+  width: 0;
+  border-left: 1px solid rgba(0, 140, 149, 0.5);
   pointer-events: none;
 }
 
@@ -4777,9 +4957,9 @@ button {
 
 .signal-inspector-readout {
   position: absolute;
-  top: 10px;
-  right: 12px;
-  z-index: 2;
+  top: 50%;
+  right: auto;
+  z-index: 4;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4787,12 +4967,14 @@ button {
   max-width: min(560px, calc(100% - 24px));
   padding: 6px 8px;
   border: var(--border-subtle);
+  border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.94);
   box-shadow: var(--shadow-floating-control);
   color: var(--muted);
   font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+  transform: translate(-50%, -50%);
 }
 
 .signal-inspector-readout strong {
@@ -4810,6 +4992,14 @@ button {
   width: 8px;
   height: 8px;
   border-radius: var(--radius-pill);
+}
+
+.signal-inspector-chart-card.inline-legend .signal-inspector-readout {
+  right: auto;
+  bottom: auto;
+  max-width: min(560px, calc(100% - 92px));
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .signal-inspector-event-detail {
@@ -4889,6 +5079,18 @@ button {
   gap: 6px 12px;
   color: var(--muted);
   font-size: var(--text-caption);
+}
+
+.signal-inspector-chart-card.inline-legend .signal-inspector-legend {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 3;
+  max-width: min(62%, 680px);
+  padding: 4px 6px;
+  border: var(--border-subtle);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-floating-control);
 }
 
 .signal-inspector-legend span {

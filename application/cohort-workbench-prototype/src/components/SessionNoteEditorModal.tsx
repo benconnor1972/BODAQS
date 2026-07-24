@@ -31,6 +31,7 @@ export function SessionNoteEditorModal({
   dataSource,
   loadSessionNote,
   saveSessionNote,
+  canWrite = true,
   onClose,
   onSaved,
 }: {
@@ -38,6 +39,7 @@ export function SessionNoteEditorModal({
   dataSource: LibraryDataSource
   loadSessionNote?: (session: SessionRecord) => Promise<SessionNoteRecord>
   saveSessionNote?: (note: SessionNoteRecord) => Promise<SessionNoteRecord>
+  canWrite?: boolean
   onClose: () => void
   onSaved: (session: SessionRecord) => void
 }) {
@@ -48,7 +50,7 @@ export function SessionNoteEditorModal({
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const persistNote = saveSessionNote ?? dataSource.saveSessionNote
-  const canSave = Boolean(note && persistNote && !loading && !saving)
+  const canSave = Boolean(canWrite && note && persistNote && !loading && !saving)
   const groupedFields = note ? groupedNoteFields(note) : []
 
   useEffect(() => {
@@ -91,6 +93,10 @@ export function SessionNoteEditorModal({
   }, [dataSource, loadSessionNote, session])
 
   async function saveNote(nextDraftStatus: boolean | 'preserve') {
+    if (!canWrite) {
+      setError('The Library API is running in read-only mode.')
+      return
+    }
     if (!note || !persistNote) {
       setError('This data source does not support note saves.')
       return

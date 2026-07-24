@@ -4976,10 +4976,10 @@ function filterRowsByTimeWindows(
   const filteredRows: TableQueryRow[] = []
   for (const [sessionKey, sessionRows] of rowsBySession.entries()) {
     if (!windowedSessions.has(sessionKey)) {
-      filteredRows.push(...sessionRows)
+      appendRows(filteredRows, sessionRows)
       continue
     }
-    filteredRows.push(...tableRowsInTimeWindow(sessionRows, data, timeWindows[sessionKey]))
+    appendRows(filteredRows, tableRowsInTimeWindow(sessionRows, data, timeWindows[sessionKey]))
   }
   return filteredRows
 }
@@ -5102,6 +5102,18 @@ function normalizeSignalTimes(values: number[]) {
   return values.map((value) => (Number.isFinite(value) ? value * scale - offset : Number.NaN))
 }
 
+function appendNumbers(target: number[], source: readonly number[]) {
+  for (const value of source) {
+    target.push(value)
+  }
+}
+
+function appendRows(target: TableQueryRow[], source: readonly TableQueryRow[]) {
+  for (const row of source) {
+    target.push(row)
+  }
+}
+
 function entitySignalValues(entity: VisualizationEntity, data: VisualizationData, role: string) {
   if (entity.sessionRefs.length === 1) {
     return data.signalsBySession[sessionRefId(entity.sessionRefs[0])]?.[role] ?? []
@@ -5114,7 +5126,7 @@ function entitySignalValues(entity: VisualizationEntity, data: VisualizationData
   const values: number[] = []
   for (const sessionRef of entity.sessionRefs) {
     const sessionValues = data.signalsBySession[sessionRefId(sessionRef)]?.[role] ?? []
-    values.push(...sessionValues)
+    appendNumbers(values, sessionValues)
   }
   const nextCache = cached ?? new Map<string, number[]>()
   nextCache.set(key, values)
@@ -5150,10 +5162,12 @@ function entityRows(entity: VisualizationEntity, rows: TableQueryRow[]) {
     return cached.get(key) ?? []
   }
   const grouped = rowsGroupedBySession(rows)
-  const out =
-    entity.sessionRefs.length === 1
-      ? grouped.get(sessionRefId(entity.sessionRefs[0])) ?? []
-      : entity.sessionRefs.flatMap((sessionRef) => grouped.get(sessionRefId(sessionRef)) ?? [])
+  const out: TableQueryRow[] = entity.sessionRefs.length === 1 ? grouped.get(sessionRefId(entity.sessionRefs[0])) ?? [] : []
+  if (entity.sessionRefs.length > 1) {
+    for (const sessionRef of entity.sessionRefs) {
+      appendRows(out, grouped.get(sessionRefId(sessionRef)) ?? [])
+    }
+  }
   const nextCache = cached ?? new Map<string, TableQueryRow[]>()
   nextCache.set(key, out)
   if (!cached) {
@@ -5538,7 +5552,7 @@ function sectorValuesForEntity(
   }
   const values: number[] = []
   for (const sessionRef of entity.sessionRefs) {
-    values.push(...sectorValuesForSession(sessionRef, data, track, sector, role))
+    appendNumbers(values, sectorValuesForSession(sessionRef, data, track, sector, role))
   }
   const nextCache = cached ?? new Map<string, number[]>()
   nextCache.set(key, values)
@@ -5562,7 +5576,7 @@ function sectorValuesForEntityAcrossSectors(
   }
   const values: number[] = []
   for (const sector of sectors) {
-    values.push(...sectorValuesForEntity(entity, data, track, sector, role))
+    appendNumbers(values, sectorValuesForEntity(entity, data, track, sector, role))
   }
   const nextCache = cached ?? new Map<string, number[]>()
   nextCache.set(key, values)

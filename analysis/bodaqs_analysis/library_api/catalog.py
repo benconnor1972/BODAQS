@@ -895,6 +895,12 @@ def _gps_columns(metadata: Mapping[str, Any], known_columns: set[str] | None) ->
     longitude = _known_column(_first_text(position_columns.get("longitude"), metadata.get("longitude_column")), known_columns)
     elevation = _known_column(_first_text(metadata.get("elevation_column"), position_columns.get("elevation")), known_columns)
     if latitude and longitude:
+        if elevation is None:
+            resolved = resolve_gps_columns(metadata, known_columns=known_columns)
+            if resolved is not None:
+                elevation = resolved.altitude
+        if elevation is None:
+            elevation = _matching_gps_elevation_column(metadata, known_columns)
         return latitude, longitude, elevation
 
     resolved = resolve_gps_columns(metadata, known_columns=known_columns)
@@ -919,6 +925,23 @@ def _gps_columns(metadata: Mapping[str, Any], known_columns: set[str] | None) ->
     longitude = _first_matching_column(column_info, known_columns, _is_longitude_column)
     elevation = _first_matching_column(column_info, known_columns, _is_elevation_column)
     return latitude, longitude, elevation
+
+
+def _matching_gps_elevation_column(metadata: Mapping[str, Any], known_columns: set[str] | None) -> str | None:
+    column_info: dict[str, Mapping[str, Any]] = {}
+    for key in ("channel_info", "signals"):
+        raw = metadata.get(key)
+        if isinstance(raw, Mapping):
+            column_info.update(
+                {
+                    str(column): info if isinstance(info, Mapping) else {}
+                    for column, info in raw.items()
+                }
+            )
+    if known_columns is not None:
+        for column in known_columns:
+            column_info.setdefault(column, {})
+    return _first_matching_column(column_info, known_columns, _is_elevation_column)
 
 
 def _known_column(value: str | None, known_columns: set[str] | None) -> str | None:

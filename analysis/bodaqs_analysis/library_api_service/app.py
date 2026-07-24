@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from bodaqs_analysis.library_api import LibraryAdapter
-from bodaqs_analysis.library_api.errors import LibraryApiError
+from bodaqs_analysis.library_api.errors import LibraryApiError, ReadOnlyModeError
 
 try:
     from bodaqs_library_service_build_version import SERVICE_VERSION as _PACKAGED_SERVICE_VERSION
@@ -39,6 +39,7 @@ class LibraryApiServiceConfig:
     libraries_root: Path
     allow_origins: tuple[str, ...] = DEFAULT_ALLOW_ORIGINS
     web_root: Path | None = None
+    read_only: bool = False
 
 
 def create_app(
@@ -46,6 +47,7 @@ def create_app(
     *,
     allow_origins: Sequence[str] | None = None,
     web_root: str | Path | None = None,
+    read_only: bool = False,
 ) -> FastAPI:
     """Create a local-only FastAPI app backed by ``LibraryAdapter``."""
 
@@ -54,6 +56,7 @@ def create_app(
         libraries_root=Path(libraries_root).expanduser(),
         allow_origins=tuple(allow_origins or DEFAULT_ALLOW_ORIGINS),
         web_root=resolved_web_root,
+        read_only=bool(read_only),
     )
     app = FastAPI(
         title=SERVICE_NAME,
@@ -102,12 +105,13 @@ def create_app(
             "api_version": SERVICE_API_VERSION,
             "service_version": SERVICE_COMPONENT_VERSION,
             "libraries_root": str(current_config.libraries_root),
+            "read_only": current_config.read_only,
             "web_app": _web_app_status(current_config),
         }
 
     @app.get("/api/v1/capabilities")
     def capabilities() -> dict[str, Any]:
-        return _current_adapter(app).capabilities()
+        return _capabilities_response(app)
 
     @app.get("/api/v1/cache/diagnostics")
     def cache_diagnostics() -> dict[str, Any]:
@@ -115,6 +119,7 @@ def create_app(
 
     @app.post("/api/v1/config/libraries-root")
     async def set_libraries_root(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         libraries_root = _libraries_root_payload(payload)
         next_adapter = LibraryAdapter(libraries_root)
@@ -123,6 +128,7 @@ def create_app(
             libraries_root=Path(libraries_root).expanduser(),
             allow_origins=_current_config(app).allow_origins,
             web_root=_current_config(app).web_root,
+            read_only=_current_config(app).read_only,
         )
         app.state.adapter = next_adapter
         app.state.trackpoint_query_threads = {}
@@ -167,11 +173,13 @@ def create_app(
 
     @app.put("/api/v1/libraries/{library_id}/sessions/note")
     async def save_session_note(library_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).save_session_note(library_id, _json_object_payload(payload))
 
     @app.put("/api/v1/libraries/{library_id}/sessions/descriptions")
     async def update_session_descriptions(library_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_session_descriptions(library_id, _json_object_payload(payload))
 
@@ -182,6 +190,7 @@ def create_app(
         session_id: str,
         cleanup_memberships: bool = False,
     ) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_session(
             library_id,
             run_id,
@@ -195,6 +204,7 @@ def create_app(
 
     @app.post("/api/v1/tracks")
     async def create_root_track(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_track(_track_payload(payload))
 
@@ -204,6 +214,7 @@ def create_app(
 
     @app.put("/api/v1/tracks/{track_id}")
     async def update_root_track(track_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_track(
             track_id,
@@ -213,6 +224,7 @@ def create_app(
 
     @app.delete("/api/v1/tracks/{track_id}")
     def delete_root_track(track_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_track(track_id)
 
     @app.get("/api/v1/geospatial-policies")
@@ -221,6 +233,7 @@ def create_app(
 
     @app.post("/api/v1/geospatial-policies")
     async def create_root_geospatial_policy(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_geospatial_policy(_geospatial_policy_payload(payload))
 
@@ -230,11 +243,13 @@ def create_app(
 
     @app.put("/api/v1/geospatial-policies/{policy_id}")
     async def update_root_geospatial_policy(policy_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_geospatial_policy(policy_id, payload=_geospatial_policy_payload(payload))
 
     @app.delete("/api/v1/geospatial-policies/{policy_id}")
     def delete_root_geospatial_policy(policy_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_geospatial_policy(policy_id)
 
     @app.get("/api/v1/study-sets")
@@ -243,6 +258,7 @@ def create_app(
 
     @app.post("/api/v1/study-sets")
     async def create_root_study_set(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_study_set(_study_set_payload(payload))
 
@@ -252,6 +268,7 @@ def create_app(
 
     @app.put("/api/v1/study-sets/{study_set_id}")
     async def update_root_study_set(study_set_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         expected_revision = _expected_revision(payload)
         return _current_adapter(app).update_study_set(
@@ -262,6 +279,7 @@ def create_app(
 
     @app.delete("/api/v1/study-sets/{study_set_id}")
     def delete_root_study_set(study_set_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_study_set(study_set_id)
 
     @app.get("/api/v1/session-filters")
@@ -270,6 +288,7 @@ def create_app(
 
     @app.post("/api/v1/session-filters")
     async def create_root_session_filter(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_session_filter(_session_filter_payload(payload))
 
@@ -279,6 +298,7 @@ def create_app(
 
     @app.put("/api/v1/session-filters/{filter_id}")
     async def update_root_session_filter(filter_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_session_filter(
             filter_id,
@@ -288,6 +308,7 @@ def create_app(
 
     @app.delete("/api/v1/session-filters/{filter_id}")
     def delete_root_session_filter(filter_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_session_filter(filter_id)
 
     @app.get("/api/v1/bookmarks")
@@ -304,6 +325,7 @@ def create_app(
 
     @app.post("/api/v1/bookmarks")
     async def create_root_bookmark(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_bookmark(_bookmark_payload(payload))
 
@@ -313,6 +335,7 @@ def create_app(
 
     @app.put("/api/v1/bookmarks/{bookmark_id}")
     async def update_root_bookmark(bookmark_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_bookmark(
             bookmark_id,
@@ -322,6 +345,7 @@ def create_app(
 
     @app.delete("/api/v1/bookmarks/{bookmark_id}")
     def delete_root_bookmark(bookmark_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_bookmark(bookmark_id)
 
     @app.get("/api/v1/analysis-views")
@@ -361,10 +385,14 @@ def create_app(
     @app.post("/api/v1/track-matches/query")
     async def query_track_matches(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return _current_adapter(app).query_track_matches(_json_object_payload(payload))
+        payload = _json_object_payload(payload)
+        if bool(payload.get("persist", False)):
+            _assert_writable(app)
+        return _current_adapter(app).query_track_matches(payload)
 
     @app.post("/api/v1/track-matches/compute")
     async def compute_track_match(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).compute_track_match(_json_object_payload(payload))
 
@@ -374,6 +402,7 @@ def create_app(
 
     @app.post("/api/v1/trackpoint-match-queries")
     async def create_trackpoint_match_query(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         query = _current_adapter(app).create_trackpoint_match_query(_json_object_payload(payload))
         if query.get("status") in {"queued", "running"}:
@@ -398,6 +427,7 @@ def create_app(
 
     @app.delete("/api/v1/trackpoint-match-queries/{query_id}")
     def cancel_trackpoint_match_query(query_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).cancel_trackpoint_match_query(query_id)
 
     if config.web_root is not None:
@@ -529,6 +559,42 @@ def _current_config(app: FastAPI) -> LibraryApiServiceConfig:
 
 def _current_adapter(app: FastAPI) -> LibraryAdapter:
     return app.state.adapter
+
+
+def _assert_writable(app: FastAPI) -> None:
+    if _current_config(app).read_only:
+        raise ReadOnlyModeError(
+            "The Library API service is running in read-only mode.",
+            details={"read_only": True},
+        )
+
+
+def _capabilities_response(app: FastAPI) -> dict[str, Any]:
+    capabilities = _current_adapter(app).capabilities()
+    if not _current_config(app).read_only:
+        capabilities["read_only"] = False
+        return capabilities
+
+    capabilities = dict(capabilities)
+    capabilities["read_only"] = True
+    features = dict(capabilities.get("features", {}))
+    for feature in (
+        "write_study_sets",
+        "delete_study_sets",
+        "delete_sessions",
+        "write_session_notes",
+        "write_session_descriptions",
+        "write_tracks",
+        "write_geospatial_policies",
+        "compute_track_matches",
+        "query_trackpoint_matches",
+        "cancel_trackpoint_match_queries",
+        "write_filters",
+        "write_bookmarks",
+    ):
+        features[feature] = False
+    capabilities["features"] = features
+    return capabilities
 
 
 def _start_trackpoint_query_worker(app: FastAPI, query_id: str) -> None:

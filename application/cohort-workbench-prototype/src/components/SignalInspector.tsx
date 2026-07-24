@@ -23,8 +23,13 @@ import type {
 const TARGET_POINTS = 1800
 const NAVIGATOR_POINTS = 900
 const DENSE_EVENT_CUTOFF = 50
+const SIGNAL_INSPECTOR_HOVER_DEBUG = false
+const SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY = 'bodaqs.signalInspector.chartMode.v1'
+const SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY = 'bodaqs.signalInspector.sessionColumns.v1'
 const SIGNAL_COLORS = ['#008c95', '#101820', '#2d5f64', '#b88a43', '#6f7b80', '#9aa7a3']
 const EVENT_COLORS = ['#b66a2c', '#4d70a8', '#8a5a7b', '#6f7e2e', '#c46f58', '#2f7d6d']
+
+type SignalInspectorChartMode = 'single' | 'multi'
 
 type LoadState =
   | { status: 'idle'; message: string }
@@ -55,6 +60,17 @@ type HoverReadout = {
     unit: string
     color: string
   }>
+}
+
+type HoverDebugEvent = {
+  chart: string
+  rawIndex: number | null
+  rawLeft: number | null
+  resolvedIndex: number | null
+  resolvedTimeS: number | null
+  action: 'hover' | 'clear' | 'leave'
+  reason: string
+  at: number
 }
 
 type NavigatorDrag = {
@@ -113,7 +129,11 @@ export function SignalInspector({
   const signalOptions = useMemo(() => inspectorSignalOptions(session), [session])
   const signalOptionLabels = useMemo(() => duplicateAwareSignalLabels(signalOptions), [signalOptions])
   const signalOptionColumns = useMemo(() => new Set(signalOptions.map((signal) => signal.column)), [signalOptions])
-  const initialColumns = useMemo(() => defaultSignalColumns(signalOptions), [signalOptions])
+  const initialColumns = useMemo(
+    () => loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions),
+    [session.libraryId, session.sessionKey, signalOptionColumns, signalOptions],
+  )
+  const [chartMode, setChartMode] = useState<SignalInspectorChartMode>(() => loadStoredChartMode())
   const [selectedColumns, setSelectedColumns] = useState<string[]>(initialColumns)
   const [windowStartS, setWindowStartS] = useState(() => sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS))
   const [windowEndS, setWindowEndS] = useState(() => sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS))
@@ -146,7 +166,7 @@ export function SignalInspector({
   const bookmarkContextMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    setSelectedColumns(defaultSignalColumns(signalOptions))
+    setSelectedColumns(loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions))
     setWindowStartS(sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS))
     setWindowEndS(sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS))
     setActiveBookmarkId(null)
@@ -168,7 +188,15 @@ export function SignalInspector({
     setEventGroups([])
     setVisibleEventGroups([])
     eventGroupsInitializedRef.current = false
-  }, [durationS, initialWindow?.endS, initialWindow?.startS, session.sessionKey, signalOptions])
+  }, [durationS, initialWindow?.endS, initialWindow?.startS, session.libraryId, session.sessionKey, signalOptionColumns, signalOptions])
+
+  useEffect(() => {
+    storeChartMode(chartMode)
+  }, [chartMode])
+
+  useEffect(() => {
+    storeSignalColumns(session, selectedColumns.filter((column) => signalOptionColumns.has(column)))
+  }, [selectedColumns, session.libraryId, session.sessionKey, signalOptionColumns])
 
   const requestWindow = sanitizeWindow(windowStartS, windowEndS, durationS)
   const displayedWindowData = loadStateData(loadState)
@@ -675,6 +703,27 @@ export function SignalInspector({
               </button>
             </div>
           <section className="signal-inspector-card">
+            <h3>Chart mode</h3>
+            <div className="signal-inspector-mode-toggle">
+              <button
+                className={chartMode === 'single' ? 'active' : ''}
+                type="button"
+                onClick={() => setChartMode('single')}
+              >
+                <strong>Single chart</strong>
+                <small>Selected signals share one plot.</small>
+              </button>
+              <button
+                className={chartMode === 'multi' ? 'active' : ''}
+                type="button"
+                onClick={() => setChartMode('multi')}
+              >
+                <strong>Multi chart</strong>
+                <small>One synchronized chart per signal.</small>
+              </button>
+            </div>
+          </section>
+          <section className="signal-inspector-card">
             <h3>Signals</h3>
             {signalOptions.length === 0 ? (
               <p>No signal catalog is available for this session.</p>
@@ -759,33 +808,55 @@ export function SignalInspector({
           {displayedWindowData && (
             <>
               {loadState.status === 'loading' && <div className="signal-inspector-update-pill">{loadState.message}</div>}
-              <SignalWindowChart
-                activeBookmarkId={activeBookmarkId}
-                bookmarks={sortedBookmarks}
-                data={displayedWindowData}
-                durationS={durationS}
-                visibleEventGroups={visibleEventGroups}
-                showMarks={showMarks}
-                eventGroups={eventGroups}
-                selectedEventId={selectedEventId}
-                onSelectEvent={setSelectedEventId}
-                onSelectWindow={(window) => {
-                  setWindowStartS(window.startS)
-                  setWindowEndS(window.endS)
-                  setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
-                }}
-                onSelectPoint={(timeS) => setBookmarkPointS(roundForInput(timeS))}
-              />
-              <SignalNavigator
-                state={navigatorState}
-                activeWindow={requestWindow}
-                durationS={durationS}
-                onSelectWindow={(window) => {
-                  setWindowStartS(window.startS)
-                  setWindowEndS(window.endS)
-                  setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
-                }}
-              />
+              {chartMode === 'multi' ? (
+                <SignalMultiChartStack
+                  activeBookmarkId={activeBookmarkId}
+                  bookmarks={sortedBookmarks}
+                  data={displayedWindowData}
+                  durationS={durationS}
+                  visibleEventGroups={visibleEventGroups}
+                  showMarks={showMarks}
+                  eventGroups={eventGroups}
+                  selectedEventId={selectedEventId}
+                  onSelectEvent={setSelectedEventId}
+                  onSelectWindow={(window) => {
+                    setWindowStartS(window.startS)
+                    setWindowEndS(window.endS)
+                    setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
+                  }}
+                  onSelectPoint={(timeS) => setBookmarkPointS(roundForInput(timeS))}
+                />
+              ) : (
+                <>
+                  <SignalWindowChart
+                    activeBookmarkId={activeBookmarkId}
+                    bookmarks={sortedBookmarks}
+                    data={displayedWindowData}
+                    durationS={durationS}
+                    visibleEventGroups={visibleEventGroups}
+                    showMarks={showMarks}
+                    eventGroups={eventGroups}
+                    selectedEventId={selectedEventId}
+                    onSelectEvent={setSelectedEventId}
+                    onSelectWindow={(window) => {
+                      setWindowStartS(window.startS)
+                      setWindowEndS(window.endS)
+                      setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
+                    }}
+                    onSelectPoint={(timeS) => setBookmarkPointS(roundForInput(timeS))}
+                  />
+                  <SignalNavigator
+                    state={navigatorState}
+                    activeWindow={requestWindow}
+                    durationS={durationS}
+                    onSelectWindow={(window) => {
+                      setWindowStartS(window.startS)
+                      setWindowEndS(window.endS)
+                      setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
+                    }}
+                  />
+                </>
+              )}
               <SelectedEventPanel
                 event={displayedWindowData.events.find((event) => event.eventId === selectedEventId) ?? null}
                 onClear={() => setSelectedEventId(null)}
@@ -988,6 +1059,7 @@ function SignalInspectorGpsPanel({
           <span>No GPS path is available for this session.</span>
         </div>
       )}
+      <GpsAltitudeChart activeWindow={activeWindow} pointSet={pointSet} />
       <dl className="signal-inspector-gps-summary">
         <dt>Source</dt>
         <dd>{gpsSourceDisplay(session.gpsSummary.preferredSourceKind, session.gpsSummary.preferredSourceId)}</dd>
@@ -1000,7 +1072,322 @@ function SignalInspectorGpsPanel({
   )
 }
 
+function GpsAltitudeChart({
+  activeWindow,
+  pointSet,
+}: {
+  activeWindow: { startS: number; endS: number }
+  pointSet: SessionGpsPointSet | null
+}) {
+  const samples = useMemo(() => gpsAltitudeSamplesForWindow(pointSet?.points ?? [], activeWindow), [activeWindow.endS, activeWindow.startS, pointSet])
+  if (!pointSet?.present) {
+    return <div className="signal-inspector-altitude-empty">No GPS altitude data.</div>
+  }
+  if (samples.length < 2) {
+    return <div className="signal-inspector-altitude-empty">No altitude samples in window.</div>
+  }
+
+  const width = 320
+  const height = 96
+  const margin = { top: 10, right: 10, bottom: 20, left: 42 }
+  const xDomain = d3.extent(samples, (sample) => sample.timeS) as [number, number]
+  const yDomain = paddedExtent(samples.map((sample) => sample.elevationM))
+  const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+  const y = d3.scaleLinear().domain(yDomain).range([height - margin.bottom, margin.top])
+  const line = d3
+    .line<{ timeS: number; elevationM: number }>()
+    .defined((sample) => Number.isFinite(sample.timeS) && Number.isFinite(sample.elevationM))
+    .x((sample) => x(sample.timeS))
+    .y((sample) => y(sample.elevationM))
+
+  return (
+    <div className="signal-inspector-altitude-chart">
+      <div className="signal-inspector-altitude-title">
+        <strong>GPS altitude</strong>
+        <span>{Math.round(yDomain[0])}-{Math.round(yDomain[1])} m</span>
+      </div>
+      <svg aria-label="GPS altitude over selected signal window" viewBox={`0 0 ${width} ${height}`} role="img">
+        <line x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
+        <line x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
+        <path d={line(samples) ?? ''} />
+        <text x={margin.left} y={height - 5}>{formatTime(xDomain[0])}</text>
+        <text x={width - margin.right} y={height - 5} textAnchor="end">{formatTime(xDomain[1])}</text>
+      </svg>
+    </div>
+  )
+}
+
 function SignalWindowChart({
+  activeBookmarkId,
+  bookmarks,
+  compact = false,
+  data,
+  durationS,
+  eventGroups,
+  height = 500,
+  inlineLegend = false,
+  externalHover = false,
+  debugChartLabel,
+  synchronizedHoverTimeS = null,
+  selectedEventId,
+  showFullSessionControl = true,
+  showMarks,
+  visibleEventGroups,
+  onHoverTimeChange,
+  onHoverDebug,
+  onSelectEvent,
+  onSelectPoint,
+  onSelectWindow,
+}: {
+  activeBookmarkId: string | null
+  bookmarks: SessionBookmarkRecord[]
+  compact?: boolean
+  data: TimeseriesWindowResponse
+  durationS: number
+  eventGroups: EventGroup[]
+  height?: number
+  inlineLegend?: boolean
+  externalHover?: boolean
+  debugChartLabel?: string
+  synchronizedHoverTimeS?: number | null
+  selectedEventId: string | null
+  showFullSessionControl?: boolean
+  showMarks: boolean
+  visibleEventGroups: string[]
+  onHoverTimeChange?: (timeS: number | null) => void
+  onHoverDebug?: (event: HoverDebugEvent) => void
+  onSelectEvent: (eventId: string | null) => void
+  onSelectPoint: (timeS: number) => void
+  onSelectWindow: (window: { startS: number; endS: number }) => void
+}) {
+  const plotHostRef = useRef<HTMLDivElement | null>(null)
+  const plotRef = useRef<uPlot | null>(null)
+  const onSelectPointRef = useRef(onSelectPoint)
+  const onSelectWindowRef = useRef(onSelectWindow)
+  const onHoverTimeChangeRef = useRef(onHoverTimeChange)
+  const onHoverDebugRef = useRef(onHoverDebug)
+  const hostWidth = useElementWidth(plotHostRef)
+  const [hover, setHover] = useState<HoverReadout | null>(null)
+  const hoverFrameRef = useRef<number | null>(null)
+  const pendingHoverRef = useRef<HoverReadout | null>(null)
+  const [plotVersion, setPlotVersion] = useState(0)
+  const chartModel = useMemo(() => buildSignalChartModel(data), [data])
+  const plotWidth = boundedPlotWidth(hostWidth)
+  const plotHeight = height
+  const chartValues = chartSignalValues(chartModel.chartSignals)
+  const selectedEventGroups = new Set(visibleEventGroups)
+  const groupColorByKey = new Map(eventGroups.map((group) => [group.key, group.color]))
+  const groupLaneByKey = new Map(eventGroups.map((group, index) => [group.key, index % 4]))
+  const visibleEvents = data.events.filter((event) => selectedEventGroups.has(eventGroupKey(event)))
+  const xDomain = d3.extent(chartModel.times)
+  const visibleMarks = showMarks ? data.marks.filter((mark) => markInDomain(mark, xDomain)) : []
+
+  useEffect(() => {
+    onSelectPointRef.current = onSelectPoint
+  }, [onSelectPoint])
+
+  useEffect(() => {
+    onSelectWindowRef.current = onSelectWindow
+  }, [onSelectWindow])
+
+  useEffect(() => {
+    onHoverTimeChangeRef.current = onHoverTimeChange
+  }, [onHoverTimeChange])
+
+  useEffect(() => {
+    onHoverDebugRef.current = onHoverDebug
+  }, [onHoverDebug])
+
+  useEffect(
+    () => () => {
+      if (hoverFrameRef.current !== null) {
+        window.cancelAnimationFrame(hoverFrameRef.current)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (
+      !plotHostRef.current ||
+      plotWidth < signalInspectorPlotToken('--signal-inspector-plot-min-width', 320) ||
+      chartModel.times.length === 0 ||
+      chartModel.chartSignals.length === 0 ||
+      chartValues.length === 0
+    ) {
+      return
+    }
+    function scheduleHover(nextHover: HoverReadout | null) {
+      pendingHoverRef.current = nextHover
+      if (!externalHover) {
+        onHoverTimeChangeRef.current?.(nextHover?.timeS ?? null)
+      }
+      if (hoverFrameRef.current !== null) {
+        return
+      }
+      hoverFrameRef.current = window.requestAnimationFrame(() => {
+        hoverFrameRef.current = null
+        setHover(pendingHoverRef.current)
+      })
+    }
+    plotHostRef.current.replaceChildren()
+    const plot = new uPlot(
+      signalUPlotOptions({
+        model: chartModel,
+        compact,
+        debugChartLabel: debugChartLabel ?? chartModel.chartSignals[0]?.displayLabel ?? 'chart',
+        width: plotWidth,
+        height: plotHeight,
+        enableHover: !externalHover,
+        onHoverDebug: (event) => onHoverDebugRef.current?.(event),
+        onHover: scheduleHover,
+        onSelectPoint: (timeS) => onSelectPointRef.current(timeS),
+        onSelectWindow: (window) => onSelectWindowRef.current(window),
+      }),
+      chartModel.alignedData,
+      plotHostRef.current,
+    )
+    plotRef.current = plot
+    const handleClick = (event: globalThis.MouseEvent) => {
+      if (plot.select.width >= 4) {
+        return
+      }
+      const rect = plot.over.getBoundingClientRect()
+      const timeS = plot.posToVal(event.clientX - rect.left, 'x')
+      const domainStart = chartModel.times[0] ?? 0
+      const domainEnd = chartModel.times.at(-1) ?? domainStart
+      onSelectPointRef.current(clamp(timeS, domainStart, domainEnd))
+    }
+    plot.over.addEventListener('click', handleClick)
+    setPlotVersion((version) => version + 1)
+    return () => {
+      plot.over.removeEventListener('click', handleClick)
+      if (hoverFrameRef.current !== null) {
+        window.cancelAnimationFrame(hoverFrameRef.current)
+        hoverFrameRef.current = null
+        pendingHoverRef.current = null
+      }
+      plot.destroy()
+      if (plotRef.current === plot) {
+        plotRef.current = null
+      }
+    }
+  }, [chartModel, chartValues.length, compact, externalHover, plotHeight, plotWidth])
+
+  if (data.signals.length === 0 || chartModel.times.length === 0 || chartValues.length === 0) {
+    return <div className="signal-inspector-message">No matching signal samples were returned for this window.</div>
+  }
+
+  const displayHover = onHoverTimeChange ? readoutForTime(chartModel, synchronizedHoverTimeS) : hover
+  const displayHoverLeft = displayHover && plotRef.current ? plotValueX(plotRef.current, displayHover.timeS) : null
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (!externalHover || !plotRef.current || chartModel.times.length === 0) {
+      return
+    }
+    const plot = plotRef.current
+    const rect = plot.over.getBoundingClientRect()
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) {
+      return
+    }
+    const rawLeft = event.clientX - rect.left
+    const left = clamp(rawLeft, 0, rect.width)
+    const rawTimeS = plot.posToVal(left, 'x')
+    const domainStart = chartModel.times[0] ?? 0
+    const domainEnd = chartModel.times.at(-1) ?? domainStart
+    const timeS = clamp(rawTimeS, domainStart, domainEnd)
+    const resolvedIndex = nearestTimeIndex(chartModel.times, timeS)
+    onHoverDebugRef.current?.({
+      chart: debugChartLabel ?? chartModel.chartSignals[0]?.displayLabel ?? 'chart',
+      rawIndex: null,
+      rawLeft,
+      resolvedIndex,
+      resolvedTimeS: resolvedIndex === null ? null : chartModel.times[resolvedIndex],
+      action: 'hover',
+      reason: 'dom-pointer',
+      at: performance.now(),
+    })
+    onHoverTimeChangeRef.current?.(timeS)
+  }
+
+  return (
+    <div className={`signal-inspector-chart-card${compact ? ' compact' : ''}${inlineLegend ? ' inline-legend' : ''}`}>
+      <div className="signal-inspector-chart-frame" onPointerMove={handlePointerMove}>
+        {showFullSessionControl && (
+          <button
+            className="signal-inspector-full-session-control"
+            type="button"
+            onClick={() => onSelectWindow({ startS: 0, endS: durationS })}
+          >
+            <RefreshCcw size={14} />
+            Full session
+          </button>
+        )}
+        <div
+          className="signal-inspector-uplot-host"
+          ref={plotHostRef}
+          style={{ height: plotHeight, minHeight: plotHeight }}
+        />
+        <SignalPlotOverlay
+          activeBookmarkId={activeBookmarkId}
+          bookmarks={bookmarks}
+          eventGroups={eventGroups}
+          groupColorByKey={groupColorByKey}
+          groupLaneByKey={groupLaneByKey}
+          marks={visibleMarks}
+          onSelectEvent={onSelectEvent}
+          plot={plotRef.current}
+          selectedEventId={selectedEventId}
+          version={plotVersion}
+          visibleEvents={visibleEvents}
+        />
+        {displayHoverLeft !== null && <span className="signal-inspector-synced-hover-line" style={{ left: `${displayHoverLeft}px` }} />}
+        {displayHover && displayHoverLeft !== null && (
+          <div className="signal-inspector-readout" style={{ left: `clamp(88px, ${displayHoverLeft}px, calc(100% - 88px))` }}>
+            <strong>{formatTime(displayHover.timeS)}</strong>
+            {displayHover.values.slice(0, 6).map((item) => (
+              <span key={item.label}>
+                <i style={{ background: item.color }} />
+                {item.label}: {formatReadoutValue(item.value)}
+                {item.unit ? ` ${item.unit}` : ''}
+              </span>
+            ))}
+          </div>
+        )}
+        {inlineLegend && <SignalChartLegend chartModel={chartModel} marks={visibleMarks} />}
+      </div>
+      {!inlineLegend && <SignalChartLegend chartModel={chartModel} marks={visibleMarks} />}
+    </div>
+  )
+}
+
+function SignalChartLegend({
+  chartModel,
+  marks,
+}: {
+  chartModel: SignalChartModel
+  marks: TimeseriesWindowMark[]
+}) {
+  return (
+    <div className="signal-inspector-legend">
+      {chartModel.chartSignals.map((signal, index) => (
+        <span key={signal.column}>
+          <i style={{ background: SIGNAL_COLORS[(signal.originalIndex ?? index) % SIGNAL_COLORS.length] }} />
+          {signal.displayLabel}
+          {signal.unit ? ` (${signal.unit})` : ''}
+          {signal.axisId !== 'primary' ? `, ${axisLabel(signal.axisId)} axis` : ''}
+        </span>
+      ))}
+      {marks.length > 0 && (
+        <span>
+          <i className="signal-inspector-mark-swatch" />
+          Logger marks ({marks.length})
+        </span>
+      )}
+    </div>
+  )
+}
+
+function SignalMultiChartStack({
   activeBookmarkId,
   bookmarks,
   data,
@@ -1025,165 +1412,167 @@ function SignalWindowChart({
   onSelectPoint: (timeS: number) => void
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
-  const plotHostRef = useRef<HTMLDivElement | null>(null)
-  const plotRef = useRef<uPlot | null>(null)
-  const onSelectPointRef = useRef(onSelectPoint)
-  const onSelectWindowRef = useRef(onSelectWindow)
-  const hostWidth = useElementWidth(plotHostRef)
-  const [hover, setHover] = useState<HoverReadout | null>(null)
-  const hoverFrameRef = useRef<number | null>(null)
-  const pendingHoverRef = useRef<HoverReadout | null>(null)
-  const [plotVersion, setPlotVersion] = useState(0)
-  const chartModel = useMemo(() => buildSignalChartModel(data), [data])
-  const plotWidth = boundedPlotWidth(hostWidth)
-  const plotHeight = 500
-  const chartValues = chartSignalValues(chartModel.chartSignals)
-  const selectedEventGroups = new Set(visibleEventGroups)
-  const groupColorByKey = new Map(eventGroups.map((group) => [group.key, group.color]))
-  const groupLaneByKey = new Map(eventGroups.map((group, index) => [group.key, index % 4]))
-  const visibleEvents = data.events.filter((event) => selectedEventGroups.has(eventGroupKey(event)))
-  const xDomain = d3.extent(chartModel.times)
-  const visibleMarks = showMarks ? data.marks.filter((mark) => markInDomain(mark, xDomain)) : []
-
-  useEffect(() => {
-    onSelectPointRef.current = onSelectPoint
-  }, [onSelectPoint])
-
-  useEffect(() => {
-    onSelectWindowRef.current = onSelectWindow
-  }, [onSelectWindow])
-
+  const [hoverTimeS, setHoverTimeS] = useState<number | null>(null)
+  const [hoverDebugEvents, setHoverDebugEvents] = useState<HoverDebugEvent[]>([])
+  const pendingHoverDebugEventRef = useRef<HoverDebugEvent | null>(null)
+  const pendingHoverTimeSRef = useRef<number | null>(null)
+  const hoverDebugFrameRef = useRef<number | null>(null)
+  const hoverTimeFrameRef = useRef<number | null>(null)
+  const hoverClearTimerRef = useRef<number | null>(null)
+  const handleHoverTimeChange = (timeS: number | null) => {
+    if (hoverClearTimerRef.current !== null) {
+      window.clearTimeout(hoverClearTimerRef.current)
+      hoverClearTimerRef.current = null
+    }
+    if (timeS === null) {
+      hoverClearTimerRef.current = window.setTimeout(() => {
+        hoverClearTimerRef.current = null
+        setHoverTimeS(null)
+      }, 90)
+      return
+    }
+    pendingHoverTimeSRef.current = timeS
+    if (hoverTimeFrameRef.current !== null) {
+      return
+    }
+    hoverTimeFrameRef.current = window.requestAnimationFrame(() => {
+      hoverTimeFrameRef.current = null
+      const nextTimeS = pendingHoverTimeSRef.current
+      if (nextTimeS === null) {
+        return
+      }
+      setHoverTimeS((current) => (current !== null && Math.abs(current - nextTimeS) < 0.001 ? current : nextTimeS))
+    })
+  }
   useEffect(
     () => () => {
-      if (hoverFrameRef.current !== null) {
-        window.cancelAnimationFrame(hoverFrameRef.current)
+      if (hoverClearTimerRef.current !== null) {
+        window.clearTimeout(hoverClearTimerRef.current)
+      }
+      if (hoverTimeFrameRef.current !== null) {
+        window.cancelAnimationFrame(hoverTimeFrameRef.current)
+      }
+      if (hoverDebugFrameRef.current !== null) {
+        window.cancelAnimationFrame(hoverDebugFrameRef.current)
       }
     },
     [],
   )
-
-  useEffect(() => {
-    if (
-      !plotHostRef.current ||
-      plotWidth < signalInspectorPlotToken('--signal-inspector-plot-min-width', 320) ||
-      chartModel.times.length === 0 ||
-      chartModel.chartSignals.length === 0 ||
-      chartValues.length === 0
-    ) {
+  const handleHoverDebug = (event: HoverDebugEvent) => {
+    pendingHoverDebugEventRef.current = event
+    if (hoverDebugFrameRef.current !== null) {
       return
     }
-    function scheduleHover(nextHover: HoverReadout | null) {
-      pendingHoverRef.current = nextHover
-      if (hoverFrameRef.current !== null) {
+    hoverDebugFrameRef.current = window.requestAnimationFrame(() => {
+      hoverDebugFrameRef.current = null
+      const next = pendingHoverDebugEventRef.current
+      if (!next) {
         return
       }
-      hoverFrameRef.current = window.requestAnimationFrame(() => {
-        hoverFrameRef.current = null
-        setHover(pendingHoverRef.current)
-      })
+      setHoverDebugEvents((events) => [next, ...events].slice(0, 10))
+    })
+  }
+  const handleStackPointerLeave = () => {
+    if (hoverClearTimerRef.current !== null) {
+      window.clearTimeout(hoverClearTimerRef.current)
+      hoverClearTimerRef.current = null
     }
-    plotHostRef.current.replaceChildren()
-    const plot = new uPlot(
-      signalUPlotOptions({
-        model: chartModel,
-        width: plotWidth,
-        height: plotHeight,
-        onHover: scheduleHover,
-        onSelectPoint: (timeS) => onSelectPointRef.current(timeS),
-        onSelectWindow: (window) => onSelectWindowRef.current(window),
-      }),
-      chartModel.alignedData,
-      plotHostRef.current,
-    )
-    plotRef.current = plot
-    const handleMouseLeave = () => scheduleHover(null)
-    const handleClick = (event: globalThis.MouseEvent) => {
-      if (plot.select.width >= 4) {
-        return
-      }
-      const rect = plot.over.getBoundingClientRect()
-      const timeS = plot.posToVal(event.clientX - rect.left, 'x')
-      const domainStart = chartModel.times[0] ?? 0
-      const domainEnd = chartModel.times.at(-1) ?? domainStart
-      onSelectPointRef.current(clamp(timeS, domainStart, domainEnd))
+    if (hoverTimeFrameRef.current !== null) {
+      window.cancelAnimationFrame(hoverTimeFrameRef.current)
+      hoverTimeFrameRef.current = null
     }
-    plot.over.addEventListener('mouseleave', handleMouseLeave)
-    plot.over.addEventListener('click', handleClick)
-    setPlotVersion((version) => version + 1)
-    return () => {
-      plot.over.removeEventListener('mouseleave', handleMouseLeave)
-      plot.over.removeEventListener('click', handleClick)
-      if (hoverFrameRef.current !== null) {
-        window.cancelAnimationFrame(hoverFrameRef.current)
-        hoverFrameRef.current = null
-        pendingHoverRef.current = null
-      }
-      plot.destroy()
-      if (plotRef.current === plot) {
-        plotRef.current = null
-      }
-    }
-  }, [chartModel, chartValues.length, plotHeight, plotWidth])
-
-  if (data.signals.length === 0 || chartModel.times.length === 0 || chartValues.length === 0) {
+    pendingHoverTimeSRef.current = null
+    setHoverTimeS(null)
+    handleHoverDebug({
+      chart: 'stack',
+      rawIndex: null,
+      rawLeft: null,
+      resolvedIndex: null,
+      resolvedTimeS: null,
+      action: 'leave',
+      reason: 'stack-pointerleave',
+      at: performance.now(),
+    })
+  }
+  if (data.signals.length === 0) {
     return <div className="signal-inspector-message">No matching signal samples were returned for this window.</div>
   }
-
   return (
-    <div className="signal-inspector-chart-card">
-      <div className="signal-inspector-chart-frame">
-        <button
-          className="signal-inspector-full-session-control"
-          type="button"
-          onClick={() => onSelectWindow({ startS: 0, endS: durationS })}
-        >
-          <RefreshCcw size={14} />
-          Full session
-        </button>
-        <div className="signal-inspector-uplot-host" ref={plotHostRef} />
-        <SignalPlotOverlay
-          activeBookmarkId={activeBookmarkId}
-          bookmarks={bookmarks}
-          eventGroups={eventGroups}
-          groupColorByKey={groupColorByKey}
-          groupLaneByKey={groupLaneByKey}
-          marks={visibleMarks}
-          onSelectEvent={onSelectEvent}
-          plot={plotRef.current}
-          selectedEventId={selectedEventId}
-          version={plotVersion}
-          visibleEvents={visibleEvents}
-        />
-        {hover && (
-          <div className="signal-inspector-readout">
-            <strong>{formatTime(hover.timeS)}</strong>
-            {hover.values.slice(0, 6).map((item) => (
-              <span key={item.label}>
-                <i style={{ background: item.color }} />
-                {item.label}: {formatReadoutValue(item.value)}
-                {item.unit ? ` ${item.unit}` : ''}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="signal-inspector-legend">
-        {chartModel.chartSignals.map((signal, index) => (
-          <span key={signal.column}>
-            <i style={{ background: SIGNAL_COLORS[(signal.originalIndex ?? index) % SIGNAL_COLORS.length] }} />
-            {signal.displayLabel}
-            {signal.unit ? ` (${signal.unit})` : ''}
-            {signal.axisId !== 'primary' ? `, ${axisLabel(signal.axisId)} axis` : ''}
-          </span>
-        ))}
-        {visibleMarks.length > 0 && (
-          <span>
-            <i className="signal-inspector-mark-swatch" />
-            Logger marks ({visibleMarks.length})
-          </span>
-        )}
-      </div>
+    <div className="signal-inspector-multi-stack" onPointerLeave={handleStackPointerLeave}>
+      {SIGNAL_INSPECTOR_HOVER_DEBUG && <SignalHoverDebugPanel events={hoverDebugEvents} hoverTimeS={hoverTimeS} />}
+      {data.signals.map((signal, index) => {
+        const signalData = timeseriesWindowForSignal(data, signal)
+        const isFirstChart = index === 0
+        return (
+          <SignalWindowChart
+            activeBookmarkId={activeBookmarkId}
+            bookmarks={bookmarks}
+            compact
+            data={signalData}
+            debugChartLabel={signal.displayName || signal.column}
+            durationS={durationS}
+            eventGroups={eventGroups}
+            externalHover
+            height={190}
+            inlineLegend
+            key={signal.column}
+            selectedEventId={selectedEventId}
+            showFullSessionControl={isFirstChart}
+            showMarks={isFirstChart && showMarks}
+            synchronizedHoverTimeS={hoverTimeS}
+            visibleEventGroups={isFirstChart ? visibleEventGroups : []}
+            onHoverDebug={SIGNAL_INSPECTOR_HOVER_DEBUG ? handleHoverDebug : undefined}
+            onHoverTimeChange={handleHoverTimeChange}
+            onSelectEvent={onSelectEvent}
+            onSelectPoint={onSelectPoint}
+            onSelectWindow={onSelectWindow}
+          />
+        )
+      })}
     </div>
+  )
+}
+
+function SignalHoverDebugPanel({ events, hoverTimeS }: { events: HoverDebugEvent[]; hoverTimeS: number | null }) {
+  return (
+    <details className="signal-inspector-hover-debug" open>
+      <summary>
+        Hover debug
+        <span>shared {hoverTimeS === null ? 'null' : `${hoverTimeS.toFixed(3)}s`}</span>
+      </summary>
+      {events.length === 0 ? (
+        <div className="signal-inspector-hover-debug-empty">Move over a chart to sample cursor events.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Chart</th>
+              <th>Action</th>
+              <th>Reason</th>
+              <th>idx</th>
+              <th>left</th>
+              <th>resolved</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((event, index) => (
+              <tr key={`${event.at}-${index}`}>
+                <td>{event.chart}</td>
+                <td>{event.action}</td>
+                <td>{event.reason}</td>
+                <td>{event.rawIndex ?? 'null'}</td>
+                <td>{event.rawLeft === null ? 'null' : event.rawLeft.toFixed(1)}</td>
+                <td>
+                  {event.resolvedIndex === null || event.resolvedTimeS === null
+                    ? 'null'
+                    : `${event.resolvedIndex} / ${event.resolvedTimeS.toFixed(3)}s`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </details>
   )
 }
 
@@ -1325,16 +1714,24 @@ function SignalPlotOverlay({
 }
 
 function signalUPlotOptions({
+  compact = false,
+  debugChartLabel = 'chart',
+  enableHover = true,
   height,
   model,
   onHover,
+  onHoverDebug,
   onSelectPoint,
   onSelectWindow,
   width,
 }: {
+  compact?: boolean
+  debugChartLabel?: string
+  enableHover?: boolean
   height: number
   model: SignalChartModel
   onHover: (hover: HoverReadout | null) => void
+  onHoverDebug?: (event: HoverDebugEvent) => void
   onSelectPoint: (timeS: number) => void
   onSelectWindow: (window: { startS: number; endS: number }) => void
   width: number
@@ -1354,13 +1751,13 @@ function signalUPlotOptions({
     {
       scale: 'x',
       side: 2,
-      label: 'Time (s)',
       values: (_plot, splits) => formatTimeAxisLabels(splits),
       stroke: '#5b6670',
       grid: { show: false },
       ticks: { stroke: '#9fb0ad', width: 1, size: 5 },
       font: '10px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
       labelFont: '11px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
+      size: compact ? 24 : undefined,
     },
     ...model.axisConfigs.map((axis, index): uPlot.Axis => ({
       scale: axis.id,
@@ -1370,7 +1767,7 @@ function signalUPlotOptions({
       stroke: '#5b6670',
       grid: index === 0 ? { stroke: 'rgba(79, 116, 119, 0.15)', width: 1 } : { show: false },
       ticks: { stroke: '#9fb0ad', width: 1, size: 5 },
-      size: index === 0 ? 52 : 48,
+      size: compact ? 40 : index === 0 ? 52 : 48,
       font: '10px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
       labelFont: '11px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
     })),
@@ -1403,12 +1800,46 @@ function signalUPlotOptions({
     hooks: {
       setCursor: [
         (plot) => {
-          const index = plot.cursor.idx
-          if (index === null || index === undefined || index < 0 || index >= model.times.length) {
+          if (!enableHover) {
+            return
+          }
+          const rawIndex = typeof plot.cursor.idx === 'number' && Number.isFinite(plot.cursor.idx) ? plot.cursor.idx : null
+          const rawLeft = typeof plot.cursor.left === 'number' && Number.isFinite(plot.cursor.left) ? plot.cursor.left : null
+          const leftTimeS = rawLeft !== null ? plot.posToVal(rawLeft, 'x') : null
+          let index =
+            typeof leftTimeS === 'number' && Number.isFinite(leftTimeS)
+              ? nearestTimeIndex(model.times, leftTimeS)
+              : null
+          let reason = index === null ? 'left-no-time' : 'left-authoritative'
+          if ((index === null || index < 0 || index >= model.times.length) && rawIndex !== null) {
+            index = rawIndex
+            reason = 'idx-fallback'
+          }
+          if (index === null || index < 0 || index >= model.times.length) {
+            onHoverDebug?.({
+              chart: debugChartLabel,
+              rawIndex,
+              rawLeft,
+              resolvedIndex: null,
+              resolvedTimeS: null,
+              action: 'clear',
+              reason,
+              at: performance.now(),
+            })
             onHover(null)
             return
           }
           const timeS = model.times[index]
+          onHoverDebug?.({
+            chart: debugChartLabel,
+            rawIndex,
+            rawLeft,
+            resolvedIndex: index,
+            resolvedTimeS: timeS,
+            action: 'hover',
+            reason,
+            at: performance.now(),
+          })
           onHover({
             x: plot.valToPos(timeS, 'x'),
             timeS,
@@ -1796,7 +2227,12 @@ function defaultSignalColumns(signals: SessionSignalSummary[]) {
   const fallbackWheelDisplacement = wheelDisplacement.length ? wheelDisplacement : signals.filter(isWheelDisplacementSignal)
   const displacement = fallbackWheelDisplacement.length ? fallbackWheelDisplacement : source.filter(isDisplacementSignal)
   const preferred = displacement.length ? preferEngineeringDisplacementSignals(displacement) : source
-  return preferred.slice(0, 4).map((signal) => signal.column)
+  const defaults = preferred.slice(0, 4).map((signal) => signal.column)
+  const speedSignal = signals.find(isWorldSpeedSignal)
+  if (speedSignal && !defaults.includes(speedSignal.column)) {
+    defaults.push(speedSignal.column)
+  }
+  return defaults
 }
 
 function preferEngineeringDisplacementSignals(signals: SessionSignalSummary[]) {
@@ -1832,6 +2268,16 @@ function isEngineeringUnitDisplacement(signal: SessionSignalSummary) {
     return false
   }
   return !text.includes('normalized') && !text.includes('normalised') && !text.includes('disp_norm')
+}
+
+function isWorldSpeedSignal(signal: SessionSignalSummary) {
+  const domain = normalizeSignalText(signal.domain)
+  const quantity = normalizeSignalText(signal.quantity)
+  const unit = signalUnitKey(signal)
+  const text = normalizeSignalText([signal.displayName, signal.column, signal.kind, signal.sensor].join(' '))
+  const worldish = ['world', 'gps', 'position', 'route'].includes(domain) || text.includes('gps') || text.includes('world')
+  const speedish = ['speed', 'velocity', 'vel'].includes(quantity) || text.includes('speed')
+  return worldish && speedish && ['mm/sec', 'm/sec', 'km/h', 'other:mph'].includes(unit)
 }
 
 function inferEndFromText(value: unknown) {
@@ -1920,6 +2366,84 @@ function gpsPathForWindow(points: SessionGpsPoint[], window: { startS: number; e
   return timedPoints.slice(from, to + 1).map((point) => [point.longitude, point.latitude] as [number, number])
 }
 
+function gpsAltitudeSamplesForWindow(points: SessionGpsPoint[], window: { startS: number; endS: number }) {
+  const startS = Math.min(window.startS, window.endS)
+  const endS = Math.max(window.startS, window.endS)
+  return points
+    .filter(
+      (point) =>
+        typeof point.timeS === 'number' &&
+        Number.isFinite(point.timeS) &&
+        typeof point.elevationM === 'number' &&
+        Number.isFinite(point.elevationM) &&
+        point.timeS >= startS &&
+        point.timeS <= endS,
+    )
+    .map((point) => ({ timeS: point.timeS as number, elevationM: point.elevationM as number }))
+    .sort((a, b) => a.timeS - b.timeS)
+}
+
+function timeseriesWindowForSignal(
+  data: TimeseriesWindowResponse,
+  signal: TimeseriesWindowResponse['signals'][number],
+): TimeseriesWindowResponse {
+  return {
+    ...data,
+    signals: [signal],
+  }
+}
+
+function loadStoredChartMode(): SignalInspectorChartMode {
+  if (typeof window === 'undefined') {
+    return 'multi'
+  }
+  const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY)
+  return raw === 'single' || raw === 'multi' ? raw : 'multi'
+}
+
+function storeChartMode(mode: SignalInspectorChartMode) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.setItem(SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY, mode)
+}
+
+function loadStoredSignalColumns(session: SessionRecord, availableColumns: Set<string>) {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    const columns = Array.isArray(parsed?.[signalInspectorSessionPreferenceKey(session)])
+      ? parsed[signalInspectorSessionPreferenceKey(session)]
+      : null
+    const validColumns = columns?.filter((column: unknown): column is string => typeof column === 'string' && availableColumns.has(column)) ?? []
+    return validColumns.length > 0 ? validColumns : null
+  } catch {
+    return null
+  }
+}
+
+function storeSignalColumns(session: SessionRecord, columns: string[]) {
+  if (typeof window === 'undefined' || columns.length === 0) {
+    return
+  }
+  try {
+    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    const preferences = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? { ...parsed } : {}
+    preferences[signalInspectorSessionPreferenceKey(session)] = columns
+    window.localStorage.setItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY, JSON.stringify(preferences))
+  } catch {
+    // Ignore preference write failures; the inspector should remain usable.
+  }
+}
+
+function signalInspectorSessionPreferenceKey(session: SessionRecord) {
+  return `${session.libraryId}::${session.sessionKey}`
+}
+
 function useElementWidth(ref: RefObject<HTMLElement | null>) {
   const [width, setWidth] = useState(0)
   useEffect(() => {
@@ -1978,7 +2502,8 @@ function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column
 }
 
 function buildSignalChartModel(data: TimeseriesWindowResponse): SignalChartModel {
-  const axisUnits = chooseAxisUnits(data.signals)
+  const displaySignals = data.signals.map(chartDisplaySignal)
+  const axisUnits = chooseAxisUnits(displaySignals)
   const axisConfigs = axisUnits.map(
     (unit, index): AxisConfig => ({
       id: index === 0 ? 'primary' : `axis-${index + 1}`,
@@ -1988,7 +2513,7 @@ function buildSignalChartModel(data: TimeseriesWindowResponse): SignalChartModel
     }),
   )
   const axisIdByUnitKey = new Map(axisConfigs.map((axis) => [axis.unit.key, axis.id]))
-  const chartSignalsBase = data.signals
+  const chartSignalsBase = displaySignals
     .map((signal, originalIndex) => {
       const unitKey = signalUnitKey(signal)
       const axisId = axisIdByUnitKey.get(unitKey)
@@ -2017,6 +2542,67 @@ function buildSignalChartModel(data: TimeseriesWindowResponse): SignalChartModel
     times,
     seriesValues,
   }
+}
+
+function readoutForTime(model: SignalChartModel, timeS: number | null | undefined): HoverReadout | null {
+  if (timeS === null || timeS === undefined || !Number.isFinite(timeS) || model.times.length === 0) {
+    return null
+  }
+  const index = nearestTimeIndex(model.times, timeS)
+  if (index === null) {
+    return null
+  }
+  return {
+    x: 0,
+    timeS: model.times[index],
+    values: model.chartSignals
+      .map((signal, signalIndex) => ({
+        label: signal.displayLabel,
+        value: model.seriesValues[signalIndex]?.[index],
+        unit: signal.unit,
+        color: SIGNAL_COLORS[(signal.originalIndex ?? signalIndex) % SIGNAL_COLORS.length],
+      }))
+      .filter((item): item is HoverReadout['values'][number] => typeof item.value === 'number' && Number.isFinite(item.value)),
+  }
+}
+
+function nearestTimeIndex(times: number[], timeS: number) {
+  if (times.length === 0) {
+    return null
+  }
+  let lo = 0
+  let hi = times.length - 1
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (times[mid] < timeS) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  if (lo === 0) {
+    return 0
+  }
+  const prev = lo - 1
+  return Math.abs(times[lo] - timeS) < Math.abs(times[prev] - timeS) ? lo : prev
+}
+
+function chartDisplaySignal(signal: TimeseriesWindowResponse['signals'][number]): TimeseriesWindowResponse['signals'][number] {
+  if (!isWorldSpeedSignal(signal)) {
+    return signal
+  }
+  const compactUnit = normalizeSignalText(signal.unit).replace(/\s+/g, '')
+  if (['km/h', 'kph', 'kmh'].includes(compactUnit)) {
+    return { ...signal, unit: 'km/h' }
+  }
+  if (['m/s', 'm/sec', 'mpersec', 'mpersecond', 'ms-1', 'ms^-1'].includes(compactUnit)) {
+    return {
+      ...signal,
+      unit: 'km/h',
+      values: signal.values.map((value) => (typeof value === 'number' && Number.isFinite(value) ? value * 3.6 : value)),
+    }
+  }
+  return signal
 }
 
 function plotGeometry(plot: uPlot | null) {
@@ -2085,6 +2671,12 @@ function signalUnitKey(signal: SessionSignalSummary) {
   if (['mm/s', 'mm/sec', 'mmpersec', 'mmpersecond', 'mms-1', 'mms^-1'].includes(compact)) {
     return 'mm/sec'
   }
+  if (['km/h', 'kph', 'kmh'].includes(compact)) {
+    return 'km/h'
+  }
+  if (['m/s', 'm/sec', 'mpersec', 'mpersecond', 'ms-1', 'ms^-1'].includes(compact)) {
+    return 'm/sec'
+  }
   if (['1', 'ratio', 'norm', 'normalized', 'normalised'].includes(compact)) {
     return '1'
   }
@@ -2101,13 +2693,16 @@ function unitPreferenceRank(key: string) {
   if (key === 'mm/sec') {
     return 1
   }
-  if (key === '1') {
+  if (key === 'km/h') {
     return 2
   }
-  if (key === 'counts') {
+  if (key === '1') {
     return 3
   }
-  return 4
+  if (key === 'counts') {
+    return 4
+  }
+  return 5
 }
 
 function unitLabelForKey(key: string) {
@@ -2116,6 +2711,12 @@ function unitLabelForKey(key: string) {
   }
   if (key === 'mm/sec') {
     return 'mm/sec'
+  }
+  if (key === 'km/h') {
+    return 'km/h'
+  }
+  if (key === 'm/sec') {
+    return 'm/s'
   }
   if (key === '1') {
     return '1'
