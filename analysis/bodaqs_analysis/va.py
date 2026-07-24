@@ -181,28 +181,47 @@ def estimate_va(
 
     out = df.copy()
 
-    # interpolate numeric gaps gently
-    data = out[target_cols].apply(pd.to_numeric, errors="coerce").interpolate(limit_direction="both")
+    # Interpolate ordinary gaps, but leave wholly unavailable signals for the
+    # per-column guard below rather than passing them into SciPy.
+    data = (
+        out[target_cols]
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+        .interpolate(limit_direction="both")
+    )
+    unavailable_cols: List[str] = []
 
     for c in target_cols:
-        y = data[c].to_numpy()
-        eff = _effective_savgol_params(len(y), window_points, poly_order)
-        if eff is None:
-            if len(y) >= 2:
-                # Robust fallback for very short signals.
-                v = np.gradient(y, dt)
-                a = np.gradient(v, dt)
-            else:
-                v = np.full_like(y, np.nan, dtype=float)
-                a = np.full_like(y, np.nan, dtype=float)
+        y = data[c].to_numpy(dtype=float)
+        finite = np.isfinite(y)
+        if not finite.any():
+            unavailable_cols.append(c)
+            v = np.full(len(y), np.nan, dtype=float)
+            a = np.full(len(y), np.nan, dtype=float)
         else:
-            w_eff, p_eff = eff
-            if _HAVE_SCIPY:
-                v = savgol_filter(y, w_eff, p_eff, deriv=1, delta=dt, mode="interp")
-                a = savgol_filter(y, w_eff, p_eff, deriv=2, delta=dt, mode="interp")
+            # This is defensive for unusual indexes/interpolation behavior.
+            # A single finite sample is extended as a constant signal.
+            if not finite.all():
+                positions = np.arange(len(y), dtype=float)
+                y = np.interp(positions, positions[finite], y[finite])
+
+            eff = _effective_savgol_params(len(y), window_points, poly_order)
+            if eff is None:
+                if len(y) >= 2:
+                    # Robust fallback for very short signals.
+                    v = np.gradient(y, dt)
+                    a = np.gradient(v, dt)
+                else:
+                    v = np.full_like(y, np.nan, dtype=float)
+                    a = np.full_like(y, np.nan, dtype=float)
             else:
-                v = _savgol_numpy(y, w_eff, p_eff, deriv=1, dt=dt)
-                a = _savgol_numpy(y, w_eff, p_eff, deriv=2, dt=dt)
+                w_eff, p_eff = eff
+                if _HAVE_SCIPY:
+                    v = savgol_filter(y, w_eff, p_eff, deriv=1, delta=dt, mode="interp")
+                    a = savgol_filter(y, w_eff, p_eff, deriv=2, delta=dt, mode="interp")
+                else:
+                    v = _savgol_numpy(y, w_eff, p_eff, deriv=1, dt=dt)
+                    a = _savgol_numpy(y, w_eff, p_eff, deriv=2, dt=dt)
 
         vel_col = _name_vel(c)
         acc_col = _name_acc(c)
@@ -218,6 +237,7 @@ def estimate_va(
         "window_points": window_points,
         "poly_order": poly_order,
         "cols": list(target_cols),
+        "unavailable_cols": unavailable_cols,
         "time_col": time_col,
         "sample_rate_hz": sample_rate_hz,
     }

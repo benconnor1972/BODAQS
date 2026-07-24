@@ -20,6 +20,7 @@ from bodaqs_analysis.io_fit import (
     parse_fit_bindings,
     inspect_fit_stream,
     parse_fit_stream,
+    refresh_fit_inspection_index,
     select_fit_candidate,
     upsert_fit_binding,
     upsert_fit_binding_records,
@@ -2030,6 +2031,39 @@ def test_find_overlapping_fit_files_deduplicates_case_variants(tmp_path, monkeyp
     assert candidates[0]["filename"] == "ride.fit"
 
 
+def test_refresh_fit_inspection_index_reuses_unchanged_entries(tmp_path, monkeypatch):
+    fit_path = tmp_path / "ride.fit"
+    fit_path.write_bytes(b"fit-binary-placeholder")
+    inspections = []
+
+    def fake_inspect(path, field_allowlist=None):
+        inspections.append(Path(path))
+        return {
+            "path": str(path),
+            "filename": Path(path).name,
+            "start_datetime": "2026-02-19T00:35:11+00:00",
+            "end_datetime": "2026-02-19T00:45:11+00:00",
+            "record_count": 2,
+            "available_fields": ["enhanced_speed"],
+            "field_units": {"enhanced_speed": "m/s"},
+        }
+
+    monkeypatch.setattr("bodaqs_analysis.io_fit.inspect_fit_file", fake_inspect)
+
+    first = refresh_fit_inspection_index(tmp_path)
+    second = refresh_fit_inspection_index(tmp_path)
+    fit_path.write_bytes(b"changed-fit-binary-placeholder")
+    third = refresh_fit_inspection_index(tmp_path)
+
+    assert len(inspections) == 2
+    assert first["stats"]["inspected"] == 1
+    assert second["stats"]["unchanged"] == 1
+    assert second["stats"]["inspected"] == 0
+    assert third["stats"]["inspected"] == 1
+    assert Path(first["index_path"]).exists()
+    assert second["candidates"][0]["path"] == str(fit_path.resolve())
+
+
 def test_inspect_fit_stream_accepts_bytes_without_paths(monkeypatch):
     def fake_iter_fit_record_rows_from_fileish(fileish):
         assert fileish.read(4) == b"fake"
@@ -2805,6 +2839,74 @@ def test_enrich_session_with_fit_candidates_accepts_in_memory_fit_input(monkeypa
     assert np.isnan(speed[0]) and np.isnan(speed[-1])
     assert np.allclose(speed[1:3], np.array([2.0, 4.0]))
     assert out["qc"]["fit_import"]["selected_file"] == "uploaded.fit"
+
+
+def test_enrich_session_with_fit_reuses_batch_parsed_stream(monkeypatch):
+    parse_calls = []
+
+    def fake_parse_absolute(fit_input, *, field_allowlist, source_name=None):
+        parse_calls.append(fit_input)
+        return (
+            pd.DataFrame(
+                {
+                    "timestamp": pd.to_datetime(
+                        [
+                            "2026-02-19T00:00:01+00:00",
+                            "2026-02-19T00:00:02+00:00",
+                        ],
+                        utc=True,
+                    ),
+                    "gps_fit_speed_dom_world [m/s]": [1.0, 2.0],
+                }
+            ),
+            {
+                "filename": "ride.fit",
+                "fit_sha256": "fit-sha",
+                "resample_columns": ["gps_fit_speed_dom_world [m/s]"],
+                "channel_info": {},
+            },
+        )
+
+    monkeypatch.setattr(
+        "bodaqs_analysis.pipeline.parse_fit_stream_absolute",
+        fake_parse_absolute,
+    )
+
+    candidate = {
+        "filename": "ride.fit",
+        "fit_input": b"fit-binary",
+        "fit_sha256": "fit-sha",
+        "start_datetime": "2026-02-19T00:00:01+00:00",
+        "end_datetime": "2026-02-19T00:00:02+00:00",
+    }
+    cache = {}
+
+    def make_session(start):
+        return {
+            "session_id": start,
+            "source": {"filename": f"{start}.csv"},
+            "meta": {"t0_datetime": start, "channel_info": {}},
+            "qc": {"warnings": [], "transforms": {}},
+            "df": pd.DataFrame({"time_s": [0.0, 2.0]}),
+        }
+
+    first = enrich_session_with_fit(
+        make_session("2026-02-19T00:00:00+00:00"),
+        fit_import={"enabled": True, "persist_raw_stream": True, "resample_to_primary": False},
+        fit_candidates=[candidate],
+        fit_parsed_cache=cache,
+    )
+    second = enrich_session_with_fit(
+        make_session("2026-02-19T00:00:01+00:00"),
+        fit_import={"enabled": True, "persist_raw_stream": True, "resample_to_primary": False},
+        fit_candidates=[candidate],
+        fit_parsed_cache=cache,
+    )
+
+    assert parse_calls == [b"fit-binary"]
+    assert len(cache) == 1
+    assert first["stream_dfs"]["gps_fit"]["time_s"].tolist() == [1.0, 2.0]
+    assert second["stream_dfs"]["gps_fit"]["time_s"].tolist() == [0.0, 1.0]
 
 
 def test_preprocess_resolved_accepts_fit_candidates_with_in_memory_fit_input(monkeypatch):

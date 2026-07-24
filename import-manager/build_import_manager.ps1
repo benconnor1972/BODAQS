@@ -3,7 +3,7 @@ param(
     [switch]$InstallPyInstaller,
     [switch]$SkipPyInstallerBuild,
     [switch]$SkipWebAppBuild,
-    [ValidateSet("cli", "setup", "service", "installer", "all")]
+    [ValidateSet("cli", "setup", "service", "manager-installer", "installer", "all")]
     [string]$Target = "cli",
     [string]$InnoSetupExe = "",
     [string]$BundleVersion = "0.1.5-dev",
@@ -179,10 +179,12 @@ $pyinstallerTargetNames = switch ($Target) {
     "cli" { @("cli") }
     "setup" { @("setup") }
     "service" { @("service") }
+    "manager-installer" { @("setup") }
     "installer" { @("setup", "service") }
     "all" { @("cli", "setup", "service") }
 }
-$installerRequested = $Target -in @("installer", "all")
+$installerRequested = $Target -in @("manager-installer", "installer", "all")
+$managerOnlyInstaller = $Target -eq "manager-installer"
 $targets = @($pyinstallerTargetNames | ForEach-Object { $pyinstallerTargetsByName[$_] })
 $serviceRequested = $pyinstallerTargetNames -contains "service"
 
@@ -248,7 +250,12 @@ foreach ($buildTarget in $targets) {
 }
 
 if ($installerRequested) {
-    $installerScript = Join-Path $importManagerDir "packaging\windows\bodaqs_import_agent_windows.iss"
+    $installerScriptName = if ($managerOnlyInstaller) {
+        "bodaqs_import_manager_windows.iss"
+    } else {
+        "bodaqs_import_agent_windows.iss"
+    }
+    $installerScript = Join-Path $importManagerDir "packaging\windows\$installerScriptName"
     if (-not (Test-Path $installerScript)) {
         throw "Installer script not found: $installerScript"
     }
@@ -256,7 +263,12 @@ if ($installerRequested) {
     $installerBuildDir = Join-Path $importManagerDir "build\installer\windows"
     $installerStageDir = Join-Path $installerBuildDir "staging"
     $installerOutputDir = Join-Path $importManagerDir "dist\installer\windows"
-    $finalInstallerPath = Join-Path $installerOutputDir ("bodaqs-desktop-setup-" + $BundleVersion + ".exe")
+    $installerBaseName = if ($managerOnlyInstaller) {
+        "bodaqs-import-manager-setup-"
+    } else {
+        "bodaqs-desktop-setup-"
+    }
+    $finalInstallerPath = Join-Path $installerOutputDir ($installerBaseName + $BundleVersion + ".exe")
 
     Ensure-CleanDirectory -Path $installerStageDir
     if (-not (Test-Path $installerOutputDir)) {
@@ -268,43 +280,45 @@ if ($installerRequested) {
 
     Copy-Item (Join-Path $distDir "bodaqs-import-setup\*") $managerStageDir -Recurse -Force
 
-    $serviceStageDir = Join-Path $installerStageDir "service"
-    New-Item -ItemType Directory -Force -Path $serviceStageDir | Out-Null
-    Copy-Item (Join-Path $distDir "bodaqs-library-service\*") $serviceStageDir -Recurse -Force
+    if (-not $managerOnlyInstaller) {
+        $serviceStageDir = Join-Path $installerStageDir "service"
+        New-Item -ItemType Directory -Force -Path $serviceStageDir | Out-Null
+        Copy-Item (Join-Path $distDir "bodaqs-library-service\*") $serviceStageDir -Recurse -Force
 
-    $repoRoot = Split-Path -Parent $importManagerDir
-    $demoAssetsSourceDir = Join-Path $repoRoot "demo-assets"
-    $demoAssetsStageDir = Join-Path $installerStageDir "demo-assets"
-    New-Item -ItemType Directory -Force -Path $demoAssetsStageDir | Out-Null
-    if (Test-Path $demoAssetsSourceDir) {
-        Copy-Item (Join-Path $demoAssetsSourceDir "*") $demoAssetsStageDir -Recurse -Force
-    }
-
-    $componentVersions = [ordered]@{
-        bundle = [ordered]@{
-            name = "BODAQS Desktop"
-            version = $BundleVersion
+        $repoRoot = Split-Path -Parent $importManagerDir
+        $demoAssetsSourceDir = Join-Path $repoRoot "demo-assets"
+        $demoAssetsStageDir = Join-Path $installerStageDir "demo-assets"
+        New-Item -ItemType Directory -Force -Path $demoAssetsStageDir | Out-Null
+        if (Test-Path $demoAssetsSourceDir) {
+            Copy-Item (Join-Path $demoAssetsSourceDir "*") $demoAssetsStageDir -Recurse -Force
         }
-        components = @(
-            [ordered]@{
-                name = "BODAQS Import Manager"
-                version = $ImportManagerVersion
-                path = "manager\bodaqs-import-setup.exe"
-            },
-            [ordered]@{
-                name = "BODAQS Library Service"
-                version = $LibraryServiceVersion
-                path = "service\bodaqs-library-service.exe"
-            },
-            [ordered]@{
-                name = "BODAQS Workbench"
-                version = $WorkbenchVersion
-                path = "service\web\index.html"
+
+        $componentVersions = [ordered]@{
+            bundle = [ordered]@{
+                name = "BODAQS Desktop"
+                version = $BundleVersion
             }
-        )
+            components = @(
+                [ordered]@{
+                    name = "BODAQS Import Manager"
+                    version = $ImportManagerVersion
+                    path = "manager\bodaqs-import-setup.exe"
+                },
+                [ordered]@{
+                    name = "BODAQS Library Service"
+                    version = $LibraryServiceVersion
+                    path = "service\bodaqs-library-service.exe"
+                },
+                [ordered]@{
+                    name = "BODAQS Workbench"
+                    version = $WorkbenchVersion
+                    path = "service\web\index.html"
+                }
+            )
+        }
+        $componentVersionsPath = Join-Path $installerStageDir "component_versions.json"
+        $componentVersions | ConvertTo-Json -Depth 8 | Set-Content -Path $componentVersionsPath -Encoding UTF8
     }
-    $componentVersionsPath = Join-Path $installerStageDir "component_versions.json"
-    $componentVersions | ConvertTo-Json -Depth 8 | Set-Content -Path $componentVersionsPath -Encoding UTF8
 
     Write-Host ""
     Write-Host "Installer staging directory:" $installerStageDir
@@ -324,7 +338,7 @@ if ($installerRequested) {
             "/DWorkbenchVersion=$WorkbenchVersion",
             "/DInstallerOutputDir=$installerOutputDir"
         )
-        if (Test-Path (Join-Path $demoAssetsStageDir "libraries\*\library_definition.json")) {
+        if (-not $managerOnlyInstaller -and (Test-Path (Join-Path $demoAssetsStageDir "libraries\*\library_definition.json"))) {
             $innoArgs += "/DHasDemoLibrary=1"
         }
         $innoArgs += $installerScript

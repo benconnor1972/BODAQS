@@ -1155,6 +1155,7 @@ def _compute_metrics(
     end_idx: int,
     trig_results: dict | None = None,
     primary_trigger_id: str | None = None,
+    smoothed_signal_cache: dict[tuple[str, int], np.ndarray] | None = None,
 ):
     t = _to_seconds(df["time_s"])
     seg = df.iloc[start_idx:end_idx]
@@ -1268,7 +1269,14 @@ def _compute_metrics(
             smooth_ms = m.get("smooth_ms", None)
             if smooth_ms is not None and np.isfinite(dt) and dt > 0:
                 win = int(round((smooth_ms / 1000.0) / dt))
-                y_source = _moving_average_1d(y_full, win) if win > 1 else y_full
+                if win > 1 and smoothed_signal_cache is not None:
+                    cache_key = (str(col), win)
+                    y_source = smoothed_signal_cache.get(cache_key)
+                    if y_source is None:
+                        y_source = _moving_average_1d(y_full, win)
+                        smoothed_signal_cache[cache_key] = y_source
+                else:
+                    y_source = _moving_average_1d(y_full, win) if win > 1 else y_full
             else:
                 y_source = y_full
 
@@ -1471,6 +1479,7 @@ def detect_events_from_schema(
     rows = []
     n = len(df)
     tvec = df["time_s"].to_numpy()
+    smoothed_signal_cache: dict[tuple[str, int], np.ndarray] = {}
 
     # Contract: event_id must be unique per *instance*.
     # We'll generate event_id as "{schema_id}:{occurrence_index}" per contract recommendation.
@@ -1796,6 +1805,7 @@ def detect_events_from_schema(
                 end_idx,
                 trig_results=trig_results,
                 primary_trigger_id=primary_id,
+                smoothed_signal_cache=smoothed_signal_cache,
             )
             if not _apply_metric_conditions(m, ev_resolved):
                 rej["metric_conditions"] += 1
