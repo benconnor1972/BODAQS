@@ -36,6 +36,7 @@ from bodaqs_analysis.library_api import (
 )
 from bodaqs_analysis.library_api.catalog import discover_libraries
 from bodaqs_analysis.library_api_service import create_app
+import bodaqs_analysis.library_api.adapter as adapter_module
 from bodaqs_analysis.widgets.contracts import EntitySelectionSnapshot, ScopeEntity, SelectionSnapshot
 from bodaqs_analysis.widgets.entity_scope import build_entity_selection_snapshot
 from bodaqs_analysis.widgets.metric_widget_data import build_metric_viz_df
@@ -88,9 +89,13 @@ def _make_session(
     }
 
 
-def _write_catalog_fixture_session(library_root: Path, *, library_id: str = "default-library") -> dict:
-    run_id = "run_2026-05-25T13-57-10_LOCAL"
-    session_id = "2026-05-18_13-27-14"
+def _write_catalog_fixture_session(
+    library_root: Path,
+    *,
+    library_id: str = "default-library",
+    run_id: str = "run_2026-05-25T13-57-10_LOCAL",
+    session_id: str = "2026-05-18_13-27-14",
+) -> dict:
     session_ref = _make_session(library_root, run_id, session_id, library_id=library_id)
     session_root = library_root / "runs" / run_id / "sessions" / session_id
 
@@ -1354,6 +1359,73 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
     assert points["sampling"]["window"] == {"start_s": 0.0, "end_s": 2.0}
 
 
+def test_library_adapter_caches_session_gps_points_and_invalidates_by_artifact_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    original = adapter_module.catalog_get_session_gps_points
+    call_count = 0
+
+    def counted_loader(*args: object, **kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(adapter_module, "catalog_get_session_gps_points", counted_loader)
+    request = {**session_ref, "max_points": 10}
+
+    first = adapter.get_session_gps_points("default-library", request)
+    second = adapter.get_session_gps_points("default-library", request)
+
+    assert first == second
+    assert call_count == 1
+
+    stream_path = (
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+        / "session"
+        / "streams"
+        / "gps_fit"
+        / "df.parquet"
+    )
+    df = pd.read_parquet(stream_path)
+    df.loc[len(df)] = {
+        "time_s": 1.5,
+        "gps_fit_position_latitude_dom_world [deg]": -31.9502,
+        "gps_fit_position_longitude_dom_world [deg]": 115.8615,
+        "gps_fit_altitude_dom_world [m]": 203.0,
+    }
+    time.sleep(0.001)
+    df.to_parquet(stream_path, index=False)
+
+    changed = adapter.get_session_gps_points("default-library", request)
+
+    assert call_count == 2
+    assert changed["sampling"]["source_points"] == 4
+
+
 def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_adequacy(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -1386,6 +1458,8 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert views[0]["view_id"] == "simple-suspension"
     assert views[0]["requirements"]["required"][0]["id"] == "wheel_motion_data"
     assert views[0]["requirements"]["recommended"][0]["id"] == "both_ends"
+    assert [view["view_id"] for view in views] == ["simple-suspension", "track-analysis-lap-timing"]
+    assert views[1]["requirements"]["required"][0]["id"] == "gps"
 
     ready = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [ready_ref]})
     assert ready["status"] == "ready"
@@ -1416,6 +1490,20 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     blocked = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [blocked_ref]})
     assert blocked["status"] == "blocked"
     assert blocked["usable_session_count"] == 0
+
+    track_ready = adapter.get_analysis_view_adequacy("track-analysis-lap-timing", {"sessions": [ready_ref]})
+    assert track_ready["status"] == "ready"
+    assert track_ready["usable_session_count"] == 1
+    assert track_ready["usable_units"][0]["unit_kind"] == "session"
+
+    track_partial = adapter.get_analysis_view_adequacy(
+        "track-analysis-lap-timing",
+        {"sessions": [ready_ref, blocked_ref]},
+    )
+    assert track_partial["status"] == "partial"
+    assert track_partial["usable_session_count"] == 1
+    assert track_partial["blocked_session_count"] == 1
+    assert track_partial["excluded_units"][0]["missing_required"] == ["gps"]
 
 
 def test_library_adapter_caches_and_invalidates_analysis_view_adequacy(tmp_path: Path) -> None:
@@ -1749,13 +1837,42 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
                     "type": "Point",
                     "coordinates": [115.8605, -31.95, 200.0],
                 },
+            },
+            {
+                "trackpoint_id": "finish-gate",
+                "display_name": "Finish gate",
+                "station_m": 90.0,
+                "position": {
+                    "type": "Point",
+                    "coordinates": [115.8609, -31.95, 201.0],
+                },
             }
+        ],
+        "segment_aliases": [
+            {
+                "from_trackpoint_id": "start-gate",
+                "to_trackpoint_id": "finish-gate",
+                "display_name": "Main chute",
+            },
+            {
+                "from_trackpoint_id": "finish-gate",
+                "to_trackpoint_id": "start-gate",
+                "display_name": "Malformed reverse alias",
+            },
         ],
     }
     create_response = client.post("/api/v1/tracks", json=track_payload)
     assert create_response.status_code == 200
     assert create_response.json()["track_id"] == "test-track"
-    assert client.get("/api/v1/tracks").json()[0]["track_id"] == "test-track"
+    created_track = client.get("/api/v1/tracks").json()[0]
+    assert created_track["track_id"] == "test-track"
+    assert created_track["segment_aliases"] == [
+        {
+            "from_trackpoint_id": "start-gate",
+            "to_trackpoint_id": "finish-gate",
+            "display_name": "Main chute",
+        }
+    ]
 
     gps_response = client.post(
         "/api/v1/libraries/default-library/sessions/gps-summary",
@@ -1840,6 +1957,128 @@ def test_library_adapter_track_match_requires_cutline_crossing(tmp_path: Path) -
     assert result["min_distance_m"] > 5.0
 
 
+def test_library_adapter_track_match_bbox_prefilter_skips_disjoint_gps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (116.86, -32.95),
+            (116.8605, -32.95),
+            (116.861, -32.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "length_m": 100.0,
+                "coordinates": [
+                    [115.86, -31.95],
+                    [115.861, -31.95],
+                ],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "start-gate",
+                    "display_name": "Start gate",
+                    "station_m": 10.0,
+                    "position": {"type": "Point", "coordinates": [115.8601, -31.95]},
+                }
+            ],
+        }
+    )
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("GPS point rows should not be loaded for bbox-disjoint track matches.")
+
+    monkeypatch.setattr(adapter_module, "catalog_get_session_gps_points", fail_if_called)
+
+    match = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+
+    assert match["status"] == "no_overlap"
+    assert "session_gps_bbox_no_track_overlap" in match["warnings"]
+    assert match["coverage"]["matched_gps_point_count"] == 0
+    assert match["trackpoint_results"][0]["crossed"] is False
+
+
+def test_library_adapter_track_match_reuses_cached_gps_points(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "length_m": 100.0,
+                "coordinates": [
+                    [115.86, -31.95],
+                    [115.861, -31.95],
+                ],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "start-gate",
+                    "display_name": "Start gate",
+                    "station_m": 50.0,
+                    "position": {"type": "Point", "coordinates": [115.8605, -31.95]},
+                }
+            ],
+        }
+    )
+    original = adapter_module.catalog_get_session_gps_points
+    call_count = 0
+
+    def counted_loader(*args: object, **kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(adapter_module, "catalog_get_session_gps_points", counted_loader)
+
+    first = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+    second = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+
+    assert first["status"] == "matched"
+    assert second["status"] == "matched"
+    assert call_count == 1
+
+
 def test_library_adapter_trackpoint_match_query_can_be_cancelled(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -1897,6 +2136,11 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
         display_name="Default Library",
     )
     session_ref = _write_catalog_fixture_session(library_root)
+    far_session_ref = _write_catalog_fixture_session(
+        library_root,
+        run_id="run_2026-05-26T13-57-10_LOCAL",
+        session_id="2026-05-19_13-27-14",
+    )
     _write_gps_fit_stream(
         library_root,
         session_ref,
@@ -1907,6 +2151,26 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
             (115.861, -31.95),
         ],
     )
+    _write_gps_fit_stream(
+        library_root,
+        far_session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (116.86, -32.95),
+            (116.8605, -32.95),
+            (116.861, -32.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    catalog = adapter.get_catalog("default-library", refresh=True)
+    gps_bboxes = [
+        row.get("gps_summary", {}).get("position_bbox")
+        for row in catalog["rows"]
+        if row.get("gps_summary", {}).get("present")
+    ]
+    assert len(gps_bboxes) == 2
+    assert all(bbox and bbox["min_longitude"] <= bbox["max_longitude"] for bbox in gps_bboxes)
+
     client = TestClient(create_app(libraries_root))
     track_payload = {
         "track_id": "test-track",
@@ -1946,7 +2210,7 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
     assert create_response.status_code == 200
     created = create_response.json()
     assert created["schema"] == "bodaqs.trackpoint_match_query"
-    assert created["candidate_session_count"] == 1
+    assert created["candidate_session_count"] == 2
 
     query_id = created["query_id"]
     status = created
@@ -1959,7 +2223,9 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
         time.sleep(0.05)
 
     assert status["status"] == "completed"
-    assert status["processed_session_count"] == 1
+    assert status["processed_session_count"] == 2
+    assert status["exact_session_count"] == 1
+    assert status["skipped_session_count"] == 1
     assert status["matched_session_count"] == 1
 
     results_response = client.get(f"/api/v1/trackpoint-match-queries/{query_id}/results", params={"limit": 1})

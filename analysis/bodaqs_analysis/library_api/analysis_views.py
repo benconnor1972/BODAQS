@@ -14,6 +14,7 @@ ANALYSIS_ADEQUACY_VERSION = 1
 ANALYSIS_ADEQUACY_POLICY_VERSION = 1
 
 SIMPLE_SUSPENSION_VIEW_ID = "simple-suspension"
+TRACK_ANALYSIS_VIEW_ID = "track-analysis-lap-timing"
 _SUSPENSION_ENDS = ("front", "rear")
 _REQUIRED_EVENT_TYPES = ("compressions_all", "rebounds_all")
 _REQUIRED_METRIC_COLUMNS = (
@@ -27,7 +28,7 @@ _REQUIRED_METRIC_COLUMNS = (
 def list_analysis_views() -> list[dict[str, Any]]:
     """Return supported analysis view descriptors."""
 
-    return [_simple_suspension_view_descriptor()]
+    return [_simple_suspension_view_descriptor(), _track_analysis_view_descriptor()]
 
 
 def get_analysis_view(view_id: str) -> dict[str, Any]:
@@ -61,6 +62,8 @@ def evaluate_analysis_view_adequacy(
     view = get_analysis_view(view_id)
     if view["view_id"] == SIMPLE_SUSPENSION_VIEW_ID:
         return _simple_suspension_adequacy(view, scope=scope, session_rows=session_rows)
+    if view["view_id"] == TRACK_ANALYSIS_VIEW_ID:
+        return _track_analysis_adequacy(view, scope=scope, session_rows=session_rows)
     raise AnalysisViewNotFoundError(
         "Analysis view was not found.",
         details={"view_id": str(view_id or "").strip()},
@@ -108,6 +111,53 @@ def _simple_suspension_view_descriptor() -> dict[str, Any]:
                     "label": "GPS data",
                     "applies_to": "session",
                     "description": "GPS data is available for track-sector filtering.",
+                }
+            ],
+        },
+    }
+
+
+def _track_analysis_view_descriptor() -> dict[str, Any]:
+    return {
+        "schema": "bodaqs.analysis_view",
+        "version": 1,
+        "view_id": TRACK_ANALYSIS_VIEW_ID,
+        "display_name": "Track Analysis and Lap Timing",
+        "category": "Geospatial",
+        "description": "Create trackpoints from GPS traces and compare track start-to-finish sector timing.",
+        "route": "/analysis/track-analysis-lap-timing",
+        "scope_kinds": ["study_set", "session_refs"],
+        "adequacy_policy": "partial",
+        "requirements": {
+            "required": [
+                {
+                    "id": "gps",
+                    "label": "GPS data",
+                    "applies_to": "session",
+                    "minimum": "at_least_one_session",
+                    "description": "At least one selected session must expose usable GPS data.",
+                }
+            ],
+            "recommended": [
+                {
+                    "id": "all_sessions_gps",
+                    "label": "GPS for all sessions",
+                    "applies_to": "scope",
+                    "description": "All selected sessions have usable GPS for direct timing comparison.",
+                },
+                {
+                    "id": "track_scope",
+                    "label": "Track in scope",
+                    "applies_to": "scope",
+                    "description": "A saved or temporary track is available for trackpoint and sector timing work.",
+                },
+            ],
+            "optional": [
+                {
+                    "id": "alternate_gps_sources",
+                    "label": "Alternate GPS sources",
+                    "applies_to": "session",
+                    "description": "Sessions with multiple GPS sources can be inspected with alternate source choices.",
                 }
             ],
         },
@@ -181,6 +231,113 @@ def _simple_suspension_adequacy(
         "excluded_units": excluded_units,
         "messages": _scope_messages(session_results, scope_status=scope_status),
         "session_results": session_results,
+    }
+
+
+def _track_analysis_adequacy(
+    view: Mapping[str, Any],
+    *,
+    scope: Mapping[str, Any],
+    session_rows: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    session_results = [_track_analysis_session_result(row) for row in session_rows]
+    usable_sessions = [result for result in session_results if bool(result["usable"])]
+    blocked_sessions = [result for result in session_results if not bool(result["usable"])]
+    if not session_results or not usable_sessions:
+        scope_status = "blocked"
+    elif blocked_sessions:
+        scope_status = "partial"
+    elif any(result["status"] != "ready" for result in session_results):
+        scope_status = "warning"
+    else:
+        scope_status = "ready"
+
+    usable_units = [
+        {
+            "session_ref_id": result["session_ref_id"],
+            "library_id": result["library_id"],
+            "session_key": result["session_key"],
+            "run_id": result["run_id"],
+            "session_id": result["session_id"],
+            "unit_kind": "session",
+        }
+        for result in session_results
+        if result["usable"]
+    ]
+    excluded_units = [
+        {
+            "session_ref_id": result["session_ref_id"],
+            "library_id": result["library_id"],
+            "session_key": result["session_key"],
+            "run_id": result["run_id"],
+            "session_id": result["session_id"],
+            "unit_kind": "session",
+            "missing_required": list(result.get("missing_required") or []),
+            "reason": "; ".join(str(item) for item in result.get("missing_required") or []) or "Session has no usable GPS.",
+        }
+        for result in session_results
+        if not result["usable"]
+    ]
+
+    return {
+        "schema": ANALYSIS_ADEQUACY_SCHEMA,
+        "version": ANALYSIS_ADEQUACY_VERSION,
+        "view_id": view["view_id"],
+        "display_name": view["display_name"],
+        "policy": view["adequacy_policy"],
+        "status": scope_status,
+        "summary": _track_analysis_scope_summary(
+            scope_status,
+            usable_sessions=len(usable_sessions),
+            total_sessions=len(session_results),
+        ),
+        "scope": dict(scope),
+        "requirements": view["requirements"],
+        "total_session_count": len(session_results),
+        "usable_session_count": len(usable_sessions),
+        "blocked_session_count": len(blocked_sessions),
+        "usable_units": usable_units,
+        "excluded_units": excluded_units,
+        "messages": _track_analysis_scope_messages(session_results, scope_status=scope_status),
+        "session_results": session_results,
+    }
+
+
+def _track_analysis_session_result(row: Mapping[str, Any]) -> dict[str, Any]:
+    gps_summary = row.get("gps_summary") if isinstance(row.get("gps_summary"), Mapping) else {}
+    quality = str(gps_summary.get("quality") or "absent")
+    present = bool(gps_summary.get("present"))
+    usable = present and quality == "usable"
+    limited = present and quality == "limited"
+    missing_required = [] if usable or limited else ["gps"]
+    missing_recommended = [] if usable else ["gps_usable"]
+    sources = [source for source in gps_summary.get("sources") or [] if isinstance(source, Mapping)]
+    missing_optional = [] if len(sources) > 1 else ["alternate_gps_sources"]
+    if usable:
+        status = "ready"
+    elif limited:
+        status = "warning"
+    else:
+        status = "blocked"
+    return {
+        "session_ref_id": row.get("session_ref_id"),
+        "library_id": row.get("library_id"),
+        "session_key": row.get("session_key"),
+        "run_id": row.get("run_id"),
+        "session_id": row.get("session_id"),
+        "label": _session_label(row),
+        "status": status,
+        "usable": usable or limited,
+        "gps_quality": quality,
+        "gps_source_count": len(sources),
+        "missing_required": missing_required,
+        "missing_recommended": missing_recommended,
+        "missing_optional": missing_optional,
+        "messages": _track_analysis_session_messages(
+            quality=quality,
+            present=present,
+            source_count=len(sources),
+        ),
     }
 
 
@@ -346,6 +503,79 @@ def _scope_messages(session_results: list[Mapping[str, Any]], *, scope_status: s
                 "severity": "info",
                 "code": "missing_gps",
                 "message": f"{missing_gps_count} session(s) lack GPS data; sector filtering may be unavailable.",
+            }
+        )
+    return messages
+
+
+def _track_analysis_scope_summary(status: str, *, usable_sessions: int, total_sessions: int) -> str:
+    if status == "ready":
+        return f"{usable_sessions} of {total_sessions} sessions have usable GPS for track analysis."
+    if status == "warning":
+        return f"{usable_sessions} of {total_sessions} sessions can be analyzed, with GPS quality warnings."
+    if status == "partial":
+        return f"{usable_sessions} of {total_sessions} sessions have GPS; sessions without GPS will be excluded."
+    return "No sessions in this scope have GPS data for track analysis."
+
+
+def _track_analysis_scope_messages(
+    session_results: list[Mapping[str, Any]],
+    *,
+    scope_status: str,
+) -> list[dict[str, str]]:
+    if scope_status == "ready":
+        return []
+    messages: list[dict[str, str]] = []
+    blocked_count = sum(1 for result in session_results if not result.get("usable"))
+    limited_count = sum(1 for result in session_results if result.get("gps_quality") == "limited")
+    if blocked_count:
+        messages.append(
+            {
+                "severity": "warning" if scope_status == "partial" else "error",
+                "code": "sessions_without_gps",
+                "message": f"{blocked_count} session(s) do not have GPS data for track analysis.",
+            }
+        )
+    if limited_count:
+        messages.append(
+            {
+                "severity": "warning",
+                "code": "limited_gps",
+                "message": f"{limited_count} session(s) have limited GPS coverage.",
+            }
+        )
+    return messages
+
+
+def _track_analysis_session_messages(
+    *,
+    quality: str,
+    present: bool,
+    source_count: int,
+) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    if not present or quality in {"absent", "invalid"}:
+        messages.append(
+            {
+                "severity": "error",
+                "code": "gps_missing",
+                "message": "Session has no usable GPS data.",
+            }
+        )
+    elif quality == "limited":
+        messages.append(
+            {
+                "severity": "warning",
+                "code": "gps_limited",
+                "message": "Session has limited GPS coverage.",
+            }
+        )
+    if source_count <= 1:
+        messages.append(
+            {
+                "severity": "info",
+                "code": "single_gps_source",
+                "message": "No alternate GPS source is available for this session.",
             }
         )
     return messages

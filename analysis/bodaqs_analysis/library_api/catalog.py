@@ -279,6 +279,7 @@ def _gps_summary(
     position_point_count = int(preferred.get("point_count") or 0)
     time_coverage_ratio = min(1.0, max(0.0, float(preferred.get("_coverage_ratio") or 0.0)))
     max_gap_s = preferred.get("max_gap_s")
+    position_bbox = preferred.get("position_bbox") if isinstance(preferred.get("position_bbox"), Mapping) else None
 
     if position_point_count <= 0:
         quality = "absent"
@@ -312,6 +313,7 @@ def _gps_summary(
         "session_duration_s": session_duration_s,
         "time_coverage_ratio": time_coverage_ratio,
         "position_point_count": position_point_count,
+        "position_bbox": dict(position_bbox) if position_bbox else None,
         "quality": quality,
         "warnings": sorted(set(str(warning) for warning in warnings if warning)),
     }
@@ -482,6 +484,10 @@ def _gps_source_summary(
         lat.loc[valid_position].to_list(),
         lon.loc[valid_position].to_list(),
     )
+    position_bbox = _gps_position_bbox(
+        lat.loc[valid_position].to_list(),
+        lon.loc[valid_position].to_list(),
+    )
 
     times: list[float] = []
     if time_col in df.columns:
@@ -509,6 +515,7 @@ def _gps_source_summary(
         "route_reconstruction": _gps_route_reconstruction(metadata, source_info),
         **_gps_quality_summary(metadata, source_info),
         "point_count": point_count,
+        "position_bbox": position_bbox,
         "route_distance_m": route_distance_m,
         "nominal_sample_rate_hz": nominal_sample_rate_hz,
         "median_gap_s": median_gap_s,
@@ -1453,6 +1460,33 @@ def _gps_route_distance_m(latitudes: list[Any], longitudes: list[Any]) -> float 
     for (lat1, lon1), (lat2, lon2) in zip(points, points[1:]):
         total += _haversine_m(lat1, lon1, lat2, lon2)
     return total
+
+
+def _gps_position_bbox(latitudes: list[Any], longitudes: list[Any]) -> dict[str, float] | None:
+    points: list[tuple[float, float]] = []
+    for lat, lon in zip(latitudes, longitudes):
+        try:
+            lat_f = float(lat)
+            lon_f = float(lon)
+        except (TypeError, ValueError):
+            continue
+        if (
+            math.isfinite(lat_f)
+            and math.isfinite(lon_f)
+            and -90.0 <= lat_f <= 90.0
+            and -180.0 <= lon_f <= 180.0
+        ):
+            points.append((lat_f, lon_f))
+    if not points:
+        return None
+    lat_values = [lat for lat, _ in points]
+    lon_values = [lon for _, lon in points]
+    return {
+        "min_longitude": min(lon_values),
+        "min_latitude": min(lat_values),
+        "max_longitude": max(lon_values),
+        "max_latitude": max(lat_values),
+    }
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

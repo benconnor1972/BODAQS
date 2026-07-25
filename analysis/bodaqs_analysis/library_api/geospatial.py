@@ -251,6 +251,78 @@ def build_session_track_match(
     )
 
 
+def build_session_track_no_overlap_match(
+    *,
+    track: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    session_ref: Mapping[str, Any],
+    gps_summary: Mapping[str, Any],
+    warning: str = "session_gps_bbox_no_track_overlap",
+) -> dict[str, Any]:
+    """Build a cheap no-overlap SessionTrackMatch from catalog summary data."""
+
+    track_id = str(track.get("track_id") or "")
+    track_revision = track.get("revision")
+    policy_id = str(policy.get("policy_id") or DEFAULT_GEOSPATIAL_POLICY_ID)
+    session_ref_id = str(session_ref.get("session_ref_id") or "")
+    gps_source_ref = _gps_source_ref(gps_summary=gps_summary)
+    track_match_id = derive_object_id(
+        f"{session_ref_id} {track_id} {track_revision} {policy_id} {_gps_source_identity(gps_source_ref)}",
+        fallback="track-match",
+    )
+    path = track.get("path") if isinstance(track.get("path"), Mapping) else {}
+    length_m = _number_or_none(path.get("length_m")) or 0.0
+    point_count = int(_number_or_none(gps_summary.get("position_point_count")) or 0)
+    warnings = _unique_warnings([warning] + [str(item) for item in gps_summary.get("warnings") or []])
+
+    return {
+        "schema": SESSION_TRACK_MATCH_SCHEMA,
+        "version": SESSION_TRACK_MATCH_VERSION,
+        "track_match_id": track_match_id,
+        "library_id": session_ref.get("library_id"),
+        "session_ref": dict(session_ref),
+        "track_ref": {
+            "track_id": track_id,
+            "revision": track.get("revision"),
+        },
+        "policy_ref": {
+            "policy_id": policy_id,
+            "version": policy.get("version"),
+        },
+        "status": "no_overlap",
+        "direction": "unknown",
+        "coverage": {
+            "track_start_station_m": 0.0,
+            "track_end_station_m": length_m,
+            "matched_start_station_m": None,
+            "matched_end_station_m": None,
+            "track_coverage_ratio": 0.0,
+            "session_gps_point_count": point_count,
+            "matched_gps_point_count": 0,
+        },
+        "trackpoint_results": [
+            _trackpoint_result(
+                trackpoint,
+                status="no_overlap",
+                coverage_ratio=0.0,
+                length_m=length_m,
+                session_duration_s=0.0,
+                policy=policy,
+            )
+            for trackpoint in track.get("trackpoints") or []
+            if isinstance(trackpoint, Mapping)
+        ],
+        "warnings": warnings,
+        "provenance": {
+            "derived_at": _utcnow_iso(),
+            "derived_by": "bodaqs_analysis.library_api.geospatial",
+            "algorithm": "session_track_match_bbox_prefilter_v0",
+            "algorithm_version": "0.1.0",
+            "gps_source": gps_source_ref,
+        },
+    }
+
+
 def _build_session_track_match_from_summary(
     *,
     track: Mapping[str, Any],
@@ -391,6 +463,10 @@ def _normalized_track_payload(
         ),
         key=lambda item: float(item.get("station_m") or 0.0),
     )
+    doc["segment_aliases"] = _normalized_segment_aliases(
+        doc.get("segment_aliases"),
+        trackpoints=doc["trackpoints"],
+    )
 
     source = doc.get("source")
     if source is not None and not isinstance(source, Mapping):
@@ -499,6 +575,43 @@ def _normalized_trackpoint(value: Any, *, index: int, track_length_m: Any) -> di
             and _number_or_none(raw) is not None
         }
     return out
+
+
+def _normalized_segment_aliases(value: Any, *, trackpoints: list[dict[str, Any]]) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise InvalidTrackError("Track segment_aliases must be a list when present.")
+
+    adjacent_pairs = {
+        (
+            str(trackpoints[index].get("trackpoint_id") or ""),
+            str(trackpoints[index + 1].get("trackpoint_id") or ""),
+        )
+        for index in range(max(0, len(trackpoints) - 1))
+    }
+    aliases: list[dict[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise InvalidTrackError(f"segment_aliases[{index}] must be an object.")
+        from_trackpoint_id = _optional_text(item.get("from_trackpoint_id"))
+        to_trackpoint_id = _optional_text(item.get("to_trackpoint_id"))
+        display_name = _optional_text(item.get("display_name")) or _optional_text(item.get("name"))
+        if not from_trackpoint_id or not to_trackpoint_id or not display_name:
+            continue
+        pair = (from_trackpoint_id, to_trackpoint_id)
+        if pair not in adjacent_pairs or pair in seen_pairs:
+            continue
+        aliases.append(
+            {
+                "from_trackpoint_id": from_trackpoint_id,
+                "to_trackpoint_id": to_trackpoint_id,
+                "display_name": display_name,
+            }
+        )
+        seen_pairs.add(pair)
+    return aliases
 
 
 def _normalized_position(value: Any, *, context: str) -> list[float]:

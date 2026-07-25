@@ -131,6 +131,10 @@
   min-height: calc(100vh - 98px);
 }
 
+.analysis-route-content .track-analysis {
+  min-height: calc(100vh - 98px);
+}
+
 .analysis-route-empty {
   align-self: start;
   display: grid;
@@ -144,6 +148,502 @@
 .analysis-route-empty h2,
 .analysis-route-empty p {
   margin: 0;
+}
+
+.track-analysis {
+  position: relative;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.track-analysis.drawer-open {
+  grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+}
+
+.track-analysis-drawer {
+  position: sticky;
+  top: var(--space-4);
+  z-index: 2;
+  align-self: start;
+  display: grid;
+  min-height: calc(100vh - 130px);
+  border: var(--border-subtle);
+  background: var(--surface);
+}
+
+.track-analysis-drawer-tab {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-items: center;
+  justify-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 100%;
+  padding: var(--space-3) 0;
+  border: 0;
+  background: transparent;
+  color: var(--teal-strong);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.track-analysis.drawer-open .track-analysis-drawer {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.track-analysis.drawer-open .track-analysis-drawer-tab {
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto;
+  justify-items: start;
+  min-height: auto;
+  padding: var(--space-3);
+  border-bottom: var(--border-subtle);
+}
+
+.track-analysis-drawer-tab span {
+  writing-mode: vertical-rl;
+}
+
+.track-analysis.drawer-open .track-analysis-drawer-tab span {
+  writing-mode: horizontal-tb;
+}
+
+.track-analysis-drawer-body {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.track-analysis-control-card,
+.track-analysis-map-card,
+.track-analysis-lower-card {
+  min-width: 0;
+  border: var(--border-subtle);
+  background: var(--surface);
+}
+
+.track-analysis-control-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.track-analysis-control-card .panel-title {
+  padding: 0;
+  border: 0;
+}
+
+.track-analysis-title-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-section-title);
+  font-weight: var(--weight-semibold);
+}
+
+.track-analysis-title-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 3px 7px;
+  border: var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--teal-strong);
+  font: inherit;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.track-analysis-title-button:hover {
+  border-color: rgba(0, 140, 149, 0.5);
+  background: var(--teal-soft);
+}
+
+.track-analysis-control-card select {
+  width: 100%;
+  min-height: 32px;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-body);
+}
+
+.track-analysis-field,
+.track-analysis-draft-row label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.track-analysis-field span,
+.track-analysis-draft-row label span {
+  color: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.track-analysis-field input,
+.track-analysis-draft-row input,
+.track-analysis-segment-row input {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.track-analysis-session-list,
+.track-analysis-track-list,
+.track-analysis-draft-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.track-analysis-draft-list {
+  gap: 0;
+  padding: var(--space-2);
+  border: var(--border-subtle);
+  background: var(--surface-muted);
+}
+
+.track-analysis-session-row,
+.track-analysis-track-row,
+.track-analysis-draft-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
+  padding: var(--space-2);
+  border: var(--border-subtle);
+  background: var(--surface-muted);
+  font-size: var(--text-body);
+}
+
+.track-analysis-label-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.track-analysis-label-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 7px;
+  border: var(--border-subtle);
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.track-analysis-segment-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 4px var(--space-2);
+}
+
+.track-analysis-segment-row input {
+  grid-column: 2 / 3;
+}
+
+.track-analysis-track-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  border: var(--border-subtle);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.track-analysis-track-row.selected {
+  border-left: 3px solid var(--teal);
+  background: var(--teal-soft);
+}
+
+.track-analysis-track-row.dirty {
+  border-color: rgba(182, 106, 44, 0.42);
+}
+
+.track-analysis-track-row em {
+  align-self: center;
+  padding: 2px 6px;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-style: normal;
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+}
+
+.track-analysis-track-row.dirty em {
+  border-color: rgba(182, 106, 44, 0.5);
+  background: rgba(182, 106, 44, 0.12);
+  color: var(--draft-strong);
+}
+
+.track-analysis-session-row select {
+  grid-column: 2;
+  min-height: 28px;
+}
+
+.track-analysis-session-row strong,
+.track-analysis-track-row strong,
+.track-analysis-draft-row strong {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-analysis-session-row small,
+.track-analysis-track-row small,
+.track-analysis-draft-row small,
+.track-analysis-muted {
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.track-analysis-draft-row {
+  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  align-items: center;
+  padding: 5px var(--space-2);
+  border: 0;
+  background: transparent;
+}
+
+.track-analysis-draft-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.track-analysis-draft-heading small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.track-analysis-row-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  align-self: center;
+  color: var(--teal-strong);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  letter-spacing: normal;
+  line-height: 1;
+  text-transform: none;
+}
+
+.track-analysis-point-glyph::before {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--teal);
+  content: "";
+}
+
+.track-analysis-segment-glyph {
+  justify-self: center;
+  width: 3px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--teal);
+  color: transparent;
+}
+
+.track-analysis-save-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.track-analysis-save-row span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.track-analysis-main {
+  display: grid;
+  grid-template-rows: minmax(430px, 2fr) minmax(220px, 1fr);
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.track-analysis-map-card,
+.track-analysis-lower-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.track-analysis-map,
+.track-analysis-map-empty {
+  min-height: 430px;
+}
+
+.track-analysis-map-empty,
+.track-analysis-placeholder {
+  display: grid;
+  place-items: center;
+  gap: var(--space-2);
+  min-height: 150px;
+  padding: var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-body);
+  text-align: center;
+}
+
+.track-analysis-placeholder p,
+.track-analysis-placeholder small {
+  margin: 0;
+}
+
+.track-analysis-map .maplibregl-ctrl-group {
+  border-radius: var(--radius-control);
+}
+
+.track-analysis-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.track-analysis-bottom.lap-expanded {
+  grid-template-columns: 34px minmax(0, 1fr);
+}
+
+.track-analysis-altitude-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 34px;
+  min-height: 220px;
+  padding: var(--space-3) 0;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--teal-strong);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  writing-mode: vertical-rl;
+}
+
+.track-analysis-altitude-rail svg {
+  writing-mode: horizontal-tb;
+}
+
+.track-analysis-altitude-rail:hover {
+  border-color: rgba(0, 140, 149, 0.5);
+  background: var(--teal-soft);
+}
+
+.track-analysis-altitude-chart {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 170px;
+  padding: var(--space-3);
+  overflow: visible;
+}
+
+.track-analysis-altitude-chart line {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.track-analysis-altitude-chart path {
+  fill: none;
+  stroke: var(--teal);
+  stroke-width: 2;
+}
+
+.track-analysis-altitude-chart text {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.track-analysis-lap-table-wrap {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.track-analysis-lap-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: var(--text-body);
+}
+
+.track-analysis-lap-table th,
+.track-analysis-lap-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-subtle);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.track-analysis-lap-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+}
+
+.track-analysis-overall-row td {
+  background: #effafa;
+  font-weight: var(--weight-semibold);
+}
+
+.track-analysis-muted-cell {
+  color: var(--muted);
+}
+
+.track-analysis-table-note {
+  margin: var(--space-2) var(--space-3) var(--space-3);
+  color: var(--muted);
+  font-size: var(--text-caption);
 }
 
 .eyebrow {

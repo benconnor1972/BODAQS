@@ -470,6 +470,8 @@ The API-facing summary is:
 - tracks are root-scoped objects under the configured libraries root.
 - a track contains one and only one directed geospatial path.
 - trackpoints are named locations along that path, ordered by `station_m`.
+- optional `segment_aliases` name adjacent trackpoint-to-trackpoint intervals
+  for display, without creating a separate segment object.
 - default trackpoint cutlines are generated from policy.
 - trackpoints store only cutline overrides unless explicit geometry editing is
   introduced later.
@@ -526,6 +528,13 @@ Minimal API example:
       }
     }
   ],
+  "segment_aliases": [
+    {
+      "from_trackpoint_id": "start-gate",
+      "to_trackpoint_id": "rock-garden-entry",
+      "display_name": "Opening chute"
+    }
+  ],
   "source": {
     "kind": "session_gps",
     "library_id": "default-library",
@@ -543,6 +552,11 @@ Minimal API example:
 
 Track `source` is optional. A track may be authored from a session GPS path,
 imported from GPX/GeoJSON in the future, or created manually.
+
+Track `segment_aliases` are optional labels for adjacent ordered trackpoint
+pairs. They should be ignored or dropped if either endpoint is missing, or if
+the `to_trackpoint_id` is not the first trackpoint after `from_trackpoint_id`
+when ordered by `station_m`.
 
 A study set may reference a whole track by `track_id`, or a track interval by
 `track_id + from_trackpoint_id + to_trackpoint_id`.
@@ -673,6 +687,12 @@ Example:
     "session_duration_s": 612.4,
     "time_coverage_ratio": 0.94,
     "position_point_count": 1234,
+    "position_bbox": {
+      "min_longitude": 115.8571,
+      "min_latitude": -31.9531,
+      "max_longitude": 115.8614,
+      "max_latitude": -31.9498
+    },
     "quality": "usable",
     "sources": [
       {
@@ -681,6 +701,12 @@ Example:
         "stream_name": "gps_logger",
         "timebase": "intermittent",
         "point_count": 1234,
+        "position_bbox": {
+          "min_longitude": 115.8571,
+          "min_latitude": -31.9531,
+          "max_longitude": 115.8614,
+          "max_latitude": -31.9498
+        },
         "nominal_sample_rate_hz": 1.0,
         "median_gap_s": 1.0,
         "max_gap_s": 8.2
@@ -762,6 +788,11 @@ Recommended `gps_summary.quality` values are defined in
 ```text
 absent | limited | usable | invalid
 ```
+
+`gps_summary.position_bbox` and per-source `position_bbox` are optional
+conservative longitude/latitude extents for valid GPS points. They are intended
+for cheap spatial prefiltering only; exact trackpoint matching must still use the
+geospatial matching endpoints.
 
 The first projected `note_fields` should include `bike` and `rider` where
 available. Additional projected fields may be added later without changing the

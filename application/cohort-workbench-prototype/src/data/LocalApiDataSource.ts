@@ -9,6 +9,7 @@ import type {
   AnalysisRequirementRecord,
   AnalysisRequirementTier,
   AnalysisViewRecord,
+  GeoPosition,
   GpsQuality,
   GpsSourceKind,
   GpsTimebase,
@@ -589,7 +590,7 @@ function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
 
 function mapTrack(value: ApiObject): TrackRecord {
   const path = objectValue(value.path)
-  const coordinates = arrayValue(path.coordinates).map(coordinatePair).filter(isCoordinatePair)
+  const coordinates = arrayValue(path.coordinates).map(coordinatePosition).filter(isCoordinatePosition)
   const lengthM = numberValue(path.length_m)
   const policyRef = objectValue(value.default_policy_ref)
   const source = objectValue(value.source)
@@ -618,10 +619,18 @@ function mapTrack(value: ApiObject): TrackRecord {
           id: textValue(trackpoint.trackpoint_id),
           name: textValue(trackpoint.display_name, textValue(trackpoint.trackpoint_id)),
           stationM: numberValue(trackpoint.station_m),
-          position: coordinatePair(position.coordinates) ?? ([0, 0] as [number, number]),
+          position: coordinatePosition(position.coordinates) ?? ([0, 0] as GeoPosition),
           cutlineOverride: hasOverride ? mappedOverride : undefined,
         }
       }),
+    segmentAliases: arrayValue(value.segment_aliases)
+      .filter(isObject)
+      .map((alias) => ({
+        fromTrackpointId: textValue(alias.from_trackpoint_id),
+        toTrackpointId: textValue(alias.to_trackpoint_id),
+        name: textValue(alias.display_name, textValue(alias.name)),
+      }))
+      .filter((alias) => alias.fromTrackpointId && alias.toTrackpointId && alias.name),
     matchSummaries: arrayValue(value.match_summaries).filter(isObject).map(mapTrackMatch),
     source: textValue(source.kind)
       ? {
@@ -676,6 +685,8 @@ function mapTrackpointMatchQuery(value: ApiObject): TrackpointMatchQueryRecord {
     toleranceM: numberValue(value.tolerance_m),
     candidateSessionCount: numberValue(value.candidate_session_count),
     processedSessionCount: numberValue(value.processed_session_count),
+    exactSessionCount: numberValue(value.exact_session_count),
+    skippedSessionCount: numberValue(value.skipped_session_count),
     matchedSessionCount: numberValue(value.matched_session_count),
     failedSessionCount: numberValue(value.failed_session_count),
     error: textValue(value.error),
@@ -772,7 +783,11 @@ function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
     sourcePolicy: objectRecordValue(source.gps_source_policy),
     routeReconstruction: objectRecordValue(source.route_reconstruction),
     points,
-    path: points.map((point) => [point.longitude, point.latitude] as [number, number]),
+    path: points.map((point) =>
+      point.elevationM !== null && Number.isFinite(point.elevationM)
+        ? ([point.longitude, point.latitude, point.elevationM] as GeoPosition)
+        : ([point.longitude, point.latitude] as GeoPosition),
+    ),
     warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
   }
 }
@@ -1071,7 +1086,7 @@ function mapAnalysisAdequacy(value: ApiObject): AnalysisAdequacyResult {
 function mapAnalysisAdequacyMessage(value: ApiObject): AnalysisAdequacyMessage {
   const sessionRef = objectValue(value.session_ref)
   return {
-    level: messageLevelValue(value.level),
+    level: messageLevelValue(value.level ?? value.severity),
     code: textValue(value.code),
     message: textValue(value.message),
     ...(Object.keys(sessionRef).length ? { sessionRef: mapStudySessionRef(sessionRef) } : {}),
@@ -1198,7 +1213,7 @@ function toApiTrack(track: TrackRecord) {
     revision: track.revision,
     path: {
       type: 'LineString',
-      coordinates: track.points.map(([longitude, latitude]) => [longitude, latitude]),
+      coordinates: track.points.map((position) => coordinatePayload(position)),
       coordinate_reference_system: 'EPSG:4326',
       distance_model: 'geodesic',
       length_m: track.lengthM,
@@ -1218,7 +1233,7 @@ function toApiTrack(track: TrackRecord) {
         station_m: trackpoint.stationM,
         position: {
           type: 'Point',
-          coordinates: trackpoint.position,
+          coordinates: coordinatePayload(trackpoint.position),
         },
       }
       if (trackpoint.cutlineOverride) {
@@ -1230,6 +1245,11 @@ function toApiTrack(track: TrackRecord) {
       }
       return out
     }),
+    segment_aliases: (track.segmentAliases ?? []).map((alias) => ({
+      from_trackpoint_id: alias.fromTrackpointId,
+      to_trackpoint_id: alias.toTrackpointId,
+      display_name: alias.name,
+    })),
     display_state: {
       bodaqs_web_v1: {},
     },
@@ -1595,7 +1615,7 @@ function messageLevelValue(value: unknown): AnalysisAdequacyMessage['level'] {
   return 'info'
 }
 
-function coordinatePair(value: unknown): [number, number] | null {
+function coordinatePosition(value: unknown): GeoPosition | null {
   if (!Array.isArray(value) || value.length < 2) {
     return null
   }
@@ -1604,11 +1624,16 @@ function coordinatePair(value: unknown): [number, number] | null {
   if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
     return null
   }
-  return [x, y]
+  const z = value[2]
+  return typeof z === 'number' && Number.isFinite(z) ? [x, y, z] : [x, y]
 }
 
-function isCoordinatePair(value: [number, number] | null): value is [number, number] {
+function isCoordinatePosition(value: GeoPosition | null): value is GeoPosition {
   return value !== null
+}
+
+function coordinatePayload(position: GeoPosition) {
+  return Number.isFinite(position[2]) ? [position[0], position[1], position[2]] : [position[0], position[1]]
 }
 
 function isObject(value: unknown): value is ApiObject {

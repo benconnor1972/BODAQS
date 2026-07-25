@@ -1,6 +1,8 @@
+import type { GeoPosition } from './types'
+
 const EARTH_RADIUS_M = 6371000
 
-export function routeLengthM(points: Array<[number, number]>) {
+export function routeLengthM(points: GeoPosition[]) {
   let total = 0
   for (let index = 1; index < points.length; index += 1) {
     total += distanceM(points[index - 1], points[index])
@@ -8,7 +10,17 @@ export function routeLengthM(points: Array<[number, number]>) {
   return total
 }
 
-export function pointAtStationM(points: Array<[number, number]>, stationM: number): [number, number] {
+export function routeStationsM(points: GeoPosition[]) {
+  const stations = [0]
+  let total = 0
+  for (let index = 1; index < points.length; index += 1) {
+    total += distanceM(points[index - 1], points[index])
+    stations.push(total)
+  }
+  return stations
+}
+
+export function pointAtStationM(points: GeoPosition[], stationM: number): GeoPosition {
   if (points.length === 0) {
     return [0, 0]
   }
@@ -23,10 +35,14 @@ export function pointAtStationM(points: Array<[number, number]>, stationM: numbe
     const segmentM = distanceM(start, end)
     if (travelledM + segmentM >= stationM) {
       const ratio = segmentM > 0 ? (stationM - travelledM) / segmentM : 0
-      return [
-        start[0] + (end[0] - start[0]) * ratio,
-        start[1] + (end[1] - start[1]) * ratio,
-      ]
+      const longitude = start[0] + (end[0] - start[0]) * ratio
+      const latitude = start[1] + (end[1] - start[1]) * ratio
+      const startElevation = start[2]
+      const endElevation = end[2]
+      if (Number.isFinite(startElevation) && Number.isFinite(endElevation)) {
+        return [longitude, latitude, (startElevation as number) + (((endElevation as number) - (startElevation as number)) * ratio)]
+      }
+      return [longitude, latitude]
     }
     travelledM += segmentM
   }
@@ -34,7 +50,7 @@ export function pointAtStationM(points: Array<[number, number]>, stationM: numbe
   return points[points.length - 1]
 }
 
-function distanceM(start: [number, number], end: [number, number]) {
+function distanceM(start: GeoPosition, end: GeoPosition) {
   const lon1 = toRadians(start[0])
   const lat1 = toRadians(start[1])
   const lon2 = toRadians(end[0])

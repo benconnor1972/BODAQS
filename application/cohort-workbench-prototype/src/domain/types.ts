@@ -9,6 +9,7 @@ export type GpsTimebase = 'uniform' | 'intermittent' | 'unknown'
 export type TrackMatchStatus = 'matched' | 'partial' | 'no_gps' | 'no_overlap' | 'ambiguous' | 'failed'
 export type TrackDirection = 'positive' | 'reverse' | 'unknown'
 export type SignalRole = 'front' | 'rear' | 'unknown'
+export type GeoPosition = [number, number] | [number, number, number]
 
 export type SessionGpsSourceSummary = {
   sourceId: string
@@ -63,7 +64,7 @@ export type SessionGpsPointSet = {
   sourcePolicy?: Record<string, unknown>
   routeReconstruction?: Record<string, unknown>
   points: SessionGpsPoint[]
-  path: Array<[number, number]>
+  path: GeoPosition[]
   warnings: string[]
 }
 
@@ -184,6 +185,8 @@ export type TrackpointMatchQueryRecord = {
   toleranceM: number
   candidateSessionCount: number
   processedSessionCount: number
+  exactSessionCount: number
+  skippedSessionCount: number
   matchedSessionCount: number
   failedSessionCount: number
   error: string
@@ -220,9 +223,10 @@ export type TrackRecord = {
   pointCount: number
   distanceKm: number
   lengthM: number
-  points: Array<[number, number]>
+  points: GeoPosition[]
   defaultPolicyId: string
   trackpoints: TrackpointRecord[]
+  segmentAliases?: TrackSegmentAliasRecord[]
   matchSummaries: SessionTrackMatchRecord[]
   source?: {
     kind: string
@@ -238,11 +242,17 @@ export type TrackRecord = {
   }
 }
 
+export type TrackSegmentAliasRecord = {
+  fromTrackpointId: string
+  toTrackpointId: string
+  name: string
+}
+
 export type TrackpointRecord = {
   id: string
   name: string
   stationM: number
-  position: [number, number]
+  position: GeoPosition
   cutlineOverride?: {
     leftLengthM?: number
     rightLengthM?: number

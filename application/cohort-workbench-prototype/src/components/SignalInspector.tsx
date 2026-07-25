@@ -10,6 +10,7 @@ import { InfoTip } from './Common'
 import { MapRoutePreview, type HighlightPathOverlay } from './MapRoutePreview'
 import { GpsBadge } from './StatusBadges'
 import type {
+  GeoPosition,
   SessionRecord,
   SessionBookmarkRecord,
   SessionGpsPoint,
@@ -2319,7 +2320,7 @@ function catalogGpsPointSet(session: SessionRecord): SessionGpsPointSet {
       latitude,
       elevationM: null,
     })),
-    path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as [number, number]),
+    path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as GeoPosition),
     warnings: [...session.gpsSummary.warnings],
   }
 }
@@ -2363,7 +2364,11 @@ function gpsPathForWindow(points: SessionGpsPoint[], window: { startS: number; e
   }
   const from = Math.max(0, firstInside - 1)
   const to = Math.min(timedPoints.length - 1, lastInside + 1)
-  return timedPoints.slice(from, to + 1).map((point) => [point.longitude, point.latitude] as [number, number])
+  return timedPoints.slice(from, to + 1).map((point) =>
+    point.elevationM !== null && Number.isFinite(point.elevationM)
+      ? ([point.longitude, point.latitude, point.elevationM] as GeoPosition)
+      : ([point.longitude, point.latitude] as GeoPosition),
+  )
 }
 
 function gpsAltitudeSamplesForWindow(points: SessionGpsPoint[], window: { startS: number; endS: number }) {

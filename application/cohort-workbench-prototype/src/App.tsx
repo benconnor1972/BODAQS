@@ -37,6 +37,7 @@ import { SessionSignalPreview } from './components/SessionSignalPreview'
 import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
 import { SuspensionVisualization } from './components/SuspensionVisualization'
+import { TrackAnalysisView } from './components/TrackAnalysisView'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
 import { LocalApiDataSource } from './data/LocalApiDataSource'
@@ -83,6 +84,7 @@ import {
 import { applyTableColumnFilters, type TableColumnFilter } from './domain/tableFilters'
 import type {
   ColumnId,
+  GeoPosition,
   LibraryRecord,
   ModalState,
   SessionInspectionTab,
@@ -116,7 +118,7 @@ type GeoFilterQueryState = {
 type StudySetMapSessionPath = {
   id: string
   label: string
-  path: Array<[number, number]>
+  path: GeoPosition[]
 }
 
 type NoteClipboard = {
@@ -768,7 +770,7 @@ function App() {
         }))
 
         let query = created
-        for (let attempt = 0; attempt < 120; attempt += 1) {
+        while (true) {
           if (cancelled || query.status === 'completed' || query.status === 'failed' || query.status === 'cancelled') {
             break
           }
@@ -1383,7 +1385,7 @@ function App() {
   }
 
   function openAnalysisView(viewId: string, studySet: StudySet) {
-    if (viewId === 'simple-suspension') {
+    if (viewId === 'simple-suspension' || viewId === 'track-analysis-lap-timing') {
       const url = analysisRouteUrl(viewId, studySet)
       const opened = window.open(url, '_blank')
       if (!opened) {
@@ -2001,6 +2003,9 @@ function App() {
         statusMessage={statusMessage}
         connectionStatus={connectionStatus}
         connectionMode={connectionMode}
+        canWrite={canWriteLibraryState}
+        onTrackSaved={upsertTrack}
+        onTrackDeleted={deleteTrackFromWorkbench}
         onRefreshScope={() => void refreshAnalysisRouteScope()}
         onDismissScopeNotice={() => setAnalysisScopeNotice(null)}
       />
@@ -2730,6 +2735,9 @@ function AnalysisRoutePage({
   statusMessage,
   connectionStatus,
   connectionMode,
+  canWrite,
+  onTrackSaved,
+  onTrackDeleted,
   onRefreshScope,
   onDismissScopeNotice,
 }: {
@@ -2744,10 +2752,18 @@ function AnalysisRoutePage({
   statusMessage: string
   connectionStatus: ConnectionStatus
   connectionMode: 'local-api' | 'fixture'
+  canWrite: boolean
+  onTrackSaved: (track: TrackRecord) => void
+  onTrackDeleted: (trackId: string) => void
   onRefreshScope: () => void
   onDismissScopeNotice: () => void
 }) {
-  const viewTitle = route.viewId === 'simple-suspension' ? 'Simple Suspension Analysis' : route.viewId
+  const viewTitle =
+    route.viewId === 'simple-suspension'
+      ? 'Simple Suspension Analysis'
+      : route.viewId === 'track-analysis-lap-timing'
+        ? 'Track Analysis and Lap Timing'
+        : route.viewId
   const [routeModal, setRouteModal] = useState<ModalState>(null)
   const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
 
@@ -2812,6 +2828,35 @@ function AnalysisRoutePage({
                   setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
                 }
               }}
+            />
+          </RouteErrorBoundary>
+        </section>
+      ) : route.viewId === 'track-analysis-lap-timing' ? (
+        <section className="analysis-route-content">
+          {scopeNotice && (
+            <div className={`analysis-route-notice ${scopeNotice.kind}`}>
+              <span>{scopeNotice.message}</span>
+              <div className="analysis-route-notice-actions">
+                {scopeNotice.refreshable && (
+                  <button className="secondary-action compact" type="button" onClick={onRefreshScope}>
+                    Refresh analysis
+                  </button>
+                )}
+                <button className="secondary-action compact" type="button" onClick={onDismissScopeNotice}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+          <RouteErrorBoundary resetKey={analysisRouteErrorBoundaryKey(route, studySet)}>
+            <TrackAnalysisView
+              studySet={studySet}
+              sessions={sessions}
+              tracks={tracks}
+              dataSource={dataSource}
+              canWrite={canWrite}
+              onTrackSaved={onTrackSaved}
+              onTrackDeleted={onTrackDeleted}
             />
           </RouteErrorBoundary>
         </section>
@@ -2929,6 +2974,9 @@ function browserTabTitle(route: AnalysisRouteState | null) {
   }
   if (route.viewId === 'simple-suspension') {
     return 'simple suspension analysis'
+  }
+  if (route.viewId === 'track-analysis-lap-timing') {
+    return 'track analysis and lap timing'
   }
   return route.viewId
 }
@@ -3067,7 +3115,7 @@ function candidateStillExists(id: string, sessions: SessionRecord[]) {
   return sessions.some((session) => candidateId(session) === id)
 }
 
-function studySetPathFromSession(session: SessionRecord, path: Array<[number, number]> = session.gps): StudySetMapSessionPath {
+function studySetPathFromSession(session: SessionRecord, path: GeoPosition[] = session.gps): StudySetMapSessionPath {
   return {
     id: candidateId(session),
     label: session.name,

@@ -67,6 +67,8 @@ def create_trackpoint_match_query_record(
         "candidate_session_count": len(candidate_session_refs),
         "candidate_gps_sources": [dict(ref) for ref in candidate_gps_sources or []],
         "processed_session_count": 0,
+        "exact_session_count": 0,
+        "skipped_session_count": 0,
         "matched_session_count": 0,
         "failed_session_count": 0,
         "cache": {
@@ -140,18 +142,21 @@ def complete_trackpoint_match_query(
     processed_count: int,
     matched_count: int,
     failed_count: int,
+    exact_count: int | None = None,
+    skipped_count: int | None = None,
 ) -> dict[str, Any]:
-    return update_trackpoint_match_query(
-        libraries_root,
-        query_id,
-        {
-            "status": "completed",
-            "processed_session_count": int(processed_count),
-            "matched_session_count": int(matched_count),
-            "failed_session_count": int(failed_count),
-            "completed_at": _utcnow_iso(),
-        },
-    )
+    updates = {
+        "status": "completed",
+        "processed_session_count": int(processed_count),
+        "matched_session_count": int(matched_count),
+        "failed_session_count": int(failed_count),
+        "completed_at": _utcnow_iso(),
+    }
+    if exact_count is not None:
+        updates["exact_session_count"] = int(exact_count)
+    if skipped_count is not None:
+        updates["skipped_session_count"] = int(skipped_count)
+    return update_trackpoint_match_query(libraries_root, query_id, updates)
 
 
 def write_trackpoint_match_query_results(

@@ -110,7 +110,7 @@ export function GeospatialWorkbench({
         persist: true,
       })
       setTrackpointQuery(query)
-      for (let attempt = 0; attempt < 40 && (query.status === 'queued' || query.status === 'running'); attempt += 1) {
+      while (isActiveTrackpointQuery(query)) {
         await delay(300)
         query = await dataSource.loadTrackpointMatchQuery(query.queryId)
         setTrackpointQuery(query)
@@ -201,7 +201,7 @@ export function GeospatialWorkbench({
           <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
           <button
             className="ghost-action"
-            disabled={!canWrite || !trackpointQuery || !dataSource.cancelTrackpointMatchQuery || trackpointQueryBusy}
+            disabled={!canWrite || !isActiveTrackpointQuery(trackpointQuery) || !dataSource.cancelTrackpointMatchQuery || trackpointQueryBusy}
             onClick={() => void cancelTrackpointQuery()}
             type="button"
           >
@@ -219,7 +219,8 @@ export function GeospatialWorkbench({
         {trackpointQuery && (
           <p className="track-manager-message">
             Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
-            {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
+            {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched
+            {trackpointQuery.skippedSessionCount ? `, ${trackpointQuery.skippedSessionCount} skipped by GPS extent` : ''}.
           </p>
         )}
         {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
@@ -624,7 +625,7 @@ function TrackManagerModal({
         persist: true,
       })
       setTrackpointQuery(query)
-      for (let attempt = 0; attempt < 40 && (query.status === 'queued' || query.status === 'running'); attempt += 1) {
+      while (isActiveTrackpointQuery(query)) {
         await delay(300)
         query = await dataSource.loadTrackpointMatchQuery(query.queryId)
         setTrackpointQuery(query)
@@ -784,7 +785,7 @@ function TrackManagerModal({
                     <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
                     <button
                       className="ghost-action"
-                      disabled={!canWrite || !trackpointQuery || !dataSource.cancelTrackpointMatchQuery || busy}
+                      disabled={!canWrite || !isActiveTrackpointQuery(trackpointQuery) || !dataSource.cancelTrackpointMatchQuery || busy}
                       onClick={() => void cancelTrackpointQuery()}
                       type="button"
                     >
@@ -798,7 +799,8 @@ function TrackManagerModal({
               {trackpointQuery && (
                 <p className="track-manager-message">
                   Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
-                  {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
+                  {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched
+                  {trackpointQuery.skippedSessionCount ? `, ${trackpointQuery.skippedSessionCount} skipped by GPS extent` : ''}.
                 </p>
               )}
               {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
@@ -846,6 +848,10 @@ function matchStatusClassName(status: string | undefined) {
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)))
+}
+
+function isActiveTrackpointQuery(query: TrackpointMatchQueryRecord | null) {
+  return query?.status === 'queued' || query?.status === 'running'
 }
 
 function delay(ms: number) {

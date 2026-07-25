@@ -1,6 +1,8 @@
+import type { GeoPosition } from './types'
+
 export type RoutePath = {
   id: string
-  points: Array<[number, number]>
+  points: GeoPosition[]
   color: string
   width: number
 }
