@@ -64,7 +64,7 @@ def create_app(
         description="Local HTTP wrapper around processed BODAQS libraries.",
     )
     app.state.config = config
-    app.state.adapter = LibraryAdapter(config.libraries_root)
+    app.state.adapter = LibraryAdapter(config.libraries_root, write_catalog_revision=not config.read_only)
     app.state.trackpoint_query_threads = {}
 
     app.add_middleware(
@@ -117,12 +117,16 @@ def create_app(
     def cache_diagnostics() -> dict[str, Any]:
         return _current_adapter(app).cache_diagnostics()
 
+    @app.get("/api/v1/workbench/bootstrap")
+    def workbench_bootstrap() -> dict[str, Any]:
+        return _current_adapter(app).get_workbench_bootstrap()
+
     @app.post("/api/v1/config/libraries-root")
     async def set_libraries_root(request: Request) -> dict[str, Any]:
         _assert_writable(app)
         payload = await request.json()
         libraries_root = _libraries_root_payload(payload)
-        next_adapter = LibraryAdapter(libraries_root)
+        next_adapter = LibraryAdapter(libraries_root, write_catalog_revision=not _current_config(app).read_only)
         libraries = next_adapter.list_libraries(refresh=True)
         app.state.config = LibraryApiServiceConfig(
             libraries_root=Path(libraries_root).expanduser(),
@@ -152,6 +156,10 @@ def create_app(
         library = _current_adapter(app).refresh_library(library_id)
         return {"refreshed": True, "library": library}
 
+    @app.post("/api/v1/libraries/{library_id}/catalog/invalidate")
+    def invalidate_library_catalog(library_id: str) -> dict[str, Any]:
+        return _current_adapter(app).invalidate_library_catalog(library_id)
+
     @app.get("/api/v1/libraries/{library_id}/catalog")
     def get_catalog(library_id: str) -> dict[str, Any]:
         return _current_adapter(app).get_catalog(library_id)
@@ -176,6 +184,12 @@ def create_app(
         _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).save_session_note(library_id, _json_object_payload(payload))
+
+    @app.put("/api/v1/libraries/{library_id}/sessions/notes")
+    async def save_session_notes(library_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        return _current_adapter(app).save_session_notes(library_id, _json_object_payload(payload))
 
     @app.put("/api/v1/libraries/{library_id}/sessions/descriptions")
     async def update_session_descriptions(library_id: str, request: Request) -> dict[str, Any]:

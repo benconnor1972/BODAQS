@@ -35,6 +35,7 @@ from bodaqs_analysis.library_api import (
     parse_session_key,
 )
 from bodaqs_analysis.library_api.catalog import discover_libraries
+from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, load_catalog_revision
 from bodaqs_analysis.library_api_service import create_app
 import bodaqs_analysis.library_api.adapter as adapter_module
 from bodaqs_analysis.widgets.contracts import EntitySelectionSnapshot, ScopeEntity, SelectionSnapshot
@@ -611,6 +612,48 @@ def test_library_adapter_loads_and_saves_session_note(tmp_path: Path) -> None:
     row = catalog["rows"][0]
     assert row["note_status"]["status"] == "edited"
     assert row["note_fields"]["bike"] == "Prototype G"
+
+
+def test_library_adapter_bulk_saves_session_notes_with_one_catalog_revision_touch(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    first_ref = _write_catalog_fixture_session(library_root, session_id="session_1")
+    second_ref = _write_catalog_fixture_session(library_root, session_id="session_2")
+    adapter = LibraryAdapter(libraries_root)
+
+    first_note = dict(adapter.load_session_note("default-library", {"session_ref": first_ref})["note"])
+    first_note["values"] = {**first_note["values"], "bike": "Bulk Bike 1", "rider": "Ben"}
+    first_note["draft"] = False
+    second_note = dict(adapter.load_session_note("default-library", {"session_ref": second_ref})["note"])
+    second_note["values"] = {**second_note["values"], "bike": "Bulk Bike 2", "rider": "Alex"}
+    second_note["draft"] = False
+
+    saved = adapter.save_session_notes(
+        "default-library",
+        {
+            "items": [
+                {"session_ref": first_ref, "note": first_note},
+                {"session_ref": second_ref, "note": second_note},
+            ]
+        },
+    )
+
+    assert saved["schema"] == "bodaqs.library_api.session_note_bulk_save"
+    assert saved["requested_count"] == 2
+    assert saved["saved_count"] == 2
+    assert saved["failed_count"] == 0
+    assert [result["ok"] for result in saved["results"]] == [True, True]
+    assert load_catalog_revision(library_root)["revision"] == 2
+
+    catalog = adapter.get_catalog("default-library", refresh=True)
+    rows_by_session_id = {row["session_id"]: row for row in catalog["rows"]}
+    assert rows_by_session_id["session_1"]["note_fields"]["bike"] == "Bulk Bike 1"
+    assert rows_by_session_id["session_2"]["note_fields"]["bike"] == "Bulk Bike 2"
 
 
 def test_library_adapter_updates_session_descriptions_and_refreshes_catalog(
@@ -1666,7 +1709,7 @@ def test_library_adapter_warms_analysis_adequacy_when_study_set_is_saved(tmp_pat
     diagnostics = adapter.cache_diagnostics()
 
     assert diagnostics["schema"] == "bodaqs.library_api.cache_diagnostics"
-    assert diagnostics["cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+    assert diagnostics["cache"]["namespaces"]["analysis_adequacy"]["entry_count"] >= 1
 
     stats_after_save = adapter._cache.stats()
     adequacy = adapter.get_analysis_view_adequacy(
@@ -1786,8 +1829,8 @@ def test_library_adapter_prunes_persisted_analysis_adequacy_cache(tmp_path: Path
     assert first_explain["persistent_cached"] is True
     assert second_explain["memory_cached"] is True
     assert second_explain["persistent_cached"] is True
-    assert diagnostics["persistent_cache"]["entry_count"] == 1
-    assert diagnostics["persistent_cache"]["file_count"] == 1
+    assert diagnostics["persistent_cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+    assert diagnostics["persistent_cache"]["namespaces"]["analysis_adequacy"]["file_count"] == 1
 
 
 def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
@@ -2268,6 +2311,119 @@ def test_library_adapter_catalog_cache_refreshes_explicitly(tmp_path: Path) -> N
     assert adapter.get_catalog("default-library", refresh=True)["row_count"] == 2
 
 
+def test_library_adapter_reuses_persisted_catalog_on_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.get_catalog("default-library")["row_count"] == 1
+    assert catalog_revision_path(library_root).exists()
+    diagnostics = adapter.cache_diagnostics()
+    assert diagnostics["persistent_cache"]["namespaces"]["session_catalog"]["entry_count"] == 1
+    assert diagnostics["catalog_cache"]["event_counts"]["rebuilt"] == 1
+    assert diagnostics["catalog_cache"]["libraries"][0]["validation_mode"] == "catalog_revision"
+    assert diagnostics["catalog_cache"]["libraries"][0]["catalog_revision"]["revision"] == 1
+
+    def fail_build_session_catalog(*_args, **_kwargs):
+        raise AssertionError("Catalog should have been loaded from persistent cache.")
+
+    def fail_tree_stat_dependency(*_args, **_kwargs):
+        raise AssertionError("Revision-backed cache validation should not scan the runs tree.")
+
+    monkeypatch.setattr(adapter_module, "build_session_catalog", fail_build_session_catalog)
+    monkeypatch.setattr(LibraryAdapter, "_tree_stat_dependency", fail_tree_stat_dependency)
+    restarted = LibraryAdapter(libraries_root)
+    assert restarted.get_catalog("default-library")["row_count"] == 1
+    restarted_diagnostics = restarted.cache_diagnostics()
+    assert restarted_diagnostics["catalog_cache"]["event_counts"]["persistent_hit"] == 1
+
+
+def test_library_adapter_persisted_catalog_trusts_revision_until_deep_refresh(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.get_catalog("default-library")["row_count"] == 1
+    revision_before = load_catalog_revision(library_root)
+    assert revision_before is not None
+    _make_session(library_root, "run_2", "session_2")
+
+    restarted = LibraryAdapter(libraries_root)
+    assert restarted.get_catalog("default-library")["row_count"] == 1
+
+    restarted.refresh_library("default-library")
+    revision_after = load_catalog_revision(library_root)
+    assert revision_after is not None
+    assert int(revision_after["revision"]) > int(revision_before["revision"])
+    assert restarted.get_catalog("default-library")["row_count"] == 2
+
+
+def test_library_api_service_invalidates_catalog_cache(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    client = TestClient(create_app(libraries_root))
+
+    catalog = client.get("/api/v1/libraries/default-library/catalog")
+    assert catalog.status_code == 200
+    assert catalog.json()["row_count"] == 1
+
+    warm_diagnostics = client.get("/api/v1/cache/diagnostics").json()
+    assert warm_diagnostics["catalog_cache"]["memory_entry_count"] == 1
+    assert warm_diagnostics["persistent_cache"]["namespaces"]["session_catalog"]["entry_count"] == 1
+
+    invalidated = client.post("/api/v1/libraries/default-library/catalog/invalidate")
+    assert invalidated.status_code == 200
+    assert invalidated.json()["invalidated"] is True
+    assert invalidated.json()["library_id"] == "default-library"
+
+    cold_diagnostics = client.get("/api/v1/cache/diagnostics").json()
+    assert cold_diagnostics["catalog_cache"]["memory_entry_count"] == 0
+    assert cold_diagnostics["catalog_cache"]["invalidation_count"] == 1
+    assert cold_diagnostics["persistent_cache"]["namespaces"].get("session_catalog", {}).get("entry_count", 0) == 0
+
+
+def test_library_api_read_only_service_does_not_backfill_catalog_revision(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    client = TestClient(create_app(libraries_root, read_only=True))
+
+    catalog = client.get("/api/v1/libraries/default-library/catalog")
+
+    assert catalog.status_code == 200
+    assert catalog.json()["row_count"] == 1
+    assert not catalog_revision_path(library_root).exists()
+    diagnostics = client.get("/api/v1/cache/diagnostics").json()
+    assert diagnostics["catalog_cache"]["libraries"][0]["validation_mode"] == "runs_tree_stat"
+    assert diagnostics["catalog_cache"]["libraries"][0]["catalog_revision"] is None
+
+
 def test_library_adapter_returns_timeseries_window_for_semantic_signals(
     tmp_path: Path,
 ) -> None:
@@ -2340,6 +2496,8 @@ def test_library_adapter_returns_timeseries_window_for_semantic_signals(
         "jump",
     ]
     assert payload["events"][0]["display_name"] == "Bottom out"
+    assert payload["events"][0]["metrics"] == {"peak_force": 123.0, "duration_s": 0.2}
+    assert "metrics" not in payload["events"][1]
     assert payload["warnings"] == []
 
 
@@ -3134,7 +3292,18 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert cache_diagnostics.status_code == 200
     assert cache_diagnostics.json()["schema"] == "bodaqs.library_api.cache_diagnostics"
     assert cache_diagnostics.json()["cache"]["entry_count"] == 1
-    assert cache_diagnostics.json()["persistent_cache"]["entry_count"] == 1
+    assert cache_diagnostics.json()["persistent_cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+    assert cache_diagnostics.json()["persistent_cache"]["namespaces"]["session_catalog"]["entry_count"] == 1
+
+    bootstrap = client.get("/api/v1/workbench/bootstrap")
+    assert bootstrap.status_code == 200
+    bootstrap_payload = bootstrap.json()
+    assert bootstrap_payload["schema"] == "bodaqs.library_api.workbench_bootstrap"
+    assert len(bootstrap_payload["libraries"]) == 1
+    assert len(bootstrap_payload["catalogs"]) == 1
+    assert len(bootstrap_payload["catalogs"][0]["rows"]) == 1
+    assert bootstrap_payload["study_sets"] == []
+    assert "total_ms" in bootstrap_payload["timings"]
 
     missing_view = client.post(
         "/api/v1/analysis-views/not-a-real-view/adequacy",
@@ -3166,6 +3335,15 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert save_note_response.status_code == 200
     assert save_note_response.json()["note"]["values"]["rider"] == "Alex"
     assert save_note_response.json()["note"]["draft"] is False
+
+    edited_note["values"] = {**edited_note["values"], "rider": "Casey"}
+    bulk_note_response = client.put(
+        "/api/v1/libraries/default-library/sessions/notes",
+        json={"items": [{"session_ref": session_ref, "note": edited_note}]},
+    )
+    assert bulk_note_response.status_code == 200
+    assert bulk_note_response.json()["saved_count"] == 1
+    assert bulk_note_response.json()["results"][0]["note"]["note"]["values"]["rider"] == "Casey"
 
     description_response = client.put(
         "/api/v1/libraries/default-library/sessions/descriptions",

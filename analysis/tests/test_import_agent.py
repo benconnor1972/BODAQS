@@ -669,6 +669,11 @@ def test_manual_preprocessing_batch_writes_one_run_and_draft_notes(tmp_path, mon
         / "1.0.json"
     )
     assert copied_template.exists()
+    revision = result["library_catalog_revision"]
+    assert revision["schema"] == "bodaqs.library_catalog_revision"
+    assert revision["reason"] == "manual_preprocessing_sessions_written"
+    assert revision["actor"] == "library_preprocessing"
+    assert [row["session_id"] for row in revision["changed_sessions"]] == ["session_a", "session_b"]
 
     study_set = batch_result_to_study_set(result, library_id="default-library")
     assert study_set["study_set_id"].startswith("unsaved-")
@@ -1345,6 +1350,43 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
     assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_run_sources_once_notifies_library_api_after_successful_import(tmp_path, monkeypatch):
+    import bodaqs_analysis.import_agent as import_agent_module
+
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_notify", artifacts_dir)
+    config_path = source_root / "import_source.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["library_id"] = "default-library"
+    config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    archive_path = _write_session_archive(source_root / "inbox", stem="session_001")
+    _set_old_mtime(archive_path)
+    notified_library_ids: list[str | None] = []
+
+    def fake_notify(source):
+        notified_library_ids.append(source.library_id)
+        return {
+            "attempted": True,
+            "notified": True,
+            "library_id": source.library_id,
+        }
+
+    monkeypatch.setattr(import_agent_module, "_notify_library_api_catalog_changed", fake_notify)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert notified_library_ids == ["default-library"]
+    assert report["sources"][0]["library_api_notification"]["notified"] is True
+    revision_path = artifacts_dir / "library_catalog_revision.json"
+    revision = json.loads(revision_path.read_text(encoding="utf-8"))
+    assert revision["schema"] == "bodaqs.library_catalog_revision"
+    assert revision["reason"] == "import_agent_sessions_imported"
+    assert revision["actor"] == "import_agent"
+    assert revision["changed_sessions"][0]["library_id"] == "default-library"
+    assert revision["changed_sessions"][0]["session_id"] == "session_001"
 
 
 def test_run_sources_once_emits_detection_and_archive_progress(tmp_path):

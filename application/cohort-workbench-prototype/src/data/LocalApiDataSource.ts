@@ -50,7 +50,7 @@ import type {
   TrackpointMatchQueryStatus,
   TrackRecord,
 } from '../domain/types'
-import type { LibraryDataSource } from './LibraryDataSource'
+import type { LibraryDataSource, SessionNoteSaveResult, WorkbenchBootstrapData } from './LibraryDataSource'
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
 const VITE_DEV_PORTS = new Set(['5173', '4173'])
@@ -130,10 +130,27 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapLibrary(library)
   }
 
-  async listSessions() {
-    const libraries = await this.listLibraries()
+  async loadWorkbenchBootstrap(): Promise<WorkbenchBootstrapData> {
+    const bootstrap = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/workbench/bootstrap`)
+    const catalogs = arrayValue(bootstrap.catalogs).filter(isObject)
+    const sessions = catalogs.flatMap((catalog) => {
+      const rows = arrayValue(catalog.rows)
+      return rows.filter(isObject).map(mapSession)
+    })
+    return {
+      libraries: arrayValue(bootstrap.libraries).filter(isObject).map(mapLibrary),
+      sessions,
+      tracks: arrayValue(bootstrap.tracks).filter(isObject).map(mapTrack),
+      studySets: arrayValue(bootstrap.study_sets).filter(isObject).map(mapStudySet),
+      savedFilters: arrayValue(bootstrap.session_filters).filter(isObject).map(mapSavedSessionFilter),
+      timings: objectValue(bootstrap.timings),
+    }
+  }
+
+  async listSessions(libraries?: LibraryRecord[]) {
+    const libraryList = libraries ?? (await this.listLibraries())
     const catalogs = await Promise.all(
-      libraries.map((libraryItem) =>
+      libraryList.map((libraryItem) =>
         requestJson<ApiObject>(`${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryItem.id)}/catalog`),
       ),
     )
@@ -386,6 +403,62 @@ export class LocalApiDataSource implements LibraryDataSource {
       },
     )
     return mapSessionNote(response, note.sessionRef)
+  }
+
+  async saveSessionNotes(notes: SessionNoteRecord[]): Promise<SessionNoteSaveResult[]> {
+    const indexedNotes = notes.map((note, index) => ({ note, index }))
+    const groups = new Map<string, Array<{ note: SessionNoteRecord; index: number }>>()
+    for (const item of indexedNotes) {
+      const libraryId = item.note.sessionRef.libraryId
+      groups.set(libraryId, [...(groups.get(libraryId) ?? []), item])
+    }
+
+    const results: SessionNoteSaveResult[] = new Array(notes.length)
+    await Promise.all(
+      [...groups.entries()].map(async ([libraryId, group]) => {
+        const response = await requestJson<ApiObject>(
+          `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/sessions/notes`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              items: group.map(({ note }) => ({
+                session_ref: toApiStudySessionRef(note.sessionRef),
+                note: toApiSessionNote(note),
+              })),
+            }),
+          },
+        )
+        const responseResults = arrayValue(response.results).filter(isObject)
+        responseResults.forEach((result, responseIndex) => {
+          const rawIndex = Number(result.index)
+          const source = group[Number.isInteger(rawIndex) ? rawIndex : responseIndex] ?? group[responseIndex]
+          if (!source) {
+            return
+          }
+          if (result.ok) {
+            const notePayload = objectValue(result.note)
+            results[source.index] = {
+              ok: true,
+              note: mapSessionNote(notePayload, source.note.sessionRef),
+            }
+            return
+          }
+          results[source.index] = {
+            ok: false,
+            sessionRef: source.note.sessionRef,
+            message: textValue(result.error, 'Could not save session note.'),
+          }
+        })
+      }),
+    )
+
+    return results.map((result, index) =>
+      result ?? {
+        ok: false,
+        sessionRef: notes[index].sessionRef,
+        message: 'No save result was returned for this session note.',
+      },
+    )
   }
 
   async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
@@ -970,6 +1043,7 @@ function mapTimeseriesWindowEvent(value: ApiObject): TimeseriesWindowEvent {
     endS: nullableNumberValue(value.end_s),
     peakTimeS: nullableNumberValue(value.peak_time_s),
     end: textValue(value.end),
+    metrics: objectRecordValue(value.metrics),
   }
 }
 

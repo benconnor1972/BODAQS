@@ -10,6 +10,9 @@ import shutil
 import socket
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +75,7 @@ from .import_agent_sources import (
     normalize_import_source_type,
     parse_logger_wifi_source_config,
 )
+from .library_api.catalog_revision import touch_catalog_revision
 
 
 IMPORT_SOURCE_SCHEMA = "bodaqs.import_source"
@@ -85,6 +89,8 @@ DATA_SYN_BIKE_LIBRARY_MANIFEST_FILENAME = "data_syn_bike_export_manifest.json"
 DEFAULT_SESSION_NOTE_DIRNAME = "notes"
 SESSION_NAMING_MODE_DEFAULT = "default"
 SESSION_NAMING_MODE_BASE_INDEX = "base_index"
+DEFAULT_LIBRARY_API_BASE_URL = "http://127.0.0.1:8765"
+LIBRARY_API_NOTIFICATION_TIMEOUT_S = 0.75
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +184,88 @@ def _write_json_atomic(path: Path, obj: Mapping[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _library_api_base_url() -> str:
+    configured = (
+        _optional_text(os.environ.get("BODAQS_LIBRARY_API_BASE_URL"))
+        or _optional_text(os.environ.get("BODAQS_LIBRARY_API_URL"))
+        or DEFAULT_LIBRARY_API_BASE_URL
+    )
+    return configured.rstrip("/")
+
+
+def _library_id_for_api_notification(source: "ImportSourceConfig") -> Optional[str]:
+    if source.library_id:
+        return source.library_id
+    definition = _read_json(source.artifacts_dir / "library_definition.json", {})
+    if isinstance(definition, Mapping):
+        return _optional_text(definition.get("library_id"))
+    return None
+
+
+def _notify_library_api_catalog_changed(source: "ImportSourceConfig") -> Dict[str, Any]:
+    library_id = _library_id_for_api_notification(source)
+    if library_id is None:
+        return {
+            "attempted": False,
+            "reason": "missing_library_id",
+        }
+
+    base_url = _library_api_base_url()
+    quoted_library_id = urllib.parse.quote(library_id, safe="")
+    url = f"{base_url}/api/v1/libraries/{quoted_library_id}/catalog/invalidate"
+    request = urllib.request.Request(url, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=LIBRARY_API_NOTIFICATION_TIMEOUT_S) as response:
+            status_code = int(getattr(response, "status", 0) or response.getcode())
+            return {
+                "attempted": True,
+                "notified": 200 <= status_code < 300,
+                "library_id": library_id,
+                "url": url,
+                "status_code": status_code,
+            }
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        logger.debug(
+            "Library API catalog invalidation notification failed for library %s via %s: %s",
+            library_id,
+            url,
+            exc,
+        )
+        return {
+            "attempted": True,
+            "notified": False,
+            "library_id": library_id,
+            "url": url,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _imported_session_revision_records(
+    source: "ImportSourceConfig",
+    imported: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    library_id = _library_id_for_api_notification(source)
+    records: list[dict[str, Any]] = []
+    for item in imported:
+        run_id = _optional_text(item.get("run_id"))
+        session_id = _optional_text(item.get("session_id"))
+        session_key = _optional_text(item.get("session_key"))
+        record: dict[str, Any] = {}
+        if library_id is not None:
+            record["library_id"] = library_id
+        if run_id is not None:
+            record["run_id"] = run_id
+        if session_id is not None:
+            record["session_id"] = session_id
+        if session_key is not None:
+            record["session_key"] = session_key
+        elif run_id is not None and session_id is not None:
+            record["session_key"] = f"{run_id}::{session_id}"
+        if record:
+            records.append(record)
+    return records
 
 
 def _library_data_syn_bike_export_config(artifacts_dir: Path) -> Optional[Dict[str, Any]]:
@@ -2455,10 +2543,20 @@ class ImportSourceRunner:
                         progress_callback=progress_callback,
                     )
 
+        if summary["imported"]:
+            summary["library_catalog_revision"] = touch_catalog_revision(
+                self.source.artifacts_dir,
+                reason="import_agent_sessions_imported",
+                actor="import_agent",
+                changed_sessions=_imported_session_revision_records(self.source, summary["imported"]),
+            )
+            summary["library_api_notification"] = _notify_library_api_catalog_changed(self.source)
         self._emit_progress(
             progress_callback,
             "source_scan_completed",
             totals=_aggregate_reports([summary]),
+            library_catalog_revision=summary.get("library_catalog_revision"),
+            library_api_notification=summary.get("library_api_notification"),
         )
         return summary
 

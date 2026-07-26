@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react'
 import * as d3 from 'd3'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
@@ -24,6 +24,7 @@ import type {
 const TARGET_POINTS = 1800
 const NAVIGATOR_POINTS = 900
 const DENSE_EVENT_CUTOFF = 50
+const CHART_WINDOW_DRAG_THRESHOLD_PX = 8
 const SIGNAL_INSPECTOR_HOVER_DEBUG = false
 const SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY = 'bodaqs.signalInspector.chartMode.v1'
 const SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY = 'bodaqs.signalInspector.sessionColumns.v1'
@@ -80,6 +81,19 @@ type NavigatorDrag = {
   currentS: number
   startS: number
   endS: number
+}
+
+type ChartWindowDrag = {
+  pointerId: number
+  startClientX: number
+  latestClientX: number
+}
+
+type ChartWindowPreview = {
+  left: number
+  top: number
+  width: number
+  height: number
 }
 
 type AxisId = string
@@ -318,6 +332,11 @@ export function SignalInspector({
   }, [dataSource, requestWindow.endS, requestWindow.startS, selectedColumns, session])
 
   const markCount = displayedWindowData?.marks.length ?? 0
+  const fallbackEventGroups = useMemo(
+    () => (displayedWindowData ? groupEvents(displayedWindowData.events) : []),
+    [displayedWindowData],
+  )
+  const effectiveEventGroups = eventGroups.length > 0 ? eventGroups : fallbackEventGroups
 
   useEffect(() => {
     let cancelled = false
@@ -353,8 +372,6 @@ export function SignalInspector({
       } catch {
         if (!cancelled) {
           setEventGroups([])
-          setVisibleEventGroups([])
-          eventGroupsInitializedRef.current = false
         }
       }
     }
@@ -364,6 +381,20 @@ export function SignalInspector({
       cancelled = true
     }
   }, [dataSource, durationS, eventSignalColumn, session.libraryId, session.sessionKey])
+
+  useEffect(() => {
+    if (eventGroups.length > 0 || fallbackEventGroups.length === 0) {
+      return
+    }
+    setVisibleEventGroups((current) => {
+      const validKeys = new Set(fallbackEventGroups.map((group) => group.key))
+      if (!eventGroupsInitializedRef.current) {
+        eventGroupsInitializedRef.current = true
+        return fallbackEventGroups.filter((group) => !group.dense).map((group) => group.key)
+      }
+      return current.filter((groupKey) => validKeys.has(groupKey))
+    })
+  }, [eventGroups.length, fallbackEventGroups])
 
   useEffect(() => {
     let cancelled = false
@@ -764,9 +795,9 @@ export function SignalInspector({
                   </small>
                 </span>
               </label>
-              {eventGroups.length === 0 ? (
+              {effectiveEventGroups.length === 0 ? (
                 <p>No event overlays returned for this session.</p>
-              ) : eventGroups.map((group) => (
+              ) : effectiveEventGroups.map((group) => (
                   <label key={group.key}>
                     <input
                       checked={visibleEventGroups.includes(group.key)}
@@ -817,7 +848,7 @@ export function SignalInspector({
                   durationS={durationS}
                   visibleEventGroups={visibleEventGroups}
                   showMarks={showMarks}
-                  eventGroups={eventGroups}
+                  eventGroups={effectiveEventGroups}
                   selectedEventId={selectedEventId}
                   onSelectEvent={setSelectedEventId}
                   onSelectWindow={(window) => {
@@ -836,7 +867,7 @@ export function SignalInspector({
                     durationS={durationS}
                     visibleEventGroups={visibleEventGroups}
                     showMarks={showMarks}
-                    eventGroups={eventGroups}
+                    eventGroups={effectiveEventGroups}
                     selectedEventId={selectedEventId}
                     onSelectEvent={setSelectedEventId}
                     onSelectWindow={(window) => {
@@ -1161,16 +1192,20 @@ function SignalWindowChart({
   onSelectPoint: (timeS: number) => void
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
+  const chartFrameRef = useRef<HTMLDivElement | null>(null)
   const plotHostRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
   const onSelectPointRef = useRef(onSelectPoint)
   const onSelectWindowRef = useRef(onSelectWindow)
   const onHoverTimeChangeRef = useRef(onHoverTimeChange)
   const onHoverDebugRef = useRef(onHoverDebug)
+  const chartWindowDragRef = useRef<ChartWindowDrag | null>(null)
+  const suppressNextClickRef = useRef(false)
   const hostWidth = useElementWidth(plotHostRef)
   const [hover, setHover] = useState<HoverReadout | null>(null)
   const hoverFrameRef = useRef<number | null>(null)
   const pendingHoverRef = useRef<HoverReadout | null>(null)
+  const [windowPreview, setWindowPreview] = useState<ChartWindowPreview | null>(null)
   const [plotVersion, setPlotVersion] = useState(0)
   const chartModel = useMemo(() => buildSignalChartModel(data), [data])
   const plotWidth = boundedPlotWidth(hostWidth)
@@ -1242,14 +1277,109 @@ function SignalWindowChart({
         enableHover: !externalHover,
         onHoverDebug: (event) => onHoverDebugRef.current?.(event),
         onHover: scheduleHover,
-        onSelectPoint: (timeS) => onSelectPointRef.current(timeS),
-        onSelectWindow: (window) => onSelectWindowRef.current(window),
       }),
       chartModel.alignedData,
       plotHostRef.current,
     )
     plotRef.current = plot
+    const windowFromClientRange = (startClientX: number, endClientX: number) => {
+      const rect = plot.over.getBoundingClientRect()
+      const leftA = clamp(startClientX - rect.left, 0, rect.width)
+      const leftB = clamp(endClientX - rect.left, 0, rect.width)
+      const rawStartS = plot.posToVal(leftA, 'x')
+      const rawEndS = plot.posToVal(leftB, 'x')
+      const domainStart = chartModel.times[0] ?? 0
+      const domainEnd = chartModel.times.at(-1) ?? domainStart
+      const startS = clamp(Math.min(rawStartS, rawEndS), domainStart, domainEnd)
+      const endS = clamp(Math.max(rawStartS, rawEndS), domainStart, domainEnd)
+      return { startS, endS }
+    }
+    const previewFromClientRange = (startClientX: number, endClientX: number): ChartWindowPreview | null => {
+      const frame = chartFrameRef.current
+      if (!frame) {
+        return null
+      }
+      const frameRect = frame.getBoundingClientRect()
+      const overRect = plot.over.getBoundingClientRect()
+      const leftA = clamp(startClientX, overRect.left, overRect.right)
+      const leftB = clamp(endClientX, overRect.left, overRect.right)
+      const left = Math.min(leftA, leftB) - frameRect.left
+      const width = Math.max(1, Math.abs(leftB - leftA))
+      return {
+        left,
+        top: overRect.top - frameRect.top,
+        width,
+        height: overRect.height,
+      }
+    }
+    const clearSelectAfterGesture = () => {
+      window.setTimeout(() => {
+        if (plotRef.current === plot) {
+          plot.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false)
+        }
+      }, 0)
+    }
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      if (event.button !== 0) {
+        return
+      }
+      chartWindowDragRef.current = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        latestClientX: event.clientX,
+      }
+      setWindowPreview(null)
+      try {
+        plot.over.setPointerCapture(event.pointerId)
+      } catch {
+        // Pointer capture is an enhancement; uPlot still receives normal mouse events without it.
+      }
+    }
+    const handlePointerMove = (event: globalThis.PointerEvent) => {
+      const drag = chartWindowDragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) {
+        return
+      }
+      drag.latestClientX = event.clientX
+      const dragWidth = Math.abs(event.clientX - drag.startClientX)
+      setWindowPreview(dragWidth >= CHART_WINDOW_DRAG_THRESHOLD_PX ? previewFromClientRange(drag.startClientX, event.clientX) : null)
+    }
+    const handlePointerUp = (event: globalThis.PointerEvent) => {
+      const drag = chartWindowDragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) {
+        return
+      }
+      chartWindowDragRef.current = null
+      setWindowPreview(null)
+      const endClientX = event.clientX
+      const dragWidth = Math.abs(endClientX - drag.startClientX)
+      if (dragWidth < CHART_WINDOW_DRAG_THRESHOLD_PX) {
+        return
+      }
+      const nextWindow = windowFromClientRange(drag.startClientX, endClientX)
+      suppressNextClickRef.current = true
+      clearSelectAfterGesture()
+      window.setTimeout(() => {
+        suppressNextClickRef.current = false
+      }, 0)
+      if (nextWindow.endS - nextWindow.startS >= 0.1) {
+        onSelectWindowRef.current(nextWindow)
+      }
+    }
+    const handlePointerCancel = (event: globalThis.PointerEvent) => {
+      const drag = chartWindowDragRef.current
+      if (drag?.pointerId === event.pointerId) {
+        chartWindowDragRef.current = null
+        setWindowPreview(null)
+      }
+    }
     const handleClick = (event: globalThis.MouseEvent) => {
+      if (suppressNextClickRef.current) {
+        suppressNextClickRef.current = false
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       if (plot.select.width >= 4) {
         return
       }
@@ -1259,15 +1389,26 @@ function SignalWindowChart({
       const domainEnd = chartModel.times.at(-1) ?? domainStart
       onSelectPointRef.current(clamp(timeS, domainStart, domainEnd))
     }
+    plot.over.addEventListener('pointerdown', handlePointerDown)
+    plot.over.addEventListener('pointermove', handlePointerMove)
+    plot.over.addEventListener('pointerup', handlePointerUp)
+    plot.over.addEventListener('pointercancel', handlePointerCancel)
+    plot.over.addEventListener('lostpointercapture', handlePointerCancel)
     plot.over.addEventListener('click', handleClick)
     setPlotVersion((version) => version + 1)
     return () => {
+      plot.over.removeEventListener('pointerdown', handlePointerDown)
+      plot.over.removeEventListener('pointermove', handlePointerMove)
+      plot.over.removeEventListener('pointerup', handlePointerUp)
+      plot.over.removeEventListener('pointercancel', handlePointerCancel)
+      plot.over.removeEventListener('lostpointercapture', handlePointerCancel)
       plot.over.removeEventListener('click', handleClick)
       if (hoverFrameRef.current !== null) {
         window.cancelAnimationFrame(hoverFrameRef.current)
         hoverFrameRef.current = null
         pendingHoverRef.current = null
       }
+      setWindowPreview(null)
       plot.destroy()
       if (plotRef.current === plot) {
         plotRef.current = null
@@ -1312,7 +1453,7 @@ function SignalWindowChart({
 
   return (
     <div className={`signal-inspector-chart-card${compact ? ' compact' : ''}${inlineLegend ? ' inline-legend' : ''}`}>
-      <div className="signal-inspector-chart-frame" onPointerMove={handlePointerMove}>
+      <div className="signal-inspector-chart-frame" ref={chartFrameRef} onPointerMove={handlePointerMove}>
         {showFullSessionControl && (
           <button
             className="signal-inspector-full-session-control"
@@ -1341,6 +1482,18 @@ function SignalWindowChart({
           version={plotVersion}
           visibleEvents={visibleEvents}
         />
+        {windowPreview && (
+          <span
+            aria-hidden="true"
+            className="signal-inspector-window-preview"
+            style={{
+              height: `${windowPreview.height}px`,
+              left: `${windowPreview.left}px`,
+              top: `${windowPreview.top}px`,
+              width: `${windowPreview.width}px`,
+            }}
+          />
+        )}
         {displayHoverLeft !== null && <span className="signal-inspector-synced-hover-line" style={{ left: `${displayHoverLeft}px` }} />}
         {displayHover && displayHoverLeft !== null && (
           <div className="signal-inspector-readout" style={{ left: `clamp(88px, ${displayHoverLeft}px, calc(100% - 88px))` }}>
@@ -1677,7 +1830,9 @@ function SignalPlotOverlay({
               top: `${geometry.top}px`,
             }}
             title={`${mark.displayName || 'Mark'} at ${formatTime(mark.timeS)}`}
-          />
+          >
+            <span>{mark.displayName || 'Mark'}</span>
+          </div>
         )
       })}
       {visibleEvents.map((event, index) => {
@@ -1722,8 +1877,6 @@ function signalUPlotOptions({
   model,
   onHover,
   onHoverDebug,
-  onSelectPoint,
-  onSelectWindow,
   width,
 }: {
   compact?: boolean
@@ -1733,8 +1886,6 @@ function signalUPlotOptions({
   model: SignalChartModel
   onHover: (hover: HoverReadout | null) => void
   onHoverDebug?: (event: HoverDebugEvent) => void
-  onSelectPoint: (timeS: number) => void
-  onSelectWindow: (window: { startS: number; endS: number }) => void
   width: number
 }): uPlot.Options {
   const valuesByAxis = new Map(
@@ -1857,21 +2008,9 @@ function signalUPlotOptions({
       ],
       setSelect: [
         (plot) => {
-          if (plot.select.width < 4) {
-            const index = plot.cursor.idx
-            if (index !== null && index !== undefined && index >= 0 && index < model.times.length) {
-              onSelectPoint(model.times[index])
-            }
-            return
+          if (plot.select.width >= 4) {
+            window.setTimeout(() => plot.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false), 0)
           }
-          const startS = plot.posToVal(plot.select.left, 'x')
-          const endS = plot.posToVal(plot.select.left + plot.select.width, 'x')
-          const nextStartS = Math.max(0, Math.min(startS, endS))
-          const nextEndS = Math.min(Math.max(startS, endS), model.times.at(-1) ?? Math.max(startS, endS))
-          if (nextEndS - nextStartS >= 0.1) {
-            onSelectWindow({ startS: nextStartS, endS: nextEndS })
-          }
-          plot.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false)
         },
       ],
     },
@@ -2174,6 +2313,7 @@ function SelectedEventPanel({
   const eventStartS = event.startS ?? event.peakTimeS ?? event.endS ?? 0
   const eventEndS = event.endS ?? event.peakTimeS ?? event.startS ?? eventStartS
   const zoomPaddingS = Math.max(1, (eventEndS - eventStartS) * 2, 2)
+  const metricEntries = eventMetricEntries(event.metrics)
   return (
     <section className="signal-inspector-event-detail">
       <div>
@@ -2190,6 +2330,19 @@ function SelectedEventPanel({
         <dt>ID</dt>
         <dd>{event.eventId || 'unknown'}</dd>
       </dl>
+      {metricEntries.length > 0 && (
+        <div className="signal-inspector-event-metrics">
+          <span>Metrics</span>
+          <dl>
+            {metricEntries.map(([name, value]) => (
+              <Fragment key={name}>
+                <dt>{formatMetricName(name)}</dt>
+                <dd>{formatEventMetricValue(value)}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </div>
+      )}
       <div className="signal-inspector-event-actions">
         <button
           type="button"
@@ -2880,12 +3033,7 @@ function roundForInput(value: number) {
 }
 
 function formatTime(value: number) {
-  if (!Number.isFinite(value)) {
-    return '0:00'
-  }
-  const minutes = Math.floor(value / 60)
-  const seconds = Math.round(value % 60)
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
+  return formatTimeAxisValue(value, 1)
 }
 
 function formatTimeAxisLabels(values: number[]) {
@@ -2942,4 +3090,41 @@ function formatReadoutValue(value: number) {
     return d3.format(',.2f')(value)
   }
   return d3.format(',.3f')(value)
+}
+
+function eventMetricEntries(metrics: Record<string, unknown> | undefined) {
+  if (!metrics) {
+    return []
+  }
+  return Object.entries(metrics)
+    .filter(([, value]) => {
+      if (value === null || value === undefined) {
+        return false
+      }
+      if (typeof value === 'number') {
+        return Number.isFinite(value)
+      }
+      if (typeof value === 'string') {
+        return value.trim().length > 0
+      }
+      return typeof value === 'boolean'
+    })
+    .sort(([left], [right]) => left.localeCompare(right))
+}
+
+function formatMetricName(name: string) {
+  return name
+    .replace(/^m_/, '')
+    .replace(/^d_/, '')
+    .replace(/_/g, ' ')
+}
+
+function formatEventMetricValue(value: unknown) {
+  if (typeof value === 'number') {
+    return formatReadoutValue(value)
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'yes' : 'no'
+  }
+  return String(value)
 }

@@ -357,6 +357,22 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
     return cloneSessionNote(saved)
   }
 
+  async saveSessionNotes(notes: SessionNoteRecord[]) {
+    const results = []
+    for (const note of notes) {
+      try {
+        results.push({ ok: true as const, note: await this.saveSessionNote(note) })
+      } catch (error) {
+        results.push({
+          ok: false as const,
+          sessionRef: note.sessionRef,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return results
+  }
+
   async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
     const wanted = sessionRefId(sessionToStudyRef(session))
     return this.bookmarks.filter((bookmark) => sessionRefId(bookmark.sessionRef) === wanted).map(cloneSessionBookmark)

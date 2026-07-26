@@ -41,7 +41,7 @@ import { TrackAnalysisView } from './components/TrackAnalysisView'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
 import { LocalApiDataSource } from './data/LocalApiDataSource'
-import type { LibraryDataSource } from './data/LibraryDataSource'
+import type { LibraryDataSource, SessionNoteSaveResult } from './data/LibraryDataSource'
 import { invalidateSuspensionCacheForSession } from './data/SuspensionAnalysisCache'
 import {
   broadcastSessionDeleted,
@@ -235,6 +235,7 @@ function App() {
   const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
   const [noteEditorSession, setNoteEditorSession] = useState<SessionRecord | null>(null)
   const [pendingStudySetAction, setPendingStudySetAction] = useState<PendingStudySetAction | null>(null)
+  const [isSavingCurrentStudySet, setIsSavingCurrentStudySet] = useState(false)
   const [libraryRootInput, setLibraryRootInput] = useState('')
   const [connectionMode, setConnectionMode] = useState<'local-api' | 'fixture'>('local-api')
   const [isChangingLibraryRoot, setIsChangingLibraryRoot] = useState(false)
@@ -243,6 +244,7 @@ function App() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
   const [libraryApiReadOnly, setLibraryApiReadOnly] = useState(false)
   const workbenchRefreshInFlightRef = useRef(false)
+  const studySetSaveInFlightRef = useRef(false)
   const lastAutomaticWorkbenchRefreshMs = useRef(0)
 
   useEffect(() => {
@@ -486,8 +488,13 @@ function App() {
   const currentStudySetStatus = studySetStatus(currentStudySet, isCurrentStudySetDirty)
   const canWriteLibraryState = !(connectionMode === 'local-api' && libraryApiReadOnly)
   const canSaveCurrentStudySet =
-    canWriteLibraryState && (isCurrentStudySetDirty || (!currentStudySet.id && currentStudySet.sessions.length > 0))
-  const canSavePendingAction = canWriteLibraryState && Boolean(currentStudySet.displayName.trim() && currentStudySet.sessions.length > 0)
+    canWriteLibraryState &&
+    !isSavingCurrentStudySet &&
+    (isCurrentStudySetDirty || (!currentStudySet.id && currentStudySet.sessions.length > 0))
+  const canSavePendingAction =
+    canWriteLibraryState &&
+    !isSavingCurrentStudySet &&
+    Boolean(currentStudySet.displayName.trim() && currentStudySet.sessions.length > 0)
   const trackMatchRequestKey = JSON.stringify({
     sessions: currentStudySet.sessions,
     trackIds: currentStudySet.trackIds,
@@ -652,6 +659,16 @@ function App() {
     [activeDataSource],
   )
 
+  const cacheSessionNoteRecord = useCallback((saved: SessionNoteRecord) => {
+    const cacheKey = sessionNoteRecordCacheKey(saved)
+    noteCacheRef.current.set(cacheKey, cloneSessionNoteRecord(saved))
+    setNoteClipboard((current) =>
+      current && sessionNoteCacheKey(current.sourceSession) === cacheKey
+        ? { ...current, note: cloneSessionNoteRecord(saved) }
+        : current,
+    )
+  }, [])
+
   const saveCachedSessionNote = useCallback(
     async (note: SessionNoteRecord) => {
       if (!canWriteLibraryState) {
@@ -661,16 +678,10 @@ function App() {
         throw new Error('The current data source does not support note saves.')
       }
       const saved = await activeDataSource.saveSessionNote(note)
-      const cacheKey = sessionNoteRecordCacheKey(saved)
-      noteCacheRef.current.set(cacheKey, cloneSessionNoteRecord(saved))
-      setNoteClipboard((current) =>
-        current && sessionNoteCacheKey(current.sourceSession) === cacheKey
-          ? { ...current, note: cloneSessionNoteRecord(saved) }
-          : current,
-      )
+      cacheSessionNoteRecord(saved)
       return cloneSessionNoteRecord(saved)
     },
-    [activeDataSource, canWriteLibraryState],
+    [activeDataSource, cacheSessionNoteRecord, canWriteLibraryState],
   )
 
   function clearNoteCache() {
@@ -894,9 +905,11 @@ function App() {
   async function refreshWorkbenchData({
     quiet = false,
     automatic = false,
+    deep = false,
   }: {
     quiet?: boolean
     automatic?: boolean
+    deep?: boolean
   } = {}) {
     if (workbenchRefreshInFlightRef.current || isChangingLibraryRoot) {
       return
@@ -905,7 +918,7 @@ function App() {
     workbenchRefreshInFlightRef.current = true
     if (!quiet) {
       setIsRefreshingWorkbenchData(true)
-      setStatusMessage('Refreshing library catalog...')
+      setStatusMessage(deep ? 'Deep refreshing library catalog...' : 'Reloading workbench data...')
     }
 
     const selectedAllLibraries =
@@ -917,7 +930,7 @@ function App() {
       const libraryIdsToRefresh = selectedLibraryIds.length
         ? selectedLibraryIds
         : libraries.map((libraryItem) => libraryItem.id)
-      if (activeDataSource.refreshLibrary && libraryIdsToRefresh.length) {
+      if (deep && activeDataSource.refreshLibrary && libraryIdsToRefresh.length) {
         await Promise.all(libraryIdsToRefresh.map((libraryId) => activeDataSource.refreshLibrary?.(libraryId)))
       }
 
@@ -950,7 +963,11 @@ function App() {
 
       if (!quiet) {
         const sessionLabel = loaded.sessions.length === 1 ? 'session' : 'sessions'
-        setStatusMessage(`Refreshed library catalog: ${loaded.sessions.length} ${sessionLabel} available.`)
+        setStatusMessage(
+          deep
+            ? `Deep refreshed library catalog: ${loaded.sessions.length} ${sessionLabel} available.`
+            : `Reloaded workbench data: ${loaded.sessions.length} ${sessionLabel} available.`,
+        )
         if (connectionMode === 'local-api') {
           setConnectionStatus('online')
         }
@@ -967,7 +984,7 @@ function App() {
       }
       if (!quiet) {
         const message = error instanceof Error ? error.message : String(error)
-        setStatusMessage(`Could not refresh library catalog: ${message}`)
+        setStatusMessage(`Could not ${deep ? 'deep refresh library catalog' : 'reload workbench data'}: ${message}`)
       }
     } finally {
       workbenchRefreshInFlightRef.current = false
@@ -1476,11 +1493,16 @@ function App() {
 
     setStatusMessage(targets.length === 1 ? 'Pasting note...' : `Pasting note to ${targets.length} sessions...`)
     const sourceNote = cloneSessionNoteRecord(noteClipboard.note)
-    const results = await mapWithConcurrency(targets, NOTE_PASTE_CONCURRENCY, (target) =>
-      pasteNoteToSession(target, sourceNote),
-    )
+    const notesToSave = targets.map((target) => noteForPasteTarget(target, sourceNote))
+    const bulkSaveSessionNotes = activeDataSource.saveSessionNotes?.bind(activeDataSource)
+    const results = bulkSaveSessionNotes && targets.length > 1
+      ? await pasteNotesToSessionsBulk(targets, notesToSave, bulkSaveSessionNotes)
+      : await mapWithConcurrency(targets, NOTE_PASTE_CONCURRENCY, (target) =>
+          pasteNoteToSession(target, sourceNote),
+        )
     const updatedSessions = results.flatMap((result) => (result.ok ? [result.session] : []))
     const failures = results.flatMap((result) => (result.ok ? [] : [`${result.session.name}: ${result.message}`]))
+    applyUpdatedSessions(updatedSessions)
     if (failures.length > 0) {
       const successPrefix = updatedSessions.length > 0 ? `${updatedSessions.length} note(s) pasted. ` : ''
       setStatusMessage(`${successPrefix}${failures.length} paste operation(s) failed: ${failures.join('; ')}`)
@@ -1493,18 +1515,41 @@ function App() {
     )
   }
 
+  async function pasteNotesToSessionsBulk(
+    targets: SessionRecord[],
+    notesToSave: SessionNoteRecord[],
+    saveNotes: (notes: SessionNoteRecord[]) => Promise<SessionNoteSaveResult[]>,
+  ): Promise<NotePasteResult[]> {
+    const results = await saveNotes(notesToSave)
+    return targets.map((target, index) => {
+      const result = results[index]
+      if (!result) {
+        return {
+          ok: false,
+          session: target,
+          message: 'No note save result was returned for this target.',
+        }
+      }
+      if (!result.ok) {
+        return {
+          ok: false,
+          session: target,
+          message: result.message,
+        }
+      }
+      cacheSessionNoteRecord(result.note)
+      return {
+        ok: true,
+        session: sessionFromSavedNote(target, result.note),
+      }
+    })
+  }
+
   async function pasteNoteToSession(target: SessionRecord, sourceNote: SessionNoteRecord): Promise<NotePasteResult> {
     try {
-      const noteToSave: SessionNoteRecord = {
-        ...cloneSessionNoteRecord(sourceNote),
-        sessionRef: sessionToStudyRef(target),
-        present: true,
-        createdAtUtc: '',
-        updatedAtUtc: '',
-      }
+      const noteToSave = noteForPasteTarget(target, sourceNote)
       const savedNote = await saveCachedSessionNote(noteToSave)
       const updatedSession = sessionFromSavedNote(target, savedNote)
-      applyUpdatedSessions([updatedSession])
       return { ok: true, session: updatedSession }
     } catch (error) {
       return {
@@ -1812,6 +1857,29 @@ function App() {
     }
   }
 
+  function noteForPasteTarget(target: SessionRecord, sourceNote: SessionNoteRecord): SessionNoteRecord {
+    return {
+      ...cloneSessionNoteRecord(sourceNote),
+      sessionRef: sessionToStudyRef(target),
+      present: true,
+      createdAtUtc: '',
+      updatedAtUtc: '',
+    }
+  }
+
+  async function deepRefreshWorkbenchData() {
+    const selectedLabel = selectedLibraryIds.length
+      ? `${selectedLibraryIds.length} selected ${selectedLibraryIds.length === 1 ? 'library' : 'libraries'}`
+      : 'all libraries'
+    const confirmed = window.confirm(
+      `Deep refresh will rescan ${selectedLabel} from disk and invalidate cached session catalogs. This can take a while for large or cloud-synced libraries.\n\nContinue?`,
+    )
+    if (!confirmed) {
+      return
+    }
+    await refreshWorkbenchData({ deep: true })
+  }
+
   function upsertTrack(track: TrackRecord) {
     setTracks((currentTracks) => {
       const exists = currentTracks.some((item) => item.id === track.id)
@@ -1848,6 +1916,10 @@ function App() {
   }
 
   async function saveCurrentStudySet(): Promise<StudySet | null> {
+    if (studySetSaveInFlightRef.current) {
+      setStatusMessage('Study Set save is already in progress.')
+      return null
+    }
     if (!canWriteLibraryState) {
       setStatusMessage('The Library API is running in read-only mode.')
       return null
@@ -1862,6 +1934,8 @@ function App() {
       return null
     }
 
+    studySetSaveInFlightRef.current = true
+    setIsSavingCurrentStudySet(true)
     try {
       const saved = await activeDataSource.saveStudySet({
         ...currentStudySet,
@@ -1877,6 +1951,9 @@ function App() {
       const message = error instanceof Error ? error.message : String(error)
       setStatusMessage(`Could not save Study Set: ${message}`)
       return null
+    } finally {
+      studySetSaveInFlightRef.current = false
+      setIsSavingCurrentStudySet(false)
     }
   }
 
@@ -2060,6 +2137,12 @@ function App() {
                   <div className="module-header-actions">
                     <span className="module-header-count">{selectedLibraries.length} active</span>
                     <IconButton
+                      label="Deep Refresh Libraries"
+                      onClick={() => void deepRefreshWorkbenchData()}
+                      disabled={isRefreshingWorkbenchData || isChangingLibraryRoot || connectionMode !== 'local-api'}
+                      icon={<RefreshCw size={16} />}
+                    />
+                    <IconButton
                       label="Collapse Library Selector"
                       onClick={() => setLibrarySelectorCollapsed(true)}
                       icon={<ChevronUp size={16} />}
@@ -2124,7 +2207,7 @@ function App() {
                   {libraryScopedSessions.length} total / {visibleSessions.length} filtered / {selectedCandidateIds.length} selected
                 </span>
                 <IconButton
-                  label="Refresh Session Selector"
+                  label="Reload Session Selector"
                   onClick={() => void refreshWorkbenchData()}
                   disabled={isRefreshingWorkbenchData || isChangingLibraryRoot}
                   icon={<RefreshCw size={16} />}
@@ -2417,7 +2500,7 @@ function App() {
                 onClick={() => void saveCurrentStudySet()}
               >
                 <Save size={17} />
-                Save
+                {isSavingCurrentStudySet ? 'Saving...' : 'Save'}
               </button>
               <button className="danger-action compact-row-action" disabled={!currentStudySetHasContent} onClick={requestClearStudySet}>
                 <Trash2 size={17} />
@@ -3039,13 +3122,28 @@ function isStoredStudySet(value: unknown): value is StudySet {
 }
 
 async function fetchWorkbenchData(source: LibraryDataSource) {
-  const [loadedLibraries, loadedSessions, loadedTracks, loadedStudySets, loadedSavedFilters] = await Promise.all([
-    source.listLibraries(),
-    source.listSessions(),
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+
+  if (source.loadWorkbenchBootstrap) {
+    const loaded = await source.loadWorkbenchBootstrap()
+    logWorkbenchLoadTiming('bootstrap', startedAt, loaded.timings)
+    return {
+      libraries: applySessionCounts(loaded.libraries, loaded.sessions),
+      sessions: loaded.sessions,
+      tracks: loaded.tracks,
+      studySets: loaded.studySets,
+      savedFilters: loaded.savedFilters,
+    }
+  }
+
+  const loadedLibraries = await source.listLibraries()
+  const [loadedSessions, loadedTracks, loadedStudySets, loadedSavedFilters] = await Promise.all([
+    source.listSessions(loadedLibraries),
     source.listTracks(),
     source.listStudySets(),
     source.listSavedSessionFilters ? source.listSavedSessionFilters() : Promise.resolve(prototypeSavedSessionFilters),
   ])
+  logWorkbenchLoadTiming('fallback', startedAt)
 
   return {
     libraries: applySessionCounts(loadedLibraries, loadedSessions),
@@ -3054,6 +3152,18 @@ async function fetchWorkbenchData(source: LibraryDataSource) {
     studySets: loadedStudySets,
     savedFilters: loadedSavedFilters,
   }
+}
+
+function logWorkbenchLoadTiming(mode: string, startedAt: number, serviceTimings?: Record<string, unknown>) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+  const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+  console.info('[BODAQS] Workbench data loaded', {
+    mode,
+    totalMs: Math.round((finishedAt - startedAt) * 10) / 10,
+    serviceTimings,
+  })
 }
 
 function removeSessionsFromStudySetValue(studySet: StudySet, refIds: Set<string>, preserveSavedFlag: boolean) {

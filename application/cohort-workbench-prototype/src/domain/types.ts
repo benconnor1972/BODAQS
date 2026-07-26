@@ -429,6 +429,7 @@ export type TimeseriesWindowEvent = {
   endS: number | null
   peakTimeS: number | null
   end: string
+  metrics?: Record<string, unknown>
 }
 
 export type TimeseriesWindowMark = {

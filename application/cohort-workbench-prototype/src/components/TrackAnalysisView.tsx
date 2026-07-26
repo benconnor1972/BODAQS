@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Map as MapIcon, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Map as MapIcon, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
 import maplibregl, {
   type GeoJSONSource,
   type Map as MapLibreMap,
@@ -17,6 +17,10 @@ import type {
   SessionRecord,
   StudySet,
   TrackRecord,
+  TrackpointMatchMode,
+  TrackpointMatchQueryRecord,
+  TrackpointMatchQueryResult,
+  TrackpointMatchQueryResults,
   TrackpointRecord,
   TrackSegmentAliasRecord,
 } from '../domain/types'
@@ -102,6 +106,19 @@ type AltitudeSample = {
   elevationM: number
 }
 
+type LonLatBounds = {
+  minLongitude: number
+  minLatitude: number
+  maxLongitude: number
+  maxLatitude: number
+}
+
+type PersistedTrackAnalysisViewContext = {
+  addedSessionIds: string[]
+  removedSessionIds: string[]
+  addedTrackIds: string[]
+}
+
 type MapPointProperties = {
   color: string
   label: string
@@ -114,6 +131,7 @@ const SESSION_COLORS = ['#008c95', '#101820', '#3f6b7a', '#b66a2c', '#68737a', '
 const TRACK_COLOR = '#b66a2c'
 const DRAFT_COLOR = '#008c95'
 const CUTLINE_LENGTH_M = 20
+const TRACK_ANALYSIS_VIEW_CONTEXT_STORAGE_PREFIX = 'bodaqs.track-analysis.view-context.v1:'
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -169,6 +187,11 @@ export function TrackAnalysisView({
   onTrackSaved,
   onTrackDeleted,
 }: TrackAnalysisViewProps) {
+  const viewContextStorageKey = useMemo(() => trackAnalysisViewContextStorageKey(studySet), [studySet])
+  const initialViewContext = useMemo(
+    () => readTrackAnalysisViewContext(viewContextStorageKey),
+    [viewContextStorageKey],
+  )
   const scopedSessions = useMemo(
     () => studySet.sessions.map((ref) => sessionByRef(ref, sessions)).filter(isSessionRecord),
     [sessions, studySet.sessions],
@@ -177,14 +200,49 @@ export function TrackAnalysisView({
     () => scopedSessions.map((session) => sessionRecordId(session)),
     [scopedSessions],
   )
+  const scopedSessionIdSet = useMemo(() => new Set(scopedSessionIds), [scopedSessionIds])
+  const [addedSessionIds, setAddedSessionIds] = useState<Set<string>>(
+    () => new Set(initialViewContext.addedSessionIds),
+  )
+  const [removedSessionIds, setRemovedSessionIds] = useState<Set<string>>(
+    () => new Set(initialViewContext.removedSessionIds),
+  )
+  const visibleScopedSessions = useMemo(
+    () => scopedSessions.filter((session) => !removedSessionIds.has(sessionRecordId(session))),
+    [removedSessionIds, scopedSessions],
+  )
+  const addedSessions = useMemo(
+    () =>
+      sessions.filter((session) => {
+        const id = sessionRecordId(session)
+        return addedSessionIds.has(id) && !scopedSessionIdSet.has(id) && !removedSessionIds.has(id)
+      }),
+    [addedSessionIds, removedSessionIds, scopedSessionIdSet, sessions],
+  )
+  const viewSessions = useMemo(
+    () => mergeSessionLists(visibleScopedSessions, addedSessions),
+    [addedSessions, visibleScopedSessions],
+  )
+  const viewSessionIds = useMemo(
+    () => viewSessions.map((session) => sessionRecordId(session)),
+    [viewSessions],
+  )
   const savedScopedTracks = useMemo(
     () => tracks.filter((track) => studySet.trackIds.includes(track.id)),
     [studySet.trackIds, tracks],
   )
+  const savedScopedTrackIdSet = useMemo(() => new Set(savedScopedTracks.map((track) => track.id)), [savedScopedTracks])
+  const [localAddedTrackIds, setLocalAddedTrackIds] = useState<Set<string>>(
+    () => new Set(initialViewContext.addedTrackIds),
+  )
+  const locallyAddedTracks = useMemo(
+    () => tracks.filter((track) => localAddedTrackIds.has(track.id) && !savedScopedTrackIdSet.has(track.id)),
+    [localAddedTrackIds, savedScopedTrackIdSet, tracks],
+  )
   const [localTracks, setLocalTracks] = useState<TrackRecord[]>([])
   const scopedTracks = useMemo(
-    () => mergeTrackLists(savedScopedTracks, localTracks),
-    [localTracks, savedScopedTracks],
+    () => mergeTrackLists(mergeTrackLists(savedScopedTracks, locallyAddedTracks), localTracks),
+    [localTracks, locallyAddedTracks, savedScopedTracks],
   )
   const [workingTracks, setWorkingTracks] = useState<WorkingTrack[]>(() =>
     scopedTracks.map((track) => workingTrackFromRecord(track)),
@@ -193,17 +251,37 @@ export function TrackAnalysisView({
   const [activeSessionIds, setActiveSessionIds] = useState<Set<string>>(
     () => new Set(scopedSessionIds),
   )
-  const previousScopedSessionIdsRef = useRef<Set<string>>(new Set(scopedSessionIds))
+  const previousViewSessionIdsRef = useRef<Set<string>>(new Set(viewSessionIds))
   const [gpsSourceBySessionId, setGpsSourceBySessionId] = useState<Record<string, string>>({})
   const [loadedGps, setLoadedGps] = useState<Record<string, LoadedGpsState>>({})
   const loadedGpsRef = useRef<Record<string, LoadedGpsState>>({})
   const [selectedWorkingTrackId, setSelectedWorkingTrackId] = useState(() => workingTracks[0]?.workingId ?? '')
+  const [activeTrackIds, setActiveTrackIds] = useState<Set<string>>(() => new Set(workingTracks.map((track) => track.workingId)))
+  const previousWorkingTrackIdsRef = useRef<Set<string>>(new Set(workingTracks.map((track) => track.workingId)))
   const [hideSegmentNames, setHideSegmentNames] = useState(true)
   const [lapTimingExpanded, setLapTimingExpanded] = useState(false)
+  const [findSessionsOpen, setFindSessionsOpen] = useState(false)
+  const [findTracksOpen, setFindTracksOpen] = useState(false)
+  const [mapViewportBounds, setMapViewportBounds] = useState<LonLatBounds | null>(null)
 
   useEffect(() => {
     loadedGpsRef.current = loadedGps
   }, [loadedGps])
+
+  useEffect(() => {
+    const restored = readTrackAnalysisViewContext(viewContextStorageKey)
+    setAddedSessionIds(new Set(restored.addedSessionIds))
+    setRemovedSessionIds(new Set(restored.removedSessionIds))
+    setLocalAddedTrackIds(new Set(restored.addedTrackIds))
+  }, [viewContextStorageKey])
+
+  useEffect(() => {
+    writeTrackAnalysisViewContext(viewContextStorageKey, {
+      addedSessionIds: Array.from(addedSessionIds),
+      removedSessionIds: Array.from(removedSessionIds),
+      addedTrackIds: Array.from(localAddedTrackIds),
+    })
+  }, [addedSessionIds, localAddedTrackIds, removedSessionIds, viewContextStorageKey])
 
   useEffect(() => {
     setWorkingTracks((current) => {
@@ -225,24 +303,24 @@ export function TrackAnalysisView({
   }, [scopedTracks])
 
   useEffect(() => {
-    const scopedIds = new Set(scopedSessionIds)
-    const previousScopedIds = previousScopedSessionIdsRef.current
+    const viewIds = new Set(viewSessionIds)
+    const previousViewIds = previousViewSessionIdsRef.current
     setActiveSessionIds((current) => {
       const next = new Set<string>()
-      scopedSessionIds.forEach((id) => {
-        if (current.has(id) || !previousScopedIds.has(id)) {
+      viewSessionIds.forEach((id) => {
+        if (current.has(id) || !previousViewIds.has(id)) {
           next.add(id)
         }
       })
       return next
     })
-    previousScopedSessionIdsRef.current = scopedIds
-  }, [scopedSessionIds])
+    previousViewSessionIdsRef.current = viewIds
+  }, [viewSessionIds])
 
   useEffect(() => {
     setGpsSourceBySessionId((current) => {
       const next = { ...current }
-      scopedSessions.forEach((session) => {
+      viewSessions.forEach((session) => {
         const id = sessionRecordId(session)
         if (!next[id] && session.gpsSummary.preferredSourceId) {
           next[id] = session.gpsSummary.preferredSourceId
@@ -250,7 +328,7 @@ export function TrackAnalysisView({
       })
       return next
     })
-  }, [scopedSessions])
+  }, [viewSessions])
 
   useEffect(() => {
     setSelectedWorkingTrackId((current) => {
@@ -261,9 +339,29 @@ export function TrackAnalysisView({
     })
   }, [workingTracks])
 
+  useEffect(() => {
+    const previousWorkingTrackIds = previousWorkingTrackIdsRef.current
+    setActiveTrackIds((current) => {
+      const workingIds = new Set(workingTracks.map((track) => track.workingId))
+      const next = new Set<string>()
+      workingTracks.forEach((track) => {
+        if (current.has(track.workingId) || !previousWorkingTrackIds.has(track.workingId)) {
+          next.add(track.workingId)
+        }
+      })
+      current.forEach((id) => {
+        if (workingIds.has(id)) {
+          next.add(id)
+        }
+      })
+      return next
+    })
+    previousWorkingTrackIdsRef.current = new Set(workingTracks.map((track) => track.workingId))
+  }, [workingTracks])
+
   const activeSessions = useMemo(
-    () => scopedSessions.filter((session) => activeSessionIds.has(sessionRecordId(session))),
-    [activeSessionIds, scopedSessions],
+    () => viewSessions.filter((session) => activeSessionIds.has(sessionRecordId(session))),
+    [activeSessionIds, viewSessions],
   )
 
   useEffect(() => {
@@ -317,14 +415,21 @@ export function TrackAnalysisView({
   }, [activeSessions, dataSource, gpsSourceBySessionId])
 
   const selectedTrack = workingTracks.find((track) => track.workingId === selectedWorkingTrackId) ?? null
+  const selectedTrackVisible = Boolean(selectedTrack && activeTrackIds.has(selectedTrack.workingId))
+  const timingTrack = selectedTrackVisible ? selectedTrack : null
   const draftTrackpoints = selectedTrack?.trackpoints ?? []
+  const timingTrackpoints = timingTrack?.trackpoints ?? []
   const orderedDraftTrackpoints = useMemo(
     () => [...draftTrackpoints].sort((a, b) => a.stationM - b.stationM),
     [draftTrackpoints],
   )
   const validSegmentAliases = useMemo(
-    () => (selectedTrack ? validSegmentAliasesForTrack(selectedTrack) : []),
-    [selectedTrack],
+    () => (timingTrack ? validSegmentAliasesForTrack(timingTrack) : []),
+    [timingTrack],
+  )
+  const visibleTracks = useMemo(
+    () => workingTracks.filter((track) => activeTrackIds.has(track.workingId)),
+    [activeTrackIds, workingTracks],
   )
   const activePointSets: ActiveGpsPointSet[] = activeSessions
     .map((session) => {
@@ -339,10 +444,10 @@ export function TrackAnalysisView({
     path: item.loaded.pointSet.path,
     session: item.session,
   }))
-  const referencePath = selectedTrack?.points.length ? selectedTrack.points : sessionPaths[0]?.path ?? []
+  const referencePath = timingTrack?.points.length ? timingTrack.points : sessionPaths[0]?.path ?? []
   const lapTimingRows = useMemo(
-    () => buildLapTimingRows(activePointSets, referencePath, draftTrackpoints, validSegmentAliases),
-    [activePointSets, draftTrackpoints, referencePath, validSegmentAliases],
+    () => buildLapTimingRows(activePointSets, referencePath, timingTrackpoints, validSegmentAliases),
+    [activePointSets, timingTrackpoints, referencePath, validSegmentAliases],
   )
   const trackAltitudeSamples = useMemo(
     () => (selectedTrack ? altitudeSamplesForTrack(selectedTrack) : []),
@@ -360,11 +465,97 @@ export function TrackAnalysisView({
         ? `${activePointSets[0].session.name} session altitude`
         : 'No altitude'
   const mapStatus = activePointSets.length
-    ? `${activePointSets.length} session path(s) / ${draftTrackpoints.length} draft point(s) / ${validSegmentAliases.length} segment label(s)`
+    ? `${activePointSets.length} session path(s) / ${visibleTracks.length} visible track(s) / ${timingTrackpoints.length} focused point(s)`
     : 'No active GPS paths loaded'
   const dirtyTrackCount = workingTracks.filter((track) => track.dirty).length
-  const canPersistTrack = Boolean(canWrite && dataSource.saveTrack && selectedTrack && referencePath.length >= 2 && selectedTrack.name.trim())
-  const canSaveAllTracks = Boolean(canWrite && dataSource.saveTrack && dirtyTrackCount > 0)
+
+  function addSessionsToView(sessionsToAdd: SessionRecord[]) {
+    if (!sessionsToAdd.length) {
+      return
+    }
+    const ids = sessionsToAdd.map((session) => sessionRecordId(session))
+    setAddedSessionIds((current) => {
+      const next = new Set(current)
+      ids.forEach((id) => next.add(id))
+      return next
+    })
+    setRemovedSessionIds((current) => {
+      const next = new Set(current)
+      ids.forEach((id) => next.delete(id))
+      return next
+    })
+    setActiveSessionIds((current) => {
+      const next = new Set(current)
+      ids.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
+  function addTracksToView(tracksToAdd: TrackRecord[]) {
+    if (!tracksToAdd.length) {
+      return
+    }
+    setLocalAddedTrackIds((current) => {
+      const next = new Set(current)
+      tracksToAdd.forEach((track) => next.add(track.id))
+      return next
+    })
+    setSelectedWorkingTrackId((current) => current || (tracksToAdd[0] ? `saved:${tracksToAdd[0].id}` : ''))
+    setActiveTrackIds((current) => {
+      const next = new Set(current)
+      tracksToAdd.forEach((track) => next.add(`saved:${track.id}`))
+      return next
+    })
+  }
+
+  function removeLocalTrackFromView(trackId: string) {
+    const workingTrack = workingTracks.find((track) => track.persistedId === trackId)
+    if (workingTrack?.dirty && !window.confirm(`Remove "${workingTrack.name}" from this view and discard unsaved edits?`)) {
+      return
+    }
+    setLocalAddedTrackIds((current) => {
+      const next = new Set(current)
+      next.delete(trackId)
+      return next
+    })
+    setLocalTracks((current) => current.filter((track) => track.id !== trackId))
+    if (workingTrack) {
+      setActiveTrackIds((current) => {
+        const next = new Set(current)
+        next.delete(workingTrack.workingId)
+        return next
+      })
+    }
+    setSelectedWorkingTrackId((current) => {
+      if (workingTrack?.workingId !== current) {
+        return current
+      }
+      return workingTracks.find((track) => track.workingId !== current)?.workingId ?? ''
+    })
+  }
+
+  function removeSessionFromView(session: SessionRecord) {
+    const id = sessionRecordId(session)
+    setAddedSessionIds((current) => {
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+    setRemovedSessionIds((current) => {
+      const next = new Set(current)
+      if (scopedSessionIdSet.has(id)) {
+        next.add(id)
+      } else {
+        next.delete(id)
+      }
+      return next
+    })
+    setActiveSessionIds((current) => {
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+  }
 
   function toggleSession(session: SessionRecord) {
     const id = sessionRecordId(session)
@@ -374,6 +565,18 @@ export function TrackAnalysisView({
         next.delete(id)
       } else {
         next.add(id)
+      }
+      return next
+    })
+  }
+
+  function toggleTrackVisibility(workingId: string) {
+    setActiveTrackIds((current) => {
+      const next = new Set(current)
+      if (next.has(workingId)) {
+        next.delete(workingId)
+      } else {
+        next.add(workingId)
       }
       return next
     })
@@ -396,7 +599,7 @@ export function TrackAnalysisView({
   }
 
   const addDraftTrackpoint = useCallback((position: [number, number]) => {
-    const targetTrack = selectedTrack
+    const targetTrack = selectedTrackVisible ? selectedTrack : null
     if (!targetTrack) {
       const scratchTrack = scratchTrackFromNearestPath(position, sessionPaths, workingTracks, studySet)
       if (!scratchTrack) {
@@ -417,7 +620,7 @@ export function TrackAnalysisView({
         trackpoints: [...track.trackpoints, draftTrackpointFromSnap(snapped, nextIndex)],
       }
     })
-  }, [selectedTrack, sessionPaths, studySet, workingTracks])
+  }, [selectedTrack, selectedTrackVisible, sessionPaths, studySet, workingTracks])
 
   function removeDraftTrackpoint(trackpointId: string) {
     if (!selectedTrack) {
@@ -486,6 +689,11 @@ export function TrackAnalysisView({
     setWorkingTracks((current) => {
       const next = current.filter((track) => track.workingId !== workingId)
       setSelectedWorkingTrackId((selected) => (selected === workingId ? next[0]?.workingId ?? '' : selected))
+      return next
+    })
+    setActiveTrackIds((current) => {
+      const next = new Set(current)
+      next.delete(workingId)
       return next
     })
   }
@@ -562,10 +770,37 @@ export function TrackAnalysisView({
     }
   }
 
-  async function saveAllTracks() {
-    for (const track of workingTracks.filter((item) => item.dirty)) {
-      await saveTrackEdits(track.workingId)
+  function canPersistWorkingTrack(track: WorkingTrack) {
+    return Boolean(canWrite && dataSource.saveTrack && track.dirty && track.points.length >= 2 && track.name.trim())
+  }
+
+  function discardWorkingTrack(workingId: string) {
+    const trackToDiscard = workingTracks.find((track) => track.workingId === workingId)
+    if (!trackToDiscard) {
+      return
     }
+    const label = trackToDiscard.persistedId
+      ? `Discard unsaved edits to "${trackToDiscard.name}"?`
+      : `Discard scratch track "${trackToDiscard.name}"?`
+    if (!window.confirm(label)) {
+      return
+    }
+    if (!trackToDiscard.persistedId) {
+      removeWorkingTrack(workingId)
+      return
+    }
+    const saved = scopedTracks.find((track) => track.id === trackToDiscard.persistedId)
+    if (!saved) {
+      setTrackStatus(workingId, 'Could not find the saved track to restore.')
+      return
+    }
+    setWorkingTracks((current) =>
+      current.map((track) =>
+        track.workingId === workingId
+          ? { ...workingTrackFromRecord(saved, track), workingId: track.workingId, status: 'Discarded unsaved changes.' }
+          : track,
+      ),
+    )
   }
 
   async function deleteWorkingTrack(workingId: string) {
@@ -673,21 +908,49 @@ export function TrackAnalysisView({
             <section className="track-analysis-control-card">
               <TrackPanelTitle
                 title="Sessions"
-                meta={`${activeSessionIds.size} active / ${scopedSessions.length} available`}
+                meta={`${activeSessionIds.size} active / ${viewSessions.length} in view${addedSessions.length ? ` / ${addedSessions.length} added` : ''}`}
                 info="Groups in the launch scope are accepted but ignored in this first track-analysis slice."
+                action={
+                  <button
+                    type="button"
+                    className="track-analysis-panel-toggle"
+                    onClick={() => setFindSessionsOpen(true)}
+                    title="Find sessions to add to this analysis view"
+                  >
+                    <Plus size={14} />
+                  </button>
+                }
               />
               <div className="track-analysis-session-list">
-                {scopedSessions.map((session) => {
+                {viewSessions.map((session) => {
                   const id = sessionRecordId(session)
                   const gpsQuality = session.gpsSummary.quality
                   const sources = session.gpsSummary.sources ?? []
+                  const addedOnly = addedSessionIds.has(id) && !scopedSessionIdSet.has(id)
                   return (
-                    <label key={id} className="track-analysis-session-row">
-                      <input checked={activeSessionIds.has(id)} type="checkbox" onChange={() => toggleSession(session)} />
+                    <div key={id} className={`track-analysis-session-row ${addedOnly ? 'added' : 'scoped'}`}>
+                      <input
+                        aria-label={`Toggle ${session.name}`}
+                        checked={activeSessionIds.has(id)}
+                        type="checkbox"
+                        onChange={() => toggleSession(session)}
+                      />
                       <span>
                         <strong>{session.name}</strong>
-                        <small>{gpsQuality === 'usable' ? 'usable GPS' : `${gpsQuality || 'unknown'} GPS`}</small>
+                        <small>
+                          {gpsQuality === 'usable' ? 'usable GPS' : `${gpsQuality || 'unknown'} GPS`}
+                          {addedOnly ? ' - added to view' : ''}
+                        </small>
                       </span>
+                      <button
+                        type="button"
+                        className="icon-only small"
+                        onClick={() => removeSessionFromView(session)}
+                        title="Remove from this analysis view"
+                        aria-label={`Remove ${session.name} from this analysis view`}
+                      >
+                        <X size={13} />
+                      </button>
                       {sources.length > 1 && (
                         <select
                           value={gpsSourceBySessionId[id] ?? session.gpsSummary.preferredSourceId ?? sources[0]?.sourceId ?? ''}
@@ -702,7 +965,7 @@ export function TrackAnalysisView({
                           ))}
                         </select>
                       )}
-                    </label>
+                    </div>
                   )
                 })}
               </div>
@@ -711,26 +974,138 @@ export function TrackAnalysisView({
             <section className="track-analysis-control-card">
               <TrackPanelTitle
                 title="Tracks"
-                meta={`${workingTracks.length} in scope / ${dirtyTrackCount} unsaved`}
+                meta={`${activeTrackIds.size} visible / ${workingTracks.length} in scope / ${dirtyTrackCount} unsaved`}
                 info="Scratch tracks are temporary working copies created from session GPS. Save them to make root-scoped reusable tracks."
+                action={
+                  <button
+                    type="button"
+                    className="track-analysis-panel-toggle"
+                    onClick={() => setFindTracksOpen(true)}
+                    title="Find tracks to add to this analysis view"
+                  >
+                    <Plus size={14} />
+                  </button>
+                }
               />
               {workingTracks.length ? (
                 <div className="track-analysis-track-list">
                   {workingTracks.map((track) => (
-                    <button
+                    <div
                       key={track.workingId}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       className={`track-analysis-track-row ${track.workingId === selectedWorkingTrackId ? 'selected' : ''} ${track.dirty ? 'dirty' : 'clean'}`}
                       onClick={() => setSelectedWorkingTrackId(track.workingId)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedWorkingTrackId(track.workingId)
+                        }
+                      }}
                     >
+                      <input
+                        aria-label={`Toggle ${track.name || 'Unnamed track'}`}
+                        checked={activeTrackIds.has(track.workingId)}
+                        type="checkbox"
+                        onChange={(event) => {
+                          event.stopPropagation()
+                          toggleTrackVisibility(track.workingId)
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                      />
                       <span>
                         <strong>{track.name || 'Unnamed track'}</strong>
                         <small>
-                          {track.persistedId ? 'saved track' : 'scratch track'} · {track.trackpoints.length} point(s)
+                          {track.persistedId && localAddedTrackIds.has(track.persistedId) && !studySet.trackIds.includes(track.persistedId)
+                            ? 'added track'
+                            : track.persistedId
+                              ? 'saved track'
+                              : 'scratch track'} - {track.trackpoints.length} point(s)
                         </small>
                       </span>
-                      <em>{track.dirty ? 'unsaved' : 'saved'}</em>
-                    </button>
+                      {track.status && <small className="track-analysis-row-status">{track.status}</small>}
+                      <div className="track-analysis-track-actions">
+                        <em>{track.dirty ? 'unsaved' : 'saved'}</em>
+                        {track.dirty && (
+                          <>
+                            <button
+                              type="button"
+                              className="icon-only small track-analysis-row-save"
+                              disabled={!canPersistWorkingTrack(track) || track.saving}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void saveTrackEdits(track.workingId)
+                              }}
+                              aria-label={track.persistedId ? `Save ${track.name}` : `Create ${track.name}`}
+                              title={track.persistedId ? 'Save track' : 'Create track'}
+                            >
+                              <Save size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              className={`icon-only small ${track.persistedId ? '' : 'danger-icon'}`}
+                              disabled={track.saving}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                discardWorkingTrack(track.workingId)
+                              }}
+                              aria-label={`Discard ${track.name}`}
+                              title={track.persistedId ? 'Discard changes' : 'Discard scratch track'}
+                            >
+                              {track.persistedId ? <RotateCcw size={13} /> : <Trash2 size={13} />}
+                            </button>
+                          </>
+                        )}
+                        {!track.dirty &&
+                          track.persistedId &&
+                          localAddedTrackIds.has(track.persistedId) &&
+                          !studySet.trackIds.includes(track.persistedId) && (
+                            <button
+                              type="button"
+                              className="icon-only small"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                removeLocalTrackFromView(track.persistedId as string)
+                              }}
+                              aria-label={`Remove ${track.name} from view`}
+                              title="Remove from view"
+                            >
+                              <X size={13} />
+                            </button>
+                          )}
+                        {!track.dirty &&
+                          track.persistedId &&
+                          (!localAddedTrackIds.has(track.persistedId) || studySet.trackIds.includes(track.persistedId)) && (
+                            <button
+                              type="button"
+                              className="icon-only small danger-icon"
+                              disabled={track.deleting}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void deleteWorkingTrack(track.workingId)
+                              }}
+                              aria-label={`Delete ${track.name}`}
+                              title="Delete saved track"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        {!track.dirty && !track.persistedId && (
+                          <button
+                            type="button"
+                            className="icon-only small danger-icon"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              discardWorkingTrack(track.workingId)
+                            }}
+                            aria-label={`Discard ${track.name}`}
+                            title="Discard scratch track"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   ))}
                 </div>
               ) : (
@@ -798,35 +1173,6 @@ export function TrackAnalysisView({
                   <p className="track-analysis-muted">Select a track, or click near a GPS path to create a scratch track.</p>
                 )}
               </div>
-              <div className="track-analysis-save-row">
-                <button
-                  className="primary-action compact"
-                  disabled={!canPersistTrack || selectedTrack?.saving}
-                  onClick={() => void saveTrackEdits()}
-                  type="button"
-                >
-                  {selectedTrack?.saving ? 'Saving...' : selectedTrack?.persistedId ? 'Save track' : 'Create track'}
-                </button>
-                <button
-                  className="secondary-action compact"
-                  disabled={!canSaveAllTracks}
-                  onClick={() => void saveAllTracks()}
-                  type="button"
-                >
-                  Save all
-                </button>
-                {selectedTrack && (
-                  <button
-                    className="danger-action compact"
-                    disabled={selectedTrack.deleting}
-                    onClick={() => void deleteWorkingTrack(selectedTrack.workingId)}
-                    type="button"
-                  >
-                    {selectedTrack.deleting ? 'Deleting...' : 'Delete'}
-                  </button>
-                )}
-                {selectedTrack?.status && <span>{selectedTrack.status}</span>}
-              </div>
             </section>
           </div>
         )}
@@ -841,9 +1187,9 @@ export function TrackAnalysisView({
           />
           <TrackAnalysisMap
             sessionPaths={sessionPaths}
-            referencePath={referencePath}
-            referenceTrackDirty={Boolean(selectedTrack?.dirty)}
-            draftTrackpoints={draftTrackpoints}
+            visibleTracks={visibleTracks}
+            focusedTrackId={timingTrack?.workingId ?? ''}
+            draftTrackpoints={timingTrackpoints}
             segmentAliases={validSegmentAliases}
             hideSegmentNames={hideSegmentNames}
             onCreateTrackpoint={addDraftTrackpoint}
@@ -851,14 +1197,28 @@ export function TrackAnalysisView({
             onAdjustCutline={adjustDraftCutline}
             onDeleteTrackpoint={removeDraftTrackpoint}
             onTrackpointDragEnd={sortSelectedTrackpointsByStation}
+            onViewportBoundsChanged={setMapViewportBounds}
           />
         </section>
 
         <section className={`track-analysis-bottom ${lapTimingExpanded ? 'lap-expanded' : ''}`}>
           {!lapTimingExpanded && (
             <div className="track-analysis-lower-card">
-              <TrackPanelTitle title="Altitude profile" meta={altitudeMeta} />
-              <AltitudeChart samples={altitudeSamples} />
+              <TrackPanelTitle
+                title="Altitude profile"
+                meta={altitudeMeta}
+                action={
+                  <button
+                    type="button"
+                    className="track-analysis-panel-toggle"
+                    onClick={() => setLapTimingExpanded(true)}
+                    title="Collapse altitude profile"
+                  >
+                    <ChevronLeft size={14} />
+                  </button>
+                }
+              />
+              <AltitudeChart samples={altitudeSamples} trackpoints={timingTrackpoints} />
             </div>
           )}
           {lapTimingExpanded && (
@@ -876,25 +1236,897 @@ export function TrackAnalysisView({
             <TrackPanelTitle
               title="Lap timing"
               meta={lapTimingRows.length ? `${lapTimingRows.length} timing row(s)` : 'No sectors'}
-              action={
-                <button
-                  type="button"
-                  className="track-analysis-title-button"
-                  onClick={() => setLapTimingExpanded((current) => !current)}
-                  title={lapTimingExpanded ? 'Show altitude profile' : 'Expand lap timing'}
-                >
-                  <ChevronLeft size={14} />
-                  <span>{lapTimingExpanded ? 'Collapse' : 'Expand'}</span>
-                </button>
-              }
             />
             <LapTimingTable activePointSets={activePointSets} rows={lapTimingRows} trackpointCount={draftTrackpoints.length} />
           </div>
         </section>
       </section>
+      {findSessionsOpen && (
+        <TrackAnalysisFindSessionsModal
+          dataSource={dataSource}
+          sessions={sessions}
+          tracks={tracks}
+          viewSessionIds={new Set(viewSessionIds)}
+          initialTrackId={selectedTrack?.persistedId ?? savedScopedTracks[0]?.id ?? tracks[0]?.id ?? ''}
+          onAddSessions={addSessionsToView}
+          onClose={() => setFindSessionsOpen(false)}
+        />
+      )}
+      {findTracksOpen && (
+        <TrackAnalysisFindTracksModal
+          tracks={tracks}
+          viewTrackIds={new Set(scopedTracks.map((track) => track.id))}
+          viewportBounds={mapViewportBounds}
+          onAddTracks={addTracksToView}
+          onClose={() => setFindTracksOpen(false)}
+        />
+      )}
     </div>
   )
 }
+
+function TrackAnalysisFindSessionsModal({
+  dataSource,
+  sessions,
+  tracks,
+  viewSessionIds,
+  initialTrackId,
+  onAddSessions,
+  onClose,
+}: {
+  dataSource: LibraryDataSource
+  sessions: SessionRecord[]
+  tracks: TrackRecord[]
+  viewSessionIds: Set<string>
+  initialTrackId: string
+  onAddSessions: (sessions: SessionRecord[]) => void
+  onClose: () => void
+}) {
+  const queryableTracks = useMemo(() => tracks.filter((track) => track.trackpoints.length > 0), [tracks])
+  const initialQueryableTrackId = queryableTracks.some((track) => track.id === initialTrackId)
+    ? initialTrackId
+    : queryableTracks[0]?.id ?? ''
+  const [trackId, setTrackId] = useState(initialQueryableTrackId)
+  const selectedTrack = queryableTracks.find((track) => track.id === trackId) ?? null
+  const [selectedTrackpointIds, setSelectedTrackpointIds] = useState<string[]>(
+    () => selectedTrack?.trackpoints.map((trackpoint) => trackpoint.id) ?? [],
+  )
+  const [matchMode, setMatchMode] = useState<TrackpointMatchMode>('all')
+  const [minCount, setMinCount] = useState(2)
+  const [toleranceM, setToleranceM] = useState(10)
+  const [query, setQuery] = useState<TrackpointMatchQueryRecord | null>(null)
+  const [results, setResults] = useState<TrackpointMatchQueryResult[]>([])
+  const [selectedResultIds, setSelectedResultIds] = useState<Set<string>>(() => new Set())
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    setSelectedTrackpointIds(selectedTrack?.trackpoints.map((trackpoint) => trackpoint.id) ?? [])
+    setResults([])
+    setSelectedResultIds(new Set())
+    setQuery(null)
+    setMessage('')
+  }, [selectedTrack])
+
+  const selectedTrackpointIdSet = useMemo(() => new Set(selectedTrackpointIds), [selectedTrackpointIds])
+  const canRunQuery = Boolean(
+    selectedTrack &&
+      selectedTrackpointIds.length > 0 &&
+      dataSource.createTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQueryResults,
+  )
+  const effectiveMinCount = Math.max(1, Math.min(minCount, selectedTrackpointIds.length || 1))
+
+  async function runQuery() {
+    const createQuery = dataSource.createTrackpointMatchQuery?.bind(dataSource)
+    const loadQuery = dataSource.loadTrackpointMatchQuery?.bind(dataSource)
+    const loadResults = dataSource.loadTrackpointMatchQueryResults?.bind(dataSource)
+    if (!selectedTrack || !createQuery || !loadQuery || !loadResults || !canRunQuery) {
+      setMessage('Select a track with at least one trackpoint. The current data source must support trackpoint queries.')
+      return
+    }
+    setBusy(true)
+    setResults([])
+    setSelectedResultIds(new Set())
+    setMessage(`Searching for sessions matching ${selectedTrack.name}...`)
+    try {
+      let currentQuery: TrackpointMatchQueryRecord = await createQuery({
+        trackId: selectedTrack.id,
+        trackpointIds: selectedTrackpointIds,
+        matchMode,
+        minCount: matchMode === 'min_count' ? effectiveMinCount : undefined,
+        toleranceM,
+        scope: {
+          libraryIds: uniqueStrings(sessions.map((session) => session.libraryId)),
+        },
+        persist: true,
+      })
+      if (mountedRef.current) {
+        setQuery(currentQuery)
+      }
+      while (isActiveTrackpointQuery(currentQuery)) {
+        await delay(300)
+        currentQuery = await loadQuery(currentQuery.queryId)
+        if (mountedRef.current) {
+          setQuery(currentQuery)
+        }
+      }
+      if (currentQuery.status !== 'completed') {
+        if (mountedRef.current) {
+          setMessage(currentQuery.error || `Trackpoint query is ${currentQuery.status}.`)
+        }
+        return
+      }
+      const loadedResults = await loadAllTrackpointQueryResults(loadResults, currentQuery.queryId)
+      const addableIds = loadedResults
+        .map((result) => sessionRefId(result.sessionRef))
+        .filter((id) => !viewSessionIds.has(id) && sessionByRefId(id, sessions))
+      if (mountedRef.current) {
+        setResults(loadedResults)
+        setSelectedResultIds(new Set(addableIds))
+        setMessage(`Found ${loadedResults.length} matching session(s). ${addableIds.length} can be added to this view.`)
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setMessage(error instanceof Error ? error.message : 'Trackpoint query failed.')
+      }
+    } finally {
+      if (mountedRef.current) {
+        setBusy(false)
+      }
+    }
+  }
+
+  async function cancelQuery() {
+    if (!query || !dataSource.cancelTrackpointMatchQuery || !isActiveTrackpointQuery(query)) {
+      return
+    }
+    setBusy(true)
+    try {
+      const cancelled = await dataSource.cancelTrackpointMatchQuery(query.queryId)
+      setQuery(cancelled)
+      setMessage(`Trackpoint query ${cancelled.status}.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not cancel trackpoint query.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function toggleResult(result: TrackpointMatchQueryResult) {
+    const id = sessionRefId(result.sessionRef)
+    if (viewSessionIds.has(id) || !sessionByRefId(id, sessions)) {
+      return
+    }
+    setSelectedResultIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  function addSelectedResults() {
+    const selectedSessions = Array.from(selectedResultIds)
+      .map((id) => sessionByRefId(id, sessions))
+      .filter(isSessionRecord)
+    onAddSessions(selectedSessions)
+    onClose()
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal track-analysis-add-modal" role="dialog" aria-modal="true" aria-label="Find sessions for analysis view">
+        <div className="modal-header">
+          <div>
+            <h2>Find sessions</h2>
+            <p>Find sessions that fit a selected track. Added sessions only affect this analysis view.</p>
+          </div>
+          <button className="icon-only" type="button" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="track-analysis-add-grid track-analysis-add-grid-single">
+          <section className="track-analysis-add-card">
+            <h3>Trackpoint query</h3>
+            {queryableTracks.length ? (
+              <>
+                <label className="track-analysis-field">
+                  <span>Track</span>
+                  <select value={trackId} onChange={(event) => setTrackId(event.target.value)}>
+                    {queryableTracks.map((track) => (
+                      <option key={track.id} value={track.id}>
+                        {track.name} ({track.trackpoints.length} point{track.trackpoints.length === 1 ? '' : 's'})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="track-analysis-add-trackpoints">
+                  {selectedTrack?.trackpoints.map((trackpoint) => (
+                    <label key={trackpoint.id}>
+                      <input
+                        checked={selectedTrackpointIdSet.has(trackpoint.id)}
+                        type="checkbox"
+                        onChange={(event) => {
+                          setSelectedTrackpointIds((current) =>
+                            event.target.checked
+                              ? [...current, trackpoint.id]
+                              : current.filter((id) => id !== trackpoint.id),
+                          )
+                        }}
+                      />
+                      <span>{trackpoint.name || trackpoint.id}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="track-analysis-add-controls">
+                  <label className="track-analysis-field">
+                    <span>Fit mode</span>
+                    <select value={matchMode} onChange={(event) => setMatchMode(event.target.value as TrackpointMatchMode)}>
+                      <option value="all">All selected points</option>
+                      <option value="min_count">Minimum count</option>
+                      <option value="any">Any selected point</option>
+                    </select>
+                  </label>
+                  {matchMode === 'min_count' && (
+                    <label className="track-analysis-field">
+                      <span>Minimum</span>
+                      <input
+                        min={1}
+                        max={Math.max(1, selectedTrackpointIds.length)}
+                        type="number"
+                        value={effectiveMinCount}
+                        onChange={(event) => setMinCount(Number(event.target.value) || 1)}
+                      />
+                    </label>
+                  )}
+                  <label className="track-analysis-field">
+                    <span>Tolerance (m)</span>
+                    <input
+                      min={1}
+                      step={1}
+                      type="number"
+                      value={toleranceM}
+                      onChange={(event) => setToleranceM(Math.max(1, Number(event.target.value) || 1))}
+                    />
+                  </label>
+                </div>
+                <div className="track-analysis-add-actions">
+                  <button className="primary-action compact" type="button" disabled={!canRunQuery || busy} onClick={() => void runQuery()}>
+                    {busy && isActiveTrackpointQuery(query) ? 'Searching...' : 'Find sessions'}
+                  </button>
+                  <button
+                    className="secondary-action compact"
+                    type="button"
+                    disabled={!query || !isActiveTrackpointQuery(query) || !dataSource.cancelTrackpointMatchQuery}
+                    onClick={() => void cancelQuery()}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="track-analysis-muted">No saved tracks with trackpoints are available for matching.</p>
+            )}
+            {query && (
+              <p className="track-analysis-muted">
+                {query.status}: {query.processedSessionCount} / {query.candidateSessionCount} processed, {query.matchedSessionCount} matched.
+              </p>
+            )}
+            {message && <p className="track-analysis-muted">{message}</p>}
+          </section>
+
+          <section className="track-analysis-add-card">
+            <h3>Matching sessions</h3>
+            {results.length ? (
+              <div className="track-analysis-add-results">
+                {results.map((result) => {
+                  const id = sessionRefId(result.sessionRef)
+                  const session = sessionByRefId(id, sessions)
+                  const alreadyInView = viewSessionIds.has(id)
+                  const disabled = !session || alreadyInView
+                  return (
+                    <label key={`${id}-${result.trackMatchId}`} className={`track-analysis-add-result ${disabled ? 'disabled' : ''}`}>
+                      <input
+                        checked={selectedResultIds.has(id)}
+                        disabled={disabled}
+                        type="checkbox"
+                        onChange={() => toggleResult(result)}
+                      />
+                      <span>
+                        <strong>{session?.name ?? id}</strong>
+                        <small>
+                          {result.matchedTrackpointIds.length} matched / {result.missingTrackpointIds.length} missing
+                          {alreadyInView ? ' - already in view' : ''}
+                          {!session ? ' - unavailable in current catalog' : ''}
+                        </small>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="track-analysis-placeholder">
+                <MapIcon size={22} />
+                <p>Run a trackpoint query to find sessions.</p>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose}>
+            Close
+          </button>
+          <button className="primary-action" type="button" disabled={!selectedResultIds.size} onClick={addSelectedResults}>
+            Add {selectedResultIds.size || ''} session{selectedResultIds.size === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TrackAnalysisFindTracksModal({
+  tracks,
+  viewTrackIds,
+  viewportBounds,
+  onAddTracks,
+  onClose,
+}: {
+  tracks: TrackRecord[]
+  viewTrackIds: Set<string>
+  viewportBounds: LonLatBounds | null
+  onAddTracks: (tracks: TrackRecord[]) => void
+  onClose: () => void
+}) {
+  const [trackResults, setTrackResults] = useState<TrackRecord[]>([])
+  const [selectedTrackResultIds, setSelectedTrackResultIds] = useState<Set<string>>(() => new Set())
+  const [modalViewportBounds, setModalViewportBounds] = useState<LonLatBounds | null>(viewportBounds)
+  const [message, setMessage] = useState('')
+
+  function findTracksInViewport() {
+    if (!modalViewportBounds) {
+      setMessage('The modal map viewport is not available yet. Pan or zoom the map, then try again.')
+      setTrackResults([])
+      setSelectedTrackResultIds(new Set())
+      return
+    }
+    const matchingTracks = tracks.filter((track) => trackIntersectsBounds(track, modalViewportBounds))
+    const addableTracks = matchingTracks.filter((track) => !viewTrackIds.has(track.id))
+    setTrackResults(matchingTracks)
+    setSelectedTrackResultIds(new Set(addableTracks.map((track) => track.id)))
+    setMessage(`Found ${matchingTracks.length} track(s) in the current map view. ${addableTracks.length} can be added.`)
+  }
+
+  function toggleTrackResult(track: TrackRecord) {
+    if (viewTrackIds.has(track.id)) {
+      return
+    }
+    setSelectedTrackResultIds((current) => {
+      const next = new Set(current)
+      if (next.has(track.id)) {
+        next.delete(track.id)
+      } else {
+        next.add(track.id)
+      }
+      return next
+    })
+  }
+
+  function addSelectedTracks() {
+    const selectedTracks = tracks.filter((track) => selectedTrackResultIds.has(track.id))
+    onAddTracks(selectedTracks)
+    onClose()
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal track-analysis-add-modal" role="dialog" aria-modal="true" aria-label="Find tracks for analysis view">
+        <div className="modal-header">
+          <div>
+            <h2>Find tracks</h2>
+            <p>Find saved tracks whose geometry overlaps the map viewport. Added tracks only affect this analysis view.</p>
+          </div>
+          <button className="icon-only" type="button" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+
+        <TrackAnalysisAddViewportMap
+          initialBounds={viewportBounds}
+          tracks={trackResults}
+          selectedTrackIds={selectedTrackResultIds}
+          onViewportBoundsChanged={setModalViewportBounds}
+        />
+
+        <div className="track-analysis-add-grid track-analysis-add-grid-single">
+          <section className="track-analysis-add-card">
+            <h3>Tracks in map view</h3>
+            <p className="track-analysis-muted">
+              Pan or zoom the map above, then search for saved tracks that overlap its visible area.
+            </p>
+            <div className="track-analysis-add-actions">
+              <button className="primary-action compact" type="button" onClick={findTracksInViewport}>
+                Find tracks
+              </button>
+            </div>
+            {message && <p className="track-analysis-muted">{message}</p>}
+            {trackResults.length ? (
+              <div className="track-analysis-add-results">
+                {trackResults.map((track) => {
+                  const alreadyInView = viewTrackIds.has(track.id)
+                  return (
+                    <label key={track.id} className={`track-analysis-add-result ${alreadyInView ? 'disabled' : ''}`}>
+                      <input
+                        checked={selectedTrackResultIds.has(track.id)}
+                        disabled={alreadyInView}
+                        type="checkbox"
+                        onChange={() => toggleTrackResult(track)}
+                      />
+                      <span>
+                        <strong>{track.name}</strong>
+                        <small>
+                          {track.trackpoints.length} point(s), {formatDistance(track.lengthM)}
+                          {alreadyInView ? ' - already in view' : ''}
+                        </small>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="track-analysis-placeholder">
+                <MapIcon size={22} />
+                <p>No track search results yet.</p>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose}>
+            Close
+          </button>
+          <button className="primary-action" type="button" disabled={!selectedTrackResultIds.size} onClick={addSelectedTracks}>
+            Add {selectedTrackResultIds.size || ''} track{selectedTrackResultIds.size === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TrackAnalysisAddToViewModal({
+  dataSource,
+  sessions,
+  tracks,
+  viewSessionIds,
+  viewTrackIds,
+  viewportBounds,
+  initialTrackId,
+  onAddSessions,
+  onAddTracks,
+  onClose,
+}: {
+  dataSource: LibraryDataSource
+  sessions: SessionRecord[]
+  tracks: TrackRecord[]
+  viewSessionIds: Set<string>
+  viewTrackIds: Set<string>
+  viewportBounds: LonLatBounds | null
+  initialTrackId: string
+  onAddSessions: (sessions: SessionRecord[]) => void
+  onAddTracks: (tracks: TrackRecord[]) => void
+  onClose: () => void
+}) {
+  const queryableTracks = useMemo(() => tracks.filter((track) => track.trackpoints.length > 0), [tracks])
+  const initialQueryableTrackId = queryableTracks.some((track) => track.id === initialTrackId)
+    ? initialTrackId
+    : queryableTracks[0]?.id ?? ''
+  const [trackId, setTrackId] = useState(initialQueryableTrackId)
+  const selectedTrack = queryableTracks.find((track) => track.id === trackId) ?? null
+  const [selectedTrackpointIds, setSelectedTrackpointIds] = useState<string[]>(
+    () => selectedTrack?.trackpoints.map((trackpoint) => trackpoint.id) ?? [],
+  )
+  const [matchMode, setMatchMode] = useState<TrackpointMatchMode>('all')
+  const [minCount, setMinCount] = useState(2)
+  const [toleranceM, setToleranceM] = useState(10)
+  const [query, setQuery] = useState<TrackpointMatchQueryRecord | null>(null)
+  const [results, setResults] = useState<TrackpointMatchQueryResult[]>([])
+  const [selectedResultIds, setSelectedResultIds] = useState<Set<string>>(() => new Set())
+  const [trackResults, setTrackResults] = useState<TrackRecord[]>([])
+  const [selectedTrackResultIds, setSelectedTrackResultIds] = useState<Set<string>>(() => new Set())
+  const [modalViewportBounds, setModalViewportBounds] = useState<LonLatBounds | null>(viewportBounds)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [trackSearchMessage, setTrackSearchMessage] = useState('')
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    setSelectedTrackpointIds(selectedTrack?.trackpoints.map((trackpoint) => trackpoint.id) ?? [])
+    setResults([])
+    setSelectedResultIds(new Set())
+    setQuery(null)
+    setMessage('')
+  }, [selectedTrack])
+
+  const selectedTrackpointIdSet = useMemo(() => new Set(selectedTrackpointIds), [selectedTrackpointIds])
+  const canRunQuery = Boolean(
+    selectedTrack &&
+      selectedTrackpointIds.length > 0 &&
+      dataSource.createTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQuery &&
+      dataSource.loadTrackpointMatchQueryResults,
+  )
+  const effectiveMinCount = Math.max(1, Math.min(minCount, selectedTrackpointIds.length || 1))
+
+  async function runQuery() {
+    const createQuery = dataSource.createTrackpointMatchQuery?.bind(dataSource)
+    const loadQuery = dataSource.loadTrackpointMatchQuery?.bind(dataSource)
+    const loadResults = dataSource.loadTrackpointMatchQueryResults?.bind(dataSource)
+    if (!selectedTrack || !createQuery || !loadQuery || !loadResults || !canRunQuery) {
+      setMessage('Select a track with at least one trackpoint. The current data source must support trackpoint queries.')
+      return
+    }
+    setBusy(true)
+    setResults([])
+    setSelectedResultIds(new Set())
+    setMessage(`Searching for sessions matching ${selectedTrack.name}...`)
+    try {
+      let currentQuery: TrackpointMatchQueryRecord = await createQuery({
+        trackId: selectedTrack.id,
+        trackpointIds: selectedTrackpointIds,
+        matchMode,
+        minCount: matchMode === 'min_count' ? effectiveMinCount : undefined,
+        toleranceM,
+        scope: {
+          libraryIds: uniqueStrings(sessions.map((session) => session.libraryId)),
+        },
+        persist: true,
+      })
+      if (mountedRef.current) {
+        setQuery(currentQuery)
+      }
+      while (isActiveTrackpointQuery(currentQuery)) {
+        await delay(300)
+        const loaded: TrackpointMatchQueryRecord = await loadQuery(currentQuery.queryId)
+        currentQuery = loaded
+        if (mountedRef.current) {
+          setQuery(currentQuery)
+        }
+      }
+      if (currentQuery.status !== 'completed') {
+        if (mountedRef.current) {
+          setMessage(currentQuery.error || `Trackpoint query is ${currentQuery.status}.`)
+        }
+        return
+      }
+      const loadedResults = await loadAllTrackpointQueryResults(loadResults, currentQuery.queryId)
+      const addableIds = loadedResults
+        .map((result) => sessionRefId(result.sessionRef))
+        .filter((id) => !viewSessionIds.has(id) && sessionByRefId(id, sessions))
+      if (mountedRef.current) {
+        setResults(loadedResults)
+        setSelectedResultIds(new Set(addableIds))
+        setMessage(`Found ${loadedResults.length} matching session(s). ${addableIds.length} can be added to this view.`)
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setMessage(error instanceof Error ? error.message : 'Trackpoint query failed.')
+      }
+    } finally {
+      if (mountedRef.current) {
+        setBusy(false)
+      }
+    }
+  }
+
+  async function cancelQuery() {
+    if (!query || !dataSource.cancelTrackpointMatchQuery || !isActiveTrackpointQuery(query)) {
+      return
+    }
+    setBusy(true)
+    try {
+      const cancelled = await dataSource.cancelTrackpointMatchQuery(query.queryId)
+      setQuery(cancelled)
+      setMessage(`Trackpoint query ${cancelled.status}.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not cancel trackpoint query.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function toggleResult(result: TrackpointMatchQueryResult) {
+    const id = sessionRefId(result.sessionRef)
+    if (viewSessionIds.has(id) || !sessionByRefId(id, sessions)) {
+      return
+    }
+    setSelectedResultIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  function addSelectedResults() {
+    const selectedSessions = Array.from(selectedResultIds)
+      .map((id) => sessionByRefId(id, sessions))
+      .filter(isSessionRecord)
+    onAddSessions(selectedSessions)
+    onClose()
+  }
+
+  function findTracksInViewport() {
+    if (!modalViewportBounds) {
+      setTrackSearchMessage('The modal map viewport is not available yet. Pan or zoom the map, then try again.')
+      setTrackResults([])
+      setSelectedTrackResultIds(new Set())
+      return
+    }
+    const matchingTracks = tracks.filter((track) => trackIntersectsBounds(track, modalViewportBounds))
+    const addableTracks = matchingTracks.filter((track) => !viewTrackIds.has(track.id))
+    setTrackResults(matchingTracks)
+    setSelectedTrackResultIds(new Set(addableTracks.map((track) => track.id)))
+    setTrackSearchMessage(`Found ${matchingTracks.length} track(s) in the current map view. ${addableTracks.length} can be added.`)
+  }
+
+  function toggleTrackResult(track: TrackRecord) {
+    if (viewTrackIds.has(track.id)) {
+      return
+    }
+    setSelectedTrackResultIds((current) => {
+      const next = new Set(current)
+      if (next.has(track.id)) {
+        next.delete(track.id)
+      } else {
+        next.add(track.id)
+      }
+      return next
+    })
+  }
+
+  function addSelectedTracks() {
+    const selectedTracks = tracks.filter((track) => selectedTrackResultIds.has(track.id))
+    onAddTracks(selectedTracks)
+    setSelectedTrackResultIds(new Set())
+    setTrackSearchMessage(`Added ${selectedTracks.length} track${selectedTracks.length === 1 ? '' : 's'} to this view.`)
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal track-analysis-add-modal" role="dialog" aria-modal="true" aria-label="Add sessions to analysis view">
+        <div className="modal-header">
+          <div>
+            <h2>Add to view</h2>
+            <p>Find sessions that fit a selected track. Added sessions only affect this analysis view.</p>
+          </div>
+          <button className="icon-only" type="button" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+
+        <TrackAnalysisAddViewportMap
+          initialBounds={viewportBounds}
+          tracks={trackResults.length ? trackResults : selectedTrack ? [selectedTrack] : []}
+          selectedTrackIds={selectedTrackResultIds}
+          onViewportBoundsChanged={setModalViewportBounds}
+        />
+
+        <div className="track-analysis-add-grid">
+          <section className="track-analysis-add-card">
+            <h3>Trackpoint query</h3>
+            {queryableTracks.length ? (
+              <>
+                <label className="track-analysis-field">
+                  <span>Track</span>
+                  <select value={trackId} onChange={(event) => setTrackId(event.target.value)}>
+                    {queryableTracks.map((track) => (
+                      <option key={track.id} value={track.id}>
+                        {track.name} ({track.trackpoints.length} point{track.trackpoints.length === 1 ? '' : 's'})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="track-analysis-add-trackpoints">
+                  {selectedTrack?.trackpoints.map((trackpoint) => (
+                    <label key={trackpoint.id}>
+                      <input
+                        checked={selectedTrackpointIdSet.has(trackpoint.id)}
+                        type="checkbox"
+                        onChange={(event) => {
+                          setSelectedTrackpointIds((current) =>
+                            event.target.checked
+                              ? [...current, trackpoint.id]
+                              : current.filter((id) => id !== trackpoint.id),
+                          )
+                        }}
+                      />
+                      <span>{trackpoint.name || trackpoint.id}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="track-analysis-add-controls">
+                  <label className="track-analysis-field">
+                    <span>Fit mode</span>
+                    <select value={matchMode} onChange={(event) => setMatchMode(event.target.value as TrackpointMatchMode)}>
+                      <option value="all">All selected points</option>
+                      <option value="min_count">Minimum count</option>
+                      <option value="any">Any selected point</option>
+                    </select>
+                  </label>
+                  {matchMode === 'min_count' && (
+                    <label className="track-analysis-field">
+                      <span>Minimum</span>
+                      <input
+                        min={1}
+                        max={Math.max(1, selectedTrackpointIds.length)}
+                        type="number"
+                        value={effectiveMinCount}
+                        onChange={(event) => setMinCount(Number(event.target.value) || 1)}
+                      />
+                    </label>
+                  )}
+                  <label className="track-analysis-field">
+                    <span>Tolerance (m)</span>
+                    <input
+                      min={1}
+                      step={1}
+                      type="number"
+                      value={toleranceM}
+                      onChange={(event) => setToleranceM(Math.max(1, Number(event.target.value) || 1))}
+                    />
+                  </label>
+                </div>
+                <div className="track-analysis-add-actions">
+                  <button className="primary-action compact" type="button" disabled={!canRunQuery || busy} onClick={() => void runQuery()}>
+                    {busy && isActiveTrackpointQuery(query) ? 'Searching...' : 'Find sessions'}
+                  </button>
+                  <button
+                    className="secondary-action compact"
+                    type="button"
+                    disabled={!query || !isActiveTrackpointQuery(query) || !dataSource.cancelTrackpointMatchQuery}
+                    onClick={() => void cancelQuery()}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="track-analysis-muted">No saved tracks with trackpoints are available for matching.</p>
+            )}
+            {query && (
+              <p className="track-analysis-muted">
+                {query.status}: {query.processedSessionCount} / {query.candidateSessionCount} processed, {query.matchedSessionCount} matched.
+              </p>
+            )}
+            {message && <p className="track-analysis-muted">{message}</p>}
+          </section>
+
+          <section className="track-analysis-add-card">
+            <h3>Tracks in map view</h3>
+            <p className="track-analysis-muted">
+              Finds saved tracks whose geometry overlaps the current Track map viewport. Added tracks stay local to this analysis view.
+            </p>
+            <div className="track-analysis-add-actions">
+              <button className="primary-action compact" type="button" onClick={findTracksInViewport}>
+                Find tracks
+              </button>
+              <button
+                className="secondary-action compact"
+                type="button"
+                disabled={!selectedTrackResultIds.size}
+                onClick={addSelectedTracks}
+              >
+                Add selected
+              </button>
+            </div>
+            {trackSearchMessage && <p className="track-analysis-muted">{trackSearchMessage}</p>}
+            {trackResults.length ? (
+              <div className="track-analysis-add-results">
+                {trackResults.map((track) => {
+                  const alreadyInView = viewTrackIds.has(track.id)
+                  return (
+                    <label key={track.id} className={`track-analysis-add-result ${alreadyInView ? 'disabled' : ''}`}>
+                      <input
+                        checked={selectedTrackResultIds.has(track.id)}
+                        disabled={alreadyInView}
+                        type="checkbox"
+                        onChange={() => toggleTrackResult(track)}
+                      />
+                      <span>
+                        <strong>{track.name}</strong>
+                        <small>
+                          {track.trackpoints.length} point(s), {formatDistance(track.lengthM)}
+                          {alreadyInView ? ' · already in view' : ''}
+                        </small>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="track-analysis-muted">No track search results yet.</p>
+            )}
+          </section>
+
+          <section className="track-analysis-add-card">
+            <h3>Matching sessions</h3>
+            {results.length ? (
+              <div className="track-analysis-add-results">
+                {results.map((result) => {
+                  const id = sessionRefId(result.sessionRef)
+                  const session = sessionByRefId(id, sessions)
+                  const alreadyInView = viewSessionIds.has(id)
+                  const disabled = !session || alreadyInView
+                  return (
+                    <label key={`${id}-${result.trackMatchId}`} className={`track-analysis-add-result ${disabled ? 'disabled' : ''}`}>
+                      <input
+                        checked={selectedResultIds.has(id)}
+                        disabled={disabled}
+                        type="checkbox"
+                        onChange={() => toggleResult(result)}
+                      />
+                      <span>
+                        <strong>{session?.name ?? id}</strong>
+                        <small>
+                          {result.matchedTrackpointIds.length} matched / {result.missingTrackpointIds.length} missing
+                          {alreadyInView ? ' · already in view' : ''}
+                          {!session ? ' · unavailable in current catalog' : ''}
+                        </small>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="track-analysis-placeholder">
+                <MapIcon size={22} />
+                <p>Run a trackpoint query to find sessions.</p>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose}>
+            Close
+          </button>
+          <button className="primary-action" type="button" disabled={!selectedResultIds.size} onClick={addSelectedResults}>
+            Add {selectedResultIds.size || ''} session{selectedResultIds.size === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+void TrackAnalysisAddToViewModal
 
 function LapTimingTable({
   activePointSets,
@@ -989,10 +2221,111 @@ function LapTimingTable({
   )
 }
 
+function TrackAnalysisAddViewportMap({
+  initialBounds,
+  tracks,
+  selectedTrackIds,
+  onViewportBoundsChanged,
+}: {
+  initialBounds: LonLatBounds | null
+  tracks: TrackRecord[]
+  selectedTrackIds: Set<string>
+  onViewportBoundsChanged: (bounds: LonLatBounds | null) => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const mapRef = useRef<MapLibreMap | null>(null)
+  const viewportChangedRef = useRef(onViewportBoundsChanged)
+  const fittedInitialBoundsRef = useRef(false)
+
+  useEffect(() => {
+    viewportChangedRef.current = onViewportBoundsChanged
+  }, [onViewportBoundsChanged])
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) {
+      return
+    }
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: OSM_RASTER_STYLE,
+      center: [0, 0],
+      zoom: 13,
+      attributionControl: false,
+    })
+    const reportViewportBounds = () => {
+      viewportChangedRef.current(boundsFromMap(map))
+    }
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
+    map.on('moveend', reportViewportBounds)
+    map.on('zoomend', reportViewportBounds)
+    map.once('load', () => {
+      if (initialBounds) {
+        fitToLonLatBounds(map, initialBounds)
+        fittedInitialBoundsRef.current = true
+      }
+      reportViewportBounds()
+    })
+    mapRef.current = map
+    return () => {
+      map.off('moveend', reportViewportBounds)
+      map.off('zoomend', reportViewportBounds)
+      map.remove()
+      mapRef.current = null
+      viewportChangedRef.current(null)
+    }
+  }, [initialBounds])
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return
+    }
+    const observer = new ResizeObserver(() => mapRef.current?.resize())
+    observer.observe(containerRef.current)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) {
+      return
+    }
+    const activeMap = map
+    function applyTracks() {
+      const lines = buildModalTrackLines(tracks, selectedTrackIds)
+      ensureLineLayer(activeMap, lines)
+      if (!fittedInitialBoundsRef.current && tracks.length) {
+        const positions = tracks.flatMap((track) => track.points)
+        fitToPositions(activeMap, positions)
+        fittedInitialBoundsRef.current = true
+        viewportChangedRef.current(boundsFromMap(activeMap))
+      }
+    }
+    if (activeMap.isStyleLoaded()) {
+      applyTracks()
+      return
+    }
+    activeMap.once('load', applyTracks)
+    return () => {
+      activeMap.off('load', applyTracks)
+    }
+  }, [selectedTrackIds, tracks])
+
+  return (
+    <section className="track-analysis-add-map-card">
+      <div className="track-analysis-add-map-heading">
+        <strong>Search map</strong>
+        <span>Pan or zoom this map, then search for tracks in its visible area.</span>
+      </div>
+      <div className="track-analysis-add-map" ref={containerRef} />
+    </section>
+  )
+}
+
 function TrackAnalysisMap({
   sessionPaths,
-  referencePath,
-  referenceTrackDirty,
+  visibleTracks,
+  focusedTrackId,
   draftTrackpoints,
   segmentAliases,
   hideSegmentNames,
@@ -1001,10 +2334,11 @@ function TrackAnalysisMap({
   onAdjustCutline,
   onDeleteTrackpoint,
   onTrackpointDragEnd,
+  onViewportBoundsChanged,
 }: {
   sessionPaths: SessionPath[]
-  referencePath: GeoPosition[]
-  referenceTrackDirty: boolean
+  visibleTracks: WorkingTrack[]
+  focusedTrackId: string
   draftTrackpoints: DraftTrackpoint[]
   segmentAliases: TrackSegmentAliasRecord[]
   hideSegmentNames: boolean
@@ -1013,6 +2347,7 @@ function TrackAnalysisMap({
   onAdjustCutline: (trackpointId: string, handle: CutlineHandle, position: [number, number]) => void
   onDeleteTrackpoint: (trackpointId: string) => void
   onTrackpointDragEnd: () => void
+  onViewportBoundsChanged: (bounds: LonLatBounds | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
@@ -1021,10 +2356,28 @@ function TrackAnalysisMap({
   const adjustCutlineRef = useRef(onAdjustCutline)
   const deleteTrackpointRef = useRef(onDeleteTrackpoint)
   const trackpointDragEndRef = useRef(onTrackpointDragEnd)
+  const viewportBoundsChangedRef = useRef(onViewportBoundsChanged)
   const dragHandleRef = useRef<DragHandle | null>(null)
   const suppressClickRef = useRef(false)
   const hasFitInitialDataRef = useRef(false)
-  const hasData = sessionPaths.some((path) => path.path.length >= 2) || referencePath.length >= 2
+  const previousGeometrySignatureRef = useRef('')
+  const hasData = sessionPaths.some((path) => path.path.length >= 2) || visibleTracks.some((track) => track.points.length >= 2)
+  const geometrySignature = useMemo(
+    () =>
+      [
+        ...sessionPaths.filter((path) => path.path.length >= 2).map((path) => `session:${path.id}:${path.path.length}`),
+        ...visibleTracks.filter((track) => track.points.length >= 2).map((track) => `track:${track.workingId}:${track.points.length}`),
+      ].join('|'),
+    [sessionPaths, visibleTracks],
+  )
+
+  useEffect(() => {
+    if (!hasData) {
+      hasFitInitialDataRef.current = false
+      previousGeometrySignatureRef.current = ''
+      onViewportBoundsChanged(null)
+    }
+  }, [hasData, onViewportBoundsChanged])
 
   useEffect(() => {
     createTrackpointRef.current = onCreateTrackpoint
@@ -1047,6 +2400,10 @@ function TrackAnalysisMap({
   }, [onTrackpointDragEnd])
 
   useEffect(() => {
+    viewportBoundsChangedRef.current = onViewportBoundsChanged
+  }, [onViewportBoundsChanged])
+
+  useEffect(() => {
     if (!hasData || !containerRef.current || mapRef.current) {
       return
     }
@@ -1059,6 +2416,9 @@ function TrackAnalysisMap({
     })
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
+    const reportViewportBounds = () => {
+      viewportBoundsChangedRef.current(boundsFromMap(map))
+    }
     const preventContextMenu = (event: MouseEvent) => {
       event.preventDefault()
       const rect = map.getCanvas().getBoundingClientRect()
@@ -1137,11 +2497,17 @@ function TrackAnalysisMap({
       map.getCanvas().style.cursor = ''
       map.dragPan.enable()
     })
+    map.on('moveend', reportViewportBounds)
+    map.on('zoomend', reportViewportBounds)
+    map.once('load', reportViewportBounds)
     mapRef.current = map
     return () => {
       map.getCanvas().removeEventListener('contextmenu', preventContextMenu)
+      map.off('moveend', reportViewportBounds)
+      map.off('zoomend', reportViewportBounds)
       map.remove()
       mapRef.current = null
+      viewportBoundsChangedRef.current(null)
     }
   }, [hasData])
 
@@ -1161,13 +2527,19 @@ function TrackAnalysisMap({
     }
     const activeMap = map
     function applyData() {
-      const data = buildMapData(sessionPaths, referencePath, referenceTrackDirty, draftTrackpoints, segmentAliases, hideSegmentNames)
+      const data = buildMapData(sessionPaths, visibleTracks, focusedTrackId, draftTrackpoints, segmentAliases, hideSegmentNames)
       ensureLineLayer(activeMap, data.lines)
       ensurePointLayer(activeMap, data.points)
-      if (!hasFitInitialDataRef.current) {
+      const shouldFitToData =
+        data.bounds.length > 0 &&
+        (!hasFitInitialDataRef.current ||
+          (previousGeometrySignatureRef.current === '' && Boolean(geometrySignature)))
+      if (shouldFitToData) {
         hasFitInitialDataRef.current = true
         fitToPositions(activeMap, data.bounds)
+        viewportBoundsChangedRef.current(boundsFromMap(activeMap))
       }
+      previousGeometrySignatureRef.current = geometrySignature
     }
     if (activeMap.isStyleLoaded()) {
       applyData()
@@ -1177,7 +2549,7 @@ function TrackAnalysisMap({
     return () => {
       activeMap.off('load', applyData)
     }
-  }, [draftTrackpoints, hasData, hideSegmentNames, referencePath, referenceTrackDirty, segmentAliases, sessionPaths])
+  }, [draftTrackpoints, focusedTrackId, geometrySignature, hasData, hideSegmentNames, segmentAliases, sessionPaths, visibleTracks])
 
   if (!hasData) {
     return (
@@ -1191,39 +2563,89 @@ function TrackAnalysisMap({
   return <div className="track-analysis-map" ref={containerRef} />
 }
 
-function AltitudeChart({ samples }: { samples: AltitudeSample[] }) {
+function AltitudeChart({ samples, trackpoints }: { samples: AltitudeSample[]; trackpoints: DraftTrackpoint[] }) {
   if (samples.length < 2) {
     return <div className="track-analysis-placeholder">No altitude data is available for the selected track or session.</div>
   }
   const width = 640
-  const height = 170
-  const padding = { top: 12, right: 16, bottom: 24, left: 42 }
+  const height = 178
+  const padding = { top: 20, right: 22, bottom: 46, left: 54 }
   const minDistance = Math.min(...samples.map((item) => item.distanceM))
   const maxDistance = Math.max(...samples.map((item) => item.distanceM))
   const elevations = samples.map((item) => item.elevationM)
   const minElevation = Math.min(...elevations)
   const maxElevation = Math.max(...elevations)
-  const spanElevation = Math.max(1, maxElevation - minElevation)
+  const elevationStep = gridStep(maxElevation - minElevation, [10, 20, 50, 100, 200], 3)
+  const distanceStep = gridStep(maxDistance - minDistance, [100, 200, 500, 1000, 2000], 3)
+  const elevationDomain = gridDomain(minElevation, maxElevation, elevationStep)
+  const distanceDomain = gridDomain(minDistance, maxDistance, distanceStep)
+  const elevationTicks = gridTicks(elevationDomain.min, elevationDomain.max, elevationStep)
+  const distanceTicks = gridTicks(distanceDomain.min, distanceDomain.max, distanceStep)
+  const plotWidth = width - padding.left - padding.right
+  const plotHeight = height - padding.top - padding.bottom
+  const xForDistance = (distanceM: number) =>
+    padding.left + ((distanceM - distanceDomain.min) / Math.max(1, distanceDomain.max - distanceDomain.min)) * plotWidth
+  const yForElevation = (elevationM: number) =>
+    padding.top + (1 - (elevationM - elevationDomain.min) / Math.max(1, elevationDomain.max - elevationDomain.min)) * plotHeight
   const path = samples
     .map((item, index) => {
-      const x = padding.left + ((item.distanceM - minDistance) / Math.max(1, maxDistance - minDistance)) * (width - padding.left - padding.right)
-      const y = padding.top + (1 - (item.elevationM - minElevation) / spanElevation) * (height - padding.top - padding.bottom)
+      const x = xForDistance(item.distanceM)
+      const y = yForElevation(item.elevationM)
       return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
     })
     .join(' ')
+  const plottedTrackpoints = trackpoints
+    .filter((trackpoint) => trackpoint.stationM >= distanceDomain.min && trackpoint.stationM <= distanceDomain.max)
+    .map((trackpoint) => ({
+      trackpoint,
+      x: xForDistance(trackpoint.stationM),
+      y: yForElevation(interpolateAltitude(samples, trackpoint.stationM)),
+    }))
   return (
     <svg className="track-analysis-altitude-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Altitude profile chart">
-      <line x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
-      <line x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
-      <path d={path} />
-      <text x={padding.left} y={height - 6}>
-        Distance
+      {elevationTicks.map((tick) => {
+        const y = yForElevation(tick)
+        return (
+          <g key={`elevation-${tick}`} className="track-analysis-altitude-grid">
+            <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
+            <text x={padding.left - 7} y={y + 3} textAnchor="end">
+              {Math.round(tick)}
+            </text>
+          </g>
+        )
+      })}
+      {distanceTicks.map((tick) => {
+        const x = xForDistance(tick)
+        return (
+          <g key={`distance-${tick}`} className="track-analysis-altitude-grid">
+            <line x1={x} x2={x} y1={padding.top} y2={height - padding.bottom} />
+            <text x={x} y={height - padding.bottom + 16} textAnchor="middle">
+              {formatDistanceTick(tick)}
+            </text>
+          </g>
+        )
+      })}
+      <line className="track-analysis-altitude-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
+      <line className="track-analysis-altitude-axis" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
+      <path className="track-analysis-altitude-line" d={path} />
+      {plottedTrackpoints.map(({ trackpoint, x, y }) => (
+        <g key={trackpoint.id} className="track-analysis-altitude-trackpoint">
+          <title>{trackpoint.name || trackpoint.id}</title>
+          <line x1={x} x2={x} y1={y} y2={height - padding.bottom} />
+          <circle cx={x} cy={y} r={3.4} />
+        </g>
+      ))}
+      <text className="track-analysis-altitude-axis-title" x={(padding.left + width - padding.right) / 2} y={height - 3} textAnchor="middle">
+        Distance from start
       </text>
-      <text x={6} y={padding.top + 8}>
-        {Math.round(maxElevation)} m
-      </text>
-      <text x={6} y={height - padding.bottom}>
-        {Math.round(minElevation)} m
+      <text
+        className="track-analysis-altitude-axis-title"
+        x={16}
+        y={(padding.top + height - padding.bottom) / 2}
+        textAnchor="middle"
+        transform={`rotate(-90 16 ${(padding.top + height - padding.bottom) / 2})`}
+      >
+        Altitude (m)
       </text>
     </svg>
   )
@@ -1231,8 +2653,8 @@ function AltitudeChart({ samples }: { samples: AltitudeSample[] }) {
 
 function buildMapData(
   sessionPaths: SessionPath[],
-  referencePath: GeoPosition[],
-  referenceTrackDirty: boolean,
+  visibleTracks: WorkingTrack[],
+  focusedTrackId: string,
   draftTrackpoints: DraftTrackpoint[],
   segmentAliases: TrackSegmentAliasRecord[],
   hideSegmentNames: boolean,
@@ -1249,11 +2671,27 @@ function buildMapData(
     }
   })
 
-  const safeReferencePath = filterPositions(referencePath)
-  if (safeReferencePath.length >= 2) {
-    lines.push(lineFeature('reference-track', safeReferencePath, referenceTrackDirty ? DRAFT_COLOR : TRACK_COLOR, 5, 0.92))
-    bounds.push(...safeReferencePath)
-  }
+  const focusedTrack = visibleTracks.find((track) => track.workingId === focusedTrackId) ?? null
+
+  visibleTracks.forEach((track) => {
+    const safeTrackPath = filterPositions(track.points)
+    if (safeTrackPath.length < 2) {
+      return
+    }
+    const focused = track.workingId === focusedTrackId
+    lines.push(
+      lineFeature(
+        `track-${track.workingId}`,
+        safeTrackPath,
+        track.dirty ? DRAFT_COLOR : TRACK_COLOR,
+        focused ? 5 : 3,
+        focused ? 0.92 : 0.58,
+      ),
+    )
+    bounds.push(...safeTrackPath)
+  })
+
+  const safeReferencePath = focusedTrack ? filterPositions(focusedTrack.points) : []
 
   draftTrackpoints.forEach((trackpoint) => {
     points.push(
@@ -1300,6 +2738,30 @@ function buildMapData(
   }
 }
 
+function buildModalTrackLines(tracks: TrackRecord[], selectedTrackIds: Set<string>) {
+  const lines: Array<Feature<LineString, { color: string; width: number; opacity: number }>> = []
+  tracks.forEach((track) => {
+    const points = filterPositions(track.points)
+    if (points.length < 2) {
+      return
+    }
+    const selected = selectedTrackIds.has(track.id)
+    lines.push(
+      lineFeature(
+        `modal-track-${track.id}`,
+        points,
+        selected ? DRAFT_COLOR : TRACK_COLOR,
+        selected ? 5 : 3,
+        selected ? 0.94 : 0.62,
+      ),
+    )
+  })
+  return {
+    type: 'FeatureCollection',
+    features: lines,
+  } satisfies FeatureCollection<LineString, { color: string; width: number; opacity: number }>
+}
+
 function altitudeSamplesForTrack(track: Pick<TrackRecord, 'points'>): AltitudeSample[] {
   const stations = routeStationsM(track.points)
   return track.points
@@ -1336,6 +2798,62 @@ function altitudeSamplesForSessionGps(pointSet: SessionGpsPointSet | null): Alti
 
 function isAltitudeSample(value: AltitudeSample | null): value is AltitudeSample {
   return value !== null
+}
+
+function gridStep(span: number, candidates: number[], minimumGridlines = 4) {
+  const safeSpan = Math.max(0, span)
+  return [...candidates].reverse().find((candidate) => safeSpan / candidate >= minimumGridlines) ?? candidates[0]
+}
+
+function gridDomain(minValue: number, maxValue: number, step: number) {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return { min: 0, max: step * 4 }
+  }
+  let min = Math.floor(minValue / step) * step
+  let max = Math.ceil(maxValue / step) * step
+  if (max <= min) {
+    max = min + step * 4
+  }
+  while ((max - min) / step < 4) {
+    max += step
+  }
+  return { min, max }
+}
+
+function gridTicks(minValue: number, maxValue: number, step: number) {
+  const ticks: number[] = []
+  const start = Math.ceil(minValue / step) * step
+  const end = Math.floor(maxValue / step) * step
+  for (let value = start; value <= end + step * 0.001; value += step) {
+    ticks.push(Math.round(value * 1000) / 1000)
+  }
+  return ticks
+}
+
+function formatDistanceTick(distanceM: number) {
+  if (Math.abs(distanceM) >= 1000) {
+    return `${(distanceM / 1000).toFixed(distanceM % 1000 === 0 ? 0 : 1)} km`
+  }
+  return `${Math.round(distanceM)} m`
+}
+
+function interpolateAltitude(samples: AltitudeSample[], distanceM: number) {
+  if (!samples.length) {
+    return 0
+  }
+  const sorted = [...samples].sort((a, b) => a.distanceM - b.distanceM)
+  if (distanceM <= sorted[0].distanceM) {
+    return sorted[0].elevationM
+  }
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1]
+    const next = sorted[index]
+    if (distanceM <= next.distanceM) {
+      const fraction = (distanceM - previous.distanceM) / Math.max(1e-9, next.distanceM - previous.distanceM)
+      return previous.elevationM + (next.elevationM - previous.elevationM) * fraction
+    }
+  }
+  return sorted[sorted.length - 1].elevationM
 }
 
 function validSegmentAliasesForTrack(track: Pick<WorkingTrack, 'trackpoints' | 'segmentAliases'>): TrackSegmentAliasRecord[] {
@@ -1605,6 +3123,16 @@ function fitToPositions(map: MapLibreMap, positions: GeoPosition[]) {
     new maplibregl.LngLatBounds(lonLat(validPositions[0]), lonLat(validPositions[0])),
   )
   map.fitBounds(bounds, { padding: 40, maxZoom: 16, duration: 0 })
+}
+
+function fitToLonLatBounds(map: MapLibreMap, bounds: LonLatBounds) {
+  map.fitBounds(
+    new maplibregl.LngLatBounds(
+      [bounds.minLongitude, bounds.minLatitude],
+      [bounds.maxLongitude, bounds.maxLatitude],
+    ),
+    { padding: 32, maxZoom: 16, duration: 0 },
+  )
 }
 
 function cutlineForTrackpoint(path: GeoPosition[], trackpoint: DraftTrackpoint): Array<[number, number]> | null {
@@ -1905,6 +3433,91 @@ function mergeTrackLists(primary: TrackRecord[], secondary: TrackRecord[]) {
   return Array.from(byId.values())
 }
 
+function mergeSessionLists(primary: SessionRecord[], secondary: SessionRecord[]) {
+  const byId = new Map<string, SessionRecord>()
+  primary.forEach((session) => byId.set(sessionRecordId(session), session))
+  secondary.forEach((session) => byId.set(sessionRecordId(session), session))
+  return Array.from(byId.values())
+}
+
+function trackIntersectsBounds(track: Pick<TrackRecord, 'points' | 'trackpoints'>, bounds: LonLatBounds) {
+  const trackBounds = boundsForPositions([
+    ...track.points,
+    ...track.trackpoints.map((trackpoint) => trackpoint.position),
+  ])
+  return Boolean(trackBounds && lonLatBoundsIntersect(trackBounds, bounds))
+}
+
+function boundsForPositions(positions: GeoPosition[]): LonLatBounds | null {
+  const validPositions = filterPositions(positions)
+  if (!validPositions.length) {
+    return null
+  }
+  return validPositions.reduce<LonLatBounds>(
+    (bounds, position) => ({
+      minLongitude: Math.min(bounds.minLongitude, position[0]),
+      minLatitude: Math.min(bounds.minLatitude, position[1]),
+      maxLongitude: Math.max(bounds.maxLongitude, position[0]),
+      maxLatitude: Math.max(bounds.maxLatitude, position[1]),
+    }),
+    {
+      minLongitude: validPositions[0][0],
+      minLatitude: validPositions[0][1],
+      maxLongitude: validPositions[0][0],
+      maxLatitude: validPositions[0][1],
+    },
+  )
+}
+
+function boundsFromMap(map: MapLibreMap): LonLatBounds {
+  const bounds = map.getBounds()
+  return {
+    minLongitude: bounds.getWest(),
+    minLatitude: bounds.getSouth(),
+    maxLongitude: bounds.getEast(),
+    maxLatitude: bounds.getNorth(),
+  }
+}
+
+function lonLatBoundsIntersect(a: LonLatBounds, b: LonLatBounds) {
+  return !(
+    a.maxLongitude < b.minLongitude ||
+    a.minLongitude > b.maxLongitude ||
+    a.maxLatitude < b.minLatitude ||
+    a.minLatitude > b.maxLatitude
+  )
+}
+
+function sessionByRefId(id: string, sessions: SessionRecord[]) {
+  return sessions.find((session) => sessionRecordId(session) === id)
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
+}
+
+function isActiveTrackpointQuery(query: TrackpointMatchQueryRecord | null) {
+  return query?.status === 'queued' || query?.status === 'running'
+}
+
+async function loadAllTrackpointQueryResults(
+  loadResults: NonNullable<LibraryDataSource['loadTrackpointMatchQueryResults']>,
+  queryId: string,
+) {
+  const results: TrackpointMatchQueryResult[] = []
+  let cursor: string | null = null
+  do {
+    const page: TrackpointMatchQueryResults = await loadResults(queryId, cursor, 500)
+    results.push(...page.results)
+    cursor = page.nextCursor
+  } while (cursor)
+  return results
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
 function dragHandleFromFeature(properties: unknown): DragHandle | null {
   if (!properties || typeof properties !== 'object') {
     return null
@@ -1937,6 +3550,73 @@ function sessionRecordId(session: SessionRecord) {
 
 function gpsLoadKey(sessionId: string, sourceId: string | null) {
   return `${sessionId}::${sourceId ?? 'preferred'}`
+}
+
+function trackAnalysisViewContextStorageKey(studySet: StudySet) {
+  const stableScope =
+    studySet.id ||
+    [
+      studySet.displayName,
+      ...studySet.sessions.map(sessionRefId).sort(),
+      ...studySet.trackIds.map((id) => `track:${id}`).sort(),
+    ].join('|')
+  return `${TRACK_ANALYSIS_VIEW_CONTEXT_STORAGE_PREFIX}${hashString(stableScope)}`
+}
+
+function readTrackAnalysisViewContext(key: string): PersistedTrackAnalysisViewContext {
+  if (typeof window === 'undefined') {
+    return emptyTrackAnalysisViewContext()
+  }
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) {
+      return emptyTrackAnalysisViewContext()
+    }
+    const parsed = JSON.parse(raw) as Partial<PersistedTrackAnalysisViewContext>
+    return {
+      addedSessionIds: stringArrayValue(parsed.addedSessionIds),
+      removedSessionIds: stringArrayValue(parsed.removedSessionIds),
+      addedTrackIds: stringArrayValue(parsed.addedTrackIds),
+    }
+  } catch {
+    return emptyTrackAnalysisViewContext()
+  }
+}
+
+function writeTrackAnalysisViewContext(key: string, context: PersistedTrackAnalysisViewContext) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    const normalized: PersistedTrackAnalysisViewContext = {
+      addedSessionIds: uniqueStrings(context.addedSessionIds),
+      removedSessionIds: uniqueStrings(context.removedSessionIds),
+      addedTrackIds: uniqueStrings(context.addedTrackIds),
+    }
+    if (!normalized.addedSessionIds.length && !normalized.removedSessionIds.length && !normalized.addedTrackIds.length) {
+      window.localStorage.removeItem(key)
+      return
+    }
+    window.localStorage.setItem(key, JSON.stringify(normalized))
+  } catch {
+    // Local context persistence is a convenience; failures should not block analysis.
+  }
+}
+
+function emptyTrackAnalysisViewContext(): PersistedTrackAnalysisViewContext {
+  return { addedSessionIds: [], removedSessionIds: [], addedTrackIds: [] }
+}
+
+function stringArrayValue(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function hashString(value: string) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash).toString(36)
 }
 
 function clampNumber(value: number, min: number, max: number) {

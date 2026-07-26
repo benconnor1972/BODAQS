@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -21,6 +22,7 @@ from .catalog import (
     discover_libraries,
     get_session_gps_points as catalog_get_session_gps_points,
 )
+from .catalog_revision import catalog_revision_dependency, ensure_catalog_revision, touch_catalog_revision
 from .errors import InvalidRequestError, InvalidStudySetError, LibraryApiError, LibraryNotFoundError, SessionNotFoundError
 from .geospatial import (
     DEFAULT_GEOSPATIAL_POLICY_ID,
@@ -87,30 +89,48 @@ class LibraryAdapter:
     _ANALYSIS_ADEQUACY_CACHE_NAMESPACE = "analysis_adequacy"
     _ANALYSIS_INPUT_CACHE_NAMESPACE = "analysis_input"
     _GPS_POINTS_CACHE_NAMESPACE = "gps_points"
+    _SESSION_CATALOG_CACHE_NAMESPACE = "session_catalog"
     _ANALYSIS_ADEQUACY_CACHE_TTL_S = 900.0
     _ANALYSIS_INPUT_CACHE_TTL_S = 900.0
     _GPS_POINTS_CACHE_TTL_S = 900.0
     _ANALYSIS_ADEQUACY_PERSISTENT_CACHE_TTL_S = 86400.0
     _ANALYSIS_ADEQUACY_PERSISTENT_CACHE_MAX_ENTRIES = 512
+    _SESSION_CATALOG_PERSISTENT_CACHE_MAX_ENTRIES = 128
     _SERVICE_CACHE_DIR_NAME = ".bodaqs_library_api_cache"
 
-    def __init__(self, libraries_root: str | Path) -> None:
+    def __init__(self, libraries_root: str | Path, *, write_catalog_revision: bool = True) -> None:
         self.libraries_root = Path(libraries_root).expanduser()
+        self.write_catalog_revision = bool(write_catalog_revision)
         self._libraries_cache: list[dict[str, Any]] | None = None
         self._catalog_cache: dict[str, dict[str, Any]] = {}
         self._cache = InMemoryLruCache(max_entries=1024, default_ttl_s=900.0)
         self._persistent_cache = PersistentJsonCache(self.libraries_root / self._SERVICE_CACHE_DIR_NAME)
+        self._timing_samples: list[dict[str, Any]] = []
+        self._catalog_cache_event_counts: dict[str, int] = {}
+        self._catalog_cache_invalidations = 0
         self._load_persisted_analysis_adequacy_cache_entries()
 
     def capabilities(self) -> dict[str, Any]:
         return default_capabilities()
 
     def cache_diagnostics(self) -> dict[str, Any]:
+        persistent_catalog_summary = self._persistent_cache.prune_namespace(
+            self._SESSION_CATALOG_CACHE_NAMESPACE,
+            max_entries=self._SESSION_CATALOG_PERSISTENT_CACHE_MAX_ENTRIES,
+        )
         return {
             "schema": "bodaqs.library_api.cache_diagnostics",
             "version": 1,
+            "catalog_cache": {
+                "memory_entry_count": len(self._catalog_cache),
+                "persistent_prune": persistent_catalog_summary,
+                "event_counts": dict(sorted(self._catalog_cache_event_counts.items())),
+                "invalidation_count": self._catalog_cache_invalidations,
+                "libraries": self._catalog_cache_library_diagnostics(),
+            },
             "cache": self._cache.stats(),
             "persistent_cache": self._persistent_cache.stats(),
+            "timings": self._timing_samples[-40:],
         }
 
     def list_libraries(self, *, refresh: bool = False) -> list[dict[str, Any]]:
@@ -130,20 +150,146 @@ class LibraryAdapter:
 
     def refresh_library(self, library_id: str) -> dict[str, Any]:
         self.list_libraries(refresh=True)
-        self._catalog_cache.pop(str(library_id).strip(), None)
+        wanted = str(library_id).strip()
+        if self.write_catalog_revision:
+            touch_catalog_revision(self._library_root(wanted), reason="deep_refresh", actor="library_api")
+        self._invalidate_catalog_cache(wanted)
         self._invalidate_analysis_adequacy_cache()
         self._invalidate_analysis_input_cache()
         self._invalidate_gps_points_cache()
         return self.get_library(library_id)
 
+    def invalidate_library_catalog(self, library_id: str) -> dict[str, Any]:
+        wanted = str(library_id).strip()
+        library = self.get_library(wanted)
+        self._invalidate_catalog_cache(wanted)
+        self._invalidate_analysis_adequacy_cache()
+        self._invalidate_analysis_input_cache()
+        self._invalidate_gps_points_cache()
+        return {
+            "invalidated": True,
+            "library_id": wanted,
+            "library": library,
+        }
+
     def get_catalog(self, library_id: str, *, refresh: bool = False) -> dict[str, Any]:
         wanted = str(library_id).strip()
-        if refresh or wanted not in self._catalog_cache:
-            self._catalog_cache[wanted] = build_session_catalog(
-                self._library_root(wanted),
-                library_id=wanted,
-            )
+        total_start = time.perf_counter()
+        timing: dict[str, Any] = {
+            "operation": "get_catalog",
+            "library_id": wanted,
+            "refresh": bool(refresh),
+        }
+        if not refresh and wanted in self._catalog_cache:
+            timing["cache_status"] = "memory_hit"
+            self._record_catalog_cache_event("memory_hit")
+            timing["total_ms"] = self._elapsed_ms(total_start)
+            self._record_timing_sample(timing)
+            return copy.deepcopy(self._catalog_cache[wanted])
+
+        library_root = self._library_root(wanted)
+        if self.write_catalog_revision:
+            ensure_catalog_revision(library_root, reason="catalog_revision_backfill", actor="library_api")
+        dependency_start = time.perf_counter()
+        dependency = self._session_catalog_cache_dependency(wanted, library_root)
+        timing["dependency_ms"] = self._elapsed_ms(dependency_start)
+        timing["validation_mode"] = dependency.get("validation_mode")
+        catalog_revision = dependency.get("catalog_revision")
+        if isinstance(catalog_revision, Mapping):
+            timing["catalog_revision"] = catalog_revision.get("revision")
+        cache_key = stable_cache_digest(dependency)
+        if not refresh:
+            persistent_start = time.perf_counter()
+            persisted = self._persistent_cache.get(self._SESSION_CATALOG_CACHE_NAMESPACE, cache_key)
+            timing["persistent_read_ms"] = self._elapsed_ms(persistent_start)
+            if persisted is not None and isinstance(persisted.value, dict):
+                self._catalog_cache[wanted] = copy.deepcopy(persisted.value)
+                timing["cache_status"] = "persistent_hit"
+                self._record_catalog_cache_event("persistent_hit")
+                timing["row_count"] = len(self._catalog_cache[wanted].get("rows") or [])
+                timing["total_ms"] = self._elapsed_ms(total_start)
+                self._record_timing_sample(timing)
+                return copy.deepcopy(self._catalog_cache[wanted])
+
+        build_start = time.perf_counter()
+        self._catalog_cache[wanted] = build_session_catalog(
+            library_root,
+            library_id=wanted,
+        )
+        timing["build_ms"] = self._elapsed_ms(build_start)
+        persistent_write_start = time.perf_counter()
+        self._persistent_cache.set(
+            self._SESSION_CATALOG_CACHE_NAMESPACE,
+            cache_key,
+            self._catalog_cache[wanted],
+            ttl_s=None,
+            metadata=self._session_catalog_persistent_cache_metadata(dependency),
+        )
+        timing["persistent_write_ms"] = self._elapsed_ms(persistent_write_start)
+        self._persistent_cache.prune_namespace(
+            self._SESSION_CATALOG_CACHE_NAMESPACE,
+            max_entries=self._SESSION_CATALOG_PERSISTENT_CACHE_MAX_ENTRIES,
+        )
+        timing["cache_status"] = "rebuilt"
+        self._record_catalog_cache_event("rebuilt")
+        timing["row_count"] = len(self._catalog_cache[wanted].get("rows") or [])
+        timing["total_ms"] = self._elapsed_ms(total_start)
+        self._record_timing_sample(timing)
         return copy.deepcopy(self._catalog_cache[wanted])
+
+    def get_workbench_bootstrap(self) -> dict[str, Any]:
+        """Return the browser's initial workbench payload in one coordinated read."""
+
+        total_start = time.perf_counter()
+        timings: dict[str, float] = {}
+
+        libraries_start = time.perf_counter()
+        libraries = self.list_libraries()
+        timings["libraries_ms"] = self._elapsed_ms(libraries_start)
+
+        catalogs_start = time.perf_counter()
+        catalogs = [self.get_catalog(str(library.get("library_id") or "")) for library in libraries]
+        timings["catalogs_ms"] = self._elapsed_ms(catalogs_start)
+
+        tracks_start = time.perf_counter()
+        tracks = self.list_tracks()
+        timings["tracks_ms"] = self._elapsed_ms(tracks_start)
+
+        study_sets_start = time.perf_counter()
+        study_set_summaries = self.list_study_sets()
+        study_sets = [
+            self.load_study_set(str(summary.get("study_set_id") or ""))
+            for summary in study_set_summaries
+            if summary.get("study_set_id")
+        ]
+        timings["study_sets_ms"] = self._elapsed_ms(study_sets_start)
+
+        filters_start = time.perf_counter()
+        session_filters = self.list_session_filters()
+        timings["session_filters_ms"] = self._elapsed_ms(filters_start)
+        timings["total_ms"] = self._elapsed_ms(total_start)
+
+        payload = {
+            "schema": "bodaqs.library_api.workbench_bootstrap",
+            "version": 1,
+            "libraries_root": str(self.libraries_root),
+            "libraries": libraries,
+            "catalogs": catalogs,
+            "tracks": tracks,
+            "study_sets": study_sets,
+            "session_filters": session_filters,
+            "timings": timings,
+        }
+        self._record_timing_sample(
+            {
+                "operation": "workbench_bootstrap",
+                "library_count": len(libraries),
+                "catalog_count": len(catalogs),
+                "session_count": sum(len(catalog.get("rows") or []) for catalog in catalogs),
+                **timings,
+            }
+        )
+        return payload
 
     def get_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return get_timeseries_window(self._library_root(library_id), request, library_id=library_id)
@@ -239,16 +385,102 @@ class LibraryAdapter:
         session_ref = self._normalized_session_ref_request(library_id, request)
         self._catalog_row_for_session(library_id, session_ref)
         saved = save_session_note(self._library_root(library_id), session_ref, request)
-        self._catalog_cache.pop(str(library_id).strip(), None)
+        self._touch_catalog_revision(library_id, reason="session_note_saved", session_ref=session_ref)
+        self._invalidate_catalog_cache(str(library_id).strip())
         self._invalidate_analysis_adequacy_cache()
         self._invalidate_gps_points_cache()
         return saved
+
+    def save_session_notes(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(request, Mapping):
+            raise InvalidRequestError("Bulk session note save request must be a JSON object.")
+        raw_items = request.get("items")
+        if not isinstance(raw_items, list):
+            raise InvalidRequestError("Bulk session note save request must include an items list.")
+
+        wanted_library_id = str(library_id).strip()
+        library_root = self._library_root(wanted_library_id)
+        results: list[dict[str, Any]] = []
+        changed_sessions: list[dict[str, Any]] = []
+
+        for index, item in enumerate(raw_items):
+            if not isinstance(item, Mapping):
+                results.append(
+                    {
+                        "ok": False,
+                        "index": index,
+                        "error": "Bulk session note item must be a JSON object.",
+                    }
+                )
+                continue
+            try:
+                session_ref = self._normalized_session_ref_request(wanted_library_id, item)
+                if session_ref["library_id"] != wanted_library_id:
+                    raise InvalidRequestError(
+                        "Bulk session note item library_id does not match request library.",
+                        details={
+                            "library_id": wanted_library_id,
+                            "item_library_id": session_ref["library_id"],
+                        },
+                    )
+                self._catalog_row_for_session(wanted_library_id, session_ref)
+                saved = save_session_note(library_root, session_ref, item)
+                results.append(
+                    {
+                        "ok": True,
+                        "index": index,
+                        "session_ref": session_ref,
+                        "note": saved,
+                    }
+                )
+                changed_sessions.append(
+                    {
+                        "library_id": wanted_library_id,
+                        "run_id": session_ref["run_id"],
+                        "session_id": session_ref["session_id"],
+                        "session_key": session_ref["session_key"],
+                    }
+                )
+            except Exception as exc:
+                error_payload: dict[str, Any] = {
+                    "ok": False,
+                    "index": index,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+                if isinstance(exc, LibraryApiError):
+                    error_payload["details"] = exc.details
+                results.append(error_payload)
+
+        saved_count = sum(1 for result in results if result.get("ok"))
+        if saved_count:
+            if self.write_catalog_revision:
+                touch_catalog_revision(
+                    library_root,
+                    reason="session_notes_bulk_saved",
+                    actor="library_api",
+                    changed_sessions=changed_sessions,
+                )
+            self._invalidate_catalog_cache(wanted_library_id)
+            self._invalidate_analysis_adequacy_cache()
+            self._invalidate_gps_points_cache()
+
+        return {
+            "schema": "bodaqs.library_api.session_note_bulk_save",
+            "version": 1,
+            "library_id": wanted_library_id,
+            "requested_count": len(raw_items),
+            "saved_count": saved_count,
+            "failed_count": len(raw_items) - saved_count,
+            "results": results,
+        }
 
     def update_session_descriptions(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session_ref = self._normalized_session_ref_request(library_id, request)
         self._catalog_row_for_session(library_id, session_ref)
         updated = write_session_descriptions(self._library_root(library_id), session_ref, request)
-        self._catalog_cache.pop(str(library_id).strip(), None)
+        self._touch_catalog_revision(library_id, reason="session_descriptions_updated", session_ref=session_ref)
+        self._invalidate_catalog_cache(str(library_id).strip())
         self._invalidate_analysis_adequacy_cache()
         self._invalidate_gps_points_cache()
         return updated
@@ -277,7 +509,12 @@ class LibraryAdapter:
             session_id=session_id,
             cleanup_memberships=cleanup_memberships,
         )
-        self._catalog_cache.pop(str(library_id).strip(), None)
+        self._touch_catalog_revision(
+            library_id,
+            reason="session_deleted",
+            session_ref={"library_id": library_id, "run_id": run_id, "session_id": session_id},
+        )
+        self._invalidate_catalog_cache(str(library_id).strip())
         self._invalidate_analysis_adequacy_cache()
         self._invalidate_analysis_input_cache()
         self._invalidate_gps_points_cache()
@@ -1453,6 +1690,141 @@ class LibraryAdapter:
             "kind": signal.get("kind"),
             "motion_source_id": signal.get("motion_source_id"),
             "origin": signal.get("origin"),
+        }
+
+    def _session_catalog_cache_dependency(self, library_id: str, library_root: Path) -> dict[str, Any]:
+        dependency: dict[str, Any] = {
+            "cache_schema": "bodaqs.session_catalog_cache_key",
+            "cache_version": 2,
+            "library_id": str(library_id),
+            "library_root": str(library_root.resolve()),
+            "library_definition": self._file_stat_dependency(library_root / "library_definition.json", library_root),
+        }
+        revision_dependency = catalog_revision_dependency(library_root)
+        if revision_dependency is not None:
+            dependency["validation_mode"] = "catalog_revision"
+            dependency["catalog_revision"] = revision_dependency
+        else:
+            dependency["validation_mode"] = "runs_tree_stat"
+            dependency["runs"] = self._tree_stat_dependency(library_root / "runs", library_root)
+        return dependency
+
+    @staticmethod
+    def _session_catalog_persistent_cache_metadata(dependency: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "cache_schema": dependency.get("cache_schema"),
+            "cache_version": dependency.get("cache_version"),
+            "library_id": dependency.get("library_id"),
+            "library_root": dependency.get("library_root"),
+        }
+
+    def _invalidate_catalog_cache(self, library_id: str | None = None) -> None:
+        self._catalog_cache_invalidations += 1
+        if library_id:
+            self._catalog_cache.pop(str(library_id).strip(), None)
+        else:
+            self._catalog_cache.clear()
+        self._persistent_cache.invalidate_namespace(self._SESSION_CATALOG_CACHE_NAMESPACE)
+
+    def _catalog_cache_library_diagnostics(self) -> list[dict[str, Any]]:
+        diagnostics: list[dict[str, Any]] = []
+        for library in self.list_libraries():
+            library_id = str(library.get("library_id") or "").strip()
+            if not library_id:
+                continue
+            try:
+                library_root = self._library_root(library_id)
+            except LibraryNotFoundError:
+                continue
+            revision_dependency = catalog_revision_dependency(library_root)
+            diagnostics.append(
+                {
+                    "library_id": library_id,
+                    "display_name": library.get("display_name"),
+                    "memory_cached": library_id in self._catalog_cache,
+                    "validation_mode": "catalog_revision" if revision_dependency is not None else "runs_tree_stat",
+                    "catalog_revision": revision_dependency,
+                }
+            )
+        return diagnostics
+
+    def _record_catalog_cache_event(self, status: str) -> None:
+        key = str(status or "unknown")
+        self._catalog_cache_event_counts[key] = self._catalog_cache_event_counts.get(key, 0) + 1
+
+    def _touch_catalog_revision(
+        self,
+        library_id: str,
+        *,
+        reason: str,
+        session_ref: Mapping[str, Any] | None = None,
+    ) -> None:
+        changed_sessions: list[dict[str, Any]] = []
+        if session_ref is not None:
+            run_id = session_ref.get("run_id")
+            session_id = session_ref.get("session_id")
+            changed: dict[str, Any] = {
+                "library_id": str(library_id),
+            }
+            if run_id is not None:
+                changed["run_id"] = str(run_id)
+            if session_id is not None:
+                changed["session_id"] = str(session_id)
+            if run_id is not None and session_id is not None:
+                changed["session_key"] = make_session_key(str(run_id), str(session_id))
+            changed_sessions.append(changed)
+        if self.write_catalog_revision:
+            touch_catalog_revision(
+                self._library_root(library_id),
+                reason=reason,
+                actor="library_api",
+                changed_sessions=changed_sessions,
+            )
+
+    def _record_timing_sample(self, sample: Mapping[str, Any]) -> None:
+        normalized = dict(sample)
+        normalized["recorded_at_epoch_s"] = round(time.time(), 3)
+        self._timing_samples.append(normalized)
+        if len(self._timing_samples) > 100:
+            del self._timing_samples[: len(self._timing_samples) - 100]
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> float:
+        return round((time.perf_counter() - start) * 1000.0, 3)
+
+    @classmethod
+    def _tree_stat_dependency(cls, root: Path, base: Path) -> list[dict[str, Any]]:
+        if not root.exists():
+            return []
+        dependencies: list[dict[str, Any]] = []
+        for path in [root, *sorted(root.rglob("*"), key=lambda item: item.as_posix())]:
+            if cls._SERVICE_CACHE_DIR_NAME in path.parts:
+                continue
+            stat_dependency = cls._file_stat_dependency(path, base)
+            if stat_dependency is not None:
+                dependencies.append(stat_dependency)
+        return dependencies
+
+    @staticmethod
+    def _file_stat_dependency(path: Path, base: Path) -> dict[str, Any] | None:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return {
+                "path": str(path),
+                "unavailable": True,
+            }
+        try:
+            relative_path = path.relative_to(base)
+        except ValueError:
+            relative_path = path
+        return {
+            "path": relative_path.as_posix(),
+            "kind": "dir" if path.is_dir() else "file",
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
         }
 
     def _invalidate_analysis_adequacy_cache(self) -> None:

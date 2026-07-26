@@ -457,11 +457,15 @@ def _event_overlays(
             df = pd.read_parquet(path)
         except Exception:
             continue
+        metrics_by_event_id = _metrics_by_event_id(store, run_id=run_id, session_id=session_id, schema_id=schema_id)
         for _, row in df.iterrows():
             event = _event_row_payload(row)
             event_start = event.get("start_s")
             event_end = event.get("end_s")
             if _event_overlaps_window(event_start, event_end, start_s=start_s, end_s=end_s):
+                metrics = metrics_by_event_id.get(str(event.get("event_id") or ""))
+                if metrics:
+                    event["metrics"] = metrics
                 out.append(event)
     return sorted(out, key=lambda item: (float(item.get("start_s") or 0.0), str(item.get("event_id") or "")))
 
@@ -479,6 +483,59 @@ def _event_row_payload(row: pd.Series) -> dict[str, Any]:
         "peak_time_s": _first_float(row.get("peak_time_s"), row.get("trigger_time_s"), start_s),
         "end": _first_text(row.get("end"), row.get("signal"), row.get("signal_col")),
     }
+
+
+def _metrics_by_event_id(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+    schema_id: str,
+) -> dict[str, dict[str, Any]]:
+    path = store.path_metrics_df(run_id, session_id, schema_id)
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_parquet(path)
+    except Exception:
+        return {}
+    if "event_id" not in df.columns or df.empty:
+        return {}
+    metric_columns = [
+        str(column)
+        for column in df.columns
+        if str(column) not in {"event_id", "session_id", "schema_id"}
+    ]
+    out: dict[str, dict[str, Any]] = {}
+    for _, row in df.iterrows():
+        event_id = _first_text(row.get("event_id"))
+        if event_id is None:
+            continue
+        metrics: dict[str, Any] = {}
+        for column in metric_columns:
+            value = _json_metric_value(row.get(column))
+            if value is not None:
+                metrics[column] = value
+        if metrics:
+            out[event_id] = metrics
+    return out
+
+
+def _json_metric_value(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return float(value) if np.isfinite(value) else None
+    if isinstance(value, np.generic):
+        return _json_metric_value(value.item())
+    return str(value)
 
 
 def _event_overlaps_window(
