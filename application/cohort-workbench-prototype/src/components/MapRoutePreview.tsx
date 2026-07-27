@@ -42,6 +42,9 @@ const STUDY_TRACK_COLOR = '#b66a2c'
 
 const LINE_SOURCE_ID = 'bodaqs-route-lines'
 const LINE_LAYER_ID = 'bodaqs-route-lines'
+const EMPTY_SESSION_PATHS: SessionPathOverlay[] = []
+const EMPTY_HIGHLIGHT_PATHS: HighlightPathOverlay[] = []
+const EMPTY_TRACKS: TrackRecord[] = []
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -65,21 +68,24 @@ const OSM_RASTER_STYLE: StyleSpecification = {
 export function MapRoutePreview({
   primarySession,
   primaryGpsPath,
-  sessionPaths = [],
-  highlightPaths = [],
-  selectedTracks,
-  currentTracks,
+  sessionPaths = EMPTY_SESSION_PATHS,
+  highlightPaths = EMPTY_HIGHLIGHT_PATHS,
+  cursorPosition = null,
+  selectedTracks = EMPTY_TRACKS,
+  currentTracks = EMPTY_TRACKS,
 }: {
   primarySession: SessionRecord | null
   primaryGpsPath?: GeoPosition[]
   sessionPaths?: SessionPathOverlay[]
   highlightPaths?: HighlightPathOverlay[]
-  selectedTracks: TrackRecord[]
-  currentTracks: TrackRecord[]
+  cursorPosition?: GeoPosition | null
+  selectedTracks?: TrackRecord[]
+  currentTracks?: TrackRecord[]
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markerRef = useRef<maplibregl.Marker[]>([])
+  const cursorMarkerRef = useRef<maplibregl.Marker | null>(null)
   const visiblePoints = collectVisiblePositions(primarySession, primaryGpsPath, sessionPaths, highlightPaths, selectedTracks, currentTracks)
   const hasVisiblePoints = visiblePoints.length > 0
 
@@ -102,6 +108,8 @@ export function MapRoutePreview({
     return () => {
       clearMarkers(markerRef.current)
       markerRef.current = []
+      cursorMarkerRef.current?.remove()
+      cursorMarkerRef.current = null
       map.remove()
       mapRef.current = null
     }
@@ -145,6 +153,24 @@ export function MapRoutePreview({
       activeMap.off('load', applyOverlayData)
     }
   }, [currentTracks, hasVisiblePoints, highlightPaths, primaryGpsPath, primarySession, selectedTracks, sessionPaths])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const cursorLngLat = cursorPosition && isValidPosition(cursorPosition) ? lonLat(cursorPosition) : null
+    if (!map || !hasVisiblePoints || !cursorLngLat) {
+      cursorMarkerRef.current?.remove()
+      cursorMarkerRef.current = null
+      return
+    }
+    if (!cursorMarkerRef.current) {
+      const element = document.createElement('div')
+      element.className = 'map-route-cursor-marker'
+      element.setAttribute('aria-label', 'Signal cursor position')
+      cursorMarkerRef.current = new maplibregl.Marker({ element, anchor: 'center' }).setLngLat(cursorLngLat).addTo(map)
+      return
+    }
+    cursorMarkerRef.current.setLngLat(cursorLngLat)
+  }, [cursorPosition, hasVisiblePoints])
 
   if (!hasVisiblePoints) {
     return (

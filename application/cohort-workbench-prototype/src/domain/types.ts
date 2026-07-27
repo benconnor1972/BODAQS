@@ -147,6 +147,39 @@ export type SessionNoteRecord = {
   updatedAtUtc: string
 }
 
+export type SessionVideoAttachmentRecord = {
+  attachmentId: string
+  displayName: string
+  cameraLabel: string
+  path: string
+  workspaceRelativePath: string
+  libraryRelativePath: string
+  sessionRelativePath: string
+  uri: string
+  mediaType: string
+  enabled: boolean
+  sessionTimeAtVideoZeroS: number
+}
+
+export type SessionVideoAttachmentsRecord = {
+  sessionRef: StudySessionRef
+  present: boolean
+  revision: number
+  attachments: SessionVideoAttachmentRecord[]
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
+export type LocalVideoFileSelection = {
+  selected: boolean
+  path: string
+  workspaceRelativePath: string
+  displayName: string
+  fileName: string
+  mediaCreatedAtUnixS: number | null
+  mediaCreatedAtUtc: string
+}
+
 export type SessionNoteFieldDef = {
   fieldId: string
   label: string

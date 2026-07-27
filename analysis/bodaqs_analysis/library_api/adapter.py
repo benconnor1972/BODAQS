@@ -62,6 +62,11 @@ from .session_filters import (
 )
 from .session_descriptions import update_session_descriptions as write_session_descriptions
 from .session_notes import load_session_note, save_session_note
+from .session_videos import (
+    load_session_video_attachments,
+    resolve_session_video_attachment,
+    save_session_video_attachments,
+)
 from .sessions import delete_session as delete_session_artifact
 from .study_sets import (
     create_study_set,
@@ -474,6 +479,31 @@ class LibraryAdapter:
             "failed_count": len(raw_items) - saved_count,
             "results": results,
         }
+
+    def load_session_video_attachments(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        return load_session_video_attachments(self._library_root(library_id), session_ref)
+
+    def save_session_video_attachments(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        return save_session_video_attachments(self._library_root(library_id), session_ref, request)
+
+    def resolve_session_video_attachment(
+        self,
+        library_id: str,
+        request: dict[str, Any],
+        attachment_id: str,
+    ) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        return resolve_session_video_attachment(
+            self._library_root(library_id),
+            session_ref,
+            attachment_id,
+            workspace_root=self.libraries_root,
+        )
 
     def update_session_descriptions(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session_ref = self._normalized_session_ref_request(library_id, request)

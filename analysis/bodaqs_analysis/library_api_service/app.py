@@ -117,6 +117,11 @@ def create_app(
     def cache_diagnostics() -> dict[str, Any]:
         return _current_adapter(app).cache_diagnostics()
 
+    @app.post("/api/v1/local/video-file-dialog")
+    def select_local_video_file() -> dict[str, Any]:
+        _assert_writable(app)
+        return _select_local_video_file(_current_config(app).libraries_root)
+
     @app.get("/api/v1/workbench/bootstrap")
     def workbench_bootstrap() -> dict[str, Any]:
         return _current_adapter(app).get_workbench_bootstrap()
@@ -190,6 +195,40 @@ def create_app(
         _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).save_session_notes(library_id, _json_object_payload(payload))
+
+    @app.get("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/videos")
+    def load_session_video_attachments(library_id: str, run_id: str, session_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_session_video_attachments(
+            library_id,
+            _session_route_ref(library_id, run_id, session_id),
+        )
+
+    @app.put("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/videos")
+    async def save_session_video_attachments(library_id: str, run_id: str, session_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        payload = _json_object_payload(payload)
+        payload.update(_session_route_ref(library_id, run_id, session_id))
+        return _current_adapter(app).save_session_video_attachments(library_id, payload)
+
+    @app.get("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/videos/{attachment_id}/stream")
+    def stream_session_video_attachment(
+        library_id: str,
+        run_id: str,
+        session_id: str,
+        attachment_id: str,
+    ) -> FileResponse:
+        resolved = _current_adapter(app).resolve_session_video_attachment(
+            library_id,
+            _session_route_ref(library_id, run_id, session_id),
+            attachment_id,
+        )
+        attachment = resolved["attachment"]
+        return FileResponse(
+            resolved["path"],
+            media_type=resolved["media_type"],
+            filename=str(attachment.get("display_name") or attachment.get("attachment_id") or "session-video"),
+        )
 
     @app.put("/api/v1/libraries/{library_id}/sessions/descriptions")
     async def update_session_descriptions(library_id: str, request: Request) -> dict[str, Any]:
@@ -557,6 +596,19 @@ def _bookmark_payload(payload: Any) -> dict[str, Any]:
     return value
 
 
+def _session_route_ref(library_id: str, run_id: str, session_id: str) -> dict[str, str]:
+    from bodaqs_analysis.library_api.ids import make_session_key, make_session_ref_id
+
+    session_key = make_session_key(run_id, session_id)
+    return {
+        "library_id": str(library_id),
+        "run_id": str(run_id),
+        "session_id": str(session_id),
+        "session_key": session_key,
+        "session_ref_id": make_session_ref_id(library_id, session_key),
+    }
+
+
 def _libraries_root_payload(payload: Any) -> Path:
     payload = _json_object_payload(payload)
     value = payload.get("libraries_root")
@@ -597,6 +649,8 @@ def _capabilities_response(app: FastAPI) -> dict[str, Any]:
         "delete_study_sets",
         "delete_sessions",
         "write_session_notes",
+        "write_session_video_attachments",
+        "select_local_video_files",
         "write_session_descriptions",
         "write_tracks",
         "write_geospatial_policies",
@@ -609,6 +663,139 @@ def _capabilities_response(app: FastAPI) -> dict[str, Any]:
         features[feature] = False
     capabilities["features"] = features
     return capabilities
+
+
+def _select_local_video_file(libraries_root: Path) -> dict[str, Any]:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "message": "Native file picker is not available in this environment.",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        selected = filedialog.askopenfilename(
+            title="Select session video",
+            filetypes=(
+                ("Video files", "*.mp4 *.mov *.m4v *.avi *.mkv *.webm"),
+                ("MP4 video", "*.mp4"),
+                ("All files", "*.*"),
+            ),
+        )
+    finally:
+        root.destroy()
+
+    if not selected:
+        return {"selected": False}
+
+    path = Path(selected).expanduser().resolve()
+    workspace_relative = ""
+    try:
+        workspace_relative = path.relative_to(libraries_root.expanduser().resolve()).as_posix()
+    except ValueError:
+        workspace_relative = ""
+    media_created_at_unix_s = _mp4_creation_time_unix_s(path)
+    return {
+        "selected": True,
+        "path": str(path),
+        "workspace_relative_path": workspace_relative,
+        "display_name": path.stem,
+        "file_name": path.name,
+        "media_created_at_unix_s": media_created_at_unix_s,
+        "media_created_at_utc": _unix_seconds_to_utc_iso(media_created_at_unix_s),
+    }
+
+
+def _mp4_creation_time_unix_s(path: Path) -> float | None:
+    """Return the MP4/MOV movie-header creation time as Unix seconds if present."""
+
+    try:
+        with path.open("rb") as handle:
+            return _find_mp4_creation_time_unix_s(handle, 0, path.stat().st_size)
+    except OSError:
+        return None
+
+
+def _find_mp4_creation_time_unix_s(handle: Any, start: int, end: int, *, depth: int = 0) -> float | None:
+    if depth > 4:
+        return None
+    pos = start
+    while pos + 8 <= end:
+        handle.seek(pos)
+        header = handle.read(8)
+        if len(header) < 8:
+            return None
+        box_size = int.from_bytes(header[0:4], "big")
+        box_type = header[4:8]
+        header_size = 8
+        if box_size == 1:
+            largesize = handle.read(8)
+            if len(largesize) < 8:
+                return None
+            box_size = int.from_bytes(largesize, "big")
+            header_size = 16
+        elif box_size == 0:
+            box_size = end - pos
+        if box_size < header_size:
+            return None
+        box_end = min(end, pos + box_size)
+        payload_start = pos + header_size
+        if box_type == b"mvhd":
+            return _read_mvhd_creation_time_unix_s(handle, payload_start, box_end)
+        if box_type in {b"moov", b"trak", b"mdia", b"minf", b"stbl"}:
+            found = _find_mp4_creation_time_unix_s(handle, payload_start, box_end, depth=depth + 1)
+            if found is not None:
+                return found
+        pos = box_end
+    return None
+
+
+def _read_mvhd_creation_time_unix_s(handle: Any, start: int, end: int) -> float | None:
+    handle.seek(start)
+    version_flags = handle.read(4)
+    if len(version_flags) < 4:
+        return None
+    version = version_flags[0]
+    if version == 1:
+        if start + 12 > end:
+            return None
+        value = handle.read(8)
+        if len(value) < 8:
+            return None
+        mp4_seconds = int.from_bytes(value, "big")
+    elif version == 0:
+        if start + 8 > end:
+            return None
+        value = handle.read(4)
+        if len(value) < 4:
+            return None
+        mp4_seconds = int.from_bytes(value, "big")
+    else:
+        return None
+    unix_seconds = mp4_seconds - 2082844800
+    if unix_seconds <= 0:
+        return None
+    return float(unix_seconds)
+
+
+def _unix_seconds_to_utc_iso(value: float | None) -> str:
+    if value is None:
+        return ""
+    try:
+        from datetime import datetime, timezone
+
+        return datetime.fromtimestamp(value, tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    except (OSError, OverflowError, ValueError):
+        return ""
 
 
 def _start_trackpoint_query_worker(app: FastAPI, query_id: str) -> None:

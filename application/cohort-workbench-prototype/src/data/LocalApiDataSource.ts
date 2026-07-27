@@ -14,6 +14,7 @@ import type {
   GpsSourceKind,
   GpsTimebase,
   LibraryRecord,
+  LocalVideoFileSelection,
   NoteStatus,
   QcLevel,
   SessionGpsPointSet,
@@ -25,6 +26,8 @@ import type {
   SessionNoteValue,
   SessionRecord,
   SessionSignalSummary,
+  SessionVideoAttachmentRecord,
+  SessionVideoAttachmentsRecord,
   SessionTrackMatchRecord,
   SignalQueryRequest,
   SignalQueryResponse,
@@ -459,6 +462,39 @@ export class LocalApiDataSource implements LibraryDataSource {
         message: 'No save result was returned for this session note.',
       },
     )
+  }
+
+  async loadSessionVideoAttachments(session: SessionRecord): Promise<SessionVideoAttachmentsRecord> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}${sessionVideosPath(session)}`)
+    return mapSessionVideoAttachments(response)
+  }
+
+  async saveSessionVideoAttachments(attachments: SessionVideoAttachmentsRecord): Promise<SessionVideoAttachmentsRecord> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}${sessionVideosPathFromRef(attachments.sessionRef)}`, {
+      method: 'PUT',
+      body: JSON.stringify(toApiSessionVideoAttachments(attachments)),
+    })
+    return mapSessionVideoAttachments(response)
+  }
+
+  sessionVideoStreamUrl(session: SessionRecord, attachmentId: string): string {
+    return `${this.baseUrl}${sessionVideosPath(session)}/${encodeURIComponent(attachmentId)}/stream`
+  }
+
+  async selectLocalVideoFile(): Promise<LocalVideoFileSelection> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/local/video-file-dialog`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+    return {
+      selected: Boolean(response.selected),
+      path: textValue(response.path),
+      workspaceRelativePath: textValue(response.workspace_relative_path),
+      displayName: textValue(response.display_name),
+      fileName: textValue(response.file_name),
+      mediaCreatedAtUnixS: nullableNumberValue(response.media_created_at_unix_s),
+      mediaCreatedAtUtc: textValue(response.media_created_at_utc),
+    }
   }
 
   async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
@@ -938,6 +974,34 @@ function mapSessionBookmark(value: ApiObject): SessionBookmarkRecord {
     private: value.private === false ? false : true,
     createdAtUtc: textValue(provenance.created_at),
     updatedAtUtc: textValue(provenance.updated_at, textValue(provenance.created_at)),
+  }
+}
+
+function mapSessionVideoAttachments(value: ApiObject): SessionVideoAttachmentsRecord {
+  const doc = objectValue(value.video_attachments)
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session_ref)),
+    present: Boolean(value.present),
+    revision: numberValue(doc.revision),
+    attachments: arrayValue(doc.attachments).filter(isObject).map(mapSessionVideoAttachment),
+    createdAtUtc: textValue(doc.created_at_utc),
+    updatedAtUtc: textValue(doc.updated_at_utc),
+  }
+}
+
+function mapSessionVideoAttachment(value: ApiObject): SessionVideoAttachmentRecord {
+  return {
+    attachmentId: textValue(value.attachment_id),
+    displayName: textValue(value.display_name, 'Video'),
+    cameraLabel: textValue(value.camera_label),
+    path: textValue(value.path),
+    workspaceRelativePath: textValue(value.workspace_relative_path),
+    libraryRelativePath: textValue(value.library_relative_path),
+    sessionRelativePath: textValue(value.session_relative_path),
+    uri: textValue(value.uri),
+    mediaType: textValue(value.media_type),
+    enabled: value.enabled === false ? false : true,
+    sessionTimeAtVideoZeroS: numberValue(value.session_time_at_video_zero_s),
   }
 }
 
@@ -1481,6 +1545,44 @@ function toApiSessionBookmark(bookmark: SessionBookmarkRecord) {
     tags: bookmark.tags,
     private: bookmark.private,
   }
+}
+
+function toApiSessionVideoAttachments(attachments: SessionVideoAttachmentsRecord) {
+  return {
+    schema: 'bodaqs.session_video_attachments',
+    version: 1,
+    revision: attachments.revision,
+    run_id: attachments.sessionRef.runId,
+    session_id: attachments.sessionRef.sessionId,
+    session_key: attachments.sessionRef.sessionKey,
+    attachments: attachments.attachments.map((attachment) => ({
+      ...(attachment.attachmentId ? { attachment_id: attachment.attachmentId } : {}),
+      display_name: attachment.displayName.trim() || 'Video',
+      camera_label: attachment.cameraLabel,
+      path: attachment.path,
+      workspace_relative_path: attachment.workspaceRelativePath,
+      library_relative_path: attachment.libraryRelativePath,
+      session_relative_path: attachment.sessionRelativePath,
+      uri: attachment.uri,
+      media_type: attachment.mediaType,
+      enabled: attachment.enabled,
+      session_time_at_video_zero_s: attachment.sessionTimeAtVideoZeroS,
+    })),
+    created_at_utc: attachments.createdAtUtc,
+    updated_at_utc: attachments.updatedAtUtc,
+  }
+}
+
+function sessionVideosPath(session: SessionRecord) {
+  return `/api/v1/libraries/${encodeURIComponent(session.libraryId)}/runs/${encodeURIComponent(session.runId)}/sessions/${encodeURIComponent(
+    session.sessionId,
+  )}/videos`
+}
+
+function sessionVideosPathFromRef(session: StudySessionRef) {
+  return `/api/v1/libraries/${encodeURIComponent(session.libraryId)}/runs/${encodeURIComponent(session.runId)}/sessions/${encodeURIComponent(
+    session.sessionId,
+  )}/videos`
 }
 
 function noteStatusValue(value: unknown): NoteStatus {

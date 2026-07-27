@@ -1,10 +1,32 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MutableRefObject,
+  type PointerEvent,
+  type RefObject,
+} from 'react'
 import * as d3 from 'd3'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
-import { ChevronLeft, ChevronRight, Map as MapIcon, RefreshCcw, Save, SkipBack, SkipForward, Trash2 } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Film,
+  Map as MapIcon,
+  RefreshCcw,
+  Save,
+  SkipBack,
+  SkipForward,
+  Trash2,
+} from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
-import { gpsSourceDisplay } from '../domain/geospatial'
 import { sessionToStudyRef } from '../domain/studySets'
 import { InfoTip } from './Common'
 import { MapRoutePreview, type HighlightPathOverlay } from './MapRoutePreview'
@@ -15,6 +37,8 @@ import type {
   SessionBookmarkRecord,
   SessionGpsPoint,
   SessionGpsPointSet,
+  SessionVideoAttachmentRecord,
+  SessionVideoAttachmentsRecord,
   SessionSignalSummary,
   TimeseriesWindowEvent,
   TimeseriesWindowMark,
@@ -28,10 +52,30 @@ const CHART_WINDOW_DRAG_THRESHOLD_PX = 8
 const SIGNAL_INSPECTOR_HOVER_DEBUG = false
 const SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY = 'bodaqs.signalInspector.chartMode.v1'
 const SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY = 'bodaqs.signalInspector.sessionColumns.v1'
+const SIGNAL_INSPECTOR_VIEW_STORAGE_KEY = 'bodaqs.signalInspector.view.v1'
+const SIGNAL_INSPECTOR_SIDEBAR_MIN_WIDTH_PX = 320
+const SIGNAL_INSPECTOR_SIDEBAR_MAX_WIDTH_PX = 560
+const SIGNAL_INSPECTOR_GPS_MAP_MIN_HEIGHT_PX = 140
+const SIGNAL_INSPECTOR_GPS_MAP_MAX_HEIGHT_PX = 420
+const SIGNAL_INSPECTOR_VIDEO_MIN_HEIGHT_PX = 120
+const SIGNAL_INSPECTOR_VIDEO_MAX_HEIGHT_PX = 420
 const SIGNAL_COLORS = ['#008c95', '#101820', '#2d5f64', '#b88a43', '#6f7b80', '#9aa7a3']
 const EVENT_COLORS = ['#b66a2c', '#4d70a8', '#8a5a7b', '#6f7e2e', '#c46f58', '#2f7d6d']
 
 type SignalInspectorChartMode = 'single' | 'multi'
+type SidebarPanelKey = 'bookmarks' | 'gpsMap' | 'gpsAltitude' | 'video'
+
+type SignalInspectorViewPreferences = {
+  sidebarOpen: boolean
+  controlsOpen: boolean
+  sidebarWidthPx: number
+  collapsedSidebarPanels: Record<SidebarPanelKey, boolean>
+  gpsMapHeightPx: number
+  videoHeightPx: number
+  showEventDetails: boolean
+  videoSettingsCollapsed: boolean
+  videoScrollWithPlayback: boolean
+}
 
 type LoadState =
   | { status: 'idle'; message: string }
@@ -44,6 +88,12 @@ type GpsPanelState =
   | { status: 'loading'; message: string; pointSet: SessionGpsPointSet | null }
   | { status: 'ready'; message: string; pointSet: SessionGpsPointSet }
   | { status: 'error'; message: string; pointSet: SessionGpsPointSet | null }
+
+type VideoPanelState =
+  | { status: 'idle'; message: string; data: SessionVideoAttachmentsRecord | null }
+  | { status: 'loading'; message: string; data: SessionVideoAttachmentsRecord | null }
+  | { status: 'ready'; message: string; data: SessionVideoAttachmentsRecord }
+  | { status: 'error'; message: string; data: SessionVideoAttachmentsRecord | null }
 
 type EventGroup = {
   key: string
@@ -83,17 +133,17 @@ type NavigatorDrag = {
   endS: number
 }
 
-type ChartWindowDrag = {
+type TimeWindowDrag = {
   pointerId: number
-  startClientX: number
-  latestClientX: number
+  startS: number
+  currentS: number
 }
 
-type ChartWindowPreview = {
-  left: number
-  top: number
-  width: number
-  height: number
+type VideoAttachmentInput = {
+  displayName: string
+  cameraLabel: string
+  path: string
+  sessionTimeAtVideoZeroS: number
 }
 
 type AxisId = string
@@ -125,9 +175,126 @@ type SignalChartModel = {
   seriesValues: Array<Array<number | null>>
 }
 
+type SessionTimeWindow = {
+  startS: number
+  endS: number
+}
+
 function loadStateData(state: LoadState) {
   return state.status === 'ready' || state.status === 'loading' || state.status === 'error' ? state.data : undefined
 }
+
+function videoStateData(state: VideoPanelState) {
+  return state.status === 'ready' || state.status === 'loading' || state.status === 'error' ? state.data : null
+}
+
+function useSessionTimeInteraction({
+  durationS,
+  initialWindow,
+}: {
+  durationS: number
+  initialWindow?: SessionTimeWindow | null
+}) {
+  const initialSessionWindow = () =>
+    sanitizeWindow(
+      sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS),
+      sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS),
+      durationS,
+    )
+  const [windowState, setWindowState] = useState<SessionTimeWindow>(initialSessionWindow)
+  const [bookmarkPointS, setBookmarkPointSState] = useState(() => midpointOfWindow(initialSessionWindow()))
+  const [hoverTimeS, setHoverTimeS] = useState<number | null>(null)
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+  const windowDragRef = useRef<TimeWindowDrag | null>(null)
+
+  function setWindowDrag(nextDrag: TimeWindowDrag | null) {
+    windowDragRef.current = nextDrag
+  }
+
+  function setWindow(window: SessionTimeWindow) {
+    const nextWindow = sanitizeWindow(window.startS, window.endS, durationS)
+    setWindowState(nextWindow)
+    setBookmarkPointSState(midpointOfWindow(nextWindow))
+  }
+
+  function setBookmarkPoint(timeS: number) {
+    setBookmarkPointSState(roundForInput(sanitizeWindowBoundary(timeS, durationS)))
+  }
+
+  function reset(nextInitialWindow: SessionTimeWindow | null | undefined = initialWindow) {
+    const nextWindow = sanitizeWindow(
+      sanitizeWindowBoundary(nextInitialWindow?.startS ?? 0, durationS),
+      sanitizeWindowBoundary(nextInitialWindow?.endS ?? durationS, durationS),
+      durationS,
+    )
+    setWindowState(nextWindow)
+    setBookmarkPointSState(midpointOfWindow(nextWindow))
+    setHoverTimeS(null)
+    setSelectedEventId(null)
+    setWindowDrag(null)
+  }
+
+  function beginWindowDrag(pointerId: number, startS: number) {
+    const sanitizedStartS = sanitizeWindowBoundary(startS, durationS)
+    setWindowDrag({ pointerId, startS: sanitizedStartS, currentS: sanitizedStartS })
+  }
+
+  function updateWindowDrag(pointerId: number, currentS: number) {
+    const currentDrag = windowDragRef.current
+    if (!currentDrag || currentDrag.pointerId !== pointerId) {
+      return
+    }
+    windowDragRef.current = {
+      ...currentDrag,
+      currentS: sanitizeWindowBoundary(currentS, durationS),
+    }
+  }
+
+  function cancelWindowDrag(pointerId?: number) {
+    const currentDrag = windowDragRef.current
+    if (pointerId !== undefined && currentDrag && currentDrag.pointerId !== pointerId) {
+      return
+    }
+    setWindowDrag(null)
+  }
+
+  function commitWindowDrag(pointerId: number, currentS: number) {
+    const currentDrag = windowDragRef.current
+    if (!currentDrag || currentDrag.pointerId !== pointerId) {
+      return null
+    }
+    const nextWindow = sanitizeWindow(currentDrag.startS, sanitizeWindowBoundary(currentS, durationS), durationS)
+    setWindowDrag(null)
+    if (nextWindow.endS - nextWindow.startS < 0.1) {
+      return null
+    }
+    setWindow(nextWindow)
+    return nextWindow
+  }
+
+  function getWindowDrag() {
+    return windowDragRef.current
+  }
+
+  return {
+    activeWindow: windowState,
+    bookmarkPointS,
+    hoverTimeS,
+    selectedEventId,
+    beginWindowDrag,
+    cancelWindowDrag,
+    commitWindowDrag,
+    getWindowDrag,
+    setBookmarkPoint,
+    setHoverTimeS,
+    setSelectedEventId,
+    setWindow,
+    updateWindowDrag,
+    reset,
+  }
+}
+
+type SessionTimeInteraction = ReturnType<typeof useSessionTimeInteraction>
 
 export function SignalInspector({
   session,
@@ -148,25 +315,31 @@ export function SignalInspector({
     () => loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions),
     [session.libraryId, session.sessionKey, signalOptionColumns, signalOptions],
   )
+  const initialViewPreferences = useMemo(() => loadStoredViewPreferences(), [])
   const [chartMode, setChartMode] = useState<SignalInspectorChartMode>(() => loadStoredChartMode())
   const [selectedColumns, setSelectedColumns] = useState<string[]>(initialColumns)
-  const [windowStartS, setWindowStartS] = useState(() => sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS))
-  const [windowEndS, setWindowEndS] = useState(() => sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS))
+  const timeInteraction = useSessionTimeInteraction({ durationS, initialWindow })
+  const { activeWindow, bookmarkPointS, selectedEventId } = timeInteraction
   const [bookmarks, setBookmarks] = useState<SessionBookmarkRecord[]>([])
   const [activeBookmarkId, setActiveBookmarkId] = useState<string | null>(null)
   const [bookmarkTitle, setBookmarkTitle] = useState('')
   const [bookmarkPointTitle, setBookmarkPointTitle] = useState('')
-  const [bookmarkPointS, setBookmarkPointS] = useState(() =>
-    roundForInput((sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS) + sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS)) / 2),
-  )
   const [bookmarkContextMenu, setBookmarkContextMenu] = useState<{ bookmark: SessionBookmarkRecord; x: number; y: number } | null>(null)
   const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null)
   const [savingBookmarkId, setSavingBookmarkId] = useState<string | null>(null)
   const [bookmarkMessage, setBookmarkMessage] = useState('')
-  const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [showMarks, setShowMarks] = useState(true)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [controlsOpen, setControlsOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(initialViewPreferences.sidebarOpen)
+  const [controlsOpen, setControlsOpen] = useState(initialViewPreferences.controlsOpen)
+  const [sidebarWidthPx, setSidebarWidthPx] = useState(initialViewPreferences.sidebarWidthPx)
+  const [collapsedSidebarPanels, setCollapsedSidebarPanels] = useState<Record<SidebarPanelKey, boolean>>({
+    ...initialViewPreferences.collapsedSidebarPanels,
+  })
+  const [gpsMapHeightPx, setGpsMapHeightPx] = useState(initialViewPreferences.gpsMapHeightPx)
+  const [videoHeightPx, setVideoHeightPx] = useState(initialViewPreferences.videoHeightPx)
+  const [showEventDetails, setShowEventDetails] = useState(initialViewPreferences.showEventDetails)
+  const [videoSettingsCollapsed, setVideoSettingsCollapsed] = useState(initialViewPreferences.videoSettingsCollapsed)
+  const [videoScrollWithPlayback, setVideoScrollWithPlayback] = useState(initialViewPreferences.videoScrollWithPlayback)
   const [loadState, setLoadState] = useState<LoadState>({
     status: 'idle',
     message: signalOptions.length ? 'Choose signals to inspect.' : 'No signal catalog is available for this session.',
@@ -177,31 +350,42 @@ export function SignalInspector({
     status: 'idle',
     message: 'Navigator not loaded.',
   })
+  const [videoState, setVideoState] = useState<VideoPanelState>({
+    status: 'idle',
+    message: dataSource.loadSessionVideoAttachments ? 'Video attachments not loaded.' : 'Video attachments are not available from this data source.',
+    data: null,
+  })
+  const [activeVideoId, setActiveVideoId] = useState('')
+  const [videoScrubToCursor, setVideoScrubToCursor] = useState(false)
+  const [videoMessage, setVideoMessage] = useState('')
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const videoSeekFrameRef = useRef<number | null>(null)
+  const videoFollowFrameRef = useRef<number | null>(null)
+  const sidebarResizeRef = useRef<{ pointerId: number; startClientX: number; startWidthPx: number } | null>(null)
   const eventGroupsInitializedRef = useRef(false)
   const bookmarkContextMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     setSelectedColumns(loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions))
-    setWindowStartS(sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS))
-    setWindowEndS(sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS))
+    timeInteraction.reset(initialWindow)
     setActiveBookmarkId(null)
     setBookmarkTitle('')
     setBookmarkPointTitle('')
     setBookmarkContextMenu(null)
     setEditingBookmarkId(null)
     setSavingBookmarkId(null)
-    setBookmarkPointS(
-      roundForInput(
-        (sanitizeWindowBoundary(initialWindow?.startS ?? 0, durationS) +
-          sanitizeWindowBoundary(initialWindow?.endS ?? durationS, durationS)) /
-          2,
-      ),
-    )
     setBookmarkMessage('')
-    setSelectedEventId(null)
     setShowMarks(true)
     setEventGroups([])
     setVisibleEventGroups([])
+    setVideoState({
+      status: 'idle',
+      message: dataSource.loadSessionVideoAttachments ? 'Video attachments not loaded.' : 'Video attachments are not available from this data source.',
+      data: null,
+    })
+    setActiveVideoId('')
+    setVideoScrubToCursor(false)
+    setVideoMessage('')
     eventGroupsInitializedRef.current = false
   }, [durationS, initialWindow?.endS, initialWindow?.startS, session.libraryId, session.sessionKey, signalOptionColumns, signalOptions])
 
@@ -213,14 +397,66 @@ export function SignalInspector({
     storeSignalColumns(session, selectedColumns.filter((column) => signalOptionColumns.has(column)))
   }, [selectedColumns, session.libraryId, session.sessionKey, signalOptionColumns])
 
-  const requestWindow = sanitizeWindow(windowStartS, windowEndS, durationS)
+  useEffect(() => {
+    storeViewPreferences({
+      sidebarOpen,
+      controlsOpen,
+      sidebarWidthPx,
+      collapsedSidebarPanels,
+      gpsMapHeightPx,
+      videoHeightPx,
+      showEventDetails,
+      videoSettingsCollapsed,
+      videoScrollWithPlayback,
+    })
+  }, [
+    collapsedSidebarPanels,
+    controlsOpen,
+    gpsMapHeightPx,
+    showEventDetails,
+    sidebarOpen,
+    sidebarWidthPx,
+    videoHeightPx,
+    videoScrollWithPlayback,
+    videoSettingsCollapsed,
+  ])
+
+  useEffect(() => {
+    function handlePointerMove(event: globalThis.PointerEvent) {
+      const drag = sidebarResizeRef.current
+      if (!drag) {
+        return
+      }
+      const nextWidth = drag.startWidthPx + event.clientX - drag.startClientX
+      setSidebarWidthPx(clamp(nextWidth, SIGNAL_INSPECTOR_SIDEBAR_MIN_WIDTH_PX, SIGNAL_INSPECTOR_SIDEBAR_MAX_WIDTH_PX))
+    }
+
+    function handlePointerUp(event: globalThis.PointerEvent) {
+      const drag = sidebarResizeRef.current
+      if (!drag || event.pointerId !== drag.pointerId) {
+        return
+      }
+      sidebarResizeRef.current = null
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [])
+
+  const requestWindow = sanitizeWindow(activeWindow.startS, activeWindow.endS, durationS)
   const displayedWindowData = loadStateData(loadState)
   const visibleWarnings = displayedWindowData
     ? visibleWindowWarnings(displayedWindowData.warnings, requestWindow, durationS)
     : []
   const bookmarkWindow = {
-    startS: sanitizeWindowBoundary(windowStartS, durationS),
-    endS: sanitizeWindowBoundary(windowEndS, durationS),
+    startS: sanitizeWindowBoundary(activeWindow.startS, durationS),
+    endS: sanitizeWindowBoundary(activeWindow.endS, durationS),
   }
   const navigatorColumns = useMemo(() => {
     const defaults = defaultSignalColumns(signalOptions)
@@ -232,6 +468,15 @@ export function SignalInspector({
     () => [...bookmarks].sort((a, b) => a.window.startS - b.window.startS || a.title.localeCompare(b.title)),
     [bookmarks],
   )
+  const videoAttachmentsData = videoStateData(videoState)
+  const videoAttachments = videoAttachmentsData?.attachments ?? []
+  const activeVideo =
+    videoAttachments.find((attachment) => attachment.attachmentId === activeVideoId) ??
+    videoAttachments.find((attachment) => attachment.enabled) ??
+    videoAttachments[0] ??
+    null
+  const activeVideoStreamUrl =
+    activeVideo && dataSource.sessionVideoStreamUrl ? dataSource.sessionVideoStreamUrl(session, activeVideo.attachmentId) : ''
   const activeBookmarkIndex = activeBookmarkId
     ? sortedBookmarks.findIndex((bookmark) => bookmark.id === activeBookmarkId)
     : -1
@@ -254,6 +499,44 @@ export function SignalInspector({
       }
     }
     void loadBookmarks()
+    return () => {
+      cancelled = true
+    }
+  }, [dataSource, session])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadVideos() {
+      if (!dataSource.loadSessionVideoAttachments) {
+        setVideoState({ status: 'idle', message: 'Video attachments are not available from this data source.', data: null })
+        return
+      }
+      setVideoState((current) => ({
+        status: 'loading',
+        message: 'Loading video attachments...',
+        data: videoStateData(current),
+      }))
+      try {
+        const loaded = await dataSource.loadSessionVideoAttachments(session)
+        if (cancelled) {
+          return
+        }
+        setVideoState({ status: 'ready', message: 'Video attachments loaded.', data: loaded })
+        setActiveVideoId((current) => {
+          if (current && loaded.attachments.some((attachment) => attachment.attachmentId === current)) {
+            return current
+          }
+          return loaded.attachments.find((attachment) => attachment.enabled)?.attachmentId ?? loaded.attachments[0]?.attachmentId ?? ''
+        })
+        setVideoMessage('')
+      } catch (error) {
+        if (!cancelled) {
+          setVideoState({ status: 'error', message: error instanceof Error ? error.message : String(error), data: null })
+        }
+      }
+    }
+
+    void loadVideos()
     return () => {
       cancelled = true
     }
@@ -432,10 +715,10 @@ export function SignalInspector({
   useEffect(() => {
     const data = loadStateData(loadState)
     if (!data) {
-      setSelectedEventId(null)
+      timeInteraction.setSelectedEventId(null)
       return
     }
-    setSelectedEventId((current) =>
+    timeInteraction.setSelectedEventId((current) =>
       current && data.events.some((event) => event.eventId === current) ? current : null,
     )
   }, [loadState])
@@ -456,6 +739,70 @@ export function SignalInspector({
     })
   }, [bookmarks, bookmarkWindow.endS, bookmarkWindow.startS, selectedColumns, showMarks])
 
+  useEffect(() => {
+    if (!videoScrubToCursor || !activeVideo || timeInteraction.hoverTimeS === null) {
+      return
+    }
+    const video = videoRef.current
+    if (!video || !video.paused) {
+      return
+    }
+    const targetVideoTimeS = Math.max(0, timeInteraction.hoverTimeS - activeVideo.sessionTimeAtVideoZeroS)
+    if (!Number.isFinite(targetVideoTimeS) || Math.abs(video.currentTime - targetVideoTimeS) < 0.04) {
+      return
+    }
+    if (videoSeekFrameRef.current !== null) {
+      cancelAnimationFrame(videoSeekFrameRef.current)
+    }
+    videoSeekFrameRef.current = requestAnimationFrame(() => {
+      videoSeekFrameRef.current = null
+      if (videoRef.current && videoRef.current.paused) {
+        videoRef.current.currentTime = targetVideoTimeS
+      }
+    })
+    return () => {
+      if (videoSeekFrameRef.current !== null) {
+        cancelAnimationFrame(videoSeekFrameRef.current)
+        videoSeekFrameRef.current = null
+      }
+    }
+  }, [activeVideo?.attachmentId, activeVideo?.sessionTimeAtVideoZeroS, timeInteraction.hoverTimeS, videoScrubToCursor])
+
+  useEffect(() => {
+    if (!videoScrollWithPlayback || !activeVideo) {
+      return
+    }
+    let cancelled = false
+
+    function tick() {
+      if (cancelled) {
+        return
+      }
+      const video = videoRef.current
+      if (video && !video.paused && !video.ended) {
+        syncSignalWindowToVideoPlayback()
+      }
+      videoFollowFrameRef.current = requestAnimationFrame(tick)
+    }
+
+    videoFollowFrameRef.current = requestAnimationFrame(tick)
+    return () => {
+      cancelled = true
+      if (videoFollowFrameRef.current !== null) {
+        cancelAnimationFrame(videoFollowFrameRef.current)
+        videoFollowFrameRef.current = null
+      }
+    }
+  }, [
+    activeVideo?.attachmentId,
+    activeVideo?.sessionTimeAtVideoZeroS,
+    durationS,
+    loadState.status,
+    requestWindow.endS,
+    requestWindow.startS,
+    videoScrollWithPlayback,
+  ])
+
   function toggleColumn(column: string) {
     setSelectedColumns((current) =>
       current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
@@ -466,6 +813,153 @@ export function SignalInspector({
     setVisibleEventGroups((current) =>
       current.includes(groupKey) ? current.filter((item) => item !== groupKey) : [...current, groupKey],
     )
+  }
+
+  function seekActiveVideoToSessionTime(timeS: number) {
+    if (!activeVideo || !videoRef.current) {
+      return
+    }
+    const videoTimeS = Math.max(0, sanitizeWindowBoundary(timeS, durationS) - activeVideo.sessionTimeAtVideoZeroS)
+    if (Number.isFinite(videoTimeS)) {
+      videoRef.current.currentTime = videoTimeS
+    }
+  }
+
+  function syncSignalWindowToVideoPlayback() {
+    if (!activeVideo || !videoRef.current) {
+      return
+    }
+    const sessionTimeS = videoRef.current.currentTime + activeVideo.sessionTimeAtVideoZeroS
+    if (!Number.isFinite(sessionTimeS)) {
+      return
+    }
+    if (sessionTimeS > durationS) {
+      videoRef.current.pause()
+      timeInteraction.setHoverTimeS(durationS)
+      return
+    }
+    if (videoScrollWithPlayback && !videoRef.current.paused) {
+      const windowSizeS = Math.max(0.1, requestWindow.endS - requestWindow.startS)
+      const maxStartS = Math.max(0, durationS - windowSizeS)
+      const windowPosition = (sessionTimeS - requestWindow.startS) / windowSizeS
+      const shouldRecenter =
+        loadState.status !== 'loading' &&
+        ((windowPosition > 0.62 && requestWindow.startS < maxStartS) || (windowPosition < 0.38 && requestWindow.startS > 0))
+      if (shouldRecenter) {
+        const nextStartS = clamp(sessionTimeS - windowSizeS / 2, 0, maxStartS)
+        const nextEndS = Math.min(durationS, nextStartS + windowSizeS)
+        timeInteraction.setWindow({ startS: nextStartS, endS: nextEndS })
+      }
+      timeInteraction.setHoverTimeS(sanitizeWindowBoundary(sessionTimeS, durationS))
+      return
+    }
+    if (sessionTimeS > requestWindow.endS) {
+      videoRef.current.currentTime = Math.max(0, requestWindow.endS - activeVideo.sessionTimeAtVideoZeroS)
+      videoRef.current.pause()
+      timeInteraction.setHoverTimeS(requestWindow.endS)
+      return
+    }
+    if (sessionTimeS < requestWindow.startS && !videoRef.current.paused) {
+      videoRef.current.currentTime = Math.max(0, requestWindow.startS - activeVideo.sessionTimeAtVideoZeroS)
+      timeInteraction.setHoverTimeS(requestWindow.startS)
+      return
+    }
+    timeInteraction.setHoverTimeS(sanitizeWindowBoundary(sessionTimeS, durationS))
+  }
+
+  function handleVideoTimeUpdate() {
+    syncSignalWindowToVideoPlayback()
+  }
+
+  async function saveVideoAttachments(nextAttachments: SessionVideoAttachmentRecord[], pendingMessage: string) {
+    if (!dataSource.saveSessionVideoAttachments) {
+      setVideoMessage('This data source does not support video attachment edits.')
+      return
+    }
+    const currentData =
+      videoAttachmentsData ?? {
+        sessionRef: sessionToStudyRef(session),
+        present: false,
+        revision: 0,
+        attachments: [],
+        createdAtUtc: '',
+        updatedAtUtc: '',
+      }
+    setVideoMessage(pendingMessage)
+    try {
+      const saved = await dataSource.saveSessionVideoAttachments({
+        ...currentData,
+        present: true,
+        attachments: nextAttachments,
+      })
+      setVideoState({ status: 'ready', message: 'Video attachments loaded.', data: saved })
+      setActiveVideoId((current) => {
+        if (current && saved.attachments.some((attachment) => attachment.attachmentId === current)) {
+          return current
+        }
+        return saved.attachments.find((attachment) => attachment.enabled)?.attachmentId ?? saved.attachments[0]?.attachmentId ?? ''
+      })
+      setVideoMessage('')
+    } catch (error) {
+      setVideoMessage(error instanceof Error ? `Could not save video attachment: ${error.message}` : 'Could not save video attachment.')
+    }
+  }
+
+  async function addVideoAttachment(input: VideoAttachmentInput) {
+    const trimmedPath = input.path.trim()
+    if (!trimmedPath) {
+      setVideoMessage('Enter a video path before saving.')
+      return
+    }
+    const attachment: SessionVideoAttachmentRecord = {
+      attachmentId: makeVideoAttachmentId(),
+      displayName: input.displayName.trim() || 'Session video',
+      cameraLabel: input.cameraLabel.trim(),
+      path: isAbsoluteLocalPath(trimmedPath) ? trimmedPath : '',
+      workspaceRelativePath: isAbsoluteLocalPath(trimmedPath) ? '' : trimmedPath,
+      libraryRelativePath: '',
+      sessionRelativePath: '',
+      uri: '',
+      mediaType: 'video/mp4',
+      enabled: true,
+      sessionTimeAtVideoZeroS: Number.isFinite(input.sessionTimeAtVideoZeroS) ? input.sessionTimeAtVideoZeroS : 0,
+    }
+    const nextAttachments = videoAttachments.map((existing) => ({ ...existing, enabled: false })).concat(attachment)
+    setActiveVideoId(attachment.attachmentId)
+    await saveVideoAttachments(nextAttachments, 'Saving video attachment...')
+  }
+
+  async function updateVideoAttachment(attachmentId: string, input: VideoAttachmentInput) {
+    const trimmedPath = input.path.trim()
+    if (!trimmedPath) {
+      setVideoMessage('Enter a video path before saving.')
+      return
+    }
+    const nextAttachments = videoAttachments.map((attachment) =>
+      attachment.attachmentId === attachmentId
+        ? {
+            ...attachment,
+            displayName: input.displayName.trim() || attachment.displayName || 'Session video',
+            cameraLabel: input.cameraLabel.trim(),
+            path: isAbsoluteLocalPath(trimmedPath) ? trimmedPath : '',
+            workspaceRelativePath: isAbsoluteLocalPath(trimmedPath) ? '' : trimmedPath,
+            libraryRelativePath: '',
+            sessionRelativePath: '',
+            sessionTimeAtVideoZeroS: Number.isFinite(input.sessionTimeAtVideoZeroS) ? input.sessionTimeAtVideoZeroS : 0,
+          }
+        : attachment,
+    )
+    await saveVideoAttachments(nextAttachments, 'Saving video attachment...')
+  }
+
+  async function deleteVideoAttachment(attachmentId: string) {
+    const attachment = videoAttachments.find((candidate) => candidate.attachmentId === attachmentId)
+    const label = attachment?.displayName || attachment?.cameraLabel || attachmentId
+    if (!window.confirm(`Delete video attachment "${label}" from this session? The video file itself will not be deleted.`)) {
+      return
+    }
+    const nextAttachments = videoAttachments.filter((candidate) => candidate.attachmentId !== attachmentId)
+    await saveVideoAttachments(nextAttachments, 'Deleting video attachment...')
   }
 
   async function saveBookmark(kind: 'window' | 'point') {
@@ -513,8 +1007,8 @@ export function SignalInspector({
   }
 
   function applyBookmark(bookmark: SessionBookmarkRecord) {
-    setWindowStartS(sanitizeWindowBoundary(bookmark.window.startS, durationS))
-    setWindowEndS(sanitizeWindowBoundary(bookmark.window.endS, durationS))
+    timeInteraction.setWindow(bookmark.window)
+    seekActiveVideoToSessionTime(bookmark.window.startS)
     const restoredColumns = (bookmark.viewState.signalInspector?.signalColumns ?? []).filter((column) =>
       signalOptionColumns.has(column),
     )
@@ -579,15 +1073,44 @@ export function SignalInspector({
     applyBookmark(nextBookmark)
   }
 
+  function toggleSidebarPanel(panel: SidebarPanelKey) {
+    setCollapsedSidebarPanels((current) => ({
+      ...current,
+      [panel]: !current[panel],
+    }))
+  }
+
+  function beginSidebarResize(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    sidebarResizeRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startWidthPx: sidebarWidthPx,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const layoutStyle = sidebarOpen
+    ? ({ '--signal-inspector-sidebar-width': `${sidebarWidthPx}px` } as CSSProperties)
+    : undefined
+
   return (
     <div className="signal-inspector">
       <div
         className={`signal-inspector-layout${sidebarOpen ? '' : ' sidebar-collapsed'}${
           controlsOpen ? '' : ' controls-collapsed'
         }`}
+        style={layoutStyle}
       >
         {sidebarOpen ? (
         <aside className="signal-inspector-sidebar">
+          <div className="signal-inspector-control-panel-header signal-inspector-sidebar-header">
+            <strong>Bookmarks, GPS and Video</strong>
+            <button aria-label="Collapse bookmarks, GPS and video" type="button" onClick={() => setSidebarOpen(false)}>
+              <ChevronLeft size={15} />
+            </button>
+          </div>
           <section className="signal-inspector-card">
             <div className="signal-inspector-card-header">
               <h3>
@@ -596,122 +1119,169 @@ export function SignalInspector({
               </h3>
               <div className="signal-inspector-card-actions">
                 <small>{sortedBookmarks.length} saved</small>
-                <button aria-label="Collapse bookmarks and GPS" type="button" onClick={() => setSidebarOpen(false)}>
-                  <ChevronLeft size={15} />
+                <button
+                  aria-label={collapsedSidebarPanels.bookmarks ? 'Expand bookmarks' : 'Collapse bookmarks'}
+                  type="button"
+                  onClick={() => toggleSidebarPanel('bookmarks')}
+                >
+                  {collapsedSidebarPanels.bookmarks ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
                 </button>
               </div>
             </div>
-            <div className="signal-inspector-save-row">
-              <input
-                type="text"
-                value={bookmarkTitle}
-                onChange={(event) => setBookmarkTitle(event.target.value)}
-                placeholder={`Bookmark ${formatTime(requestWindow.startS)}-${formatTime(requestWindow.endS)}`}
-              />
-              <button type="button" onClick={() => saveBookmark('window')} disabled={selectedColumns.length === 0}>
-                <Save size={14} />
-                Save window
-              </button>
-            </div>
-            <div className="signal-inspector-point-row">
-              <input
-                aria-label="Point bookmark name"
-                type="text"
-                value={bookmarkPointTitle}
-                onChange={(event) => setBookmarkPointTitle(event.target.value)}
-                placeholder={`Point ${formatTime(bookmarkPointS)}`}
-              />
-              <input
-                aria-label="Bookmark point in seconds"
-                min={0}
-                max={durationS}
-                step={0.1}
-                type="number"
-                value={roundForInput(bookmarkPointS)}
-                onChange={(event) => setBookmarkPointS(Number(event.target.value))}
-              />
-              <button type="button" onClick={() => saveBookmark('point')} disabled={selectedColumns.length === 0}>
-                Save point
-              </button>
-            </div>
-            {bookmarkMessage && <p className="signal-inspector-bookmark-message">{bookmarkMessage}</p>}
-            {sortedBookmarks.length === 0 ? (
-              <p>No bookmarks yet.</p>
-            ) : (
-              <div className="signal-inspector-bookmark-list">
-                {sortedBookmarks.map((bookmark) => (
+            {!collapsedSidebarPanels.bookmarks && (
+              <div className="signal-inspector-card-body">
+                <div className="signal-inspector-save-row">
+                  <input
+                    type="text"
+                    value={bookmarkTitle}
+                    onChange={(event) => setBookmarkTitle(event.target.value)}
+                    placeholder={`Bookmark ${formatTime(requestWindow.startS)}-${formatTime(requestWindow.endS)}`}
+                  />
+                  <button type="button" onClick={() => saveBookmark('window')} disabled={selectedColumns.length === 0}>
+                    <Save size={14} />
+                    Save window
+                  </button>
+                </div>
+                <div className="signal-inspector-point-row">
+                  <input
+                    aria-label="Point bookmark name"
+                    type="text"
+                    value={bookmarkPointTitle}
+                    onChange={(event) => setBookmarkPointTitle(event.target.value)}
+                    placeholder={`Point ${formatTime(bookmarkPointS)}`}
+                  />
+                  <input
+                    aria-label="Bookmark point in seconds"
+                    min={0}
+                    max={durationS}
+                    step={0.1}
+                    type="number"
+                    value={roundForInput(bookmarkPointS)}
+                    onChange={(event) => timeInteraction.setBookmarkPoint(Number(event.target.value))}
+                  />
+                  <button type="button" onClick={() => saveBookmark('point')} disabled={selectedColumns.length === 0}>
+                    Save point
+                  </button>
+                </div>
+                {bookmarkMessage && <p className="signal-inspector-bookmark-message">{bookmarkMessage}</p>}
+                {sortedBookmarks.length === 0 ? (
+                  <p>No bookmarks yet.</p>
+                ) : (
+                  <div className="signal-inspector-bookmark-list">
+                    {sortedBookmarks.map((bookmark) => (
+                      <div
+                        className={bookmark.id === activeBookmarkId ? 'active' : ''}
+                        key={bookmark.id}
+                        onContextMenu={(event) => {
+                          event.preventDefault()
+                          setBookmarkContextMenu({ bookmark, x: event.clientX, y: event.clientY })
+                        }}
+                      >
+                        {editingBookmarkId === bookmark.id ? (
+                          <BookmarkRenameInput
+                            disabled={savingBookmarkId === bookmark.id}
+                            initialValue={bookmark.title}
+                            onCancel={() => {
+                              setEditingBookmarkId(null)
+                              setSavingBookmarkId(null)
+                            }}
+                            onCommit={(title) => {
+                              void renameBookmark(bookmark, title)
+                            }}
+                          />
+                        ) : (
+                          <button type="button" onClick={() => applyBookmark(bookmark)}>
+                            <strong>{bookmark.title}</strong>
+                            <small>{formatBookmarkWindow(bookmark.window)}</small>
+                          </button>
+                        )}
+                        <button
+                          aria-label={`Delete bookmark ${bookmark.title}`}
+                          className="signal-inspector-delete-bookmark"
+                          type="button"
+                          onClick={() => deleteBookmark(bookmark.id)}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {bookmarkContextMenu && (
                   <div
-                    className={bookmark.id === activeBookmarkId ? 'active' : ''}
-                    key={bookmark.id}
-                    onContextMenu={(event) => {
-                      event.preventDefault()
-                      setBookmarkContextMenu({ bookmark, x: event.clientX, y: event.clientY })
-                    }}
+                    className="signal-inspector-bookmark-context-menu"
+                    ref={bookmarkContextMenuRef}
+                    style={{ left: bookmarkContextMenu.x, top: bookmarkContextMenu.y }}
                   >
-                    {editingBookmarkId === bookmark.id ? (
-                      <BookmarkRenameInput
-                        disabled={savingBookmarkId === bookmark.id}
-                        initialValue={bookmark.title}
-                        onCancel={() => {
-                          setEditingBookmarkId(null)
-                          setSavingBookmarkId(null)
-                        }}
-                        onCommit={(title) => {
-                          void renameBookmark(bookmark, title)
-                        }}
-                      />
-                    ) : (
-                      <button type="button" onClick={() => applyBookmark(bookmark)}>
-                        <strong>{bookmark.title}</strong>
-                        <small>
-                          {formatBookmarkWindow(bookmark.window)}
-                        </small>
-                      </button>
-                    )}
                     <button
-                      aria-label={`Delete bookmark ${bookmark.title}`}
-                      className="signal-inspector-delete-bookmark"
                       type="button"
-                      onClick={() => deleteBookmark(bookmark.id)}
+                      onClick={() => {
+                        setEditingBookmarkId(bookmarkContextMenu.bookmark.id)
+                        setBookmarkContextMenu(null)
+                      }}
                     >
-                      <Trash2 size={13} />
+                      Rename bookmark
                     </button>
                   </div>
-                ))}
+                )}
+                <div className="signal-inspector-bookmark-actions">
+                  <button type="button" onClick={() => goToAdjacentBookmark(-1)} disabled={sortedBookmarks.length === 0}>
+                    <SkipBack size={14} />
+                    Previous
+                  </button>
+                  <button type="button" onClick={() => goToAdjacentBookmark(1)} disabled={sortedBookmarks.length === 0}>
+                    <SkipForward size={14} />
+                    Next
+                  </button>
+                </div>
               </div>
             )}
-            {bookmarkContextMenu && (
-              <div
-                className="signal-inspector-bookmark-context-menu"
-                ref={bookmarkContextMenuRef}
-                style={{ left: bookmarkContextMenu.x, top: bookmarkContextMenu.y }}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingBookmarkId(bookmarkContextMenu.bookmark.id)
-                    setBookmarkContextMenu(null)
-                  }}
-                >
-                  Rename bookmark
-                </button>
-              </div>
-            )}
-            <div className="signal-inspector-bookmark-actions">
-              <button type="button" onClick={() => goToAdjacentBookmark(-1)} disabled={sortedBookmarks.length === 0}>
-                <SkipBack size={14} />
-                Previous
-              </button>
-              <button type="button" onClick={() => goToAdjacentBookmark(1)} disabled={sortedBookmarks.length === 0}>
-                <SkipForward size={14} />
-                Next
-              </button>
-            </div>
           </section>
           <SignalInspectorGpsPanel
             activeWindow={requestWindow}
+            collapsedAltitude={collapsedSidebarPanels.gpsAltitude}
+            collapsedMap={collapsedSidebarPanels.gpsMap}
+            cursorTimeS={timeInteraction.hoverTimeS}
             dataSource={dataSource}
+            mapHeightPx={gpsMapHeightPx}
+            onToggleAltitude={() => toggleSidebarPanel('gpsAltitude')}
+            onToggleMap={() => toggleSidebarPanel('gpsMap')}
+            onMapHeightChange={setGpsMapHeightPx}
             session={session}
+          />
+          <SignalInspectorVideoPanel
+            activeVideo={activeVideo}
+            activeVideoId={activeVideoId}
+            activeWindow={requestWindow}
+            canWrite={Boolean(dataSource.saveSessionVideoAttachments)}
+            collapsed={collapsedSidebarPanels.video}
+            durationS={durationS}
+            message={videoMessage}
+            onActiveVideoIdChange={setActiveVideoId}
+            onAddAttachment={(input) => {
+              void addVideoAttachment(input)
+            }}
+            onDeleteAttachment={(attachmentId) => {
+              void deleteVideoAttachment(attachmentId)
+            }}
+            onSelectVideoFile={dataSource.selectLocalVideoFile?.bind(dataSource)}
+            onSettingsCollapsedChange={setVideoSettingsCollapsed}
+            onScrubToCursorChange={setVideoScrubToCursor}
+            onScrollWithPlaybackChange={setVideoScrollWithPlayback}
+            onTimeUpdate={handleVideoTimeUpdate}
+            onToggleCollapsed={() => toggleSidebarPanel('video')}
+            onUpdateAttachment={(attachmentId, input) => {
+              void updateVideoAttachment(attachmentId, input)
+            }}
+            onVideoHeightChange={setVideoHeightPx}
+            scrubToCursor={videoScrubToCursor}
+            sessionStartedAt={session.startedAt}
+            settingsCollapsed={videoSettingsCollapsed}
+            state={videoState}
+            streamUrl={activeVideoStreamUrl}
+            videoHeightPx={videoHeightPx}
+            videoRef={videoRef}
+            scrollWithPlayback={videoScrollWithPlayback}
           />
         </aside>
         ) : (
@@ -722,8 +1292,18 @@ export function SignalInspector({
             title="Show bookmarks and GPS"
           >
             <ChevronRight size={15} />
-            <span>Bookmarks / GPS</span>
+            <span>Bookmarks, GPS and Video</span>
           </button>
+        )}
+
+        {sidebarOpen && (
+          <button
+            aria-label="Resize bookmarks and GPS panel"
+            className="signal-inspector-sidebar-resizer"
+            type="button"
+            onPointerDown={beginSidebarResize}
+            title="Drag to reallocate space between the sidebar and charts"
+          />
         )}
 
         {controlsOpen ? (
@@ -782,6 +1362,14 @@ export function SignalInspector({
 
           <section className="signal-inspector-card">
             <h3>Events</h3>
+            <label className="signal-inspector-video-checkbox">
+              <input
+                checked={showEventDetails}
+                onChange={(event) => setShowEventDetails(event.target.checked)}
+                type="checkbox"
+              />
+              <span>Show event details</span>
+            </label>
             <div className="signal-inspector-check-list">
               <label>
                 <input checked={showMarks} onChange={(event) => setShowMarks(event.target.checked)} type="checkbox" />
@@ -832,82 +1420,72 @@ export function SignalInspector({
         )}
 
         <section className="signal-inspector-main">
-          {loadState.status === 'loading' && !displayedWindowData && <div className="signal-inspector-message">{loadState.message}</div>}
-          {loadState.status === 'error' && !displayedWindowData && (
-            <div className="signal-inspector-message warning">Could not load signals: {loadState.message}</div>
-          )}
-          {loadState.status === 'idle' && <div className="signal-inspector-message">{loadState.message}</div>}
-          {displayedWindowData && (
-            <>
-              {loadState.status === 'loading' && <div className="signal-inspector-update-pill">{loadState.message}</div>}
-              {chartMode === 'multi' ? (
-                <SignalMultiChartStack
-                  activeBookmarkId={activeBookmarkId}
-                  bookmarks={sortedBookmarks}
-                  data={displayedWindowData}
-                  durationS={durationS}
-                  visibleEventGroups={visibleEventGroups}
-                  showMarks={showMarks}
-                  eventGroups={effectiveEventGroups}
-                  selectedEventId={selectedEventId}
-                  onSelectEvent={setSelectedEventId}
-                  onSelectWindow={(window) => {
-                    setWindowStartS(window.startS)
-                    setWindowEndS(window.endS)
-                    setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
-                  }}
-                  onSelectPoint={(timeS) => setBookmarkPointS(roundForInput(timeS))}
-                />
-              ) : (
-                <>
+          <div className="signal-inspector-main-scroll">
+            {loadState.status === 'loading' && !displayedWindowData && <div className="signal-inspector-message">{loadState.message}</div>}
+            {loadState.status === 'error' && !displayedWindowData && (
+              <div className="signal-inspector-message warning">Could not load signals: {loadState.message}</div>
+            )}
+            {loadState.status === 'idle' && <div className="signal-inspector-message">{loadState.message}</div>}
+            {displayedWindowData && (
+              <>
+                {loadState.status === 'loading' && <div className="signal-inspector-update-pill">{loadState.message}</div>}
+                {chartMode === 'multi' ? (
+                  <SignalMultiChartStack
+                    activeBookmarkId={activeBookmarkId}
+                    bookmarks={sortedBookmarks}
+                    data={displayedWindowData}
+                    durationS={durationS}
+                    timeInteraction={timeInteraction}
+                    visibleEventGroups={visibleEventGroups}
+                    showMarks={showMarks}
+                    eventGroups={effectiveEventGroups}
+                    selectedEventId={selectedEventId}
+                    onSelectEvent={timeInteraction.setSelectedEventId}
+                  />
+                ) : (
                   <SignalWindowChart
                     activeBookmarkId={activeBookmarkId}
                     bookmarks={sortedBookmarks}
                     data={displayedWindowData}
                     durationS={durationS}
+                    timeInteraction={timeInteraction}
                     visibleEventGroups={visibleEventGroups}
                     showMarks={showMarks}
+                    synchronizedHoverTimeS={timeInteraction.hoverTimeS}
                     eventGroups={effectiveEventGroups}
                     selectedEventId={selectedEventId}
-                    onSelectEvent={setSelectedEventId}
-                    onSelectWindow={(window) => {
-                      setWindowStartS(window.startS)
-                      setWindowEndS(window.endS)
-                      setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
-                    }}
-                    onSelectPoint={(timeS) => setBookmarkPointS(roundForInput(timeS))}
+                    onHoverTimeChange={timeInteraction.setHoverTimeS}
+                    onSelectEvent={timeInteraction.setSelectedEventId}
                   />
-                  <SignalNavigator
-                    state={navigatorState}
-                    activeWindow={requestWindow}
-                    durationS={durationS}
-                    onSelectWindow={(window) => {
-                      setWindowStartS(window.startS)
-                      setWindowEndS(window.endS)
-                      setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
-                    }}
+                )}
+                {showEventDetails && (
+                  <SelectedEventPanel
+                    event={displayedWindowData.events.find((event) => event.eventId === selectedEventId) ?? null}
+                    onClear={() => timeInteraction.setSelectedEventId(null)}
+                    onZoom={timeInteraction.setWindow}
                   />
-                </>
-              )}
-              <SelectedEventPanel
-                event={displayedWindowData.events.find((event) => event.eventId === selectedEventId) ?? null}
-                onClear={() => setSelectedEventId(null)}
-                onZoom={(window) => {
-                  setWindowStartS(window.startS)
-                  setWindowEndS(window.endS)
-                  setBookmarkPointS(roundForInput((window.startS + window.endS) / 2))
-                }}
+                )}
+                {loadState.status === 'error' && (
+                  <div className="signal-inspector-message warning">Could not update signals: {loadState.message}</div>
+                )}
+                {visibleWarnings.length > 0 && (
+                  <div className="signal-inspector-message warning">
+                    {visibleWarnings.slice(0, 3).join(' | ')}
+                    {visibleWarnings.length > 3 ? ` | ${visibleWarnings.length - 3} more warning(s)` : ''}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          {displayedWindowData && (
+            <div className="signal-inspector-main-navigator">
+              <SignalNavigator
+                state={navigatorState}
+                activeWindow={requestWindow}
+                durationS={durationS}
+                onSelectWindow={timeInteraction.setWindow}
               />
-              {loadState.status === 'error' && (
-                <div className="signal-inspector-message warning">Could not update signals: {loadState.message}</div>
-              )}
-              {visibleWarnings.length > 0 && (
-                <div className="signal-inspector-message warning">
-                  {visibleWarnings.slice(0, 3).join(' | ')}
-                  {visibleWarnings.length > 3 ? ` | ${visibleWarnings.length - 3} more warning(s)` : ''}
-                </div>
-              )}
-            </>
+            </div>
           )}
         </section>
       </div>
@@ -975,14 +1553,29 @@ function BookmarkRenameInput({
 
 function SignalInspectorGpsPanel({
   activeWindow,
+  collapsedAltitude,
+  collapsedMap,
+  cursorTimeS,
   dataSource,
+  mapHeightPx,
+  onMapHeightChange,
+  onToggleAltitude,
+  onToggleMap,
   session,
 }: {
   activeWindow: { startS: number; endS: number }
+  collapsedAltitude: boolean
+  collapsedMap: boolean
+  cursorTimeS: number | null
   dataSource: LibraryDataSource
+  mapHeightPx: number
+  onMapHeightChange: (heightPx: number) => void
+  onToggleAltitude: () => void
+  onToggleMap: () => void
   session: SessionRecord
 }) {
   const fallbackPointSet = useMemo(() => catalogGpsPointSet(session), [session])
+  const mapResizeRef = useRef<{ pointerId: number; startClientY: number; startHeightPx: number } | null>(null)
   const [gpsState, setGpsState] = useState<GpsPanelState>(() => ({
     status: fallbackPointSet.present ? 'idle' : 'idle',
     message: fallbackPointSet.present ? 'GPS preview not loaded.' : 'No GPS path is available for this session.',
@@ -1042,11 +1635,43 @@ function SignalInspectorGpsPanel({
     }
   }, [dataSource, fallbackPointSet, preferredSourceId, session])
 
+  useEffect(() => {
+    function handlePointerMove(event: globalThis.PointerEvent) {
+      const drag = mapResizeRef.current
+      if (!drag) {
+        return
+      }
+      const nextHeight = drag.startHeightPx + event.clientY - drag.startClientY
+      onMapHeightChange(clamp(nextHeight, SIGNAL_INSPECTOR_GPS_MAP_MIN_HEIGHT_PX, SIGNAL_INSPECTOR_GPS_MAP_MAX_HEIGHT_PX))
+    }
+
+    function handlePointerUp(event: globalThis.PointerEvent) {
+      const drag = mapResizeRef.current
+      if (!drag || event.pointerId !== drag.pointerId) {
+        return
+      }
+      mapResizeRef.current = null
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [onMapHeightChange])
+
   const pointSet = gpsState.pointSet
   const fullPath = pointSet?.path ?? []
   const windowPath = useMemo(
     () => (pointSet ? gpsPathForWindow(pointSet.points, activeWindow) : []),
     [activeWindow.endS, activeWindow.startS, pointSet],
+  )
+  const cursorPosition = useMemo(
+    () => (pointSet && cursorTimeS !== null ? gpsPositionAtTime(pointSet.points, cursorTimeS) : null),
+    [cursorTimeS, pointSet],
   )
   const highlightPaths = useMemo<HighlightPathOverlay[]>(
     () =>
@@ -1064,42 +1689,449 @@ function SignalInspectorGpsPanel({
         : [],
     [windowPath],
   )
-  const timedPointCount = pointSet?.points.filter((point) => typeof point.timeS === 'number' && Number.isFinite(point.timeS)).length ?? 0
+  const mapViewportStyle = { '--gps-map-height': `${mapHeightPx}px` } as CSSProperties
+
+  function beginMapResize(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    mapResizeRef.current = {
+      pointerId: event.pointerId,
+      startClientY: event.clientY,
+      startHeightPx: mapHeightPx,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
 
   return (
-    <section className="signal-inspector-card signal-inspector-gps-card">
+    <>
+      <section className="signal-inspector-card signal-inspector-gps-card">
+        <div className="signal-inspector-card-header">
+          <h3>
+            GPS
+            <InfoTip text="Shows the session GPS path and highlights the portion covered by the current signal window when time-aligned GPS points are available." />
+          </h3>
+          <div className="signal-inspector-card-actions">
+            <GpsBadge summary={session.gpsSummary} />
+            <button
+              aria-label={collapsedMap ? 'Expand GPS' : 'Collapse GPS'}
+              type="button"
+              onClick={onToggleMap}
+            >
+              {collapsedMap ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+            </button>
+          </div>
+        </div>
+        {!collapsedMap && (
+          <div className="signal-inspector-resizable-viewport">
+            {fullPath.length >= 2 ? (
+              <div className="signal-inspector-gps-map" style={mapViewportStyle}>
+                <MapRoutePreview
+                  cursorPosition={cursorPosition}
+                  highlightPaths={highlightPaths}
+                  primaryGpsPath={fullPath}
+                  primarySession={session}
+                />
+              </div>
+            ) : (
+              <div className="signal-inspector-gps-empty" style={mapViewportStyle}>
+                <MapIcon size={20} />
+                <span>No GPS path is available for this session.</span>
+              </div>
+            )}
+            <button
+              aria-label="Resize GPS map"
+              className="signal-inspector-vertical-resizer"
+              type="button"
+              onPointerDown={beginMapResize}
+              title="Drag to resize GPS map"
+            />
+          </div>
+        )}
+      </section>
+      <section className="signal-inspector-card signal-inspector-gps-card">
+        <div className="signal-inspector-card-header">
+          <h3>Altitude</h3>
+          <div className="signal-inspector-card-actions">
+            <button
+              aria-label={collapsedAltitude ? 'Expand altitude' : 'Collapse altitude'}
+              type="button"
+              onClick={onToggleAltitude}
+            >
+              {collapsedAltitude ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+            </button>
+          </div>
+        </div>
+        {!collapsedAltitude && <GpsAltitudeChart activeWindow={activeWindow} pointSet={pointSet} />}
+      </section>
+    </>
+  )
+}
+
+function SignalInspectorVideoPanel({
+  activeVideo,
+  activeVideoId,
+  activeWindow,
+  canWrite,
+  collapsed,
+  durationS,
+  message,
+  onActiveVideoIdChange,
+  onAddAttachment,
+  onDeleteAttachment,
+  onSettingsCollapsedChange,
+  onSelectVideoFile,
+  onScrubToCursorChange,
+  onScrollWithPlaybackChange,
+  onTimeUpdate,
+  onToggleCollapsed,
+  onUpdateAttachment,
+  onVideoHeightChange,
+  scrollWithPlayback,
+  scrubToCursor,
+  sessionStartedAt,
+  settingsCollapsed,
+  state,
+  streamUrl,
+  videoHeightPx,
+  videoRef,
+}: {
+  activeVideo: SessionVideoAttachmentRecord | null
+  activeVideoId: string
+  activeWindow: { startS: number; endS: number }
+  canWrite: boolean
+  collapsed: boolean
+  durationS: number
+  message: string
+  onActiveVideoIdChange: (attachmentId: string) => void
+  onAddAttachment: (input: VideoAttachmentInput) => void
+  onDeleteAttachment: (attachmentId: string) => void
+  onSettingsCollapsedChange: (collapsed: boolean) => void
+  onSelectVideoFile?: LibraryDataSource['selectLocalVideoFile']
+  onScrubToCursorChange: (enabled: boolean) => void
+  onScrollWithPlaybackChange: (enabled: boolean) => void
+  onTimeUpdate: () => void
+  onToggleCollapsed: () => void
+  onUpdateAttachment: (attachmentId: string, input: VideoAttachmentInput) => void
+  onVideoHeightChange: (heightPx: number) => void
+  scrollWithPlayback: boolean
+  scrubToCursor: boolean
+  sessionStartedAt: string
+  settingsCollapsed: boolean
+  state: VideoPanelState
+  streamUrl: string
+  videoHeightPx: number
+  videoRef: RefObject<HTMLVideoElement | null>
+}) {
+  const data = videoStateData(state)
+  const attachments = data?.attachments ?? []
+  const [editingNewVideo, setEditingNewVideo] = useState(false)
+  const [activeOffset, setActiveOffset] = useState('0')
+  const [editDisplayName, setEditDisplayName] = useState('')
+  const [editCameraLabel, setEditCameraLabel] = useState('')
+  const [editPath, setEditPath] = useState('')
+  const [browseMessage, setBrowseMessage] = useState('')
+  const autoNewArmedRef = useRef(false)
+  const videoResizeRef = useRef<{ pointerId: number; startClientY: number; startHeightPx: number } | null>(null)
+
+  useEffect(() => {
+    if (editingNewVideo) {
+      return
+    }
+    setActiveOffset(String(roundForInput(activeVideo?.sessionTimeAtVideoZeroS ?? 0)))
+    setEditDisplayName(activeVideo?.displayName ?? '')
+    setEditCameraLabel(activeVideo?.cameraLabel ?? '')
+    setEditPath(activeVideo ? videoAttachmentPathValue(activeVideo) : '')
+  }, [
+    activeVideo?.attachmentId,
+    activeVideo?.cameraLabel,
+    activeVideo?.displayName,
+    activeVideo?.libraryRelativePath,
+    activeVideo?.path,
+    activeVideo?.sessionRelativePath,
+    activeVideo?.sessionTimeAtVideoZeroS,
+    activeVideo?.workspaceRelativePath,
+    editingNewVideo,
+  ])
+
+  useEffect(() => {
+    if (state.status !== 'ready') {
+      return
+    }
+    if (attachments.length === 0 && !editingNewVideo) {
+      startNewAttachment(true)
+      return
+    }
+    if (attachments.length > 0 && editingNewVideo && autoNewArmedRef.current) {
+      autoNewArmedRef.current = false
+      setEditingNewVideo(false)
+    }
+  }, [attachments.length, editingNewVideo, state.status])
+
+  useEffect(() => {
+    function handlePointerMove(event: globalThis.PointerEvent) {
+      const drag = videoResizeRef.current
+      if (!drag) {
+        return
+      }
+      const nextHeight = drag.startHeightPx + event.clientY - drag.startClientY
+      onVideoHeightChange(clamp(nextHeight, SIGNAL_INSPECTOR_VIDEO_MIN_HEIGHT_PX, SIGNAL_INSPECTOR_VIDEO_MAX_HEIGHT_PX))
+    }
+
+    function handlePointerUp(event: globalThis.PointerEvent) {
+      const drag = videoResizeRef.current
+      if (!drag || event.pointerId !== drag.pointerId) {
+        return
+      }
+      videoResizeRef.current = null
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [onVideoHeightChange])
+
+  const pristineForm = editingNewVideo
+    ? {
+        displayName: '',
+        cameraLabel: '',
+        path: '',
+        offset: '0',
+      }
+    : {
+        displayName: activeVideo?.displayName ?? '',
+        cameraLabel: activeVideo?.cameraLabel ?? '',
+        path: activeVideo ? videoAttachmentPathValue(activeVideo) : '',
+        offset: String(roundForInput(activeVideo?.sessionTimeAtVideoZeroS ?? 0)),
+      }
+  const formDirty =
+    editDisplayName !== pristineForm.displayName ||
+    editCameraLabel !== pristineForm.cameraLabel ||
+    editPath !== pristineForm.path ||
+    activeOffset !== pristineForm.offset
+
+  function startNewAttachment(autoArmed = false) {
+    autoNewArmedRef.current = autoArmed
+    setEditingNewVideo(true)
+    setEditDisplayName('')
+    setEditCameraLabel('')
+    setEditPath('')
+    setActiveOffset('0')
+    setBrowseMessage('')
+  }
+
+  function saveAttachmentForm() {
+    const input = {
+      displayName: editDisplayName,
+      cameraLabel: editCameraLabel,
+      path: editPath,
+      sessionTimeAtVideoZeroS: Number(activeOffset),
+    }
+    if (editingNewVideo) {
+      onAddAttachment(input)
+      setEditingNewVideo(false)
+      return
+    }
+    if (activeVideo) {
+      onUpdateAttachment(activeVideo.attachmentId, input)
+    }
+  }
+
+  function beginVideoResize(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    videoResizeRef.current = {
+      pointerId: event.pointerId,
+      startClientY: event.clientY,
+      startHeightPx: videoHeightPx,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  async function browseForVideo() {
+    if (!onSelectVideoFile) {
+      return
+    }
+    setBrowseMessage('Opening file picker...')
+    try {
+      const selection = await onSelectVideoFile()
+      if (!selection.selected) {
+        setBrowseMessage('')
+        return
+      }
+      setEditPath(selection.workspaceRelativePath || selection.path)
+      if (!editDisplayName.trim()) {
+        setEditDisplayName(selection.displayName || selection.fileName || 'Session video')
+      }
+      const guessedOffsetS = videoOffsetGuessFromMedia(selection.mediaCreatedAtUnixS, sessionStartedAt)
+      if (guessedOffsetS !== null) {
+        setActiveOffset(String(guessedOffsetS))
+      }
+      const pathMessage = selection.workspaceRelativePath ? 'Selected workspace-relative video path.' : 'Selected absolute video path.'
+      const offsetMessage = guessedOffsetS === null ? ' No media/session start-time match was available.' : ` Best-guess offset: ${guessedOffsetS}s.`
+      setBrowseMessage(`${pathMessage}${offsetMessage}`)
+    } catch (error) {
+      setBrowseMessage(error instanceof Error ? `Could not browse for video: ${error.message}` : 'Could not browse for video.')
+    }
+  }
+
+  const videoViewportStyle = { '--signal-inspector-video-height': `${videoHeightPx}px` } as CSSProperties
+
+  return (
+    <section className="signal-inspector-card signal-inspector-video-card">
       <div className="signal-inspector-card-header">
         <h3>
-          GPS
-          <InfoTip text="Shows the session GPS path and highlights the portion covered by the current signal window when time-aligned GPS points are available." />
+          Video
+          <InfoTip text="Attach a local video to this session and synchronize playback using the session time at video zero." />
         </h3>
-        <GpsBadge summary={session.gpsSummary} />
-      </div>
-      {fullPath.length >= 2 ? (
-        <div className="signal-inspector-gps-map">
-          <MapRoutePreview
-            currentTracks={[]}
-            highlightPaths={highlightPaths}
-            primaryGpsPath={fullPath}
-            primarySession={session}
-            selectedTracks={[]}
-          />
+        <div className="signal-inspector-card-actions">
+          <Film size={15} />
+          <button
+            aria-label={collapsed ? 'Expand video' : 'Collapse video'}
+            type="button"
+            onClick={onToggleCollapsed}
+          >
+            {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+          </button>
         </div>
-      ) : (
-        <div className="signal-inspector-gps-empty">
-          <MapIcon size={20} />
-          <span>No GPS path is available for this session.</span>
+      </div>
+      {!collapsed && (
+        <div className="signal-inspector-card-body">
+          {state.status === 'loading' && <p>{state.message}</p>}
+          {state.status === 'error' && <p className="signal-inspector-gps-status error">Could not load video attachments: {state.message}</p>}
+          {attachments.length > 0 ? (
+            <>
+              <label className="signal-inspector-video-field">
+                <span>Attachment</span>
+                <select
+                  value={activeVideoId || activeVideo?.attachmentId || ''}
+                  onChange={(event) => {
+                    setEditingNewVideo(false)
+                    onActiveVideoIdChange(event.target.value)
+                  }}
+                >
+                  {attachments.map((attachment) => (
+                    <option key={attachment.attachmentId} value={attachment.attachmentId}>
+                      {attachment.displayName || attachment.cameraLabel || attachment.attachmentId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {streamUrl ? (
+                <div className="signal-inspector-resizable-viewport">
+                  <video
+                    className="signal-inspector-video-player"
+                    controls
+                    muted
+                    onTimeUpdate={onTimeUpdate}
+                    preload="metadata"
+                    ref={videoRef}
+                    src={streamUrl}
+                    style={videoViewportStyle}
+                  />
+                  <button
+                    aria-label="Resize video viewport"
+                    className="signal-inspector-vertical-resizer"
+                    type="button"
+                    onPointerDown={beginVideoResize}
+                    title="Drag to resize video"
+                  />
+                </div>
+              ) : (
+                <div className="signal-inspector-video-empty">No stream URL is available for this attachment.</div>
+              )}
+              <div className="signal-inspector-video-meta">
+                <span>Window {formatTime(activeWindow.startS)}-{formatTime(activeWindow.endS)}</span>
+                <span>Session {formatTime(0)}-{formatTime(durationS)}</span>
+              </div>
+              <div className="signal-inspector-video-runtime-controls">
+                <label className="signal-inspector-video-checkbox">
+                  <input
+                    checked={scrubToCursor}
+                    onChange={(event) => onScrubToCursorChange(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span>Scrub video to chart cursor</span>
+                </label>
+                <label className="signal-inspector-video-checkbox">
+                  <input
+                    checked={scrollWithPlayback}
+                    onChange={(event) => onScrollWithPlaybackChange(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span>Scroll signals with video</span>
+                </label>
+              </div>
+            </>
+          ) : (
+            <div className="signal-inspector-video-empty">No video attachments for this session.</div>
+          )}
+          {canWrite && (
+            <div className="signal-inspector-video-settings">
+              <div className="signal-inspector-subpanel-header">
+                <strong>Video attachment controls</strong>
+                <button
+                  aria-label={settingsCollapsed ? 'Expand video attachment controls' : 'Collapse video attachment controls'}
+                  type="button"
+                  onClick={() => onSettingsCollapsedChange(!settingsCollapsed)}
+                >
+                  {settingsCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                </button>
+              </div>
+              {!settingsCollapsed && (
+                <div className="signal-inspector-video-form">
+                  <h4>{editingNewVideo ? 'New video attachment' : activeVideo ? 'Selected video attachment' : 'Video attachment'}</h4>
+                  <label>
+                    <span>Name</span>
+                    <input value={editDisplayName} onChange={(event) => setEditDisplayName(event.target.value)} placeholder="Session video" />
+                  </label>
+                  <label>
+                    <span>Camera</span>
+                    <input value={editCameraLabel} onChange={(event) => setEditCameraLabel(event.target.value)} placeholder="Helmet, bike, etc." />
+                  </label>
+                  <label>
+                    <span>Video path</span>
+                    <input value={editPath} onChange={(event) => setEditPath(event.target.value)} placeholder="video.mp4" />
+                  </label>
+                  {onSelectVideoFile && (
+                    <button className="secondary" type="button" onClick={() => void browseForVideo()}>
+                      Browse...
+                    </button>
+                  )}
+                  {browseMessage && <p className="signal-inspector-video-inline-message">{browseMessage}</p>}
+                  <label>
+                    <span>Video zero at session time (s)</span>
+                    <input step={0.1} type="number" value={activeOffset} onChange={(event) => setActiveOffset(event.target.value)} />
+                  </label>
+                  <div className="signal-inspector-video-form-actions">
+                    <button type="button" onClick={saveAttachmentForm} disabled={!formDirty || (!editingNewVideo && !activeVideo)}>
+                      <Save size={14} />
+                      Save
+                    </button>
+                    <button type="button" onClick={() => startNewAttachment()}>
+                      New...
+                    </button>
+                    {activeVideo && !editingNewVideo && (
+                      <button className="danger" type="button" onClick={() => onDeleteAttachment(activeVideo.attachmentId)}>
+                        <Trash2 size={14} />
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {message && <p className="signal-inspector-bookmark-message">{message}</p>}
+          {!canWrite && attachments.length === 0 && state.status !== 'loading' && (
+            <p className="signal-inspector-gps-status">Video attachment editing is unavailable in this context.</p>
+          )}
         </div>
       )}
-      <GpsAltitudeChart activeWindow={activeWindow} pointSet={pointSet} />
-      <dl className="signal-inspector-gps-summary">
-        <dt>Source</dt>
-        <dd>{gpsSourceDisplay(session.gpsSummary.preferredSourceKind, session.gpsSummary.preferredSourceId)}</dd>
-        <dt>Points</dt>
-        <dd>{pointSet ? `${pointSet.returnedPoints} returned` : 'none'}</dd>
-        <dt>Window</dt>
-        <dd>{highlightPaths.length ? `${windowPath.length} GPS points` : timedPointCount ? 'No GPS points in window' : 'No timed GPS points'}</dd>
-      </dl>
     </section>
   )
 }
@@ -1164,12 +2196,11 @@ function SignalWindowChart({
   selectedEventId,
   showFullSessionControl = true,
   showMarks,
+  timeInteraction,
   visibleEventGroups,
   onHoverTimeChange,
   onHoverDebug,
   onSelectEvent,
-  onSelectPoint,
-  onSelectWindow,
 }: {
   activeBookmarkId: string | null
   bookmarks: SessionBookmarkRecord[]
@@ -1185,27 +2216,23 @@ function SignalWindowChart({
   selectedEventId: string | null
   showFullSessionControl?: boolean
   showMarks: boolean
+  timeInteraction: SessionTimeInteraction
   visibleEventGroups: string[]
   onHoverTimeChange?: (timeS: number | null) => void
   onHoverDebug?: (event: HoverDebugEvent) => void
   onSelectEvent: (eventId: string | null) => void
-  onSelectPoint: (timeS: number) => void
-  onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
   const chartFrameRef = useRef<HTMLDivElement | null>(null)
   const plotHostRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
-  const onSelectPointRef = useRef(onSelectPoint)
-  const onSelectWindowRef = useRef(onSelectWindow)
+  const timeInteractionRef = useRef(timeInteraction)
   const onHoverTimeChangeRef = useRef(onHoverTimeChange)
   const onHoverDebugRef = useRef(onHoverDebug)
-  const chartWindowDragRef = useRef<ChartWindowDrag | null>(null)
   const suppressNextClickRef = useRef(false)
   const hostWidth = useElementWidth(plotHostRef)
   const [hover, setHover] = useState<HoverReadout | null>(null)
   const hoverFrameRef = useRef<number | null>(null)
   const pendingHoverRef = useRef<HoverReadout | null>(null)
-  const [windowPreview, setWindowPreview] = useState<ChartWindowPreview | null>(null)
   const [plotVersion, setPlotVersion] = useState(0)
   const chartModel = useMemo(() => buildSignalChartModel(data), [data])
   const plotWidth = boundedPlotWidth(hostWidth)
@@ -1217,14 +2244,11 @@ function SignalWindowChart({
   const visibleEvents = data.events.filter((event) => selectedEventGroups.has(eventGroupKey(event)))
   const xDomain = d3.extent(chartModel.times)
   const visibleMarks = showMarks ? data.marks.filter((mark) => markInDomain(mark, xDomain)) : []
+  const activeWindowStyle = signalWindowStyle(plotRef.current, timeInteraction.activeWindow, { hideWhenFullDomain: true })
 
   useEffect(() => {
-    onSelectPointRef.current = onSelectPoint
-  }, [onSelectPoint])
-
-  useEffect(() => {
-    onSelectWindowRef.current = onSelectWindow
-  }, [onSelectWindow])
+    timeInteractionRef.current = timeInteraction
+  }, [timeInteraction])
 
   useEffect(() => {
     onHoverTimeChangeRef.current = onHoverTimeChange
@@ -1282,133 +2306,21 @@ function SignalWindowChart({
       plotHostRef.current,
     )
     plotRef.current = plot
-    const windowFromClientRange = (startClientX: number, endClientX: number) => {
-      const rect = plot.over.getBoundingClientRect()
-      const leftA = clamp(startClientX - rect.left, 0, rect.width)
-      const leftB = clamp(endClientX - rect.left, 0, rect.width)
-      const rawStartS = plot.posToVal(leftA, 'x')
-      const rawEndS = plot.posToVal(leftB, 'x')
-      const domainStart = chartModel.times[0] ?? 0
-      const domainEnd = chartModel.times.at(-1) ?? domainStart
-      const startS = clamp(Math.min(rawStartS, rawEndS), domainStart, domainEnd)
-      const endS = clamp(Math.max(rawStartS, rawEndS), domainStart, domainEnd)
-      return { startS, endS }
-    }
-    const previewFromClientRange = (startClientX: number, endClientX: number): ChartWindowPreview | null => {
-      const frame = chartFrameRef.current
-      if (!frame) {
-        return null
-      }
-      const frameRect = frame.getBoundingClientRect()
-      const overRect = plot.over.getBoundingClientRect()
-      const leftA = clamp(startClientX, overRect.left, overRect.right)
-      const leftB = clamp(endClientX, overRect.left, overRect.right)
-      const left = Math.min(leftA, leftB) - frameRect.left
-      const width = Math.max(1, Math.abs(leftB - leftA))
-      return {
-        left,
-        top: overRect.top - frameRect.top,
-        width,
-        height: overRect.height,
-      }
-    }
-    const clearSelectAfterGesture = () => {
-      window.setTimeout(() => {
-        if (plotRef.current === plot) {
-          plot.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false)
-        }
-      }, 0)
-    }
-    const handlePointerDown = (event: globalThis.PointerEvent) => {
-      if (event.button !== 0) {
-        return
-      }
-      chartWindowDragRef.current = {
-        pointerId: event.pointerId,
-        startClientX: event.clientX,
-        latestClientX: event.clientX,
-      }
-      setWindowPreview(null)
-      try {
-        plot.over.setPointerCapture(event.pointerId)
-      } catch {
-        // Pointer capture is an enhancement; uPlot still receives normal mouse events without it.
-      }
-    }
-    const handlePointerMove = (event: globalThis.PointerEvent) => {
-      const drag = chartWindowDragRef.current
-      if (!drag || drag.pointerId !== event.pointerId) {
-        return
-      }
-      drag.latestClientX = event.clientX
-      const dragWidth = Math.abs(event.clientX - drag.startClientX)
-      setWindowPreview(dragWidth >= CHART_WINDOW_DRAG_THRESHOLD_PX ? previewFromClientRange(drag.startClientX, event.clientX) : null)
-    }
-    const handlePointerUp = (event: globalThis.PointerEvent) => {
-      const drag = chartWindowDragRef.current
-      if (!drag || drag.pointerId !== event.pointerId) {
-        return
-      }
-      chartWindowDragRef.current = null
-      setWindowPreview(null)
-      const endClientX = event.clientX
-      const dragWidth = Math.abs(endClientX - drag.startClientX)
-      if (dragWidth < CHART_WINDOW_DRAG_THRESHOLD_PX) {
-        return
-      }
-      const nextWindow = windowFromClientRange(drag.startClientX, endClientX)
-      suppressNextClickRef.current = true
-      clearSelectAfterGesture()
-      window.setTimeout(() => {
-        suppressNextClickRef.current = false
-      }, 0)
-      if (nextWindow.endS - nextWindow.startS >= 0.1) {
-        onSelectWindowRef.current(nextWindow)
-      }
-    }
-    const handlePointerCancel = (event: globalThis.PointerEvent) => {
-      const drag = chartWindowDragRef.current
-      if (drag?.pointerId === event.pointerId) {
-        chartWindowDragRef.current = null
-        setWindowPreview(null)
-      }
-    }
-    const handleClick = (event: globalThis.MouseEvent) => {
-      if (suppressNextClickRef.current) {
-        suppressNextClickRef.current = false
-        event.preventDefault()
-        event.stopPropagation()
-        return
-      }
-      if (plot.select.width >= 4) {
-        return
-      }
-      const rect = plot.over.getBoundingClientRect()
-      const timeS = plot.posToVal(event.clientX - rect.left, 'x')
-      const domainStart = chartModel.times[0] ?? 0
-      const domainEnd = chartModel.times.at(-1) ?? domainStart
-      onSelectPointRef.current(clamp(timeS, domainStart, domainEnd))
-    }
-    plot.over.addEventListener('pointerdown', handlePointerDown)
-    plot.over.addEventListener('pointermove', handlePointerMove)
-    plot.over.addEventListener('pointerup', handlePointerUp)
-    plot.over.addEventListener('pointercancel', handlePointerCancel)
-    plot.over.addEventListener('lostpointercapture', handlePointerCancel)
-    plot.over.addEventListener('click', handleClick)
+    const detachChartInteraction = attachSignalChartInteraction({
+      chartFrameRef,
+      model: chartModel,
+      plot,
+      suppressNextClickRef,
+      timeInteractionRef,
+    })
     setPlotVersion((version) => version + 1)
     return () => {
-      plot.over.removeEventListener('pointerdown', handlePointerDown)
-      plot.over.removeEventListener('pointermove', handlePointerMove)
-      plot.over.removeEventListener('pointerup', handlePointerUp)
-      plot.over.removeEventListener('pointercancel', handlePointerCancel)
-      plot.over.removeEventListener('lostpointercapture', handlePointerCancel)
-      plot.over.removeEventListener('click', handleClick)
+      detachChartInteraction()
       if (hoverFrameRef.current !== null) {
         window.cancelAnimationFrame(hoverFrameRef.current)
         hoverFrameRef.current = null
         pendingHoverRef.current = null
       }
-      setWindowPreview(null)
       plot.destroy()
       if (plotRef.current === plot) {
         plotRef.current = null
@@ -1458,7 +2370,7 @@ function SignalWindowChart({
           <button
             className="signal-inspector-full-session-control"
             type="button"
-            onClick={() => onSelectWindow({ startS: 0, endS: durationS })}
+            onClick={() => timeInteraction.setWindow({ startS: 0, endS: durationS })}
           >
             <RefreshCcw size={14} />
             Full session
@@ -1482,18 +2394,7 @@ function SignalWindowChart({
           version={plotVersion}
           visibleEvents={visibleEvents}
         />
-        {windowPreview && (
-          <span
-            aria-hidden="true"
-            className="signal-inspector-window-preview"
-            style={{
-              height: `${windowPreview.height}px`,
-              left: `${windowPreview.left}px`,
-              top: `${windowPreview.top}px`,
-              width: `${windowPreview.width}px`,
-            }}
-          />
-        )}
+        {activeWindowStyle && <span aria-hidden="true" className="signal-inspector-active-window" style={activeWindowStyle} />}
         {displayHoverLeft !== null && <span className="signal-inspector-synced-hover-line" style={{ left: `${displayHoverLeft}px` }} />}
         {displayHover && displayHoverLeft !== null && (
           <div className="signal-inspector-readout" style={{ left: `clamp(88px, ${displayHoverLeft}px, calc(100% - 88px))` }}>
@@ -1512,6 +2413,135 @@ function SignalWindowChart({
       {!inlineLegend && <SignalChartLegend chartModel={chartModel} marks={visibleMarks} />}
     </div>
   )
+}
+
+function attachSignalChartInteraction({
+  chartFrameRef,
+  model,
+  plot,
+  suppressNextClickRef,
+  timeInteractionRef,
+}: {
+  chartFrameRef: RefObject<HTMLDivElement | null>
+  model: SignalChartModel
+  plot: uPlot
+  suppressNextClickRef: MutableRefObject<boolean>
+  timeInteractionRef: MutableRefObject<SessionTimeInteraction>
+}) {
+  const previewElement = document.createElement('span')
+  previewElement.className = 'signal-inspector-window-preview'
+  previewElement.setAttribute('aria-hidden', 'true')
+  chartFrameRef.current?.appendChild(previewElement)
+  const timeFromClientX = (clientX: number) => {
+    const rect = plot.over.getBoundingClientRect()
+    const left = clamp(clientX - rect.left, 0, rect.width)
+    const rawTimeS = plot.posToVal(left, 'x')
+    const domainStart = model.times[0] ?? 0
+    const domainEnd = model.times.at(-1) ?? domainStart
+    return clamp(rawTimeS, domainStart, domainEnd)
+  }
+  const dragWidthPx = (drag: TimeWindowDrag, currentS: number) => {
+    return Math.abs(plot.valToPos(currentS, 'x') - plot.valToPos(drag.startS, 'x'))
+  }
+  const hideWindowPreview = () => {
+    previewElement.style.display = 'none'
+  }
+  const updateWindowPreview = (drag: TimeWindowDrag, currentS: number) => {
+    const frame = chartFrameRef.current
+    if (!frame || !previewElement.isConnected) {
+      return
+    }
+    const width = dragWidthPx(drag, currentS)
+    if (width < CHART_WINDOW_DRAG_THRESHOLD_PX) {
+      hideWindowPreview()
+      return
+    }
+    const frameRect = frame.getBoundingClientRect()
+    const overRect = plot.over.getBoundingClientRect()
+    const startX = plot.valToPos(drag.startS, 'x')
+    const currentX = plot.valToPos(currentS, 'x')
+    previewElement.style.display = 'block'
+    previewElement.style.height = `${overRect.height}px`
+    previewElement.style.left = `${overRect.left - frameRect.left + Math.min(startX, currentX)}px`
+    previewElement.style.top = `${overRect.top - frameRect.top}px`
+    previewElement.style.width = `${width}px`
+  }
+  const handlePointerDown = (event: globalThis.PointerEvent) => {
+    if (event.button !== 0) {
+      return
+    }
+    const startS = timeFromClientX(event.clientX)
+    timeInteractionRef.current.beginWindowDrag(event.pointerId, startS)
+    hideWindowPreview()
+    try {
+      plot.over.setPointerCapture(event.pointerId)
+    } catch {
+      // Pointer capture is an enhancement; uPlot still receives normal mouse events without it.
+    }
+  }
+  const handlePointerMove = (event: globalThis.PointerEvent) => {
+    const drag = timeInteractionRef.current.getWindowDrag()
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return
+    }
+    const currentS = timeFromClientX(event.clientX)
+    timeInteractionRef.current.updateWindowDrag(event.pointerId, currentS)
+    updateWindowPreview(drag, currentS)
+  }
+  const handlePointerUp = (event: globalThis.PointerEvent) => {
+    const drag = timeInteractionRef.current.getWindowDrag()
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return
+    }
+    const endS = timeFromClientX(event.clientX)
+    const dragWidth = dragWidthPx(drag, endS)
+    if (dragWidth < CHART_WINDOW_DRAG_THRESHOLD_PX) {
+      timeInteractionRef.current.cancelWindowDrag(event.pointerId)
+      hideWindowPreview()
+      return
+    }
+    suppressNextClickRef.current = true
+    window.setTimeout(() => {
+      suppressNextClickRef.current = false
+    }, 0)
+    hideWindowPreview()
+    timeInteractionRef.current.commitWindowDrag(event.pointerId, endS)
+  }
+  const handlePointerCancel = (event: globalThis.PointerEvent) => {
+    timeInteractionRef.current.cancelWindowDrag(event.pointerId)
+    hideWindowPreview()
+  }
+  const handleClick = (event: globalThis.MouseEvent) => {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (plot.select.width >= 4) {
+      return
+    }
+    const pointS = timeFromClientX(event.clientX)
+    timeInteractionRef.current.setBookmarkPoint(pointS)
+  }
+
+  plot.over.addEventListener('pointerdown', handlePointerDown)
+  plot.over.addEventListener('pointermove', handlePointerMove)
+  plot.over.addEventListener('pointerup', handlePointerUp)
+  plot.over.addEventListener('pointercancel', handlePointerCancel)
+  plot.over.addEventListener('lostpointercapture', handlePointerCancel)
+  plot.over.addEventListener('click', handleClick)
+
+  return () => {
+    hideWindowPreview()
+    previewElement.remove()
+    plot.over.removeEventListener('pointerdown', handlePointerDown)
+    plot.over.removeEventListener('pointermove', handlePointerMove)
+    plot.over.removeEventListener('pointerup', handlePointerUp)
+    plot.over.removeEventListener('pointercancel', handlePointerCancel)
+    plot.over.removeEventListener('lostpointercapture', handlePointerCancel)
+    plot.over.removeEventListener('click', handleClick)
+  }
 }
 
 function SignalChartLegend({
@@ -1549,10 +2579,9 @@ function SignalMultiChartStack({
   eventGroups,
   selectedEventId,
   showMarks,
+  timeInteraction,
   visibleEventGroups,
   onSelectEvent,
-  onSelectPoint,
-  onSelectWindow,
 }: {
   activeBookmarkId: string | null
   bookmarks: SessionBookmarkRecord[]
@@ -1561,18 +2590,22 @@ function SignalMultiChartStack({
   eventGroups: EventGroup[]
   selectedEventId: string | null
   showMarks: boolean
+  timeInteraction: SessionTimeInteraction
   visibleEventGroups: string[]
   onSelectEvent: (eventId: string | null) => void
-  onSelectPoint: (timeS: number) => void
-  onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
-  const [hoverTimeS, setHoverTimeS] = useState<number | null>(null)
   const [hoverDebugEvents, setHoverDebugEvents] = useState<HoverDebugEvent[]>([])
+  const timeInteractionRef = useRef(timeInteraction)
   const pendingHoverDebugEventRef = useRef<HoverDebugEvent | null>(null)
   const pendingHoverTimeSRef = useRef<number | null>(null)
   const hoverDebugFrameRef = useRef<number | null>(null)
   const hoverTimeFrameRef = useRef<number | null>(null)
   const hoverClearTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    timeInteractionRef.current = timeInteraction
+  }, [timeInteraction])
+
   const handleHoverTimeChange = (timeS: number | null) => {
     if (hoverClearTimerRef.current !== null) {
       window.clearTimeout(hoverClearTimerRef.current)
@@ -1581,7 +2614,7 @@ function SignalMultiChartStack({
     if (timeS === null) {
       hoverClearTimerRef.current = window.setTimeout(() => {
         hoverClearTimerRef.current = null
-        setHoverTimeS(null)
+        timeInteractionRef.current.setHoverTimeS(null)
       }, 90)
       return
     }
@@ -1595,7 +2628,10 @@ function SignalMultiChartStack({
       if (nextTimeS === null) {
         return
       }
-      setHoverTimeS((current) => (current !== null && Math.abs(current - nextTimeS) < 0.001 ? current : nextTimeS))
+      const current = timeInteractionRef.current.hoverTimeS
+      if (current === null || Math.abs(current - nextTimeS) >= 0.001) {
+        timeInteractionRef.current.setHoverTimeS(nextTimeS)
+      }
     })
   }
   useEffect(
@@ -1636,7 +2672,7 @@ function SignalMultiChartStack({
       hoverTimeFrameRef.current = null
     }
     pendingHoverTimeSRef.current = null
-    setHoverTimeS(null)
+    timeInteractionRef.current.setHoverTimeS(null)
     handleHoverDebug({
       chart: 'stack',
       rawIndex: null,
@@ -1648,14 +2684,21 @@ function SignalMultiChartStack({
       at: performance.now(),
     })
   }
+  const signalWindows = useMemo(
+    () => data.signals.map((signal) => timeseriesWindowForSignal(data, signal)),
+    [data],
+  )
   if (data.signals.length === 0) {
     return <div className="signal-inspector-message">No matching signal samples were returned for this window.</div>
   }
   return (
     <div className="signal-inspector-multi-stack" onPointerLeave={handleStackPointerLeave}>
-      {SIGNAL_INSPECTOR_HOVER_DEBUG && <SignalHoverDebugPanel events={hoverDebugEvents} hoverTimeS={hoverTimeS} />}
-      {data.signals.map((signal, index) => {
-        const signalData = timeseriesWindowForSignal(data, signal)
+      {SIGNAL_INSPECTOR_HOVER_DEBUG && <SignalHoverDebugPanel events={hoverDebugEvents} hoverTimeS={timeInteraction.hoverTimeS} />}
+      {signalWindows.map((signalData, index) => {
+        const signal = signalData.signals[0]
+        if (!signal) {
+          return null
+        }
         const isFirstChart = index === 0
         return (
           <SignalWindowChart
@@ -1673,13 +2716,12 @@ function SignalMultiChartStack({
             selectedEventId={selectedEventId}
             showFullSessionControl={isFirstChart}
             showMarks={isFirstChart && showMarks}
-            synchronizedHoverTimeS={hoverTimeS}
+            synchronizedHoverTimeS={timeInteraction.hoverTimeS}
+            timeInteraction={timeInteraction}
             visibleEventGroups={isFirstChart ? visibleEventGroups : []}
             onHoverDebug={SIGNAL_INSPECTOR_HOVER_DEBUG ? handleHoverDebug : undefined}
             onHoverTimeChange={handleHoverTimeChange}
             onSelectEvent={onSelectEvent}
-            onSelectPoint={onSelectPoint}
-            onSelectWindow={onSelectWindow}
           />
         )
       })}
@@ -1946,7 +2988,7 @@ function signalUPlotOptions({
     cursor: {
       x: true,
       y: false,
-      drag: { x: true, y: false, setScale: false },
+      drag: { x: false, y: false, setScale: false },
       points: { size: 5, width: 1 },
     },
     hooks: {
@@ -2006,13 +3048,6 @@ function signalUPlotOptions({
           })
         },
       ],
-      setSelect: [
-        (plot) => {
-          if (plot.select.width >= 4) {
-            window.setTimeout(() => plot.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false), 0)
-          }
-        },
-      ],
     },
   }
 }
@@ -2037,7 +3072,7 @@ function SignalNavigator({
   const data = state.status === 'ready' ? state.data : null
   const model = useMemo(() => (data ? buildSignalChartModel(data) : null), [data])
   const plotWidth = boundedPlotWidth(hostWidth)
-  const plotHeight = 108
+  const plotHeight = 72
   const minWindowS = Math.max(0.1, durationS / 1000)
 
   useEffect(() => {
@@ -2254,6 +3289,14 @@ function navigatorUPlotOptions({
 }
 
 function navigatorWindowStyle(plot: uPlot | null, window: { startS: number; endS: number }) {
+  return signalWindowStyle(plot, window)
+}
+
+function signalWindowStyle(
+  plot: uPlot | null,
+  window: { startS: number; endS: number },
+  options: { hideWhenFullDomain?: boolean } = {},
+) {
   const geometry = plotGeometry(plot)
   if (!plot || !geometry) {
     return null
@@ -2261,8 +3304,24 @@ function navigatorWindowStyle(plot: uPlot | null, window: { startS: number; endS
   const xScale = plot.scales.x as { min?: number; max?: number }
   const domainStart = typeof xScale.min === 'number' && Number.isFinite(xScale.min) ? xScale.min : 0
   const domainEnd = typeof xScale.max === 'number' && Number.isFinite(xScale.max) ? xScale.max : Math.max(domainStart, window.endS)
-  const startS = clamp(window.startS, domainStart, domainEnd)
-  const endS = clamp(window.endS, domainStart, domainEnd)
+  const requestedStartS = Math.min(window.startS, window.endS)
+  const requestedEndS = Math.max(window.startS, window.endS)
+  if (requestedEndS <= domainStart || requestedStartS >= domainEnd) {
+    return null
+  }
+  const startS = clamp(requestedStartS, domainStart, domainEnd)
+  const endS = clamp(requestedEndS, domainStart, domainEnd)
+  const epsilon = Math.max(0.001, (domainEnd - domainStart) / 1000)
+  if (
+    options.hideWhenFullDomain &&
+    Math.abs(startS - domainStart) <= epsilon &&
+    Math.abs(endS - domainEnd) <= epsilon
+  ) {
+    return null
+  }
+  if (endS - startS <= 0) {
+    return null
+  }
   const startX = geometry.left + plot.valToPos(startS, 'x')
   const endX = geometry.left + plot.valToPos(endS, 'x')
   return {
@@ -2482,11 +3541,106 @@ function gpsPanelStatusLine(pointSet: SessionGpsPointSet) {
   if (!pointSet.present || pointSet.returnedPoints === 0) {
     return 'No GPS points returned for this session.'
   }
-  const source = gpsSourceDisplay(pointSet.sourceKind, pointSet.sourceId)
+  const source = pointSet.sourceId || pointSet.sourceKind || 'GPS'
   const timedPointCount = pointSet.points.filter((point) => typeof point.timeS === 'number' && Number.isFinite(point.timeS)).length
   const timing = timedPointCount ? `${timedPointCount} timed` : 'no timed points'
   const stride = pointSet.stride && pointSet.stride > 1 ? `, stride ${pointSet.stride}` : ''
   return `${source}: ${pointSet.returnedPoints} of ${pointSet.sourcePoints} points, ${timing}${stride}.`
+}
+
+function makeVideoAttachmentId() {
+  return `video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function videoAttachmentPathValue(attachment: SessionVideoAttachmentRecord) {
+  if (attachment.workspaceRelativePath) {
+    return attachment.workspaceRelativePath
+  }
+  if (attachment.sessionRelativePath) {
+    return attachment.sessionRelativePath
+  }
+  if (attachment.libraryRelativePath) {
+    return attachment.libraryRelativePath
+  }
+  return attachment.path || attachment.uri || ''
+}
+
+function isAbsoluteLocalPath(value: string) {
+  const text = value.trim()
+  return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\') || text.startsWith('/') || text.startsWith('file:')
+}
+
+function videoOffsetGuessFromMedia(mediaCreatedAtUnixS: number | null, sessionStartedAt: string) {
+  if (mediaCreatedAtUnixS === null || !Number.isFinite(mediaCreatedAtUnixS)) {
+    return null
+  }
+  const sessionStartedAtMs = Date.parse(sessionStartedAt)
+  if (!Number.isFinite(sessionStartedAtMs)) {
+    return null
+  }
+  return roundForInput(sessionStartedAtMs / 1000 - mediaCreatedAtUnixS)
+}
+
+function gpsPositionAtTime(points: SessionGpsPoint[], timeS: number): GeoPosition | null {
+  if (!Number.isFinite(timeS)) {
+    return null
+  }
+  const timedPoints = points
+    .filter(
+      (point) =>
+        typeof point.timeS === 'number' &&
+        Number.isFinite(point.timeS) &&
+        Number.isFinite(point.longitude) &&
+        Number.isFinite(point.latitude),
+    )
+    .sort((a, b) => (a.timeS ?? 0) - (b.timeS ?? 0))
+  if (timedPoints.length === 0) {
+    return null
+  }
+  if (timeS <= (timedPoints[0].timeS ?? 0)) {
+    return gpsPositionFromPoint(timedPoints[0])
+  }
+  const lastPoint = timedPoints[timedPoints.length - 1]
+  if (timeS >= (lastPoint.timeS ?? 0)) {
+    return gpsPositionFromPoint(lastPoint)
+  }
+  for (let index = 1; index < timedPoints.length; index += 1) {
+    const before = timedPoints[index - 1]
+    const after = timedPoints[index]
+    const beforeTimeS = before.timeS ?? 0
+    const afterTimeS = after.timeS ?? beforeTimeS
+    if (timeS > afterTimeS) {
+      continue
+    }
+    if (afterTimeS <= beforeTimeS) {
+      return gpsPositionFromPoint(after)
+    }
+    const fraction = clamp((timeS - beforeTimeS) / (afterTimeS - beforeTimeS), 0, 1)
+    const elevationM =
+      before.elevationM !== null &&
+      after.elevationM !== null &&
+      Number.isFinite(before.elevationM) &&
+      Number.isFinite(after.elevationM)
+        ? before.elevationM + (after.elevationM - before.elevationM) * fraction
+        : null
+    return elevationM === null
+      ? [
+          before.longitude + (after.longitude - before.longitude) * fraction,
+          before.latitude + (after.latitude - before.latitude) * fraction,
+        ]
+      : [
+          before.longitude + (after.longitude - before.longitude) * fraction,
+          before.latitude + (after.latitude - before.latitude) * fraction,
+          elevationM,
+        ]
+  }
+  return null
+}
+
+function gpsPositionFromPoint(point: SessionGpsPoint): GeoPosition {
+  return point.elevationM !== null && Number.isFinite(point.elevationM)
+    ? [point.longitude, point.latitude, point.elevationM]
+    : [point.longitude, point.latitude]
 }
 
 function gpsPathForWindow(points: SessionGpsPoint[], window: { startS: number; endS: number }) {
@@ -2564,6 +3718,84 @@ function storeChartMode(mode: SignalInspectorChartMode) {
     return
   }
   window.localStorage.setItem(SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY, mode)
+}
+
+function defaultViewPreferences(): SignalInspectorViewPreferences {
+  return {
+    sidebarOpen: true,
+    controlsOpen: false,
+    sidebarWidthPx: 380,
+    collapsedSidebarPanels: {
+      bookmarks: false,
+      gpsMap: false,
+      gpsAltitude: false,
+      video: false,
+    },
+    gpsMapHeightPx: 184,
+    videoHeightPx: 190,
+    showEventDetails: false,
+    videoSettingsCollapsed: true,
+    videoScrollWithPlayback: false,
+  }
+}
+
+function loadStoredViewPreferences(): SignalInspectorViewPreferences {
+  const defaults = defaultViewPreferences()
+  if (typeof window === 'undefined') {
+    return defaults
+  }
+  try {
+    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_VIEW_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return defaults
+    }
+    const collapsedPanels =
+      parsed.collapsedSidebarPanels && typeof parsed.collapsedSidebarPanels === 'object' && !Array.isArray(parsed.collapsedSidebarPanels)
+        ? parsed.collapsedSidebarPanels
+        : {}
+    return {
+      sidebarOpen: typeof parsed.sidebarOpen === 'boolean' ? parsed.sidebarOpen : defaults.sidebarOpen,
+      controlsOpen: typeof parsed.controlsOpen === 'boolean' ? parsed.controlsOpen : defaults.controlsOpen,
+      sidebarWidthPx:
+        typeof parsed.sidebarWidthPx === 'number'
+          ? clamp(parsed.sidebarWidthPx, SIGNAL_INSPECTOR_SIDEBAR_MIN_WIDTH_PX, SIGNAL_INSPECTOR_SIDEBAR_MAX_WIDTH_PX)
+          : defaults.sidebarWidthPx,
+      collapsedSidebarPanels: {
+        bookmarks: typeof collapsedPanels.bookmarks === 'boolean' ? collapsedPanels.bookmarks : defaults.collapsedSidebarPanels.bookmarks,
+        gpsMap: typeof collapsedPanels.gpsMap === 'boolean' ? collapsedPanels.gpsMap : defaults.collapsedSidebarPanels.gpsMap,
+        gpsAltitude:
+          typeof collapsedPanels.gpsAltitude === 'boolean' ? collapsedPanels.gpsAltitude : defaults.collapsedSidebarPanels.gpsAltitude,
+        video: typeof collapsedPanels.video === 'boolean' ? collapsedPanels.video : defaults.collapsedSidebarPanels.video,
+      },
+      gpsMapHeightPx:
+        typeof parsed.gpsMapHeightPx === 'number'
+          ? clamp(parsed.gpsMapHeightPx, SIGNAL_INSPECTOR_GPS_MAP_MIN_HEIGHT_PX, SIGNAL_INSPECTOR_GPS_MAP_MAX_HEIGHT_PX)
+          : defaults.gpsMapHeightPx,
+      videoHeightPx:
+        typeof parsed.videoHeightPx === 'number'
+          ? clamp(parsed.videoHeightPx, SIGNAL_INSPECTOR_VIDEO_MIN_HEIGHT_PX, SIGNAL_INSPECTOR_VIDEO_MAX_HEIGHT_PX)
+          : defaults.videoHeightPx,
+      showEventDetails: typeof parsed.showEventDetails === 'boolean' ? parsed.showEventDetails : defaults.showEventDetails,
+      videoSettingsCollapsed:
+        typeof parsed.videoSettingsCollapsed === 'boolean' ? parsed.videoSettingsCollapsed : defaults.videoSettingsCollapsed,
+      videoScrollWithPlayback:
+        typeof parsed.videoScrollWithPlayback === 'boolean' ? parsed.videoScrollWithPlayback : defaults.videoScrollWithPlayback,
+    }
+  } catch {
+    return defaults
+  }
+}
+
+function storeViewPreferences(preferences: SignalInspectorViewPreferences) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(SIGNAL_INSPECTOR_VIEW_STORAGE_KEY, JSON.stringify(preferences))
+  } catch {
+    // Ignore preference write failures; the inspector should remain usable.
+  }
 }
 
 function loadStoredSignalColumns(session: SessionRecord, availableColumns: Set<string>) {
@@ -2994,6 +4226,10 @@ function sanitizeWindow(startS: number, endS: number, durationS: number) {
     return { startS: Math.max(0, start - 0.1), endS: Math.min(durationS, start + 0.1) }
   }
   return { startS: start, endS: end }
+}
+
+function midpointOfWindow(window: SessionTimeWindow) {
+  return roundForInput((window.startS + window.endS) / 2)
 }
 
 function sanitizeWindowBoundary(value: number, durationS: number) {

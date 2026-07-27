@@ -2,10 +2,12 @@ import type {
   AnalysisAdequacyResult,
   AnalysisViewRecord,
   LibraryRecord,
+  LocalVideoFileSelection,
   SessionGpsPointSet,
   SessionBookmarkRecord,
   SessionNoteRecord,
   SessionRecord,
+  SessionVideoAttachmentsRecord,
   SessionTrackMatchRecord,
   SignalQueryRequest,
   SignalQueryResponse,
@@ -66,6 +68,10 @@ export interface LibraryDataSource {
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
   saveSessionNotes?(notes: SessionNoteRecord[]): Promise<SessionNoteSaveResult[]>
+  loadSessionVideoAttachments?(session: SessionRecord): Promise<SessionVideoAttachmentsRecord>
+  saveSessionVideoAttachments?(attachments: SessionVideoAttachmentsRecord): Promise<SessionVideoAttachmentsRecord>
+  sessionVideoStreamUrl?(session: SessionRecord, attachmentId: string): string
+  selectLocalVideoFile?(): Promise<LocalVideoFileSelection>
   listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]>
   saveSessionBookmark(bookmark: SessionBookmarkRecord): Promise<SessionBookmarkRecord>
   deleteSessionBookmark(bookmarkId: string): Promise<void>

@@ -37,6 +37,7 @@ from bodaqs_analysis.library_api import (
 from bodaqs_analysis.library_api.catalog import discover_libraries
 from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, load_catalog_revision
 from bodaqs_analysis.library_api_service import create_app
+from bodaqs_analysis.library_api_service.app import _mp4_creation_time_unix_s
 import bodaqs_analysis.library_api.adapter as adapter_module
 from bodaqs_analysis.widgets.contracts import EntitySelectionSnapshot, ScopeEntity, SelectionSnapshot
 from bodaqs_analysis.widgets.entity_scope import build_entity_selection_snapshot
@@ -52,6 +53,10 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _mp4_box(box_type: bytes, payload: bytes) -> bytes:
+    return (len(payload) + 8).to_bytes(4, "big") + box_type + payload
 
 
 def _make_library_definition(
@@ -612,6 +617,134 @@ def test_library_adapter_loads_and_saves_session_note(tmp_path: Path) -> None:
     row = catalog["rows"][0]
     assert row["note_status"]["status"] == "edited"
     assert row["note_fields"]["bike"] == "Prototype G"
+
+
+def test_library_adapter_loads_saves_and_resolves_session_video_attachment(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    video_path = library_root / "videos" / "ride.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"fake mp4 bytes")
+    adapter = LibraryAdapter(libraries_root)
+
+    loaded = adapter.load_session_video_attachments("default-library", {"session_ref": session_ref})
+    assert loaded["schema"] == "bodaqs.library_api.session_video_attachments"
+    assert loaded["present"] is False
+    assert loaded["video_attachments"]["attachments"] == []
+
+    saved = adapter.save_session_video_attachments(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "attachments": [
+                {
+                    "display_name": "Helmet camera",
+                    "camera_label": "Helmet",
+                    "library_relative_path": "videos/ride.mp4",
+                    "session_time_at_video_zero_s": 12.5,
+                }
+            ],
+        },
+    )
+
+    assert saved["present"] is True
+    attachment = saved["video_attachments"]["attachments"][0]
+    assert attachment["attachment_id"] == "helmet-camera"
+    assert attachment["display_name"] == "Helmet camera"
+    assert attachment["library_relative_path"] == "videos/ride.mp4"
+    assert attachment["session_time_at_video_zero_s"] == 12.5
+
+    resolved = adapter.resolve_session_video_attachment(
+        "default-library",
+        {"session_ref": session_ref},
+        "helmet-camera",
+    )
+    assert resolved["path"] == video_path.resolve()
+    assert resolved["media_type"] == "video/mp4"
+
+    workspace_video_path = libraries_root / "video" / "workspace-ride.mp4"
+    workspace_video_path.parent.mkdir(parents=True)
+    workspace_video_path.write_bytes(b"workspace mp4 bytes")
+    saved_workspace = adapter.save_session_video_attachments(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "attachments": [
+                {
+                    "attachment_id": "workspace-video",
+                    "display_name": "Workspace video",
+                    "workspace_relative_path": "video/workspace-ride.mp4",
+                }
+            ],
+        },
+    )
+
+    workspace_attachment = saved_workspace["video_attachments"]["attachments"][0]
+    assert workspace_attachment["workspace_relative_path"] == "video/workspace-ride.mp4"
+    resolved_workspace = adapter.resolve_session_video_attachment(
+        "default-library",
+        {"session_ref": session_ref},
+        "workspace-video",
+    )
+    assert resolved_workspace["path"] == workspace_video_path.resolve()
+
+
+def test_local_video_picker_mp4_creation_time_parser(tmp_path: Path) -> None:
+    unix_seconds = 1_800_000_000
+    mp4_seconds = unix_seconds + 2_082_844_800
+    mvhd_payload = bytes([0, 0, 0, 0]) + mp4_seconds.to_bytes(4, "big") + (0).to_bytes(4, "big")
+    path = tmp_path / "video.mp4"
+    path.write_bytes(_mp4_box(b"ftyp", b"isom") + _mp4_box(b"moov", _mp4_box(b"mvhd", mvhd_payload)))
+
+    assert _mp4_creation_time_unix_s(path) == float(unix_seconds)
+
+
+def test_library_api_service_streams_session_video_attachment_by_id(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    video_path = library_root / "videos" / "ride.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"fake mp4 bytes")
+    adapter = LibraryAdapter(libraries_root)
+    adapter.save_session_video_attachments(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "attachments": [
+                {
+                    "attachment_id": "helmet",
+                    "display_name": "Helmet",
+                    "library_relative_path": "videos/ride.mp4",
+                }
+            ],
+        },
+    )
+    client = TestClient(create_app(libraries_root))
+
+    response = client.get(
+        f"/api/v1/libraries/default-library/runs/{session_ref['run_id']}/sessions/{session_ref['session_id']}/videos"
+    )
+    assert response.status_code == 200
+    assert response.json()["video_attachments"]["attachments"][0]["attachment_id"] == "helmet"
+
+    stream = client.get(
+        f"/api/v1/libraries/default-library/runs/{session_ref['run_id']}/sessions/{session_ref['session_id']}/videos/helmet/stream"
+    )
+    assert stream.status_code == 200
+    assert stream.headers["content-type"].startswith("video/mp4")
+    assert stream.content == b"fake mp4 bytes"
 
 
 def test_library_adapter_bulk_saves_session_notes_with_one_catalog_revision_touch(tmp_path: Path) -> None:

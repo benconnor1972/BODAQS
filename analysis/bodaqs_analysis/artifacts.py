@@ -70,6 +70,9 @@ class ArtifactStore:
     def path_session_notes(self, run_id: str, session_id: str) -> Path:
         return self.path_session_annotations_dir(run_id, session_id) / "session_notes.json"
 
+    def path_session_videos(self, run_id: str, session_id: str) -> Path:
+        return self.path_session_annotations_dir(run_id, session_id) / "session_videos.json"
+
     def path_session_aux_source_dir(self, run_id: str, session_id: str) -> Path:
         return self.session_dir(run_id, session_id) / "source_aux"
 

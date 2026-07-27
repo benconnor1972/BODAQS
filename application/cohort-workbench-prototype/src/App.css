@@ -2342,6 +2342,17 @@ button {
   line-height: 1;
 }
 
+.map-route-cursor-marker {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 2px rgba(0, 140, 149, 0.38),
+    0 5px 14px rgba(16, 24, 32, 0.26);
+}
+
 .route-preview rect {
   fill: #eef1ed;
   stroke: var(--line);
@@ -2961,6 +2972,7 @@ button {
 }
 
 .modal {
+  position: relative;
   width: min(680px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   overflow: auto;
@@ -2980,14 +2992,41 @@ button {
 
 .modal.signal-inspector-modal {
   width: min(1540px, calc(100vw - 36px));
-  max-height: calc(100vh - 36px);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .modal.signal-inspector-modal .modal-content {
-  max-height: calc(100vh - 92px);
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+.modal-resize-handle {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 5;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-right: 2px solid rgba(0, 140, 149, 0.62);
+  border-bottom: 2px solid rgba(0, 140, 149, 0.62);
+  background:
+    linear-gradient(135deg, transparent 0 45%, rgba(0, 140, 149, 0.34) 46% 52%, transparent 53%),
+    linear-gradient(135deg, transparent 0 64%, rgba(0, 140, 149, 0.24) 65% 70%, transparent 71%);
+  cursor: nwse-resize;
+}
+
+.modal-resize-handle:hover,
+.modal-resize-handle:focus-visible {
+  border-color: var(--teal);
+  outline: none;
 }
 
 .modal.track-manager-modal {
@@ -4683,23 +4722,25 @@ button {
 .signal-inspector {
   display: grid;
   gap: var(--space-4);
+  min-height: 100%;
 }
 
 .signal-inspector-layout {
   display: grid;
-  grid-template-columns: minmax(300px, 364px) minmax(210px, 260px) minmax(0, 1fr);
-  gap: var(--space-4);
+  grid-template-columns: var(--signal-inspector-sidebar-width, 380px) 8px 260px minmax(0, 1fr);
+  gap: var(--space-3);
   align-items: stretch;
   max-width: 100%;
+  min-height: 100%;
   overflow: hidden;
 }
 
 .signal-inspector-layout.controls-collapsed {
-  grid-template-columns: minmax(300px, 364px) 32px minmax(0, 1fr);
+  grid-template-columns: var(--signal-inspector-sidebar-width, 380px) 8px 32px minmax(0, 1fr);
 }
 
 .signal-inspector-layout.sidebar-collapsed {
-  grid-template-columns: 32px minmax(210px, 260px) minmax(0, 1fr);
+  grid-template-columns: 32px 260px minmax(0, 1fr);
 }
 
 .signal-inspector-layout.sidebar-collapsed.controls-collapsed {
@@ -4711,6 +4752,35 @@ button {
   gap: var(--space-4);
   align-self: start;
   min-width: 0;
+}
+
+.signal-inspector-sidebar-header {
+  min-width: 0;
+}
+
+.signal-inspector-sidebar-resizer {
+  position: relative;
+  align-self: stretch;
+  width: 8px;
+  min-width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.signal-inspector-sidebar-resizer::before {
+  position: absolute;
+  inset: var(--space-3) 3px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(0, 140, 149, 0.18);
+  content: '';
+}
+
+.signal-inspector-sidebar-resizer:hover::before,
+.signal-inspector-sidebar-resizer:focus-visible::before {
+  background: var(--teal);
 }
 
 .signal-inspector-control-panel {
@@ -4780,6 +4850,12 @@ button {
   padding: 10px;
   border: var(--border-subtle);
   background: var(--surface);
+}
+
+.signal-inspector-card-body {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .signal-inspector-card h3 {
@@ -5023,8 +5099,68 @@ button {
   gap: var(--space-2);
 }
 
+.signal-inspector-subpanel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--control-height-sm);
+  color: var(--ink);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-subpanel-header button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--green);
+  cursor: pointer;
+}
+
+.signal-inspector-subpanel-header button:hover {
+  border-color: var(--green);
+  background: var(--teal-soft);
+}
+
+.signal-inspector-resizable-viewport {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.signal-inspector-vertical-resizer {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: row-resize;
+}
+
+.signal-inspector-vertical-resizer::before {
+  position: absolute;
+  inset: 3px 36%;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(0, 140, 149, 0.18);
+  content: '';
+}
+
+.signal-inspector-vertical-resizer:hover::before,
+.signal-inspector-vertical-resizer:focus-visible::before {
+  background: var(--teal);
+}
+
 .signal-inspector-gps-map {
   --gps-map-height: 184px;
+  height: var(--gps-map-height);
   overflow: hidden;
   border: var(--border-subtle);
   background: var(--surface-warm);
@@ -5044,7 +5180,7 @@ button {
   display: grid;
   place-items: center;
   gap: var(--space-2);
-  min-height: 184px;
+  min-height: var(--gps-map-height, 184px);
   border: var(--border-subtle);
   background: var(--surface-warm);
   color: var(--muted);
@@ -5083,6 +5219,158 @@ button {
 .signal-inspector-gps-status.error,
 .signal-inspector-gps-status.warning {
   color: #7c5522;
+}
+
+.signal-inspector-video-card {
+  gap: var(--space-2);
+}
+
+.signal-inspector-video-card .signal-inspector-card-header svg {
+  color: var(--green);
+}
+
+.signal-inspector-video-player {
+  display: block;
+  width: 100%;
+  height: var(--signal-inspector-video-height, 190px);
+  max-height: var(--signal-inspector-video-height, 190px);
+  border: var(--border-subtle);
+  background: var(--ink);
+  object-fit: contain;
+}
+
+.signal-inspector-video-empty {
+  display: grid;
+  place-items: center;
+  min-height: 84px;
+  padding: var(--space-3);
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+  color: var(--muted);
+  font-size: var(--text-caption);
+  text-align: center;
+}
+
+.signal-inspector-video-field,
+.signal-inspector-video-form label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+}
+
+.signal-inspector-video-field select,
+.signal-inspector-video-form input,
+.signal-inspector-video-form select {
+  min-width: 0;
+  min-height: var(--control-height-md);
+  padding: 4px 7px;
+  border: var(--border-strong);
+  background: white;
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  text-transform: none;
+}
+
+.signal-inspector-video-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-inspector-video-runtime-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.signal-inspector-video-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-video-checkbox input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--teal);
+}
+
+.signal-inspector-video-form button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: var(--control-height-md);
+  padding: 4px 9px;
+  border: var(--border-strong);
+  background: var(--teal);
+  color: white;
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-video-form button.danger {
+  border-color: #e3a6a6;
+  background: #fff1f1;
+  color: var(--red);
+}
+
+.signal-inspector-video-form button.secondary {
+  background: white;
+  color: var(--green);
+}
+
+.signal-inspector-video-inline-message {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-video-settings {
+  display: grid;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+  border-top: var(--border-subtle);
+}
+
+.signal-inspector-video-form {
+  display: grid;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.signal-inspector-video-form + .signal-inspector-video-form {
+  border-top: var(--border-subtle);
+}
+
+.signal-inspector-video-form h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-video-form-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-2);
+}
+
+.signal-inspector-video-form-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
 }
 
 .signal-inspector-altitude-chart,
@@ -5255,9 +5543,29 @@ button {
 .signal-inspector-main {
   position: relative;
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: var(--space-3);
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
+}
+
+.signal-inspector-main-scroll {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.signal-inspector-main-navigator {
+  min-width: 0;
+}
+
+.signal-inspector-main-navigator .signal-inspector-navigator-card {
+  margin: 0;
 }
 
 .signal-inspector-update-pill {
@@ -5426,10 +5734,20 @@ button {
 
 .signal-inspector-window-preview {
   position: absolute;
+  display: none;
   z-index: 4;
   box-sizing: border-box;
   border: 1px solid var(--teal);
   background: rgba(0, 140, 149, 0.16);
+  pointer-events: none;
+}
+
+.signal-inspector-active-window {
+  position: absolute;
+  z-index: 3;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 140, 149, 0.55);
+  background: rgba(0, 140, 149, 0.1);
   pointer-events: none;
 }
 
@@ -5866,8 +6184,8 @@ button {
 
 .signal-inspector-uplot-host-navigator {
   width: 100%;
-  height: 108px;
-  min-height: 108px;
+  height: 72px;
+  min-height: 72px;
 }
 
 .signal-inspector-uplot-host-navigator .u-over {
@@ -5875,7 +6193,7 @@ button {
 }
 
 .signal-inspector-uplot-navigator {
-  height: 108px;
+  height: 72px;
 }
 
 .signal-inspector-navigator-overlay {
