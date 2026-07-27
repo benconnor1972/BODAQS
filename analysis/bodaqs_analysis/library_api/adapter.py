@@ -488,7 +488,11 @@ class LibraryAdapter:
     def save_session_video_attachments(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session_ref = self._normalized_session_ref_request(library_id, request)
         self._catalog_row_for_session(library_id, session_ref)
-        return save_session_video_attachments(self._library_root(library_id), session_ref, request)
+        response = save_session_video_attachments(self._library_root(library_id), session_ref, request)
+        self._touch_catalog_revision(library_id, reason="session_video_attachments_saved", session_ref=session_ref)
+        self._invalidate_catalog_cache(str(library_id).strip())
+        self._invalidate_analysis_adequacy_cache()
+        return response
 
     def resolve_session_video_attachment(
         self,
@@ -1725,7 +1729,7 @@ class LibraryAdapter:
     def _session_catalog_cache_dependency(self, library_id: str, library_root: Path) -> dict[str, Any]:
         dependency: dict[str, Any] = {
             "cache_schema": "bodaqs.session_catalog_cache_key",
-            "cache_version": 2,
+            "cache_version": 3,
             "library_id": str(library_id),
             "library_root": str(library_root.resolve()),
             "library_definition": self._file_stat_dependency(library_root / "library_definition.json", library_root),

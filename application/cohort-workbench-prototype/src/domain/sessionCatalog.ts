@@ -34,6 +34,7 @@ export const columnLabels: Record<ColumnId, string> = {
   noteAction: 'Notes',
   qaAction: 'QA',
   gpsAction: 'GPS',
+  videoAction: 'Video',
   signalInspectorAction: 'Inspect signals',
   metadataAction: 'Metadata',
 }
@@ -42,6 +43,7 @@ export const infoActionColumns = [
   'noteAction',
   'qaAction',
   'gpsAction',
+  'videoAction',
   'signalInspectorAction',
   'metadataAction',
 ] as const satisfies readonly ColumnId[]
@@ -214,6 +216,10 @@ export function getColumnText(
       return `${session.qcLevel} ${session.qcAlerts.length}`
     case 'gpsAction':
       return gpsSummaryLine(session.gpsSummary)
+    case 'videoAction':
+      return session.videoSummary.present
+        ? `${session.videoSummary.enabledCount} enabled / ${session.videoSummary.attachmentCount} attached`
+        : 'none'
     case 'signalInspectorAction':
       return session.signals.join(', ')
     case 'metadataAction':

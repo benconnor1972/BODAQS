@@ -99,6 +99,14 @@ export type SessionRecord = {
   availableSignals?: SessionSignalSummary[]
   gps: Array<[number, number]>
   gpsSummary: SessionGpsSummary
+  videoSummary: SessionVideoSummary
+}
+
+export type SessionVideoSummary = {
+  present: boolean
+  attachmentCount: number
+  enabledCount: number
+  warnings: string[]
 }
 
 export type SessionSignalSummary = {
@@ -561,6 +569,7 @@ export type ColumnId =
   | 'noteAction'
   | 'qaAction'
   | 'gpsAction'
+  | 'videoAction'
   | 'signalInspectorAction'
   | 'metadataAction'
 

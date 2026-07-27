@@ -1,11 +1,11 @@
-import { Activity, AlertTriangle, FileText, Info, MapPin, Trash2 } from 'lucide-react'
+import { Activity, AlertTriangle, FileText, Info, MapPin, Trash2, Video } from 'lucide-react'
 import { gpsQualityTone, gpsSummaryLine } from '../domain/geospatial'
 import type { ColumnId, QcLevel, SessionInspectionTab, SessionRecord } from '../domain/types'
 import { IconButton } from './Common'
 
 type InfoTone = 'good' | 'warning' | 'alert'
-export type SessionInfoAction = 'note' | 'qc' | 'gps' | 'signals' | 'metadata' | 'delete'
-const defaultInfoActions: SessionInfoAction[] = ['note', 'qc', 'gps', 'signals', 'metadata']
+export type SessionInfoAction = 'note' | 'qc' | 'gps' | 'video' | 'signals' | 'metadata' | 'delete'
+const defaultInfoActions: SessionInfoAction[] = ['note', 'qc', 'gps', 'video', 'signals', 'metadata']
 
 export function SessionInfoButtons({
   session,
@@ -78,6 +78,21 @@ function SessionInfoButton({
       />
     )
   }
+  if (action === 'video') {
+    const attachmentCount = session.videoSummary.attachmentCount
+    const enabledCount = session.videoSummary.enabledCount
+    const label = session.videoSummary.present
+      ? `${attachmentCount} video attachment${attachmentCount === 1 ? '' : 's'} (${enabledCount} enabled)`
+      : 'No video attached'
+    return (
+      <IconButton
+        label={label}
+        icon={<Video size={15} />}
+        tone={session.videoSummary.present ? 'good' : 'neutral'}
+        disabled={!session.videoSummary.present}
+      />
+    )
+  }
   if (action === 'signals') {
     return (
       <IconButton
@@ -125,6 +140,8 @@ export function sessionInfoActionForColumn(columnId: ColumnId): SessionInfoActio
       return 'qc'
     case 'gpsAction':
       return 'gps'
+    case 'videoAction':
+      return 'video'
     case 'signalInspectorAction':
       return 'signals'
     case 'metadataAction':

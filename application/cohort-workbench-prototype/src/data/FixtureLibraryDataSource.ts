@@ -871,6 +871,7 @@ function cloneSession(session: SessionRecord): SessionRecord {
     availableSignals: session.availableSignals?.map((signal) => ({ ...signal })),
     gps: session.gps.map(([x, y]) => [x, y]),
     gpsSummary: cloneGpsSummary(session.gpsSummary),
+    videoSummary: { ...session.videoSummary, warnings: [...session.videoSummary.warnings] },
   }
 }
 

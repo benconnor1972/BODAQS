@@ -61,6 +61,7 @@ export const fixtureSessions: SessionRecord[] = [
       [115.952, -42.769],
     ],
     gpsSummary: gpsSummary('fit_enrichment', 'usable', 516, 0.98, 518, 1.0, 2.1),
+    videoSummary: videoSummary(1, 1),
   },
   {
     libraryId: 'library-maydena',
@@ -92,6 +93,7 @@ export const fixtureSessions: SessionRecord[] = [
     gpsSummary: gpsSummary('fit_enrichment', 'limited', 504, 0.91, 476, 1.0, 4.2, [
       'FIT overlap has a short gap near the matching boundary.',
     ]),
+    videoSummary: noVideoSummary(),
   },
   {
     libraryId: 'library-maydena',
@@ -120,6 +122,7 @@ export const fixtureSessions: SessionRecord[] = [
       [115.963, -42.781],
     ],
     gpsSummary: gpsSummary('fit_enrichment', 'usable', 372, 0.96, 366, 1.0, 2.7),
+    videoSummary: noVideoSummary(),
   },
   {
     libraryId: 'library-local-test',
@@ -150,6 +153,7 @@ export const fixtureSessions: SessionRecord[] = [
     gpsSummary: gpsSummary('logger_sensor', 'limited', 846, 0.78, 632, 1.4, 12.8, [
       'GPS coverage is patchy in tree cover.',
     ]),
+    videoSummary: noVideoSummary(),
   },
   {
     libraryId: 'library-local-test',
@@ -180,6 +184,7 @@ export const fixtureSessions: SessionRecord[] = [
     gpsSummary: gpsSummary('fit_enrichment', 'limited', 1308, 0.82, 1104, 1.0, 18.0, [
       'GPS stream ends 18 s before logger stream.',
     ]),
+    videoSummary: noVideoSummary(),
   },
   {
     libraryId: 'library-shock-dev',
@@ -203,6 +208,7 @@ export const fixtureSessions: SessionRecord[] = [
     signals: ['front shock raw', 'rear shock raw', 'speed'],
     gps: [],
     gpsSummary: noGpsSummary(294),
+    videoSummary: noVideoSummary(),
   },
 ]
 
@@ -423,6 +429,19 @@ function noGpsSummary(sessionDurationS: number): SessionGpsSummary {
     quality: 'absent',
     warnings: ['No GPS stream available in this fixture session.'],
   }
+}
+
+function videoSummary(attachmentCount: number, enabledCount: number) {
+  return {
+    present: attachmentCount > 0,
+    attachmentCount,
+    enabledCount,
+    warnings: [],
+  }
+}
+
+function noVideoSummary() {
+  return videoSummary(0, 0)
 }
 
 function trackMatch(

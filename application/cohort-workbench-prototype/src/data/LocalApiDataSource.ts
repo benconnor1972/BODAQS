@@ -639,6 +639,7 @@ function mapSession(row: ApiObject): SessionRecord {
   const eventSchema = objectValue(row.event_schema)
   const summary = objectValue(row.summary)
   const gpsSummary = objectValue(row.gps_summary)
+  const videoSummary = objectValue(row.video_summary)
   const libraryId = textValue(row.library_id)
   const sessionKey = textValue(row.session_key)
   const runId = textValue(row.run_id)
@@ -674,6 +675,18 @@ function mapSession(row: ApiObject): SessionRecord {
     availableSignals: availableSignals.map(mapSessionSignalSummary),
     gps: [],
     gpsSummary: mapGpsSummary(gpsSummary),
+    videoSummary: mapVideoSummary(videoSummary),
+  }
+}
+
+function mapVideoSummary(value: ApiObject) {
+  const attachmentCount = numberValue(value.attachment_count)
+  const enabledCount = numberValue(value.enabled_count)
+  return {
+    present: Boolean(value.present) || attachmentCount > 0,
+    attachmentCount,
+    enabledCount,
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
   }
 }
 

@@ -50,6 +50,7 @@ const defaultColumnWidths: Record<ColumnId, number> = {
   noteAction: 0,
   qaAction: 0,
   gpsAction: 0,
+  videoAction: 0,
   signalInspectorAction: 0,
   metadataAction: 0,
 }
@@ -74,6 +75,7 @@ const minColumnWidths: Record<ColumnId, number> = {
   noteAction: 0,
   qaAction: 0,
   gpsAction: 0,
+  videoAction: 0,
   signalInspectorAction: 0,
   metadataAction: 0,
 }

@@ -4937,6 +4937,25 @@ button {
   grid-template-columns: minmax(0, 1fr) 82px auto;
 }
 
+.signal-inspector-pinned-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.signal-inspector-pinned-row.compact {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.signal-inspector-pinned-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .signal-inspector-save-row input,
 .signal-inspector-point-row input {
   min-width: 0;
@@ -4958,7 +4977,8 @@ button {
 }
 
 .signal-inspector-save-row button,
-.signal-inspector-point-row button {
+.signal-inspector-point-row button,
+.signal-inspector-pinned-row button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4975,7 +4995,8 @@ button {
 }
 
 .signal-inspector-save-row button:disabled,
-.signal-inspector-point-row button:disabled {
+.signal-inspector-point-row button:disabled,
+.signal-inspector-pinned-row button:disabled {
   cursor: not-allowed;
   opacity: 0.46;
 }
@@ -5286,9 +5307,19 @@ button {
 }
 
 .signal-inspector-video-runtime-controls {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: var(--space-3);
+}
+
+.signal-inspector-video-runtime-column {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.signal-inspector-video-runtime-column.actions {
+  justify-items: stretch;
 }
 
 .signal-inspector-video-checkbox {
@@ -5306,7 +5337,8 @@ button {
   accent-color: var(--teal);
 }
 
-.signal-inspector-video-form button {
+.signal-inspector-video-form button,
+.signal-inspector-video-runtime-controls button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5319,6 +5351,53 @@ button {
   cursor: pointer;
   font-size: var(--text-caption);
   font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-video-runtime-controls button {
+  min-width: 142px;
+}
+
+.signal-inspector-video-runtime-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.signal-inspector-video-offset-row {
+  display: grid;
+  grid-template-columns: minmax(112px, 1fr) auto;
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.signal-inspector-video-nudge-controls {
+  display: grid;
+  grid-template-columns: repeat(4, 42px);
+  gap: 4px;
+}
+
+.signal-inspector-video-nudge-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: var(--control-height-md);
+  padding: 4px 3px;
+  border: var(--border-strong);
+  background: var(--teal);
+  color: white;
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+}
+
+.signal-inspector-video-nudge-controls button:hover:not(:disabled) {
+  background: var(--green);
+  color: white;
+}
+
+.signal-inspector-video-nudge-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
 }
 
 .signal-inspector-video-form button.danger {
@@ -5861,6 +5940,26 @@ button {
   opacity: 1;
 }
 
+.signal-inspector-pinned-time {
+  position: absolute;
+  width: 0;
+  border-left: 1.4px solid var(--teal);
+  pointer-events: none;
+}
+
+.signal-inspector-pinned-time::before {
+  position: absolute;
+  bottom: -19px;
+  left: -5px;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid white;
+  background: var(--teal);
+  box-shadow: 0 0 0 1px rgba(0, 140, 149, 0.46), var(--shadow-control);
+  content: "";
+  transform: rotate(45deg);
+}
+
 .signal-inspector-uplot-mark {
   position: absolute;
   width: 0;
@@ -6216,6 +6315,28 @@ button {
 .signal-inspector-navigator-preview {
   display: none;
   background: rgba(0, 140, 149, 0.22);
+}
+
+.signal-inspector-navigator-pinned-time {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px solid var(--teal);
+  pointer-events: none;
+}
+
+.signal-inspector-navigator-pinned-time::before {
+  position: absolute;
+  top: 50%;
+  left: -4px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid white;
+  background: var(--teal);
+  box-shadow: 0 0 0 1px rgba(0, 140, 149, 0.42);
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
 }
 
 .signal-inspector-navigator-handle {

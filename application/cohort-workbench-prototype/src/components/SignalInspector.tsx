@@ -18,8 +18,11 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  ChevronsLeft,
+  ChevronsRight,
   Film,
   Map as MapIcon,
+  Play,
   RefreshCcw,
   Save,
   SkipBack,
@@ -52,6 +55,7 @@ const CHART_WINDOW_DRAG_THRESHOLD_PX = 8
 const SIGNAL_INSPECTOR_HOVER_DEBUG = false
 const SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY = 'bodaqs.signalInspector.chartMode.v1'
 const SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY = 'bodaqs.signalInspector.sessionColumns.v1'
+const SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY = 'bodaqs.signalInspector.sessionPinnedTime.v1'
 const SIGNAL_INSPECTOR_VIEW_STORAGE_KEY = 'bodaqs.signalInspector.view.v1'
 const SIGNAL_INSPECTOR_SIDEBAR_MIN_WIDTH_PX = 320
 const SIGNAL_INSPECTOR_SIDEBAR_MAX_WIDTH_PX = 560
@@ -59,6 +63,14 @@ const SIGNAL_INSPECTOR_GPS_MAP_MIN_HEIGHT_PX = 140
 const SIGNAL_INSPECTOR_GPS_MAP_MAX_HEIGHT_PX = 420
 const SIGNAL_INSPECTOR_VIDEO_MIN_HEIGHT_PX = 120
 const SIGNAL_INSPECTOR_VIDEO_MAX_HEIGHT_PX = 420
+const SIGNAL_INSPECTOR_VIDEO_BUFFER_MIN_SPAN_S = 30
+const SIGNAL_INSPECTOR_VIDEO_BUFFER_MULTIPLIER = 6
+const SIGNAL_INSPECTOR_VIDEO_BUFFER_MAX_SPAN_S = 180
+const SIGNAL_INSPECTOR_SHORT_WINDOW_DETAIL_SPAN_S = 5
+const SIGNAL_INSPECTOR_MEDIUM_WINDOW_DETAIL_SPAN_S = 10
+const SIGNAL_INSPECTOR_SHORT_WINDOW_TARGET_POINTS = 12000
+const SIGNAL_INSPECTOR_MEDIUM_WINDOW_TARGET_POINTS = 16000
+const SIGNAL_INSPECTOR_MAX_TARGET_POINTS = 48000
 const SIGNAL_COLORS = ['#008c95', '#101820', '#2d5f64', '#b88a43', '#6f7b80', '#9aa7a3']
 const EVENT_COLORS = ['#b66a2c', '#4d70a8', '#8a5a7b', '#6f7e2e', '#c46f58', '#2f7d6d']
 
@@ -191,9 +203,11 @@ function videoStateData(state: VideoPanelState) {
 function useSessionTimeInteraction({
   durationS,
   initialWindow,
+  initialPinnedTimeS,
 }: {
   durationS: number
   initialWindow?: SessionTimeWindow | null
+  initialPinnedTimeS?: number | null
 }) {
   const initialSessionWindow = () =>
     sanitizeWindow(
@@ -202,7 +216,11 @@ function useSessionTimeInteraction({
       durationS,
     )
   const [windowState, setWindowState] = useState<SessionTimeWindow>(initialSessionWindow)
-  const [bookmarkPointS, setBookmarkPointSState] = useState(() => midpointOfWindow(initialSessionWindow()))
+  const [pinnedTimeS, setPinnedTimeSState] = useState<number | null>(() =>
+    initialPinnedTimeS !== null && initialPinnedTimeS !== undefined
+      ? roundForInput(sanitizeWindowBoundary(initialPinnedTimeS, durationS))
+      : midpointOfWindow(initialSessionWindow()),
+  )
   const [hoverTimeS, setHoverTimeS] = useState<number | null>(null)
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const windowDragRef = useRef<TimeWindowDrag | null>(null)
@@ -214,21 +232,24 @@ function useSessionTimeInteraction({
   function setWindow(window: SessionTimeWindow) {
     const nextWindow = sanitizeWindow(window.startS, window.endS, durationS)
     setWindowState(nextWindow)
-    setBookmarkPointSState(midpointOfWindow(nextWindow))
   }
 
-  function setBookmarkPoint(timeS: number) {
-    setBookmarkPointSState(roundForInput(sanitizeWindowBoundary(timeS, durationS)))
+  function setPinnedTime(timeS: number | null) {
+    setPinnedTimeSState(timeS === null || !Number.isFinite(timeS) ? null : roundForInput(sanitizeWindowBoundary(timeS, durationS)))
   }
 
-  function reset(nextInitialWindow: SessionTimeWindow | null | undefined = initialWindow) {
+  function reset(nextInitialWindow: SessionTimeWindow | null | undefined = initialWindow, nextPinnedTimeS: number | null | undefined = initialPinnedTimeS) {
     const nextWindow = sanitizeWindow(
       sanitizeWindowBoundary(nextInitialWindow?.startS ?? 0, durationS),
       sanitizeWindowBoundary(nextInitialWindow?.endS ?? durationS, durationS),
       durationS,
     )
     setWindowState(nextWindow)
-    setBookmarkPointSState(midpointOfWindow(nextWindow))
+    setPinnedTimeSState(
+      nextPinnedTimeS !== null && nextPinnedTimeS !== undefined
+        ? roundForInput(sanitizeWindowBoundary(nextPinnedTimeS, durationS))
+        : midpointOfWindow(nextWindow),
+    )
     setHoverTimeS(null)
     setSelectedEventId(null)
     setWindowDrag(null)
@@ -278,14 +299,14 @@ function useSessionTimeInteraction({
 
   return {
     activeWindow: windowState,
-    bookmarkPointS,
+    pinnedTimeS,
     hoverTimeS,
     selectedEventId,
     beginWindowDrag,
     cancelWindowDrag,
     commitWindowDrag,
     getWindowDrag,
-    setBookmarkPoint,
+    setPinnedTime,
     setHoverTimeS,
     setSelectedEventId,
     setWindow,
@@ -318,8 +339,12 @@ export function SignalInspector({
   const initialViewPreferences = useMemo(() => loadStoredViewPreferences(), [])
   const [chartMode, setChartMode] = useState<SignalInspectorChartMode>(() => loadStoredChartMode())
   const [selectedColumns, setSelectedColumns] = useState<string[]>(initialColumns)
-  const timeInteraction = useSessionTimeInteraction({ durationS, initialWindow })
-  const { activeWindow, bookmarkPointS, selectedEventId } = timeInteraction
+  const initialPinnedTimeS = useMemo(
+    () => loadStoredPinnedTime(session, durationS),
+    [durationS, session.libraryId, session.sessionKey],
+  )
+  const timeInteraction = useSessionTimeInteraction({ durationS, initialWindow, initialPinnedTimeS })
+  const { activeWindow, pinnedTimeS, selectedEventId } = timeInteraction
   const [bookmarks, setBookmarks] = useState<SessionBookmarkRecord[]>([])
   const [activeBookmarkId, setActiveBookmarkId] = useState<string | null>(null)
   const [bookmarkTitle, setBookmarkTitle] = useState('')
@@ -361,13 +386,16 @@ export function SignalInspector({
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoSeekFrameRef = useRef<number | null>(null)
   const videoFollowFrameRef = useRef<number | null>(null)
+  const latestRequestWindowRef = useRef<SessionTimeWindow | null>(null)
+  const latestSignalRequestSignatureRef = useRef('')
+  const signalFetchInFlightRef = useRef<{ window: SessionTimeWindow; signature: string } | null>(null)
   const sidebarResizeRef = useRef<{ pointerId: number; startClientX: number; startWidthPx: number } | null>(null)
   const eventGroupsInitializedRef = useRef(false)
   const bookmarkContextMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     setSelectedColumns(loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions))
-    timeInteraction.reset(initialWindow)
+    timeInteraction.reset(initialWindow, loadStoredPinnedTime(session, durationS))
     setActiveBookmarkId(null)
     setBookmarkTitle('')
     setBookmarkPointTitle('')
@@ -388,6 +416,10 @@ export function SignalInspector({
     setVideoMessage('')
     eventGroupsInitializedRef.current = false
   }, [durationS, initialWindow?.endS, initialWindow?.startS, session.libraryId, session.sessionKey, signalOptionColumns, signalOptions])
+
+  useEffect(() => {
+    storePinnedTime(session, pinnedTimeS)
+  }, [pinnedTimeS, session.libraryId, session.sessionKey])
 
   useEffect(() => {
     storeChartMode(chartMode)
@@ -450,6 +482,7 @@ export function SignalInspector({
   }, [])
 
   const requestWindow = sanitizeWindow(activeWindow.startS, activeWindow.endS, durationS)
+  latestRequestWindowRef.current = requestWindow
   const displayedWindowData = loadStateData(loadState)
   const visibleWarnings = displayedWindowData
     ? visibleWindowWarnings(displayedWindowData.warnings, requestWindow, durationS)
@@ -579,6 +612,36 @@ export function SignalInspector({
         setLoadState({ status: 'idle', message: 'Select one or more signals to inspect.' })
         return
       }
+      const useBufferedWindow = videoScrollWithPlayback && Boolean(activeVideo)
+      const requestSignature = signalWindowRequestSignature(session, selectedColumns, useBufferedWindow)
+      latestSignalRequestSignatureRef.current = requestSignature
+      const fetchWindow = useBufferedWindow ? bufferedSignalFetchWindow(requestWindow, durationS) : requestWindow
+      const targetPoints = signalWindowTargetPoints(requestWindow, fetchWindow)
+      const loadedData = loadStateData(loadState)
+      const loadedCoverage = timeseriesDataCoverage(loadedData)
+      const loadedWindowIsReady =
+        loadedCoverage &&
+        (useBufferedWindow
+          ? windowHasPlaybackRunway(loadedCoverage, requestWindow, durationS)
+          : windowContains(loadedCoverage, requestWindow)) &&
+        timeseriesDataMeetsResolution(loadedData, targetPoints)
+      if (
+        loadedWindowIsReady
+      ) {
+        return
+      }
+      const pendingRequest = signalFetchInFlightRef.current
+      if (
+        pendingRequest &&
+        pendingRequest.signature === requestSignature &&
+        (useBufferedWindow
+          ? windowHasPlaybackRunway(pendingRequest.window, requestWindow, durationS)
+          : windowContains(pendingRequest.window, requestWindow))
+      ) {
+        return
+      }
+      const fetchRequest = { window: fetchWindow, signature: requestSignature }
+      signalFetchInFlightRef.current = fetchRequest
       setLoadState((current) => {
         const data = loadStateData(current)
         return data
@@ -589,12 +652,18 @@ export function SignalInspector({
         const data = await dataSource.loadTimeseriesWindow(session.libraryId, {
           session: sessionToStudyRef(session),
           signals: selectedColumns.map((column) => ({ column })),
-          window: requestWindow,
-          resolution: { targetPoints: TARGET_POINTS },
+          window: fetchWindow,
+          resolution: { targetPoints },
           includeEvents: true,
           includeMarks: true,
         })
-        if (!cancelled) {
+        const currentRequestWindow = latestRequestWindowRef.current ?? requestWindow
+        const returnedCoverage = timeseriesDataCoverage(data) ?? fetchWindow
+        const bufferedResultStillUseful =
+          useBufferedWindow &&
+          requestSignature === latestSignalRequestSignatureRef.current &&
+          windowContains(returnedCoverage, currentRequestWindow)
+        if (!cancelled || bufferedResultStillUseful) {
           setLoadState({ status: 'ready', message: 'Signal window loaded.', data })
         }
       } catch (error) {
@@ -606,13 +675,25 @@ export function SignalInspector({
           })
         }
       }
+      if (signalFetchInFlightRef.current === fetchRequest) {
+        signalFetchInFlightRef.current = null
+      }
     }
 
     void loadWindow()
     return () => {
       cancelled = true
     }
-  }, [dataSource, requestWindow.endS, requestWindow.startS, selectedColumns, session])
+  }, [
+    activeVideo,
+    dataSource,
+    durationS,
+    requestWindow.endS,
+    requestWindow.startS,
+    selectedColumns,
+    session,
+    videoScrollWithPlayback,
+  ])
 
   const markCount = displayedWindowData?.marks.length ?? 0
   const fallbackEventGroups = useMemo(
@@ -803,6 +884,31 @@ export function SignalInspector({
     videoScrollWithPlayback,
   ])
 
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.repeat || !isSpaceKey(event) || isEditableKeyboardTarget(event.target)) {
+        return
+      }
+      const video = videoRef.current
+      if (!activeVideo || !video) {
+        return
+      }
+      event.preventDefault()
+      if (video.paused || video.ended) {
+        video.play().catch((error: unknown) => {
+          setVideoMessage(error instanceof Error ? `Could not start video playback: ${error.message}` : 'Could not start video playback.')
+        })
+      } else {
+        video.pause()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [activeVideo])
+
   function toggleColumn(column: string) {
     setSelectedColumns((current) =>
       current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
@@ -825,6 +931,35 @@ export function SignalInspector({
     }
   }
 
+  function playActiveVideoFromSessionTime(timeS: number) {
+    seekActiveVideoToSessionTime(timeS)
+    const video = videoRef.current
+    if (!video) {
+      return
+    }
+    video.play().catch((error: unknown) => {
+      setVideoMessage(error instanceof Error ? `Could not start video playback: ${error.message}` : 'Could not start video playback.')
+    })
+  }
+
+  async function syncActiveVideoToPinnedTime() {
+    if (!activeVideo || !videoRef.current || pinnedTimeS === null) {
+      return
+    }
+    if (!dataSource.saveSessionVideoAttachments) {
+      setVideoMessage('This data source does not support video attachment edits.')
+      return
+    }
+    const nextOffsetS = roundForInput(sanitizeWindowBoundary(pinnedTimeS, durationS) - videoRef.current.currentTime)
+    await updateVideoAttachment(activeVideo.attachmentId, {
+      displayName: activeVideo.displayName,
+      cameraLabel: activeVideo.cameraLabel,
+      path: videoAttachmentPathValue(activeVideo),
+      sessionTimeAtVideoZeroS: nextOffsetS,
+    })
+    timeInteraction.setHoverTimeS(sanitizeWindowBoundary(pinnedTimeS, durationS))
+  }
+
   function syncSignalWindowToVideoPlayback() {
     if (!activeVideo || !videoRef.current) {
       return
@@ -841,13 +976,9 @@ export function SignalInspector({
     if (videoScrollWithPlayback && !videoRef.current.paused) {
       const windowSizeS = Math.max(0.1, requestWindow.endS - requestWindow.startS)
       const maxStartS = Math.max(0, durationS - windowSizeS)
-      const windowPosition = (sessionTimeS - requestWindow.startS) / windowSizeS
-      const shouldRecenter =
-        loadState.status !== 'loading' &&
-        ((windowPosition > 0.62 && requestWindow.startS < maxStartS) || (windowPosition < 0.38 && requestWindow.startS > 0))
-      if (shouldRecenter) {
-        const nextStartS = clamp(sessionTimeS - windowSizeS / 2, 0, maxStartS)
-        const nextEndS = Math.min(durationS, nextStartS + windowSizeS)
+      const nextStartS = clamp(sessionTimeS - windowSizeS / 2, 0, maxStartS)
+      const nextEndS = Math.min(durationS, nextStartS + windowSizeS)
+      if (Math.abs(nextStartS - requestWindow.startS) > 0.03 || Math.abs(nextEndS - requestWindow.endS) > 0.03) {
         timeInteraction.setWindow({ startS: nextStartS, endS: nextEndS })
       }
       timeInteraction.setHoverTimeS(sanitizeWindowBoundary(sessionTimeS, durationS))
@@ -963,7 +1094,11 @@ export function SignalInspector({
   }
 
   async function saveBookmark(kind: 'window' | 'point') {
-    const pointS = sanitizeWindowBoundary(bookmarkPointS, durationS)
+    if (kind === 'point' && pinnedTimeS === null) {
+      setBookmarkMessage('Pin a time before saving a point bookmark.')
+      return
+    }
+    const pointS = sanitizeWindowBoundary(pinnedTimeS ?? activeWindow.startS, durationS)
     const window =
       kind === 'point'
         ? { startS: pointS, endS: pointS }
@@ -1008,6 +1143,7 @@ export function SignalInspector({
 
   function applyBookmark(bookmark: SessionBookmarkRecord) {
     timeInteraction.setWindow(bookmark.window)
+    timeInteraction.setPinnedTime(bookmark.window.startS)
     seekActiveVideoToSessionTime(bookmark.window.startS)
     const restoredColumns = (bookmark.viewState.signalInspector?.signalColumns ?? []).filter((column) =>
       signalOptionColumns.has(column),
@@ -1148,19 +1284,26 @@ export function SignalInspector({
                     type="text"
                     value={bookmarkPointTitle}
                     onChange={(event) => setBookmarkPointTitle(event.target.value)}
-                    placeholder={`Point ${formatTime(bookmarkPointS)}`}
+                    placeholder={`Point ${pinnedTimeS === null ? 'unpinned' : formatTime(pinnedTimeS)}`}
                   />
                   <input
-                    aria-label="Bookmark point in seconds"
+                    aria-label="Pinned time in seconds"
                     min={0}
                     max={durationS}
                     step={0.1}
                     type="number"
-                    value={roundForInput(bookmarkPointS)}
-                    onChange={(event) => timeInteraction.setBookmarkPoint(Number(event.target.value))}
+                    value={pinnedTimeS === null ? '' : roundForInput(pinnedTimeS)}
+                    onChange={(event) => timeInteraction.setPinnedTime(event.target.value === '' ? null : Number(event.target.value))}
+                    placeholder="Pin time"
                   />
-                  <button type="button" onClick={() => saveBookmark('point')} disabled={selectedColumns.length === 0}>
+                  <button type="button" onClick={() => saveBookmark('point')} disabled={selectedColumns.length === 0 || pinnedTimeS === null}>
                     Save point
+                  </button>
+                </div>
+                <div className="signal-inspector-pinned-row compact">
+                  <span>Pinned time {pinnedTimeS === null ? 'not set' : formatTime(pinnedTimeS)}</span>
+                  <button type="button" onClick={() => timeInteraction.setPinnedTime(null)} disabled={pinnedTimeS === null}>
+                    Clear
                   </button>
                 </div>
                 {bookmarkMessage && <p className="signal-inspector-bookmark-message">{bookmarkMessage}</p>}
@@ -1268,6 +1411,10 @@ export function SignalInspector({
             onSettingsCollapsedChange={setVideoSettingsCollapsed}
             onScrubToCursorChange={setVideoScrubToCursor}
             onScrollWithPlaybackChange={setVideoScrollWithPlayback}
+            onPlayFromPinnedTime={() => pinnedTimeS !== null && playActiveVideoFromSessionTime(pinnedTimeS)}
+            onSyncToPinnedTime={() => {
+              void syncActiveVideoToPinnedTime()
+            }}
             onTimeUpdate={handleVideoTimeUpdate}
             onToggleCollapsed={() => toggleSidebarPanel('video')}
             onUpdateAttachment={(attachmentId, input) => {
@@ -1275,6 +1422,7 @@ export function SignalInspector({
             }}
             onVideoHeightChange={setVideoHeightPx}
             scrubToCursor={videoScrubToCursor}
+            pinnedTimeS={pinnedTimeS}
             sessionStartedAt={session.startedAt}
             settingsCollapsed={videoSettingsCollapsed}
             state={videoState}
@@ -1436,6 +1584,7 @@ export function SignalInspector({
                     data={displayedWindowData}
                     durationS={durationS}
                     timeInteraction={timeInteraction}
+                    visibleWindow={requestWindow}
                     visibleEventGroups={visibleEventGroups}
                     showMarks={showMarks}
                     eventGroups={effectiveEventGroups}
@@ -1449,6 +1598,7 @@ export function SignalInspector({
                     data={displayedWindowData}
                     durationS={durationS}
                     timeInteraction={timeInteraction}
+                    visibleWindow={requestWindow}
                     visibleEventGroups={visibleEventGroups}
                     showMarks={showMarks}
                     synchronizedHoverTimeS={timeInteraction.hoverTimeS}
@@ -1483,6 +1633,7 @@ export function SignalInspector({
                 state={navigatorState}
                 activeWindow={requestWindow}
                 durationS={durationS}
+                pinnedTimeS={pinnedTimeS}
                 onSelectWindow={timeInteraction.setWindow}
               />
             </div>
@@ -1682,8 +1833,8 @@ function SignalInspectorGpsPanel({
               label: 'Signal window',
               path: windowPath,
               color: '#008c95',
-              width: 7,
-              opacity: 0.95,
+              width: 4,
+              opacity: 0.88,
             },
           ]
         : [],
@@ -1782,12 +1933,15 @@ function SignalInspectorVideoPanel({
   onSelectVideoFile,
   onScrubToCursorChange,
   onScrollWithPlaybackChange,
+  onPlayFromPinnedTime,
+  onSyncToPinnedTime,
   onTimeUpdate,
   onToggleCollapsed,
   onUpdateAttachment,
   onVideoHeightChange,
   scrollWithPlayback,
   scrubToCursor,
+  pinnedTimeS,
   sessionStartedAt,
   settingsCollapsed,
   state,
@@ -1809,12 +1963,15 @@ function SignalInspectorVideoPanel({
   onSelectVideoFile?: LibraryDataSource['selectLocalVideoFile']
   onScrubToCursorChange: (enabled: boolean) => void
   onScrollWithPlaybackChange: (enabled: boolean) => void
+  onPlayFromPinnedTime: () => void
+  onSyncToPinnedTime: () => void
   onTimeUpdate: () => void
   onToggleCollapsed: () => void
   onUpdateAttachment: (attachmentId: string, input: VideoAttachmentInput) => void
   onVideoHeightChange: (heightPx: number) => void
   scrollWithPlayback: boolean
   scrubToCursor: boolean
+  pinnedTimeS: number | null
   sessionStartedAt: string
   settingsCollapsed: boolean
   state: VideoPanelState
@@ -1941,6 +2098,21 @@ function SignalInspectorVideoPanel({
     }
   }
 
+  function nudgeVideoOffset(deltaS: number) {
+    const current = Number(activeOffset)
+    const nextOffset = roundForInput((Number.isFinite(current) ? current : 0) + deltaS)
+    setActiveOffset(String(nextOffset))
+    if (!activeVideo || editingNewVideo || !editPath.trim()) {
+      return
+    }
+    onUpdateAttachment(activeVideo.attachmentId, {
+      displayName: editDisplayName,
+      cameraLabel: editCameraLabel,
+      path: editPath,
+      sessionTimeAtVideoZeroS: nextOffset,
+    })
+  }
+
   function beginVideoResize(event: PointerEvent<HTMLButtonElement>) {
     event.preventDefault()
     event.stopPropagation()
@@ -2049,22 +2221,33 @@ function SignalInspectorVideoPanel({
                 <span>Session {formatTime(0)}-{formatTime(durationS)}</span>
               </div>
               <div className="signal-inspector-video-runtime-controls">
-                <label className="signal-inspector-video-checkbox">
-                  <input
-                    checked={scrubToCursor}
-                    onChange={(event) => onScrubToCursorChange(event.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>Scrub video to chart cursor</span>
-                </label>
-                <label className="signal-inspector-video-checkbox">
-                  <input
-                    checked={scrollWithPlayback}
-                    onChange={(event) => onScrollWithPlaybackChange(event.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>Scroll signals with video</span>
-                </label>
+                <div className="signal-inspector-video-runtime-column">
+                  <label className="signal-inspector-video-checkbox">
+                    <input
+                      checked={scrubToCursor}
+                      onChange={(event) => onScrubToCursorChange(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Scrub video to chart cursor</span>
+                  </label>
+                  <label className="signal-inspector-video-checkbox">
+                    <input
+                      checked={scrollWithPlayback}
+                      onChange={(event) => onScrollWithPlaybackChange(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Scroll signals with video</span>
+                  </label>
+                </div>
+                <div className="signal-inspector-video-runtime-column actions">
+                  <button type="button" onClick={onPlayFromPinnedTime} disabled={!activeVideo || pinnedTimeS === null}>
+                    <Play size={13} />
+                    Play from pinned time
+                  </button>
+                  <button type="button" onClick={onSyncToPinnedTime} disabled={!canWrite || !activeVideo || pinnedTimeS === null}>
+                    Sync to pinned time
+                  </button>
+                </div>
               </div>
             </>
           ) : (
@@ -2103,10 +2286,30 @@ function SignalInspectorVideoPanel({
                     </button>
                   )}
                   {browseMessage && <p className="signal-inspector-video-inline-message">{browseMessage}</p>}
-                  <label>
-                    <span>Video zero at session time (s)</span>
-                    <input step={0.1} type="number" value={activeOffset} onChange={(event) => setActiveOffset(event.target.value)} />
-                  </label>
+                  <div className="signal-inspector-video-offset-row">
+                    <label>
+                      <span>Video zero at session time (s)</span>
+                      <input step={0.1} type="number" value={activeOffset} onChange={(event) => setActiveOffset(event.target.value)} />
+                    </label>
+                    <div className="signal-inspector-video-nudge-controls" aria-label="Nudge video sync offset">
+                      <button type="button" onClick={() => nudgeVideoOffset(-1)} disabled={!activeVideo && !editingNewVideo} title="Nudge sync earlier by 1 second">
+                        <ChevronsLeft size={13} />
+                        <span>1s</span>
+                      </button>
+                      <button type="button" onClick={() => nudgeVideoOffset(-0.1)} disabled={!activeVideo && !editingNewVideo} title="Nudge sync earlier by 0.1 seconds">
+                        <ChevronLeft size={13} />
+                        <span>0.1</span>
+                      </button>
+                      <button type="button" onClick={() => nudgeVideoOffset(0.1)} disabled={!activeVideo && !editingNewVideo} title="Nudge sync later by 0.1 seconds">
+                        <span>0.1</span>
+                        <ChevronRight size={13} />
+                      </button>
+                      <button type="button" onClick={() => nudgeVideoOffset(1)} disabled={!activeVideo && !editingNewVideo} title="Nudge sync later by 1 second">
+                        <span>1s</span>
+                        <ChevronsRight size={13} />
+                      </button>
+                    </div>
+                  </div>
                   <div className="signal-inspector-video-form-actions">
                     <button type="button" onClick={saveAttachmentForm} disabled={!formDirty || (!editingNewVideo && !activeVideo)}>
                       <Save size={14} />
@@ -2197,6 +2400,7 @@ function SignalWindowChart({
   showFullSessionControl = true,
   showMarks,
   timeInteraction,
+  visibleWindow,
   visibleEventGroups,
   onHoverTimeChange,
   onHoverDebug,
@@ -2217,6 +2421,7 @@ function SignalWindowChart({
   showFullSessionControl?: boolean
   showMarks: boolean
   timeInteraction: SessionTimeInteraction
+  visibleWindow: SessionTimeWindow
   visibleEventGroups: string[]
   onHoverTimeChange?: (timeS: number | null) => void
   onHoverDebug?: (event: HoverDebugEvent) => void
@@ -2241,9 +2446,8 @@ function SignalWindowChart({
   const selectedEventGroups = new Set(visibleEventGroups)
   const groupColorByKey = new Map(eventGroups.map((group) => [group.key, group.color]))
   const groupLaneByKey = new Map(eventGroups.map((group, index) => [group.key, index % 4]))
-  const visibleEvents = data.events.filter((event) => selectedEventGroups.has(eventGroupKey(event)))
-  const xDomain = d3.extent(chartModel.times)
-  const visibleMarks = showMarks ? data.marks.filter((mark) => markInDomain(mark, xDomain)) : []
+  const visibleEvents = data.events.filter((event) => selectedEventGroups.has(eventGroupKey(event)) && eventInWindow(event, visibleWindow))
+  const visibleMarks = showMarks ? data.marks.filter((mark) => markInWindow(mark, visibleWindow)) : []
   const activeWindowStyle = signalWindowStyle(plotRef.current, timeInteraction.activeWindow, { hideWhenFullDomain: true })
 
   useEffect(() => {
@@ -2299,6 +2503,7 @@ function SignalWindowChart({
         width: plotWidth,
         height: plotHeight,
         enableHover: !externalHover,
+        visibleWindow,
         onHoverDebug: (event) => onHoverDebugRef.current?.(event),
         onHover: scheduleHover,
       }),
@@ -2327,6 +2532,14 @@ function SignalWindowChart({
       }
     }
   }, [chartModel, chartValues.length, compact, externalHover, plotHeight, plotWidth])
+
+  useEffect(() => {
+    const plot = plotRef.current
+    if (!plot) {
+      return
+    }
+    plot.setScale('x', { min: visibleWindow.startS, max: visibleWindow.endS })
+  }, [visibleWindow.endS, visibleWindow.startS])
 
   if (data.signals.length === 0 || chartModel.times.length === 0 || chartValues.length === 0) {
     return <div className="signal-inspector-message">No matching signal samples were returned for this window.</div>
@@ -2389,6 +2602,7 @@ function SignalWindowChart({
           groupLaneByKey={groupLaneByKey}
           marks={visibleMarks}
           onSelectEvent={onSelectEvent}
+          pinnedTimeS={timeInteraction.pinnedTimeS}
           plot={plotRef.current}
           selectedEventId={selectedEventId}
           version={plotVersion}
@@ -2522,7 +2736,7 @@ function attachSignalChartInteraction({
       return
     }
     const pointS = timeFromClientX(event.clientX)
-    timeInteractionRef.current.setBookmarkPoint(pointS)
+    timeInteractionRef.current.setPinnedTime(pointS)
   }
 
   plot.over.addEventListener('pointerdown', handlePointerDown)
@@ -2580,6 +2794,7 @@ function SignalMultiChartStack({
   selectedEventId,
   showMarks,
   timeInteraction,
+  visibleWindow,
   visibleEventGroups,
   onSelectEvent,
 }: {
@@ -2591,6 +2806,7 @@ function SignalMultiChartStack({
   selectedEventId: string | null
   showMarks: boolean
   timeInteraction: SessionTimeInteraction
+  visibleWindow: SessionTimeWindow
   visibleEventGroups: string[]
   onSelectEvent: (eventId: string | null) => void
 }) {
@@ -2718,6 +2934,7 @@ function SignalMultiChartStack({
             showMarks={isFirstChart && showMarks}
             synchronizedHoverTimeS={timeInteraction.hoverTimeS}
             timeInteraction={timeInteraction}
+            visibleWindow={visibleWindow}
             visibleEventGroups={isFirstChart ? visibleEventGroups : []}
             onHoverDebug={SIGNAL_INSPECTOR_HOVER_DEBUG ? handleHoverDebug : undefined}
             onHoverTimeChange={handleHoverTimeChange}
@@ -2780,6 +2997,7 @@ function SignalPlotOverlay({
   groupLaneByKey,
   marks,
   onSelectEvent,
+  pinnedTimeS,
   plot,
   selectedEventId,
   version,
@@ -2792,6 +3010,7 @@ function SignalPlotOverlay({
   groupLaneByKey: Map<string, number>
   marks: TimeseriesWindowMark[]
   onSelectEvent: (eventId: string | null) => void
+  pinnedTimeS: number | null
   plot: uPlot | null
   selectedEventId: string | null
   version: number
@@ -2806,8 +3025,23 @@ function SignalPlotOverlay({
   if (!geometry) {
     return null
   }
+  const pinnedLeft = pinnedTimeS === null ? null : plotValueX(plot, pinnedTimeS)
+  const showPinnedTime = pinnedLeft !== null && pinnedLeft >= geometry.left && pinnedLeft <= geometry.right
   return (
     <div className="signal-inspector-plot-overlay">
+      {showPinnedTime && pinnedTimeS !== null && (
+        <span
+          aria-label={`Pinned time ${formatTime(pinnedTimeS)}`}
+          className="signal-inspector-pinned-time"
+          role="img"
+          style={{
+            height: `${geometry.height}px`,
+            left: `${pinnedLeft}px`,
+            top: `${geometry.top}px`,
+          }}
+          title={`Pinned time: ${formatTime(pinnedTimeS)}`}
+        />
+      )}
       {bookmarks.map((bookmark) => {
         const startS = bookmark.window.startS
         const endS = bookmark.window.endS
@@ -2919,6 +3153,7 @@ function signalUPlotOptions({
   model,
   onHover,
   onHoverDebug,
+  visibleWindow,
   width,
 }: {
   compact?: boolean
@@ -2928,13 +3163,14 @@ function signalUPlotOptions({
   model: SignalChartModel
   onHover: (hover: HoverReadout | null) => void
   onHoverDebug?: (event: HoverDebugEvent) => void
+  visibleWindow: SessionTimeWindow
   width: number
 }): uPlot.Options {
   const valuesByAxis = new Map(
     model.axisConfigs.map((axis) => [axis.id, chartSignalValues(model.chartSignals.filter((signal) => signal.axisId === axis.id))]),
   )
   const scales: uPlot.Scales = {
-    x: { time: false },
+    x: { time: false, min: visibleWindow.startS, max: visibleWindow.endS },
   }
   for (const axis of model.axisConfigs) {
     scales[axis.id] = {
@@ -3056,11 +3292,13 @@ function SignalNavigator({
   state,
   activeWindow,
   durationS,
+  pinnedTimeS,
   onSelectWindow,
 }: {
   state: LoadState
   activeWindow: { startS: number; endS: number }
   durationS: number
+  pinnedTimeS: number | null
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
   const plotHostRef = useRef<HTMLDivElement | null>(null)
@@ -3123,6 +3361,8 @@ function SignalNavigator({
   }
 
   const activeStyle = navigatorWindowStyle(plotRef.current, activeWindow)
+  const navigatorPlot = plotRef.current
+  const pinnedLeft = pinnedTimeS === null || !navigatorPlot ? null : plotValueX(navigatorPlot, pinnedTimeS)
 
   function pointerTime(event: PointerEvent<HTMLElement>) {
     const plot = plotRef.current
@@ -3230,6 +3470,14 @@ function SignalNavigator({
               <span className="signal-inspector-navigator-handle start" />
               <span className="signal-inspector-navigator-handle end" />
             </div>
+          )}
+          {pinnedLeft !== null && pinnedTimeS !== null && (
+            <span
+              aria-label={`Pinned time ${formatTime(pinnedTimeS)}`}
+              className="signal-inspector-navigator-pinned-time"
+              style={{ left: `${pinnedLeft}px` }}
+              title={`Pinned time: ${formatTime(pinnedTimeS)}`}
+            />
           )}
           <div className="signal-inspector-navigator-preview" ref={previewRef} />
         </div>
@@ -3830,6 +4078,60 @@ function storeSignalColumns(session: SessionRecord, columns: string[]) {
   }
 }
 
+function loadStoredPinnedTime(session: SessionRecord, durationS: number) {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    const value = parsed?.[signalInspectorSessionPreferenceKey(session)]
+    return typeof value === 'number' && Number.isFinite(value) ? sanitizeWindowBoundary(value, durationS) : null
+  } catch {
+    return null
+  }
+}
+
+function storePinnedTime(session: SessionRecord, pinnedTimeS: number | null) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    const preferences = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? { ...parsed } : {}
+    const key = signalInspectorSessionPreferenceKey(session)
+    if (pinnedTimeS === null) {
+      delete preferences[key]
+    } else {
+      preferences[key] = pinnedTimeS
+    }
+    window.localStorage.setItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY, JSON.stringify(preferences))
+  } catch {
+    // Ignore preference write failures; the inspector should remain usable.
+  }
+}
+
+function signalWindowRequestSignature(session: SessionRecord, selectedColumns: string[], buffered: boolean) {
+  return `${session.libraryId}::${session.sessionKey}::${buffered ? 'buffered' : 'exact'}::${selectedColumns.join('|')}`
+}
+
+function isSpaceKey(event: globalThis.KeyboardEvent) {
+  return event.code === 'Space' || event.key === ' ' || event.key === 'Spacebar'
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  return (
+    target.isContentEditable ||
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  )
+}
+
 function signalInspectorSessionPreferenceKey(session: SessionRecord) {
   return `${session.libraryId}::${session.sessionKey}`
 }
@@ -4210,13 +4512,87 @@ function eventDisplayName(event: TimeseriesWindowEvent) {
     .join(' ')
 }
 
-function markInDomain(mark: TimeseriesWindowMark, domain: [number | undefined, number | undefined]) {
-  if (!Number.isFinite(mark.timeS)) {
+function markInWindow(mark: TimeseriesWindowMark, window: SessionTimeWindow) {
+  return Number.isFinite(mark.timeS) && mark.timeS >= window.startS && mark.timeS <= window.endS
+}
+
+function eventInWindow(event: TimeseriesWindowEvent, window: SessionTimeWindow) {
+  const eventStartS = event.startS ?? event.peakTimeS ?? event.endS
+  const eventEndS = event.endS ?? event.peakTimeS ?? event.startS
+  if (!Number.isFinite(eventStartS) || !Number.isFinite(eventEndS)) {
     return false
   }
-  const start = domain[0] ?? Number.NEGATIVE_INFINITY
-  const end = domain[1] ?? Number.POSITIVE_INFINITY
-  return mark.timeS >= start && mark.timeS <= end
+  return Math.max(eventStartS as number, window.startS) <= Math.min(eventEndS as number, window.endS)
+}
+
+function timeseriesDataCoverage(data: TimeseriesWindowResponse | undefined): SessionTimeWindow | null {
+  if (!data) {
+    return null
+  }
+  const startS = data.window.returnedStartS ?? data.window.requestedStartS ?? data.time.values.find((value) => typeof value === 'number') ?? null
+  const endS =
+    data.window.returnedEndS ??
+    data.window.requestedEndS ??
+    [...data.time.values].reverse().find((value) => typeof value === 'number') ??
+    null
+  if (typeof startS !== 'number' || typeof endS !== 'number' || !Number.isFinite(startS) || !Number.isFinite(endS) || endS <= startS) {
+    return null
+  }
+  return { startS, endS }
+}
+
+function timeseriesDataMeetsResolution(data: TimeseriesWindowResponse | undefined, targetPoints: number) {
+  if (!data) {
+    return false
+  }
+  return data.sampling.mode === 'raw' || data.sampling.targetPoints >= targetPoints
+}
+
+function windowContains(container: SessionTimeWindow, child: SessionTimeWindow, toleranceS = 0.05) {
+  return container.startS <= child.startS + toleranceS && container.endS >= child.endS - toleranceS
+}
+
+function windowHasPlaybackRunway(container: SessionTimeWindow, visibleWindow: SessionTimeWindow, durationS: number) {
+  if (!windowContains(container, visibleWindow)) {
+    return false
+  }
+  const visibleSpanS = Math.max(0.1, visibleWindow.endS - visibleWindow.startS)
+  const runwayS = playbackBufferRunwayS(visibleSpanS)
+  const hasLeftRunway = visibleWindow.startS <= runwayS || container.startS <= visibleWindow.startS - runwayS
+  const hasRightRunway = visibleWindow.endS >= durationS - runwayS || container.endS >= visibleWindow.endS + runwayS
+  return hasLeftRunway && hasRightRunway
+}
+
+function playbackBufferRunwayS(visibleSpanS: number) {
+  return Math.min(30, Math.max(8, visibleSpanS * 1.5))
+}
+
+function bufferedSignalFetchWindow(visibleWindow: SessionTimeWindow, durationS: number) {
+  const visibleSpanS = Math.max(0.1, visibleWindow.endS - visibleWindow.startS)
+  const bufferSpanS = Math.min(
+    durationS,
+    Math.max(
+      SIGNAL_INSPECTOR_VIDEO_BUFFER_MIN_SPAN_S,
+      Math.min(SIGNAL_INSPECTOR_VIDEO_BUFFER_MAX_SPAN_S, visibleSpanS * SIGNAL_INSPECTOR_VIDEO_BUFFER_MULTIPLIER),
+    ),
+  )
+  const centerS = (visibleWindow.startS + visibleWindow.endS) / 2
+  const maxStartS = Math.max(0, durationS - bufferSpanS)
+  const startS = clamp(centerS - bufferSpanS / 2, 0, maxStartS)
+  return { startS, endS: Math.min(durationS, startS + bufferSpanS) }
+}
+
+function signalWindowTargetPoints(visibleWindow: SessionTimeWindow, fetchWindow: SessionTimeWindow) {
+  const visibleSpanS = Math.max(0.1, visibleWindow.endS - visibleWindow.startS)
+  const fetchSpanS = Math.max(visibleSpanS, fetchWindow.endS - fetchWindow.startS)
+  let visibleTarget = TARGET_POINTS
+  if (visibleSpanS <= SIGNAL_INSPECTOR_SHORT_WINDOW_DETAIL_SPAN_S) {
+    visibleTarget = SIGNAL_INSPECTOR_SHORT_WINDOW_TARGET_POINTS
+  } else if (visibleSpanS <= SIGNAL_INSPECTOR_MEDIUM_WINDOW_DETAIL_SPAN_S) {
+    visibleTarget = SIGNAL_INSPECTOR_MEDIUM_WINDOW_TARGET_POINTS
+  }
+  const scaledTarget = Math.ceil(visibleTarget * (fetchSpanS / visibleSpanS))
+  return Math.max(2, Math.min(SIGNAL_INSPECTOR_MAX_TARGET_POINTS, scaledTarget))
 }
 
 function sanitizeWindow(startS: number, endS: number, durationS: number) {

@@ -28,9 +28,9 @@ LIBRARY_DEFINITION_FILENAME = "library_definition.json"
 LIBRARIES_DIRNAME = "libraries"
 RUNS_DIRNAME = "runs"
 SESSION_CATALOG_SCHEMA = "bodaqs.session_catalog"
-SESSION_CATALOG_VERSION = 1
+SESSION_CATALOG_VERSION = 2
 SESSION_CATALOG_ROW_SCHEMA = "bodaqs.session_catalog_row"
-SESSION_CATALOG_ROW_VERSION = 1
+SESSION_CATALOG_ROW_VERSION = 2
 SESSION_GPS_SUMMARY_SCHEMA = "bodaqs.session_gps_summary"
 SESSION_GPS_SUMMARY_VERSION = 1
 SESSION_GPS_POINTS_SCHEMA = "bodaqs.session_gps_points"
@@ -214,6 +214,7 @@ def _build_session_catalog_row(
             dataframe_path=store.path_session_df(run_id, session_id),
         ),
         "gps_summary": gps_summary,
+        "video_summary": _video_summary(store, run_id=run_id, session_id=session_id),
         "event_summary": event_summary,
         "metric_summary": metric_summary,
     }
@@ -1347,6 +1348,48 @@ def _note_summary(
         if value is not None:
             projected[field_id] = value
     return status, projected
+
+
+def _video_summary(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    base = {
+        "present": False,
+        "attachment_count": 0,
+        "enabled_count": 0,
+        "warnings": [],
+    }
+    path = store.path_session_videos(run_id, session_id)
+    if not path.exists():
+        return base
+
+    data = _read_json_object(path)
+    if data is None:
+        return {
+            **base,
+            "present": True,
+            "warnings": ["video_attachments_unreadable"],
+        }
+
+    attachments = data.get("attachments")
+    if not isinstance(attachments, list):
+        return {
+            **base,
+            "present": True,
+            "warnings": ["video_attachments_invalid"],
+        }
+
+    attachment_count = sum(1 for item in attachments if isinstance(item, Mapping))
+    enabled_count = sum(1 for item in attachments if isinstance(item, Mapping) and item.get("enabled") is not False)
+    return {
+        "present": attachment_count > 0,
+        "attachment_count": attachment_count,
+        "enabled_count": enabled_count,
+        "warnings": [],
+    }
 
 
 def _timestamp_summary(
