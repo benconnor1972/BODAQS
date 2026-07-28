@@ -71,6 +71,7 @@ export function MapRoutePreview({
   sessionPaths = EMPTY_SESSION_PATHS,
   highlightPaths = EMPTY_HIGHLIGHT_PATHS,
   cursorPosition = null,
+  playbackPosition = null,
   selectedTracks = EMPTY_TRACKS,
   currentTracks = EMPTY_TRACKS,
 }: {
@@ -79,6 +80,7 @@ export function MapRoutePreview({
   sessionPaths?: SessionPathOverlay[]
   highlightPaths?: HighlightPathOverlay[]
   cursorPosition?: GeoPosition | null
+  playbackPosition?: GeoPosition | null
   selectedTracks?: TrackRecord[]
   currentTracks?: TrackRecord[]
 }) {
@@ -86,6 +88,7 @@ export function MapRoutePreview({
   const mapRef = useRef<MapLibreMap | null>(null)
   const markerRef = useRef<maplibregl.Marker[]>([])
   const cursorMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const playbackMarkerRef = useRef<maplibregl.Marker | null>(null)
   const visiblePoints = collectVisiblePositions(primarySession, primaryGpsPath, sessionPaths, highlightPaths, selectedTracks, currentTracks)
   const hasVisiblePoints = visiblePoints.length > 0
 
@@ -110,6 +113,8 @@ export function MapRoutePreview({
       markerRef.current = []
       cursorMarkerRef.current?.remove()
       cursorMarkerRef.current = null
+      playbackMarkerRef.current?.remove()
+      playbackMarkerRef.current = null
       map.remove()
       mapRef.current = null
     }
@@ -171,6 +176,24 @@ export function MapRoutePreview({
     }
     cursorMarkerRef.current.setLngLat(cursorLngLat)
   }, [cursorPosition, hasVisiblePoints])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const playbackLngLat = playbackPosition && isValidPosition(playbackPosition) ? lonLat(playbackPosition) : null
+    if (!map || !hasVisiblePoints || !playbackLngLat) {
+      playbackMarkerRef.current?.remove()
+      playbackMarkerRef.current = null
+      return
+    }
+    if (!playbackMarkerRef.current) {
+      const element = document.createElement('div')
+      element.className = 'map-route-playback-marker'
+      element.setAttribute('aria-label', 'Video playback position')
+      playbackMarkerRef.current = new maplibregl.Marker({ element, anchor: 'center' }).setLngLat(playbackLngLat).addTo(map)
+      return
+    }
+    playbackMarkerRef.current.setLngLat(playbackLngLat)
+  }, [hasVisiblePoints, playbackPosition])
 
   if (!hasVisiblePoints) {
     return (

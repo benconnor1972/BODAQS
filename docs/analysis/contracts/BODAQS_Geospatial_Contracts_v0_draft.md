@@ -347,7 +347,8 @@ Minimal example:
 {
   "from_trackpoint_id": "start-gate",
   "to_trackpoint_id": "rock-garden-entry",
-  "display_name": "Opening chute"
+  "display_name": "Opening chute",
+  "timing_role": "timed"
 }
 ```
 
@@ -360,6 +361,12 @@ Rules:
 - aliases may be removed automatically if trackpoints are deleted or reordered
   so that the alias is no longer well formed.
 - consumers should fall back to "`from` to `to`" wording when no alias exists.
+- `timing_role` is optional. Missing or unknown values should be treated as
+  `timed`; `untimed` marks the segment for exclusion from lap-timing sector
+  rows and timed totals.
+- if a segment annotation is retained for non-display metadata such as
+  `timing_role: "untimed"`, consumers should provide a default display name
+  such as `Segment 1` when no user name is present.
 
 ---
 

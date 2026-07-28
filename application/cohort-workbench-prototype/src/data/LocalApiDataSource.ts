@@ -46,6 +46,7 @@ import type {
   TimeseriesWindowSignal,
   TrackDirection,
   TrackMatchStatus,
+  TrackSegmentAliasRecord,
   TrackpointMatchMode,
   TrackpointMatchQueryRecord,
   TrackpointMatchQueryRequest,
@@ -751,8 +752,9 @@ function mapTrack(value: ApiObject): TrackRecord {
         fromTrackpointId: textValue(alias.from_trackpoint_id),
         toTrackpointId: textValue(alias.to_trackpoint_id),
         name: textValue(alias.display_name, textValue(alias.name)),
+        timingRole: (textValue(alias.timing_role) === 'untimed' ? 'untimed' : 'timed') as TrackSegmentAliasRecord['timingRole'],
       }))
-      .filter((alias) => alias.fromTrackpointId && alias.toTrackpointId && alias.name),
+      .filter((alias) => alias.fromTrackpointId && alias.toTrackpointId && (alias.name || alias.timingRole === 'untimed')),
     matchSummaries: arrayValue(value.match_summaries).filter(isObject).map(mapTrackMatch),
     source: textValue(source.kind)
       ? {
@@ -1400,6 +1402,7 @@ function toApiTrack(track: TrackRecord) {
       from_trackpoint_id: alias.fromTrackpointId,
       to_trackpoint_id: alias.toTrackpointId,
       display_name: alias.name,
+      ...(alias.timingRole === 'untimed' ? { timing_role: 'untimed' } : {}),
     })),
     display_state: {
       bodaqs_web_v1: {},

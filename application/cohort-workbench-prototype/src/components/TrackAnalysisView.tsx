@@ -1,5 +1,15 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Map as MapIcon, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
+import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { ChevronLeft, ChevronRight, Map as MapIcon, Play, Plus, RotateCcw, Save, Trash2, Video, X } from 'lucide-react'
 import maplibregl, {
   type GeoJSONSource,
   type Map as MapLibreMap,
@@ -15,7 +25,10 @@ import type {
   SessionGpsPoint,
   SessionGpsPointSet,
   SessionRecord,
+  SessionVideoAttachmentRecord,
+  SessionVideoAttachmentsRecord,
   StudySet,
+  TrackMatchStatus,
   TrackRecord,
   TrackpointMatchMode,
   TrackpointMatchQueryRecord,
@@ -94,16 +107,47 @@ type LapTimingRow = {
   key: string
   label: string
   distanceM: number
-  times: Array<{
-    sessionId: string
-    valueS: number | null
-    status: 'ready' | 'missing' | 'reverse'
-  }>
+  times: LapTimingCell[]
 }
+
+type LapTimingCell = {
+  sessionId: string
+  valueS: number | null
+  status: 'ready' | 'missing' | 'reverse'
+}
+
+type LapTimingDisplayMode = 'segment' | 'cumulative'
 
 type AltitudeSample = {
   distanceM: number
   elevationM: number
+}
+
+type PlaybackPosition = {
+  position: GeoPosition
+  stationM: number
+  timeS: number
+}
+
+type VideoPanelState =
+  | { status: 'idle'; message: string; data: SessionVideoAttachmentsRecord | null }
+  | { status: 'loading'; message: string; data: SessionVideoAttachmentsRecord | null }
+  | { status: 'ready'; message: string; data: SessionVideoAttachmentsRecord }
+  | { status: 'error'; message: string; data: SessionVideoAttachmentsRecord | null }
+
+type TrackSessionMatchCacheEntry = {
+  trackWorkingId: string
+  trackId: string
+  sessionRefId: string
+  status: TrackMatchStatus
+  crossedCount: number
+  trackpointCount: number
+}
+
+type VideoTargetTrackOption = {
+  value: string
+  label: string
+  description: string
 }
 
 type LonLatBounds = {
@@ -117,13 +161,15 @@ type PersistedTrackAnalysisViewContext = {
   addedSessionIds: string[]
   removedSessionIds: string[]
   addedTrackIds: string[]
+  videoPanelOpen: boolean
+  videoPanelWidthPx: number
 }
 
 type MapPointProperties = {
   color: string
   label: string
   radius: number
-  role: DragHandleRole | 'segment'
+  role: DragHandleRole | 'segment' | 'videoHead'
   trackpointId: string
 }
 
@@ -132,6 +178,9 @@ const TRACK_COLOR = '#b66a2c'
 const DRAFT_COLOR = '#008c95'
 const CUTLINE_LENGTH_M = 20
 const TRACK_ANALYSIS_VIEW_CONTEXT_STORAGE_PREFIX = 'bodaqs.track-analysis.view-context.v1:'
+const TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX = 360
+const TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX = 680
+const VIDEO_TARGET_SCRATCH = 'scratch'
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -258,11 +307,30 @@ export function TrackAnalysisView({
   const [selectedWorkingTrackId, setSelectedWorkingTrackId] = useState(() => workingTracks[0]?.workingId ?? '')
   const [activeTrackIds, setActiveTrackIds] = useState<Set<string>>(() => new Set(workingTracks.map((track) => track.workingId)))
   const previousWorkingTrackIdsRef = useRef<Set<string>>(new Set(workingTracks.map((track) => track.workingId)))
-  const [hideSegmentNames, setHideSegmentNames] = useState(true)
+  const [showSegments, setShowSegments] = useState(false)
+  const [automaticEndpoints, setAutomaticEndpoints] = useState(false)
+  const [trimTracksOnSave, setTrimTracksOnSave] = useState(false)
   const [lapTimingExpanded, setLapTimingExpanded] = useState(false)
+  const [lapTimingDisplayMode, setLapTimingDisplayMode] = useState<LapTimingDisplayMode>('segment')
   const [findSessionsOpen, setFindSessionsOpen] = useState(false)
   const [findTracksOpen, setFindTracksOpen] = useState(false)
   const [mapViewportBounds, setMapViewportBounds] = useState<LonLatBounds | null>(null)
+  const [videoPanelOpen, setVideoPanelOpen] = useState(initialViewContext.videoPanelOpen)
+  const [videoPanelWidthPx, setVideoPanelWidthPx] = useState(initialViewContext.videoPanelWidthPx)
+  const [referenceVideoSessionId, setReferenceVideoSessionId] = useState('')
+  const [videoTargetTrackId, setVideoTargetTrackId] = useState(VIDEO_TARGET_SCRATCH)
+  const [trackSessionMatchCache, setTrackSessionMatchCache] = useState<Record<string, TrackSessionMatchCacheEntry>>({})
+  const [videoState, setVideoState] = useState<VideoPanelState>({
+    status: 'idle',
+    message: dataSource.loadSessionVideoAttachments ? 'Select a video reference session.' : 'Video attachments are not available from this data source.',
+    data: null,
+  })
+  const [activeVideoId, setActiveVideoId] = useState('')
+  const [videoPlaybackTimeS, setVideoPlaybackTimeS] = useState(0)
+  const videoElementRef = useRef<HTMLVideoElement | null>(null)
+  const trackAnalysisStyle = {
+    '--track-analysis-video-width': `${videoPanelWidthPx}px`,
+  } as CSSProperties
 
   useEffect(() => {
     loadedGpsRef.current = loadedGps
@@ -273,6 +341,8 @@ export function TrackAnalysisView({
     setAddedSessionIds(new Set(restored.addedSessionIds))
     setRemovedSessionIds(new Set(restored.removedSessionIds))
     setLocalAddedTrackIds(new Set(restored.addedTrackIds))
+    setVideoPanelOpen(restored.videoPanelOpen)
+    setVideoPanelWidthPx(restored.videoPanelWidthPx)
   }, [viewContextStorageKey])
 
   useEffect(() => {
@@ -280,8 +350,10 @@ export function TrackAnalysisView({
       addedSessionIds: Array.from(addedSessionIds),
       removedSessionIds: Array.from(removedSessionIds),
       addedTrackIds: Array.from(localAddedTrackIds),
+      videoPanelOpen,
+      videoPanelWidthPx,
     })
-  }, [addedSessionIds, localAddedTrackIds, removedSessionIds, viewContextStorageKey])
+  }, [addedSessionIds, localAddedTrackIds, removedSessionIds, videoPanelOpen, videoPanelWidthPx, viewContextStorageKey])
 
   useEffect(() => {
     setWorkingTracks((current) => {
@@ -363,6 +435,201 @@ export function TrackAnalysisView({
     () => viewSessions.filter((session) => activeSessionIds.has(sessionRecordId(session))),
     [activeSessionIds, viewSessions],
   )
+  const activeVideoSessions = useMemo(
+    () => activeSessions.filter((session) => session.videoSummary.present),
+    [activeSessions],
+  )
+  const effectivePersistedTrackIds = useMemo(
+    () => uniqueStrings(workingTracks.map((track) => track.persistedId).filter((id): id is string => Boolean(id))).sort(),
+    [workingTracks],
+  )
+  const effectiveTrackMatchKey = useMemo(
+    () =>
+      [
+        ...viewSessionIds.slice().sort(),
+        ...effectivePersistedTrackIds.map((id) => `track:${id}`),
+      ].join('|'),
+    [effectivePersistedTrackIds, viewSessionIds],
+  )
+
+  useEffect(() => {
+    if (!activeVideoSessions.length) {
+      setReferenceVideoSessionId('')
+      return
+    }
+    if (!activeVideoSessions.some((session) => sessionRecordId(session) === referenceVideoSessionId)) {
+      setReferenceVideoSessionId(sessionRecordId(activeVideoSessions[0]))
+    }
+  }, [activeVideoSessions, referenceVideoSessionId])
+
+  const referenceVideoSession = useMemo(
+    () => activeVideoSessions.find((session) => sessionRecordId(session) === referenceVideoSessionId) ?? null,
+    [activeVideoSessions, referenceVideoSessionId],
+  )
+
+  useEffect(() => {
+    if (!dataSource.listTrackMatches || !viewSessions.length || !effectivePersistedTrackIds.length) {
+      return
+    }
+    let cancelled = false
+    const effectiveStudySet: StudySet = {
+      id: null,
+      displayName: `${studySet.displayName || 'Track analysis'} effective scope`,
+      revision: 0,
+      saved: false,
+      sessions: viewSessions.map(sessionToStudyRef),
+      groupings: [],
+      trackIds: effectivePersistedTrackIds,
+      provenance: 'track_analysis_view_context',
+    }
+    async function loadEffectiveTrackMatches() {
+      try {
+        const matches = await dataSource.listTrackMatches?.(effectiveStudySet)
+        if (cancelled || !matches) {
+          return
+        }
+        const matchesByTrack = new Map<string, typeof matches>()
+        matches.forEach((match) => {
+          const trackMatches = matchesByTrack.get(match.trackId) ?? []
+          trackMatches.push(match)
+          matchesByTrack.set(match.trackId, trackMatches)
+        })
+        setWorkingTracks((current) =>
+          current.map((track) => {
+            if (!track.persistedId) {
+              return track
+            }
+            const matchSummaries = matchesByTrack.get(track.persistedId) ?? []
+            return {
+              ...track,
+              matchSummaries: matchSummaries.map(copyTrackMatchSummary),
+            }
+          }),
+        )
+      } catch {
+        // Match hydration is an affordance for restored local tracks; failure should not block the view.
+      }
+    }
+    void loadEffectiveTrackMatches()
+    return () => {
+      cancelled = true
+    }
+  }, [dataSource, effectiveTrackMatchKey, studySet.displayName, viewSessions])
+
+  useEffect(() => {
+    const sessionIdSet = new Set(viewSessionIds)
+    const workingTrackIdSet = new Set(workingTracks.map((track) => track.workingId))
+    const nextFromSummaries: Record<string, TrackSessionMatchCacheEntry> = {}
+    workingTracks.forEach((track) => {
+      const persistedId = track.persistedId
+      if (!persistedId) {
+        return
+      }
+      track.matchSummaries.forEach((match) => {
+        if (!sessionIdSet.has(match.sessionRefId)) {
+          return
+        }
+        const crossedCount = match.trackpointResults.filter((result) => result.crossed).length
+        nextFromSummaries[trackSessionMatchKey(track.workingId, match.sessionRefId)] = {
+          trackWorkingId: track.workingId,
+          trackId: persistedId,
+          sessionRefId: match.sessionRefId,
+          status: match.status,
+          crossedCount,
+          trackpointCount: match.trackpointResults.length,
+        }
+      })
+    })
+    setTrackSessionMatchCache((current) => {
+      const next = { ...nextFromSummaries }
+      Object.values(current).forEach((entry) => {
+        const key = trackSessionMatchKey(entry.trackWorkingId, entry.sessionRefId)
+        if (next[key] || !sessionIdSet.has(entry.sessionRefId) || !workingTrackIdSet.has(entry.trackWorkingId)) {
+          return
+        }
+        next[key] = entry
+      })
+      return next
+    })
+  }, [viewSessionIds, workingTracks])
+
+  const videoTargetTrackOptions = useMemo<VideoTargetTrackOption[]>(() => {
+    const options: VideoTargetTrackOption[] = [
+      {
+        value: VIDEO_TARGET_SCRATCH,
+        label: 'Scratch track',
+        description: 'Create or extend a local scratch track from the video reference session.',
+      },
+    ]
+    if (!referenceVideoSession) {
+      return options
+    }
+    const referenceId = sessionRecordId(referenceVideoSession)
+    workingTracks.forEach((track) => {
+      if (!track.persistedId) {
+        return
+      }
+      const entry = trackSessionMatchCache[trackSessionMatchKey(track.workingId, referenceId)]
+      if (!entry || entry.crossedCount <= 0 || !isUsableTrackMatchStatus(entry.status)) {
+        return
+      }
+      options.push({
+        value: track.workingId,
+        label: track.name || track.persistedId,
+        description: `${entry.crossedCount}/${entry.trackpointCount || '?'} point(s) matched to the video session.`,
+      })
+    })
+    return options
+  }, [referenceVideoSession, trackSessionMatchCache, workingTracks])
+
+  useEffect(() => {
+    if (!videoTargetTrackOptions.some((option) => option.value === videoTargetTrackId)) {
+      setVideoTargetTrackId(VIDEO_TARGET_SCRATCH)
+    }
+  }, [videoTargetTrackId, videoTargetTrackOptions])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!videoPanelOpen || !referenceVideoSession || !dataSource.loadSessionVideoAttachments) {
+      setVideoState({
+        status: 'idle',
+        message: dataSource.loadSessionVideoAttachments
+          ? videoPanelOpen
+            ? 'Select a video reference session.'
+            : 'Open the video reference panel to load session video.'
+          : 'Video attachments are not available from this data source.',
+        data: null,
+      })
+      setActiveVideoId('')
+      return
+    }
+    setVideoState({ status: 'loading', message: 'Loading session video attachments...', data: null })
+    setActiveVideoId('')
+    setVideoPlaybackTimeS(0)
+    dataSource
+      .loadSessionVideoAttachments(referenceVideoSession)
+      .then((record) => {
+        if (cancelled) {
+          return
+        }
+        setVideoState({ status: 'ready', message: '', data: record })
+        const firstEnabled = record.attachments.find((attachment) => attachment.enabled) ?? record.attachments[0] ?? null
+        setActiveVideoId(firstEnabled?.attachmentId ?? '')
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setVideoState({
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Could not load video attachments.',
+          data: null,
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dataSource, referenceVideoSession, videoPanelOpen])
 
   useEffect(() => {
     let cancelled = false
@@ -438,6 +705,59 @@ export function TrackAnalysisView({
       return { session, loaded: loadedGps[gpsLoadKey(id, sourceId)] }
     })
     .filter(isReadyGpsPointSet)
+  const referenceVideoPointSet =
+    referenceVideoSession
+      ? activePointSets.find((item) => sessionRecordId(item.session) === sessionRecordId(referenceVideoSession))?.loaded.pointSet ?? null
+      : null
+  const videoAttachments = videoStateData(videoState)?.attachments ?? []
+  const activeVideo =
+    videoAttachments.find((attachment) => attachment.attachmentId === activeVideoId) ??
+    videoAttachments.find((attachment) => attachment.enabled) ??
+    videoAttachments[0] ??
+    null
+  const activeVideoStreamUrl =
+    referenceVideoSession && activeVideo && dataSource.sessionVideoStreamUrl
+      ? dataSource.sessionVideoStreamUrl(referenceVideoSession, activeVideo.attachmentId)
+      : ''
+
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.repeat || !isSpaceKey(event) || isEditableKeyboardTarget(event.target)) {
+        return
+      }
+      const video = videoElementRef.current
+      if (!activeVideo || !video) {
+        return
+      }
+      event.preventDefault()
+      if (video.paused || video.ended) {
+        void video.play()
+      } else {
+        video.pause()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [activeVideo])
+
+  const videoSessionTimeS =
+    activeVideo && Number.isFinite(activeVideo.sessionTimeAtVideoZeroS)
+      ? activeVideo.sessionTimeAtVideoZeroS + videoPlaybackTimeS
+      : null
+  const videoPlaybackPosition = useMemo(
+    () =>
+      videoSessionTimeS !== null && referenceVideoPointSet
+        ? playbackPositionForSessionTime(referenceVideoPointSet, videoSessionTimeS)
+        : null,
+    [referenceVideoPointSet, videoSessionTimeS],
+  )
+  const canPlayFocusedTrackFromVideo = useMemo(
+    () => canUseReferenceVideoForTrack(selectedTrack, referenceVideoSession, trackSessionMatchCache),
+    [referenceVideoSession, selectedTrack, trackSessionMatchCache],
+  )
   const sessionPaths = activePointSets.map<SessionPath>((item) => ({
     id: sessionRecordId(item.session),
     label: item.session.name,
@@ -458,6 +778,15 @@ export function TrackAnalysisView({
     [activePointSets],
   )
   const altitudeSamples = trackAltitudeSamples.length >= 2 ? trackAltitudeSamples : sessionAltitudeSamples
+  const videoAltitudeStationM = useMemo(() => {
+    if (!videoPlaybackPosition) {
+      return null
+    }
+    if (trackAltitudeSamples.length >= 2 && selectedTrack?.points.length) {
+      return snapPositionToPath(lonLat(videoPlaybackPosition.position), selectedTrack.points, routeLengthM(selectedTrack.points)).stationM
+    }
+    return videoPlaybackPosition.stationM
+  }, [selectedTrack, trackAltitudeSamples.length, videoPlaybackPosition])
   const altitudeMeta =
     trackAltitudeSamples.length >= 2
       ? `${selectedTrack?.name ?? 'Track'} track altitude`
@@ -468,6 +797,107 @@ export function TrackAnalysisView({
     ? `${activePointSets.length} session path(s) / ${visibleTracks.length} visible track(s) / ${timingTrackpoints.length} focused point(s)`
     : 'No active GPS paths loaded'
   const dirtyTrackCount = workingTracks.filter((track) => track.dirty).length
+
+  function addTrackpointAtVideoHead() {
+    if (!videoPlaybackPosition) {
+      return
+    }
+    const videoHeadPosition = lonLat(videoPlaybackPosition.position)
+    if (videoTargetTrackId !== VIDEO_TARGET_SCRATCH) {
+      const targetTrack = workingTracks.find((track) => track.workingId === videoTargetTrackId) ?? null
+      if (!targetTrack) {
+        return
+      }
+      setSelectedWorkingTrackId(targetTrack.workingId)
+      setActiveTrackIds((current) => {
+        const next = new Set(current)
+        next.add(targetTrack.workingId)
+        return next
+      })
+      addPositionToWorkingTrack(targetTrack, videoHeadPosition)
+      return
+    }
+    if (selectedTrack?.origin === 'scratch') {
+      setActiveTrackIds((current) => {
+        const next = new Set(current)
+        next.add(selectedTrack.workingId)
+        return next
+      })
+      addPositionToWorkingTrack(selectedTrack, videoHeadPosition)
+      return
+    }
+    if (referenceVideoSession && referenceVideoPointSet?.path.length) {
+      const sessionPath: SessionPath = {
+        id: sessionRecordId(referenceVideoSession),
+        label: referenceVideoSession.name,
+        path: referenceVideoPointSet.path,
+        session: referenceVideoSession,
+      }
+      const scratchTrack = scratchTrackFromSessionPath(
+        sessionPath,
+        { position: videoPlaybackPosition.position, stationM: videoPlaybackPosition.stationM },
+        workingTracks,
+        studySet,
+        automaticEndpoints,
+      )
+      setWorkingTracks((current) => [...current, scratchTrack])
+      setSelectedWorkingTrackId(scratchTrack.workingId)
+      setActiveTrackIds((current) => {
+        const next = new Set(current)
+        next.add(scratchTrack.workingId)
+        return next
+      })
+      return
+    }
+    addDraftTrackpoint(videoHeadPosition)
+  }
+
+  function addPositionToWorkingTrack(targetTrack: WorkingTrack, position: [number, number]) {
+    if (targetTrack.points.length < 2) {
+      return
+    }
+    const snapped = snapPositionToPath(position, targetTrack.points, routeLengthM(targetTrack.points))
+    updateWorkingTrack(targetTrack.workingId, (track) => {
+      const nextIndex = track.trackpoints.length + 1
+      return {
+        ...track,
+        trackpoints: [...track.trackpoints, draftTrackpointFromSnap(snapped, nextIndex)],
+      }
+    })
+  }
+
+  function playVideoFromTrackpoint(trackpoint: DraftTrackpoint) {
+    if (!activeVideo || !referenceVideoPointSet || !videoElementRef.current || !canPlayFocusedTrackFromVideo) {
+      return
+    }
+    const sessionTimeS = sessionTimeForPosition(referenceVideoPointSet, trackpoint.position)
+    if (sessionTimeS === null) {
+      return
+    }
+    const videoTimeS = Math.max(0, sessionTimeS - activeVideo.sessionTimeAtVideoZeroS)
+    const duration = videoElementRef.current.duration
+    videoElementRef.current.currentTime = Number.isFinite(duration)
+      ? clampNumber(videoTimeS, 0, Math.max(0, duration - 0.05))
+      : videoTimeS
+    void videoElementRef.current.play()
+  }
+
+  function beginVideoPanelResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    const startClientX = event.clientX
+    const startWidthPx = videoPanelWidthPx
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextWidth = startWidthPx + (startClientX - moveEvent.clientX)
+      setVideoPanelWidthPx(clampNumber(nextWidth, TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX, TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX))
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
 
   function addSessionsToView(sessionsToAdd: SessionRecord[]) {
     if (!sessionsToAdd.length) {
@@ -487,6 +917,33 @@ export function TrackAnalysisView({
     setActiveSessionIds((current) => {
       const next = new Set(current)
       ids.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
+  function warmTrackSessionMatchCache(track: TrackRecord, queryResults: TrackpointMatchQueryResult[]) {
+    const workingTrack = workingTracks.find((candidate) => candidate.persistedId === track.id)
+    if (!workingTrack || !queryResults.length) {
+      return
+    }
+    setTrackSessionMatchCache((current) => {
+      const next = { ...current }
+      queryResults.forEach((result) => {
+        const sessionId = sessionRefId(result.sessionRef)
+        const crossedCount = result.matchedTrackpointIds.length
+        const trackpointCount = crossedCount + result.missingTrackpointIds.length
+        if (crossedCount <= 0) {
+          return
+        }
+        next[trackSessionMatchKey(workingTrack.workingId, sessionId)] = {
+          trackWorkingId: workingTrack.workingId,
+          trackId: track.id,
+          sessionRefId: sessionId,
+          status: result.missingTrackpointIds.length ? 'partial' : 'matched',
+          crossedCount,
+          trackpointCount,
+        }
+      })
       return next
     })
   }
@@ -601,7 +1058,7 @@ export function TrackAnalysisView({
   const addDraftTrackpoint = useCallback((position: [number, number]) => {
     const targetTrack = selectedTrackVisible ? selectedTrack : null
     if (!targetTrack) {
-      const scratchTrack = scratchTrackFromNearestPath(position, sessionPaths, workingTracks, studySet)
+      const scratchTrack = scratchTrackFromNearestPath(position, sessionPaths, workingTracks, studySet, automaticEndpoints)
       if (!scratchTrack) {
         return
       }
@@ -620,7 +1077,7 @@ export function TrackAnalysisView({
         trackpoints: [...track.trackpoints, draftTrackpointFromSnap(snapped, nextIndex)],
       }
     })
-  }, [selectedTrack, selectedTrackVisible, sessionPaths, studySet, workingTracks])
+  }, [automaticEndpoints, selectedTrack, selectedTrackVisible, sessionPaths, studySet, workingTracks])
 
   function removeDraftTrackpoint(trackpointId: string) {
     if (!selectedTrack) {
@@ -667,7 +1124,20 @@ export function TrackAnalysisView({
     }
     updateWorkingTrack(selectedTrack.workingId, (track) => ({
       ...track,
-      segmentAliases: upsertSegmentAlias(track.segmentAliases, fromTrackpointId, toTrackpointId, name),
+      segmentAliases: upsertSegmentAlias(track.segmentAliases, fromTrackpointId, toTrackpointId, { name }),
+    }))
+  }
+
+  function setSegmentUntimed(fromTrackpointId: string, toTrackpointId: string, untimed: boolean, fallbackName: string) {
+    if (!selectedTrack) {
+      return
+    }
+    updateWorkingTrack(selectedTrack.workingId, (track) => ({
+      ...track,
+      segmentAliases: upsertSegmentAlias(track.segmentAliases, fromTrackpointId, toTrackpointId, {
+        name: fallbackName,
+        timingRole: untimed ? 'untimed' : 'timed',
+      }),
     }))
   }
 
@@ -722,11 +1192,12 @@ export function TrackAnalysisView({
     }
     setWorkingTrackFlags(workingId, { saving: true, status: '' })
     try {
+      const preparedTrack = trimTracksOnSave ? trimWorkingTrackToTrackpoints(trackToSave) : trackToSave
       const generatedTrackpointIds: string[] = []
-      const sortedTrackpoints = [...trackToSave.trackpoints]
+      const sortedTrackpoints = [...preparedTrack.trackpoints]
         .map((trackpoint, index) => {
           const name = trackpoint.name.trim() || `Point ${index + 1}`
-          const existingIds = [...trackToSave.trackpoints.map((item) => item.id), ...generatedTrackpointIds]
+          const existingIds = [...preparedTrack.trackpoints.map((item) => item.id), ...generatedTrackpointIds]
           const id = trackpoint.id.startsWith('draft-') ? uniqueId(slugify(name), existingIds) : trackpoint.id
           generatedTrackpointIds.push(id)
           return {
@@ -741,17 +1212,17 @@ export function TrackAnalysisView({
       const saved = await dataSource.saveTrack({
         id: trackToSave.persistedId ?? '',
         name: displayName,
-        description: trackToSave.description || 'Track created from Track Analysis and Lap Timing.',
-        revision: trackToSave.revision,
-        pointCount: trackToSave.points.length,
-        distanceKm: trackToSave.lengthM / 1000,
-        lengthM: trackToSave.lengthM,
-        points: trackToSave.points.map((position) => copyPosition(position)),
-        defaultPolicyId: trackToSave.defaultPolicyId || 'default-geospatial-policy',
+        description: preparedTrack.description || 'Track created from Track Analysis and Lap Timing.',
+        revision: preparedTrack.revision,
+        pointCount: preparedTrack.points.length,
+        distanceKm: preparedTrack.lengthM / 1000,
+        lengthM: preparedTrack.lengthM,
+        points: preparedTrack.points.map((position) => copyPosition(position)),
+        defaultPolicyId: preparedTrack.defaultPolicyId || 'default-geospatial-policy',
         trackpoints: sortedTrackpoints,
-        segmentAliases: validSegmentAliasesForTrack(trackToSave),
-        matchSummaries: trackToSave.matchSummaries,
-        source: trackToSave.source,
+        segmentAliases: validSegmentAliasesForTrack(preparedTrack),
+        matchSummaries: preparedTrack.matchSummaries,
+        source: preparedTrack.source,
       })
       setLocalTracks((current) => mergeTrackLists(current, [saved]))
       setWorkingTracks((current) =>
@@ -936,9 +1407,19 @@ export function TrackAnalysisView({
                         onChange={() => toggleSession(session)}
                       />
                       <span>
-                        <strong>{session.name}</strong>
+                        <strong>
+                          {session.name}
+                          {session.videoSummary.present && (
+                            <Video
+                              aria-label={`${session.videoSummary.attachmentCount} video attachment${session.videoSummary.attachmentCount === 1 ? '' : 's'}`}
+                              className="track-analysis-video-session-icon"
+                              size={13}
+                            />
+                          )}
+                        </strong>
                         <small>
                           {gpsQuality === 'usable' ? 'usable GPS' : `${gpsQuality || 'unknown'} GPS`}
+                          {session.videoSummary.present ? ` - ${session.videoSummary.enabledCount} video enabled` : ''}
                           {addedOnly ? ' - added to view' : ''}
                         </small>
                       </span>
@@ -1112,28 +1593,55 @@ export function TrackAnalysisView({
                 <p className="track-analysis-muted">No tracks yet. Click near an active GPS path to start a scratch track.</p>
               )}
               <button className="secondary-action compact" type="button" onClick={() => setSelectedWorkingTrackId('')}>
-                New scratch on next map click
+                New scratch track on next map click
               </button>
+            </section>
+
+            <section className="track-analysis-control-card">
+              <TrackPanelTitle
+                title="Trackpoints"
+                meta={selectedTrack ? `${draftTrackpoints.length} point(s)` : 'No focused track'}
+                info="Edit the focused track's point names, segment labels, and save-time track-shaping options."
+              />
               <div className="track-analysis-label-options">
                 <label>
                   <input
-                    checked={hideSegmentNames}
+                    checked={automaticEndpoints}
                     type="checkbox"
-                    onChange={(event) => setHideSegmentNames(event.target.checked)}
+                    onChange={(event) => setAutomaticEndpoints(event.target.checked)}
                   />
-                  <span>Hide segment names</span>
+                  <span>Automatic endpoints</span>
+                </label>
+                <label>
+                  <input
+                    checked={trimTracksOnSave}
+                    type="checkbox"
+                    onChange={(event) => setTrimTracksOnSave(event.target.checked)}
+                  />
+                  <span>Trim tracks on save</span>
                 </label>
               </div>
               {selectedTrack && (
-                <label className="track-analysis-field">
-                  <span>Track name</span>
-                  <input value={selectedTrack.name} onChange={(event) => renameWorkingTrack(selectedTrack.workingId, event.target.value)} />
-                </label>
+                <div className="track-analysis-trackpoint-name-row">
+                  <label className="track-analysis-field">
+                    <span>Track name</span>
+                    <input value={selectedTrack.name} onChange={(event) => renameWorkingTrack(selectedTrack.workingId, event.target.value)} />
+                  </label>
+                  <label className="track-analysis-inline-toggle">
+                    <input
+                      checked={showSegments}
+                      type="checkbox"
+                      onChange={(event) => setShowSegments(event.target.checked)}
+                    />
+                    <span>Show segments</span>
+                  </label>
+                </div>
               )}
               <div className="track-analysis-draft-list">
                 {selectedTrack && draftTrackpoints.length ? (
                   orderedDraftTrackpoints.flatMap((trackpoint, index) => {
                     const nextTrackpoint = orderedDraftTrackpoints[index + 1]
+                    const segmentDefaultName = `Segment ${index + 1}`
                     const alias = nextTrackpoint
                       ? segmentAliasForPair(selectedTrack.segmentAliases, trackpoint.id, nextTrackpoint.id)
                       : null
@@ -1150,12 +1658,25 @@ export function TrackAnalysisView({
                             onChange={(event) => renameDraftTrackpoint(trackpoint.id, event.target.value)}
                           />
                         </label>
-                        <button type="button" className="icon-only small" onClick={() => removeDraftTrackpoint(trackpoint.id)}>
-                          <Trash2 size={13} />
-                        </button>
+                        <div className="track-analysis-draft-actions">
+                          {activeVideo && referenceVideoPointSet && canPlayFocusedTrackFromVideo && (
+                            <button
+                              type="button"
+                              className="icon-only small"
+                              onClick={() => playVideoFromTrackpoint(trackpoint)}
+                              title="Play video from this trackpoint"
+                              aria-label={`Play video from ${trackpoint.name || trackpoint.id}`}
+                            >
+                              <Play size={13} />
+                            </button>
+                          )}
+                          <button type="button" className="icon-only small" onClick={() => removeDraftTrackpoint(trackpoint.id)}>
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </div>,
-                      nextTrackpoint && !hideSegmentNames ? (
-                        <label key={`${trackpoint.id}-${nextTrackpoint.id}-segment`} className="track-analysis-segment-row">
+                      nextTrackpoint && showSegments ? (
+                        <div key={`${trackpoint.id}-${nextTrackpoint.id}-segment`} className="track-analysis-segment-row">
                           <span className="track-analysis-row-glyph track-analysis-segment-glyph" aria-hidden="true" />
                           <input
                             aria-label={`Segment name from ${trackpoint.name || trackpoint.id} to ${nextTrackpoint.name || nextTrackpoint.id}`}
@@ -1163,7 +1684,17 @@ export function TrackAnalysisView({
                             value={alias?.name ?? ''}
                             onChange={(event) => renameSegmentAlias(trackpoint.id, nextTrackpoint.id, event.target.value)}
                           />
-                        </label>
+                          <label className="track-analysis-segment-timing-toggle">
+                            <input
+                              checked={alias?.timingRole === 'untimed'}
+                              type="checkbox"
+                              onChange={(event) =>
+                                setSegmentUntimed(trackpoint.id, nextTrackpoint.id, event.target.checked, alias?.name || segmentDefaultName)
+                              }
+                            />
+                            <span>Untimed</span>
+                          </label>
+                        </div>
                       ) : null,
                     ].filter(Boolean)
                   })
@@ -1178,28 +1709,85 @@ export function TrackAnalysisView({
         )}
       </aside>
 
-      <section className="track-analysis-main">
-        <section className="track-analysis-map-card">
-          <TrackPanelTitle
-            title="Track map"
-            meta={mapStatus}
-            info="Click near the reference path to place a temporary trackpoint. Drag a point to move it along the path, or drag cutline ends to rotate and resize the cutline."
-          />
-          <TrackAnalysisMap
-            sessionPaths={sessionPaths}
-            visibleTracks={visibleTracks}
-            focusedTrackId={timingTrack?.workingId ?? ''}
-            draftTrackpoints={timingTrackpoints}
-            segmentAliases={validSegmentAliases}
-            hideSegmentNames={hideSegmentNames}
-            onCreateTrackpoint={addDraftTrackpoint}
-            onMoveTrackpoint={moveDraftTrackpoint}
-            onAdjustCutline={adjustDraftCutline}
-            onDeleteTrackpoint={removeDraftTrackpoint}
-            onTrackpointDragEnd={sortSelectedTrackpointsByStation}
-            onViewportBoundsChanged={setMapViewportBounds}
-          />
-        </section>
+      <section className={`track-analysis-main ${videoPanelOpen ? 'video-open' : 'video-closed'}`} style={trackAnalysisStyle}>
+        <div className="track-analysis-map-band">
+          <section className="track-analysis-map-card">
+            <TrackPanelTitle
+              title="Track map"
+              meta={mapStatus}
+              info="Click near the reference path to place a temporary trackpoint. Drag a point to move it along the path, or drag cutline ends to rotate and resize the cutline."
+            />
+            <TrackAnalysisMap
+              sessionPaths={sessionPaths}
+              visibleTracks={visibleTracks}
+              focusedTrackId={timingTrack?.workingId ?? ''}
+              draftTrackpoints={timingTrackpoints}
+              segmentAliases={validSegmentAliases}
+              hideSegmentNames={!showSegments}
+              videoMarkerPosition={videoPlaybackPosition?.position ?? null}
+              onCreateTrackpoint={addDraftTrackpoint}
+              onMoveTrackpoint={moveDraftTrackpoint}
+              onAdjustCutline={adjustDraftCutline}
+              onDeleteTrackpoint={removeDraftTrackpoint}
+              onTrackpointDragEnd={sortSelectedTrackpointsByStation}
+              onViewportBoundsChanged={setMapViewportBounds}
+            />
+          </section>
+        {videoPanelOpen ? (
+          <aside className="track-analysis-video-panel">
+            <button
+              aria-label="Resize video reference panel"
+              className="track-analysis-video-resizer"
+              type="button"
+              onPointerDown={beginVideoPanelResize}
+              title="Drag to resize video reference"
+            />
+            <TrackPanelTitle
+              title="Video reference"
+              meta={activeVideoSessions.length ? `${activeVideoSessions.length} session(s) with video` : 'No active video sessions'}
+                action={
+                  <button
+                    type="button"
+                    className="track-analysis-panel-toggle"
+                    onClick={() => setVideoPanelOpen(false)}
+                    title="Collapse video reference"
+                  >
+                    <ChevronRight size={14} />
+                  </button>
+                }
+              />
+              <TrackAnalysisVideoPanel
+                activeVideo={activeVideo}
+                attachments={videoAttachments}
+                disabled={!dataSource.loadSessionVideoAttachments || !dataSource.sessionVideoStreamUrl}
+                onActiveVideoIdChange={setActiveVideoId}
+                onAddTrackpoint={addTrackpointAtVideoHead}
+                onPlaybackTimeChange={setVideoPlaybackTimeS}
+                onReferenceSessionIdChange={setReferenceVideoSessionId}
+                onTargetTrackIdChange={setVideoTargetTrackId}
+                playbackPosition={videoPlaybackPosition}
+                referenceSession={referenceVideoSession}
+                sessions={activeVideoSessions}
+                focusedTrack={selectedTrack}
+                state={videoState}
+                streamUrl={activeVideoStreamUrl}
+                targetTrackId={videoTargetTrackId}
+                targetTrackOptions={videoTargetTrackOptions}
+                videoRef={videoElementRef}
+              />
+            </aside>
+          ) : (
+            <button
+              type="button"
+              className="track-analysis-video-rail"
+              onClick={() => setVideoPanelOpen(true)}
+              title="Show video reference"
+            >
+              <ChevronLeft size={14} />
+              <span>Video reference</span>
+            </button>
+          )}
+        </div>
 
         <section className={`track-analysis-bottom ${lapTimingExpanded ? 'lap-expanded' : ''}`}>
           {!lapTimingExpanded && (
@@ -1218,7 +1806,7 @@ export function TrackAnalysisView({
                   </button>
                 }
               />
-              <AltitudeChart samples={altitudeSamples} trackpoints={timingTrackpoints} />
+              <AltitudeChart samples={altitudeSamples} trackpoints={timingTrackpoints} playbackStationM={videoAltitudeStationM} />
             </div>
           )}
           {lapTimingExpanded && (
@@ -1236,8 +1824,31 @@ export function TrackAnalysisView({
             <TrackPanelTitle
               title="Lap timing"
               meta={lapTimingRows.length ? `${lapTimingRows.length} timing row(s)` : 'No sectors'}
+              action={
+                <div className="track-analysis-lap-mode-toggle" role="group" aria-label="Lap timing display mode">
+                  <button
+                    type="button"
+                    className={lapTimingDisplayMode === 'segment' ? 'active' : ''}
+                    onClick={() => setLapTimingDisplayMode('segment')}
+                  >
+                    Segment
+                  </button>
+                  <button
+                    type="button"
+                    className={lapTimingDisplayMode === 'cumulative' ? 'active' : ''}
+                    onClick={() => setLapTimingDisplayMode('cumulative')}
+                  >
+                    Cumulative
+                  </button>
+                </div>
+              }
             />
-            <LapTimingTable activePointSets={activePointSets} rows={lapTimingRows} trackpointCount={draftTrackpoints.length} />
+            <LapTimingTable
+              activePointSets={activePointSets}
+              rows={lapTimingRows}
+              trackpointCount={draftTrackpoints.length}
+              displayMode={lapTimingDisplayMode}
+            />
           </div>
         </section>
       </section>
@@ -1249,6 +1860,7 @@ export function TrackAnalysisView({
           viewSessionIds={new Set(viewSessionIds)}
           initialTrackId={selectedTrack?.persistedId ?? savedScopedTracks[0]?.id ?? tracks[0]?.id ?? ''}
           onAddSessions={addSessionsToView}
+          onAddSessionMatches={warmTrackSessionMatchCache}
           onClose={() => setFindSessionsOpen(false)}
         />
       )}
@@ -1272,6 +1884,7 @@ function TrackAnalysisFindSessionsModal({
   viewSessionIds,
   initialTrackId,
   onAddSessions,
+  onAddSessionMatches,
   onClose,
 }: {
   dataSource: LibraryDataSource
@@ -1280,6 +1893,7 @@ function TrackAnalysisFindSessionsModal({
   viewSessionIds: Set<string>
   initialTrackId: string
   onAddSessions: (sessions: SessionRecord[]) => void
+  onAddSessionMatches: (track: TrackRecord, results: TrackpointMatchQueryResult[]) => void
   onClose: () => void
 }) {
   const queryableTracks = useMemo(() => tracks.filter((track) => track.trackpoints.length > 0), [tracks])
@@ -1422,7 +2036,11 @@ function TrackAnalysisFindSessionsModal({
     const selectedSessions = Array.from(selectedResultIds)
       .map((id) => sessionByRefId(id, sessions))
       .filter(isSessionRecord)
+    const selectedMatches = results.filter((result) => selectedResultIds.has(sessionRefId(result.sessionRef)))
     onAddSessions(selectedSessions)
+    if (selectedTrack) {
+      onAddSessionMatches(selectedTrack, selectedMatches)
+    }
     onClose()
   }
 
@@ -1547,9 +2165,19 @@ function TrackAnalysisFindSessionsModal({
                         onChange={() => toggleResult(result)}
                       />
                       <span>
-                        <strong>{session?.name ?? id}</strong>
+                        <strong>
+                          {session?.name ?? id}
+                          {session?.videoSummary.present && (
+                            <Video
+                              aria-label={`${session.videoSummary.attachmentCount} video attachment${session.videoSummary.attachmentCount === 1 ? '' : 's'}`}
+                              className="track-analysis-video-session-icon"
+                              size={13}
+                            />
+                          )}
+                        </strong>
                         <small>
                           {result.matchedTrackpointIds.length} matched / {result.missingTrackpointIds.length} missing
+                          {session?.videoSummary.present ? ` - ${session.videoSummary.enabledCount} video enabled` : ''}
                           {alreadyInView ? ' - already in view' : ''}
                           {!session ? ' - unavailable in current catalog' : ''}
                         </small>
@@ -1576,6 +2204,146 @@ function TrackAnalysisFindSessionsModal({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function TrackAnalysisVideoPanel({
+  activeVideo,
+  attachments,
+  disabled,
+  onActiveVideoIdChange,
+  onAddTrackpoint,
+  onPlaybackTimeChange,
+  onReferenceSessionIdChange,
+  onTargetTrackIdChange,
+  playbackPosition,
+  referenceSession,
+  sessions,
+  focusedTrack,
+  state,
+  streamUrl,
+  targetTrackId,
+  targetTrackOptions,
+  videoRef,
+}: {
+  activeVideo: SessionVideoAttachmentRecord | null
+  attachments: SessionVideoAttachmentRecord[]
+  disabled: boolean
+  onActiveVideoIdChange: (attachmentId: string) => void
+  onAddTrackpoint: () => void
+  onPlaybackTimeChange: (timeS: number) => void
+  onReferenceSessionIdChange: (sessionId: string) => void
+  onTargetTrackIdChange: (trackId: string) => void
+  playbackPosition: PlaybackPosition | null
+  referenceSession: SessionRecord | null
+  sessions: SessionRecord[]
+  focusedTrack: WorkingTrack | null
+  state: VideoPanelState
+  streamUrl: string
+  targetTrackId: string
+  targetTrackOptions: VideoTargetTrackOption[]
+  videoRef: RefObject<HTMLVideoElement | null>
+}) {
+  const referenceSessionId = referenceSession ? sessionRecordId(referenceSession) : ''
+  const targetOption = targetTrackOptions.find((option) => option.value === targetTrackId) ?? targetTrackOptions[0] ?? null
+
+  if (disabled) {
+    return <p className="track-analysis-muted">Video playback is not available from this data source.</p>
+  }
+
+  return (
+    <div className="track-analysis-video-body">
+      {sessions.length ? (
+        <label className="track-analysis-field">
+          <span>Reference session</span>
+          <select value={referenceSessionId} onChange={(event) => onReferenceSessionIdChange(event.target.value)}>
+            {sessions.map((session) => (
+              <option key={sessionRecordId(session)} value={sessionRecordId(session)}>
+                {session.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="track-analysis-muted">No active sessions with video attachments. Toggle a video-capable session on to use video placement.</p>
+      )}
+
+      {state.status === 'loading' && <p className="track-analysis-muted">{state.message}</p>}
+      {state.status === 'error' && <p className="track-analysis-muted">Could not load video attachments: {state.message}</p>}
+
+      {attachments.length > 0 && (
+        <label className="track-analysis-field">
+          <span>Attachment</span>
+          <select value={activeVideo?.attachmentId ?? ''} onChange={(event) => onActiveVideoIdChange(event.target.value)}>
+            {attachments.map((attachment) => (
+              <option key={attachment.attachmentId} value={attachment.attachmentId}>
+                {attachment.displayName || attachment.cameraLabel || attachment.attachmentId}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {streamUrl ? (
+        <video
+          className="track-analysis-video-player"
+          controls
+          muted
+          onTimeUpdate={(event) => onPlaybackTimeChange(event.currentTarget.currentTime)}
+          preload="metadata"
+          ref={videoRef}
+          src={streamUrl}
+        />
+      ) : attachments.length ? (
+        <div className="track-analysis-video-empty">No stream URL is available for the selected attachment.</div>
+      ) : referenceSession ? (
+        <div className="track-analysis-video-empty">No video attachments were returned for this session.</div>
+      ) : null}
+
+      <div className="track-analysis-video-meta">
+        <span>
+          Target{' '}
+          <strong>
+            {targetOption?.label ??
+              (focusedTrack
+                ? `${focusedTrack.name || 'Unnamed track'} (${focusedTrack.origin === 'scratch' ? 'scratch' : 'saved'} track)`
+                : 'next scratch track')}
+          </strong>
+        </span>
+        {targetOption && <span>{targetOption.description}</span>}
+        <span>{referenceSession ? `Reference session: ${referenceSession.name}` : 'No reference session selected'}</span>
+        <span>
+          Video head{' '}
+          <strong>{playbackPosition ? formatDuration(playbackPosition.timeS) : 'not on GPS path'}</strong>
+        </span>
+        <span>{activeVideo ? `Offset ${formatSignedSeconds(activeVideo.sessionTimeAtVideoZeroS)}` : 'No active attachment'}</span>
+      </div>
+      <div className="track-analysis-video-placement-row">
+        <label className="track-analysis-field">
+          <span>Target track</span>
+          <select value={targetOption?.value ?? VIDEO_TARGET_SCRATCH} onChange={(event) => onTargetTrackIdChange(event.target.value)}>
+            {targetTrackOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="primary-action"
+          disabled={!playbackPosition || !targetOption}
+          onClick={onAddTrackpoint}
+          title="Add a trackpoint at the current video GPS position"
+        >
+          <Plus size={14} />
+          Add point at video head
+        </button>
+      </div>
+      <p className="track-analysis-muted">
+        Video remains attached to the session. Saved tracks are available only when the reference session has a trackpoint match.
+      </p>
     </div>
   )
 }
@@ -2132,10 +2900,12 @@ function LapTimingTable({
   activePointSets,
   rows,
   trackpointCount,
+  displayMode,
 }: {
   activePointSets: ActiveGpsPointSet[]
   rows: LapTimingRow[]
   trackpointCount: number
+  displayMode: LapTimingDisplayMode
 }) {
   if (activePointSets.length === 0) {
     return (
@@ -2186,6 +2956,7 @@ function LapTimingTable({
     ...row,
     times: row.times.filter((time) => visibleSessionIds.has(time.sessionId)),
   }))
+  const displayRows = displayMode === 'cumulative' ? cumulativeLapTimingRows(visibleRowOrder) : visibleRowOrder
   return (
     <div className="track-analysis-lap-table-wrap">
       <table className="track-analysis-lap-table">
@@ -2199,26 +2970,94 @@ function LapTimingTable({
           </tr>
         </thead>
         <tbody>
-          {visibleRowOrder.map((row) => (
-            <tr key={row.key} className={row.key === 'overall' ? 'track-analysis-overall-row' : ''}>
-              <td>{row.label}</td>
-              <td>{formatDistance(row.distanceM)}</td>
-              {row.times.map((time) => (
-                <td key={time.sessionId} className={time.status !== 'ready' ? 'track-analysis-muted-cell' : ''}>
-                  {time.status === 'ready' && time.valueS !== null
-                    ? formatDuration(time.valueS)
-                    : time.status === 'reverse'
-                      ? 'reverse'
-                      : 'no crossing'}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {displayRows.map((row) => {
+            const highlights = lapTimingHighlightClasses(row)
+            return (
+              <tr key={row.key} className={row.key === 'overall' ? 'track-analysis-overall-row' : ''}>
+                <td>{row.label}</td>
+                <td>{formatDistance(row.distanceM)}</td>
+                {row.times.map((time) => {
+                  const highlightClass = time.status === 'ready' ? highlights.get(time.sessionId) ?? '' : ''
+                  return (
+                    <td
+                      key={time.sessionId}
+                      className={[
+                        time.status !== 'ready' ? 'track-analysis-muted-cell' : '',
+                        highlightClass,
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                    >
+                      {time.status === 'ready' && time.valueS !== null
+                        ? formatDuration(time.valueS)
+                        : time.status === 'reverse'
+                          ? 'reverse'
+                          : 'no crossing'}
+                    </td>
+                  )
+                })}
+              </tr>
+            )
+          })}
         </tbody>
       </table>
       <p className="track-analysis-table-note">Latest crossing per trackpoint is used; sectors with reverse timing are ignored.</p>
     </div>
   )
+}
+
+function cumulativeLapTimingRows(rows: LapTimingRow[]): LapTimingRow[] {
+  const segmentRows = rows.filter((row) => row.key !== 'overall')
+  const overallRows = rows.filter((row) => row.key === 'overall')
+  const cumulativeBySession = new Map<string, { valueS: number; blockedStatus: Exclude<LapTimingCell['status'], 'ready'> | null }>()
+  let cumulativeDistanceM = 0
+
+  const cumulativeSegments = segmentRows.map((row) => {
+    cumulativeDistanceM += row.distanceM
+    const times: LapTimingCell[] = row.times.map((time) => {
+      const current = cumulativeBySession.get(time.sessionId) ?? { valueS: 0, blockedStatus: null }
+      if (current.blockedStatus) {
+        return { sessionId: time.sessionId, valueS: null, status: current.blockedStatus }
+      }
+      if (time.status !== 'ready' || time.valueS === null) {
+        const blockedStatus: Exclude<LapTimingCell['status'], 'ready'> = time.status === 'reverse' ? 'reverse' : 'missing'
+        cumulativeBySession.set(time.sessionId, { valueS: current.valueS, blockedStatus })
+        return { sessionId: time.sessionId, valueS: null, status: blockedStatus }
+      }
+      const nextValue = current.valueS + time.valueS
+      cumulativeBySession.set(time.sessionId, { valueS: nextValue, blockedStatus: null })
+      return { sessionId: time.sessionId, valueS: nextValue, status: 'ready' as const }
+    })
+    return {
+      ...row,
+      distanceM: cumulativeDistanceM,
+      times,
+    }
+  })
+
+  return [...cumulativeSegments, ...overallRows]
+}
+
+function lapTimingHighlightClasses(row: LapTimingRow) {
+  const readyTimes = row.times.filter((time) => time.status === 'ready' && time.valueS !== null)
+  const classes = new Map<string, string>()
+  if (readyTimes.length < 2) {
+    return classes
+  }
+  const values = readyTimes.map((time) => time.valueS ?? 0)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  if (Math.abs(max - min) < 1e-9) {
+    return classes
+  }
+  readyTimes.forEach((time) => {
+    if (time.valueS === min) {
+      classes.set(time.sessionId, 'track-analysis-lap-fastest')
+    } else if (time.valueS === max) {
+      classes.set(time.sessionId, 'track-analysis-lap-slowest')
+    }
+  })
+  return classes
 }
 
 function TrackAnalysisAddViewportMap({
@@ -2329,6 +3168,7 @@ function TrackAnalysisMap({
   draftTrackpoints,
   segmentAliases,
   hideSegmentNames,
+  videoMarkerPosition,
   onCreateTrackpoint,
   onMoveTrackpoint,
   onAdjustCutline,
@@ -2342,6 +3182,7 @@ function TrackAnalysisMap({
   draftTrackpoints: DraftTrackpoint[]
   segmentAliases: TrackSegmentAliasRecord[]
   hideSegmentNames: boolean
+  videoMarkerPosition: GeoPosition | null
   onCreateTrackpoint: (position: [number, number]) => void
   onMoveTrackpoint: (trackpointId: string, position: [number, number]) => void
   onAdjustCutline: (trackpointId: string, handle: CutlineHandle, position: [number, number]) => void
@@ -2527,7 +3368,15 @@ function TrackAnalysisMap({
     }
     const activeMap = map
     function applyData() {
-      const data = buildMapData(sessionPaths, visibleTracks, focusedTrackId, draftTrackpoints, segmentAliases, hideSegmentNames)
+      const data = buildMapData(
+        sessionPaths,
+        visibleTracks,
+        focusedTrackId,
+        draftTrackpoints,
+        segmentAliases,
+        hideSegmentNames,
+        videoMarkerPosition,
+      )
       ensureLineLayer(activeMap, data.lines)
       ensurePointLayer(activeMap, data.points)
       const shouldFitToData =
@@ -2549,7 +3398,7 @@ function TrackAnalysisMap({
     return () => {
       activeMap.off('load', applyData)
     }
-  }, [draftTrackpoints, focusedTrackId, geometrySignature, hasData, hideSegmentNames, segmentAliases, sessionPaths, visibleTracks])
+  }, [draftTrackpoints, focusedTrackId, geometrySignature, hasData, hideSegmentNames, segmentAliases, sessionPaths, videoMarkerPosition, visibleTracks])
 
   if (!hasData) {
     return (
@@ -2563,7 +3412,15 @@ function TrackAnalysisMap({
   return <div className="track-analysis-map" ref={containerRef} />
 }
 
-function AltitudeChart({ samples, trackpoints }: { samples: AltitudeSample[]; trackpoints: DraftTrackpoint[] }) {
+function AltitudeChart({
+  samples,
+  trackpoints,
+  playbackStationM,
+}: {
+  samples: AltitudeSample[]
+  trackpoints: DraftTrackpoint[]
+  playbackStationM: number | null
+}) {
   if (samples.length < 2) {
     return <div className="track-analysis-placeholder">No altitude data is available for the selected track or session.</div>
   }
@@ -2601,6 +3458,13 @@ function AltitudeChart({ samples, trackpoints }: { samples: AltitudeSample[]; tr
       x: xForDistance(trackpoint.stationM),
       y: yForElevation(interpolateAltitude(samples, trackpoint.stationM)),
     }))
+  const playbackMarker =
+    playbackStationM !== null && playbackStationM >= distanceDomain.min && playbackStationM <= distanceDomain.max
+      ? {
+          x: xForDistance(playbackStationM),
+          y: yForElevation(interpolateAltitude(samples, playbackStationM)),
+        }
+      : null
   return (
     <svg className="track-analysis-altitude-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Altitude profile chart">
       {elevationTicks.map((tick) => {
@@ -2635,6 +3499,12 @@ function AltitudeChart({ samples, trackpoints }: { samples: AltitudeSample[]; tr
           <circle cx={x} cy={y} r={3.4} />
         </g>
       ))}
+      {playbackMarker && (
+        <g className="track-analysis-altitude-playback-marker">
+          <line x1={playbackMarker.x} x2={playbackMarker.x} y1={padding.top} y2={height - padding.bottom} />
+          <circle cx={playbackMarker.x} cy={playbackMarker.y} r={4.4} />
+        </g>
+      )}
       <text className="track-analysis-altitude-axis-title" x={(padding.left + width - padding.right) / 2} y={height - 3} textAnchor="middle">
         Distance from start
       </text>
@@ -2658,6 +3528,7 @@ function buildMapData(
   draftTrackpoints: DraftTrackpoint[],
   segmentAliases: TrackSegmentAliasRecord[],
   hideSegmentNames: boolean,
+  videoMarkerPosition: GeoPosition | null,
 ) {
   const lines: Array<Feature<LineString, { color: string; width: number; opacity: number }>> = []
   const points: Array<Feature<Point, MapPointProperties>> = []
@@ -2723,6 +3594,10 @@ function buildMapData(
       }
       points.push(pointFeature(`segment-${alias.fromTrackpointId}-${alias.toTrackpointId}`, midpoint, TRACK_COLOR, alias.name, 0, 'segment', ''))
     })
+  }
+
+  if (videoMarkerPosition && Number.isFinite(videoMarkerPosition[0]) && Number.isFinite(videoMarkerPosition[1])) {
+    points.push(pointFeature('video-head', videoMarkerPosition, '#f59e0b', 'Video head', 7, 'videoHead', ''))
   }
 
   return {
@@ -2796,6 +3671,117 @@ function altitudeSamplesForSessionGps(pointSet: SessionGpsPointSet | null): Alti
   }))
 }
 
+function videoStateData(state: VideoPanelState) {
+  return state.data
+}
+
+function playbackPositionForSessionTime(pointSet: SessionGpsPointSet, sessionTimeS: number): PlaybackPosition | null {
+  const timedPoints = pointSet.points
+    .filter(
+      (point) =>
+        point.timeS !== null &&
+        Number.isFinite(point.timeS) &&
+        Number.isFinite(point.longitude) &&
+        Number.isFinite(point.latitude),
+    )
+    .sort((a, b) => (a.timeS ?? 0) - (b.timeS ?? 0))
+  if (!timedPoints.length || !Number.isFinite(sessionTimeS)) {
+    return null
+  }
+  const positions = timedPoints.map(
+    (point) =>
+      Number.isFinite(point.elevationM)
+        ? ([point.longitude, point.latitude, point.elevationM as number] as GeoPosition)
+        : ([point.longitude, point.latitude] as GeoPosition),
+  )
+  const stations = routeStationsM(positions)
+  if (sessionTimeS <= (timedPoints[0].timeS ?? 0)) {
+    return { position: positions[0], stationM: stations[0] ?? 0, timeS: timedPoints[0].timeS ?? 0 }
+  }
+  for (let index = 1; index < timedPoints.length; index += 1) {
+    const previous = timedPoints[index - 1]
+    const next = timedPoints[index]
+    const previousTime = previous.timeS ?? 0
+    const nextTime = next.timeS ?? previousTime
+    if (sessionTimeS <= nextTime) {
+      const fraction = clampNumber((sessionTimeS - previousTime) / Math.max(1e-9, nextTime - previousTime), 0, 1)
+      const previousPosition = positions[index - 1]
+      const nextPosition = positions[index]
+      const interpolated: GeoPosition =
+        Number.isFinite(previousPosition[2]) && Number.isFinite(nextPosition[2])
+          ? [
+              previousPosition[0] + (nextPosition[0] - previousPosition[0]) * fraction,
+              previousPosition[1] + (nextPosition[1] - previousPosition[1]) * fraction,
+              (previousPosition[2] as number) + ((nextPosition[2] as number) - (previousPosition[2] as number)) * fraction,
+            ]
+          : [
+              previousPosition[0] + (nextPosition[0] - previousPosition[0]) * fraction,
+              previousPosition[1] + (nextPosition[1] - previousPosition[1]) * fraction,
+            ]
+      return {
+        position: interpolated,
+        stationM: (stations[index - 1] ?? 0) + ((stations[index] ?? 0) - (stations[index - 1] ?? 0)) * fraction,
+        timeS: sessionTimeS,
+      }
+    }
+  }
+  const lastIndex = timedPoints.length - 1
+  return {
+    position: positions[lastIndex],
+    stationM: stations[lastIndex] ?? 0,
+    timeS: timedPoints[lastIndex].timeS ?? sessionTimeS,
+  }
+}
+
+function sessionTimeForPosition(pointSet: SessionGpsPointSet, position: GeoPosition): number | null {
+  const route = timedSessionRoute(pointSet)
+  if (route.positions.length < 2) {
+    return null
+  }
+  const snapped = nearestPointOnLine(lineString(route.positions.map(lonLat)), point(lonLat(position)), { units: 'meters' })
+  const stationM = clampNumber(Number(snapped.properties?.location ?? 0), 0, route.stations[route.stations.length - 1] ?? 0)
+  return interpolateTimeAtStation(route.stations, route.times, stationM)
+}
+
+function timedSessionRoute(pointSet: SessionGpsPointSet) {
+  const timedPoints = pointSet.points
+    .filter(
+      (point) =>
+        point.timeS !== null &&
+        Number.isFinite(point.timeS) &&
+        Number.isFinite(point.longitude) &&
+        Number.isFinite(point.latitude),
+    )
+    .sort((a, b) => (a.timeS ?? 0) - (b.timeS ?? 0))
+  const positions = timedPoints.map(
+    (point) =>
+      Number.isFinite(point.elevationM)
+        ? ([point.longitude, point.latitude, point.elevationM as number] as GeoPosition)
+        : ([point.longitude, point.latitude] as GeoPosition),
+  )
+  return {
+    positions,
+    stations: routeStationsM(positions),
+    times: timedPoints.map((point) => point.timeS ?? 0),
+  }
+}
+
+function interpolateTimeAtStation(stations: number[], times: number[], stationM: number) {
+  if (!stations.length || stations.length !== times.length) {
+    return null
+  }
+  if (stationM <= stations[0]) {
+    return times[0]
+  }
+  for (let index = 1; index < stations.length; index += 1) {
+    if (stationM <= stations[index]) {
+      const fraction = clampNumber((stationM - stations[index - 1]) / Math.max(1e-9, stations[index] - stations[index - 1]), 0, 1)
+      return times[index - 1] + (times[index] - times[index - 1]) * fraction
+    }
+  }
+  return times[times.length - 1]
+}
+
 function isAltitudeSample(value: AltitudeSample | null): value is AltitudeSample {
   return value !== null
 }
@@ -2859,12 +3845,20 @@ function interpolateAltitude(samples: AltitudeSample[], distanceM: number) {
 function validSegmentAliasesForTrack(track: Pick<WorkingTrack, 'trackpoints' | 'segmentAliases'>): TrackSegmentAliasRecord[] {
   const ordered = [...track.trackpoints].sort((a, b) => a.stationM - b.stationM)
   const adjacentPairs = new Set<string>()
+  const pairDefaultNames = new Map<string, string>()
   for (let index = 0; index < ordered.length - 1; index += 1) {
-    adjacentPairs.add(segmentAliasKey(ordered[index].id, ordered[index + 1].id))
+    const key = segmentAliasKey(ordered[index].id, ordered[index + 1].id)
+    adjacentPairs.add(key)
+    pairDefaultNames.set(key, `Segment ${index + 1}`)
   }
-  return track.segmentAliases.filter(
-    (alias) => alias.name.trim() && adjacentPairs.has(segmentAliasKey(alias.fromTrackpointId, alias.toTrackpointId)),
-  )
+  return track.segmentAliases
+    .map((alias) => {
+      const key = segmentAliasKey(alias.fromTrackpointId, alias.toTrackpointId)
+      const name = alias.name.trim() || (alias.timingRole === 'untimed' ? pairDefaultNames.get(key) || 'Segment' : '')
+      const timingRole: TrackSegmentAliasRecord['timingRole'] = alias.timingRole === 'untimed' ? 'untimed' : 'timed'
+      return { ...alias, name, timingRole }
+    })
+    .filter((alias) => alias.name && adjacentPairs.has(segmentAliasKey(alias.fromTrackpointId, alias.toTrackpointId)))
 }
 
 function segmentAliasForPair(
@@ -2879,15 +3873,18 @@ function upsertSegmentAlias(
   aliases: TrackSegmentAliasRecord[],
   fromTrackpointId: string,
   toTrackpointId: string,
-  name: string,
+  patch: { name?: string; timingRole?: 'timed' | 'untimed' },
 ) {
-  const trimmedName = name.trim()
   const key = segmentAliasKey(fromTrackpointId, toTrackpointId)
+  const existing = aliases.find((alias) => segmentAliasKey(alias.fromTrackpointId, alias.toTrackpointId) === key)
   const withoutExisting = aliases.filter((alias) => segmentAliasKey(alias.fromTrackpointId, alias.toTrackpointId) !== key)
-  if (!trimmedName) {
+  const name = patch.name !== undefined ? patch.name : existing?.name ?? ''
+  const timingRole = patch.timingRole ?? existing?.timingRole ?? 'timed'
+  const trimmedName = name.trim()
+  if (!trimmedName && timingRole !== 'untimed') {
     return withoutExisting
   }
-  return [...withoutExisting, { fromTrackpointId, toTrackpointId, name }]
+  return [...withoutExisting, { fromTrackpointId, toTrackpointId, name: trimmedName || name, timingRole }]
 }
 
 function segmentAliasKey(fromTrackpointId: string, toTrackpointId: string) {
@@ -2913,11 +3910,7 @@ function workingTrackFromRecord(track: TrackRecord, previous?: WorkingTrack): Wo
     defaultPolicyId: track.defaultPolicyId,
     trackpoints: track.trackpoints.map(draftTrackpointFromRecord),
     segmentAliases: (track.segmentAliases ?? []).map((alias) => ({ ...alias })),
-    matchSummaries: track.matchSummaries.map((match) => ({
-      ...match,
-      trackpointResults: match.trackpointResults.map((result) => ({ ...result })),
-      warnings: [...match.warnings],
-    })),
+    matchSummaries: track.matchSummaries.map(copyTrackMatchSummary),
     source: track.source ? { ...track.source } : undefined,
     sourceSessionId: previous?.sourceSessionId,
   }
@@ -2932,13 +3925,49 @@ function draftTrackpointFromRecord(trackpoint: TrackpointRecord): DraftTrackpoin
   }
 }
 
+function trackSessionMatchKey(trackWorkingId: string, sessionRefId: string) {
+  return `${trackWorkingId}::${sessionRefId}`
+}
+
+function isUsableTrackMatchStatus(status: TrackMatchStatus) {
+  return status === 'matched' || status === 'partial'
+}
+
+function canUseReferenceVideoForTrack(
+  track: WorkingTrack | null,
+  referenceSession: SessionRecord | null,
+  matchCache: Record<string, TrackSessionMatchCacheEntry>,
+) {
+  if (!track || !referenceSession) {
+    return false
+  }
+  const referenceId = sessionRecordId(referenceSession)
+  if (track.origin === 'scratch') {
+    return track.sourceSessionId === referenceId
+  }
+  if (!track.persistedId) {
+    return false
+  }
+  const entry = matchCache[trackSessionMatchKey(track.workingId, referenceId)]
+  return Boolean(entry && entry.crossedCount > 0 && isUsableTrackMatchStatus(entry.status))
+}
+
+function copyTrackMatchSummary(match: TrackRecord['matchSummaries'][number]) {
+  return {
+    ...match,
+    trackpointResults: match.trackpointResults.map((result) => ({ ...result })),
+    warnings: [...match.warnings],
+  }
+}
+
 function draftTrackpointFromSnap(
   snapped: { position: GeoPosition; stationM: number },
   nextIndex: number,
+  name?: string,
 ): DraftTrackpoint {
   return {
     id: `draft-${Date.now().toString(36)}-${nextIndex}`,
-    name: `Point ${nextIndex}`,
+    name: name ?? `Point ${nextIndex}`,
     stationM: snapped.stationM,
     position: copyPosition(snapped.position),
     cutlineOverride: {
@@ -2949,11 +3978,98 @@ function draftTrackpointFromSnap(
   }
 }
 
+function initialScratchTrackpoints(
+  path: GeoPosition[],
+  snapped: { position: GeoPosition; stationM: number },
+  includeEndpoints: boolean,
+) {
+  if (!includeEndpoints || path.length < 2) {
+    return [draftTrackpointFromSnap(snapped, 1)]
+  }
+  const lengthM = routeLengthM(path)
+  const endpointToleranceM = 1
+  const trackpoints: DraftTrackpoint[] = []
+  let nextIndex = 1
+  if (snapped.stationM > endpointToleranceM) {
+    trackpoints.push(draftTrackpointFromSnap({ position: path[0], stationM: 0 }, nextIndex, 'Start'))
+    nextIndex += 1
+  }
+  trackpoints.push(draftTrackpointFromSnap(snapped, nextIndex, 'Point 1'))
+  nextIndex += 1
+  if (lengthM - snapped.stationM > endpointToleranceM) {
+    trackpoints.push(draftTrackpointFromSnap({ position: path[path.length - 1], stationM: lengthM }, nextIndex, 'End'))
+  }
+  return trackpoints.sort((a, b) => a.stationM - b.stationM)
+}
+
+function trimWorkingTrackToTrackpoints(track: WorkingTrack): WorkingTrack {
+  if (track.points.length < 2 || track.trackpoints.length < 2) {
+    return track
+  }
+  const routeLength = routeLengthM(track.points)
+  const orderedTrackpoints = [...track.trackpoints].sort((a, b) => a.stationM - b.stationM)
+  const startStationM = clampNumber(orderedTrackpoints[0].stationM, 0, routeLength)
+  const endStationM = clampNumber(orderedTrackpoints[orderedTrackpoints.length - 1].stationM, 0, routeLength)
+  if (endStationM - startStationM < 1) {
+    return track
+  }
+  const points = trimRoutePoints(track.points, startStationM, endStationM)
+  if (points.length < 2) {
+    return track
+  }
+  const lengthM = routeLengthM(points)
+  return {
+    ...track,
+    points,
+    lengthM,
+    pointCount: points.length,
+    distanceKm: lengthM / 1000,
+    trackpoints: track.trackpoints
+      .map((trackpoint) => {
+        const stationM = clampNumber(trackpoint.stationM - startStationM, 0, lengthM)
+        return {
+          ...trackpoint,
+          stationM,
+          position: pointAtStationM(points, stationM),
+          cutlineOverride: trackpoint.cutlineOverride ? { ...trackpoint.cutlineOverride } : undefined,
+          draft: true as const,
+        }
+      })
+      .sort((a, b) => a.stationM - b.stationM),
+  }
+}
+
+function trimRoutePoints(points: GeoPosition[], startStationM: number, endStationM: number) {
+  const stations = routeStationsM(points)
+  const out: GeoPosition[] = [pointAtStationM(points, startStationM)]
+  points.forEach((position, index) => {
+    const stationM = stations[index] ?? 0
+    if (stationM > startStationM && stationM < endStationM) {
+      out.push(copyPosition(position))
+    }
+  })
+  out.push(pointAtStationM(points, endStationM))
+  return dedupeAdjacentPositions(out)
+}
+
+function dedupeAdjacentPositions(points: GeoPosition[]) {
+  const out: GeoPosition[] = []
+  points.forEach((position) => {
+    const previous = out[out.length - 1]
+    if (previous && Math.abs(previous[0] - position[0]) < 1e-12 && Math.abs(previous[1] - position[1]) < 1e-12) {
+      return
+    }
+    out.push(copyPosition(position))
+  })
+  return out
+}
+
 function scratchTrackFromNearestPath(
   position: [number, number],
   sessionPaths: SessionPath[],
   existingTracks: WorkingTrack[],
   studySet: StudySet,
+  includeEndpoints: boolean,
 ): WorkingTrack | null {
   const nearest = nearestSessionPath(position, sessionPaths)
   if (!nearest) {
@@ -2981,7 +4097,7 @@ function scratchTrackFromNearestPath(
     pointCount: path.length,
     distanceKm: lengthM / 1000,
     defaultPolicyId: 'default-geospatial-policy',
-    trackpoints: [draftTrackpointFromSnap(nearest.snapped, 1)],
+    trackpoints: initialScratchTrackpoints(path, nearest.snapped, includeEndpoints),
     segmentAliases: [],
     matchSummaries: [],
     source: {
@@ -2997,6 +4113,54 @@ function scratchTrackFromNearestPath(
       gpsSourceSelectionMethod: nearest.sessionPath.session.gpsSummary.sourceSelectionMethod,
     },
     sourceSessionId: nearest.sessionPath.id,
+  }
+}
+
+function scratchTrackFromSessionPath(
+  sessionPath: SessionPath,
+  snapped: { position: GeoPosition; stationM: number },
+  existingTracks: WorkingTrack[],
+  studySet: StudySet,
+  includeEndpoints: boolean,
+): WorkingTrack {
+  const existingIds = existingTracks.map((track) => track.workingId)
+  const workingId = uniqueId(`scratch-${Date.now().toString(36)}`, existingIds)
+  const path = sessionPath.path.map(copyPosition)
+  const lengthM = routeLengthM(path)
+  const nextIndex = existingTracks.filter((track) => track.origin === 'scratch' && !track.persistedId).length + 1
+  const name = `${studySet.displayName.trim() || sessionPath.label} scratch ${nextIndex}`
+  return {
+    workingId,
+    persistedId: null,
+    origin: 'scratch',
+    dirty: true,
+    saving: false,
+    deleting: false,
+    status: '',
+    name,
+    description: `Scratch track created from ${sessionPath.label}.`,
+    revision: 0,
+    points: path,
+    lengthM,
+    pointCount: path.length,
+    distanceKm: lengthM / 1000,
+    defaultPolicyId: 'default-geospatial-policy',
+    trackpoints: initialScratchTrackpoints(path, snapped, includeEndpoints),
+    segmentAliases: [],
+    matchSummaries: [],
+    source: {
+      kind: 'session_gps',
+      libraryId: sessionPath.session.libraryId,
+      sessionRefId: sessionRecordId(sessionPath.session),
+      sessionKey: sessionPath.session.sessionKey,
+      runId: sessionPath.session.runId,
+      sessionId: sessionPath.session.sessionId,
+      gpsSourceId: sessionPath.session.gpsSummary.preferredSourceId ?? undefined,
+      gpsSourceKind: sessionPath.session.gpsSummary.preferredSourceKind ?? undefined,
+      gpsStreamName: sessionPath.session.gpsSummary.sources[0]?.streamName,
+      gpsSourceSelectionMethod: sessionPath.session.gpsSummary.sourceSelectionMethod,
+    },
+    sourceSessionId: sessionPath.id,
   }
 }
 
@@ -3061,7 +4225,7 @@ function ensurePointLayer(
       id: 'track-analysis-point-hitboxes',
       type: 'circle',
       source: 'track-analysis-points',
-      filter: ['!=', ['get', 'role'], 'segment'],
+      filter: ['in', ['get', 'role'], ['literal', ['trackpoint', 'left', 'right']]],
       paint: {
         'circle-color': '#ffffff',
         'circle-radius': ['+', ['get', 'radius'], 10],
@@ -3194,28 +4358,19 @@ function buildLapTimingRows(
     )
   })
 
-  const rows: LapTimingRow[] = []
-  const firstTrackpoint = orderedTrackpoints[0]
-  const lastTrackpoint = orderedTrackpoints[orderedTrackpoints.length - 1]
-  rows.push(
-    timingRow(
-      'overall',
-      `${firstTrackpoint.name} to ${lastTrackpoint.name}`,
-      Math.max(0, lastTrackpoint.stationM - firstTrackpoint.stationM),
-      activePointSets,
-      crossingsBySession,
-      firstTrackpoint,
-      lastTrackpoint,
-    ),
-  )
+  const segmentRows: LapTimingRow[] = []
 
   for (let index = 1; index < orderedTrackpoints.length; index += 1) {
     const start = orderedTrackpoints[index - 1]
     const end = orderedTrackpoints[index]
-    rows.push(
+    const alias = segmentAliasForPair(segmentAliases, start.id, end.id)
+    if (alias?.timingRole === 'untimed') {
+      continue
+    }
+    segmentRows.push(
       timingRow(
         `${start.id}-${end.id}`,
-        segmentAliasForPair(segmentAliases, start.id, end.id)?.name || `${start.name} to ${end.name}`,
+        alias?.name || `${start.name} to ${end.name}`,
         Math.max(0, end.stationM - start.stationM),
         activePointSets,
         crossingsBySession,
@@ -3225,7 +4380,33 @@ function buildLapTimingRows(
     )
   }
 
-  return rows
+  if (!segmentRows.length) {
+    return []
+  }
+  return [...segmentRows, timedTotalRow(segmentRows, activePointSets)]
+}
+
+function timedTotalRow(segmentRows: LapTimingRow[], activePointSets: ActiveGpsPointSet[]): LapTimingRow {
+  return {
+    key: 'overall',
+    label: 'Timed total',
+    distanceM: segmentRows.reduce((total, row) => total + row.distanceM, 0),
+    times: activePointSets.map((item) => {
+      const sessionId = sessionRecordId(item.session)
+      const segmentTimes = segmentRows.map((row) => row.times.find((time) => time.sessionId === sessionId))
+      if (segmentTimes.some((time) => time?.status === 'reverse')) {
+        return { sessionId, valueS: null, status: 'reverse' }
+      }
+      if (segmentTimes.some((time) => time?.status !== 'ready' || time.valueS === null)) {
+        return { sessionId, valueS: null, status: 'missing' }
+      }
+      return {
+        sessionId,
+        valueS: segmentTimes.reduce((total, time) => total + (time?.valueS ?? 0), 0),
+        status: 'ready',
+      }
+    }),
+  }
 }
 
 function timingRow(
@@ -3552,6 +4733,22 @@ function gpsLoadKey(sessionId: string, sourceId: string | null) {
   return `${sessionId}::${sourceId ?? 'preferred'}`
 }
 
+function isSpaceKey(event: globalThis.KeyboardEvent) {
+  return event.code === 'Space' || event.key === ' ' || event.key === 'Spacebar'
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  return (
+    target.isContentEditable ||
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  )
+}
+
 function trackAnalysisViewContextStorageKey(studySet: StudySet) {
   const stableScope =
     studySet.id ||
@@ -3577,6 +4774,12 @@ function readTrackAnalysisViewContext(key: string): PersistedTrackAnalysisViewCo
       addedSessionIds: stringArrayValue(parsed.addedSessionIds),
       removedSessionIds: stringArrayValue(parsed.removedSessionIds),
       addedTrackIds: stringArrayValue(parsed.addedTrackIds),
+      videoPanelOpen: typeof parsed.videoPanelOpen === 'boolean' ? parsed.videoPanelOpen : false,
+      videoPanelWidthPx: clampNumber(
+        typeof parsed.videoPanelWidthPx === 'number' ? parsed.videoPanelWidthPx : TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
+        TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
+        TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX,
+      ),
     }
   } catch {
     return emptyTrackAnalysisViewContext()
@@ -3592,8 +4795,20 @@ function writeTrackAnalysisViewContext(key: string, context: PersistedTrackAnaly
       addedSessionIds: uniqueStrings(context.addedSessionIds),
       removedSessionIds: uniqueStrings(context.removedSessionIds),
       addedTrackIds: uniqueStrings(context.addedTrackIds),
+      videoPanelOpen: context.videoPanelOpen,
+      videoPanelWidthPx: clampNumber(
+        context.videoPanelWidthPx,
+        TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
+        TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX,
+      ),
     }
-    if (!normalized.addedSessionIds.length && !normalized.removedSessionIds.length && !normalized.addedTrackIds.length) {
+    if (
+      !normalized.addedSessionIds.length &&
+      !normalized.removedSessionIds.length &&
+      !normalized.addedTrackIds.length &&
+      !normalized.videoPanelOpen &&
+      normalized.videoPanelWidthPx === TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX
+    ) {
       window.localStorage.removeItem(key)
       return
     }
@@ -3604,7 +4819,13 @@ function writeTrackAnalysisViewContext(key: string, context: PersistedTrackAnaly
 }
 
 function emptyTrackAnalysisViewContext(): PersistedTrackAnalysisViewContext {
-  return { addedSessionIds: [], removedSessionIds: [], addedTrackIds: [] }
+  return {
+    addedSessionIds: [],
+    removedSessionIds: [],
+    addedTrackIds: [],
+    videoPanelOpen: false,
+    videoPanelWidthPx: TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
+  }
 }
 
 function stringArrayValue(value: unknown) {
@@ -3640,4 +4861,9 @@ function formatDuration(valueS: number) {
     return `${minutes}:${seconds.toFixed(1).padStart(4, '0')}`
   }
   return `${valueS.toFixed(2)} s`
+}
+
+function formatSignedSeconds(valueS: number) {
+  const sign = valueS > 0 ? '+' : ''
+  return `${sign}${valueS.toFixed(1)}s`
 }

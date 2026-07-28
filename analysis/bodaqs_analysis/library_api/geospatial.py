@@ -583,13 +583,15 @@ def _normalized_segment_aliases(value: Any, *, trackpoints: list[dict[str, Any]]
     if not isinstance(value, list):
         raise InvalidTrackError("Track segment_aliases must be a list when present.")
 
-    adjacent_pairs = {
-        (
-            str(trackpoints[index].get("trackpoint_id") or ""),
-            str(trackpoints[index + 1].get("trackpoint_id") or ""),
+    adjacent_pairs: set[tuple[str, str]] = set()
+    default_names: dict[tuple[str, str], str] = {}
+    for pair_index in range(max(0, len(trackpoints) - 1)):
+        pair = (
+            str(trackpoints[pair_index].get("trackpoint_id") or ""),
+            str(trackpoints[pair_index + 1].get("trackpoint_id") or ""),
         )
-        for index in range(max(0, len(trackpoints) - 1))
-    }
+        adjacent_pairs.add(pair)
+        default_names[pair] = f"Segment {pair_index + 1}"
     aliases: list[dict[str, str]] = []
     seen_pairs: set[tuple[str, str]] = set()
     for index, item in enumerate(value):
@@ -598,18 +600,26 @@ def _normalized_segment_aliases(value: Any, *, trackpoints: list[dict[str, Any]]
         from_trackpoint_id = _optional_text(item.get("from_trackpoint_id"))
         to_trackpoint_id = _optional_text(item.get("to_trackpoint_id"))
         display_name = _optional_text(item.get("display_name")) or _optional_text(item.get("name"))
-        if not from_trackpoint_id or not to_trackpoint_id or not display_name:
+        timing_role = _optional_text(item.get("timing_role")) or "timed"
+        if timing_role not in {"timed", "untimed"}:
+            timing_role = "timed"
+        if not from_trackpoint_id or not to_trackpoint_id:
             continue
         pair = (from_trackpoint_id, to_trackpoint_id)
+        if not display_name and timing_role == "untimed":
+            display_name = default_names.get(pair, f"Segment {index + 1}")
+        if not display_name:
+            continue
         if pair not in adjacent_pairs or pair in seen_pairs:
             continue
-        aliases.append(
-            {
-                "from_trackpoint_id": from_trackpoint_id,
-                "to_trackpoint_id": to_trackpoint_id,
-                "display_name": display_name,
-            }
-        )
+        alias = {
+            "from_trackpoint_id": from_trackpoint_id,
+            "to_trackpoint_id": to_trackpoint_id,
+            "display_name": display_name,
+        }
+        if timing_role == "untimed":
+            alias["timing_role"] = timing_role
+        aliases.append(alias)
         seen_pairs.add(pair)
     return aliases
 

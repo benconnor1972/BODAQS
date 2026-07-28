@@ -359,9 +359,31 @@
   font-weight: var(--weight-semibold);
 }
 
+.track-analysis-trackpoint-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.track-analysis-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: var(--border-subtle);
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
 .track-analysis-segment-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
@@ -370,6 +392,21 @@
 
 .track-analysis-segment-row input {
   grid-column: 2 / 3;
+}
+
+.track-analysis-segment-timing-toggle {
+  display: inline-flex;
+  grid-column: 3 / 4;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
+.track-analysis-segment-timing-toggle input {
+  grid-column: auto;
 }
 
 .track-analysis-track-row {
@@ -438,12 +475,19 @@
 .track-analysis-session-row strong,
 .track-analysis-track-row strong,
 .track-analysis-draft-row strong {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   overflow: hidden;
   color: var(--ink);
   font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.track-analysis-video-session-icon {
+  flex: 0 0 auto;
+  color: var(--teal-strong);
 }
 
 .track-analysis-session-row small,
@@ -455,11 +499,17 @@
 }
 
 .track-analysis-draft-row {
-  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   padding: 5px var(--space-2);
   border: 0;
   background: transparent;
+}
+
+.track-analysis-draft-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .track-analysis-draft-heading {
@@ -517,10 +567,143 @@
   min-width: 0;
 }
 
+.track-analysis-map-band {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+
+.track-analysis-main.video-open .track-analysis-map-band {
+  grid-template-columns: minmax(0, 1fr) var(--track-analysis-video-width, 360px);
+}
+
 .track-analysis-map-card,
-.track-analysis-lower-card {
+.track-analysis-lower-card,
+.track-analysis-video-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+.track-analysis-video-panel {
+  position: relative;
+  min-width: 0;
+  border: var(--border-subtle);
+  background: var(--surface);
+}
+
+.track-analysis-video-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  z-index: 2;
+  width: 10px;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.track-analysis-video-resizer::before {
+  position: absolute;
+  top: var(--space-3);
+  bottom: var(--space-3);
+  left: 4px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: "";
+}
+
+.track-analysis-video-resizer:hover::before {
+  background: var(--teal);
+}
+
+.track-analysis-video-panel .panel-title {
+  min-width: 0;
+}
+
+.track-analysis-video-body {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.track-analysis-video-player,
+.track-analysis-video-empty {
+  width: 100%;
+  min-height: 190px;
+  border: var(--border-subtle);
+  background: #101820;
+}
+
+.track-analysis-video-empty {
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: var(--text-body);
+  text-align: center;
+}
+
+.track-analysis-video-meta {
+  display: grid;
+  gap: 3px;
+  padding: var(--space-2);
+  border: var(--border-subtle);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.track-analysis-video-meta strong {
+  color: var(--ink);
+  font-weight: var(--weight-semibold);
+}
+
+.track-analysis-video-placement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.track-analysis-video-placement-row .primary-action {
+  min-height: 30px;
+  white-space: nowrap;
+}
+
+.track-analysis-video-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 34px;
+  min-height: 100%;
+  padding: var(--space-3) 0;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--teal-strong);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  writing-mode: vertical-rl;
+}
+
+.track-analysis-video-rail svg {
+  writing-mode: horizontal-tb;
+}
+
+.track-analysis-video-rail:hover {
+  border-color: rgba(0, 140, 149, 0.5);
+  background: var(--teal-soft);
 }
 
 .track-analysis-map,
@@ -639,10 +822,53 @@
   font-weight: var(--weight-semibold);
 }
 
+.track-analysis-altitude-playback-marker line {
+  stroke: #f59e0b;
+  stroke-dasharray: 4 4;
+  stroke-width: 1.4;
+}
+
+.track-analysis-altitude-playback-marker circle {
+  fill: #f59e0b;
+  stroke: #ffffff;
+  stroke-width: 1.6;
+}
+
 .track-analysis-lap-table-wrap {
   min-width: 0;
   min-height: 0;
   overflow: auto;
+}
+
+.track-analysis-lap-mode-toggle {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  min-width: 180px;
+  overflow: hidden;
+  border: var(--border-subtle);
+  background: var(--surface-muted);
+}
+
+.track-analysis-lap-mode-toggle button {
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 0;
+  border-right: var(--border-subtle);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.track-analysis-lap-mode-toggle button:last-child {
+  border-right: 0;
+}
+
+.track-analysis-lap-mode-toggle button.active {
+  background: var(--teal-soft);
+  color: var(--green);
+  box-shadow: inset 0 0 0 1px rgba(0, 140, 149, 0.35);
 }
 
 .track-analysis-lap-table {
@@ -674,6 +900,16 @@
 .track-analysis-overall-row td {
   background: #effafa;
   font-weight: var(--weight-semibold);
+}
+
+.track-analysis-lap-table td.track-analysis-lap-fastest {
+  background: rgba(8, 129, 99, 0.16);
+  box-shadow: inset 3px 0 0 rgba(8, 129, 99, 0.7);
+}
+
+.track-analysis-lap-table td.track-analysis-lap-slowest {
+  background: rgba(202, 65, 65, 0.14);
+  box-shadow: inset 3px 0 0 rgba(202, 65, 65, 0.72);
 }
 
 .track-analysis-muted-cell {
@@ -811,7 +1047,9 @@
 }
 
 .track-analysis-add-result strong {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   overflow: hidden;
   color: var(--ink);
   font-weight: var(--weight-semibold);
@@ -2350,6 +2588,17 @@ button {
   background: var(--accent);
   box-shadow:
     0 0 0 2px rgba(0, 140, 149, 0.38),
+    0 5px 14px rgba(16, 24, 32, 0.26);
+}
+
+.map-route-playback-marker {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #f59e0b;
+  box-shadow:
+    0 0 0 2px rgba(245, 158, 11, 0.42),
     0 5px 14px rgba(16, 24, 32, 0.26);
 }
 
@@ -5459,50 +5708,59 @@ button {
 }
 
 .signal-inspector-altitude-chart {
-  display: grid;
-  gap: 4px;
-  padding: 7px;
-}
-
-.signal-inspector-altitude-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-caption);
-}
-
-.signal-inspector-altitude-title strong {
-  color: var(--ink);
-  font-weight: var(--weight-semibold);
+  padding: var(--space-2);
 }
 
 .signal-inspector-altitude-chart svg {
   display: block;
   width: 100%;
-  height: 96px;
+  height: 150px;
+  overflow: visible;
 }
 
-.signal-inspector-altitude-chart line {
-  stroke: rgba(79, 116, 119, 0.34);
-  stroke-width: 0.8;
+.signal-inspector-altitude-axis {
+  stroke: var(--line-strong);
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
-.signal-inspector-altitude-chart path {
+.signal-inspector-altitude-grid line {
+  stroke: rgba(83, 96, 106, 0.18);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-line {
   fill: none;
   stroke: var(--teal);
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.45;
+  stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
 
 .signal-inspector-altitude-chart text {
   fill: var(--muted);
-  font-size: 9px;
-  font-weight: var(--weight-semibold);
+  font-size: 11px;
+  font-weight: var(--weight-regular);
+}
+
+.signal-inspector-altitude-axis-title {
+  font-weight: var(--weight-regular);
+}
+
+.signal-inspector-altitude-playback-marker line {
+  stroke: #f59e0b;
+  stroke-dasharray: 4 4;
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-playback-marker circle {
+  fill: #f59e0b;
+  stroke: #ffffff;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
 }
 
 .signal-inspector-altitude-empty {
@@ -5858,6 +6116,10 @@ button {
   width: 0;
   border-left: 1px solid rgba(0, 140, 149, 0.5);
   pointer-events: none;
+}
+
+.signal-inspector-synced-hover-line.video-head {
+  border-left: 1.6px dotted #f59e0b;
 }
 
 .signal-inspector-uplot-event {

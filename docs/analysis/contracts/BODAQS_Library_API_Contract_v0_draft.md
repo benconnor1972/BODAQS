@@ -558,6 +558,12 @@ pairs. They should be ignored or dropped if either endpoint is missing, or if
 the `to_trackpoint_id` is not the first trackpoint after `from_trackpoint_id`
 when ordered by `station_m`.
 
+Segment aliases may also carry optional segment display metadata. `timing_role`
+defaults to `timed`; `untimed` marks the segment for exclusion from lap-timing
+sector rows and timed totals. If an otherwise unnamed segment is retained for
+`timing_role`, consumers should provide a default display name such as
+`Segment 1`.
+
 A study set may reference a whole track by `track_id`, or a track interval by
 `track_id + from_trackpoint_id + to_trackpoint_id`.
 

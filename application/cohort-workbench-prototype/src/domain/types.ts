@@ -287,6 +287,7 @@ export type TrackSegmentAliasRecord = {
   fromTrackpointId: string
   toTrackpointId: string
   name: string
+  timingRole?: 'timed' | 'untimed'
 }
 
 export type TrackpointRecord = {

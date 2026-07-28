@@ -383,6 +383,7 @@ export function SignalInspector({
   const [activeVideoId, setActiveVideoId] = useState('')
   const [videoScrubToCursor, setVideoScrubToCursor] = useState(false)
   const [videoMessage, setVideoMessage] = useState('')
+  const [videoPlaybackSessionTimeS, setVideoPlaybackSessionTimeS] = useState<number | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoSeekFrameRef = useRef<number | null>(null)
   const videoFollowFrameRef = useRef<number | null>(null)
@@ -414,6 +415,7 @@ export function SignalInspector({
     setActiveVideoId('')
     setVideoScrubToCursor(false)
     setVideoMessage('')
+    setVideoPlaybackSessionTimeS(null)
     eventGroupsInitializedRef.current = false
   }, [durationS, initialWindow?.endS, initialWindow?.startS, session.libraryId, session.sessionKey, signalOptionColumns, signalOptions])
 
@@ -968,6 +970,8 @@ export function SignalInspector({
     if (!Number.isFinite(sessionTimeS)) {
       return
     }
+    const boundedSessionTimeS = sanitizeWindowBoundary(sessionTimeS, durationS)
+    setVideoPlaybackSessionTimeS(boundedSessionTimeS)
     if (sessionTimeS > durationS) {
       videoRef.current.pause()
       timeInteraction.setHoverTimeS(durationS)
@@ -981,7 +985,7 @@ export function SignalInspector({
       if (Math.abs(nextStartS - requestWindow.startS) > 0.03 || Math.abs(nextEndS - requestWindow.endS) > 0.03) {
         timeInteraction.setWindow({ startS: nextStartS, endS: nextEndS })
       }
-      timeInteraction.setHoverTimeS(sanitizeWindowBoundary(sessionTimeS, durationS))
+      timeInteraction.setHoverTimeS(boundedSessionTimeS)
       return
     }
     if (sessionTimeS > requestWindow.endS) {
@@ -995,7 +999,7 @@ export function SignalInspector({
       timeInteraction.setHoverTimeS(requestWindow.startS)
       return
     }
-    timeInteraction.setHoverTimeS(sanitizeWindowBoundary(sessionTimeS, durationS))
+    timeInteraction.setHoverTimeS(boundedSessionTimeS)
   }
 
   function handleVideoTimeUpdate() {
@@ -1391,6 +1395,7 @@ export function SignalInspector({
             onToggleMap={() => toggleSidebarPanel('gpsMap')}
             onMapHeightChange={setGpsMapHeightPx}
             session={session}
+            videoHeadTimeS={videoPlaybackSessionTimeS}
           />
           <SignalInspectorVideoPanel
             activeVideo={activeVideo}
@@ -1589,6 +1594,7 @@ export function SignalInspector({
                     showMarks={showMarks}
                     eventGroups={effectiveEventGroups}
                     selectedEventId={selectedEventId}
+                    videoHeadTimeS={videoPlaybackSessionTimeS}
                     onSelectEvent={timeInteraction.setSelectedEventId}
                   />
                 ) : (
@@ -1604,6 +1610,7 @@ export function SignalInspector({
                     synchronizedHoverTimeS={timeInteraction.hoverTimeS}
                     eventGroups={effectiveEventGroups}
                     selectedEventId={selectedEventId}
+                    videoHeadTimeS={videoPlaybackSessionTimeS}
                     onHoverTimeChange={timeInteraction.setHoverTimeS}
                     onSelectEvent={timeInteraction.setSelectedEventId}
                   />
@@ -1713,6 +1720,7 @@ function SignalInspectorGpsPanel({
   onToggleAltitude,
   onToggleMap,
   session,
+  videoHeadTimeS,
 }: {
   activeWindow: { startS: number; endS: number }
   collapsedAltitude: boolean
@@ -1724,6 +1732,7 @@ function SignalInspectorGpsPanel({
   onToggleAltitude: () => void
   onToggleMap: () => void
   session: SessionRecord
+  videoHeadTimeS: number | null
 }) {
   const fallbackPointSet = useMemo(() => catalogGpsPointSet(session), [session])
   const mapResizeRef = useRef<{ pointerId: number; startClientY: number; startHeightPx: number } | null>(null)
@@ -1824,6 +1833,14 @@ function SignalInspectorGpsPanel({
     () => (pointSet && cursorTimeS !== null ? gpsPositionAtTime(pointSet.points, cursorTimeS) : null),
     [cursorTimeS, pointSet],
   )
+  const playbackPosition = useMemo(
+    () => (pointSet && videoHeadTimeS !== null ? gpsPositionAtTime(pointSet.points, videoHeadTimeS) : null),
+    [pointSet, videoHeadTimeS],
+  )
+  const mapCursorPosition =
+    cursorTimeS !== null && videoHeadTimeS !== null && Math.abs(cursorTimeS - videoHeadTimeS) < 0.05
+      ? null
+      : cursorPosition
   const highlightPaths = useMemo<HighlightPathOverlay[]>(
     () =>
       windowPath.length >= 2
@@ -1877,8 +1894,9 @@ function SignalInspectorGpsPanel({
             {fullPath.length >= 2 ? (
               <div className="signal-inspector-gps-map" style={mapViewportStyle}>
                 <MapRoutePreview
-                  cursorPosition={cursorPosition}
+                  cursorPosition={mapCursorPosition}
                   highlightPaths={highlightPaths}
+                  playbackPosition={playbackPosition}
                   primaryGpsPath={fullPath}
                   primarySession={session}
                 />
@@ -1912,7 +1930,7 @@ function SignalInspectorGpsPanel({
             </button>
           </div>
         </div>
-        {!collapsedAltitude && <GpsAltitudeChart activeWindow={activeWindow} pointSet={pointSet} />}
+        {!collapsedAltitude && <GpsAltitudeChart activeWindow={activeWindow} pointSet={pointSet} videoHeadTimeS={videoHeadTimeS} />}
       </section>
     </>
   )
@@ -2342,9 +2360,11 @@ function SignalInspectorVideoPanel({
 function GpsAltitudeChart({
   activeWindow,
   pointSet,
+  videoHeadTimeS,
 }: {
   activeWindow: { startS: number; endS: number }
   pointSet: SessionGpsPointSet | null
+  videoHeadTimeS: number | null
 }) {
   const samples = useMemo(() => gpsAltitudeSamplesForWindow(pointSet?.points ?? [], activeWindow), [activeWindow.endS, activeWindow.startS, pointSet])
   if (!pointSet?.present) {
@@ -2354,31 +2374,87 @@ function GpsAltitudeChart({
     return <div className="signal-inspector-altitude-empty">No altitude samples in window.</div>
   }
 
-  const width = 320
-  const height = 96
-  const margin = { top: 10, right: 10, bottom: 20, left: 42 }
-  const xDomain = d3.extent(samples, (sample) => sample.timeS) as [number, number]
-  const yDomain = paddedExtent(samples.map((sample) => sample.elevationM))
-  const x = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
-  const y = d3.scaleLinear().domain(yDomain).range([height - margin.bottom, margin.top])
-  const line = d3
-    .line<{ timeS: number; elevationM: number }>()
-    .defined((sample) => Number.isFinite(sample.timeS) && Number.isFinite(sample.elevationM))
-    .x((sample) => x(sample.timeS))
-    .y((sample) => y(sample.elevationM))
+  const width = 420
+  const height = 148
+  const padding = { top: 14, right: 16, bottom: 38, left: 50 }
+  const minTime = Math.min(activeWindow.startS, activeWindow.endS)
+  const maxTime = Math.max(activeWindow.startS, activeWindow.endS)
+  const elevations = samples.map((sample) => sample.elevationM)
+  const minElevation = Math.min(...elevations)
+  const maxElevation = Math.max(...elevations)
+  const elevationStep = signalInspectorGridStep(maxElevation - minElevation, [5, 10, 20, 50, 100, 200], 3)
+  const timeStep = signalInspectorGridStep(maxTime - minTime, [1, 2, 5, 10, 20, 30, 60, 120, 300], 3)
+  const elevationDomain = signalInspectorGridDomain(minElevation, maxElevation, elevationStep)
+  const timeDomain = signalInspectorGridDomain(minTime, maxTime, timeStep)
+  const elevationTicks = signalInspectorGridTicks(elevationDomain.min, elevationDomain.max, elevationStep)
+  const timeTicks = signalInspectorGridTicks(timeDomain.min, timeDomain.max, timeStep)
+  const plotWidth = width - padding.left - padding.right
+  const plotHeight = height - padding.top - padding.bottom
+  const xForTime = (timeS: number) =>
+    padding.left + ((timeS - timeDomain.min) / Math.max(1e-9, timeDomain.max - timeDomain.min)) * plotWidth
+  const yForElevation = (elevationM: number) =>
+    padding.top + (1 - (elevationM - elevationDomain.min) / Math.max(1e-9, elevationDomain.max - elevationDomain.min)) * plotHeight
+  const path = samples
+    .map((sample, index) => {
+      const x = xForTime(sample.timeS)
+      const y = yForElevation(sample.elevationM)
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
+    })
+    .join(' ')
+  const playbackMarker =
+    videoHeadTimeS !== null && videoHeadTimeS >= timeDomain.min && videoHeadTimeS <= timeDomain.max
+      ? {
+          x: xForTime(videoHeadTimeS),
+          y: yForElevation(interpolateGpsAltitude(samples, videoHeadTimeS)),
+        }
+      : null
 
   return (
     <div className="signal-inspector-altitude-chart">
-      <div className="signal-inspector-altitude-title">
-        <strong>GPS altitude</strong>
-        <span>{Math.round(yDomain[0])}-{Math.round(yDomain[1])} m</span>
-      </div>
       <svg aria-label="GPS altitude over selected signal window" viewBox={`0 0 ${width} ${height}`} role="img">
-        <line x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
-        <line x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
-        <path d={line(samples) ?? ''} />
-        <text x={margin.left} y={height - 5}>{formatTime(xDomain[0])}</text>
-        <text x={width - margin.right} y={height - 5} textAnchor="end">{formatTime(xDomain[1])}</text>
+        {elevationTicks.map((tick) => {
+          const y = yForElevation(tick)
+          return (
+            <g key={`elevation-${tick}`} className="signal-inspector-altitude-grid">
+              <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
+              <text x={padding.left - 7} y={y + 3} textAnchor="end">
+                {Math.round(tick)}
+              </text>
+            </g>
+          )
+        })}
+        {timeTicks.map((tick) => {
+          const x = xForTime(tick)
+          return (
+            <g key={`time-${tick}`} className="signal-inspector-altitude-grid">
+              <line x1={x} x2={x} y1={padding.top} y2={height - padding.bottom} />
+              <text x={x} y={height - padding.bottom + 16} textAnchor="middle">
+                {formatTime(tick)}
+              </text>
+            </g>
+          )
+        })}
+        <line className="signal-inspector-altitude-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
+        <line className="signal-inspector-altitude-axis" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
+        <path className="signal-inspector-altitude-line" d={path} />
+        {playbackMarker && (
+          <g className="signal-inspector-altitude-playback-marker">
+            <line x1={playbackMarker.x} x2={playbackMarker.x} y1={padding.top} y2={height - padding.bottom} />
+            <circle cx={playbackMarker.x} cy={playbackMarker.y} r={4.4} />
+          </g>
+        )}
+        <text className="signal-inspector-altitude-axis-title" x={(padding.left + width - padding.right) / 2} y={height - 3} textAnchor="middle">
+          Time
+        </text>
+        <text
+          className="signal-inspector-altitude-axis-title"
+          x={15}
+          y={(padding.top + height - padding.bottom) / 2}
+          textAnchor="middle"
+          transform={`rotate(-90 15 ${(padding.top + height - padding.bottom) / 2})`}
+        >
+          Altitude (m)
+        </text>
       </svg>
     </div>
   )
@@ -2400,6 +2476,7 @@ function SignalWindowChart({
   showFullSessionControl = true,
   showMarks,
   timeInteraction,
+  videoHeadTimeS,
   visibleWindow,
   visibleEventGroups,
   onHoverTimeChange,
@@ -2421,6 +2498,7 @@ function SignalWindowChart({
   showFullSessionControl?: boolean
   showMarks: boolean
   timeInteraction: SessionTimeInteraction
+  videoHeadTimeS: number | null
   visibleWindow: SessionTimeWindow
   visibleEventGroups: string[]
   onHoverTimeChange?: (timeS: number | null) => void
@@ -2547,6 +2625,8 @@ function SignalWindowChart({
 
   const displayHover = onHoverTimeChange ? readoutForTime(chartModel, synchronizedHoverTimeS) : hover
   const displayHoverLeft = displayHover && plotRef.current ? plotValueX(plotRef.current, displayHover.timeS) : null
+  const displayHoverIsVideoHead =
+    displayHover !== null && videoHeadTimeS !== null && Math.abs(displayHover.timeS - videoHeadTimeS) < 0.05
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     if (!externalHover || !plotRef.current || chartModel.times.length === 0) {
       return
@@ -2609,7 +2689,12 @@ function SignalWindowChart({
           visibleEvents={visibleEvents}
         />
         {activeWindowStyle && <span aria-hidden="true" className="signal-inspector-active-window" style={activeWindowStyle} />}
-        {displayHoverLeft !== null && <span className="signal-inspector-synced-hover-line" style={{ left: `${displayHoverLeft}px` }} />}
+        {displayHoverLeft !== null && (
+          <span
+            className={`signal-inspector-synced-hover-line${displayHoverIsVideoHead ? ' video-head' : ''}`}
+            style={{ left: `${displayHoverLeft}px` }}
+          />
+        )}
         {displayHover && displayHoverLeft !== null && (
           <div className="signal-inspector-readout" style={{ left: `clamp(88px, ${displayHoverLeft}px, calc(100% - 88px))` }}>
             <strong>{formatTime(displayHover.timeS)}</strong>
@@ -2794,6 +2879,7 @@ function SignalMultiChartStack({
   selectedEventId,
   showMarks,
   timeInteraction,
+  videoHeadTimeS,
   visibleWindow,
   visibleEventGroups,
   onSelectEvent,
@@ -2806,6 +2892,7 @@ function SignalMultiChartStack({
   selectedEventId: string | null
   showMarks: boolean
   timeInteraction: SessionTimeInteraction
+  videoHeadTimeS: number | null
   visibleWindow: SessionTimeWindow
   visibleEventGroups: string[]
   onSelectEvent: (eventId: string | null) => void
@@ -2934,6 +3021,7 @@ function SignalMultiChartStack({
             showMarks={isFirstChart && showMarks}
             synchronizedHoverTimeS={timeInteraction.hoverTimeS}
             timeInteraction={timeInteraction}
+            videoHeadTimeS={videoHeadTimeS}
             visibleWindow={visibleWindow}
             visibleEventGroups={isFirstChart ? visibleEventGroups : []}
             onHoverDebug={SIGNAL_INSPECTOR_HOVER_DEBUG ? handleHoverDebug : undefined}
@@ -3941,6 +4029,54 @@ function gpsAltitudeSamplesForWindow(points: SessionGpsPoint[], window: { startS
     )
     .map((point) => ({ timeS: point.timeS as number, elevationM: point.elevationM as number }))
     .sort((a, b) => a.timeS - b.timeS)
+}
+
+function signalInspectorGridStep(span: number, candidates: number[], minimumGridlines = 3) {
+  const safeSpan = Math.max(0, span)
+  return [...candidates].reverse().find((candidate) => safeSpan / candidate >= minimumGridlines) ?? candidates[0]
+}
+
+function signalInspectorGridDomain(minValue: number, maxValue: number, step: number) {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return { min: 0, max: step * 4 }
+  }
+  let min = Math.floor(minValue / step) * step
+  let max = Math.ceil(maxValue / step) * step
+  if (max <= min) {
+    max = min + step * 4
+  }
+  while ((max - min) / step < 3) {
+    max += step
+  }
+  return { min, max }
+}
+
+function signalInspectorGridTicks(min: number, max: number, step: number) {
+  const ticks: number[] = []
+  const start = Math.ceil(min / step) * step
+  for (let value = start; value <= max + step * 0.001; value += step) {
+    ticks.push(roundForInput(value))
+  }
+  return ticks
+}
+
+function interpolateGpsAltitude(samples: Array<{ timeS: number; elevationM: number }>, timeS: number) {
+  if (!samples.length) {
+    return 0
+  }
+  const sorted = [...samples].sort((a, b) => a.timeS - b.timeS)
+  if (timeS <= sorted[0].timeS) {
+    return sorted[0].elevationM
+  }
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1]
+    const next = sorted[index]
+    if (timeS <= next.timeS) {
+      const fraction = (timeS - previous.timeS) / Math.max(1e-9, next.timeS - previous.timeS)
+      return previous.elevationM + (next.elevationM - previous.elevationM) * fraction
+    }
+  }
+  return sorted[sorted.length - 1].elevationM
 }
 
 function timeseriesWindowForSignal(

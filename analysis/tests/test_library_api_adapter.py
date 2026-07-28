@@ -2029,6 +2029,7 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
                 "from_trackpoint_id": "start-gate",
                 "to_trackpoint_id": "finish-gate",
                 "display_name": "Main chute",
+                "timing_role": "untimed",
             },
             {
                 "from_trackpoint_id": "finish-gate",
@@ -2047,6 +2048,7 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
             "from_trackpoint_id": "start-gate",
             "to_trackpoint_id": "finish-gate",
             "display_name": "Main chute",
+            "timing_role": "untimed",
         }
     ]
 
