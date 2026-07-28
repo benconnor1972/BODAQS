@@ -155,6 +155,12 @@ class CapabilityUnavailableError(LibraryApiError):
     default_message = "Capability is unavailable."
 
 
+class ReadOnlyModeError(LibraryApiError):
+    code = "read_only_mode"
+    status_code = 403
+    default_message = "The Library API service is running in read-only mode."
+
+
 class SignalNotFoundError(LibraryApiError):
     code = "signal_not_found"
     status_code = 404

@@ -35,7 +35,10 @@ from bodaqs_analysis.library_api import (
     parse_session_key,
 )
 from bodaqs_analysis.library_api.catalog import discover_libraries
+from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, load_catalog_revision
 from bodaqs_analysis.library_api_service import create_app
+from bodaqs_analysis.library_api_service.app import _mp4_creation_time_unix_s
+import bodaqs_analysis.library_api.adapter as adapter_module
 from bodaqs_analysis.widgets.contracts import EntitySelectionSnapshot, ScopeEntity, SelectionSnapshot
 from bodaqs_analysis.widgets.entity_scope import build_entity_selection_snapshot
 from bodaqs_analysis.widgets.metric_widget_data import build_metric_viz_df
@@ -50,6 +53,10 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _mp4_box(box_type: bytes, payload: bytes) -> bytes:
+    return (len(payload) + 8).to_bytes(4, "big") + box_type + payload
 
 
 def _make_library_definition(
@@ -88,9 +95,13 @@ def _make_session(
     }
 
 
-def _write_catalog_fixture_session(library_root: Path, *, library_id: str = "default-library") -> dict:
-    run_id = "run_2026-05-25T13-57-10_LOCAL"
-    session_id = "2026-05-18_13-27-14"
+def _write_catalog_fixture_session(
+    library_root: Path,
+    *,
+    library_id: str = "default-library",
+    run_id: str = "run_2026-05-25T13-57-10_LOCAL",
+    session_id: str = "2026-05-18_13-27-14",
+) -> dict:
     session_ref = _make_session(library_root, run_id, session_id, library_id=library_id)
     session_root = library_root / "runs" / run_id / "sessions" / session_id
 
@@ -606,6 +617,176 @@ def test_library_adapter_loads_and_saves_session_note(tmp_path: Path) -> None:
     row = catalog["rows"][0]
     assert row["note_status"]["status"] == "edited"
     assert row["note_fields"]["bike"] == "Prototype G"
+
+
+def test_library_adapter_loads_saves_and_resolves_session_video_attachment(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    video_path = library_root / "videos" / "ride.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"fake mp4 bytes")
+    adapter = LibraryAdapter(libraries_root)
+
+    loaded = adapter.load_session_video_attachments("default-library", {"session_ref": session_ref})
+    assert loaded["schema"] == "bodaqs.library_api.session_video_attachments"
+    assert loaded["present"] is False
+    assert loaded["video_attachments"]["attachments"] == []
+
+    saved = adapter.save_session_video_attachments(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "attachments": [
+                {
+                    "display_name": "Helmet camera",
+                    "camera_label": "Helmet",
+                    "library_relative_path": "videos/ride.mp4",
+                    "session_time_at_video_zero_s": 12.5,
+                }
+            ],
+        },
+    )
+
+    assert saved["present"] is True
+    attachment = saved["video_attachments"]["attachments"][0]
+    assert attachment["attachment_id"] == "helmet-camera"
+    assert attachment["display_name"] == "Helmet camera"
+    assert attachment["library_relative_path"] == "videos/ride.mp4"
+    assert attachment["session_time_at_video_zero_s"] == 12.5
+
+    resolved = adapter.resolve_session_video_attachment(
+        "default-library",
+        {"session_ref": session_ref},
+        "helmet-camera",
+    )
+    assert resolved["path"] == video_path.resolve()
+    assert resolved["media_type"] == "video/mp4"
+
+    workspace_video_path = libraries_root / "video" / "workspace-ride.mp4"
+    workspace_video_path.parent.mkdir(parents=True)
+    workspace_video_path.write_bytes(b"workspace mp4 bytes")
+    saved_workspace = adapter.save_session_video_attachments(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "attachments": [
+                {
+                    "attachment_id": "workspace-video",
+                    "display_name": "Workspace video",
+                    "workspace_relative_path": "video/workspace-ride.mp4",
+                }
+            ],
+        },
+    )
+
+    workspace_attachment = saved_workspace["video_attachments"]["attachments"][0]
+    assert workspace_attachment["workspace_relative_path"] == "video/workspace-ride.mp4"
+    resolved_workspace = adapter.resolve_session_video_attachment(
+        "default-library",
+        {"session_ref": session_ref},
+        "workspace-video",
+    )
+    assert resolved_workspace["path"] == workspace_video_path.resolve()
+
+
+def test_local_video_picker_mp4_creation_time_parser(tmp_path: Path) -> None:
+    unix_seconds = 1_800_000_000
+    mp4_seconds = unix_seconds + 2_082_844_800
+    mvhd_payload = bytes([0, 0, 0, 0]) + mp4_seconds.to_bytes(4, "big") + (0).to_bytes(4, "big")
+    path = tmp_path / "video.mp4"
+    path.write_bytes(_mp4_box(b"ftyp", b"isom") + _mp4_box(b"moov", _mp4_box(b"mvhd", mvhd_payload)))
+
+    assert _mp4_creation_time_unix_s(path) == float(unix_seconds)
+
+
+def test_library_api_service_streams_session_video_attachment_by_id(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    video_path = library_root / "videos" / "ride.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"fake mp4 bytes")
+    adapter = LibraryAdapter(libraries_root)
+    adapter.save_session_video_attachments(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "attachments": [
+                {
+                    "attachment_id": "helmet",
+                    "display_name": "Helmet",
+                    "library_relative_path": "videos/ride.mp4",
+                }
+            ],
+        },
+    )
+    client = TestClient(create_app(libraries_root))
+
+    response = client.get(
+        f"/api/v1/libraries/default-library/runs/{session_ref['run_id']}/sessions/{session_ref['session_id']}/videos"
+    )
+    assert response.status_code == 200
+    assert response.json()["video_attachments"]["attachments"][0]["attachment_id"] == "helmet"
+
+    stream = client.get(
+        f"/api/v1/libraries/default-library/runs/{session_ref['run_id']}/sessions/{session_ref['session_id']}/videos/helmet/stream"
+    )
+    assert stream.status_code == 200
+    assert stream.headers["content-type"].startswith("video/mp4")
+    assert stream.content == b"fake mp4 bytes"
+
+
+def test_library_adapter_bulk_saves_session_notes_with_one_catalog_revision_touch(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    first_ref = _write_catalog_fixture_session(library_root, session_id="session_1")
+    second_ref = _write_catalog_fixture_session(library_root, session_id="session_2")
+    adapter = LibraryAdapter(libraries_root)
+
+    first_note = dict(adapter.load_session_note("default-library", {"session_ref": first_ref})["note"])
+    first_note["values"] = {**first_note["values"], "bike": "Bulk Bike 1", "rider": "Ben"}
+    first_note["draft"] = False
+    second_note = dict(adapter.load_session_note("default-library", {"session_ref": second_ref})["note"])
+    second_note["values"] = {**second_note["values"], "bike": "Bulk Bike 2", "rider": "Alex"}
+    second_note["draft"] = False
+
+    saved = adapter.save_session_notes(
+        "default-library",
+        {
+            "items": [
+                {"session_ref": first_ref, "note": first_note},
+                {"session_ref": second_ref, "note": second_note},
+            ]
+        },
+    )
+
+    assert saved["schema"] == "bodaqs.library_api.session_note_bulk_save"
+    assert saved["requested_count"] == 2
+    assert saved["saved_count"] == 2
+    assert saved["failed_count"] == 0
+    assert [result["ok"] for result in saved["results"]] == [True, True]
+    assert load_catalog_revision(library_root)["revision"] == 2
+
+    catalog = adapter.get_catalog("default-library", refresh=True)
+    rows_by_session_id = {row["session_id"]: row for row in catalog["rows"]}
+    assert rows_by_session_id["session_1"]["note_fields"]["bike"] == "Bulk Bike 1"
+    assert rows_by_session_id["session_2"]["note_fields"]["bike"] == "Bulk Bike 2"
 
 
 def test_library_adapter_updates_session_descriptions_and_refreshes_catalog(
@@ -1354,6 +1535,73 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
     assert points["sampling"]["window"] == {"start_s": 0.0, "end_s": 2.0}
 
 
+def test_library_adapter_caches_session_gps_points_and_invalidates_by_artifact_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    original = adapter_module.catalog_get_session_gps_points
+    call_count = 0
+
+    def counted_loader(*args: object, **kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(adapter_module, "catalog_get_session_gps_points", counted_loader)
+    request = {**session_ref, "max_points": 10}
+
+    first = adapter.get_session_gps_points("default-library", request)
+    second = adapter.get_session_gps_points("default-library", request)
+
+    assert first == second
+    assert call_count == 1
+
+    stream_path = (
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+        / "session"
+        / "streams"
+        / "gps_fit"
+        / "df.parquet"
+    )
+    df = pd.read_parquet(stream_path)
+    df.loc[len(df)] = {
+        "time_s": 1.5,
+        "gps_fit_position_latitude_dom_world [deg]": -31.9502,
+        "gps_fit_position_longitude_dom_world [deg]": 115.8615,
+        "gps_fit_altitude_dom_world [m]": 203.0,
+    }
+    time.sleep(0.001)
+    df.to_parquet(stream_path, index=False)
+
+    changed = adapter.get_session_gps_points("default-library", request)
+
+    assert call_count == 2
+    assert changed["sampling"]["source_points"] == 4
+
+
 def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_adequacy(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -1386,6 +1634,8 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert views[0]["view_id"] == "simple-suspension"
     assert views[0]["requirements"]["required"][0]["id"] == "wheel_motion_data"
     assert views[0]["requirements"]["recommended"][0]["id"] == "both_ends"
+    assert [view["view_id"] for view in views] == ["simple-suspension", "track-analysis-lap-timing"]
+    assert views[1]["requirements"]["required"][0]["id"] == "gps"
 
     ready = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [ready_ref]})
     assert ready["status"] == "ready"
@@ -1416,6 +1666,20 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     blocked = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [blocked_ref]})
     assert blocked["status"] == "blocked"
     assert blocked["usable_session_count"] == 0
+
+    track_ready = adapter.get_analysis_view_adequacy("track-analysis-lap-timing", {"sessions": [ready_ref]})
+    assert track_ready["status"] == "ready"
+    assert track_ready["usable_session_count"] == 1
+    assert track_ready["usable_units"][0]["unit_kind"] == "session"
+
+    track_partial = adapter.get_analysis_view_adequacy(
+        "track-analysis-lap-timing",
+        {"sessions": [ready_ref, blocked_ref]},
+    )
+    assert track_partial["status"] == "partial"
+    assert track_partial["usable_session_count"] == 1
+    assert track_partial["blocked_session_count"] == 1
+    assert track_partial["excluded_units"][0]["missing_required"] == ["gps"]
 
 
 def test_library_adapter_caches_and_invalidates_analysis_view_adequacy(tmp_path: Path) -> None:
@@ -1578,7 +1842,7 @@ def test_library_adapter_warms_analysis_adequacy_when_study_set_is_saved(tmp_pat
     diagnostics = adapter.cache_diagnostics()
 
     assert diagnostics["schema"] == "bodaqs.library_api.cache_diagnostics"
-    assert diagnostics["cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+    assert diagnostics["cache"]["namespaces"]["analysis_adequacy"]["entry_count"] >= 1
 
     stats_after_save = adapter._cache.stats()
     adequacy = adapter.get_analysis_view_adequacy(
@@ -1698,8 +1962,8 @@ def test_library_adapter_prunes_persisted_analysis_adequacy_cache(tmp_path: Path
     assert first_explain["persistent_cached"] is True
     assert second_explain["memory_cached"] is True
     assert second_explain["persistent_cached"] is True
-    assert diagnostics["persistent_cache"]["entry_count"] == 1
-    assert diagnostics["persistent_cache"]["file_count"] == 1
+    assert diagnostics["persistent_cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+    assert diagnostics["persistent_cache"]["namespaces"]["analysis_adequacy"]["file_count"] == 1
 
 
 def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
@@ -1749,13 +2013,44 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
                     "type": "Point",
                     "coordinates": [115.8605, -31.95, 200.0],
                 },
+            },
+            {
+                "trackpoint_id": "finish-gate",
+                "display_name": "Finish gate",
+                "station_m": 90.0,
+                "position": {
+                    "type": "Point",
+                    "coordinates": [115.8609, -31.95, 201.0],
+                },
             }
+        ],
+        "segment_aliases": [
+            {
+                "from_trackpoint_id": "start-gate",
+                "to_trackpoint_id": "finish-gate",
+                "display_name": "Main chute",
+                "timing_role": "untimed",
+            },
+            {
+                "from_trackpoint_id": "finish-gate",
+                "to_trackpoint_id": "start-gate",
+                "display_name": "Malformed reverse alias",
+            },
         ],
     }
     create_response = client.post("/api/v1/tracks", json=track_payload)
     assert create_response.status_code == 200
     assert create_response.json()["track_id"] == "test-track"
-    assert client.get("/api/v1/tracks").json()[0]["track_id"] == "test-track"
+    created_track = client.get("/api/v1/tracks").json()[0]
+    assert created_track["track_id"] == "test-track"
+    assert created_track["segment_aliases"] == [
+        {
+            "from_trackpoint_id": "start-gate",
+            "to_trackpoint_id": "finish-gate",
+            "display_name": "Main chute",
+            "timing_role": "untimed",
+        }
+    ]
 
     gps_response = client.post(
         "/api/v1/libraries/default-library/sessions/gps-summary",
@@ -1840,6 +2135,128 @@ def test_library_adapter_track_match_requires_cutline_crossing(tmp_path: Path) -
     assert result["min_distance_m"] > 5.0
 
 
+def test_library_adapter_track_match_bbox_prefilter_skips_disjoint_gps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (116.86, -32.95),
+            (116.8605, -32.95),
+            (116.861, -32.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "length_m": 100.0,
+                "coordinates": [
+                    [115.86, -31.95],
+                    [115.861, -31.95],
+                ],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "start-gate",
+                    "display_name": "Start gate",
+                    "station_m": 10.0,
+                    "position": {"type": "Point", "coordinates": [115.8601, -31.95]},
+                }
+            ],
+        }
+    )
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("GPS point rows should not be loaded for bbox-disjoint track matches.")
+
+    monkeypatch.setattr(adapter_module, "catalog_get_session_gps_points", fail_if_called)
+
+    match = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+
+    assert match["status"] == "no_overlap"
+    assert "session_gps_bbox_no_track_overlap" in match["warnings"]
+    assert match["coverage"]["matched_gps_point_count"] == 0
+    assert match["trackpoint_results"][0]["crossed"] is False
+
+
+def test_library_adapter_track_match_reuses_cached_gps_points(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    _write_gps_fit_stream(
+        library_root,
+        session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (115.86, -31.95),
+            (115.8605, -31.95),
+            (115.861, -31.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    adapter.create_track(
+        {
+            "track_id": "test-track",
+            "display_name": "Test Track",
+            "path": {
+                "type": "LineString",
+                "length_m": 100.0,
+                "coordinates": [
+                    [115.86, -31.95],
+                    [115.861, -31.95],
+                ],
+            },
+            "trackpoints": [
+                {
+                    "trackpoint_id": "start-gate",
+                    "display_name": "Start gate",
+                    "station_m": 50.0,
+                    "position": {"type": "Point", "coordinates": [115.8605, -31.95]},
+                }
+            ],
+        }
+    )
+    original = adapter_module.catalog_get_session_gps_points
+    call_count = 0
+
+    def counted_loader(*args: object, **kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(adapter_module, "catalog_get_session_gps_points", counted_loader)
+
+    first = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+    second = adapter.compute_track_match({"track_id": "test-track", "session_ref": session_ref})
+
+    assert first["status"] == "matched"
+    assert second["status"] == "matched"
+    assert call_count == 1
+
+
 def test_library_adapter_trackpoint_match_query_can_be_cancelled(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -1897,6 +2314,11 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
         display_name="Default Library",
     )
     session_ref = _write_catalog_fixture_session(library_root)
+    far_session_ref = _write_catalog_fixture_session(
+        library_root,
+        run_id="run_2026-05-26T13-57-10_LOCAL",
+        session_id="2026-05-19_13-27-14",
+    )
     _write_gps_fit_stream(
         library_root,
         session_ref,
@@ -1907,6 +2329,26 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
             (115.861, -31.95),
         ],
     )
+    _write_gps_fit_stream(
+        library_root,
+        far_session_ref,
+        times=[0.0, 1.0, 2.0],
+        coordinates=[
+            (116.86, -32.95),
+            (116.8605, -32.95),
+            (116.861, -32.95),
+        ],
+    )
+    adapter = LibraryAdapter(libraries_root)
+    catalog = adapter.get_catalog("default-library", refresh=True)
+    gps_bboxes = [
+        row.get("gps_summary", {}).get("position_bbox")
+        for row in catalog["rows"]
+        if row.get("gps_summary", {}).get("present")
+    ]
+    assert len(gps_bboxes) == 2
+    assert all(bbox and bbox["min_longitude"] <= bbox["max_longitude"] for bbox in gps_bboxes)
+
     client = TestClient(create_app(libraries_root))
     track_payload = {
         "track_id": "test-track",
@@ -1946,7 +2388,7 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
     assert create_response.status_code == 200
     created = create_response.json()
     assert created["schema"] == "bodaqs.trackpoint_match_query"
-    assert created["candidate_session_count"] == 1
+    assert created["candidate_session_count"] == 2
 
     query_id = created["query_id"]
     status = created
@@ -1959,7 +2401,9 @@ def test_library_api_service_trackpoint_match_query_lifecycle(tmp_path: Path) ->
         time.sleep(0.05)
 
     assert status["status"] == "completed"
-    assert status["processed_session_count"] == 1
+    assert status["processed_session_count"] == 2
+    assert status["exact_session_count"] == 1
+    assert status["skipped_session_count"] == 1
     assert status["matched_session_count"] == 1
 
     results_response = client.get(f"/api/v1/trackpoint-match-queries/{query_id}/results", params={"limit": 1})
@@ -2000,6 +2444,119 @@ def test_library_adapter_catalog_cache_refreshes_explicitly(tmp_path: Path) -> N
     _make_session(library_root, "run_2", "session_2")
     assert adapter.get_catalog("default-library")["row_count"] == 1
     assert adapter.get_catalog("default-library", refresh=True)["row_count"] == 2
+
+
+def test_library_adapter_reuses_persisted_catalog_on_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.get_catalog("default-library")["row_count"] == 1
+    assert catalog_revision_path(library_root).exists()
+    diagnostics = adapter.cache_diagnostics()
+    assert diagnostics["persistent_cache"]["namespaces"]["session_catalog"]["entry_count"] == 1
+    assert diagnostics["catalog_cache"]["event_counts"]["rebuilt"] == 1
+    assert diagnostics["catalog_cache"]["libraries"][0]["validation_mode"] == "catalog_revision"
+    assert diagnostics["catalog_cache"]["libraries"][0]["catalog_revision"]["revision"] == 1
+
+    def fail_build_session_catalog(*_args, **_kwargs):
+        raise AssertionError("Catalog should have been loaded from persistent cache.")
+
+    def fail_tree_stat_dependency(*_args, **_kwargs):
+        raise AssertionError("Revision-backed cache validation should not scan the runs tree.")
+
+    monkeypatch.setattr(adapter_module, "build_session_catalog", fail_build_session_catalog)
+    monkeypatch.setattr(LibraryAdapter, "_tree_stat_dependency", fail_tree_stat_dependency)
+    restarted = LibraryAdapter(libraries_root)
+    assert restarted.get_catalog("default-library")["row_count"] == 1
+    restarted_diagnostics = restarted.cache_diagnostics()
+    assert restarted_diagnostics["catalog_cache"]["event_counts"]["persistent_hit"] == 1
+
+
+def test_library_adapter_persisted_catalog_trusts_revision_until_deep_refresh(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.get_catalog("default-library")["row_count"] == 1
+    revision_before = load_catalog_revision(library_root)
+    assert revision_before is not None
+    _make_session(library_root, "run_2", "session_2")
+
+    restarted = LibraryAdapter(libraries_root)
+    assert restarted.get_catalog("default-library")["row_count"] == 1
+
+    restarted.refresh_library("default-library")
+    revision_after = load_catalog_revision(library_root)
+    assert revision_after is not None
+    assert int(revision_after["revision"]) > int(revision_before["revision"])
+    assert restarted.get_catalog("default-library")["row_count"] == 2
+
+
+def test_library_api_service_invalidates_catalog_cache(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    client = TestClient(create_app(libraries_root))
+
+    catalog = client.get("/api/v1/libraries/default-library/catalog")
+    assert catalog.status_code == 200
+    assert catalog.json()["row_count"] == 1
+
+    warm_diagnostics = client.get("/api/v1/cache/diagnostics").json()
+    assert warm_diagnostics["catalog_cache"]["memory_entry_count"] == 1
+    assert warm_diagnostics["persistent_cache"]["namespaces"]["session_catalog"]["entry_count"] == 1
+
+    invalidated = client.post("/api/v1/libraries/default-library/catalog/invalidate")
+    assert invalidated.status_code == 200
+    assert invalidated.json()["invalidated"] is True
+    assert invalidated.json()["library_id"] == "default-library"
+
+    cold_diagnostics = client.get("/api/v1/cache/diagnostics").json()
+    assert cold_diagnostics["catalog_cache"]["memory_entry_count"] == 0
+    assert cold_diagnostics["catalog_cache"]["invalidation_count"] == 1
+    assert cold_diagnostics["persistent_cache"]["namespaces"].get("session_catalog", {}).get("entry_count", 0) == 0
+
+
+def test_library_api_read_only_service_does_not_backfill_catalog_revision(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    client = TestClient(create_app(libraries_root, read_only=True))
+
+    catalog = client.get("/api/v1/libraries/default-library/catalog")
+
+    assert catalog.status_code == 200
+    assert catalog.json()["row_count"] == 1
+    assert not catalog_revision_path(library_root).exists()
+    diagnostics = client.get("/api/v1/cache/diagnostics").json()
+    assert diagnostics["catalog_cache"]["libraries"][0]["validation_mode"] == "runs_tree_stat"
+    assert diagnostics["catalog_cache"]["libraries"][0]["catalog_revision"] is None
 
 
 def test_library_adapter_returns_timeseries_window_for_semantic_signals(
@@ -2074,6 +2631,8 @@ def test_library_adapter_returns_timeseries_window_for_semantic_signals(
         "jump",
     ]
     assert payload["events"][0]["display_name"] == "Bottom out"
+    assert payload["events"][0]["metrics"] == {"peak_force": 123.0, "duration_s": 0.2}
+    assert "metrics" not in payload["events"][1]
     assert payload["warnings"] == []
 
 
@@ -2868,7 +3427,18 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert cache_diagnostics.status_code == 200
     assert cache_diagnostics.json()["schema"] == "bodaqs.library_api.cache_diagnostics"
     assert cache_diagnostics.json()["cache"]["entry_count"] == 1
-    assert cache_diagnostics.json()["persistent_cache"]["entry_count"] == 1
+    assert cache_diagnostics.json()["persistent_cache"]["namespaces"]["analysis_adequacy"]["entry_count"] == 1
+    assert cache_diagnostics.json()["persistent_cache"]["namespaces"]["session_catalog"]["entry_count"] == 1
+
+    bootstrap = client.get("/api/v1/workbench/bootstrap")
+    assert bootstrap.status_code == 200
+    bootstrap_payload = bootstrap.json()
+    assert bootstrap_payload["schema"] == "bodaqs.library_api.workbench_bootstrap"
+    assert len(bootstrap_payload["libraries"]) == 1
+    assert len(bootstrap_payload["catalogs"]) == 1
+    assert len(bootstrap_payload["catalogs"][0]["rows"]) == 1
+    assert bootstrap_payload["study_sets"] == []
+    assert "total_ms" in bootstrap_payload["timings"]
 
     missing_view = client.post(
         "/api/v1/analysis-views/not-a-real-view/adequacy",
@@ -2900,6 +3470,15 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert save_note_response.status_code == 200
     assert save_note_response.json()["note"]["values"]["rider"] == "Alex"
     assert save_note_response.json()["note"]["draft"] is False
+
+    edited_note["values"] = {**edited_note["values"], "rider": "Casey"}
+    bulk_note_response = client.put(
+        "/api/v1/libraries/default-library/sessions/notes",
+        json={"items": [{"session_ref": session_ref, "note": edited_note}]},
+    )
+    assert bulk_note_response.status_code == 200
+    assert bulk_note_response.json()["saved_count"] == 1
+    assert bulk_note_response.json()["results"][0]["note"]["note"]["values"]["rider"] == "Casey"
 
     description_response = client.put(
         "/api/v1/libraries/default-library/sessions/descriptions",

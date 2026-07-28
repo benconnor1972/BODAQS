@@ -31,6 +31,7 @@ export function GeospatialWorkbench({
   tracks,
   selectedTrackIds,
   dataSource,
+  canWrite = true,
   onToggleTrack,
   onAttachTrack,
   onAttachSession,
@@ -43,6 +44,7 @@ export function GeospatialWorkbench({
   tracks: TrackRecord[]
   selectedTrackIds: string[]
   dataSource: LibraryDataSource
+  canWrite?: boolean
   onToggleTrack: (trackId: string) => void
   onAttachTrack: (trackId: string) => void
   onAttachSession: (sessionRef: StudySessionRef) => void
@@ -57,6 +59,7 @@ export function GeospatialWorkbench({
   const [trackpointQueryBusy, setTrackpointQueryBusy] = useState(false)
   const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? tracks[0] ?? null
   const canRunTrackpointQuery = Boolean(
+    canWrite &&
     activeTrack &&
       activeTrack.trackpoints.length > 0 &&
       dataSource.createTrackpointMatchQuery &&
@@ -107,7 +110,7 @@ export function GeospatialWorkbench({
         persist: true,
       })
       setTrackpointQuery(query)
-      for (let attempt = 0; attempt < 40 && (query.status === 'queued' || query.status === 'running'); attempt += 1) {
+      while (isActiveTrackpointQuery(query)) {
         await delay(300)
         query = await dataSource.loadTrackpointMatchQuery(query.queryId)
         setTrackpointQuery(query)
@@ -198,7 +201,7 @@ export function GeospatialWorkbench({
           <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
           <button
             className="ghost-action"
-            disabled={!trackpointQuery || !dataSource.cancelTrackpointMatchQuery || trackpointQueryBusy}
+            disabled={!canWrite || !isActiveTrackpointQuery(trackpointQuery) || !dataSource.cancelTrackpointMatchQuery || trackpointQueryBusy}
             onClick={() => void cancelTrackpointQuery()}
             type="button"
           >
@@ -216,7 +219,8 @@ export function GeospatialWorkbench({
         {trackpointQuery && (
           <p className="track-manager-message">
             Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
-            {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
+            {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched
+            {trackpointQuery.skippedSessionCount ? `, ${trackpointQuery.skippedSessionCount} skipped by GPS extent` : ''}.
           </p>
         )}
         {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
@@ -247,7 +251,7 @@ export function GeospatialWorkbench({
             <Route size={16} />
             Manage
           </button>
-          <button className="secondary-action" onClick={openNewTrack} type="button">
+          <button className="secondary-action" disabled={!canWrite} onClick={openNewTrack} type="button">
             <Plus size={16} />
             New
           </button>
@@ -262,6 +266,7 @@ export function GeospatialWorkbench({
           tracks={tracks}
           activeTrack={activeTrack}
           dataSource={dataSource}
+          canWrite={canWrite}
           onActiveTrackChange={setActiveTrackId}
           onClose={() => setTrackManagerMode(null)}
           onTrackSaved={onTrackSaved}
@@ -397,6 +402,7 @@ function TrackManagerModal({
   tracks,
   activeTrack,
   dataSource,
+  canWrite = true,
   onActiveTrackChange,
   onClose,
   onTrackSaved,
@@ -408,6 +414,7 @@ function TrackManagerModal({
   tracks: TrackRecord[]
   activeTrack: TrackRecord | null
   dataSource: LibraryDataSource
+  canWrite?: boolean
   onActiveTrackChange: (trackId: string | null) => void
   onClose: () => void
   onTrackSaved: (track: TrackRecord) => void
@@ -421,9 +428,10 @@ function TrackManagerModal({
   const [trackpointQueryResults, setTrackpointQueryResults] = useState<TrackpointMatchQueryResults | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
-  const canCreateTrack = Boolean(primarySession && dataSource.loadSessionGpsPoints && dataSource.saveTrack && !busy)
-  const canEditTrack = Boolean(activeTrack && dataSource.saveTrack && !busy)
+  const canCreateTrack = Boolean(canWrite && primarySession && dataSource.loadSessionGpsPoints && dataSource.saveTrack && !busy)
+  const canEditTrack = Boolean(canWrite && activeTrack && dataSource.saveTrack && !busy)
   const canRunTrackpointQuery = Boolean(
+    canWrite &&
     activeTrack &&
       activeTrack.trackpoints.length > 0 &&
       dataSource.createTrackpointMatchQuery &&
@@ -433,6 +441,10 @@ function TrackManagerModal({
   )
 
   async function createTrackFromPrimaryGps() {
+    if (!canWrite) {
+      setMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!primarySession || !dataSource.loadSessionGpsPoints || !dataSource.saveTrack) {
       setMessage('Select a primary session and connect to a data source that can save tracks.')
       return
@@ -485,6 +497,10 @@ function TrackManagerModal({
   }
 
   async function addTrackpoint() {
+    if (!canWrite) {
+      setMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!activeTrack || !dataSource.saveTrack) {
       setMessage('Choose a track to manage first.')
       return
@@ -512,6 +528,10 @@ function TrackManagerModal({
   }
 
   async function deleteTrackpoint(trackpointId: string) {
+    if (!canWrite) {
+      setMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!activeTrack) {
       return
     }
@@ -523,6 +543,10 @@ function TrackManagerModal({
   }
 
   async function deleteActiveTrack() {
+    if (!canWrite) {
+      setMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!activeTrack || !dataSource.deleteTrack) {
       setMessage('Choose a track to delete first.')
       return
@@ -545,6 +569,10 @@ function TrackManagerModal({
   }
 
   async function saveTrackUpdate(track: TrackRecord, successMessage: string) {
+    if (!canWrite) {
+      setMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (!dataSource.saveTrack) {
       setMessage('Current data source cannot save tracks.')
       return
@@ -564,6 +592,10 @@ function TrackManagerModal({
   }
 
   async function runTrackpointQuery() {
+    if (!canWrite) {
+      setMessage('The Library API is running in read-only mode.')
+      return
+    }
     if (
       !activeTrack ||
       !dataSource.createTrackpointMatchQuery ||
@@ -593,7 +625,7 @@ function TrackManagerModal({
         persist: true,
       })
       setTrackpointQuery(query)
-      for (let attempt = 0; attempt < 40 && (query.status === 'queued' || query.status === 'running'); attempt += 1) {
+      while (isActiveTrackpointQuery(query)) {
         await delay(300)
         query = await dataSource.loadTrackpointMatchQuery(query.queryId)
         setTrackpointQuery(query)
@@ -694,7 +726,7 @@ function TrackManagerModal({
                 {activeTrack && (
                   <button
                     className="danger-action compact-danger"
-                    disabled={!dataSource.deleteTrack || busy}
+                    disabled={!canWrite || !dataSource.deleteTrack || busy}
                     onClick={() => void deleteActiveTrack()}
                     type="button"
                   >
@@ -753,7 +785,7 @@ function TrackManagerModal({
                     <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
                     <button
                       className="ghost-action"
-                      disabled={!trackpointQuery || !dataSource.cancelTrackpointMatchQuery || busy}
+                      disabled={!canWrite || !isActiveTrackpointQuery(trackpointQuery) || !dataSource.cancelTrackpointMatchQuery || busy}
                       onClick={() => void cancelTrackpointQuery()}
                       type="button"
                     >
@@ -767,7 +799,8 @@ function TrackManagerModal({
               {trackpointQuery && (
                 <p className="track-manager-message">
                   Query {trackpointQuery.status}: {trackpointQuery.processedSessionCount}/
-                  {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched.
+                  {trackpointQuery.candidateSessionCount} processed, {trackpointQuery.matchedSessionCount} matched
+                  {trackpointQuery.skippedSessionCount ? `, ${trackpointQuery.skippedSessionCount} skipped by GPS extent` : ''}.
                 </p>
               )}
               {trackpointQueryResults && trackpointQueryResults.results.length > 0 && (
@@ -815,6 +848,10 @@ function matchStatusClassName(status: string | undefined) {
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)))
+}
+
+function isActiveTrackpointQuery(query: TrackpointMatchQueryRecord | null) {
+  return query?.status === 'queued' || query?.status === 'running'
 }
 
 function delay(ms: number) {

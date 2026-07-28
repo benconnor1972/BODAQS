@@ -63,6 +63,7 @@ layout while making the wording easy to review and refine.
 | --- | --- | --- |
 | Bookmarks card | Save bookmarks to return to windows or exact points while inspecting this session. | Explains session-tied window and point bookmark creation. |
 | GPS card | Shows the session GPS path and highlights the portion covered by the current signal window when time-aligned GPS points are available. | Explains the read-only GPS context panel and current-window overlay. |
+| Video card | Attach a local video to this session and synchronize playback using the session time at video zero. | Explains session video attachment and first-cut synchronization controls. |
 | Signals card | Select which available time-series signals are displayed in the inspector. | Explains signal visibility controls. |
 | Events card | Select event overlays to show. | Explains event overlay controls. |
 | Logger marks row | Shows logger/sample marks from the processed session dataframe when available. | Explains mark overlay toggle. |

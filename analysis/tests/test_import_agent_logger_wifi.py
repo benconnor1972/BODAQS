@@ -355,8 +355,15 @@ class _FakeLoggerHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/v1/session/archive":
             query = parse_qs(parsed.query)
-            self.state["archive_ids"].append(query.get("id", [""])[0])
-            payload = self.state["archive_bytes"]
+            session_id = query.get("id", [""])[0]
+            self.state["archive_ids"].append(session_id)
+            second_download_started = self.state.get("second_download_started")
+            if len(self.state["archive_ids"]) >= 2 and isinstance(second_download_started, threading.Event):
+                second_download_started.set()
+            payload = self.state.get("archive_bytes_by_id", {}).get(
+                session_id,
+                self.state["archive_bytes"],
+            )
             if self.state.get("truncate_archive"):
                 partial = payload[: max(1, len(payload) // 3)]
                 self.send_response(200)
@@ -775,6 +782,69 @@ def test_logger_wifi_source_acquires_imports_acknowledges_and_cleans_up(tmp_path
     assert remote_records[0]["status"] == "succeeded"
     assert remote_records[0]["remote_session_id"] == "Prototype E__2026-05-16_20-15-42"
     assert remote_records[0]["acknowledged"] is True
+
+
+def test_logger_wifi_pipeline_downloads_next_session_while_processing_first(tmp_path, monkeypatch):
+    session_ids = [
+        "Prototype E__260516_100000",
+        "Prototype E__260516_100100",
+    ]
+    sessions = [
+        {
+            "session_id": session_id,
+            "session_stem": session_id.rsplit("__", 1)[1],
+            "data_format": "csv_zip",
+            "archive_ready": True,
+            "data_ready": True,
+            "uploaded": False,
+            "acknowledged": False,
+        }
+        for session_id in session_ids
+    ]
+    second_download_started = threading.Event()
+    original_import_candidate = import_agent_module.ImportSourceRunner.import_candidate
+    first_processing_observed = threading.Event()
+
+    def import_candidate_with_overlap_check(self, candidate, *, batch=None):
+        if not first_processing_observed.is_set():
+            first_processing_observed.set()
+            assert second_download_started.wait(timeout=2.0)
+        return original_import_candidate(self, candidate, batch=batch)
+
+    monkeypatch.setattr(
+        import_agent_module.ImportSourceRunner,
+        "import_candidate",
+        import_candidate_with_overlap_check,
+    )
+
+    archive_bytes_by_id = {
+        session_ids[0]: _importable_archive_bytes("260516_100000"),
+        session_ids[1]: _importable_archive_bytes("260516_100100"),
+    }
+    with _FakeLoggerServer(
+        sessions=sessions,
+        archive_bytes_by_id=archive_bytes_by_id,
+        second_download_started=second_download_started,
+    ) as server:
+        source, _library = _provision_wifi_source(tmp_path, server.base_url)
+        report = run_sources_once([source.source_root])
+
+    source_report = report["sources"][0]
+    assert first_processing_observed.is_set()
+    assert report["totals"]["imported"] == 2
+    assert source_report["remote"]["pipeline"]["mode"] == "narrow_producer_consumer"
+    assert source_report["remote"]["pipeline"]["streamed_archives"] == 2
+    assert server.state["archive_ids"] == session_ids
+    assert len(server.state["acks"]) == 2
+
+    request_paths = [request[1] for request in server.state["requests"]]
+    second_download_index = [
+        index
+        for index, path in enumerate(request_paths)
+        if path == "/api/v1/session/archive"
+    ][1]
+    first_ack_index = request_paths.index("/api/v1/session/ack")
+    assert second_download_index < first_ack_index
 
 
 def test_logger_wifi_source_acquires_imports_bdq_session_data(tmp_path):

@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from bodaqs_analysis.library_api import LibraryAdapter
-from bodaqs_analysis.library_api.errors import LibraryApiError
+from bodaqs_analysis.library_api.errors import LibraryApiError, ReadOnlyModeError
 
 try:
     from bodaqs_library_service_build_version import SERVICE_VERSION as _PACKAGED_SERVICE_VERSION
@@ -39,6 +39,7 @@ class LibraryApiServiceConfig:
     libraries_root: Path
     allow_origins: tuple[str, ...] = DEFAULT_ALLOW_ORIGINS
     web_root: Path | None = None
+    read_only: bool = False
 
 
 def create_app(
@@ -46,6 +47,7 @@ def create_app(
     *,
     allow_origins: Sequence[str] | None = None,
     web_root: str | Path | None = None,
+    read_only: bool = False,
 ) -> FastAPI:
     """Create a local-only FastAPI app backed by ``LibraryAdapter``."""
 
@@ -54,6 +56,7 @@ def create_app(
         libraries_root=Path(libraries_root).expanduser(),
         allow_origins=tuple(allow_origins or DEFAULT_ALLOW_ORIGINS),
         web_root=resolved_web_root,
+        read_only=bool(read_only),
     )
     app = FastAPI(
         title=SERVICE_NAME,
@@ -61,7 +64,7 @@ def create_app(
         description="Local HTTP wrapper around processed BODAQS libraries.",
     )
     app.state.config = config
-    app.state.adapter = LibraryAdapter(config.libraries_root)
+    app.state.adapter = LibraryAdapter(config.libraries_root, write_catalog_revision=not config.read_only)
     app.state.trackpoint_query_threads = {}
 
     app.add_middleware(
@@ -102,27 +105,39 @@ def create_app(
             "api_version": SERVICE_API_VERSION,
             "service_version": SERVICE_COMPONENT_VERSION,
             "libraries_root": str(current_config.libraries_root),
+            "read_only": current_config.read_only,
             "web_app": _web_app_status(current_config),
         }
 
     @app.get("/api/v1/capabilities")
     def capabilities() -> dict[str, Any]:
-        return _current_adapter(app).capabilities()
+        return _capabilities_response(app)
 
     @app.get("/api/v1/cache/diagnostics")
     def cache_diagnostics() -> dict[str, Any]:
         return _current_adapter(app).cache_diagnostics()
 
+    @app.post("/api/v1/local/video-file-dialog")
+    def select_local_video_file() -> dict[str, Any]:
+        _assert_writable(app)
+        return _select_local_video_file(_current_config(app).libraries_root)
+
+    @app.get("/api/v1/workbench/bootstrap")
+    def workbench_bootstrap() -> dict[str, Any]:
+        return _current_adapter(app).get_workbench_bootstrap()
+
     @app.post("/api/v1/config/libraries-root")
     async def set_libraries_root(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         libraries_root = _libraries_root_payload(payload)
-        next_adapter = LibraryAdapter(libraries_root)
+        next_adapter = LibraryAdapter(libraries_root, write_catalog_revision=not _current_config(app).read_only)
         libraries = next_adapter.list_libraries(refresh=True)
         app.state.config = LibraryApiServiceConfig(
             libraries_root=Path(libraries_root).expanduser(),
             allow_origins=_current_config(app).allow_origins,
             web_root=_current_config(app).web_root,
+            read_only=_current_config(app).read_only,
         )
         app.state.adapter = next_adapter
         app.state.trackpoint_query_threads = {}
@@ -146,6 +161,10 @@ def create_app(
         library = _current_adapter(app).refresh_library(library_id)
         return {"refreshed": True, "library": library}
 
+    @app.post("/api/v1/libraries/{library_id}/catalog/invalidate")
+    def invalidate_library_catalog(library_id: str) -> dict[str, Any]:
+        return _current_adapter(app).invalidate_library_catalog(library_id)
+
     @app.get("/api/v1/libraries/{library_id}/catalog")
     def get_catalog(library_id: str) -> dict[str, Any]:
         return _current_adapter(app).get_catalog(library_id)
@@ -167,11 +186,53 @@ def create_app(
 
     @app.put("/api/v1/libraries/{library_id}/sessions/note")
     async def save_session_note(library_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).save_session_note(library_id, _json_object_payload(payload))
 
+    @app.put("/api/v1/libraries/{library_id}/sessions/notes")
+    async def save_session_notes(library_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        return _current_adapter(app).save_session_notes(library_id, _json_object_payload(payload))
+
+    @app.get("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/videos")
+    def load_session_video_attachments(library_id: str, run_id: str, session_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_session_video_attachments(
+            library_id,
+            _session_route_ref(library_id, run_id, session_id),
+        )
+
+    @app.put("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/videos")
+    async def save_session_video_attachments(library_id: str, run_id: str, session_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        payload = _json_object_payload(payload)
+        payload.update(_session_route_ref(library_id, run_id, session_id))
+        return _current_adapter(app).save_session_video_attachments(library_id, payload)
+
+    @app.get("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/videos/{attachment_id}/stream")
+    def stream_session_video_attachment(
+        library_id: str,
+        run_id: str,
+        session_id: str,
+        attachment_id: str,
+    ) -> FileResponse:
+        resolved = _current_adapter(app).resolve_session_video_attachment(
+            library_id,
+            _session_route_ref(library_id, run_id, session_id),
+            attachment_id,
+        )
+        attachment = resolved["attachment"]
+        return FileResponse(
+            resolved["path"],
+            media_type=resolved["media_type"],
+            filename=str(attachment.get("display_name") or attachment.get("attachment_id") or "session-video"),
+        )
+
     @app.put("/api/v1/libraries/{library_id}/sessions/descriptions")
     async def update_session_descriptions(library_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_session_descriptions(library_id, _json_object_payload(payload))
 
@@ -182,6 +243,7 @@ def create_app(
         session_id: str,
         cleanup_memberships: bool = False,
     ) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_session(
             library_id,
             run_id,
@@ -195,6 +257,7 @@ def create_app(
 
     @app.post("/api/v1/tracks")
     async def create_root_track(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_track(_track_payload(payload))
 
@@ -204,6 +267,7 @@ def create_app(
 
     @app.put("/api/v1/tracks/{track_id}")
     async def update_root_track(track_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_track(
             track_id,
@@ -213,6 +277,7 @@ def create_app(
 
     @app.delete("/api/v1/tracks/{track_id}")
     def delete_root_track(track_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_track(track_id)
 
     @app.get("/api/v1/geospatial-policies")
@@ -221,6 +286,7 @@ def create_app(
 
     @app.post("/api/v1/geospatial-policies")
     async def create_root_geospatial_policy(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_geospatial_policy(_geospatial_policy_payload(payload))
 
@@ -230,11 +296,13 @@ def create_app(
 
     @app.put("/api/v1/geospatial-policies/{policy_id}")
     async def update_root_geospatial_policy(policy_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_geospatial_policy(policy_id, payload=_geospatial_policy_payload(payload))
 
     @app.delete("/api/v1/geospatial-policies/{policy_id}")
     def delete_root_geospatial_policy(policy_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_geospatial_policy(policy_id)
 
     @app.get("/api/v1/study-sets")
@@ -243,6 +311,7 @@ def create_app(
 
     @app.post("/api/v1/study-sets")
     async def create_root_study_set(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_study_set(_study_set_payload(payload))
 
@@ -252,6 +321,7 @@ def create_app(
 
     @app.put("/api/v1/study-sets/{study_set_id}")
     async def update_root_study_set(study_set_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         expected_revision = _expected_revision(payload)
         return _current_adapter(app).update_study_set(
@@ -262,6 +332,7 @@ def create_app(
 
     @app.delete("/api/v1/study-sets/{study_set_id}")
     def delete_root_study_set(study_set_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_study_set(study_set_id)
 
     @app.get("/api/v1/session-filters")
@@ -270,6 +341,7 @@ def create_app(
 
     @app.post("/api/v1/session-filters")
     async def create_root_session_filter(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_session_filter(_session_filter_payload(payload))
 
@@ -279,6 +351,7 @@ def create_app(
 
     @app.put("/api/v1/session-filters/{filter_id}")
     async def update_root_session_filter(filter_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_session_filter(
             filter_id,
@@ -288,6 +361,7 @@ def create_app(
 
     @app.delete("/api/v1/session-filters/{filter_id}")
     def delete_root_session_filter(filter_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_session_filter(filter_id)
 
     @app.get("/api/v1/bookmarks")
@@ -304,6 +378,7 @@ def create_app(
 
     @app.post("/api/v1/bookmarks")
     async def create_root_bookmark(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).create_bookmark(_bookmark_payload(payload))
 
@@ -313,6 +388,7 @@ def create_app(
 
     @app.put("/api/v1/bookmarks/{bookmark_id}")
     async def update_root_bookmark(bookmark_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).update_bookmark(
             bookmark_id,
@@ -322,6 +398,7 @@ def create_app(
 
     @app.delete("/api/v1/bookmarks/{bookmark_id}")
     def delete_root_bookmark(bookmark_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).delete_bookmark(bookmark_id)
 
     @app.get("/api/v1/analysis-views")
@@ -361,10 +438,14 @@ def create_app(
     @app.post("/api/v1/track-matches/query")
     async def query_track_matches(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return _current_adapter(app).query_track_matches(_json_object_payload(payload))
+        payload = _json_object_payload(payload)
+        if bool(payload.get("persist", False)):
+            _assert_writable(app)
+        return _current_adapter(app).query_track_matches(payload)
 
     @app.post("/api/v1/track-matches/compute")
     async def compute_track_match(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).compute_track_match(_json_object_payload(payload))
 
@@ -374,6 +455,7 @@ def create_app(
 
     @app.post("/api/v1/trackpoint-match-queries")
     async def create_trackpoint_match_query(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
         payload = await request.json()
         query = _current_adapter(app).create_trackpoint_match_query(_json_object_payload(payload))
         if query.get("status") in {"queued", "running"}:
@@ -398,6 +480,7 @@ def create_app(
 
     @app.delete("/api/v1/trackpoint-match-queries/{query_id}")
     def cancel_trackpoint_match_query(query_id: str) -> dict[str, Any]:
+        _assert_writable(app)
         return _current_adapter(app).cancel_trackpoint_match_query(query_id)
 
     if config.web_root is not None:
@@ -513,6 +596,19 @@ def _bookmark_payload(payload: Any) -> dict[str, Any]:
     return value
 
 
+def _session_route_ref(library_id: str, run_id: str, session_id: str) -> dict[str, str]:
+    from bodaqs_analysis.library_api.ids import make_session_key, make_session_ref_id
+
+    session_key = make_session_key(run_id, session_id)
+    return {
+        "library_id": str(library_id),
+        "run_id": str(run_id),
+        "session_id": str(session_id),
+        "session_key": session_key,
+        "session_ref_id": make_session_ref_id(library_id, session_key),
+    }
+
+
 def _libraries_root_payload(payload: Any) -> Path:
     payload = _json_object_payload(payload)
     value = payload.get("libraries_root")
@@ -529,6 +625,177 @@ def _current_config(app: FastAPI) -> LibraryApiServiceConfig:
 
 def _current_adapter(app: FastAPI) -> LibraryAdapter:
     return app.state.adapter
+
+
+def _assert_writable(app: FastAPI) -> None:
+    if _current_config(app).read_only:
+        raise ReadOnlyModeError(
+            "The Library API service is running in read-only mode.",
+            details={"read_only": True},
+        )
+
+
+def _capabilities_response(app: FastAPI) -> dict[str, Any]:
+    capabilities = _current_adapter(app).capabilities()
+    if not _current_config(app).read_only:
+        capabilities["read_only"] = False
+        return capabilities
+
+    capabilities = dict(capabilities)
+    capabilities["read_only"] = True
+    features = dict(capabilities.get("features", {}))
+    for feature in (
+        "write_study_sets",
+        "delete_study_sets",
+        "delete_sessions",
+        "write_session_notes",
+        "write_session_video_attachments",
+        "select_local_video_files",
+        "write_session_descriptions",
+        "write_tracks",
+        "write_geospatial_policies",
+        "compute_track_matches",
+        "query_trackpoint_matches",
+        "cancel_trackpoint_match_queries",
+        "write_filters",
+        "write_bookmarks",
+    ):
+        features[feature] = False
+    capabilities["features"] = features
+    return capabilities
+
+
+def _select_local_video_file(libraries_root: Path) -> dict[str, Any]:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "message": "Native file picker is not available in this environment.",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        selected = filedialog.askopenfilename(
+            title="Select session video",
+            filetypes=(
+                ("Video files", "*.mp4 *.mov *.m4v *.avi *.mkv *.webm"),
+                ("MP4 video", "*.mp4"),
+                ("All files", "*.*"),
+            ),
+        )
+    finally:
+        root.destroy()
+
+    if not selected:
+        return {"selected": False}
+
+    path = Path(selected).expanduser().resolve()
+    workspace_relative = ""
+    try:
+        workspace_relative = path.relative_to(libraries_root.expanduser().resolve()).as_posix()
+    except ValueError:
+        workspace_relative = ""
+    media_created_at_unix_s = _mp4_creation_time_unix_s(path)
+    return {
+        "selected": True,
+        "path": str(path),
+        "workspace_relative_path": workspace_relative,
+        "display_name": path.stem,
+        "file_name": path.name,
+        "media_created_at_unix_s": media_created_at_unix_s,
+        "media_created_at_utc": _unix_seconds_to_utc_iso(media_created_at_unix_s),
+    }
+
+
+def _mp4_creation_time_unix_s(path: Path) -> float | None:
+    """Return the MP4/MOV movie-header creation time as Unix seconds if present."""
+
+    try:
+        with path.open("rb") as handle:
+            return _find_mp4_creation_time_unix_s(handle, 0, path.stat().st_size)
+    except OSError:
+        return None
+
+
+def _find_mp4_creation_time_unix_s(handle: Any, start: int, end: int, *, depth: int = 0) -> float | None:
+    if depth > 4:
+        return None
+    pos = start
+    while pos + 8 <= end:
+        handle.seek(pos)
+        header = handle.read(8)
+        if len(header) < 8:
+            return None
+        box_size = int.from_bytes(header[0:4], "big")
+        box_type = header[4:8]
+        header_size = 8
+        if box_size == 1:
+            largesize = handle.read(8)
+            if len(largesize) < 8:
+                return None
+            box_size = int.from_bytes(largesize, "big")
+            header_size = 16
+        elif box_size == 0:
+            box_size = end - pos
+        if box_size < header_size:
+            return None
+        box_end = min(end, pos + box_size)
+        payload_start = pos + header_size
+        if box_type == b"mvhd":
+            return _read_mvhd_creation_time_unix_s(handle, payload_start, box_end)
+        if box_type in {b"moov", b"trak", b"mdia", b"minf", b"stbl"}:
+            found = _find_mp4_creation_time_unix_s(handle, payload_start, box_end, depth=depth + 1)
+            if found is not None:
+                return found
+        pos = box_end
+    return None
+
+
+def _read_mvhd_creation_time_unix_s(handle: Any, start: int, end: int) -> float | None:
+    handle.seek(start)
+    version_flags = handle.read(4)
+    if len(version_flags) < 4:
+        return None
+    version = version_flags[0]
+    if version == 1:
+        if start + 12 > end:
+            return None
+        value = handle.read(8)
+        if len(value) < 8:
+            return None
+        mp4_seconds = int.from_bytes(value, "big")
+    elif version == 0:
+        if start + 8 > end:
+            return None
+        value = handle.read(4)
+        if len(value) < 4:
+            return None
+        mp4_seconds = int.from_bytes(value, "big")
+    else:
+        return None
+    unix_seconds = mp4_seconds - 2082844800
+    if unix_seconds <= 0:
+        return None
+    return float(unix_seconds)
+
+
+def _unix_seconds_to_utc_iso(value: float | None) -> str:
+    if value is None:
+        return ""
+    try:
+        from datetime import datetime, timezone
+
+        return datetime.fromtimestamp(value, tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    except (OSError, OverflowError, ValueError):
+        return ""
 
 
 def _start_trackpoint_query_worker(app: FastAPI, query_id: str) -> None:

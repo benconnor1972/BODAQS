@@ -21,6 +21,7 @@ from bodaqs_analysis.artifacts import (
     write_session_manifest,
 )
 from bodaqs_analysis.bike_profile import load_bike_profile
+from bodaqs_analysis.library_api.catalog_revision import touch_catalog_revision
 from bodaqs_analysis.pipeline import preprocess_session
 from bodaqs_analysis.preprocess_profile import (
     load_preprocess_config,
@@ -183,8 +184,23 @@ def preprocess_requested_sessions_to_library(
             "results": results,
         },
     )
+    catalog_revision = None
+    if session_ids:
+        catalog_revision = touch_catalog_revision(
+            store.root,
+            reason="manual_preprocessing_sessions_written",
+            actor="library_preprocessing",
+            changed_sessions=[
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "session_key": f"{run_id}::{session_id}",
+                }
+                for session_id in session_ids
+            ],
+        )
 
-    return {
+    response = {
         "schema": "bodaqs.manual_preprocessing.batch_result",
         "version": 1,
         "run_id": run_id,
@@ -193,6 +209,9 @@ def preprocess_requested_sessions_to_library(
         "results": results,
         "run_manifest_path": str(store.path_run_manifest(run_id)),
     }
+    if catalog_revision is not None:
+        response["library_catalog_revision"] = catalog_revision
+    return response
 
 
 def batch_result_to_study_set(batch_result: Mapping[str, Any], *, library_id: str) -> dict[str, Any]:

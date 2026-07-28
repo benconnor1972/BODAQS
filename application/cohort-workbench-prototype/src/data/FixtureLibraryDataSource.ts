@@ -7,6 +7,7 @@ import {
 import type {
   AnalysisAdequacyResult,
   AnalysisViewRecord,
+  GeoPosition,
   SessionGpsPointSet,
   SessionGpsSummary,
   SessionBookmarkRecord,
@@ -92,13 +93,24 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   }
 
   async listAnalysisViews(): Promise<AnalysisViewRecord[]> {
-    return [fixtureSimpleSuspensionAnalysisView()]
+    return [fixtureSimpleSuspensionAnalysisView(), fixtureTrackAnalysisView()]
   }
 
   async evaluateAnalysisAdequacy(viewId: string, studySet: StudySet): Promise<AnalysisAdequacyResult> {
-    const view = fixtureSimpleSuspensionAnalysisView()
+    const view =
+      viewId === 'track-analysis-lap-timing'
+        ? fixtureTrackAnalysisView()
+        : fixtureSimpleSuspensionAnalysisView()
     const totalSessionCount = studySet.sessions.length
-    const usableSessionCount = viewId === view.id ? totalSessionCount : 0
+    const usableSessionCount =
+      viewId === 'track-analysis-lap-timing'
+        ? studySet.sessions.filter((sessionRef) => {
+            const session = this.sessions.find((candidate) => sessionRefId(sessionToStudyRef(candidate)) === sessionRefId(sessionRef))
+            return Boolean(session?.gpsSummary.present)
+          }).length
+        : viewId === view.id
+          ? totalSessionCount
+          : 0
     return {
       viewId,
       displayName: viewId === view.id ? view.displayName : viewId,
@@ -243,6 +255,8 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
       toleranceM: request.toleranceM,
       candidateSessionCount: candidateSessions.length,
       processedSessionCount: candidateSessions.length,
+      exactSessionCount: candidateSessions.length,
+      skippedSessionCount: 0,
       matchedSessionCount: results.length,
       failedSessionCount: track ? 0 : candidateSessions.length,
       error: track ? '' : 'Fixture track not found.',
@@ -310,7 +324,7 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
         latitude,
         elevationM: null,
       })),
-      path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as [number, number]),
+      path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as GeoPosition),
       warnings: [...session.gpsSummary.warnings],
     }
   }
@@ -341,6 +355,22 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
         : session,
     )
     return cloneSessionNote(saved)
+  }
+
+  async saveSessionNotes(notes: SessionNoteRecord[]) {
+    const results = []
+    for (const note of notes) {
+      try {
+        results.push({ ok: true as const, note: await this.saveSessionNote(note) })
+      } catch (error) {
+        results.push({
+          ok: false as const,
+          sessionRef: note.sessionRef,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return results
   }
 
   async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
@@ -841,6 +871,7 @@ function cloneSession(session: SessionRecord): SessionRecord {
     availableSignals: session.availableSignals?.map((signal) => ({ ...signal })),
     gps: session.gps.map(([x, y]) => [x, y]),
     gpsSummary: cloneGpsSummary(session.gpsSummary),
+    videoSummary: { ...session.videoSummary, warnings: [...session.videoSummary.warnings] },
   }
 }
 
@@ -970,15 +1001,59 @@ function fixtureSimpleSuspensionAnalysisView(): AnalysisViewRecord {
   }
 }
 
+function fixtureTrackAnalysisView(): AnalysisViewRecord {
+  return {
+    id: 'track-analysis-lap-timing',
+    displayName: 'Track Analysis and Lap Timing',
+    category: 'Geospatial',
+    description: 'Create trackpoints from GPS traces and compare track start-to-finish sector timing.',
+    route: 'track-analysis-lap-timing',
+    adequacyPolicy: 'fixture heuristic',
+    requirements: {
+      required: [
+        {
+          requirementId: 'gps',
+          label: 'GPS data',
+          tier: 'required',
+          description: 'At least one selected session needs usable GPS data.',
+        },
+      ],
+      recommended: [
+        {
+          requirementId: 'all_sessions_gps',
+          label: 'GPS for all sessions',
+          tier: 'recommended',
+          description: 'All selected sessions have GPS for direct timing comparison.',
+        },
+        {
+          requirementId: 'track_scope',
+          label: 'Track in scope',
+          tier: 'recommended',
+          description: 'A saved or temporary track is available for trackpoint and sector timing work.',
+        },
+      ],
+      optional: [
+        {
+          requirementId: 'alternate_gps_sources',
+          label: 'Alternate GPS sources',
+          tier: 'optional',
+          description: 'Sessions with multiple GPS sources can be inspected with alternate source choices.',
+        },
+      ],
+    },
+  }
+}
+
 function cloneTrack(track: TrackRecord): TrackRecord {
   return {
     ...track,
-    points: track.points.map(([x, y]) => [x, y]),
+    points: track.points.map(copyPosition),
     trackpoints: track.trackpoints.map((trackpoint) => ({
       ...trackpoint,
-      position: [trackpoint.position[0], trackpoint.position[1]] as [number, number],
+      position: copyPosition(trackpoint.position),
       cutlineOverride: trackpoint.cutlineOverride ? { ...trackpoint.cutlineOverride } : undefined,
     })),
+    segmentAliases: track.segmentAliases?.map((alias) => ({ ...alias })),
     matchSummaries: track.matchSummaries.map((match) => ({
       ...match,
       trackpointResults: match.trackpointResults.map((result) => ({ ...result })),
@@ -986,6 +1061,10 @@ function cloneTrack(track: TrackRecord): TrackRecord {
     })),
     source: track.source ? { ...track.source } : undefined,
   }
+}
+
+function copyPosition(position: GeoPosition): GeoPosition {
+  return Number.isFinite(position[2]) ? [position[0], position[1], position[2] as number] : [position[0], position[1]]
 }
 
 function cloneGpsSummary(summary: SessionGpsSummary): SessionGpsSummary {

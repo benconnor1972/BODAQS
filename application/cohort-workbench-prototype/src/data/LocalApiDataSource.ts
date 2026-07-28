@@ -9,10 +9,12 @@ import type {
   AnalysisRequirementRecord,
   AnalysisRequirementTier,
   AnalysisViewRecord,
+  GeoPosition,
   GpsQuality,
   GpsSourceKind,
   GpsTimebase,
   LibraryRecord,
+  LocalVideoFileSelection,
   NoteStatus,
   QcLevel,
   SessionGpsPointSet,
@@ -24,6 +26,8 @@ import type {
   SessionNoteValue,
   SessionRecord,
   SessionSignalSummary,
+  SessionVideoAttachmentRecord,
+  SessionVideoAttachmentsRecord,
   SessionTrackMatchRecord,
   SignalQueryRequest,
   SignalQueryResponse,
@@ -42,6 +46,7 @@ import type {
   TimeseriesWindowSignal,
   TrackDirection,
   TrackMatchStatus,
+  TrackSegmentAliasRecord,
   TrackpointMatchMode,
   TrackpointMatchQueryRecord,
   TrackpointMatchQueryRequest,
@@ -49,7 +54,7 @@ import type {
   TrackpointMatchQueryStatus,
   TrackRecord,
 } from '../domain/types'
-import type { LibraryDataSource } from './LibraryDataSource'
+import type { LibraryDataSource, SessionNoteSaveResult, WorkbenchBootstrapData } from './LibraryDataSource'
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
 const VITE_DEV_PORTS = new Set(['5173', '4173'])
@@ -77,6 +82,9 @@ export function defaultLibraryApiBaseUrl() {
   if (typeof window !== 'undefined' && window.location?.origin && isBundledLocalOrigin(window.location)) {
     return normalizeApiBaseUrl(window.location.origin)
   }
+  if (!import.meta.env.DEV && typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)) {
+    return normalizeApiBaseUrl(window.location.origin)
+  }
   return DEFAULT_API_BASE_URL
 }
 
@@ -84,6 +92,7 @@ type ApiObject = Record<string, unknown>
 
 type ApiHealth = {
   libraries_root?: string
+  read_only?: boolean
 }
 
 type ApiSetLibrariesRootResponse = {
@@ -125,10 +134,27 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapLibrary(library)
   }
 
-  async listSessions() {
-    const libraries = await this.listLibraries()
+  async loadWorkbenchBootstrap(): Promise<WorkbenchBootstrapData> {
+    const bootstrap = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/workbench/bootstrap`)
+    const catalogs = arrayValue(bootstrap.catalogs).filter(isObject)
+    const sessions = catalogs.flatMap((catalog) => {
+      const rows = arrayValue(catalog.rows)
+      return rows.filter(isObject).map(mapSession)
+    })
+    return {
+      libraries: arrayValue(bootstrap.libraries).filter(isObject).map(mapLibrary),
+      sessions,
+      tracks: arrayValue(bootstrap.tracks).filter(isObject).map(mapTrack),
+      studySets: arrayValue(bootstrap.study_sets).filter(isObject).map(mapStudySet),
+      savedFilters: arrayValue(bootstrap.session_filters).filter(isObject).map(mapSavedSessionFilter),
+      timings: objectValue(bootstrap.timings),
+    }
+  }
+
+  async listSessions(libraries?: LibraryRecord[]) {
+    const libraryList = libraries ?? (await this.listLibraries())
     const catalogs = await Promise.all(
-      libraries.map((libraryItem) =>
+      libraryList.map((libraryItem) =>
         requestJson<ApiObject>(`${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryItem.id)}/catalog`),
       ),
     )
@@ -383,6 +409,95 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapSessionNote(response, note.sessionRef)
   }
 
+  async saveSessionNotes(notes: SessionNoteRecord[]): Promise<SessionNoteSaveResult[]> {
+    const indexedNotes = notes.map((note, index) => ({ note, index }))
+    const groups = new Map<string, Array<{ note: SessionNoteRecord; index: number }>>()
+    for (const item of indexedNotes) {
+      const libraryId = item.note.sessionRef.libraryId
+      groups.set(libraryId, [...(groups.get(libraryId) ?? []), item])
+    }
+
+    const results: SessionNoteSaveResult[] = new Array(notes.length)
+    await Promise.all(
+      [...groups.entries()].map(async ([libraryId, group]) => {
+        const response = await requestJson<ApiObject>(
+          `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/sessions/notes`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              items: group.map(({ note }) => ({
+                session_ref: toApiStudySessionRef(note.sessionRef),
+                note: toApiSessionNote(note),
+              })),
+            }),
+          },
+        )
+        const responseResults = arrayValue(response.results).filter(isObject)
+        responseResults.forEach((result, responseIndex) => {
+          const rawIndex = Number(result.index)
+          const source = group[Number.isInteger(rawIndex) ? rawIndex : responseIndex] ?? group[responseIndex]
+          if (!source) {
+            return
+          }
+          if (result.ok) {
+            const notePayload = objectValue(result.note)
+            results[source.index] = {
+              ok: true,
+              note: mapSessionNote(notePayload, source.note.sessionRef),
+            }
+            return
+          }
+          results[source.index] = {
+            ok: false,
+            sessionRef: source.note.sessionRef,
+            message: textValue(result.error, 'Could not save session note.'),
+          }
+        })
+      }),
+    )
+
+    return results.map((result, index) =>
+      result ?? {
+        ok: false,
+        sessionRef: notes[index].sessionRef,
+        message: 'No save result was returned for this session note.',
+      },
+    )
+  }
+
+  async loadSessionVideoAttachments(session: SessionRecord): Promise<SessionVideoAttachmentsRecord> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}${sessionVideosPath(session)}`)
+    return mapSessionVideoAttachments(response)
+  }
+
+  async saveSessionVideoAttachments(attachments: SessionVideoAttachmentsRecord): Promise<SessionVideoAttachmentsRecord> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}${sessionVideosPathFromRef(attachments.sessionRef)}`, {
+      method: 'PUT',
+      body: JSON.stringify(toApiSessionVideoAttachments(attachments)),
+    })
+    return mapSessionVideoAttachments(response)
+  }
+
+  sessionVideoStreamUrl(session: SessionRecord, attachmentId: string): string {
+    return `${this.baseUrl}${sessionVideosPath(session)}/${encodeURIComponent(attachmentId)}/stream`
+  }
+
+  async selectLocalVideoFile(): Promise<LocalVideoFileSelection> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/local/video-file-dialog`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+    return {
+      selected: Boolean(response.selected),
+      path: textValue(response.path),
+      workspaceRelativePath: textValue(response.workspace_relative_path),
+      displayName: textValue(response.display_name),
+      fileName: textValue(response.file_name),
+      mediaCreatedAtUnixS: nullableNumberValue(response.media_created_at_unix_s),
+      mediaCreatedAtUtc: textValue(response.media_created_at_utc),
+    }
+  }
+
   async listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]> {
     const params = new URLSearchParams({
       library_id: session.libraryId,
@@ -525,6 +640,7 @@ function mapSession(row: ApiObject): SessionRecord {
   const eventSchema = objectValue(row.event_schema)
   const summary = objectValue(row.summary)
   const gpsSummary = objectValue(row.gps_summary)
+  const videoSummary = objectValue(row.video_summary)
   const libraryId = textValue(row.library_id)
   const sessionKey = textValue(row.session_key)
   const runId = textValue(row.run_id)
@@ -560,6 +676,18 @@ function mapSession(row: ApiObject): SessionRecord {
     availableSignals: availableSignals.map(mapSessionSignalSummary),
     gps: [],
     gpsSummary: mapGpsSummary(gpsSummary),
+    videoSummary: mapVideoSummary(videoSummary),
+  }
+}
+
+function mapVideoSummary(value: ApiObject) {
+  const attachmentCount = numberValue(value.attachment_count)
+  const enabledCount = numberValue(value.enabled_count)
+  return {
+    present: Boolean(value.present) || attachmentCount > 0,
+    attachmentCount,
+    enabledCount,
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
   }
 }
 
@@ -585,7 +713,7 @@ function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
 
 function mapTrack(value: ApiObject): TrackRecord {
   const path = objectValue(value.path)
-  const coordinates = arrayValue(path.coordinates).map(coordinatePair).filter(isCoordinatePair)
+  const coordinates = arrayValue(path.coordinates).map(coordinatePosition).filter(isCoordinatePosition)
   const lengthM = numberValue(path.length_m)
   const policyRef = objectValue(value.default_policy_ref)
   const source = objectValue(value.source)
@@ -614,10 +742,19 @@ function mapTrack(value: ApiObject): TrackRecord {
           id: textValue(trackpoint.trackpoint_id),
           name: textValue(trackpoint.display_name, textValue(trackpoint.trackpoint_id)),
           stationM: numberValue(trackpoint.station_m),
-          position: coordinatePair(position.coordinates) ?? ([0, 0] as [number, number]),
+          position: coordinatePosition(position.coordinates) ?? ([0, 0] as GeoPosition),
           cutlineOverride: hasOverride ? mappedOverride : undefined,
         }
       }),
+    segmentAliases: arrayValue(value.segment_aliases)
+      .filter(isObject)
+      .map((alias) => ({
+        fromTrackpointId: textValue(alias.from_trackpoint_id),
+        toTrackpointId: textValue(alias.to_trackpoint_id),
+        name: textValue(alias.display_name, textValue(alias.name)),
+        timingRole: (textValue(alias.timing_role) === 'untimed' ? 'untimed' : 'timed') as TrackSegmentAliasRecord['timingRole'],
+      }))
+      .filter((alias) => alias.fromTrackpointId && alias.toTrackpointId && (alias.name || alias.timingRole === 'untimed')),
     matchSummaries: arrayValue(value.match_summaries).filter(isObject).map(mapTrackMatch),
     source: textValue(source.kind)
       ? {
@@ -672,6 +809,8 @@ function mapTrackpointMatchQuery(value: ApiObject): TrackpointMatchQueryRecord {
     toleranceM: numberValue(value.tolerance_m),
     candidateSessionCount: numberValue(value.candidate_session_count),
     processedSessionCount: numberValue(value.processed_session_count),
+    exactSessionCount: numberValue(value.exact_session_count),
+    skippedSessionCount: numberValue(value.skipped_session_count),
     matchedSessionCount: numberValue(value.matched_session_count),
     failedSessionCount: numberValue(value.failed_session_count),
     error: textValue(value.error),
@@ -768,7 +907,11 @@ function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
     sourcePolicy: objectRecordValue(source.gps_source_policy),
     routeReconstruction: objectRecordValue(source.route_reconstruction),
     points,
-    path: points.map((point) => [point.longitude, point.latitude] as [number, number]),
+    path: points.map((point) =>
+      point.elevationM !== null && Number.isFinite(point.elevationM)
+        ? ([point.longitude, point.latitude, point.elevationM] as GeoPosition)
+        : ([point.longitude, point.latitude] as GeoPosition),
+    ),
     warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
   }
 }
@@ -846,6 +989,34 @@ function mapSessionBookmark(value: ApiObject): SessionBookmarkRecord {
     private: value.private === false ? false : true,
     createdAtUtc: textValue(provenance.created_at),
     updatedAtUtc: textValue(provenance.updated_at, textValue(provenance.created_at)),
+  }
+}
+
+function mapSessionVideoAttachments(value: ApiObject): SessionVideoAttachmentsRecord {
+  const doc = objectValue(value.video_attachments)
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session_ref)),
+    present: Boolean(value.present),
+    revision: numberValue(doc.revision),
+    attachments: arrayValue(doc.attachments).filter(isObject).map(mapSessionVideoAttachment),
+    createdAtUtc: textValue(doc.created_at_utc),
+    updatedAtUtc: textValue(doc.updated_at_utc),
+  }
+}
+
+function mapSessionVideoAttachment(value: ApiObject): SessionVideoAttachmentRecord {
+  return {
+    attachmentId: textValue(value.attachment_id),
+    displayName: textValue(value.display_name, 'Video'),
+    cameraLabel: textValue(value.camera_label),
+    path: textValue(value.path),
+    workspaceRelativePath: textValue(value.workspace_relative_path),
+    libraryRelativePath: textValue(value.library_relative_path),
+    sessionRelativePath: textValue(value.session_relative_path),
+    uri: textValue(value.uri),
+    mediaType: textValue(value.media_type),
+    enabled: value.enabled === false ? false : true,
+    sessionTimeAtVideoZeroS: numberValue(value.session_time_at_video_zero_s),
   }
 }
 
@@ -951,6 +1122,7 @@ function mapTimeseriesWindowEvent(value: ApiObject): TimeseriesWindowEvent {
     endS: nullableNumberValue(value.end_s),
     peakTimeS: nullableNumberValue(value.peak_time_s),
     end: textValue(value.end),
+    metrics: objectRecordValue(value.metrics),
   }
 }
 
@@ -1067,7 +1239,7 @@ function mapAnalysisAdequacy(value: ApiObject): AnalysisAdequacyResult {
 function mapAnalysisAdequacyMessage(value: ApiObject): AnalysisAdequacyMessage {
   const sessionRef = objectValue(value.session_ref)
   return {
-    level: messageLevelValue(value.level),
+    level: messageLevelValue(value.level ?? value.severity),
     code: textValue(value.code),
     message: textValue(value.message),
     ...(Object.keys(sessionRef).length ? { sessionRef: mapStudySessionRef(sessionRef) } : {}),
@@ -1194,7 +1366,7 @@ function toApiTrack(track: TrackRecord) {
     revision: track.revision,
     path: {
       type: 'LineString',
-      coordinates: track.points.map(([longitude, latitude]) => [longitude, latitude]),
+      coordinates: track.points.map((position) => coordinatePayload(position)),
       coordinate_reference_system: 'EPSG:4326',
       distance_model: 'geodesic',
       length_m: track.lengthM,
@@ -1214,7 +1386,7 @@ function toApiTrack(track: TrackRecord) {
         station_m: trackpoint.stationM,
         position: {
           type: 'Point',
-          coordinates: trackpoint.position,
+          coordinates: coordinatePayload(trackpoint.position),
         },
       }
       if (trackpoint.cutlineOverride) {
@@ -1226,6 +1398,12 @@ function toApiTrack(track: TrackRecord) {
       }
       return out
     }),
+    segment_aliases: (track.segmentAliases ?? []).map((alias) => ({
+      from_trackpoint_id: alias.fromTrackpointId,
+      to_trackpoint_id: alias.toTrackpointId,
+      display_name: alias.name,
+      ...(alias.timingRole === 'untimed' ? { timing_role: 'untimed' } : {}),
+    })),
     display_state: {
       bodaqs_web_v1: {},
     },
@@ -1383,6 +1561,44 @@ function toApiSessionBookmark(bookmark: SessionBookmarkRecord) {
     tags: bookmark.tags,
     private: bookmark.private,
   }
+}
+
+function toApiSessionVideoAttachments(attachments: SessionVideoAttachmentsRecord) {
+  return {
+    schema: 'bodaqs.session_video_attachments',
+    version: 1,
+    revision: attachments.revision,
+    run_id: attachments.sessionRef.runId,
+    session_id: attachments.sessionRef.sessionId,
+    session_key: attachments.sessionRef.sessionKey,
+    attachments: attachments.attachments.map((attachment) => ({
+      ...(attachment.attachmentId ? { attachment_id: attachment.attachmentId } : {}),
+      display_name: attachment.displayName.trim() || 'Video',
+      camera_label: attachment.cameraLabel,
+      path: attachment.path,
+      workspace_relative_path: attachment.workspaceRelativePath,
+      library_relative_path: attachment.libraryRelativePath,
+      session_relative_path: attachment.sessionRelativePath,
+      uri: attachment.uri,
+      media_type: attachment.mediaType,
+      enabled: attachment.enabled,
+      session_time_at_video_zero_s: attachment.sessionTimeAtVideoZeroS,
+    })),
+    created_at_utc: attachments.createdAtUtc,
+    updated_at_utc: attachments.updatedAtUtc,
+  }
+}
+
+function sessionVideosPath(session: SessionRecord) {
+  return `/api/v1/libraries/${encodeURIComponent(session.libraryId)}/runs/${encodeURIComponent(session.runId)}/sessions/${encodeURIComponent(
+    session.sessionId,
+  )}/videos`
+}
+
+function sessionVideosPathFromRef(session: StudySessionRef) {
+  return `/api/v1/libraries/${encodeURIComponent(session.libraryId)}/runs/${encodeURIComponent(session.runId)}/sessions/${encodeURIComponent(
+    session.sessionId,
+  )}/videos`
 }
 
 function noteStatusValue(value: unknown): NoteStatus {
@@ -1591,7 +1807,7 @@ function messageLevelValue(value: unknown): AnalysisAdequacyMessage['level'] {
   return 'info'
 }
 
-function coordinatePair(value: unknown): [number, number] | null {
+function coordinatePosition(value: unknown): GeoPosition | null {
   if (!Array.isArray(value) || value.length < 2) {
     return null
   }
@@ -1600,11 +1816,16 @@ function coordinatePair(value: unknown): [number, number] | null {
   if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
     return null
   }
-  return [x, y]
+  const z = value[2]
+  return typeof z === 'number' && Number.isFinite(z) ? [x, y, z] : [x, y]
 }
 
-function isCoordinatePair(value: [number, number] | null): value is [number, number] {
+function isCoordinatePosition(value: GeoPosition | null): value is GeoPosition {
   return value !== null
+}
+
+function coordinatePayload(position: GeoPosition) {
+  return Number.isFinite(position[2]) ? [position[0], position[1], position[2]] : [position[0], position[1]]
 }
 
 function isObject(value: unknown): value is ApiObject {

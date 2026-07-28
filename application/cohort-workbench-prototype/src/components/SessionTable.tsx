@@ -50,6 +50,7 @@ const defaultColumnWidths: Record<ColumnId, number> = {
   noteAction: 0,
   qaAction: 0,
   gpsAction: 0,
+  videoAction: 0,
   signalInspectorAction: 0,
   metadataAction: 0,
 }
@@ -74,6 +75,7 @@ const minColumnWidths: Record<ColumnId, number> = {
   noteAction: 0,
   qaAction: 0,
   gpsAction: 0,
+  videoAction: 0,
   signalInspectorAction: 0,
   metadataAction: 0,
 }
@@ -380,8 +382,13 @@ export function SessionTable({
                   const selectedFilterValues = isSortableSessionColumn
                     ? tableColumnFilters.find((filter) => filter.columnId === columnId)?.values ?? []
                     : []
+                  const headerClasses = [
+                    isInfoActionHeader ? 'info-action-heading' : '',
+                    'resizable-column-header',
+                    openFilterColumnId === columnId ? 'filter-open' : '',
+                  ].filter(Boolean).join(' ')
                   return (
-                    <th className={isInfoActionHeader ? 'info-action-heading resizable-column-header' : 'resizable-column-header'} key={header.id}>
+                    <th className={headerClasses} key={header.id}>
                       {isSortableSessionColumn ? (
                         <div className="column-header-control">
                           <button className="sort-button" onClick={() => onSort(columnId)} type="button">

@@ -1609,6 +1609,8 @@ class ImportAgentManagerWindow:
             return "scanning..."
         if event == "remote_acquisition_started":
             return "checking logger..."
+        if event == "remote_pipeline_started":
+            return "downloading and processing..."
         if event == "remote_status":
             state = str(progress.get("remote_state") or "unknown")
             if state == "waiting_upload_mode":
@@ -1703,6 +1705,26 @@ class ImportAgentManagerWindow:
                 f"{label} source {source_id}: skipped remote session {remote_session_id} "
                 f"({progress.get('reason')})."
             )
+        if event == "remote_pipeline_started":
+            return f"{label} source {source_id}: started streaming download and processing."
+        if event == "remote_pipeline_completed":
+            try:
+                elapsed = f"{float(progress.get('elapsed_s')):.1f}s"
+            except (TypeError, ValueError):
+                elapsed = "unknown time"
+            return (
+                f"{label} source {source_id}: streaming pipeline complete "
+                f"({self._progress_int(progress, 'streamed_archives')} archive(s), {elapsed})."
+            )
+        if event == "fit_index_refreshed":
+            stats = progress.get("fit_index_stats")
+            if not isinstance(stats, Mapping):
+                return None
+            return (
+                f"{label} source {source_id}: FIT index ready "
+                f"(files={stats.get('files_seen', 0)}, inspected={stats.get('inspected', 0)}, "
+                f"cached={stats.get('unchanged', 0)}, failed={stats.get('failed', 0)})."
+            )
         if event == "archives_detected":
             count = self._progress_int(progress, "archive_count")
             if origin == "watch" and count == 0:
@@ -1719,7 +1741,14 @@ class ImportAgentManagerWindow:
         if event == "archive_imported":
             session_id = progress.get("session_id")
             suffix = f" -> {session_id}" if session_id else ""
-            return f"{label} source {source_id}: imported {archive_name}{suffix}."
+            timing_suffix = ""
+            timings = progress.get("timings")
+            if isinstance(timings, Mapping):
+                try:
+                    timing_suffix = f" in {float(timings.get('total_s')):.1f}s"
+                except (TypeError, ValueError):
+                    timing_suffix = ""
+            return f"{label} source {source_id}: imported {archive_name}{suffix}{timing_suffix}."
         if event == "archive_failed":
             return f"{label} source {source_id}: failed {archive_name}: {progress.get('error')}"
         if event == "archive_skipped":

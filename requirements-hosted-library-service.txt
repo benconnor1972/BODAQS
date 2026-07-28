@@ -1,0 +1,14 @@
+# BODAQS hosted demo Library API runtime
+#
+# This intentionally excludes notebook, desktop, and import-manager UI
+# dependencies. It is intended for a read-only hosted Library API service that
+# serves the built Workbench and an already-processed demo library.
+
+fastapi==0.115.6
+uvicorn==0.34.0
+
+numpy==2.4.2
+pandas==2.3.3
+PyYAML==6.0.3
+fastparquet==2025.12.0
+

@@ -116,6 +116,15 @@ from .session_notes import (
     load_session_note,
     save_session_note,
 )
+from .session_videos import (
+    SESSION_VIDEO_ATTACHMENTS_API_SCHEMA,
+    SESSION_VIDEO_ATTACHMENTS_API_VERSION,
+    SESSION_VIDEO_ATTACHMENTS_SCHEMA,
+    SESSION_VIDEO_ATTACHMENTS_VERSION,
+    load_session_video_attachments,
+    resolve_session_video_attachment,
+    save_session_video_attachments,
+)
 from .sessions import delete_session
 from .study_sets import (
     STUDY_SET_SCHEMA,
@@ -189,6 +198,10 @@ __all__ = [
     "SESSION_NOTE_API_VERSION",
     "SESSION_NOTE_DOCUMENT_SCHEMA",
     "SESSION_NOTE_DOCUMENT_VERSION",
+    "SESSION_VIDEO_ATTACHMENTS_API_SCHEMA",
+    "SESSION_VIDEO_ATTACHMENTS_API_VERSION",
+    "SESSION_VIDEO_ATTACHMENTS_SCHEMA",
+    "SESSION_VIDEO_ATTACHMENTS_VERSION",
     "SELECTION_BRIDGE_SCHEMA",
     "SELECTION_BRIDGE_VERSION",
     "SESSION_TRACK_MATCH_SCHEMA",
@@ -245,6 +258,7 @@ __all__ = [
     "load_bookmark",
     "load_session_filter",
     "load_session_note",
+    "load_session_video_attachments",
     "load_study_set",
     "load_track",
     "load_track_match",
@@ -266,6 +280,8 @@ __all__ = [
     "validate_study_set",
     "cancel_trackpoint_match_query",
     "fail_trackpoint_match_query",
+    "resolve_session_video_attachment",
     "save_session_note",
+    "save_session_video_attachments",
     "write_trackpoint_match_query_results",
 ]

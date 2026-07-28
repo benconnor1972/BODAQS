@@ -10,9 +10,14 @@ import shutil
 import socket
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from queue import Empty, Queue
+from threading import RLock, Thread
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
 import pandas as pd
@@ -45,6 +50,7 @@ from .import_agent_logger_wifi_discovery import (
     discover_single_logger_wifi_source,
 )
 from .io_bdq import is_bdq_path, read_bdq
+from .io_fit import refresh_fit_inspection_index
 from .pipeline import preprocess_session
 from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
 from .session_note_presets import BikeSetupPreset, load_bike_setup_preset
@@ -69,6 +75,7 @@ from .import_agent_sources import (
     normalize_import_source_type,
     parse_logger_wifi_source_config,
 )
+from .library_api.catalog_revision import touch_catalog_revision
 
 
 IMPORT_SOURCE_SCHEMA = "bodaqs.import_source"
@@ -82,6 +89,8 @@ DATA_SYN_BIKE_LIBRARY_MANIFEST_FILENAME = "data_syn_bike_export_manifest.json"
 DEFAULT_SESSION_NOTE_DIRNAME = "notes"
 SESSION_NAMING_MODE_DEFAULT = "default"
 SESSION_NAMING_MODE_BASE_INDEX = "base_index"
+DEFAULT_LIBRARY_API_BASE_URL = "http://127.0.0.1:8765"
+LIBRARY_API_NOTIFICATION_TIMEOUT_S = 0.75
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +184,88 @@ def _write_json_atomic(path: Path, obj: Mapping[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _library_api_base_url() -> str:
+    configured = (
+        _optional_text(os.environ.get("BODAQS_LIBRARY_API_BASE_URL"))
+        or _optional_text(os.environ.get("BODAQS_LIBRARY_API_URL"))
+        or DEFAULT_LIBRARY_API_BASE_URL
+    )
+    return configured.rstrip("/")
+
+
+def _library_id_for_api_notification(source: "ImportSourceConfig") -> Optional[str]:
+    if source.library_id:
+        return source.library_id
+    definition = _read_json(source.artifacts_dir / "library_definition.json", {})
+    if isinstance(definition, Mapping):
+        return _optional_text(definition.get("library_id"))
+    return None
+
+
+def _notify_library_api_catalog_changed(source: "ImportSourceConfig") -> Dict[str, Any]:
+    library_id = _library_id_for_api_notification(source)
+    if library_id is None:
+        return {
+            "attempted": False,
+            "reason": "missing_library_id",
+        }
+
+    base_url = _library_api_base_url()
+    quoted_library_id = urllib.parse.quote(library_id, safe="")
+    url = f"{base_url}/api/v1/libraries/{quoted_library_id}/catalog/invalidate"
+    request = urllib.request.Request(url, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=LIBRARY_API_NOTIFICATION_TIMEOUT_S) as response:
+            status_code = int(getattr(response, "status", 0) or response.getcode())
+            return {
+                "attempted": True,
+                "notified": 200 <= status_code < 300,
+                "library_id": library_id,
+                "url": url,
+                "status_code": status_code,
+            }
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        logger.debug(
+            "Library API catalog invalidation notification failed for library %s via %s: %s",
+            library_id,
+            url,
+            exc,
+        )
+        return {
+            "attempted": True,
+            "notified": False,
+            "library_id": library_id,
+            "url": url,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _imported_session_revision_records(
+    source: "ImportSourceConfig",
+    imported: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    library_id = _library_id_for_api_notification(source)
+    records: list[dict[str, Any]] = []
+    for item in imported:
+        run_id = _optional_text(item.get("run_id"))
+        session_id = _optional_text(item.get("session_id"))
+        session_key = _optional_text(item.get("session_key"))
+        record: dict[str, Any] = {}
+        if library_id is not None:
+            record["library_id"] = library_id
+        if run_id is not None:
+            record["run_id"] = run_id
+        if session_id is not None:
+            record["session_id"] = session_id
+        if session_key is not None:
+            record["session_key"] = session_key
+        elif run_id is not None and session_id is not None:
+            record["session_key"] = f"{run_id}::{session_id}"
+        if record:
+            records.append(record)
+    return records
 
 
 def _library_data_syn_bike_export_config(artifacts_dir: Path) -> Optional[Dict[str, Any]]:
@@ -405,6 +496,7 @@ class ImportAgentLock:
 class ImportAgentState:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._lock = RLock()
         self.data: dict[str, Any] = {
             "schema": IMPORT_AGENT_STATE_SCHEMA,
             "version": IMPORT_AGENT_STATE_VERSION,
@@ -414,48 +506,53 @@ class ImportAgentState:
         self.load()
 
     def load(self) -> None:
-        obj = _read_json(self.path, self.data)
-        if not isinstance(obj, dict):
-            return
-        if obj.get("schema") != IMPORT_AGENT_STATE_SCHEMA:
-            return
-        if int(obj.get("version", -1)) != IMPORT_AGENT_STATE_VERSION:
-            return
-        records = obj.get("records")
-        self.data = {
-            "schema": IMPORT_AGENT_STATE_SCHEMA,
-            "version": IMPORT_AGENT_STATE_VERSION,
-            "updated_at": str(obj.get("updated_at") or _utcnow_iso()),
-            "records": records if isinstance(records, dict) else {},
-        }
+        with self._lock:
+            obj = _read_json(self.path, self.data)
+            if not isinstance(obj, dict):
+                return
+            if obj.get("schema") != IMPORT_AGENT_STATE_SCHEMA:
+                return
+            if int(obj.get("version", -1)) != IMPORT_AGENT_STATE_VERSION:
+                return
+            records = obj.get("records")
+            self.data = {
+                "schema": IMPORT_AGENT_STATE_SCHEMA,
+                "version": IMPORT_AGENT_STATE_VERSION,
+                "updated_at": str(obj.get("updated_at") or _utcnow_iso()),
+                "records": records if isinstance(records, dict) else {},
+            }
 
     def save(self) -> None:
-        self.data["updated_at"] = _utcnow_iso()
-        _write_json_atomic(self.path, self.data)
+        with self._lock:
+            self.data["updated_at"] = _utcnow_iso()
+            _write_json_atomic(self.path, self.data)
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
-        records = self.data.get("records")
-        if not isinstance(records, dict):
-            return None
-        record = records.get(key)
-        return dict(record) if isinstance(record, dict) else None
+        with self._lock:
+            records = self.data.get("records")
+            if not isinstance(records, dict):
+                return None
+            record = records.get(key)
+            return dict(record) if isinstance(record, dict) else None
 
     def records(self) -> dict[str, Dict[str, Any]]:
-        records = self.data.get("records")
-        if not isinstance(records, dict):
-            return {}
-        return {
-            str(key): dict(value)
-            for key, value in records.items()
-            if isinstance(value, dict)
-        }
+        with self._lock:
+            records = self.data.get("records")
+            if not isinstance(records, dict):
+                return {}
+            return {
+                str(key): dict(value)
+                for key, value in records.items()
+                if isinstance(value, dict)
+            }
 
     def upsert(self, key: str, record: Mapping[str, Any]) -> None:
-        records = self.data.setdefault("records", {})
-        if not isinstance(records, dict):
-            raise ValueError("Import agent state records store is corrupted")
-        records[key] = dict(record)
-        self.save()
+        with self._lock:
+            records = self.data.setdefault("records", {})
+            if not isinstance(records, dict):
+                raise ValueError("Import agent state records store is corrupted")
+            records[key] = dict(record)
+            self.save()
 
 
 @dataclass(frozen=True)
@@ -598,6 +695,9 @@ class ImportRunBatch:
     run_description_override: Optional[str] = None
     session_ids: list[str] = field(default_factory=list)
     archive_import_by_session: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    fit_candidates: Optional[list[Dict[str, Any]]] = None
+    fit_parsed_cache: Dict[str, tuple[pd.DataFrame, Dict[str, Any]]] = field(default_factory=dict)
+    fit_index_stats: Optional[Dict[str, Any]] = None
 
     def add_session(self, session_id: str, archive_import_config: Mapping[str, Any]) -> None:
         if session_id not in self.session_ids:
@@ -888,6 +988,34 @@ class ImportSourceRunner:
         cfg["ambiguity_policy"] = "largest_overlap"
         cfg["failure_policy"] = "warn"
         return cfg
+
+    def _prepare_fit_batch(self, batch: ImportRunBatch) -> None:
+        fit_import = self._import_agent_fit_import_config()
+        if not isinstance(fit_import, Mapping) or not bool(fit_import.get("enabled")):
+            return
+
+        try:
+            index_result = refresh_fit_inspection_index(self.source.fit_dir)
+        except Exception:
+            # Indexing is an optimization. Preserve the direct inspection path
+            # if the cache cannot be read or refreshed.
+            logger.warning(
+                "FIT inspection index refresh failed for source %s",
+                self.source.source_id,
+                exc_info=True,
+            )
+            return
+
+        candidates = index_result.get("candidates")
+        if isinstance(candidates, list):
+            batch.fit_candidates = [
+                dict(candidate)
+                for candidate in candidates
+                if isinstance(candidate, Mapping)
+            ]
+        stats = index_result.get("stats")
+        if isinstance(stats, Mapping):
+            batch.fit_index_stats = dict(stats)
 
     def _write_data_syn_bike_outputs_if_enabled(
         self,
@@ -1318,6 +1446,9 @@ class ImportSourceRunner:
         summary: Dict[str, Any],
         *,
         progress_callback: Optional[ImportProgressCallback] = None,
+        archive_ready_callback: Optional[
+            Callable[[LoggerWifiArchiveAcquisition, Mapping[str, Any]], None]
+        ] = None,
     ) -> dict[str, LoggerWifiArchiveAcquisition]:
         if self.source.source_type != SOURCE_TYPE_LOGGER_WIFI or self.source.logger_wifi is None:
             return {}
@@ -1517,6 +1648,8 @@ class ImportSourceRunner:
                         archive_path=str(target_path),
                         **remote_progress,
                     )
+                    if archive_ready_callback is not None:
+                        archive_ready_callback(acquisition, remote_progress)
                     continue
 
                 self._emit_progress(
@@ -1586,6 +1719,8 @@ class ImportSourceRunner:
                     archive_sha256=archive_sha256,
                     **remote_progress,
                 )
+                if archive_ready_callback is not None:
+                    archive_ready_callback(acquisition, remote_progress)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             remote_summary["status"] = {
@@ -1933,6 +2068,409 @@ class ImportSourceRunner:
             suffix = str(index)
         return f"{base} {suffix}"
 
+    def _process_inbox_archive(
+        self,
+        inbox_path: Path,
+        *,
+        archive_index: int,
+        archive_count: int,
+        now_s: float,
+        remote_acquisition: Optional[LoggerWifiArchiveAcquisition],
+        batch: ImportRunBatch,
+        summary: Dict[str, Any],
+        progress_callback: Optional[ImportProgressCallback],
+        deferred_remote_postprocess: Optional[
+            list[
+                tuple[
+                    LoggerWifiArchiveAcquisition,
+                    Dict[str, Any],
+                    ImportArchiveCandidate,
+                    Optional[Dict[str, Any]],
+                ]
+            ]
+        ] = None,
+    ) -> None:
+        summary["seen"] += 1
+        archive_progress = {
+            "archive_name": inbox_path.name,
+            "archive_path": str(inbox_path),
+            "archive_index": archive_index,
+            "archive_count": archive_count,
+        }
+        if not self._is_settled(inbox_path, now_s=now_s):
+            summary["deferred_unsettled"].append(str(inbox_path))
+            self._emit_progress(
+                progress_callback,
+                "archive_deferred",
+                reason="unsettled",
+                **archive_progress,
+            )
+            return
+
+        try:
+            claimed_path = _move_to_dir_unique(inbox_path, self.source.staging_dir)
+        except FileNotFoundError:
+            logger.warning("Archive disappeared before it could be claimed: %s", inbox_path)
+            self._emit_progress(
+                progress_callback,
+                "archive_skipped",
+                reason="disappeared_before_claim",
+                **archive_progress,
+            )
+            return
+
+        try:
+            candidate = self._build_candidate(
+                inbox_archive_path=inbox_path,
+                claimed_archive_path=claimed_path,
+            )
+        except Exception as exc:
+            failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
+            failure = {
+                "status": "failed",
+                "source_id": self.source.source_id,
+                "archive_path": str(inbox_path),
+                "failed_archive_path": str(failed_path),
+                "updated_at": _utcnow_iso(),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            logger.exception("Archive validation failed for %s", inbox_path)
+            if remote_acquisition is not None:
+                self._record_logger_wifi_failure(
+                    acquisition=remote_acquisition,
+                    error=failure["error"],
+                )
+            summary["failed"].append(failure)
+            self._emit_progress(
+                progress_callback,
+                "archive_failed",
+                reason="validation_failed",
+                error=failure["error"],
+                failed_archive_path=str(failed_path),
+                **archive_progress,
+            )
+            return
+
+        existing = self.state.get(candidate.processing_key)
+        if existing is not None and not self.source.force_reprocess:
+            if str(existing.get("status") or "") == "succeeded":
+                done_path = _move_to_dir_unique(claimed_path, self.source.done_dir)
+                summary["skipped_succeeded"].append(
+                    {
+                        "archive_path": str(inbox_path),
+                        "done_archive_path": str(done_path),
+                        "run_id": existing.get("run_id"),
+                        "session_id": existing.get("session_id"),
+                        "processing_key": candidate.processing_key,
+                    }
+                )
+                if remote_acquisition is not None and deferred_remote_postprocess is not None:
+                    deferred_remote_postprocess.append(
+                        (remote_acquisition, existing, candidate, None)
+                    )
+                else:
+                    self._postprocess_logger_wifi_import(
+                        acquisition=remote_acquisition,
+                        record=existing,
+                        candidate=candidate,
+                        summary=summary,
+                    )
+                self._emit_progress(
+                    progress_callback,
+                    "archive_skipped",
+                    reason="already_imported",
+                    done_archive_path=str(done_path),
+                    run_id=existing.get("run_id"),
+                    session_id=existing.get("session_id"),
+                    **archive_progress,
+                )
+                return
+            if str(existing.get("status") or "") == "failed":
+                failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
+                summary["skipped_failed"].append(
+                    {
+                        "archive_path": str(inbox_path),
+                        "failed_archive_path": str(failed_path),
+                        "processing_key": candidate.processing_key,
+                        "error": existing.get("error"),
+                    }
+                )
+                self._emit_progress(
+                    progress_callback,
+                    "archive_skipped",
+                    reason="previous_import_failed",
+                    failed_archive_path=str(failed_path),
+                    error=existing.get("error"),
+                    **archive_progress,
+                )
+                return
+
+        try:
+            run_id = self._ensure_import_batch_run(batch)
+            self._emit_progress(
+                progress_callback,
+                "archive_processing_started",
+                run_id=run_id,
+                input_kind=candidate.input_kind,
+                archive_sha256=candidate.archive_sha256,
+                processing_key=candidate.processing_key,
+                **archive_progress,
+            )
+            record = self.import_candidate(candidate, batch=batch)
+            if remote_acquisition is not None and deferred_remote_postprocess is not None:
+                summary_record = record
+                deferred_remote_postprocess.append(
+                    (remote_acquisition, record, candidate, summary_record)
+                )
+            else:
+                self._postprocess_logger_wifi_import(
+                    acquisition=remote_acquisition,
+                    record=record,
+                    candidate=candidate,
+                    summary=summary,
+                )
+                record = self.state.get(candidate.processing_key) or record
+                summary_record = record
+            summary["imported"].append(summary_record)
+            self._emit_progress(
+                progress_callback,
+                "archive_imported",
+                run_id=record.get("run_id"),
+                session_id=record.get("session_id"),
+                session_key=record.get("session_key"),
+                timings=record.get("timings"),
+                imported_count=len(summary["imported"]),
+                **archive_progress,
+            )
+        except Exception as exc:
+            failed_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.failed_dir)
+            error_record = {
+                "status": "failed",
+                "source_id": self.source.source_id,
+                "archive_path": str(candidate.inbox_archive_path),
+                "archive_sha256": candidate.archive_sha256,
+                "failed_archive_path": str(failed_path),
+                "raw_session_identity": candidate.raw_session_identity,
+                "processing_key": candidate.processing_key,
+                "updated_at": _utcnow_iso(),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            self.state.upsert(candidate.processing_key, error_record)
+            if remote_acquisition is not None:
+                self._record_logger_wifi_failure(
+                    acquisition=remote_acquisition,
+                    error=error_record["error"],
+                    processing_key=candidate.processing_key,
+                    archive_sha256=candidate.archive_sha256,
+                )
+            logger.exception("Import failed for %s", candidate.inbox_archive_path)
+            summary["failed"].append(error_record)
+            self._emit_progress(
+                progress_callback,
+                "archive_failed",
+                reason="import_failed",
+                error=error_record["error"],
+                failed_archive_path=str(failed_path),
+                failed_count=len(summary["failed"]),
+                **archive_progress,
+            )
+
+    def _finish_deferred_logger_wifi_postprocess(
+        self,
+        deferred: Sequence[
+            tuple[
+                LoggerWifiArchiveAcquisition,
+                Dict[str, Any],
+                ImportArchiveCandidate,
+                Optional[Dict[str, Any]],
+            ]
+        ],
+        *,
+        summary: Dict[str, Any],
+    ) -> None:
+        for acquisition, record, candidate, summary_record in deferred:
+            self._postprocess_logger_wifi_import(
+                acquisition=acquisition,
+                record=record,
+                candidate=candidate,
+                summary=summary,
+            )
+            if summary_record is not None:
+                updated = self.state.get(candidate.processing_key)
+                if updated is not None:
+                    summary_record.clear()
+                    summary_record.update(updated)
+
+    def _scan_logger_wifi_pipeline(
+        self,
+        *,
+        summary: Dict[str, Any],
+        batch: ImportRunBatch,
+        now_s: float,
+        progress_callback: Optional[ImportProgressCallback],
+        prepare_fit_batch: Callable[[], None],
+    ) -> None:
+        ready_queue: Queue[
+            tuple[LoggerWifiArchiveAcquisition, Dict[str, Any]]
+        ] = Queue(maxsize=1)
+        progress_queue: Queue[Dict[str, Any]] = Queue()
+        producer_result: Dict[str, Any] = {}
+        producer_errors: list[BaseException] = []
+        deferred_remote_postprocess: list[
+            tuple[
+                LoggerWifiArchiveAcquisition,
+                Dict[str, Any],
+                ImportArchiveCandidate,
+                Optional[Dict[str, Any]],
+            ]
+        ] = []
+        pipeline_started = time.perf_counter()
+
+        def queue_progress(message: Mapping[str, Any]) -> None:
+            progress_queue.put(dict(message))
+
+        def queue_ready(
+            acquisition: LoggerWifiArchiveAcquisition,
+            remote_progress: Mapping[str, Any],
+        ) -> None:
+            ready_queue.put((acquisition, dict(remote_progress)))
+
+        def produce() -> None:
+            try:
+                producer_result["acquisitions"] = self._acquire_logger_wifi_archives(
+                    summary,
+                    progress_callback=queue_progress,
+                    archive_ready_callback=queue_ready,
+                )
+            except BaseException as exc:
+                producer_errors.append(exc)
+
+        def drain_progress() -> None:
+            while True:
+                try:
+                    message = progress_queue.get_nowait()
+                except Empty:
+                    return
+                if progress_callback is not None:
+                    try:
+                        progress_callback(message)
+                    except Exception:
+                        logger.warning(
+                            "Import progress callback failed for event %s",
+                            message.get("event"),
+                            exc_info=True,
+                        )
+
+        self._emit_progress(
+            progress_callback,
+            "remote_pipeline_started",
+            mode="narrow_producer_consumer",
+            queue_capacity=1,
+        )
+        producer = Thread(
+            target=produce,
+            name=f"bodaqs-download-{self.source.source_id}",
+            daemon=True,
+        )
+        producer.start()
+
+        processed_ready = 0
+        archives_announced = False
+        max_archives = self.source.max_archives_per_scan
+        while producer.is_alive() or not ready_queue.empty():
+            drain_progress()
+            try:
+                acquisition, remote_progress = ready_queue.get(timeout=0.05)
+            except Empty:
+                continue
+
+            if max_archives is not None and processed_ready >= int(max_archives):
+                ready_queue.task_done()
+                continue
+
+            processed_ready += 1
+            remote_count = int(remote_progress.get("remote_session_count") or processed_ready)
+            archive_count = min(remote_count, int(max_archives)) if max_archives is not None else remote_count
+            if not archives_announced:
+                self._emit_progress(
+                    progress_callback,
+                    "archives_detected",
+                    archive_count=archive_count,
+                    max_archives_per_scan=max_archives,
+                )
+                archives_announced = True
+            prepare_fit_batch()
+            self._process_inbox_archive(
+                acquisition.local_archive_path,
+                archive_index=processed_ready,
+                archive_count=archive_count,
+                now_s=now_s,
+                remote_acquisition=acquisition,
+                batch=batch,
+                summary=summary,
+                progress_callback=progress_callback,
+                deferred_remote_postprocess=deferred_remote_postprocess,
+            )
+            ready_queue.task_done()
+
+        producer.join()
+        drain_progress()
+        if producer_errors:
+            raise producer_errors[0]
+
+        acquisitions = producer_result.get("acquisitions")
+        remote_acquisitions = acquisitions if isinstance(acquisitions, dict) else {}
+        self._finish_deferred_logger_wifi_postprocess(
+            deferred_remote_postprocess,
+            summary=summary,
+        )
+
+        remaining_capacity: Optional[int] = None
+        if max_archives is not None:
+            remaining_capacity = max(0, int(max_archives) - processed_ready)
+        inbox_paths = self._discover_archives()
+        if remaining_capacity is not None:
+            inbox_paths = inbox_paths[:remaining_capacity]
+
+        if inbox_paths:
+            prepare_fit_batch()
+        total_count = processed_ready + len(inbox_paths)
+        if not archives_announced:
+            self._emit_progress(
+                progress_callback,
+                "archives_detected",
+                archive_count=total_count,
+                max_archives_per_scan=max_archives,
+            )
+        for offset, inbox_path in enumerate(inbox_paths, start=1):
+            self._process_inbox_archive(
+                inbox_path,
+                archive_index=processed_ready + offset,
+                archive_count=total_count,
+                now_s=now_s,
+                remote_acquisition=remote_acquisitions.get(_path_key(inbox_path)),
+                batch=batch,
+                summary=summary,
+                progress_callback=progress_callback,
+            )
+
+        pipeline_elapsed_s = time.perf_counter() - pipeline_started
+        remote_summary = summary.get("remote")
+        if isinstance(remote_summary, dict):
+            remote_summary["pipeline"] = {
+                "mode": "narrow_producer_consumer",
+                "queue_capacity": 1,
+                "streamed_archives": processed_ready,
+                "elapsed_s": pipeline_elapsed_s,
+            }
+        self._emit_progress(
+            progress_callback,
+            "remote_pipeline_completed",
+            mode="narrow_producer_consumer",
+            streamed_archives=processed_ready,
+            elapsed_s=pipeline_elapsed_s,
+        )
+
     def scan_once(
         self,
         *,
@@ -1958,197 +2496,67 @@ class ImportSourceRunner:
         )
 
         with self.lock:
+            self._ensure_runtime_config_loaded()
             batch = ImportRunBatch(run_description_override=_optional_text(run_description_override))
-            remote_acquisitions = self._acquire_logger_wifi_archives(
-                summary,
-                progress_callback=progress_callback,
-            )
-            inbox_paths = self._discover_archives()
-            self._emit_progress(
-                progress_callback,
-                "archives_detected",
-                archive_count=len(inbox_paths),
-                max_archives_per_scan=self.source.max_archives_per_scan,
-            )
+            fit_batch_prepared = False
 
-            for archive_index, inbox_path in enumerate(inbox_paths, start=1):
-                remote_acquisition = remote_acquisitions.get(_path_key(inbox_path))
-                summary["seen"] += 1
-                archive_progress = {
-                    "archive_name": inbox_path.name,
-                    "archive_path": str(inbox_path),
-                    "archive_index": archive_index,
-                    "archive_count": len(inbox_paths),
-                }
-                if not self._is_settled(inbox_path, now_s=now_s):
-                    summary["deferred_unsettled"].append(str(inbox_path))
+            def prepare_fit_batch() -> None:
+                nonlocal fit_batch_prepared
+                if fit_batch_prepared:
+                    return
+                self._prepare_fit_batch(batch)
+                fit_batch_prepared = True
+                if batch.fit_index_stats is not None:
                     self._emit_progress(
                         progress_callback,
-                        "archive_deferred",
-                        reason="unsettled",
-                        **archive_progress,
+                        "fit_index_refreshed",
+                        fit_index_stats=batch.fit_index_stats,
                     )
-                    continue
 
-                try:
-                    claimed_path = _move_to_dir_unique(inbox_path, self.source.staging_dir)
-                except FileNotFoundError:
-                    logger.warning("Archive disappeared before it could be claimed: %s", inbox_path)
-                    self._emit_progress(
-                        progress_callback,
-                        "archive_skipped",
-                        reason="disappeared_before_claim",
-                        **archive_progress,
-                    )
-                    continue
-
-                try:
-                    candidate = self._build_candidate(
-                        inbox_archive_path=inbox_path,
-                        claimed_archive_path=claimed_path,
-                    )
-                except Exception as exc:
-                    failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
-                    failure = {
-                        "status": "failed",
-                        "source_id": self.source.source_id,
-                        "archive_path": str(inbox_path),
-                        "failed_archive_path": str(failed_path),
-                        "updated_at": _utcnow_iso(),
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                    logger.exception("Archive validation failed for %s", inbox_path)
-                    if remote_acquisition is not None:
-                        self._record_logger_wifi_failure(
-                            acquisition=remote_acquisition,
-                            error=failure["error"],
-                        )
-                    summary["failed"].append(failure)
-                    self._emit_progress(
-                        progress_callback,
-                        "archive_failed",
-                        reason="validation_failed",
-                        error=failure["error"],
-                        failed_archive_path=str(failed_path),
-                        **archive_progress,
-                    )
-                    continue
-
-                existing = self.state.get(candidate.processing_key)
-                if existing is not None and not self.source.force_reprocess:
-                    if str(existing.get("status") or "") == "succeeded":
-                        done_path = _move_to_dir_unique(claimed_path, self.source.done_dir)
-                        summary["skipped_succeeded"].append(
-                            {
-                                "archive_path": str(inbox_path),
-                                "done_archive_path": str(done_path),
-                                "run_id": existing.get("run_id"),
-                                "session_id": existing.get("session_id"),
-                                "processing_key": candidate.processing_key,
-                            }
-                        )
-                        self._postprocess_logger_wifi_import(
-                            acquisition=remote_acquisition,
-                            record=existing,
-                            candidate=candidate,
-                            summary=summary,
-                        )
-                        self._emit_progress(
-                            progress_callback,
-                            "archive_skipped",
-                            reason="already_imported",
-                            done_archive_path=str(done_path),
-                            run_id=existing.get("run_id"),
-                            session_id=existing.get("session_id"),
-                            **archive_progress,
-                        )
-                        continue
-                    if str(existing.get("status") or "") == "failed":
-                        failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
-                        summary["skipped_failed"].append(
-                            {
-                                "archive_path": str(inbox_path),
-                                "failed_archive_path": str(failed_path),
-                                "processing_key": candidate.processing_key,
-                                "error": existing.get("error"),
-                            }
-                        )
-                        self._emit_progress(
-                            progress_callback,
-                            "archive_skipped",
-                            reason="previous_import_failed",
-                            failed_archive_path=str(failed_path),
-                            error=existing.get("error"),
-                            **archive_progress,
-                        )
-                        continue
-
-                try:
-                    run_id = self._ensure_import_batch_run(batch)
-                    self._emit_progress(
-                        progress_callback,
-                        "archive_processing_started",
-                        run_id=run_id,
-                        input_kind=candidate.input_kind,
-                        archive_sha256=candidate.archive_sha256,
-                        processing_key=candidate.processing_key,
-                        **archive_progress,
-                    )
-                    record = self.import_candidate(candidate, batch=batch)
-                    self._postprocess_logger_wifi_import(
-                        acquisition=remote_acquisition,
-                        record=record,
-                        candidate=candidate,
+            if self.source.source_type == SOURCE_TYPE_LOGGER_WIFI:
+                self._scan_logger_wifi_pipeline(
+                    summary=summary,
+                    batch=batch,
+                    now_s=now_s,
+                    progress_callback=progress_callback,
+                    prepare_fit_batch=prepare_fit_batch,
+                )
+            else:
+                inbox_paths = self._discover_archives()
+                if inbox_paths:
+                    prepare_fit_batch()
+                self._emit_progress(
+                    progress_callback,
+                    "archives_detected",
+                    archive_count=len(inbox_paths),
+                    max_archives_per_scan=self.source.max_archives_per_scan,
+                )
+                for archive_index, inbox_path in enumerate(inbox_paths, start=1):
+                    self._process_inbox_archive(
+                        inbox_path,
+                        archive_index=archive_index,
+                        archive_count=len(inbox_paths),
+                        now_s=now_s,
+                        remote_acquisition=None,
+                        batch=batch,
                         summary=summary,
-                    )
-                    record = self.state.get(candidate.processing_key) or record
-                    summary["imported"].append(record)
-                    self._emit_progress(
-                        progress_callback,
-                        "archive_imported",
-                        run_id=record.get("run_id"),
-                        session_id=record.get("session_id"),
-                        session_key=record.get("session_key"),
-                        imported_count=len(summary["imported"]),
-                        **archive_progress,
-                    )
-                except Exception as exc:
-                    failed_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.failed_dir)
-                    error_record = {
-                        "status": "failed",
-                        "source_id": self.source.source_id,
-                        "archive_path": str(candidate.inbox_archive_path),
-                        "archive_sha256": candidate.archive_sha256,
-                        "failed_archive_path": str(failed_path),
-                        "raw_session_identity": candidate.raw_session_identity,
-                        "processing_key": candidate.processing_key,
-                        "updated_at": _utcnow_iso(),
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                    self.state.upsert(candidate.processing_key, error_record)
-                    if remote_acquisition is not None:
-                        self._record_logger_wifi_failure(
-                            acquisition=remote_acquisition,
-                            error=error_record["error"],
-                            processing_key=candidate.processing_key,
-                            archive_sha256=candidate.archive_sha256,
-                        )
-                    logger.exception("Import failed for %s", candidate.inbox_archive_path)
-                    summary["failed"].append(error_record)
-                    self._emit_progress(
-                        progress_callback,
-                        "archive_failed",
-                        reason="import_failed",
-                        error=error_record["error"],
-                        failed_archive_path=str(failed_path),
-                        failed_count=len(summary["failed"]),
-                        **archive_progress,
+                        progress_callback=progress_callback,
                     )
 
+        if summary["imported"]:
+            summary["library_catalog_revision"] = touch_catalog_revision(
+                self.source.artifacts_dir,
+                reason="import_agent_sessions_imported",
+                actor="import_agent",
+                changed_sessions=_imported_session_revision_records(self.source, summary["imported"]),
+            )
+            summary["library_api_notification"] = _notify_library_api_catalog_changed(self.source)
         self._emit_progress(
             progress_callback,
             "source_scan_completed",
             totals=_aggregate_reports([summary]),
+            library_catalog_revision=summary.get("library_catalog_revision"),
+            library_api_notification=summary.get("library_api_notification"),
         )
         return summary
 
@@ -2167,6 +2575,9 @@ class ImportSourceRunner:
         added_to_batch = False
         preprocess_profile_path = self._resolve_preprocess_profile_path()
         bike_profile_path = self._resolve_bike_profile_path()
+        import_started = time.perf_counter()
+        stage_timings: Dict[str, float] = {}
+        preprocess_timings: Optional[Mapping[str, Any]] = None
 
         try:
             run_id = self._ensure_import_batch_run(batch)
@@ -2174,22 +2585,32 @@ class ImportSourceRunner:
                 prefix=f"{self.source.source_id}_",
                 dir=str(self.source.staging_dir),
             ) as tmpdir:
+                stage_started = time.perf_counter()
                 input_path, log_metadata_path = self._extract_candidate(candidate, Path(tmpdir))
+                stage_timings["input_preparation"] = time.perf_counter() - stage_started
                 preprocess_kwargs: Dict[str, Any] = {}
                 if log_metadata_path is not None:
                     preprocess_kwargs["log_metadata_path"] = str(log_metadata_path)
 
+                stage_started = time.perf_counter()
                 results = preprocess_session(
                     str(input_path),
                     preprocess_config=self.preprocess_config,
                     fit_import=self._import_agent_fit_import_config(),
+                    fit_candidates=batch.fit_candidates,
+                    fit_parsed_cache=batch.fit_parsed_cache,
                     bike_profile_path=str(bike_profile_path),
                     timezone=self.source.logger_timezone,
                     include_events=True,
                     include_metrics=True,
                     **preprocess_kwargs,
                 )
+                stage_timings["preprocessing"] = time.perf_counter() - stage_started
+                raw_preprocess_timings = results.get("timings")
+                if isinstance(raw_preprocess_timings, Mapping):
+                    preprocess_timings = dict(raw_preprocess_timings)
 
+                stage_started = time.perf_counter()
                 session = results["session"]
                 session_id = str(session["session_id"])
                 ensure_session_is_new(self.store, run_id=run_id, session_id=session_id, force=False)
@@ -2328,8 +2749,19 @@ class ImportSourceRunner:
                 batch.add_session(session_id, archive_import_config)
                 added_to_batch = True
                 self._write_import_run_manifest(batch)
+                stage_timings["artifact_output"] = time.perf_counter() - stage_started
 
+            stage_started = time.perf_counter()
             done_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.done_dir)
+            stage_timings["source_finalize"] = time.perf_counter() - stage_started
+            import_timings: Dict[str, Any] = {
+                "schema": "bodaqs.import_timing",
+                "version": 1,
+                "total_s": time.perf_counter() - import_started,
+                "stages_s": stage_timings,
+            }
+            if preprocess_timings is not None:
+                import_timings["preprocess"] = preprocess_timings
             record = {
                 "status": "succeeded",
                 "source_id": self.source.source_id,
@@ -2345,6 +2777,7 @@ class ImportSourceRunner:
                 "session_key": f"{run_id}/{session_id}",
                 "session_manifest_path": str(self.store.path_session_manifest(run_id, session_id)),
                 "updated_at": _utcnow_iso(),
+                "timings": import_timings,
             }
             if candidate.contract is not None:
                 record["archive_csv_member"] = candidate.contract.csv_member_name

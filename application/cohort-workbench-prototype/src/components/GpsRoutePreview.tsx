@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties, type PointerEvent } from 'react'
 import { gpsSourceDisplay, gpsSourceLabel } from '../domain/geospatial'
-import type { SessionGpsPointSet, SessionRecord, TrackRecord } from '../domain/types'
+import type { GeoPosition, SessionGpsPointSet, SessionRecord, TrackRecord } from '../domain/types'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { MapRoutePreview } from './MapRoutePreview'
 
@@ -208,7 +208,7 @@ function gpsPointSetFromSession(session: SessionRecord): SessionGpsPointSet {
       latitude,
       elevationM: null,
     })),
-    path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as [number, number]),
+    path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as GeoPosition),
     warnings: [...session.gpsSummary.warnings],
   }
 }

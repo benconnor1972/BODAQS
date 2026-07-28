@@ -9,6 +9,7 @@ export type GpsTimebase = 'uniform' | 'intermittent' | 'unknown'
 export type TrackMatchStatus = 'matched' | 'partial' | 'no_gps' | 'no_overlap' | 'ambiguous' | 'failed'
 export type TrackDirection = 'positive' | 'reverse' | 'unknown'
 export type SignalRole = 'front' | 'rear' | 'unknown'
+export type GeoPosition = [number, number] | [number, number, number]
 
 export type SessionGpsSourceSummary = {
   sourceId: string
@@ -63,7 +64,7 @@ export type SessionGpsPointSet = {
   sourcePolicy?: Record<string, unknown>
   routeReconstruction?: Record<string, unknown>
   points: SessionGpsPoint[]
-  path: Array<[number, number]>
+  path: GeoPosition[]
   warnings: string[]
 }
 
@@ -98,6 +99,14 @@ export type SessionRecord = {
   availableSignals?: SessionSignalSummary[]
   gps: Array<[number, number]>
   gpsSummary: SessionGpsSummary
+  videoSummary: SessionVideoSummary
+}
+
+export type SessionVideoSummary = {
+  present: boolean
+  attachmentCount: number
+  enabledCount: number
+  warnings: string[]
 }
 
 export type SessionSignalSummary = {
@@ -146,6 +155,39 @@ export type SessionNoteRecord = {
   updatedAtUtc: string
 }
 
+export type SessionVideoAttachmentRecord = {
+  attachmentId: string
+  displayName: string
+  cameraLabel: string
+  path: string
+  workspaceRelativePath: string
+  libraryRelativePath: string
+  sessionRelativePath: string
+  uri: string
+  mediaType: string
+  enabled: boolean
+  sessionTimeAtVideoZeroS: number
+}
+
+export type SessionVideoAttachmentsRecord = {
+  sessionRef: StudySessionRef
+  present: boolean
+  revision: number
+  attachments: SessionVideoAttachmentRecord[]
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
+export type LocalVideoFileSelection = {
+  selected: boolean
+  path: string
+  workspaceRelativePath: string
+  displayName: string
+  fileName: string
+  mediaCreatedAtUnixS: number | null
+  mediaCreatedAtUtc: string
+}
+
 export type SessionNoteFieldDef = {
   fieldId: string
   label: string
@@ -184,6 +226,8 @@ export type TrackpointMatchQueryRecord = {
   toleranceM: number
   candidateSessionCount: number
   processedSessionCount: number
+  exactSessionCount: number
+  skippedSessionCount: number
   matchedSessionCount: number
   failedSessionCount: number
   error: string
@@ -220,9 +264,10 @@ export type TrackRecord = {
   pointCount: number
   distanceKm: number
   lengthM: number
-  points: Array<[number, number]>
+  points: GeoPosition[]
   defaultPolicyId: string
   trackpoints: TrackpointRecord[]
+  segmentAliases?: TrackSegmentAliasRecord[]
   matchSummaries: SessionTrackMatchRecord[]
   source?: {
     kind: string
@@ -238,11 +283,18 @@ export type TrackRecord = {
   }
 }
 
+export type TrackSegmentAliasRecord = {
+  fromTrackpointId: string
+  toTrackpointId: string
+  name: string
+  timingRole?: 'timed' | 'untimed'
+}
+
 export type TrackpointRecord = {
   id: string
   name: string
   stationM: number
-  position: [number, number]
+  position: GeoPosition
   cutlineOverride?: {
     leftLengthM?: number
     rightLengthM?: number
@@ -419,6 +471,7 @@ export type TimeseriesWindowEvent = {
   endS: number | null
   peakTimeS: number | null
   end: string
+  metrics?: Record<string, unknown>
 }
 
 export type TimeseriesWindowMark = {
@@ -517,6 +570,7 @@ export type ColumnId =
   | 'noteAction'
   | 'qaAction'
   | 'gpsAction'
+  | 'videoAction'
   | 'signalInspectorAction'
   | 'metadataAction'
 

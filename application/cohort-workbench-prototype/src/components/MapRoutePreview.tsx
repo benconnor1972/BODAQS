@@ -6,7 +6,7 @@ import maplibregl, {
   type StyleSpecification,
 } from 'maplibre-gl'
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
-import type { SessionRecord, TrackRecord } from '../domain/types'
+import type { GeoPosition, SessionRecord, TrackRecord } from '../domain/types'
 
 type LineProperties = {
   color: string
@@ -23,13 +23,13 @@ type PointProperties = {
 type SessionPathOverlay = {
   id: string
   label: string
-  path: Array<[number, number]>
+  path: GeoPosition[]
 }
 
 export type HighlightPathOverlay = {
   id: string
   label: string
-  path: Array<[number, number]>
+  path: GeoPosition[]
   color?: string
   width?: number
   opacity?: number
@@ -42,6 +42,9 @@ const STUDY_TRACK_COLOR = '#b66a2c'
 
 const LINE_SOURCE_ID = 'bodaqs-route-lines'
 const LINE_LAYER_ID = 'bodaqs-route-lines'
+const EMPTY_SESSION_PATHS: SessionPathOverlay[] = []
+const EMPTY_HIGHLIGHT_PATHS: HighlightPathOverlay[] = []
+const EMPTY_TRACKS: TrackRecord[] = []
 
 const OSM_RASTER_STYLE: StyleSpecification = {
   version: 8,
@@ -65,21 +68,27 @@ const OSM_RASTER_STYLE: StyleSpecification = {
 export function MapRoutePreview({
   primarySession,
   primaryGpsPath,
-  sessionPaths = [],
-  highlightPaths = [],
-  selectedTracks,
-  currentTracks,
+  sessionPaths = EMPTY_SESSION_PATHS,
+  highlightPaths = EMPTY_HIGHLIGHT_PATHS,
+  cursorPosition = null,
+  playbackPosition = null,
+  selectedTracks = EMPTY_TRACKS,
+  currentTracks = EMPTY_TRACKS,
 }: {
   primarySession: SessionRecord | null
-  primaryGpsPath?: Array<[number, number]>
+  primaryGpsPath?: GeoPosition[]
   sessionPaths?: SessionPathOverlay[]
   highlightPaths?: HighlightPathOverlay[]
-  selectedTracks: TrackRecord[]
-  currentTracks: TrackRecord[]
+  cursorPosition?: GeoPosition | null
+  playbackPosition?: GeoPosition | null
+  selectedTracks?: TrackRecord[]
+  currentTracks?: TrackRecord[]
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markerRef = useRef<maplibregl.Marker[]>([])
+  const cursorMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const playbackMarkerRef = useRef<maplibregl.Marker | null>(null)
   const visiblePoints = collectVisiblePositions(primarySession, primaryGpsPath, sessionPaths, highlightPaths, selectedTracks, currentTracks)
   const hasVisiblePoints = visiblePoints.length > 0
 
@@ -102,6 +111,10 @@ export function MapRoutePreview({
     return () => {
       clearMarkers(markerRef.current)
       markerRef.current = []
+      cursorMarkerRef.current?.remove()
+      cursorMarkerRef.current = null
+      playbackMarkerRef.current?.remove()
+      playbackMarkerRef.current = null
       map.remove()
       mapRef.current = null
     }
@@ -146,6 +159,42 @@ export function MapRoutePreview({
     }
   }, [currentTracks, hasVisiblePoints, highlightPaths, primaryGpsPath, primarySession, selectedTracks, sessionPaths])
 
+  useEffect(() => {
+    const map = mapRef.current
+    const cursorLngLat = cursorPosition && isValidPosition(cursorPosition) ? lonLat(cursorPosition) : null
+    if (!map || !hasVisiblePoints || !cursorLngLat) {
+      cursorMarkerRef.current?.remove()
+      cursorMarkerRef.current = null
+      return
+    }
+    if (!cursorMarkerRef.current) {
+      const element = document.createElement('div')
+      element.className = 'map-route-cursor-marker'
+      element.setAttribute('aria-label', 'Signal cursor position')
+      cursorMarkerRef.current = new maplibregl.Marker({ element, anchor: 'center' }).setLngLat(cursorLngLat).addTo(map)
+      return
+    }
+    cursorMarkerRef.current.setLngLat(cursorLngLat)
+  }, [cursorPosition, hasVisiblePoints])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const playbackLngLat = playbackPosition && isValidPosition(playbackPosition) ? lonLat(playbackPosition) : null
+    if (!map || !hasVisiblePoints || !playbackLngLat) {
+      playbackMarkerRef.current?.remove()
+      playbackMarkerRef.current = null
+      return
+    }
+    if (!playbackMarkerRef.current) {
+      const element = document.createElement('div')
+      element.className = 'map-route-playback-marker'
+      element.setAttribute('aria-label', 'Video playback position')
+      playbackMarkerRef.current = new maplibregl.Marker({ element, anchor: 'center' }).setLngLat(playbackLngLat).addTo(map)
+      return
+    }
+    playbackMarkerRef.current.setLngLat(playbackLngLat)
+  }, [hasVisiblePoints, playbackPosition])
+
   if (!hasVisiblePoints) {
     return (
       <div className="map-empty">
@@ -160,7 +209,7 @@ export function MapRoutePreview({
 
 function collectVisiblePositions(
   primarySession: SessionRecord | null,
-  primaryGpsPath: Array<[number, number]> | undefined,
+  primaryGpsPath: GeoPosition[] | undefined,
   sessionPaths: SessionPathOverlay[],
   highlightPaths: HighlightPathOverlay[],
   selectedTracks: TrackRecord[],
@@ -180,7 +229,7 @@ function collectVisiblePositions(
 
 function buildOverlayData(
   primarySession: SessionRecord | null,
-  primaryGpsPath: Array<[number, number]> | undefined,
+  primaryGpsPath: GeoPosition[] | undefined,
   sessionPaths: SessionPathOverlay[],
   highlightPaths: HighlightPathOverlay[],
   selectedTracks: TrackRecord[],
@@ -189,7 +238,7 @@ function buildOverlayData(
   const primaryPoints = filterPositions(primaryGpsPath ?? primarySession?.gps ?? [])
   const lineFeatures: Array<Feature<LineString, LineProperties>> = []
   const pointFeatures: Array<Feature<Point, PointProperties>> = []
-  const boundsPoints: Array<[number, number]> = []
+  const boundsPoints: GeoPosition[] = []
 
   if (primarySession && primaryPoints.length >= 2) {
     lineFeatures.push(routeLineFeature('primary-session', primaryPoints, SESSION_COLOR, 4, 0.9))
@@ -243,7 +292,7 @@ function buildOverlayData(
   })
 
   pointFeatures.forEach((feature) => {
-    boundsPoints.push(feature.geometry.coordinates as [number, number])
+    boundsPoints.push(feature.geometry.coordinates as GeoPosition)
   })
 
   return {
@@ -261,7 +310,7 @@ function buildOverlayData(
 
 function routeLineFeature(
   id: string,
-  points: Array<[number, number]>,
+  points: GeoPosition[],
   color: string,
   width: number,
   opacity: number,
@@ -279,7 +328,7 @@ function routeLineFeature(
 
 function addEndpointMarkers(
   features: Array<Feature<Point, PointProperties>>,
-  points: Array<[number, number]>,
+  points: GeoPosition[],
   color: string,
   labelPrefix: string,
 ) {
@@ -305,7 +354,7 @@ function addTrackpointMarkers(
 
 function pointFeature(
   label: string,
-  coordinates: [number, number],
+  coordinates: GeoPosition,
   color: string,
   radius: number,
 ): Feature<Point, PointProperties> {
@@ -358,7 +407,7 @@ function syncPointMarkers(
     element.style.setProperty('--marker-radius', `${feature.properties.radius}px`)
     element.textContent = feature.properties.label
     return new maplibregl.Marker({ element, anchor: 'bottom' })
-      .setLngLat(feature.geometry.coordinates as [number, number])
+      .setLngLat(lonLat(feature.geometry.coordinates as GeoPosition))
       .addTo(map)
   })
 }
@@ -367,26 +416,26 @@ function clearMarkers(markers: maplibregl.Marker[]) {
   markers.forEach((marker) => marker.remove())
 }
 
-function fitMapToPoints(map: MapLibreMap, points: Array<[number, number]>) {
+function fitMapToPoints(map: MapLibreMap, points: GeoPosition[]) {
   const validPoints = filterPositions(points)
   if (validPoints.length === 0) {
     return
   }
   if (validPoints.length === 1) {
-    map.easeTo({ center: validPoints[0], zoom: 15, duration: 450 })
+    map.easeTo({ center: lonLat(validPoints[0]), zoom: 15, duration: 450 })
     return
   }
 
-  const bounds = new maplibregl.LngLatBounds(validPoints[0], validPoints[0])
-  validPoints.slice(1).forEach((point) => bounds.extend(point))
+  const bounds = new maplibregl.LngLatBounds(lonLat(validPoints[0]), lonLat(validPoints[0]))
+  validPoints.slice(1).forEach((point) => bounds.extend(lonLat(point)))
   map.fitBounds(bounds, { padding: 36, maxZoom: 16, duration: 450 })
 }
 
-function filterPositions(points: Array<[number, number]>) {
+function filterPositions(points: GeoPosition[]) {
   return points.filter(isValidPosition)
 }
 
-function isValidPosition(point: [number, number]) {
+function isValidPosition(point: GeoPosition) {
   const [longitude, latitude] = point
   return (
     Number.isFinite(longitude) &&
@@ -396,4 +445,8 @@ function isValidPosition(point: [number, number]) {
     latitude >= -90 &&
     latitude <= 90
   )
+}
+
+function lonLat(position: GeoPosition): [number, number] {
+  return [position[0], position[1]]
 }

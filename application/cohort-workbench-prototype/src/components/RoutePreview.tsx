@@ -1,6 +1,6 @@
 import { Map } from 'lucide-react'
 import { projectPaths } from '../domain/routes'
-import type { SessionRecord, TrackRecord } from '../domain/types'
+import type { GeoPosition, SessionRecord, TrackRecord } from '../domain/types'
 
 export function RoutePreview({
   primarySession,
@@ -9,7 +9,7 @@ export function RoutePreview({
   currentTracks,
 }: {
   primarySession: SessionRecord | null
-  primaryGpsPath?: Array<[number, number]>
+  primaryGpsPath?: GeoPosition[]
   selectedTracks: TrackRecord[]
   currentTracks: TrackRecord[]
 }) {

@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional directory containing a built BODAQS web app to serve at /.",
     )
     parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Reject routes that modify library, study-set, filter, track, note, bookmark, or match-query state.",
+    )
+    parser.add_argument(
         "--allow-origin",
         action="append",
         default=None,
@@ -44,6 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         Path(args.libraries_root),
         allow_origins=tuple(args.allow_origin) if args.allow_origin else None,
         web_root=Path(args.web_root) if args.web_root else None,
+        read_only=bool(args.read_only),
     )
     uvicorn.run(app, host=str(args.host), port=int(args.port))
     return 0

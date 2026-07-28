@@ -153,6 +153,12 @@ Example:
         "cached_async_snapshots": false
       },
       "point_count": 1234,
+      "position_bbox": {
+        "min_longitude": 115.8571,
+        "min_latitude": -31.9531,
+        "max_longitude": 115.8614,
+        "max_latitude": -31.9498
+      },
       "nominal_sample_rate_hz": 1.0,
       "median_gap_s": 1.0,
       "max_gap_s": 8.2,
@@ -163,6 +169,12 @@ Example:
   "session_duration_s": 612.4,
   "time_coverage_ratio": 0.94,
   "position_point_count": 1234,
+  "position_bbox": {
+    "min_longitude": 115.8571,
+    "min_latitude": -31.9531,
+    "max_longitude": 115.8614,
+    "max_latitude": -31.9498
+  },
   "quality": "usable",
   "warnings": []
 }
@@ -197,6 +209,12 @@ sample interval. It should not imply a uniform stream.
 `time_coverage_ratio` should describe how much of the session duration is
 covered by valid GPS samples under the active summary policy. The exact gap
 threshold used to calculate coverage should be recorded in the source summary.
+
+`position_bbox` is an optional conservative longitude/latitude extent for valid
+GPS position samples. Source summaries may expose their own `position_bbox`; the
+top-level `position_bbox` mirrors the preferred source selected by the active GPS
+summary policy. Consumers may use this as a cheap spatial prefilter, but exact
+trackpoint matching remains the responsibility of the geospatial matching layer.
 
 ---
 
@@ -257,6 +275,13 @@ Example:
       }
     }
   ],
+  "segment_aliases": [
+    {
+      "from_trackpoint_id": "start-gate",
+      "to_trackpoint_id": "rock-garden-entry",
+      "display_name": "Opening chute"
+    }
+  ],
   "source": {
     "kind": "session_gps",
     "library_id": "default-library",
@@ -297,6 +322,12 @@ Validation notes:
   `length_m` is known.
 - trackpoints are implicitly ordered by increasing `station_m`.
 - trackpoint ids must be unique within a track.
+- `segment_aliases`, if present, are optional labels for adjacent ordered
+  trackpoint pairs. They are an interpretation aid, not first-class track
+  geometry.
+- segment aliases whose endpoints do not exist, or whose `to_trackpoint_id` is
+  not the first ordered trackpoint after `from_trackpoint_id`, should be ignored
+  or dropped during normalization.
 
 Heading, gradient, curvature, and other path profiles are derived from the path
 under a geospatial policy. They should not be treated as canonical fields on the
@@ -304,7 +335,42 @@ minimal `Track` object.
 
 ---
 
-## 7. Trackpoint Contract v1
+## 7. Segment Alias Contract v1
+
+A `segment_alias` is an optional display name for the interval between two
+adjacent trackpoints. It exists to make lap-timing and map displays easier to
+read without promoting named sectors to a separate root-scoped concept.
+
+Minimal example:
+
+```json
+{
+  "from_trackpoint_id": "start-gate",
+  "to_trackpoint_id": "rock-garden-entry",
+  "display_name": "Opening chute",
+  "timing_role": "timed"
+}
+```
+
+Rules:
+
+- `from_trackpoint_id` and `to_trackpoint_id` must reference trackpoints on the
+  same track.
+- the `to_trackpoint_id` must be the next trackpoint after `from_trackpoint_id`
+  when trackpoints are ordered by `station_m`.
+- aliases may be removed automatically if trackpoints are deleted or reordered
+  so that the alias is no longer well formed.
+- consumers should fall back to "`from` to `to`" wording when no alias exists.
+- `timing_role` is optional. Missing or unknown values should be treated as
+  `timed`; `untimed` marks the segment for exclusion from lap-timing sector
+  rows and timed totals.
+- if a segment annotation is retained for non-display metadata such as
+  `timing_role: "untimed"`, consumers should provide a default display name
+  such as `Segment 1` when no user name is present.
+
+---
+
+## 8. Trackpoint Contract v1
 
 A `trackpoint` is a named point along a directed track. It is also the home for
 any cutline overrides.
@@ -359,7 +425,7 @@ edits the cutline geometry in a future UI.
 
 ---
 
-## 8. Track And Trackpoint Inventory
+## 9. Track And Trackpoint Inventory
 
 Track and trackpoint inventory is cheap descriptive data. It should be separate
 from expensive session-to-trackpoint match results.
@@ -381,7 +447,7 @@ Those are properties of a derived match query/index, not of the session catalog.
 
 ---
 
-## 9. Geospatial Policy Contract v1
+## 10. Geospatial Policy Contract v1
 
 A `GeospatialPolicy` defines defaults for constructing, interrogating, and
 matching tracks.
@@ -448,7 +514,7 @@ explainable after defaults change.
 
 ---
 
-## 10. Session Track Match Contract v1
+## 11. Session Track Match Contract v1
 
 A `SessionTrackMatch` is a derived result that records how one processed session
 maps onto one track under one policy.
@@ -536,10 +602,13 @@ good | approximate | ambiguous | missing
 contract. It is an analysis output that may be cached under the libraries root.
 Cache keys must include the selected GPS source id, source kind, and any source
 selection or reconstruction policy that can change the match result.
+Implementations may use conservative session GPS and track bounding boxes to
+return `no_overlap` without loading full GPS point rows. Missing or invalid
+bounding boxes must fall back to exact matching rather than skipping.
 
 ---
 
-## 11. Trackpoint Match Query Contract v1
+## 12. Trackpoint Match Query Contract v1
 
 A `TrackpointMatchQuery` is an asynchronous root-scoped derived query used to
 answer broad filtering questions such as:
@@ -611,6 +680,8 @@ Creation response example:
   "tolerance_m": 5.0,
   "candidate_session_count": 842,
   "processed_session_count": 0,
+  "exact_session_count": 0,
+  "skipped_session_count": 0,
   "matched_session_count": 0,
   "failed_session_count": 0,
   "cache": {
@@ -631,6 +702,13 @@ Results should be paged. The default results endpoint should return matched
 sessions only, plus enough evidence for the UI to explain why they matched.
 Rejected sessions should be omitted by default and returned only through an
 explicit debug or diagnostics option.
+
+Implementations may use conservative GPS summary fields such as `position_bbox`
+to skip sessions that cannot plausibly match the requested trackpoints before
+running exact geospatial matching. `processed_session_count` includes both exact
+and skipped candidates. `exact_session_count` counts candidates that reached the
+exact matcher, while `skipped_session_count` counts candidates eliminated by
+prefilters such as GPS extent checks.
 
 Paged result example:
 
@@ -673,7 +751,7 @@ entries may remain available for future queries.
 
 ---
 
-## 12. Derived Track Profiles
+## 13. Derived Track Profiles
 
 Heading, gradient, curvature, and related path properties should be treated as
 derived profiles.
@@ -711,7 +789,7 @@ Example profile shape:
 
 ---
 
-## 13. Deferred Decisions
+## 14. Deferred Decisions
 
 The following are intentionally left flexible in v0:
 

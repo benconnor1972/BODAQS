@@ -7,15 +7,18 @@ import numpy as np
 import logging
 import os
 import re
+import time
 
 from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
 from .io_bdq import bdq_to_dataframe, bdq_to_log_metadata, is_bdq_path, read_bdq
 from .io_fit import (
     FIT_DEFAULT_FIELDS,
+    fit_stream_for_session,
     find_overlapping_fit_candidates,
     find_overlapping_fit_files,
     load_fit_stream,
     parse_fit_stream,
+    parse_fit_stream_absolute,
     select_fit_candidate,
 )
 from .normalize import scale_signal_columns, zero_signal_columns
@@ -1611,6 +1614,7 @@ def enrich_session_with_fit(
     fit_import: Optional[Mapping[str, Any]],
     fit_stream: Optional[Mapping[str, Any]] = None,
     fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_parsed_cache: Optional[Dict[str, tuple[pd.DataFrame, Dict[str, Any]]]] = None,
     fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
 ) -> Dict[str, Any]:
     cfg = _normalized_fit_import_config(fit_import)
@@ -1623,6 +1627,7 @@ def enrich_session_with_fit(
                 fit_import=cfg,
                 fit_stream=fit_stream,
                 fit_candidates=fit_candidates,
+                fit_parsed_cache=fit_parsed_cache,
                 fit_bindings=fit_bindings,
             )
         except Exception as exc:
@@ -1643,6 +1648,7 @@ def enrich_session_with_fit(
         fit_import=cfg,
         fit_stream=fit_stream,
         fit_candidates=fit_candidates,
+        fit_parsed_cache=fit_parsed_cache,
         fit_bindings=fit_bindings,
     )
 
@@ -1653,6 +1659,7 @@ def _enrich_session_with_fit_impl(
     fit_import: Mapping[str, Any],
     fit_stream: Optional[Mapping[str, Any]] = None,
     fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_parsed_cache: Optional[Dict[str, tuple[pd.DataFrame, Dict[str, Any]]]] = None,
     fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
 ) -> Dict[str, Any]:
     cfg = _normalized_fit_import_config(fit_import)
@@ -1722,26 +1729,61 @@ def _enrich_session_with_fit_impl(
             if not isinstance(fit_meta, Mapping):
                 raise TypeError("selected fit candidate fit_stream['meta'] must be a mapping")
             fit_meta = dict(fit_meta)
-        elif "fit_input" in selected:
-            fit_df, fit_meta = parse_fit_stream(
-                selected["fit_input"],
-                session_start_datetime=session_start.isoformat(),
-                field_allowlist=cfg.get("field_allowlist"),
-                source_name=selected.get("filename"),
-            )
-            fit_meta = dict(fit_meta)
         else:
+            fit_input = selected.get("fit_input")
             fit_path = selected.get("path")
-            if not isinstance(fit_path, str) or not fit_path.strip():
+            if fit_input is None and not (isinstance(fit_path, str) and fit_path.strip()):
                 raise ValueError(
                     "Selected FIT candidate does not contain a usable path, fit_input, or fit_stream"
                 )
-            fit_df, fit_meta = load_fit_stream(
-                fit_path,
-                session_start_datetime=session_start.isoformat(),
-                field_allowlist=cfg.get("field_allowlist"),
-            )
-            fit_meta = dict(fit_meta)
+
+            if fit_parsed_cache is None:
+                if fit_input is not None:
+                    fit_df, fit_meta = parse_fit_stream(
+                        fit_input,
+                        session_start_datetime=session_start.isoformat(),
+                        field_allowlist=cfg.get("field_allowlist"),
+                        source_name=selected.get("filename"),
+                    )
+                else:
+                    fit_df, fit_meta = load_fit_stream(
+                        fit_path,
+                        session_start_datetime=session_start.isoformat(),
+                        field_allowlist=cfg.get("field_allowlist"),
+                    )
+                fit_meta = dict(fit_meta)
+            else:
+                cache_key: Optional[str] = None
+                fit_sha256 = selected.get("fit_sha256")
+                if isinstance(fit_sha256, str) and fit_sha256:
+                    cache_key = f"sha256:{fit_sha256}"
+                elif isinstance(fit_path, str) and fit_path.strip():
+                    path_obj = Path(fit_path).expanduser().resolve()
+                    stat = path_obj.stat()
+                    cache_key = f"path:{path_obj}|{stat.st_size}|{stat.st_mtime_ns}"
+                if cache_key is not None:
+                    allowlist = cfg.get("field_allowlist")
+                    cache_key = f"{cache_key}|fields:{tuple(allowlist or FIT_DEFAULT_FIELDS)!r}"
+
+                cached = fit_parsed_cache.get(cache_key) if cache_key else None
+                if cached is None:
+                    absolute_df, absolute_meta = parse_fit_stream_absolute(
+                        fit_input if fit_input is not None else fit_path,
+                        field_allowlist=cfg.get("field_allowlist"),
+                        source_name=selected.get("filename"),
+                    )
+                    absolute_meta = dict(absolute_meta)
+                    if cache_key is not None:
+                        fit_parsed_cache[cache_key] = (absolute_df, absolute_meta)
+                else:
+                    absolute_df, absolute_meta = cached
+
+                fit_df, fit_meta = fit_stream_for_session(
+                    absolute_df,
+                    absolute_meta,
+                    session_start_datetime=session_start.isoformat(),
+                )
+                fit_meta = dict(fit_meta)
         fit_meta["match"] = {
             "overlap_s": float(selected.get("overlap_s", 0.0)),
             "overlap_start_datetime": selected.get("overlap_start_datetime"),
@@ -2752,6 +2794,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     transforms["va"] = {
         "applied": True,
         "by_channel": list(va_meta.get("cols", [])) if va_meta else list(va_cols),
+        "unavailable_channels": list(va_meta.get("unavailable_cols", [])) if va_meta else [],
         "dt": float(va_meta["dt"]) if va_meta and va_meta.get("dt") is not None else None,
         "window_points": int(va_window_points),
         "poly_order": int(va_poly_order),
@@ -2792,6 +2835,7 @@ def preprocess_resolved(
     fit_import: Optional[Mapping[str, Any]] = None,
     fit_stream: Optional[Mapping[str, Any]] = None,
     fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_parsed_cache: Optional[Dict[str, tuple[pd.DataFrame, Dict[str, Any]]]] = None,
     fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
     gps_source_policy: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
@@ -2825,6 +2869,7 @@ def preprocess_resolved(
     Run preprocessing from already-resolved session/schema/profile content rather
     than discovering local files.
     """
+    timing_started = time.perf_counter()
     if not isinstance(session, Mapping):
         raise ValueError("preprocess_resolved expects an existing session mapping")
 
@@ -2878,16 +2923,20 @@ def preprocess_resolved(
     csv_path = source.get("path") if isinstance(source, dict) else None
     logger.info("Using resolved session for preprocessing")
 
+    stage_started = time.perf_counter()
     session_obj = enrich_session_with_fit(
         session_obj,
         fit_import=fit_import,
         fit_stream=fit_stream,
         fit_candidates=fit_candidates,
+        fit_parsed_cache=fit_parsed_cache,
         fit_bindings=fit_bindings,
     )
+    fit_enrichment_s = time.perf_counter() - stage_started
     if bool((fit_import or {}).get("enabled")):
         logger.info("FIT enrichment step complete")
 
+    stage_started = time.perf_counter()
     session_obj = _preprocess_loaded_session(
         session_obj,
         preprocess_config=cfg,
@@ -2917,6 +2966,7 @@ def preprocess_resolved(
         butterworth_generate_residuals=butterworth_generate_residuals,
         strict=strict,
     )
+    core_preprocessing_s = time.perf_counter() - stage_started
     logger.info("Session pre-process complete")
 
     t = session_obj["df"]["time_s"].to_numpy()
@@ -2961,6 +3011,7 @@ def preprocess_resolved(
         logger.info("Schema load complete")
 
     events_df = pd.DataFrame()
+    stage_started = time.perf_counter()
     if resolved_schema is not None and include_events:
         events_df = detect_events_from_schema(
             session_obj["df"],
@@ -2987,6 +3038,7 @@ def preprocess_resolved(
                 )
             else:
                 logger.debug("events_df has no 'schema_id' column; columns=%s", list(events_df.columns))
+    event_detection_s = time.perf_counter() - stage_started
 
     detected_sids = sorted(events_df["schema_id"].dropna().astype(str).unique().tolist()) if (
         isinstance(events_df, pd.DataFrame) and ("schema_id" in events_df.columns)
@@ -3008,6 +3060,8 @@ def preprocess_resolved(
 
     bundles_by_schema_id: dict[str, dict] = {}
     metrics_parts: list[pd.DataFrame] = []
+    segment_extraction_s = 0.0
+    metric_calculation_s = 0.0
 
     for sid in (detected_sids if resolved_schema is not None and include_metrics else []):
         events_sel = events_df[events_df["schema_id"].astype(str) == str(sid)]
@@ -3015,6 +3069,7 @@ def preprocess_resolved(
             logger.info("No events for schema_id=%s; skipping.", sid)
             continue
 
+        stage_started = time.perf_counter()
         bundle = extract_segments(
             df=session_obj["df"],
             events=events_df,
@@ -3022,6 +3077,7 @@ def preprocess_resolved(
             schema=resolved_schema,
             request=SegmentRequest(schema_id=sid),
         )
+        segment_extraction_s += time.perf_counter() - stage_started
         bundles_by_schema_id[sid] = bundle
         logger.info("Segment extraction complete (schema_id=%s)", sid)
 
@@ -3039,7 +3095,9 @@ def preprocess_resolved(
             logger.debug("diff stats: min=%s med=%s max=%s", np.nanmin(d), np.nanmedian(d), np.nanmax(d))
             logger.debug("nonpositive diffs=%d", int(np.sum(d <= 0)))
 
+        stage_started = time.perf_counter()
         metrics_i = compute_metrics_from_segments(bundle, schema=resolved_schema, strict=strict)
+        metric_calculation_s += time.perf_counter() - stage_started
         logger.info("Metrics calculation complete (schema_id=%s)", sid)
 
         if "schema_id" not in metrics_i.columns:
@@ -3050,9 +3108,21 @@ def preprocess_resolved(
 
     metrics_df = pd.concat(metrics_parts, ignore_index=True) if metrics_parts else pd.DataFrame()
 
+    stage_started = time.perf_counter()
     if resolved_schema is not None and include_metrics:
         validate_metrics_df(metrics_df, events_df=events_df)
         logger.info("Metrics validation complete")
+    metrics_validation_s = time.perf_counter() - stage_started
+
+    total_s = time.perf_counter() - timing_started
+    measured_s = (
+        fit_enrichment_s
+        + core_preprocessing_s
+        + event_detection_s
+        + segment_extraction_s
+        + metric_calculation_s
+        + metrics_validation_s
+    )
 
     return {
         "session": session_obj,
@@ -3060,6 +3130,20 @@ def preprocess_resolved(
         "events": events_df,
         "segments": bundles_by_schema_id,
         "metrics": metrics_df,
+        "timings": {
+            "schema": "bodaqs.preprocess_timing",
+            "version": 1,
+            "total_s": total_s,
+            "stages_s": {
+                "fit_enrichment": fit_enrichment_s,
+                "core_preprocessing": core_preprocessing_s,
+                "event_detection": event_detection_s,
+                "segment_extraction": segment_extraction_s,
+                "metric_calculation": metric_calculation_s,
+                "metrics_validation": metrics_validation_s,
+                "setup_and_other": max(0.0, total_s - measured_s),
+            },
+        },
     }
 
 
@@ -3077,6 +3161,7 @@ def preprocess_session(
     fit_import: Optional[Mapping[str, Any]] = None,
     fit_stream: Optional[Mapping[str, Any]] = None,
     fit_candidates: Optional[Sequence[Mapping[str, Any]]] = None,
+    fit_parsed_cache: Optional[Dict[str, tuple[pd.DataFrame, Dict[str, Any]]]] = None,
     fit_bindings: Optional[Sequence[Mapping[str, Any]] | Mapping[str, Any] | str | bytes | Path] = None,
     gps_source_policy: Optional[Mapping[str, Any]] = None,
     zeroing_enabled: bool = True,
@@ -3108,6 +3193,8 @@ def preprocess_session(
     strict: bool = True,
 ) -> Dict[str, Any]:
     """Run the standard BODAQS preprocessing pipeline for one session or CSV."""
+    timing_started = time.perf_counter()
+    stage_started = timing_started
     cfg = _coerce_preprocess_config(
         preprocess_profile_path=preprocess_profile_path,
         preprocess_profile=preprocess_profile,
@@ -3120,7 +3207,9 @@ def preprocess_session(
 
     if isinstance(schema_path, str) and not schema_path.strip():
         schema_path = None
+    config_resolution_s = time.perf_counter() - stage_started
 
+    stage_started = time.perf_counter()
     if isinstance(session_or_path, Mapping):
         session = dict(session_or_path)
         logger.info("Using existing session for preprocessing")
@@ -3140,15 +3229,18 @@ def preprocess_session(
                 generic_sidecar_paths=generic_sidecar_paths,
             )
             logger.info("Session load complete: %s", csv_path)
+    input_load_s = time.perf_counter() - stage_started
 
+    stage_started = time.perf_counter()
     resolved_schema = parse_event_schema(schema_path) if schema_path is not None else None
     resolved_bike_profile = (
         parse_bike_profile(bike_profile)
         if bike_profile is not None
         else (load_bike_profile(bike_profile_path) if bike_profile_path is not None else None)
     )
+    asset_resolution_s = time.perf_counter() - stage_started
 
-    return preprocess_resolved(
+    result = preprocess_resolved(
         session,
         schema=resolved_schema,
         preprocess_profile=preprocess_profile,
@@ -3156,6 +3248,7 @@ def preprocess_session(
         fit_import=fit_import,
         fit_stream=fit_stream,
         fit_candidates=fit_candidates,
+        fit_parsed_cache=fit_parsed_cache,
         fit_bindings=fit_bindings,
         gps_source_policy=gps_source_policy,
         zeroing_enabled=zeroing_enabled,
@@ -3185,4 +3278,15 @@ def preprocess_session(
         include_metrics=include_metrics,
         strict=strict,
     )
+    total_s = time.perf_counter() - timing_started
+    timings = result.setdefault(
+        "timings",
+        {"schema": "bodaqs.preprocess_timing", "version": 1, "stages_s": {}},
+    )
+    stages = timings.setdefault("stages_s", {})
+    stages["config_resolution"] = config_resolution_s
+    stages["input_load"] = input_load_s
+    stages["asset_resolution"] = asset_resolution_s
+    timings["preprocess_session_total_s"] = total_s
+    return result
 

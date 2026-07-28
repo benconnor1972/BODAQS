@@ -2,13 +2,16 @@ import type {
   AnalysisAdequacyResult,
   AnalysisViewRecord,
   LibraryRecord,
+  LocalVideoFileSelection,
   SessionGpsPointSet,
   SessionBookmarkRecord,
   SessionNoteRecord,
   SessionRecord,
+  SessionVideoAttachmentsRecord,
   SessionTrackMatchRecord,
   SignalQueryRequest,
   SignalQueryResponse,
+  StudySessionRef,
   StudySet,
   TableQueryRequest,
   TableQueryResponse,
@@ -21,10 +24,24 @@ import type {
 } from '../domain/types'
 import type { SavedSessionFilterRecord } from '../domain/sessionFilters'
 
+export type WorkbenchBootstrapData = {
+  libraries: LibraryRecord[]
+  sessions: SessionRecord[]
+  tracks: TrackRecord[]
+  studySets: StudySet[]
+  savedFilters: SavedSessionFilterRecord[]
+  timings?: Record<string, unknown>
+}
+
+export type SessionNoteSaveResult =
+  | { ok: true; note: SessionNoteRecord }
+  | { ok: false; sessionRef: StudySessionRef; message: string }
+
 export interface LibraryDataSource {
   listLibraries(): Promise<LibraryRecord[]>
   refreshLibrary?(libraryId: string): Promise<LibraryRecord | void>
-  listSessions(): Promise<SessionRecord[]>
+  loadWorkbenchBootstrap?(): Promise<WorkbenchBootstrapData>
+  listSessions(libraries?: LibraryRecord[]): Promise<SessionRecord[]>
   listTracks(): Promise<TrackRecord[]>
   listStudySets(): Promise<StudySet[]>
   loadStudySet?(studySetId: string): Promise<StudySet>
@@ -50,6 +67,11 @@ export interface LibraryDataSource {
   loadSessionGpsPoints?(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
+  saveSessionNotes?(notes: SessionNoteRecord[]): Promise<SessionNoteSaveResult[]>
+  loadSessionVideoAttachments?(session: SessionRecord): Promise<SessionVideoAttachmentsRecord>
+  saveSessionVideoAttachments?(attachments: SessionVideoAttachmentsRecord): Promise<SessionVideoAttachmentsRecord>
+  sessionVideoStreamUrl?(session: SessionRecord, attachmentId: string): string
+  selectLocalVideoFile?(): Promise<LocalVideoFileSelection>
   listSessionBookmarks(session: SessionRecord): Promise<SessionBookmarkRecord[]>
   saveSessionBookmark(bookmark: SessionBookmarkRecord): Promise<SessionBookmarkRecord>
   deleteSessionBookmark(bookmarkId: string): Promise<void>

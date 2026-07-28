@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
@@ -20,6 +22,11 @@ FIT_DEFAULT_FIELDS: tuple[str, ...] = (
     "heading",
 )
 
+FIT_INSPECTION_INDEX_SCHEMA = "bodaqs.fit_inspection_index"
+FIT_INSPECTION_INDEX_VERSION = 1
+FIT_INSPECTION_PARSER_VERSION = 1
+FIT_INSPECTION_INDEX_RELATIVE_PATH = Path(".bodaqs") / "fit_index_v1.json"
+
 _SEMICIRCLES_TO_DEGREES = 180.0 / (2 ** 31)
 
 
@@ -33,6 +40,10 @@ def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _coerce_timestamp(value: Any) -> pd.Timestamp:
@@ -231,8 +242,190 @@ def inspect_fit_file(
         "filename": p.name,
         "start_datetime": timestamps[0].isoformat(),
         "end_datetime": timestamps[-1].isoformat(),
+        "record_count": len(rows),
         "available_fields": available_fields,
         "field_units": {k: v for k, v in field_units.items() if k in available_fields},
+    }
+
+
+def _fit_paths(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for path in sorted(root.glob("*.fit")) + sorted(root.glob("*.FIT")):
+        try:
+            key = str(path.resolve()).lower()
+        except Exception:
+            key = str(path).replace("\\", "/").lower()
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def _read_fit_inspection_index(path: Path) -> tuple[dict[str, Any], bool]:
+    empty = {
+        "schema": FIT_INSPECTION_INDEX_SCHEMA,
+        "version": FIT_INSPECTION_INDEX_VERSION,
+        "parser_version": FIT_INSPECTION_PARSER_VERSION,
+        "updated_at": _utcnow_iso(),
+        "entries": {},
+    }
+    if not path.exists():
+        return empty, False
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return empty, False
+    if not isinstance(obj, dict):
+        return empty, False
+    if obj.get("schema") != FIT_INSPECTION_INDEX_SCHEMA:
+        return empty, False
+    if int(obj.get("version", -1)) != FIT_INSPECTION_INDEX_VERSION:
+        return empty, False
+    if int(obj.get("parser_version", -1)) != FIT_INSPECTION_PARSER_VERSION:
+        return empty, False
+    if not isinstance(obj.get("entries"), dict):
+        return empty, False
+    return obj, True
+
+
+def _write_fit_inspection_index(path: Path, index: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(
+        json.dumps(dict(index), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, path)
+
+
+def refresh_fit_inspection_index(
+    fit_dir: str | Path,
+    *,
+    index_path: Optional[str | Path] = None,
+) -> dict[str, Any]:
+    """
+    Refresh a rebuildable, profile-independent index of FIT file boundaries.
+
+    The index stores relative paths and complete field inventories. Callers
+    apply their current field allowlist only when loading the selected stream.
+    """
+    root = Path(fit_dir).expanduser().resolve()
+    resolved_index_path = (
+        Path(index_path).expanduser().resolve()
+        if index_path is not None
+        else root / FIT_INSPECTION_INDEX_RELATIVE_PATH
+    )
+    if not root.exists():
+        return {
+            "index_path": str(resolved_index_path),
+            "candidates": [],
+            "stats": {
+                "files_seen": 0,
+                "unchanged": 0,
+                "inspected": 0,
+                "failed": 0,
+                "removed": 0,
+                "rebuilt": False,
+            },
+        }
+
+    index, valid_index = _read_fit_inspection_index(resolved_index_path)
+    old_entries = index.get("entries", {})
+    entries: dict[str, Any] = {}
+    candidates: list[dict[str, Any]] = []
+    stats = {
+        "files_seen": 0,
+        "unchanged": 0,
+        "inspected": 0,
+        "failed": 0,
+        "removed": 0,
+        "rebuilt": not valid_index,
+    }
+    changed = not valid_index
+
+    for path in _fit_paths(root):
+        stats["files_seen"] += 1
+        relative_path = path.relative_to(root).as_posix()
+        stat_before = path.stat()
+        fingerprint = {
+            "size": int(stat_before.st_size),
+            "mtime_ns": int(stat_before.st_mtime_ns),
+        }
+        existing = old_entries.get(relative_path)
+        if (
+            isinstance(existing, Mapping)
+            and existing.get("fingerprint") == fingerprint
+            and str(existing.get("status") or "") in {"ready", "failed"}
+        ):
+            entry = dict(existing)
+            stats["unchanged"] += 1
+            if str(entry.get("status") or "") == "failed":
+                stats["failed"] += 1
+        else:
+            changed = True
+            try:
+                # An empty allowlist intentionally records every available FIT
+                # field so profile changes do not invalidate the index.
+                summary = inspect_fit_file(path, field_allowlist=())
+                stat_after = path.stat()
+                if (
+                    stat_after.st_size != stat_before.st_size
+                    or stat_after.st_mtime_ns != stat_before.st_mtime_ns
+                ):
+                    raise RuntimeError("FIT file changed while it was being inspected")
+                summary = dict(summary)
+                summary.pop("path", None)
+                entry = {
+                    "status": "ready",
+                    "relative_path": relative_path,
+                    "fingerprint": fingerprint,
+                    "fit_sha256": _sha256_file(path),
+                    "inspected_at": _utcnow_iso(),
+                    "summary": summary,
+                }
+                stats["inspected"] += 1
+            except Exception as exc:
+                entry = {
+                    "status": "failed",
+                    "relative_path": relative_path,
+                    "fingerprint": fingerprint,
+                    "inspected_at": _utcnow_iso(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                stats["failed"] += 1
+        entries[relative_path] = entry
+
+        if str(entry.get("status") or "") == "ready":
+            summary = entry.get("summary")
+            if isinstance(summary, Mapping):
+                candidate = dict(summary)
+                candidate["path"] = str(path.resolve())
+                candidate["filename"] = path.name
+                candidate["fit_sha256"] = entry.get("fit_sha256")
+                candidate["fit_fingerprint"] = dict(fingerprint)
+                candidates.append(candidate)
+
+    removed = set(old_entries) - set(entries)
+    stats["removed"] = len(removed)
+    if removed:
+        changed = True
+
+    if changed:
+        index = {
+            "schema": FIT_INSPECTION_INDEX_SCHEMA,
+            "version": FIT_INSPECTION_INDEX_VERSION,
+            "parser_version": FIT_INSPECTION_PARSER_VERSION,
+            "updated_at": _utcnow_iso(),
+            "entries": entries,
+        }
+        _write_fit_inspection_index(resolved_index_path, index)
+
+    return {
+        "index_path": str(resolved_index_path),
+        "candidates": candidates,
+        "stats": stats,
     }
 
 
@@ -614,13 +807,13 @@ def select_fit_candidate(
     raise ValueError("A FIT binding was found, but it does not resolve to any overlapping candidate FIT file.")
 
 
-def parse_fit_stream(
+def parse_fit_stream_absolute(
     fit_input: str | Path | bytes | bytearray | memoryview,
     *,
-    session_start_datetime: str,
     field_allowlist: Optional[Sequence[str]] = None,
     source_name: Optional[str] = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Parse a FIT stream once while retaining its absolute UTC timebase."""
     source_path: Optional[Path] = None
     fit_sha256: Optional[str] = None
     filename: Optional[str] = None
@@ -653,7 +846,6 @@ def parse_fit_stream(
         if isinstance(x, str) and x.strip()
     }
 
-    session_start = _coerce_timestamp(session_start_datetime)
     timestamps = [_coerce_timestamp(row["timestamp"]) for row in rows]
 
     out_rows: list[dict[str, Any]] = []
@@ -661,10 +853,7 @@ def parse_fit_stream(
     channel_info: dict[str, dict[str, Any]] = {}
 
     for row, ts in zip(rows, timestamps):
-        out: dict[str, Any] = {
-            "timestamp": ts,
-            "time_s": float((ts - session_start).total_seconds()),
-        }
+        out: dict[str, Any] = {"timestamp": ts}
         for field_name, value in row.items():
             if field_name == "timestamp":
                 continue
@@ -697,14 +886,13 @@ def parse_fit_stream(
     if df.empty:
         raise ValueError("FIT input did not yield any allowed numeric fields")
 
-    df = df.sort_values("time_s", kind="stable").reset_index(drop=True)
-    df = df.loc[~df["time_s"].duplicated(keep="first")].reset_index(drop=True)
+    df = df.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    df = df.loc[~df["timestamp"].duplicated(keep="first")].reset_index(drop=True)
 
     meta: dict[str, Any] = {
         "fit_sha256": fit_sha256,
         "stream_name": "gps_fit",
         "kind": "intermittent",
-        "time_col": "time_s",
         "timestamp_col": "timestamp",
         "fit_start_datetime": timestamps[0].isoformat(),
         "fit_end_datetime": timestamps[-1].isoformat(),
@@ -733,6 +921,48 @@ def parse_fit_stream(
     if filename is not None:
         meta["filename"] = filename
     return df, meta
+
+
+def fit_stream_for_session(
+    fit_df_absolute: pd.DataFrame,
+    fit_meta_absolute: Mapping[str, Any],
+    *,
+    session_start_datetime: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Project an absolute FIT stream onto one logger session's timebase."""
+    if "timestamp" not in fit_df_absolute.columns:
+        raise ValueError("Absolute FIT stream is missing timestamp")
+
+    session_start = _coerce_timestamp(session_start_datetime)
+    df = fit_df_absolute.copy()
+    timestamps = pd.to_datetime(df["timestamp"], utc=True)
+    df["time_s"] = (timestamps - session_start).dt.total_seconds().astype(float)
+    signal_columns = [column for column in df.columns if column not in {"timestamp", "time_s"}]
+    df = df[["timestamp", "time_s", *signal_columns]]
+
+    meta = dict(fit_meta_absolute)
+    meta["time_col"] = "time_s"
+    meta["timestamp_col"] = "timestamp"
+    return df, meta
+
+
+def parse_fit_stream(
+    fit_input: str | Path | bytes | bytearray | memoryview,
+    *,
+    session_start_datetime: str,
+    field_allowlist: Optional[Sequence[str]] = None,
+    source_name: Optional[str] = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    fit_df_absolute, fit_meta_absolute = parse_fit_stream_absolute(
+        fit_input,
+        field_allowlist=field_allowlist,
+        source_name=source_name,
+    )
+    return fit_stream_for_session(
+        fit_df_absolute,
+        fit_meta_absolute,
+        session_start_datetime=session_start_datetime,
+    )
 
 
 def load_fit_stream(

@@ -1,7 +1,7 @@
 # BODAQS Web App Caching Implementation Note
 
 Status: draft  
-Date: 2026-07-01  
+Date: 2026-07-26  
 Audience: library API / web app / analysis-view implementation
 
 This note records the caching work added during the web application prototype
@@ -45,6 +45,35 @@ This is useful because adequacy is a good candidate for reuse: if the analysis
 view definition, study set, and underlying session metadata have not changed,
 the answer should not change.
 
+### Server-Side Session Catalog Cache
+
+The library API persists built session catalogs under `.bodaqs_library_api_cache`
+so opening the library browser after a service restart does not normally require
+re-scanning every run/session artifact.
+
+Catalog cache keys are dependency-aware. The preferred dependency is a small
+per-library `library_catalog_revision.json` marker stored at the library root.
+When that marker is present, catalog validation is cheap: the service can decide
+whether the persisted catalog is current by reading one small file rather than
+walking the complete `runs/` tree.
+
+The revision marker is updated by normal writer paths:
+
+- Import Manager successful session imports
+- manual/batch preprocessing writes
+- Library API session note saves
+- Library API session description/name updates
+- Library API session deletes
+- explicit Deep Refresh
+
+If the marker is absent, the service falls back to the older `runs/` tree-stat
+dependency check. That fallback is safe but can be slower for large or
+cloud-synced libraries.
+
+Read-only service mode does not backfill or mutate the revision marker during
+ordinary reads. Hosted demo libraries should therefore either ship with the
+revision marker already present or accept the slower tree-stat validation path.
+
 ### Server-Side Analysis Input Cache
 
 The library API now also has an in-memory `analysis_input` cache for repeated
@@ -76,6 +105,17 @@ The current approach combines two protections:
 This means stale data risk is low for normal prototype workflows. The approach
 does not attempt fine-grained removal of only the affected cached query entries;
 it favours simple, safe invalidation while the API surface is still evolving.
+
+For session catalogs, the intended invalidation model is explicit:
+
+- Normal import/preprocess/API writes bump the library revision marker and clear
+  the relevant live caches.
+- Browser reloads and normal workbench refreshes reuse the persisted catalog when
+  the revision marker is unchanged.
+- Manual filesystem changes made outside the Import Manager/API may not be seen
+  immediately when a revision marker exists. The user-facing Deep Refresh action
+  is the repair path for that case; it bumps the marker, clears catalog caches,
+  and forces a rebuild.
 
 ## What Is Not Cached Yet
 
@@ -164,8 +204,19 @@ Risks/tradeoffs:
 
 ### 5. Cache Diagnostics And Developer Tooling
 
-Extend diagnostics to expose per-namespace hit rates, approximate payload sizes,
-oldest/newest entries, and invalidation counts.
+The API now exposes cache diagnostics at `/api/v1/cache/diagnostics`, including:
+
+- process-local cache namespace stats
+- persistent cache namespace stats
+- session catalog memory entry count
+- session catalog hit/rebuild event counts
+- session catalog invalidation count
+- per-library catalog validation mode
+- per-library catalog revision metadata where available
+- recent timing samples for workbench bootstrap and catalog loads
+
+Further diagnostics could add approximate payload sizes, oldest/newest entries,
+and per-route response serialization timings.
 
 Expected benefit:
 
@@ -179,7 +230,7 @@ Risks/tradeoffs:
 ## Recommended Next Step
 
 Leave the current cache stack in place while gathering real usage feedback. The
-next high-value technical step is measurement rather than another cache layer:
+current high-value technical step is measurement rather than another cache layer:
 
 - record timings for library-service query handlers
 - record payload sizes for signal/event/metric responses
@@ -190,3 +241,10 @@ next high-value technical step is measurement rather than another cache layer:
 If repeated reopen/startup remains painful after measurement, the best next cache
 candidate is persisted event/metric query payloads, followed by selective
 persisted signal payloads if the measurements justify the storage cost.
+
+For library-browser startup specifically, the next thing to check is whether the
+library has a `library_catalog_revision.json` marker and whether diagnostics show
+`catalog_revision` or `runs_tree_stat` validation. If validation is
+revision-backed and the browser is still slow, the bottleneck is probably not
+catalog scanning; it is more likely payload size, browser render cost, study-set
+loading, or map/GPS work.

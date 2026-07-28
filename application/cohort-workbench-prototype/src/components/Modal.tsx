@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type PointerEvent, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { formatPercent, gpsSourceDisplay } from '../domain/geospatial'
 import { libraryName } from '../domain/sessionCatalog'
@@ -35,6 +35,10 @@ export function Modal({
   onSessionBookmarksChanged?: (session: SessionRecord) => void
   bookmarkRefreshToken?: number
 }) {
+  const modalKey = state ? modalErrorBoundaryKey(state) : ''
+  const resizable = state?.kind === 'signal-inspector'
+  const resize = useResizableModal(resizable, modalKey)
+
   if (!state) {
     return null
   }
@@ -46,13 +50,14 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         onMouseDown={(event) => event.stopPropagation()}
+        style={resize.style}
       >
         <div className="modal-header">
           <h2>{modalTitle(state)}</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
         <div className="modal-content">
-          <ModalErrorBoundary resetKey={modalErrorBoundaryKey(state)}>
+          <ModalErrorBoundary resetKey={modalKey}>
             {modalContent(
               state,
               libraries,
@@ -66,9 +71,139 @@ export function Modal({
             )}
           </ModalErrorBoundary>
         </div>
+        {resizable && (
+          <button
+            aria-label="Resize Signal Inspector"
+            className="modal-resize-handle"
+            type="button"
+            onPointerDown={resize.onPointerDown}
+            onDoubleClick={resize.reset}
+          />
+        )}
       </section>
     </div>
   )
+}
+
+function useResizableModal(enabled: boolean, resetKey: string) {
+  const [size, setSize] = useState(() => defaultModalSize())
+  const dragRef = useRef<{
+    pointerId: number
+    startClientX: number
+    startClientY: number
+    startWidth: number
+    startHeight: number
+  } | null>(null)
+
+  useEffect(() => {
+    if (enabled) {
+      setSize(defaultModalSize())
+    }
+  }, [enabled, resetKey])
+
+  useEffect(() => {
+    if (!enabled) {
+      return
+    }
+    function handleResize() {
+      setSize((current) => clampModalSize(current))
+    }
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [enabled])
+
+  const style = useMemo(
+    () =>
+      enabled
+        ? ({
+            width: `${size.width}px`,
+            height: `${size.height}px`,
+          } as const)
+        : undefined,
+    [enabled, size.height, size.width],
+  )
+
+  function onPointerDown(event: PointerEvent<HTMLButtonElement>) {
+    if (!enabled || event.button !== 0) {
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startWidth: size.width,
+      startHeight: size.height,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  useEffect(() => {
+    if (!enabled) {
+      return
+    }
+    function handlePointerMove(event: globalThis.PointerEvent) {
+      const drag = dragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) {
+        return
+      }
+      event.preventDefault()
+      setSize(
+        clampModalSize({
+          width: drag.startWidth + event.clientX - drag.startClientX,
+          height: drag.startHeight + event.clientY - drag.startClientY,
+        }),
+      )
+    }
+
+    function handlePointerEnd(event: globalThis.PointerEvent) {
+      const drag = dragRef.current
+      if (!drag || drag.pointerId !== event.pointerId) {
+        return
+      }
+      dragRef.current = null
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerEnd)
+    window.addEventListener('pointercancel', handlePointerEnd)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerEnd)
+      window.removeEventListener('pointercancel', handlePointerEnd)
+    }
+  }, [enabled])
+
+  return {
+    onPointerDown,
+    reset: () => setSize(defaultModalSize()),
+    style,
+  }
+}
+
+function defaultModalSize() {
+  if (typeof window === 'undefined') {
+    return { width: 1540, height: 880 }
+  }
+  return clampModalSize({
+    width: Math.min(1540, window.innerWidth - 36),
+    height: Math.min(920, window.innerHeight - 36),
+  })
+}
+
+function clampModalSize(size: { width: number; height: number }) {
+  if (typeof window === 'undefined') {
+    return size
+  }
+  const maxWidth = Math.max(760, window.innerWidth - 24)
+  const maxHeight = Math.max(520, window.innerHeight - 24)
+  return {
+    width: Math.round(Math.min(maxWidth, Math.max(860, size.width))),
+    height: Math.round(Math.min(maxHeight, Math.max(520, size.height))),
+  }
 }
 
 type ModalErrorBoundaryProps = {

@@ -106,6 +106,16 @@ def build_signals_registry(
         tok = b.split("_", 1)[0].strip()
         return canonical_sensor_id(tok) or None
 
+    def _infer_end_from_base(base: Optional[str]) -> Optional[str]:
+        if not base or not isinstance(base, str):
+            return None
+        b = normalize_sensor_token(base)
+        if b == "front" or b.startswith("front_"):
+            return "front"
+        if b == "rear" or b.startswith("rear_"):
+            return "rear"
+        return None
+
     def _infer_quantity_from_parts(base: Optional[str], kind: str, unit: Optional[str], ops: Optional[Iterable[str]] = None) ->Optional[str]:
         """
         Infer a coarse semantic quantity for resolution:
@@ -335,7 +345,7 @@ def build_signals_registry(
                 "domain": domain,             # string or None
                 "op_chain": ops,              # list[str]
                 "sensor": sensor_id,          # e.g. rear_shock
-                "end": end_from_sensor(sensor_id) or None,
+                "end": end_from_sensor(sensor_id) or _infer_end_from_base(getattr(parts, "base", None)) or None,
                 "quantity": quantity,         # disp / vel / acc / disp_norm / raw
             }
 
