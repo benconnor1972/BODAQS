@@ -1,22 +1,171 @@
 ---
 title: Building the logger
-description: Placeholder assembly guide for the BODAQS A8 v1.0 logger.
+description: Assembly instructions for the BODAQS A8 logger.
 sidebar:
   order: 3
 ---
-
 import {Aside} from '@astrojs/starlight/components';
+import Flag from '@components/Flag.astro';
+import MiniAside from '@components/MiniAside.astro';
+import Lightbox from '@components/Lightbox.astro';
 
-<Aside type="caution" title="Content still needed">
-  This page is a placeholder for the BODAQS A8 v1.0 assembly guide.
+<Aside type={"caution"} title="These instructions are for BODAQS A8"  icon="seti:config">
+	These instructions cover the Prototype F logger design.
 </Aside>
 
-This page will walk through assembling the A8 logger once parts have been sourced and the development board has been programmed.
+## Prepare the MicroSD card
+ - Connect the MicroSD card to your computer and format it in FAT32.
+ - Create a folder named 'config' in the card's root directory.
+ - Download the config file [here](https://github.com/benconnor1972/BODAQS/tree/main/firmware/Configs/Prototype%20F) and place it in the config directory. 
+ - Open the config file in a text editor and add some wifi credentials.
+ - Eject the MicroSD card. Install it in the MicroSD slot in the underside of the dev board.
 
-## Content to add
+## Build the logger
 
-- Pre-assembly checklist.
-- PCB, display, input, battery, and connector assembly steps.
-- Photos for each major assembly stage.
-- Power-on tests and troubleshooting checks.
-- Enclosure assembly and waterproofing notes.
+Now the fun really begins. Check that you have all the things shown in the picture.
+<Lightbox thumbnailWidth={600} src="/src/assets/pics/logger-build-guide/Build-overview.png" alt="Build-overview"/>
+
+### Solder header socket to PCB 
+<Aside title="Soldering">
+  It is assumed that you have basic soldering skills. If not, there are [many online resources](https://www.youtube.com/watch?v=rK38rpUy568&t=15) -
+  it's not particularly difficult and having some familiarity will greatly increase your success rate at building the logger.
+</Aside>
+
+<Flag src="/src/assets/pics/logger-build-guide/Build-7CE.png" alt="Build-7C">
+  **Install navigation pin headers.** Cut a section of pin header 6 pins long and solder it into the
+  PCB in the holes labelled 'navigation'.
+</Flag>
+
+### Solder header pin to OLED display
+
+<Flag src="/src/assets/pics/logger-build-guide/OLED-3E.png" alt="OLED-3E">
+  **Prepare the OLED display.** If your OLED display has pin headers installed, carefully pry off
+  the plastic collar at the base of the pin headers with a craft knife and cut the headers to around
+  half their original length. Cut 4 sections of heat shrink, approx 6mm long and thread one onto
+  each wire of the QWIIC cable. If the display has no pin headers installed, no action is needed.
+</Flag>
+
+
+<Lightbox src="/src/assets/pics/logger-build-guide/OLED-1E.png" alt="OLED-1E"/>
+
+
+<Aside type={"caution"} title="Take care with the OLED display">
+  The OLED display is fragile. Handle it with care so as not to crack it.
+  If your OLED display has pin headers installed, do not attempt to de-solder them. It is easy to
+  damage the copper traces when doing do.
+</Aside>
+
+
+### Connect the display and check the build so far
+<Flag src="/src/assets/pics/logger-build-guide/Build-9.jpg" alt="Build-9">
+  **Connect the keypad and display.** Plug the QWIIC connector into the dev board. Connect the
+  membrane keypad to the navigation headers on the PCB, ensuring the connector orientation matches
+  the picture.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/Build-10.jpg" alt="Build-10">
+  **Connect the dev board to a power supply** with a USB cable. Press the 'RST' button on the board.
+  The OLED display should now show the home screen
+  Check keypad operation. Pressing the right arrow should enter the menu system. Pressing the 'Sel'
+  key from the home screen should toggle logging on and off.
+</Flag>
+
+### Assembling the connectors
+<Aside type={"caution"} title="Fiddly work ahead">
+  This is a fiddly job and it is worth getting organised to do it properly.
+  There is limited room inside the case for excess wire so using the recommended wire lengths is
+  important.
+  Using the suggested wire colors will make your life easier too.
+</Aside>
+
+<Flag src="/src/assets/pics/logger-build-guide/connector-overview-F.png" alt="Connector overview">
+
+  **In this step you will be wiring the connectors to the PCB.**
+  The guide covers the standard connector configuration: 4 analog inputs, one I2C input and one
+  connector for a handlebar-mounted switch. Other configurations are possible: the minimum useful
+  configuration would be 2 analog inputs.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/Build-11.jpg" alt="Build-11">
+  **Install the connectors in the 3d printed end pieces** and tighten. Ensure that the connector
+  o-rings are on the outside and sit in the chamfered edges of the holes.
+  Place the connector assemblies face-down. If possible, secure them in a vise.
+  'Tin' the pins on the back of each connector with a small amount of solder
+</Flag>
+
+
+<Flag src="/src/assets/pics/logger-build-guide/connector-overview-F.png" alt="Connector overview">
+  **Solder the connectors to the PCB.** Solder the free ends of the wires into the PCB so they enter the PCB from the
+  top. Take care to ensure the wires are connected correctly as per the picture. Trim any
+  excess wire sticking through the bottom of the board.
+
+</Flag>
+ <Lightbox src="/src/assets/pics/logger-build-guide/Build-15F.jpg" alt="Build-15"/>
+
+### Prepare the case
+<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
+  **Remove support material** from the case using a craft knife. If printed in the recommended
+  orientation, the majority of support material will be for the shallow indent where the keypad
+  sits. Make sure the material is thoroughly removed. The cosmetic appearance is not important since
+  the keypad covers it, but it should be as flat as possible.
+
+  **Optional:** Install heat-set inserts. If you are using brass inserts rather than nuts to close
+  your case, they should be installed now. Install them straight and flush using a soldering iron.
+
+</Flag>
+
+### Install the components
+
+<Flag src="/src/assets/pics/logger-build-guide/Build-16F.jpg" alt="Build-16">
+  **Install the PCB and connectors**. Place the PCB into the lower half of the case, ensuring the
+  right-hand edge is captured in the slot designed for it (the left-hand edge is held down by the
+  upper half of the case).
+
+  Position the case end pieces into their slots and ensure all the wiring sits cleanly.
+</Flag>
+ <Aside type={"caution"} title="Take your time">
+  Getting the PCB to sit flat may require some careful manoeuvring of the wires. Take your time and
+  don't force anything.
+</Aside>
+
+<Flag src="/src/assets/pics/logger-build-guide/Build-19.jpg" alt="Build-19">
+  **Install the battery**. The battery sits in the slot on the right-hand side of the case with the
+  wires facing to the front of the case.
+  If necessary trim or extend the battery wires. The recommended wire length is 70 mm.
+  <MiniAside type={"caution"} >
+    Check the battery polarity again
+  </MiniAside>
+  Route the battery wires as shown and connect to the JST connector on the dev board.
+
+</Flag>
+  <Lightbox src="/src/assets/pics/logger-build-guide/Build-18A.png" alt="Build-18"/>
+
+### Connect up and close
+
+<Flag src="/src/assets/pics/logger-build-guide/Build-22.jpg" alt="Build-22">
+  **Connect the keypad and display.** Connect the loose ends of the QWIIC cable to the OLED display.
+  Connect the other end to the QWIIC connector on the dev board.
+
+  Connect the keypad connector the the navigation pins.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/Build-23.jpg" alt="Build-23">
+  **Carefully close the case**. Take special care with the keypad ribbon connector. It can be bent,
+  but minimise this if possible.
+
+  Secure the case with 4 M3x12 cap screws and tighten.
+
+</Flag>
+<Aside title="Congratulations!" icon={"star"}>
+  Well done. Take the rest of the day off.
+</Aside>
+
+
+
+
+### Optional but recommended: waterproofing
+The water-resistance of the logger can be dramatically improved with the judicious application of caulking silicone at selected points:
+ - Seal the keypad ribbon connector where it passes through the case from the back.
+ - Cut a 16mm x 28mm piece of clear plastic (an old visor is ideal) and silicone it into the recess in front of the OLED display.
+ - Partially fill the gasket groove in the top half of the case with silicone. Carefully apply silicone to the groove (you can do this with a small syringe) and then form it to shape with this 3d-printed spatula tool.
+
