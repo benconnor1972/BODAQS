@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include "Calibration.h"
 #include "OutputTransform.h"   // keep lightweight; transform interface only
+#include "SensorRuntimeDiagnostics.h"
 
 class TransformRegistry;
 
@@ -176,6 +177,10 @@ public:
   virtual void sampleValues(float* out, uint8_t max) = 0;
   virtual bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const;
   virtual bool describeSensorMetadata(SensorMetadataDescriptor& out) const;
+  virtual bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const {
+    (void)out;
+    return false;
+  }
   virtual bool gpsStatus(SensorGpsStatus& out) const { (void)out; return false; }
 
   // UI labels

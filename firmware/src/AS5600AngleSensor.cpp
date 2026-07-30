@@ -7,6 +7,7 @@
 
 #include "ConfigManager.h"
 #include "I2CManager.h"
+#include "PowerManager.h"
 #include "SensorRegistry.h"
 #include "DebugLog.h"
 #include "esp_timer.h"
@@ -244,7 +245,109 @@ void AS5600AngleSensor::applyParams(const Params& p) {
   copyField_(m_rawDomain, sizeof(m_rawDomain), p.primaryDomain);
 }
 
+void AS5600AngleSensor::setRuntimeFailure_(SensorRuntimeFailureStage stage,
+                                           int16_t resultCode,
+                                           uint8_t expectedBytes,
+                                           uint8_t receivedBytes) const {
+  m_lastRuntimeFailure.stage = stage;
+  m_lastRuntimeFailure.resultCode = resultCode;
+  m_lastRuntimeFailure.expectedBytes = expectedBytes;
+  m_lastRuntimeFailure.receivedBytes = receivedBytes;
+}
+
+void AS5600AngleSensor::resetRuntimeDiagnostics_() {
+  const uint32_t beginCount = m_runtimeDiagnostics.beginCount + 1;
+  m_runtimeDiagnostics = SensorRuntimeDiagnostics{};
+  m_runtimeDiagnostics.present = true;
+  copyField_(m_runtimeDiagnostics.sensorName,
+             sizeof(m_runtimeDiagnostics.sensorName),
+             name());
+  copyField_(m_runtimeDiagnostics.kind,
+             sizeof(m_runtimeDiagnostics.kind),
+             asyncClientKind());
+  m_runtimeDiagnostics.busIndex = m_busIndex;
+  m_runtimeDiagnostics.address = m_i2cAddr;
+  m_runtimeDiagnostics.beginCount = beginCount;
+  m_runtimeDiagnostics.lastBeginUptimeMs = millis();
+  m_lastRuntimeFailure = SensorRuntimeFailure{};
+  m_lastRawRuntimeFailure = SensorRuntimeFailure{};
+  m_runtimeReadFailureStreak = 0;
+  m_runtimeReadFailureActive = false;
+  m_runtimeConfigFailureActive = false;
+}
+
+void AS5600AngleSensor::resetSessionRuntimeDiagnostics_() const {
+  m_runtimeDiagnostics.eventCount = 0;
+  m_runtimeDiagnostics.eventsTotal = 0;
+  m_runtimeDiagnostics.eventsDropped = 0;
+  m_runtimeDiagnostics.readFailureStreakMax = 0;
+  m_runtimeDiagnostics.readRecoveries = 0;
+  m_runtimeSessionRawFailureBase = m_rawReadFailures;
+  m_runtimeSessionDiagnosticFailureBase = m_diagnosticReadFailures;
+  m_runtimeReadFailureStreak = 0;
+  m_runtimeReadFailureActive = false;
+  m_runtimeConfigFailureActive = false;
+}
+
+void AS5600AngleSensor::recordRuntimeEvent_(SensorRuntimeEventType type) const {
+  ++m_runtimeDiagnostics.eventsTotal;
+  if (m_runtimeDiagnostics.eventCount >= SensorRuntimeDiagnostics::kMaxEvents) {
+    ++m_runtimeDiagnostics.eventsDropped;
+    return;
+  }
+
+  SensorRuntimeEvent& event =
+    m_runtimeDiagnostics.events[m_runtimeDiagnostics.eventCount++];
+  event = SensorRuntimeEvent{};
+  event.uptimeMs = millis();
+  event.acquisitionSeq = m_asyncNextSeq;
+  event.rawReadFailures = m_rawReadFailures - m_runtimeSessionRawFailureBase;
+  event.raw = m_haveLastGoodRaw ? (uint16_t)normalizeCount_(m_lastGoodRaw) : 0;
+  event.conf = m_deviceConfigReadOk ? m_configConf : m_runtimeDiagnostics.configAfter;
+  event.type = type;
+  switch (type) {
+    case SensorRuntimeEventType::ReadFailureStarted:
+    case SensorRuntimeEventType::ReadRecovered:
+      event.failure = m_lastRawRuntimeFailure;
+      break;
+    case SensorRuntimeEventType::ConfigWriteFailed:
+    case SensorRuntimeEventType::ConfigWriteRecovered:
+      event.failure = m_lastRuntimeFailure;
+      break;
+    default:
+      event.failure = m_lastReadOk ? SensorRuntimeFailure{} : m_lastRawRuntimeFailure;
+      break;
+  }
+  event.haveSample = m_haveLastGoodRaw;
+  event.readOk = m_lastReadOk;
+  event.reused = m_lastReadReused;
+  event.analogRailEnabled = PowerManager::analogRailEnabled();
+  event.analogRailFault = PowerManager::analogRailFaultActive();
+}
+
+void AS5600AngleSensor::updateReadTransition_(bool readOk) const {
+  if (!readOk) {
+    ++m_runtimeReadFailureStreak;
+    if (m_runtimeReadFailureStreak > m_runtimeDiagnostics.readFailureStreakMax) {
+      m_runtimeDiagnostics.readFailureStreakMax = m_runtimeReadFailureStreak;
+    }
+    if (!m_runtimeReadFailureActive) {
+      m_runtimeReadFailureActive = true;
+      recordRuntimeEvent_(SensorRuntimeEventType::ReadFailureStarted);
+    }
+    return;
+  }
+
+  if (m_runtimeReadFailureActive) {
+    ++m_runtimeDiagnostics.readRecoveries;
+    recordRuntimeEvent_(SensorRuntimeEventType::ReadRecovered);
+  }
+  m_runtimeReadFailureActive = false;
+  m_runtimeReadFailureStreak = 0;
+}
+
 void AS5600AngleSensor::begin() {
+  resetRuntimeDiagnostics_();
   m_wire = I2CManager::bus(m_busIndex);
   m_warnedNoBus = false;
   m_warnedRead = false;
@@ -287,16 +390,20 @@ void AS5600AngleSensor::begin() {
   I2CBusScheduler::registerClient(this);
 
   if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
     AS5600A_LOGW("sensor '%s': I2C bus %u unavailable\n",
                  name(), (unsigned)m_busIndex);
     return;
   }
 
   if (!probe_()) {
+    m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
     AS5600A_LOGW("sensor '%s': no AS5600 response at 0x%02X on bus %u\n",
                  name(), (unsigned)m_i2cAddr, (unsigned)m_busIndex);
     return;
   }
+  m_runtimeDiagnostics.initialProbeOk = true;
 
   maybeApplyVolatileConfig_();
 
@@ -317,7 +424,17 @@ void AS5600AngleSensor::begin() {
                  (unsigned long)busHz_(m_busIndex),
                  (m_readMode == I2CReadMode::RepeatedStart) ? "repeated" : "stop");
   } else {
+    m_lastRawRuntimeFailure = m_lastRuntimeFailure;
+    m_runtimeDiagnostics.initializationFailure = m_lastRawRuntimeFailure;
     readDeviceConfig_();
+  }
+
+  m_runtimeDiagnostics.configWriteAttempted = m_configWriteAttempted;
+  m_runtimeDiagnostics.configWriteOk = m_configWriteOk;
+  m_runtimeDiagnostics.configReadAttempted = m_deviceConfigReadAttempted;
+  m_runtimeDiagnostics.configReadOk = m_deviceConfigReadOk;
+  if (m_deviceConfigReadOk) {
+    m_runtimeDiagnostics.configAfter = m_configConf;
   }
 }
 
@@ -332,14 +449,17 @@ bool AS5600AngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
 }
 
 void AS5600AngleSensor::onLoggingStart() {
+  resetSessionRuntimeDiagnostics_();
   m_asyncLoggingActive = true;
   m_asyncNextSeq = 0;
   m_asyncLastLoggedSeq = 0;
   resetAsyncSnapshot_();
+  recordRuntimeEvent_(SensorRuntimeEventType::LoggingStart);
   (void)acquireAsyncSample_();
 }
 
 void AS5600AngleSensor::onLoggingStop() {
+  recordRuntimeEvent_(SensorRuntimeEventType::LoggingStop);
   m_asyncLoggingActive = false;
 }
 
@@ -356,22 +476,49 @@ bool AS5600AngleSensor::asyncAcquire() {
   return acquireAsyncSample_();
 }
 
+void AS5600AngleSensor::asyncSchedulerStarting() {
+  recordRuntimeEvent_(SensorRuntimeEventType::SchedulerStart);
+}
+
+void AS5600AngleSensor::asyncSchedulerStopped() {
+  recordRuntimeEvent_(SensorRuntimeEventType::SchedulerStop);
+}
+
 bool AS5600AngleSensor::probe_() const {
-  if (!m_wire) return false;
-  if (!I2CManager::lock(m_wire)) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
   m_wire->beginTransmission(m_i2cAddr);
-  const bool ok = (m_wire->endTransmission(true) == 0);
+  const uint8_t result = (uint8_t)m_wire->endTransmission(true);
   I2CManager::unlock(m_wire);
-  return ok;
+  if (result != 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::Probe, result);
+    return false;
+  }
+  return true;
 }
 
 bool AS5600AngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t len) const {
-  if (!m_wire || !out || len == 0) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!out || len == 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::RequestBytes, -1, len, 0);
+    return false;
+  }
 
   m_wire->beginTransmission(m_i2cAddr);
   m_wire->write(reg);
   const bool stopAfterRegister = (m_readMode == I2CReadMode::StopThenRead);
-  if (m_wire->endTransmission(stopAfterRegister) != 0) {
+  const uint8_t txResult = (uint8_t)m_wire->endTransmission(stopAfterRegister);
+  if (txResult != 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::RegisterAddress, txResult);
     return false;
   }
   if (stopAfterRegister) delayMicroseconds(5);
@@ -381,26 +528,45 @@ bool AS5600AngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t l
     while (m_wire->available() > 0) {
       (void)m_wire->read();
     }
+    setRuntimeFailure_(SensorRuntimeFailureStage::RequestBytes,
+                       0,
+                       len,
+                       (got > 255u) ? 255u : (uint8_t)got);
     return false;
   }
 
   for (uint8_t i = 0; i < len; ++i) {
     const int v = m_wire->read();
-    if (v < 0) return false;
+    if (v < 0) {
+      setRuntimeFailure_(SensorRuntimeFailureStage::ReadByte, v, len, i);
+      return false;
+    }
     out[i] = (uint8_t)v;
   }
   return true;
 }
 
 bool AS5600AngleSensor::writeRegBytesLocked_(uint8_t reg, const uint8_t* data, uint8_t len) const {
-  if (!m_wire || !data || len == 0) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!data || len == 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::WriteRegister, -1, len, 0);
+    return false;
+  }
 
   m_wire->beginTransmission(m_i2cAddr);
   m_wire->write(reg);
   for (uint8_t i = 0; i < len; ++i) {
     m_wire->write(data[i]);
   }
-  return m_wire->endTransmission(true) == 0;
+  const uint8_t result = (uint8_t)m_wire->endTransmission(true);
+  if (result != 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::WriteRegister, result);
+    return false;
+  }
+  return true;
 }
 
 bool AS5600AngleSensor::readOutputBlock_(OutputSample& out) const {
@@ -408,8 +574,14 @@ bool AS5600AngleSensor::readOutputBlock_(OutputSample& out) const {
   if (!m_wire) {
     m_wire = I2CManager::bus(m_busIndex);
   }
-  if (!m_wire) return false;
-  if (!I2CManager::lock(m_wire)) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
 
   uint8_t bytes[2] = {0, 0};
   const bool ok = readRegBytesLocked_(kRawAngleMsbReg, bytes, sizeof(bytes));
@@ -425,8 +597,14 @@ bool AS5600AngleSensor::readAngleRegister_(uint16_t& out) const {
   if (!m_wire) {
     m_wire = I2CManager::bus(m_busIndex);
   }
-  if (!m_wire) return false;
-  if (!I2CManager::lock(m_wire)) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
 
   uint8_t bytes[2] = {0, 0};
   const bool ok = readRegBytesLocked_(kAngleMsbReg, bytes, sizeof(bytes));
@@ -445,8 +623,14 @@ bool AS5600AngleSensor::readDiagnostics_(OutputSample& out) const {
   if (!m_wire) {
     m_wire = I2CManager::bus(m_busIndex);
   }
-  if (!m_wire) return false;
-  if (!I2CManager::lock(m_wire)) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
 
   uint8_t status = 0;
   uint8_t agc = 0;
@@ -467,9 +651,12 @@ bool AS5600AngleSensor::readDiagnostics_(OutputSample& out) const {
 bool AS5600AngleSensor::applyVolatileConfig_() const {
   m_configWriteAttempted = true;
   m_configWriteOk = false;
+  m_runtimeDiagnostics.configWriteAttempted = true;
+  m_runtimeDiagnostics.configWriteOk = false;
 
   if (m_slowFilterCode < 0) {
     m_configWriteOk = true;
+    m_runtimeDiagnostics.configWriteOk = true;
     return true;
   }
 
@@ -477,11 +664,21 @@ bool AS5600AngleSensor::applyVolatileConfig_() const {
     m_wire = I2CManager::bus(m_busIndex);
   }
   if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
     m_nextConfigWriteMs = millis() + kDeviceConfigRetryMs;
+    if (m_asyncLoggingActive && !m_runtimeConfigFailureActive) {
+      m_runtimeConfigFailureActive = true;
+      recordRuntimeEvent_(SensorRuntimeEventType::ConfigWriteFailed);
+    }
     return false;
   }
   if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
     m_nextConfigWriteMs = millis() + kDeviceConfigRetryMs;
+    if (m_asyncLoggingActive && !m_runtimeConfigFailureActive) {
+      m_runtimeConfigFailureActive = true;
+      recordRuntimeEvent_(SensorRuntimeEventType::ConfigWriteFailed);
+    }
     return false;
   }
 
@@ -489,6 +686,7 @@ bool AS5600AngleSensor::applyVolatileConfig_() const {
   bool ok = readRegBytesLocked_(kConfMsbReg, confBytes, sizeof(confBytes));
   uint16_t oldConf = ok ? decode16_(confBytes[0], confBytes[1]) : 0;
   uint16_t newConf = oldConf;
+  if (ok) m_runtimeDiagnostics.configBefore = oldConf;
   if (ok) {
     newConf = (uint16_t)((oldConf & ~kConfSlowFilterMask) |
                          ((uint16_t(m_slowFilterCode) << kConfSlowFilterShift) & kConfSlowFilterMask));
@@ -505,6 +703,11 @@ bool AS5600AngleSensor::applyVolatileConfig_() const {
 
   if (!ok) {
     m_nextConfigWriteMs = millis() + kDeviceConfigRetryMs;
+    m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
+    if (m_asyncLoggingActive && !m_runtimeConfigFailureActive) {
+      m_runtimeConfigFailureActive = true;
+      recordRuntimeEvent_(SensorRuntimeEventType::ConfigWriteFailed);
+    }
     AS5600A_LOGW("sensor '%s': slow_filter=%s volatile config write failed at 0x%02X on bus %u\n",
                  name(),
                  as5600SlowFilterName_((uint8_t)m_slowFilterCode),
@@ -514,6 +717,12 @@ bool AS5600AngleSensor::applyVolatileConfig_() const {
   }
 
   m_configWriteOk = true;
+  m_runtimeDiagnostics.configWriteOk = true;
+  m_runtimeDiagnostics.configAfter = newConf;
+  if (m_asyncLoggingActive && m_runtimeConfigFailureActive) {
+    m_runtimeConfigFailureActive = false;
+    recordRuntimeEvent_(SensorRuntimeEventType::ConfigWriteRecovered);
+  }
   m_nextConfigWriteMs = 0;
   m_deviceConfigReadOk = false;
   m_nextDeviceConfigReadMs = 0;
@@ -541,16 +750,26 @@ bool AS5600AngleSensor::maybeApplyVolatileConfig_() const {
 bool AS5600AngleSensor::readDeviceConfig_() const {
   m_deviceConfigReadAttempted = true;
   m_deviceConfigReadOk = false;
+  m_runtimeDiagnostics.configReadAttempted = true;
+  m_runtimeDiagnostics.configReadOk = false;
 
   if (!m_wire) {
     m_wire = I2CManager::bus(m_busIndex);
   }
   if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
     m_nextDeviceConfigReadMs = millis() + kDeviceConfigRetryMs;
+    if (!m_asyncLoggingActive) {
+      m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
+    }
     return false;
   }
   if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
     m_nextDeviceConfigReadMs = millis() + kDeviceConfigRetryMs;
+    if (!m_asyncLoggingActive) {
+      m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
+    }
     return false;
   }
 
@@ -578,6 +797,9 @@ bool AS5600AngleSensor::readDeviceConfig_() const {
   I2CManager::unlock(m_wire);
   if (!ok) {
     m_nextDeviceConfigReadMs = millis() + kDeviceConfigRetryMs;
+    if (!m_asyncLoggingActive) {
+      m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
+    }
     AS5600A_LOGW("sensor '%s': read-only config snapshot failed at 0x%02X on bus %u\n",
                  name(), (unsigned)m_i2cAddr, (unsigned)m_busIndex);
     return false;
@@ -593,6 +815,9 @@ bool AS5600AngleSensor::readDeviceConfig_() const {
   m_configAgc = agc;
   m_configMagnitude = decode12_(magnitudeBytes[0], magnitudeBytes[1]);
   m_deviceConfigReadOk = true;
+  m_runtimeDiagnostics.configReadAttempted = true;
+  m_runtimeDiagnostics.configReadOk = true;
+  m_runtimeDiagnostics.configAfter = m_configConf;
   m_nextDeviceConfigReadMs = 0;
 
   AS5600A_LOGI("sensor '%s': config snapshot zpos=%u mpos=%u mang=%u conf=0x%04X raw=%u angle=%u status=0x%02X agc=%u mag=%u\n",
@@ -762,6 +987,8 @@ int AS5600AngleSensor::readRawAngleOnce_() const {
     }
     m_lastReadOk = false;
     m_lastReadReused = m_haveLastGoodRaw;
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    m_lastRawRuntimeFailure = m_lastRuntimeFailure;
     ++m_rawReadFailures;
     return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
   }
@@ -784,6 +1011,8 @@ int AS5600AngleSensor::readRawAngleOnce_() const {
     }
     delayMicroseconds(150);
   }
+
+  m_lastRawRuntimeFailure = m_lastRuntimeFailure;
 
   if (!m_warnedRead) {
     AS5600A_LOGW("sensor '%s': read failed at 0x%02X on bus %u bus_hz=%lu mode=%s; reusing last good sample\n",
@@ -898,6 +1127,7 @@ bool AS5600AngleSensor::acquireAsyncSample_() const {
   snapshot.diagnosticReadFailures = m_diagnosticReadFailures;
   snapshot.seq = ++m_asyncNextSeq;
   snapshot.acquiredUs = (uint64_t)esp_timer_get_time();
+  updateReadTransition_(snapshot.readOk);
 
   if (m_includeAngleColumn) {
     uint16_t angle = 0;
@@ -1236,6 +1466,32 @@ bool AS5600AngleSensor::describeSensorMetadata(SensorMetadataDescriptor& out) co
   copyField_(out.deviceConfig.confFastFilterThreshold, sizeof(out.deviceConfig.confFastFilterThreshold),
              as5600FastFilterThresholdName_((uint8_t)((m_configConf >> 10) & 0x07u)));
   out.deviceConfig.confWatchdog = ((m_configConf >> 13) & 0x01u) != 0;
+  return true;
+}
+
+bool AS5600AngleSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const {
+  out = m_runtimeDiagnostics;
+  out.present = true;
+  copyField_(out.sensorName, sizeof(out.sensorName), name());
+  copyField_(out.kind, sizeof(out.kind), asyncClientKind());
+  out.busIndex = m_busIndex;
+  out.address = m_i2cAddr;
+  out.configWriteAttempted = m_configWriteAttempted;
+  out.configWriteOk = m_configWriteOk;
+  out.configReadAttempted = m_deviceConfigReadAttempted;
+  out.configReadOk = m_deviceConfigReadOk;
+  out.rawReadFailures = m_rawReadFailures - m_runtimeSessionRawFailureBase;
+  out.diagnosticReadFailures =
+    m_diagnosticReadFailures - m_runtimeSessionDiagnosticFailureBase;
+  out.haveLastGoodRaw = m_haveLastGoodRaw;
+  out.lastReadOk = m_lastReadOk;
+  out.lastReadReused = m_lastReadReused;
+  out.lastGoodRaw = m_haveLastGoodRaw ? (uint16_t)normalizeCount_(m_lastGoodRaw) : 0;
+  out.lastConf = m_deviceConfigReadOk ? m_configConf : out.configAfter;
+  out.lastFailure =
+    (out.rawReadFailures > 0 || !m_lastReadOk)
+      ? m_lastRawRuntimeFailure
+      : SensorRuntimeFailure{};
   return true;
 }
 

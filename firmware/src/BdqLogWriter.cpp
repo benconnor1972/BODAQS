@@ -439,6 +439,9 @@ void appendI2CSchedulerTiming_(String& out,
     appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
     appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
     appendKeyUInt_(out, depth + 3, "row_no_sample", c.rowNoSample);
+    appendKeyUInt_(out, depth + 3, "acquire_fail_streak_max", c.acquireFailStreakMax);
+    appendKeyUInt_(out, depth + 3, "row_reuse_streak_max", c.rowReuseStreakMax);
+    appendKeyUInt_(out, depth + 3, "row_no_sample_streak_max", c.rowNoSampleStreakMax);
     appendTimingSummary_(out, depth + 3, "acquire_us", c.acquireUs);
     appendTimingSummary_(out, depth + 3, "row_age_us", c.rowAgeUs, false);
     appendIndent_(out, depth + 2);
@@ -485,6 +488,150 @@ void appendI2CBusDiagnostics_(String& out,
     }
   }
   if (wroteAny) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+const char* runtimeEventName_(SensorRuntimeEventType type) {
+  switch (type) {
+    case SensorRuntimeEventType::LoggingStart: return "logging_start";
+    case SensorRuntimeEventType::SchedulerStart: return "scheduler_start";
+    case SensorRuntimeEventType::ReadFailureStarted: return "read_failure_started";
+    case SensorRuntimeEventType::ReadRecovered: return "read_recovered";
+    case SensorRuntimeEventType::ConfigWriteFailed: return "config_write_failed";
+    case SensorRuntimeEventType::ConfigWriteRecovered: return "config_write_recovered";
+    case SensorRuntimeEventType::SchedulerStop: return "scheduler_stop";
+    case SensorRuntimeEventType::LoggingStop: return "logging_stop";
+    default: return "unknown";
+  }
+}
+
+const char* runtimeFailureStageName_(SensorRuntimeFailureStage stage) {
+  switch (stage) {
+    case SensorRuntimeFailureStage::None: return "none";
+    case SensorRuntimeFailureStage::BusUnavailable: return "bus_unavailable";
+    case SensorRuntimeFailureStage::BusLock: return "bus_lock";
+    case SensorRuntimeFailureStage::Probe: return "probe";
+    case SensorRuntimeFailureStage::RegisterAddress: return "register_address";
+    case SensorRuntimeFailureStage::RequestBytes: return "request_bytes";
+    case SensorRuntimeFailureStage::ReadByte: return "read_byte";
+    case SensorRuntimeFailureStage::WriteRegister: return "write_register";
+    default: return "unknown";
+  }
+}
+
+void appendRuntimeFailure_(String& out,
+                           uint8_t depth,
+                           const char* key,
+                           const SensorRuntimeFailure& failure,
+                           bool comma = true) {
+  appendKey_(out, depth, key);
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "stage", runtimeFailureStageName_(failure.stage));
+  appendKeyInt_(out, depth + 1, "result_code", failure.resultCode);
+  appendKeyUInt_(out, depth + 1, "expected_bytes", failure.expectedBytes);
+  appendKeyUInt_(out, depth + 1, "received_bytes", failure.receivedBytes, false);
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true) {
+  uint8_t sensorCount = 0;
+  const uint8_t registered = SensorManager::count();
+  SensorRuntimeDiagnostics diagnostics;
+  for (uint8_t i = 0; i < registered; ++i) {
+    if (SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) && diagnostics.present) {
+      ++sensorCount;
+    }
+  }
+
+  appendKey_(out, depth, "sensor_runtime_diagnostics");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "sensor_count", sensorCount);
+  appendKey_(out, depth + 1, "sensors");
+  out += F("{\n");
+
+  bool wroteSensor = false;
+  for (uint8_t i = 0; i < registered; ++i) {
+    if (!SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) || !diagnostics.present) {
+      continue;
+    }
+    if (wroteSensor) out += F(",\n");
+    wroteSensor = true;
+
+    appendKey_(out, depth + 2, diagnostics.sensorName);
+    out += F("{\n");
+    appendKeyString_(out, depth + 3, "kind", diagnostics.kind);
+    appendKeyUInt_(out, depth + 3, "bus", diagnostics.busIndex);
+    appendKeyUInt_(out, depth + 3, "address", diagnostics.address);
+
+    appendKey_(out, depth + 3, "initialization");
+    out += F("{\n");
+    appendKeyUInt_(out, depth + 4, "begin_count", diagnostics.beginCount);
+    appendKeyUInt_(out, depth + 4, "last_begin_uptime_ms", diagnostics.lastBeginUptimeMs);
+    appendKeyBool_(out, depth + 4, "probe_ok", diagnostics.initialProbeOk);
+    appendKeyBool_(out, depth + 4, "config_write_attempted", diagnostics.configWriteAttempted);
+    appendKeyBool_(out, depth + 4, "config_write_ok", diagnostics.configWriteOk);
+    appendKeyBool_(out, depth + 4, "config_read_attempted", diagnostics.configReadAttempted);
+    appendKeyBool_(out, depth + 4, "config_read_ok", diagnostics.configReadOk);
+    appendKeyHex16_(out, depth + 4, "conf_before", diagnostics.configBefore);
+    appendKeyHex16_(out, depth + 4, "conf_after", diagnostics.configAfter);
+    appendRuntimeFailure_(out,
+                          depth + 4,
+                          "failure",
+                          diagnostics.initializationFailure,
+                          false);
+    appendIndent_(out, depth + 3);
+    out += F("},\n");
+
+    appendKey_(out, depth + 3, "session");
+    out += F("{\n");
+    appendKeyUInt_(out, depth + 4, "raw_read_failures", diagnostics.rawReadFailures);
+    appendKeyUInt_(out, depth + 4, "diagnostic_read_failures", diagnostics.diagnosticReadFailures);
+    appendKeyUInt_(out, depth + 4, "read_failure_streak_max", diagnostics.readFailureStreakMax);
+    appendKeyUInt_(out, depth + 4, "read_recoveries", diagnostics.readRecoveries);
+    appendKeyBool_(out, depth + 4, "have_last_good_raw", diagnostics.haveLastGoodRaw);
+    appendKeyBool_(out, depth + 4, "last_read_ok", diagnostics.lastReadOk);
+    appendKeyBool_(out, depth + 4, "last_read_reused", diagnostics.lastReadReused);
+    appendKeyUInt_(out, depth + 4, "last_good_raw", diagnostics.lastGoodRaw);
+    appendKeyHex16_(out, depth + 4, "last_conf", diagnostics.lastConf);
+    appendKeyUInt_(out, depth + 4, "events_recorded", diagnostics.eventCount);
+    appendKeyUInt_(out, depth + 4, "events_total", diagnostics.eventsTotal);
+    appendKeyUInt_(out, depth + 4, "events_dropped", diagnostics.eventsDropped);
+    appendRuntimeFailure_(out, depth + 4, "last_failure", diagnostics.lastFailure, false);
+    appendIndent_(out, depth + 3);
+    out += F("},\n");
+
+    appendKey_(out, depth + 3, "events");
+    out += F("[\n");
+    for (uint8_t eventIndex = 0; eventIndex < diagnostics.eventCount; ++eventIndex) {
+      const SensorRuntimeEvent& event = diagnostics.events[eventIndex];
+      appendIndent_(out, depth + 4);
+      out += F("{\n");
+      appendKeyString_(out, depth + 5, "type", runtimeEventName_(event.type));
+      appendKeyUInt_(out, depth + 5, "uptime_ms", event.uptimeMs);
+      appendKeyUInt_(out, depth + 5, "acquisition_seq", event.acquisitionSeq);
+      appendKeyUInt_(out, depth + 5, "raw_read_failures", event.rawReadFailures);
+      appendKeyUInt_(out, depth + 5, "raw", event.raw);
+      appendKeyHex16_(out, depth + 5, "conf", event.conf);
+      appendKeyBool_(out, depth + 5, "have_sample", event.haveSample);
+      appendKeyBool_(out, depth + 5, "read_ok", event.readOk);
+      appendKeyBool_(out, depth + 5, "reused", event.reused);
+      appendKeyBool_(out, depth + 5, "analog_rail_enabled", event.analogRailEnabled);
+      appendKeyBool_(out, depth + 5, "analog_rail_fault", event.analogRailFault);
+      appendRuntimeFailure_(out, depth + 5, "failure", event.failure, false);
+      appendIndent_(out, depth + 4);
+      out += (eventIndex + 1 < diagnostics.eventCount) ? F("},\n") : F("}\n");
+    }
+    appendIndent_(out, depth + 3);
+    out += F("]\n");
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+
+  if (wroteSensor) out += '\n';
   appendIndent_(out, depth + 1);
   out += F("}\n");
   appendIndent_(out, depth);
@@ -922,7 +1069,7 @@ bool appendFrame_(uint32_t sampleId, uint64_t tsMs, const float* values, uint16_
 
 String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
   String out;
-  out.reserve(512);
+  out.reserve(4096);
   out += F("{\n");
   appendKeyString_(out, 1, "summary_format", "bdq.final_summary.v1");
   appendKeyString_(out, 1, "session_id", s_sessionId.c_str());
@@ -934,11 +1081,7 @@ String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
   appendKeyUInt_(out, 1, "queue_depth", info.queueDepth);
   appendKeyUInt_(out, 1, "flush_count", info.flushCount);
   appendKeyUInt_(out, 1, "flush_max_ms", info.flushMaxMs);
-#if BODAQS_TIMING_INSTRUMENTATION
   appendKeyUInt_(out, 1, "flush_total_ms", info.flushTotalMs);
-#else
-  appendKeyUInt_(out, 1, "flush_total_ms", info.flushTotalMs, false);
-#endif
 #if BODAQS_TIMING_INSTRUMENTATION
   appendKeyUInt_(out, 1, "sampler_late_ticks", info.samplerLateTicks);
   appendKeyUInt_(out, 1, "sampler_late_max_lag_ms", info.samplerLateMaxLagMs);
@@ -954,8 +1097,9 @@ String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
   appendAdcTiming_(out, 1, info.externalAdcTiming ? *info.externalAdcTiming : emptyExternalAdcTiming_());
   appendSensorTiming_(out, 1, info.sensorTiming ? *info.sensorTiming : emptySensorTiming_());
   appendI2CSchedulerTiming_(out, 1, info.i2cSchedulerTiming ? *info.i2cSchedulerTiming : emptyI2CSchedulerTiming_());
-  appendI2CBusDiagnostics_(out, 1, info.boardProfile, false);
+  appendI2CBusDiagnostics_(out, 1, info.boardProfile);
 #endif
+  appendRuntimeDiagnostics_(out, 1, false);
   out += F("}\n");
   return out;
 }

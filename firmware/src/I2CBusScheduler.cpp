@@ -26,7 +26,7 @@ static constexpr int64_t kCoarseSleepThresholdUs = 1500;
 static constexpr int64_t kFineSleepThresholdUs = 250;
 static constexpr int64_t kFineSleepGuardUs = 100;
 static constexpr int64_t kFineSleepMaxUs = 500;
-static constexpr uint32_t kStopWaitMs = 100;
+static constexpr uint32_t kStopWaitMs = 1500;
 static constexpr uint32_t kTaskStackBytes = 4096;
 static constexpr UBaseType_t kTaskPriority = 2;
 static constexpr BaseType_t kTaskCore = 1;
@@ -34,16 +34,41 @@ static constexpr BaseType_t kTaskCore = 1;
 struct ClientSlot {
   I2CAsyncClient* client = nullptr;
   bool registered = false;
-  uint8_t statsIndex = 0;
   uint64_t nextDueUs = 0;
+
+  // Acquisition fields are written only by the bus scheduler task. Row-use
+  // fields are written only by the sampler task. They are copied into the
+  // public snapshot after the scheduler has stopped.
+  TimingSummary acquireUs;
+  TimingSummary rowAgeUs;
+  uint32_t acquireOk = 0;
+  uint32_t acquireFail = 0;
+  uint32_t rowUses = 0;
+  uint32_t rowFresh = 0;
+  uint32_t rowReused = 0;
+  uint32_t rowNoSample = 0;
+  uint32_t acquireFailStreak = 0;
+  uint32_t acquireFailStreakMax = 0;
+  uint32_t rowReuseStreak = 0;
+  uint32_t rowReuseStreakMax = 0;
+  uint32_t rowNoSampleStreak = 0;
+  uint32_t rowNoSampleStreakMax = 0;
 };
 
 ClientSlot s_clients[kMaxClients];
-I2CBusSchedulerTimingStats s_timing;
+TimingSummary s_busAcquireUs[kMaxBuses];
+I2CBusSchedulerTimingStats s_timingSnapshot;
 
 #if defined(ESP32)
 TaskHandle_t s_tasks[kMaxBuses] = { nullptr, nullptr };
 volatile bool s_run[kMaxBuses] = { false, false };
+
+bool schedulerTasksActive_() {
+  for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
+    if (s_tasks[bus] != nullptr) return true;
+  }
+  return false;
+}
 #endif
 
 void copyText_(char* dst, size_t cap, const char* src) {
@@ -83,49 +108,19 @@ int firstFreeClient_() {
   return -1;
 }
 
-void refreshClientStats_(uint8_t idx) {
-  if (idx >= kMaxClients) return;
-  auto& slot = s_clients[idx];
-  auto& stats = s_timing.client[idx];
-  const TimingSummary acquireUs = stats.acquireUs;
-  const TimingSummary rowAgeUs = stats.rowAgeUs;
-  const uint32_t acquireOk = stats.acquireOk;
-  const uint32_t acquireFail = stats.acquireFail;
-  const uint32_t rowUses = stats.rowUses;
-  const uint32_t rowFresh = stats.rowFresh;
-  const uint32_t rowReused = stats.rowReused;
-  const uint32_t rowNoSample = stats.rowNoSample;
-
-  stats = I2CBusSchedulerTimingStats::ClientStats{};
-  if (!slot.registered || !slot.client) return;
-
-  stats.present = true;
-  stats.active = !slot.client->asyncMuted();
-  stats.busIndex = slot.client->asyncI2CBusIndex();
-  stats.address = slot.client->asyncI2CAddress();
-  stats.targetRateHz = targetRateHz_(slot.client);
-  stats.periodUs = periodUsFor_(slot.client);
-  copyText_(stats.name, sizeof(stats.name), slot.client->asyncClientName());
-  copyText_(stats.kind, sizeof(stats.kind), slot.client->asyncClientKind());
-  stats.acquireUs = acquireUs;
-  stats.rowAgeUs = rowAgeUs;
-  stats.acquireOk = acquireOk;
-  stats.acquireFail = acquireFail;
-  stats.rowUses = rowUses;
-  stats.rowFresh = rowFresh;
-  stats.rowReused = rowReused;
-  stats.rowNoSample = rowNoSample;
-}
-
-void refreshBusStats_() {
+void buildTimingSnapshot_() {
+  // This object is about 3 KB. Build it in its existing static storage rather
+  // than on loopTask's stack: this function is also reached from the sensor
+  // configuration HTTP handler, whose stack frame is already comparatively
+  // large. Callers only invoke it while scheduler tasks are inactive.
+  memset(&s_timingSnapshot, 0, sizeof(s_timingSnapshot));
+  I2CBusSchedulerTimingStats& snapshot = s_timingSnapshot;
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
-    auto& b = s_timing.bus[bus];
-    const TimingSummary loopUs = b.acquireLoopUs;
+    auto& b = snapshot.bus[bus];
     const board::I2CProfile* profile = I2CManager::profile(bus);
-    b = I2CBusSchedulerTimingStats::BusStats{};
     b.present = I2CManager::available(bus);
     b.hz = (profile && profile->hz) ? profile->hz : 0;
-    b.acquireLoopUs = loopUs;
+    b.acquireLoopUs = s_busAcquireUs[bus];
 #if defined(ESP32)
     b.running = (s_tasks[bus] != nullptr) && s_run[bus];
 #endif
@@ -135,11 +130,55 @@ void refreshBusStats_() {
   for (uint8_t i = 0; i < kMaxClients; ++i) {
     if (!s_clients[i].registered || !s_clients[i].client) continue;
     ++total;
-    refreshClientStats_(i);
-    const uint8_t bus = s_clients[i].client->asyncI2CBusIndex();
-    if (bus < kMaxBuses) ++s_timing.bus[bus].clientCount;
+    const ClientSlot& slot = s_clients[i];
+    I2CAsyncClient* client = slot.client;
+    auto& stats = snapshot.client[i];
+    stats.present = true;
+    stats.active = !client->asyncMuted();
+    stats.busIndex = client->asyncI2CBusIndex();
+    stats.address = client->asyncI2CAddress();
+    stats.targetRateHz = targetRateHz_(client);
+    stats.periodUs = periodUsFor_(client);
+    copyText_(stats.name, sizeof(stats.name), client->asyncClientName());
+    copyText_(stats.kind, sizeof(stats.kind), client->asyncClientKind());
+    stats.acquireUs = slot.acquireUs;
+    stats.rowAgeUs = slot.rowAgeUs;
+    stats.acquireOk = slot.acquireOk;
+    stats.acquireFail = slot.acquireFail;
+    stats.rowUses = slot.rowUses;
+    stats.rowFresh = slot.rowFresh;
+    stats.rowReused = slot.rowReused;
+    stats.rowNoSample = slot.rowNoSample;
+    stats.acquireFailStreakMax = slot.acquireFailStreakMax;
+    stats.rowReuseStreakMax = slot.rowReuseStreakMax;
+    stats.rowNoSampleStreakMax = slot.rowNoSampleStreakMax;
+    if (stats.busIndex < kMaxBuses) ++snapshot.bus[stats.busIndex].clientCount;
   }
-  s_timing.clientCount = total;
+  snapshot.clientCount = total;
+}
+
+void resetRuntimeStats_() {
+  for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
+    s_busAcquireUs[bus] = TimingSummary{};
+  }
+  for (uint8_t i = 0; i < kMaxClients; ++i) {
+    ClientSlot& slot = s_clients[i];
+    slot.acquireUs = TimingSummary{};
+    slot.rowAgeUs = TimingSummary{};
+    slot.acquireOk = 0;
+    slot.acquireFail = 0;
+    slot.rowUses = 0;
+    slot.rowFresh = 0;
+    slot.rowReused = 0;
+    slot.rowNoSample = 0;
+    slot.acquireFailStreak = 0;
+    slot.acquireFailStreakMax = 0;
+    slot.rowReuseStreak = 0;
+    slot.rowReuseStreakMax = 0;
+    slot.rowNoSampleStreak = 0;
+    slot.rowNoSampleStreakMax = 0;
+  }
+  s_timingSnapshot = I2CBusSchedulerTimingStats{};
 }
 
 bool busHasActiveClients_(uint8_t bus) {
@@ -226,16 +265,19 @@ void taskFn_(void* arg) {
     const uint32_t acquireUs = (uint32_t)(micros() - t0);
 
 #if BODAQS_TIMING_INSTRUMENTATION
-    const uint8_t statsIndex = slot->statsIndex;
-    if (statsIndex < kMaxClients) {
-      auto& c = s_timing.client[statsIndex];
-      refreshClientStats_(statsIndex);
-      TimingStats_record(c.acquireUs, acquireUs);
-      if (ok) ++c.acquireOk;
-      else ++c.acquireFail;
+    TimingStats_record(slot->acquireUs, acquireUs);
+    if (ok) {
+      ++slot->acquireOk;
+      slot->acquireFailStreak = 0;
+    } else {
+      ++slot->acquireFail;
+      ++slot->acquireFailStreak;
+      if (slot->acquireFailStreak > slot->acquireFailStreakMax) {
+        slot->acquireFailStreakMax = slot->acquireFailStreak;
+      }
     }
     if (bus < kMaxBuses) {
-      TimingStats_record(s_timing.bus[bus].acquireLoopUs, acquireUs);
+      TimingStats_record(s_busAcquireUs[bus], acquireUs);
     }
 #endif
 
@@ -259,7 +301,6 @@ void taskFn_(void* arg) {
   if (bus < kMaxBuses) {
     s_run[bus] = false;
     s_tasks[bus] = nullptr;
-    s_timing.bus[bus].running = false;
   }
   I2CSCHED_LOGI("bus%u scheduler stopped\n", (unsigned)bus);
   vTaskDelete(nullptr);
@@ -283,10 +324,8 @@ bool registerClient(I2CAsyncClient* client) {
 
   s_clients[idx].client = client;
   s_clients[idx].registered = true;
-  s_clients[idx].statsIndex = (uint8_t)idx;
   s_clients[idx].nextDueUs = 0;
-  refreshBusStats_();
-  refreshClientStats_((uint8_t)idx);
+  buildTimingSnapshot_();
   return true;
 }
 
@@ -294,24 +333,27 @@ void unregisterClient(I2CAsyncClient* client) {
   const int idx = findClient_(client);
   if (idx < 0) return;
   s_clients[idx] = ClientSlot{};
-  refreshBusStats_();
+  buildTimingSnapshot_();
 }
 
 void resetTimingStats() {
 #if BODAQS_TIMING_INSTRUMENTATION
-  s_timing = I2CBusSchedulerTimingStats{};
-  refreshBusStats_();
+  resetRuntimeStats_();
+  buildTimingSnapshot_();
 #endif
 }
 
 const I2CBusSchedulerTimingStats& timingStats() {
-  refreshBusStats_();
-  return s_timing;
+#if defined(ESP32)
+  if (!schedulerTasksActive_()) buildTimingSnapshot_();
+#else
+  buildTimingSnapshot_();
+#endif
+  return s_timingSnapshot;
 }
 
 void start() {
 #if defined(ESP32)
-  refreshBusStats_();
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
     if (s_tasks[bus]) continue;
     if (!busHasActiveClients_(bus)) continue;
@@ -330,8 +372,6 @@ void start() {
       s_tasks[bus] = nullptr;
       s_run[bus] = false;
       I2CSCHED_LOGW("failed to start bus%u scheduler\n", (unsigned)bus);
-    } else {
-      s_timing.bus[bus].running = true;
     }
   }
 #endif
@@ -356,7 +396,12 @@ void stop() {
     if (any) vTaskDelay(1);
   }
 
-  refreshBusStats_();
+  if (!schedulerTasksActive_()) {
+    buildTimingSnapshot_();
+  } else {
+    I2CSCHED_LOGW("scheduler task did not stop within %lu ms; retaining last coherent timing snapshot\n",
+                  (unsigned long)kStopWaitMs);
+  }
 #endif
 }
 
@@ -373,16 +418,29 @@ void recordRowUse(I2CAsyncClient* client, uint32_t ageUs, bool fresh, bool haveS
 #if BODAQS_TIMING_INSTRUMENTATION
   const int idx = findClient_(client);
   if (idx < 0 || idx >= (int)kMaxClients) return;
-  auto& c = s_timing.client[idx];
-  refreshClientStats_((uint8_t)idx);
-  ++c.rowUses;
+  ClientSlot& slot = s_clients[idx];
+  ++slot.rowUses;
   if (!haveSample) {
-    ++c.rowNoSample;
+    ++slot.rowNoSample;
+    ++slot.rowNoSampleStreak;
+    if (slot.rowNoSampleStreak > slot.rowNoSampleStreakMax) {
+      slot.rowNoSampleStreakMax = slot.rowNoSampleStreak;
+    }
+    slot.rowReuseStreak = 0;
     return;
   }
-  if (fresh) ++c.rowFresh;
-  else ++c.rowReused;
-  TimingStats_record(c.rowAgeUs, ageUs);
+  slot.rowNoSampleStreak = 0;
+  if (fresh) {
+    ++slot.rowFresh;
+    slot.rowReuseStreak = 0;
+  } else {
+    ++slot.rowReused;
+    ++slot.rowReuseStreak;
+    if (slot.rowReuseStreak > slot.rowReuseStreakMax) {
+      slot.rowReuseStreakMax = slot.rowReuseStreak;
+    }
+  }
+  TimingStats_record(slot.rowAgeUs, ageUs);
 #else
   (void)client;
   (void)ageUs;
