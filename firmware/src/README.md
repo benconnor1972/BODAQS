@@ -114,12 +114,18 @@ This document summarizes the major modules in the project, what each one is resp
 - AS5600 metadata includes a read-only startup snapshot of key device registers
   (`ZPOS`, `MPOS`, `MANG`, `CONF`, `RAW ANGLE`, `ANGLE`, `STATUS`, `AGC`, and
   `MAGNITUDE`) under `device_config`.
+- BDQ final summaries include bounded AS5600 runtime transition diagnostics
+  (logging/scheduler boundaries, the start and recovery of read/configuration
+  failures, failure stage/result, and analog-rail state). These diagnostics do
+  not add sample columns or successful-path I2C transactions.
 
 **Notes**
 - `ZERO` calibration captures the installed zero point and then asks for a small positive movement so the firmware can set `direction`.
 - `direction=counts_increase_positive` means increasing raw counts produce positive angular output; `counts_decrease_positive` reverses that polarity.
 - Metadata emits both `direction` and legacy `invert`; `invert=true` corresponds to `counts_decrease_positive`.
 - These angle sensors do not support multi-turn tracking.
+- Repeated failures are coalesced into transition events and aggregate streak
+  counts. At most 32 events are retained per session; overflow is reported.
 
 ## `AS5600StringPotSensorBase` / `AS5600StringPotAnalog`
 

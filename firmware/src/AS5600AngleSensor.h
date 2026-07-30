@@ -51,6 +51,7 @@ public:
   void sampleValues(float* out, uint8_t max) override;
   bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const override;
   bool describeSensorMetadata(SensorMetadataDescriptor& out) const override;
+  bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const override;
 
   const char* label() const override { return "AS5600 Angle"; }
   const char* name() const override { return m_name; }
@@ -89,6 +90,8 @@ public:
   uint16_t asyncTargetRateHz() const override;
   bool asyncMuted() const override { return m_muted; }
   bool asyncAcquire() override;
+  void asyncSchedulerStarting() override;
+  void asyncSchedulerStopped() override;
 
   static const ParamDef* paramDefs(size_t& count);
   static Sensor* create(const char* instanceName, const ParamPack& params, bool mutedDefault);
@@ -141,6 +144,14 @@ private:
   bool refreshDiagnostics_(bool force) const;
   void maybeWarnDiagnostics_() const;
   void logFailureProbe_() const;
+  void setRuntimeFailure_(SensorRuntimeFailureStage stage,
+                          int16_t resultCode = 0,
+                          uint8_t expectedBytes = 0,
+                          uint8_t receivedBytes = 0) const;
+  void resetRuntimeDiagnostics_();
+  void resetSessionRuntimeDiagnostics_() const;
+  void recordRuntimeEvent_(SensorRuntimeEventType type) const;
+  void updateReadTransition_(bool readOk) const;
   bool readRawAngle_(uint16_t& out) const;
   int readRawAngleOnce_() const;
   int32_t calibrationCountsFromRaw_(int raw) const;
@@ -213,6 +224,14 @@ private:
   mutable uint8_t m_configStatus = 0;
   mutable uint8_t m_configAgc = 0;
   mutable uint16_t m_configMagnitude = 0;
+  mutable SensorRuntimeFailure m_lastRuntimeFailure;
+  mutable SensorRuntimeFailure m_lastRawRuntimeFailure;
+  mutable SensorRuntimeDiagnostics m_runtimeDiagnostics;
+  mutable uint32_t m_runtimeSessionRawFailureBase = 0;
+  mutable uint32_t m_runtimeSessionDiagnosticFailureBase = 0;
+  mutable uint32_t m_runtimeReadFailureStreak = 0;
+  mutable bool m_runtimeReadFailureActive = false;
+  mutable bool m_runtimeConfigFailureActive = false;
 
   mutable bool m_calUnwrapInit = false;
   mutable int32_t m_calLastUnwrapped = 0;

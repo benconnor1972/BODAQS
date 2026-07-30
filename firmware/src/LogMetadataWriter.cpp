@@ -321,6 +321,9 @@ void appendI2CSchedulerTiming_(String& out,
     appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
     appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
     appendKeyUInt_(out, depth + 3, "row_no_sample", c.rowNoSample);
+    appendKeyUInt_(out, depth + 3, "acquire_fail_streak_max", c.acquireFailStreakMax);
+    appendKeyUInt_(out, depth + 3, "row_reuse_streak_max", c.rowReuseStreakMax);
+    appendKeyUInt_(out, depth + 3, "row_no_sample_streak_max", c.rowNoSampleStreakMax);
     appendTimingSummary_(out, depth + 3, "acquire_us", c.acquireUs);
     appendTimingSummary_(out, depth + 3, "row_age_us", c.rowAgeUs, false);
     appendIndent_(out, depth + 2);

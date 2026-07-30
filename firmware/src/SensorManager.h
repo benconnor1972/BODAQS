@@ -65,6 +65,7 @@ namespace SensorManager {
   uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut);
   bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out);
   uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut);
+  bool describeRuntimeDiagnosticsAt(uint8_t sensorIndex, SensorRuntimeDiagnostics& out);
   uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut);
   uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut);
   bool resolveSynBikeRawBindings(SynBikeRawBindings& out);

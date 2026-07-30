@@ -83,6 +83,29 @@ namespace {
   };
   static inline uint8_t mainItemCount_() { return 8; }
 
+  static void ensureSelectionVisible_(uint8_t& selection,
+                                      uint8_t& top,
+                                      uint8_t itemCount,
+                                      uint8_t visibleRows) {
+    if (itemCount == 0 || visibleRows == 0) {
+      selection = 0;
+      top = 0;
+      return;
+    }
+
+    if (selection >= itemCount) selection = (uint8_t)(itemCount - 1);
+
+    const uint8_t maxTop =
+        (itemCount > visibleRows) ? (uint8_t)(itemCount - visibleRows) : 0;
+    if (top > maxTop) top = maxTop;
+
+    if (selection < top) {
+      top = selection;
+    } else if (selection >= (uint8_t)(top + visibleRows)) {
+      top = (uint8_t)(selection - visibleRows + 1);
+    }
+  }
+
   enum class SettingsItem : uint8_t {
     WiFiMode = 0,
     LogFormat,
@@ -248,13 +271,7 @@ namespace {
 
     const uint8_t N = mainItemCount_();
 
-    // Clamp top in case N changed
-    if (N <= MAIN_VISIBLE_ROWS) {
-      s_mainTop = 0;
-    } else {
-      const uint8_t maxTop = (uint8_t)(N - MAIN_VISIBLE_ROWS);
-      if (s_mainTop > maxTop) s_mainTop = maxTop;
-    }
+    ensureSelectionVisible_(s_mainSel, s_mainTop, N, MAIN_VISIBLE_ROWS);
 
     // Draw a 5-line window starting at s_mainTop
     for (uint8_t row = 0; row < MAIN_VISIBLE_ROWS; ++row) {
@@ -280,12 +297,7 @@ namespace {
     drawHeader_("Settings");
 
     const uint8_t N = settingsItemCount_();
-    if (N <= SETTINGS_VISIBLE_ROWS) {
-      s_settingsTop = 0;
-    } else {
-      const uint8_t maxTop = (uint8_t)(N - SETTINGS_VISIBLE_ROWS);
-      if (s_settingsTop > maxTop) s_settingsTop = maxTop;
-    }
+    ensureSelectionVisible_(s_settingsSel, s_settingsTop, N, SETTINGS_VISIBLE_ROWS);
 
     for (uint8_t row = 0; row < SETTINGS_VISIBLE_ROWS; ++row) {
       const uint8_t i = (uint8_t)(s_settingsTop + row);
@@ -478,8 +490,6 @@ namespace {
       case MainItem::Settings: {
         s_swallowEnterRelease = true;
         guardEnterRight();
-        s_settingsSel = 0;
-        s_settingsTop = 0;
         s_state = State::Settings;
         drawSettings_();
         break;
@@ -1422,7 +1432,6 @@ void MenuSystem::requestOpen() {
   if (s_state == State::Inactive) {
     MLOG("[MENU] requestOpen -> Inactive -> Main (sel=%u)\n", (unsigned)s_mainSel);
     s_state = State::Main;
-    s_mainSel   = 0;
     s_sensorSel = 0;
     s_calUiPhase= CalUiPhase::Idle;
     touch();

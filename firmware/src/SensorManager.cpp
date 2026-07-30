@@ -643,6 +643,12 @@ uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut) {
   return total;
 }
 
+bool describeRuntimeDiagnosticsAt(uint8_t sensorIndex, SensorRuntimeDiagnostics& out) {
+  out = SensorRuntimeDiagnostics{};
+  Sensor* sensor = get(sensorIndex);
+  return sensor && sensor->describeRuntimeDiagnostics(out);
+}
+
 uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut) {
   uint16_t total = 0;
   uint16_t written = 0;

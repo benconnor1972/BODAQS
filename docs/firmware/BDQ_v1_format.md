@@ -463,6 +463,33 @@ Example fields:
 }
 ```
 
+Current firmware may also append optional diagnostic objects. In particular,
+`sensor_runtime_diagnostics` contains bounded, transition-only runtime evidence
+for supported sensors such as the AS5600:
+
+- initialization probe/configuration status and failure stage;
+- logging and scheduler boundary events;
+- read/configuration failure-start and recovery events;
+- session failure/recovery counts and maximum consecutive-failure streaks;
+- I2C result codes and expected/received byte counts on failure;
+- analog-rail enabled/fault state captured with each event; and
+- `events_total`, `events_recorded`, and `events_dropped` so a full event ring is
+  visible rather than silently truncated.
+
+The AS5600 event ring holds at most 32 entries and is serialized only after
+sampling and the I2C scheduler have stopped. Repeated failures are coalesced;
+normal samples do not create events. This object is additive, does not widen
+data frames, and does not require parsers to understand it.
+
+I2C scheduler client summaries may include:
+
+- `acquire_fail_streak_max`;
+- `row_reuse_streak_max`; and
+- `row_no_sample_streak_max`.
+
+As with all final-summary fields, these diagnostics can be absent after an
+unclean shutdown.
+
 ## 16. Parser Acceptance Criteria
 
 A minimal compliant parser should:

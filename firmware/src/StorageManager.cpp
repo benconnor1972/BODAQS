@@ -80,7 +80,8 @@ struct SampleRow {
   uint64_t ts_ms = 0;
   uint16_t nValues = 0;
   bool     mark = false;
-  volatile uint8_t ready = 0;          // NEW
+  // 0 = unavailable/free or producer-owned, 1 = ready, 2 = consumer-owned.
+  volatile uint8_t ready = 0;
   float    values[SM_MAX_DYNAMIC_COLS];
 };
 
@@ -766,14 +767,29 @@ static bool dequeueSample(SampleRow &out) {
 
   const uint16_t idx = s_qTail;
 
-  // If producer reserved but hasn't finished filling, don't pop it yet
-  if (s_rows[idx].ready == 0) {
+  // If the producer reserved this slot but has not published it, do not pop it.
+  if (s_rows[idx].ready != 1) {
 #if defined(ESP32)
     portEXIT_CRITICAL(&s_qMux);
 #endif
     return false;  // try again next loop iteration
   }
 
+  // Keep the row counted as occupied while it is copied. This prevents the
+  // producer from wrapping around and reusing the slot during the copy.
+  s_rows[idx].ready = 2;
+
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_qMux);
+#endif
+
+  out = s_rows[idx];
+
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_qMux);
+#endif
+
+  s_rows[idx].ready = 0;
   s_qTail = (uint16_t)((s_qTail + 1) % s_qCap);
   --s_qCount;
 
@@ -781,9 +797,6 @@ static bool dequeueSample(SampleRow &out) {
   portEXIT_CRITICAL(&s_qMux);
 #endif
 
-  out = s_rows[idx];
-  // Optional: clear ready so stale reads are obvious in debug
-  s_rows[idx].ready = 0;
   return true;
 }
 

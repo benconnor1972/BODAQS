@@ -16,6 +16,7 @@
 #include "esp_timer.h"
 #include "DebugLog.h"
 #include "LoggerLimits.h"
+#include <atomic>
 
 #define LOGGING_LOGE(...) LOGE_TAG("Logging", __VA_ARGS__)
 #define LOGGING_LOGW(...) LOGW_TAG("Logging", __VA_ARGS__)
@@ -70,6 +71,7 @@ namespace {
   // ---- Task-based sampling (ESP32) ----
 #if defined(ESP32)
   static TaskHandle_t s_sampleTask = nullptr;
+  static std::atomic<bool> s_sampleInProgress{false};
 
   // Stats: how often the sampler task woke up "late"
   static uint32_t s_lateTicks    = 0;
@@ -233,7 +235,9 @@ static void sampleTaskFn_(void* arg) {
       }
     }
 
+    s_sampleInProgress.store(true);
     sampleOnce_();
+    s_sampleInProgress.store(false);
 
     const int64_t afterSampleUs = esp_timer_get_time();
     if ((afterSampleUs - lastBlockUs) >= kSamplerMaxNoBlockUs) {
@@ -426,6 +430,16 @@ LoggingManager::RuntimeStats LoggingManager::runtimeStats() {
 
 void LoggingManager::stop() {
   s_running = false;
+#if defined(ESP32)
+  // A sampler that already passed the run-state check may still be copying a
+  // row into the storage queue. Let that bounded operation finish before
+  // stopping sensors or draining/freeing the queue. If the sampler has not
+  // entered sampleOnce_ yet, sampleOnce_ will observe s_running == false and
+  // return without touching either subsystem.
+  while (s_sampleInProgress.load()) {
+    vTaskDelay(1);
+  }
+#endif
   AnalogInputManager::onLoggingStop();
   SensorManager::onLoggingStop();
   IndicatorManager::ledOff();

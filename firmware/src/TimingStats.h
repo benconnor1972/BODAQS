@@ -113,6 +113,9 @@ struct I2CBusSchedulerTimingStats {
     uint32_t rowFresh = 0;
     uint32_t rowReused = 0;
     uint32_t rowNoSample = 0;
+    uint32_t acquireFailStreakMax = 0;
+    uint32_t rowReuseStreakMax = 0;
+    uint32_t rowNoSampleStreakMax = 0;
     TimingSummary acquireUs;
     TimingSummary rowAgeUs;
   };
