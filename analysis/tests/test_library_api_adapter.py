@@ -3555,14 +3555,17 @@ def test_library_api_service_serves_optional_web_app(tmp_path: Path) -> None:
     root = client.get("/")
     assert root.status_code == 200
     assert "BODAQS" in root.text
+    assert root.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
 
     asset = client.get("/assets/app.js")
     assert asset.status_code == 200
     assert "window.__bodaqs" in asset.text
+    assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"
 
     spa_route = client.get("/analysis/simple-suspension")
     assert spa_route.status_code == 200
     assert "BODAQS" in spa_route.text
+    assert spa_route.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
 
     missing_asset = client.get("/assets/missing.js")
     assert missing_asset.status_code == 404

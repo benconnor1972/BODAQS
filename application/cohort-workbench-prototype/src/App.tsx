@@ -33,6 +33,7 @@ import {
   sessionFromSavedNote,
   sessionNoteFromSession,
 } from './components/SessionNoteEditorModal'
+import { SessionAltitudePreview } from './components/SessionAltitudePreview'
 import { SessionSignalPreview } from './components/SessionSignalPreview'
 import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
@@ -224,6 +225,7 @@ function App() {
   const [librarySelectorCollapsed, setLibrarySelectorCollapsed] = useState(true)
   const [sessionSelectorCollapsed, setSessionSelectorCollapsed] = useState(false)
   const [gpsLocationCollapsed, setGpsLocationCollapsed] = useState(false)
+  const [sessionAltitudeCollapsed, setSessionAltitudeCollapsed] = useState(false)
   const [studyGpsCollapsed, setStudyGpsCollapsed] = useState(false)
   const [filtersCollapsed, setFiltersCollapsed] = useState(false)
   const [activeSavedFilterIds, setActiveSavedFilterIds] = useState<string[]>([])
@@ -2395,6 +2397,12 @@ function App() {
                   selectedTracks={selectedTracks}
                   currentTracks={currentStudyTracks}
                 />
+                <SessionAltitudePreview
+                  collapsed={sessionAltitudeCollapsed}
+                  dataSource={activeDataSource}
+                  onToggleCollapsed={() => setSessionAltitudeCollapsed((current) => !current)}
+                  session={primarySession}
+                />
               </section>
             )}
 
@@ -2439,7 +2447,6 @@ function App() {
                 onToggleTrack={toggleTrack}
                 onAttachTrack={addTrackToStudySet}
                 onAttachSession={addSessionRefToStudySet}
-                onTrackSaved={upsertTrack}
                 onTrackDeleted={deleteTrackFromWorkbench}
               />
             </div>

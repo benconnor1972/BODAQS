@@ -40,8 +40,9 @@ export function SessionSignalPreview({
     status: 'idle',
     message: 'Select a primary session to preview wheel displacement.',
   })
-  const durationSourceS = session?.gpsSummary.sessionDurationS ?? (session?.durationMin ?? 0) * 60
-  const durationS = Math.max(1, durationSourceS || 1)
+  const gpsDurationS = positiveNumberOrNull(session?.gpsSummary.sessionDurationS)
+  const tabularDurationS = positiveNumberOrNull((session?.durationMin ?? 0) * 60)
+  const durationS = Math.max(1, gpsDurationS ?? tabularDurationS ?? 1)
   const previewSignals = useMemo(() => previewWheelDisplacementSignals(session), [session])
   const previewSignalKey = previewSignals.map((signal) => signal.column).join('|')
 
@@ -291,13 +292,26 @@ function previewRange(values: number[]): [number, number] {
   if (values.length === 0) {
     return [0, 1]
   }
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  if (min >= -0.05 && max <= 1.05) {
-    return [0, 1]
+  const robustMin = percentile(values, 0.01)
+  const robustMax = percentile(values, 0.99)
+  if (robustMin >= -0.1 && robustMax <= 1.05) {
+    return [-0.1, 1]
   }
-  const padding = Math.max((max - min) * 0.08, 0.05)
-  return [min - padding, max + padding]
+  const padding = Math.max((robustMax - robustMin) * 0.08, 0.05)
+  return [robustMin - padding, robustMax + padding]
+}
+
+function percentile(values: number[], fraction: number) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b)
+  if (sorted.length === 0) {
+    return 0
+  }
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * fraction)))
+  return sorted[index]
+}
+
+function positiveNumberOrNull(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 }
 
 function signalLabel(signal: TimeseriesWindowResponse['signals'][number], index: number) {

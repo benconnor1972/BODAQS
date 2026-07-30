@@ -7,6 +7,12 @@ This note describes the lightweight hosted-demo deployment shape for the BODAQS
 Workbench and Library API. The intended first target is a small AWS Lightsail
 Linux instance running a read-only demo library.
 
+For the current full build, release, and hosted-demo update runbook, see:
+
+```text
+docs/analysis/release-notes/BODAQS_Desktop_And_Hosted_Demo_Release_Process.md
+```
+
 ## Deployment Shape
 
 - Nginx listens publicly on ports `80` and `443`.
@@ -28,10 +34,10 @@ The local deployment bundle currently consists of:
 - `bodaqs-demo-library-root.zip`: processed read-only demo library root.
 - `SHA256SUMS.txt`: checksums for the three archives.
 
-Current generated bundle folder:
+Example generated bundle folder:
 
 ```text
-C:\Users\benco\dev\BODAQS\build\hosted-demo\20260723-110228
+C:\Users\benco\dev\BODAQS\build\hosted-demo\<timestamp>
 ```
 
 ## Runtime Dependencies

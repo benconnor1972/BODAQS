@@ -35,7 +35,6 @@ export function GeospatialWorkbench({
   onToggleTrack,
   onAttachTrack,
   onAttachSession,
-  onTrackSaved,
   onTrackDeleted,
 }: {
   primarySession: SessionRecord | null
@@ -48,11 +47,10 @@ export function GeospatialWorkbench({
   onToggleTrack: (trackId: string) => void
   onAttachTrack: (trackId: string) => void
   onAttachSession: (sessionRef: StudySessionRef) => void
-  onTrackSaved: (track: TrackRecord) => void
   onTrackDeleted: (trackId: string) => void
 }) {
   const [activeTrackId, setActiveTrackId] = useState<string | null>(tracks[0]?.id ?? null)
-  const [trackManagerMode, setTrackManagerMode] = useState<TrackManagerMode | null>(null)
+  const [deletingTrackIds, setDeletingTrackIds] = useState<Set<string>>(() => new Set())
   const [trackpointQuery, setTrackpointQuery] = useState<TrackpointMatchQueryRecord | null>(null)
   const [trackpointQueryResults, setTrackpointQueryResults] = useState<TrackpointMatchQueryResults | null>(null)
   const [trackpointQueryMessage, setTrackpointQueryMessage] = useState('')
@@ -68,17 +66,6 @@ export function GeospatialWorkbench({
       !trackpointQueryBusy,
   )
   const currentStudySessionIds = new Set(currentStudySet.sessions.map(sessionRefId))
-
-  function openManageTracks() {
-    if (!activeTrackId && tracks[0]) {
-      setActiveTrackId(tracks[0].id)
-    }
-    setTrackManagerMode('manage')
-  }
-
-  function openNewTrack() {
-    setTrackManagerMode('new')
-  }
 
   async function runTrackpointQuery() {
     if (
@@ -151,6 +138,45 @@ export function GeospatialWorkbench({
     setTrackpointQueryMessage('')
   }
 
+  async function deleteTrack(track: TrackRecord) {
+    if (!canWrite) {
+      setTrackpointQueryMessage('The Library API is running in read-only mode.')
+      return
+    }
+    if (!dataSource.deleteTrack) {
+      setTrackpointQueryMessage('Current data source cannot delete tracks.')
+      return
+    }
+    const confirmed = window.confirm(`Delete track "${track.name}"? This will also remove it from any open Study Set context.`)
+    if (!confirmed) {
+      return
+    }
+    setDeletingTrackIds((current) => new Set([...current, track.id]))
+    setTrackpointQueryMessage(`Deleting ${track.name}...`)
+    try {
+      await dataSource.deleteTrack(track.id)
+      onTrackDeleted(track.id)
+      setSelectedActiveTrackAfterDelete(track.id)
+      setTrackpointQueryMessage(`Deleted ${track.name}.`)
+    } catch (error) {
+      setTrackpointQueryMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDeletingTrackIds((current) => {
+        const next = new Set(current)
+        next.delete(track.id)
+        return next
+      })
+    }
+  }
+
+  function setSelectedActiveTrackAfterDelete(trackId: string) {
+    if (activeTrackId !== trackId) {
+      return
+    }
+    const nextTrack = tracks.find((track) => track.id !== trackId) ?? null
+    setActiveTrackId(nextTrack?.id ?? null)
+  }
+
   return (
     <section className="geospatial-workbench">
       <PrimaryGpsCard primarySession={primarySession} />
@@ -167,6 +193,7 @@ export function GeospatialWorkbench({
         <div className="track-list compact-track-list">
           {tracks.map((track) => {
             const attached = currentStudySet.trackIds.includes(track.id)
+            const deleting = deletingTrackIds.has(track.id)
             return (
               <div className={`check-row compact track-row${activeTrack?.id === track.id ? ' active-track' : ''}`} key={track.id}>
                 <input
@@ -178,7 +205,7 @@ export function GeospatialWorkbench({
                 <button className="track-row-summary" onClick={() => setActiveTrackId(track.id)} type="button">
                   <strong>{track.name}</strong>
                   <small>
-                    {track.trackpoints.length} trackpoints, {track.distanceKm.toFixed(1)} km, {track.defaultPolicyId}
+                    {track.trackpoints.length} trackpoints, {track.distanceKm.toFixed(1)} km
                   </small>
                 </button>
                 <IconButton
@@ -188,17 +215,24 @@ export function GeospatialWorkbench({
                   icon={<Plus size={16} />}
                   tone="good"
                 />
+                <IconButton
+                  label={deleting ? 'Deleting Track' : 'Delete Track'}
+                  disabled={!canWrite || !dataSource.deleteTrack || deleting}
+                  onClick={() => void deleteTrack(track)}
+                  icon={<Trash2 size={16} />}
+                  tone="alert"
+                />
               </div>
             )
           })}
-          {tracks.length === 0 && <p className="empty-note">No tracks yet. Use New to create one from primary GPS.</p>}
+          {tracks.length === 0 && <p className="empty-note">No tracks yet. Use Track Analysis and Lap Timing to create one from session GPS.</p>}
         </div>
         <div className="action-row tight">
           <button className="secondary-action" disabled={!canRunTrackpointQuery} onClick={() => void runTrackpointQuery()} type="button">
             <Crosshair size={16} />
-            Run trackpoint query
+            Find matching sessions
           </button>
-          <InfoTip text="Trackpoint query prototype: runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
+          <InfoTip text="Find matching sessions runs all trackpoints on the active track against the selected libraries with a 5 m tolerance." />
           <button
             className="ghost-action"
             disabled={!canWrite || !isActiveTrackpointQuery(trackpointQuery) || !dataSource.cancelTrackpointMatchQuery || trackpointQueryBusy}
@@ -246,33 +280,7 @@ export function GeospatialWorkbench({
           </div>
         )}
         {trackpointQueryMessage && <p className="track-manager-message">{trackpointQueryMessage}</p>}
-        <div className="action-row tight">
-          <button className="secondary-action" disabled={tracks.length === 0} onClick={openManageTracks} type="button">
-            <Route size={16} />
-            Manage
-          </button>
-          <button className="secondary-action" disabled={!canWrite} onClick={openNewTrack} type="button">
-            <Plus size={16} />
-            New
-          </button>
-        </div>
       </div>
-
-      {trackManagerMode && (
-        <TrackManagerModal
-          mode={trackManagerMode}
-          primarySession={primarySession}
-          sessions={sessions}
-          tracks={tracks}
-          activeTrack={activeTrack}
-          dataSource={dataSource}
-          canWrite={canWrite}
-          onActiveTrackChange={setActiveTrackId}
-          onClose={() => setTrackManagerMode(null)}
-          onTrackSaved={onTrackSaved}
-          onTrackDeleted={onTrackDeleted}
-        />
-      )}
     </section>
   )
 }
@@ -395,7 +403,7 @@ function PrimaryGpsCard({ primarySession }: { primarySession: SessionRecord | nu
   )
 }
 
-function TrackManagerModal({
+export function TrackManagerModal({
   mode,
   primarySession,
   sessions,

@@ -23,6 +23,14 @@ except Exception:
 SERVICE_API_VERSION = "0"
 SERVICE_COMPONENT_VERSION = str(_PACKAGED_SERVICE_VERSION or "0.1.0-dev")
 SERVICE_NAME = "BODAQS Library API"
+WEB_APP_INDEX_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+WEB_APP_ASSET_CACHE_HEADERS = {
+    "Cache-Control": "public, max-age=31536000, immutable",
+}
 DEFAULT_ALLOW_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -518,16 +526,24 @@ def _web_app_response(config: LibraryApiServiceConfig, request_path: str) -> Fil
         raise HTTPException(status_code=404, detail="Web app index.html was not found.")
 
     if not normalized_path:
-        return FileResponse(index_path)
+        return _web_app_index_response(index_path)
 
     requested = (root / normalized_path).resolve()
     if not _path_is_within(requested, root):
         raise HTTPException(status_code=404)
     if requested.is_file():
+        if normalized_path.startswith("assets/"):
+            return FileResponse(requested, headers=WEB_APP_ASSET_CACHE_HEADERS)
+        if requested.name == "index.html":
+            return _web_app_index_response(index_path)
         return FileResponse(requested)
     if Path(normalized_path).suffix:
         raise HTTPException(status_code=404)
-    return FileResponse(index_path)
+    return _web_app_index_response(index_path)
+
+
+def _web_app_index_response(index_path: Path) -> FileResponse:
+    return FileResponse(index_path, headers=WEB_APP_INDEX_CACHE_HEADERS)
 
 
 def _path_is_within(path: Path, root: Path) -> bool:

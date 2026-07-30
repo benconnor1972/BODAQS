@@ -1471,7 +1471,8 @@
 
 .track-row {
   position: relative;
-  grid-template-columns: 18px minmax(0, 1fr) 30px;
+  grid-template-columns: 18px minmax(0, 1fr) 26px 26px;
+  align-items: center;
 }
 
 .track-row.active-track {
@@ -2344,20 +2345,30 @@ button {
 
 .filter-panel {
   display: grid;
+  grid-template-rows: minmax(0, auto) auto;
   gap: 8px;
-  height: 164px;
-  min-height: 164px;
+  padding: 8px 10px 10px;
+}
+
+.filter-panel-scroll {
+  display: grid;
+  gap: 8px;
+  height: 118px;
+  min-height: 96px;
   max-height: 520px;
   overflow: auto;
-  padding: 8px 10px 10px;
+  padding: 0;
   resize: vertical;
 }
 
 .filter-panel-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 7px;
+}
+
+.filter-panel-actions .ghost-action:last-child {
+  margin-left: auto;
 }
 
 .active-filter-stack {
@@ -2713,6 +2724,83 @@ button {
 
 .gps-route-status.error strong {
   color: #983d3d;
+}
+
+.session-altitude-module {
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.library-altitude-chart {
+  display: block;
+  width: 100%;
+  height: 190px;
+  padding: var(--space-3);
+  overflow: visible;
+}
+
+.library-altitude-axis {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.library-altitude-grid line {
+  stroke: rgba(83, 96, 106, 0.18);
+  stroke-width: 1;
+}
+
+.library-altitude-line {
+  fill: none;
+  stroke: var(--teal);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.library-altitude-chart text {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.library-altitude-axis-title {
+  font-weight: var(--weight-regular);
+}
+
+.session-altitude-empty {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
+  padding: var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-body);
+  text-align: center;
+}
+
+.session-altitude-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+  padding: 5px var(--space-3);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.session-altitude-status strong {
+  color: var(--teal-strong);
+  font-weight: var(--weight-heavy);
+  text-transform: uppercase;
+}
+
+.session-altitude-status.loading strong {
+  color: var(--green);
+}
+
+.session-altitude-status.error strong {
+  color: var(--red);
 }
 
 .trackpoint-marker line {
