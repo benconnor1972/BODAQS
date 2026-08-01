@@ -622,6 +622,7 @@ export function SignalInspector({
       const loadedData = loadStateData(loadState)
       const loadedCoverage = timeseriesDataCoverage(loadedData)
       const loadedWindowIsReady =
+        timeseriesDataMatchesSelectedSignals(loadedData, selectedColumns) &&
         loadedCoverage &&
         (useBufferedWindow
           ? windowHasPlaybackRunway(loadedCoverage, requestWindow, durationS)
@@ -4690,6 +4691,23 @@ function timeseriesDataMeetsResolution(data: TimeseriesWindowResponse | undefine
     return false
   }
   return data.sampling.mode === 'raw' || data.sampling.targetPoints >= targetPoints
+}
+
+function timeseriesDataMatchesSelectedSignals(
+  data: TimeseriesWindowResponse | undefined,
+  selectedColumns: readonly string[],
+) {
+  if (!data) {
+    return false
+  }
+  const requestedColumns = new Set(selectedColumns)
+  const returnedColumns = new Set(data.signals.map((signal) => signal.column))
+  return (
+    requestedColumns.size === selectedColumns.length &&
+    returnedColumns.size === data.signals.length &&
+    returnedColumns.size === requestedColumns.size &&
+    [...requestedColumns].every((column) => returnedColumns.has(column))
+  )
 }
 
 function windowContains(container: SessionTimeWindow, child: SessionTimeWindow, toleranceS = 0.05) {

@@ -1,28 +1,7 @@
 import { ExternalLink, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
-const WALKTHROUGH_VIDEOS = [
-  {
-    title: 'BODAQS Workbench: first analysis',
-    description: 'Explore the demo library and simple suspension metrics.',
-    href: 'https://youtu.be/HjcBr6v1-Ec?si=DsW_EbhhPCR1otQ2',
-  },
-  {
-    title: 'BODAQS Workbench: the Signal Inspector',
-    description: 'In detail with the underlying data, including video synchronisation. Walkthrough video coming soon.',
-    href: null,
-  },
-  {
-    title: 'BODAQS Workbench: Tracks and lap timing',
-    description: 'Setting up tracks, segments and timing comparisons. Walkthrough video coming soon.',
-    href: null,
-  },
-]
-
-const DESKTOP_INSTALL_VIDEO = {
-  title: 'Download and install BODAQS Desktop',
-  href: 'https://youtu.be/V4gr8XfFBcc?si=XJwLHi5YHer0pZt-',
-}
+const BODAQS_YOUTUBE_URL = 'https://www.youtube.com/@BODAQS'
 
 export function DemoWelcomeModal({ onClose }: { onClose: (suppressFutureSessions: boolean) => void }) {
   const [suppressFutureSessions, setSuppressFutureSessions] = useState(false)
@@ -72,37 +51,20 @@ export function DemoWelcomeModal({ onClose }: { onClose: (suppressFutureSessions
             Changes you make in the Workbench are local to this browser session and do not alter the demonstration
             library.
           </p>
-          <section aria-label="Walkthrough videos" className="demo-welcome-videos">
-            <h3>Walkthrough videos</h3>
-            {WALKTHROUGH_VIDEOS.map((video) =>
-              video.href ? (
-                <a className="demo-welcome-video" href={video.href} key={video.title} rel="noreferrer" target="_blank">
-                  <span>
-                    <strong>{video.title}</strong>
-                    <small>{video.description}</small>
-                  </span>
-                  <ExternalLink aria-hidden="true" size={16} />
-                </a>
-              ) : (
-                <div className="demo-welcome-video pending" key={video.title}>
-                  <span>
-                    <strong>{video.title}</strong>
-                    <small>{video.description}</small>
-                  </span>
-                </div>
-              ),
-            )}
+          <section aria-label="BODAQS videos" className="demo-welcome-videos">
+            <h3>Videos and walkthroughs</h3>
+            <a className="demo-welcome-video" href={BODAQS_YOUTUBE_URL} rel="noreferrer" target="_blank">
+              <span>
+                <strong>BODAQS on YouTube</strong>
+                <small>Watch the latest Workbench walkthroughs and installation guidance.</small>
+              </span>
+              <ExternalLink aria-hidden="true" size={16} />
+            </a>
           </section>
           <section className="demo-welcome-desktop-note">
             <p>
               You can also install the BODAQS Desktop package - this is <em>not required</em> to try this demo.
             </p>
-            <a className="demo-welcome-video" href={DESKTOP_INSTALL_VIDEO.href} rel="noreferrer" target="_blank">
-              <span>
-                <strong>{DESKTOP_INSTALL_VIDEO.title}</strong>
-              </span>
-              <ExternalLink aria-hidden="true" size={16} />
-            </a>
           </section>
           <label className="demo-welcome-preference">
             <input
