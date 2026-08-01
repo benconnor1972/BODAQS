@@ -15,8 +15,12 @@ hero:
 ---
 
 import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
 import Lede from '@components/Lede.astro';
 import {Aside} from '@astrojs/starlight/components';
+import explodedAssembly from '../../assets/pics/homepage/exploded-assembly.png';
+import softwareMapVideo from '../../assets/pics/homepage/software-map-video.png';
+import analysisResults from '../../assets/pics/homepage/analysis-results.png';
 
 <Lede>
   **BODAQS** is a project focused on making mountain-bike data acquisition and analysis accessible — allowing the curious to explore and learn, and the driven a new tool to chase performance.
@@ -28,6 +32,35 @@ import {Aside} from '@astrojs/starlight/components';
 <Aside type={"note"} title="Work in progress"  icon="seti:config">
 This site is getting a makeover in the run up to publication of the A8 design. It may have a few rough edges just now.
 </Aside>
+
+## From bike to insight
+
+<div class="bodaqs-story" aria-label="Placeholder images showing the BODAQS workflow from bike to insight">
+  <figure class="bodaqs-story__panel bodaqs-story__panel--product">
+    <div class="bodaqs-story__image" role="img" aria-label="Placeholder for a photograph of a BODAQS logger installed on a bicycle">
+      <span class="bodaqs-story__bike-frame"></span><span class="bodaqs-story__bike-wheel bodaqs-story__bike-wheel--front"></span><span class="bodaqs-story__bike-wheel bodaqs-story__bike-wheel--rear"></span><span class="bodaqs-story__logger"></span>
+    </div>
+    <figcaption><strong>Product</strong><span>The logger, out on the bike.</span></figcaption>
+  </figure>
+  <figure class="bodaqs-story__panel bodaqs-story__panel--process">
+    <div class="bodaqs-story__image">
+      <Image class="bodaqs-story__asset" src={explodedAssembly} alt="Exploded assembly view of the BODAQS logger enclosure, circuit board and controls" />
+    </div>
+    <figcaption><strong>Process</strong><span>Open parts, built your way.</span></figcaption>
+  </figure>
+  <figure class="bodaqs-story__panel bodaqs-story__panel--software">
+    <div class="bodaqs-story__image">
+      <Image class="bodaqs-story__asset" src={softwareMapVideo} alt="BODAQS software showing a segmented trail map, synchronised riding video and lap timing comparison" />
+    </div>
+    <figcaption><strong>Software</strong><span>Turn a ride into readable data.</span></figcaption>
+  </figure>
+  <figure class="bodaqs-story__panel bodaqs-story__panel--results">
+    <div class="bodaqs-story__image">
+      <Image class="bodaqs-story__asset" src={analysisResults} alt="BODAQS analysis comparing wheel displacement and velocity distributions across three riding sessions" />
+    </div>
+    <figcaption><strong>Results</strong><span>Find the moments worth chasing.</span></figcaption>
+  </figure>
+</div>
 
 ## Next steps
 
@@ -65,6 +98,17 @@ This site is getting a makeover in the run up to publication of the A8 design. I
       Fire up your computer
     </LinkButton>
   </Card>
+  <Card title="Try the demo site" icon="external">
+    Explore the BODAQS analysis software in your browser with sample data.
+    <LinkButton
+      href="https://demo.bodaqs.net/"
+      variant="minimal"
+      icon="external"
+      iconPlacement="end"
+    >
+      Open the demo
+    </LinkButton>
+  </Card>
   <Card title="Read the user guide" icon="add-document">
     Learn how to set up and use your logger.
     <LinkButton
@@ -76,9 +120,9 @@ This site is getting a makeover in the run up to publication of the A8 design. I
       Lights, camera...action!
     </LinkButton>
   </Card>
-  <Card title="Discord & Instagram" icon="seti:css">
+  <Card title="Discord, Instagram & YouTube" icon="seti:css">
     Connect with other bike data enthusiasts, show off your hacks, get help, and generally hang out
-    on the BODAQS Discord server or follow us on Instagram.
+    on the BODAQS Discord server, follow us on Instagram, or watch BODAQS on YouTube.
 
     <LinkButton
       href="https://discord.gg/6V9cujn7G"
@@ -95,6 +139,14 @@ This site is getting a makeover in the run up to publication of the A8 design. I
       iconPlacement="start"
     >
       Follow on Instagram
+    </LinkButton>
+    <LinkButton
+      href="https://www.youtube.com/@bodaqs"
+      variant="minimal"
+      icon="external"
+      iconPlacement="start"
+    >
+      Watch on YouTube
     </LinkButton>
 
   </Card>
