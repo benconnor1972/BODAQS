@@ -10,6 +10,7 @@ param(
     [string]$ImportManagerVersion = "0.1.5-beta",
     [string]$LibraryServiceVersion = "0.1.0-dev",
     [string]$WorkbenchVersion = "0.1.0-dev",
+    [switch]$IncludeDemoLibrary,
     [string]$AppVersion = "",
     [string]$WebAppDist = ""
 )
@@ -285,12 +286,16 @@ if ($installerRequested) {
         New-Item -ItemType Directory -Force -Path $serviceStageDir | Out-Null
         Copy-Item (Join-Path $distDir "bodaqs-library-service\*") $serviceStageDir -Recurse -Force
 
-        $repoRoot = Split-Path -Parent $importManagerDir
-        $demoAssetsSourceDir = Join-Path $repoRoot "demo-assets"
-        $demoAssetsStageDir = Join-Path $installerStageDir "demo-assets"
-        New-Item -ItemType Directory -Force -Path $demoAssetsStageDir | Out-Null
-        if (Test-Path $demoAssetsSourceDir) {
-            Copy-Item (Join-Path $demoAssetsSourceDir "*") $demoAssetsStageDir -Recurse -Force
+        $hasDemoLibrary = $false
+        if ($IncludeDemoLibrary) {
+            $repoRoot = Split-Path -Parent $importManagerDir
+            $demoAssetsSourceDir = Join-Path $repoRoot "demo-assets"
+            $demoAssetsStageDir = Join-Path $installerStageDir "demo-assets"
+            New-Item -ItemType Directory -Force -Path $demoAssetsStageDir | Out-Null
+            if (Test-Path $demoAssetsSourceDir) {
+                Copy-Item (Join-Path $demoAssetsSourceDir "*") $demoAssetsStageDir -Recurse -Force
+            }
+            $hasDemoLibrary = Test-Path (Join-Path $demoAssetsStageDir "libraries\*\library_definition.json")
         }
 
         $componentVersions = [ordered]@{
@@ -338,7 +343,7 @@ if ($installerRequested) {
             "/DWorkbenchVersion=$WorkbenchVersion",
             "/DInstallerOutputDir=$installerOutputDir"
         )
-        if (-not $managerOnlyInstaller -and (Test-Path (Join-Path $demoAssetsStageDir "libraries\*\library_definition.json"))) {
+        if (-not $managerOnlyInstaller -and $hasDemoLibrary) {
             $innoArgs += "/DHasDemoLibrary=1"
         }
         $innoArgs += $installerScript

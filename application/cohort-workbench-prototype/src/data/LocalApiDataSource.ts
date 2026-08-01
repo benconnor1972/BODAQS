@@ -93,6 +93,9 @@ type ApiObject = Record<string, unknown>
 type ApiHealth = {
   libraries_root?: string
   read_only?: boolean
+  web_app?: {
+    demo_welcome_enabled?: boolean
+  }
 }
 
 type ApiSetLibrariesRootResponse = {

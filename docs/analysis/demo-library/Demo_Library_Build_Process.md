@@ -39,15 +39,17 @@ The Import Manager must never overwrite an existing demo library silently. If
    mixture of these.
 5. Add `tracks`, `bookmarks`, and `session_filters` if they should be included
    explicitly.
-6. Set anonymization replacements under `anonymize.replace_text`.
-7. Run:
+6. Set `include_session_videos` to `true` when portable video attachments for
+   selected sessions should be copied into the demo workspace.
+7. Set anonymization replacements under `anonymize.replace_text`.
+8. Run:
 
    ```powershell
    python tools/build_demo_library.py demo-assets/recipes/bodaqs_demo_library.recipe.json --force
    ```
 
-8. Review `demo-assets/demo_manifest.json`.
-9. Start the library service against `demo-assets` and smoke-test the library in
+9. Review `demo-assets/demo_manifest.json`.
+10. Start the library service against `demo-assets` and smoke-test the library in
    the Workbench before building the installer.
 
 ## What The Exporter Copies
@@ -62,6 +64,8 @@ The exporter copies:
 - selected tracks
 - selected session filters
 - selected bookmarks plus, by default, bookmarks for copied sessions
+- enabled session video attachments that use safe workspace-relative paths,
+  when `include_session_videos` is enabled
 
 The exporter rewrites selected session references from the source library ID to
 the demo library ID. It also removes configured absolute source paths from JSON

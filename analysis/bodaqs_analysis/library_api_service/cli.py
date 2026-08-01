@@ -35,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reject routes that modify library, study-set, filter, track, note, bookmark, or match-query state.",
     )
     parser.add_argument(
+        "--demo-welcome",
+        action="store_true",
+        help="Show the hosted-demo welcome panel in the bundled web app.",
+    )
+    parser.add_argument(
         "--allow-origin",
         action="append",
         default=None,
@@ -50,6 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_origins=tuple(args.allow_origin) if args.allow_origin else None,
         web_root=Path(args.web_root) if args.web_root else None,
         read_only=bool(args.read_only),
+        demo_welcome_enabled=bool(args.demo_welcome),
     )
     uvicorn.run(app, host=str(args.host), port=int(args.port))
     return 0

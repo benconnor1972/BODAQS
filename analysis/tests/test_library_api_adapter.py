@@ -3550,6 +3550,7 @@ def test_library_api_service_serves_optional_web_app(tmp_path: Path) -> None:
         "enabled": True,
         "web_root": str(web_root.resolve()),
         "index_present": True,
+        "demo_welcome_enabled": False,
     }
 
     root = client.get("/")
@@ -3574,6 +3575,29 @@ def test_library_api_service_serves_optional_web_app(tmp_path: Path) -> None:
     assert missing_api.status_code == 404
     assert "BODAQS" not in missing_api.text
 
+
+def test_library_api_service_can_enable_hosted_demo_welcome(tmp_path: Path) -> None:
+    web_root = tmp_path / "web"
+    web_root.mkdir()
+    (web_root / "index.html").write_text("<!doctype html><title>BODAQS</title>", encoding="utf-8")
+    client = TestClient(create_app(tmp_path / "libraries", web_root=web_root, demo_welcome_enabled=True))
+
+    health = client.get("/api/v1/health")
+
+    assert health.status_code == 200
+    assert health.json()["web_app"]["demo_welcome_enabled"] is True
+
+
+def test_library_api_service_reports_demo_welcome_without_bundled_web_app(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path / "libraries", demo_welcome_enabled=True))
+
+    health = client.get("/api/v1/health")
+
+    assert health.status_code == 200
+    assert health.json()["web_app"] == {
+        "enabled": False,
+        "demo_welcome_enabled": True,
+    }
 
 def test_library_api_service_study_set_crud_and_revision_conflict(
     tmp_path: Path,

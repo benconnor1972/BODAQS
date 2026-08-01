@@ -109,7 +109,7 @@ Type=simple
 User=ec2-user
 WorkingDirectory=/opt/bodaqs/app/analysis
 Environment=PYTHONPATH=/opt/bodaqs/app/analysis
-ExecStart=/opt/bodaqs/venv/bin/python -m bodaqs_analysis.library_api_service --libraries-root /opt/bodaqs/demo-library-root --web-root /opt/bodaqs/workbench --host 127.0.0.1 --port 8765 --read-only
+ExecStart=/opt/bodaqs/venv/bin/python -m bodaqs_analysis.library_api_service --libraries-root /opt/bodaqs/demo-library-root --web-root /opt/bodaqs/workbench --host 127.0.0.1 --port 8765 --read-only --demo-welcome
 Restart=on-failure
 RestartSec=5
 

@@ -48,6 +48,7 @@ class LibraryApiServiceConfig:
     allow_origins: tuple[str, ...] = DEFAULT_ALLOW_ORIGINS
     web_root: Path | None = None
     read_only: bool = False
+    demo_welcome_enabled: bool = False
 
 
 def create_app(
@@ -56,6 +57,7 @@ def create_app(
     allow_origins: Sequence[str] | None = None,
     web_root: str | Path | None = None,
     read_only: bool = False,
+    demo_welcome_enabled: bool = False,
 ) -> FastAPI:
     """Create a local-only FastAPI app backed by ``LibraryAdapter``."""
 
@@ -65,6 +67,7 @@ def create_app(
         allow_origins=tuple(allow_origins or DEFAULT_ALLOW_ORIGINS),
         web_root=resolved_web_root,
         read_only=bool(read_only),
+        demo_welcome_enabled=bool(demo_welcome_enabled),
     )
     app = FastAPI(
         title=SERVICE_NAME,
@@ -503,12 +506,16 @@ def create_app(
 def _web_app_status(config: LibraryApiServiceConfig) -> dict[str, Any]:
     web_root = config.web_root
     if web_root is None:
-        return {"enabled": False}
+        return {
+            "enabled": False,
+            "demo_welcome_enabled": config.demo_welcome_enabled,
+        }
     index_path = web_root / "index.html"
     return {
         "enabled": True,
         "web_root": str(web_root),
         "index_present": index_path.is_file(),
+        "demo_welcome_enabled": config.demo_welcome_enabled,
     }
 
 

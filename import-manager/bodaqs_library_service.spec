@@ -22,7 +22,6 @@ service_excludes = [
     "nbformat",
     "PIL",
     "pytest",
-    "tkinter",
     "tornado",
     "zmq",
 ]
@@ -45,6 +44,8 @@ a = Analysis(
         "uvicorn.protocols.http.auto",
         "uvicorn.protocols.websockets.auto",
         "uvicorn.logging",
+        "tkinter",
+        "tkinter.filedialog",
     ],
     hookspath=[],
     hooksconfig={},

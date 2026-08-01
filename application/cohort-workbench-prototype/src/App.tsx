@@ -28,6 +28,7 @@ import { GeospatialWorkbench, MatchPreviewCard, StudySetGpsCoverageCard } from '
 import { GpsRoutePreview } from './components/GpsRoutePreview'
 import { MapRoutePreview } from './components/MapRoutePreview'
 import { Modal } from './components/Modal'
+import { DemoWelcomeModal } from './components/DemoWelcomeModal'
 import {
   SessionNoteEditorModal,
   sessionFromSavedNote,
@@ -104,6 +105,9 @@ type PendingStudySetAction =
   | { kind: 'load'; studySet: StudySet }
   | { kind: 'analyze-now'; session: SessionRecord }
   | { kind: 'clear' }
+
+const DEMO_WELCOME_DISMISSED_STORAGE_KEY = 'bodaqs.demo-welcome.dismissed.v1'
+const DEMO_WELCOME_SESSION_STORAGE_KEY = 'bodaqs.demo-welcome.seen.v1'
 
 type GeoFilterQueryState = {
   key: string
@@ -245,9 +249,33 @@ function App() {
   const [statusMessage, setStatusMessage] = useState('Connecting to configured BODAQS Library API...')
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
   const [libraryApiReadOnly, setLibraryApiReadOnly] = useState(false)
+  const [demoWelcomeOpen, setDemoWelcomeOpen] = useState(false)
   const workbenchRefreshInFlightRef = useRef(false)
   const studySetSaveInFlightRef = useRef(false)
   const lastAutomaticWorkbenchRefreshMs = useRef(0)
+  const demoWelcomeEvaluatedRef = useRef(false)
+
+  const considerDemoWelcome = useCallback((health: { web_app?: { demo_welcome_enabled?: boolean } }) => {
+    if (demoWelcomeEvaluatedRef.current || !health.web_app?.demo_welcome_enabled) {
+      return
+    }
+    demoWelcomeEvaluatedRef.current = true
+    if (
+      window.localStorage.getItem(DEMO_WELCOME_DISMISSED_STORAGE_KEY) === '1' ||
+      window.sessionStorage.getItem(DEMO_WELCOME_SESSION_STORAGE_KEY) === '1'
+    ) {
+      return
+    }
+    window.sessionStorage.setItem(DEMO_WELCOME_SESSION_STORAGE_KEY, '1')
+    setDemoWelcomeOpen(true)
+  }, [])
+
+  const closeDemoWelcome = useCallback((suppressFutureSessions: boolean) => {
+    if (suppressFutureSessions) {
+      window.localStorage.setItem(DEMO_WELCOME_DISMISSED_STORAGE_KEY, '1')
+    }
+    setDemoWelcomeOpen(false)
+  }, [])
 
   useEffect(() => {
     function handleHashChange() {
@@ -280,6 +308,7 @@ function App() {
           setLibraryRootInput(health.libraries_root)
         }
         setLibraryApiReadOnly(Boolean(health.read_only))
+        considerDemoWelcome(health)
         const loaded = await fetchWorkbenchData(localDataSource)
         if (cancelled) {
           return
@@ -331,7 +360,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [fixtureDataSource, localDataSource])
+  }, [considerDemoWelcome, fixtureDataSource, localDataSource])
 
   useEffect(() => {
     if (connectionMode !== 'local-api') {
@@ -346,6 +375,7 @@ function App() {
           return
         }
         setLibraryApiReadOnly(Boolean(health.read_only))
+        considerDemoWelcome(health)
         setConnectionStatus('online')
       } catch {
         if (cancelled) {
@@ -363,7 +393,7 @@ function App() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [connectionMode, localDataSource])
+  }, [connectionMode, considerDemoWelcome, localDataSource])
 
   useEffect(() => {
     if (connectionMode !== 'local-api' || !activeDataSource.refreshLibrary || libraries.length === 0) {
@@ -2070,28 +2100,32 @@ function App() {
   if (analysisRoute) {
     const routeStudySet = analysisRoute.scopeToken ? loadAnalysisScope(analysisRoute.scopeToken) : analysisRouteStudySet
     return (
-      <AnalysisRoutePage
-        route={analysisRoute}
-        studySet={routeStudySet}
-        loadingScope={analysisRouteStudySetLoading}
-        scopeError={analysisRouteStudySetError}
-        scopeNotice={analysisScopeNotice}
-        sessions={sessions}
-        tracks={tracks}
-        dataSource={activeDataSource}
-        statusMessage={statusMessage}
-        connectionStatus={connectionStatus}
-        connectionMode={connectionMode}
-        canWrite={canWriteLibraryState}
-        onTrackSaved={upsertTrack}
-        onTrackDeleted={deleteTrackFromWorkbench}
-        onRefreshScope={() => void refreshAnalysisRouteScope()}
-        onDismissScopeNotice={() => setAnalysisScopeNotice(null)}
-      />
+      <>
+        <AnalysisRoutePage
+          route={analysisRoute}
+          studySet={routeStudySet}
+          loadingScope={analysisRouteStudySetLoading}
+          scopeError={analysisRouteStudySetError}
+          scopeNotice={analysisScopeNotice}
+          sessions={sessions}
+          tracks={tracks}
+          dataSource={activeDataSource}
+          statusMessage={statusMessage}
+          connectionStatus={connectionStatus}
+          connectionMode={connectionMode}
+          canWrite={canWriteLibraryState}
+          onTrackSaved={upsertTrack}
+          onTrackDeleted={deleteTrackFromWorkbench}
+          onRefreshScope={() => void refreshAnalysisRouteScope()}
+          onDismissScopeNotice={() => setAnalysisScopeNotice(null)}
+        />
+        {demoWelcomeOpen && <DemoWelcomeModal onClose={closeDemoWelcome} />}
+      </>
     )
   }
 
   return (
+    <>
     <main className="app-shell">
       <header className="app-header">
         <div>
@@ -2773,6 +2807,8 @@ function App() {
         />
       )}
     </main>
+    {demoWelcomeOpen && <DemoWelcomeModal onClose={closeDemoWelcome} />}
+    </>
   )
 }
 

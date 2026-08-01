@@ -54,6 +54,7 @@ def main() -> int:
     print(f"Demo library written to: {output_root}")
     print(f"Manifest written to: {manifest_path}")
     print(f"Included sessions: {len(report['sessions'])}")
+    print(f"Included videos: {len(report['videos'])}")
     print(f"Warnings: {len(report['warnings'])}")
     for warning in report["warnings"]:
         print(f"  - {warning}")
@@ -78,6 +79,7 @@ def build_demo_library(recipe: Mapping[str, Any], *, output_root: Path) -> dict[
     anonymize = recipe.get("anonymize") if isinstance(recipe.get("anonymize"), Mapping) else {}
     include_referenced_sessions = bool(recipe.get("include_referenced_sessions", True))
     include_bookmarks_for_sessions = bool(recipe.get("include_bookmarks_for_sessions", True))
+    include_session_videos = bool(recipe.get("include_session_videos", False))
 
     source_library_root = _find_library_root(source_libraries_root, source_library_id)
     if source_library_root is None:
@@ -123,6 +125,17 @@ def build_demo_library(recipe: Mapping[str, Any], *, output_root: Path) -> dict[
         output_library_root,
         selected_sessions=selected_sessions,
         warnings=warnings,
+    )
+    copied_videos = (
+        _copy_session_videos(
+            source_libraries_root,
+            source_library_root,
+            output_root,
+            copied_sessions,
+            warnings=warnings,
+        )
+        if include_session_videos
+        else []
     )
     _write_demo_library_definition(
         source_library_root,
@@ -204,13 +217,13 @@ def build_demo_library(recipe: Mapping[str, Any], *, output_root: Path) -> dict[
         "library": {
             "library_id": demo_library_id,
             "display_name": demo_display_name,
-            "root": str(output_library_root),
+            "root": f"libraries/{demo_library_id}",
         },
         "source": {
-            "libraries_root": str(source_libraries_root),
             "library_id": source_library_id,
         },
         "sessions": [{"run_id": session.run_id, "session_id": session.session_id} for session in copied_sessions],
+        "videos": copied_videos,
         "study_sets": copied_study_sets,
         "tracks": copied_tracks,
         "bookmarks": copied_bookmarks,
@@ -277,6 +290,78 @@ def _copy_selected_sessions(
         _write_json(target_manifest_path, manifest)
 
     return copied
+
+
+def _copy_session_videos(
+    source_workspace_root: Path,
+    source_library_root: Path,
+    output_root: Path,
+    sessions: Sequence[SessionRef],
+    *,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    copied_by_path: dict[str, dict[str, Any]] = {}
+    for session in sessions:
+        attachment_path = (
+            source_library_root
+            / "runs"
+            / session.run_id
+            / "sessions"
+            / session.session_id
+            / "annotations"
+            / "session_videos.json"
+        )
+        if not attachment_path.exists():
+            continue
+        try:
+            document = _read_json_object(attachment_path)
+        except Exception as exc:
+            warnings.append(f"Could not read video attachments for {session.key}: {exc}")
+            continue
+        attachments = document.get("attachments")
+        if not isinstance(attachments, list):
+            warnings.append(f"Video attachments for {session.key} are not a list and were skipped.")
+            continue
+        for attachment in attachments:
+            if not isinstance(attachment, Mapping) or not bool(attachment.get("enabled", True)):
+                continue
+            relative_text = _text(attachment.get("workspace_relative_path"))
+            if not relative_text:
+                warnings.append(
+                    f"Video attachment {attachment.get('attachment_id') or '<unknown>'} for {session.key} "
+                    "has no portable workspace-relative path and was skipped."
+                )
+                continue
+            relative_path = Path(relative_text.replace("\\", "/"))
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                warnings.append(f"Unsafe video path for {session.key} was skipped: {relative_text}")
+                continue
+            source_path = (source_workspace_root / relative_path).resolve()
+            try:
+                source_path.relative_to(source_workspace_root.resolve())
+            except ValueError:
+                warnings.append(f"Video path outside the source workspace was skipped for {session.key}: {relative_text}")
+                continue
+            if not source_path.is_file():
+                warnings.append(f"Video file not found for {session.key}: {relative_text}")
+                continue
+            normalized_relative = relative_path.as_posix()
+            record = copied_by_path.get(normalized_relative)
+            if record is None:
+                target_path = output_root / relative_path
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, target_path)
+                if target_path.stat().st_size != source_path.stat().st_size:
+                    raise OSError(f"Copied video size mismatch: {normalized_relative}")
+                record = {
+                    "workspace_relative_path": normalized_relative,
+                    "bytes": source_path.stat().st_size,
+                    "sessions": [],
+                }
+                copied_by_path[normalized_relative] = record
+            if session.key not in record["sessions"]:
+                record["sessions"].append(session.key)
+    return [copied_by_path[path] for path in sorted(copied_by_path)]
 
 
 def _write_demo_library_definition(
@@ -636,6 +721,7 @@ def _clear_output_root(path: Path) -> None:
         "session_filters",
         "study_sets",
         "tracks",
+        "video",
     }
     for child in resolved.iterdir():
         if child.name not in generated_names:

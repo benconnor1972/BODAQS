@@ -661,11 +661,13 @@ export function SignalInspector({
         })
         const currentRequestWindow = latestRequestWindowRef.current ?? requestWindow
         const returnedCoverage = timeseriesDataCoverage(data) ?? fetchWindow
-        const bufferedResultStillUseful =
-          useBufferedWindow &&
+        // React can re-run this effect while the same request is still in flight.
+        // Accept its result when it still covers the live window; otherwise the
+        // replacement effect may wait on a request whose cancelled caller drops it.
+        const resultStillUseful =
           requestSignature === latestSignalRequestSignatureRef.current &&
           windowContains(returnedCoverage, currentRequestWindow)
-        if (!cancelled || bufferedResultStillUseful) {
+        if (!cancelled || resultStillUseful) {
           setLoadState({ status: 'ready', message: 'Signal window loaded.', data })
         }
       } catch (error) {
@@ -1640,6 +1642,7 @@ export function SignalInspector({
                 state={navigatorState}
                 activeWindow={requestWindow}
                 durationS={durationS}
+                hideActiveWindowFill={videoScrollWithPlayback}
                 pinnedTimeS={pinnedTimeS}
                 onSelectWindow={timeInteraction.setWindow}
               />
@@ -3380,12 +3383,14 @@ function SignalNavigator({
   state,
   activeWindow,
   durationS,
+  hideActiveWindowFill,
   pinnedTimeS,
   onSelectWindow,
 }: {
   state: LoadState
   activeWindow: { startS: number; endS: number }
   durationS: number
+  hideActiveWindowFill: boolean
   pinnedTimeS: number | null
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
@@ -3393,7 +3398,7 @@ function SignalNavigator({
   const previewRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
   const dragRef = useRef<NavigatorDrag | null>(null)
-  const hostWidth = useElementWidth(plotHostRef)
+  const hostWidth = useElementWidth(plotHostRef, state.status)
   const [plotVersion, setPlotVersion] = useState(0)
   const data = state.status === 'ready' ? state.data : null
   const model = useMemo(() => (data ? buildSignalChartModel(data) : null), [data])
@@ -3554,7 +3559,10 @@ function SignalNavigator({
           onPointerUp={handlePointerUp}
         >
           {activeStyle && (
-            <div className="signal-inspector-navigator-window" style={activeStyle}>
+            <div
+              className={`signal-inspector-navigator-window${hideActiveWindowFill ? ' fill-hidden' : ''}`}
+              style={activeStyle}
+            >
               <span className="signal-inspector-navigator-handle start" />
               <span className="signal-inspector-navigator-handle end" />
             </div>
@@ -4272,7 +4280,7 @@ function signalInspectorSessionPreferenceKey(session: SessionRecord) {
   return `${session.libraryId}::${session.sessionKey}`
 }
 
-function useElementWidth(ref: RefObject<HTMLElement | null>) {
+function useElementWidth(ref: RefObject<HTMLElement | null>, observeKey?: unknown) {
   const [width, setWidth] = useState(0)
   useEffect(() => {
     const element = ref.current
@@ -4290,7 +4298,7 @@ function useElementWidth(ref: RefObject<HTMLElement | null>) {
     })
     observer.observe(element)
     return () => observer.disconnect()
-  }, [ref])
+  }, [observeKey, ref])
   return width
 }
 

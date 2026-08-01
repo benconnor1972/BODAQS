@@ -8,6 +8,7 @@
   "demo_display_name": "BODAQS Demo Library",
   "include_referenced_sessions": true,
   "include_bookmarks_for_sessions": true,
+  "include_session_videos": true,
   "runs": [
     {
       "run_id": "ben-stevo-rc3001_260630_162343",
@@ -26,7 +27,16 @@
       "description": "Valley with Gav - shock clickers undone"
     }
   ],
-  "sessions": [],
+  "sessions": [
+    {
+      "run_id": "ben-stevo-rc3001_260731_131730",
+      "session_id": "260731_102444_a6f317a71ddf"
+    },
+    {
+      "run_id": "ben-stevo-rc3001_260731_131730",
+      "session_id": "260731_110446_d7dfb26a3ea6"
+    }
+  ],
   "study_sets": [
     "jly-three-ways",
     "stevo-shakedown",
