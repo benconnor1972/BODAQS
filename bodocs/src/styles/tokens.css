@@ -8,85 +8,12 @@
   }
 }
 
-.bodaqs-story {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.75rem;
-  margin: 1.5rem 0 2.5rem;
-}
-
-.bodaqs-story__panel {
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--sl-color-gray-5);
-  border-radius: 0.75rem;
-  background: var(--sl-color-bg-nav);
-}
-
-.bodaqs-story__image {
-  position: relative;
-  aspect-ratio: 3 / 2;
-  overflow: hidden;
-  background: linear-gradient(145deg, #08383a, #0d1f30);
-}
-
-.bodaqs-story__asset {
+.homepage-card__image {
   display: block;
   width: 100%;
-  height: 100%;
+  aspect-ratio: 3 / 2;
   object-fit: cover;
-}
-
-.bodaqs-story__image::after {
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(115deg, transparent 0 18px, rgb(255 255 255 / 4%) 19px 20px);
-  content: '';
-}
-
-.bodaqs-story__panel--process .bodaqs-story__image::after,
-.bodaqs-story__panel--software .bodaqs-story__image::after,
-.bodaqs-story__panel--results .bodaqs-story__image::after {
-  content: none;
-}
-
-.bodaqs-story__panel--process .bodaqs-story__image { background: #fff; }
-.bodaqs-story__panel--software .bodaqs-story__image { background: #f4f7f7; }
-.bodaqs-story__panel--results .bodaqs-story__image { background: #f4f7f7; }
-
-.bodaqs-story figcaption { display: grid; gap: 0.2rem; padding: 0.85rem; }
-.bodaqs-story figcaption strong { color: var(--sl-color-text-accent); font-size: 0.9rem; }
-.bodaqs-story figcaption span { font-size: 0.85rem; line-height: 1.35; }
-
-.bodaqs-story__bike-wheel, .bodaqs-story__bike-frame, .bodaqs-story__logger, .bodaqs-story__board, .bodaqs-story__component, .bodaqs-story__window, .bodaqs-story__wire { position: absolute; z-index: 1; }
-.bodaqs-story__bike-wheel { bottom: 1.35rem; width: 4.4rem; aspect-ratio: 1; border: 3px solid #d9f8f4; border-radius: 50%; }
-.bodaqs-story__bike-wheel--rear { left: 1.25rem; }
-.bodaqs-story__bike-wheel--front { right: 1.25rem; }
-.bodaqs-story__bike-frame { bottom: 3.2rem; left: 4.3rem; width: 6.6rem; height: 3rem; border: solid #00fede; border-width: 0 0 3px 3px; transform: skewX(-28deg); }
-.bodaqs-story__logger { bottom: 4.8rem; left: 50%; width: 2.6rem; height: 1.4rem; border: 2px solid #00fede; border-radius: 0.25rem; background: #102a32; transform: translateX(-50%) rotate(-8deg); }
-
-.bodaqs-story__board { inset: 2rem 2.3rem; border: 2px solid #00fede; border-radius: 0.35rem; background: repeating-linear-gradient(90deg, transparent 0 17px, rgb(0 254 222 / 22%) 18px 19px); transform: rotate(-9deg); }
-.bodaqs-story__component { top: 4.1rem; left: 50%; width: 2.6rem; height: 1.7rem; border-radius: 0.2rem; background: #f6c25f; box-shadow: 0 0 0 4px #1a5552; transform: translateX(-50%) rotate(-9deg); }
-.bodaqs-story__wire { width: 4rem; height: 2rem; border-top: 3px solid #f6c25f; border-radius: 50%; }
-.bodaqs-story__wire--one { top: 1.9rem; left: 0.4rem; transform: rotate(25deg); }
-.bodaqs-story__wire--two { right: 0.3rem; bottom: 1.4rem; transform: rotate(205deg); }
-
-.bodaqs-story__window { inset: 1.6rem 1.5rem; border: 2px solid #b9f4ec; border-radius: 0.35rem; background: #0a1827; }
-.bodaqs-story__window::before { display: block; height: 1rem; border-bottom: 2px solid #b9f4ec; background: #285c64; content: ''; }
-.bodaqs-story__window i, .bodaqs-story__window b, .bodaqs-story__window em, .bodaqs-story__window small { position: absolute; display: block; background: #00fede; }
-.bodaqs-story__window i { top: 2rem; left: 1rem; width: 38%; height: 0.35rem; }
-.bodaqs-story__window b { top: 3rem; left: 1rem; width: 63%; height: 0.35rem; background: #f6c25f; }
-.bodaqs-story__window em { right: 1rem; bottom: 1.1rem; width: 48%; height: 2.5rem; clip-path: polygon(0 100%, 25% 45%, 50% 65%, 75% 10%, 100% 35%, 100% 100%); }
-.bodaqs-story__window small { bottom: 1.1rem; left: 1rem; width: 0.35rem; height: 3.8rem; }
-
-.bodaqs-story__panel--results svg { position: absolute; z-index: 1; inset: 1.2rem 0.8rem; width: calc(100% - 1.6rem); height: calc(100% - 2.4rem); fill: none; }
-.bodaqs-story__panel--results path { stroke: rgb(217 248 244 / 55%); stroke-width: 2; }
-.bodaqs-story__panel--results polyline { stroke: #00fede; stroke-width: 4; }
-
-@media (max-width: 50rem) {
-  .bodaqs-story { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-@media (max-width: 30rem) {
-  .bodaqs-story { grid-template-columns: 1fr; }
+  margin-block-end: 0.8rem;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
 }

@@ -33,35 +33,6 @@ import analysisResults from '../../assets/pics/homepage/analysis-results.png';
 This site is getting a makeover in the run up to publication of the A8 design. It may have a few rough edges just now.
 </Aside>
 
-## From bike to insight
-
-<div class="bodaqs-story" aria-label="Placeholder images showing the BODAQS workflow from bike to insight">
-  <figure class="bodaqs-story__panel bodaqs-story__panel--product">
-    <div class="bodaqs-story__image" role="img" aria-label="Placeholder for a photograph of a BODAQS logger installed on a bicycle">
-      <span class="bodaqs-story__bike-frame"></span><span class="bodaqs-story__bike-wheel bodaqs-story__bike-wheel--front"></span><span class="bodaqs-story__bike-wheel bodaqs-story__bike-wheel--rear"></span><span class="bodaqs-story__logger"></span>
-    </div>
-    <figcaption><strong>Product</strong><span>The logger, out on the bike.</span></figcaption>
-  </figure>
-  <figure class="bodaqs-story__panel bodaqs-story__panel--process">
-    <div class="bodaqs-story__image">
-      <Image class="bodaqs-story__asset" src={explodedAssembly} alt="Exploded assembly view of the BODAQS logger enclosure, circuit board and controls" />
-    </div>
-    <figcaption><strong>Process</strong><span>Open parts, built your way.</span></figcaption>
-  </figure>
-  <figure class="bodaqs-story__panel bodaqs-story__panel--software">
-    <div class="bodaqs-story__image">
-      <Image class="bodaqs-story__asset" src={softwareMapVideo} alt="BODAQS software showing a segmented trail map, synchronised riding video and lap timing comparison" />
-    </div>
-    <figcaption><strong>Software</strong><span>Turn a ride into readable data.</span></figcaption>
-  </figure>
-  <figure class="bodaqs-story__panel bodaqs-story__panel--results">
-    <div class="bodaqs-story__image">
-      <Image class="bodaqs-story__asset" src={analysisResults} alt="BODAQS analysis comparing wheel displacement and velocity distributions across three riding sessions" />
-    </div>
-    <figcaption><strong>Results</strong><span>Find the moments worth chasing.</span></figcaption>
-  </figure>
-</div>
-
 ## Next steps
 
 <CardGrid stagger>
@@ -77,6 +48,7 @@ This site is getting a makeover in the run up to publication of the A8 design. I
     </LinkButton>
   </Card>
   <Card title="Read the logger build guide" icon="setting">
+    <Image class="homepage-card__image" src={explodedAssembly} alt="Exploded assembly view of the BODAQS logger enclosure, circuit board and controls" />
     Choose a logger design, assemble your tools and components, and build your own data logger.
     <LinkButton
       href="/logger-build-guide"
@@ -88,6 +60,7 @@ This site is getting a makeover in the run up to publication of the A8 design. I
     </LinkButton>
   </Card>
   <Card title="Read the software guide" icon="add-document">
+    <Image class="homepage-card__image" src={softwareMapVideo} alt="BODAQS software showing a segmented trail map, synchronised riding video and lap timing comparison" />
     Learn how to install the analysis software.
     <LinkButton
       href="/software-guide"
@@ -99,6 +72,7 @@ This site is getting a makeover in the run up to publication of the A8 design. I
     </LinkButton>
   </Card>
   <Card title="Try the demo site" icon="external">
+    <Image class="homepage-card__image" src={analysisResults} alt="BODAQS analysis comparing wheel displacement and velocity distributions across three riding sessions" />
     Explore the BODAQS analysis software in your browser with sample data.
     <LinkButton
       href="https://demo.bodaqs.net/"
