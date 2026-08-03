@@ -16,9 +16,10 @@
 #   --skip-dmg            Build only the .app, skip the .dmg.
 #   --skip-icns           Do not (re)generate the .icns first.
 #   --skip-service        Skip building the library service.
-#   --skip-web-app        Skip bundling the web app into the service.
+#   --skip-web-app        Skip building and bundling the web app.
 #   --include-demo        Bundle demo-assets into the .app (if available).
 #   --version <ver>       Override the release version (default: 0.1.4-dev).
+#   --service-version <v> Override the library service version (default: 0.1.0-dev).
 #   --python <path>       Python interpreter to use (default: auto-detected).
 #
 # Signing/notarization are deliberately not implemented here. See
@@ -31,6 +32,7 @@ import_manager_dir="${script_dir}"
 repo_root="$(cd "${import_manager_dir}/.." && pwd)"
 
 app_version="0.1.4-dev"
+service_version="0.1.0-dev"
 include_demo=0
 make_dmg=1
 make_icns=1
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --skip-web-app) make_web_app=0; shift ;;
         --include-demo) include_demo=1; shift ;;
         --version) app_version="$2"; shift 2 ;;
+        --service-version) service_version="$2"; shift 2 ;;
         --python) python_bin="$2"; shift 2 ;;
         *) echo "error: unknown option: $1" >&2; exit 2 ;;
     esac
@@ -113,6 +116,7 @@ if [[ "${make_service}" -eq 1 ]]; then
     echo "==> Running PyInstaller (macOS library service spec)"
     (
         cd "${import_manager_dir}"
+        BODAQS_LIBRARY_SERVICE_VERSION="${service_version}" \
         "${python_bin}" -m PyInstaller \
             --noconfirm \
             --clean \
@@ -140,28 +144,35 @@ if [[ "${make_service}" -eq 1 ]]; then
         web_app_dir="${repo_root}/application/cohort-workbench-prototype"
         web_app_dist="${web_app_dir}/dist"
 
-        if [[ ! -f "${web_app_dist}/index.html" ]]; then
-            echo "==> Web app dist not found, attempting build..."
-            if [[ -f "${web_app_dir}/package.json" ]] && command -v npm >/dev/null 2>&1; then
-                (
-                    cd "${web_app_dir}"
-                    npm run build
-                )
-            else
-                echo "   warning: npm not found or package.json missing, skipping web app" >&2
-            fi
+        if [[ ! -f "${web_app_dir}/package.json" ]]; then
+            echo "error: web app package.json not found at ${web_app_dir}" >&2
+            echo "       use --skip-web-app to build without the Workbench" >&2
+            exit 1
+        fi
+        if ! command -v npm >/dev/null 2>&1; then
+            echo "error: npm not found, cannot build web app" >&2
+            echo "       use --skip-web-app to build without the Workbench" >&2
+            exit 1
         fi
 
-        if [[ -f "${web_app_dist}/index.html" ]]; then
-            web_dst="${service_dst}/web"
-            echo "==> Bundling web app into service"
-            rm -rf "${web_dst}"
-            mkdir -p "${web_dst}"
-            cp -R "${web_app_dist}/"* "${web_dst}/"
-            echo "==> Web app bundled at: ${web_dst}"
-        else
-            echo "   warning: web app dist not available, skipping" >&2
+        echo "==> Building web app (deterministic rebuild)"
+        (
+            cd "${web_app_dir}"
+            npm run build
+        )
+
+        if [[ ! -f "${web_app_dist}/index.html" ]]; then
+            echo "error: web app build did not produce dist/index.html" >&2
+            echo "       use --skip-web-app to build without the Workbench" >&2
+            exit 1
         fi
+
+        web_dst="${service_dst}/web"
+        echo "==> Bundling web app into service"
+        rm -rf "${web_dst}"
+        mkdir -p "${web_dst}"
+        cp -R "${web_app_dist}/"* "${web_dst}/"
+        echo "==> Web app bundled at: ${web_dst}"
     fi
 fi
 

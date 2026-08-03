@@ -169,22 +169,39 @@ def build_macos_launch_agent_plist(
 
 def _macos_load_launch_agent(plist_path: Path) -> None:
     uid = os.getuid()
-    subprocess.run(
+    result = subprocess.run(
         ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        # launchctl prints "Boot-out failed" or similar if the agent is
+        # already loaded.  Re-bootstrap can return non-zero in that case
+        # but the agent is still registered.  Only raise for genuine
+        # failures (e.g. malformed plist, permission denied).
+        if "already" not in stderr.lower() and "exists" not in stderr.lower():
+            raise RuntimeError(
+                f"launchctl bootstrap failed (exit {result.returncode}): {stderr}"
+            )
 
 
 def _macos_unload_launch_agent(label: str) -> None:
     uid = os.getuid()
-    subprocess.run(
+    result = subprocess.run(
         ["launchctl", "bootout", f"gui/{uid}/{label}"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        # bootout returns non-zero if the agent is not currently loaded,
+        # which is expected when disabling or re-loading.  Only raise for
+        # genuinely unexpected errors.
+        if "no such" not in stderr.lower() and "not loaded" not in stderr.lower():
+            raise RuntimeError(
+                f"launchctl bootout failed (exit {result.returncode}): {stderr}"
+            )
 
 
 def read_macos_startup_registration(

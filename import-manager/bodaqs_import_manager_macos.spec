@@ -39,6 +39,20 @@ app_version = os.environ.get("BODAQS_IMPORT_MANAGER_APP_VERSION", "").strip() or
     encoding="utf-8",
 )
 
+# CFBundleVersion must be one to three period-separated integers (e.g. "1",
+# "1.2", "1.2.3").  Derive a numeric build number from the product version
+# by stripping prerelease suffixes and padding missing segments.
+import re
+
+def _numeric_build_number(version: str) -> str:
+    match = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?", version)
+    if not match:
+        return "1"
+    parts = [p for p in match.groups() if p is not None]
+    return ".".join(parts)
+
+build_number = _numeric_build_number(app_version)
+
 setup_datas = collect_data_files("bodaqs_import_manager.import_agent_assets")
 app_icon_path = (import_manager_dir / "packaging" / "macos" / "bodaqs_import_manager.icns").resolve()
 setup_excludes = [
@@ -113,7 +127,7 @@ app = BUNDLE(
         "CFBundleDisplayName": APP_NAME,
         "CFBundleIdentifier": BUNDLE_IDENTIFIER,
         "CFBundleShortVersionString": app_version,
-        "CFBundleVersion": app_version,
+        "CFBundleVersion": build_number,
         "NSHighResolutionCapable": True,
         # Local-network access for Wi-Fi logger discovery (mDNS/Bonjour).
         "NSLocalNetworkUsageDescription": (

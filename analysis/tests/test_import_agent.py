@@ -3599,6 +3599,56 @@ def test_read_macos_startup_registration_returns_none_when_no_plist(tmp_path):
     assert result is None
 
 
+def test_sync_macos_startup_registration_propagates_load_failure(tmp_path, monkeypatch):
+    label = "org.bodaqs.importmanager.test"
+    argv = ["/usr/bin/open", "-a", "/Applications/Test.app", "--args", "--startup-launch"]
+
+    def fail_bootstrap(plist_path):
+        raise RuntimeError("launchctl bootstrap failed (exit 1): malformed plist")
+
+    monkeypatch.setattr(
+        import_agent_startup_module, "_macos_load_launch_agent", fail_bootstrap
+    )
+
+    with pytest.raises(RuntimeError, match="bootstrap failed"):
+        import_agent_startup_module.sync_macos_startup_registration(
+            enabled=True,
+            argv=argv,
+            home=tmp_path,
+            label=label,
+            platform="darwin",
+            load_agent=True,
+        )
+
+
+def test_sync_macos_startup_registration_tolerates_unload_not_loaded(tmp_path, monkeypatch):
+    label = "org.bodaqs.importmanager.test"
+    argv = ["/usr/bin/open", "-a", "/Applications/Test.app", "--args", "--startup-launch"]
+
+    # _macos_unload_launch_agent should tolerate "not loaded" errors
+    unload_called = []
+    original_unload = import_agent_startup_module._macos_unload_launch_agent
+
+    def tolerant_unload(lbl):
+        unload_called.append(lbl)
+
+    monkeypatch.setattr(import_agent_startup_module, "_macos_unload_launch_agent", tolerant_unload)
+    monkeypatch.setattr(
+        import_agent_startup_module, "_macos_load_launch_agent", lambda p: None
+    )
+
+    applied = import_agent_startup_module.sync_macos_startup_registration(
+        enabled=True,
+        argv=argv,
+        home=tmp_path,
+        label=label,
+        platform="darwin",
+        load_agent=True,
+    )
+    assert applied is not None
+    assert label in unload_called
+
+
 # ---------------------------------------------------------------------------
 # Generic startup wrapper tests
 # ---------------------------------------------------------------------------
