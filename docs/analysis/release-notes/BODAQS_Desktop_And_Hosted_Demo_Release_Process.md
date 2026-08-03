@@ -379,6 +379,31 @@ sudo systemctl start bodaqs-library-api
 sudo systemctl status bodaqs-library-api --no-pager
 ```
 
+### Warm Shared Demo Caches
+
+After a service or demo-library deployment, warm the hosted service before
+announcing the update. This primes the persisted catalog and adequacy results
+for every saved study set and every individual session. It is read-only and
+safe to run repeatedly:
+
+```bash
+cd /opt/bodaqs/app/analysis
+PYTHONPATH=/opt/bodaqs/app/analysis \
+  /opt/bodaqs/venv/bin/python -m bodaqs_analysis.library_api_service.warm_demo_cache \
+  --api-base-url http://127.0.0.1:8765 \
+  --verbose
+```
+
+The script discovers libraries, saved study sets, registered analysis views,
+and catalogued sessions from the service. It does not hard-code the current
+demo content. A non-zero exit code means that one or more scopes could not be
+warmed; the summary identifies them.
+
+The default intentionally does **not** request full signal-window payloads.
+Those responses are large, request-specific, and currently process-local;
+warming every possible inspector or analysis window would use significant RAM
+for little visitor benefit.
+
 ## Hosted Smoke Tests
 
 Test the service directly:

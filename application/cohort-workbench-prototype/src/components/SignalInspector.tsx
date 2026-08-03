@@ -53,6 +53,8 @@ const NAVIGATOR_POINTS = 900
 const DENSE_EVENT_CUTOFF = 50
 const CHART_WINDOW_DRAG_THRESHOLD_PX = 8
 const SIGNAL_INSPECTOR_HOVER_DEBUG = false
+const COMPACT_NAVIGATOR_HANDLE_WIDTH_PX = 48
+const COMPACT_NAVIGATOR_SELECTION_THRESHOLD_PX = 42
 const SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY = 'bodaqs.signalInspector.chartMode.v1'
 const SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY = 'bodaqs.signalInspector.sessionColumns.v1'
 const SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY = 'bodaqs.signalInspector.sessionPinnedTime.v1'
@@ -384,6 +386,8 @@ export function SignalInspector({
   const [videoScrubToCursor, setVideoScrubToCursor] = useState(false)
   const [videoMessage, setVideoMessage] = useState('')
   const [videoPlaybackSessionTimeS, setVideoPlaybackSessionTimeS] = useState<number | null>(null)
+  const [navigatorDragging, setNavigatorDragging] = useState(false)
+  const [signalFetchCycle, setSignalFetchCycle] = useState(0)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoSeekFrameRef = useRef<number | null>(null)
   const videoFollowFrameRef = useRef<number | null>(null)
@@ -416,6 +420,7 @@ export function SignalInspector({
     setVideoScrubToCursor(false)
     setVideoMessage('')
     setVideoPlaybackSessionTimeS(null)
+    setNavigatorDragging(false)
     eventGroupsInitializedRef.current = false
   }, [durationS, initialWindow?.endS, initialWindow?.startS, session.libraryId, session.sessionKey, signalOptionColumns, signalOptions])
 
@@ -614,8 +619,10 @@ export function SignalInspector({
         setLoadState({ status: 'idle', message: 'Select one or more signals to inspect.' })
         return
       }
-      const useBufferedWindow = videoScrollWithPlayback && Boolean(activeVideo)
-      const requestSignature = signalWindowRequestSignature(session, selectedColumns, useBufferedWindow)
+      // Navigator drags need symmetric runway because users can reverse direction at
+      // any point. A buffered result is also valid once the drag ends.
+      const useBufferedWindow = (videoScrollWithPlayback && Boolean(activeVideo)) || navigatorDragging
+      const requestSignature = signalWindowRequestSignature(session, selectedColumns)
       latestSignalRequestSignatureRef.current = requestSignature
       const fetchWindow = useBufferedWindow ? bufferedSignalFetchWindow(requestWindow, durationS) : requestWindow
       const targetPoints = signalWindowTargetPoints(requestWindow, fetchWindow)
@@ -634,17 +641,14 @@ export function SignalInspector({
         return
       }
       const pendingRequest = signalFetchInFlightRef.current
-      if (
-        pendingRequest &&
-        pendingRequest.signature === requestSignature &&
-        (useBufferedWindow
-          ? windowHasPlaybackRunway(pendingRequest.window, requestWindow, durationS)
-          : windowContains(pendingRequest.window, requestWindow))
-      ) {
+      if (pendingRequest) {
+        // Do not queue one expensive parquet/event read for every pointer move.
+        // Completion advances signalFetchCycle, which reconciles the latest window.
         return
       }
       const fetchRequest = { window: fetchWindow, signature: requestSignature }
       signalFetchInFlightRef.current = fetchRequest
+      let completed = false
       setLoadState((current) => {
         const data = loadStateData(current)
         return data
@@ -671,6 +675,7 @@ export function SignalInspector({
         if (!cancelled || resultStillUseful) {
           setLoadState({ status: 'ready', message: 'Signal window loaded.', data })
         }
+        completed = true
       } catch (error) {
         if (!cancelled) {
           setLoadState((current) => {
@@ -682,6 +687,9 @@ export function SignalInspector({
       }
       if (signalFetchInFlightRef.current === fetchRequest) {
         signalFetchInFlightRef.current = null
+        if (completed) {
+          setSignalFetchCycle((cycle) => cycle + 1)
+        }
       }
     }
 
@@ -697,7 +705,9 @@ export function SignalInspector({
     requestWindow.startS,
     selectedColumns,
     session,
+    signalFetchCycle,
     videoScrollWithPlayback,
+    navigatorDragging,
   ])
 
   const markCount = displayedWindowData?.marks.length ?? 0
@@ -1645,6 +1655,7 @@ export function SignalInspector({
                 durationS={durationS}
                 hideActiveWindowFill={videoScrollWithPlayback}
                 pinnedTimeS={pinnedTimeS}
+                onDragStateChange={setNavigatorDragging}
                 onSelectWindow={timeInteraction.setWindow}
               />
             </div>
@@ -3386,6 +3397,7 @@ function SignalNavigator({
   durationS,
   hideActiveWindowFill,
   pinnedTimeS,
+  onDragStateChange,
   onSelectWindow,
 }: {
   state: LoadState
@@ -3393,12 +3405,15 @@ function SignalNavigator({
   durationS: number
   hideActiveWindowFill: boolean
   pinnedTimeS: number | null
+  onDragStateChange: (dragging: boolean) => void
   onSelectWindow: (window: { startS: number; endS: number }) => void
 }) {
   const plotHostRef = useRef<HTMLDivElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
   const dragRef = useRef<NavigatorDrag | null>(null)
+  const dragFrameRef = useRef<number | null>(null)
+  const pendingDragWindowRef = useRef<{ startS: number; endS: number } | null>(null)
   const hostWidth = useElementWidth(plotHostRef, state.status)
   const [plotVersion, setPlotVersion] = useState(0)
   const data = state.status === 'ready' ? state.data : null
@@ -3441,6 +3456,16 @@ function SignalNavigator({
     setNavigatorPreview(previewRef.current, null, plotRef.current)
   }, [activeWindow.endS, activeWindow.startS, plotVersion])
 
+  useEffect(
+    () => () => {
+      if (dragFrameRef.current !== null) {
+        window.cancelAnimationFrame(dragFrameRef.current)
+      }
+      onDragStateChange(false)
+    },
+    [onDragStateChange],
+  )
+
   if (state.status === 'loading') {
     return <div className="signal-inspector-message">{state.message}</div>
   }
@@ -3457,6 +3482,32 @@ function SignalNavigator({
   const activeStyle = navigatorWindowStyle(plotRef.current, activeWindow)
   const navigatorPlot = plotRef.current
   const pinnedLeft = pinnedTimeS === null || !navigatorPlot ? null : plotValueX(navigatorPlot, pinnedTimeS)
+  function publishDraggedWindow(nextWindow: { startS: number; endS: number }, immediate = false) {
+    pendingDragWindowRef.current = nextWindow
+    if (immediate) {
+      if (dragFrameRef.current !== null) {
+        window.cancelAnimationFrame(dragFrameRef.current)
+        dragFrameRef.current = null
+      }
+      const pendingWindow = pendingDragWindowRef.current
+      pendingDragWindowRef.current = null
+      if (pendingWindow) {
+        onSelectWindow(pendingWindow)
+      }
+      return
+    }
+    if (dragFrameRef.current !== null) {
+      return
+    }
+    dragFrameRef.current = window.requestAnimationFrame(() => {
+      dragFrameRef.current = null
+      const pendingWindow = pendingDragWindowRef.current
+      pendingDragWindowRef.current = null
+      if (pendingWindow) {
+        onSelectWindow(pendingWindow)
+      }
+    })
+  }
 
   function pointerTime(event: PointerEvent<HTMLElement>) {
     const plot = plotRef.current
@@ -3496,11 +3547,9 @@ function SignalNavigator({
     let startS = activeStartS
     let endS = activeEndS
     let mode: NavigatorDrag['mode'] = 'move'
-    const handleTolerancePx = 13
-    if (Math.abs(viewX - activeStartX) <= handleTolerancePx) {
-      mode = 'start'
-    } else if (Math.abs(viewX - activeEndX) <= handleTolerancePx) {
-      mode = 'end'
+    const directMode = navigatorDragModeAt(viewX, activeStartX, activeEndX)
+    if (directMode) {
+      mode = directMode
     } else if (viewX >= Math.min(activeStartX, activeEndX) && viewX <= Math.max(activeStartX, activeEndX)) {
       mode = 'move'
     } else {
@@ -3510,19 +3559,32 @@ function SignalNavigator({
     }
     const drag: NavigatorDrag = { mode, originS: timeS, currentS: timeS, startS, endS }
     dragRef.current = drag
-    setNavigatorPreview(previewRef.current, navigatorWindowFromDrag(drag, durationS, minWindowS), plot)
+    onDragStateChange(true)
+    const nextWindow = navigatorWindowFromDrag(drag, durationS, minWindowS)
+    setNavigatorPreview(previewRef.current, nextWindow, plot)
+    publishDraggedWindow(nextWindow)
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
   function handlePointerMove(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current
     if (!drag) {
+      const plot = plotRef.current
+      const geometry = plot ? plotGeometry(plot) : null
+      if (plot && geometry) {
+        const startX = plot.valToPos(clamp(activeWindow.startS, 0, durationS), 'x')
+        const endX = plot.valToPos(clamp(activeWindow.endS, 0, durationS), 'x')
+        const mode = navigatorDragModeAt(pointerX(event), startX, endX)
+        event.currentTarget.style.cursor = mode === 'move' ? 'grab' : mode ? 'ew-resize' : 'crosshair'
+      }
       return
     }
     event.preventDefault()
     const nextDrag = { ...drag, currentS: pointerTime(event) }
     dragRef.current = nextDrag
-    setNavigatorPreview(previewRef.current, navigatorWindowFromDrag(nextDrag, durationS, minWindowS), plotRef.current)
+    const nextWindow = navigatorWindowFromDrag(nextDrag, durationS, minWindowS)
+    setNavigatorPreview(previewRef.current, nextWindow, plotRef.current)
+    publishDraggedWindow(nextWindow)
   }
 
   function handlePointerUp(event: PointerEvent<HTMLElement>) {
@@ -3534,7 +3596,8 @@ function SignalNavigator({
     const nextDrag = { ...drag, currentS: pointerTime(event) }
     dragRef.current = null
     setNavigatorPreview(previewRef.current, null, plotRef.current)
-    onSelectWindow(navigatorWindowFromDrag(nextDrag, durationS, minWindowS))
+    publishDraggedWindow(navigatorWindowFromDrag(nextDrag, durationS, minWindowS), true)
+    onDragStateChange(false)
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
@@ -3542,6 +3605,12 @@ function SignalNavigator({
 
   function handlePointerCancel(event: PointerEvent<HTMLElement>) {
     dragRef.current = null
+    onDragStateChange(false)
+    pendingDragWindowRef.current = null
+    if (dragFrameRef.current !== null) {
+      window.cancelAnimationFrame(dragFrameRef.current)
+      dragFrameRef.current = null
+    }
     setNavigatorPreview(previewRef.current, null, plotRef.current)
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
@@ -4257,8 +4326,8 @@ function storePinnedTime(session: SessionRecord, pinnedTimeS: number | null) {
   }
 }
 
-function signalWindowRequestSignature(session: SessionRecord, selectedColumns: string[], buffered: boolean) {
-  return `${session.libraryId}::${session.sessionKey}::${buffered ? 'buffered' : 'exact'}::${selectedColumns.join('|')}`
+function signalWindowRequestSignature(session: SessionRecord, selectedColumns: string[]) {
+  return `${session.libraryId}::${session.sessionKey}::${selectedColumns.join('|')}`
 }
 
 function isSpaceKey(event: globalThis.KeyboardEvent) {
@@ -4691,6 +4760,36 @@ function timeseriesDataMeetsResolution(data: TimeseriesWindowResponse | undefine
     return false
   }
   return data.sampling.mode === 'raw' || data.sampling.targetPoints >= targetPoints
+}
+
+function navigatorDragModeAt(viewX: number, startX: number, endX: number): NavigatorDrag['mode'] | null {
+  const leftX = Math.min(startX, endX)
+  const rightX = Math.max(startX, endX)
+  const selectionWidth = rightX - leftX
+  if (selectionWidth < COMPACT_NAVIGATOR_SELECTION_THRESHOLD_PX) {
+    const centerX = (leftX + rightX) / 2
+    const compactLeft = centerX - COMPACT_NAVIGATOR_HANDLE_WIDTH_PX / 2
+    const compactRight = centerX + COMPACT_NAVIGATOR_HANDLE_WIDTH_PX / 2
+    if (viewX < compactLeft || viewX > compactRight) {
+      return null
+    }
+    const zoneWidth = COMPACT_NAVIGATOR_HANDLE_WIDTH_PX / 3
+    if (viewX < compactLeft + zoneWidth) {
+      return 'start'
+    }
+    if (viewX > compactRight - zoneWidth) {
+      return 'end'
+    }
+    return 'move'
+  }
+  const handleTolerancePx = 13
+  if (Math.abs(viewX - startX) <= handleTolerancePx) {
+    return 'start'
+  }
+  if (Math.abs(viewX - endX) <= handleTolerancePx) {
+    return 'end'
+  }
+  return leftX <= viewX && viewX <= rightX ? 'move' : null
 }
 
 function timeseriesDataMatchesSelectedSignals(
