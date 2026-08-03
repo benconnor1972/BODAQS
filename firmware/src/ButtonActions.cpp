@@ -366,9 +366,10 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
   // If the selected Wi-Fi mode is already up, start the server immediately.
   if (WiFiManager::isNetworkUp()) {
     if (WebServerManager::start()) {
-      UI::println(String("Web server at ") + WiFiManager::localAddress().toString(),
-                  "WiFi on", UI::TARGET_BOTH, UI::LVL_INFO, 2000, 2);
-      UI::status("WiFi on");
+      const String host = WiFiManager::hostname() + ".local";
+      UI::println(String("Web server at ") + host,
+                  host, UI::TARGET_BOTH, UI::LVL_INFO, 3000, 1);
+      UI::status(host);
     } else {
       // At this point WiFi is connected but server failed—this is a real failure.
       UI::println("Failed to start web server.", "WS fail", UI::TARGET_BOTH, UI::LVL_ERROR, 2000, 2);

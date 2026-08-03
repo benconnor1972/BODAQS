@@ -392,31 +392,35 @@ Status:
 - station-mode ONLINE starts mDNS advertisement:
   - service: `_bodaqs-logger._tcp`
   - port: `80`
+- AP mode also starts mDNS after the AP is up, so the device is reachable at
+  `bodaqs-<logger_id>.local` in either mode
 - mDNS TXT records currently include:
   - `api=1`
   - `logger_id=<logger_id>`
+  - `display_name=<logger_name>`
+  - `wifi_mode=<station|ap>`
   - `upload_mode=true|false`
   - `hostname=<hostname>`
 - upload mode enter/exit refreshes mDNS so `upload_mode` TXT stays current
-- mDNS is stopped when Wi-Fi leaves station-online mode or AP mode starts
+- mDNS is stopped when Wi-Fi leaves online mode or the radio is torn down
 - `/api/v1/device` and `/api/v1/status` report the same hostname
 
 Tasks:
 
 - Add a stable hostname derived from logger ID if not already present.
-- Add mDNS advertisement in station mode:
+- Add mDNS advertisement in station and AP mode:
   - service: `_bodaqs-logger._tcp`
   - port: `80`
 - Include TXT records where practical:
   - `api=1`
   - `logger_id=<logger_id>`
   - `upload_mode=true|false`
-- In AP mode, keep a recognizable SSID, but the PC still confirms identity via
-  `/api/v1/device`.
+- In AP mode, keep a recognizable SSID; the device is also reachable via
+  mDNS at `bodaqs-<logger_id>.local`.
 
 Acceptance checks:
 
-- station-mode logger is discoverable on a local network that permits mDNS
+- station-mode and AP-mode loggers are discoverable on a local network that permits mDNS
 - API works equally in station and AP modes after the PC is connected
 - no desktop AP auto-join behavior is required
 

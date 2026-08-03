@@ -126,8 +126,8 @@ static void stopMdns_(const char* reason) {
 }
 
 static void startMdns_() {
-  if (!WiFiManager::isNetworkUp() || ConfigManager::get().wifiMode != WiFiMode::Station) {
-    stopMdns_("not station online");
+  if (!WiFiManager::isNetworkUp()) {
+    stopMdns_("network not up");
     return;
   }
 
@@ -143,6 +143,8 @@ static void startMdns_() {
   MDNS.addServiceTxt("bodaqs-logger", "tcp", "api", "1");
   const String loggerId = ConfigManager::loggerId();
   MDNS.addServiceTxt("bodaqs-logger", "tcp", "logger_id", loggerId.c_str());
+  MDNS.addServiceTxt("bodaqs-logger", "tcp", "display_name", ConfigManager::get().loggerName);
+  MDNS.addServiceTxt("bodaqs-logger", "tcp", "wifi_mode", ConfigManager::wifiModeKey(ConfigManager::get().wifiMode));
   MDNS.addServiceTxt("bodaqs-logger", "tcp", "upload_mode", UploadModeManager::isActive() ? "true" : "false");
   MDNS.addServiceTxt("bodaqs-logger", "tcp", "hostname", host.c_str());
   s_mdnsActive = true;
@@ -918,7 +920,7 @@ String WiFiManager::hostname() {
 }
 
 void WiFiManager::refreshDiscovery() {
-  if (s_state == WiFiMgrState::ONLINE && isNetworkUp()) {
+  if (isNetworkUp()) {
     startMdns_();
   } else {
     stopMdns_("refresh while offline");
@@ -1008,6 +1010,7 @@ void WiFiManager::startAccessPoint_() {
   WIFI_LOGI("AP started ssid='%s' ip=%s\n",
             s_currSsid.c_str(),
             WiFi.softAPIP().toString().c_str());
+  startMdns_();
   if (s_onOnline) s_onOnline();
   notifyUi_();
 }
