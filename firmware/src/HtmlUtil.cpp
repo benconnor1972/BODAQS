@@ -1,6 +1,7 @@
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
 #include "WiFiManager.h"
+#include <WebServer.h>
 #include <WiFi.h>
 
 namespace HtmlUtil {
@@ -35,86 +36,12 @@ namespace HtmlUtil {
     String s = F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
     s += F("<meta name='viewport' content='width=device-width, initial-scale=1'>");
     s += "<title>" + title + "</title>";
-    s += F("<style>"
-        /* page */
-        "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
-          "font-size:14px;line-height:1.35;color:#333;margin:20px}"
-        ".titlebar{font-size:2em;font-weight:700;margin:0 0 .15em 0}"
-        ".netbar{font-size:1em;color:#555;margin:0 0 .8em 0}"
-        ".topnav{margin:10px 0 14px 0;padding:8px 10px;background:#f3f3f3;border-radius:8px}"
-        ".topnav a{margin-right:12px}"
-        "h2{margin-top:1.6em;padding-bottom:.2em;border-bottom:1px solid #ccc;font-size:1.1em}"
-
-        /* containers */
-        "fieldset{margin:1.2em 0;padding:1em 1.2em;border:1px solid #ddd;border-radius:6px;background:#fafafa}"
-        "legend{font-weight:700;padding:0 6px}"
-
-        /* rows & controls */
-        ".row{margin:.4em 0}"
-        "label{display:inline-block;min-width:160px;margin:.4em 0;font-weight:500}"
-        "input,select{margin:.3em 0;padding:.3em .4em;border:1px solid #bbb;border-radius:4px;font-size:.95em}"
-        ".row input[type='checkbox']{margin-left:.5em}"
-
-        /* minor helpers */
-        "small{color:#666;margin-left:.3em}"
-
-        /* buttons */
-        "button{padding:.45em .9em;border:1px solid #999;border-radius:5px;background:#f5f5f5;cursor:pointer}"
-        "button:disabled{opacity:.6;cursor:not-allowed}"
-        "</style>");
-        "function populateSelect(selectEl, data, selected) {"
-        "  var arr = [];"
-        "  if (Array.isArray(data)) {"
-        "    arr = data;"
-        "  } else if (data.options) {"
-        "    arr = data.options;"
-        "  } else if (data.items) {"
-        "    arr = data.items;"
-        "  } else if (data.transforms) {"
-        "    arr = data.transforms;"
-        "  } else if (data.results) {"
-        "    arr = data.results;"
-        "  } else if (data.choices) {"
-        "    arr = data.choices;"
-        "  }"
-        "  selectEl.innerHTML = '';"
-        "  arr.forEach(function(t) {"
-        "    var opt = document.createElement('option');"
-        "    opt.value = t.id || t.value || '';"
-        "    opt.textContent = (t.label || t.name || t.id || '?') + (t.out_units ? (' [' + t.out_units + ']') : '');"
-        "    if (opt.value === selected) {"
-        "      opt.selected = true;"
-        "    }"
-        "    selectEl.appendChild(opt);"
-        "  });"
-        "}"
-        ""
-        "function loadTransforms(sensorId, selectEl, selected, mode) {"
-        "  var url = '/api/transforms/list?sensor=' + encodeURIComponent(sensorId) + '&t=' + Date.now();"
-        "  if (mode) url += '&mode=' + encodeURIComponent(mode);"
-        "  fetch(url, {cache:'no-store'})"
-        "    .then(function(r){ return r.json(); })"
-        "    .then(function(data){"
-        "      populateSelect(selectEl, data, selected);"
-        "    })"
-        "    .catch(function(err){"
-        "      console.error('Error loading transforms', err);"
-        "    });"
-        "}"
-        ""
-        "document.addEventListener('DOMContentLoaded', function(){"
-        "  document.querySelectorAll('.reload').forEach(function(btn){"
-        "    btn.addEventListener('click', function(){"
-        "      var block = btn.closest('.tr-block');"
-        "      if (!block) return;"
-        "      var sensor = block.getAttribute('data-sensor');"
-        "      var sel = block.querySelector('select');"
-        "      var modeEl = document.getElementById(sensor + '_output_mode');"
-        "      var mode = modeEl ? modeEl.value : null;"
-        "      loadTransforms(sensor, sel, sel.value, mode);"
-        "    });"
-        "  });"
-        "});";
+    s += F("<script src='/static/htmx.min.js?v=");
+    s += FirmwareInfo::version();
+    s += F("' defer></script>");
+    s += F("<link rel='stylesheet' href='/static/app.css?v=");
+    s += FirmwareInfo::version();
+    s += F("'>");
 
     s += F("</head><body>");
 
@@ -162,6 +89,25 @@ namespace HtmlUtil {
       else out += c;
     }
     return out;
+  }
+
+  bool isHtmxRequest(WebServer& srv) {
+    if (!srv.hasHeader(F("HX-Request"))) return false;
+    String val = srv.header(F("HX-Request"));
+    val.trim();
+    val.toLowerCase();
+    return val == "true";
+  }
+
+  String htmlFragment(const String& body) {
+    return body;
+  }
+
+  String htmlRespond(WebServer& srv, const String& title, const String& body) {
+    if (isHtmxRequest(srv)) {
+      return htmlFragment(body);
+    }
+    return htmlHeader(title) + body + htmlFooter();
   }
 
   bool safePath(const String& name) {

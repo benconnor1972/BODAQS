@@ -76,6 +76,14 @@ static bool rejectConfigEditLocked_(WebServer& srv) {
   if (!configEditLocked_(&reason)) {
     return false;
   }
+  if (HtmlUtil::isHtmxRequest(srv)) {
+    // Return 200 (not 423) because htmx v2.0 does not swap 4xx response bodies by default.
+    // Returning 423 would cause htmx to fire htmx:responseError and discard the body,
+    // leaving the target div empty with no lock feedback visible to the user.
+    HttpFileSender::sendText(srv, 200, F("text/html"),
+      String(F("<div class='alert-warn'>Configuration is locked while ")) + reason + F(".</div>"), F("no-store"));
+    return true;
+  }
   srv.send(423, F("text/plain"), String(F("Configuration is locked while ")) + reason + F("."));
   return true;
 }
@@ -692,7 +700,11 @@ void registerConfigRoutes(WebServer& srv) {
 
 
     // ---------- GLOBALS ----------
-    html += F("<h2>Configuration</h2><form method='POST' action='/config'>");
+    html += F("<div id='save-result'></div>");
+    html += F("<h2>Configuration</h2>");
+    html += F("<form method='POST' action='/config'");
+    html += F(" hx-post='/config' hx-target='#save-result' hx-swap='innerHTML'");
+    html += F(" hx-sync='this:replace'>");
     html += F("<input type='hidden' name='submit' value='globals'>"); //Hidden input
 
     html += F("<fieldset><legend>General</legend>");
@@ -892,7 +904,7 @@ void registerConfigRoutes(WebServer& srv) {
       html += F("</fieldset>");
     }
 
-    html += F("<p><button type='submit'"); html += dis; html += F(">Save</button></p>");
+    html += F("<p><button type='submit'"); html += dis; html += F(">Save <span class='htmx-indicator'>Saving...</span></button></p>");
     html += F("</form>");
 
     html += htmlFooter();
@@ -957,7 +969,10 @@ void registerConfigRoutes(WebServer& srv) {
       html += F("</tbody></table>");
     }
 
-    html += F("<form method='POST' action='/config/sensors'><fieldset><legend>New sensor</legend>");
+    html += F("<div id='sensor-list-result'></div>");
+    html += F("<form method='POST' action='/config/sensors'");
+    html += F(" hx-post='/config/sensors' hx-target='#sensor-list-result' hx-swap='innerHTML'");
+    html += F(" hx-sync='this:replace'><fieldset><legend>New sensor</legend>");
     html += F("<div class='row'><label>Type</label><select name='add_sensor_type'");
     html += dis;
     html += F(">");
@@ -1021,14 +1036,17 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     html += F("<p><a href='/config/sensors'>Back to sensors</a></p>");
-    html += F("<form method='POST' action='/config/sensors'>");
+    html += F("<div id='sensor-result'></div>");
+    html += F("<form method='POST' action='/config/sensors'");
+    html += F(" hx-post='/config/sensors' hx-target='#sensor-result' hx-swap='innerHTML'");
+    html += F(" hx-sync='this:replace'>");
     html += F("<input type='hidden' name='return_to' value='/config/sensor?id=");
     html += String(id);
     html += F("'>");
     emitSensorEditor_(html, (uint8_t)id, sp, locked, dis);
     html += F("<p><button type='submit'");
     html += dis;
-    html += F(">Save Sensor</button></p></form>");
+    html += F(">Save Sensor <span class='htmx-indicator'>Saving...</span></button></p></form>");
     html += htmlFooter();
     html.finish();
   });
@@ -1049,7 +1067,17 @@ void registerConfigRoutes(WebServer& srv) {
         return;
       }
       if (!ConfigManager::deleteSensorByIndex((uint8_t)idx) || !ConfigManager::save(ConfigManager::get())) {
-        srv.send(500, F("text/plain"), F("Failed to delete sensor"));
+        if (isHtmxRequest(srv)) {
+          HttpFileSender::sendText(srv, 200, F("text/html"),
+            F("<div class='alert-err'>Failed to delete sensor</div>"), F("no-store"));
+        } else {
+          srv.send(500, F("text/plain"), F("Failed to delete sensor"));
+        }
+        return;
+      }
+      if (isHtmxRequest(srv)) {
+        HttpFileSender::sendText(srv, 200, F("text/html"),
+          F("<div class='alert-ok'>Sensor deleted. Restart the logger to rebuild the live sensor set.</div>"), F("no-store"));
         return;
       }
       srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1");
@@ -1064,10 +1092,20 @@ void registerConfigRoutes(WebServer& srv) {
       }
       const String uniqueName = uniqueSensorName_(newType, srv.hasArg("add_sensor_name") ? srv.arg("add_sensor_name") : String());
       if (!ConfigManager::appendSensor(newType, uniqueName.c_str()) || !ConfigManager::save(ConfigManager::get())) {
-        srv.send(500, F("text/plain"), F("Failed to add sensor"));
+        if (isHtmxRequest(srv)) {
+          HttpFileSender::sendText(srv, 200, F("text/html"),
+            F("<div class='alert-err'>Failed to add sensor</div>"), F("no-store"));
+        } else {
+          srv.send(500, F("text/plain"), F("Failed to add sensor"));
+        }
         return;
       }
       const int newIdx = (int)ConfigManager::sensorCount() - 1;
+      if (isHtmxRequest(srv)) {
+        HttpFileSender::sendText(srv, 200, F("text/html"),
+          F("<div class='alert-ok'>Sensor added. Restart the logger to rebuild the live sensor set.</div>"), F("no-store"));
+        return;
+      }
       srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1#sensor-" + String(newIdx));
       srv.send(303, F("text/plain"), F("Sensor added"));
       return;
@@ -1308,7 +1346,17 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     if (!ConfigManager::save(tmp)) {
-      srv.send(500, F("text/plain"), F("Failed to save config"));
+      if (isHtmxRequest(srv)) {
+        HttpFileSender::sendText(srv, 200, F("text/html"),
+          F("<div class='alert-err'>Failed to save config</div>"), F("no-store"));
+      } else {
+        srv.send(500, F("text/plain"), F("Failed to save config"));
+      }
+      return;
+    }
+    if (isHtmxRequest(srv)) {
+      HttpFileSender::sendText(srv, 200, F("text/html"),
+        F("<div class='alert-ok'>Saved.</div>"), F("no-store"));
       return;
     }
     String location = "/config/sensors";
@@ -1447,6 +1495,11 @@ void registerConfigRoutes(WebServer& srv) {
         apPassword.trim();
         if (!apPassword.length()) apPassword = F("bodaqslogger");
         if (apPassword.length() < 8 || apPassword.length() > 63) {
+          if (isHtmxRequest(srv)) {
+            HttpFileSender::sendText(srv, 200, F("text/html"),
+              F("<div class='alert-err'>Error: AP password must be 8-63 characters</div>"), F("no-store"));
+            return;
+          }
           srv.sendHeader("Location", "/config?err=wifi_ap_password_length");
           srv.send(303, F("text/plain"), F("AP password must be 8-63 characters"));
           return;
@@ -1522,6 +1575,11 @@ void registerConfigRoutes(WebServer& srv) {
         if (tmp.wifi[i].staticIp) {
           // Require these three at minimum
           if (isZero4(tmp.wifi[i].ip) || isZero4(tmp.wifi[i].gateway) || isZero4(tmp.wifi[i].subnet)) {
+            if (isHtmxRequest(srv)) {
+              HttpFileSender::sendText(srv, 200, F("text/html"),
+                F("<div class='alert-err'>Error: Static IP requires ip/gateway/subnet</div>"), F("no-store"));
+              return;
+            }
             srv.sendHeader("Location", "/config?err=wifi_static_ip_incomplete&net=" + String(i));
             srv.send(303, F("text/plain"), F("Static IP requires ip/gateway/subnet"));
             return;
@@ -1566,6 +1624,11 @@ void registerConfigRoutes(WebServer& srv) {
     // Debug aid for saving tmp bindings count if needed later.
               
     if (!ConfigManager::save(tmp)) {
+      if (isHtmxRequest(srv)) {
+        HttpFileSender::sendText(srv, 200, F("text/html"),
+          F("<div class='alert-err'>Failed to save config</div>"), F("no-store"));
+        return;
+      }
       srv.send(500, F("text/plain"), F("Failed to save config"));
       return;
     }
@@ -1579,6 +1642,11 @@ void registerConfigRoutes(WebServer& srv) {
     //ConfigManager::debugDumpConfigFile();
 
     // Redirect back to GET with ok=1
+    if (isHtmxRequest(srv)) {
+      HttpFileSender::sendText(srv, 200, F("text/html"),
+        F("<div class='alert-ok'>Configuration saved.</div>"), F("no-store"));
+      return;
+    }
     srv.sendHeader("Location", "/config?ok=1&tab=" + submit);
     srv.send(303, F("text/plain"), F("Saved"));
     

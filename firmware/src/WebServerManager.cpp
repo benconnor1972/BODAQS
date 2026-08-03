@@ -17,6 +17,7 @@
 #include "Routes_Files.h"
 #include "Routes_Config.h"
 #include "Routes_Api.h"
+#include "Routes_Static.h"
 #include "HtmlUtil.h"
 #include "DebugLog.h"
 using namespace HtmlUtil;
@@ -185,7 +186,7 @@ bool WebServerManager::prepareServer_() {
     return false;
   }
 
-  static const char* kHeaderKeys[] = { "Range" };
+  static const char* kHeaderKeys[] = { "Range", "HX-Request" };
   g_server->collectHeaders(kHeaderKeys, sizeof(kHeaderKeys) / sizeof(kHeaderKeys[0]));
   setupRoutes();
   WS_LOGI("prepareServer: routes registered\n");
@@ -235,6 +236,7 @@ void WebServerManager::setupRoutes() {
   g_server->on("/", HTTP_GET, handleRoot);
 
   // Delegate
+  registerStaticRoutes(*g_server);
   registerFileRoutes(*g_server);
   registerConfigRoutes(*g_server);
   registerApiRoutes(*g_server);

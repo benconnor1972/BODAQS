@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BODAQS — Live Preview</title>
+<link rel="stylesheet" href="../../../firmware/www/app.css">
+<script src="../../../firmware/www/htmx.min.js" defer></script>
+</head>
+<body>
+
+<h1 class="titlebar">BODAQS data logger: MyLogger</h1>
+<p class="netbar">Network: AP / BODAQS-Logger &nbsp; IP: 192.168.4.1</p>
+
+<nav class="topnav">
+  <a href="/files">Files</a>
+  <a href="/config">General</a>
+  <a href="/config/sensors">Sensors</a>
+</nav>
+
+<div id="save-result"></div>
+
+<form method="POST" action="/config"
+      hx-post="/config" hx-target="#save-result" hx-swap="innerHTML" hx-sync="this:replace">
+  <fieldset>
+    <legend>General</legend>
+    <div class="row">
+      <label>Logger name</label>
+      <input type="text" name="logger_name" value="MyLogger" maxlength="20">
+    </div>
+    <div class="row">
+      <label>Sample rate</label>
+      <input type="number" name="sample_rate_hz" value="100" min="1" max="1000">
+      <small>Hz</small>
+    </div>
+    <div class="row">
+      <label>Log format</label>
+      <select name="log_format">
+        <option value="0" selected>BODAQS CSV</option>
+        <option value="1">syn.bike</option>
+        <option value="2">binary</option>
+      </select>
+    </div>
+    <p><button type="submit" name="submit" value="globals">Save <span class="htmx-indicator">Saving...</span></button></p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Network &amp; NTP</legend>
+    <div class="row">
+      <label>Wi-Fi mode</label>
+      <select name="wifi_mode">
+        <option value="0" selected>Access Point</option>
+        <option value="1">Station</option>
+        <option value="2">AP + Station</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>AP SSID</label>
+      <input type="text" name="wifi_ap_ssid" value="BODAQS-Logger" maxlength="32">
+    </div>
+    <div class="row">
+      <label>AP password</label>
+      <input type="password" name="wifi_ap_password" value="bodaqslogger" maxlength="63">
+      <small>8-63 characters</small>
+    </div>
+    <div class="row">
+      <label>Static IP</label>
+      <input type="checkbox" name="wifi_static_ip" checked>
+    </div>
+    <div class="row">
+      <label>IP address</label>
+      <input type="text" name="wifi_static_ip_addr" value="192.168.4.1">
+    </div>
+    <div class="row">
+      <label>Gateway</label>
+      <input type="text" name="wifi_static_gw" value="192.168.4.1">
+    </div>
+    <div class="row">
+      <label>Subnet</label>
+      <input type="text" name="wifi_static_sn" value="255.255.255.0">
+    </div>
+    <p><button type="submit" name="submit" value="globals">Save <span class="htmx-indicator">Saving...</span></button></p>
+  </fieldset>
+</form>
+
+</body>
+</html>
