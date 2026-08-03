@@ -137,7 +137,7 @@ Example `logger_wifi` source:
   "settle_time_s": 0,
   "logger_wifi": {
     "logger_id": "Prototype E",
-    "base_url": "http://192.168.4.1",
+    "base_url": "http://bodaqs-prototype-e.local",
     "request_timeout_s": 5,
     "download_timeout_s": 60,
     "cleanup_mode": "none"
@@ -371,8 +371,8 @@ Purpose:
 
 Tests:
 
-- AP mode, manual PC connection, address `http://192.168.4.1`.
-- Station mode with manually entered IP.
+- AP mode, manual PC connection, address `http://bodaqs-<logger-id>.local`.
+- Station mode with manually entered `.local` address.
 - Logger not in upload mode.
 - Logger enters upload mode while manager is running.
 - Interrupted download and retry.

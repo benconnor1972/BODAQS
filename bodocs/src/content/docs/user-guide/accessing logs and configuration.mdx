@@ -58,35 +58,37 @@ from the General configuration page in the web interface.
   2. Select the `WiFi` menu item.
   3. Wait while the menu shows `WiFi: STARTING`.
   4. When the web server is running, the menu shows `WiFi: ON`.
-  5. Close the menu and note the network/AP name and IP address shown on the idle screen.
+  5. Close the menu and note the `.local` address shown on the idle screen.
 </Steps>
 </Flag>
 
-In station mode, open a browser on the same network and enter the logger IP
-address, for example:
+In station mode, open a browser on the same network and enter the logger's
+`.local` address, for example:
 
 ```text
-http://192.168.1.42/
+http://bodaqs-<logger-id>.local/
 ```
 
 In access-point mode, first connect your phone, tablet, or computer to the
-logger's AP SSID, then open the IP address shown on the logger display. If the
-default ESP32 AP address is unchanged, this is typically:
+logger's AP SSID, then open the same `.local` address shown on the logger
+display:
 
 ```text
-http://192.168.4.1/
+http://bodaqs-<logger-id>.local/
 ```
 
 The root page redirects to the file browser. You can also go directly to:
 
 ```text
-http://<logger-ip>/files
+http://bodaqs-<logger-id>.local/files
 ```
 
 <Aside type="tip" title="Finding the logger">
-  The idle screen alternates between network/AP name and IP address while Wi-Fi
-  is running. If the page does not load, check that your computer or phone is on
-  the same network or connected to the logger access point.
+  The idle screen alternates between the network/AP name and the `.local`
+  address while Wi-Fi is running. The logger advertises itself via Bonjour/mDNS
+  in both station and access-point mode, so the `.local` address works in either
+  mode. If the page does not load, check that your computer or phone is on the
+  same network or connected to the logger access point.
 </Aside>
 
 Every web page shows navigation links for `Files`, `General`, and `Sensors`.

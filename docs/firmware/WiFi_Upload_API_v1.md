@@ -244,10 +244,14 @@ Example response:
   "wifi_mode": "access_point",
   "network_up": true,
   "ip": "192.168.4.1",
+  "hostname": "bodaqs-prototype-e",
   "session_count": 8,
   "importable_session_count": 8
 }
 ```
+
+The `hostname` field gives the mDNS/Bonjour hostname. The device is reachable
+at `http://<hostname>.local/` in both station and access-point mode.
 
 ### `POST /api/v1/upload-mode/enter`
 
