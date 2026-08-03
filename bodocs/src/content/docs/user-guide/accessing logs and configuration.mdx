@@ -91,6 +91,14 @@ http://bodaqs-<logger-id>.local/files
   same network or connected to the logger access point.
 </Aside>
 
+<Aside type="caution" title="Windows requires Bonjour">
+  The `.local` address works natively on macOS, iOS, Android, and Linux. On
+  Windows, install [Bonjour Print Services for Windows](https://support.apple.com/downloads/bonjour_for_windows)
+  (bundled with iTunes) for `.local` resolution. Without Bonjour installed, use
+  the raw IP address shown on the logger display instead — in access-point mode
+  this is typically `http://192.168.4.1/`.
+</Aside>
+
 Every web page shows navigation links for `Files`, `General`, and `Sensors`.
 
 <Aside type="note" title="Web editing locks">
