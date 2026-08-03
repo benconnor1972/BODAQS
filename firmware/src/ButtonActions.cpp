@@ -367,8 +367,9 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
   if (WiFiManager::isNetworkUp()) {
     if (WebServerManager::start()) {
       const String host = WiFiManager::hostname() + ".local";
-      UI::println(String("Web server at ") + host,
-                  host, UI::TARGET_BOTH, UI::LVL_INFO, 3000, 1);
+      const String ip = WiFiManager::localAddress().toString();
+      UI::println(String("Web server at ") + host + " (" + ip + ")",
+                  host + "\n" + ip, UI::TARGET_BOTH, UI::LVL_INFO, 3000, 1);
       UI::status(host);
     } else {
       // At this point WiFi is connected but server failed—this is a real failure.

@@ -216,8 +216,8 @@ The hostname is derived from the logger identity. The advertisement is refreshed
 when upload mode changes so the desktop app can see whether the logger is ready
 for upload.
 
-AP mode also advertises mDNS, so a computer connected to the logger AP can
-reach it at `bodaqs-<logger_id>.local` as an alternative to the raw IP.
+AP mode does not rely on mDNS. A computer connected to the logger AP should
+confirm identity through `/api/v1/device`.
 
 ### Web UI Upload Panel
 

@@ -398,7 +398,7 @@ Status:
   - `api=1`
   - `logger_id=<logger_id>`
   - `display_name=<logger_name>`
-  - `wifi_mode=<station|ap>`
+  - `wifi_mode=<station|access_point>`
   - `upload_mode=true|false`
   - `hostname=<hostname>`
 - upload mode enter/exit refreshes mDNS so `upload_mode` TXT stays current

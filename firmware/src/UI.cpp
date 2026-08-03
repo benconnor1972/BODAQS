@@ -37,11 +37,15 @@ static String makeWifiSummary_() {
 
     const String a = (st.mode == WiFiMode::AccessPoint) ? ("AP: " + ssid) : ("WiFi: " + ssid);
     const String b = st.hostname + ".local";
+    const String c = st.ip.length() ? st.ip : WiFiManager::localAddress().toString();
 
-    // Alternate once per second. Since UI::loop() already runs at 1 Hz,
-    // this will flip each time UI::loop() refreshes the status.
-    const bool showHost = ((millis() / 1000) & 0x1) != 0;
-    return showHost ? b : a;
+    // Cycle: SSID -> .local -> IP -> SSID ...
+    // .local may not resolve on all platforms (e.g. Windows without Bonjour),
+    // so the raw IP is still shown as a fallback.
+    const uint8_t phase = (millis() / 1000) % 3;
+    if (phase == 0) return a;
+    if (phase == 1) return b;
+    return c;
   }
 
   // Otherwise reflect state machine
