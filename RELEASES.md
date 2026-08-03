@@ -13,16 +13,7 @@ Bundles the Import Manager, BODAQS Workbench analysis app, library service and o
 
 Latest release:
 
-- [BODAQS Desktop 0.1.6-alpha](https://github.com/benconnor1972/BODAQS/releases/tag/desktop-v0.1.6-alpha)
-
-## Import Manager
-
-Windows desktop app for creating BODAQS libraries and import sources, importing
-logger files, and running the local preprocessing workflow. *It is generally preferable to install the Import Manager as part of the Desktop bundle unless you have a reason to want just the import manager specifically*. 
-
-Latest release:
-
-- [BODAQS Import Manager 0.1.4-beta](https://github.com/benconnor1972/BODAQS/releases/tag/import-manager-v0.1.4-beta)
+- [BODAQS Desktop 0.2.1-beta](https://github.com/benconnor1972/BODAQS/releases/tag/Desktop-v0.2.1-beta)
 
 ## Firmware
 
@@ -30,7 +21,7 @@ ESP32 logger firmware for BODAQS devices.
 
 Latest release:
 
-- [BODAQS Firmware 0.4.0](https://github.com/benconnor1972/BODAQS/releases/tag/firmware-v0.4.0)
+- [BODAQS Firmware 0.4.2](https://github.com/benconnor1972/BODAQS/releases/tag/firmware-v0.4.2)
 
 ## Analysis Package
 
@@ -41,11 +32,12 @@ Latest release:
 
 - [BODAQS Analysis Package 0.3.0](https://github.com/benconnor1972/BODAQS/releases/tag/analysis-v0.3.0)
 
+**Note: this release is a long way out of date**
+
 ## Release Search Links
 
 Use these links if you prefer GitHub's release search view:
 
-- [Import Manager releases](https://github.com/benconnor1972/BODAQS/releases?q=import-manager)
 - [Firmware releases](https://github.com/benconnor1972/BODAQS/releases?q=firmware)
 - [Analysis releases](https://github.com/benconnor1972/BODAQS/releases?q=analysis)
 
