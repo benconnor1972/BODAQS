@@ -14,22 +14,31 @@
 #
 # This mirrors bodaqs_import_agent_setup.spec (Windows) but produces a windowed
 # .app via a BUNDLE block, uses an .icns icon, and adds the macOS local-network
-# / Bonjour Info.plist keys. Tray/menu-bar support is intentionally NOT enabled
-# on macOS for v1, so pystray (and its pyobjc backend) is excluded to keep the
-# bundle lean; the tray module degrades gracefully when pystray is absent.
+# / Bonjour Info.plist keys. Tray/menu-bar support is enabled on macOS via
+# pystray's Darwin backend (pystray._darwin).
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 
 APP_NAME = "BODAQS Import Manager"
-APP_VERSION = "0.1.4-dev"
 BUNDLE_IDENTIFIER = "org.bodaqs.importmanager"
 
 import_manager_dir = Path.cwd()
 repo_root = import_manager_dir.parent
 analysis_dir = repo_root / "analysis"
+
+# Generate a build-version module so the packaged app can display its version.
+generated_dir = import_manager_dir / "build" / "generated"
+generated_dir.mkdir(parents=True, exist_ok=True)
+app_version = os.environ.get("BODAQS_IMPORT_MANAGER_APP_VERSION", "").strip() or "0.1.4-dev"
+(generated_dir / "bodaqs_import_manager_build_version.py").write_text(
+    f"APP_VERSION = {app_version!r}\n",
+    encoding="utf-8",
+)
+
 setup_datas = collect_data_files("bodaqs_import_manager.import_agent_assets")
 app_icon_path = (import_manager_dir / "packaging" / "macos" / "bodaqs_import_manager.icns").resolve()
 setup_excludes = [
@@ -37,7 +46,6 @@ setup_excludes = [
     "jedi",
     "matplotlib",
     "nbformat",
-    "pystray",
     "pytest",
     "tornado",
     "zmq",
@@ -46,13 +54,14 @@ setup_excludes = [
 
 a = Analysis(
     ['bodaqs_import_agent_setup.py'],
-    pathex=[str(import_manager_dir), str(analysis_dir)],
+    pathex=[str(generated_dir), str(import_manager_dir), str(analysis_dir)],
     binaries=[],
     datas=setup_datas,
     hiddenimports=[
         "bodaqs_analysis.import_agent_logger_wifi",
         "bodaqs_analysis.import_agent_logger_wifi_discovery",
         "bodaqs_analysis.import_agent_sources",
+        "pystray._darwin",
         "zeroconf",
     ],
     hookspath=[],
@@ -98,13 +107,13 @@ app = BUNDLE(
     name=f"{APP_NAME}.app",
     icon=str(app_icon_path),
     bundle_identifier=BUNDLE_IDENTIFIER,
-    version=APP_VERSION,
+    version=app_version,
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
         "CFBundleIdentifier": BUNDLE_IDENTIFIER,
-        "CFBundleShortVersionString": APP_VERSION,
-        "CFBundleVersion": APP_VERSION,
+        "CFBundleShortVersionString": app_version,
+        "CFBundleVersion": app_version,
         "NSHighResolutionCapable": True,
         # Local-network access for Wi-Fi logger discovery (mDNS/Bonjour).
         "NSLocalNetworkUsageDescription": (
