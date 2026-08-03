@@ -25,7 +25,8 @@ export default defineConfig({
       social: [
         {icon: 'github', label: 'GitHub', href: 'https://github.com/benconnor1972/BODAQS'},
         {icon: 'discord', label: 'Discord', href: 'https://discord.gg/BkWuT4S5kB'},
-        {icon: 'instagram', label: 'Discord', href: 'https://www.instagram.com/bodaqs'}
+        {icon: 'instagram', label: 'Instagram', href: 'https://www.instagram.com/bodaqs'},
+        {icon: 'youtube', label: 'YouTube', href: 'https://www.youtube.com/@bodaqs'}
       ],
       head: [
 

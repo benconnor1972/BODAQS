@@ -328,6 +328,7 @@ export function TrackAnalysisView({
   const [activeVideoId, setActiveVideoId] = useState('')
   const [videoPlaybackTimeS, setVideoPlaybackTimeS] = useState(0)
   const videoElementRef = useRef<HTMLVideoElement | null>(null)
+  const videoPlaybackFrameRef = useRef<number | null>(null)
   const trackAnalysisStyle = {
     '--track-analysis-video-width': `${videoPanelWidthPx}px`,
   } as CSSProperties
@@ -698,13 +699,17 @@ export function TrackAnalysisView({
     () => workingTracks.filter((track) => activeTrackIds.has(track.workingId)),
     [activeTrackIds, workingTracks],
   )
-  const activePointSets: ActiveGpsPointSet[] = activeSessions
-    .map((session) => {
-      const id = sessionRecordId(session)
-      const sourceId = gpsSourceBySessionId[id] || session.gpsSummary.preferredSourceId || null
-      return { session, loaded: loadedGps[gpsLoadKey(id, sourceId)] }
-    })
-    .filter(isReadyGpsPointSet)
+  const activePointSets = useMemo(
+    () =>
+      activeSessions
+        .map((session) => {
+          const id = sessionRecordId(session)
+          const sourceId = gpsSourceBySessionId[id] || session.gpsSummary.preferredSourceId || null
+          return { session, loaded: loadedGps[gpsLoadKey(id, sourceId)] }
+        })
+        .filter(isReadyGpsPointSet),
+    [activeSessions, gpsSourceBySessionId, loadedGps],
+  )
   const referenceVideoPointSet =
     referenceVideoSession
       ? activePointSets.find((item) => sessionRecordId(item.session) === sessionRecordId(referenceVideoSession))?.loaded.pointSet ?? null
@@ -743,27 +748,83 @@ export function TrackAnalysisView({
     }
   }, [activeVideo])
 
+  useEffect(() => {
+    const video = videoElementRef.current
+    if (!video || !activeVideo) {
+      return
+    }
+    let lastReportedTimeS = Number.NaN
+    const reportPlaybackTime = () => {
+      const nextTimeS = video.currentTime
+      if (Number.isFinite(nextTimeS) && (!Number.isFinite(lastReportedTimeS) || Math.abs(nextTimeS - lastReportedTimeS) >= 1 / 30)) {
+        lastReportedTimeS = nextTimeS
+        setVideoPlaybackTimeS(nextTimeS)
+      }
+    }
+    const tick = () => {
+      reportPlaybackTime()
+      if (!video.paused && !video.ended) {
+        videoPlaybackFrameRef.current = requestAnimationFrame(tick)
+      } else {
+        videoPlaybackFrameRef.current = null
+      }
+    }
+    const start = () => {
+      if (videoPlaybackFrameRef.current === null) {
+        videoPlaybackFrameRef.current = requestAnimationFrame(tick)
+      }
+    }
+    const stop = () => {
+      if (videoPlaybackFrameRef.current !== null) {
+        cancelAnimationFrame(videoPlaybackFrameRef.current)
+        videoPlaybackFrameRef.current = null
+      }
+      reportPlaybackTime()
+    }
+    video.addEventListener('play', start)
+    video.addEventListener('playing', start)
+    video.addEventListener('pause', stop)
+    video.addEventListener('ended', stop)
+    video.addEventListener('seeked', reportPlaybackTime)
+    if (!video.paused && !video.ended) {
+      start()
+    }
+    return () => {
+      stop()
+      video.removeEventListener('play', start)
+      video.removeEventListener('playing', start)
+      video.removeEventListener('pause', stop)
+      video.removeEventListener('ended', stop)
+      video.removeEventListener('seeked', reportPlaybackTime)
+    }
+  }, [activeVideo?.attachmentId])
+
   const videoSessionTimeS =
     activeVideo && Number.isFinite(activeVideo.sessionTimeAtVideoZeroS)
       ? activeVideo.sessionTimeAtVideoZeroS + videoPlaybackTimeS
       : null
+  const referenceVideoRoute = useMemo(
+    () => (referenceVideoPointSet ? timedSessionRoute(referenceVideoPointSet) : null),
+    [referenceVideoPointSet],
+  )
   const videoPlaybackPosition = useMemo(
-    () =>
-      videoSessionTimeS !== null && referenceVideoPointSet
-        ? playbackPositionForSessionTime(referenceVideoPointSet, videoSessionTimeS)
-        : null,
-    [referenceVideoPointSet, videoSessionTimeS],
+    () => (videoSessionTimeS !== null && referenceVideoRoute ? playbackPositionForTimedRoute(referenceVideoRoute, videoSessionTimeS) : null),
+    [referenceVideoRoute, videoSessionTimeS],
   )
   const canPlayFocusedTrackFromVideo = useMemo(
     () => canUseReferenceVideoForTrack(selectedTrack, referenceVideoSession, trackSessionMatchCache),
     [referenceVideoSession, selectedTrack, trackSessionMatchCache],
   )
-  const sessionPaths = activePointSets.map<SessionPath>((item) => ({
-    id: sessionRecordId(item.session),
-    label: item.session.name,
-    path: item.loaded.pointSet.path,
-    session: item.session,
-  }))
+  const sessionPaths = useMemo(
+    () =>
+      activePointSets.map<SessionPath>((item) => ({
+        id: sessionRecordId(item.session),
+        label: item.session.name,
+        path: item.loaded.pointSet.path,
+        session: item.session,
+      })),
+    [activePointSets],
+  )
   const referencePath = timingTrack?.points.length ? timingTrack.points : sessionPaths[0]?.path ?? []
   const lapTimingRows = useMemo(
     () => buildLapTimingRows(activePointSets, referencePath, timingTrackpoints, validSegmentAliases),
@@ -3202,6 +3263,8 @@ function TrackAnalysisMap({
   const suppressClickRef = useRef(false)
   const hasFitInitialDataRef = useRef(false)
   const previousGeometrySignatureRef = useRef('')
+  const videoMarkerPositionRef = useRef<GeoPosition | null>(videoMarkerPosition)
+  videoMarkerPositionRef.current = videoMarkerPosition
   const hasData = sessionPaths.some((path) => path.path.length >= 2) || visibleTracks.some((track) => track.points.length >= 2)
   const geometrySignature = useMemo(
     () =>
@@ -3340,7 +3403,12 @@ function TrackAnalysisMap({
     })
     map.on('moveend', reportViewportBounds)
     map.on('zoomend', reportViewportBounds)
-    map.once('load', reportViewportBounds)
+    map.once('load', () => {
+      // Install the independent playback layer with the latest position even if
+      // video begins before the MapLibre style has finished loading.
+      ensureVideoHeadLayer(map, videoMarkerPositionRef.current)
+      reportViewportBounds()
+    })
     mapRef.current = map
     return () => {
       map.getCanvas().removeEventListener('contextmenu', preventContextMenu)
@@ -3375,7 +3443,6 @@ function TrackAnalysisMap({
         draftTrackpoints,
         segmentAliases,
         hideSegmentNames,
-        videoMarkerPosition,
       )
       ensureLineLayer(activeMap, data.lines)
       ensurePointLayer(activeMap, data.points)
@@ -3398,7 +3465,23 @@ function TrackAnalysisMap({
     return () => {
       activeMap.off('load', applyData)
     }
-  }, [draftTrackpoints, focusedTrackId, geometrySignature, hasData, hideSegmentNames, segmentAliases, sessionPaths, videoMarkerPosition, visibleTracks])
+  }, [draftTrackpoints, focusedTrackId, geometrySignature, hasData, hideSegmentNames, segmentAliases, sessionPaths, visibleTracks])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !hasData) {
+      return
+    }
+    const applyVideoHead = () => ensureVideoHeadLayer(map, videoMarkerPosition)
+    if (map.isStyleLoaded()) {
+      applyVideoHead()
+      return
+    }
+    map.once('load', applyVideoHead)
+    return () => {
+      map.off('load', applyVideoHead)
+    }
+  }, [hasData, videoMarkerPosition])
 
   if (!hasData) {
     return (
@@ -3528,7 +3611,6 @@ function buildMapData(
   draftTrackpoints: DraftTrackpoint[],
   segmentAliases: TrackSegmentAliasRecord[],
   hideSegmentNames: boolean,
-  videoMarkerPosition: GeoPosition | null,
 ) {
   const lines: Array<Feature<LineString, { color: string; width: number; opacity: number }>> = []
   const points: Array<Feature<Point, MapPointProperties>> = []
@@ -3594,10 +3676,6 @@ function buildMapData(
       }
       points.push(pointFeature(`segment-${alias.fromTrackpointId}-${alias.toTrackpointId}`, midpoint, TRACK_COLOR, alias.name, 0, 'segment', ''))
     })
-  }
-
-  if (videoMarkerPosition && Number.isFinite(videoMarkerPosition[0]) && Number.isFinite(videoMarkerPosition[1])) {
-    points.push(pointFeature('video-head', videoMarkerPosition, '#f59e0b', 'Video head', 7, 'videoHead', ''))
   }
 
   return {
@@ -3675,61 +3753,49 @@ function videoStateData(state: VideoPanelState) {
   return state.data
 }
 
-function playbackPositionForSessionTime(pointSet: SessionGpsPointSet, sessionTimeS: number): PlaybackPosition | null {
-  const timedPoints = pointSet.points
-    .filter(
-      (point) =>
-        point.timeS !== null &&
-        Number.isFinite(point.timeS) &&
-        Number.isFinite(point.longitude) &&
-        Number.isFinite(point.latitude),
-    )
-    .sort((a, b) => (a.timeS ?? 0) - (b.timeS ?? 0))
-  if (!timedPoints.length || !Number.isFinite(sessionTimeS)) {
+function playbackPositionForTimedRoute(route: ReturnType<typeof timedSessionRoute>, sessionTimeS: number): PlaybackPosition | null {
+  const { positions, stations, times } = route
+  if (!times.length || !Number.isFinite(sessionTimeS)) {
     return null
   }
-  const positions = timedPoints.map(
-    (point) =>
-      Number.isFinite(point.elevationM)
-        ? ([point.longitude, point.latitude, point.elevationM as number] as GeoPosition)
-        : ([point.longitude, point.latitude] as GeoPosition),
-  )
-  const stations = routeStationsM(positions)
-  if (sessionTimeS <= (timedPoints[0].timeS ?? 0)) {
-    return { position: positions[0], stationM: stations[0] ?? 0, timeS: timedPoints[0].timeS ?? 0 }
+  if (sessionTimeS <= times[0]) {
+    return { position: positions[0], stationM: stations[0] ?? 0, timeS: times[0] }
   }
-  for (let index = 1; index < timedPoints.length; index += 1) {
-    const previous = timedPoints[index - 1]
-    const next = timedPoints[index]
-    const previousTime = previous.timeS ?? 0
-    const nextTime = next.timeS ?? previousTime
-    if (sessionTimeS <= nextTime) {
-      const fraction = clampNumber((sessionTimeS - previousTime) / Math.max(1e-9, nextTime - previousTime), 0, 1)
-      const previousPosition = positions[index - 1]
-      const nextPosition = positions[index]
-      const interpolated: GeoPosition =
-        Number.isFinite(previousPosition[2]) && Number.isFinite(nextPosition[2])
-          ? [
-              previousPosition[0] + (nextPosition[0] - previousPosition[0]) * fraction,
-              previousPosition[1] + (nextPosition[1] - previousPosition[1]) * fraction,
-              (previousPosition[2] as number) + ((nextPosition[2] as number) - (previousPosition[2] as number)) * fraction,
-            ]
-          : [
-              previousPosition[0] + (nextPosition[0] - previousPosition[0]) * fraction,
-              previousPosition[1] + (nextPosition[1] - previousPosition[1]) * fraction,
-            ]
-      return {
-        position: interpolated,
-        stationM: (stations[index - 1] ?? 0) + ((stations[index] ?? 0) - (stations[index - 1] ?? 0)) * fraction,
-        timeS: sessionTimeS,
-      }
+  let lowerIndex = 0
+  let upperIndex = times.length - 1
+  while (lowerIndex < upperIndex) {
+    const middleIndex = Math.floor((lowerIndex + upperIndex) / 2)
+    if (times[middleIndex] < sessionTimeS) {
+      lowerIndex = middleIndex + 1
+    } else {
+      upperIndex = middleIndex
     }
   }
-  const lastIndex = timedPoints.length - 1
+  const nextIndex = lowerIndex
+  if (nextIndex === 0) {
+    return { position: positions[0], stationM: stations[0] ?? 0, timeS: times[0] }
+  }
+  const previousIndex = nextIndex - 1
+  const previousTime = times[previousIndex]
+  const nextTime = times[nextIndex]
+  const fraction = clampNumber((sessionTimeS - previousTime) / Math.max(1e-9, nextTime - previousTime), 0, 1)
+  const previousPosition = positions[previousIndex]
+  const nextPosition = positions[nextIndex]
+  const interpolated: GeoPosition =
+    Number.isFinite(previousPosition[2]) && Number.isFinite(nextPosition[2])
+      ? [
+          previousPosition[0] + (nextPosition[0] - previousPosition[0]) * fraction,
+          previousPosition[1] + (nextPosition[1] - previousPosition[1]) * fraction,
+          (previousPosition[2] as number) + ((nextPosition[2] as number) - (previousPosition[2] as number)) * fraction,
+        ]
+      : [
+          previousPosition[0] + (nextPosition[0] - previousPosition[0]) * fraction,
+          previousPosition[1] + (nextPosition[1] - previousPosition[1]) * fraction,
+        ]
   return {
-    position: positions[lastIndex],
-    stationM: stations[lastIndex] ?? 0,
-    timeS: timedPoints[lastIndex].timeS ?? sessionTimeS,
+    position: interpolated,
+    stationM: (stations[previousIndex] ?? 0) + ((stations[nextIndex] ?? 0) - (stations[previousIndex] ?? 0)) * fraction,
+    timeS: sessionTimeS,
   }
 }
 
@@ -4261,6 +4327,41 @@ function ensurePointLayer(
         'text-color': '#101820',
         'text-halo-color': '#ffffff',
         'text-halo-width': 1.5,
+      },
+    })
+  }
+}
+
+function ensureVideoHeadLayer(map: MapLibreMap, position: GeoPosition | null) {
+  const hasPosition = Boolean(position && Number.isFinite(position[0]) && Number.isFinite(position[1]))
+  const data: FeatureCollection<Point, { label: string }> = {
+    type: 'FeatureCollection',
+    features: hasPosition
+      ? [
+          {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: lonLat(position as GeoPosition) },
+            properties: { label: 'Video head' },
+          },
+        ]
+      : [],
+  }
+  const existingSource = map.getSource('track-analysis-video-head') as GeoJSONSource | undefined
+  if (existingSource) {
+    existingSource.setData(data)
+  } else {
+    map.addSource('track-analysis-video-head', { type: 'geojson', data })
+  }
+  if (!map.getLayer('track-analysis-video-head-circle')) {
+    map.addLayer({
+      id: 'track-analysis-video-head-circle',
+      type: 'circle',
+      source: 'track-analysis-video-head',
+      paint: {
+        'circle-color': '#f59e0b',
+        'circle-radius': 7,
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff',
       },
     })
   }
