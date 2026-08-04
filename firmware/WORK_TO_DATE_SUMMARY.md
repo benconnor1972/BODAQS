@@ -94,7 +94,7 @@ Expected user flow:
 2. Start Wi-Fi from the menu/button shortcut, or set `wifi_enabled_default=true`.
 3. Connect a phone or laptop to SSID `BODAQS`.
 4. Use password `bodaqslogger`.
-5. Open `http://192.168.4.1/` in a browser, assuming the ESP32 default AP IP is unchanged.
+5. Open `http://bodaqs-<logger-id>.local/` in a browser (the logger advertises via Bonjour/mDNS).
 
 Current limitation:
 
@@ -119,7 +119,7 @@ The AP feature has been compile-verified, but still needs hardware testing on th
 
 - Confirm AP SSID appears as `BODAQS`.
 - Confirm password `bodaqslogger` works.
-- Confirm the web UI loads at `http://192.168.4.1/`.
+- Confirm the web UI loads at `http://bodaqs-<logger-id>.local/`.
 - Confirm changing Wi-Fi mode from the main menu restarts active Wi-Fi.
 - Confirm station mode still connects to configured networks.
 - Confirm NTP reset works in station mode and is unavailable/ignored in AP mode.

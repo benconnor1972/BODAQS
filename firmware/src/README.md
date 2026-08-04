@@ -5,7 +5,7 @@ ESP32-based data logger with:
 - Up to 500Hz logging (tested to 100Hz so far)
 - SD card logging
 - On-device web UI (list/download/delete files, simple config page)
-- mDNS discovery in station mode via `_bodaqs-logger._tcp`
+- mDNS discovery in station and AP mode via `_bodaqs-logger._tcp`
 - Button control (start/stop logging, mark events, menu navigation)
 - General and sensor configuration via config file on SD (`loggercfg`) 
 
@@ -290,13 +290,13 @@ sync, web/API availability, and discovery.
 **Common APIs**
 - `status()` - returns mode, IP, hostname, RSSI/client details.
 - `hostname()` - returns a stable mDNS/HTTP hostname derived from `logger_id`.
-- `refreshDiscovery()` - restarts station-mode mDNS TXT records after upload
+- `refreshDiscovery()` - restarts mDNS TXT records after upload
   mode changes.
 
 **Notes/Gotchas**
-- Station mode advertises `_bodaqs-logger._tcp` on port `80` when online.
-- AP mode does not rely on mDNS; the PC confirms logger identity via
-  `/api/v1/device` after connecting.
+- Station and AP modes both advertise `_bodaqs-logger._tcp` on port `80`
+  when online, so the device is reachable at `bodaqs-<logger_id>.local`
+  in either mode.
 
 ---
 
