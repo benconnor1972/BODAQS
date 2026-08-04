@@ -3504,6 +3504,209 @@ def test_sync_windows_startup_registration_removes_legacy_value_name():
     ) not in fake_reg.values
 
 
+# ---------------------------------------------------------------------------
+# macOS startup registration tests
+# ---------------------------------------------------------------------------
+
+
+def test_macos_startup_supported_is_true_for_darwin():
+    assert import_agent_startup_module.macos_startup_supported(platform="darwin") is True
+
+
+def test_macos_startup_supported_is_false_for_non_darwin():
+    assert import_agent_startup_module.macos_startup_supported(platform="win32") is False
+    assert import_agent_startup_module.macos_startup_supported(platform="linux") is False
+
+
+def test_macos_launch_agent_path_uses_library_launchagents():
+    path = import_agent_startup_module.macos_launch_agent_path(
+        home="/Users/Test",
+        label="org.bodaqs.importmanager",
+    )
+    assert path == Path("/Users/Test/Library/LaunchAgents/org.bodaqs.importmanager.plist")
+
+
+def test_build_macos_launch_agent_plist_includes_required_keys():
+    argv = [
+        "/open",
+        "-a",
+        "/Applications/BODAQS Import Manager.app",
+        "--args",
+        "--app-config",
+        "/Users/Test/Library/Application Support/BODAQS/import-agent/import_agent_app.json",
+        "--app-config-mode",
+        "installed",
+        "--startup-launch",
+    ]
+    plist = import_agent_startup_module.build_macos_launch_agent_plist(argv)
+
+    assert plist["Label"] == "org.bodaqs.importmanager"
+    assert plist["RunAtLoad"] is True
+    assert plist["KeepAlive"] is False
+    program_args = plist["ProgramArguments"]
+    assert "--startup-launch" in program_args
+    assert "--app-config-mode" in program_args
+    assert "installed" in program_args
+    assert program_args[0] == "/open"
+
+
+def test_sync_macos_startup_registration_writes_and_removes_plist(tmp_path):
+    label = "org.bodaqs.importmanager.test"
+    argv = ["/usr/bin/open", "-a", "/Applications/Test.app", "--args", "--startup-launch"]
+
+    # Enable
+    applied = import_agent_startup_module.sync_macos_startup_registration(
+        enabled=True,
+        argv=argv,
+        home=tmp_path,
+        label=label,
+        platform="darwin",
+        load_agent=False,
+    )
+    plist_path = tmp_path / "Library" / "LaunchAgents" / f"{label}.plist"
+    assert plist_path.is_file()
+    assert applied is not None
+    assert "--startup-launch" in applied
+
+    # Disable
+    cleared = import_agent_startup_module.sync_macos_startup_registration(
+        enabled=False,
+        home=tmp_path,
+        label=label,
+        platform="darwin",
+        load_agent=False,
+    )
+    assert cleared is None
+    assert not plist_path.exists()
+
+
+def test_sync_macos_startup_registration_raises_on_empty_argv(tmp_path):
+    with pytest.raises(ValueError, match="non-empty argv"):
+        import_agent_startup_module.sync_macos_startup_registration(
+            enabled=True,
+            argv=None,
+            home=tmp_path,
+            platform="darwin",
+            load_agent=False,
+        )
+
+
+def test_read_macos_startup_registration_returns_none_when_no_plist(tmp_path):
+    result = import_agent_startup_module.read_macos_startup_registration(
+        home=tmp_path,
+        platform="darwin",
+    )
+    assert result is None
+
+
+def test_sync_macos_startup_registration_propagates_load_failure(tmp_path, monkeypatch):
+    label = "org.bodaqs.importmanager.test"
+    argv = ["/usr/bin/open", "-a", "/Applications/Test.app", "--args", "--startup-launch"]
+
+    def fail_bootstrap(plist_path):
+        raise RuntimeError("launchctl bootstrap failed (exit 1): malformed plist")
+
+    monkeypatch.setattr(
+        import_agent_startup_module, "_macos_load_launch_agent", fail_bootstrap
+    )
+
+    with pytest.raises(RuntimeError, match="bootstrap failed"):
+        import_agent_startup_module.sync_macos_startup_registration(
+            enabled=True,
+            argv=argv,
+            home=tmp_path,
+            label=label,
+            platform="darwin",
+            load_agent=True,
+        )
+
+
+def test_sync_macos_startup_registration_tolerates_unload_not_loaded(tmp_path, monkeypatch):
+    label = "org.bodaqs.importmanager.test"
+    argv = ["/usr/bin/open", "-a", "/Applications/Test.app", "--args", "--startup-launch"]
+
+    # _macos_unload_launch_agent should tolerate "not loaded" errors
+    unload_called = []
+    original_unload = import_agent_startup_module._macos_unload_launch_agent
+
+    def tolerant_unload(lbl):
+        unload_called.append(lbl)
+
+    monkeypatch.setattr(import_agent_startup_module, "_macos_unload_launch_agent", tolerant_unload)
+    monkeypatch.setattr(
+        import_agent_startup_module, "_macos_load_launch_agent", lambda p: None
+    )
+
+    applied = import_agent_startup_module.sync_macos_startup_registration(
+        enabled=True,
+        argv=argv,
+        home=tmp_path,
+        label=label,
+        platform="darwin",
+        load_agent=True,
+    )
+    assert applied is not None
+    assert label in unload_called
+
+
+# ---------------------------------------------------------------------------
+# Generic startup wrapper tests
+# ---------------------------------------------------------------------------
+
+
+def test_startup_supported_is_true_for_windows_and_macos():
+    assert import_agent_startup_module.startup_supported(platform="win32") is True
+    assert import_agent_startup_module.startup_supported(platform="darwin") is True
+
+
+def test_startup_supported_is_false_for_linux():
+    assert import_agent_startup_module.startup_supported(platform="linux") is False
+
+
+def test_build_startup_command_uses_windows_format_on_windows():
+    command = import_agent_startup_module.build_startup_command(
+        ["C:\\Program Files\\app.exe", "--flag"],
+        platform="win32",
+    )
+    assert '"C:\\Program Files\\app.exe"' in command
+
+
+def test_build_startup_command_quotes_paths_on_macos():
+    command = import_agent_startup_module.build_startup_command(
+        ["/Applications/My App.app", "--flag"],
+        platform="darwin",
+    )
+    assert "/Applications/My App.app" in command
+    assert "--flag" in command
+
+
+def test_sync_startup_registration_noop_on_linux():
+    result = import_agent_startup_module.sync_startup_registration(
+        enabled=True,
+        command="test",
+        platform="linux",
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Tray tests for macOS
+# ---------------------------------------------------------------------------
+
+
+def test_tray_supported_is_true_for_darwin_when_deps_available():
+    # pystray and PIL may or may not be installed in the test environment.
+    # Verify the platform gate passes for darwin (deps are checked separately).
+    has_pystray = import_agent_tray_module.pystray is not None
+    has_pil = import_agent_tray_module.Image is not None
+    expected = has_pystray and has_pil
+    assert import_agent_tray_module.tray_supported(platform="darwin") is expected
+
+
+def test_tray_supported_is_false_for_linux():
+    assert import_agent_tray_module.tray_supported(platform="linux") is False
+
+
 def test_import_manager_import_now_guard_allows_watch_start_when_idle():
     window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
     window.import_now_thread = None

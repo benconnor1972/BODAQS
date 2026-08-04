@@ -106,7 +106,12 @@ from bodaqs_analysis.import_agent_sources import (
     SOURCE_TYPE_LOGGER_WIFI,
 )
 from .import_agent_startup import (
+    build_startup_command,
     build_windows_startup_command,
+    macos_startup_supported,
+    read_startup_registration,
+    startup_supported,
+    sync_startup_registration,
     sync_windows_startup_registration,
     windows_startup_supported,
 )
@@ -711,16 +716,29 @@ def _subprocess_creationflags() -> int:
 def _packaged_library_service_exe() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
-    manager_dir = Path(sys.executable).resolve().parent
-    candidate = manager_dir.parent / "service" / "bodaqs-library-service.exe"
+    manager_dir = Path(sys.executable).resolve()
+    if sys.platform.startswith("win"):
+        candidate = manager_dir.parent / "service" / "bodaqs-library-service.exe"
+    elif sys.platform == "darwin":
+        # Inside a .app bundle: Contents/MacOS/<exe> -> Contents/Resources/service/
+        resources_dir = manager_dir.parent.parent / "Resources"
+        candidate = resources_dir / "service" / "bodaqs-library-service"
+    else:
+        candidate = manager_dir.parent / "service" / "bodaqs-library-service"
     return candidate if candidate.is_file() else None
 
 
 def _packaged_library_service_web_root() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
-    manager_dir = Path(sys.executable).resolve().parent
-    candidate = manager_dir.parent / "service" / "web"
+    manager_dir = Path(sys.executable).resolve()
+    if sys.platform.startswith("win"):
+        candidate = manager_dir.parent / "service" / "web"
+    elif sys.platform == "darwin":
+        resources_dir = manager_dir.parent.parent / "Resources"
+        candidate = resources_dir / "service" / "web"
+    else:
+        candidate = manager_dir.parent / "service" / "web"
     return candidate if (candidate / "index.html").is_file() else None
 
 
@@ -1889,6 +1907,10 @@ class ImportAgentManagerWindow:
             exe_path = Path(sys.executable).resolve()
             candidates.append(exe_path.parent.parent / _DEMO_ASSETS_DIRNAME)
             candidates.append(exe_path.parent / _DEMO_ASSETS_DIRNAME)
+            if sys.platform == "darwin":
+                # Inside a .app bundle: Contents/MacOS/<exe> -> Contents/Resources/
+                resources_dir = exe_path.parent.parent / "Resources"
+                candidates.append(resources_dir / _DEMO_ASSETS_DIRNAME)
         except Exception:
             pass
         try:
@@ -4693,15 +4715,39 @@ class ImportAgentManagerWindow:
     def _manager_startup_argv(self) -> list[str]:
         app_config_path = str(Path(self.args.app_config).expanduser().resolve())
         app_config_mode = str(self.args.app_config_mode or IMPORT_AGENT_APP_CONFIG_MODE_AUTO)
-        if getattr(sys, "frozen", False):
+        extra_args = ["--app-config", app_config_path, "--app-config-mode", app_config_mode, "--startup-launch"]
+        if getattr(sys, "frozen", False) and sys.platform == "darwin":
+            # On macOS, use ``open -a`` to launch the .app bundle so that
+            # LaunchAgent invokes the system open command rather than the
+            # bare executable inside the bundle.
+            app_bundle_path = self._macos_app_bundle_path()
+            if app_bundle_path is not None:
+                return ["open", "-a", str(app_bundle_path), "--args", *extra_args]
             launch_argv: list[str] = [str(Path(sys.executable).resolve())]
+        elif getattr(sys, "frozen", False):
+            launch_argv = [str(Path(sys.executable).resolve())]
         else:
             launch_argv = [
                 str(Path(sys.executable).resolve()),
                 str((Path(__file__).resolve().parents[1] / "bodaqs_import_agent_setup.py").resolve()),
             ]
-        launch_argv.extend(["--app-config", app_config_path, "--app-config-mode", app_config_mode, "--startup-launch"])
+        launch_argv.extend(extra_args)
         return launch_argv
+
+    @staticmethod
+    def _macos_app_bundle_path() -> Path | None:
+        """Return the .app bundle path when running inside a frozen macOS app."""
+        if not getattr(sys, "frozen", False) or sys.platform != "darwin":
+            return None
+        exe_path = Path(sys.executable).resolve()
+        # sys.executable is typically <Bundle>.app/Contents/MacOS/<exe_name>
+        try:
+            contents_dir = exe_path.parent.parent
+            if contents_dir.name == "Contents" and contents_dir.parent.suffix == ".app":
+                return contents_dir.parent
+        except Exception:
+            pass
+        return None
 
     def _tray_status_snapshot(self) -> dict[str, Any]:
         config = self.controller.app_config
@@ -4779,18 +4825,23 @@ class ImportAgentManagerWindow:
         config = self.controller.app_config
         if config is None:
             return
-        if not windows_startup_supported():
+        if not startup_supported():
             if emit_status:
-                self._append_log("Start-at-login registration is only available on Windows in this build.")
+                self._append_log("Start-at-login registration is not available on this platform.")
             return
 
-        command = (
-            build_windows_startup_command(self._manager_startup_argv())
-            if config.auto_start
-            else None
-        )
+        if config.auto_start:
+            startup_argv = self._manager_startup_argv()
+            command = build_startup_command(startup_argv)
+        else:
+            startup_argv = None
+            command = None
         try:
-            applied = sync_windows_startup_registration(enabled=config.auto_start, command=command)
+            applied = sync_startup_registration(
+                enabled=config.auto_start,
+                command=command,
+                argv=startup_argv,
+            )
         except Exception as exc:
             if emit_status:
                 self._set_manager_status(f"Start-at-login update failed: {exc}")

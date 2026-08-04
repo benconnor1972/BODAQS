@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+
+# ---------------------------------------------------------------------------
+# Windows constants and functions (unchanged)
+# ---------------------------------------------------------------------------
 
 WINDOWS_STARTUP_VALUE_NAME = "BODAQS Import Manager"
 LEGACY_WINDOWS_STARTUP_VALUE_NAMES = ("BODAQS Import Agent",)
@@ -113,3 +119,214 @@ def sync_windows_startup_registration(
         registry_module=reg,
         platform=platform,
     )
+
+
+# ---------------------------------------------------------------------------
+# macOS constants and functions
+# ---------------------------------------------------------------------------
+
+MACOS_LAUNCH_AGENT_LABEL = "org.bodaqs.importmanager"
+MACOS_LAUNCH_AGENTS_DIRNAME = "LaunchAgents"
+
+
+def macos_startup_supported(*, platform: Optional[str] = None) -> bool:
+    resolved_platform = platform or sys.platform
+    return resolved_platform == "darwin"
+
+
+def macos_launch_agent_path(
+    *,
+    home: Optional[str | Path] = None,
+    label: str = MACOS_LAUNCH_AGENT_LABEL,
+) -> Path:
+    home_path = Path.home() if home is None else Path(home).expanduser()
+    return home_path / "Library" / MACOS_LAUNCH_AGENTS_DIRNAME / f"{label}.plist"
+
+
+def build_macos_launch_agent_plist(
+    argv: Sequence[str | Path],
+    *,
+    label: str = MACOS_LAUNCH_AGENT_LABEL,
+) -> dict[str, Any]:
+    """Build a LaunchAgent plist dictionary from an argv list.
+
+    The first element of *argv* is expected to be the executable or ``open``
+    command.  When the first element is an ``.app`` bundle path, the caller
+    should pass ``["open", "-a", "<app_path>", "--args", ...]`` so that
+    LaunchAgent invokes the system ``open`` command.
+    """
+    program_args = [
+        str(Path(item).expanduser().resolve()) if isinstance(item, Path) else str(item)
+        for item in argv
+    ]
+    return {
+        "Label": label,
+        "ProgramArguments": program_args,
+        "RunAtLoad": True,
+        "KeepAlive": False,
+    }
+
+
+def _macos_load_launch_agent(plist_path: Path) -> None:
+    uid = os.getuid()
+    result = subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        # launchctl prints "Boot-out failed" or similar if the agent is
+        # already loaded.  Re-bootstrap can return non-zero in that case
+        # but the agent is still registered.  Only raise for genuine
+        # failures (e.g. malformed plist, permission denied).
+        if "already" not in stderr.lower() and "exists" not in stderr.lower():
+            raise RuntimeError(
+                f"launchctl bootstrap failed (exit {result.returncode}): {stderr}"
+            )
+
+
+def _macos_unload_launch_agent(label: str) -> None:
+    uid = os.getuid()
+    result = subprocess.run(
+        ["launchctl", "bootout", f"gui/{uid}/{label}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        # bootout returns non-zero if the agent is not currently loaded,
+        # which is expected when disabling or re-loading.  Only raise for
+        # genuinely unexpected errors.
+        if "no such" not in stderr.lower() and "not loaded" not in stderr.lower():
+            raise RuntimeError(
+                f"launchctl bootout failed (exit {result.returncode}): {stderr}"
+            )
+
+
+def read_macos_startup_registration(
+    *,
+    home: Optional[str | Path] = None,
+    label: str = MACOS_LAUNCH_AGENT_LABEL,
+    platform: Optional[str] = None,
+) -> Optional[str]:
+    if not macos_startup_supported(platform=platform):
+        return None
+    plist_path = macos_launch_agent_path(home=home, label=label)
+    if not plist_path.is_file():
+        return None
+    try:
+        with plist_path.open("rb") as handle:
+            data = plistlib.load(handle)
+    except Exception:
+        return None
+    args = data.get("ProgramArguments")
+    if not isinstance(args, list) or not args:
+        return None
+    return " ".join(str(a) for a in args)
+
+
+def sync_macos_startup_registration(
+    *,
+    enabled: bool,
+    argv: Optional[Sequence[str | Path]] = None,
+    home: Optional[str | Path] = None,
+    label: str = MACOS_LAUNCH_AGENT_LABEL,
+    platform: Optional[str] = None,
+    load_agent: bool = True,
+) -> Optional[str]:
+    if not macos_startup_supported(platform=platform):
+        return None
+    plist_path = macos_launch_agent_path(home=home, label=label)
+
+    if not enabled:
+        if load_agent:
+            _macos_unload_launch_agent(label)
+        try:
+            plist_path.unlink()
+        except FileNotFoundError:
+            pass
+        return None
+
+    if not argv:
+        raise ValueError("A non-empty argv is required when enabling macOS startup registration")
+
+    plist_data = build_macos_launch_agent_plist(argv, label=label)
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    with plist_path.open("wb") as handle:
+        plistlib.dump(plist_data, handle)
+
+    if load_agent:
+        _macos_unload_launch_agent(label)
+        _macos_load_launch_agent(plist_path)
+
+    return read_macos_startup_registration(home=home, label=label, platform=platform)
+
+
+# ---------------------------------------------------------------------------
+# Generic platform wrappers
+# ---------------------------------------------------------------------------
+
+STARTUP_APP_LABEL = "BODAQS Import Manager"
+
+
+def startup_supported(*, platform: Optional[str] = None) -> bool:
+    resolved_platform = platform or sys.platform
+    return windows_startup_supported(platform=resolved_platform) or macos_startup_supported(
+        platform=resolved_platform
+    )
+
+
+def build_startup_command(argv: Sequence[str | Path], *, platform: Optional[str] = None) -> str:
+    resolved_platform = platform or sys.platform
+    if windows_startup_supported(platform=resolved_platform):
+        return build_windows_startup_command(argv)
+    # On macOS and other Unix, return a shell-quoted command string.
+    args = [
+        str(Path(item).expanduser().resolve()) if isinstance(item, Path) else str(item)
+        for item in argv
+    ]
+    return subprocess.list2cmdline(args)
+
+
+def read_startup_registration(
+    *,
+    platform: Optional[str] = None,
+    home: Optional[str | Path] = None,
+) -> Optional[str]:
+    resolved_platform = platform or sys.platform
+    if windows_startup_supported(platform=resolved_platform):
+        return read_windows_startup_registration(platform=resolved_platform)
+    if macos_startup_supported(platform=resolved_platform):
+        return read_macos_startup_registration(home=home, platform=resolved_platform)
+    return None
+
+
+def sync_startup_registration(
+    *,
+    enabled: bool,
+    command: Optional[str] = None,
+    argv: Optional[Sequence[str | Path]] = None,
+    app_label: str = STARTUP_APP_LABEL,
+    platform: Optional[str] = None,
+    home: Optional[str | Path] = None,
+    registry_module: Any = None,
+    load_agent: bool = True,
+) -> Optional[str]:
+    resolved_platform = platform or sys.platform
+    if windows_startup_supported(platform=resolved_platform):
+        return sync_windows_startup_registration(
+            enabled=enabled,
+            command=command,
+            registry_module=registry_module,
+            platform=resolved_platform,
+        )
+    if macos_startup_supported(platform=resolved_platform):
+        return sync_macos_startup_registration(
+            enabled=enabled,
+            argv=argv,
+            home=home,
+            platform=resolved_platform,
+            load_agent=load_agent,
+        )
+    return None

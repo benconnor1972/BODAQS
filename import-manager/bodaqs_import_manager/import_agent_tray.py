@@ -23,7 +23,12 @@ _TRAY_ICON_FILENAME = "tray_icon.png"
 
 def tray_supported(*, platform: Optional[str] = None) -> bool:
     resolved_platform = platform or sys.platform
-    return resolved_platform.startswith("win") and pystray is not None and Image is not None and ImageDraw is not None
+    return (
+        (resolved_platform.startswith("win") or resolved_platform == "darwin")
+        and pystray is not None
+        and Image is not None
+        and ImageDraw is not None
+    )
 
 
 def build_import_agent_tray_image(*, size: int = 64) -> Any:
