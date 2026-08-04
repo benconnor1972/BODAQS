@@ -1,0 +1,244 @@
+(footprint "MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "MicroCrystal C7 SON, 8 Pin (https://www.microcrystal.com/fileadmin/Media/Products/RTC/App.Manual/RV-3028-C7_App-Manual.pdf#page=107)")
+	(tags "MicroCrystal SON NoLead MicroCrystal-RV3028-C7")
+	(property "Reference" "REF**"
+		(at 0 -2.63 0)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "164e9bc4-b687-4dae-a3f4-ded6b1227696")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "RV-3028-C7"
+		(at 0 2.63 0)
+		(layer "F.Fab")
+		(uuid "8be30bfe-0deb-4c50-8af8-31cade77d3d7")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.microcrystal.com/fileadmin/Media/Products/RTC/Datasheet/RV-3028-C7.pdf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "f61d9ba1-175b-4988-bf9b-fc20f9cf72c9")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" "Realtime Clock/Calendar I2C Interface, Extreme Low Power, 1.1 V to 5.5 V, MicroCrystal C7"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "2dc88043-21a7-41a0-8814-82a8418e517d")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "KiLib_Generator" "Micro Crystal"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "7e3d5a4c-bc58-48cb-b79d-bf5b9b5c3dae")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "LCSC Part" "C3019759"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "9be7083f-2417-4d71-abc4-61d6aa24eef7")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "FP_JLC" "SMD3215-8P"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "48dd7343-3078-4974-b76e-c21b26a920fc")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Manufacturer_Part_Number" "RV-3028-C7-32.768kHz-1ppm-TA-QC"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "802c3468-23bf-41b4-ba0a-f16de34da82e")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property ki_fp_filters "MicroCrystal*C7*1.5x3.2mm*")
+	(sheetname "/Peripherals/")
+	(sheetfile "UI.kicad_sch")
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -0.86 -1.935)
+		(end 0.86 -1.935)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "65330a83-de79-4f3d-af4b-60e3846123f2")
+	)
+	(fp_line
+		(start 0.86 1.935)
+		(end -0.86 1.935)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "ce415b71-d06e-41b0-a391-fa2bbe4f861d")
+	)
+	(fp_poly
+		(pts
+			(xy -1.27 -1.82) (xy -1.55 -1.82) (xy -1.27 -2.1)
+		)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.SilkS")
+		(uuid "ff63ff8a-e5bb-4d25-8e47-ed55e933f229")
+	)
+	(fp_rect
+		(start -1.38 -1.93)
+		(end 1.38 1.93)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "4ac831ef-0742-4725-a4ec-df4a2007583b")
+	)
+	(fp_poly
+		(pts
+			(xy -0.375 -1.6) (xy 0.75 -1.6) (xy 0.75 1.6) (xy -0.75 1.6) (xy -0.75 -1.225)
+		)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "1f7054b8-06f6-474c-8c5e-3f353cf42fb1")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 0 90)
+		(layer "F.Fab")
+		(uuid "30fa7962-d5d5-4338-8ed2-994e47224cb0")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.12)
+			)
+		)
+	)
+	(pad "1" smd roundrect
+		(at -0.65 -1.35)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "1a03e654-1c8c-4902-a257-c1c80afc9cef")
+	)
+	(pad "2" smd roundrect
+		(at -0.65 -0.45)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "2da50f37-bc3c-4680-bdf5-4b08963dd483")
+	)
+	(pad "3" smd roundrect
+		(at -0.65 0.45)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "a248512b-54df-446f-8772-e1da3e5eeff5")
+	)
+	(pad "4" smd roundrect
+		(at -0.65 1.35)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "4bcc1cd2-048f-4b6f-8268-5332968d16f0")
+	)
+	(pad "5" smd roundrect
+		(at 0.65 1.35)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "57cafbf8-4345-4815-a2fe-70c7be03f36e")
+	)
+	(pad "6" smd roundrect
+		(at 0.65 0.45)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "3f746e85-a8ad-459c-99a5-4e9b04ffea0b")
+	)
+	(pad "7" smd roundrect
+		(at 0.65 -0.45)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "2d3dd492-38d2-4aab-bc70-e70389627ded")
+	)
+	(pad "8" smd roundrect
+		(at 0.65 -1.35)
+		(size 0.95 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "3578a475-cab0-4c99-9bcc-037147b7a3d2")
+	)
+	(embedded_fonts no)
+	(model "${KICAD10_3DMODEL_DIR}/Package_SON.3dshapes/MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)

@@ -17,7 +17,7 @@ Some parts are optional or have budget and premium options.
 </Lede>
 
 <Aside type={"caution"} title="These materials are for the BODAQS A8 logger"  icon="seti:config">
-    The following materials work for the BODAQS A8 logger, currently version 1.0. If you are building the Prototype F logger, start [here]()
+    The following materials work for the BODAQS A8 logger, currently version 1.0. If you are building the Prototype F logger, start [here](/logger-build-guide/prototype-f/sourcing-hardware/)
 </Aside>
 
 ## Printed circuit board
@@ -25,7 +25,7 @@ The printed circuit board (PCB) is custom-designed for this project. It is obtai
 
 #### Obtaining the PCB fabrication files
 
-Go to the 'releases' page in the BODAQS github repository [here](https://github.com/benconnor1972/BODAQS/tree/main/hardware/releases) and download the latest PCB fabrication package. The package contains all the files you need to order an assembled PCB from JLCPCB.
+Go to the 'releases' page in the BODAQS github repository [here](https://github.com/benconnor1972/BODAQS/tree/main/hardware/bodaqs-a8/v1_0/fab) and download the latest PCB fabrication package. The package contains all the files you need to order an assembled PCB from JLCPCB.
 
 #### Ordering PCBs on JLCPCB
 
@@ -34,55 +34,69 @@ First, [create an account](https://passport.jlcpcb.com/#/login) at JLCPCB (or lo
 </Flag>
 
 <Flag src="/src/assets/pics/logger-build-guide/hardware_2.png" alt="hardware_2">
-Select "Add gerber file" and navigate to the *_fab.zip file in the fabrication files package. When the file has uploaded, a picture of the PCB should appear in the box.
+Select "Add gerber file" and navigate to the *.zip file in the fabrication files package. When the file has uploaded, a picture of the PCB should appear in the box.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/hardware_3.png" alt="hardware_3">
-Scroll down to the bottom of the page, leaving the other settings unchanged. Click the 'PCB Assembly' slider ON. A set of new options should appear below. Leave these unchanged and click 'next'.
+<Flag src="/src/assets/pics/logger-build-guide/hardware_2a_a8.png" alt="hardware_2a">
+In the 'High-spec Options' section below the PCB picture, set 'Specify Stackup' to 'Yes' and then select 'JLC04161H-7628' from the list of available layer stackups.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_3_a8.png" alt="hardware_3">
+Scroll down to the bottom of the page, leaving the other settings unchanged. Click the 'PCB Assembly' slider ON. A set of new options should appear below. Set 'PCBA Type' to 'Standard' and leave the other options unchanged. Click 'next'.
 
 A picture of the PCB should appear. Click 'next'.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/hardware_4.png" alt="hardware_4">
-Select "Add BOM file" and navigate to the *_BOM.csv file in the fabrication files package. Select "Add CPL file" and navigate to the *-top-pos.csv file in the fabrication files package. Click 'process BOM and CPL'.
+<Flag src="/src/assets/pics/logger-build-guide/hardware_4_a8.png" alt="hardware_4">
+Select "Add BOM file" and navigate to the *-BOM.csv file in the fabrication files package. Select "Add CPL file" and navigate to the *-all-pos.csv file in the fabrication files package. Click 'process BOM and CPL'.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/hardware_5.png" alt="hardware_5">
-You will be presented with the Bill of Materials and Component Placements. Click 'next' on each page.
+<Flag src="/src/assets/pics/logger-build-guide/hardware_5_a8.png" alt="hardware_5">
+You will be presented with the Bill of Materials and Component Placements. **Make sure that all the checkboxes in the Bill of Materials 'Select' column are checked before proceeding.** Click 'next', and again on the placements page.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/hardware_6.png" alt="hardware_6">
+<Aside type={"note"} title="Out of stock parts"  icon="seti:config">
+If a component's checkbox is not selected in the Bill of Materials, it is usually because the part is out of stock. If the part is a resistor or capacitor (designators beginning 'C' or 'R'), you can search for alternative parts and accept any in-stick parts JLCPCB offers. For other parts, don't make substitutions unless (1) you are completely sure you know what you are doing, or (2) you talk to me first.
+</Aside> 
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_6_a8.png" alt="hardware_6">
 Review the quote and select an appropriate product description (this is needed for shipping paperwork). Research/Education/DIY/Entertainment => DIY hobby circuit board is a good option. Select 'save to cart'.
 
 Select 'secure checkout' and complete checkout details.
 
 </Flag>
 
-<Aside title={'Ordering tips'}>
- - If you order directly, consider pooling with your friends. The per-unit price and freight cost falls quickly for more than one unit.
- - In the future, we may set up a storefront to allow you to order the PCB and other components directly. We don't intend to do this until the hardware design is stable. Note also that ordering from the storefront will be a premium option: stocking, handling, postage etc take time. If you're after the lowest price, sourcing the parts yourself is likely to be the cheapest option.
+<Aside title={'Minimum order quantities'}>
+Minimum order quantity for custom PCBs (from JLCPCB) is 5, which is more data loggers than most people need. With the A8 design, all the hardware is baked into the design *unlike the Prototype F, which uses a plug-in development board). That makes ordering 5 a little pricy.
+
+If you dont want the cost of 5 PCBs, consider pooling with your friend or buying a PCB or kit from me. Buying stuff from me is going to be more expensive on a per-unit basis, because my time is valuable too, but it could make getting the parts you need a lot simpler. 
 </Aside>
 
 ## Electronic parts
 
 #### 0.96” OLED display
 <Flag  src="/src/assets/pics/logger-build-guide/OLED.png" alt="OLED pic">
-  These displays, based on an SSD1306 driver chip, are a commodity item and many vendors sell functionally equivalent versions. They do vary slightly in the physical dimensions of the board however, and some versions may require minor case modifications to install. [This vendor](https://www.aliexpress.com/item/1005009067594342.html) is one of many selling the module the case was built around. If the vendor posts an illustration like the one shown here, it’s probably the same one. If you buy something different, don’t worry – it can probably be installed with only minor modifications.
+  These displays, based on an SSD1306 driver chip, are a commodity item and many vendors sell functionally equivalent versions. They do vary slightly in the physical dimensions of the board however, and some versions may require minor case modifications to install. The case is designed around a HS96L03W2C03 module, like [this one](https://www.aliexpress.com/item/1005007228213109.html) but if the description says HS96L03W2C03, you should be good to go. Lots of other similar modules can work too - if you buy something different, don’t worry – it can probably be installed with only minor modifications.
 </Flag>
-<Lightbox src="/src/assets/pics/logger-build-guide/OLED_dims.png" alt="OLED dims" />
 
 
-#### Nintendo DS2 replacement membranes **
-<Flag src="/src/assets/pics/logger-build-guide/keypad.png" alt="keypad ">
-  This is another commodity item available from many vendors on AliExpress, Amazon and Ebay, like [this one](https://www.aliexpress.com/item/1005006245093356.html). Search for variations of “5 button membrane keypad” or “5 key matrix keyboard”.
+#### Nintendo 2DS replacement button pads
+<Flag src="/src/assets/pics/logger-build-guide/2ds-keypad.png" alt="keypad ">
+  This is another commodity item available from many vendors on AliExpress, Amazon and Ebay, like [this one](https://www.aliexpress.com/item/1005009646292735.html). Note that the case design **specifically requires 2DS parts** - other controller parts won't fit. Search for “button pad 2ds”.
 </Flag>
 
 #### Li-ion battery
-<Flag src={"/src/assets/pics/logger-build-guide/battery.png"} alt="battery">
-  The Li-ion battery is xxx size, with JST-PH 2 pin connector. xxx Li-ion cells are widely available as replacement parts from AliExpress, Amazon, Ebay and local vendors. For our purposes, all are equally good. However, make sure that:
-    - The battery's maximum dimensions are xxx  x yyy x zzz
+<Flag src={"/src/assets/pics/logger-build-guide/battery-a8.png"} alt="battery">
+  The BODAQS A8 uses a 3.7V Li-ion polymer battery pack with JST-PH 2 pin connector. Li-ion polymer batteries are widely available from a variety of sources. For our purposes, all are equally good. However, make sure that:
+    - The battery's maximum dimensions are 65mm x 55mm x 7mm
     - The battery’s capacity exceeds about 1000mAh
     - The battery comes with a 2-wire JST-PH connector. Some batteries are sold with JST-XH or SM-2P connectors, which are not the same and will not fit.
+	
+Some sources for suitable batteries:
+- In Australia, [Altronics](https://www.altronics.com.au/p/s4725-3.7v-2000mah-polymer-lithium-ion-battery-lipo/) have the exact battery I use.
+- In the US, [Sparkfun](https://www.sparkfun.com/lithium-ion-battery-2ah.html) has one that looks the same.
+- In the EU, [Kiwi Electronics](https://www.kiwi-electronics.com/en/lithium-polymer-li-po-battery-3-7v-1200mah-1045) looks like it should work. 
+- And of course, AliExpress has numerous options, like this [model 524261](https://www.aliexpress.com/item/1005004841334328.html)
 </Flag>
 
 <Aside type={"caution"} title="Always check polarity before connecting">
@@ -97,46 +111,110 @@ Select 'secure checkout' and complete checkout details.
 
 ### Connectors
 
-The BODAQS A8 logger has 4 external connectors: two for analog inputs, one for I2C and one connector for a handlebar-mounted switch and GPS connection. All the connectors are identical 6-pin metal M8 circular connectors. Amphenol xxx
+The BODAQS A8 logger has 4 external connectors: two for analog inputs, one for I2C and one connector for a handlebar-mounted switch and GPS connection. All the connectors are identical 6-pin metal M8 circular connectors, Amphenol part number 
+M8AS-06PMMR-SF8001. 
 
-<Lightbox src="/src/assets/pics/logger-build-guide/male_3_pin.png" alt="male 3 pin " />
-<Lightbox src="/src/assets/pics/logger-build-guide/male_4_pin.png" alt="male 4 pin " />
+You can get original Amphenol connectors from [Digikey](https://www.digikey.com.au/en/products/detail/amphenol-ltw/M8AS-06PMMR-SF8001/7618863) or other major online electronics suppliers. 
+You can get copies on AliExpress from various vendors, like [this one](https://www.aliexpress.com/item/1005008002251461.html)
 
-<Aside  title="Optional">
-  - The **premium** option for connectors is to use original Amphenol connectors.
-  - The **budget** option is AliExpress.
-  If you go premium, the connectors might be the most expensive part of your logger!
+<Lightbox src="/src/assets/pics/logger-build-guide/male_6_pin.png" alt="male 6 pin " />
+
+<Aside  title="Name brand or generic?">
+One of the advantages of M8 circular connectors is the availability of low-priced clones on AliExpress and similar marketplaces. These are generally fine, with one caveat: buy both the connector and the matching wire tail from the same vendor. There is some variation in pin diameter and the dimensions of the plastic inserts between the originals and the clones, and between different clones.
 </Aside>
 
 #### Plugs for the connectors.
-<Flag src="/src/assets/pics/logger-build-guide/plugs.png" alt="plugs">
-These need to match the connectors. It is easiest to buy these as sealed cable tails and solder them to your sensor wires. There are many Amphenol options, or search for M8 connectors on AliExpress, Amazon or e-bay and look for something like the picture.
+
+<Flag src="/src/assets/pics/logger-build-guide/plugs_a8.png" alt="plugs">
+It goes without saying that these need to match the connectors. It is easiest to buy plug assemblies with sealed wire tails and join you sensors on. The Amphenol plug assemblies I recommend are Amphenol 8A-06AFFM-SL7A01, available from [Digikey](https://www.digikey.com.au/en/products/detail/amphenol-ltw/8A-06AFFM-SL7A01/7616809). If you're going the AliExpress route, get them from whoever is supplying your connectors, and to match - or go elsewhere.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/plugs_ebike.png" alt="plugs">
+For intermediate connections, I favour generic plastic M6 or M8 push-in connectors, sold on AliExpress (for example, [here](https://www.aliexpress.com/item/1005005939808200.html). They are low cost, compact, waterproof, and convenient when you want removable sensor sections or Y-connection branches.
+
+Their weakness is that they do not lock by themselves. You should be careful that cable movement (from turning the handlebars, say) cannot pull them apart, and either duct tape them together or [use this 3d-printed lock].
+
+Read the section on [Wiring and connector tips](/sensor-connection-and-wiring-guide/wiring-and-connector-tips/) before purchasing your plug assemblies. 
 </Flag>
 
 ##  3D printed parts
 The logger case can be printed on any modern 3D printer. You can: 
--Print it yourself (or have a  friend do it) 
--Have it printed by a local business
--Buy one from me as part of a parts kit
--Order one from JLC3DP (the 3D printing sibling of JLCPCB).
+- Print it yourself (or have a  friend do it) 
+- Have it printed by a local business
+- Buy one from me as part of a parts kit
+- Order one from JLC3DP (the 3D printing sibling of JLCPCB).
 
-All the print files are available [here](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/a8%v1_0). (The Fusion CAD model of the case is in the 'f3z' directory). 
+All the print files are available [here](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/a8_v1_0). (The Fusion CAD model of the case is in the 'f3z' directory). 
 
 ### Parts required
 
+There are two variants of the case design. The main, and recommended, design uses brass heat-set inserts in the case wherever parts need to be connected. This is mechanically superior, but requires you to have the inserts. 
+
+The alternative is to use bt2.5 self-tapping screws. You probably don't want to use these if you're anticipating disassembling your logger 100 times, but they don't need you to buy heat-set inserts. If you choose this option, then pick the parts with the `bt2_5` suffix.
+
 You will need the following printed parts:
- - **A base** (the lower half of the case). There are two variants of the base design. `base.stl` is designed to be fixed closed using brass heat-set inserts in the lower half of the case. This is cosmetically superior, but requires you to have the inserts. `base_nuts.stl`is to use standard 3mm hex nuts. This works just as well but doesn't look quite so tidy.
- - **A lid** (the upper half of the case): `lid.stl`.
- - **A top end piece** (the end of the box that faces forward). This piece can mount up to four M8 connectors. The normal configuration is: two analog inputs, one I2C input, and one connector for a handlebar-mounted switch.`Top end.stl` Variations are available with one, two or three connectors `Top end_*_connectors.stl`
- - **A bottom end piece** (the end of the box that faces backward). This piece can mount up to two M8 connectors and contains the opening for USB-C connection to the logger. The normal configuration is two analog inputs.`Bottom end.stl` A variation is available with one connectors `Top end_1_connector.stl`
- - **A plug** to go in the USB connection hole. `plug.stl`. If you don't wish to use this, tape also works.
+
+<Flag src="/src/assets/pics/logger-build-guide/base.png" alt="base">
+ - A **base** (the lower half of the case). `Base.stl` or `Base bt2_5.stl`. 
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/lid.png" alt="lid">
+ - A **lid** (the upper half of the case). `lid.stl` or `Lid bt2_5.stl`.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/top_end.png" alt="top end">
+ - A **top end piece** (the end of the box that faces forward). This piece mounts two M8 connectors.`Top end.stl`. 
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/bottom_end.png" alt="bottom end">
+ - A **bottom end piece** (the end of the box that faces backward). This piece mounts two M8 connectors and the  USB-C connector. `Bottom end.stl`.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/nav_plate.png" alt="nav plate">
+ - A **nav plate** to retain the navigation button assembly. `Nav plate.stl` or `Nav plate bt2_5.stl`.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/power_plate.png" alt="power button plate">
+ - A **power button plate** to retain the power button assembly. `Power button plate.stl` or `Power button plate bt2_5.stl`
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/oled_spacer.png" alt="oled spacer">
+ - An **OLED spacer** to keep the OLED display in the correct position. `OLED spacer.stl`.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/pin.png" alt="pin">
+ - 6 **pins** that actuate the buttons on the PCB. `Pin.stl`
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/plug.png" alt="plug">
+ - A **plug** to go in the USB connection hole. `plug.stl`. If you don't wish to use this, tape also works. It **must** be printed in TPU.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/cap.png" alt="cap">
+ - **Caps** to go over any unused connectors. These are optional but recommended. They **must** be printed in TPU.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/downtube_mount.png" alt="downtube-mount">
+ - A **downtube mount** (assuming you will mount your logger on your bike's downtube). It **should** be printed in TPU but other materials also work.
+</Flag>
+
 
 ### Notes on 3d printing the parts:
-**Recommended material:** PETG or PCTG, with or without carbon or glass fill. Virtually any material will work as the mechanical stresses on the case are low. If you are confident the logger will not be exposed to high temperatures, black carbon-filled PLA looks awesome. The plug is best printed in TPU, if you have it available.
+#### Recommended material 
+Except for the parts noted above that have to be, or should be, printed in TPU, almost any material will suffice. Some however are better than others:
 
-**Print orientation:** for the case top and bottom, flat on their largest faces, with supports enabled. The print lid requires support for the cutouts in the front face, and for the screw holes. Everything else prints well without supports.
+- Carbon-reinforced nylon is the gold standard for this application in my opinion: it is strong, tough and temperature-resistant. I use [BambuLab PAHT-CF](https://au.store.bambulab.com/products/paht-cf) for most case parts.
 
-**Support settings:** tree-style supports work well. If you are a more advanced 3D printer user, the cutout areas benefit from using an interface layer of dissimilar material (PLA for PETG and vice versa), along with the following support settings: 
+- ABS, ASA, PETG and PCTG are all good choices, with or without fiber reinforcing. I use unreinforced ABS for the button assembly parts (pins and plates) because a smooth finish is desirable for those parts.
+
+- PLA works, and carbon-reinforced PLA looks amazing with colored logos printed into it. But I'd consider it a third-tier choice as it doesn't have much temperature resistance or impact strength.
+
+**Bottom line: use the best thing you have, and don't stress too much about it**.
+
+#### Print orientation and settings 
+for the case top and bottom, flat on their largest faces, with supports enabled. The print lid requires support for the cutouts in the front face, and for the screw holes. The nav and power plates should be printed in the opposite orientation to the pictures above, with supports enabled. The bottom end piece should be printed on the large flat face with supports enabled. Everything else prints well without supports.
+
+Tree-style supports work well. If you are a more advanced 3D printer user and have access to a machine capable of printing multiple materials, the cutout areas benefit from using an interface layer of dissimilar material (PLA for PETG and vice versa), along with the following support settings: 
  - Top z distance: 0
  - Top interface layers: 2
  - Top interface spacing: 0
@@ -148,13 +226,13 @@ You will need the following printed parts:
 </Flag>
 
 <Flag src="/src/assets/pics/logger-build-guide/print-plate.png" alt="print-plate">
-**BambuLab-format project files** are also available in the '3mf' directory. `all parts - one material.3mf` has all the parts on a single plate - **delete the base and ends variants you don't need**. Each project file has two build plates - one for the base variant that uses brass inserts, and another for the one that uses nuts.
+**BambuLab-format project files** are also available in the '3mf' directory. `all parts - one material.3mf` has all the parts on a single plate. Each project file has two build plates - one for the base variant that uses brass inserts, and another for the one that uses self-tapping screws.
 
 `all parts - three colors.3mf` is actually set up to use *four* filments - three colors plus an interface material. It has the same items as the single-color project file but has alternate filament colors assigned to the logo inlays, interface material applied to support-interface surfaces, and the revised support settings described above. 
  
 </Flag>
 <Aside  title="Interface materials">
-Bambulab and other vendors sell dedicated support-interface materials, but all you really need is two materials that don't stick well to each other. If you are printing in PLA, you can use PETG as am interface material, and vice versa.
+Bambulab and other vendors sell dedicated support-interface materials, but all you really need is two materials that don't stick well to each other. If you are printing in PLA, you can use PETG as am interface material, and vice versa. If you are printing in nylon, ASA makes a great interface material.
 </Aside>
 
 

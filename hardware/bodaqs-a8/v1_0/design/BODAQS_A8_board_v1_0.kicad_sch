@@ -1,0 +1,248 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "be879817-760e-4f98-a489-0ddbffa263ee")
+	(paper "A4")
+	(lib_symbols)
+	(no_connect
+		(at -106.68 139.7)
+		(uuid "b2f3157a-57f5-4ee7-8cb8-ceaa334646d9")
+	)
+	(sheet
+		(at 96.52 156.21)
+		(size 44.45 11.43)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "1e32d774-a3f3-449d-bb37-98431c0a6797")
+		(property "Sheetname" "Peripherals"
+			(at 96.52 155.4984 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "UI.kicad_sch"
+			(at 96.52 168.2246 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "BODAQS_A8_board_v1_0"
+				(path "/be879817-760e-4f98-a489-0ddbffa263ee"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 96.52 173.99)
+		(size 44.45 10.16)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "7b8fcffe-11e1-4227-ba3c-14f11f11a2d9")
+		(property "Sheetname" "ESP32"
+			(at 96.52 173.2784 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "ESP32.kicad_sch"
+			(at 96.52 184.7346 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "BODAQS_A8_board_v1_0"
+				(path "/be879817-760e-4f98-a489-0ddbffa263ee"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 96.52 138.43)
+		(size 44.45 11.43)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "83374319-298d-44ef-b3d0-622657a7e917")
+		(property "Sheetname" "Analog_inputs"
+			(at 96.52 137.7184 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "Analog_inputs.kicad_sch"
+			(at 96.52 150.4446 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "BODAQS_A8_board_v1_0"
+				(path "/be879817-760e-4f98-a489-0ddbffa263ee"
+					(page "5")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 96.52 101.6)
+		(size 44.45 11.43)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "a25a20d3-4252-4501-9660-30d4bcbcfb55")
+		(property "Sheetname" "Power"
+			(at 96.52 100.8884 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "Power.kicad_sch"
+			(at 96.52 113.6146 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "BODAQS_A8_board_v1_0"
+				(path "/be879817-760e-4f98-a489-0ddbffa263ee"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 96.52 120.65)
+		(size 44.45 11.43)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "e7af9c2a-a668-469b-8c06-5ad3fc294f66")
+		(property "Sheetname" "Connectors"
+			(at 96.52 119.9384 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "Connectors.kicad_sch"
+			(at 96.52 132.6646 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "BODAQS_A8_board_v1_0"
+				(path "/be879817-760e-4f98-a489-0ddbffa263ee"
+					(page "6")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

@@ -82,6 +82,7 @@ export const defaultColumns: ColumnId[] = normalizeColumnSelection([
   'noteAction',
   'qaAction',
   'gpsAction',
+  'videoAction',
   'signalInspectorAction',
   'metadataAction',
 ])
