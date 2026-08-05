@@ -20,6 +20,9 @@ Some parts are optional or have budget and premium options.
     The following materials work for the BODAQS A8 logger, currently version 1.0. If you are building the Prototype F logger, start [here](/logger-build-guide/prototype-f/sourcing-hardware/)
 </Aside>
 
+
+
+
 ## Printed circuit board
 The printed circuit board (PCB) is custom-designed for this project. It is obtained by ordering it from a PCB fabricator. You can also get it from me.
 
@@ -107,6 +110,21 @@ Some sources for suitable batteries:
 
   **Do not connect a battery with the incorrect or unknown polarity as it will probably damage the development board.**
 </Aside>
+
+#### Header socket
+<Flag src="/src/assets/pics/logger-build-guide/header-socket.png" alt="header socket ">
+  Header sockets are standard electronic parts for making plug-in connections to a PCB. This one connects the OLED display and needs 4 sockets in 1 row, 8.5mm high and 2.54mm pitch. Longer sockets can be cut to size. You should just add these to the order from wherever you get your battery or other electronic parts (links in the table above).
+</Flag>
+
+#### CR1220 button cell
+<Flag src="/src/assets/pics/logger-build-guide/button-cell.png" alt="button cell ">
+A button cell that powers the logger's real-time clock (RTC) when the battery is disconnected, allowing it to retain the time. These are available in hardware stores, pharmacies and supermarkets.
+</Flag>
+
+#### MicroSD card
+<Flag src="/src/assets/pics/logger-build-guide/microsd.png" alt="microsd ">
+You will need a MicroSD card to record log files and store the logger's configuration file. 16GB is sufficient - even a large log file is only a few tens of MB. Likewise, super high performance is not essential. Any modern name-brand MicroSD card should perform adequately.
+</Flag>
 
 
 ### Connectors
@@ -198,6 +216,9 @@ You will need the following printed parts:
  - A **downtube mount** (assuming you will mount your logger on your bike's downtube). It **should** be printed in TPU but other materials also work.
 </Flag>
 
+<Flag src="/src/assets/pics/logger-build-guide/acrylic.png" alt="acrylic">
+ - A **small piece of acrylic** or other clear plastic (22mm x 33mm) to go over the screen of your logger. I cut up old goggle lenses to make these but you can also buy 1 mm acrylic sheet on [AliExpress](https://www.aliexpress.com/item/1005012216508583.html)
+</Flag>
 
 ### Notes on 3d printing the parts:
 #### Recommended material 
@@ -295,19 +316,58 @@ In addition, you will need:
 
 ## Bill of Materials
 
-| Qty | Item                                        | DigiKey                                                                                                  | AliExpress                                                          |
-|-----|---------------------------------------------|----------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
-| 2   | Header strip pin for nav pad and UART       | —                                                                                                        | —                                                                   |
-| 1   | SparkFun ESP32-S3 Thing Plus                | [DigiKey](https://www.digikey.com.au/en/products/detail/sparkfun-electronics/24408/22606864)             | —                                                                   |
-| 1   | 0.96" OLED display (128×64, SSD1306)        | —                                                                                                        | [AliExpress](https://www.aliexpress.com/item/1005008738379315.html) |
-| 1   | 5-key membrane keypad                       | —                                                                                                        | [AliExpress](https://www.aliexpress.com/item/1005006245093356.html) |
-| 1   | QWIIC cable (50mm)                          | [DigiKey](https://www.digikey.com.au/en/products/detail/sparkfun-electronics/14427/7652740)              | [AliExpress](https://www.aliexpress.com/item/1005009291263030.html) |
-| 1   | LiPo battery, 1000mAh+, 2-pin JST-PH        |                                                                                                          | —                                                                   |
-| 2   | Linear potentiometers (75mm and 200mm)      |                                                                                                          | [AliExpress](https://www.aliexpress.com/item/1005008810289538.html)  |
-| 5   | M8 back panel mount connector, 3-pin male   | [DigiKey](https://www.digikey.com/en/products/detail/amphenol-ltw/8-03PMMS-SH7001/7616639)               | [AliExpress](https://www.aliexpress.com/item/32840940523.html)      |
-| 5   | M8 plug and cable tail, 3-pin female        | —                                                                                                        | [AliExpress](https://www.aliexpress.com/item/1005005615414536.html) |
-| 1   | M8 back panel mount connector, 4-pin male   | [DigiKey](https://www.digikey.com.au/en/products/detail/amphenol-ltw/8-04PMMS-SH7001/7616711)            | [AliExpress](https://www.aliexpress.com/item/32840940523.html)      |
-| 1   | M8 plug and cable tail, 4-pin female        | —                                                                                                        | [AliExpress](https://www.aliexpress.com/item/1005005615414536.html) |
-| 4   | M3 x 12 socket head capscrew with nut        | —                                                                                                        |  |
-| 4   | (Optional) M3 brass heat-set insert        | —                                                                                                        | |
+| Qty | Item | Link | Note |
+|---:|---|---|---|
+| 1 | BODAQS A8 printed circuit board | [JLCPCB](https://jlcpcb.com/) | Direct from fabricator |
+|  |  | [BODAQS.net](https://bodaqs.net/logger-build-guide/bodaqs-a8/buy/) | Buy from bodaqs.net |
+| 1 | 0.96" OLED display HS96L03W2C03 | [AliExpress](https://www.aliexpress.com/item/1005007228213109.html) | Multiple vendors — search "HS96L03W2C03" |
+| 1 | Nintendo 2DS replacement button pad | [AliExpress](https://www.aliexpress.com/item/1005009646292735.html) | Multiple vendors — search "button pad 2DS" |
+| 1 | Li-Ion Polymer battery pack 3.7V, JST-PH 2-pin connector | [SparkFun](https://www.sparkfun.com/lithium-ion-battery-2ah.html) | Recommended if purchasing from the US |
+|  |  | [Kiwi Electronics](https://www.kiwi-electronics.com/en/lithium-polymer-li-po-battery-3-7v-1200mah-1045) | Recommended if purchasing from the EU |
+|  |  | [Altronics](https://www.altronics.com.au/p/s4725-3.7v-2000mah-polymer-lithium-ion-battery-lipo/) | Recommended if purchasing from Australia |
+|  |  | [AliExpress](https://www.aliexpress.com/item/1005004841334328.html) | Check dimensions — model 524261 from this vendor |
+| 1 | Header socket, 8.5mm high, 2.54mm pitch, single row, 4+ sockets | [SparkFun](https://www.sparkfun.com/arduino-header-kit.html) | Recommended if purchasing from the US |
+|  |  | [Kiwi Electronics](https://www.kiwi-electronics.com/en/teensy-header-kit-2706) | Recommended if purchasing from the EU |
+|  |  | [Altronics](https://www.altronics.com.au/p/p5390-oupiin-40-pin-header-socket/) | Recommended if purchasing from Australia |
+|  |  | [AliExpress](https://www.aliexpress.com/item/1005003610333849.html) | Multiple vendors — search "Socket header 8.5mm" |
+| 4 | Amphenol M8 circular connector M8AS-06PMMR-SF8001 | [DigiKey](https://www.digikey.com.au/en/products/detail/amphenol-ltw/M8AS-06PMMR-SF8001/7618863) |  |
+|  |  | [AliExpress](https://www.aliexpress.com/item/1005008002251461.html) | Purchase plug assemblies from the same vendor — read the guide |
+| 4 | M8 plug assemblies Amphenol 8A-06AFFM-SL7A01 | [DigiKey](https://www.digikey.com.au/en/products/detail/amphenol-ltw/8A-06AFFM-SL7A01/7616809) | DigiKey |
+| 5 max | M6 plastic circular connectors — 3 pin | [AliExpress](https://www.aliexpress.com/item/1005005939808200.html) | Multiple vendors — search "M6 connector". Read the guide to decide how many you need. |
+| 3 max | M6 plastic circular connectors — 4 pin | [AliExpress](https://www.aliexpress.com/item/1005005939808200.html) | Multiple vendors — search "M6 connector". Read the guide to decide how many you need. |
+| 1 | 22mm × 33mm × 1mm acrylic panel | [AliExpress](https://www.aliexpress.com/item/1005012216508583.html) | You can make this from a clear lens from a set of goggles. |
+| 1 | CR1220 button cell battery |  | For the real-time clock. Available almost anywhere. |
 
+### Fasteners (option 1 - using brass inserts)
+
+| Qty | Item | Link | Note |
+|---:|---|---|---|
+| 14 | M3 × 5 × 4.2 heat-set brass inserts | [AliExpress](https://www.aliexpress.com/item/1005008666672949.html) | Multiple vendors — search "M3 brass insert" |
+| 4 | M3 × 16 stainless-steel socket-head cap screws | [AliExpress](https://www.aliexpress.com/item/1005003318923561.html) | Multiple vendors — search "M3 stainless steel hex" |
+| 4 | M3 × 8 stainless-steel socket-head cap screws | [AliExpress](https://www.aliexpress.com/item/1005003318923561.html) | Multiple vendors — search "M3 stainless steel hex" |
+| 6 | M3 × 6 stainless-steel socket-head cap screws | [AliExpress](https://www.aliexpress.com/item/1005003318923561.html) | Multiple vendors — search "M3 stainless steel hex" |
+| 4 | M2.5 × 5 stainless-steel button-head cap screws | [AliExpress](https://www.aliexpress.com/item/32966917947.html) | Multiple vendors — search "M2.5 stainless steel buttonhead" |
+
+### Fasteners (option 2 - using self tapping screws)
+
+| Qty | Item | Link | Note |
+|---:|---|---|---|
+| 8 | BT2.5 × 8 self-tapping screws for plastic | [Bambu Lab](https://au.store.bambulab.com/products/bt2-5-socket-head-cap-self-tapping-screws-shcs-new) | Also available on AliExpress |
+| 6 | BT2.5 × 5 self-tapping screws for plastic | [Bambu Lab](https://au.store.bambulab.com/products/bt2-5-socket-head-cap-self-tapping-screws-shcs-new) | Also available on AliExpress |
+| 4 | M2.5 × 5 stainless-steel button-head cap screws | [AliExpress](https://www.aliexpress.com/item/32966917947.html) | Multiple vendors — search "M2.5 stainless steel buttonhead" |
+
+### 3D-printed parts
+
+| Qty | Part |
+|---:|---|
+| 1 | Logger case — base |
+| 1 | Logger case — lid |
+| 1 | Logger case — top end |
+| 1 | Logger case — bottom end |
+| 1 | Logger case — nav plate |
+| 1 | Logger case — power-button plate |
+| 1 | Logger case — OLED spacer |
+| 6 | Logger case — pin |
+| 1 | Plug |
+| 4 | Caps |
+| 1 | Downtube mount |
