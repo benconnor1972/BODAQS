@@ -13,15 +13,15 @@ import Flag from '@components/Flag.astro';
 <Lede>
 You will need to source a range of parts to build your BODAQS data logger.
 A small selection of common tools is also required.
-Some parts are optional or have budget and premium options.
 </Lede>
 
 <Aside type={"caution"} title="These materials are for the BODAQS A8 logger"  icon="seti:config">
     The following materials work for the BODAQS A8 logger, currently version 1.0. If you are building the Prototype F logger, start [here](/logger-build-guide/prototype-f/sourcing-hardware/)
 </Aside>
 
+A complete Bill of Materials, including links, is at the [end of this section](/logger-build-guide/bodaqs-a8/sourcing-hardware/#bill-of-materials). If you prefer, you can get the Bill of Materials as an [Excel spreadsheet](https://github.com/benconnor1972/BODAQS/tree/main/Bill%20of%20Materials/bodaqs-a8)
 
-
+You can buy a PCB or kit directly from [BODAQS.net](/buy-pcb-or-kit/) 
 
 ## Printed circuit board
 The printed circuit board (PCB) is custom-designed for this project. It is obtained by ordering it from a PCB fabricator. You can also get it from me.
@@ -155,6 +155,18 @@ Their weakness is that they do not lock by themselves. You should be careful tha
 Read the section on [Wiring and connector tips](/sensor-connection-and-wiring-guide/wiring-and-connector-tips/) before purchasing your plug assemblies. 
 </Flag>
 
+#### Shrink sleeve
+<Flag src="/src/assets/pics/logger-build-guide/shrink.png" alt="shrink">
+You will need shrink sleeve for covering soldered joints. Read the [wiring and connector tips section](/sensor-connection-and-wiring-guide/wiring-and-connector-tips/) to decide what you need - at a minimum, you will probably require some 2.5mm shrink sleeve for covering soldered joints where you connect your sensors to the plug assembly. If you are [making y-connections](/sensor-connection-and-wiring-guide/wiring-and-connector-tips/#making-y-connections) you will also need 10mm adhesive lined shrink sleeve. You can buy this at good hardware stores and electronics suppliers.
+</Flag>
+
+#### Caulking silicone
+<Flag src="/src/assets/pics/logger-build-guide/silicone.png" alt="silicone">
+You will need caulking silicone for fitting the acrylic cover to the logger case. It is also useful for waterproofing [ y-connections](/sensor-connection-and-wiring-guide/wiring-and-connector-tips/#making-y-connections). **Use neutral-cure silicone only** if you are using it for waterproofing wiring. You can buy this at most hardware stores.
+</Flag>
+
+
+
 ##  3D printed parts
 The logger case can be printed on any modern 3D printer. You can: 
 - Print it yourself (or have a  friend do it) 
@@ -162,7 +174,7 @@ The logger case can be printed on any modern 3D printer. You can:
 - Buy one from me as part of a parts kit
 - Order one from JLC3DP (the 3D printing sibling of JLCPCB).
 
-All the print files are available [here](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/a8_v1_0). (The Fusion CAD model of the case is in the 'f3z' directory). 
+All the print files are available [here](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/a8_v1_0) and [here](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/Common). (The Fusion CAD model of the case is in the 'f3z' directory). 
 
 ### Parts required
 
@@ -226,7 +238,7 @@ Except for the parts noted above that have to be, or should be, printed in TPU, 
 
 - Carbon-reinforced nylon is the gold standard for this application in my opinion: it is strong, tough and temperature-resistant. I use [BambuLab PAHT-CF](https://au.store.bambulab.com/products/paht-cf) for most case parts.
 
-- ABS, ASA, PETG and PCTG are all good choices, with or without fiber reinforcing. I use unreinforced ABS for the button assembly parts (pins and plates) because a smooth finish is desirable for those parts.
+- ABS, ASA, PETG and PCTG are all good choices, with or without fiber reinforcing. Even when printing in carbon-reinforced nylon, I use unreinforced ABS for the button assembly parts (pins and plates) because a smooth finish is desirable for those parts.
 
 - PLA works, and carbon-reinforced PLA looks amazing with colored logos printed into it. But I'd consider it a third-tier choice as it doesn't have much temperature resistance or impact strength.
 
@@ -239,17 +251,17 @@ Tree-style supports work well. If you are a more advanced 3D printer user and ha
  - Top z distance: 0
  - Top interface layers: 2
  - Top interface spacing: 0
- - Interface pattern: rectilinear
+ - Interface pattern: rectilinearOption 
 
 
 <Flag src="/src/assets/pics/logger-build-guide/print-case.png" alt="print-case">
-**Printing cases with inlaid logo:** If you have access to a multi-color 3D printer and your slicer software supports it, the easiest way to do so is to import the parts as STEP files directly into your slicer (the STEP files are in the 'STEP' directory). Once the files are imported, assign the logo inlays with the colors of your choice. The official BODAQS colors are teal for the spring and either white or black for the bar, depending on the background.
+**Printing cases with inlaid logo:** If you have access to a multi-color 3D printer and your slicer software supports it, the easiest way to do so is to import the parts as [STEP files](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/a8_v1_0/step) directly into your slicer. Once the files are imported, assign the logo inlays with the colors of your choice. The official BODAQS colors are teal for the spring and either white or black for the bar, depending on the background.
 </Flag>
 
 <Flag src="/src/assets/pics/logger-build-guide/print-plate.png" alt="print-plate">
-**BambuLab-format project files** are also available in the '3mf' directory. `all parts - one material.3mf` has all the parts on a single plate. Each project file has two build plates - one for the base variant that uses brass inserts, and another for the one that uses self-tapping screws.
+**BambuLab-format project files** are also available in [the 3mf directory](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/Case/a8_v1_0/3mf). `a8_all_parts_one_material.3mf` has all the parts on a single plate. Each project file has two build plates - one for the base variant that uses brass inserts, and another for the one that uses self-tapping screws.
 
-`all parts - three colors.3mf` is actually set up to use *four* filments - three colors plus an interface material. It has the same items as the single-color project file but has alternate filament colors assigned to the logo inlays, interface material applied to support-interface surfaces, and the revised support settings described above. 
+`a8_all_parts_three_colors.3mf` is actually set up to use *four* filments - three colors plus an interface material. It has the same items as the single-color project file but has alternate filament colors assigned to the logo inlays, interface material applied to support-interface surfaces, and the revised support settings described above. 
  
 </Flag>
 <Aside  title="Interface materials">
@@ -264,9 +276,9 @@ These sensors change their resistance according to how far they are compressed o
 Linear pots are available from a range of suppliers including major international electronics distributors, specialist suppliers of instrumentation, motorsport suppliers and manufacturers.
 </Flag>
 
-The most economical way to buy linear pots is on AliExpress.
-There are numerous options, but I personally use [these items](https://www.aliexpress.com/item/1005008810289538.html).
-Others report Miran KPM12 pots to be good value. When buying your linear pots, pay attention to:
+The most economical way to buy linear pots is on AliExpress. There are numerous options, but I personally use [these items](https://www.aliexpress.com/item/1005008810289538.html).
+
+When buying your linear pots, pay attention to:
 
 - **Travel:**  Your pots must have more travel than what you are measuring. If in doubt go a size up, but no more than needed as longer pots can be harder to mount.
 - **Physical dimensions:** Especially diameter. Around 12mm is ideal. Larger diameter pots get harder to mount.
@@ -279,7 +291,7 @@ The following tools are <Badge variant="danger" text="Required" /> or <Badge tex
 
 
 #### Soldering iron
-<Badge variant="danger" text="Required" /> You will be soldering pin headers into a PCB and short wires to connectors, so you will need a soldering iron suitable for electronics use and some solder around 0.8mm diameter.
+<Badge variant="danger" text="Required" /> You will be soldering pin headers and connectors into the PCB and sensors to plug assemblies, so you will need a soldering iron suitable for electronics use and some solder around 0.8mm diameter.
 <Lightbox src="/src/assets/pics/logger-build-guide/soldering_iron_1.png" alt="A generic soldering iron" />
 <Lightbox src="/src/assets/pics/logger-build-guide/soldering_iron_2.png" alt="sThe TS101 premium iron" />
 
@@ -295,31 +307,24 @@ The following tools are <Badge variant="danger" text="Required" /> or <Badge tex
 <Badge variant="danger" text="Required" /> For fitting the case together. If you don't have a decent set of allen keys, you can pick a set up from almost any hardware store
 
 #### Wire strippers
-<Badge text="Recommended" variant="caution"/> You can strip wire with side cutters if you are careful, or your teeth if you are a maniac, but these make it much easier.
+<Badge text="Recommended" variant="caution"/> You can strip wire with side cutters if you are careful, or your teeth if you are a maniac, but these make it much easier. You will need to strip wire to wire sensors to plug assemblies.
 <Lightbox src="/src/assets/pics/logger-build-guide/wire_strippers.png" alt="wire stripper " />
 
 #### Multi-meter
-<Badge text="Recommended" variant="caution"/> For polarity & continuity testing and fault finding. Even a basic model is sufficient for the needs of this project. Not needed if everything goes perfectly. (You'll probably need one)
+<Badge text="Recommended" variant="caution"/> For polarity & continuity testing and fault finding. Even a basic model is sufficient for the needs of this project. Not needed if everything goes perfectly but indispensible if it doesn't.
 <Lightbox src="/src/assets/pics/logger-build-guide/multimeter.png" alt="multimeter " />
 
 #### Miniature hot air gun
 <Badge text="Recommended" variant="caution"/> For heating shrink-sleeve. A match, cigarette lighter, or glossy print of the author (price on request) can be used instead if necessary.
 <Lightbox src="/src/assets/pics/logger-build-guide/hot_air.png" alt="hot air gun" />
 
-### Minor components and consumables
-In addition, you will need:
-- Some light-gauge (22, 24 or 26 gauge) hookup wire, preferably in four colors – less than a metre in total. You can get this from electronics hobby shops, online, or scavenge it from an old network cable. {/* <Lightbox src="/src/assets/pics/logger-build-guide/wire.png" alt="wire pic" /> */}
-- 2.5mm shrink-sleeve for covering soldered joints{/*<Lightbox src="/src/assets/pics/logger-build-guide/shrink.png" alt="shrink pic" />*/}
-- Silicone sealant, for waterproofing {/*<Lightbox src="/src/assets/pics/logger-build-guide/silicone.png" alt="silicone pic" />*/}
-- 4 M3x16 socket-head cap screws and nuts to hold the case together
-- (Optional but recommended): a small section of thin, transparent rigid plastic for waterproofing the screen. I cut up an old visor for this.
 
 ## Bill of Materials
 
 | Qty | Item | Link | Note |
 |---:|---|---|---|
 | 1 | BODAQS A8 printed circuit board | [JLCPCB](https://jlcpcb.com/) | Direct from fabricator |
-|  |  | [BODAQS.net](https://bodaqs.net/logger-build-guide/bodaqs-a8/buy/) | Buy from bodaqs.net |
+|  |  | [BODAQS.net](/buy-pcb-or-kit/) | Buy from bodaqs.net |
 | 1 | 0.96" OLED display HS96L03W2C03 | [AliExpress](https://www.aliexpress.com/item/1005007228213109.html) | Multiple vendors — search "HS96L03W2C03" |
 | 1 | Nintendo 2DS replacement button pad | [AliExpress](https://www.aliexpress.com/item/1005009646292735.html) | Multiple vendors — search "button pad 2DS" |
 | 1 | Li-Ion Polymer battery pack 3.7V, JST-PH 2-pin connector | [SparkFun](https://www.sparkfun.com/lithium-ion-battery-2ah.html) | Recommended if purchasing from the US |
@@ -337,6 +342,10 @@ In addition, you will need:
 | 3 max | M6 plastic circular connectors — 4 pin | [AliExpress](https://www.aliexpress.com/item/1005005939808200.html) | Multiple vendors — search "M6 connector". Read the guide to decide how many you need. |
 | 1 | 22mm × 33mm × 1mm acrylic panel | [AliExpress](https://www.aliexpress.com/item/1005012216508583.html) | You can make this from a clear lens from a set of goggles. |
 | 1 | CR1220 button cell battery |  | For the real-time clock. Available almost anywhere. |
+| 1 | 16GB (or larger) MicroSD card |  | Available almost anywhere. |
+|  | 2.5mm shrink sleeve |  | Available from most hardware shops and electronics suppliers. |
+|  | 10mm shrink sleeve(if making y connections) |  | Available from most hardware shops and electronics suppliers. |
+|  | Neutral-cure caulking silicone |  | Available from most hardware shops. |
 
 ### Fasteners (option 1 - using brass inserts)
 
