@@ -11,6 +11,9 @@ build*/
 *.bin
 *.map
 
+# Host test binary (built by firmware/test/Makefile)
+firmware/test/test_runner
+
 # Python/Jupyter
 __pycache__/
 *.pyc

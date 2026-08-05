@@ -1076,8 +1076,8 @@ void registerConfigRoutes(WebServer& srv) {
         return;
       }
       if (isHtmxRequest(srv)) {
-        HttpFileSender::sendText(srv, 200, F("text/html"),
-          F("<div class='alert-ok'>Sensor deleted. Restart the logger to rebuild the live sensor set.</div>"), F("no-store"));
+        srv.sendHeader(F("HX-Redirect"), F("/config/sensors?ok=1&reboot=1"));
+        HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
         return;
       }
       srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1");
@@ -1102,8 +1102,10 @@ void registerConfigRoutes(WebServer& srv) {
       }
       const int newIdx = (int)ConfigManager::sensorCount() - 1;
       if (isHtmxRequest(srv)) {
-        HttpFileSender::sendText(srv, 200, F("text/html"),
-          F("<div class='alert-ok'>Sensor added. Restart the logger to rebuild the live sensor set.</div>"), F("no-store"));
+        String redirect = F("/config/sensors?ok=1&reboot=1#sensor-");
+        redirect += String(newIdx);
+        srv.sendHeader(F("HX-Redirect"), redirect);
+        HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
         return;
       }
       srv.sendHeader("Location", "/config/sensors?ok=1&reboot=1#sensor-" + String(newIdx));
@@ -1355,8 +1357,17 @@ void registerConfigRoutes(WebServer& srv) {
       return;
     }
     if (isHtmxRequest(srv)) {
-      HttpFileSender::sendText(srv, 200, F("text/html"),
-        F("<div class='alert-ok'>Saved.</div>"), F("no-store"));
+      if (applyTypeIdx >= 0) {
+        // "Apply Type" was clicked — redirect to rebuild the editor with the new sensor-type fields
+        String redirect = F("/config/sensor?id=");
+        redirect += String(applyTypeIdx);
+        redirect += F("&ok=1");
+        srv.sendHeader(F("HX-Redirect"), redirect);
+        HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
+      } else {
+        HttpFileSender::sendText(srv, 200, F("text/html"),
+          F("<div class='alert-ok'>Saved.</div>"), F("no-store"));
+      }
       return;
     }
     String location = "/config/sensors";

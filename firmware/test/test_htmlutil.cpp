@@ -2,8 +2,8 @@
 // test_htmlutil.cpp — HtmlUtil tests for htmx Web UI migration
 //
 // Tests (15 total):
-//   T1:  htmlHeader includes htmx script with version
-//   T2:  htmlHeader includes app.css link with version
+//   T1:  htmlHeader includes htmx script with content hash
+//   T2:  htmlHeader includes app.css link with content hash
 //   T3:  htmlHeader does NOT contain inline style
 //   T4:  htmlHeader still includes navbar
 //   T5:  htmlHeader still includes titlebar
@@ -14,7 +14,7 @@
 //   T10: isHtmxRequest false when other value
 //   T11: htmlRespond fragment mode
 //   T12: htmlRespond full page mode
-//   T13: Version changes with firmware
+//   T13: Cache key is content-based, not firmware-version-based
 //   T14: htmlFooter returns closing tags (retained from baseline)
 //   T15: htmlEscape escapes special characters (retained from baseline)
 // ─────────────────────────────────────────────────────────────────
@@ -42,21 +42,23 @@ int runHtmlUtilTests() {
     mockResetAll();
     mockReset();
 
-    // ── T1: htmlHeader includes htmx script with version ──
-    printf("T1: htmlHeader includes htmx script with version\n");
+    // ── T1: htmlHeader includes htmx script with content hash ──
+    printf("T1: htmlHeader includes htmx script with content hash\n");
     {
         String h = HtmlUtil::htmlHeader("Config");
-        check(h.indexOf("<script src='/static/htmx.min.js?v=0.4.1' defer></script>") >= 0,
-              "htmlHeader contains htmx script tag with version");
+        check(h.indexOf("<script src='/static/htmx.min.js?v=") >= 0 &&
+              h.indexOf("' defer></script>") >= 0,
+              "htmlHeader contains htmx script tag with content hash");
     }
     printf("  passed\n\n");
 
-    // ── T2: htmlHeader includes app.css link with version ──
-    printf("T2: htmlHeader includes app.css link with version\n");
+    // ── T2: htmlHeader includes app.css link with content hash ──
+    printf("T2: htmlHeader includes app.css link with content hash\n");
     {
         String h = HtmlUtil::htmlHeader("Config");
-        check(h.indexOf("<link rel='stylesheet' href='/static/app.css?v=0.4.1'>") >= 0,
-              "htmlHeader contains app.css link tag with version");
+        check(h.indexOf("<link rel='stylesheet' href='/static/app.css?v=") >= 0 &&
+              h.indexOf("'>") >= 0,
+              "htmlHeader contains app.css link tag with content hash");
     }
     printf("  passed\n\n");
 
@@ -169,13 +171,18 @@ int runHtmlUtilTests() {
     }
     printf("  passed\n\n");
 
-    // ── T13: Version changes with firmware ──
-    printf("T13: Version changes with firmware\n");
+    // ── T13: Cache key is content-based, not firmware-version-based ──
+    printf("T13: Cache key is content-based, not firmware-version-based\n");
     {
+        // Changing the firmware version should NOT change the asset cache key
+        // (the key is a content hash from WebAssets.h, not FirmwareInfo::version())
         mockSetVersion("0.5.0");
         String h = HtmlUtil::htmlHeader("Config");
-        check(h.indexOf("?v=0.5.0") >= 0,
-              "htmlHeader contains ?v=0.5.0 when version is 0.5.0");
+        check(h.indexOf("?v=0.5.0") < 0,
+              "htmlHeader does NOT use firmware version as cache key");
+        // The hash should be the content hash from WebAssets.h
+        check(h.indexOf("?v=cd38187c") >= 0 || h.indexOf("?v=1f2cd37c") >= 0,
+              "htmlHeader uses content hash as cache key");
         mockSetVersion(MOCK_DEFAULT_VERSION);  // reset
     }
     printf("  passed\n\n");

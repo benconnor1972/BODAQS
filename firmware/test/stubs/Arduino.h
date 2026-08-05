@@ -17,6 +17,12 @@
 // Real Arduino wraps in __FlashStringHelper; for host tests, pass-through.
 #define F(x) (static_cast<const char*>(x))
 
+// ── PROGMEM ──
+// Real Arduino stores data in flash; for host tests, no-op.
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+
 // ── delay / millis ──
 inline void delay(unsigned long /*ms*/) {}
 inline unsigned long millis() {

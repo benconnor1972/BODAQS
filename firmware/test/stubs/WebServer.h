@@ -148,6 +148,10 @@ public:
                 return;
             }
         }
+        // No handler matched — real web servers return 404
+        mockLastStatus = 404;
+        mockLastContentType = "text/plain";
+        mockLastBody = "Not found";
     }
     void mockInvokeHandler(const char* uri, HTTPMethod method) {
         mockInvokeHandler(String(uri), method);
@@ -165,11 +169,17 @@ private:
 
     // Match URI with support for trailing * wildcard
     static bool matchUri_(const String& pattern, const String& uri) {
+        // Strip query string from URI for matching (real web servers do this)
+        String path = uri;
+        int q = path.indexOf('?');
+        if (q >= 0) {
+            path = path.substring(0, q);
+        }
         // Check for wildcard at end: "/static/*"
         if (pattern.endsWith("/*")) {
             String prefix = pattern.substring(0, pattern.length() - 1); // remove *
-            return uri.startsWith(prefix);
+            return path.startsWith(prefix);
         }
-        return pattern == uri;
+        return pattern == path;
     }
 };

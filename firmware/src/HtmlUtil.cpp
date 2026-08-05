@@ -1,6 +1,7 @@
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
 #include "WiFiManager.h"
+#include "WebAssets.h"
 #include <WebServer.h>
 #include <WiFi.h>
 
@@ -37,10 +38,10 @@ namespace HtmlUtil {
     s += F("<meta name='viewport' content='width=device-width, initial-scale=1'>");
     s += "<title>" + title + "</title>";
     s += F("<script src='/static/htmx.min.js?v=");
-    s += FirmwareInfo::version();
+    s += htmx_js_hash;
     s += F("' defer></script>");
     s += F("<link rel='stylesheet' href='/static/app.css?v=");
-    s += FirmwareInfo::version();
+    s += app_css_hash;
     s += F("'>");
 
     s += F("</head><body>");
