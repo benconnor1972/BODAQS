@@ -1,0 +1,251 @@
+/* ─────────────────────────────────────────────────────────────────
+   app.css — BODAQS web UI stylesheet
+   Full design language implementation for htmx Web UI migration.
+   Implements the Design Language section from
+   docs/design/htmx-web-ui-migration.md.
+   ───────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Brand palette */
+  --shadow-grey:   #212227;  /* near-black — primary text, dark surfaces */
+  --dim-grey:      #637074;  /* medium grey — secondary text, borders, disabled */
+  --lavender-grey: #8693ab;  /* muted purple-grey — primary accent, active states */
+  --powder-blue:   #aab9cf;  /* light blue-grey — hover, secondary accent */
+  --pale-sky:      #bdd4e7;  /* light blue — surface backgrounds, highlights */
+
+  /* Semantic status colors */
+  --status-success-bg: #e7f5e7;
+  --status-success-fg: #2d6a2d;
+  --status-success-bd: #8bc34a;
+  --status-error-bg:   #ffe7e7;
+  --status-error-fg:   #8b2020;
+  --status-error-bd:   #e57373;
+  --status-warn-bg:    #fff3cd;
+  --status-warn-fg:    #665500;
+  --status-warn-bd:    #ffe08a;
+
+  /* Spacing scale */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+}
+
+/* ── Page shell ── */
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--shadow-grey);
+  margin: 20px;
+}
+
+.titlebar {
+  font-size: 1.5em;
+  font-weight: 700;
+  color: var(--shadow-grey);
+  margin: 0 0 var(--space-xs) 0;
+}
+
+.netbar {
+  font-size: 0.9em;
+  color: var(--dim-grey);
+  margin: 0 0 var(--space-md) 0;
+}
+
+.topnav {
+  margin: 0 0 var(--space-lg) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--shadow-grey);
+  border-radius: 8px;
+}
+
+.topnav a {
+  color: var(--pale-sky);
+  margin-right: var(--space-md);
+  text-decoration: none;
+}
+
+.topnav a:hover {
+  color: #fff;
+  text-decoration: underline;
+}
+
+h2 {
+  margin-top: 1.6em;
+  padding-bottom: .2em;
+  border-bottom: 1px solid var(--dim-grey);
+  font-size: 1.1em;
+}
+
+/* ── Fieldsets and form rows ── */
+
+fieldset {
+  margin: var(--space-lg) 0;
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--dim-grey);
+  border-radius: 8px;
+  background: var(--pale-sky);
+}
+
+legend {
+  font-weight: 700;
+  color: var(--lavender-grey);
+  padding: 0 var(--space-xs);
+}
+
+.row {
+  margin: var(--space-sm) 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+label {
+  min-width: 160px;
+  font-weight: 500;
+  color: var(--shadow-grey);
+}
+
+input, select {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--dim-grey);
+  border-radius: 4px;
+  font-size: 0.95em;
+  color: var(--shadow-grey);
+  background: #fff;
+}
+
+input:focus, select:focus {
+  border-color: var(--powder-blue);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(170, 185, 207, 0.3);
+}
+
+input:disabled, select:disabled {
+  opacity: 0.5;
+  background: var(--dim-grey);
+}
+
+.row input[type='checkbox'] {
+  margin-left: .5em;
+}
+
+small {
+  color: var(--dim-grey);
+  font-size: 0.85em;
+  margin-left: .3em;
+}
+
+/* ── Buttons ── */
+
+button {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--dim-grey);
+  border-radius: 6px;
+  background: var(--lavender-grey);
+  color: #fff;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--powder-blue);
+  color: var(--shadow-grey);
+}
+
+button:disabled {
+  background: var(--dim-grey);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Alerts (success / error / warning) ── */
+
+.alert-ok {
+  background: var(--status-success-bg);
+  border: 1px solid var(--status-success-bd);
+  color: var(--status-success-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+}
+
+.alert-err {
+  background: var(--status-error-bg);
+  border: 1px solid var(--status-error-bd);
+  color: var(--status-error-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+}
+
+.alert-warn {
+  background: var(--status-warn-bg);
+  border: 1px solid var(--status-warn-bd);
+  color: var(--status-warn-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+}
+
+/* ── Tables ── */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  background: var(--shadow-grey);
+  color: var(--pale-sky);
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+td {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--dim-grey);
+}
+
+tbody tr:nth-child(even) {
+  background: rgba(189, 212, 231, 0.3); /* pale-sky at 30% */
+}
+
+tbody tr:hover {
+  background: var(--pale-sky);
+}
+
+/* ── htmx loading indicator ── */
+
+.htmx-indicator {
+  display: none;
+}
+
+.htmx-request .htmx-indicator {
+  display: inline-block;
+  color: var(--dim-grey);
+  font-size: 0.85em;
+}
+
+.htmx-request.htmx-indicator {
+  display: inline-block;
+}
+
+/* ── Mobile responsive ── */
+
+@media (max-width: 480px) {
+  body { margin: var(--space-sm); font-size: 15px; }
+
+  .row { flex-direction: column; align-items: flex-start; }
+  label { min-width: 0; }
+
+  .topnav { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+  .topnav a { margin-right: 0; }
+
+  fieldset { padding: var(--space-sm); }
+  th, td { padding: var(--space-xs); font-size: 0.85em; }
+}

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BODAQS — Sensors Page Mockup</title>
+<style>
+:root {
+  --shadow-grey:  #212227;
+  --dim-grey:     #637074;
+  --lavender-grey: #8693ab;
+  --powder-blue:  #aab9cf;
+  --pale-sky:     #bdd4e7;
+  --status-success-bg: #e7f5e7;
+  --status-success-fg: #2d6a2d;
+  --status-success-bd: #8bc34a;
+  --status-error-bg:   #ffe7e7;
+  --status-error-fg:   #8b2020;
+  --status-error-bd:   #e57373;
+  --status-warn-bg:    #fff3cd;
+  --status-warn-fg:    #665500;
+  --status-warn-bd:    #ffe08a;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--shadow-grey);
+  margin: 20px;
+  max-width: 800px;
+}
+
+.titlebar {
+  font-size: 1.5em;
+  font-weight: 700;
+  color: var(--shadow-grey);
+  margin: 0 0 var(--space-xs) 0;
+}
+.netbar {
+  font-size: 0.9em;
+  color: var(--dim-grey);
+  margin: 0 0 var(--space-md) 0;
+}
+.topnav {
+  margin: 0 0 var(--space-lg) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--shadow-grey);
+  border-radius: 8px;
+}
+.topnav a {
+  color: var(--pale-sky);
+  margin-right: var(--space-md);
+  text-decoration: none;
+}
+.topnav a:hover { color: #fff; text-decoration: underline; }
+.topnav a.active { color: #fff; font-weight: 700; }
+
+h2 {
+  margin-top: 1.6em;
+  padding-bottom: .2em;
+  border-bottom: 1px solid var(--dim-grey);
+  font-size: 1.1em;
+}
+h4 {
+  font-size: 0.9em;
+  color: var(--lavender-grey);
+  margin: var(--space-lg) 0 var(--space-xs) 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+fieldset {
+  margin: var(--space-lg) 0;
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--dim-grey);
+  border-radius: 8px;
+  background: var(--pale-sky);
+}
+legend {
+  font-weight: 700;
+  color: var(--lavender-grey);
+  padding: 0 var(--space-xs);
+}
+
+.row {
+  margin: var(--space-sm) 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+label {
+  min-width: 160px;
+  font-weight: 500;
+  color: var(--shadow-grey);
+}
+input, select {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--dim-grey);
+  border-radius: 4px;
+  font-size: 0.95em;
+  color: var(--shadow-grey);
+  background: #fff;
+}
+input:focus, select:focus {
+  border-color: var(--powder-blue);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(170, 185, 207, 0.3);
+}
+input:disabled, select:disabled {
+  opacity: 0.5;
+  background: var(--dim-grey);
+}
+.row input[type='checkbox'] { margin-left: 0; }
+small { color: var(--dim-grey); font-size: 0.85em; margin-left: var(--space-xs); }
+
+button {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--dim-grey);
+  border-radius: 6px;
+  background: var(--lavender-grey);
+  color: #fff;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+button:hover { background: var(--powder-blue); color: var(--shadow-grey); }
+button:disabled { background: var(--dim-grey); opacity: 0.6; cursor: not-allowed; }
+button.secondary { background: var(--powder-blue); color: var(--shadow-grey); }
+button.danger { background: var(--status-error-bd); }
+
+a { color: var(--lavender-grey); text-decoration: none; }
+a:hover { color: var(--powder-blue); text-decoration: underline; }
+
+.alert-ok {
+  background: var(--status-success-bg);
+  border: 1px solid var(--status-success-bd);
+  color: var(--status-success-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  margin: var(--space-sm) 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--space-md) 0;
+}
+th {
+  background: var(--shadow-grey);
+  color: var(--pale-sky);
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+td {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--dim-grey);
+}
+tbody tr:nth-child(even) { background: rgba(189, 212, 231, 0.3); }
+tbody tr:hover { background: var(--pale-sky); }
+
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator {
+  display: inline-block;
+  color: var(--dim-grey);
+  font-size: 0.85em;
+}
+
+#sensor-result:empty { display: none; }
+
+@media (max-width: 480px) {
+  body { margin: var(--space-sm); font-size: 15px; }
+  .row { flex-direction: column; align-items: flex-start; }
+  label { min-width: 0; }
+  .topnav { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+  .topnav a { margin-right: 0; }
+  fieldset { padding: var(--space-sm); }
+  th, td { padding: var(--space-xs); font-size: 0.85em; }
+}
+</style>
+</head>
+<body>
+
+<div class="titlebar">BODAQS data logger: BODAQS-Logger</div>
+<div class="netbar">Network: Access point / BODAQS-Logger &nbsp; IP: 192.168.4.1</div>
+
+<div class="topnav">
+  <a href="#">Files</a>
+  <a href="#">General</a>
+  <a href="#" class="active">Sensors</a>
+</div>
+
+<!-- htmx swap target -->
+<div id="sensor-result"></div>
+
+<h2>Sensors</h2>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>Name</th><th>Type</th><th>State</th><th>Output</th><th></th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0</td>
+      <td>front_susp</td>
+      <td>AS5600 String Pot I2C</td>
+      <td>active</td>
+      <td>LINEAR</td>
+      <td><a href="/config/sensor?id=0">Edit</a></td>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>rear_susp</td>
+      <td>AS5600 String Pot I2C</td>
+      <td>active</td>
+      <td>LINEAR</td>
+      <td><a href="/config/sensor?id=1">Edit</a></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>front_pot</td>
+      <td>Analog Potentiometer</td>
+      <td>muted</td>
+      <td>RAW</td>
+      <td><a href="/config/sensor?id=2">Edit</a></td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>gps</td>
+      <td>DAN-F10N GPS UART</td>
+      <td>active</td>
+      <td>RAW</td>
+      <td><a href="/config/sensor?id=3">Edit</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- Add new sensor -->
+<form hx-post="/config/sensors" hx-target="#sensor-result" hx-swap="innerHTML">
+  <fieldset>
+    <legend>New sensor</legend>
+    <div class="row">
+      <label>Type</label>
+      <select name="add_sensor_type">
+        <option value="analog_pot">Analog Potentiometer</option>
+        <option value="as5600_string_pot_analog">AS5600 String Pot (Analog)</option>
+        <option value="as5600_string_pot_i2c">AS5600 String Pot (I2C)</option>
+        <option value="as5600_angle_i2c">AS5600 Angle (I2C)</option>
+        <option value="as5048b_angle_i2c">AS5048B Angle (I2C)</option>
+        <option value="dan_f10n_gps_uart">DAN-F10N GPS (UART)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Name</label>
+      <input type="text" name="add_sensor_name" maxlength="15" placeholder="optional">
+      <small>Leave blank to auto-name.</small>
+    </div>
+    <p>
+      <button type="submit" name="add_sensor" value="1">
+        Add Sensor
+        <span class="htmx-indicator">Adding...</span>
+      </button>
+    </p>
+  </fieldset>
+</form>
+
+<!-- ===== Sensor editor (what /config/sensor?id=0 looks like) ===== -->
+<h2>Sensor Editor: front_susp</h2>
+<p><a href="#">&larr; Back to sensors</a></p>
+
+<form hx-post="/config/sensors" hx-target="#sensor-result" hx-swap="innerHTML">
+  <input type="hidden" name="return_to" value="/config/sensor?id=0">
+
+  <fieldset id="sensor-0">
+    <legend>front_susp - AS5600 String Pot I2C</legend>
+
+    <h4>Basic</h4>
+    <div class="row">
+      <label>Name</label>
+      <input type="text" name="s0.name" value="front_susp">
+    </div>
+    <div class="row">
+      <label>Type</label>
+      <select name="s0.type">
+        <option value="as5600_string_pot_i2c" selected>AS5600 String Pot (I2C)</option>
+      </select>
+      <button type="submit" name="apply_type_idx" value="0" class="secondary">Apply Type</button>
+      <small>Rebuilds fields for this sensor type; restart after add/delete/type changes.</small>
+    </div>
+    <div class="row">
+      <label>I2C bus</label>
+      <select name="s0.i2c_bus">
+        <option value="0" selected>Bus 0</option>
+        <option value="1">Bus 1</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>I2C address</label>
+      <input type="text" name="s0.i2c_addr" value="0x36">
+    </div>
+    <div class="row">
+      <label>Muted by default</label>
+      <input type="checkbox" name="s0.muted" value="true">
+    </div>
+
+    <h4>Output</h4>
+    <div class="row">
+      <label>Output mode</label>
+      <select name="s0.output_mode">
+        <option value="0">RAW</option>
+        <option value="1" selected>LINEAR</option>
+      </select>
+      <small>Complex transforms are applied downstream during import/analysis.</small>
+    </div>
+    <div class="row">
+      <label>Include raw column</label>
+      <input type="checkbox" name="s0.include_raw" value="true" checked>
+    </div>
+    <div class="row">
+      <label>Sensor full travel (mm)</label>
+      <input type="text" name="s0.sensor_full_travel_mm" value="150.000000">
+    </div>
+    <div class="row">
+      <label>Installed range</label>
+      <input type="text" name="s0.installed_range" value="150.000000">
+    </div>
+
+    <h4>Usage</h4>
+    <div class="row">
+      <label>End</label>
+      <select name="s0.end">
+        <option value="front" selected>front</option>
+        <option value="rear">rear</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Primary domain</label>
+      <select name="s0.primary_domain">
+        <option value="suspension" selected>suspension</option>
+        <option value="steering">steering</option>
+        <option value="braking">braking</option>
+        <option value="position">position</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Primary quantity</label>
+      <select name="s0.primary_quantity">
+        <option value="travel" selected>travel</option>
+        <option value="angle">angle</option>
+        <option value="velocity">velocity</option>
+      </select>
+    </div>
+
+    <h4>Calibration</h4>
+    <div class="row">
+      <label>Calibration methods</label>
+      <input type="text" value="ZERO,RANGE" readonly>
+      <small>Read-only sensor capability. Calibration values below remain editable.</small>
+    </div>
+    <div class="row">
+      <label>Sensor count at zero travel</label>
+      <input type="text" name="s0.sensor_zero_count" value="0">
+    </div>
+    <div class="row">
+      <label>Sensor count at full travel</label>
+      <input type="text" name="s0.sensor_full_count" value="4095">
+    </div>
+    <div class="row">
+      <label>Installed zero count</label>
+      <input type="text" name="s0.installed_zero_count" value="120">
+    </div>
+    <div class="row">
+      <label>Zero count</label>
+      <input type="text" name="s0.zero_count" value="120">
+    </div>
+
+    <h4>Wrapping</h4>
+    <div class="row">
+      <label>Counts per turn</label>
+      <input type="text" name="s0.counts_per_turn" value="4096">
+    </div>
+    <div class="row">
+      <label>Wrap threshold (counts)</label>
+      <input type="text" name="s0.wrap_threshold_counts" value="2048">
+    </div>
+    <div class="row">
+      <label>Assume turn 0 at log start</label>
+      <input type="checkbox" name="s0.assume_turn0_at_start" value="true" checked>
+    </div>
+
+    <div class="row">
+      <label>Remove</label>
+      <button type="submit" name="delete_sensor_idx" value="0" class="danger">Delete this sensor</button>
+      <small>Removes the sensor from logger config only.</small>
+    </div>
+  </fieldset>
+
+  <p>
+    <button type="submit">
+      Save Sensor
+      <span class="htmx-indicator">Saving...</span>
+    </button>
+  </p>
+</form>
+
+<!-- ===== Simulated htmx responses ===== -->
+<h2 style="margin-top: 2em;">Simulated htmx Fragment Responses</h2>
+
+<h3>Save success</h3>
+<pre style="background: var(--shadow-grey); color: var(--pale-sky); padding: 12px; border-radius: 6px; font-size: 0.85em; overflow-x: auto;"><code>&lt;div class="alert-ok"&gt;Saved.&lt;/div&gt;</code></pre>
+<p>Rendered:</p>
+<div class="alert-ok">Saved.</div>
+
+<h3>Add sensor success (with redirect hint)</h3>
+<pre style="background: var(--shadow-grey); color: var(--pale-sky); padding: 12px; border-radius: 6px; font-size: 0.85em; overflow-x: auto;"><code>&lt;div class="alert-ok"&gt;Sensor added. Restart the logger to rebuild the live sensor set.&lt;/div&gt;</code></pre>
+<p>Rendered:</p>
+<div class="alert-ok">Sensor added. Restart the logger to rebuild the live sensor set.</div>
+
+</body>
+</html>

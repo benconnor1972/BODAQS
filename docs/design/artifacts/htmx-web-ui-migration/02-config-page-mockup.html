@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BODAQS — Config Page Mockup</title>
+<style>
+:root {
+  --shadow-grey:  #212227;
+  --dim-grey:     #637074;
+  --lavender-grey: #8693ab;
+  --powder-blue:  #aab9cf;
+  --pale-sky:     #bdd4e7;
+  --status-success-bg: #e7f5e7;
+  --status-success-fg: #2d6a2d;
+  --status-success-bd: #8bc34a;
+  --status-error-bg:   #ffe7e7;
+  --status-error-fg:   #8b2020;
+  --status-error-bd:   #e57373;
+  --status-warn-bg:    #fff3cd;
+  --status-warn-fg:    #665500;
+  --status-warn-bd:    #ffe08a;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--shadow-grey);
+  margin: 20px;
+  max-width: 800px;
+}
+
+.titlebar {
+  font-size: 1.5em;
+  font-weight: 700;
+  color: var(--shadow-grey);
+  margin: 0 0 var(--space-xs) 0;
+}
+.netbar {
+  font-size: 0.9em;
+  color: var(--dim-grey);
+  margin: 0 0 var(--space-md) 0;
+}
+.topnav {
+  margin: 0 0 var(--space-lg) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--shadow-grey);
+  border-radius: 8px;
+}
+.topnav a {
+  color: var(--pale-sky);
+  margin-right: var(--space-md);
+  text-decoration: none;
+}
+.topnav a:hover { color: #fff; text-decoration: underline; }
+.topnav a.active { color: #fff; font-weight: 700; }
+
+h2 {
+  margin-top: 1.6em;
+  padding-bottom: .2em;
+  border-bottom: 1px solid var(--dim-grey);
+  font-size: 1.1em;
+}
+
+fieldset {
+  margin: var(--space-lg) 0;
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--dim-grey);
+  border-radius: 8px;
+  background: var(--pale-sky);
+}
+legend {
+  font-weight: 700;
+  color: var(--lavender-grey);
+  padding: 0 var(--space-xs);
+}
+
+.row {
+  margin: var(--space-sm) 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+label {
+  min-width: 160px;
+  font-weight: 500;
+  color: var(--shadow-grey);
+}
+input, select {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--dim-grey);
+  border-radius: 4px;
+  font-size: 0.95em;
+  color: var(--shadow-grey);
+  background: #fff;
+}
+input:focus, select:focus {
+  border-color: var(--powder-blue);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(170, 185, 207, 0.3);
+}
+input:disabled, select:disabled {
+  opacity: 0.5;
+  background: var(--dim-grey);
+}
+.row input[type='checkbox'] { margin-left: 0; }
+.row input[type='radio'] { margin-left: 0; }
+small { color: var(--dim-grey); font-size: 0.85em; margin-left: var(--space-xs); }
+
+button {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--dim-grey);
+  border-radius: 6px;
+  background: var(--lavender-grey);
+  color: #fff;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+button:hover { background: var(--powder-blue); color: var(--shadow-grey); }
+button:disabled { background: var(--dim-grey); opacity: 0.6; cursor: not-allowed; }
+
+.alert-ok {
+  background: var(--status-success-bg);
+  border: 1px solid var(--status-success-bd);
+  color: var(--status-success-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  margin: var(--space-sm) 0;
+}
+.alert-warn {
+  background: var(--status-warn-bg);
+  border: 1px solid var(--status-warn-bd);
+  color: var(--status-warn-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  margin: var(--space-sm) 0;
+}
+
+/* htmx indicator */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator {
+  display: inline-block;
+  color: var(--dim-grey);
+  font-size: 0.85em;
+}
+
+/* htmx swap target — normally invisible, shown here for illustration */
+#save-result:empty { display: none; }
+
+@media (max-width: 480px) {
+  body { margin: var(--space-sm); font-size: 15px; }
+  .row { flex-direction: column; align-items: flex-start; }
+  label { min-width: 0; }
+  .topnav { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+  .topnav a { margin-right: 0; }
+  fieldset { padding: var(--space-sm); }
+}
+</style>
+</head>
+<body>
+
+<div class="titlebar">BODAQS data logger: BODAQS-Logger</div>
+<div class="netbar">Network: Access point / BODAQS-Logger &nbsp; IP: 192.168.4.1</div>
+
+<div class="topnav">
+  <a href="#">Files</a>
+  <a href="#" class="active">General</a>
+  <a href="#">Sensors</a>
+</div>
+
+<!-- htmx swap target — success/error fragments land here -->
+<div id="save-result"></div>
+
+<h2>Configuration</h2>
+
+<!-- The form uses hx-post to swap the result into #save-result -->
+<form hx-post="/config" hx-target="#save-result" hx-swap="innerHTML" hx-sync="this:replace">
+  <input type="hidden" name="submit" value="globals">
+
+  <fieldset>
+    <legend>General</legend>
+    <div class="row">
+      <label>Logger name</label>
+      <input type="text" name="logger_name" maxlength="31" value="BODAQS-Logger">
+    </div>
+    <div class="row">
+      <label>Sample rate (Hz)</label>
+      <input type="number" name="sample_rate_hz" min="1" max="2000" value="100">
+    </div>
+    <div class="row">
+      <label>Log format</label>
+      <label style="min-width: auto;"><input type="radio" name="log_format" value="bodaqs_standard" checked> BODAQS CSV</label>
+      <label style="min-width: auto;"><input type="radio" name="log_format" value="syn_bike_raw"> syn.bike CSV</label>
+      <label style="min-width: auto;"><input type="radio" name="log_format" value="bodaqs_compact_binary"> Compact binary</label>
+    </div>
+    <div class="row">
+      <label>Omit log metadata JSON</label>
+      <input type="checkbox" name="omit_metadata" value="true">
+    </div>
+    <div class="row">
+      <label>Timestamp mode</label>
+      <select name="timestamp_mode">
+        <option value="human" selected>human</option>
+        <option value="fast">fast</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Timezone (tz rule)</label>
+      <input type="text" name="tz" value="EST5EDT,M3.2.0,M11.1.0" style="width: 280px;">
+    </div>
+    <div class="row">
+      <label>Auto-sleep idle (min)</label>
+      <input type="number" name="auto_sleep_idle_min" min="0" step="0.1" value="15">
+      <small>0 = disabled</small>
+    </div>
+    <div class="row">
+      <label>Wi-Fi idle timeout (min)</label>
+      <input type="number" name="wifi_idle_timeout_min" min="0" step="0.1" value="10">
+      <small>0 = disabled</small>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Network & NTP</legend>
+    <div class="row">
+      <label>Enable Wi-Fi by default</label>
+      <input type="checkbox" name="wifi_enabled_default" value="true" checked>
+    </div>
+    <div class="row">
+      <label>Wi-Fi mode</label>
+      <select name="wifi_mode">
+        <option value="station">Station</option>
+        <option value="access_point" selected>Access point</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>AP SSID</label>
+      <input type="text" name="wifi_ap_ssid" maxlength="31" value="BODAQS-Logger">
+    </div>
+    <div class="row">
+      <label>AP password</label>
+      <input type="password" name="wifi_ap_password" minlength="8" maxlength="63" value="bodaqslogger">
+      <small>8-63 characters</small>
+    </div>
+    <div class="row">
+      <label>Auto-enable for NTP if RTC invalid</label>
+      <input type="checkbox" name="wifi_auto_time_on_rtc_invalid" value="true" checked>
+    </div>
+    <div class="row">
+      <label>NTP servers (CSV)</label>
+      <input type="text" name="ntp_servers" value="pool.ntp.org" style="width: 280px;">
+    </div>
+    <div class="row">
+      <label>HTTP time check URL</label>
+      <input type="text" name="time_check_url" value="http://worldtimeapi.org/api/timezone/Etc/UTC" style="width: 350px;">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Wi-Fi 0 (priority 1)</legend>
+    <div class="row">
+      <label>SSID</label>
+      <input type="text" name="wifi0.ssid" value="Workshop_5G">
+    </div>
+    <div class="row">
+      <label>Password</label>
+      <input type="password" name="wifi0.password" value="workshop123">
+    </div>
+    <div class="row">
+      <label>Min RSSI (dBm)</label>
+      <input type="number" step="1" min="-100" max="0" name="wifi0.min_rssi" value="-75">
+      <small>≤ -10, or 0/blank to ignore</small>
+    </div>
+    <div class="row">
+      <label>BSSID (optional)</label>
+      <input type="text" name="wifi0.bssid" value="" placeholder="AA:BB:CC:DD:EE:FF" style="width: 180px;">
+    </div>
+    <div class="row">
+      <label>Hidden SSID</label>
+      <input type="checkbox" name="wifi0.hidden" value="true">
+    </div>
+    <div class="row">
+      <label>Static IP</label>
+      <input type="checkbox" name="wifi0.static_ip" value="true">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Wi-Fi 1 (priority 2)</legend>
+    <div class="row">
+      <label>SSID</label>
+      <input type="text" name="wifi1.ssid" value="">
+    </div>
+    <div class="row">
+      <label>Password</label>
+      <input type="password" name="wifi1.password" value="" placeholder="(unchanged)">
+    </div>
+    <div class="row">
+      <label>Min RSSI (dBm)</label>
+      <input type="number" step="1" min="-100" max="0" name="wifi1.min_rssi" value="0" placeholder="0 or blank = ignore">
+    </div>
+  </fieldset>
+
+  <p>
+    <button type="submit">
+      Save
+      <span class="htmx-indicator">Saving...</span>
+    </button>
+  </p>
+</form>
+
+<!-- ===== Simulated htmx responses (for demo) ===== -->
+<!-- In production, these fragments are returned by the server on POST /config -->
+
+<h2 style="margin-top: 2em;">Simulated htmx Fragment Responses</h2>
+<p style="color: var(--dim-grey);">These are the HTML fragments the server would return on form POST. htmx swaps them into <code>#save-result</code> above the form.</p>
+
+<h3>Success fragment</h3>
+<pre style="background: var(--shadow-grey); color: var(--pale-sky); padding: 12px; border-radius: 6px; font-size: 0.85em; overflow-x: auto;"><code>&lt;div class="alert-ok"&gt;Configuration saved.&lt;/div&gt;</code></pre>
+<p>Rendered:</p>
+<div class="alert-ok">Configuration saved.</div>
+
+<h3>Error fragment (validation)</h3>
+<pre style="background: var(--shadow-grey); color: var(--pale-sky); padding: 12px; border-radius: 6px; font-size: 0.85em; overflow-x: auto;"><code>&lt;div class="alert-err"&gt;Error: AP password must be 8-63 characters&lt;/div&gt;</code></pre>
+<p>Rendered:</p>
+<div style="background: var(--status-error-bg); border: 1px solid var(--status-error-bd); color: var(--status-error-fg); padding: var(--space-sm) var(--space-md); border-radius: 6px; margin: var(--space-sm) 0;">
+  Error: AP password must be 8-63 characters
+</div>
+
+<h3>Locked fragment (423)</h3>
+<pre style="background: var(--shadow-grey); color: var(--pale-sky); padding: 12px; border-radius: 6px; font-size: 0.85em; overflow-x: auto;"><code>&lt;div class="alert-warn"&gt;Configuration is locked while logging is active.&lt;/div&gt;</code></pre>
+<p>Rendered:</p>
+<div class="alert-warn">Configuration is locked while logging is active.</div>
+
+</body>
+</html>

@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BODAQS — Design Language Showcase</title>
+<style>
+:root {
+  /* Brand palette */
+  --shadow-grey:  #212227;
+  --dim-grey:     #637074;
+  --lavender-grey: #8693ab;
+  --powder-blue:  #aab9cf;
+  --pale-sky:     #bdd4e7;
+
+  /* Semantic status colors */
+  --status-success-bg: #e7f5e7;
+  --status-success-fg: #2d6a2d;
+  --status-success-bd: #8bc34a;
+  --status-error-bg:   #ffe7e7;
+  --status-error-fg:   #8b2020;
+  --status-error-bd:   #e57373;
+  --status-warn-bg:    #fff3cd;
+  --status-warn-fg:    #665500;
+  --status-warn-bd:    #ffe08a;
+
+  /* Spacing scale */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--shadow-grey);
+  margin: 20px;
+  max-width: 800px;
+}
+
+h1 { font-size: 1.8em; margin: 0 0 var(--space-md) 0; }
+h2 { margin-top: 1.6em; padding-bottom: .2em; border-bottom: 1px solid var(--dim-grey); font-size: 1.2em; }
+h3 { font-size: 1em; margin: var(--space-lg) 0 var(--space-sm) 0; color: var(--lavender-grey); }
+
+/* ---- Color swatches ---- */
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-md);
+  margin: var(--space-md) 0;
+}
+.swatch {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--dim-grey);
+}
+.swatch-color {
+  height: 60px;
+}
+.swatch-info {
+  padding: var(--space-sm);
+  font-size: 0.8em;
+}
+.swatch-info code { font-weight: 700; }
+.swatch-info small { display: block; color: var(--dim-grey); margin-top: 2px; }
+
+/* ---- Nav bar ---- */
+.topnav {
+  margin: 0 0 var(--space-lg) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--shadow-grey);
+  border-radius: 8px;
+}
+.topnav a {
+  color: var(--pale-sky);
+  margin-right: var(--space-md);
+  text-decoration: none;
+}
+.topnav a:hover { color: #fff; text-decoration: underline; }
+.topnav a.active { color: #fff; font-weight: 700; }
+
+/* ---- Fieldsets ---- */
+fieldset {
+  margin: var(--space-lg) 0;
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--dim-grey);
+  border-radius: 8px;
+  background: var(--pale-sky);
+}
+legend {
+  font-weight: 700;
+  color: var(--lavender-grey);
+  padding: 0 var(--space-xs);
+}
+
+/* ---- Form rows ---- */
+.row {
+  margin: var(--space-sm) 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+label {
+  min-width: 160px;
+  font-weight: 500;
+  color: var(--shadow-grey);
+}
+input, select {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--dim-grey);
+  border-radius: 4px;
+  font-size: 0.95em;
+  color: var(--shadow-grey);
+  background: #fff;
+}
+input:focus, select:focus {
+  border-color: var(--powder-blue);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(170, 185, 207, 0.3);
+}
+input:disabled, select:disabled {
+  opacity: 0.5;
+  background: var(--dim-grey);
+}
+.row input[type='checkbox'] { margin-left: 0; }
+small { color: var(--dim-grey); font-size: 0.85em; margin-left: var(--space-xs); }
+
+/* ---- Buttons ---- */
+button {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--dim-grey);
+  border-radius: 6px;
+  background: var(--lavender-grey);
+  color: #fff;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+button:hover { background: var(--powder-blue); color: var(--shadow-grey); }
+button:disabled { background: var(--dim-grey); opacity: 0.6; cursor: not-allowed; }
+button.secondary { background: var(--powder-blue); color: var(--shadow-grey); }
+button.danger { background: var(--status-error-bd); }
+
+/* ---- Alerts ---- */
+.alert-ok {
+  background: var(--status-success-bg);
+  border: 1px solid var(--status-success-bd);
+  color: var(--status-success-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  margin: var(--space-sm) 0;
+}
+.alert-err {
+  background: var(--status-error-bg);
+  border: 1px solid var(--status-error-bd);
+  color: var(--status-error-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  margin: var(--space-sm) 0;
+}
+.alert-warn {
+  background: var(--status-warn-bg);
+  border: 1px solid var(--status-warn-bd);
+  color: var(--status-warn-fg);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  margin: var(--space-sm) 0;
+}
+
+/* ---- Tables ---- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--space-md) 0;
+}
+th {
+  background: var(--shadow-grey);
+  color: var(--pale-sky);
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+td {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--dim-grey);
+}
+tbody tr:nth-child(even) { background: rgba(189, 212, 231, 0.3); }
+tbody tr:hover { background: var(--pale-sky); }
+
+/* ---- htmx indicator ---- */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator {
+  display: inline-block;
+  color: var(--dim-grey);
+  font-size: 0.85em;
+}
+
+/* ---- Code blocks ---- */
+pre {
+  background: var(--shadow-grey);
+  color: var(--pale-sky);
+  padding: var(--space-md);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+/* ---- Mobile demo ---- */
+.mobile-frame {
+  width: 375px;
+  border: 3px solid var(--shadow-grey);
+  border-radius: 12px;
+  padding: var(--space-sm);
+  margin: var(--space-lg) 0;
+}
+.mobile-frame .frame-label {
+  text-align: center;
+  font-size: 0.75em;
+  color: var(--dim-grey);
+  margin-bottom: var(--space-sm);
+}
+
+@media (max-width: 480px) {
+  body { margin: var(--space-sm); font-size: 15px; }
+  .row { flex-direction: column; align-items: flex-start; }
+  label { min-width: 0; }
+  .topnav { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+  .topnav a { margin-right: 0; }
+  fieldset { padding: var(--space-sm); }
+  th, td { padding: var(--space-xs); font-size: 0.85em; }
+}
+</style>
+</head>
+<body>
+
+<h1>BODAQS Design Language Showcase</h1>
+<p style="color: var(--dim-grey);">Reference page for the htmx web UI migration. Open this file in a browser to see all components rendered with the brand palette.</p>
+
+<!-- ===== COLOR PALETTE ===== -->
+<h2>Color Palette</h2>
+
+<h3>Brand Colors</h3>
+<div class="swatch-grid">
+  <div class="swatch">
+    <div class="swatch-color" style="background: #212227;"></div>
+    <div class="swatch-info"><code>--shadow-grey</code><small>#212227</small></div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: #637074;"></div>
+    <div class="swatch-info"><code>--dim-grey</code><small>#637074</small></div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: #8693ab;"></div>
+    <div class="swatch-info"><code>--lavender-grey</code><small>#8693ab</small></div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: #aab9cf;"></div>
+    <div class="swatch-info"><code>--powder-blue</code><small>#aab9cf</small></div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: #bdd4e7;"></div>
+    <div class="swatch-info"><code>--pale-sky</code><small>#bdd4e7</small></div>
+  </div>
+</div>
+
+<h3>Semantic Status Colors</h3>
+<div class="swatch-grid">
+  <div class="swatch">
+    <div class="swatch-color" style="background: #e7f5e7; border-bottom: 3px solid #8bc34a;"></div>
+    <div class="swatch-info"><code>success</code><small>#e7f5e7 / #8bc34a</small></div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: #ffe7e7; border-bottom: 3px solid #e57373;"></div>
+    <div class="swatch-info"><code>error</code><small>#ffe7e7 / #e57373</small></div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: #fff3cd; border-bottom: 3px solid #ffe08a;"></div>
+    <div class="swatch-info"><code>warn</code><small>#fff3cd / #ffe08a</small></div>
+  </div>
+</div>
+
+<!-- ===== NAV BAR ===== -->
+<h2>Navigation Bar</h2>
+<div class="topnav">
+  <a href="#" class="active">Files</a>
+  <a href="#">General</a>
+  <a href="#">Sensors</a>
+</div>
+
+<!-- ===== ALERTS ===== -->
+<h2>Alerts</h2>
+<div class="alert-ok">Configuration saved.</div>
+<div class="alert-err">Error: Invalid sample rate. Must be between 1 and 2000 Hz.</div>
+<div class="alert-warn">Editing is disabled while logging is active. Exit upload mode or stop logging to make changes.</div>
+
+<!-- ===== FIELDSETS & FORMS ===== -->
+<h2>Fieldsets & Form Rows</h2>
+
+<fieldset>
+  <legend>General</legend>
+  <div class="row">
+    <label>Logger name</label>
+    <input type="text" value="BODAQS-Logger">
+  </div>
+  <div class="row">
+    <label>Sample rate (Hz)</label>
+    <input type="number" value="100" min="1" max="2000">
+  </div>
+  <div class="row">
+    <label>Log format</label>
+    <label style="min-width: auto;"><input type="radio" name="fmt" checked> BODAQS CSV</label>
+    <label style="min-width: auto;"><input type="radio" name="fmt"> syn.bike CSV</label>
+    <label style="min-width: auto;"><input type="radio" name="fmt"> Compact binary</label>
+  </div>
+  <div class="row">
+    <label>Omit metadata JSON</label>
+    <input type="checkbox">
+  </div>
+  <div class="row">
+    <label>Timestamp mode</label>
+    <select>
+      <option selected>human</option>
+      <option>fast</option>
+    </select>
+  </div>
+  <div class="row">
+    <label>Timezone</label>
+    <input type="text" value="EST5EDT,M3.2.0,M11.1.0" style="width: 250px;">
+    <small>POSIX tz rule</small>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Network & NTP</legend>
+  <div class="row">
+    <label>Wi-Fi mode</label>
+    <select>
+      <option>Station</option>
+      <option selected>Access point</option>
+    </select>
+  </div>
+  <div class="row">
+    <label>AP SSID</label>
+    <input type="text" value="BODAQS-Logger">
+  </div>
+  <div class="row">
+    <label>AP password</label>
+    <input type="password" value="bodaqslogger">
+    <small>8-63 characters</small>
+  </div>
+  <div class="row">
+    <label>Enable Wi-Fi by default</label>
+    <input type="checkbox" checked>
+  </div>
+  <div class="row">
+    <label>NTP servers</label>
+    <input type="text" value="pool.ntp.org" style="width: 250px;">
+  </div>
+</fieldset>
+
+<!-- ===== BUTTONS ===== -->
+<h2>Buttons</h2>
+<div class="row" style="gap: var(--space-md);">
+  <button>Save</button>
+  <button class="secondary">Cancel</button>
+  <button class="danger">Delete</button>
+  <button disabled>Disabled</button>
+</div>
+
+<h3>Button with htmx indicator</h3>
+<div class="row" style="gap: var(--space-md);">
+  <button class="htmx-request">
+    Save
+    <span class="htmx-indicator">Saving...</span>
+  </button>
+  <button>
+    Save
+    <span class="htmx-indicator">Saving...</span>
+  </button>
+  <small>← left shows "Saving..." state, right shows idle</small>
+</div>
+
+<!-- ===== TABLE ===== -->
+<h2>Table (Sensor List)</h2>
+<table>
+  <thead>
+    <tr><th>#</th><th>Name</th><th>Type</th><th>State</th><th>Output</th><th></th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0</td><td>front_susp</td><td>AS5600 String Pot I2C</td><td>active</td><td>LINEAR</td>
+      <td><a href="#">Edit</a></td>
+    </tr>
+    <tr>
+      <td>1</td><td>rear_susp</td><td>AS5600 String Pot I2C</td><td>active</td><td>LINEAR</td>
+      <td><a href="#">Edit</a></td>
+    </tr>
+    <tr>
+      <td>2</td><td>front_pot</td><td>Analog Potentiometer</td><td>muted</td><td>RAW</td>
+      <td><a href="#">Edit</a></td>
+    </tr>
+    <tr>
+      <td>3</td><td>gps</td><td>DAN-F10N GPS UART</td><td>active</td><td>RAW</td>
+      <td><a href="#">Edit</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ===== LOCKED STATE ===== -->
+<h2>Locked State (logging active)</h2>
+<div class="alert-warn">Editing is disabled while logging is active. Exit upload mode or stop logging to make changes.</div>
+<fieldset>
+  <legend>General (locked)</legend>
+  <div class="row">
+    <label>Logger name</label>
+    <input type="text" value="BODAQS-Logger" disabled>
+  </div>
+  <div class="row">
+    <label>Sample rate (Hz)</label>
+    <input type="number" value="100" disabled>
+  </div>
+  <div class="row">
+    <button disabled>Save</button>
+  </div>
+</fieldset>
+
+<!-- ===== MOBILE PREVIEW ===== -->
+<h2>Mobile Preview (375px)</h2>
+<div class="mobile-frame">
+  <div class="frame-label">375px — iPhone SE / small Android</div>
+  <div class="topnav" style="display: flex; flex-wrap: wrap; gap: 8px;">
+    <a href="#" class="active">Files</a>
+    <a href="#">General</a>
+    <a href="#">Sensors</a>
+  </div>
+  <fieldset style="padding: 8px;">
+    <legend>General</legend>
+    <div class="row" style="flex-direction: column; align-items: flex-start;">
+      <label style="min-width: 0;">Logger name</label>
+      <input type="text" value="BODAQS-Logger" style="width: 100%;">
+    </div>
+    <div class="row" style="flex-direction: column; align-items: flex-start;">
+      <label style="min-width: 0;">Sample rate (Hz)</label>
+      <input type="number" value="100" style="width: 100%;">
+    </div>
+    <div class="row" style="flex-direction: column; align-items: flex-start;">
+      <label style="min-width: 0;">Wi-Fi mode</label>
+      <select style="width: 100%;">
+        <option>Station</option>
+        <option selected>Access point</option>
+      </select>
+    </div>
+    <div class="row">
+      <button style="width: 100%;">Save</button>
+    </div>
+  </fieldset>
+</div>
+
+</body>
+</html>

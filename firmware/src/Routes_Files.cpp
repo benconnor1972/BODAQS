@@ -65,6 +65,12 @@ static bool rejectManualFileMutation_(WebServer& srv) {
     return false;
   }
 
+  if (isHtmxRequest(srv)) {
+    HttpFileSender::sendText(srv, 200, F("text/html"),
+      String(F("<div class='alert-warn'>Manual file changes are disabled while ")) + reason + F(".</div>"), F("no-store"));
+    return true;
+  }
+
   srv.send(409, F("text/plain"), String(F("Manual file changes are disabled while ")) + reason + F("."));
   return true;
 }
@@ -374,10 +380,12 @@ static void appendUploadModePanel_(String& html) {
   html += F("</p>");
 
   if (uploadMode) {
-    html += F("<form method='POST' action='/upload-mode/exit'>"
+    html += F("<form method='POST' action='/upload-mode/exit'"
+              " hx-post='/upload-mode/exit' hx-target='this' hx-swap='outerHTML' hx-sync='this:replace'>"
               "<button type='submit'>Exit upload mode</button></form>");
   } else {
-    html += F("<form method='POST' action='/upload-mode/enter'>"
+    html += F("<form method='POST' action='/upload-mode/enter'"
+              " hx-post='/upload-mode/enter' hx-target='this' hx-swap='outerHTML' hx-sync='this:replace'>"
               "<button type='submit'");
     if (logging) {
       html += F(" disabled title='Stop logging before entering upload mode'");
@@ -400,6 +408,13 @@ void registerFileRoutes(WebServer& srv) {
       return;
     }
 
+    if (isHtmxRequest(srv)) {
+      srv.sendHeader(F("HX-Redirect"), F("/files"));
+      HttpFileSender::sendText(srv, 200, F("text/html"),
+        F("<div class='alert-ok'>Upload mode active.</div>"), F("no-store"));
+      return;
+    }
+
     redirectToFiles_(srv);
   });
 
@@ -408,6 +423,14 @@ void registerFileRoutes(WebServer& srv) {
     noteHttpActivity_();
 
     UploadModeManager::exit();
+
+    if (isHtmxRequest(srv)) {
+      srv.sendHeader(F("HX-Redirect"), F("/files"));
+      HttpFileSender::sendText(srv, 200, F("text/html"),
+        F("<div class='alert-ok'>Upload mode exited.</div>"), F("no-store"));
+      return;
+    }
+
     redirectToFiles_(srv);
   });
 
@@ -561,6 +584,14 @@ S->on("/delete", HTTP_GET, [S](){
   }
   if (!removed) {
     srv.send(500, F("text/plain"), F("Delete failed"));
+    return;
+  }
+
+  if (isHtmxRequest(srv)) {
+    String redirectUrl = String(F("/files?path=")) + urlEncodeQueryValue_(parentDir(path));
+    srv.sendHeader(F("HX-Redirect"), redirectUrl);
+    HttpFileSender::sendText(srv, 200, F("text/html"),
+      F("<div class='alert-ok'>Deleted.</div>"), F("no-store"));
     return;
   }
 
@@ -720,6 +751,22 @@ S->on("/delete_multi", HTTP_POST, [S](){
   }
 
   // Confirmed: delete best-effort
+  if (isHtmxRequest(srv)) {
+    int okCount = 0;
+    for (int i = 0; i < nSel; ++i) {
+      const String& p = paths[i];
+      if (SD_MMC.exists(p.c_str()) && SD_MMC.remove(p.c_str())) {
+        ++okCount;
+      }
+      delay(0);
+    }
+    String redirectUrl = String(F("/files?path=")) + urlEncodeQueryValue_(dir);
+    srv.sendHeader(F("HX-Redirect"), redirectUrl);
+    HttpFileSender::sendText(srv, 200, F("text/html"),
+      String(F("<div class='alert-ok'>Deleted ")) + String(okCount) + F(" file(s).</div>"), F("no-store"));
+    return;
+  }
+
   int okCount = 0;
   int failCount = 0;
 
@@ -1010,6 +1057,14 @@ S->on("/mkdir", HTTP_POST, [S](){
 
   if (!ok) {
     srv.send(500, F("text/plain"), F("mkdir failed"));
+    return;
+  }
+
+  if (isHtmxRequest(srv)) {
+    String redirectUrl = String(F("/files?path=")) + urlEncodeQueryValue_(normDir(base));
+    srv.sendHeader(F("HX-Redirect"), redirectUrl);
+    HttpFileSender::sendText(srv, 200, F("text/html"),
+      F("<div class='alert-ok'>Folder created.</div>"), F("no-store"));
     return;
   }
 

@@ -1,5 +1,8 @@
 #pragma once
 #include <Arduino.h>  // for String, F(), etc.
+#include "FirmwareInfo.h"  // for FirmwareInfo::version()
+
+class WebServer;  // forward declaration — full include in .cpp
 
 // Keep helpers in a namespace to avoid name collisions.
 namespace HtmlUtil {
@@ -18,4 +21,9 @@ namespace HtmlUtil {
   // Safety
   bool   safePath(const String& name);
   bool   safeRelPath(const String& path);   // allows '/', forbids '..', '\\', '//' etc.
+
+  // htmx fragment support
+  bool   isHtmxRequest(WebServer& srv);                    // true if HX-Request: true header
+  String htmlFragment(const String& body);                 // body only, no <html>/<head> wrapper
+  String htmlRespond(WebServer& srv, const String& title, const String& body);  // fragment if htmx, full page otherwise
 }
