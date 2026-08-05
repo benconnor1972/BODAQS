@@ -1,0 +1,374 @@
+(footprint "XC6193AA05ERG"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "XC6193AA05ER-G")
+	(tags "Integrated Circuit")
+	(property "Reference" "REF**"
+		(at -0.25 0 180)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "6845f09c-1ab6-45e9-b540-1fbe94ec0cbb")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.254)
+			)
+		)
+	)
+	(property "Value" "XC6193AA05ERG"
+		(at -0.25 0 180)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "da053a8c-7b0f-4317-9073-ed6d617cf3dd")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.254)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.torexsemi.com/file/XC6193/XC6193.pdf"
+		(at 0 0 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "d34c5ad4-6198-463e-94bb-a107c86f382b")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" "1 1.5A High Side Switch USP-B06-8(2x2) Power Distribution Switches, Load Drivers RoHS"
+		(at 0 0 180)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "9ccc8131-7ef5-4715-a669-1fb4e72e774a")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Height" "0.33"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "6ac3267a-979c-43e7-84ab-9a17c3d053df")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Manufacturer_Name" "Torex"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "950a37bd-9f89-41cc-8039-2055ce70cf94")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Manufacturer_Part_Number" "XC6193A103ER-G"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8f179fcb-51ce-4623-bf5e-55b1eb0b2e6f")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Mouser Part Number" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "6801458c-5651-42b6-9e9d-7a991431a344")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Mouser Price/Stock" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b0766aa6-44b8-490d-90a5-2bdc705cb6fd")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Arrow Part Number" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "433bac0f-437b-459b-8d8e-378db3518f4d")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Arrow Price/Stock" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "759f5194-093c-4fa4-a929-cdb517b9d75c")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "FP_JLC" "USP-B06-8(2x2)"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "bc40ca8b-4eb9-4552-b480-6d842e2367ef")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "LCSC Part" "C17658088"
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "ad790052-c2a6-4bd1-8a05-36af6670f3e1")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(sheetname "/Power/")
+	(sheetfile "Power.kicad_sch")
+	(attr smd dnp)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -1.625 0.85)
+		(end -1.625 0.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "a98918f2-313b-4711-967c-2d1097bd28e2")
+	)
+	(fp_line
+		(start -1.575 0.85)
+		(end -1.575 0.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "1ed2af5d-3b38-4af5-9c69-0d4951c8503d")
+	)
+	(fp_arc
+		(start -1.625 0.85)
+		(mid -1.6 0.825)
+		(end -1.575 0.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "5365b813-4073-4ed5-a1e3-a0ffb0e6f8ce")
+	)
+	(fp_arc
+		(start -1.575 0.85)
+		(mid -1.6 0.875)
+		(end -1.625 0.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "66a27eb6-7c4b-49b4-8ef9-cb185383f3a2")
+	)
+	(fp_line
+		(start -2.7 -2.2)
+		(end 2.2 -2.2)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "ef374635-ee24-4688-8d09-0193eb5c9cee")
+	)
+	(fp_line
+		(start -2.7 2.2)
+		(end -2.7 -2.2)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "7fd13c4c-d479-4833-ad1d-a9614c02110e")
+	)
+	(fp_line
+		(start 2.2 -2.2)
+		(end 2.2 2.2)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "8252ced3-6ad7-4dcb-affd-0a9fc3d06503")
+	)
+	(fp_line
+		(start 2.2 2.2)
+		(end -2.7 2.2)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "ac3c3beb-f8e7-4477-ae40-7d79ce65531b")
+	)
+	(fp_line
+		(start -1 -1)
+		(end 1 -1)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "603843c0-6c4a-4494-a666-98b4c2d5ce37")
+	)
+	(fp_line
+		(start -1 1)
+		(end -1 -1)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "4463a70c-7f66-4e0c-8126-eff9781f7fe0")
+	)
+	(fp_line
+		(start 1 -1)
+		(end 1 1)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "41cc6054-e253-45cb-8f2a-1d4e51c346e5")
+	)
+	(fp_line
+		(start 1 1)
+		(end -1 1)
+		(stroke
+			(width 0.2)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "d9f83584-3cba-49f0-bedd-87fb32a12549")
+	)
+	(fp_text user "${REFERENCE}"
+		(at -0.25 0 180)
+		(layer "F.Fab")
+		(uuid "3bae9357-aef3-47a9-b577-11482280719f")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.254)
+			)
+		)
+	)
+	(pad "1" smd rect
+		(at -0.75 0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "2ae3aa20-17e6-4a13-a884-eef167efea41")
+	)
+	(pad "2" smd rect
+		(at -0.25 0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "f92a7d4a-1d60-4e88-8f2e-3bd1331ca30a")
+	)
+	(pad "3" smd rect
+		(at 0.25 0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "bb8dfffe-331d-4520-8479-7a8b37922eb9")
+	)
+	(pad "4" smd rect
+		(at 0.75 0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "ab26fc6c-c145-45b4-999e-8ed60602335f")
+	)
+	(pad "5" smd rect
+		(at 0.75 -0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "c9ee1034-a877-4b77-b4b6-bd57cf9e6f24")
+	)
+	(pad "6" smd rect
+		(at 0.25 -0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "ef57a3f2-6011-456a-8b49-9ee42822a339")
+	)
+	(pad "7" smd rect
+		(at -0.25 -0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "4d4ea59f-7218-47be-84bb-910b514b23c4")
+	)
+	(pad "8" smd rect
+		(at -0.75 -0.85 90)
+		(size 0.25 0.25)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "b23817c3-b205-413c-8c11-7eb779b5ed7d")
+	)
+	(pad "9" smd rect
+		(at 0 0 90)
+		(size 1.04 1.8)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(uuid "52e37647-7420-4a1a-abed-e9dca8e1fe4c")
+	)
+	(embedded_fonts no)
+	(model "XC6193A103ER-G.stp"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -90 0 0)
+		)
+	)
+)
