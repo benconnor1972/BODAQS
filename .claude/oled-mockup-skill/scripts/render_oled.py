@@ -33,7 +33,7 @@ Config schema
   // CUSTOM: explicit element list
   "type": "custom",
   "elements": [
-    {"text": "IP  192.168.1.132", "row": 0},
+    {"text": "bodaqs-rc3-001.local", "row": 0},
     {"text": "Range start",       "row": 2},
     {"text": "Count  1942",       "row": 3},
     {"text": "Time  13 29 22",    "row": "footer_left"},

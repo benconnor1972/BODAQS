@@ -137,7 +137,7 @@ Example `logger_wifi` source:
   "settle_time_s": 0,
   "logger_wifi": {
     "logger_id": "Prototype E",
-    "base_url": "http://192.168.4.1",
+    "base_url": "http://bodaqs-prototype-e.local",
     "request_timeout_s": 5,
     "download_timeout_s": 60,
     "cleanup_mode": "none"
@@ -371,8 +371,8 @@ Purpose:
 
 Tests:
 
-- AP mode, manual PC connection, address `http://192.168.4.1`.
-- Station mode with manually entered IP.
+- AP mode, manual PC connection, address `http://bodaqs-<logger-id>.local`.
+- Station mode with manually entered `.local` address.
 - Logger not in upload mode.
 - Logger enters upload mode while manager is running.
 - Interrupted download and retry.
@@ -394,20 +394,19 @@ Acceptance:
 
 Status:
 
-- firmware already advertises `_bodaqs-logger._tcp` in station mode
-- firmware already publishes `api`, `logger_id`, `upload_mode`, and `hostname`
-  TXT records
-- firmware already exposes `mdns_discovery` in `/api/v1/device` capabilities
+- firmware advertises `_bodaqs-logger._tcp` in both station and AP mode
+- firmware publishes `api`, `logger_id`, `display_name`, `wifi_mode`,
+  `upload_mode`, and `hostname` TXT records
+- firmware exposes `mdns_discovery` in `/api/v1/device` capabilities
 - agent discovery module implemented with the Python `zeroconf` package
 - manager discovery button implemented for the Add Source flow
 - background acquisition fallback implemented for missing/stale `base_url`
 
 Purpose:
 
-- remove the need for fixed station-mode IP addresses
+- remove the need for fixed IP addresses in either station or AP mode
 - let the manager find the current address for a known logger id
-- keep AP-mode and troublesome-network workflows working through manual
-  address entry
+- keep troublesome-network workflows working through manual address entry
 
 Design:
 
@@ -415,32 +414,33 @@ Design:
 - mDNS answers "where is that logger right now?"
 - `/api/v1/device` remains the authoritative identity check
 - discovered addresses are cached as reachability hints, not trusted identity
-- AP mode keeps using manual/default address, because the PC must explicitly
-  join the logger AP network
+- AP mode also advertises mDNS, so the PC can use `.local` after joining the
+  logger AP network; the `192.168.4.1` fallback remains for Windows without
+  Bonjour
 
 Firmware tasks:
 
-- keep advertising service `_bodaqs-logger._tcp.local.` on port 80 in station
-  mode only
+- keep advertising service `_bodaqs-logger._tcp.local.` on port 80 in both
+  station and AP mode
 - keep hostname stable and DNS-safe, derived from `logger_id`
 - include TXT records:
   - `api=1`
   - `logger_id=<logger id>`
+  - `display_name=<logger name>`
+  - `wifi_mode=<station|access_point>`
   - `upload_mode=true|false`
   - `hostname=<advertised hostname>`
 - restart or refresh mDNS after:
-  - station connection comes online
+  - station connection or AP comes online
   - upload mode enters/exits
   - logger id/name changes
   - Wi-Fi disconnect/reconnect
 - stop mDNS when:
   - Wi-Fi is disabled
   - logging suspends Wi-Fi
-  - AP mode starts
   - sleep/shutdown begins
 - keep `/api/v1/device` and `/api/v1/status` hostname/capability fields in
   sync with the mDNS advertisement
-- document that mDNS is station-mode discovery only
 
 Agent tasks:
 

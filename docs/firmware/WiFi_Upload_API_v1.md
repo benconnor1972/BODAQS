@@ -220,10 +220,10 @@ Example response:
 }
 ```
 
-In station mode, reachable loggers may advertise mDNS service
+In station and AP mode, reachable loggers advertise mDNS service
 `_bodaqs-logger._tcp` on port `80` with TXT records including `api=1`,
-`logger_id`, `upload_mode`, and `hostname`. AP mode does not require mDNS; the
-PC confirms identity through this endpoint after connecting.
+`logger_id`, `display_name`, `wifi_mode`, `upload_mode`, and `hostname`.
+The device is reachable at `bodaqs-<logger_id>.local` in either mode.
 
 ### `GET /api/v1/status`
 
@@ -244,10 +244,14 @@ Example response:
   "wifi_mode": "access_point",
   "network_up": true,
   "ip": "192.168.4.1",
+  "hostname": "bodaqs-prototype-e",
   "session_count": 8,
   "importable_session_count": 8
 }
 ```
+
+The `hostname` field gives the mDNS/Bonjour hostname. The device is reachable
+at `http://<hostname>.local/` in both station and access-point mode.
 
 ### `POST /api/v1/upload-mode/enter`
 
