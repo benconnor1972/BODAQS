@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: bodaqs-history
+Version: 0.1.0
+Summary: Private, repeatable extraction of BODAQS engineering knowledge from conversation archives.
+Requires-Python: >=3.11
+Requires-Dist: PyYAML>=6.0
+Provides-Extra: openai
+Requires-Dist: openai>=1.0; extra == "openai"
+Provides-Extra: test
+Requires-Dist: pytest>=8.0; extra == "test"

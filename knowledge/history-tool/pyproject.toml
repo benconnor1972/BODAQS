@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bodaqs-history"
+version = "0.1.0"
+description = "Private, repeatable extraction of BODAQS engineering knowledge from conversation archives."
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+bodaqs-history = "bodaqs_history.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+where = ["src"]

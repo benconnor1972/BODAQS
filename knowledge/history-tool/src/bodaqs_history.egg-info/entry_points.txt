@@ -1,0 +1,2 @@
+[console_scripts]
+bodaqs-history = bodaqs_history.cli:main

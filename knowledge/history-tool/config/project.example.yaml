@@ -1,0 +1,47 @@
+project:
+  name: BODAQS
+  keywords:
+    - BODAQS
+    - logger
+    - suspension
+    - ESP32
+    - ESP32-S3
+    - SD_MMC
+    - StorageManager
+    - AnalogPotSensor
+    - BMI270
+    - front_shock
+    - rear_shock
+  exclusion_terms: []
+
+sources:
+  - id: chatgpt-main
+    type: chatgpt_zip
+    path: <PRIVATE_ARCHIVE_ROOT>/chatgpt-export-260805.zip
+    label: ChatGPT main
+  - id: codex-workstation
+    type: codex_sessions
+    path: <PRIVATE_ARCHIVE_ROOT>/.codex
+    label: Codex workstation
+  - id: codex-laptop
+    type: codex_sessions
+    path: <PRIVATE_ARCHIVE_ROOT>/codex-laptop-260805
+    label: Codex laptop
+
+repositories:
+  - id: bodaqs
+    path: <BODAQS_REPOSITORY_ROOT>
+
+output:
+  private_work: <PRIVATE_WORK_ROOT>/engineering-history-work
+  corpus: <PRIVATE_WORK_ROOT>/engineering-history
+
+privacy:
+  redact_patterns_file: null
+
+llm:
+  provider: openai
+  model: null
+  reasoning_effort: null # low | medium | high, when supported by the selected model
+  max_input_characters: 60000
+  external_api_allowed: false

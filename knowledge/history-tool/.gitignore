@@ -1,0 +1,5 @@
+# Local configuration contains private source and output paths.
+config/project.local.yaml
+
+# Never stage a local working directory if it is temporarily placed here.
+private-work/

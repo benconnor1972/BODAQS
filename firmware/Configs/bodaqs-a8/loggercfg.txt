@@ -1,17 +1,20 @@
 # global
-logger_name=Prototype E
+logger_name=bodaqs_A8_001
 sample_rate_hz=500
+log_format=bodaqs_compact_binary
+omit_metadata=false
 timestamp_mode=human
-tz=AWST-8 #your timezone, in this format
-ntp_servers=au.pool.ntp.org,pool.ntp.org,time.google.com
-time_check_url=http://worldtimeapi.org/api/timezone/Australia/Perth #your timezone, in this format. This is a fallback
+tz=AWST-8 #This requires a POSIX timezone rule string. These can be found at https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
+ntp_servers=au.pool.ntp.org,pool.ntp.org,time.google.com 
+time_check_url=
 debounce_ms=40
-auto_sleep_idle_ms=900000
-wifi_idle_timeout_ms=300000
+auto_sleep_idle_min=30
+wifi_idle_timeout_min=5
 log_level=default
 
-# bindings - generally don't touch these
-binding_count=8
+# button bindings - generally leave these alone
+
+binding_count=12
 binding0.button=nav_up
 binding0.event=pressed
 binding0.action=menu_nav_up
@@ -28,7 +31,7 @@ binding4.button=nav_enter
 binding4.event=released
 binding4.action=menu_nav_enter
 binding5.button=mark
-binding5.event=pressed
+binding5.event=click
 binding5.action=mark_event
 binding6.button=mark
 binding6.event=double_click
@@ -42,12 +45,21 @@ binding8.action=menu_select
 binding9.button=nav_left
 binding9.event=held
 binding9.action=sleep
+binding10.button=nav_up
+binding10.event=held
+binding10.action=upload_mode_toggle
+binding11.button=nav_down
+binding11.event=held
+binding11.action=web_toggle
 
 # wifi - configure up to 5 wifi networks. Copy the settings block if needed.
 
+wifi_mode=station
 wifi_enabled_default=false
 wifi_auto_time_on_rtc_invalid=true
-wifi_network_count=2 #or the number of networks you have configured below
+wifi_ap_ssid=bodaqs_A8_001 #Change this if you like
+wifi_ap_password=bodaqslogger #Change this if you like
+wifi_network_count=1 #or the number of networks you have configured below
 
 wifi0.ssid= #<your ssid>
 wifi0.password= #<your password>
@@ -58,59 +70,54 @@ wifi0.static_ip=false
 wifi0.ip= #<your static ip address, if you want one>
 wifi0.gateway= #<your gateway.
 wifi0.subnet= #<your subnet mask>
-wifi0.dns1=192.168.1.1
+wifi0.dns1=
 
-wifi1.ssid= #<your next ssid>
-wifi1.password= #<your next password>
-wifi1.min_rssi=-127
-wifi1.hidden=false
-wifi1.bssid=
-wifi1.static_ip=false
-wifi1.ip= #<your next static ip address, if you want one>
-wifi1.gateway= #<your next gateway>
-wifi1.subnet= #<your next subnet mask>
-wifi1.dns1=192.168.1.1
-
-# generally leave these alone
 ui_target=1
 ui_serial_level=3
 ui_oled_level=3
 oled_brightness=200
-oled_idle_dim_ms=30000 # maybe change this if you want the display to stay bright for longer
+oled_idle_dim_ms=30000
 
-# sensors
-#If running more than 2 sensors, copy and paste one of these blocks (incrementing the sensor count). It is easiest to configure sensors through the webserver.
-
+# sensors - generally it is easier to configure these through the web interface
 sensor_count=2
 
 sensor0.type=analog_pot
-sensor0.name=front_shock
+sensor0.name=fork_pot
 sensor0.muted=false
-sensor0.ain=1
+sensor0.ain=0
 sensor0.sensor_zero_count=0
 sensor0.sensor_full_count=4095
 sensor0.sensor_full_travel_mm=203.000000
-sensor0.units_label=mm
-sensor0.include_raw=true
+sensor0.installed_zero_count=186
+
 sensor0.output_mode=1
-sensor0.output_id=identity
+sensor0.include_raw=true
+sensor0.units_label=
+sensor0.end=front
+sensor0.primary_domain=suspension
+sensor0.primary_quantity=disp
 sensor0.__om_changed=false
-sensor0.installed_zero_count=100
 sensor0.__id_changed=false
+sensor0.installed_range=170.000000
 
 sensor1.type=analog_pot
-sensor1.name=rear_shock
+sensor1.name=shock_pot
 sensor1.muted=false
-sensor1.ain=3
+sensor1.ain=1
 sensor1.sensor_zero_count=0
 sensor1.sensor_full_count=4095
 sensor1.sensor_full_travel_mm=78.000000
-sensor1.units_label=mm
-sensor1.include_raw=true
+sensor1.installed_zero_count=0
+
 sensor1.output_mode=1
-sensor1.output_id=identity
+sensor1.include_raw=true
+sensor1.units_label=
+sensor1.end=rear
+sensor1.primary_domain=suspension
+sensor1.primary_quantity=disp
 sensor1.__om_changed=false
-sensor1.installed_zero_count=100
-sensor1.__id_changed=true
+sensor1.__id_changed=false
+sensor1.installed_range=55.000000
+
 
 
