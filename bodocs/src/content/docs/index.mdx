@@ -12,6 +12,12 @@ hero:
     - text: Start building
       link: /logger-build-guide
       icon: right-arrow
+    - text: Try the software
+      link: https://demo.bodaqs.net/
+      icon: external
+    - text: Buy a PCB or kit
+      link: /buy-pcb-or-kit
+      icon: right-arrow
 ---
 
 import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
@@ -21,6 +27,8 @@ import {Aside} from '@astrojs/starlight/components';
 import explodedAssembly from '../../assets/pics/homepage/exploded-assembly.png';
 import softwareMapVideo from '../../assets/pics/homepage/software-map-video.png';
 import analysisResults from '../../assets/pics/homepage/analysis-results.png';
+import onBike from '../../assets/pics/homepage/what-is-bodaqs-on-bike.png';
+import loggerCloseup from '../../assets/pics/homepage/user-guide-logger-closeup.png';
 
 <Lede>
   **BODAQS** is a project focused on making mountain-bike data acquisition and analysis accessible — allowing the curious to explore and learn, and the driven a new tool to chase performance.
@@ -37,6 +45,7 @@ This site is getting a makeover in the run up to publication of the A8 design. I
 
 <CardGrid stagger>
   <Card title="What is BODAQS?" icon="information">
+    <Image class="homepage-card__image" src={onBike} alt="BODAQS logger installed on a mountain bike" />
     Learn what BODAQS is, and the problems it sets out to solve.
     <LinkButton
       href="/what-is-bodaqs"
@@ -84,6 +93,7 @@ This site is getting a makeover in the run up to publication of the A8 design. I
     </LinkButton>
   </Card>
   <Card title="Read the user guide" icon="add-document">
+    <Image class="homepage-card__image" src={loggerCloseup} alt="Close-up of a BODAQS logger installed on a mountain bike" />
     Learn how to set up and use your logger.
     <LinkButton
       href="/user-guide"
