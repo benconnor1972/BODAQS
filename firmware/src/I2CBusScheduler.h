@@ -16,6 +16,10 @@ public:
   virtual bool asyncMuted() const = 0;
   virtual bool asyncAcquire() = 0;
 
+  // Opt-in bound used to admit long, low-priority transfers on a shared bus.
+  // Zero means this client does not participate in admission control.
+  virtual uint32_t asyncMaximumLowPriorityGapUs() const { return 0; }
+
   virtual void asyncSchedulerStarting() {}
   virtual void asyncSchedulerStopped() {}
 };
@@ -30,6 +34,13 @@ namespace I2CBusScheduler {
   void start();
   void stop();
   bool isRunning();
+
+  // True when every participating active client on the bus was serviced
+  // recently enough to tolerate the proposed non-preemptible transfer.
+  bool lowPriorityWindowAvailable(
+      uint8_t busIndex,
+      uint32_t transferDurationUs,
+      uint32_t guardUs = 5000);
 
   void recordRowUse(I2CAsyncClient* client, uint32_t ageUs, bool fresh, bool haveSample);
 }

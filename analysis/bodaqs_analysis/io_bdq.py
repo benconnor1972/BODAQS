@@ -241,6 +241,8 @@ def _storage_format(storage_type: str) -> str:
     normalized = str(storage_type).lower()
     if normalized == "uint16":
         return "<H"
+    if normalized == "int16":
+        return "<h"
     if normalized == "int32":
         return "<i"
     if normalized == "uint32":

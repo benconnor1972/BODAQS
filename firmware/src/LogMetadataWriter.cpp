@@ -476,6 +476,185 @@ void appendDeviceConfig_(String& out, const SensorDeviceConfigDescriptor& cfg) {
   out += F("},\n");
 }
 
+void appendImuRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true) {
+  uint8_t imuCount = 0;
+  const uint8_t sensorCount = SensorManager::count();
+  SensorRuntimeDiagnostics diagnostics;
+  for (uint8_t i = 0; i < sensorCount; ++i) {
+    if (SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) &&
+        diagnostics.present && diagnostics.hasImuSession) {
+      ++imuCount;
+    }
+  }
+
+  appendKey_(out, depth, "imu_runtime_diagnostics");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "sensor_count", imuCount);
+  appendKey_(out, depth + 1, "sensors");
+  out += F("{\n");
+  bool wrote = false;
+  for (uint8_t i = 0; i < sensorCount; ++i) {
+    if (!SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) ||
+        !diagnostics.present || !diagnostics.hasImuSession) {
+      continue;
+    }
+    if (wrote) out += F(",\n");
+    wrote = true;
+    appendIndent_(out, depth + 2);
+    appendJsonString_(out, diagnostics.sensorName);
+    out += F(": {\n");
+    appendKeyUInt64_(out, depth + 3, "drain_calls", diagnostics.imuDrainCalls);
+    appendKeyUInt64_(out, depth + 3, "drain_passes", diagnostics.imuDrainPasses);
+    appendKeyUInt64_(out, depth + 3, "empty_passes", diagnostics.imuEmptyPasses);
+    appendKeyUInt64_(out, depth + 3, "drain_pass_limit_hits", diagnostics.imuDrainPassLimitHits);
+    appendKeyUInt64_(out, depth + 3, "fifo_bytes_read", diagnostics.imuFifoBytesRead);
+    appendKeyUInt64_(out, depth + 3, "fifo_frames_parsed", diagnostics.imuFifoFramesParsed);
+    appendKeyUInt64_(out, depth + 3, "sensor_time_frames", diagnostics.imuSensorTimeFrames);
+    appendKeyUInt64_(out, depth + 3, "missing_sensor_time_batches", diagnostics.imuMissingSensorTimeBatches);
+    appendKeyUInt64_(out, depth + 3, "fifo_skip_control_frames", diagnostics.imuSkipControlFrames);
+    appendKeyUInt64_(out, depth + 3, "fifo_overflow_events", diagnostics.imuFifoOverflowEvents);
+    appendKeyUInt64_(out, depth + 3, "fifo_full_observations", diagnostics.imuFifoFullObservations);
+    appendKeyUInt64_(out, depth + 3, "hardware_skipped_frames", diagnostics.imuHardwareSkippedFrames);
+    appendKeyUInt64_(out, depth + 3, "unpaired_frames", diagnostics.imuUnpairedFrames);
+    appendKeyUInt64_(out, depth + 3, "input_config_frames", diagnostics.imuInputConfigFrames);
+    appendKeyUInt64_(out, depth + 3, "invalid_headers", diagnostics.imuInvalidHeaders);
+    appendKeyUInt64_(out, depth + 3, "partial_frames", diagnostics.imuPartialFrames);
+    appendKeyUInt64_(out, depth + 3, "overread_frames", diagnostics.imuOverreadFrames);
+    appendKeyUInt64_(out, depth + 3, "parser_output_drops", diagnostics.imuParserOutputDrops);
+    appendKeyUInt64_(out, depth + 3, "samples_enqueued", diagnostics.imuSamplesEnqueued);
+    appendKeyUInt64_(out, depth + 3, "samples_emitted", diagnostics.imuSamplesEmitted);
+    appendKeyUInt64_(out, depth + 3, "queue_drops", diagnostics.imuQueueDrops);
+    appendKeyUInt_(out, depth + 3, "queue_capacity", diagnostics.imuQueueCapacity);
+    appendKeyUInt_(out, depth + 3, "queue_high_water", diagnostics.imuQueueHighWater);
+    appendKeyUInt_(out, depth + 3, "final_queue_depth", diagnostics.imuFinalQueueDepth);
+    appendKeyUInt64_(out, depth + 3, "pre_session_queue_discards", diagnostics.imuPreSessionQueueDiscards);
+    appendKeyUInt64_(out, depth + 3, "explicit_queue_discards", diagnostics.imuExplicitQueueDiscards);
+    appendKeyUInt64_(out, depth + 3, "temperature_reads", diagnostics.imuTemperatureReads);
+    appendKeyUInt64_(out, depth + 3, "temperature_read_failures", diagnostics.imuTemperatureReadFailures);
+    appendKeyUInt64_(out, depth + 3, "fifo_flushes", diagnostics.imuFifoFlushes);
+    appendKeyUInt64_(out, depth + 3, "fifo_flush_failures", diagnostics.imuFifoFlushFailures);
+    appendKeyUInt64_(out, depth + 3, "stop_drain_attempts", diagnostics.imuStopDrainAttempts);
+    appendKeyUInt64_(out, depth + 3, "stop_drain_failures", diagnostics.imuStopDrainFailures);
+    appendKeyUInt_(out, depth + 3, "maximum_fifo_bytes_observed", diagnostics.imuMaximumFifoBytesObserved);
+    appendKeyUInt_(out, depth + 3, "maximum_drain_duration_us", diagnostics.imuMaximumDrainDurationUs);
+    appendKeyUInt_(out, depth + 3, "maximum_drain_failure_streak", diagnostics.imuMaximumDrainFailureStreak);
+    appendKeyUInt64_(out, depth + 3, "i2c_operations", diagnostics.imuI2cOperations);
+    appendKeyUInt64_(out, depth + 3, "i2c_failures", diagnostics.imuI2cFailures);
+    appendKeyUInt64_(out, depth + 3, "i2c_recoveries", diagnostics.imuI2cRecoveries);
+    appendKeyUInt_(out, depth + 3, "i2c_maximum_failure_streak", diagnostics.imuI2cMaximumFailureStreak);
+    appendKeyUInt64_(out, depth + 3, "i2c_bus_lock_attempts", diagnostics.imuI2cBusLockAttempts);
+    appendKeyUInt64_(out, depth + 3, "i2c_bus_lock_timeouts", diagnostics.imuI2cBusLockTimeouts);
+    appendKeyUInt64_(out, depth + 3, "i2c_bus_lock_wait_total_us", diagnostics.imuI2cBusLockWaitTotalUs);
+    appendKeyUInt_(out, depth + 3, "i2c_bus_lock_wait_maximum_us", diagnostics.imuI2cBusLockWaitMaximumUs);
+    appendKey_(out, depth + 3, "i2c_failures_by_stage");
+    out += F("{\n");
+    appendKeyUInt_(out, depth + 4, "invalid_argument", diagnostics.imuI2cFailureStageCounts[1]);
+    appendKeyUInt_(out, depth + 4, "bus_unavailable", diagnostics.imuI2cFailureStageCounts[2]);
+    appendKeyUInt_(out, depth + 4, "bus_lock_timeout", diagnostics.imuI2cFailureStageCounts[3]);
+    appendKeyUInt_(out, depth + 4, "register_address", diagnostics.imuI2cFailureStageCounts[4]);
+    appendKeyUInt_(out, depth + 4, "write_payload", diagnostics.imuI2cFailureStageCounts[5]);
+    appendKeyUInt_(out, depth + 4, "end_transmission", diagnostics.imuI2cFailureStageCounts[6]);
+    appendKeyUInt_(out, depth + 4, "request_bytes", diagnostics.imuI2cFailureStageCounts[7]);
+    appendKeyUInt_(out, depth + 4, "read_bytes", diagnostics.imuI2cFailureStageCounts[8], false);
+    appendIndent_(out, depth + 3);
+    out += F("},\n");
+    appendKeyUInt64_(out, depth + 3, "recovery_attempts", diagnostics.imuRecoveryAttempts);
+    appendKeyUInt64_(out, depth + 3, "recovery_successes", diagnostics.imuRecoverySuccesses);
+    appendKeyBool_(out, depth + 3, "counter_saturated", diagnostics.imuCounterSaturated, false);
+    appendIndent_(out, depth + 2);
+    out += F("}");
+  }
+  if (wrote) out += '\n';
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendImuConfig_(String& out, const SensorImuConfigDescriptor& imu) {
+  appendKey_(out, 3, "imu_config");
+  out += F("{\n");
+  appendKeyString_(out, 4, "contract_id", imu.contractId);
+  appendKeyString_(out, 4, "imu_id", imu.imuId);
+  appendKeyString_(out, 4, "location", imu.location);
+  appendKeyUInt_(out, 4, "i2c_bus", imu.busIndex);
+  appendKeyUInt_(out, 4, "i2c_address", imu.address);
+  appendKeyUInt_(out, 4, "i2c_clock_hz", imu.i2cClockHz);
+  appendKeyUInt_(out, 4, "chip_id", imu.chipId);
+  appendKeyBool_(out, 4, "initialization_ok", imu.initializationOk);
+  appendKeyString_(out, 4, "requested_profile", imu.profile);
+  appendKeyString_(out, 4, "driver_revision", imu.driverRevision);
+  appendKeyString_(out, 4, "calibration_ref", imu.calibrationRef);
+  appendKeyUInt_(out, 4, "logger_rate_hz", imu.loggerRateHz);
+  appendKeyUInt_(out, 4, "imu_rate_hz", imu.imuRateHz);
+
+  appendKey_(out, 4, "mount_transform");
+  out += F("{\n");
+  appendKeyString_(out, 5, "body_x", imu.mountAxis[0]);
+  appendKeyString_(out, 5, "body_y", imu.mountAxis[1]);
+  appendKeyString_(out, 5, "body_z", imu.mountAxis[2], false);
+  appendIndent_(out, 4);
+  out += F("},\n");
+
+  appendKey_(out, 4, "effective_config");
+  out += F("{\n");
+  appendKeyBool_(out, 5, "matched", imu.effectiveConfigMatched);
+  appendKeyUInt_(out, 5, "config_file_major", imu.configFileMajor);
+  appendKeyUInt_(out, 5, "config_file_minor", imu.configFileMinor);
+  appendKeyUInt_(out, 5, "accel_odr_hz", 200);
+  appendKeyUInt_(out, 5, "accel_range_g", 16);
+  appendKeyString_(out, 5, "accel_bandwidth", "normal_avg4");
+  appendKeyString_(out, 5, "accel_filter_performance", "performance_optimized");
+  appendKeyUInt_(out, 5, "gyro_odr_hz", 200);
+  appendKeyUInt_(out, 5, "gyro_range_dps", 2000);
+  appendKeyString_(out, 5, "gyro_bandwidth", "normal");
+  appendKeyString_(out, 5, "gyro_noise_performance", "power_optimized");
+  appendKeyString_(out, 5, "gyro_filter_performance", "performance_optimized");
+  appendKeyUInt_(out, 5, "accel_odr_code", imu.accelOdr);
+  appendKeyUInt_(out, 5, "accel_range_code", imu.accelRange);
+  appendKeyUInt_(out, 5, "accel_bandwidth_code", imu.accelBandwidth);
+  appendKeyUInt_(out, 5, "accel_filter_performance_code", imu.accelFilterPerformance);
+  appendKeyUInt_(out, 5, "gyro_odr_code", imu.gyroOdr);
+  appendKeyUInt_(out, 5, "gyro_range_code", imu.gyroRange);
+  appendKeyUInt_(out, 5, "gyro_bandwidth_code", imu.gyroBandwidth);
+  appendKeyUInt_(out, 5, "gyro_noise_performance_code", imu.gyroNoisePerformance);
+  appendKeyUInt_(out, 5, "gyro_filter_performance_code", imu.gyroFilterPerformance, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
+
+  appendKey_(out, 4, "fifo");
+  out += F("{\n");
+  appendKeyString_(out, 5, "mode", "header");
+  appendKeyString_(out, 5, "content", "accel,gyro,sensor_time");
+  appendKeyUInt_(out, 5, "poll_rate_hz", imu.fifoPollRateHz);
+  appendKeyUInt_(out, 5, "watermark", imu.fifoWatermark);
+  appendKeyUInt_(out, 5, "effective_config", imu.fifoConfig, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
+
+  appendKey_(out, 4, "sensor_time");
+  out += F("{\n");
+  appendKeyUInt_(out, 5, "tick_numerator_us", 625);
+  appendKeyUInt_(out, 5, "tick_denominator", 16);
+  appendKeyUInt_(out, 5, "modulus_ticks", 16777216, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
+
+  appendKey_(out, 4, "temperature");
+  out += F("{\n");
+  appendKeyUInt_(out, 5, "observation_rate_hz", imu.temperatureRateHz);
+  appendKeyUInt_(out, 5, "freshness_limit_us", imu.temperatureFreshnessUs);
+  appendKeyString_(out, 5, "sample_policy", "latest_held_value", false);
+  appendIndent_(out, 4);
+  out += F("},\n");
+
+  appendKeyUInt_(out, 4, "startup_bias_capture_s", imu.startupBiasCaptureSeconds);
+  appendKeyString_(out, 4, "row_policy", "sparse_once_sample_valid");
+  appendKeyString_(out, 4, "invalid_placeholder_policy", "zero_except_sample_age_us_nan", false);
+  appendIndent_(out, 3);
+  out += F("},\n");
+}
+
 void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
   appendIndent_(out, 2);
   appendJsonString_(out, s.sensorId);
@@ -497,6 +676,10 @@ void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
 
   if (s.hasDeviceConfig) {
     appendDeviceConfig_(out, s.deviceConfig);
+  }
+
+  if (s.hasImuConfig) {
+    appendImuConfig_(out, s.imuConfig);
   }
 
   if (s.hasCalibration) {
@@ -534,7 +717,17 @@ void appendSignalColumn_(String& out,
   out += F(": {\n");
   appendCsvRefByHeader_(out, 3, c.csvHeader);
   appendKeyString_(out, 3, "class", "signal");
-  appendKeyString_(out, 3, "dtype", c.raw ? "uint32" : "float64");
+  const char* dtype = "float32";
+  switch (c.storageType) {
+    case SensorColumnStorageType::UInt16: dtype = "uint16"; break;
+    case SensorColumnStorageType::Int16: dtype = "int16"; break;
+    case SensorColumnStorageType::Int32: dtype = "int32"; break;
+    case SensorColumnStorageType::UInt32: dtype = "uint32"; break;
+    case SensorColumnStorageType::Float32: dtype = "float32"; break;
+    case SensorColumnStorageType::Automatic:
+    default: dtype = c.raw ? "uint32" : "float64"; break;
+  }
+  appendKeyString_(out, 3, "dtype", dtype);
   appendKeyString_(out, 3, "stream", "primary");
   appendKeyString_(out, 3, "sensor", c.sensorName);
   if (hasText_(c.end)) appendKeyString_(out, 3, "end", c.end);
@@ -545,6 +738,7 @@ void appendSignalColumn_(String& out,
   if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);
   if (hasText_(c.processingRole)) appendKeyString_(out, 3, "processing_role", c.processingRole);
   if (c.semanticSelectionExcluded) appendKeyBool_(out, 3, "semantic_selection_excluded", true);
+  if (c.allowNaN) appendKeyBool_(out, 3, "nan_allowed", true);
   if (hasText_(c.calibrationId)) appendKeyString_(out, 3, "calibration_ref", c.sensorName);
 
   if (hasText_(c.transformChain)) {
@@ -578,12 +772,23 @@ void appendDiagnosticColumn_(String& out,
   out += F(": {\n");
   appendCsvRefByHeader_(out, 3, c.csvHeader);
   appendKeyString_(out, 3, "class", "diagnostic");
-  appendKeyString_(out, 3, "dtype", "uint32");
+  const char* dtype = "uint32";
+  switch (c.storageType) {
+    case SensorColumnStorageType::UInt16: dtype = "uint16"; break;
+    case SensorColumnStorageType::Int16: dtype = "int16"; break;
+    case SensorColumnStorageType::Int32: dtype = "int32"; break;
+    case SensorColumnStorageType::UInt32: dtype = "uint32"; break;
+    case SensorColumnStorageType::Float32: dtype = "float32"; break;
+    case SensorColumnStorageType::Automatic:
+    default: break;
+  }
+  appendKeyString_(out, 3, "dtype", dtype);
   appendKeyString_(out, 3, "stream", "primary");
   appendKeyString_(out, 3, "sensor", c.sensorName);
   appendKeyString_(out, 3, "metric", c.quantity);
   appendKeyString_(out, 3, "unit", c.unit[0] ? c.unit : "");
   if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);
+  if (c.allowNaN) appendKeyBool_(out, 3, "nan_allowed", true);
   if (hasText_(c.notes)) appendKeyString_(out, 3, "notes", c.notes, false);
   else appendKeyBool_(out, 3, "required", true, false);
 
@@ -803,7 +1008,8 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
     appendJsonString_(out, "syn_bike_rear_raw_not_available");
   }
   out += F("],\n");
-  appendRunStats_(out, 2, ctx, false);
+  appendRunStats_(out, 2, ctx);
+  appendImuRuntimeDiagnostics_(out, 2, false);
   appendIndent_(out, 1);
   out += F("},\n");
 
@@ -959,7 +1165,8 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   out += F("{\n");
   appendIndent_(out, 2);
   out += F("\"warnings\": [],\n");
-  appendRunStats_(out, 2, ctx, false);
+  appendRunStats_(out, 2, ctx);
+  appendImuRuntimeDiagnostics_(out, 2, false);
   appendIndent_(out, 1);
   out += F("},\n");
 

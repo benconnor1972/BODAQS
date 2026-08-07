@@ -24,6 +24,18 @@ enum class SensorSampleMode : uint8_t {
   Asynchronous = 1,
 };
 
+// Explicit BDQ representation for a sensor column. Automatic preserves the
+// legacy inference from raw/source metadata so existing sensors remain
+// byte-for-byte compatible.
+enum class SensorColumnStorageType : uint8_t {
+  Automatic = 0,
+  UInt16,
+  Int16,
+  Int32,
+  UInt32,
+  Float32,
+};
+
 enum class SensorGpsState : uint8_t {
   Error = 0,
   Acquiring,
@@ -84,6 +96,7 @@ struct SensorColumnDescriptor {
   char transformChain[64] = {0};
   char notes[64] = {0};
   OutputMode outputMode = OutputMode::RAW;
+  SensorColumnStorageType storageType = SensorColumnStorageType::Automatic;
   bool required = true;
   bool primary = false;
   bool raw = false;
@@ -91,6 +104,7 @@ struct SensorColumnDescriptor {
   bool calibrated = false;
   bool transformed = false;
   bool semanticSelectionExcluded = false;
+  bool allowNaN = false;
 };
 
 struct SensorDeviceConfigDescriptor {
@@ -120,6 +134,41 @@ struct SensorDeviceConfigDescriptor {
   bool confWatchdog = false;
 };
 
+struct SensorImuConfigDescriptor {
+  char contractId[40] = {0};
+  char imuId[32] = {0};
+  char location[24] = {0};
+  char profile[24] = {0};
+  char driverRevision[48] = {0};
+  char calibrationRef[32] = {0};
+  char mountAxis[3][3] = {{0}};
+  uint8_t busIndex = 0;
+  uint8_t address = 0;
+  uint32_t i2cClockHz = 0;
+  uint8_t chipId = 0;
+  uint8_t configFileMajor = 0;
+  uint8_t configFileMinor = 0;
+  uint16_t loggerRateHz = 0;
+  uint16_t imuRateHz = 0;
+  uint16_t fifoPollRateHz = 0;
+  uint16_t temperatureRateHz = 0;
+  uint32_t temperatureFreshnessUs = 0;
+  uint16_t fifoConfig = 0;
+  uint16_t fifoWatermark = 0;
+  uint8_t accelOdr = 0;
+  uint8_t accelRange = 0;
+  uint8_t accelBandwidth = 0;
+  uint8_t accelFilterPerformance = 0;
+  uint8_t gyroOdr = 0;
+  uint8_t gyroRange = 0;
+  uint8_t gyroBandwidth = 0;
+  uint8_t gyroNoisePerformance = 0;
+  uint8_t gyroFilterPerformance = 0;
+  uint16_t startupBiasCaptureSeconds = 0;
+  bool initializationOk = false;
+  bool effectiveConfigMatched = false;
+};
+
 struct SensorMetadataDescriptor {
   char sensorId[16] = {0};
   char name[32] = {0};
@@ -142,6 +191,8 @@ struct SensorMetadataDescriptor {
   bool assumeTurn0AtStart = false;
   bool hasDeviceConfig = false;
   SensorDeviceConfigDescriptor deviceConfig;
+  bool hasImuConfig = false;
+  SensorImuConfigDescriptor imuConfig;
 };
 
 struct LoggerConfig;
@@ -158,6 +209,13 @@ public:
   virtual void applyConfig(const LoggerConfig&) {}
   virtual void onLoggingStart() {}
   virtual void onLoggingStop() {}
+  virtual bool validateLoggingStart(
+      const LoggerConfig&,
+      uint16_t,
+      char*,
+      size_t) const { return true; }
+  virtual bool startLoggingSession(char*, size_t) { onLoggingStart(); return true; }
+  virtual size_t pendingLoggingRows() const { return 0; }
 
   // ----- Runtime muting -----
   virtual bool muted() const = 0;

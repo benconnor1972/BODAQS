@@ -9,6 +9,8 @@
 #include "BoardSelect.h" 
 #include "AnalogInputManager.h"
 #include "I2CBusScheduler.h"
+#include "BMI270ImuSensor.h"
+#include "BMI270Profile.h"
 #include <cstring>
 #include "BoardSelect.h"
 #include "DebugLog.h"
@@ -350,18 +352,140 @@ void loop() {
   for (auto* s : s_list) if (s) s->loop();
 }
 
-void onLoggingStart() {
+bool validateLoggingStart(
+    const LoggerConfig& cfg,
+    uint16_t effectiveRateHz,
+    char* error,
+    size_t errorCapacity) {
+  if (error && errorCapacity) error[0] = '\0';
+  for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
+    SensorSpec current;
+    if (!cfg.getSensorSpec(i, current)) continue;
+    if (current.type == SensorType::Unknown) {
+      if (error && errorCapacity) {
+        snprintf(error, errorCapacity, "sensor%u has an unknown type", (unsigned)i);
+      }
+      return false;
+    }
+
+    for (uint8_t previousIndex = 0; previousIndex < i; ++previousIndex) {
+      SensorSpec previous;
+      if (!cfg.getSensorSpec(previousIndex, previous)) continue;
+      if (current.name[0] && strcasecmp(current.name, previous.name) == 0) {
+        if (error && errorCapacity) {
+          snprintf(error, errorCapacity, "duplicate sensor name '%s'", current.name);
+        }
+        return false;
+      }
+    }
+
+    if (current.type != SensorType::BMI270ImuI2C || current.mutedDefault) continue;
+    if (!BMI270ImuSensor::validateSpec(current, error, errorCapacity)) return false;
+    bool liveBmi270Found = false;
+    for (auto* sensor : s_list) {
+      if (sensor && strcasecmp(sensor->name(), current.name) == 0 &&
+          strcmp(sensor->label(), "BMI270 IMU (I2C)") == 0) {
+        liveBmi270Found = true;
+        break;
+      }
+    }
+    if (!liveBmi270Found) {
+      if (error && errorCapacity) {
+        snprintf(error, errorCapacity, "%s BMI270 is not active; restart required", current.name);
+      }
+      return false;
+    }
+
+    String currentImuId;
+    if (!current.params.get("imu_id", currentImuId) || !currentImuId.length()) {
+      currentImuId = String(current.name) + F("_001");
+    }
+    for (uint8_t previousIndex = 0; previousIndex < i; ++previousIndex) {
+      SensorSpec previous;
+      if (!cfg.getSensorSpec(previousIndex, previous) ||
+          previous.type != SensorType::BMI270ImuI2C || previous.mutedDefault) {
+        continue;
+      }
+      String previousImuId;
+      if (!previous.params.get("imu_id", previousImuId) || !previousImuId.length()) {
+        previousImuId = String(previous.name) + F("_001");
+      }
+      if (currentImuId.equalsIgnoreCase(previousImuId)) {
+        if (error && errorCapacity) {
+          snprintf(error, errorCapacity, "duplicate imu_id '%s'", currentImuId.c_str());
+        }
+        return false;
+      }
+
+      long currentBus = 1;
+      long currentAddress = BMI270Profile::kPrimaryAddress;
+      long previousBus = 1;
+      long previousAddress = BMI270Profile::kPrimaryAddress;
+      (void)current.params.getInt("i2c_bus", currentBus);
+      (void)current.params.getInt("i2c_addr", currentAddress);
+      (void)previous.params.getInt("i2c_bus", previousBus);
+      (void)previous.params.getInt("i2c_addr", previousAddress);
+      if (currentBus == previousBus && currentAddress == previousAddress) {
+        if (error && errorCapacity) {
+          snprintf(error, errorCapacity,
+                   "BMI270 sensors '%s' and '%s' share I2C bus/address",
+                   current.name, previous.name);
+        }
+        return false;
+      }
+    }
+  }
+
+  uint8_t liveBmi270Count = 0;
+  for (auto* sensor : s_list) {
+    if (sensor && !sensor->muted() && strcmp(sensor->label(), "BMI270 IMU (I2C)") == 0) {
+      ++liveBmi270Count;
+    }
+  }
+  if (liveBmi270Count > 1) {
+    if (error && errorCapacity) {
+      snprintf(error, errorCapacity, "the MVP supports one active BMI270 IMU");
+    }
+    return false;
+  }
+
+  for (auto* sensor : s_list) {
+    if (!sensor || sensor->muted()) continue;
+    if (!sensor->validateLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
+  }
+  return true;
+}
+
+bool onLoggingStart(char* error, size_t errorCapacity) {
 #if BODAQS_TIMING_INSTRUMENTATION
   resetTimingStats_();
   I2CBusScheduler::resetTimingStats();
 #endif
-  for (auto* s : s_list) if (s) s->onLoggingStart();
+  if (error && errorCapacity) error[0] = '\0';
+  for (auto* s : s_list) {
+    if (!s) continue;
+    if (!s->startLoggingSession(error, errorCapacity)) {
+      for (auto* started : s_list) if (started) started->onLoggingStop();
+      return false;
+    }
+  }
   I2CBusScheduler::start();
+  return true;
 }
 
 void onLoggingStop() {
   I2CBusScheduler::stop();
   for (auto* s : s_list) if (s) s->onLoggingStop();
+}
+
+size_t pendingLoggingRows() {
+  size_t pending = 0;
+  for (auto* sensor : s_list) {
+    if (!sensor || sensor->muted()) continue;
+    const size_t sensorPending = sensor->pendingLoggingRows();
+    if (sensorPending > pending) pending = sensorPending;
+  }
+  return pending;
 }
 
 uint8_t count() {

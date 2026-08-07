@@ -1,0 +1,9 @@
+[mcp_servers.azure-devops]
+command = "npx"
+args = ["-y", "@azure-devops/mcp", "bodaqs", "--authentication", "pat", "-d", "core", "work", "work-items"]
+env_vars = ["PERSONAL_ACCESS_TOKEN"]
+default_tools_approval_mode = "writes"
+
+[mcp_servers.azure-devops.env]
+ado_mcp_project = "BODAQS"
+ado_mcp_team = "BODAQS Team"

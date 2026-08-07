@@ -14,7 +14,7 @@ CXXFLAGS = -std=gnu++2a -I stubs -I ../src -Wall -Wno-unused
 CXXFLAGS += '-DBODAQS_FW_VERSION="0.4.1"' '-DBODAQS_FW_NAME="BODAQS"'
 
 # Production source files to compile (extend as more files are tested)
-PROD_SRCS = ../src/HtmlUtil.cpp ../src/Routes_Static.cpp
+PROD_SRCS = ../src/HtmlUtil.cpp ../src/Routes_Static.cpp ../src/BMI270FifoParser.cpp
 
 # Stub source files
 STUB_SRCS = stubs/mocks.cpp stubs/HttpFileSender_stub.cpp

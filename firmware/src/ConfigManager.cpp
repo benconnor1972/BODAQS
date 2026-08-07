@@ -107,7 +107,7 @@ namespace {
   }
 
   static SensorType strToSensorType(const char* v) {
-    if (!v) return SensorType::AnalogPot;
+    if (!v) return SensorType::Unknown;
     if (!strcasecmp(v, "analog_pot") || !strcasecmp(v, "pot")) return SensorType::AnalogPot;
     if (!strcasecmp(v, "as5600_string_pot_analog") || !strcasecmp(v, "as5600_pot_analog")) {
       return SensorType::AS5600StringPotAnalog;
@@ -127,7 +127,8 @@ namespace {
         !strcasecmp(v, "gps_uart") || !strcasecmp(v, "gps")) {
       return SensorType::DANF10NGps;
     }
-    return SensorType::AnalogPot;
+    if (!strcasecmp(v, "bmi270_imu_i2c")) return SensorType::BMI270ImuI2C;
+    return SensorType::Unknown;
   }
 
   // Convert a SensorType to a config-safe key like "analog_pot"

@@ -22,13 +22,17 @@ enum class SensorRuntimeFailureStage : uint8_t {
   RequestBytes = 5,
   ReadByte = 6,
   WriteRegister = 7,
+  InvalidArgument = 8,
+  WritePayload = 9,
+  EndTransmission = 10,
 };
 
 struct SensorRuntimeFailure {
   SensorRuntimeFailureStage stage = SensorRuntimeFailureStage::None;
   int16_t resultCode = 0;
-  uint8_t expectedBytes = 0;
-  uint8_t receivedBytes = 0;
+  uint8_t registerAddress = 0;
+  uint16_t expectedBytes = 0;
+  uint16_t receivedBytes = 0;
 };
 
 struct SensorRuntimeEvent {
@@ -81,4 +85,53 @@ struct SensorRuntimeDiagnostics {
   uint32_t eventsTotal = 0;
   uint32_t eventsDropped = 0;
   SensorRuntimeEvent events[kMaxEvents];
+
+  bool hasImuSession = false;
+  uint64_t imuDrainCalls = 0;
+  uint64_t imuDrainPasses = 0;
+  uint64_t imuEmptyPasses = 0;
+  uint64_t imuDrainPassLimitHits = 0;
+  uint64_t imuFifoBytesRead = 0;
+  uint64_t imuFifoFramesParsed = 0;
+  uint64_t imuSensorTimeFrames = 0;
+  uint64_t imuMissingSensorTimeBatches = 0;
+  uint64_t imuSkipControlFrames = 0;
+  uint64_t imuFifoOverflowEvents = 0;
+  uint64_t imuFifoFullObservations = 0;
+  uint64_t imuHardwareSkippedFrames = 0;
+  uint64_t imuUnpairedFrames = 0;
+  uint64_t imuInputConfigFrames = 0;
+  uint64_t imuInvalidHeaders = 0;
+  uint64_t imuPartialFrames = 0;
+  uint64_t imuOverreadFrames = 0;
+  uint64_t imuParserOutputDrops = 0;
+  uint64_t imuSamplesEnqueued = 0;
+  uint64_t imuSamplesEmitted = 0;
+  uint64_t imuQueueDrops = 0;
+  uint64_t imuPreSessionQueueDiscards = 0;
+  uint64_t imuExplicitQueueDiscards = 0;
+  uint64_t imuTemperatureReads = 0;
+  uint64_t imuTemperatureReadFailures = 0;
+  uint64_t imuFifoFlushes = 0;
+  uint64_t imuFifoFlushFailures = 0;
+  uint64_t imuStopDrainAttempts = 0;
+  uint64_t imuStopDrainFailures = 0;
+  uint64_t imuI2cOperations = 0;
+  uint64_t imuI2cFailures = 0;
+  uint64_t imuI2cRecoveries = 0;
+  uint64_t imuI2cBusLockAttempts = 0;
+  uint64_t imuI2cBusLockTimeouts = 0;
+  uint64_t imuI2cBusLockWaitTotalUs = 0;
+  uint32_t imuI2cFailureStageCounts[9] {};
+  uint64_t imuRecoveryAttempts = 0;
+  uint64_t imuRecoverySuccesses = 0;
+  uint16_t imuQueueCapacity = 0;
+  uint16_t imuQueueHighWater = 0;
+  uint16_t imuFinalQueueDepth = 0;
+  uint16_t imuMaximumFifoBytesObserved = 0;
+  uint32_t imuMaximumDrainDurationUs = 0;
+  uint32_t imuMaximumDrainFailureStreak = 0;
+  uint32_t imuI2cMaximumFailureStreak = 0;
+  uint32_t imuI2cBusLockWaitMaximumUs = 0;
+  bool imuCounterSaturated = false;
 };

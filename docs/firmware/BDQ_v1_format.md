@@ -35,6 +35,7 @@ All numeric fields are little-endian.
 | Type | Size | Notes |
 |---|---:|---|
 | `uint16` | 2 | Unsigned 16-bit integer |
+| `int16` | 2 | Signed two's-complement 16-bit integer |
 | `uint32` | 4 | Unsigned 32-bit integer |
 | `uint64` | 8 | Unsigned 64-bit integer |
 | `int32` | 4 | Signed two's-complement 32-bit integer |
@@ -265,7 +266,14 @@ Schema validation:
 6. Each decodable channel must have `field`, `storage_type`, and `byte_offset`.
 7. `byte_offset + sizeof(storage_type)` must be within `frame_size_bytes`.
 
-Current firmware caps emitted sensor columns at 32. Parsers should not rely on
+Channel objects may also declare `"nan_allowed": true`. This is currently used
+for the BMI270 sparse-row `sample_age_us` channel: a quiet logger row has no new
+native IMU sample, so its contractual age placeholder is NaN. The writer
+preserves that NaN without setting the frame-level `sensor_err` bit. A NaN in a
+channel that does not opt in, or an infinity in any channel, remains a sensor
+value error.
+
+Current firmware caps emitted sensor columns at 64. Parsers should not rely on
 that cap; they should trust the schema and frame size.
 
 ## 9. Storage Types In Frames
@@ -275,15 +283,24 @@ Supported `storage_type` values in v1:
 | `storage_type` | Size | Decode as | Current writer usage |
 |---|---:|---|---|
 | `uint16` | 2 | Little-endian unsigned integer | Wrapped/native raw count columns and `flags` |
+| `int16` | 2 | Little-endian signed integer | Explicit signed raw columns such as BMI270 axes |
 | `int32` | 4 | Little-endian signed integer | Unwrapped raw count columns |
-| `uint32` | 4 | Little-endian unsigned integer | `sample_id` |
+| `uint32` | 4 | Little-endian unsigned integer | `sample_id` and explicit 24-bit timing/sequence columns |
 | `float32` | 4 | Little-endian IEEE-754 binary32 | Calibrated/engineered values |
 
-Current firmware chooses storage type from each emitted sensor column:
+Each emitted sensor column may explicitly request `int16`, `uint16`, `int32`,
+`uint32`, or `float32`. Existing columns default to `Automatic`, which preserves
+the legacy selection:
 
 - raw unwrapped count columns: `int32`
 - other raw/native count columns: `uint16`
 - calibrated or transformed columns: `float32`
+
+Sensor values currently pass through a `float32` row buffer before BDQ packing.
+Integer-valued sensor columns are therefore guaranteed bit-exact only through
+24 significant bits. The BMI270 contract uses signed 16-bit axes and modulo
+2^24 sensor-time/sequence values for this reason. `sample_id` is written
+directly as `uint32` and is not subject to the sensor-row limitation.
 
 If the writer encounters NaN, infinity, range overflow, or a missing emitted
 value while packing a frame, it sets `SAMPLE_FLAG_SENSOR_ERR` in that frame.
@@ -527,6 +544,7 @@ Storage-type decode map:
 ```python
 STORAGE_TYPES = {
     "uint16": ("<H", 2),
+    "int16": ("<h", 2),
     "int32": ("<i", 4),
     "uint32": ("<I", 4),
     "float32": ("<f", 4),

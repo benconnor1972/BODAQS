@@ -13,6 +13,10 @@ namespace {
   TwoWire* s_buses[board::BOARD_MAX_I2C_BUSES] = { &Wire, &s_wire1 };
   const board::I2CProfile* s_profiles[board::BOARD_MAX_I2C_BUSES] = { nullptr, nullptr };
   bool s_available[board::BOARD_MAX_I2C_BUSES] = { false, false };
+  size_t s_bufferCapacity[board::BOARD_MAX_I2C_BUSES] = {
+    I2C_BUFFER_LENGTH,
+    I2C_BUFFER_LENGTH
+  };
 #if defined(ESP32)
   SemaphoreHandle_t s_mutexes[board::BOARD_MAX_I2C_BUSES] = { nullptr, nullptr };
 #endif
@@ -86,6 +90,34 @@ TwoWire* I2CManager::bus(uint8_t busIndex) {
 const board::I2CProfile* I2CManager::profile(uint8_t busIndex) {
   if (busIndex >= board::BOARD_MAX_I2C_BUSES) return nullptr;
   return s_profiles[busIndex];
+}
+
+bool I2CManager::ensureBufferCapacity(uint8_t busIndex, size_t bytes) {
+  if (busIndex >= board::BOARD_MAX_I2C_BUSES || !s_available[busIndex]) return false;
+  if (bytes <= s_bufferCapacity[busIndex]) return true;
+  TwoWire* wire = s_buses[busIndex];
+  if (!wire) return false;
+  const size_t allocated = wire->setBufferSize(bytes);
+  if (allocated < bytes) {
+    I2C_LOGW("bus%u buffer allocation failed: requested=%u allocated=%u\n",
+             (unsigned)busIndex,
+             (unsigned)bytes,
+             (unsigned)allocated);
+    return false;
+  }
+  s_bufferCapacity[busIndex] = allocated;
+  I2C_LOGI("bus%u buffer capacity=%u bytes\n",
+           (unsigned)busIndex,
+           (unsigned)allocated);
+  return true;
+}
+
+bool I2CManager::setTransactionTimeout(uint8_t busIndex, uint16_t timeoutMs) {
+  if (busIndex >= board::BOARD_MAX_I2C_BUSES || !s_available[busIndex]) return false;
+  TwoWire* wire = s_buses[busIndex];
+  if (!wire) return false;
+  wire->setTimeOut(timeoutMs);
+  return true;
 }
 
 bool I2CManager::lock(TwoWire* wire, uint32_t timeoutMs) {

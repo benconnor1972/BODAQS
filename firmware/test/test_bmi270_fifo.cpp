@@ -1,0 +1,240 @@
+#include <cstdio>
+
+#include "BMI270FifoParser.h"
+#include "BMI270FifoReadPlan.h"
+#include "BMI270ImuTiming.h"
+#include "FixedSpscQueue.h"
+#include "I2CLowPriorityWindow.h"
+
+namespace {
+
+void putI16_(uint8_t* destination, int16_t value) {
+    const uint16_t raw = static_cast<uint16_t>(value);
+    destination[0] = static_cast<uint8_t>(raw & 0xFFu);
+    destination[1] = static_cast<uint8_t>(raw >> 8);
+}
+
+void putCombined_(
+    uint8_t* destination,
+    int16_t gx,
+    int16_t gy,
+    int16_t gz,
+    int16_t ax,
+    int16_t ay,
+    int16_t az) {
+    destination[0] = 0x8C;
+    putI16_(&destination[1], gx);
+    putI16_(&destination[3], gy);
+    putI16_(&destination[5], gz);
+    putI16_(&destination[7], ax);
+    putI16_(&destination[9], ay);
+    putI16_(&destination[11], az);
+}
+
+} // namespace
+
+int runBMI270FifoTests() {
+    int passed = 0;
+    int failed = 0;
+
+    auto check = [&](bool condition, const char* description) {
+        if (condition) {
+            ++passed;
+        } else {
+            printf("    FAIL: test_bmi270_fifo: %s\n", description);
+            ++failed;
+        }
+    };
+
+    {
+        uint8_t data[17] {};
+        putCombined_(data, -1, 2, -32768, 32767, -2, 3);
+        data[13] = 0x44;
+        data[14] = 0x56;
+        data[15] = 0x34;
+        data[16] = 0x12;
+        BMI270FifoParsedSample output[2] {};
+        const BMI270FifoParseResult result =
+            BMI270FifoParser::parseHeaderMode(data, sizeof(data), output, 2);
+
+        check(result.samplesWritten == 1, "combined frame parsed once");
+        check(result.sampleFrames == 1, "combined frame counted once");
+        check(output[0].gyroX == -1 && output[0].gyroY == 2 && output[0].gyroZ == -32768,
+              "gyro axes preserve signed little-endian values");
+        check(output[0].accelX == 32767 && output[0].accelY == -2 && output[0].accelZ == 3,
+              "accel axes preserve signed little-endian values");
+        check(result.sensorTimePresent && result.sensorTime == 0x123456,
+              "24-bit sensor-time frame parsed");
+        check(result.sensorTimeAnchorByteOffset == 13,
+              "sensor-time capture byte position is retained for host correlation");
+    }
+
+    {
+        uint8_t data[15] { 0x40, 0x02 };
+        putCombined_(&data[2], 1, 2, 3, 4, 5, 6);
+        BMI270FifoParsedSample output[1] {};
+        const BMI270FifoParseResult result =
+            BMI270FifoParser::parseHeaderMode(data, sizeof(data), output, 1);
+
+        check(result.skippedFrames == 2 && result.skipControlFrames == 1,
+              "FIFO skip control frame counted");
+        check(output[0].skippedFramesBefore == 2,
+              "hardware loss attaches to the following sample");
+        check((output[0].statusBefore & BMI270ImuStatus::kFifoDiscontinuityBefore) != 0,
+              "following sample carries FIFO discontinuity");
+    }
+
+    {
+        uint8_t data[20] { 0x84, 1, 0, 2, 0, 3, 0 };
+        putCombined_(&data[7], 4, 5, 6, 7, 8, 9);
+        BMI270FifoParsedSample output[1] {};
+        const BMI270FifoParseResult result =
+            BMI270FifoParser::parseHeaderMode(data, sizeof(data), output, 1);
+
+        check(result.unpairedFrames == 1, "unpaired accelerometer frame counted");
+        check((output[0].statusBefore & BMI270ImuStatus::kTimingDegraded) != 0,
+              "unpaired frame degrades the following sample");
+    }
+
+    {
+        const uint8_t partial[] = { 0x8C, 1, 2, 3 };
+        BMI270FifoParsedSample output[1] {};
+        const BMI270FifoParseResult result =
+            BMI270FifoParser::parseHeaderMode(partial, sizeof(partial), output, 1);
+        check(result.partialFrames == 1 && result.samplesWritten == 0,
+              "partial combined frame is rejected and counted");
+        check((result.pendingStatus & BMI270ImuStatus::kFifoDiscontinuityBefore) != 0,
+              "partial frame marks a future discontinuity");
+    }
+
+    {
+        const uint8_t controls[] = { 0x48, 1, 2, 3, 4, 0x7C };
+        BMI270FifoParsedSample output[1] {};
+        const BMI270FifoParseResult result =
+            BMI270FifoParser::parseHeaderMode(controls, sizeof(controls), output, 1);
+        check(result.inputConfigFrames == 1 && result.invalidHeaders == 1,
+              "input-configuration and invalid headers are counted separately");
+        check((result.pendingStatus & BMI270ImuStatus::kTimingDegraded) != 0,
+              "unexpected control stream degrades future timing");
+
+        const uint8_t overread[] = { 0x80, 0, 0, 0 };
+        const BMI270FifoParseResult overreadResult =
+            BMI270FifoParser::parseHeaderMode(overread, sizeof(overread), output, 1);
+        check(overreadResult.overreadSeen && overreadResult.invalidHeaders == 0,
+              "normal FIFO over-read marker terminates parsing without an error");
+    }
+
+    {
+        uint8_t data[26] {};
+        putCombined_(data, 1, 2, 3, 4, 5, 6);
+        putCombined_(&data[13], 7, 8, 9, 10, 11, 12);
+        BMI270FifoParsedSample ordered[2] {};
+        const BMI270FifoParseResult orderedResult =
+            BMI270FifoParser::parseHeaderMode(data, sizeof(data), ordered, 2);
+        check(orderedResult.samplesWritten == 2 &&
+              ordered[0].gyroX == 1 && ordered[1].gyroX == 7 &&
+              ordered[0].accelX == 4 && ordered[1].accelX == 10,
+              "multi-frame batch preserves sample and axis order");
+
+        BMI270FifoParsedSample output[1] {};
+        const BMI270FifoParseResult result =
+            BMI270FifoParser::parseHeaderMode(data, sizeof(data), output, 1);
+        check(result.sampleFrames == 2 && result.outputDrops == 1,
+              "bounded parser output drops only the overflow suffix");
+        check((result.pendingStatus & BMI270ImuStatus::kQueueDropBefore) != 0,
+              "parser overflow marks the next retained sample");
+    }
+
+    {
+        BMI270FifoParsedSample parsed[2] {};
+        parsed[1].skippedFramesBefore = 1;
+        bool havePrevious = false;
+        uint32_t previous = 0;
+        const bool assigned = BMI270FifoParser::assignSensorTimes200Hz(
+            parsed, 2, true, 0x0000C5, havePrevious, previous);
+
+        check(assigned && parsed[1].sensorTime == 0x000080,
+              "last sample is aligned to the 200 Hz sensor-time grid");
+        check(parsed[0].sensorTime == 0xFFFF80,
+              "sensor time backfill accounts for skips and 24-bit wrap");
+        check(havePrevious && previous == 0x000080,
+              "sensor-time continuation state updated");
+        check((parsed[0].statusBefore & BMI270ImuStatus::kSensorTimeEstimated) != 0,
+              "backfilled sensor time is explicitly estimated");
+
+        BMI270FifoParsedSample continuedParsed[1] {};
+        previous = 0xFFFFC0;
+        havePrevious = true;
+        BMI270FifoParser::assignSensorTimes200Hz(
+            continuedParsed, 1, false, 0, havePrevious, previous);
+        check(continuedParsed[0].sensorTime == 0x000040,
+              "missing-anchor continuation wraps the native clock explicitly");
+        check((continuedParsed[0].statusBefore & BMI270ImuStatus::kTimingDegraded) != 0,
+              "missing sensor-time anchor degrades timing confidence");
+
+        BMI270FifoParsedSample unanchored[1] {};
+        previous = 0;
+        havePrevious = false;
+        const bool unanchoredAssigned = BMI270FifoParser::assignSensorTimes200Hz(
+            unanchored, 1, false, 0, havePrevious, previous);
+        check(!unanchoredAssigned && unanchored[0].sensorTime == 0,
+              "an initial batch without sensor time remains explicitly unanchored");
+
+        BMI270FifoParsedSample discontinuous[1] {};
+        previous = 0x000080;
+        havePrevious = true;
+        BMI270FifoParser::assignSensorTimes200Hz(
+            discontinuous, 1, true, 0x000285, havePrevious, previous);
+        check((discontinuous[0].statusBefore &
+               BMI270ImuStatus::kFifoDiscontinuityBefore) != 0,
+              "inconsistent consecutive anchors mark a discontinuity");
+    }
+
+    {
+        check(BMI270FifoReadPlan::bytesToRead(13) == 43,
+              "small FIFO burst includes in-flight frames and sensor time");
+        check(BMI270FifoReadPlan::bytesToRead(2048) == 2221,
+              "full FIFO burst remains within the configured Wire buffer");
+        check(BMI270FifoReadPlan::bytesToRead(0) == 0 &&
+              BMI270FifoReadPlan::bytesToRead(2049) == 0,
+              "FIFO read planning rejects empty and invalid lengths");
+
+        const uint64_t frameHostUs = BMI270ImuTiming::interpolateTransferTimeUs(
+            1000, 2000, 75, 100);
+        check(frameHostUs == 1750,
+              "sensor-time host anchor is interpolated at its FIFO byte position");
+        uint64_t sampleHostUs = 0;
+        check(BMI270ImuTiming::estimateHostSampleTimeUs(
+                  0x0000C5, 0x000080, 100000, sampleHostUs) &&
+              sampleHostUs == 97305,
+              "raw sensor-time phase maps a gridded sample into host time");
+    }
+
+    {
+        check(I2CLowPriorityWindow::fits(5000, 30000, 5000, 50000),
+              "OLED transfer fits immediately after FIFO service");
+        check(!I2CLowPriorityWindow::fits(16000, 30000, 5000, 50000),
+              "low-priority transfer is deferred when FIFO service headroom is insufficient");
+        check(!I2CLowPriorityWindow::fits(0, 1000, 1000, 0),
+              "a client with no declared gap does not admit a transfer");
+    }
+
+    {
+        FixedSpscQueue<uint32_t, 4> queue;
+        size_t depth = 0;
+        check(queue.push(10, &depth) && depth == 1, "queue accepts first item");
+        check(queue.push(20) && queue.push(30) && queue.push(40),
+              "queue uses its full declared capacity");
+        check(!queue.push(50), "queue deterministically drops newest when full");
+        uint32_t value = 0;
+        check(queue.pop(value) && value == 10, "queue preserves oldest item");
+        check(queue.pop(value) && value == 20, "queue preserves FIFO order");
+        check(queue.push(50), "queue accepts data after consumer makes room");
+        check(queue.size() == 3, "queue depth remains coherent");
+        queue.clear();
+        check(queue.empty(), "queue clear establishes an empty session boundary");
+    }
+
+    printf("BMI270 FIFO: %d passed, %d failed\n", passed, failed);
+    return failed;
+}

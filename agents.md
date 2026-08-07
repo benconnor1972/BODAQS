@@ -161,3 +161,17 @@ A change is considered done when:
 - All call sites are updated.
 - The change is reviewable (diff is reasonably scoped).
 - Any required manual steps (Arduino IDE compile/upload, notebook run) are clearly listed.
+
+## 9) Azure Boards backlog management
+
+- Organization: `bodaqs`
+- Project: `BODAQS`
+- Team: `BODAQS Team`
+- Process: Agile
+- Default product-backlog work item type: `User Story`
+- Use the configured Azure DevOps MCP server for backlog requests.
+- Treat an explicit request to "add" or "create" an item as authorization for that
+  item. Otherwise, prepare a preview before writing to Azure DevOps.
+- Do not delete work items, perform bulk updates, or change item state unless the
+  user explicitly requests it.
+- After creating an item, report its work item ID and URL.
