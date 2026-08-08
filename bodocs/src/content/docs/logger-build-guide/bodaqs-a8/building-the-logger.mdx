@@ -17,14 +17,12 @@ import Lede from '@components/Lede.astro';
 <Lede>
 Now the fun really begins. Check that you have all the things shown in the picture, then dig in.
 </Lede>
+<Lightbox thumbnailWidth={1000} src="/src/assets/pics/logger-build-guide/build-a8-1.png" alt="Build-overview"/>
 
-<Lightbox thumbnailWidth={1000} src="/src/assets/pics/logger-build-guide/work-in-progress.png" alt="Build-overview"/>
-
-**This section is a work in progress. it is text-complete but waiting on new photos**
 
 
 <Aside type={"caution"} title="These instructions are for BODAQS A8"  icon="seti:config">
-	These instructions cover the Prototype F logger design.
+	These instructions cover the BODAQS A8 logger design.
 </Aside>
 
 
@@ -33,13 +31,13 @@ Now the fun really begins. Check that you have all the things shown in the pictu
 </Aside>
 
 ### Solder header pins and sockets for the OLED display
-<Flag src="/src/assets/pics/logger-build-guide/Build-7CE.png" alt="Build-7C">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-2.png" alt="Build a8 2">
   **Install socket headers in the PCB** Cut a section of socket headers 4 sockets long and solder it into the
   PCB in the holes shown.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/OLED-3E.png" alt="OLED-3E">
-  **Install pin headers in the OLED display.** Your OLED display will come with pin headers. If they are already installed, no action is needed. Otherwise, solder the pin headers into the holes in the display as shown.
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-3.png" alt="Build a8 3">
+  **Install pin headers in the OLED display.** Your OLED display will come with pin headers. If they are already installed, no action is needed. Otherwise, solder the pin headers into the holes in the display as shown. Trim the tops of the pins where they protrude through the OLED display so they stick up as little as possible.
 </Flag>
 
 <Aside type={"caution"} title="Take care with the OLED display">
@@ -48,30 +46,24 @@ Now the fun really begins. Check that you have all the things shown in the pictu
 
 
 ### Connect the display and check the build so far
-<Flag src="/src/assets/pics/logger-build-guide/Build-9.jpg" alt="Build-9">
-  **Connect the display.** Plug the OLED display pin headers into the socket headers on the PCB
-</Flag>
-
-<Flag src="/src/assets/pics/logger-build-guide/Build-10.jpg" alt="Build-10">
-  **Connect the PCB to a power supply** with a USB cable. Press the 'Power on' button on the board.
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-4.png" alt="Build a8 4">
+  **Connect the display.** Plug the OLED display pin headers into the socket headers on the PCB. Then connect the PCB to a power supply with a USB cable. Press the 'Power on' button on the board.
   The OLED display should now show the home screen.
   Check keypad operation. Pressing the right button in the main button cluster should enter the menu system. Pressing the centre button from the home screen should toggle logging on and off.
 </Flag>
 
 
 ### Preparing the case
-<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
-  **Remove support material** from the case using a craft knife. Make sure the material is thoroughly removed. 
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-5.png" alt="Build A8 5">
+  Remove support material from the case using a craft knife. Make sure the material is thoroughly removed. Then **install heat-set inserts** if you are using brass inserts rather than self-tapping screws to close
+  the case. If you haven't installed heat set inserts before, read [this guide](https://www.printables.com/article/heat-inserts-and-3d-printing-a-guide-W5ob2VN) before starting. The BODAQS A8 logger has a total of 14 inserts, installed in the positions shown.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
-  **Install heat-set inserts** if you are using brass inserts rather than self-tapping screws to close
-  the case. If you haven't installed heat set inserts before, read [this guide](https://www.printables.com/article/heat-inserts-and-3d-printing-a-guide-W5ob2VN) before starting.
-  
-  The BODAQS A8 logger has a total of 14 inserts, installed in the positions shown.
-</Flag>
+<Aside type={"note"} title="Drill the holes if using BT2.5 self tapping screws">
+If you are using the sef-tapping screws option for the case fasteners, it is worth running a 2mm drill bit into the printed holes.
+</Aside>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-6.png" alt="Build A8 6">
 **Install the keypad membranes**. Carefully place the main navigation pad membrane in the lid of the case, ensuring the ridge on the outside edge is properly seated in the groove in the case. Cut the power button membrane in half and place it in the case.
 </Flag>
 
@@ -79,15 +71,15 @@ Now the fun really begins. Check that you have all the things shown in the pictu
   The "feel" of the nav pad buttons can be improved by filling the holes in the backs of the four direction buttons with caulking silicone. This is completely optional and a matter of personal preference.
 </Aside>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-7.png" alt="Build A8 7">
 **Install the pins** in the retainer plates. When installed, the larger end of the pins should face the lid / membrane and the smaller end should protrude out of the plate towards the PCB. Check that the pins slide smoothly in the retainer plates and if necessary, use a craft knife or fine sandpaper to remove any printing imperfections.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-8.png" alt="Build A8 8">
 **Fit the nav and power button plates**. Carefully install the plates, with pins installed, to the lid. It is easiest to hold both parts up vertically so the pins don't fall out during this step. Fasten the plates using M3 x 5 capscrews (or bt2.5 x 5 self-tapping screws, as applicable to your case).
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-17.jpg" alt="Build-17">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-9.png" alt="Build A8 9">
 **Fit the acrylic cover over the OLED display opening**. Carefully spread a small bead of clear caulking silicone in the inset section of the lid. Place the acrylic cover in the inset section and gently press down. Set the lid aside until the silicone has cured.
 </Flag>
 
@@ -97,22 +89,22 @@ Now the fun really begins. Check that you have all the things shown in the pictu
 
 ### Assembling the connectors
 
-<Flag src="/src/assets/pics/logger-build-guide/connector-overview-F.png" alt="Connector overview">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-10.png" alt="Build A8 10">
 
   **Fit the connectors to the PCB.**
   Carefully push the connectors into the top of the PCB, making sure that all the connector pins are aligned with their holes. The barbed legs on the sides of the connectors should 'click' into the large holes in the PCB.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-11.jpg" alt="Build-11">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-11.png" alt="Build A8 11">
   **Install the 3d printed end pieces over the connectors** and tighten. Ensure that the connector
   o-rings are on the inside and sit in the chamfered edges of the holes.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-11.jpg" alt="Build-11">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-12.png" alt="Build A8 12">
   **Place the PCB and end pieces upside down in the lid**. Ensure the end pieces are fitted snugly into the grooves in the lid. This is what keeps the connectors in the exact right place for soldering.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/connector-overview-F.png" alt="Connector overview">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-13.png" alt="Build A8 13">
   **Solder the connectors to the PCB.** Solder each pin, including the barbed legs on either side of the connector, to the PCB. The central cluster of pins is close together so carefully inspect each solder joint to ensure there are no solder 'bridges' between pins. 
 </Flag>
 
@@ -120,10 +112,12 @@ Now the fun really begins. Check that you have all the things shown in the pictu
 If you find you have accidentally bridged two pins with solder, clean your soldering iron then apply it to the bridge. This is usually sufficient to remove excess solder.
 </Aside>
 
-
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-14.png" alt="Build A8 14">
+  **Clip the legs** of the button cell battery holder and the OLED display socket headers close to the bottom of the board, so they don't damage the battery pack. 
+</Flag>
 ### Install the components
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-19.jpg" alt="Build-19">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-15.png" alt="Build A8 15">
   **Install the battery** in the base of the case, with the wires facing towards the top end of the logger. Secure the battery to the base with double-sided tape, or a loop of duct tape sticky-side-out. 
   If necessary trim or extend the battery wires. The recommended wire length is 70 mm.
   <MiniAside type={"caution"} >
@@ -131,16 +125,12 @@ If you find you have accidentally bridged two pins with solder, clean your solde
   </MiniAside>
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-16F.jpg" alt="Build-16">
-  **Install the OLED spacer** and secure it with the M2.5 x 5 capscrews as shown.
-You may need to enlarge the screw holes in the spacer slightly with a 2.5mm drill bit before the threads will engage. 
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-16.png" alt="Build A8 16">
+   Fit the CR1220 button cell then **Install the OLED spacer** and secure it with the M2 x 5 capscrews (or BT2.5 x 5 self-tapping screws) as shown.
+If you are using BT2.5 screws you may need to enlarge the screw holes in the spacer slightly with a 2mm drill bit before the threads will engage. 
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-16F.jpg" alt="Build-16">
-  **Fit the CR1220 button cell** as shown.
-</Flag>
-
-<Flag src="/src/assets/pics/logger-build-guide/Build-16F.jpg" alt="Build-16">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-17.png" alt="Build A8 17">
  **Install the OLED display** by fitting its pins into the sockets in the PCB. The holes in the corners of the OLED display should fit over the studs on the OLED spacer.
 </Flag>
 
@@ -148,27 +138,27 @@ You may need to enlarge the screw holes in the spacer slightly with a 2.5mm dril
 If your OLED module does not match the OLED spacer exactly, don't worry - just trim the studs off the spacer with side cutters. The studs are nice-to-have but if they aren't there it's no big deal.
 </Aside>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-16F.jpg" alt="Build-16">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-18.png" alt="Build A8 18">
   **Install the PCB and case ends** in the base of the case. Ensure that the case ends are seated in the grooves in the base.
   Route the battery wires as shown and connect to the JST connector on the dev board.
 </Flag>
 
 ### Optional but recommended: waterproofing
-<Flag src="/src/assets/pics/logger-build-guide/Build-16F.jpg" alt="Build-16">
+<Flag src="/src/assets/pics/logger-build-guide/work-in-progress.png" alt="Build-16">
 The water-resistance of the logger can be improved by applying a little caulking silicone in the case grooves. Partially fill the grooves in the lid and base with silicone (you can do this with a small syringe) and then scrape out any excess. You can do this with a [3d-printed spatula tool] or just by pushing your finger into the groove and running it around the edge (wear nitrile gloves while you do this).
 </Flag>
 
 ### Close the case and check
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-23.jpg" alt="Build-23">
-  **Carefully close the case** and secure it with 4 M3x16 cap screws. Power the logger on and check the operation of the buttons.
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-19.png" alt="Build A8 19">
+  **Carefully close the case** and secure it with 4 M3x12 cap screws. Power the logger on and check the operation of the buttons.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-23.jpg" alt="Build-23">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-20.png" alt="Build A8 20">
   **Fit the downtube mount** using 4 M3x8 cap screws. Power the logger on and check the operation of the buttons.
 </Flag>
 
-<Flag src="/src/assets/pics/logger-build-guide/Build-23.jpg" alt="Build-23">
+<Flag src="/src/assets/pics/logger-build-guide/build-a8-21.png" alt="Build A8 21">
   **Install the plug and caps** as shown. These help keep the logger's electrical connections free of dirt and moisture when they aren't connected to anything.
 </Flag>
 

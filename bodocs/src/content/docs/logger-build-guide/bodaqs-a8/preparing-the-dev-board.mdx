@@ -47,8 +47,12 @@ Find the `Flash addresses` section in the release notes. Note the addresses for 
 
 This is the easiest installation method for most Windows users. Use **Google Chrome** or **Microsoft Edge**.
 
+<Flag src="/src/assets/pics/logger-build-guide/flash-4a.png" alt="flash 4a">
+**Connect the PCB to your computer and turn it on** by pressing the power button on the PCB. You can verify that the logger is powered on because a new device will appear in the Device Manager list, under `Ports (COM and LPT)`.
+</Flag>
+
 <Flag src="/src/assets/pics/logger-build-guide/flash-4.png" alt="flash 4">
-Connect the PCB to your computer with a **USB data cable** and open the Adafruit WebSerial ESPTool here: **[Adafruit WebSerial ESPTool](https://adafruit.github.io/Adafruit_WebSerial_ESPTool/)**. Check the baud rate is set to 115200 and click **Connect**.
+Open the Adafruit WebSerial ESPTool here: **[Adafruit WebSerial ESPTool](https://adafruit.github.io/Adafruit_WebSerial_ESPTool/)**. Check the baud rate is set to 115200 and click **Connect**.
 </Flag>
 
 <Flag src="/src/assets/pics/logger-build-guide/flash-5.png" alt="flash 5">
@@ -102,7 +106,7 @@ If the board does not start automatically after flashing, press the **Reset** bu
 
 Once you have your firmware file and ESPtool installed, follow these steps to flash the firmware:
 
-- Connect your BODAQS board to your computer with a **USB data cable**.
+- **Connect your BODAQS board to your computer** with a USB data cable and turn it on, as in Option 1.
 {/* //TODO, how to find your port address*/}
 - Identify the serial port used by the board:
 - **Windows:** something like `COM3`
