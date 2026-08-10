@@ -18,6 +18,7 @@ enum class BoardID : uint8_t {
   ThingPlusS3_BODAQS_4_F,
   BODAQS_V1RC3,
   BODAQS_S3_Mini_N4R2 = BODAQS_V1RC3,
+  ThingPlusS3_Proto_F_ADC_Diagnostic,
   // Add more here...
 };
 

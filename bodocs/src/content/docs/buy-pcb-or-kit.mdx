@@ -1,10 +1,98 @@
 ---
 title: Buy PCB or Kit
+description: Buy a BODAQS A8 PCB or kit to save time sourcing and preparing parts.
 ---
 
 import { Image } from 'astro:assets';
+import Flag from '@components/Flag.astro';
+import Lede from '@components/Lede.astro';
 import comingSoon from '../../assets/pics/buy-pcb-or-kit/coming-soon.png';
 
 <Image src={comingSoon} alt="Exploded assembly view of the BODAQS A8 logger" />
 
-Coming soon.
+<Lede>
+  You can source every BODAQS part yourself using the build guide and bill of materials, but hunting around for the right bits is not everyone's idea of a good time. I can supply the key parts ready to go: it might cost more, but makes building your logger considerably less hassle.
+</Lede>
+
+## Options available (prices are in Australian Dollars)
+
+{/* TODO: Replace this placeholder with a bare-PCB photo. */}
+<Flag src="/src/assets/pics/buy-pcb-or-kit/coming-soon.png" alt="Placeholder for a bare BODAQS A8 PCB photo">
+
+### BODAQS A8 PCB — A$100 plus postage
+
+A BODAQS A8 PCB flashed with the latest firmware. The A8 logger design incorporates the microcontroller directly onto the PCB and does not require an additional plug-in dev board (unlike earlier versions).
+
+You will need to [source](/logger-build-guide/bodaqs-a8/sourcing-hardware/#bill-of-materials) the remainder of the parts.
+
+</Flag>
+
+{/* TODO: Replace this placeholder with an electronics-kit photo. */}
+<Flag src="/src/assets/pics/buy-pcb-or-kit/coming-soon.png" alt="Placeholder for a BODAQS electronics kit photo">
+
+### Electronics kit — A$250 plus postage
+
+Everything except the 3D-printed parts, batteries, and SD card:
+- A BODAQS A8 PCB flashed with the latest firmware.
+- 0.96" OLED display
+- Button pads
+- Header socket for OLED display
+- 4 6-pin solder-in M8 circular connectors
+- 4 matching M8 plug assemblies
+- 3 pairs of 3-pin, and 3 pairs of 4-pin, plastic circular connectors for [building sensor wiring](/sensor-connection-and-wiring-guide/wiring-and-connector-tips/#decide-how-much-flexibility-you-need)
+- acrylic panel for OLED screen protection
+- some shrink sleeve for wiring sensors
+- all required [fasteners](/logger-build-guide/bodaqs-a8/sourcing-hardware/#fasteners-option-1---using-brass-inserts) including the brass inserts required for your 3d-printed parts
+</Flag>
+
+{/* TODO: Replace this placeholder with a complete-hardware-kit photo. */}
+<Flag src="/src/assets/pics/buy-pcb-or-kit/coming-soon.png" alt="Placeholder for a complete BODAQS hardware kit photo">
+
+### Complete hardware kit — A$325 plus postage
+
+Everything except batteries and an SD card. All the parts in the electronics kit plus all the required [3d printed parts](/logger-build-guide/bodaqs-a8/sourcing-hardware/#parts-required): 
+- High-quality carbon fiber reinforced nylon filament for the case parts; ABS for the other parts.
+- Brass inserts, button pads and plates, and acrylic screen protector installed in case.
+
+</Flag>
+
+## How to order
+
+Payment is by PayPal. Please contact me first to confirm that all parts are available and to discuss postage. Once availability and shipping are confirmed, I will send payment details.
+
+<p><a href="mailto:info@bodaqs.net">Email me to discuss a PCB or kit</a></p>
+
+## Frequently asked questions
+
+#### What other parts do I need to buy?
+
+That depends on the option you choose. The PCB-only option needs all other logger parts. The electronics kit also needs the 3D-printed enclosure parts, batteries, and an SD card. The complete hardware kit needs batteries and an SD card. All options will require you to purchase [sensors](/logger-build-guide/bodaqs-a8/sourcing-hardware/#sensors) separately. 
+
+#### How much does postage cost?
+
+Flat-rate postage by [Australia Post Standard International Service](https://auspost.com.au/parcels-mail/calculate-postage-delivery-times/#/option/international/AU/CA?fromPostcode=6076) to the US, Canada, EU and New Zealand is A$35. Postage within Australia is A$15. For other locations or services, <a href="mailto:info@bodaqs.net">email me</a>
+
+#### Why don't you supply the batteries?
+
+Shipping lithium batteries dramtically increases the chances of issues with shipping and/or customs, particularly internationally. Buying batteries locally is generally simpler, faster, and safer. Links to suitable battery suppliers in a range of international locations are shown [here](/logger-build-guide/bodaqs-a8/sourcing-hardware/#li-ion-battery)
+
+#### Why don't you offer kits for the Prototype F logger?
+
+Two reasons. First (as the name suggests) I don't consider it a finished design. I do intend to continue development of logger designs with a plug-in development board, but later ones will have some fairly significant design changes. Second, the Proto-F design doesn't have the PCB minimum order quantity issue of the A8: Proto-F PCBs are so cheap that ordering 5 of them is still very reasonable.
+
+#### Is this cheaper than sourcing the parts myself?
+
+Probably not, but it depends. On a per-unit basis sourcing parts yourself is the lowest-cost route, but it often doesn't quite work out that way due to  minimum order quantities (this is particularly the case for the [A8 PCB](/logger-build-guide/#prototype-f-not-dead-yet)) and disproportionate shipping costs for small orders. If you want to build 5 data loggers, then self sourcing is probably a better option. These options are for people who would rather save time, avoid supplier hunting, and receive a known-compatible set of parts.
+
+#### What skills do I need for this project?
+
+The kits reduce the sourcing work, but the logger is still a build-it-yourself project. You should be comfortable following the build guide, soldering and carrying out mechanical assembly. You will also need the ability to set up and install the logger on your bike: instructions are provided for this, but the level of hand-holding is less than you would get with, say, a new phone.
+
+#### What kind of support will I get?
+
+I will help as much as I reasonably can with questions about the supplied PCB or kit, assembly, and getting the logger working with the published guides. The BODAQS Discord community is also a good place to ask questions and share progress. I will endeavour to provide timely responses to queries but please understand that I am just one person, and help me out by reading the guides before you message me.
+
+#### Will you build the logger for me?
+
+Not currently. These options provide the PCB or parts needed to build your own logger; assembly remains part of the BODAQS build-it-yourself project.
+I don't really have the time, and what time I do have I would rather put into improving the hardware and software. If your circumstances are exceptional we can discuss it. 

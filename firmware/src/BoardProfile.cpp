@@ -189,6 +189,25 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   return p;
 }();
 
+static const BoardProfile THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC = [] {
+  BoardProfile p = THING_PLUS_S3_BODAQS_4_F;
+  p.name = "Proto F ADC diagnostic";
+
+  // AIN4 bypasses the Proto-F analog front end and connects directly to the
+  // Thing Plus A1 header. GPIO14 shares ADC2 with the normal AIN1 (GPIO18).
+  p.analog.pins[4] = 14;
+  p.analog.inputs[4] = MakeInternalAnalog(14);
+  p.analog.count = 5;
+  p.analog.attenuation = AdcAttenuation::Db11;
+
+  // GPIO14 is normally I2C1 SDA on Proto F, so the diagnostic profile cannot
+  // expose that bus while GPIO14 is used as an ADC input.
+  p.i2c[1] = I2CProfile{};
+  p.i2c_count = 1;
+
+  return p;
+}();
+
 static const BoardProfile V1RC3_PROFILE = {
   .name = "BODAQS V1RC3",
 
@@ -364,6 +383,7 @@ const BoardProfile& GetBoardProfile(BoardID id) {
     case BoardID::ThingPlusS3_BODAQS_4_D: return THING_PLUS_S3_BODAQS_4_D;
     case BoardID::ThingPlusS3_BODAQS_4_D_UartI2C1: return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
     case BoardID::ThingPlusS3_BODAQS_4_F: return THING_PLUS_S3_BODAQS_4_F;
+    case BoardID::ThingPlusS3_Proto_F_ADC_Diagnostic: return THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC;
     case BoardID::BODAQS_V1RC3: return V1RC3_PROFILE;
     default: return THING_PLUS_S3_BODAQS_4_D;
   }
@@ -375,6 +395,7 @@ const BoardProfile& GetBoardProfileByName(const char* name) {
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D.name) == 0) return THING_PLUS_S3_BODAQS_4_D;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D_UART_I2C1.name) == 0) return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_F.name) == 0) return THING_PLUS_S3_BODAQS_4_F;
+  if (strcmp(name, THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC.name) == 0) return THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC;
   if (strcmp(name, V1RC3_PROFILE.name) == 0) return V1RC3_PROFILE;
   if (strcmp(name, "BODAQS S3 Mini N4R2") == 0) return V1RC3_PROFILE;
 
