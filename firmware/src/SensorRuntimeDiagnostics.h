@@ -22,13 +22,17 @@ enum class SensorRuntimeFailureStage : uint8_t {
   RequestBytes = 5,
   ReadByte = 6,
   WriteRegister = 7,
+  InvalidArgument = 8,
+  WritePayload = 9,
+  EndTransmission = 10,
 };
 
 struct SensorRuntimeFailure {
   SensorRuntimeFailureStage stage = SensorRuntimeFailureStage::None;
   int16_t resultCode = 0;
-  uint8_t expectedBytes = 0;
-  uint8_t receivedBytes = 0;
+  uint8_t registerAddress = 0;
+  uint16_t expectedBytes = 0;
+  uint16_t receivedBytes = 0;
 };
 
 struct SensorRuntimeEvent {
@@ -81,4 +85,108 @@ struct SensorRuntimeDiagnostics {
   uint32_t eventsTotal = 0;
   uint32_t eventsDropped = 0;
   SensorRuntimeEvent events[kMaxEvents];
+
+  bool hasImuSession = false;
+  uint64_t imuDrainCalls = 0;
+  uint64_t imuDrainPasses = 0;
+  uint64_t imuEmptyPasses = 0;
+  uint64_t imuDrainPassLimitHits = 0;
+  uint64_t imuFifoBytesRead = 0;
+  uint64_t imuFifoFramesParsed = 0;
+  uint64_t imuSensorTimeFrames = 0;
+  uint64_t imuMissingSensorTimeBatches = 0;
+  uint64_t imuSkipControlFrames = 0;
+  uint64_t imuFifoOverflowEvents = 0;
+  uint64_t imuFifoFullObservations = 0;
+  uint64_t imuHardwareSkippedFrames = 0;
+  uint64_t imuUnpairedFrames = 0;
+  uint64_t imuInputConfigFrames = 0;
+  uint64_t imuInvalidHeaders = 0;
+  uint64_t imuPartialFrames = 0;
+  uint64_t imuOverreadFrames = 0;
+  uint64_t imuParserOutputDrops = 0;
+  uint64_t imuSamplesEnqueued = 0;
+  uint64_t imuSamplesEmitted = 0;
+  uint64_t imuQueueDrops = 0;
+  uint64_t imuPreSessionQueueDiscards = 0;
+  uint64_t imuExplicitQueueDiscards = 0;
+  uint64_t imuTemperatureReads = 0;
+  uint64_t imuTemperatureReadFailures = 0;
+  uint64_t imuOperationalValidationAttempts = 0;
+  uint64_t imuOperationalValidationFailures = 0;
+  uint64_t imuSessionStartValidationAttempts = 0;
+  uint64_t imuSessionStartValidationFailures = 0;
+  uint64_t imuNoProgressEvents = 0;
+  uint64_t imuFifoFlushes = 0;
+  uint64_t imuFifoFlushFailures = 0;
+  uint64_t imuStopDrainAttempts = 0;
+  uint64_t imuStopDrainFailures = 0;
+  uint64_t imuI2cOperations = 0;
+  uint64_t imuI2cFailures = 0;
+  uint64_t imuI2cRecoveries = 0;
+  uint64_t imuI2cBusLockAttempts = 0;
+  uint64_t imuI2cBusLockTimeouts = 0;
+  uint64_t imuI2cBusLockWaitTotalUs = 0;
+  uint32_t imuI2cFailureStageCounts[9] {};
+  uint64_t imuRecoveryAttempts = 0;
+  uint64_t imuRecoverySuccesses = 0;
+  uint64_t imuRecoveryFailures = 0;
+  uint64_t imuTerminalFaultEvents = 0;
+  uint64_t imuAccelNearRail[3] {};
+  uint64_t imuGyroNearRail[3] {};
+  uint64_t imuTimingDegradedSamples = 0;
+  uint64_t imuSequenceDiscontinuityEvents = 0;
+  uint64_t imuNativeTimeDiscontinuityEvents = 0;
+  uint64_t imuAgeSamples = 0;
+  uint64_t imuAgeUnavailable = 0;
+  uint64_t imuAgeClipped = 0;
+  uint64_t imuTemperatureSamples = 0;
+  uint16_t imuQueueCapacity = 0;
+  uint16_t imuQueueHighWater = 0;
+  uint16_t imuFinalQueueDepth = 0;
+  uint16_t imuMaximumFifoBytesObserved = 0;
+  uint32_t imuMaximumDrainDurationUs = 0;
+  uint32_t imuMaximumDrainFailureStreak = 0;
+  uint32_t imuNoProgressTimeoutUs = 0;
+  uint32_t imuMaximumNoProgressUs = 0;
+  uint32_t imuLastValidationIssues = 0;
+  uint32_t imuI2cMaximumFailureStreak = 0;
+  uint32_t imuI2cBusLockWaitMaximumUs = 0;
+  uint32_t imuAgeMinimumUs = 0;
+  uint32_t imuAgeMedianUs = 0;
+  uint32_t imuAgeP95Us = 0;
+  uint32_t imuAgeP99Us = 0;
+  uint32_t imuAgeMaximumUs = 0;
+  uint16_t imuAgeResolutionUs = 0;
+  uint16_t imuLastValidationFifoConfig = 0;
+  uint16_t imuLastValidationFifoWatermark = 0;
+  uint8_t imuLastValidationChipId = 0;
+  uint8_t imuLastValidationInternalStatus = 0;
+  uint8_t imuLastValidationPowerControl = 0;
+  uint8_t imuLastValidationAccelDownsample = 0;
+  uint8_t imuLastValidationGyroDownsample = 0;
+  uint8_t imuLastValidationAccelFiltered = 0;
+  uint8_t imuLastValidationGyroFiltered = 0;
+  uint8_t imuConsecutiveRecoveryFailures = 0;
+  uint8_t imuRecoveryAttemptsWithoutProgress = 0;
+  uint8_t imuLastRecoveryReason = 0;
+  int8_t imuLastValidationApiResult = 0;
+  uint8_t imuStartupObservationState = 0;
+  uint16_t imuStartupRejectionMask = 0;
+  uint16_t imuStartupConfiguredSeconds = 0;
+  uint32_t imuStartupTargetSampleSlots = 0;
+  uint32_t imuStartupValidSamples = 0;
+  uint32_t imuStartupTemperatureSamples = 0;
+  float imuStartupGyroMeanRaw[3] {};
+  float imuStartupGyroStdRaw[3] {};
+  float imuStartupAccelMagnitudeMeanG = 0.0f;
+  float imuStartupAccelMagnitudeStdG = 0.0f;
+  float imuStartupMaximumGyroMagnitudeDps = 0.0f;
+  float imuStartupTemperatureMeanC = 0.0f;
+  float imuStartupTemperatureMinimumC = 0.0f;
+  float imuStartupTemperatureMaximumC = 0.0f;
+  float imuTemperatureMinimumC = 0.0f;
+  float imuTemperatureMaximumC = 0.0f;
+  bool imuTerminalFault = false;
+  bool imuCounterSaturated = false;
 };

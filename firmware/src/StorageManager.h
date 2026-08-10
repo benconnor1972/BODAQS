@@ -18,6 +18,9 @@ void StorageManager_loop();
 void StorageManager_setCustomHeader(const char* csv);
 void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t n, bool mark);
 bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t n, bool mark);
+// Requires the logger sampler to be quiesced. Used during orderly shutdown so
+// final sensor FIFO rows cannot be lost behind a full storage queue.
+void StorageManager_drainQueuedSamples();
 
 bool StorageManager_loadTextFile(const char* path, String& out);
 bool StorageManager_saveTextFile(const char* path, const String& data);

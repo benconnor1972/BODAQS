@@ -194,7 +194,10 @@ def build_signals_registry(
 
         quantity = hints.get("quantity", hints.get("role"))
         quantity_text = quantity.strip().lower() if isinstance(quantity, str) else ""
-        if quantity_text != "raw" and unit != RAW_UNIT_DEFAULT:
+        raw_quantity = quantity_text == "raw" or quantity_text.endswith("_raw")
+        raw_count_unit = unit in {"count", RAW_UNIT_DEFAULT}
+        raw_evidence = str(hints.get("processing_role") or "").strip().lower() == "raw_evidence"
+        if not (raw_quantity and (raw_count_unit or raw_evidence)):
             return ""
         return normalized
 
@@ -238,6 +241,10 @@ def build_signals_registry(
             "sidecar_column_id",
             "source_columns",
             "source",
+            "mount_point",
+            "component",
+            "coordinate_frame",
+            "vector_group",
             "calibration_ref",
             "calibration",
             "transform_chain",
@@ -291,6 +298,10 @@ def build_signals_registry(
             "sidecar_column_id",
             "source_columns",
             "source",
+            "mount_point",
+            "component",
+            "coordinate_frame",
+            "vector_group",
             "calibration_ref",
             "calibration",
             "transform_chain",

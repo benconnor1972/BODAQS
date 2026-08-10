@@ -6,6 +6,7 @@
 #include "LoggingManager.h"
 #include "UploadModeManager.h"
 #include "I2CManager.h"
+#include "I2CBusScheduler.h"
 #include "DebugLog.h"
 
 #include <Adafruit_GFX.h>
@@ -34,6 +35,10 @@ static uint16_t s_idleDimMs    = 30000;
 static uint8_t  s_brightness   = 200; // 0..255
 static uint8_t  s_nominal      = 200;
 static bool     s_dimmed       = false;
+static uint8_t  s_busIndex     = 0;
+static uint32_t s_busClockHz   = 400000UL;
+static uint32_t s_lastPresentMs = 0;
+static bool     s_presentPending = false;
 
 
 
@@ -46,7 +51,10 @@ namespace {
   uint8_t       s_lastActive= 0;
   static uint8_t       s_lastBlinkPhase= 255;     // force first draw
 
-  static constexpr uint16_t BLINK_MS = 1000;       // 500ms on/off = 1 Hz
+  static constexpr uint16_t BLINK_MS = 1000;       // one-second phases
+  static constexpr uint32_t LOGGING_PRESENT_INTERVAL_MS = 1000;
+  static constexpr uint32_t OLED_TRANSFER_BUDGET_US = 30000;
+  static constexpr uint32_t OLED_TRANSFER_GUARD_US = 5000;
 
 
   static void renderStatus_() {
@@ -155,9 +163,7 @@ static void drawAll() {
       s_oled->print(line1);
     }
   }
-  if (!I2CManager::lock(s_wire)) return;
-  s_oled->display();
-  I2CManager::unlock(s_wire);
+  DisplayManager::present();
 }
 
 static void setContrast(uint8_t c) {
@@ -174,6 +180,9 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
                            TwoWire* wire) {
   s_cfg = &cfg;
   s_wire = wire;
+  s_busIndex = disp.bus_index;
+  const board::I2CProfile* busProfile = I2CManager::profile(s_busIndex);
+  s_busClockHz = (busProfile && busProfile->hz) ? busProfile->hz : 400000UL;
 
   // If no display on this board, disable cleanly.
   if (disp.type == board::DisplayType::None) {
@@ -194,7 +203,16 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
     delete s_oled;
     s_oled = nullptr;
   }
-  s_oled = new Adafruit_SSD1306(OLED_W, OLED_H, s_wire, OLED_RST_PIN);
+  // Adafruit's default restores Wire to 100 kHz after every refresh. On a
+  // shared 400 kHz sensor bus, use the configured clock both during and after
+  // OLED transfers so another device never inherits a slower bus silently.
+  s_oled = new Adafruit_SSD1306(
+      OLED_W,
+      OLED_H,
+      s_wire,
+      OLED_RST_PIN,
+      s_busClockHz,
+      s_busClockHz);
   if (!s_oled) {
     s_present = false;
     s_status  = "OLED alloc fail";
@@ -279,6 +297,8 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
   s_lastHudMs   = 0;
   s_lastRate    = 0;
   s_lastActive  = 255;
+  s_lastPresentMs = 0;
+  s_presentPending = false;
 
   drawAll();
   LOGI_TAG("DISP", "begin: complete\n");
@@ -312,6 +332,8 @@ void DisplayManager::loop() {
       setContrast(s_nominal);
     }
   }
+
+  if (s_presentPending) DisplayManager::present();
 }
 
 void DisplayManager::setStatusLine(const String& line) {
@@ -365,7 +387,44 @@ void DisplayManager::setBrightness(uint8_t b) {
 
 void DisplayManager::present() {
   if (!available()) return;
-  if (!I2CManager::lock(s_wire)) return;
+  const bool logging = LoggingManager::isRunning();
+  const uint32_t nowMs = millis();
+  if (logging) {
+    if (s_lastPresentMs != 0 &&
+        static_cast<uint32_t>(nowMs - s_lastPresentMs) <
+            LOGGING_PRESENT_INTERVAL_MS) {
+      s_presentPending = true;
+      return;
+    }
+    if (I2CBusScheduler::isRunning() &&
+        !I2CBusScheduler::lowPriorityWindowAvailable(
+            s_busIndex,
+            OLED_TRANSFER_BUDGET_US,
+            OLED_TRANSFER_GUARD_US)) {
+      s_presentPending = true;
+      return;
+    }
+  }
+  // A low-priority refresh must never block loopTask/storage behind a sensor
+  // reservation. Outside logging, retain the normal UI lock timeout.
+  if (!I2CManager::lock(s_wire, logging ? 1u : 50u)) {
+    s_presentPending = true;
+    return;
+  }
+  // Recheck after waiting for the mutex: another device may have consumed the
+  // window between the optimistic check above and the actual bus reservation.
+  if (logging && I2CBusScheduler::isRunning() &&
+      !I2CBusScheduler::lowPriorityWindowAvailable(
+          s_busIndex,
+          OLED_TRANSFER_BUDGET_US,
+          OLED_TRANSFER_GUARD_US)) {
+    I2CManager::unlock(s_wire);
+    s_presentPending = true;
+    return;
+  }
+  s_wire->setClock(s_busClockHz);
   s_oled->display();
   I2CManager::unlock(s_wire);
+  s_lastPresentMs = millis();
+  s_presentPending = false;
 }

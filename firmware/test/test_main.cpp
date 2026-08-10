@@ -25,6 +25,12 @@ int runRoutesStaticTests();
 // Defined in test_fragments.cpp
 int runFragmentsTests();
 
+// Defined in test_bmi270_profile.cpp
+int runBMI270ProfileTests();
+
+// Defined in test_bmi270_fifo.cpp
+int runBMI270FifoTests();
+
 static int tests_passed = 0;
 static int tests_failed = 0;
 
@@ -281,6 +287,14 @@ int main() {
     printf("\nRunning Fragments tests...\n\n");
     int fragments_failed = runFragmentsTests();
     tests_failed += fragments_failed;
+
+    printf("\nRunning BMI270 profile tests...\n\n");
+    int bmi270_profile_failed = runBMI270ProfileTests();
+    tests_failed += bmi270_profile_failed;
+
+    printf("\nRunning BMI270 FIFO tests...\n\n");
+    int bmi270_fifo_failed = runBMI270FifoTests();
+    tests_failed += bmi270_fifo_failed;
 
     printf("\n%d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

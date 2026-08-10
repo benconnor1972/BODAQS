@@ -13,8 +13,8 @@ enum class SensorType : uint8_t {
   AS5048BAngleI2C        = 4,
   AS5600AngleI2C         = 5,
   DANF10NGps             = 6,
+  BMI270ImuI2C           = 7,
   // StrainGauge = 2,
-  // Accelerometer = 3,
 };
 
 // One configured sensor entry (loaded from sensors.cfg).

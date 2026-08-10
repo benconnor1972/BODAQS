@@ -42,8 +42,10 @@ namespace SensorManager {
   void finalizeBegin();
   void applyConfig(const LoggerConfig& cfg);
   void loop();
-  void onLoggingStart();
+  bool validateLoggingStart(const LoggerConfig& cfg, uint16_t effectiveRateHz, char* error, size_t errorCapacity);
+  bool onLoggingStart(char* error = nullptr, size_t errorCapacity = 0);
   void onLoggingStop();
+  size_t pendingLoggingRows();
 
   // registry / access
   void    registerSensor(Sensor* s);

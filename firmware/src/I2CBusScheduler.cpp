@@ -5,7 +5,10 @@
 #include "BoardProfile.h"
 #include "I2CManager.h"
 #include "DebugLog.h"
+#include "I2CLowPriorityWindow.h"
 #include "esp_timer.h"
+
+#include <atomic>
 
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
@@ -28,7 +31,9 @@ static constexpr int64_t kFineSleepGuardUs = 100;
 static constexpr int64_t kFineSleepMaxUs = 500;
 static constexpr uint32_t kStopWaitMs = 1500;
 static constexpr uint32_t kTaskStackBytes = 4096;
-static constexpr UBaseType_t kTaskPriority = 2;
+// Match Arduino loopTask so sustained I2C work cannot starve storage service
+// on the same core. Acquisition deadlines are still driven by nextDueUs.
+static constexpr UBaseType_t kTaskPriority = 1;
 static constexpr BaseType_t kTaskCore = 1;
 
 struct ClientSlot {
@@ -56,6 +61,7 @@ struct ClientSlot {
 };
 
 ClientSlot s_clients[kMaxClients];
+std::atomic<uint32_t> s_lastSuccessfulAcquireEndUs[kMaxClients];
 TimingSummary s_busAcquireUs[kMaxBuses];
 I2CBusSchedulerTimingStats s_timingSnapshot;
 
@@ -177,6 +183,7 @@ void resetRuntimeStats_() {
     slot.rowReuseStreakMax = 0;
     slot.rowNoSampleStreak = 0;
     slot.rowNoSampleStreakMax = 0;
+    s_lastSuccessfulAcquireEndUs[i].store(0, std::memory_order_release);
   }
   s_timingSnapshot = I2CBusSchedulerTimingStats{};
 }
@@ -263,6 +270,14 @@ void taskFn_(void* arg) {
     const uint32_t t0 = micros();
     const bool ok = client->asyncAcquire();
     const uint32_t acquireUs = (uint32_t)(micros() - t0);
+    if (ok) {
+      const size_t slotIndex = static_cast<size_t>(slot - s_clients);
+      if (slotIndex < kMaxClients) {
+        s_lastSuccessfulAcquireEndUs[slotIndex].store(
+            micros(),
+            std::memory_order_release);
+      }
+    }
 
 #if BODAQS_TIMING_INSTRUMENTATION
     TimingStats_record(slot->acquireUs, acquireUs);
@@ -325,6 +340,7 @@ bool registerClient(I2CAsyncClient* client) {
   s_clients[idx].client = client;
   s_clients[idx].registered = true;
   s_clients[idx].nextDueUs = 0;
+  s_lastSuccessfulAcquireEndUs[idx].store(0, std::memory_order_release);
   buildTimingSnapshot_();
   return true;
 }
@@ -333,6 +349,7 @@ void unregisterClient(I2CAsyncClient* client) {
   const int idx = findClient_(client);
   if (idx < 0) return;
   s_clients[idx] = ClientSlot{};
+  s_lastSuccessfulAcquireEndUs[idx].store(0, std::memory_order_release);
   buildTimingSnapshot_();
 }
 
@@ -412,6 +429,30 @@ bool isRunning() {
   }
 #endif
   return false;
+}
+
+bool lowPriorityWindowAvailable(
+    uint8_t busIndex,
+    uint32_t transferDurationUs,
+    uint32_t guardUs) {
+  if (busIndex >= kMaxBuses) return false;
+  const uint32_t nowUs = micros();
+  for (uint8_t i = 0; i < kMaxClients; ++i) {
+    I2CAsyncClient* client = s_clients[i].registered ? s_clients[i].client : nullptr;
+    if (!client || client->asyncI2CBusIndex() != busIndex || client->asyncMuted()) continue;
+    const uint32_t maximumGapUs = client->asyncMaximumLowPriorityGapUs();
+    if (maximumGapUs == 0) continue;
+    const uint32_t lastUs =
+        s_lastSuccessfulAcquireEndUs[i].load(std::memory_order_acquire);
+    if (lastUs == 0 || !I2CLowPriorityWindow::fits(
+                           static_cast<uint32_t>(nowUs - lastUs),
+                           transferDurationUs,
+                           guardUs,
+                           maximumGapUs)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void recordRowUse(I2CAsyncClient* client, uint32_t ageUs, bool fresh, bool haveSample) {

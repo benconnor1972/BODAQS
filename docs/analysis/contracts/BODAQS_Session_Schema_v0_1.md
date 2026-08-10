@@ -96,7 +96,12 @@ meta["channel_info"][channel] = {
     "unit": str | None,              # e.g. "mm", "g", "deg/s", "V"
     "sensor": str | None,            # source/logical grouping (e.g. "rear_shock", "imu")
     "end": str | None,               # bike end/location, usually "front" or "rear"
+    "domain": str | None,            # physical/analysis subject; not a coordinate basis
+    "mount_point": str | None,       # optional descriptive installation detail
     "role": str | None,              # e.g. "position", "accel", "gyro"
+    "component": str | None,         # vector component, normally "x", "y", or "z"
+    "coordinate_frame": str | None,  # e.g. sensor_native, body_local, bike_body, world_enu
+    "vector_group": str | None,      # sensor-local vector grouping identifier
     "nominal_rate_hz": float | None, # if known from firmware/config
     "source_columns": list[str],     # raw CSV columns used (optional)
 }

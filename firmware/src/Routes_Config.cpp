@@ -147,6 +147,10 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::DANF10NGps;
     return true;
   }
+  if (text.equalsIgnoreCase("bmi270_imu_i2c")) {
+    out = SensorType::BMI270ImuI2C;
+    return true;
+  }
   return false;
 }
 
@@ -158,6 +162,7 @@ static const char* defaultNamePrefix_(SensorType type) {
     case SensorType::AS5048BAngleI2C: return "as5048";
     case SensorType::AS5600AngleI2C: return "as5600r";
     case SensorType::DANF10NGps: return "gps";
+    case SensorType::BMI270ImuI2C: return "imu";
     default: return "sensor";
   }
 }
@@ -281,6 +286,7 @@ static const SensorType kEditableSensorTypes_[] = {
   SensorType::AS5048BAngleI2C,
   SensorType::AS5600AngleI2C,
   SensorType::DANF10NGps,
+  SensorType::BMI270ImuI2C,
 };
 
 static void emitSensorTypeOptions_(ChunkedHtmlResponse& html, SensorType selected) {

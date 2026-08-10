@@ -33,6 +33,7 @@ analysis/tests/*
 !analysis/tests/test_import_agent.py
 !analysis/tests/test_import_agent_logger_wifi.py
 !analysis/tests/test_library_api_adapter.py
+!analysis/tests/test_io_bdq_storage_types.py
 docs/analysis/old versions/*
 analysis/event schema/old versions/*
 firmware/libraries/*

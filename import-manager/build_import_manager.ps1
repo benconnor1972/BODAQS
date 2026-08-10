@@ -3,11 +3,12 @@ param(
     [switch]$InstallPyInstaller,
     [switch]$SkipPyInstallerBuild,
     [switch]$SkipWebAppBuild,
+    [switch]$SkipPackagedSmokeTests,
     [ValidateSet("cli", "setup", "service", "manager-installer", "installer", "all")]
     [string]$Target = "cli",
     [string]$InnoSetupExe = "",
     [string]$BundleVersion = "0.1.5-dev",
-    [string]$ImportManagerVersion = "0.1.5-beta",
+    [string]$ImportManagerVersion = "0.2.0-dev",
     [string]$LibraryServiceVersion = "0.1.0-dev",
     [string]$WorkbenchVersion = "0.1.0-dev",
     [switch]$IncludeDemoLibrary,
@@ -243,6 +244,16 @@ if ($serviceRequested) {
     Write-Host "Bundled web app:" $serviceWebDir
 }
 
+if (($pyinstallerTargetNames -contains "setup") -and -not $SkipPackagedSmokeTests) {
+    $packagedImuSmokeScript = Join-Path $importManagerDir "tools\smoke_test_packaged_imu_bdq.py"
+    Write-Host ""
+    Write-Host "Running packaged Import Manager IMU BDQ smoke test..."
+    & $PythonExe $packagedImuSmokeScript $pyinstallerTargetsByName["setup"].Executable
+    if ($LASTEXITCODE -ne 0) {
+        throw "Packaged Import Manager IMU BDQ smoke test failed with exit code $LASTEXITCODE."
+    }
+}
+
 Write-Host ""
 Write-Host "Build complete."
 foreach ($buildTarget in $targets) {
@@ -323,6 +334,16 @@ if ($installerRequested) {
         }
         $componentVersionsPath = Join-Path $installerStageDir "component_versions.json"
         $componentVersions | ConvertTo-Json -Depth 8 | Set-Content -Path $componentVersionsPath -Encoding UTF8
+
+        if (-not $SkipPackagedSmokeTests) {
+            $stagedManagerExe = Join-Path $managerStageDir "bodaqs-import-setup.exe"
+            Write-Host ""
+            Write-Host "Running staged desktop Workbench layout smoke test..."
+            & $PythonExe $packagedImuSmokeScript $stagedManagerExe --check-workbench-layout
+            if ($LASTEXITCODE -ne 0) {
+                throw "Staged desktop Workbench layout smoke test failed with exit code $LASTEXITCODE."
+            }
+        }
     }
 
     Write-Host ""

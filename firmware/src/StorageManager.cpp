@@ -1227,16 +1227,21 @@ static void StorageManager_logSampleRow_(const SampleRow& row) {
 #endif
 }
 
+void StorageManager_drainQueuedSamples() {
+  if (!loggingActive) return;
+  SampleRow row;
+  while (dequeueSample(row)) {
+    StorageManager_logSampleRow_(row);
+  }
+}
+
 
 // Stop log
 void StorageManager_stopLog() {
   if (!loggingActive) return;
 
   // Drain any remaining queued samples into the staging buffer
-  SampleRow row;
-  while (dequeueSample(row)) {
-      StorageManager_logSampleRow_(row);
-  }
+  StorageManager_drainQueuedSamples();
 
   if (!isCompactBinaryFormat_() && bufferIndex > 0) {
     logFileMMC.write((const uint8_t*)buffer, bufferIndex);

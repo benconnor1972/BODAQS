@@ -99,10 +99,10 @@ namespace {
   }
 
   // One sample, no scheduling logic (task provides cadence)
-static inline void sampleOnce_() {
-  if (!s_running) return;
-  if (s_intervalMs < 1) return;
-  if (s_intervalMs > 1000) return; // sanity, optional
+static inline bool sampleOnce_(bool allowStopped = false) {
+  if (!s_running && !allowStopped) return false;
+  if (s_intervalMs < 1) return false;
+  if (s_intervalMs > 1000) return false; // sanity, optional
 
 
   // --------- 1 Hz production-rate diagnostic ---------
@@ -161,11 +161,12 @@ static inline void sampleOnce_() {
 #if BODAQS_TIMING_INSTRUMENTATION
   const uint32_t enqueueT0 = micros();
 #endif
-  (void)StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, markNow);
+  const bool enqueued = StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, markNow);
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(s_enqueueUs, (uint32_t)(micros() - enqueueT0));
   TimingStats_record(s_sampleOnceUs, (uint32_t)(micros() - sampleT0));
 #endif
+  return enqueued;
 }
 
 
@@ -236,7 +237,7 @@ static void sampleTaskFn_(void* arg) {
     }
 
     s_sampleInProgress.store(true);
-    sampleOnce_();
+    (void)sampleOnce_();
     s_sampleInProgress.store(false);
 
     const int64_t afterSampleUs = esp_timer_get_time();
@@ -301,6 +302,26 @@ bool LoggingManager::start() {
   s_intervalMs = StorageManager_getSampleIntervalMs();
   s_lastSample = 0;
 
+  // sampling cadence
+  uint16_t requestedHz = s_cfg->sampleRateHz;
+  const uint16_t syncCapHz = SensorManager::synchronousMaxSampleRateHz();
+  if (syncCapHz != 0 && requestedHz > syncCapHz) {
+    LOGGING_LOGW("Sample rate capped by synchronous sensor: requested=%u Hz cap=%u Hz\n",
+                 (unsigned)requestedHz,
+                 (unsigned)syncCapHz);
+    requestedHz = syncCapHz;
+  }
+  const uint16_t effectiveRateHz = AnalogInputManager::configureFromConfig(*s_cfg, requestedHz);
+  char sensorError[128] = {0};
+  if (!SensorManager::validateLoggingStart(*s_cfg, effectiveRateHz, sensorError, sizeof(sensorError))) {
+    UI::toast("Sensor config", 1800, 1);
+    UI::status("Sensor config");
+    LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor validation failed");
+    return false;
+  }
+  StorageManager_setSampleRate(effectiveRateHz);
+  s_intervalMs = StorageManager_getSampleIntervalMs();
+
   // Logging owns the device: take Wi-Fi (and therefore web server) down NOW.
   if (WebServerManager::isRunning()) {
     UI::println("Stopping web server for logging...", "", UI::TARGET_SERIAL, UI::LVL_INFO); // no delay
@@ -316,18 +337,6 @@ bool LoggingManager::start() {
   //PowerManager::setCpuFreqForLogging();
 
   //SensorManager::debugDump("before-header");
-
-  // sampling cadence
-  uint16_t requestedHz = s_cfg->sampleRateHz;
-  const uint16_t syncCapHz = SensorManager::synchronousMaxSampleRateHz();
-  if (syncCapHz != 0 && requestedHz > syncCapHz) {
-    LOGGING_LOGW("Sample rate capped by synchronous sensor: requested=%u Hz cap=%u Hz\n",
-                 (unsigned)requestedHz,
-                 (unsigned)syncCapHz);
-    requestedHz = syncCapHz;
-  }
-  StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(*s_cfg, requestedHz));
-  s_intervalMs = StorageManager_getSampleIntervalMs();
 
   TRACE("RTC sanity check begin");
   const bool rtcValid = RTCManager_hasValidTime();
@@ -361,7 +370,16 @@ bool LoggingManager::start() {
 
   const uint32_t sensorStartT0 = millis();
   AnalogInputManager::onLoggingStart();
-  SensorManager::onLoggingStart();
+  if (!SensorManager::onLoggingStart(sensorError, sizeof(sensorError))) {
+    AnalogInputManager::onLoggingStop();
+    SensorManager::onLoggingStop();
+    StorageManager_stopLog();
+    WiFiManager::resumeAfterLogging();
+    UI::toast("Sensor start", 1800, 1);
+    UI::status("Sensor error");
+    LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor start failed");
+    return false;
+  }
   const uint32_t sensorStartMs = millis() - sensorStartT0;
   s_running = true;
 
@@ -442,6 +460,35 @@ void LoggingManager::stop() {
 #endif
   AnalogInputManager::onLoggingStop();
   SensorManager::onLoggingStop();
+
+  // Existing logger rows are made durable first. The IMU driver has now
+  // suspended production and completed its final FIFO drain, so one forced
+  // sparse row per remaining queued sample closes the session boundary.
+  StorageManager_drainQueuedSamples();
+  size_t pendingRows = SensorManager::pendingLoggingRows();
+  const size_t initialPendingRows = pendingRows;
+  size_t tailRowsWritten = 0;
+  while (pendingRows > 0 && tailRowsWritten < initialPendingRows) {
+    if (!sampleOnce_(true)) {
+      LOGGING_LOGW("final sensor row enqueue failed with %u rows pending\n",
+                   (unsigned)pendingRows);
+      break;
+    }
+    StorageManager_drainQueuedSamples();
+    ++tailRowsWritten;
+    const size_t remaining = SensorManager::pendingLoggingRows();
+    if (remaining >= pendingRows) {
+      LOGGING_LOGW("final sensor queue made no progress (%u rows pending)\n",
+                   (unsigned)remaining);
+      break;
+    }
+    pendingRows = remaining;
+  }
+  if (initialPendingRows > 0) {
+    LOGGING_LOGI("final sensor rows written=%u remaining=%u\n",
+                 (unsigned)tailRowsWritten,
+                 (unsigned)SensorManager::pendingLoggingRows());
+  }
   IndicatorManager::ledOff();
   StorageManager_stopLog();
   PowerManager::restoreCpuFreqAfterLogging();

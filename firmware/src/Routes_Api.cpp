@@ -450,6 +450,10 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::DANF10NGps;
     return true;
   }
+  if (text.equalsIgnoreCase("bmi270_imu_i2c")) {
+    out = SensorType::BMI270ImuI2C;
+    return true;
+  }
   return false;
 }
 
@@ -640,6 +644,7 @@ static void handleSensorTypes_(WebServer& srv) {
     SensorType::AS5048BAngleI2C,
     SensorType::AS5600AngleI2C,
     SensorType::DANF10NGps,
+    SensorType::BMI270ImuI2C,
   };
   for (const auto type : types) {
     const SensorTypeInfo* ti = SensorRegistry::lookup(type);

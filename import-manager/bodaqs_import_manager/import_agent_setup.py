@@ -38,6 +38,11 @@ from bodaqs_analysis.import_agent_logger_wifi_discovery import (
     discover_logger_wifi_sources,
     discover_single_logger_wifi_source,
 )
+from bodaqs_analysis.pipeline import load_bdq_session
+from bodaqs_analysis.signal_standardize import (
+    canonicalize_signal_names,
+    rebuild_and_validate_signal_registry,
+)
 from .import_agent_provisioning import (
     IMPORT_AGENT_APP_CONFIG_MODE_AUTO,
     IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED,
@@ -247,7 +252,71 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--startup-launch", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--start-watch", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--start-minimized", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-test-imu-bdq", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-test-workbench-layout", action="store_true", help=argparse.SUPPRESS)
     return parser
+
+
+def _smoke_test_imu_bdq(path: str | Path) -> dict[str, int]:
+    input_path = Path(path).expanduser().resolve()
+    if not input_path.is_file():
+        raise FileNotFoundError(f"IMU BDQ smoke-test input not found: {input_path}")
+
+    session = load_bdq_session(input_path)
+    session = canonicalize_signal_names(session)
+    session = rebuild_and_validate_signal_registry(session, strict_registry_parse=True)
+    dataframe = session.get("df")
+    if dataframe is None or dataframe.empty:
+        raise ValueError("IMU BDQ smoke-test input produced no samples")
+
+    expected_values = {
+        "frame_imu_accel_x_raw": [-32768, 32767, -123, 0],
+        "frame_imu_accel_y_raw": [-1, 1, 0, 32767],
+        "frame_imu_accel_z_raw": [0, 1234, 1, -32768],
+    }
+    columns = [str(column) for column in dataframe.columns]
+    for base_name, expected in expected_values.items():
+        matches = [column for column in columns if column == base_name or column.startswith(f"{base_name}_")]
+        if len(matches) != 1:
+            raise ValueError(f"IMU BDQ smoke-test input did not resolve one {base_name!r} column")
+        decoded = [int(value) for value in dataframe[matches[0]].tolist()]
+        if decoded != expected:
+            raise ValueError(f"IMU BDQ smoke-test values are wrong for {base_name!r}: {decoded!r}")
+
+        signal = session.get("meta", {}).get("signals", {}).get(matches[0], {})
+        if signal.get("kind") != "raw" or signal.get("domain") != "frame":
+            raise ValueError(
+                f"IMU BDQ smoke-test semantics are wrong for {base_name!r}: {signal!r}"
+            )
+
+    return {
+        "rows": int(len(dataframe.index)),
+        "columns": int(len(dataframe.columns)),
+    }
+
+
+def _smoke_test_workbench_layout() -> dict[str, str]:
+    service_exe = _packaged_library_service_exe()
+    if service_exe is None:
+        raise FileNotFoundError("Packaged BODAQS Library Service executable was not found")
+    web_root = _packaged_library_service_web_root()
+    if web_root is None:
+        raise FileNotFoundError("Packaged BODAQS Workbench web root was not found")
+
+    service = LibraryApiServiceProcess(libraries_root=service_exe.parent)
+    command, cwd = service._launch_command()
+    if Path(command[0]).resolve() != service_exe:
+        raise ValueError(f"Workbench launch command resolved the wrong executable: {command[0]}")
+    if cwd is None or cwd.resolve() != service_exe.parent:
+        raise ValueError(f"Workbench launch command resolved the wrong working directory: {cwd}")
+    if "--web-root" not in command or str(web_root) not in command:
+        raise ValueError("Workbench launch command did not include the packaged web root")
+
+    return {
+        "service_exe": str(service_exe),
+        "web_root": str(web_root),
+        "cwd": str(cwd),
+    }
 
 
 class ImportAgentManagerController:
@@ -684,6 +753,10 @@ class LibraryApiServiceProcess:
         if service_exe is not None:
             command = [str(service_exe)]
             cwd = service_exe.parent
+        elif getattr(sys, "frozen", False):
+            raise FileNotFoundError(
+                "Packaged BODAQS Library Service executable was not found beside the Import Manager."
+            )
         else:
             command = [
                 str(Path(sys.executable).resolve()),
@@ -716,29 +789,29 @@ def _subprocess_creationflags() -> int:
 def _packaged_library_service_exe() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
-    manager_dir = Path(sys.executable).resolve()
+    executable_path = Path(sys.executable).resolve()
     if sys.platform.startswith("win"):
-        candidate = manager_dir.parent / "service" / "bodaqs-library-service.exe"
+        candidate = executable_path.parent.parent / "service" / "bodaqs-library-service.exe"
     elif sys.platform == "darwin":
         # Inside a .app bundle: Contents/MacOS/<exe> -> Contents/Resources/service/
-        resources_dir = manager_dir.parent.parent / "Resources"
+        resources_dir = executable_path.parent.parent / "Resources"
         candidate = resources_dir / "service" / "bodaqs-library-service"
     else:
-        candidate = manager_dir.parent / "service" / "bodaqs-library-service"
+        candidate = executable_path.parent / "service" / "bodaqs-library-service"
     return candidate if candidate.is_file() else None
 
 
 def _packaged_library_service_web_root() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
-    manager_dir = Path(sys.executable).resolve()
+    executable_path = Path(sys.executable).resolve()
     if sys.platform.startswith("win"):
-        candidate = manager_dir.parent / "service" / "web"
+        candidate = executable_path.parent.parent / "service" / "web"
     elif sys.platform == "darwin":
-        resources_dir = manager_dir.parent.parent / "Resources"
+        resources_dir = executable_path.parent.parent / "Resources"
         candidate = resources_dir / "service" / "web"
     else:
-        candidate = manager_dir.parent / "service" / "web"
+        candidate = executable_path.parent / "service" / "web"
     return candidate if (candidate / "index.html").is_file() else None
 
 
@@ -5564,6 +5637,28 @@ class ImportAgentManagerWindow:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.smoke_test_workbench_layout:
+        try:
+            summary = _smoke_test_workbench_layout()
+        except Exception as exc:
+            print(f"Workbench layout smoke test failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+        print(
+            "Workbench layout smoke test passed: "
+            f"service={summary['service_exe']} web={summary['web_root']}"
+        )
+        return 0
+    if str(args.smoke_test_imu_bdq).strip():
+        try:
+            summary = _smoke_test_imu_bdq(args.smoke_test_imu_bdq)
+        except Exception as exc:
+            print(f"IMU BDQ smoke test failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+        print(
+            "IMU BDQ smoke test passed: "
+            f"rows={summary['rows']} columns={summary['columns']}"
+        )
+        return 0
     if args.startup_launch:
         args.start_watch = True
         args.start_minimized = True

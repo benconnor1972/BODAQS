@@ -118,6 +118,7 @@ from bodaqs_analysis.session_archive import (
 )
 from bodaqs_analysis.session_notes import build_session_catalog_df
 from bodaqs_analysis.ui.preprocess_file_selector import load_processed_sha256_set
+from tools.smoke_test_packaged_imu_bdq import imu_int16_bdq_fixture_bytes
 
 
 def _set_old_mtime(path: Path, *, seconds_ago: int = 120) -> None:
@@ -3431,6 +3432,84 @@ def test_import_agent_window_icon_ico_asset_exists():
         payload = handle.read()
 
     assert len(payload) > 0
+
+
+def test_manager_imu_smoke_entry_point_loads_int16_bdq(tmp_path: Path) -> None:
+    fixture_path = tmp_path / "imu_int16.bdq"
+    fixture_path.write_bytes(imu_int16_bdq_fixture_bytes())
+
+    summary = import_agent_setup_module._smoke_test_imu_bdq(fixture_path)
+
+    assert summary["rows"] == 4
+    assert summary["columns"] == 9
+
+
+def test_manager_imu_smoke_cli_bypasses_desktop_window(monkeypatch, tmp_path: Path) -> None:
+    fixture_path = tmp_path / "imu_int16.bdq"
+    fixture_path.write_bytes(imu_int16_bdq_fixture_bytes())
+
+    def fail_if_lock_is_created(*args, **kwargs):
+        raise AssertionError("smoke-test mode must not enter the desktop single-instance path")
+
+    monkeypatch.setattr(
+        import_agent_setup_module.SingleInstanceLock,
+        "for_app_config",
+        fail_if_lock_is_created,
+    )
+
+    assert import_agent_setup_module.main(["--smoke-test-imu-bdq", str(fixture_path)]) == 0
+
+
+def test_packaged_workbench_launch_uses_sibling_service_directory(monkeypatch, tmp_path: Path) -> None:
+    bundle_root = tmp_path / "BODAQS Desktop"
+    manager_exe = bundle_root / "manager" / "bodaqs-import-setup.exe"
+    service_exe = bundle_root / "service" / "bodaqs-library-service.exe"
+    web_root = bundle_root / "service" / "web"
+    manager_exe.parent.mkdir(parents=True)
+    service_exe.parent.mkdir(parents=True)
+    web_root.mkdir()
+    manager_exe.touch()
+    service_exe.touch()
+    (web_root / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    monkeypatch.setattr(import_agent_setup_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(import_agent_setup_module.sys, "executable", str(manager_exe))
+    monkeypatch.setattr(import_agent_setup_module.sys, "platform", "win32")
+
+    service = import_agent_setup_module.LibraryApiServiceProcess(libraries_root=tmp_path / "libraries")
+    command, cwd = service._launch_command()
+
+    assert Path(command[0]) == service_exe.resolve()
+    assert cwd == service_exe.parent.resolve()
+    assert command[command.index("--web-root") + 1] == str(web_root.resolve())
+
+
+def test_packaged_workbench_layout_smoke_cli_bypasses_desktop_window(monkeypatch, tmp_path: Path) -> None:
+    bundle_root = tmp_path / "BODAQS Desktop"
+    manager_exe = bundle_root / "manager" / "bodaqs-import-setup.exe"
+    service_exe = bundle_root / "service" / "bodaqs-library-service.exe"
+    web_root = bundle_root / "service" / "web"
+    manager_exe.parent.mkdir(parents=True)
+    service_exe.parent.mkdir(parents=True)
+    web_root.mkdir()
+    manager_exe.touch()
+    service_exe.touch()
+    (web_root / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    monkeypatch.setattr(import_agent_setup_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(import_agent_setup_module.sys, "executable", str(manager_exe))
+    monkeypatch.setattr(import_agent_setup_module.sys, "platform", "win32")
+
+    def fail_if_lock_is_created(*args, **kwargs):
+        raise AssertionError("smoke-test mode must not enter the desktop single-instance path")
+
+    monkeypatch.setattr(
+        import_agent_setup_module.SingleInstanceLock,
+        "for_app_config",
+        fail_if_lock_is_created,
+    )
+
+    assert import_agent_setup_module.main(["--smoke-test-workbench-layout"]) == 0
 
 
 def test_tray_supported_is_false_for_non_windows_platform():

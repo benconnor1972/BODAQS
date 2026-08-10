@@ -83,11 +83,12 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
             if unit is None or not isinstance(unit, str) or not unit.strip():
                 errors.append(f"{col!r}: engineered signal missing unit")
 
-        # Raw: should be counts
+        # Raw evidence uses the legacy canonical label "counts" or the BDQ
+        # storage-contract label "count".
         if kind == "raw":
-            if unit != RAW_UNIT_DEFAULT:
+            if unit not in {"count", RAW_UNIT_DEFAULT}:
                 errors.append(
-                    f"{col!r}: raw signal unit should be '{RAW_UNIT_DEFAULT}', got {unit!r}"
+                    f"{col!r}: raw signal unit should be 'count' or '{RAW_UNIT_DEFAULT}', got {unit!r}"
                 )
 
         # QC may be a boolean flag or a numeric quality metric such as GPS age,
@@ -127,12 +128,15 @@ def validate_signals_semantics(session: Dict[str, Any], *, spec: SignalSpec = DE
                     errors.append(f"{col!r}: quantity 'acc' should have unit 'mm/s^2', got {unit!r}")
                    # errors.append(f"{col!r}: quantity 'disp_norm' should have unit '1', got {unit!r}")
 
-        # For raw signals, we also want sensor + quantity='raw'
+        # Raw vector evidence carries the measured quantity explicitly, e.g.
+        # linear_acceleration_raw or angular_velocity_raw.
         if kind == "raw":
             if not _is_nonempty_str(sensor):
                 errors.append(f"{col!r}: raw signal missing sensor")
-            if quantity != "raw":
-                errors.append(f"{col!r}: raw signal quantity should be 'raw', got {quantity!r}")
+            if not _is_nonempty_str(quantity) or not (quantity == "raw" or quantity.endswith("_raw")):
+                errors.append(
+                    f"{col!r}: raw signal quantity should be 'raw' or end in '_raw', got {quantity!r}"
+                )
 
         # QC signals: do not require sensor/quantity (can be global flags)
 
