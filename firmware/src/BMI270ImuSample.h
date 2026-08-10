@@ -10,6 +10,8 @@ inline constexpr uint16_t kSensorRecoveryBefore = 0x0004;
 inline constexpr uint16_t kTimingDegraded = 0x0008;
 inline constexpr uint16_t kSensorTimeEstimated = 0x0010;
 inline constexpr uint16_t kTemperatureStale = 0x0020;
+inline constexpr uint16_t kAccelNearRail = 0x0040;
+inline constexpr uint16_t kGyroNearRail = 0x0080;
 
 } // namespace BMI270ImuStatus
 
@@ -41,3 +43,5 @@ static_assert(BMI270ImuStatus::kSensorRecoveryBefore == 0x0004);
 static_assert(BMI270ImuStatus::kTimingDegraded == 0x0008);
 static_assert(BMI270ImuStatus::kSensorTimeEstimated == 0x0010);
 static_assert(BMI270ImuStatus::kTemperatureStale == 0x0020);
+static_assert(BMI270ImuStatus::kAccelNearRail == 0x0040);
+static_assert(BMI270ImuStatus::kGyroNearRail == 0x0080);

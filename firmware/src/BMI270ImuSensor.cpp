@@ -196,6 +196,7 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
   const uint8_t count = maximum < kColumnCount ? maximum : kColumnCount;
   memcpy(out, values, count * sizeof(float));
   I2CBusScheduler::recordRowUse(&acquisition_, ageUs, ageValid, haveSample);
+  if (haveSample) acquisition_.recordRowEmission(ageUs, ageValid);
 }
 
 bool BMI270ImuSensor::describeColumn(uint8_t index, SensorColumnDescriptor& out) const {
@@ -359,6 +360,13 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.imuRecoverySuccesses = fifo.recoverySuccesses;
   out.imuRecoveryFailures = fifo.recoveryFailures;
   out.imuTerminalFaultEvents = fifo.terminalFaultEvents;
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    out.imuAccelNearRail[axis] = fifo.accelNearRail[axis];
+    out.imuGyroNearRail[axis] = fifo.gyroNearRail[axis];
+  }
+  out.imuTimingDegradedSamples = fifo.timingDegradedSamples;
+  out.imuSequenceDiscontinuityEvents = fifo.sequenceDiscontinuityEvents;
+  out.imuNativeTimeDiscontinuityEvents = fifo.nativeTimeDiscontinuityEvents;
   out.imuQueueCapacity = fifo.queueCapacity;
   out.imuQueueHighWater = fifo.queueHighWater;
   out.imuFinalQueueDepth = static_cast<uint16_t>(acquisition_.queuedSamples());
@@ -370,6 +378,20 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.imuLastValidationIssues = fifo.lastValidationIssues;
   out.imuI2cMaximumFailureStreak = transport.maximumFailureStreak;
   out.imuI2cBusLockWaitMaximumUs = transport.busLockWaitMaximumUs;
+  const BMI270AgeSummary age = acquisition_.ageSummary();
+  out.imuAgeSamples = age.count;
+  out.imuAgeUnavailable = age.unavailable;
+  out.imuAgeClipped = age.clipped;
+  out.imuAgeMinimumUs = age.minimumUs;
+  out.imuAgeMedianUs = age.medianUs;
+  out.imuAgeP95Us = age.p95Us;
+  out.imuAgeP99Us = age.p99Us;
+  out.imuAgeMaximumUs = age.maximumUs;
+  out.imuAgeResolutionUs = age.resolutionUs;
+  const BMI270RunningStats& temperature = acquisition_.temperatureStats();
+  out.imuTemperatureSamples = temperature.count();
+  out.imuTemperatureMinimumC = static_cast<float>(temperature.minimum());
+  out.imuTemperatureMaximumC = static_cast<float>(temperature.maximum());
   out.imuLastValidationFifoConfig = fifo.lastValidationFifoConfig;
   out.imuLastValidationFifoWatermark = fifo.lastValidationFifoWatermark;
   out.imuLastValidationChipId = fifo.lastValidationChipId;
@@ -383,6 +405,24 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.imuRecoveryAttemptsWithoutProgress = fifo.recoveryAttemptsWithoutProgress;
   out.imuLastRecoveryReason = static_cast<uint8_t>(fifo.lastRecoveryReason);
   out.imuLastValidationApiResult = fifo.lastValidationApiResult;
+  const BMI270StartupObservationResult& startup = acquisition_.startupObservation();
+  out.imuStartupObservationState = static_cast<uint8_t>(startup.state);
+  out.imuStartupRejectionMask = startup.rejectionMask;
+  out.imuStartupConfiguredSeconds = startup.configuredSeconds;
+  out.imuStartupTargetSampleSlots = startup.targetSampleSlots;
+  out.imuStartupValidSamples = startup.validSamples;
+  out.imuStartupTemperatureSamples = startup.temperatureSamples;
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    out.imuStartupGyroMeanRaw[axis] = static_cast<float>(startup.gyroMeanRaw[axis]);
+    out.imuStartupGyroStdRaw[axis] = static_cast<float>(startup.gyroStdRaw[axis]);
+  }
+  out.imuStartupAccelMagnitudeMeanG = static_cast<float>(startup.accelMagnitudeMeanG);
+  out.imuStartupAccelMagnitudeStdG = static_cast<float>(startup.accelMagnitudeStdG);
+  out.imuStartupMaximumGyroMagnitudeDps =
+      static_cast<float>(startup.maximumGyroMagnitudeDps);
+  out.imuStartupTemperatureMeanC = static_cast<float>(startup.temperatureMeanC);
+  out.imuStartupTemperatureMinimumC = static_cast<float>(startup.temperatureMinimumC);
+  out.imuStartupTemperatureMaximumC = static_cast<float>(startup.temperatureMaximumC);
   out.imuTerminalFault = fifo.terminalFault;
   out.imuCounterSaturated = fifo.counterSaturated;
   return true;
@@ -441,7 +481,7 @@ bool BMI270ImuSensor::validateLoggingStart(
 
 bool BMI270ImuSensor::startLoggingSession(char* error, size_t errorCapacity) {
   if (muted_) return true;
-  if (!acquisition_.startSession()) {
+  if (!acquisition_.startSession(params_.startupBiasCaptureSeconds)) {
     return fail_(error, errorCapacity, "%s BMI270 session start failed", params_.name);
   }
   return true;
@@ -559,7 +599,7 @@ const ParamDef* BMI270ImuSensor::paramDefs(size_t& count) {
     {"mount_x", ParamType::Enum, "+x", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local X as a signed sensor-native axis"},
     {"mount_y", ParamType::Enum, "+y", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local Y as a signed sensor-native axis"},
     {"mount_z", ParamType::Enum, "+z", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local Z as a signed sensor-native axis"},
-    {"startup_bias_capture_s", ParamType::Int, "5", "0", "60", nullptr, "Stationary observation window (implemented in Phase 5)"},
+    {"startup_bias_capture_s", ParamType::Int, "5", "0", "60", nullptr, "Startup stationary-observation window; records bias evidence without modifying raw samples"},
     {"calibration_ref", ParamType::String, "", nullptr, nullptr, nullptr, "Optional host calibration reference"},
   };
   count = sizeof(definitions) / sizeof(definitions[0]);

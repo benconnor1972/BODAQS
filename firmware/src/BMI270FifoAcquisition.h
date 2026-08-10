@@ -9,6 +9,7 @@
 #include "BMI270FifoReadPlan.h"
 #include "BMI270ImuSample.h"
 #include "BMI270ProgressWatchdog.h"
+#include "BMI270SessionQuality.h"
 #include "FixedSpscQueue.h"
 #include "I2CBusScheduler.h"
 
@@ -64,6 +65,11 @@ struct BMI270FifoDiagnostics {
   uint64_t fifoFlushFailures = 0;
   uint64_t stopDrainAttempts = 0;
   uint64_t stopDrainFailures = 0;
+  uint64_t accelNearRail[3] {};
+  uint64_t gyroNearRail[3] {};
+  uint64_t timingDegradedSamples = 0;
+  uint64_t sequenceDiscontinuityEvents = 0;
+  uint64_t nativeTimeDiscontinuityEvents = 0;
 
   uint16_t maximumFifoBytesObserved = 0;
   uint16_t queueCapacity = 0;
@@ -126,17 +132,23 @@ public:
   // These calls require the I2C scheduler to be stopped. stopSession() stops
   // new production, performs the final FIFO drain, and leaves queued samples
   // available to the Phase 4 row adapter.
-  bool startSession();
+  bool startSession(uint16_t startupObservationSeconds = 5);
   bool stopSession();
   size_t discardQueuedSamples();
 
   bool pop(BMI270ImuSample& sample);
+  void recordRowEmission(uint32_t ageUs, bool ageValid);
   size_t queuedSamples() const { return queue_.size(); }
   bool sessionActive() const { return sessionActive_.load(std::memory_order_acquire); }
 
   // Read diagnostics only after the scheduler has stopped; cumulative 64-bit
   // fields are intentionally not synchronized on the hot acquisition path.
   const BMI270FifoDiagnostics& diagnostics() const { return diagnostics_; }
+  const BMI270StartupObservationResult& startupObservation() const {
+    return startupObservation_.result();
+  }
+  BMI270AgeSummary ageSummary() const { return ageHistogram_.summary(); }
+  const BMI270RunningStats& temperatureStats() const { return temperatureStats_; }
   const BMI270Device& device() const { return device_; }
   BMI270Device& device() { return device_; }
 
@@ -209,6 +221,11 @@ private:
   uint16_t recoveryBackoffPolls_ = 0;
   BMI270ProgressWatchdog progressWatchdog_ { kNoSampleProgressTimeoutUs };
   BMI270RecoveryBudget recoveryBudget_ { kMaximumConsecutiveRecoveryFailures };
+  BMI270StartupObservation startupObservation_;
+  BMI270AgeHistogram ageHistogram_;
+  BMI270RunningStats temperatureStats_;
+  bool havePreviousDequeuedSequence_ = false;
+  uint32_t previousDequeuedSequence_ = 0;
   bool havePreviousSensorTime_ = false;
   uint32_t previousSensorTime_ = 0;
   bool haveTemperature_ = false;

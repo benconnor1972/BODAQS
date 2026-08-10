@@ -246,6 +246,21 @@ The session summary records:
 
 These statistics are observations only. Firmware does not subtract the gyro mean or otherwise alter logged raw samples.
 
+The `rejection_mask` is additive, so a window can report more than one cause:
+
+| Mask | Meaning |
+|---:|---|
+| `0x0001` | Fewer than 800 valid samples |
+| `0x0002` | FIFO, queue, recovery, or degraded-timing incident |
+| `0x0004` | Mean acceleration magnitude outside the gravity band |
+| `0x0008` | Acceleration magnitude unstable |
+| `0x0010` | Gyroscope X axis unstable |
+| `0x0020` | Gyroscope Y axis unstable |
+| `0x0040` | Gyroscope Z axis unstable |
+| `0x0080` | Gyroscope vector magnitude indicates motion |
+
+The summary's `rejection_reason` is the first set cause in the order above and is intended for display; consumers needing complete evidence use `rejection_mask`. A configured window of zero produces the explicit `disabled` state.
+
 ## 12. Session boundaries
 
 At logging start:
@@ -285,11 +300,13 @@ The final summary must contain, per IMU:
 - I2C bus-lock attempt and timeout counts, cumulative lock wait, and maximum lock wait;
 - timing-degraded sample count;
 - acquisition-age minimum, median, 95th percentile, 99th percentile, and maximum where feasible;
-- sequence and native-time discontinuity counts;
+- discontinuities between emitted sequence values and native-time-anchor discontinuity counts;
 - near-rail counts per accelerometer and gyro axis;
 - temperature minimum and maximum;
 - pre-session discard and stop-drain failure counts;
 - startup stationary observation.
+
+Acquisition-age percentiles are fixed-memory histogram upper bounds with 256 microsecond resolution. Values above the histogram range are retained in the exact maximum, included in the final bucket for percentile calculation, and counted separately as `histogram_clipped`; unavailable ages are counted separately and excluded from percentiles.
 
 No data-loss counter may saturate silently. If an exact count is unavailable, the corresponding diagnostic explicitly states that only an event count is known.
 

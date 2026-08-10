@@ -4,6 +4,7 @@
 #include "BMI270FifoReadPlan.h"
 #include "BMI270ImuTiming.h"
 #include "BMI270ProgressWatchdog.h"
+#include "BMI270SessionQuality.h"
 #include "FixedSpscQueue.h"
 #include "I2CLowPriorityWindow.h"
 
@@ -189,6 +190,101 @@ int runBMI270FifoTests() {
         check((discontinuous[0].statusBefore &
                BMI270ImuStatus::kFifoDiscontinuityBefore) != 0,
               "inconsistent consecutive anchors mark a discontinuity");
+        check(discontinuous[0].sensorTimeDiscontinuityBefore,
+              "native-clock discontinuities remain separately countable");
+    }
+
+    {
+        BMI270StartupObservation observation;
+        observation.begin(5);
+        for (uint32_t sequence = 0; sequence < 1000; ++sequence) {
+            observation.observe(
+                sequence,
+                0, 0, 2048,
+                2, -3, 1,
+                512, true,
+                BMI270ImuStatus::kSensorTimeEstimated);
+        }
+        const BMI270StartupObservationResult& result = observation.result();
+        check(result.state == BMI270StartupObservationState::Accepted &&
+              result.rejectionMask == 0,
+              "stationary startup observation is accepted");
+        check(result.validSamples == 1000 && result.temperatureSamples == 1000,
+              "startup observation reports sample coverage");
+        check(result.accelMagnitudeMeanG == 1.0 &&
+              result.accelMagnitudeStdG == 0.0,
+              "startup observation reports gravity magnitude without changing raw samples");
+        check(result.gyroMeanRaw[0] == 2.0 &&
+              result.gyroMeanRaw[1] == -3.0 &&
+              result.gyroMeanRaw[2] == 1.0,
+              "startup observation retains gyro bias estimates in raw counts");
+        check(result.temperatureMeanC == 24.0 &&
+              result.temperatureMinimumC == 24.0 &&
+              result.temperatureMaximumC == 24.0,
+              "startup observation reports the fresh temperature range");
+    }
+
+    {
+        BMI270StartupObservation observation;
+        observation.begin(5);
+        for (uint32_t sequence = 0; sequence < 1000; ++sequence) {
+            const int16_t accelZ = (sequence & 1u) ? 2048 : 2600;
+            const int16_t gyroX = (sequence & 1u) ? 100 : -100;
+            observation.observe(
+                sequence,
+                0, 0, accelZ,
+                gyroX, 0, 0,
+                0, false,
+                0);
+        }
+        const BMI270StartupObservationResult& result = observation.result();
+        check(result.state == BMI270StartupObservationState::Rejected,
+              "moving startup observation is rejected");
+        check((result.rejectionMask &
+               BMI270StartupRejection::kAccelMagnitudeUnstable) != 0 &&
+              (result.rejectionMask & BMI270StartupRejection::kGyroXUnstable) != 0 &&
+              (result.rejectionMask & BMI270StartupRejection::kGyroMotionDetected) != 0,
+              "startup rejection identifies motion and instability causes");
+    }
+
+    {
+        BMI270StartupObservation observation;
+        observation.begin(5);
+        for (uint32_t sequence = 0; sequence < 1000; ++sequence) {
+            observation.observe(
+                sequence,
+                0, 0, 2048,
+                0, 0, 0,
+                0, false,
+                sequence == 500 ? BMI270ImuStatus::kTimingDegraded : 0);
+        }
+        check((observation.result().rejectionMask &
+               BMI270StartupRejection::kQualityIncident) != 0,
+              "a transport or timing incident invalidates the stationary observation");
+
+        observation.begin(0);
+        check(observation.result().state == BMI270StartupObservationState::Disabled,
+              "zero seconds explicitly disables startup observation");
+    }
+
+    {
+        BMI270AgeHistogram histogram;
+        histogram.reset();
+        histogram.add(100, true);
+        histogram.add(300, true);
+        histogram.add(1000, true);
+        histogram.add(5000, true);
+        histogram.add(70000, true);
+        histogram.add(0, false);
+        const BMI270AgeSummary result = histogram.summary();
+        check(result.count == 5 && result.unavailable == 1 && result.clipped == 1,
+              "acquisition-age histogram accounts for valid, unavailable, and clipped rows");
+        check(result.minimumUs == 100 && result.maximumUs == 70000 &&
+              result.resolutionUs == 256,
+              "acquisition-age histogram preserves exact range and declared resolution");
+        check(result.medianUs == 1023 && result.p95Us == 65535 &&
+              result.p99Us == 65535,
+              "acquisition-age percentile upper bounds are deterministic");
     }
 
     {

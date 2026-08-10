@@ -31,6 +31,11 @@ constexpr uint16_t kCarryStatusMask =
     BMI270ImuStatus::kQueueDropBefore |
     BMI270ImuStatus::kSensorRecoveryBefore |
     BMI270ImuStatus::kTimingDegraded;
+constexpr int16_t kNearRailThreshold = 32760;
+
+bool nearRail_(int16_t value) {
+  return value <= -kNearRailThreshold || value >= kNearRailThreshold;
+}
 
 static_assert(BMI270FifoAcquisition::kRawBufferBytes >=
               BMI270FifoReadPlan::bytesToRead(2048));
@@ -123,7 +128,7 @@ void BMI270FifoAcquisition::shutdown() {
   initialized_ = false;
 }
 
-bool BMI270FifoAcquisition::startSession() {
+bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   if (!initialized_ && !begin()) return false;
   if (sessionActive()) return true;
 
@@ -132,6 +137,7 @@ bool BMI270FifoAcquisition::startSession() {
   const uint64_t preSessionDiscards = static_cast<uint64_t>(queue_.size());
   queue_.clear();
   resetSessionState_(preSessionDiscards);
+  startupObservation_.begin(startupObservationSeconds);
   device_.resetTransportDiagnostics();
 
   addCounter_(diagnostics_.sessionStartValidationAttempts);
@@ -164,6 +170,7 @@ bool BMI270FifoAcquisition::stopSession() {
     addCounter_(diagnostics_.stopDrainFailures);
     ok = false;
   }
+  startupObservation_.finish();
   return ok;
 }
 
@@ -176,8 +183,18 @@ size_t BMI270FifoAcquisition::discardQueuedSamples() {
 
 bool BMI270FifoAcquisition::pop(BMI270ImuSample& sample) {
   if (!queue_.pop(sample)) return false;
+  if (havePreviousDequeuedSequence_ &&
+      sample.sequence != previousDequeuedSequence_ + 1u) {
+    addCounter_(diagnostics_.sequenceDiscontinuityEvents);
+  }
+  previousDequeuedSequence_ = sample.sequence;
+  havePreviousDequeuedSequence_ = true;
   addCounter_(diagnostics_.samplesDequeued);
   return true;
+}
+
+void BMI270FifoAcquisition::recordRowEmission(uint32_t ageUs, bool ageValid) {
+  ageHistogram_.add(ageUs, ageValid);
 }
 
 bool BMI270FifoAcquisition::asyncAcquire() {
@@ -212,6 +229,7 @@ bool BMI270FifoAcquisition::asyncAcquire() {
   }
   pendingStatus_ |= BMI270ImuStatus::kFifoDiscontinuityBefore |
                     BMI270ImuStatus::kTimingDegraded;
+  startupObservation_.noteQualityIncident();
   if (consecutiveDrainFailures_ < kRecoveryFailureThreshold) return false;
 
   const bool recovered = recoverAcquisition_(
@@ -526,6 +544,7 @@ bool BMI270FifoAcquisition::recoverAcquisition_(BMI270RecoveryReason reason) {
   pendingStatus_ |= BMI270ImuStatus::kFifoDiscontinuityBefore |
                     BMI270ImuStatus::kSensorRecoveryBefore |
                     BMI270ImuStatus::kTimingDegraded;
+  startupObservation_.noteQualityIncident();
   return true;
 }
 
@@ -538,6 +557,7 @@ bool BMI270FifoAcquisition::handleNoSampleProgress_(uint32_t nowUs) {
   validateOperationalState_(true, true);
   pendingStatus_ |= BMI270ImuStatus::kFifoDiscontinuityBefore |
                     BMI270ImuStatus::kTimingDegraded;
+  startupObservation_.noteQualityIncident();
   const bool recovered = recoverAcquisition_(BMI270RecoveryReason::NoSampleProgress);
   (void)recovered;
   return false;
@@ -589,6 +609,10 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   lastTemperatureRaw_ = 0;
   lastTemperatureHostUs_ = 0;
   nextTemperatureReadUs_ = 0;
+  ageHistogram_.reset();
+  temperatureStats_.reset();
+  havePreviousDequeuedSequence_ = false;
+  previousDequeuedSequence_ = 0;
 }
 
 void BMI270FifoAcquisition::accumulateParseDiagnostics_(
@@ -604,6 +628,7 @@ void BMI270FifoAcquisition::accumulateParseDiagnostics_(
   addCounter_(diagnostics_.partialFrames, parsed.partialFrames);
   if (parsed.overreadSeen) addCounter_(diagnostics_.overreadFrames);
   addCounter_(diagnostics_.parserOutputDrops, parsed.outputDrops);
+  if (parsed.outputDrops) startupObservation_.noteQualityIncident();
 }
 
 void BMI270FifoAcquisition::enqueueParsed_(
@@ -656,6 +681,30 @@ void BMI270FifoAcquisition::enqueueParsed_(
     sample.statusFlags = parsed_[index].statusBefore;
     sample.sensorTime = parsed_[index].sensorTime;
     if (!temperatureFresh) sample.statusFlags |= BMI270ImuStatus::kTemperatureStale;
+    if (nearRail_(sample.accelX)) {
+      sample.statusFlags |= BMI270ImuStatus::kAccelNearRail;
+      addCounter_(diagnostics_.accelNearRail[0]);
+    }
+    if (nearRail_(sample.accelY)) {
+      sample.statusFlags |= BMI270ImuStatus::kAccelNearRail;
+      addCounter_(diagnostics_.accelNearRail[1]);
+    }
+    if (nearRail_(sample.accelZ)) {
+      sample.statusFlags |= BMI270ImuStatus::kAccelNearRail;
+      addCounter_(diagnostics_.accelNearRail[2]);
+    }
+    if (nearRail_(sample.gyroX)) {
+      sample.statusFlags |= BMI270ImuStatus::kGyroNearRail;
+      addCounter_(diagnostics_.gyroNearRail[0]);
+    }
+    if (nearRail_(sample.gyroY)) {
+      sample.statusFlags |= BMI270ImuStatus::kGyroNearRail;
+      addCounter_(diagnostics_.gyroNearRail[1]);
+    }
+    if (nearRail_(sample.gyroZ)) {
+      sample.statusFlags |= BMI270ImuStatus::kGyroNearRail;
+      addCounter_(diagnostics_.gyroNearRail[2]);
+    }
     uint64_t estimatedHostUs = 0;
     sample.acquisitionAnchorUs = BMI270ImuTiming::estimateHostSampleTimeUs(
         referenceSensorTime,
@@ -669,6 +718,26 @@ void BMI270FifoAcquisition::enqueueParsed_(
     nextSequence_ += parsed_[index].skippedFramesBefore;
     sample.sequence = nextSequence_++;
     sample.statusFlags |= pendingStatus_;
+    if (parsed_[index].sensorTimeDiscontinuityBefore) {
+      addCounter_(diagnostics_.nativeTimeDiscontinuityEvents);
+    }
+    if (sample.statusFlags & BMI270ImuStatus::kTimingDegraded) {
+      addCounter_(diagnostics_.timingDegradedSamples);
+    }
+    if (temperatureFresh) {
+      temperatureStats_.add(static_cast<double>(temperatureRaw) / 512.0 + 23.0);
+    }
+    startupObservation_.observe(
+        sample.sequence,
+        sample.accelX,
+        sample.accelY,
+        sample.accelZ,
+        sample.gyroX,
+        sample.gyroY,
+        sample.gyroZ,
+        sample.temperatureRaw,
+        temperatureFresh,
+        sample.statusFlags);
     size_t depth = 0;
     if (queue_.push(sample, &depth)) {
       addCounter_(diagnostics_.samplesEnqueued);
@@ -678,6 +747,7 @@ void BMI270FifoAcquisition::enqueueParsed_(
       pendingStatus_ = 0;
     } else {
       addCounter_(diagnostics_.queueDrops);
+      startupObservation_.noteQualityIncident();
       pendingStatus_ |= (sample.statusFlags & kCarryStatusMask) |
                         BMI270ImuStatus::kQueueDropBefore;
     }

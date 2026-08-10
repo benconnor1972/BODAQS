@@ -755,3 +755,38 @@ Firmware and host-contract changes completed on 2026-08-10:
 Verification completed with 62 passing targeted analysis tests covering logger sidecars, BDQ types/metadata, signal registry behavior, GPS grouping, and route construction. The RC3 `bodaqs_s3_mini_n4r2` firmware environment builds successfully at 147072 of 327680 bytes RAM (44.9 percent) and 1682113 of 2097152 bytes flash (80.2 percent). Existing ArduinoJson deprecation warnings remain unrelated.
 
 Hardware acceptance should confirm that an existing `location=frame` configuration migrates without intervention, canonical domain/end metadata appears in both CSV-sidecar and BDQ logs, and the first finite GPS point of every session is a newly received observation rather than the prior session endpoint.
+
+## 20. Phase 5 calibration-observation and quality-diagnostics record
+
+Firmware implementation completed on 2026-08-10:
+
+- the configured startup window now accumulates fixed-memory running statistics for raw gyro bias, gyro stability, acceleration magnitude, and fresh BMI270 temperature observations;
+- the observation is accepted or rejected against the contract thresholds, with an additive rejection mask and a display-oriented primary reason, and never alters the raw accelerometer or gyro samples;
+- FIFO, queue, recovery, and degraded-timing incidents during the window invalidate the observation, while a zero-second window is explicitly reported as disabled;
+- accelerometer and gyro near-rail events are flagged on the affected stored sample and counted independently for all six axes;
+- cumulative diagnostics now include degraded-timing sample count, discontinuities between emitted sequence values, native-clock-anchor discontinuity events, session temperature range, and fixed-memory acquisition-age median, p95, p99, exact range, unavailable count, and histogram-clipping count;
+- the CSV sidecar and embedded BDQ final summaries publish the same versioned startup observation and session-quality evidence; and
+- parser tests now distinguish a native-clock-anchor discontinuity from other FIFO discontinuities, and native tests cover accepted, moving, quality-invalidated, and disabled startup windows plus deterministic acquisition-age statistics.
+
+The selected Bosch API contains component self-test entry points, but those operations reconfigure the BMI270 and need an explicit maintenance-mode lifecycle, restoration verification, and user-facing result contract. They are therefore retained in Milestone 2 rather than being run automatically at session startup.
+
+The RC3 `bodaqs_s3_mini_n4r2` production build compiles and links successfully at 147076 of 327680 bytes RAM (44.9 percent) and 1689537 of 2097152 bytes flash (80.6 percent). The focused native test source compiles with the ESP32-S3 C++ toolchain; executing the host-native test target still requires a host C++ compiler and Make implementation. Hardware acceptance requires stationary and deliberately moving starts, a controlled near-rail stimulus where practical, and confirmation that the final sidecar and BDQ summaries agree. The separate state-loss/disconnect recovery exercise is tracked in Azure DevOps User Story 74.
+
+## 21. Phase 6 host extraction and QC record
+
+Host implementation completed on 2026-08-10:
+
+- logger CSV and BDQ session loading now preserves the versioned `imu_configs` metadata and automatically builds one `imu_<sensor>` secondary stream for each complete IMU semantic group;
+- extraction filters `sample_valid=1` rows without changing the primary logger table or synthesizing replacements for loss;
+- 24-bit firmware sequence and BMI270 sensor time are unwrapped independently, with gaps, duplicates, reversals, wrap, and tick/sequence inconsistency reported explicitly;
+- the spectrum-ready `time_s` retains missing native slots, while logger emission time, acquisition-age-corrected host time, raw native tick time, and their provenance remain separate columns;
+- effective range metadata drives raw-to-SI conversion, and the recorded signed axis permutation produces reversible `body_local` derived channels while retaining all sensor-native raw and SI columns;
+- deterministic `bodaqs.imu_qc.v1` reports cover native rate and coverage, loss and status flags, acquisition-age distribution, clock drift/residual, per-axis near-rail event locations, temperature, startup stationary evidence, selected firmware counters, duration, and file-size rate;
+- QC is retained in persisted session metadata and secondary stream metadata links to it, so imported rides can be compared without reopening the source BDQ; and
+- missing metadata either raises a clear error in strict extraction or produces an explicitly degraded raw stream in automatic import mode.
+
+The public host API is `extract_imu_stream`, `build_imu_streams`, and `imu_qc_report`. Detailed column and QC semantics are documented in [BMI270 IMU Extraction and QC](../analysis/BMI270_IMU_Extraction_and_QC.md).
+
+Automated synthetic coverage includes signed decoding inherited from the BDQ reader, native-clock and sequence wrap, a missing sample, scaling, a right-handed non-identity mounting transform, clock fit, status localization, near-rail localization, persisted QC, idempotent stream construction, and strict/degraded missing-metadata behavior. The implementation was also exercised against `260809_093639_db1cfd00ff6b.bdq`, producing 30719 valid IMU samples at a measured 200 Hz and correctly identifying its known 112-sample discontinuity.
+
+Targeted analysis verification reports 69 passing tests. The complete analysis suite reports 344 passed and 1 skipped; its nine failures are the same pre-existing macOS-on-Windows, catalog-version, and legacy preprocessing-interface expectations recorded before Phase 6. Phase 6 deliberately stops before resampling, interpolation, orientation fusion, bias application, or gravity removal.

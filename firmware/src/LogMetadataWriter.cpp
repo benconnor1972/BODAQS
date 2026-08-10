@@ -102,6 +102,130 @@ void appendKeyFloat_(String& out, uint8_t depth, const char* key, float value, b
   out += '\n';
 }
 
+const char* imuStartupStateName_(uint8_t state) {
+  switch (state) {
+    case 0: return "disabled";
+    case 1: return "collecting";
+    case 2: return "accepted";
+    case 3: return "rejected";
+    default: return "unknown";
+  }
+}
+
+const char* imuStartupRejectionName_(uint8_t state, uint16_t mask) {
+  if (state == 0) return "disabled";
+  if (state == 1) return "window_incomplete";
+  if (mask == 0) return "none";
+  if (mask & 0x0001) return "insufficient_samples";
+  if (mask & 0x0002) return "quality_incident";
+  if (mask & 0x0004) return "accel_mean_outside_gravity_band";
+  if (mask & 0x0008) return "accel_magnitude_unstable";
+  if (mask & 0x0010) return "gyro_x_unstable";
+  if (mask & 0x0020) return "gyro_y_unstable";
+  if (mask & 0x0040) return "gyro_z_unstable";
+  if (mask & 0x0080) return "gyro_motion_detected";
+  return "unknown";
+}
+
+void appendImuQualityDiagnostics_(
+    String& out,
+    uint8_t depth,
+    const SensorRuntimeDiagnostics& diagnostics) {
+  appendKey_(out, depth, "near_rail_counts");
+  out += F("{\n");
+  appendKey_(out, depth + 1, "accel");
+  out += F("{\n");
+  appendKeyUInt64_(out, depth + 2, "x", diagnostics.imuAccelNearRail[0]);
+  appendKeyUInt64_(out, depth + 2, "y", diagnostics.imuAccelNearRail[1]);
+  appendKeyUInt64_(out, depth + 2, "z", diagnostics.imuAccelNearRail[2], false);
+  appendIndent_(out, depth + 1);
+  out += F("},\n");
+  appendKey_(out, depth + 1, "gyro");
+  out += F("{\n");
+  appendKeyUInt64_(out, depth + 2, "x", diagnostics.imuGyroNearRail[0]);
+  appendKeyUInt64_(out, depth + 2, "y", diagnostics.imuGyroNearRail[1]);
+  appendKeyUInt64_(out, depth + 2, "z", diagnostics.imuGyroNearRail[2], false);
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += F("},\n");
+
+  appendKeyUInt64_(out, depth, "timing_degraded_samples", diagnostics.imuTimingDegradedSamples);
+  appendKeyUInt64_(out, depth, "sequence_discontinuity_events", diagnostics.imuSequenceDiscontinuityEvents);
+  appendKeyUInt64_(out, depth, "native_time_discontinuity_events", diagnostics.imuNativeTimeDiscontinuityEvents);
+
+  appendKey_(out, depth, "acquisition_age_us");
+  out += F("{\n");
+  appendKeyUInt64_(out, depth + 1, "count", diagnostics.imuAgeSamples);
+  appendKeyUInt64_(out, depth + 1, "unavailable", diagnostics.imuAgeUnavailable);
+  appendKeyUInt64_(out, depth + 1, "histogram_clipped", diagnostics.imuAgeClipped);
+  appendKeyUInt_(out, depth + 1, "histogram_resolution_us", diagnostics.imuAgeResolutionUs);
+  appendKeyUInt_(out, depth + 1, "minimum", diagnostics.imuAgeMinimumUs);
+  appendKeyUInt_(out, depth + 1, "median", diagnostics.imuAgeMedianUs);
+  appendKeyUInt_(out, depth + 1, "p95", diagnostics.imuAgeP95Us);
+  appendKeyUInt_(out, depth + 1, "p99", diagnostics.imuAgeP99Us);
+  appendKeyUInt_(out, depth + 1, "maximum", diagnostics.imuAgeMaximumUs, false);
+  appendIndent_(out, depth);
+  out += F("},\n");
+
+  appendKey_(out, depth, "temperature_deg_c");
+  out += F("{\n");
+  appendKeyUInt64_(out, depth + 1, "samples", diagnostics.imuTemperatureSamples);
+  appendKeyFloat_(out, depth + 1, "minimum", diagnostics.imuTemperatureMinimumC);
+  appendKeyFloat_(out, depth + 1, "maximum", diagnostics.imuTemperatureMaximumC, false);
+  appendIndent_(out, depth);
+  out += F("},\n");
+
+  appendKey_(out, depth, "startup_stationary_observation");
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "schema", "bodaqs.imu_startup_observation.v1");
+  appendKeyString_(out, depth + 1, "state", imuStartupStateName_(diagnostics.imuStartupObservationState));
+  appendKeyBool_(out, depth + 1, "accepted", diagnostics.imuStartupObservationState == 2);
+  appendKeyString_(out, depth + 1, "rejection_reason",
+                   imuStartupRejectionName_(diagnostics.imuStartupObservationState,
+                                            diagnostics.imuStartupRejectionMask));
+  appendKeyHex16_(out, depth + 1, "rejection_mask", diagnostics.imuStartupRejectionMask);
+  appendKeyUInt_(out, depth + 1, "configured_window_s", diagnostics.imuStartupConfiguredSeconds);
+  appendKeyUInt_(out, depth + 1, "target_sample_slots", diagnostics.imuStartupTargetSampleSlots);
+  appendKeyUInt_(out, depth + 1, "minimum_valid_samples", 800);
+  appendKeyUInt_(out, depth + 1, "valid_samples", diagnostics.imuStartupValidSamples);
+  appendKey_(out, depth + 1, "thresholds");
+  out += F("{\n");
+  appendKeyFloat_(out, depth + 2, "accel_mean_tolerance_g", 0.15f);
+  appendKeyFloat_(out, depth + 2, "accel_magnitude_std_max_g", 0.03f);
+  appendKeyFloat_(out, depth + 2, "gyro_axis_std_max_dps", 0.5f);
+  appendKeyFloat_(out, depth + 2, "gyro_magnitude_max_dps", 5.0f, false);
+  appendIndent_(out, depth + 1);
+  out += F("},\n");
+  appendKey_(out, depth + 1, "gyro_mean_raw");
+  out += F("{\n");
+  appendKeyFloat_(out, depth + 2, "x", diagnostics.imuStartupGyroMeanRaw[0]);
+  appendKeyFloat_(out, depth + 2, "y", diagnostics.imuStartupGyroMeanRaw[1]);
+  appendKeyFloat_(out, depth + 2, "z", diagnostics.imuStartupGyroMeanRaw[2], false);
+  appendIndent_(out, depth + 1);
+  out += F("},\n");
+  appendKey_(out, depth + 1, "gyro_std_raw");
+  out += F("{\n");
+  appendKeyFloat_(out, depth + 2, "x", diagnostics.imuStartupGyroStdRaw[0]);
+  appendKeyFloat_(out, depth + 2, "y", diagnostics.imuStartupGyroStdRaw[1]);
+  appendKeyFloat_(out, depth + 2, "z", diagnostics.imuStartupGyroStdRaw[2], false);
+  appendIndent_(out, depth + 1);
+  out += F("},\n");
+  appendKeyFloat_(out, depth + 1, "accel_magnitude_mean_g", diagnostics.imuStartupAccelMagnitudeMeanG);
+  appendKeyFloat_(out, depth + 1, "accel_magnitude_std_g", diagnostics.imuStartupAccelMagnitudeStdG);
+  appendKeyFloat_(out, depth + 1, "maximum_gyro_magnitude_dps", diagnostics.imuStartupMaximumGyroMagnitudeDps);
+  appendKey_(out, depth + 1, "temperature_deg_c");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 2, "samples", diagnostics.imuStartupTemperatureSamples);
+  appendKeyFloat_(out, depth + 2, "mean", diagnostics.imuStartupTemperatureMeanC);
+  appendKeyFloat_(out, depth + 2, "minimum", diagnostics.imuStartupTemperatureMinimumC);
+  appendKeyFloat_(out, depth + 2, "maximum", diagnostics.imuStartupTemperatureMaximumC, false);
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += F("},\n");
+}
+
 void appendCsvRefByHeader_(String& out, uint8_t depth, const char* header) {
   appendKey_(out, depth, "csv_ref");
   out += F("{ \"by\": \"header\", \"header\": ");
@@ -584,6 +708,7 @@ void appendImuRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true)
     appendKeyUInt_(out, depth + 3, "recovery_attempts_without_progress", diagnostics.imuRecoveryAttemptsWithoutProgress);
     appendKeyUInt64_(out, depth + 3, "terminal_fault_events", diagnostics.imuTerminalFaultEvents);
     appendKeyBool_(out, depth + 3, "terminal_fault", diagnostics.imuTerminalFault);
+    appendImuQualityDiagnostics_(out, depth + 3, diagnostics);
     appendKeyBool_(out, depth + 3, "counter_saturated", diagnostics.imuCounterSaturated, false);
     appendIndent_(out, depth + 2);
     out += F("}");

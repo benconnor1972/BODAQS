@@ -15,6 +15,7 @@ struct BMI270FifoParsedSample {
   uint16_t statusBefore = 0;
   uint32_t skippedFramesBefore = 0;
   uint32_t sensorTime = 0;
+  bool sensorTimeDiscontinuityBefore = false;
 };
 
 struct BMI270FifoParseResult {

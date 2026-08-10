@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -42,6 +43,7 @@ from .gps_semantics import (
     refresh_gps_source_metadata,
     resolve_gps_columns,
 )
+from .imu import build_imu_streams
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
     apply_butterworth_smoothing,
@@ -477,6 +479,10 @@ def _apply_log_metadata(
     if isinstance(declared_sensors, dict):
         meta["declared_sensors"] = declared_sensors
 
+    imu_configs = log_metadata.get("imu_configs")
+    if isinstance(imu_configs, Mapping):
+        meta["imu_configs"] = copy.deepcopy(dict(imu_configs))
+
     session_meta = log_metadata.get("session")
     if isinstance(session_meta, dict):
         started_at_utc = session_meta.get("started_at_utc")
@@ -637,7 +643,7 @@ def load_session(
     )
 
     stats = _firmware_stats_from_log_metadata(sidecar) or parse_run_stats_footer(str(p))
-    return build_session_from_dataframe(
+    session = build_session_from_dataframe(
         df_raw,
         session_id=p.stem,
         source_path=p,
@@ -646,6 +652,7 @@ def load_session(
         log_metadata_path=resolved_sidecar_path,
         firmware_stats=stats,
     )
+    return build_imu_streams(session, strict=False)
 
 
 def build_session_from_dataframe(
@@ -775,7 +782,7 @@ def load_bdq_session(
         parse["bdq_detected_errors"] = list(info.detected_errors)
         for error in info.detected_errors:
             _append_qc_warning(session, f"bdq_parser_warning:{error}")
-    return session
+    return build_imu_streams(session, strict=False)
 
 
 def load_and_canonicalize(

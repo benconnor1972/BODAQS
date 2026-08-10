@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import copy
 import csv
 import json
 import math
@@ -564,7 +565,7 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
     if info.detected_errors:
         run_stats["bdq_parser_errors"] = list(info.detected_errors)
 
-    return {
+    log_metadata = {
         "contract": {
             "name": "bdq.v1",
             "version": f"{info.header.format_major}.{info.header.format_minor}",
@@ -612,6 +613,10 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "last_sample_id": info.last_sample_id,
         },
     }
+    imu_configs = metadata.get("imu_configs")
+    if isinstance(imu_configs, Mapping):
+        log_metadata["imu_configs"] = copy.deepcopy(dict(imu_configs))
+    return log_metadata
 
 
 def bdq_to_csv(input_path: str | Path, output_path: str | Path) -> None:

@@ -6,6 +6,7 @@
 - Companion documents:
   - [BMI270 IMU MVP Implementation Plan](BMI270_IMU_MVP_Implementation_Plan.md)
   - [BMI270 IMU MVP Data Contract](BMI270_IMU_MVP_Data_Contract.md)
+  - [BMI270 IMU Extraction and QC](../analysis/BMI270_IMU_Extraction_and_QC.md)
 
 ## 1. Outcome
 
@@ -137,6 +138,8 @@ Deliverables:
 - startup stationary-bias observation and runtime diagnostics;
 - host decoder changes and an IMU quality-control summary;
 - bench, soak, fault-injection, and real-ride validation.
+
+Firmware deliverables through Phase 5 and the Phase 6 host extraction/QC slice are implemented. Milestone 1 remains open for the documented hardware acceptance work, including the deferred state-loss/disconnect exercise.
 
 Not included:
 

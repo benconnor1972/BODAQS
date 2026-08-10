@@ -182,6 +182,7 @@ bool BMI270FifoParser::assignSensorTimes200Hz(
       if (parsed[0].sensorTime != expected) {
         parsed[0].statusBefore |= BMI270ImuStatus::kFifoDiscontinuityBefore |
                                   BMI270ImuStatus::kTimingDegraded;
+        parsed[0].sensorTimeDiscontinuityBefore = true;
       }
     }
     previousSensorTime = parsed[count - 1].sensorTime;
