@@ -1,6 +1,6 @@
 # BMI270 IMU MVP Implementation Plan
 
-- Status: Accepted; Phases 0-4 firmware implementation complete; hardware acceptance pending
+- Status: Accepted; Phases 0-4.5 firmware implementation complete; hardware acceptance pending
 - Target outcome: A rideable single-IMU prototype that produces trustworthy data for collection-performance assessment and initial post-processing design
 - Related roadmap: [BMI270 IMU Firmware Roadmap](BMI270_IMU_Roadmap.md)
 - Normative data contract: [BMI270 IMU MVP Data Contract](BMI270_IMU_MVP_Data_Contract.md)
@@ -298,7 +298,9 @@ Suggested configuration:
     sensor1.type=bmi270_imu_i2c
     sensor1.name=frame_imu
     sensor1.imu_id=frame_imu_001
-    sensor1.location=frame
+    sensor1.domain=frame
+    sensor1.end=rear
+    sensor1.mount_point=
     sensor1.i2c_bus=1
     sensor1.i2c_addr=104
     sensor1.profile=orientation_200
@@ -316,6 +318,35 @@ Acceptance checks:
 - Invalid mounting maps and unsupported logger rates prevent a misleading session.
 - Existing configurations remain valid, while unknown type names now fail visibly.
 - Session start and stop preserve the defined FIFO/queue boundary semantics.
+
+### Phase 4.5 — Consolidate IMU signal semantics
+
+Purpose: make IMU vectors first-class signals before calibration observations and host-derived channels extend the contract.
+
+Tasks:
+
+1. Classify the mechanically co-moving mounting domain as `unsprung`, `frame`, or `steering`, qualified by `end=front|rear|none` under the documented constraints.
+2. Retain optional `mount_point` as descriptive installation detail without making it a primary semantic selector.
+3. Mark raw accelerometer and gyro axes with explicit `component`, sensor-local `vector_group`, and `coordinate_frame=sensor_native` metadata.
+4. Record the static installation transform as `sensor_native` to `body_local`; do not apply it to raw firmware samples.
+5. Preserve these additive fields through CSV sidecars, embedded BDQ schemas, channel metadata, and the analysis signal registry.
+6. Continue reading the original `location` configuration key as a compatibility alias for `domain`.
+
+Domain/end constraints:
+
+| domain | permitted end | meaning |
+|---|---|---|
+| `unsprung` | `front`, `rear` | Assembly moving predominantly with the corresponding axle, including fork lowers, caliper or rear-triangle mounting |
+| `frame` | `front`, `rear`, `none` | Main sprung frame; front/rear is a coarse mounting region |
+| `steering` | `front` | Sprung assembly rotating about the steering axis |
+
+Acceptance checks:
+
+- Existing `location=frame` configuration remains valid and produces canonical `domain=frame` metadata.
+- Invalid domain/end combinations prevent logging with an actionable error.
+- Each raw accel/gyro triplet is groupable without parsing column names.
+- Firmware still writes sensor-native raw values and performs no coordinate rotation.
+- CSV-sidecar and BDQ ingestion preserve the new fields in `meta.signals`.
 
 ### Phase 5 — Add calibration observations and diagnostics
 
@@ -686,3 +717,41 @@ Firmware changes completed on 2026-08-07 after the second smoke-test log demonst
 This slice deliberately does not introduce the full multi-IMU deadline scheduler. The roadmap records the future single-owner arbiter, per-client deadline/duration/backlog declarations, fairness, optional page-sized display transfers, per-bus admission budgets, and multi-clock synchronization work.
 
 Hardware acceptance requires another shared-bus smoke test. Primary gates are zero bus-lock timeouts, zero partial frames and missing sensor-time batches during steady logging, sensor-time increments of 128 ticks except explicitly flagged boundary events, lower maximum drain duration and sample-age percentiles, continued zero queue/storage drops, and a responsive but no-more-than-1-Hz logging display. Nonzero lock wait is expected and should now be bounded and observable.
+
+## 18. Silent state-loss recovery
+
+Firmware changes completed on 2026-08-09 after ride logs showed one FIFO-length read failure followed by successful I2C polling of a permanently empty FIFO. A later ESP32 deep-sleep wake reran initialization and restored acquisition, supporting the conclusion that the BMI270 had remained responsive while losing volatile sensor or FIFO configuration:
+
+- session start now validates chip identity, BMI270 internal configuration status, the effective accelerometer and gyroscope profile, sensor enable state, and the complete managed FIFO configuration while sensing is suspended;
+- a failed session-start validation captures the observed state and invokes the existing full device/FIFO recovery before sensing is resumed;
+- active acquisition now supervises parsed native-frame progress with a provisional 250 ms timeout rather than treating successful empty FIFO reads as proof of health;
+- a stalled stream is validated after the current drain, so a scheduler delay that leaves real FIFO backlog does not cause a false recovery;
+- validation snapshots persist the issue mask, API result, chip ID, internal status, power-control value, FIFO configuration, watermark, downsampling, and filter selections before recovery overwrites the evidence;
+- full reinitialization continues to preserve the firmware sequence and marks the first later sample with recovery, discontinuity, and degraded-timing status;
+- three recovery attempts without a genuinely parsed later frame are permitted; parsed progress restores that budget, while an exhausted budget or three failed recoveries terminally mutes only the IMU bus client so other logger channels can continue;
+- recovery reason, attempts, successes, failures, no-progress duration/events, attempts without progress, terminal fault state, and session-start validation counts are added to BDQ and CSV-sidecar final diagnostics; and
+- the stored 12-column IMU sample contract, profile, configuration keys, and raw-data authority are unchanged.
+
+Persisted recovery-reason codes are `0=none`, `1=consecutive_drain_failures`, `2=session_start_validation`, and `3=no_sample_progress`. The validation issue mask assigns `0x001` to unexpected software state; `0x002/0x004` to chip-ID read/mismatch; `0x008/0x010` to internal-status read/mismatch; `0x020/0x040` to profile read/mismatch; `0x080/0x100` to power-control read/mismatch; `0x200/0x400` to FIFO read/mismatch; and `0x800` to no parsed-sample progress despite completed polling.
+
+Pure native coverage was added for watchdog arming, timeout boundaries, progress reset, 32-bit microsecond wrap, bounded recovery attempts, and budget restoration after real sample progress. The native executable remains unrun on this Windows host because GNU Make and a host C++ compiler are unavailable.
+
+The RC3 `bodaqs_s3_mini_n4r2` PlatformIO environment builds successfully, using 140928 of 327680 bytes RAM (43.0 percent) and 1673745 of 2097152 bytes flash (79.8 percent). Existing ArduinoJson deprecation warnings remain unrelated.
+
+Hardware acceptance requires a normal ride/soak with no false recovery and a controlled BMI270 reset, supply interruption, or equivalent configuration-loss injection. The latter must produce a bounded gap, a successful recovery marker, resumed sequence/tick progression, and the expected validation/recovery diagnostics without rebooting the logger. A persistent fault must reach the terminal IMU state without disrupting other configured sensors.
+
+## 19. Phase 4.5 semantic consolidation and GPS session isolation
+
+Firmware and host-contract changes completed on 2026-08-10:
+
+- BMI270 configuration now uses canonical `domain`, `end`, and optional `mount_point` fields, enforcing `unsprung/front|rear`, `frame/none|front|rear`, and `steering/front` combinations;
+- the original `location` configuration key remains accepted as a compatibility alias, and the original IMU metadata field remains temporarily emitted alongside the canonical fields;
+- raw accelerometer and gyroscope columns now publish explicit `component`, `vector_group`, and `coordinate_frame=sensor_native` metadata without changing the twelve stored fields or their values;
+- the mounting transform explicitly records `sensor_native -> body_local` using the existing signed-axis-permutation representation;
+- CSV-sidecar and embedded BDQ metadata writers, BDQ ingestion, channel metadata, the signal registry, and semantic selectors preserve the new fields;
+- GPS semantic resolution now keeps latitude, longitude, motion, and QC channels on one identified GPS sensor/source and refuses cross-source position pairs; and
+- GPS session start invalidates the previous cached snapshot and discards queued UART input when restarting acquisition, so position remains unavailable until the new session receives a new PVT observation.
+
+Verification completed with 62 passing targeted analysis tests covering logger sidecars, BDQ types/metadata, signal registry behavior, GPS grouping, and route construction. The RC3 `bodaqs_s3_mini_n4r2` firmware environment builds successfully at 147072 of 327680 bytes RAM (44.9 percent) and 1682113 of 2097152 bytes flash (80.2 percent). Existing ArduinoJson deprecation warnings remain unrelated.
+
+Hardware acceptance should confirm that an existing `location=frame` configuration migrates without intervention, canonical domain/end metadata appears in both CSV-sidecar and BDQ logs, and the first finite GPS point of every session is a newly received observation rather than the prior session endpoint.

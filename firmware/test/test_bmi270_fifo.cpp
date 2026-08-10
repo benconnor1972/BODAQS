@@ -3,6 +3,7 @@
 #include "BMI270FifoParser.h"
 #include "BMI270FifoReadPlan.h"
 #include "BMI270ImuTiming.h"
+#include "BMI270ProgressWatchdog.h"
 #include "FixedSpscQueue.h"
 #include "I2CLowPriorityWindow.h"
 
@@ -208,6 +209,38 @@ int runBMI270FifoTests() {
                   0x0000C5, 0x000080, 100000, sampleHostUs) &&
               sampleHostUs == 97305,
               "raw sensor-time phase maps a gridded sample into host time");
+    }
+
+    {
+        BMI270ProgressWatchdog watchdog(250000);
+        check(!watchdog.expired(1000), "progress watchdog is inert before session arm");
+        watchdog.arm(1000);
+        check(!watchdog.expired(250999),
+              "progress watchdog leaves the full grace interval available");
+        check(watchdog.expired(251000) && watchdog.elapsedUs(251000) == 250000,
+              "progress watchdog expires at the configured interval");
+        watchdog.recordProgress(200000);
+        check(!watchdog.expired(449999) && watchdog.expired(450000),
+              "native sample progress restarts the watchdog interval");
+
+        BMI270ProgressWatchdog wrapping(500);
+        wrapping.arm(0xFFFFFF00u);
+        check(wrapping.expired(0x00000100u) && wrapping.elapsedUs(0x00000100u) == 512,
+              "progress watchdog remains correct across micros wrap");
+        wrapping.disarm();
+        check(!wrapping.expired(0x00010000u),
+              "progress watchdog can be disabled outside a logging session");
+
+        BMI270RecoveryBudget recoveryBudget(3);
+        check(recoveryBudget.reserveAttempt() && recoveryBudget.reserveAttempt() &&
+              recoveryBudget.reserveAttempt(),
+              "recovery budget permits the configured attempts without progress");
+        check(!recoveryBudget.reserveAttempt() && recoveryBudget.exhausted(),
+              "recovery budget prevents an unbounded successful-but-stalled loop");
+        recoveryBudget.recordProgress();
+        check(!recoveryBudget.exhausted() && recoveryBudget.attemptsWithoutProgress() == 0 &&
+              recoveryBudget.reserveAttempt(),
+              "a genuinely parsed sample restores the recovery budget");
     }
 
     {

@@ -87,9 +87,28 @@ bool fail_(char* error, size_t capacity, const char* format, ...) {
   return false;
 }
 
-void readString_(const ParamPack& params, const char* key, char* out, size_t capacity) {
+bool readString_(const ParamPack& params, const char* key, char* out, size_t capacity) {
   String value;
-  if (params.get(key, value)) copyField_(out, capacity, value.c_str());
+  if (!params.get(key, value)) return false;
+  copyField_(out, capacity, value.c_str());
+  return true;
+}
+
+void canonicalizeToken_(char* value, size_t capacity) {
+  if (!value || capacity == 0) return;
+  String canonical(value);
+  canonical.trim();
+  canonical.toLowerCase();
+  canonical.toCharArray(value, capacity);
+}
+
+bool validMountSemantics_(const BMI270ImuSensor::Params& params) {
+  const bool front = strcmp(params.end, "front") == 0;
+  const bool rear = strcmp(params.end, "rear") == 0;
+  if (strcmp(params.domain, "unsprung") == 0) return front || rear;
+  if (strcmp(params.domain, "steering") == 0) return front;
+  if (strcmp(params.domain, "frame") == 0) return !params.end[0] || front || rear;
+  return false;
 }
 
 const char* quantityFor_(uint8_t index) {
@@ -185,8 +204,16 @@ bool BMI270ImuSensor::describeColumn(uint8_t index, SensorColumnDescriptor& out)
   getColumnName(index, out.csvHeader, sizeof(out.csvHeader));
   copyField_(out.columnId, sizeof(out.columnId), out.csvHeader);
   copyField_(out.sensorName, sizeof(out.sensorName), params_.name);
-  copyField_(out.domain, sizeof(out.domain), "bike");
+  copyField_(out.end, sizeof(out.end), params_.end);
+  copyField_(out.domain, sizeof(out.domain), params_.domain);
+  copyField_(out.mountPoint, sizeof(out.mountPoint), params_.mountPoint);
   copyField_(out.quantity, sizeof(out.quantity), quantityFor_(index));
+  if (index <= 5) {
+    static const char* const components[] = {"x", "y", "z"};
+    copyField_(out.component, sizeof(out.component), components[index % 3]);
+    copyField_(out.coordinateFrame, sizeof(out.coordinateFrame), "sensor_native");
+    copyField_(out.vectorGroup, sizeof(out.vectorGroup), index <= 2 ? "accel_raw" : "gyro_raw");
+  }
   copyField_(out.unit, sizeof(out.unit), unitFor_(index));
   copyField_(out.source, sizeof(out.source), sourceFor_(index));
   copyField_(out.processingRole, sizeof(out.processingRole), index <= 5 ? "raw_evidence" : "qc_metric");
@@ -209,14 +236,17 @@ bool BMI270ImuSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   copyField_(out.sensorId, sizeof(out.sensorId), params_.name);
   copyField_(out.name, sizeof(out.name), params_.name);
   copyField_(out.type, sizeof(out.type), "bmi270_imu_i2c");
-  copyField_(out.domain, sizeof(out.domain), "bike");
+  copyField_(out.domain, sizeof(out.domain), params_.domain);
   copyField_(out.rawUnit, sizeof(out.rawUnit), "counts");
   out.hasImuConfig = true;
 
   SensorImuConfigDescriptor& imu = out.imuConfig;
   copyField_(imu.contractId, sizeof(imu.contractId), BMI270Profile::kContractId);
   copyField_(imu.imuId, sizeof(imu.imuId), params_.imuId);
-  copyField_(imu.location, sizeof(imu.location), params_.location);
+  copyField_(imu.location, sizeof(imu.location), params_.domain);
+  copyField_(imu.domain, sizeof(imu.domain), params_.domain);
+  copyField_(imu.end, sizeof(imu.end), params_.end);
+  copyField_(imu.mountPoint, sizeof(imu.mountPoint), params_.mountPoint);
   copyField_(imu.profile, sizeof(imu.profile), params_.profile);
   copyField_(imu.driverRevision, sizeof(imu.driverRevision), BMI270Profile::kDriverRevision);
   copyField_(imu.calibrationRef, sizeof(imu.calibrationRef), params_.calibrationRef);
@@ -307,6 +337,11 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.imuExplicitQueueDiscards = fifo.explicitQueueDiscards;
   out.imuTemperatureReads = fifo.temperatureReads;
   out.imuTemperatureReadFailures = fifo.temperatureReadFailures;
+  out.imuOperationalValidationAttempts = fifo.operationalValidationAttempts;
+  out.imuOperationalValidationFailures = fifo.operationalValidationFailures;
+  out.imuSessionStartValidationAttempts = fifo.sessionStartValidationAttempts;
+  out.imuSessionStartValidationFailures = fifo.sessionStartValidationFailures;
+  out.imuNoProgressEvents = fifo.noProgressEvents;
   out.imuFifoFlushes = fifo.fifoFlushes;
   out.imuFifoFlushFailures = fifo.fifoFlushFailures;
   out.imuStopDrainAttempts = fifo.stopDrainAttempts;
@@ -322,14 +357,33 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   }
   out.imuRecoveryAttempts = fifo.recoveryAttempts;
   out.imuRecoverySuccesses = fifo.recoverySuccesses;
+  out.imuRecoveryFailures = fifo.recoveryFailures;
+  out.imuTerminalFaultEvents = fifo.terminalFaultEvents;
   out.imuQueueCapacity = fifo.queueCapacity;
   out.imuQueueHighWater = fifo.queueHighWater;
   out.imuFinalQueueDepth = static_cast<uint16_t>(acquisition_.queuedSamples());
   out.imuMaximumFifoBytesObserved = fifo.maximumFifoBytesObserved;
   out.imuMaximumDrainDurationUs = fifo.maximumDrainDurationUs;
   out.imuMaximumDrainFailureStreak = fifo.maximumDrainFailureStreak;
+  out.imuNoProgressTimeoutUs = BMI270FifoAcquisition::kNoSampleProgressTimeoutUs;
+  out.imuMaximumNoProgressUs = fifo.maximumNoProgressUs;
+  out.imuLastValidationIssues = fifo.lastValidationIssues;
   out.imuI2cMaximumFailureStreak = transport.maximumFailureStreak;
   out.imuI2cBusLockWaitMaximumUs = transport.busLockWaitMaximumUs;
+  out.imuLastValidationFifoConfig = fifo.lastValidationFifoConfig;
+  out.imuLastValidationFifoWatermark = fifo.lastValidationFifoWatermark;
+  out.imuLastValidationChipId = fifo.lastValidationChipId;
+  out.imuLastValidationInternalStatus = fifo.lastValidationInternalStatus;
+  out.imuLastValidationPowerControl = fifo.lastValidationPowerControl;
+  out.imuLastValidationAccelDownsample = fifo.lastValidationAccelDownsample;
+  out.imuLastValidationGyroDownsample = fifo.lastValidationGyroDownsample;
+  out.imuLastValidationAccelFiltered = fifo.lastValidationAccelFiltered;
+  out.imuLastValidationGyroFiltered = fifo.lastValidationGyroFiltered;
+  out.imuConsecutiveRecoveryFailures = fifo.consecutiveRecoveryFailures;
+  out.imuRecoveryAttemptsWithoutProgress = fifo.recoveryAttemptsWithoutProgress;
+  out.imuLastRecoveryReason = static_cast<uint8_t>(fifo.lastRecoveryReason);
+  out.imuLastValidationApiResult = fifo.lastValidationApiResult;
+  out.imuTerminalFault = fifo.terminalFault;
   out.imuCounterSaturated = fifo.counterSaturated;
   return true;
 }
@@ -352,7 +406,9 @@ bool BMI270ImuSensor::validateLoggingStart(
   loadParams_(configured, spec.name, spec.params);
   if (configured.busIndex != params_.busIndex || configured.address != params_.address ||
       strcmp(configured.imuId, params_.imuId) != 0 ||
-      strcmp(configured.location, params_.location) != 0 ||
+      strcmp(configured.domain, params_.domain) != 0 ||
+      strcmp(configured.end, params_.end) != 0 ||
+      strcmp(configured.mountPoint, params_.mountPoint) != 0 ||
       strcmp(configured.profile, params_.profile) != 0 ||
       strcmp(configured.mountAxis[0], params_.mountAxis[0]) != 0 ||
       strcmp(configured.mountAxis[1], params_.mountAxis[1]) != 0 ||
@@ -410,7 +466,14 @@ bool BMI270ImuSensor::loadParams_(
   copyField_(out.name, sizeof(out.name), instanceName && *instanceName ? instanceName : "frame_imu");
   snprintf(out.imuId, sizeof(out.imuId), "%s_001", out.name);
   readString_(params, "imu_id", out.imuId, sizeof(out.imuId));
-  readString_(params, "location", out.location, sizeof(out.location));
+  if (!readString_(params, "domain", out.domain, sizeof(out.domain))) {
+    (void)readString_(params, "location", out.domain, sizeof(out.domain));
+  }
+  readString_(params, "end", out.end, sizeof(out.end));
+  readString_(params, "mount_point", out.mountPoint, sizeof(out.mountPoint));
+  canonicalizeToken_(out.domain, sizeof(out.domain));
+  canonicalizeToken_(out.end, sizeof(out.end));
+  if (strcmp(out.end, "none") == 0) out.end[0] = '\0';
   readString_(params, "profile", out.profile, sizeof(out.profile));
   readString_(params, "mount_x", out.mountAxis[0], sizeof(out.mountAxis[0]));
   readString_(params, "mount_y", out.mountAxis[1], sizeof(out.mountAxis[1]));
@@ -453,7 +516,11 @@ bool BMI270ImuSensor::validateSpec(
   }
   if (!params.name[0]) return fail_(error, errorCapacity, "BMI270 sensor name is empty");
   if (!params.imuId[0]) return fail_(error, errorCapacity, "%s has an empty imu_id", params.name);
-  if (!params.location[0]) return fail_(error, errorCapacity, "%s has an empty location", params.name);
+  if (!validMountSemantics_(params)) {
+    return fail_(error, errorCapacity,
+                 "%s requires domain=unsprung with front/rear, domain=steering with front, or domain=frame with none/front/rear",
+                 params.name);
+  }
   if (strcmp(params.profile, BMI270Profile::kProfileName) != 0) {
     return fail_(error, errorCapacity, "%s uses unsupported profile '%s'",
                  params.name, params.profile);
@@ -483,13 +550,15 @@ bool BMI270ImuSensor::validateSpec(
 const ParamDef* BMI270ImuSensor::paramDefs(size_t& count) {
   static const ParamDef definitions[] = {
     {"imu_id", ParamType::String, "frame_imu_001", nullptr, nullptr, nullptr, "Stable physical IMU identity"},
-    {"location", ParamType::String, "frame", nullptr, nullptr, nullptr, "Installed bicycle location"},
+    {"domain", ParamType::Enum, "frame", nullptr, nullptr, "unsprung,frame,steering", "Mechanically co-moving bicycle domain"},
+    {"end", ParamType::Enum, "none", nullptr, nullptr, "none,front,rear", "Bike end; none is valid only for frame"},
+    {"mount_point", ParamType::String, "", nullptr, nullptr, nullptr, "Optional descriptive mounting point"},
     {"i2c_bus", ParamType::Enum, "1", nullptr, nullptr, "0,1", "Board I2C bus index"},
     {"i2c_addr", ParamType::Enum, "104", nullptr, nullptr, "104,105", "BMI270 I2C address (0x68 or 0x69)"},
     {"profile", ParamType::Enum, "orientation_200", nullptr, nullptr, "orientation_200", "Named acquisition profile"},
-    {"mount_x", ParamType::Enum, "+x", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body X as a signed sensor-native axis"},
-    {"mount_y", ParamType::Enum, "+y", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body Y as a signed sensor-native axis"},
-    {"mount_z", ParamType::Enum, "+z", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body Z as a signed sensor-native axis"},
+    {"mount_x", ParamType::Enum, "+x", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local X as a signed sensor-native axis"},
+    {"mount_y", ParamType::Enum, "+y", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local Y as a signed sensor-native axis"},
+    {"mount_z", ParamType::Enum, "+z", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local Z as a signed sensor-native axis"},
     {"startup_bias_capture_s", ParamType::Int, "5", "0", "60", nullptr, "Stationary observation window (implemented in Phase 5)"},
     {"calibration_ref", ParamType::String, "", nullptr, nullptr, nullptr, "Optional host calibration reference"},
   };
@@ -506,6 +575,7 @@ Sensor* BMI270ImuSensor::create(
   BMI270MountTransform transform;
   if (!BMI270Profile::isSupportedAddress(parsed.address) ||
       strcmp(parsed.profile, BMI270Profile::kProfileName) != 0 ||
+      !validMountSemantics_(parsed) ||
       !BMI270Mount::parseTransform(
           parsed.mountAxis[0], parsed.mountAxis[1], parsed.mountAxis[2], transform)) {
     BMI270_SENSOR_LOGW("refusing invalid configuration for sensor=%s\n", parsed.name);

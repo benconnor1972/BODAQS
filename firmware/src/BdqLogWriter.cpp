@@ -58,7 +58,11 @@ struct ColumnLayout {
   char sensorName[16] = {0};
   char end[16] = {0};
   char domain[24] = {0};
+  char mountPoint[32] = {0};
   char quantity[24] = {0};
+  char component[8] = {0};
+  char coordinateFrame[24] = {0};
+  char vectorGroup[32] = {0};
   char unit[24] = {0};
   char source[24] = {0};
   char kind[8] = {0};
@@ -642,6 +646,24 @@ void appendRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true) {
       appendKeyUInt_(out, depth + 4, "explicit_queue_discards", diagnostics.imuExplicitQueueDiscards);
       appendKeyUInt_(out, depth + 4, "temperature_reads", diagnostics.imuTemperatureReads);
       appendKeyUInt_(out, depth + 4, "temperature_read_failures", diagnostics.imuTemperatureReadFailures);
+      appendKeyUInt_(out, depth + 4, "operational_validation_attempts", diagnostics.imuOperationalValidationAttempts);
+      appendKeyUInt_(out, depth + 4, "operational_validation_failures", diagnostics.imuOperationalValidationFailures);
+      appendKeyUInt_(out, depth + 4, "session_start_validation_attempts", diagnostics.imuSessionStartValidationAttempts);
+      appendKeyUInt_(out, depth + 4, "session_start_validation_failures", diagnostics.imuSessionStartValidationFailures);
+      appendKeyUInt_(out, depth + 4, "no_progress_timeout_us", diagnostics.imuNoProgressTimeoutUs);
+      appendKeyUInt_(out, depth + 4, "no_progress_events", diagnostics.imuNoProgressEvents);
+      appendKeyUInt_(out, depth + 4, "maximum_no_progress_us", diagnostics.imuMaximumNoProgressUs);
+      appendKeyUInt_(out, depth + 4, "last_validation_issues", diagnostics.imuLastValidationIssues);
+      appendKeyInt_(out, depth + 4, "last_validation_api_result", diagnostics.imuLastValidationApiResult);
+      appendKeyUInt_(out, depth + 4, "last_validation_chip_id", diagnostics.imuLastValidationChipId);
+      appendKeyUInt_(out, depth + 4, "last_validation_internal_status", diagnostics.imuLastValidationInternalStatus);
+      appendKeyUInt_(out, depth + 4, "last_validation_power_control", diagnostics.imuLastValidationPowerControl);
+      appendKeyUInt_(out, depth + 4, "last_validation_fifo_config", diagnostics.imuLastValidationFifoConfig);
+      appendKeyUInt_(out, depth + 4, "last_validation_fifo_watermark", diagnostics.imuLastValidationFifoWatermark);
+      appendKeyUInt_(out, depth + 4, "last_validation_accel_downsample", diagnostics.imuLastValidationAccelDownsample);
+      appendKeyUInt_(out, depth + 4, "last_validation_gyro_downsample", diagnostics.imuLastValidationGyroDownsample);
+      appendKeyUInt_(out, depth + 4, "last_validation_accel_filtered", diagnostics.imuLastValidationAccelFiltered);
+      appendKeyUInt_(out, depth + 4, "last_validation_gyro_filtered", diagnostics.imuLastValidationGyroFiltered);
       appendKeyUInt_(out, depth + 4, "fifo_flushes", diagnostics.imuFifoFlushes);
       appendKeyUInt_(out, depth + 4, "fifo_flush_failures", diagnostics.imuFifoFlushFailures);
       appendKeyUInt_(out, depth + 4, "stop_drain_attempts", diagnostics.imuStopDrainAttempts);
@@ -671,6 +693,12 @@ void appendRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true) {
       out += F("},\n");
       appendKeyUInt_(out, depth + 4, "recovery_attempts", diagnostics.imuRecoveryAttempts);
       appendKeyUInt_(out, depth + 4, "recovery_successes", diagnostics.imuRecoverySuccesses);
+      appendKeyUInt_(out, depth + 4, "recovery_failures", diagnostics.imuRecoveryFailures);
+      appendKeyUInt_(out, depth + 4, "last_recovery_reason", diagnostics.imuLastRecoveryReason);
+      appendKeyUInt_(out, depth + 4, "consecutive_recovery_failures", diagnostics.imuConsecutiveRecoveryFailures);
+      appendKeyUInt_(out, depth + 4, "recovery_attempts_without_progress", diagnostics.imuRecoveryAttemptsWithoutProgress);
+      appendKeyUInt_(out, depth + 4, "terminal_fault_events", diagnostics.imuTerminalFaultEvents);
+      appendKeyBool_(out, depth + 4, "terminal_fault", diagnostics.imuTerminalFault);
       appendKeyBool_(out, depth + 4, "counter_saturated", diagnostics.imuCounterSaturated, false);
       appendIndent_(out, depth + 3);
       out += F("},\n");
@@ -839,6 +867,10 @@ void appendImuConfigObject_(
   out += F("{\n");
   appendKeyString_(out, depth + 1, "contract_id", imu.contractId);
   appendKeyString_(out, depth + 1, "imu_id", imu.imuId);
+  appendKeyString_(out, depth + 1, "domain", imu.domain);
+  if (imu.end[0]) appendKeyString_(out, depth + 1, "end", imu.end);
+  if (imu.mountPoint[0]) appendKeyString_(out, depth + 1, "mount_point", imu.mountPoint);
+  // Retained for readers of the original MVP metadata shape.
   appendKeyString_(out, depth + 1, "location", imu.location);
   appendKeyUInt_(out, depth + 1, "i2c_bus", imu.busIndex);
   appendKeyUInt_(out, depth + 1, "i2c_address", imu.address);
@@ -853,6 +885,9 @@ void appendImuConfigObject_(
 
   appendKey_(out, depth + 1, "mount_transform");
   out += F("{\n");
+  appendKeyString_(out, depth + 2, "from", "sensor_native");
+  appendKeyString_(out, depth + 2, "to", "body_local");
+  appendKeyString_(out, depth + 2, "representation", "signed_axis_permutation");
   appendKeyString_(out, depth + 2, "body_x", imu.mountAxis[0]);
   appendKeyString_(out, depth + 2, "body_y", imu.mountAxis[1]);
   appendKeyString_(out, depth + 2, "body_z", imu.mountAxis[2], false);
@@ -971,7 +1006,11 @@ bool buildColumnLayout_() {
     copyField_(col.sensorName, sizeof(col.sensorName), desc.sensorName);
     copyField_(col.end, sizeof(col.end), desc.end);
     copyField_(col.domain, sizeof(col.domain), desc.domain);
+    copyField_(col.mountPoint, sizeof(col.mountPoint), desc.mountPoint);
     copyField_(col.quantity, sizeof(col.quantity), desc.quantity);
+    copyField_(col.component, sizeof(col.component), desc.component);
+    copyField_(col.coordinateFrame, sizeof(col.coordinateFrame), desc.coordinateFrame);
+    copyField_(col.vectorGroup, sizeof(col.vectorGroup), desc.vectorGroup);
     copyField_(col.unit, sizeof(col.unit), desc.unit);
     copyField_(col.source, sizeof(col.source), desc.source);
     copyField_(col.kind, sizeof(col.kind), desc.kind);
@@ -1030,6 +1069,10 @@ void appendChannelJson_(String& out,
                         const char* sensorName,
                         const char* end,
                         const char* domain,
+                        const char* mountPoint,
+                        const char* component,
+                        const char* coordinateFrame,
+                        const char* vectorGroup,
                         const char* source,
                         const char* kind,
                         const char* processingRole,
@@ -1048,6 +1091,10 @@ void appendChannelJson_(String& out,
   if (sensorName && *sensorName) appendKeyString_(out, 3, "sensor", sensorName);
   if (end && *end) appendKeyString_(out, 3, "end", end);
   if (domain && *domain) appendKeyString_(out, 3, "domain", domain);
+  if (mountPoint && *mountPoint) appendKeyString_(out, 3, "mount_point", mountPoint);
+  if (component && *component) appendKeyString_(out, 3, "component", component);
+  if (coordinateFrame && *coordinateFrame) appendKeyString_(out, 3, "coordinate_frame", coordinateFrame);
+  if (vectorGroup && *vectorGroup) appendKeyString_(out, 3, "vector_group", vectorGroup);
   if (source && *source) appendKeyString_(out, 3, "source", source);
   if ((kind && *kind) || raw) appendKeyString_(out, 3, "kind", kind && *kind ? kind : "raw");
   if (processingRole && *processingRole) appendKeyString_(out, 3, "processing_role", processingRole);
@@ -1077,7 +1124,7 @@ String buildSchemaJson_() {
 
   appendKey_(out, 1, "channels");
   out += F("[\n");
-  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "frame", "", "", "index", false, false, false, true);
+  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "", "", "", "", "frame", "", "", "index", false, false, false, true);
 
   for (uint16_t i = 0; i < s_columnCount; ++i) {
     const ColumnLayout& col = s_columns[i];
@@ -1093,6 +1140,10 @@ String buildSchemaJson_() {
                        col.sensorName,
                        col.end,
                        col.domain,
+                       col.mountPoint,
+                       col.component,
+                       col.coordinateFrame,
+                       col.vectorGroup,
                        col.source,
                        col.kind,
                        col.processingRole,
@@ -1103,7 +1154,7 @@ String buildSchemaJson_() {
                        comma);
   }
 
-  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "frame", "qc", "qc_metric", "qc_flag", false, true, false, false);
+  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "", "", "", "", "frame", "qc", "qc_metric", "qc_flag", false, true, false, false);
   out += F("  ],\n");
 
   appendKey_(out, 1, "sample_flags");

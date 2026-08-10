@@ -30,7 +30,7 @@ The BODAQS bicycle body frame is right-handed:
 - positive Y: left;
 - positive Z: up.
 
-Configuration fields mount_x, mount_y, and mount_z define each body-frame axis as one signed sensor-native axis. For example:
+Configuration fields mount_x, mount_y, and mount_z define each local mounted-body axis as one signed sensor-native axis. For example:
 
     mount_x=+y
     mount_y=-x
@@ -38,13 +38,15 @@ Configuration fields mount_x, mount_y, and mount_z define each body-frame axis a
 
 means:
 
-    body_x = sensor_y
-    body_y = -sensor_x
-    body_z = sensor_z
+    body_local_x = sensor_y
+    body_local_y = -sensor_x
+    body_local_z = sensor_z
 
 A valid transform uses each of x, y, and z exactly once and has determinant +1. Invalid, duplicate, missing, or left-handed mappings are configuration errors.
 
 Raw columns remain in BMI270 sensor-native axes. The transform is stored as metadata and applied by host processing.
+
+For a frame-mounted IMU, `body_local` coincides with the bicycle body frame. For steering and unsprung installations, a static installation transform does not account for steering or suspension articulation; transforming those values into `bike_body` requires additional post-processing evidence.
 
 ## 4. orientation_200 profile
 
@@ -132,18 +134,28 @@ All integer-valued IMU fields carried through the current float32 row buffer are
 
 ## 7. Column semantic metadata
 
-| Field group | domain | quantity | unit | source | class |
-|---|---|---|---|---|---|
-| accel_*_raw | bike | linear_acceleration_raw | count | async_fifo_once | signal |
-| gyro_*_raw | bike | angular_velocity_raw | count | async_fifo_once | signal |
-| sensor_time_u24 | bike | sensor_time | tick | bmi270_sensor_time | diagnostic |
-| seq_u24 | bike | sample_sequence | count | firmware_sequence | diagnostic |
-| temperature_raw | bike | temperature_raw | count | bmi270_temperature | diagnostic |
-| sample_age_us | bike | sample_age | us | native_to_row_timing | diagnostic |
-| status_flags | bike | status | bitfield | imu_status | diagnostic |
-| sample_valid | bike | sample_valid | boolean | async_fifo_once | diagnostic |
+| Field group | domain | quantity | component | coordinate_frame | vector_group | unit | source | class |
+|---|---|---|---|---|---|---|---|---|
+| accel_*_raw | configured mount domain | linear_acceleration_raw | x/y/z | sensor_native | accel_raw | count | async_fifo_once | signal |
+| gyro_*_raw | configured mount domain | angular_velocity_raw | x/y/z | sensor_native | gyro_raw | count | async_fifo_once | signal |
+| sensor_time_u24 | configured mount domain | sensor_time | - | - | - | tick | bmi270_sensor_time | diagnostic |
+| seq_u24 | configured mount domain | sample_sequence | - | - | - | count | firmware_sequence | diagnostic |
+| temperature_raw | configured mount domain | temperature_raw | - | - | - | count | bmi270_temperature | diagnostic |
+| sample_age_us | configured mount domain | sample_age | - | - | - | us | native_to_row_timing | diagnostic |
+| status_flags | configured mount domain | status | - | - | - | bitfield | imu_status | diagnostic |
+| sample_valid | configured mount domain | sample_valid | - | - | - | boolean | async_fifo_once | diagnostic |
 
-All diagnostic columns are excluded from automatic physical-signal selection. Axis identity is carried by the canonical field/column ID and sensor metadata.
+All diagnostic columns are excluded from automatic physical-signal selection. Axis identity is explicit metadata; consumers must not depend on parsing the canonical field/column ID.
+
+The configured mounting semantics are:
+
+| domain | permitted end | meaning |
+|---|---|---|
+| unsprung | front, rear | Assembly moving predominantly with the corresponding axle, including caliper, fork-lower, or rear-triangle mounting |
+| frame | front, rear, null | Main sprung frame; front/rear describes the coarse mounting region |
+| steering | front | Sprung assembly rotating about the steering axis |
+
+`mount_point` is optional descriptive detail and is not a primary signal selector. The legacy configuration field `location` is accepted as an alias for `domain`; new metadata uses `domain` and `end` while retaining `location` temporarily for reader compatibility.
 
 ## 8. Status flag contract
 
@@ -194,7 +206,8 @@ The sensor metadata object must include:
 - contract_id;
 - sensor instance name;
 - stable imu_id;
-- location;
+- domain and end;
+- optional mount_point;
 - sensor type;
 - I2C bus and address;
 - chip ID and initialization result;

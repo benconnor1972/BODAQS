@@ -22,7 +22,17 @@ class SignalSpec:
     strict_domains: bool = True
 
 DEFAULT_SPEC = SignalSpec(
-    allowed_domains=frozenset({"suspension", "wheel", "bike", "world"}),
+    # Retain the legacy analysis domains while accepting the canonical IMU
+    # mounting domains introduced by the Phase 4.5 signal contract.
+    allowed_domains=frozenset({
+        "suspension",
+        "wheel",
+        "bike",
+        "world",
+        "unsprung",
+        "frame",
+        "steering",
+    }),
     allowed_ops=frozenset({
         "zeroed", "norm", "clip", "filt", "fill", "smooth", "detrend", "cal", "resamp", "diff",
     }),

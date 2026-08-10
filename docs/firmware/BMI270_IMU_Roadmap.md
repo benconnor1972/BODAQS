@@ -44,9 +44,11 @@ Use a right-handed bicycle body frame:
 - positive Y: left;
 - positive Z: up.
 
-Use ENU for any later world-frame output. The physical installation is described by a signed axis permutation from the BMI270 package axes into the bicycle body frame.
+Use ENU for any later world-frame output. The physical installation is described by a signed axis permutation from the BMI270 package axes into a local frame fixed to the mounted mechanical assembly (`body_local`). For a frame-mounted sensor this coincides with the bicycle body frame. Steering and unsprung sensors require additional, potentially time-varying articulation information before their values can be expressed in the main bicycle body frame.
 
 The MVP records sensor-native samples and the mounting transform. It does not destructively rotate or bias-correct the stored raw values. Post-processing applies the transform and calibration, preserving the original evidence.
+
+Signal `domain` identifies the physical or analysis subject and is independent of coordinate basis. IMU mounting domains use `unsprung`, `frame`, and `steering`, with `end` providing the front/rear qualifier. `coordinate_frame` describes only the basis in which vector components are currently expressed: firmware raw vectors are `sensor_native`; `body_local`, `bike_body`, and `world_enu` are derived representations produced by post-processing.
 
 ### 3.2 Initial measurement profile
 
@@ -130,6 +132,7 @@ Deliverables:
 - pinned Bosch BMI270 driver integration;
 - I2C transport, configuration read-back, FIFO draining, and bounded queue;
 - BODAQS registry/configuration integration;
+- Phase 4.5 domain/end and coordinate-frame semantic consolidation;
 - raw BDQ channels and session metadata;
 - startup stationary-bias observation and runtime diagnostics;
 - host decoder changes and an IMU quality-control summary;
@@ -200,7 +203,7 @@ Required architectural work:
 
 - native per-stream sample storage rather than sparse columns in a global row;
 - clock offset and drift estimation between IMUs;
-- per-unit mounting, calibration, identity, location, and health metadata;
+- per-unit mounting, calibration, identity, domain/end, optional mount point, and health metadata;
 - phase-preserving gap and resampling rules;
 - a physical transport suitable for cable length and environment;
 - storage, CPU, queue, and power budgets for the chosen channel count and rate.
@@ -248,7 +251,9 @@ Use a named profile to keep the common configuration short. Proposed logical fie
     sensorN.type=bmi270_imu_i2c
     sensorN.name=frame_imu
     sensorN.imu_id=frame_imu_001
-    sensorN.location=frame
+    sensorN.domain=frame
+    sensorN.end=rear
+    sensorN.mount_point=
     sensorN.i2c_bus=1
     sensorN.i2c_addr=104
     sensorN.profile=orientation_200
@@ -327,6 +332,7 @@ FIFO buffering removes the need to read every IMU at every sample instant, but i
 | Mount flex or poor alignment | Misleading rigid-body motion | Rigid keyed mount, recorded axis map, installation check |
 | Automatic bias correction during motion | Real motion removed or bias corrupted | Record observations only in MVP; apply offline |
 | Sensor configuration drift or init error | Incomparable sessions | Read back effective configuration and fail visibly |
+| Responsive sensor silently loses volatile configuration | FIFO remains empty for the rest of a ride | Validate state at session start, supervise native-sample progress, capture health evidence, and perform bounded full recovery |
 | Long I2C wiring in future | Intermittent remote sensors | Treat transport as a milestone-5 hardware decision |
 | Sparse global-row representation scaled to many IMUs | Wasted space and timing ambiguity | Use only for MVP; plan native asynchronous streams before multi-IMU |
 | Unknown sensor type fallback | Wrong driver instantiated silently | Reject unknown types as part of the foundation work |

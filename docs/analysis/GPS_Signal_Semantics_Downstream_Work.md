@@ -86,8 +86,10 @@ not FIT-style hardcoded column names. A minimal selector is:
 - optional speed: `domain=world`, `quantity=speed`, `unit=m/s`
 - optional heading: `domain=world`, `quantity=heading`, `unit=deg`
 
-QC selectors should resolve the corresponding `kind=qc` channels from the same
-sensor/source where possible. In particular, `valid`, `age`, `seq`, and
+QC selectors must resolve the corresponding `kind=qc` channels from the same
+sensor/source as the selected latitude/longitude pair. They must not fall back
+to a quality or motion channel belonging to a different GPS source. In
+particular, `valid`, `age`, `seq`, and
 `fresh` are the fields that distinguish a real GPS update from a repeated cached
 snapshot in the synchronous logger row stream.
 
@@ -127,6 +129,12 @@ and GPS does not discipline the logger RTC in the current firmware. The firmware
 does read GPS time internally, but it is not emitted as a log signal yet; if we
 later emit GPS time-of-week or Unix time, that should become a separate
 navigation timing/QC signal rather than silently replacing logger time.
+
+At each firmware session boundary, the DAN-F10N adapter invalidates its cached
+snapshot and, when restarting acquisition, discards queued pre-session UART
+bytes. Position and motion remain unavailable until a new PVT snapshot is
+received for the new session. This deliberately prevents the endpoint of one
+session from becoming the first point of the next session.
 
 Coordinate and motion semantics to preserve:
 

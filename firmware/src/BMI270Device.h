@@ -62,6 +62,34 @@ struct BMI270DeviceDiagnostics {
   uint8_t internalStatus = 0;
 };
 
+namespace BMI270OperationalIssue {
+
+inline constexpr uint32_t kUnexpectedSoftwareState = 0x00000001u;
+inline constexpr uint32_t kChipIdReadFailed = 0x00000002u;
+inline constexpr uint32_t kChipIdMismatch = 0x00000004u;
+inline constexpr uint32_t kInternalStatusReadFailed = 0x00000008u;
+inline constexpr uint32_t kInternalStatusMismatch = 0x00000010u;
+inline constexpr uint32_t kProfileReadFailed = 0x00000020u;
+inline constexpr uint32_t kProfileMismatch = 0x00000040u;
+inline constexpr uint32_t kPowerControlReadFailed = 0x00000080u;
+inline constexpr uint32_t kPowerControlMismatch = 0x00000100u;
+inline constexpr uint32_t kFifoReadFailed = 0x00000200u;
+inline constexpr uint32_t kFifoMismatch = 0x00000400u;
+inline constexpr uint32_t kNoSampleProgress = 0x00000800u;
+
+} // namespace BMI270OperationalIssue
+
+struct BMI270OperationalState {
+  BMI270Profile::EffectiveConfig effectiveConfig;
+  uint32_t issues = 0;
+  int8_t lastApiResult = BMI2_OK;
+  uint8_t chipId = 0;
+  uint8_t internalStatus = 0;
+  uint8_t powerControl = 0;
+
+  bool valid() const { return issues == 0; }
+};
+
 class BMI270Device {
 public:
   BMI270Device(uint8_t busIndex, uint8_t address);
@@ -74,6 +102,9 @@ public:
   bool suspend();
   bool resume();
   bool recover();
+  bool validateOperationalState(
+      bool sensorsExpected,
+      BMI270OperationalState& out);
   void shutdown();
 
   BMI270DeviceState state() const { return diagnostics_.state; }

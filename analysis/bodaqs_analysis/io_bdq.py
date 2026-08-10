@@ -520,6 +520,10 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
         }
         for key in (
             "kind",
+            "mount_point",
+            "component",
+            "coordinate_frame",
+            "vector_group",
             "processing_role",
             "semantic_selection_excluded",
             "semantic_selection_exclusion_reason",

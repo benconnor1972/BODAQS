@@ -110,9 +110,12 @@ def resolve_gps_columns(
     if not latitude_candidates or not longitude_candidates:
         return None
 
-    latitude, longitude = _paired_position_columns(latitude_candidates, longitude_candidates, column_info)
+    paired = _paired_position_columns(latitude_candidates, longitude_candidates, column_info)
+    if paired is None:
+        return None
+    latitude, longitude = paired
     lat_info = column_info.get(latitude, {})
-    group_key = _gps_group_key(lat_info) or _gps_group_key(column_info.get(longitude, {}))
+    group_key = _gps_group_key(latitude, lat_info) or _gps_group_key(longitude, column_info.get(longitude, {}))
     source_kind = _source_kind_for_column(latitude, lat_info)
 
     def pick(predicate: Any) -> Optional[str]:
@@ -121,8 +124,20 @@ def resolve_gps_columns(
             candidates = [
                 col for col in candidates if _source_kind_for_column(col, column_info.get(col, {})) == "logger_sensor"
             ]
-        same_group = [col for col in candidates if _gps_group_key(column_info.get(col, {})) == group_key]
-        return (same_group or candidates or [None])[0]
+        same_group = [
+            col for col in candidates
+            if group_key is not None and _gps_group_key(col, column_info.get(col, {})) == group_key
+        ]
+        if same_group:
+            return same_group[0]
+        # A sole ungrouped legacy column is safe only when the selected
+        # position pair is also ungrouped. Never borrow QC or motion fields
+        # from a different explicitly identified GPS source.
+        if group_key is None and len(candidates) == 1 and _gps_group_key(
+            candidates[0], column_info.get(candidates[0], {})
+        ) is None:
+            return candidates[0]
+        return None
 
     return GPSColumnSet(
         latitude=latitude,
@@ -526,15 +541,22 @@ def _paired_position_columns(
     latitude_candidates: Sequence[str],
     longitude_candidates: Sequence[str],
     column_info: Mapping[str, Mapping[str, Any]],
-) -> tuple[str, str]:
+) -> Optional[tuple[str, str]]:
     for lat in latitude_candidates:
-        lat_group = _gps_group_key(column_info.get(lat, {}))
+        lat_group = _gps_group_key(lat, column_info.get(lat, {}))
         if not lat_group:
             continue
         for lon in longitude_candidates:
-            if _gps_group_key(column_info.get(lon, {})) == lat_group:
+            if _gps_group_key(lon, column_info.get(lon, {})) == lat_group:
                 return lat, lon
-    return latitude_candidates[0], longitude_candidates[0]
+    if len(latitude_candidates) == 1 and len(longitude_candidates) == 1:
+        lat = latitude_candidates[0]
+        lon = longitude_candidates[0]
+        lat_group = _gps_group_key(lat, column_info.get(lat, {}))
+        lon_group = _gps_group_key(lon, column_info.get(lon, {}))
+        if not lat_group or not lon_group:
+            return lat, lon
+    return None
 
 
 def _column_sort_key(column: str) -> tuple[int, str]:
@@ -624,18 +646,51 @@ def _quantity(info: Mapping[str, Any]) -> str:
     return ""
 
 
-def _gps_group_key(info: Mapping[str, Any]) -> Optional[str]:
-    for key in ("sensor", "source"):
+def _gps_group_key(column: str, info: Mapping[str, Any]) -> Optional[str]:
+    for key in ("sensor", "source_id", "stream_name"):
         value = _nonempty_text(info.get(key))
         if value:
-            return value.lower()
+            return f"{key}:{value.lower()}"
+    prefix = _gps_column_prefix(column)
+    if prefix:
+        return f"column:{prefix}"
     source_columns = info.get("source_columns")
     if isinstance(source_columns, Sequence) and not isinstance(source_columns, (str, bytes)):
         for value in source_columns:
             text = _nonempty_text(value)
             if text:
-                return text.split("_", 1)[0].lower()
+                source_prefix = _gps_column_prefix(text)
+                if source_prefix:
+                    return f"column:{source_prefix}"
     return None
+
+
+def _gps_column_prefix(column: str) -> Optional[str]:
+    lower = str(column).replace("-", "_").lower()
+    markers = (
+        "_position_latitude",
+        "_position_longitude",
+        "_latitude",
+        "_longitude",
+        "_lat",
+        "_lon",
+        "_alt",
+        "_speed",
+        "_heading",
+        "_valid",
+        "_age",
+        "_seq",
+        "_fresh",
+        "_fix_type",
+        "_sats",
+        "_hacc",
+        "_vacc",
+    )
+    positions = [lower.find(marker) for marker in markers]
+    positions = [position for position in positions if position > 0]
+    if not positions:
+        return None
+    return lower[: min(positions)]
 
 
 def _source_kind_for_column(column: str, info: Mapping[str, Any]) -> str:

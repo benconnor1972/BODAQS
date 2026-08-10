@@ -3,7 +3,7 @@
 #endif
 
 #ifndef ImportManagerVersion
-  #define ImportManagerVersion "0.1.5-beta"
+  #define ImportManagerVersion "0.2.0-dev"
 #endif
 
 #ifndef LibraryServiceVersion

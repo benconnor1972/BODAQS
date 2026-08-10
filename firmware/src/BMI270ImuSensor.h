@@ -15,7 +15,9 @@ public:
   struct Params {
     char name[16] = "frame_imu";
     char imuId[32] = "frame_imu_001";
-    char location[24] = "frame";
+    char domain[24] = "frame";
+    char end[8] = "";
+    char mountPoint[32] = "";
     uint8_t busIndex = 1;
     uint8_t address = 0x68;
     char profile[24] = "orientation_200";

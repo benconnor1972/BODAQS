@@ -8,8 +8,21 @@
 #include "BMI270FifoParser.h"
 #include "BMI270FifoReadPlan.h"
 #include "BMI270ImuSample.h"
+#include "BMI270ProgressWatchdog.h"
 #include "FixedSpscQueue.h"
 #include "I2CBusScheduler.h"
+
+enum class BMI270RecoveryReason : uint8_t {
+  None = 0,
+  ConsecutiveDrainFailures,
+  SessionStartValidation,
+  NoSampleProgress,
+};
+
+static_assert(static_cast<uint8_t>(BMI270RecoveryReason::None) == 0);
+static_assert(static_cast<uint8_t>(BMI270RecoveryReason::ConsecutiveDrainFailures) == 1);
+static_assert(static_cast<uint8_t>(BMI270RecoveryReason::SessionStartValidation) == 2);
+static_assert(static_cast<uint8_t>(BMI270RecoveryReason::NoSampleProgress) == 3);
 
 struct BMI270FifoDiagnostics {
   uint64_t drainCalls = 0;
@@ -38,8 +51,15 @@ struct BMI270FifoDiagnostics {
   uint64_t explicitQueueDiscards = 0;
   uint64_t temperatureReads = 0;
   uint64_t temperatureReadFailures = 0;
+  uint64_t operationalValidationAttempts = 0;
+  uint64_t operationalValidationFailures = 0;
+  uint64_t sessionStartValidationAttempts = 0;
+  uint64_t sessionStartValidationFailures = 0;
+  uint64_t noProgressEvents = 0;
   uint64_t recoveryAttempts = 0;
   uint64_t recoverySuccesses = 0;
+  uint64_t recoveryFailures = 0;
+  uint64_t terminalFaultEvents = 0;
   uint64_t fifoFlushes = 0;
   uint64_t fifoFlushFailures = 0;
   uint64_t stopDrainAttempts = 0;
@@ -50,6 +70,8 @@ struct BMI270FifoDiagnostics {
   uint16_t queueHighWater = 0;
   uint32_t maximumDrainDurationUs = 0;
   uint32_t maximumDrainFailureStreak = 0;
+  uint32_t maximumNoProgressUs = 0;
+  uint32_t lastValidationIssues = 0;
   uint32_t nextSequence = 0;
   uint16_t effectiveFifoConfig = 0;
   uint16_t effectiveFifoWatermark = 0;
@@ -57,9 +79,23 @@ struct BMI270FifoDiagnostics {
   uint8_t effectiveGyroDownsample = 0;
   uint8_t effectiveAccelFiltered = 0;
   uint8_t effectiveGyroFiltered = 0;
+  uint16_t lastValidationFifoConfig = 0;
+  uint16_t lastValidationFifoWatermark = 0;
+  uint8_t lastValidationChipId = 0;
+  uint8_t lastValidationInternalStatus = 0;
+  uint8_t lastValidationPowerControl = 0;
+  uint8_t lastValidationAccelDownsample = 0;
+  uint8_t lastValidationGyroDownsample = 0;
+  uint8_t lastValidationAccelFiltered = 0;
+  uint8_t lastValidationGyroFiltered = 0;
+  uint8_t consecutiveRecoveryFailures = 0;
+  uint8_t recoveryAttemptsWithoutProgress = 0;
+  BMI270RecoveryReason lastRecoveryReason = BMI270RecoveryReason::None;
   int8_t lastApiResult = BMI2_OK;
+  int8_t lastValidationApiResult = BMI2_OK;
   bool fifoConfigured = false;
   bool sessionActive = false;
+  bool terminalFault = false;
   bool counterSaturated = false;
 };
 
@@ -72,6 +108,8 @@ public:
   static constexpr uint16_t kTemperatureRateHz = 10;
   static constexpr uint32_t kTemperaturePeriodUs = 1000000u / kTemperatureRateHz;
   static constexpr uint32_t kTemperatureFreshnessUs = 250000u;
+  static constexpr uint32_t kNoSampleProgressTimeoutUs = 250000u;
+  static constexpr uint8_t kMaximumConsecutiveRecoveryFailures = 3;
   static constexpr uint32_t kQueueCoverageMs =
       static_cast<uint32_t>((kQueueCapacity * 1000u) / kTargetRateHz);
 
@@ -108,20 +146,38 @@ public:
   uint8_t asyncI2CAddress() const override { return device_.address(); }
   uint16_t asyncTargetRateHz() const override { return kTargetRateHz; }
   uint32_t asyncMaximumLowPriorityGapUs() const override { return 50000u; }
-  bool asyncMuted() const override { return !sessionActive(); }
+  bool asyncMuted() const override {
+    return !sessionActive() || terminalFault_.load(std::memory_order_acquire);
+  }
   bool asyncAcquire() override;
 
 private:
   enum class DrainPassResult : uint8_t { Empty = 0, Data, Failure };
 
+  struct FifoConfigurationSnapshot {
+    uint16_t config = 0;
+    uint16_t watermark = 0;
+    uint8_t accelDownsample = 0;
+    uint8_t gyroDownsample = 0;
+    uint8_t accelFiltered = 0;
+    uint8_t gyroFiltered = 0;
+    int8_t apiResult = BMI2_OK;
+    bool readOk = false;
+    bool matched = false;
+  };
+
   bool configureFifo_();
+  bool readFifoConfiguration_(FifoConfigurationSnapshot& out);
+  bool validateOperationalState_(bool sensorsExpected, bool noSampleProgress);
   bool flushFifo_();
   bool drainAllAvailable_(
       uint8_t maximumPasses,
       bool readTemperature,
       bool requireEmpty = false);
   DrainPassResult drainOnePass_(bool readTemperature);
-  bool recoverAcquisition_();
+  bool recoverAcquisition_(BMI270RecoveryReason reason);
+  bool handleNoSampleProgress_(uint32_t nowUs);
+  void enterTerminalFault_(BMI270RecoveryReason reason);
   void resetSessionState_(uint64_t preSessionDiscards);
   void accumulateParseDiagnostics_(const BMI270FifoParseResult& parsed);
   void enqueueParsed_(
@@ -140,6 +196,7 @@ private:
   FixedSpscQueue<BMI270ImuSample, kQueueCapacity> queue_;
   BMI270FifoDiagnostics diagnostics_;
   std::atomic<bool> sessionActive_ { false };
+  std::atomic<bool> terminalFault_ { false };
 
   uint8_t rawBuffer_[kRawBufferBytes] {};
   BMI270FifoParsedSample parsed_[kMaximumBatchSamples] {};
@@ -148,7 +205,10 @@ private:
   uint16_t pendingStatus_ = 0;
   uint32_t pendingSkippedFrames_ = 0;
   uint32_t consecutiveDrainFailures_ = 0;
+  uint8_t consecutiveRecoveryFailures_ = 0;
   uint16_t recoveryBackoffPolls_ = 0;
+  BMI270ProgressWatchdog progressWatchdog_ { kNoSampleProgressTimeoutUs };
+  BMI270RecoveryBudget recoveryBudget_ { kMaximumConsecutiveRecoveryFailures };
   bool havePreviousSensorTime_ = false;
   uint32_t previousSensorTime_ = 0;
   bool haveTemperature_ = false;

@@ -86,8 +86,12 @@ struct SensorColumnDescriptor {
   char columnId[64] = {0};
   char sensorName[16] = {0};
   char end[16] = {0};       // e.g. "front", "rear"; empty when not configured
-  char domain[24] = {0};    // e.g. "wheel", "suspension"; empty when unknown
+  char domain[24] = {0};    // e.g. "wheel", "unsprung", "frame"; empty when unknown
+  char mountPoint[32] = {0}; // Optional descriptive physical mounting point
   char quantity[24] = {0};  // e.g. "raw", "disp", "ang_disp"; empty when unknown
+  char component[8] = {0};  // Vector component, e.g. "x", "y", or "z"
+  char coordinateFrame[24] = {0}; // Basis in which vector components are expressed
+  char vectorGroup[32] = {0}; // Sensor-local identifier tying vector components together
   char unit[24] = {0};      // e.g. "counts", "mm", "deg"
   char source[24] = {0};    // e.g. "primary", "raw_counts", "linearized"
   char kind[8] = {0};       // "", "raw", or "qc" for analysis signal registry
@@ -137,7 +141,10 @@ struct SensorDeviceConfigDescriptor {
 struct SensorImuConfigDescriptor {
   char contractId[40] = {0};
   char imuId[32] = {0};
-  char location[24] = {0};
+  char location[24] = {0}; // Deprecated compatibility alias for domain
+  char domain[24] = {0};
+  char end[8] = {0};
+  char mountPoint[32] = {0};
   char profile[24] = {0};
   char driverRevision[48] = {0};
   char calibrationRef[32] = {0};

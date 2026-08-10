@@ -7,7 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from bodaqs_analysis.io_bdq import CHUNK_MAGIC, FILE_MAGIC, iter_bdq_rows
+from bodaqs_analysis.io_bdq import (
+    CHUNK_MAGIC,
+    FILE_MAGIC,
+    bdq_to_log_metadata,
+    iter_bdq_rows,
+    read_bdq,
+)
+from bodaqs_analysis.pipeline import load_bdq_session
+from bodaqs_analysis.signalname import parse_signal_name
+from bodaqs_analysis.signal_standardize import (
+    canonicalize_signal_names,
+    rebuild_and_validate_signal_registry,
+)
 
 
 FILE_HEADER = struct.Struct("<8sHHIQII")
@@ -51,7 +63,14 @@ def _schema(*, accel_storage_type: str = "int16") -> dict:
             },
             {
                 "field": "frame_imu_accel_x_raw",
+                "sensor": "frame_imu",
+                "end": "rear",
+                "domain": "frame",
+                "mount_point": "seat_tube",
                 "quantity": "linear_acceleration_raw",
+                "component": "x",
+                "coordinate_frame": "sensor_native",
+                "vector_group": "accel_raw",
                 "unit": "count",
                 "storage_type": accel_storage_type,
                 "byte_offset": 4,
@@ -181,6 +200,46 @@ def test_iter_rows_preserves_legacy_storage_types(tmp_path: Path) -> None:
         "travel": 12.5,
         "flags": 1,
     }
+
+
+def test_bdq_metadata_preserves_vector_and_mount_semantics(tmp_path: Path) -> None:
+    path = tmp_path / "typed_imu.bdq"
+    path.write_bytes(_bdq_bytes())
+
+    metadata = bdq_to_log_metadata(read_bdq(path))
+    accel_x = next(
+        info
+        for info in metadata["columns"].values()
+        if info.get("bdq_field") == "frame_imu_accel_x_raw"
+    )
+
+    assert accel_x["sensor"] == "frame_imu"
+    assert accel_x["domain"] == "frame"
+    assert accel_x["end"] == "rear"
+    assert accel_x["mount_point"] == "seat_tube"
+    assert accel_x["component"] == "x"
+    assert accel_x["coordinate_frame"] == "sensor_native"
+    assert accel_x["vector_group"] == "accel_raw"
+
+
+def test_phase_4_5_frame_domain_passes_strict_signal_validation(tmp_path: Path) -> None:
+    path = tmp_path / "typed_imu.bdq"
+    path.write_bytes(_bdq_bytes())
+
+    session = canonicalize_signal_names(load_bdq_session(path))
+    validated = rebuild_and_validate_signal_registry(session, strict_registry_parse=True)
+
+    column = "frame_imu_accel_x_raw_dom_frame [count]"
+    assert column in validated["df"].columns
+    assert validated["meta"]["signals"][column]["kind"] == "raw"
+    assert validated["meta"]["signals"][column]["quantity"] == "linear_acceleration_raw"
+
+
+@pytest.mark.parametrize("domain", ["unsprung", "frame", "steering"])
+def test_phase_4_5_imu_domains_are_in_the_canonical_vocabulary(domain: str) -> None:
+    parts = parse_signal_name(f"imu0_accel_x_raw_dom_{domain} [count]")
+
+    assert parts.domain == domain
 
 
 def test_iter_rows_rejects_unsupported_storage_type_clearly(tmp_path: Path) -> None:

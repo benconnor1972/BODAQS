@@ -329,6 +329,10 @@ def _build_channel_info_from_sidecar(sidecar: Dict[str, Any]) -> Dict[str, Dict[
         for key in (
             "kind",
             "source",
+            "mount_point",
+            "component",
+            "coordinate_frame",
+            "vector_group",
             "processing_role",
             "motion_source_id",
             "motion_profile_id",
@@ -932,7 +936,18 @@ def _signal_matches_semantics(signal_info: Mapping[str, Any], selector: Mapping[
     if signal_info.get("semantic_selection_excluded"):
         return False
 
-    for key in ("end", "quantity", "domain", "unit", "processing_role", "motion_source_id", "motion_profile_id"):
+    for key in (
+        "end",
+        "quantity",
+        "domain",
+        "unit",
+        "component",
+        "coordinate_frame",
+        "vector_group",
+        "processing_role",
+        "motion_source_id",
+        "motion_profile_id",
+    ):
         expected = selector.get(key)
         if expected is None or (isinstance(expected, str) and not expected.strip()):
             continue

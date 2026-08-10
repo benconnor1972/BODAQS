@@ -25,7 +25,7 @@ from bodaqs_analysis.io_fit import (
     upsert_fit_binding,
     upsert_fit_binding_records,
 )
-from bodaqs_analysis.gps_semantics import build_logger_gps_route_stream
+from bodaqs_analysis.gps_semantics import build_logger_gps_route_stream, resolve_gps_columns
 from bodaqs_analysis.model import validate_session
 from bodaqs_analysis.pipeline import (
     build_session_from_dataframe,
@@ -2437,6 +2437,81 @@ def test_preprocess_resolved_preserves_logger_and_fit_gps_sources():
     source_kinds = {source["source_id"]: source["kind"] for source in out["meta"]["gps_sources"]["sources"]}
     assert source_kinds["gps_logger"] == "logger_sensor"
     assert source_kinds["gps_fit"] == "fit_enrichment"
+
+
+def test_gps_resolution_keeps_position_and_qc_on_the_same_sensor():
+    columns = {
+        "gps0_lat [deg]": {"sensor": "gps0", "quantity": "position_latitude"},
+        "gps0_lon [deg]": {"sensor": "gps0", "quantity": "position_longitude"},
+        "gps0_valid": {"sensor": "gps0", "quantity": "valid", "kind": "qc"},
+        "gps1_lat [deg]": {"sensor": "gps1", "quantity": "position_latitude"},
+        "gps1_lon [deg]": {"sensor": "gps1", "quantity": "position_longitude"},
+        "gps1_valid": {"sensor": "gps1", "quantity": "valid", "kind": "qc"},
+    }
+
+    resolved = resolve_gps_columns(
+        {"signals": columns},
+        known_columns=set(columns),
+        require_logger_source=True,
+    )
+
+    assert resolved is not None
+    assert resolved.latitude == "gps0_lat [deg]"
+    assert resolved.longitude == "gps0_lon [deg]"
+    assert resolved.valid == "gps0_valid"
+
+
+def test_gps_resolution_rejects_cross_sensor_position_pair():
+    columns = {
+        "gps0_lat [deg]": {"sensor": "gps0", "quantity": "position_latitude"},
+        "gps1_lon [deg]": {"sensor": "gps1", "quantity": "position_longitude"},
+    }
+
+    assert resolve_gps_columns({"signals": columns}, known_columns=set(columns)) is None
+
+
+def test_signal_registry_preserves_vector_coordinate_semantics():
+    column = "frame_imu_accel_x_raw"
+    session = {
+        "df": pd.DataFrame({"time_s": [0.0], column: [123]}),
+        "meta": {
+            "channel_info": {
+                column: {
+                    "sensor": "frame_imu",
+                    "domain": "frame",
+                    "end": "rear",
+                    "mount_point": "seat_tube",
+                    "quantity": "linear_acceleration_raw",
+                    "unit": "count",
+                    "kind": "raw",
+                    "component": "x",
+                    "coordinate_frame": "sensor_native",
+                    "vector_group": "accel_raw",
+                }
+            }
+        },
+    }
+
+    build_signals_registry(session)
+    signal = session["meta"]["signals"][column]
+
+    assert signal["component"] == "x"
+    assert signal["mount_point"] == "seat_tube"
+    assert signal["coordinate_frame"] == "sensor_native"
+    assert signal["vector_group"] == "accel_raw"
+    assert resolve_signal_selector(
+        session,
+        {
+            "domain": "frame",
+            "end": "rear",
+            "quantity": "linear_acceleration_raw",
+            "component": "x",
+            "coordinate_frame": "sensor_native",
+            "vector_group": "accel_raw",
+        },
+        purpose="IMU axis",
+        allow_missing=False,
+    ) == column
 
 
 def test_validate_preprocess_config_accepts_legacy_activity_profile_without_policy():

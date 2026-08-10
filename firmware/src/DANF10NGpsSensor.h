@@ -124,6 +124,7 @@ private:
   bool initializeGnss_();
   void taskLoop_();
   void updateSnapshotFromGnss_();
+  void clearSessionSnapshot_();
   bool copySnapshot_(Snapshot& out) const;
   bool outputValueValid_(const Snapshot& s, uint32_t ageMs, bool fresh) const;
   uint32_t snapshotAgeMs_(const Snapshot& s, uint32_t nowMs) const;

@@ -14,6 +14,8 @@ constexpr uint32_t kRetryDelayMs = 25;
 constexpr uint8_t kEnabledSensors[] = { BMI2_ACCEL, BMI2_GYRO, BMI2_TEMP };
 constexpr uint8_t kEnabledSensorCount =
     static_cast<uint8_t>(sizeof(kEnabledSensors) / sizeof(kEnabledSensors[0]));
+constexpr uint8_t kRequiredPowerControl =
+    BMI2_ACC_EN_MASK | BMI2_GYR_EN_MASK | BMI2_TEMP_EN_MASK;
 
 static_assert(BMI2_ACC_ODR_200HZ == BMI270Profile::kOdrCode);
 static_assert(BMI2_GYR_ODR_200HZ == BMI270Profile::kOdrCode);
@@ -123,6 +125,65 @@ bool BMI270Device::recover() {
   const bool ok = begin();
   if (ok) ++diagnostics_.recoverySuccesses;
   return ok;
+}
+
+bool BMI270Device::validateOperationalState(
+    bool sensorsExpected,
+    BMI270OperationalState& out) {
+  out = BMI270OperationalState{};
+  const BMI270DeviceState expectedState = sensorsExpected
+      ? BMI270DeviceState::Ready
+      : BMI270DeviceState::Suspended;
+  if (diagnostics_.state != expectedState) {
+    out.issues |= BMI270OperationalIssue::kUnexpectedSoftwareState;
+  }
+
+  if (!transport_.probeChipId(out.chipId)) {
+    out.issues |= BMI270OperationalIssue::kChipIdReadFailed;
+    out.lastApiResult = BMI2_E_COM_FAIL;
+  } else if (out.chipId != BMI270_CHIP_ID) {
+    out.issues |= BMI270OperationalIssue::kChipIdMismatch;
+    out.lastApiResult = BMI2_E_DEV_NOT_FOUND;
+  }
+
+  int8_t result = bmi2_get_internal_status(&out.internalStatus, &device_);
+  if (result != BMI2_OK) {
+    out.issues |= BMI270OperationalIssue::kInternalStatusReadFailed;
+    out.lastApiResult = result;
+  } else if (out.internalStatus != BMI2_CONFIG_LOAD_SUCCESS) {
+    out.issues |= BMI270OperationalIssue::kInternalStatusMismatch;
+    out.lastApiResult = BMI2_E_CONFIG_LOAD;
+  }
+
+  struct bmi2_sens_config config[2] {};
+  config[0].type = BMI2_ACCEL;
+  config[1].type = BMI2_GYRO;
+  result = bmi270_get_sensor_config(config, 2, &device_);
+  if (result != BMI2_OK) {
+    out.issues |= BMI270OperationalIssue::kProfileReadFailed;
+    out.lastApiResult = result;
+  } else {
+    copyEffectiveConfig_(config, out.effectiveConfig);
+    if (!BMI270Profile::matchesOrientation200(out.effectiveConfig)) {
+      out.issues |= BMI270OperationalIssue::kProfileMismatch;
+      out.lastApiResult = BMI2_E_INVALID_STATUS;
+    }
+  }
+
+  result = bmi2_get_regs(BMI2_PWR_CTRL_ADDR, &out.powerControl, 1, &device_);
+  if (result != BMI2_OK) {
+    out.issues |= BMI270OperationalIssue::kPowerControlReadFailed;
+    out.lastApiResult = result;
+  } else {
+    const uint8_t enabled = out.powerControl & kRequiredPowerControl;
+    const uint8_t expected = sensorsExpected ? kRequiredPowerControl : 0;
+    if (enabled != expected) {
+      out.issues |= BMI270OperationalIssue::kPowerControlMismatch;
+      out.lastApiResult = BMI2_E_INVALID_STATUS;
+    }
+  }
+
+  return out.valid();
 }
 
 void BMI270Device::shutdown() {

@@ -531,6 +531,24 @@ void appendImuRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true)
     appendKeyUInt64_(out, depth + 3, "explicit_queue_discards", diagnostics.imuExplicitQueueDiscards);
     appendKeyUInt64_(out, depth + 3, "temperature_reads", diagnostics.imuTemperatureReads);
     appendKeyUInt64_(out, depth + 3, "temperature_read_failures", diagnostics.imuTemperatureReadFailures);
+    appendKeyUInt64_(out, depth + 3, "operational_validation_attempts", diagnostics.imuOperationalValidationAttempts);
+    appendKeyUInt64_(out, depth + 3, "operational_validation_failures", diagnostics.imuOperationalValidationFailures);
+    appendKeyUInt64_(out, depth + 3, "session_start_validation_attempts", diagnostics.imuSessionStartValidationAttempts);
+    appendKeyUInt64_(out, depth + 3, "session_start_validation_failures", diagnostics.imuSessionStartValidationFailures);
+    appendKeyUInt_(out, depth + 3, "no_progress_timeout_us", diagnostics.imuNoProgressTimeoutUs);
+    appendKeyUInt64_(out, depth + 3, "no_progress_events", diagnostics.imuNoProgressEvents);
+    appendKeyUInt_(out, depth + 3, "maximum_no_progress_us", diagnostics.imuMaximumNoProgressUs);
+    appendKeyUInt_(out, depth + 3, "last_validation_issues", diagnostics.imuLastValidationIssues);
+    appendKeyInt_(out, depth + 3, "last_validation_api_result", diagnostics.imuLastValidationApiResult);
+    appendKeyUInt_(out, depth + 3, "last_validation_chip_id", diagnostics.imuLastValidationChipId);
+    appendKeyUInt_(out, depth + 3, "last_validation_internal_status", diagnostics.imuLastValidationInternalStatus);
+    appendKeyUInt_(out, depth + 3, "last_validation_power_control", diagnostics.imuLastValidationPowerControl);
+    appendKeyUInt_(out, depth + 3, "last_validation_fifo_config", diagnostics.imuLastValidationFifoConfig);
+    appendKeyUInt_(out, depth + 3, "last_validation_fifo_watermark", diagnostics.imuLastValidationFifoWatermark);
+    appendKeyUInt_(out, depth + 3, "last_validation_accel_downsample", diagnostics.imuLastValidationAccelDownsample);
+    appendKeyUInt_(out, depth + 3, "last_validation_gyro_downsample", diagnostics.imuLastValidationGyroDownsample);
+    appendKeyUInt_(out, depth + 3, "last_validation_accel_filtered", diagnostics.imuLastValidationAccelFiltered);
+    appendKeyUInt_(out, depth + 3, "last_validation_gyro_filtered", diagnostics.imuLastValidationGyroFiltered);
     appendKeyUInt64_(out, depth + 3, "fifo_flushes", diagnostics.imuFifoFlushes);
     appendKeyUInt64_(out, depth + 3, "fifo_flush_failures", diagnostics.imuFifoFlushFailures);
     appendKeyUInt64_(out, depth + 3, "stop_drain_attempts", diagnostics.imuStopDrainAttempts);
@@ -560,6 +578,12 @@ void appendImuRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true)
     out += F("},\n");
     appendKeyUInt64_(out, depth + 3, "recovery_attempts", diagnostics.imuRecoveryAttempts);
     appendKeyUInt64_(out, depth + 3, "recovery_successes", diagnostics.imuRecoverySuccesses);
+    appendKeyUInt64_(out, depth + 3, "recovery_failures", diagnostics.imuRecoveryFailures);
+    appendKeyUInt_(out, depth + 3, "last_recovery_reason", diagnostics.imuLastRecoveryReason);
+    appendKeyUInt_(out, depth + 3, "consecutive_recovery_failures", diagnostics.imuConsecutiveRecoveryFailures);
+    appendKeyUInt_(out, depth + 3, "recovery_attempts_without_progress", diagnostics.imuRecoveryAttemptsWithoutProgress);
+    appendKeyUInt64_(out, depth + 3, "terminal_fault_events", diagnostics.imuTerminalFaultEvents);
+    appendKeyBool_(out, depth + 3, "terminal_fault", diagnostics.imuTerminalFault);
     appendKeyBool_(out, depth + 3, "counter_saturated", diagnostics.imuCounterSaturated, false);
     appendIndent_(out, depth + 2);
     out += F("}");
@@ -576,6 +600,10 @@ void appendImuConfig_(String& out, const SensorImuConfigDescriptor& imu) {
   out += F("{\n");
   appendKeyString_(out, 4, "contract_id", imu.contractId);
   appendKeyString_(out, 4, "imu_id", imu.imuId);
+  appendKeyString_(out, 4, "domain", imu.domain);
+  if (hasText_(imu.end)) appendKeyString_(out, 4, "end", imu.end);
+  if (hasText_(imu.mountPoint)) appendKeyString_(out, 4, "mount_point", imu.mountPoint);
+  // Retained for readers of the original MVP metadata shape.
   appendKeyString_(out, 4, "location", imu.location);
   appendKeyUInt_(out, 4, "i2c_bus", imu.busIndex);
   appendKeyUInt_(out, 4, "i2c_address", imu.address);
@@ -590,6 +618,9 @@ void appendImuConfig_(String& out, const SensorImuConfigDescriptor& imu) {
 
   appendKey_(out, 4, "mount_transform");
   out += F("{\n");
+  appendKeyString_(out, 5, "from", "sensor_native");
+  appendKeyString_(out, 5, "to", "body_local");
+  appendKeyString_(out, 5, "representation", "signed_axis_permutation");
   appendKeyString_(out, 5, "body_x", imu.mountAxis[0]);
   appendKeyString_(out, 5, "body_y", imu.mountAxis[1]);
   appendKeyString_(out, 5, "body_z", imu.mountAxis[2], false);
@@ -733,6 +764,10 @@ void appendSignalColumn_(String& out,
   if (hasText_(c.end)) appendKeyString_(out, 3, "end", c.end);
   appendKeyString_(out, 3, "quantity", c.quantity);
   if (hasText_(c.domain)) appendKeyString_(out, 3, "domain", c.domain);
+  if (hasText_(c.mountPoint)) appendKeyString_(out, 3, "mount_point", c.mountPoint);
+  if (hasText_(c.component)) appendKeyString_(out, 3, "component", c.component);
+  if (hasText_(c.coordinateFrame)) appendKeyString_(out, 3, "coordinate_frame", c.coordinateFrame);
+  if (hasText_(c.vectorGroup)) appendKeyString_(out, 3, "vector_group", c.vectorGroup);
   appendKeyString_(out, 3, "unit", c.unit[0] ? c.unit : "");
   if (hasText_(c.kind) || c.raw) appendKeyString_(out, 3, "kind", c.kind[0] ? c.kind : "raw");
   if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);

@@ -59,8 +59,9 @@ Each `SignalInfo` MUST contain the following keys:
 
 
 - `domain`: `str | None`
-  - Optional, but **highly recommended** when the same physical quantity can exist in multiple frames/domains.
-  - Examples: `"sensor"`, `"wheel"`, `"bike"`, `"world"`.
+  - Optional, but **highly recommended** when the same physical quantity can describe different physical or analysis subjects.
+  - It identifies what part or system the signal characterises; it does **not** identify the coordinate basis of vector components.
+  - Examples: `"suspension"`, `"wheel"`, `"unsprung"`, `"frame"`, `"steering"`, `"world"`.
 
 - `end`: `"front" | "rear" | None`
   - Optional, but **highly recommended** for front/rear bike signals.
@@ -129,6 +130,23 @@ Residual naming note:
   - This is not an analysis selector field. For front/rear bike-location
     matching, use `end` plus `domain`, `quantity`, and `unit`.
 
+- `component`: `str | None`
+  - Vector component represented by the column, normally `"x"`, `"y"`, or `"z"`.
+  - Vector consumers should use this field rather than infer axes from column names.
+
+- `coordinate_frame`: `str | None`
+  - Coordinate basis in which a vector component is currently expressed.
+  - Canonical IMU values are `"sensor_native"`, `"body_local"`, `"bike_body"`, and `"world_enu"`.
+  - This describes the stored or derived values; it does not instruct firmware to perform a transform.
+
+- `vector_group`: `str | None`
+  - Sensor-local identifier tying components of one vector quantity together, such as `"accel_raw"` or `"gyro_raw"`.
+  - The complete group identity is `sensor` plus `vector_group`.
+
+- `mount_point`: `str | None`
+  - Optional descriptive sensor-installation detail such as `"brake_caliper"`.
+  - It is not a primary semantic selector unless a future contract explicitly promotes a controlled vocabulary.
+
 - `notes`: `str`
   - Free text diagnostics or hints.
 
@@ -152,11 +170,24 @@ When resolving schema roles (e.g. `disp`, `vel`, `acc`) to columns, downstream c
 
 1. Filter candidates by `kind` (usually engineered `""`),
 2. Filter by `unit`, `domain`, and `end` as required by the schema,
-3. Prefer a requested `processing_role` when supplied, especially
+3. For vector roles, filter by `coordinate_frame`, `vector_group`, and `component` rather than parsing column names,
+4. Prefer a requested `processing_role` when supplied, especially
    `"primary_analysis"` for standard metrics/event detection,
-4. Prefer “cleaner” stages using `op_chain` when no explicit role is supplied
+5. Prefer “cleaner” stages using `op_chain` when no explicit role is supplied
    (policy-defined ranking),
-5. Fall back deterministically and emit actionable diagnostics if no match exists.
+6. Fall back deterministically and emit actionable diagnostics if no match exists.
+
+### IMU mounting-domain convention
+
+For bike-mounted IMUs, use these signal-level `domain` and `end` combinations:
+
+| domain | permitted end | meaning |
+|---|---|---|
+| `unsprung` | `front`, `rear` | Assembly moving predominantly with the corresponding axle |
+| `frame` | `front`, `rear`, `None` | Main sprung frame; end is a coarse mounting region |
+| `steering` | `front` | Sprung assembly rotating about the steering axis |
+
+Firmware raw accelerometer and gyroscope columns use `coordinate_frame=sensor_native`. The static installation transform is recorded separately as `sensor_native -> body_local`. Post-processing may materialise `body_local`, `bike_body`, or `world_enu` signals and must record that derivation without replacing the raw evidence.
 
 This document does **not** define the ranking policy; it defines the minimum metadata required for any reasonable policy to operate.
 

@@ -113,6 +113,8 @@ bool BMI270FifoAcquisition::begin() {
 
 void BMI270FifoAcquisition::shutdown() {
   sessionActive_.store(false, std::memory_order_release);
+  terminalFault_.store(false, std::memory_order_release);
+  progressWatchdog_.disarm();
   if (registered_) {
     I2CBusScheduler::unregisterClient(this);
     registered_ = false;
@@ -132,9 +134,19 @@ bool BMI270FifoAcquisition::startSession() {
   resetSessionState_(preSessionDiscards);
   device_.resetTransportDiagnostics();
 
+  addCounter_(diagnostics_.sessionStartValidationAttempts);
+  if (!validateOperationalState_(false, false)) {
+    addCounter_(diagnostics_.sessionStartValidationFailures);
+    if (!recoverAcquisition_(BMI270RecoveryReason::SessionStartValidation)) {
+      return false;
+    }
+    if (!device_.suspend()) return false;
+  }
+
   if (!flushFifo_()) return false;
   if (!device_.resume()) return false;
 
+  progressWatchdog_.arm(micros());
   sessionActive_.store(true, std::memory_order_release);
   diagnostics_.sessionActive = true;
   return true;
@@ -144,6 +156,7 @@ bool BMI270FifoAcquisition::stopSession() {
   if (!sessionActive()) return true;
   sessionActive_.store(false, std::memory_order_release);
   diagnostics_.sessionActive = false;
+  progressWatchdog_.disarm();
 
   bool ok = device_.suspend();
   addCounter_(diagnostics_.stopDrainAttempts);
@@ -169,6 +182,7 @@ bool BMI270FifoAcquisition::pop(BMI270ImuSample& sample) {
 
 bool BMI270FifoAcquisition::asyncAcquire() {
   if (!sessionActive()) return true;
+  if (terminalFault_.load(std::memory_order_acquire)) return false;
   if (recoveryBackoffPolls_ > 0) {
     --recoveryBackoffPolls_;
     return false;
@@ -184,6 +198,10 @@ bool BMI270FifoAcquisition::asyncAcquire() {
 
   if (ok) {
     consecutiveDrainFailures_ = 0;
+    const uint32_t nowUs = micros();
+    if (progressWatchdog_.expired(nowUs)) {
+      return handleNoSampleProgress_(nowUs);
+    }
     return true;
   }
 
@@ -196,9 +214,10 @@ bool BMI270FifoAcquisition::asyncAcquire() {
                     BMI270ImuStatus::kTimingDegraded;
   if (consecutiveDrainFailures_ < kRecoveryFailureThreshold) return false;
 
-  const bool recovered = recoverAcquisition_();
+  const bool recovered = recoverAcquisition_(
+      BMI270RecoveryReason::ConsecutiveDrainFailures);
   consecutiveDrainFailures_ = 0;
-  if (!recovered) recoveryBackoffPolls_ = kRecoveryBackoffPolls;
+  (void)recovered;
   return false;
 }
 
@@ -222,53 +241,109 @@ bool BMI270FifoAcquisition::configureFifo_() {
     result = bmi2_set_fifo_config(kRequiredFifoConfig, BMI2_ENABLE, &native);
   }
 
-  uint16_t effective = 0;
-  if (result == BMI2_OK) result = bmi2_get_fifo_config(&effective, &native);
-  if (result == BMI2_OK) {
-    result = bmi2_get_fifo_wm(&diagnostics_.effectiveFifoWatermark, &native);
-  }
-  if (result == BMI2_OK) {
-    result = bmi2_get_fifo_down_sample(
-        BMI2_ACCEL,
-        &diagnostics_.effectiveAccelDownsample,
-        &native);
-  }
-  if (result == BMI2_OK) {
-    result = bmi2_get_fifo_down_sample(
-        BMI2_GYRO,
-        &diagnostics_.effectiveGyroDownsample,
-        &native);
-  }
-  if (result == BMI2_OK) {
-    result = bmi2_get_fifo_filter_data(
-        BMI2_ACCEL,
-        &diagnostics_.effectiveAccelFiltered,
-        &native);
-  }
-  if (result == BMI2_OK) {
-    result = bmi2_get_fifo_filter_data(
-        BMI2_GYRO,
-        &diagnostics_.effectiveGyroFiltered,
-        &native);
+  FifoConfigurationSnapshot snapshot;
+  if (result == BMI2_OK && !readFifoConfiguration_(snapshot)) {
+    result = snapshot.apiResult;
   }
   diagnostics_.lastApiResult = result;
-  diagnostics_.effectiveFifoConfig = effective;
-  diagnostics_.fifoConfigured =
-      result == BMI2_OK &&
-      (effective & kManagedFifoConfig) == kRequiredFifoConfig &&
-      diagnostics_.effectiveFifoWatermark == 0 &&
-      diagnostics_.effectiveAccelDownsample == 0 &&
-      diagnostics_.effectiveGyroDownsample == 0 &&
-      diagnostics_.effectiveAccelFiltered == BMI2_FIFO_FILTERED_DATA &&
-      diagnostics_.effectiveGyroFiltered == BMI2_FIFO_FILTERED_DATA;
+  diagnostics_.effectiveFifoConfig = snapshot.config;
+  diagnostics_.effectiveFifoWatermark = snapshot.watermark;
+  diagnostics_.effectiveAccelDownsample = snapshot.accelDownsample;
+  diagnostics_.effectiveGyroDownsample = snapshot.gyroDownsample;
+  diagnostics_.effectiveAccelFiltered = snapshot.accelFiltered;
+  diagnostics_.effectiveGyroFiltered = snapshot.gyroFiltered;
+  diagnostics_.fifoConfigured = result == BMI2_OK && snapshot.matched;
   if (!diagnostics_.fifoConfigured) {
     if (result == BMI2_OK) diagnostics_.lastApiResult = BMI2_E_INVALID_STATUS;
     BMI270_FIFO_LOGW(
         "FIFO configuration failed name=%s result=%d effective=0x%04X required=0x%04X\n",
         name_,
         (int)diagnostics_.lastApiResult,
-        (unsigned)effective,
+        (unsigned)snapshot.config,
         (unsigned)kRequiredFifoConfig);
+    return false;
+  }
+  return true;
+}
+
+bool BMI270FifoAcquisition::readFifoConfiguration_(
+    FifoConfigurationSnapshot& out) {
+  out = FifoConfigurationSnapshot{};
+  struct bmi2_dev& native = device_.nativeDevice();
+  int8_t result = bmi2_get_fifo_config(&out.config, &native);
+  if (result == BMI2_OK) result = bmi2_get_fifo_wm(&out.watermark, &native);
+  if (result == BMI2_OK) {
+    result = bmi2_get_fifo_down_sample(BMI2_ACCEL, &out.accelDownsample, &native);
+  }
+  if (result == BMI2_OK) {
+    result = bmi2_get_fifo_down_sample(BMI2_GYRO, &out.gyroDownsample, &native);
+  }
+  if (result == BMI2_OK) {
+    result = bmi2_get_fifo_filter_data(BMI2_ACCEL, &out.accelFiltered, &native);
+  }
+  if (result == BMI2_OK) {
+    result = bmi2_get_fifo_filter_data(BMI2_GYRO, &out.gyroFiltered, &native);
+  }
+
+  out.apiResult = result;
+  out.readOk = result == BMI2_OK;
+  out.matched = out.readOk &&
+      (out.config & kManagedFifoConfig) == kRequiredFifoConfig &&
+      out.watermark == 0 &&
+      out.accelDownsample == 0 &&
+      out.gyroDownsample == 0 &&
+      out.accelFiltered == BMI2_FIFO_FILTERED_DATA &&
+      out.gyroFiltered == BMI2_FIFO_FILTERED_DATA;
+  if (out.readOk && !out.matched) out.apiResult = BMI2_E_INVALID_STATUS;
+  return out.readOk && out.matched;
+}
+
+bool BMI270FifoAcquisition::validateOperationalState_(
+    bool sensorsExpected,
+    bool noSampleProgress) {
+  addCounter_(diagnostics_.operationalValidationAttempts);
+
+  BMI270OperationalState deviceState;
+  device_.validateOperationalState(sensorsExpected, deviceState);
+  FifoConfigurationSnapshot fifoState;
+  readFifoConfiguration_(fifoState);
+
+  uint32_t issues = deviceState.issues;
+  if (!fifoState.readOk) {
+    issues |= BMI270OperationalIssue::kFifoReadFailed;
+  } else if (!fifoState.matched) {
+    issues |= BMI270OperationalIssue::kFifoMismatch;
+  }
+  if (noSampleProgress) issues |= BMI270OperationalIssue::kNoSampleProgress;
+
+  diagnostics_.lastValidationIssues = issues;
+  diagnostics_.lastValidationChipId = deviceState.chipId;
+  diagnostics_.lastValidationInternalStatus = deviceState.internalStatus;
+  diagnostics_.lastValidationPowerControl = deviceState.powerControl;
+  diagnostics_.lastValidationFifoConfig = fifoState.config;
+  diagnostics_.lastValidationFifoWatermark = fifoState.watermark;
+  diagnostics_.lastValidationAccelDownsample = fifoState.accelDownsample;
+  diagnostics_.lastValidationGyroDownsample = fifoState.gyroDownsample;
+  diagnostics_.lastValidationAccelFiltered = fifoState.accelFiltered;
+  diagnostics_.lastValidationGyroFiltered = fifoState.gyroFiltered;
+  diagnostics_.lastValidationApiResult = deviceState.lastApiResult != BMI2_OK
+      ? deviceState.lastApiResult
+      : fifoState.apiResult;
+  if (noSampleProgress && diagnostics_.lastValidationApiResult == BMI2_OK) {
+    diagnostics_.lastValidationApiResult = BMI2_E_INVALID_STATUS;
+  }
+
+  if (issues != 0) {
+    addCounter_(diagnostics_.operationalValidationFailures);
+    BMI270_FIFO_LOGW(
+        "operational validation failed name=%s issues=0x%08lX api=%d chip=0x%02X internal=0x%02X power=0x%02X fifo=0x%04X\n",
+        name_,
+        (unsigned long)issues,
+        (int)diagnostics_.lastValidationApiResult,
+        (unsigned)deviceState.chipId,
+        (unsigned)deviceState.internalStatus,
+        (unsigned)deviceState.powerControl,
+        (unsigned)fifoState.config);
     return false;
   }
   return true;
@@ -370,6 +445,11 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
   pendingStatus_ = parsed.pendingStatus;
   pendingSkippedFrames_ = parsed.pendingSkippedFrames;
   accumulateParseDiagnostics_(parsed);
+  if (parsed.sampleFrames > 0) {
+    progressWatchdog_.recordProgress(micros());
+    recoveryBudget_.recordProgress();
+    diagnostics_.recoveryAttemptsWithoutProgress = 0;
+  }
 
   if (parsed.samplesWritten == 0) return DrainPassResult::Data;
   if (!parsed.sensorTimePresent) addCounter_(diagnostics_.missingSensorTimeBatches);
@@ -410,19 +490,70 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
   return DrainPassResult::Data;
 }
 
-bool BMI270FifoAcquisition::recoverAcquisition_() {
+bool BMI270FifoAcquisition::recoverAcquisition_(BMI270RecoveryReason reason) {
+  if (reason != BMI270RecoveryReason::SessionStartValidation) {
+    if (!recoveryBudget_.reserveAttempt()) {
+      enterTerminalFault_(reason);
+      return false;
+    }
+    diagnostics_.recoveryAttemptsWithoutProgress =
+        recoveryBudget_.attemptsWithoutProgress();
+  }
   addCounter_(diagnostics_.recoveryAttempts);
-  if (!device_.recover()) return false;
-  if (!configureFifo_()) return false;
-  if (!flushFifo_()) return false;
+  diagnostics_.lastRecoveryReason = reason;
+  const bool recovered = device_.recover() && configureFifo_() && flushFifo_();
+  if (!recovered) {
+    addCounter_(diagnostics_.recoveryFailures);
+    if (consecutiveRecoveryFailures_ < UINT8_MAX) {
+      ++consecutiveRecoveryFailures_;
+    }
+    diagnostics_.consecutiveRecoveryFailures = consecutiveRecoveryFailures_;
+    progressWatchdog_.arm(micros());
+    if (consecutiveRecoveryFailures_ >= kMaximumConsecutiveRecoveryFailures) {
+      enterTerminalFault_(reason);
+    } else {
+      recoveryBackoffPolls_ = kRecoveryBackoffPolls;
+    }
+    return false;
+  }
 
   addCounter_(diagnostics_.recoverySuccesses);
+  consecutiveRecoveryFailures_ = 0;
+  diagnostics_.consecutiveRecoveryFailures = 0;
   recoveryBackoffPolls_ = 0;
   havePreviousSensorTime_ = false;
+  progressWatchdog_.arm(micros());
   pendingStatus_ |= BMI270ImuStatus::kFifoDiscontinuityBefore |
                     BMI270ImuStatus::kSensorRecoveryBefore |
                     BMI270ImuStatus::kTimingDegraded;
   return true;
+}
+
+bool BMI270FifoAcquisition::handleNoSampleProgress_(uint32_t nowUs) {
+  const uint32_t elapsedUs = progressWatchdog_.elapsedUs(nowUs);
+  if (elapsedUs > diagnostics_.maximumNoProgressUs) {
+    diagnostics_.maximumNoProgressUs = elapsedUs;
+  }
+  addCounter_(diagnostics_.noProgressEvents);
+  validateOperationalState_(true, true);
+  pendingStatus_ |= BMI270ImuStatus::kFifoDiscontinuityBefore |
+                    BMI270ImuStatus::kTimingDegraded;
+  const bool recovered = recoverAcquisition_(BMI270RecoveryReason::NoSampleProgress);
+  (void)recovered;
+  return false;
+}
+
+void BMI270FifoAcquisition::enterTerminalFault_(BMI270RecoveryReason reason) {
+  if (terminalFault_.exchange(true, std::memory_order_acq_rel)) return;
+  diagnostics_.terminalFault = true;
+  diagnostics_.lastRecoveryReason = reason;
+  addCounter_(diagnostics_.terminalFaultEvents);
+  BMI270_FIFO_LOGW(
+      "terminal acquisition fault name=%s reason=%u failed=%u without_progress=%u\n",
+      name_,
+      (unsigned)reason,
+      (unsigned)consecutiveRecoveryFailures_,
+      (unsigned)recoveryBudget_.attemptsWithoutProgress());
 }
 
 void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
@@ -448,6 +579,10 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   pendingSkippedFrames_ = 0;
   consecutiveDrainFailures_ = 0;
   recoveryBackoffPolls_ = 0;
+  consecutiveRecoveryFailures_ = 0;
+  recoveryBudget_.reset();
+  terminalFault_.store(false, std::memory_order_release);
+  progressWatchdog_.disarm();
   havePreviousSensorTime_ = false;
   previousSensorTime_ = 0;
   haveTemperature_ = false;
