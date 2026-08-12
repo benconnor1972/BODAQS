@@ -1,26 +1,33 @@
-# Unsigned Multi-platform CI
+# Multi-platform Desktop CI
 
-The `Unsigned Desktop CI` GitHub Actions workflow validates BODAQS Desktop
-builds on clean GitHub-hosted runners. It does not sign artifacts, use release
-credentials, create GitHub Releases, or publish downloads.
+The `Desktop CI` GitHub Actions workflow validates BODAQS Desktop builds on
+clean GitHub-hosted runners. Pull-request, branch, and manually dispatched
+builds do not use release credentials and remain unsigned. A `Desktop-v*` tag
+also creates a signed and notarized macOS DMG when its required GitHub Actions
+secrets are configured. The workflow does not create GitHub Releases or publish
+downloads.
 
 ## Triggers
 
 The workflow runs for pull requests and `main` pushes that affect the desktop
 application, analysis package, Workbench, dependencies, or workflow itself. It
-can also be dispatched manually. `Desktop-v*` tags run the same unsigned build
-as a release candidate, using the tag version without its `Desktop-v` prefix;
-they do not publish a release.
+can also be dispatched manually. `Desktop-v*` tags use the tag version without
+its `Desktop-v` prefix. They sign, notarize, staple, and verify the macOS DMG
+after tests and packaged smoke tests pass.
 
 ## Outputs
 
-Each successful run retains its unsigned build artifacts for seven days:
+Each successful non-tag run retains unsigned build artifacts for seven days:
 
 | Platform | Runner | Artifact |
 | --- | --- | --- |
 | Windows x64 | `windows-latest` | Inno Setup installer `.exe` |
 | macOS arm64 | `macos-latest` | `.dmg` containing the application bundle |
 | Linux x64 | `ubuntu-latest` | Portable PyInstaller `.tar.gz` bundle |
+
+For a `Desktop-v*` tag, the macOS artifact is instead a signed and notarized
+DMG named `macos-arm64-<version>`. Windows and Linux artifacts remain unsigned
+until their platform signing workflows are added.
 
 The Linux archive expands to a directory containing `bodaqs-import-manager`.
 Run that executable from the expanded directory; its bundled `service/`
@@ -65,9 +72,23 @@ CI setup. The TypeScript/Vite build remains mandatory as part of each desktop
 package build. Once the baseline lint debt is resolved, remove
 `continue-on-error` from the three lint steps in `desktop-ci.yml`.
 
-## Future release work
+## macOS release signing
 
-Signing and publishing remain intentionally separate. A later release workflow
-will consume these proven platform build steps, apply signing/notarization in
-protected environments, verify the resulting artifacts, and then publish a
-GitHub Release.
+macOS signing runs only for a `Desktop-v*` tag. Configure these repository
+Actions secrets before creating such a tag:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_DEVELOPER_ID_P12_BASE64` | Base64 encoding of the Developer ID Application `.p12` bundle |
+| `APPLE_DEVELOPER_ID_P12_PASSWORD` | Password selected when exporting that `.p12` bundle |
+| `APPLE_NOTARY_API_KEY_BASE64` | Base64 encoding of the App Store Connect team API-key `.p8` file |
+| `APPLE_NOTARY_KEY_ID` | App Store Connect API key ID |
+| `APPLE_NOTARY_ISSUER_ID` | App Store Connect API issuer ID |
+
+The workflow imports the certificate into a temporary runner keychain, applies
+the hardened runtime and timestamp, signs the DMG, submits it to Apple
+notarization, staples the ticket, and validates the final DMG. It never writes
+these values to the repository or an artifact.
+
+Signing and publishing remain separate: a maintainer must still inspect the
+completed artifacts and create the GitHub Release deliberately.
