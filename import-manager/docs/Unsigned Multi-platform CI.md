@@ -71,9 +71,10 @@ hosted build does not need the optional `librsvg`/`rsvg-convert` dependency.
 
 Workbench linting is not currently run by this platform workflow because the
 existing lint baseline produces non-actionable annotations on every platform.
-The TypeScript/Vite build remains mandatory as part of each desktop package
-build. Restore linting as a separate required CI check after the baseline lint
-debt is resolved.
+The workflow still installs Workbench dependencies with `npm ci`, and the
+TypeScript/Vite build remains mandatory as part of each desktop package build.
+Restore linting as a separate required CI check after the baseline lint debt is
+resolved.
 
 ## macOS release signing
 

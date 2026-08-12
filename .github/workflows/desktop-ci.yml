@@ -50,6 +50,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: application/cohort-workbench-prototype/package-lock.json
+      - name: Install Workbench dependencies
+        working-directory: application/cohort-workbench-prototype
+        run: npm ci
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt pyinstaller pillow
       - name: Install Inno Setup
@@ -87,6 +90,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: application/cohort-workbench-prototype/package-lock.json
+      - name: Install Workbench dependencies
+        working-directory: application/cohort-workbench-prototype
+        run: npm ci
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller pillow
       - name: Test Python packages
@@ -237,6 +243,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: application/cohort-workbench-prototype/package-lock.json
+      - name: Install Workbench dependencies
+        working-directory: application/cohort-workbench-prototype
+        run: npm ci
       - name: Install Tk runtime dependencies
         run: sudo apt-get update && sudo apt-get install --yes python3-tk
       - name: Install Python dependencies
