@@ -3688,6 +3688,9 @@ def test_sync_macos_startup_registration_propagates_load_failure(tmp_path, monke
     monkeypatch.setattr(
         import_agent_startup_module, "_macos_load_launch_agent", fail_bootstrap
     )
+    monkeypatch.setattr(
+        import_agent_startup_module, "_macos_unload_launch_agent", lambda _label: None
+    )
 
     with pytest.raises(RuntimeError, match="bootstrap failed"):
         import_agent_startup_module.sync_macos_startup_registration(
