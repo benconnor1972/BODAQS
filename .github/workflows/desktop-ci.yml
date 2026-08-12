@@ -166,7 +166,18 @@ jobs:
           notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
           notary_result="$RUNNER_TEMP/bodaqs-notary-result.json"
 
-          codesign --force --deep --options runtime --timestamp \
+          # The bundled Library Service is a PyInstaller application under
+          # Contents/Resources.  codesign --deep does not reliably discover
+          # executable code in arbitrary resource directories, so sign every
+          # Mach-O payload first, then seal the outer app bundle last.
+          while IFS= read -r -d '' binary; do
+            if file -b "$binary" | grep -q 'Mach-O'; then
+              echo "Signing nested Mach-O: $binary"
+              codesign --force --options runtime --timestamp \
+                --sign "$MACOS_SIGNING_IDENTITY" "$binary"
+            fi
+          done < <(find "$app" -type f -print0)
+          codesign --force --options runtime --timestamp \
             --sign "$MACOS_SIGNING_IDENTITY" "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
 

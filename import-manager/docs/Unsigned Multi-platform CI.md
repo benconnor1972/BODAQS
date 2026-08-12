@@ -89,12 +89,14 @@ Actions secrets before creating such a tag:
 | `APPLE_NOTARY_KEY_ID` | App Store Connect API key ID |
 | `APPLE_NOTARY_ISSUER_ID` | App Store Connect API issuer ID |
 
-The workflow imports the certificate into a temporary runner keychain, applies
-the hardened runtime and timestamp, signs the DMG, submits it to Apple
-notarization, staples the ticket, and validates the final DMG. It never writes
-these values to the repository or an artifact. If Apple rejects a submission,
-the workflow prints Apple's notarization log and stops before stapling so the
-rejected file and reason are visible in the run output.
+The workflow imports the certificate into a temporary runner keychain, signs
+every Mach-O executable in the app bundle (including the PyInstaller Library
+Service under `Contents/Resources`), applies the hardened runtime and
+timestamp, signs the DMG, submits it to Apple notarization, staples the ticket,
+and validates the final DMG. It never writes these values to the repository or
+an artifact. If Apple rejects a submission, the workflow prints Apple's
+notarization log and stops before stapling so the rejected file and reason are
+visible in the run output.
 
 Signing and publishing remain separate: a maintainer must still inspect the
 completed artifacts and create the GitHub Release deliberately.
