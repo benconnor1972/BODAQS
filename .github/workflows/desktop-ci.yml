@@ -1,0 +1,152 @@
+name: Unsigned Desktop CI
+
+on:
+  pull_request:
+    paths:
+      - analysis/**
+      - application/cohort-workbench-prototype/**
+      - import-manager/**
+      - requirements.txt
+      - .github/workflows/desktop-ci.yml
+  push:
+    branches: [main]
+    paths:
+      - analysis/**
+      - application/cohort-workbench-prototype/**
+      - import-manager/**
+      - requirements.txt
+      - .github/workflows/desktop-ci.yml
+    tags: [Desktop-v*]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional version string for artifact filenames.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+  BUILD_VERSION: ${{ inputs.version || format('0.0.0-ci.{0}', github.run_number) }}
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Derive build version from release-candidate tag
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        shell: pwsh
+        run: '"BUILD_VERSION=$($env:GITHUB_REF_NAME.Substring(9))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: application/cohort-workbench-prototype/package-lock.json
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt pyinstaller pillow
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+      - name: Test Python packages
+        env:
+          MPLBACKEND: Agg
+        run: python -m pytest analysis/tests -q
+      - name: Lint Workbench
+        working-directory: application/cohort-workbench-prototype
+        run: npm ci; npm run lint
+      - name: Build and smoke-test Windows installer
+        run: >-
+          .\import-manager\build_import_manager.ps1 -Target installer
+          -BundleVersion $env:BUILD_VERSION -ImportManagerVersion $env:BUILD_VERSION
+          -LibraryServiceVersion $env:BUILD_VERSION -WorkbenchVersion $env:BUILD_VERSION
+      - name: Upload unsigned Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-windows-x64-${{ env.BUILD_VERSION }}
+          path: import-manager/dist/installer/windows/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS arm64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Derive build version from release-candidate tag
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        run: echo "BUILD_VERSION=${GITHUB_REF_NAME#Desktop-v}" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: application/cohort-workbench-prototype/package-lock.json
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller pillow
+      - name: Test Python packages
+        env:
+          MPLBACKEND: Agg
+        run: python -m pytest analysis/tests -q
+      - name: Lint Workbench
+        working-directory: application/cohort-workbench-prototype
+        run: npm ci && npm run lint
+      - name: Build unsigned macOS DMG
+        run: ./import-manager/build_import_manager_macos.sh --version "$BUILD_VERSION" --service-version "$BUILD_VERSION"
+      - name: Smoke-test packaged macOS app
+        run: |
+          app="import-manager/dist/pyinstaller/BODAQS Import Manager.app/Contents/MacOS/BODAQS Import Manager"
+          python import-manager/tools/smoke_test_packaged_imu_bdq.py "$app"
+          python import-manager/tools/smoke_test_packaged_imu_bdq.py "$app" --check-workbench-layout
+      - name: Upload unsigned macOS DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-macos-arm64-${{ env.BUILD_VERSION }}
+          path: import-manager/dist/BODAQS-Import-Manager-*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Derive build version from release-candidate tag
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        run: echo "BUILD_VERSION=${GITHUB_REF_NAME#Desktop-v}" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: application/cohort-workbench-prototype/package-lock.json
+      - name: Install Tk runtime dependencies
+        run: sudo apt-get update && sudo apt-get install --yes python3-tk
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller pillow
+      - name: Test Python packages
+        env:
+          MPLBACKEND: Agg
+        run: python -m pytest analysis/tests -q
+      - name: Lint Workbench
+        working-directory: application/cohort-workbench-prototype
+        run: npm ci && npm run lint
+      - name: Build and smoke-test Linux archive
+        run: bash ./import-manager/build_import_manager_linux.sh --version "$BUILD_VERSION" --service-version "$BUILD_VERSION"
+      - name: Upload unsigned Linux archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-linux-x64-${{ env.BUILD_VERSION }}
+          path: import-manager/dist/BODAQS-Import-Manager-*-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
