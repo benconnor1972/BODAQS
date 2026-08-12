@@ -2027,6 +2027,15 @@ def test_provision_import_agent_source_can_seed_logger_wifi_config_without_base_
     assert loaded.logger_wifi.base_url is None
 
 
+def test_event_schema_parser_accepts_packaged_multiline_yaml_text():
+    from bodaqs_analysis.schema import parse_event_schema
+
+    schema = parse_event_schema("specification: 0.2.0\nversion: '1'\nevents:\n  - id: test_event\n")
+
+    assert schema["specification"] == "0.2.0"
+    assert schema["events"][0]["id"] == "test_event"
+
+
 def test_provision_import_agent_source_discovers_nonstandard_asset_filenames(tmp_path, monkeypatch):
     asset_root = tmp_path / "asset_pkg_root"
     package_dir = asset_root / "temp_import_agent_assets"

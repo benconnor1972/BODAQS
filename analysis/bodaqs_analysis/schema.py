@@ -41,8 +41,11 @@ def parse_event_schema(
         elif isinstance(value, bytes):
             data_bytes = bytes(value)
         elif isinstance(value, str):
-            candidate = Path(value)
-            if candidate.exists():
+            # YAML supplied as text can be very large and multiline. Treating
+            # it as a potential path first makes Path.exists() ask the OS to
+            # stat an invalid, overlong filename on POSIX platforms.
+            candidate = Path(value) if "\n" not in value and "\r" not in value else None
+            if candidate is not None and candidate.exists():
                 source_path = str(candidate)
                 data_bytes = _read_file_bytes(candidate)
             else:

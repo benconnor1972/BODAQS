@@ -55,6 +55,14 @@ Build the unsigned Linux archive from Linux:
 The Windows and Linux scripts run packaged smoke tests. The macOS workflow runs
 the same non-interactive tests against the executable within the app bundle.
 
+## Workbench linting
+
+The workflow runs Workbench linting on every platform, but it is currently
+informational because the existing codebase has lint errors unrelated to this
+CI setup. The TypeScript/Vite build remains mandatory as part of each desktop
+package build. Once the baseline lint debt is resolved, remove
+`continue-on-error` from the three lint steps in `desktop-ci.yml`.
+
 ## Future release work
 
 Signing and publishing remain intentionally separate. A later release workflow
