@@ -1438,7 +1438,7 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     catalog = adapter.get_catalog("default-library")
 
     assert catalog["schema"] == "bodaqs.session_catalog"
-    assert catalog["version"] == 1
+    assert catalog["version"] == 2
     assert catalog["library_id"] == "default-library"
     assert catalog["row_count"] == 1
     row = catalog["rows"][0]
