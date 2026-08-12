@@ -164,6 +164,7 @@ jobs:
           dmg="import-manager/dist/BODAQS-Import-Manager-${BUILD_VERSION}.dmg"
           dmg_root="$RUNNER_TEMP/bodaqs-dmg-root"
           notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          notary_result="$RUNNER_TEMP/bodaqs-notary-result.json"
 
           codesign --force --deep --options runtime --timestamp \
             --sign "$MACOS_SIGNING_IDENTITY" "$app"
@@ -184,8 +185,25 @@ jobs:
           codesign --force --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$dmg"
 
           printf '%s' "$APPLE_NOTARY_API_KEY_BASE64" | base64 --decode > "$notary_key"
+          set +e
           xcrun notarytool submit "$dmg" --key "$notary_key" \
-            --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
+            --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait --output-format json > "$notary_result"
+          notary_exit_code=$?
+          set -e
+          cat "$notary_result"
+
+          submission_id="$(plutil -extract id raw "$notary_result")"
+          submission_status="$(plutil -extract status raw "$notary_result")"
+          if [[ "$notary_exit_code" -ne 0 || "$submission_status" != "Accepted" ]]; then
+            echo "error: Apple notarization status: ${submission_status:-unknown}" >&2
+            if [[ -n "$submission_id" ]]; then
+              echo "Apple notarization log for submission $submission_id:" >&2
+              xcrun notarytool log "$submission_id" --key "$notary_key" \
+                --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID"
+            fi
+            exit 1
+          fi
           xcrun stapler staple "$dmg"
           xcrun stapler validate "$dmg"
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
