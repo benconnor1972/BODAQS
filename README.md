@@ -1,6 +1,30 @@
-![BODAQS Workbench](docs/images/analysis-results.png)
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/analysis-results.png"
+           alt="BODAQS Workbench showing the simple suspension stats analysis view"
+           width="100%">
+    </td>
 
-![BODAQS Import Manager](docs/images/bike-profile-complete.png)
+   <td width="50%">
+      <img src="docs/images/user-guide-logger-closeup.png"
+           alt="BODAQS logger installed on a bike"
+           width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/exploded-assembly.png"
+           alt="BODAQS A8 logger exploded diagram"
+           width="100%">
+    </td>
+    <td width="50%">
+      <img src="docs/images/bike-profile-complete.png"
+         alt="BODAQS Import Manager showing a bike profile"
+         width="100%">
+    </td>
+  </tr>
+</table>
 
 Current releases [here](https://github.com/benconnor1972/BODAQS/blob/main/RELEASES.md)
 
