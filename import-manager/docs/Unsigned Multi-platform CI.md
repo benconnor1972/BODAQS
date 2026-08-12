@@ -54,6 +54,8 @@ Build the unsigned Linux archive from Linux:
 
 The Windows and Linux scripts run packaged smoke tests. The macOS workflow runs
 the same non-interactive tests against the executable within the app bundle.
+CI uses the committed macOS `.icns` asset rather than regenerating it, so the
+hosted build does not need the optional `librsvg`/`rsvg-convert` dependency.
 
 ## Workbench linting
 

@@ -102,7 +102,9 @@ jobs:
         working-directory: application/cohort-workbench-prototype
         run: npm ci && npm run lint
       - name: Build unsigned macOS DMG
-        run: ./import-manager/build_import_manager_macos.sh --version "$BUILD_VERSION" --service-version "$BUILD_VERSION"
+        run: >-
+          ./import-manager/build_import_manager_macos.sh --skip-icns
+          --version "$BUILD_VERSION" --service-version "$BUILD_VERSION"
       - name: Smoke-test packaged macOS app
         run: |
           app="import-manager/dist/pyinstaller/BODAQS Import Manager.app/Contents/MacOS/BODAQS Import Manager"
