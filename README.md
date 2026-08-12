@@ -67,8 +67,8 @@ Recording data is an engineering problem. Deciding what it means is the harder p
 
 The BODAQS software comprises two main components:
 
-the Import Manager imports data from one or more loggers via file copy or WiFi, applies bike geometry information, does pre-processing calculations, matches GPS data from external devices and manages setup notes. The processed files live in your personal run library.
-the BODAQS Workbench gives you the visualization tools to dig deep into what your bike is doing.
+- the **Import Manager** imports data from one or more loggers via file copy or WiFi, applies bike geometry information, does pre-processing calculations, matches GPS data from external devices and manages setup notes. The processed files live in your personal run library.
+- the **BODAQS Workbench** gives you the visualization tools to dig deep into what your bike is doing.
 The whole package can be installed on your computer and run with or without an internet connection.
 
 ## Who it's for
