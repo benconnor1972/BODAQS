@@ -17,8 +17,8 @@ BODAQS has applied, or intends to apply, for free code signing through SignPath.
 
 Windows: BODAQS intends to use SignPath.io code signing provided through the SignPath Foundation, subject to application approval and project configuration.  
 macOS: BODAQS intends to sign direct-distribution releases with an Apple Developer ID certificate and submit them to Apple for notarization, subject to Apple Developer Program enrolment and workflow configuration.  
-Linux: BODAQS intends to publish integrity-verifiable release artifacts, initially using signed release metadata and/or Sigstore keyless signing, subject to workflow configuration.  
-Until a platform’s signing process is configured and active, its releases may be unsigned. Each GitHub Release will state the signing and verification status of its artifacts.
+Linux: BODAQS release tags use Sigstore keyless signing for the Linux archive. The associated Sigstore bundle identifies the GitHub Actions release workflow and tag that produced the artifact.
+Until a platform's signing process is configured and active, its releases may be unsigned. Each GitHub Release will state the signing and verification status of its artifacts.
 
 ## Release process
 

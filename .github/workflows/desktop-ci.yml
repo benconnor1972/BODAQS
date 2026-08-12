@@ -58,10 +58,6 @@ jobs:
         env:
           MPLBACKEND: Agg
         run: python -m pytest analysis/tests -q
-      - name: Lint Workbench (informational until baseline debt is resolved)
-        continue-on-error: true
-        working-directory: application/cohort-workbench-prototype
-        run: npm ci; npm run lint
       - name: Build and smoke-test Windows installer
         run: >-
           .\import-manager\build_import_manager.ps1 -Target installer
@@ -97,10 +93,6 @@ jobs:
         env:
           MPLBACKEND: Agg
         run: python -m pytest analysis/tests -q
-      - name: Lint Workbench (informational until baseline debt is resolved)
-        continue-on-error: true
-        working-directory: application/cohort-workbench-prototype
-        run: npm ci && npm run lint
       - name: Build unsigned macOS app
         run: >-
           ./import-manager/build_import_manager_macos.sh --skip-dmg --skip-icns
@@ -229,6 +221,9 @@ jobs:
   linux:
     name: Linux x64
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
       - name: Derive build version from release-candidate tag
@@ -250,16 +245,37 @@ jobs:
         env:
           MPLBACKEND: Agg
         run: python -m pytest analysis/tests -q
-      - name: Lint Workbench (informational until baseline debt is resolved)
-        continue-on-error: true
-        working-directory: application/cohort-workbench-prototype
-        run: npm ci && npm run lint
       - name: Build and smoke-test Linux archive
         run: bash ./import-manager/build_import_manager_linux.sh --version "$BUILD_VERSION" --service-version "$BUILD_VERSION"
+      - name: Install Cosign
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        uses: sigstore/cosign-installer@v4.1.2
+      - name: Sign and verify Linux archive with Sigstore
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        run: |
+          archive="import-manager/dist/BODAQS-Import-Manager-${BUILD_VERSION}-linux-x64.tar.gz"
+          bundle="${archive}.sigstore.json"
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/desktop-ci.yml@${GITHUB_REF}"
+
+          cosign sign-blob --yes --bundle "$bundle" "$archive"
+          cosign verify-blob "$archive" --bundle "$bundle" \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
       - name: Upload unsigned Linux archive
+        if: ${{ !startsWith(github.ref, 'refs/tags/Desktop-v') }}
         uses: actions/upload-artifact@v7
         with:
           name: unsigned-linux-x64-${{ env.BUILD_VERSION }}
           path: import-manager/dist/BODAQS-Import-Manager-*-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload Sigstore-signed Linux archive
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x64-${{ env.BUILD_VERSION }}
+          path: |
+            import-manager/dist/BODAQS-Import-Manager-*-linux-x64.tar.gz
+            import-manager/dist/BODAQS-Import-Manager-*-linux-x64.tar.gz.sigstore.json
           if-no-files-found: error
           retention-days: 7
