@@ -306,6 +306,22 @@ def _delete_library_artifacts_dir(path: Path, *, libraries_root: Path) -> None:
     _remove_directory_tree(target)
 
 
+def _make_tree_writable(path: Path) -> None:
+    """Restore owner write/search permission before removing a managed tree."""
+
+    for root, directories, filenames in os.walk(path, topdown=True):
+        root_path = Path(root)
+        try:
+            os.chmod(root_path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+        except OSError:
+            pass
+        for name in [*directories, *filenames]:
+            try:
+                os.chmod(root_path / name, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+            except OSError:
+                pass
+
+
 def _remove_readonly_and_retry(func: Any, path: str, exc_info: tuple[type[BaseException], BaseException, Any]) -> None:
     exc = exc_info[1]
     if not isinstance(exc, PermissionError):
@@ -315,6 +331,7 @@ def _remove_readonly_and_retry(func: Any, path: str, exc_info: tuple[type[BaseEx
 
 
 def _remove_directory_tree(path: Path) -> None:
+    _make_tree_writable(path)
     shutil.rmtree(path, onerror=_remove_readonly_and_retry)
 
 

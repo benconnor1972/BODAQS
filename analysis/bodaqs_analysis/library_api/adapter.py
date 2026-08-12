@@ -527,14 +527,6 @@ class LibraryAdapter:
         *,
         cleanup_memberships: bool = False,
     ) -> dict[str, Any]:
-        self._catalog_row_for_session(
-            library_id,
-            {
-                "library_id": library_id,
-                "run_id": run_id,
-                "session_id": session_id,
-            },
-        )
         deleted = delete_session_artifact(
             self.libraries_root,
             self._library_root(library_id),

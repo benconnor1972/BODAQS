@@ -105,6 +105,8 @@ def delete_session(
 def _remove_session_dir(session_dir: Path) -> None:
     """Remove a session tree, retrying Windows read-only/OneDrive placeholders."""
 
+    _make_tree_writable(session_dir)
+
     def handle_remove_error(func: Any, path_text: str, exc_info: Any) -> None:
         exc = exc_info[1]
         if not isinstance(exc, PermissionError):
@@ -117,6 +119,16 @@ def _remove_session_dir(session_dir: Path) -> None:
             raise retry_exc from exc
 
     shutil.rmtree(session_dir, onerror=handle_remove_error)
+
+
+def _make_tree_writable(path: Path) -> None:
+    """Restore owner write/search permission throughout a session tree."""
+
+    for root, directories, filenames in os.walk(path, topdown=True):
+        root_path = Path(root)
+        _make_writable(root_path)
+        for name in [*directories, *filenames]:
+            _make_writable(root_path / name)
 
 
 def _make_writable(path: Path) -> None:
