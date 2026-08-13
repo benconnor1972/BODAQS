@@ -297,7 +297,6 @@ export function StudySetGpsCoverageCard({
   return (
     <div className="geo-card">
       <div className="geo-card-title">
-        <Crosshair size={16} />
         <strong className="inline-heading">
           Study Set GPS
           <InfoTip text="Summarizes GPS quality for Study Set sessions." />

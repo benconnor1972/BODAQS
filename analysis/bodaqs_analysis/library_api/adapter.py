@@ -1491,11 +1491,14 @@ class LibraryAdapter:
         session_refs: list[dict[str, Any]],
     ) -> dict[str, Any]:
         if isinstance(study_set, Mapping):
+            tracks = study_set.get("tracks")
+            track_count = len(tracks) if isinstance(tracks, list) else 0
             return {
                 "kind": "study_set",
                 "study_set_id": str(study_set.get("study_set_id") or request.get("study_set_id") or ""),
                 "display_name": str(study_set.get("display_name") or ""),
                 "session_count": len(session_refs),
+                "track_count": track_count,
             }
         return {
             "kind": "session_refs",

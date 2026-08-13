@@ -138,7 +138,14 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
                 code: 'empty_scope',
                 message: 'Add at least one session before opening an analysis view.',
               },
-            ],
+          ],
+      scopeCriteria: view.requirements.recommended
+        .filter((requirement) => requirement.requirementId === 'all_sessions_gps' || requirement.requirementId === 'track_scope')
+        .map((requirement) => ({
+          requirementId: requirement.requirementId,
+          met: requirement.requirementId !== 'track_scope' || studySet.trackIds.length > 0,
+          detail: 'Fixture adequacy is approximate.',
+        })),
       sessionResults: studySet.sessions.map((sessionRef) => ({
         sessionRef: { ...sessionRef },
         status: usableSessionCount > 0 ? 'warning' : 'blocked',
@@ -146,6 +153,14 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
         requiredPassed: usableSessionCount > 0,
         recommendedMissing: ['real adequacy unavailable in fixture mode'],
         optionalMissing: [],
+        criteria: Object.values(view.requirements)
+          .flat()
+          .filter((requirement) => requirement.requirementId !== 'all_sessions_gps' && requirement.requirementId !== 'track_scope')
+          .map((requirement) => ({
+            requirementId: requirement.requirementId,
+            met: usableSessionCount > 0,
+            detail: 'Fixture adequacy is approximate.',
+          })),
         units: {},
       })),
     }

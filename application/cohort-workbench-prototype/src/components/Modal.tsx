@@ -52,10 +52,12 @@ export function Modal({
         onMouseDown={(event) => event.stopPropagation()}
         style={resize.style}
       >
-        <div className="modal-header">
-          <h2>{modalTitle(state)}</h2>
-          <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
-        </div>
+        {state.kind !== 'analysis-launcher' && (
+          <div className="modal-header">
+            <h2>{modalTitle(state)}</h2>
+            <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
+          </div>
+        )}
         <div className="modal-content">
           <ModalErrorBoundary resetKey={modalKey}>
             {modalContent(
@@ -64,6 +66,7 @@ export function Modal({
               sessions,
               tracks,
               dataSource,
+              onClose,
               onOpenAnalysis,
               onOpenSignalInspector,
               onSessionBookmarksChanged,
@@ -299,6 +302,7 @@ function modalContent(
   sessions: SessionRecord[],
   tracks: TrackRecord[],
   dataSource: LibraryDataSource,
+  onClose: () => void,
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void,
   onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void,
   onSessionBookmarksChanged: ((session: SessionRecord) => void) | undefined,
@@ -470,7 +474,15 @@ function modalContent(
   }
 
   if (state.kind === 'analysis-launcher') {
-    return <AnalysisLauncher studySet={state.studySet} dataSource={dataSource} onOpenAnalysis={onOpenAnalysis} />
+    return (
+      <AnalysisLauncher
+        studySet={state.studySet}
+        tracks={tracks}
+        dataSource={dataSource}
+        onClose={onClose}
+        onOpenAnalysis={onOpenAnalysis}
+      />
+    )
   }
 
   if (state.mode === 'view') {

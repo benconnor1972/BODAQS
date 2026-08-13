@@ -7,6 +7,7 @@ import shutil
 import stat
 import struct
 import sys
+import time
 import zipfile
 from importlib.resources import files
 from pathlib import Path
@@ -72,6 +73,7 @@ from bodaqs_import_manager.import_agent_provisioning import (
     save_import_agent_app_config,
     sync_import_agent_workspace_from_roots,
     update_import_agent_app_auto_start,
+    update_import_agent_processed_archive_retention_days,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
     update_import_agent_source_bike_profile,
@@ -1351,6 +1353,50 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
     assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_processed_archive_retention_uses_processed_time_and_sweeps_existing_files(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "retention_source", artifacts_dir)
+    config_path = source_root / "import_source.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["processed_archive_retention_days"] = 1
+    config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    archive_path = _write_session_archive(source_root / "inbox", stem="session_001")
+    old_time = time.time() - (10 * 24 * 60 * 60)
+    os.utime(archive_path, (old_time, old_time))
+    first_report = run_sources_once([source_root])
+
+    done_archive = next((source_root / "done").glob("*.zip"))
+    assert done_archive.stat().st_mtime > time.time() - 60
+    assert first_report["sources"][0]["processed_archive_cleanup"]["deleted"] == []
+
+    os.utime(done_archive, (old_time, old_time))
+    second_report = run_sources_once([source_root])
+
+    assert not done_archive.exists()
+    deleted = second_report["sources"][0]["processed_archive_cleanup"]["deleted"]
+    assert deleted == [{"outcome": "done", "path": str(done_archive)}]
+
+
+def test_processed_archive_retention_can_retain_forever(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "retain_forever_source", artifacts_dir)
+    config_path = source_root / "import_source.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["processed_archive_retention_days"] = None
+    config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    retained = source_root / "done" / "old-session.zip"
+    retained.parent.mkdir(parents=True, exist_ok=True)
+    retained.write_bytes(b"processed archive")
+    old_time = time.time() - (90 * 24 * 60 * 60)
+    os.utime(retained, (old_time, old_time))
+
+    report = run_sources_once([source_root])
+
+    assert retained.exists()
+    assert report["sources"][0]["processed_archive_cleanup"]["state"] == "retain_forever"
 
 
 def test_run_sources_once_notifies_library_api_after_successful_import(tmp_path, monkeypatch):
@@ -3319,6 +3365,32 @@ def test_update_import_agent_app_auto_start_persists(tmp_path):
     assert load_import_agent_app_config(app_config_path).auto_start is True
 
 
+def test_update_processed_archive_retention_applies_to_all_managed_sources(tmp_path):
+    app_config_path = tmp_path / "config" / "import_agent_app.json"
+    provisioned = provision_import_agent_app_setup(
+        sources_root=tmp_path / "sources",
+        libraries_root=tmp_path / "libraries",
+        library_display_name="Alice Library",
+        source_display_name="Alice Enduro",
+        app_config_path=app_config_path,
+    )
+    _updated_config, second_source = provision_import_agent_source_for_app(
+        app_config_path,
+        library_id=provisioned.library.library_id,
+        display_name="Bob Downhill",
+    )
+
+    updated = update_import_agent_processed_archive_retention_days(
+        app_config_path,
+        retention_days=None,
+    )
+
+    assert updated.sources == load_import_agent_app_config(app_config_path).sources
+    for source_root in (provisioned.source.source_root, second_source.source_root):
+        payload = json.loads((source_root / "import_source.json").read_text(encoding="utf-8"))
+        assert payload["processed_archive_retention_days"] is None
+
+
 def test_single_instance_lock_path_is_per_app_config(tmp_path):
     app_config_path = tmp_path / "config" / "import_agent_app.json"
 
@@ -3491,6 +3563,35 @@ def test_packaged_workbench_launch_uses_sibling_service_directory(monkeypatch, t
     assert Path(command[0]) == service_exe.resolve()
     assert cwd == service_exe.parent.resolve()
     assert command[command.index("--web-root") + 1] == str(web_root.resolve())
+
+
+def test_packaged_component_version_lines_include_desktop_and_components(monkeypatch, tmp_path: Path) -> None:
+    bundle_root = tmp_path / "BODAQS Desktop"
+    manager_exe = bundle_root / "manager" / "bodaqs-import-setup.exe"
+    manager_exe.parent.mkdir(parents=True)
+    manager_exe.touch()
+    (bundle_root / "component_versions.json").write_text(
+        json.dumps(
+            {
+                "bundle": {"name": "BODAQS Desktop", "version": "0.2.2-beta"},
+                "components": [
+                    {"name": "BODAQS Import Manager", "version": "0.1.8-beta"},
+                    {"name": "BODAQS Library Service", "version": "0.1.2-beta"},
+                    {"name": "BODAQS Workbench", "version": "0.1.2-beta"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(import_agent_setup_module.sys, "executable", str(manager_exe))
+
+    assert import_agent_setup_module._component_version_lines() == [
+        "BODAQS Desktop: 0.2.2-beta",
+        "BODAQS Import Manager: 0.1.8-beta",
+        "BODAQS Library Service: 0.1.2-beta",
+        "BODAQS Workbench: 0.1.2-beta",
+    ]
 
 
 def test_packaged_workbench_layout_smoke_cli_bypasses_desktop_window(monkeypatch, tmp_path: Path) -> None:

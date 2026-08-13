@@ -18,8 +18,10 @@
 #   --skip-service        Skip building the library service.
 #   --skip-web-app        Skip building and bundling the web app.
 #   --include-demo        Bundle demo-assets into the .app (if available).
-#   --version <ver>       Override the release version (default: 0.1.4-dev).
-#   --service-version <v> Override the library service version (default: 0.1.0-dev).
+#   --version <ver>       Override the Desktop bundle version (default: 0.1.4-dev).
+#   --manager-version <v> Override the Import Manager version (default: bundle version).
+#   --service-version <v> Override the Library Service version (default: 0.1.0-dev).
+#   --workbench-version <v> Override the Workbench version (default: bundle version).
 #   --python <path>       Python interpreter to use (default: auto-detected).
 #
 # Signing/notarization are deliberately not implemented here. See
@@ -32,7 +34,9 @@ import_manager_dir="${script_dir}"
 repo_root="$(cd "${import_manager_dir}/.." && pwd)"
 
 app_version="0.1.4-dev"
+manager_version=""
 service_version="0.1.0-dev"
+workbench_version=""
 include_demo=0
 make_dmg=1
 make_icns=1
@@ -48,7 +52,9 @@ while [[ $# -gt 0 ]]; do
         --skip-web-app) make_web_app=0; shift ;;
         --include-demo) include_demo=1; shift ;;
         --version) app_version="$2"; shift 2 ;;
+        --manager-version) manager_version="$2"; shift 2 ;;
         --service-version) service_version="$2"; shift 2 ;;
+        --workbench-version) workbench_version="$2"; shift 2 ;;
         --python) python_bin="$2"; shift 2 ;;
         *) echo "error: unknown option: $1" >&2; exit 2 ;;
     esac
@@ -63,8 +69,14 @@ if [[ -z "${python_bin}" ]]; then
     fi
 fi
 
+manager_version="${manager_version:-${app_version}}"
+workbench_version="${workbench_version:-${app_version}}"
+
 echo "==> Python:       ${python_bin}"
-echo "==> Version:      ${app_version}"
+echo "==> Desktop:      ${app_version}"
+echo "==> Manager:      ${manager_version}"
+echo "==> Service:      ${service_version}"
+echo "==> Workbench:    ${workbench_version}"
 echo "==> Working dir:  ${import_manager_dir}"
 
 "${python_bin}" -c "import PyInstaller" >/dev/null 2>&1 || {
@@ -94,7 +106,7 @@ rm -rf "${work_dir}/BODAQS Import Manager" "${work_dir}/bodaqs-library-service"
 echo "==> Running PyInstaller (macOS manager spec)"
 (
     cd "${import_manager_dir}"
-    BODAQS_IMPORT_MANAGER_APP_VERSION="${app_version}" \
+    BODAQS_IMPORT_MANAGER_APP_VERSION="${manager_version}" \
     "${python_bin}" -m PyInstaller \
         --noconfirm \
         --clean \
@@ -175,6 +187,24 @@ if [[ "${make_service}" -eq 1 ]]; then
         echo "==> Web app bundled at: ${web_dst}"
     fi
 fi
+
+echo "==> Writing component version metadata"
+"${python_bin}" - "${app_path}/Contents/Resources/component_versions.json" "${app_version}" "${manager_version}" "${service_version}" "${workbench_version}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output, bundle, manager, service, workbench = sys.argv[1:]
+payload = {
+    "bundle": {"name": "BODAQS Desktop", "version": bundle},
+    "components": [
+        {"name": "BODAQS Import Manager", "version": manager, "path": "Contents/MacOS/BODAQS Import Manager"},
+        {"name": "BODAQS Library Service", "version": service, "path": "Contents/Resources/service/bodaqs-library-service"},
+        {"name": "BODAQS Workbench", "version": workbench, "path": "Contents/Resources/service/web/index.html"},
+    ],
+}
+Path(output).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
 
 # ---------------------------------------------------------------------------
 # Bundle demo assets if requested and available

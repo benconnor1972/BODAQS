@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, FileText, Info, MapPin, Trash2, Video } from 'lucide-react'
+import { Activity, AlertTriangle, FileText, Info, LoaderCircle, MapPin, Trash2, Video } from 'lucide-react'
 import { gpsQualityTone, gpsSummaryLine } from '../domain/geospatial'
 import type { ColumnId, QcLevel, SessionInspectionTab, SessionRecord } from '../domain/types'
 import { IconButton } from './Common'
@@ -13,12 +13,14 @@ export function SessionInfoButtons({
   actions,
   showDelete = false,
   onDelete,
+  noteSaving = false,
 }: {
   session: SessionRecord
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
   actions?: SessionInfoAction[]
   showDelete?: boolean
   onDelete?: (session: SessionRecord) => void
+  noteSaving?: boolean
 }) {
   const activeActions = actions ?? (showDelete ? [...defaultInfoActions, 'delete'] : defaultInfoActions)
 
@@ -31,6 +33,7 @@ export function SessionInfoButtons({
           session={session}
           onInspect={onInspect}
           onDelete={onDelete}
+          noteSaving={noteSaving}
         />
       ))}
     </>
@@ -42,19 +45,22 @@ function SessionInfoButton({
   session,
   onInspect,
   onDelete,
+  noteSaving,
 }: {
   action: SessionInfoAction
   session: SessionRecord
   onInspect: (session: SessionRecord, tab: SessionInspectionTab) => void
   onDelete?: (session: SessionRecord) => void
+  noteSaving: boolean
 }) {
   if (action === 'note') {
     return (
       <IconButton
-        label={`View/edit note: ${noteStatusLabel(session.noteStatus)}`}
-        onClick={() => onInspect(session, 'note')}
-        icon={<FileText size={15} />}
+        label={noteSaving ? 'Saving pasted note' : `View/edit note: ${noteStatusLabel(session.noteStatus)}`}
+        onClick={noteSaving ? undefined : () => onInspect(session, 'note')}
+        icon={noteSaving ? <LoaderCircle className="note-save-pending" size={15} /> : <FileText size={15} />}
         tone={noteTone(session.noteStatus)}
+        disabled={noteSaving}
       />
     )
   }

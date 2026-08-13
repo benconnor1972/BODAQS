@@ -332,15 +332,30 @@ export function SignalInspector({
 }) {
   const durationS = Math.max(1, session.gpsSummary.sessionDurationS || session.durationMin * 60 || 1)
   const signalOptions = useMemo(() => inspectorSignalOptions(session), [session])
-  const signalOptionLabels = useMemo(() => duplicateAwareSignalLabels(signalOptions), [signalOptions])
   const signalOptionColumns = useMemo(() => new Set(signalOptions.map((signal) => signal.column)), [signalOptions])
+  const primarySignalOptionColumns = useMemo(
+    () => new Set(signalOptions.filter(isPrimaryAnalysisSignal).map((signal) => signal.column)),
+    [signalOptions],
+  )
   const initialColumns = useMemo(
-    () => loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions),
-    [session.libraryId, session.sessionKey, signalOptionColumns, signalOptions],
+    () => primarySignalColumns(
+      loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions),
+      primarySignalOptionColumns,
+    ),
+    [session.libraryId, session.sessionKey, primarySignalOptionColumns, signalOptionColumns, signalOptions],
   )
   const initialViewPreferences = useMemo(() => loadStoredViewPreferences(), [])
   const [chartMode, setChartMode] = useState<SignalInspectorChartMode>(() => loadStoredChartMode())
   const [selectedColumns, setSelectedColumns] = useState<string[]>(initialColumns)
+  const [primarySignalsOnly, setPrimarySignalsOnly] = useState(true)
+  const visibleSignalOptions = useMemo(
+    () => (primarySignalsOnly ? signalOptions.filter(isPrimaryAnalysisSignal) : signalOptions),
+    [primarySignalsOnly, signalOptions],
+  )
+  const visibleSignalOptionLabels = useMemo(
+    () => duplicateAwareSignalLabels(visibleSignalOptions),
+    [visibleSignalOptions],
+  )
   const initialPinnedTimeS = useMemo(
     () => loadStoredPinnedTime(session, durationS),
     [durationS, session.libraryId, session.sessionKey],
@@ -399,7 +414,11 @@ export function SignalInspector({
   const bookmarkContextMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    setSelectedColumns(loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions))
+    setSelectedColumns(primarySignalColumns(
+      loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions),
+      primarySignalOptionColumns,
+    ))
+    setPrimarySignalsOnly(true)
     timeInteraction.reset(initialWindow, loadStoredPinnedTime(session, durationS))
     setActiveBookmarkId(null)
     setBookmarkTitle('')
@@ -422,7 +441,16 @@ export function SignalInspector({
     setVideoPlaybackSessionTimeS(null)
     setNavigatorDragging(false)
     eventGroupsInitializedRef.current = false
-  }, [durationS, initialWindow?.endS, initialWindow?.startS, session.libraryId, session.sessionKey, signalOptionColumns, signalOptions])
+  }, [
+    durationS,
+    initialWindow?.endS,
+    initialWindow?.startS,
+    primarySignalOptionColumns,
+    session.libraryId,
+    session.sessionKey,
+    signalOptionColumns,
+    signalOptions,
+  ])
 
   useEffect(() => {
     storePinnedTime(session, pinnedTimeS)
@@ -928,6 +956,13 @@ export function SignalInspector({
     setSelectedColumns((current) =>
       current.includes(column) ? current.filter((item) => item !== column) : [...current, column],
     )
+  }
+
+  function setPrimarySignalsFilter(checked: boolean) {
+    setPrimarySignalsOnly(checked)
+    if (checked) {
+      setSelectedColumns((current) => primarySignalColumns(current, primarySignalOptionColumns))
+    }
   }
 
   function toggleEventGroup(groupKey: string) {
@@ -1502,12 +1537,22 @@ export function SignalInspector({
             </div>
           </section>
           <section className="signal-inspector-card">
-            <h3>Signals</h3>
-            {signalOptions.length === 0 ? (
-              <p>No signal catalog is available for this session.</p>
+            <div className="signal-inspector-card-header">
+              <h3>Signals</h3>
+              <label className="signal-inspector-primary-signals-filter">
+                <input
+                  checked={primarySignalsOnly}
+                  onChange={(event) => setPrimarySignalsFilter(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Primary signals only</span>
+              </label>
+            </div>
+            {visibleSignalOptions.length === 0 ? (
+              <p>{primarySignalsOnly ? 'No primary analysis signals are available for this session.' : 'No signal catalog is available for this session.'}</p>
             ) : (
               <div className="signal-inspector-check-list">
-                {signalOptions.map((signal, index) => (
+                {visibleSignalOptions.map((signal, index) => (
                   <label key={signal.column}>
                     <input
                       checked={selectedColumns.includes(signal.column)}
@@ -1515,7 +1560,7 @@ export function SignalInspector({
                       type="checkbox"
                     />
                     <span>
-                      <strong>{signalOptionLabels[index]}</strong>
+                      <strong title={visibleSignalOptionLabels[index]}>{visibleSignalOptionLabels[index]}</strong>
                       <small>
                         {[signal.end, signal.quantity, signal.unit].filter(Boolean).join(' / ') || signal.column}
                       </small>
@@ -3845,6 +3890,44 @@ function inspectorSignalOptions(session: SessionRecord): SessionSignalSummary[] 
       seen.add(signal.column)
       return signal
     })
+    .sort(compareSignalsBySensor)
+}
+
+function isPrimaryAnalysisSignal(signal: SessionSignalSummary) {
+  return normalizeSignalText(signal.processingRole) === 'primary_analysis'
+}
+
+function compareSignalsBySensor(left: SessionSignalSummary, right: SessionSignalSummary) {
+  const leftSensor = normalizeSignalText(left.sensor) || '\uffff'
+  const rightSensor = normalizeSignalText(right.sensor) || '\uffff'
+  return (
+    leftSensor.localeCompare(rightSensor) ||
+    signalQuantityRank(left) - signalQuantityRank(right) ||
+    normalizeSignalText(left.end).localeCompare(normalizeSignalText(right.end)) ||
+    (left.displayName || left.column).localeCompare(right.displayName || right.column) ||
+    left.column.localeCompare(right.column)
+  )
+}
+
+function signalQuantityRank(signal: SessionSignalSummary) {
+  const quantity = normalizeSignalText(signal.quantity)
+  if (quantity === 'disp' || quantity === 'displacement') {
+    return 0
+  }
+  if (quantity === 'disp_norm' || quantity === 'normalized_displacement') {
+    return 1
+  }
+  if (quantity === 'vel' || quantity === 'velocity') {
+    return 2
+  }
+  if (quantity === 'acc' || quantity === 'accel' || quantity === 'acceleration') {
+    return 3
+  }
+  return 4
+}
+
+function primarySignalColumns(columns: string[], primaryColumns: ReadonlySet<string>) {
+  return columns.filter((column) => primaryColumns.has(column))
 }
 
 function defaultSignalColumns(signals: SessionSignalSummary[]) {

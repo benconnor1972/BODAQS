@@ -12,13 +12,17 @@ import_manager_dir="${script_dir}"
 repo_root="$(cd "${import_manager_dir}/.." && pwd)"
 
 app_version="0.1.4-dev"
+manager_version=""
 service_version="0.1.0-dev"
+workbench_version=""
 python_bin=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) app_version="$2"; shift 2 ;;
+        --manager-version) manager_version="$2"; shift 2 ;;
         --service-version) service_version="$2"; shift 2 ;;
+        --workbench-version) workbench_version="$2"; shift 2 ;;
         --python) python_bin="$2"; shift 2 ;;
         *) echo "error: unknown option: $1" >&2; exit 2 ;;
     esac
@@ -31,6 +35,9 @@ if [[ -z "${python_bin}" ]]; then
         python_bin="python3"
     fi
 fi
+
+manager_version="${manager_version:-${app_version}}"
+workbench_version="${workbench_version:-${app_version}}"
 
 "${python_bin}" -c "import PyInstaller" >/dev/null 2>&1 || {
     echo "error: PyInstaller is not importable by ${python_bin}" >&2
@@ -54,7 +61,10 @@ archive_root="${import_manager_dir}/build/release/linux/${archive_name}"
 archive_path="${import_manager_dir}/dist/${archive_name}.tar.gz"
 
 echo "==> Python: ${python_bin}"
-echo "==> Version: ${app_version}"
+echo "==> Desktop: ${app_version}"
+echo "==> Manager: ${manager_version}"
+echo "==> Service: ${service_version}"
+echo "==> Workbench: ${workbench_version}"
 
 rm -rf "${manager_dir}" "${service_dir}"
 rm -rf "${work_dir}/bodaqs-import-manager" "${work_dir}/bodaqs-library-service"
@@ -64,7 +74,7 @@ rm -f "${archive_path}"
 echo "==> Building Linux Import Manager"
 (
     cd "${import_manager_dir}"
-    BODAQS_IMPORT_MANAGER_APP_VERSION="${app_version}" \
+    BODAQS_IMPORT_MANAGER_APP_VERSION="${manager_version}" \
         "${python_bin}" -m PyInstaller --noconfirm --clean \
         --distpath "${dist_dir}" --workpath "${work_dir}" \
         bodaqs_import_manager_linux.spec
@@ -104,6 +114,24 @@ cp -R "${service_dir}/." "${manager_dir}/service/"
 mkdir -p "${manager_dir}/service/web"
 cp -R "${web_app_dist}/." "${manager_dir}/service/web/"
 rm -rf "${service_dir}"
+
+echo "==> Writing component version metadata"
+"${python_bin}" - "${manager_dir}/component_versions.json" "${app_version}" "${manager_version}" "${service_version}" "${workbench_version}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output, bundle, manager, service, workbench = sys.argv[1:]
+payload = {
+    "bundle": {"name": "BODAQS Desktop", "version": bundle},
+    "components": [
+        {"name": "BODAQS Import Manager", "version": manager, "path": "bodaqs-import-manager"},
+        {"name": "BODAQS Library Service", "version": service, "path": "service/bodaqs-library-service"},
+        {"name": "BODAQS Workbench", "version": workbench, "path": "service/web/index.html"},
+    ],
+}
+Path(output).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
 
 echo "==> Running packaged smoke tests"
 "${python_bin}" "${import_manager_dir}/tools/smoke_test_packaged_imu_bdq.py" \

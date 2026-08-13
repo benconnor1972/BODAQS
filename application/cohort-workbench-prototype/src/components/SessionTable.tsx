@@ -5,7 +5,7 @@ import {
   useReactTable,
   type ColumnDef,
 } from '@tanstack/react-table'
-import { Filter, X } from 'lucide-react'
+import { Filter, LoaderCircle, X } from 'lucide-react'
 import { columnLabels, getColumnText, isInfoActionColumn } from '../domain/sessionCatalog'
 import { candidateId } from '../domain/studySets'
 import {
@@ -80,6 +80,8 @@ const minColumnWidths: Record<ColumnId, number> = {
   metadataAction: 0,
 }
 
+const RENAME_CLICK_DELAY_MS = 350
+
 function rowActionsWidth(actionCount: number) {
   return Math.max(minRowActionsWidth(actionCount), 38 + actionCount * 28)
 }
@@ -126,6 +128,7 @@ export function SessionTable({
   onRenameSession,
   onCopyNote,
   onPasteNote,
+  notePasteSavingIds,
   canPasteNote = false,
 }: {
   sessions: SessionRecord[]
@@ -149,6 +152,7 @@ export function SessionTable({
   onRenameSession?: (session: SessionRecord, name: string) => Promise<void>
   onCopyNote?: (session: SessionRecord) => void
   onPasteNote?: (session: SessionRecord) => void
+  notePasteSavingIds?: ReadonlySet<string>
   canPasteNote?: boolean
 }) {
   const [openFilterColumnId, setOpenFilterColumnId] = useState<ColumnId | null>(null)
@@ -159,6 +163,7 @@ export function SessionTable({
   const filterMenuRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const renameCommitInFlightRef = useRef<string | null>(null)
+  const pendingRenameTimeoutRef = useRef<number | null>(null)
   const dataColumns = visibleColumns.filter((columnId) => !isInfoActionColumn(columnId))
   const canRenameSessions = Boolean(onRenameSession) && dataColumns.includes('name')
   const hasContextMenu = canRenameSessions || Boolean(onInspect) || Boolean(onCopyNote) || Boolean(onPasteNote)
@@ -190,7 +195,12 @@ export function SessionTable({
             />
           )
         }
-        return String(info.getValue() ?? '')
+        return (
+          <span className="session-name-value">
+            {String(info.getValue() ?? '')}
+            {savingSessionId === sessionId && <LoaderCircle className="session-rename-pending" size={14} />}
+          </span>
+        )
       },
       enableSorting: true,
     }))
@@ -201,7 +211,12 @@ export function SessionTable({
       <div className="row-action-strip">
         {infoActions.length > 0 && (
           <span className="row-info-action-group">
-            <SessionInfoButtons session={row.original} onInspect={onInspect} actions={infoActions} />
+            <SessionInfoButtons
+              session={row.original}
+              onInspect={onInspect}
+              actions={infoActions}
+              noteSaving={notePasteSavingIds?.has(candidateId(row.original))}
+            />
           </span>
         )}
         <SessionDeleteButton session={row.original} onDelete={onDeleteSession} />
@@ -274,6 +289,12 @@ export function SessionTable({
     }
   }, [contextMenu])
 
+  useEffect(() => () => {
+    if (pendingRenameTimeoutRef.current !== null) {
+      window.clearTimeout(pendingRenameTimeoutRef.current)
+    }
+  }, [])
+
   function toggleFilterMenu(columnId: ColumnId) {
     setFilterSearchText('')
     setOpenFilterColumnId((current) => (current === columnId ? null : columnId))
@@ -318,7 +339,8 @@ export function SessionTable({
   }
 
   function startRename(session: SessionRecord) {
-    if (!canRenameSessions || !onRenameSession) {
+    clearPendingRename()
+    if (!canRenameSessions || !onRenameSession || savingSessionId === candidateId(session)) {
       return
     }
     setContextMenu(null)
@@ -326,9 +348,25 @@ export function SessionTable({
   }
 
   function cancelRename() {
+    clearPendingRename()
     renameCommitInFlightRef.current = null
     setEditingSessionId(null)
     setSavingSessionId(null)
+  }
+
+  function scheduleRename(session: SessionRecord) {
+    clearPendingRename()
+    pendingRenameTimeoutRef.current = window.setTimeout(() => {
+      pendingRenameTimeoutRef.current = null
+      startRename(session)
+    }, RENAME_CLICK_DELAY_MS)
+  }
+
+  function clearPendingRename() {
+    if (pendingRenameTimeoutRef.current !== null) {
+      window.clearTimeout(pendingRenameTimeoutRef.current)
+      pendingRenameTimeoutRef.current = null
+    }
   }
 
   async function commitRename(session: SessionRecord, nextName: string) {
@@ -346,15 +384,19 @@ export function SessionTable({
       cancelRename()
       return
     }
-    try {
-      renameCommitInFlightRef.current = sessionId
-      setSavingSessionId(sessionId)
-      await onRenameSession(session, trimmedName)
-      cancelRename()
-    } catch {
-      renameCommitInFlightRef.current = null
-      setSavingSessionId(null)
-    }
+    renameCommitInFlightRef.current = sessionId
+    setEditingSessionId(null)
+    setSavingSessionId(sessionId)
+    void onRenameSession(session, trimmedName)
+      .catch(() => {
+        // The app-level handler restores the original row and reports the failure.
+      })
+      .finally(() => {
+        if (renameCommitInFlightRef.current === sessionId) {
+          renameCommitInFlightRef.current = null
+          setSavingSessionId(null)
+        }
+      })
   }
 
   return (
@@ -472,21 +514,33 @@ export function SessionTable({
                     event.preventDefault()
                     setContextMenu({ session, x: event.clientX, y: event.clientY })
                   }}
-                  onDoubleClick={(event) => handleRowDoubleClick(event, session, onAnalyzeSession)}
+                  onDoubleClick={(event) => {
+                    clearPendingRename()
+                    handleRowDoubleClick(event, session, onAnalyzeSession)
+                  }}
                   onKeyDown={(event) => handleRowKeyDown(event, session, onSelect, startRename)}
                   tabIndex={0}
                 >
                   {row.getVisibleCells().map((cell) => {
                     const isInfoCell = cell.column.id === 'rowActions'
+                    const isNameCell = cell.column.id === 'name'
                     return (
                       <td
-                        className={isInfoCell ? 'icon-cluster info-action-cell session-info-action-cell' : undefined}
+                        className={[
+                          isInfoCell ? 'icon-cluster info-action-cell session-info-action-cell' : '',
+                          isNameCell ? 'session-name-cell' : '',
+                        ].filter(Boolean).join(' ')}
                         key={cell.id}
                         onClick={(event) => {
                           if (isInfoCell) {
                             event.stopPropagation()
                             return
                           }
+                          if (isNameCell && isSelected && !hasSelectionModifier(event) && canRenameSessions) {
+                            scheduleRename(session)
+                            return
+                          }
+                          clearPendingRename()
                           onSelect(session, mouseGesture(event))
                         }}
                       >
@@ -714,6 +768,10 @@ function mouseGesture(event: MouseEvent<HTMLElement>): SessionSelectionGesture {
     extendRange: event.shiftKey,
     toggle: event.ctrlKey || event.metaKey,
   }
+}
+
+function hasSelectionModifier(event: MouseEvent<HTMLElement>) {
+  return event.shiftKey || event.ctrlKey || event.metaKey
 }
 
 function handleRowDoubleClick(

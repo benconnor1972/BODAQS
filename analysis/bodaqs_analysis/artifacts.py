@@ -585,7 +585,7 @@ def set_run_description(
     *,
     run_id: str,
     description: Optional[str],
-) -> None:
+) -> dict[str, Any]:
     """
     Update the run manifest's description field in-place.
     Leaves all other fields untouched.
@@ -597,6 +597,7 @@ def set_run_description(
     obj = store.read_json(path)
     obj["description"] = description
     store.write_json(path, obj)
+    return obj
 
 
 def set_session_description(
@@ -605,7 +606,7 @@ def set_session_description(
     run_id: str,
     session_id: str,
     description: Optional[str],
-) -> None:
+) -> dict[str, Any]:
     """
     Update a session manifest's description field in-place.
     Leaves all other fields untouched.
@@ -617,3 +618,4 @@ def set_session_description(
     obj = store.read_json(path)
     obj["description"] = description
     store.write_json(path, obj)
+    return obj

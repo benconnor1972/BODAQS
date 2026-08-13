@@ -39,22 +39,29 @@ def update_session_descriptions(
     run_id = _required_text(session_ref.get("run_id"), field_name="session_ref.run_id")
     session_id = _required_text(session_ref.get("session_id"), field_name="session_ref.session_id")
 
+    run_manifest: Mapping[str, Any] | None = None
+    session_manifest: Mapping[str, Any] | None = None
     if has_run:
-        set_run_description(
+        run_manifest = set_run_description(
             store,
             run_id=run_id,
             description=_nullable_text(descriptions.get("run_description")),
         )
     if has_session:
-        set_session_description(
+        session_manifest = set_session_description(
             store,
             run_id=run_id,
             session_id=session_id,
             description=_nullable_text(descriptions.get("session_description")),
         )
 
-    run_manifest = store.read_json(store.path_run_manifest(run_id))
-    session_manifest = store.read_json(store.path_session_manifest(run_id, session_id))
+    # Preserve the full response contract while avoiding a second read of the
+    # manifest that was just updated.
+    if run_manifest is None:
+        run_manifest = store.read_json(store.path_run_manifest(run_id))
+    if session_manifest is None:
+        session_manifest = store.read_json(store.path_session_manifest(run_id, session_id))
+
     updated_fields = []
     if has_run:
         updated_fields.append("run_description")

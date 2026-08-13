@@ -1024,3 +1024,21 @@ def test_logger_wifi_offline_source_reports_remote_error_without_import_failure(
     assert report["totals"]["failed"] == 0
     assert report["sources"][0]["remote"]["status"]["state"] == "error"
     assert report["sources"][0]["remote"]["failed"]
+
+
+def test_logger_wifi_source_processes_local_inbox_when_logger_is_offline(tmp_path):
+    source, _library = _provision_wifi_source(
+        tmp_path,
+        _unused_local_base_url(),
+        request_timeout_s=0.1,
+    )
+    (source.source_root / "inbox" / "retained-session.zip").write_bytes(
+        _importable_archive_bytes("retained-session")
+    )
+
+    report = run_sources_once([source.source_root])
+
+    source_report = report["sources"][0]
+    assert report["totals"]["imported"] == 1
+    assert source_report["remote"]["status"]["state"] == "error"
+    assert len(list((source.source_root / "done").glob("*.zip"))) == 1

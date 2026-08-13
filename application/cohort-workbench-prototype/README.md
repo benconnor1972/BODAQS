@@ -74,6 +74,34 @@ npm run build
 npm run lint
 ```
 
+## UI Glyph Conventions
+
+The Workbench uses [Lucide](https://lucide.dev/) glyphs. A static glyph is an
+orientation aid, not decoration: use one only for a persistent work area or a
+first-class BODAQS concept. Subordinate headings remain text-only unless the
+glyph makes the concept materially easier to scan.
+
+| Concept | Glyph | Current use |
+| --- | --- | --- |
+| Library | `Library` | Library Browser |
+| Sessions / signal data | `Activity` | Session Selector, signal-related views |
+| Study Set | `Layers3` | Study Set Builder |
+| Tracks | `Route` | Tracks |
+| Filters | `Filter` / `SlidersHorizontal` | Filters, Select and filter drawer |
+| GPS location / trackpoints | `MapPin` | GPS headings, trackpoints |
+| Map | `Map` | Track map and map placeholders |
+| Matching | `Crosshair` | Match Preview and trackpoint-query controls only |
+| Video | `Video` | Video reference |
+| Altitude | `Mountain` | Altitude Profile |
+| Lap timing | `Timer` | Lap timing |
+
+Action glyphs describe the action rather than the surrounding concept: for
+example `Plus`, `Save`, `Trash2`, `Play`, `RefreshCw`, `RotateCcw`, and the
+directional chevrons. Keep `X` unchanged for close controls until a separate
+close-control policy is agreed. The CSS point and segment marks in Track
+Analysis are intentionally retained because they express track geometry more
+clearly than a generic glyph.
+
 ## Current Scope
 
 - Browse, sort, filter, inspect, rename, and delete library sessions.

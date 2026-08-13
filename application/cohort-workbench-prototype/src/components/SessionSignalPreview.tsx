@@ -292,13 +292,17 @@ function previewRange(values: number[]): [number, number] {
   if (values.length === 0) {
     return [0, 1]
   }
+  const minimum = Math.min(...values)
   const robustMin = percentile(values, 0.01)
   const robustMax = percentile(values, 0.99)
   if (robustMin >= -0.1 && robustMax <= 1.05) {
-    return [-0.1, 1]
+    return [minimum < 0 ? minimum * 1.1 : -0.1, 1]
   }
   const padding = Math.max((robustMax - robustMin) * 0.08, 0.05)
-  return [robustMin - padding, robustMax + padding]
+  // Preserve brief negative excursions that would otherwise be excluded by
+  // the robust percentile range, with a small margin below the lowest value.
+  const lowerBound = minimum < 0 ? minimum * 1.1 : robustMin - padding
+  return [lowerBound, robustMax + padding]
 }
 
 function percentile(values: number[], fraction: number) {
