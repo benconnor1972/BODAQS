@@ -3,6 +3,7 @@ import { emptyGpsSummary } from '../domain/geospatial'
 import type { SavedSessionFilterRecord, SessionFilterPredicate } from '../domain/sessionFilters'
 import type {
   AnalysisAdequacyMessage,
+  AnalysisAdequacyCriterionResult,
   AnalysisAdequacyResult,
   AnalysisAdequacySessionResult,
   AnalysisAdequacyStatus,
@@ -59,6 +60,7 @@ import type { LibraryDataSource, SessionNoteSaveResult, WorkbenchBootstrapData }
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
 const VITE_DEV_PORTS = new Set(['5173', '4173'])
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+const BULK_NOTE_FALLBACK_CONCURRENCY = 4
 
 function normalizeApiBaseUrl(baseUrl: string) {
   return String(baseUrl).replace(/\/+$/, '')
@@ -423,39 +425,63 @@ export class LocalApiDataSource implements LibraryDataSource {
     const results: SessionNoteSaveResult[] = new Array(notes.length)
     await Promise.all(
       [...groups.entries()].map(async ([libraryId, group]) => {
-        const response = await requestJson<ApiObject>(
-          `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/sessions/notes`,
-          {
-            method: 'PUT',
-            body: JSON.stringify({
-              items: group.map(({ note }) => ({
-                session_ref: toApiStudySessionRef(note.sessionRef),
-                note: toApiSessionNote(note),
-              })),
-            }),
-          },
-        )
-        const responseResults = arrayValue(response.results).filter(isObject)
-        responseResults.forEach((result, responseIndex) => {
-          const rawIndex = Number(result.index)
-          const source = group[Number.isInteger(rawIndex) ? rawIndex : responseIndex] ?? group[responseIndex]
-          if (!source) {
-            return
-          }
-          if (result.ok) {
-            const notePayload = objectValue(result.note)
-            results[source.index] = {
-              ok: true,
-              note: mapSessionNote(notePayload, source.note.sessionRef),
+        try {
+          const response = await requestJson<ApiObject>(
+            `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/sessions/notes`,
+            {
+              method: 'PUT',
+              body: JSON.stringify({
+                items: group.map(({ note }) => ({
+                  session_ref: toApiStudySessionRef(note.sessionRef),
+                  note: toApiSessionNote(note),
+                })),
+              }),
+            },
+          )
+          const responseResults = arrayValue(response.results).filter(isObject)
+          responseResults.forEach((result, responseIndex) => {
+            const rawIndex = Number(result.index)
+            const source = group[Number.isInteger(rawIndex) ? rawIndex : responseIndex] ?? group[responseIndex]
+            if (!source) {
+              return
             }
-            return
+            if (result.ok) {
+              const notePayload = objectValue(result.note)
+              results[source.index] = {
+                ok: true,
+                note: mapSessionNote(notePayload, source.note.sessionRef),
+              }
+              return
+            }
+            results[source.index] = {
+              ok: false,
+              sessionRef: source.note.sessionRef,
+              message: textValue(result.error, 'Could not save session note.'),
+            }
+          })
+        } catch (error) {
+          if (!(error instanceof ApiRequestError) || error.status !== 404) {
+            throw error
           }
-          results[source.index] = {
-            ok: false,
-            sessionRef: source.note.sessionRef,
-            message: textValue(result.error, 'Could not save session note.'),
-          }
-        })
+          const fallbackResults = await mapWithConcurrency(
+            group,
+            BULK_NOTE_FALLBACK_CONCURRENCY,
+            async (source): Promise<SessionNoteSaveResult> => {
+              try {
+                return { ok: true, note: await this.saveSessionNote(source.note) }
+              } catch (saveError) {
+                return {
+                  ok: false,
+                  sessionRef: source.note.sessionRef,
+                  message: saveError instanceof Error ? saveError.message : String(saveError),
+                }
+              }
+            },
+          )
+          fallbackResults.forEach((result, index) => {
+            results[group[index].index] = result
+          })
+        }
       }),
     )
 
@@ -609,9 +635,37 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
     } catch {
       // Keep the HTTP status fallback.
     }
-    throw new Error(detail)
+    throw new ApiRequestError(response.status, detail)
   }
   return (await response.json()) as T
+}
+
+class ApiRequestError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(items[index])
+    }
+  })
+  await Promise.all(workers)
+  return results
 }
 
 function formatApiErrorDetails(details: ApiObject) {
@@ -1236,6 +1290,7 @@ function mapAnalysisAdequacy(value: ApiObject): AnalysisAdequacyResult {
     blockedSessionCount: numberValue(value.blocked_session_count),
     messages: arrayValue(value.messages).filter(isObject).map(mapAnalysisAdequacyMessage),
     sessionResults: arrayValue(value.session_results).filter(isObject).map(mapAnalysisAdequacySessionResult),
+    scopeCriteria: arrayValue(value.scope_criteria).filter(isObject).map(mapAnalysisAdequacyCriterionResult),
   }
 }
 
@@ -1251,14 +1306,24 @@ function mapAnalysisAdequacyMessage(value: ApiObject): AnalysisAdequacyMessage {
 }
 
 function mapAnalysisAdequacySessionResult(value: ApiObject): AnalysisAdequacySessionResult {
+  const sessionRef = objectValue(value.session_ref)
   return {
-    sessionRef: mapStudySessionRef(objectValue(value.session_ref)),
+    sessionRef: mapStudySessionRef(Object.keys(sessionRef).length ? sessionRef : value),
     status: adequacyStatusValue(value.status),
     summary: textValue(value.summary),
-    requiredPassed: value.required_passed === true,
-    recommendedMissing: arrayValue(value.recommended_missing).map((item) => textValue(item)).filter(Boolean),
-    optionalMissing: arrayValue(value.optional_missing).map((item) => textValue(item)).filter(Boolean),
+    requiredPassed: value.required_passed === true || value.usable === true,
+    recommendedMissing: arrayValue(value.recommended_missing ?? value.missing_recommended).map((item) => textValue(item)).filter(Boolean),
+    optionalMissing: arrayValue(value.optional_missing ?? value.missing_optional).map((item) => textValue(item)).filter(Boolean),
+    criteria: arrayValue(value.criteria).filter(isObject).map(mapAnalysisAdequacyCriterionResult),
     units: objectRecordValue(value.units),
+  }
+}
+
+function mapAnalysisAdequacyCriterionResult(value: ApiObject): AnalysisAdequacyCriterionResult {
+  return {
+    requirementId: textValue(value.requirement_id),
+    met: value.met === true,
+    detail: textValue(value.detail),
   }
 }
 

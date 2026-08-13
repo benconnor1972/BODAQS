@@ -64,6 +64,7 @@ from .import_agent_provisioning import (
     runtime_import_agent_app_config_path,
     sync_import_agent_workspace_from_roots,
     update_import_agent_app_auto_start,
+    update_import_agent_processed_archive_retention_days,
     update_import_agent_library_data_syn_bike_export_enabled,
     update_import_agent_library_display_name,
     update_import_agent_source_bike_profile,
@@ -164,6 +165,45 @@ _SOURCE_ENABLED_UNCHECKED = "☐"
 def _app_window_title() -> str:
     version = str(_PACKAGED_APP_VERSION or "").strip()
     return f"{_APP_DISPLAY_NAME} {version}" if version else _APP_DISPLAY_NAME
+
+
+def _component_version_lines() -> list[str]:
+    executable_path = Path(sys.executable).resolve()
+    manifest_candidates = (
+        executable_path.parent / "component_versions.json",
+        executable_path.parent.parent / "component_versions.json",
+        executable_path.parent.parent / "Resources" / "component_versions.json",
+    )
+    manifest_path = next((path for path in manifest_candidates if path.is_file()), None)
+    if manifest_path is None:
+        version = str(_PACKAGED_APP_VERSION or "").strip()
+        return [f"{_APP_DISPLAY_NAME}: {version}" if version else _APP_DISPLAY_NAME]
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [_APP_DISPLAY_NAME]
+    if not isinstance(payload, Mapping):
+        return [_APP_DISPLAY_NAME]
+
+    lines: list[str] = []
+    bundle = payload.get("bundle")
+    if isinstance(bundle, Mapping):
+        bundle_name = str(bundle.get("name") or "BODAQS Desktop").strip()
+        bundle_version = str(bundle.get("version") or "").strip()
+        lines.append(f"{bundle_name}: {bundle_version}" if bundle_version else bundle_name)
+
+    components = payload.get("components")
+    if isinstance(components, list):
+        for component in components:
+            if not isinstance(component, Mapping):
+                continue
+            name = str(component.get("name") or "").strip()
+            version = str(component.get("version") or "").strip()
+            if name:
+                lines.append(f"{name}: {version}" if version else name)
+
+    return lines or [_APP_DISPLAY_NAME]
 
 
 def _default_workspace_root() -> Path:
@@ -572,6 +612,21 @@ class ImportAgentManagerController:
         self.app_config = updated
         return updated
 
+    def set_processed_archive_retention_days(self, retention_days: Optional[int]) -> ImportAgentAppConfig:
+        updated = update_import_agent_processed_archive_retention_days(
+            self.app_config_path,
+            retention_days=retention_days,
+        )
+        self.app_config = updated
+        return updated
+
+    def managed_processed_archive_retention_days(self) -> tuple[bool, Optional[int]]:
+        sources = load_managed_import_source_configs(self.require_config(), enabled_only=False)
+        values = {source.processed_archive_retention_days for source in sources}
+        if len(values) != 1:
+            return False, None
+        return True, values.pop()
+
     def managed_source_roots(self, *, enabled_only: bool = False) -> list[Path]:
         return managed_import_agent_source_roots(self.require_config(), enabled_only=enabled_only)
 
@@ -863,6 +918,8 @@ class ImportAgentManagerWindow:
         self.session_auto_name_var = tk.BooleanVar(value=False)
         self.session_name_base_var = tk.StringVar(value="")
         self.auto_start_var = tk.BooleanVar(value=bool(args.auto_start))
+        self.processed_archive_retention_days_var = tk.StringVar(value="30")
+        self.retain_processed_archives_forever_var = tk.BooleanVar(value=False)
         self.overwrite_var = tk.BooleanVar(value=bool(args.overwrite))
         self.source_library_choice_var = tk.StringVar(value="")
         self.wifi_address_var = tk.StringVar(value="")
@@ -892,6 +949,7 @@ class ImportAgentManagerWindow:
         self.add_library_button: Optional[ttk.Button] = None
         self.add_source_button: Optional[ttk.Button] = None
         self.apply_app_settings_button: Optional[ttk.Button] = None
+        self.processed_archive_retention_days_entry: Optional[ttk.Entry] = None
         self.open_web_app_button: Optional[ttk.Button] = None
         self.stop_web_app_button: Optional[ttk.Button] = None
         self.library_choice_combo: Optional[ttk.Combobox] = None
@@ -965,6 +1023,12 @@ class ImportAgentManagerWindow:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
+        menu_bar = tk.Menu(self.root)
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(label="About BODAQS Desktop", command=self._show_about)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+        self.root.configure(menu=menu_bar)
+
         notebook = ttk.Notebook(self.root)
         notebook.grid(row=0, column=0, sticky="nsew")
         self.notebook = notebook
@@ -976,6 +1040,9 @@ class ImportAgentManagerWindow:
 
         self._build_manager_tab(manager_tab)
         self._build_provision_tab(provision_tab)
+
+    def _show_about(self) -> None:
+        messagebox.showinfo("About BODAQS Desktop", "\n".join(_component_version_lines()), parent=self.root)
 
     def _build_manager_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1241,6 +1308,30 @@ class ImportAgentManagerWindow:
         ttk.Checkbutton(options, text="Overwrite existing seeded files", variable=self.overwrite_var).grid(
             row=0, column=1, sticky="w"
         )
+        ttk.Label(options, text="Processed archive retention (days)").grid(
+            row=1, column=0, sticky="w", pady=(10, 0)
+        )
+        self.processed_archive_retention_days_entry = ttk.Entry(
+            options,
+            textvariable=self.processed_archive_retention_days_var,
+            width=8,
+        )
+        self.processed_archive_retention_days_entry.grid(row=1, column=1, sticky="w", pady=(10, 0))
+        ttk.Checkbutton(
+            options,
+            text="Retain forever",
+            variable=self.retain_processed_archives_forever_var,
+            command=self._sync_processed_archive_retention_control,
+        ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(10, 0))
+        ttk.Label(
+            options,
+            text=(
+                "Applies to all managed sources. Processed archives are only input copies; "
+                "the imported session remains preserved in its library."
+            ),
+            wraplength=820,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         actions = ttk.Frame(parent)
         actions.grid(row=4, column=0, sticky="ew")
@@ -1266,6 +1357,7 @@ class ImportAgentManagerWindow:
         ttk.Label(parent, textvariable=self.provision_status_var, wraplength=980, justify="left").grid(
             row=5, column=0, sticky="ew", pady=(10, 0)
         )
+        self._sync_processed_archive_retention_control()
         self._sync_source_type_fields()
 
     def _build_wifi_provision_frame(self, parent: ttk.Frame) -> ttk.LabelFrame:
@@ -1902,6 +1994,14 @@ class ImportAgentManagerWindow:
         self.sources_root_var.set(str(config.sources_root))
         self.libraries_root_var.set(str(config.libraries_root))
         self.auto_start_var.set(bool(config.auto_start))
+        try:
+            retention_is_uniform, retention_days = self.controller.managed_processed_archive_retention_days()
+        except Exception:
+            retention_is_uniform, retention_days = False, None
+        if retention_is_uniform:
+            self.retain_processed_archives_forever_var.set(retention_days is None)
+            self.processed_archive_retention_days_var.set("" if retention_days is None else str(retention_days))
+        self._sync_processed_archive_retention_control()
         enabled_count = sum(1 for source in config.sources if source.enabled)
         self.summary_var.set(
             "Managed roots: "
@@ -5220,7 +5320,18 @@ class ImportAgentManagerWindow:
             )
             return
         try:
+            retention_days: Optional[int]
+            if self.retain_processed_archives_forever_var.get():
+                retention_days = None
+            else:
+                text = self.processed_archive_retention_days_var.get().strip()
+                if not text:
+                    raise ValueError("Processed archive retention must be a positive whole number of days")
+                retention_days = int(text)
+                if retention_days <= 0:
+                    raise ValueError("Processed archive retention must be a positive whole number of days")
             updated = self.controller.set_auto_start(bool(self.auto_start_var.get()))
+            self.controller.set_processed_archive_retention_days(retention_days)
         except Exception as exc:
             self._set_provision_status(f"Apply app settings failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
@@ -5228,9 +5339,17 @@ class ImportAgentManagerWindow:
 
         self._refresh_ui_from_config()
         self._sync_startup_registration(show_errors=True, emit_status=False)
+        retention_text = "retain forever" if retention_days is None else f"{retention_days} day(s)"
         self._set_provision_status(
-            f"Updated app settings: start at login={'enabled' if updated.auto_start else 'disabled'}."
+            f"Updated app settings: start at login={'enabled' if updated.auto_start else 'disabled'}; "
+            f"processed archives={retention_text}."
         )
+
+    def _sync_processed_archive_retention_control(self) -> None:
+        if self.processed_archive_retention_days_entry is not None:
+            self.processed_archive_retention_days_entry.configure(
+                state="disabled" if self.retain_processed_archives_forever_var.get() else "normal"
+            )
 
     def _validate_sources(self) -> None:
         if not self._guard_watch_inactive(action_label="Validate"):

@@ -821,11 +821,22 @@ def test_library_adapter_updates_session_descriptions_and_refreshes_catalog(
     assert updated["run_description"] == "Morning shuttle run"
     assert updated["session_description"] == "Lower chute lap"
 
+    session_only_updated = adapter.update_session_descriptions(
+        "default-library",
+        {
+            "session_ref": session_ref,
+            "session_description": "Lower chute lap 2",
+        },
+    )
+    assert session_only_updated["updated_fields"] == ["session_description"]
+    assert session_only_updated["run_description"] == "Morning shuttle run"
+    assert session_only_updated["session_description"] == "Lower chute lap 2"
+
     catalog = adapter.get_catalog("default-library")
     row = catalog["rows"][0]
     assert row["display"]["run_label"] == "Morning shuttle run"
-    assert row["display"]["session_label"] == "Lower chute lap"
-    assert row["display"]["label"] == "Lower chute lap"
+    assert row["display"]["session_label"] == "Lower chute lap 2"
+    assert row["display"]["label"] == "Lower chute lap 2"
 
     run_manifest = _read_json(library_root / "runs" / session_ref["run_id"] / "manifest.json")
     session_manifest = _read_json(
@@ -837,7 +848,7 @@ def test_library_adapter_updates_session_descriptions_and_refreshes_catalog(
         / "manifest.json"
     )
     assert run_manifest["description"] == "Morning shuttle run"
-    assert session_manifest["description"] == "Lower chute lap"
+    assert session_manifest["description"] == "Lower chute lap 2"
 
 
 def test_library_adapter_creates_loads_lists_and_deletes_study_set(
@@ -1643,6 +1654,12 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert len(ready["usable_units"]) == 2
     assert ready["session_results"][0]["ends"]["front"]["usable"] is True
     assert ready["session_results"][0]["ends"]["rear"]["usable"] is True
+    assert {criterion["requirement_id"] for criterion in ready["session_results"][0]["criteria"]} == {
+        "wheel_motion_data",
+        "both_ends",
+        "event_metrics",
+        "gps",
+    }
 
     warning = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [warning_ref]})
     assert warning["status"] == "warning"
@@ -1671,6 +1688,14 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert track_ready["status"] == "ready"
     assert track_ready["usable_session_count"] == 1
     assert track_ready["usable_units"][0]["unit_kind"] == "session"
+    assert {criterion["requirement_id"] for criterion in track_ready["session_results"][0]["criteria"]} == {
+        "gps",
+        "alternate_gps_sources",
+    }
+    assert {criterion["requirement_id"] for criterion in track_ready["scope_criteria"]} == {
+        "all_sessions_gps",
+        "track_scope",
+    }
 
     track_partial = adapter.get_analysis_view_adequacy(
         "track-analysis-lap-timing",
@@ -1703,7 +1728,7 @@ def test_library_adapter_caches_and_invalidates_analysis_view_adequacy(tmp_path:
     assert cold_explain["schema"] == "bodaqs.library_api.analysis_adequacy_cache_key_explain"
     assert cold_explain["namespace"] == "analysis_adequacy"
     assert cold_explain["cached"] is False
-    assert cold_explain["dependencies"]["policy_version"] == 1
+    assert cold_explain["dependencies"]["policy_version"] == 2
     assert cold_explain["dependencies"]["scope"]["kind"] == "session_refs"
     assert len(cold_explain["dependencies"]["sessions"][0]["available_signals"]) >= 5
 

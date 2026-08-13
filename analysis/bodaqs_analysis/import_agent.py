@@ -408,11 +408,13 @@ def _resolve_single_valid_json_file(
     )
 
 
-def _move_to_dir_unique(src: Path, dst_dir: Path) -> Path:
+def _move_to_dir_unique(src: Path, dst_dir: Path, *, touch_mtime: bool = False) -> Path:
     _ensure_dir(dst_dir)
     candidate = dst_dir / src.name
     if not candidate.exists():
         src.replace(candidate)
+        if touch_mtime:
+            os.utime(candidate, None)
         return candidate
 
     stem = candidate.stem
@@ -422,6 +424,8 @@ def _move_to_dir_unique(src: Path, dst_dir: Path) -> Path:
         if alt.exists():
             continue
         src.replace(alt)
+        if touch_mtime:
+            os.utime(alt, None)
         return alt
     raise FileExistsError(f"Could not find a unique destination for {src} in {dst_dir}")
 
@@ -651,6 +655,7 @@ class ImportSourceConfig:
     description: Optional[str] = None
     force_reprocess: bool = False
     max_archives_per_scan: Optional[int] = None
+    processed_archive_retention_days: Optional[int] = 30
     library_id: Optional[str] = None
     logger_wifi: Optional[LoggerWifiSourceConfig] = None
     session_note: ImportSourceSessionNoteConfig = field(default_factory=ImportSourceSessionNoteConfig)
@@ -667,6 +672,8 @@ class ImportSourceConfig:
             raise ValueError("Import source config must include at least one archive pattern")
         if self.max_archives_per_scan is not None and int(self.max_archives_per_scan) <= 0:
             raise ValueError("max_archives_per_scan must be > 0 when provided")
+        if self.processed_archive_retention_days is not None and int(self.processed_archive_retention_days) <= 0:
+            raise ValueError("processed_archive_retention_days must be > 0 or null to retain forever")
         if self.session_note.attach_on_import and (
             self.session_note.template_path is None or self.session_note.setup_preset_path is None
         ):
@@ -781,6 +788,18 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         except (TypeError, ValueError):
             raise ValueError("max_archives_per_scan must be an integer when provided") from None
 
+    processed_archive_retention_days_raw = obj.get("processed_archive_retention_days", 30)
+    processed_archive_retention_days: Optional[int]
+    if processed_archive_retention_days_raw is None:
+        processed_archive_retention_days = None
+    elif isinstance(processed_archive_retention_days_raw, bool):
+        raise ValueError("processed_archive_retention_days must be a positive integer or null")
+    else:
+        try:
+            processed_archive_retention_days = int(processed_archive_retention_days_raw)
+        except (TypeError, ValueError):
+            raise ValueError("processed_archive_retention_days must be a positive integer or null") from None
+
     session_note_raw = obj.get("session_note")
     if session_note_raw is None:
         session_note = ImportSourceSessionNoteConfig()
@@ -849,6 +868,7 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
         description=_optional_text(obj.get("description")),
         force_reprocess=bool(obj.get("force_reprocess", False)),
         max_archives_per_scan=max_archives_per_scan,
+        processed_archive_retention_days=processed_archive_retention_days,
         library_id=_optional_text(obj.get("library_id")),
         logger_wifi=logger_wifi,
         session_note=session_note,
@@ -1668,7 +1688,7 @@ class ImportSourceRunner:
                     else:
                         self._archive_contract(downloaded_path)
                 except Exception as exc:
-                    failed_path = _move_to_dir_unique(downloaded_path, self.source.failed_dir)
+                    failed_path = _move_to_dir_unique(downloaded_path, self.source.failed_dir, touch_mtime=True)
                     error = f"{type(exc).__name__}: {exc}"
                     self._record_logger_wifi_failure(acquisition=acquisition, error=error)
                     remote_summary["failed"].append(
@@ -2125,7 +2145,7 @@ class ImportSourceRunner:
                 claimed_archive_path=claimed_path,
             )
         except Exception as exc:
-            failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
+            failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir, touch_mtime=True)
             failure = {
                 "status": "failed",
                 "source_id": self.source.source_id,
@@ -2154,7 +2174,7 @@ class ImportSourceRunner:
         existing = self.state.get(candidate.processing_key)
         if existing is not None and not self.source.force_reprocess:
             if str(existing.get("status") or "") == "succeeded":
-                done_path = _move_to_dir_unique(claimed_path, self.source.done_dir)
+                done_path = _move_to_dir_unique(claimed_path, self.source.done_dir, touch_mtime=True)
                 summary["skipped_succeeded"].append(
                     {
                         "archive_path": str(inbox_path),
@@ -2186,7 +2206,7 @@ class ImportSourceRunner:
                 )
                 return
             if str(existing.get("status") or "") == "failed":
-                failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir)
+                failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir, touch_mtime=True)
                 summary["skipped_failed"].append(
                     {
                         "archive_path": str(inbox_path),
@@ -2243,7 +2263,7 @@ class ImportSourceRunner:
                 **archive_progress,
             )
         except Exception as exc:
-            failed_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.failed_dir)
+            failed_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.failed_dir, touch_mtime=True)
             error_record = {
                 "status": "failed",
                 "source_id": self.source.source_id,
@@ -2314,7 +2334,6 @@ class ImportSourceRunner:
             tuple[LoggerWifiArchiveAcquisition, Dict[str, Any]]
         ] = Queue(maxsize=1)
         progress_queue: Queue[Dict[str, Any]] = Queue()
-        producer_result: Dict[str, Any] = {}
         producer_errors: list[BaseException] = []
         deferred_remote_postprocess: list[
             tuple[
@@ -2325,6 +2344,32 @@ class ImportSourceRunner:
             ]
         ] = []
         pipeline_started = time.perf_counter()
+
+        # A Wi-Fi source also has a normal local inbox.  Process that inbox
+        # first so an enabled source can reprocess retained archives even when
+        # the logger is unavailable (and before live downloads use the scan
+        # limit).
+        inbox_paths = self._discover_archives()
+        processed_inbox = len(inbox_paths)
+        if inbox_paths:
+            prepare_fit_batch()
+        self._emit_progress(
+            progress_callback,
+            "archives_detected",
+            archive_count=processed_inbox,
+            max_archives_per_scan=self.source.max_archives_per_scan,
+        )
+        for archive_index, inbox_path in enumerate(inbox_paths, start=1):
+            self._process_inbox_archive(
+                inbox_path,
+                archive_index=archive_index,
+                archive_count=processed_inbox,
+                now_s=now_s,
+                remote_acquisition=None,
+                batch=batch,
+                summary=summary,
+                progress_callback=progress_callback,
+            )
 
         def queue_progress(message: Mapping[str, Any]) -> None:
             progress_queue.put(dict(message))
@@ -2337,7 +2382,7 @@ class ImportSourceRunner:
 
         def produce() -> None:
             try:
-                producer_result["acquisitions"] = self._acquire_logger_wifi_archives(
+                self._acquire_logger_wifi_archives(
                     summary,
                     progress_callback=queue_progress,
                     archive_ready_callback=queue_ready,
@@ -2374,8 +2419,9 @@ class ImportSourceRunner:
         )
         producer.start()
 
-        processed_ready = 0
-        archives_announced = False
+        processed_ready = processed_inbox
+        processed_remote = 0
+        archives_announced = processed_inbox > 0
         max_archives = self.source.max_archives_per_scan
         while producer.is_alive() or not ready_queue.empty():
             drain_progress()
@@ -2389,8 +2435,11 @@ class ImportSourceRunner:
                 continue
 
             processed_ready += 1
-            remote_count = int(remote_progress.get("remote_session_count") or processed_ready)
-            archive_count = min(remote_count, int(max_archives)) if max_archives is not None else remote_count
+            processed_remote += 1
+            remote_count = int(remote_progress.get("remote_session_count") or 0)
+            archive_count = processed_inbox + remote_count
+            if max_archives is not None:
+                archive_count = min(archive_count, int(max_archives))
             if not archives_announced:
                 self._emit_progress(
                     progress_callback,
@@ -2418,41 +2467,10 @@ class ImportSourceRunner:
         if producer_errors:
             raise producer_errors[0]
 
-        acquisitions = producer_result.get("acquisitions")
-        remote_acquisitions = acquisitions if isinstance(acquisitions, dict) else {}
         self._finish_deferred_logger_wifi_postprocess(
             deferred_remote_postprocess,
             summary=summary,
         )
-
-        remaining_capacity: Optional[int] = None
-        if max_archives is not None:
-            remaining_capacity = max(0, int(max_archives) - processed_ready)
-        inbox_paths = self._discover_archives()
-        if remaining_capacity is not None:
-            inbox_paths = inbox_paths[:remaining_capacity]
-
-        if inbox_paths:
-            prepare_fit_batch()
-        total_count = processed_ready + len(inbox_paths)
-        if not archives_announced:
-            self._emit_progress(
-                progress_callback,
-                "archives_detected",
-                archive_count=total_count,
-                max_archives_per_scan=max_archives,
-            )
-        for offset, inbox_path in enumerate(inbox_paths, start=1):
-            self._process_inbox_archive(
-                inbox_path,
-                archive_index=processed_ready + offset,
-                archive_count=total_count,
-                now_s=now_s,
-                remote_acquisition=remote_acquisitions.get(_path_key(inbox_path)),
-                batch=batch,
-                summary=summary,
-                progress_callback=progress_callback,
-            )
 
         pipeline_elapsed_s = time.perf_counter() - pipeline_started
         remote_summary = summary.get("remote")
@@ -2460,16 +2478,46 @@ class ImportSourceRunner:
             remote_summary["pipeline"] = {
                 "mode": "narrow_producer_consumer",
                 "queue_capacity": 1,
-                "streamed_archives": processed_ready,
+                "streamed_archives": processed_remote,
                 "elapsed_s": pipeline_elapsed_s,
             }
         self._emit_progress(
             progress_callback,
             "remote_pipeline_completed",
             mode="narrow_producer_consumer",
-            streamed_archives=processed_ready,
+            streamed_archives=processed_remote,
             elapsed_s=pipeline_elapsed_s,
         )
+
+    def _purge_expired_processed_archives(self, *, now_s: float) -> Dict[str, Any]:
+        retention_days = self.source.processed_archive_retention_days
+        result: Dict[str, Any] = {
+            "retention_days": retention_days,
+            "deleted": [],
+            "errors": [],
+        }
+        if retention_days is None:
+            result["state"] = "retain_forever"
+            return result
+
+        cutoff_s = now_s - (float(retention_days) * 24 * 60 * 60)
+        result["state"] = "completed"
+        result["cutoff_at"] = datetime.fromtimestamp(cutoff_s, tz=timezone.utc).isoformat()
+        for directory, outcome in ((self.source.done_dir, "done"), (self.source.failed_dir, "failed")):
+            try:
+                if not directory.exists():
+                    continue
+                for path in directory.iterdir():
+                    if not path.is_file() or not any(path.match(pattern) for pattern in self.source.archive_patterns):
+                        continue
+                    if path.stat().st_mtime > cutoff_s:
+                        continue
+                    path.unlink()
+                    result["deleted"].append({"outcome": outcome, "path": str(path)})
+            except OSError as exc:
+                result["errors"].append({"outcome": outcome, "error": f"{type(exc).__name__}: {exc}"})
+                logger.warning("Could not purge expired %s archives for source %s", outcome, self.source.source_id, exc_info=True)
+        return result
 
     def scan_once(
         self,
@@ -2487,6 +2535,7 @@ class ImportSourceRunner:
             "skipped_failed": [],
             "imported": [],
             "failed": [],
+            "processed_archive_cleanup": None,
         }
         now_s = time.time()
         self._emit_progress(
@@ -2542,6 +2591,13 @@ class ImportSourceRunner:
                         summary=summary,
                         progress_callback=progress_callback,
                     )
+
+            summary["processed_archive_cleanup"] = self._purge_expired_processed_archives(now_s=time.time())
+            self._emit_progress(
+                progress_callback,
+                "processed_archive_cleanup_completed",
+                processed_archive_cleanup=summary["processed_archive_cleanup"],
+            )
 
         if summary["imported"]:
             summary["library_catalog_revision"] = touch_catalog_revision(
@@ -2752,7 +2808,7 @@ class ImportSourceRunner:
                 stage_timings["artifact_output"] = time.perf_counter() - stage_started
 
             stage_started = time.perf_counter()
-            done_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.done_dir)
+            done_path = _move_to_dir_unique(candidate.claimed_archive_path, self.source.done_dir, touch_mtime=True)
             stage_timings["source_finalize"] = time.perf_counter() - stage_started
             import_timings: Dict[str, Any] = {
                 "schema": "bodaqs.import_timing",

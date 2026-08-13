@@ -1,16 +1,19 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import {
+  Activity,
   BarChart3,
-  BookOpen,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   Columns3,
   FileText,
+  Filter,
   FolderOpen,
   GitBranch,
   Library,
+  Layers3,
+  MapPin,
   Minus,
   Play,
   Plus,
@@ -219,6 +222,7 @@ function App() {
   const [selectionAnchorStudySessionId, setSelectionAnchorStudySessionId] = useState<string | null>(null)
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([])
   const [noteClipboard, setNoteClipboard] = useState<NoteClipboard | null>(null)
+  const [notePasteSavingIds, setNotePasteSavingIds] = useState<Set<string>>(() => new Set())
   const [savedStudySets, setSavedStudySets] = useState<StudySet[]>([])
   const [savedSessionFilters, setSavedSessionFilters] = useState<SavedSessionFilterRecord[]>(prototypeSavedSessionFilters)
   const [currentStudySet, setCurrentStudySet] = useState<StudySet>(() => emptyStudySet())
@@ -1504,6 +1508,10 @@ function App() {
       setStatusMessage('The current data source does not support note paste.')
       return
     }
+    if (notePasteSavingIds.size > 0) {
+      setStatusMessage('Wait for the current note paste to finish.')
+      return
+    }
 
     const targets = notePasteTargets(anchorSession)
     const targetsWithNotes = targets.filter((session) => session.noteStatus === 'draft' || session.noteStatus === 'edited')
@@ -1527,24 +1535,36 @@ function App() {
     const sourceNote = cloneSessionNoteRecord(noteClipboard.note)
     const notesToSave = targets.map((target) => noteForPasteTarget(target, sourceNote))
     const bulkSaveSessionNotes = activeDataSource.saveSessionNotes?.bind(activeDataSource)
-    const results = bulkSaveSessionNotes && targets.length > 1
-      ? await pasteNotesToSessionsBulk(targets, notesToSave, bulkSaveSessionNotes)
-      : await mapWithConcurrency(targets, NOTE_PASTE_CONCURRENCY, (target) =>
-          pasteNoteToSession(target, sourceNote),
-        )
-    const updatedSessions = results.flatMap((result) => (result.ok ? [result.session] : []))
-    const failures = results.flatMap((result) => (result.ok ? [] : [`${result.session.name}: ${result.message}`]))
-    applyUpdatedSessions(updatedSessions)
-    if (failures.length > 0) {
-      const successPrefix = updatedSessions.length > 0 ? `${updatedSessions.length} note(s) pasted. ` : ''
-      setStatusMessage(`${successPrefix}${failures.length} paste operation(s) failed: ${failures.join('; ')}`)
-      return
+    const savingIds = new Set(targets.map(candidateId))
+    setNotePasteSavingIds(savingIds)
+    applyUpdatedSessions(targets.map((target, index) => sessionFromSavedNote(target, notesToSave[index])))
+
+    try {
+      const results = bulkSaveSessionNotes && targets.length > 1
+        ? await pasteNotesToSessionsBulk(targets, notesToSave, bulkSaveSessionNotes)
+        : await mapWithConcurrency(targets, NOTE_PASTE_CONCURRENCY, (target) =>
+            pasteNoteToSession(target, sourceNote),
+          )
+      const updatedSessions = results.flatMap((result) => (result.ok ? [result.session] : []))
+      const failures = results.flatMap((result) => (result.ok ? [] : [`${result.session.name}: ${result.message}`]))
+      applyUpdatedSessions(results.map((result) => result.session))
+      if (failures.length > 0) {
+        const successPrefix = updatedSessions.length > 0 ? `${updatedSessions.length} note(s) pasted. ` : ''
+        setStatusMessage(`${successPrefix}${failures.length} paste operation(s) failed: ${failures.join('; ')}`)
+        return
+      }
+      setStatusMessage(
+        targets.length === 1
+          ? `Pasted note to "${targets[0].name}".`
+          : `Pasted note to ${targets.length} selected sessions.`,
+      )
+    } catch (error) {
+      applyUpdatedSessions(targets)
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not paste note: ${message}`)
+    } finally {
+      setNotePasteSavingIds(new Set())
     }
-    setStatusMessage(
-      targets.length === 1
-        ? `Pasted note to "${targets[0].name}".`
-        : `Pasted note to ${targets.length} selected sessions.`,
-    )
   }
 
   async function pasteNotesToSessionsBulk(
@@ -1617,12 +1637,18 @@ function App() {
       throw new Error(message)
     }
 
+    const optimisticRename = {
+      ...session,
+      name: trimmedName,
+      sessionLabel: trimmedName,
+    }
+    applyRenamedSession(optimisticRename)
     try {
       const renamed = await activeDataSource.renameSession(session, trimmedName)
       applyRenamedSession(renamed)
-      void reconcileAfterSessionRename(renamed)
       setStatusMessage(`Renamed session "${currentName}" to "${renamed.name}".`)
     } catch (error) {
+      applyRenamedSession(session)
       const message = error instanceof Error ? error.message : String(error)
       setStatusMessage(`Could not rename session: ${message}`)
       throw error
@@ -1655,22 +1681,6 @@ function App() {
     setAnalysisRouteStudySet((current) =>
       current ? renameStudySetSessionLabel(current, renamedRefId, renamedLabel, current.saved) : current,
     )
-  }
-
-  async function reconcileAfterSessionRename(renamedSession: SessionRecord) {
-    try {
-      if (activeDataSource.refreshLibrary) {
-        await activeDataSource.refreshLibrary(renamedSession.libraryId)
-      }
-      const loadedSessions = await activeDataSource.listSessions()
-      const refreshedSession = loadedSessions.find((session) => candidateId(session) === candidateId(renamedSession))
-      if (refreshedSession) {
-        applyRenamedSession(refreshedSession)
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setStatusMessage(`Renamed session "${renamedSession.name}", but background refresh failed: ${message}`)
-    }
   }
 
   function selectCandidate(session: SessionRecord, gesture: SessionSelectionGesture) {
@@ -1719,7 +1729,12 @@ function App() {
       return
     }
 
-    openStudyBuilderWhenAddingToEmptySet(currentStudySet)
+    const hasNewSession = selectedCandidateSessions.some(
+      (session) => !currentStudySet.sessions.some((item) => sessionRefId(item) === candidateId(session)),
+    )
+    if (hasNewSession) {
+      openStudyBuilderWhenAddingContent()
+    }
     setCurrentStudySet((current) => {
       const existingIds = new Set(current.sessions.map(sessionRefId))
       const nextSessions = [...current.sessions]
@@ -1742,7 +1757,7 @@ function App() {
   function addSessionRefToStudySet(sessionRef: StudySet['sessions'][number]) {
     const refId = sessionRefId(sessionRef)
     if (!currentStudySet.sessions.some((item) => sessionRefId(item) === refId)) {
-      openStudyBuilderWhenAddingToEmptySet(currentStudySet)
+      openStudyBuilderWhenAddingContent()
     }
     setCurrentStudySet((current) => {
       if (current.sessions.some((item) => sessionRefId(item) === refId)) {
@@ -1878,13 +1893,13 @@ function App() {
       trackIds: Array.from(new Set([...current.trackIds, trackId])),
     }))
     if (!currentStudySet.trackIds.includes(trackId)) {
-      openStudyBuilderWhenAddingToEmptySet(currentStudySet)
+      openStudyBuilderWhenAddingContent()
     }
     setStatusMessage('Track attached to the Study Set.')
   }
 
-  function openStudyBuilderWhenAddingToEmptySet(studySet: StudySet) {
-    if (!studyDrawerOpen && studySet.sessions.length === 0 && studySet.groupings.length === 0 && studySet.trackIds.length === 0) {
+  function openStudyBuilderWhenAddingContent() {
+    if (!studyDrawerOpen) {
       setStudyDrawerOpen(true)
     }
   }
@@ -2129,8 +2144,7 @@ function App() {
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <p className="eyebrow">BODAQS application prototype</p>
-          <h1>Library Browser and Study Set Builder</h1>
+          <h1>BODAQS Workbench</h1>
         </div>
         <HeaderStatus
           baseUrl={localDataSource.baseUrl}
@@ -2235,6 +2249,7 @@ function App() {
           <section className={`module session-selector collapsible-module${sessionSelectorCollapsed ? ' collapsed' : ''}`}>
             <div className="module-header">
               <h2 className="module-heading">
+                <Activity size={16} aria-hidden="true" />
                 Session Selector
                 <InfoTip text="Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list." />
               </h2>
@@ -2370,7 +2385,13 @@ function App() {
                   onRenameSession={canWriteLibraryState && activeDataSource.renameSession ? renameLibrarySession : undefined}
                   onCopyNote={copySessionNote}
                   onPasteNote={pasteSessionNote}
-                  canPasteNote={Boolean(canWriteLibraryState && noteClipboard && activeDataSource.saveSessionNote)}
+                  notePasteSavingIds={notePasteSavingIds}
+                  canPasteNote={Boolean(
+                    canWriteLibraryState &&
+                    noteClipboard &&
+                    activeDataSource.saveSessionNote &&
+                    notePasteSavingIds.size === 0,
+                  )}
                 />
                 <div className="action-row">
                   <div className="action-row-main">
@@ -2413,6 +2434,7 @@ function App() {
               <section className="module map-module">
                 <div className="module-header">
                   <h2 className="module-heading">
+                    <MapPin size={16} aria-hidden="true" />
                     GPS Location
                     <InfoTip text="Preview the selected session GPS path and any selected or attached tracks." />
                   </h2>
@@ -2444,6 +2466,7 @@ function App() {
               <section className={`module collapsible-module${filtersCollapsed ? ' collapsed' : ''}`}>
                 <div className="module-header">
                   <h2 className="module-heading">
+                    <Filter size={16} aria-hidden="true" />
                     Filters
                     <InfoTip text="Create and apply reusable filters on the sessions displayed. Filters stack and combine with table filtering." />
                   </h2>
@@ -2501,15 +2524,18 @@ function App() {
 
         <aside className="panel study-panel" aria-label="Study Set Builder">
           <PanelTitle
-            icon={<BookOpen size={18} />}
-            title="Study Set Builder"
-            action={
-              <IconButton
-                label="Collapse Study Set Builder"
-                onClick={() => setStudyDrawerOpen(false)}
-                icon={<ChevronRight size={16} />}
-              />
+            icon={
+              <>
+                <IconButton
+                  label="Collapse Study Set Builder"
+                  onClick={() => setStudyDrawerOpen(false)}
+                  icon={<ChevronRight size={16} />}
+                />
+                <Layers3 size={18} />
+              </>
             }
+            title="Study Set Builder"
+            action={null}
           />
 
           <section className="module current-study-set">
@@ -2671,6 +2697,7 @@ function App() {
               <section className="module map-module study-map-module">
                 <div className="module-header">
                   <h2 className="module-heading">
+                    <MapPin size={16} aria-hidden="true" />
                     Study Set GPS Location
                     <InfoTip text="Preview the GPS paths for sessions in the current Study Set and any tracks attached to it." />
                   </h2>

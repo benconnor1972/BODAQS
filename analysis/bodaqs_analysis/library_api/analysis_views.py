@@ -10,8 +10,8 @@ from .errors import AnalysisViewNotFoundError
 ANALYSIS_VIEW_REGISTRY_SCHEMA = "bodaqs.analysis_view_registry"
 ANALYSIS_VIEW_REGISTRY_VERSION = 1
 ANALYSIS_ADEQUACY_SCHEMA = "bodaqs.analysis_adequacy"
-ANALYSIS_ADEQUACY_VERSION = 1
-ANALYSIS_ADEQUACY_POLICY_VERSION = 1
+ANALYSIS_ADEQUACY_VERSION = 2
+ANALYSIS_ADEQUACY_POLICY_VERSION = 2
 
 SIMPLE_SUSPENSION_VIEW_ID = "simple-suspension"
 TRACK_ANALYSIS_VIEW_ID = "track-analysis-lap-timing"
@@ -214,7 +214,7 @@ def _simple_suspension_adequacy(
         if not end_result.get("usable")
     ]
 
-    return {
+    return _with_criterion_results(view, {
         "schema": ANALYSIS_ADEQUACY_SCHEMA,
         "version": ANALYSIS_ADEQUACY_VERSION,
         "view_id": view["view_id"],
@@ -231,7 +231,7 @@ def _simple_suspension_adequacy(
         "excluded_units": excluded_units,
         "messages": _scope_messages(session_results, scope_status=scope_status),
         "session_results": session_results,
-    }
+    })
 
 
 def _track_analysis_adequacy(
@@ -279,7 +279,7 @@ def _track_analysis_adequacy(
         if not result["usable"]
     ]
 
-    return {
+    return _with_criterion_results(view, {
         "schema": ANALYSIS_ADEQUACY_SCHEMA,
         "version": ANALYSIS_ADEQUACY_VERSION,
         "view_id": view["view_id"],
@@ -300,7 +300,102 @@ def _track_analysis_adequacy(
         "excluded_units": excluded_units,
         "messages": _track_analysis_scope_messages(session_results, scope_status=scope_status),
         "session_results": session_results,
+    })
+
+
+def _with_criterion_results(view: Mapping[str, Any], adequacy: dict[str, Any]) -> dict[str, Any]:
+    """Add stable requirement-ID results for generic adequacy clients."""
+
+    view_id = str(view.get("view_id") or "")
+    session_results = adequacy.get("session_results")
+    if not isinstance(session_results, list):
+        return adequacy
+
+    for result in session_results:
+        if not isinstance(result, dict):
+            continue
+        result["session_ref"] = _session_ref(result)
+        if view_id == SIMPLE_SUSPENSION_VIEW_ID:
+            result["criteria"] = _simple_suspension_criteria(result)
+        elif view_id == TRACK_ANALYSIS_VIEW_ID:
+            result["criteria"] = _track_analysis_criteria(result)
+
+    if view_id == TRACK_ANALYSIS_VIEW_ID:
+        adequacy["scope_criteria"] = _track_analysis_scope_criteria(adequacy)
+    else:
+        adequacy["scope_criteria"] = []
+    return adequacy
+
+
+def _session_ref(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "library_id": result.get("library_id"),
+        "session_ref_id": result.get("session_ref_id"),
+        "session_key": result.get("session_key"),
+        "run_id": result.get("run_id"),
+        "session_id": result.get("session_id"),
     }
+
+
+def _criterion(requirement_id: str, met: bool, detail: str) -> dict[str, Any]:
+    return {"requirement_id": requirement_id, "met": bool(met), "detail": detail}
+
+
+def _simple_suspension_criteria(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    usable_end_count = int(result.get("usable_end_count") or 0)
+    ends = result.get("ends") if isinstance(result.get("ends"), Mapping) else {}
+    usable_ends = [str(end).title() for end, value in ends.items() if isinstance(value, Mapping) and value.get("usable")]
+    return [
+        _criterion(
+            "wheel_motion_data",
+            usable_end_count > 0,
+            f"Wheel displacement and velocity evidence found for {', '.join(usable_ends) or 'no'} suspension end(s).",
+        ),
+        _criterion(
+            "both_ends",
+            usable_end_count == len(_SUSPENSION_ENDS),
+            "Both suspension ends have wheel motion evidence."
+            if usable_end_count == len(_SUSPENSION_ENDS)
+            else "One or more suspension ends lack wheel motion evidence.",
+        ),
+        _criterion(
+            "event_metrics",
+            "event_metrics" not in (result.get("missing_recommended") or []),
+            "Compression/rebound event metrics are available.",
+        ),
+        _criterion(
+            "gps",
+            "gps" not in (result.get("missing_optional") or []),
+            "GPS data is available."
+            if "gps" not in (result.get("missing_optional") or [])
+            else "GPS data is unavailable.",
+        ),
+    ]
+
+
+def _track_analysis_criteria(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    quality = str(result.get("gps_quality") or "absent")
+    return [
+        _criterion("gps", bool(result.get("usable")), f"GPS quality is {quality}."),
+        _criterion(
+            "alternate_gps_sources",
+            int(result.get("gps_source_count") or 0) > 1,
+            f"{int(result.get('gps_source_count') or 0)} GPS source(s) are available.",
+        ),
+    ]
+
+
+def _track_analysis_scope_criteria(adequacy: Mapping[str, Any]) -> list[dict[str, Any]]:
+    session_results = adequacy.get("session_results") if isinstance(adequacy.get("session_results"), list) else []
+    all_sessions_usable = bool(session_results) and all(
+        isinstance(result, Mapping) and bool(result.get("usable")) for result in session_results
+    )
+    scope = adequacy.get("scope") if isinstance(adequacy.get("scope"), Mapping) else {}
+    track_count = int(scope.get("track_count") or 0)
+    return [
+        _criterion("all_sessions_gps", all_sessions_usable, "All selected sessions have usable GPS for timing comparison."),
+        _criterion("track_scope", track_count > 0, f"{track_count} track(s) are in scope."),
+    ]
 
 
 def _track_analysis_session_result(row: Mapping[str, Any]) -> dict[str, Any]:

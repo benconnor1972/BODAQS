@@ -143,6 +143,14 @@ Behavior:
 8. move successful archives to `done/`
 9. move failed archives to `failed/`
 
+`import_source.json` controls how long processed archive copies remain in
+`done/` and `failed/` through `processed_archive_retention_days`. It defaults
+to `30`; set it to `null` to retain processed archives forever. Cleanup runs
+after each completed source scan and uses the time an archive entered the
+processed directory (file modified time for files already present before this
+policy was added). Removing these copies does not remove the imported session
+from its artifact library.
+
 ### Watch
 
 ```powershell

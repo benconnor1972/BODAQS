@@ -1,4 +1,4 @@
-import { AlertTriangle, Ban, CheckCircle2, HelpCircle, Loader2, Play, ShieldAlert } from 'lucide-react'
+import { AlertTriangle, Ban, CheckCircle2, CircleX, HelpCircle, Loader2, Play, ShieldAlert, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import type {
@@ -8,7 +8,9 @@ import type {
   AnalysisRequirementTier,
   AnalysisViewRecord,
   StudySet,
+  TrackRecord,
 } from '../domain/types'
+import { IconButton } from './Common'
 
 type AnalysisLauncherItem = {
   view: AnalysisViewRecord
@@ -20,11 +22,15 @@ const REQUIREMENT_TIERS: AnalysisRequirementTier[] = ['required', 'recommended',
 
 export function AnalysisLauncher({
   studySet,
+  tracks,
   dataSource,
+  onClose,
   onOpenAnalysis,
 }: {
   studySet: StudySet
+  tracks: TrackRecord[]
   dataSource: LibraryDataSource
+  onClose: () => void
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void
 }) {
   const [items, setItems] = useState<AnalysisLauncherItem[]>([])
@@ -104,20 +110,10 @@ export function AnalysisLauncher({
   return (
     <div className="analysis-launcher">
       <section className="analysis-launcher-intro">
-        <div>
-          <p className="modal-kicker">Analysis launcher</p>
+        <div className="analysis-launcher-title-row">
           <h3>{studySet.displayName || 'Untitled Study Set'}</h3>
-          <p>
-            Choose an analysis view for the current scope. The adequacy check reports whether the selected sessions
-            have the required and recommended data for that view. Opening a view creates a separate browser tab so the
-            Library Browser remains available.
-          </p>
-          <p className="analysis-route-note">
-            {studySet.id && studySet.saved
-              ? 'This saved Study Set opens with a reloadable analysis route.'
-              : 'This unsaved scope opens with a temporary browser-local route.'}
-          </p>
         </div>
+        <ScopeList studySet={studySet} tracks={tracks} />
         <dl className="analysis-scope-summary">
           <dt>Sessions</dt>
           <dd>{studySet.sessions.length}</dd>
@@ -126,6 +122,9 @@ export function AnalysisLauncher({
           <dt>Tracks</dt>
           <dd>{studySet.trackIds.length}</dd>
         </dl>
+        <div className="analysis-launcher-close">
+          <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
+        </div>
       </section>
 
       {notice && <p className="modal-status warning">{notice}</p>}
@@ -164,84 +163,168 @@ function AnalysisViewCard({ item, onOpen }: { item: AnalysisLauncherItem; onOpen
           <p className="analysis-view-category">{item.view.category || 'Analysis'}</p>
           <h3>{item.view.displayName}</h3>
         </div>
-        <span className={`analysis-status-badge analysis-status-badge-${status}`}>
-          {statusMeta.icon}
-          {statusMeta.label}
-        </span>
+        <div className="analysis-view-card-header-actions">
+          <span className={`analysis-status-badge analysis-status-badge-${status}`}>
+            {statusMeta.icon}
+            {statusMeta.label}
+          </span>
+          <button className="primary-action compact-row-action" disabled={!canOpen} onClick={onOpen}>
+            <Play size={16} />
+            Open in tab
+          </button>
+        </div>
       </div>
 
       <p className="analysis-view-description">{item.view.description}</p>
 
-      <div className="analysis-view-grid">
-        <section>
-          <h4>Requirements</h4>
-          <div className="analysis-requirement-list">
-            {REQUIREMENT_TIERS.map((tier) => (
-              <RequirementTier key={tier} tier={tier} requirements={item.view.requirements[tier] ?? []} />
+      <section className="analysis-adequacy-section">
+        {item.adequacy ? (
+          <AdequacyMatrix adequacy={item.adequacy} view={item.view} />
+        ) : (
+          <p className="analysis-adequacy-summary">{item.error || 'Adequacy has not been evaluated for this view.'}</p>
+        )}
+        {item.adequacy?.messages.length ? (
+          <ul className="analysis-message-list">
+            {item.adequacy.messages.slice(0, 4).map((message, index) => (
+              <li key={`${message.code}-${index}`} className={`analysis-message-${message.level}`}>
+                {message.message}
+              </li>
             ))}
-          </div>
-        </section>
+          </ul>
+        ) : null}
+      </section>
 
-        <section>
-          <h4>Adequacy</h4>
-          <p className="analysis-adequacy-summary">
-            {item.adequacy?.summary || item.error || 'Adequacy has not been evaluated for this view.'}
-          </p>
-          {item.adequacy && (
-            <dl className="analysis-adequacy-counts">
-              <dt>Total</dt>
-              <dd>{item.adequacy.totalSessionCount}</dd>
-              <dt>Usable</dt>
-              <dd>{item.adequacy.usableSessionCount}</dd>
-              <dt>Blocked</dt>
-              <dd>{item.adequacy.blockedSessionCount}</dd>
-            </dl>
-          )}
-          {item.adequacy?.messages.length ? (
-            <ul className="analysis-message-list">
-              {item.adequacy.messages.slice(0, 4).map((message, index) => (
-                <li key={`${message.code}-${index}`} className={`analysis-message-${message.level}`}>
-                  {message.message}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
-      </div>
-
-      <div className="analysis-view-actions">
-        {!isSupported && <span className="subtle">This view is registered but not implemented in the prototype yet.</span>}
-        {isBlocked && <span className="subtle">This scope is missing required data for this analysis.</span>}
-        <button className="primary-action compact-row-action" disabled={!canOpen} onClick={onOpen}>
-          <Play size={16} />
-          Open in tab
-        </button>
-      </div>
+      {(!isSupported || isBlocked) && (
+        <div className="analysis-view-actions">
+          {!isSupported && <span className="subtle">This view is registered but not implemented in the prototype yet.</span>}
+          {isBlocked && <span className="subtle">This scope is missing required data for this analysis.</span>}
+        </div>
+      )}
     </article>
   )
 }
 
-function RequirementTier({
-  tier,
-  requirements,
-}: {
-  tier: AnalysisRequirementTier
-  requirements: AnalysisRequirementRecord[]
-}) {
-  if (requirements.length === 0) {
-    return null
-  }
+function AdequacyMatrix({ adequacy, view }: { adequacy: AnalysisAdequacyResult; view: AnalysisViewRecord }) {
+  const criteriaBySession = adequacy.sessionResults.map((session) =>
+    new Map(session.criteria.map((criterion) => [criterion.requirementId, criterion])),
+  )
+  const scopeCriteria = new Map(adequacy.scopeCriteria.map((criterion) => [criterion.requirementId, criterion]))
+  const tiers = REQUIREMENT_TIERS.map((tier) => ({
+    tier,
+    sessionRequirements: (view.requirements[tier] ?? []).filter((requirement) =>
+      criteriaBySession.some((criteria) => criteria.has(requirement.requirementId)),
+    ),
+    scopeRequirements: (view.requirements[tier] ?? []).filter((requirement) => scopeCriteria.has(requirement.requirementId)),
+  })).filter((entry) => entry.sessionRequirements.length || entry.scopeRequirements.length)
+
   return (
-    <div className={`analysis-requirement-tier analysis-requirement-${tier}`}>
-      <span>{tier}</span>
-      <ul>
-        {requirements.map((requirement) => (
-          <li key={requirement.requirementId} title={requirement.description}>
-            {requirement.label}
-          </li>
-        ))}
-      </ul>
+    <div className="analysis-adequacy-matrix" aria-label="Adequacy by criterion and session">
+      {tiers.map(({ tier, sessionRequirements, scopeRequirements }) => (
+        <div className="analysis-adequacy-tier" key={tier}>
+          <span className="analysis-adequacy-tier-label">{tier}</span>
+          <div className="analysis-adequacy-criterion-list">
+            {sessionRequirements.map((requirement) => (
+              <AdequacyCriterionRow
+                key={requirement.requirementId}
+                requirement={requirement}
+                sessionCriteria={criteriaBySession.map((criteria) => criteria.get(requirement.requirementId) ?? null)}
+              />
+            ))}
+            {scopeRequirements.map((requirement) => (
+              <AdequacyScopeCriterionRow
+                criterion={scopeCriteria.get(requirement.requirementId)!}
+                key={requirement.requirementId}
+                requirement={requirement}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
+  )
+}
+
+function ScopeList({ studySet, tracks }: { studySet: StudySet; tracks: TrackRecord[] }) {
+  const tracksById = new Map(tracks.map((track) => [track.id, track]))
+
+  if (studySet.sessions.length === 0 && studySet.trackIds.length === 0) {
+    return <p className="analysis-scope-list empty">No sessions or tracks are in scope.</p>
+  }
+
+  return (
+    <div className="analysis-scope-list">
+      {studySet.sessions.length > 0 && (
+        <ul aria-label="Sessions in scope">
+          {studySet.sessions.map((session) => (
+            <li key={`session-${session.libraryId}-${session.sessionKey}`}>{session.label}</li>
+          ))}
+        </ul>
+      )}
+      {studySet.trackIds.length > 0 && (
+        <ul aria-label="Tracks in scope">
+          {studySet.trackIds.map((trackId) => (
+            <li key={`track-${trackId}`}>{tracksById.get(trackId)?.name || trackId}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function AdequacyCriterionRow({
+  requirement,
+  sessionCriteria,
+}: {
+  requirement: AnalysisRequirementRecord
+  sessionCriteria: Array<AnalysisAdequacyResult['sessionResults'][number]['criteria'][number] | null>
+}) {
+  return (
+    <div className="analysis-adequacy-criterion-row">
+      <span title={requirement.description}>{requirement.label}</span>
+      <div className="analysis-adequacy-marks">
+        {sessionCriteria.map((criterion, index) => (
+          <AdequacyMark criterion={criterion} key={index} requirement={requirement} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function AdequacyScopeCriterionRow({
+  requirement,
+  criterion,
+}: {
+  requirement: AnalysisRequirementRecord
+  criterion: AnalysisAdequacyResult['scopeCriteria'][number]
+}) {
+  return (
+    <div className="analysis-adequacy-criterion-row scope">
+      <span title={requirement.description}>{requirement.label}</span>
+      <div className="analysis-adequacy-marks">
+        <AdequacyMark criterion={criterion} requirement={requirement} />
+      </div>
+    </div>
+  )
+}
+
+function AdequacyMark({
+  criterion,
+  requirement,
+}: {
+  criterion: AnalysisAdequacyResult['scopeCriteria'][number] | null
+  requirement: AnalysisRequirementRecord
+}) {
+  const met = criterion?.met === true
+  const detail = criterion?.detail || 'This criterion was not evaluated for the session.'
+  return (
+    <span
+      aria-label={`${requirement.label}: ${met ? 'met' : 'not met'}. ${detail}`}
+      className={`analysis-adequacy-mark ${met ? 'met' : `unmet unmet-${requirement.tier}`}`}
+      role="img"
+      title={`${requirement.label}: ${met ? 'met' : 'not met'}. ${detail}`}
+    >
+      {met ? <CheckCircle2 size={16} /> : <CircleX size={16} />}
+    </span>
   )
 }
 

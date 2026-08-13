@@ -9,7 +9,24 @@ import {
   useRef,
   useState,
 } from 'react'
-import { ChevronLeft, ChevronRight, Map as MapIcon, Play, Plus, RotateCcw, Save, Trash2, Video, X } from 'lucide-react'
+import {
+  Activity,
+  ChevronLeft,
+  ChevronRight,
+  Map as MapIcon,
+  MapPin,
+  Mountain,
+  Play,
+  Plus,
+  RotateCcw,
+  Route,
+  Save,
+  SlidersHorizontal,
+  Timer,
+  Trash2,
+  Video,
+  X,
+} from 'lucide-react'
 import maplibregl, {
   type GeoJSONSource,
   type Map as MapLibreMap,
@@ -202,11 +219,13 @@ const OSM_RASTER_STYLE: StyleSpecification = {
 }
 
 function TrackPanelTitle({
+  icon,
   title,
   meta = '',
   info = '',
   action = null,
 }: {
+  icon: ReactNode
   title: string
   meta?: string
   info?: string
@@ -214,7 +233,7 @@ function TrackPanelTitle({
 }) {
   return (
     <PanelTitle
-      icon={<MapIcon size={15} />}
+      icon={icon}
       title={title}
       action={
         <span className="track-analysis-title-meta">
@@ -305,6 +324,7 @@ export function TrackAnalysisView({
   const [loadedGps, setLoadedGps] = useState<Record<string, LoadedGpsState>>({})
   const loadedGpsRef = useRef<Record<string, LoadedGpsState>>({})
   const [selectedWorkingTrackId, setSelectedWorkingTrackId] = useState(() => workingTracks[0]?.workingId ?? '')
+  const [newScratchTrackArmed, setNewScratchTrackArmed] = useState(false)
   const [activeTrackIds, setActiveTrackIds] = useState<Set<string>>(() => new Set(workingTracks.map((track) => track.workingId)))
   const previousWorkingTrackIdsRef = useRef<Set<string>>(new Set(workingTracks.map((track) => track.workingId)))
   const [showSegments, setShowSegments] = useState(false)
@@ -1118,13 +1138,19 @@ export function TrackAnalysisView({
 
   const addDraftTrackpoint = useCallback((position: [number, number]) => {
     const targetTrack = selectedTrackVisible ? selectedTrack : null
-    if (!targetTrack) {
+    if (newScratchTrackArmed || !targetTrack) {
       const scratchTrack = scratchTrackFromNearestPath(position, sessionPaths, workingTracks, studySet, automaticEndpoints)
       if (!scratchTrack) {
         return
       }
       setWorkingTracks((current) => [...current, scratchTrack])
       setSelectedWorkingTrackId(scratchTrack.workingId)
+      setNewScratchTrackArmed(false)
+      setActiveTrackIds((current) => {
+        const next = new Set(current)
+        next.add(scratchTrack.workingId)
+        return next
+      })
       return
     }
     if (targetTrack.points.length < 2) {
@@ -1138,7 +1164,7 @@ export function TrackAnalysisView({
         trackpoints: [...track.trackpoints, draftTrackpointFromSnap(snapped, nextIndex)],
       }
     })
-  }, [automaticEndpoints, selectedTrack, selectedTrackVisible, sessionPaths, studySet, workingTracks])
+  }, [automaticEndpoints, newScratchTrackArmed, selectedTrack, selectedTrackVisible, sessionPaths, studySet, workingTracks])
 
   function removeDraftTrackpoint(trackpointId: string) {
     if (!selectedTrack) {
@@ -1432,13 +1458,15 @@ export function TrackAnalysisView({
           onClick={() => setDrawerOpen((current) => !current)}
           aria-expanded={drawerOpen}
         >
-          {drawerOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+          {drawerOpen ? <SlidersHorizontal size={14} aria-hidden="true" /> : <ChevronRight size={14} />}
           <span>Select and filter</span>
+          {drawerOpen && <ChevronLeft className="track-analysis-drawer-collapse" size={14} aria-hidden="true" />}
         </button>
         {drawerOpen && (
           <div className="track-analysis-drawer-body">
             <section className="track-analysis-control-card">
               <TrackPanelTitle
+                icon={<Activity size={15} />}
                 title="Sessions"
                 meta={`${activeSessionIds.size} active / ${viewSessions.length} in view${addedSessions.length ? ` / ${addedSessions.length} added` : ''}`}
                 info="Groups in the launch scope are accepted but ignored in this first track-analysis slice."
@@ -1515,6 +1543,7 @@ export function TrackAnalysisView({
 
             <section className="track-analysis-control-card">
               <TrackPanelTitle
+                icon={<Route size={15} />}
                 title="Tracks"
                 meta={`${activeTrackIds.size} visible / ${workingTracks.length} in scope / ${dirtyTrackCount} unsaved`}
                 info="Scratch tracks are temporary working copies created from session GPS. Save them to make root-scoped reusable tracks."
@@ -1653,13 +1682,19 @@ export function TrackAnalysisView({
               ) : (
                 <p className="track-analysis-muted">No tracks yet. Click near an active GPS path to start a scratch track.</p>
               )}
-              <button className="secondary-action compact" type="button" onClick={() => setSelectedWorkingTrackId('')}>
+              <button
+                aria-pressed={newScratchTrackArmed}
+                className={`secondary-action compact${newScratchTrackArmed ? ' armed' : ''}`}
+                type="button"
+                onClick={() => setNewScratchTrackArmed(true)}
+              >
                 New scratch track on next map click
               </button>
             </section>
 
             <section className="track-analysis-control-card">
               <TrackPanelTitle
+                icon={<MapPin size={15} />}
                 title="Trackpoints"
                 meta={selectedTrack ? `${draftTrackpoints.length} point(s)` : 'No focused track'}
                 info="Edit the focused track's point names, segment labels, and save-time track-shaping options."
@@ -1774,6 +1809,7 @@ export function TrackAnalysisView({
         <div className="track-analysis-map-band">
           <section className="track-analysis-map-card">
             <TrackPanelTitle
+              icon={<MapIcon size={15} />}
               title="Track map"
               meta={mapStatus}
               info="Click near the reference path to place a temporary trackpoint. Drag a point to move it along the path, or drag cutline ends to rotate and resize the cutline."
@@ -1804,6 +1840,7 @@ export function TrackAnalysisView({
               title="Drag to resize video reference"
             />
             <TrackPanelTitle
+              icon={<Video size={15} />}
               title="Video reference"
               meta={activeVideoSessions.length ? `${activeVideoSessions.length} session(s) with video` : 'No active video sessions'}
                 action={
@@ -1854,6 +1891,7 @@ export function TrackAnalysisView({
           {!lapTimingExpanded && (
             <div className="track-analysis-lower-card">
               <TrackPanelTitle
+                icon={<Mountain size={15} />}
                 title="Altitude profile"
                 meta={altitudeMeta}
                 action={
@@ -1883,6 +1921,7 @@ export function TrackAnalysisView({
           )}
           <div className="track-analysis-lower-card">
             <TrackPanelTitle
+              icon={<Timer size={15} />}
               title="Lap timing"
               meta={lapTimingRows.length ? `${lapTimingRows.length} timing row(s)` : 'No sectors'}
               action={

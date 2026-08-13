@@ -17,6 +17,14 @@ its `Desktop-v` prefix. They sign, notarize, staple, and verify both macOS
 DMGs, and create and verify a keyless Sigstore signature bundle for the Linux
 archive, after tests and packaged smoke tests pass.
 
+The Desktop version identifies the installable product and controls installer,
+DMG, and archive filenames. The workflow preserves distinct Import Manager,
+Library Service, and Workbench component versions in the packaged build. They
+can be supplied when manually dispatching the workflow; tag builds use the
+component-version defaults committed in the workflow. The Import Manager and
+Library Service receive their respective build versions, while each platform's
+bundle includes `component_versions.json` for support and provenance.
+
 ## Outputs
 
 Each successful non-tag run retains unsigned build artifacts for seven days:

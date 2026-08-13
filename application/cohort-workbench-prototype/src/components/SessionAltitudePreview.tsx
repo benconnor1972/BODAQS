@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, Mountain } from 'lucide-react'
 import { IconButton, InfoTip } from './Common'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { gpsSourceDisplay, gpsSourceLabel } from '../domain/geospatial'
@@ -89,6 +89,7 @@ export function SessionAltitudePreview({
     <section className={`module session-altitude-module collapsible-module${collapsed ? ' collapsed' : ''}`}>
       <div className="module-header">
         <h2 className="module-heading">
+          <Mountain size={16} aria-hidden="true" />
           Altitude Profile
           <InfoTip text="Preview the selected session GPS altitude against distance from the session start." />
         </h2>

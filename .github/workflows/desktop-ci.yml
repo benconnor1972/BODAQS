@@ -23,6 +23,21 @@ on:
         description: Optional version string for artifact filenames.
         required: false
         type: string
+      import_manager_version:
+        description: Import Manager component version.
+        default: "0.1.8-beta"
+        required: false
+        type: string
+      library_service_version:
+        description: Library Service component version.
+        default: "0.1.2-beta"
+        required: false
+        type: string
+      workbench_version:
+        description: Workbench component version.
+        default: "0.1.2-beta"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -31,6 +46,9 @@ env:
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "24"
   BUILD_VERSION: ${{ inputs.version || format('0.0.0-ci.{0}', github.run_number) }}
+  IMPORT_MANAGER_VERSION: ${{ inputs.import_manager_version || '0.1.8-beta' }}
+  LIBRARY_SERVICE_VERSION: ${{ inputs.library_service_version || '0.1.2-beta' }}
+  WORKBENCH_VERSION: ${{ inputs.workbench_version || '0.1.2-beta' }}
 
 jobs:
   windows:
@@ -64,8 +82,8 @@ jobs:
       - name: Build and smoke-test Windows installer
         run: >-
           .\import-manager\build_import_manager.ps1 -Target installer
-          -BundleVersion $env:BUILD_VERSION -ImportManagerVersion $env:BUILD_VERSION
-          -LibraryServiceVersion $env:BUILD_VERSION -WorkbenchVersion $env:BUILD_VERSION
+          -BundleVersion $env:BUILD_VERSION -ImportManagerVersion $env:IMPORT_MANAGER_VERSION
+          -LibraryServiceVersion $env:LIBRARY_SERVICE_VERSION -WorkbenchVersion $env:WORKBENCH_VERSION
       - name: Create Certum signing-candidate checksum
         if: startsWith(github.ref, 'refs/tags/Desktop-v')
         shell: pwsh
@@ -132,7 +150,8 @@ jobs:
       - name: Build unsigned macOS app
         run: >-
           ./import-manager/build_import_manager_macos.sh --skip-dmg --skip-icns
-          --version "$BUILD_VERSION" --service-version "$BUILD_VERSION"
+          --version "$BUILD_VERSION" --manager-version "$IMPORT_MANAGER_VERSION"
+          --service-version "$LIBRARY_SERVICE_VERSION" --workbench-version "$WORKBENCH_VERSION"
       - name: Smoke-test packaged macOS app
         run: |
           app="import-manager/dist/pyinstaller/BODAQS Import Manager.app/Contents/MacOS/BODAQS Import Manager"
@@ -314,7 +333,10 @@ jobs:
           MPLBACKEND: Agg
         run: python -m pytest analysis/tests -q
       - name: Build and smoke-test Linux archive
-        run: bash ./import-manager/build_import_manager_linux.sh --version "$BUILD_VERSION" --service-version "$BUILD_VERSION"
+        run: >-
+          bash ./import-manager/build_import_manager_linux.sh --version "$BUILD_VERSION"
+          --manager-version "$IMPORT_MANAGER_VERSION" --service-version "$LIBRARY_SERVICE_VERSION"
+          --workbench-version "$WORKBENCH_VERSION"
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/Desktop-v')
         uses: sigstore/cosign-installer@v4.1.2

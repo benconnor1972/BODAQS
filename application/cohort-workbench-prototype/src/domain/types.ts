@@ -367,6 +367,12 @@ export type AnalysisAdequacyMessage = {
   detail?: Record<string, unknown>
 }
 
+export type AnalysisAdequacyCriterionResult = {
+  requirementId: string
+  met: boolean
+  detail: string
+}
+
 export type AnalysisAdequacySessionResult = {
   sessionRef: StudySessionRef
   status: AnalysisAdequacyStatus
@@ -374,6 +380,7 @@ export type AnalysisAdequacySessionResult = {
   requiredPassed: boolean
   recommendedMissing: string[]
   optionalMissing: string[]
+  criteria: AnalysisAdequacyCriterionResult[]
   units?: Record<string, unknown>
 }
 
@@ -388,6 +395,7 @@ export type AnalysisAdequacyResult = {
   blockedSessionCount: number
   messages: AnalysisAdequacyMessage[]
   sessionResults: AnalysisAdequacySessionResult[]
+  scopeCriteria: AnalysisAdequacyCriterionResult[]
 }
 
 export type SignalQuerySignalRequest = {

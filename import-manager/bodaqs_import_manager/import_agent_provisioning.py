@@ -48,6 +48,7 @@ DEFAULT_IMPORT_AGENT_APP_DIRNAME = "import-agent"
 IMPORT_AGENT_APP_CONFIG_MODE_AUTO = "auto"
 IMPORT_AGENT_APP_CONFIG_MODE_PORTABLE = "portable"
 IMPORT_AGENT_APP_CONFIG_MODE_INSTALLED = "installed"
+DEFAULT_PROCESSED_ARCHIVE_RETENTION_DAYS = 30
 
 _ASSET_PACKAGE = "bodaqs_import_manager.import_agent_assets"
 
@@ -167,6 +168,22 @@ def _write_source_force_reprocess_enabled(source_root: Path, *, enabled: bool) -
         raise ValueError(f"Import source config is not a JSON object: {config_path}")
     updated = dict(payload)
     updated["force_reprocess"] = bool(enabled)
+    _write_json(config_path, updated, overwrite=True)
+
+
+def _write_source_processed_archive_retention_days(
+    source_root: Path,
+    *,
+    retention_days: Optional[int],
+) -> None:
+    if retention_days is not None and (isinstance(retention_days, bool) or int(retention_days) <= 0):
+        raise ValueError("Processed archive retention must be a positive whole number of days or retain forever")
+    config_path = source_root / DEFAULT_IMPORT_SOURCE_FILENAME
+    payload = _read_json(config_path, {})
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Import source config is not a JSON object: {config_path}")
+    updated = dict(payload)
+    updated["processed_archive_retention_days"] = None if retention_days is None else int(retention_days)
     _write_json(config_path, updated, overwrite=True)
 
 
@@ -1916,6 +1933,21 @@ def update_import_agent_app_auto_start(
     return updated
 
 
+def update_import_agent_processed_archive_retention_days(
+    app_config_path: str | Path,
+    *,
+    retention_days: Optional[int],
+) -> ImportAgentAppConfig:
+    config_path = _coerce_required_path(app_config_path, field_name="app_config_path")
+    config = load_import_agent_app_config(config_path)
+    for source in config.sources:
+        _write_source_processed_archive_retention_days(
+            source.source_root,
+            retention_days=retention_days,
+        )
+    return config
+
+
 def provision_import_agent_library(
     libraries_root: str | Path,
     *,
@@ -2091,6 +2123,7 @@ def provision_import_agent_source(
         "poll_interval_s": float(poll_interval_s),
         "settle_time_s": float(settle_time_s),
         "force_reprocess": bool(force_reprocess),
+        "processed_archive_retention_days": DEFAULT_PROCESSED_ARCHIVE_RETENTION_DAYS,
     }
     if session_auto_name_enabled:
         import_source_payload["naming"] = {
