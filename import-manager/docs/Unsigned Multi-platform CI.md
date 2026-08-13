@@ -3,18 +3,19 @@
 The `Desktop CI` GitHub Actions workflow validates BODAQS Desktop builds on
 clean GitHub-hosted runners. Pull-request, branch, and manually dispatched
 builds do not use release credentials and remain unsigned. A `Desktop-v*` tag
-creates a signed and notarized macOS DMG when its required GitHub Actions
-secrets are configured, and keylessly signs the Linux archive with Sigstore.
-The workflow does not create GitHub Releases or publish downloads.
+creates signed and notarized macOS DMGs for Apple Silicon and Intel Macs when
+its required GitHub Actions secrets are configured, and keylessly signs the
+Linux archive with Sigstore. The workflow does not create GitHub Releases or
+publish downloads.
 
 ## Triggers
 
 The workflow runs for pull requests and `main` pushes that affect the desktop
 application, analysis package, Workbench, dependencies, or workflow itself. It
 can also be dispatched manually. `Desktop-v*` tags use the tag version without
-its `Desktop-v` prefix. They sign, notarize, staple, and verify the macOS DMG,
-and create and verify a keyless Sigstore signature bundle for the Linux archive,
-after tests and packaged smoke tests pass.
+its `Desktop-v` prefix. They sign, notarize, staple, and verify both macOS
+DMGs, and create and verify a keyless Sigstore signature bundle for the Linux
+archive, after tests and packaged smoke tests pass.
 
 ## Outputs
 
@@ -24,13 +25,15 @@ Each successful non-tag run retains unsigned build artifacts for seven days:
 | --- | --- | --- |
 | Windows x64 | `windows-latest` | Inno Setup installer `.exe` |
 | macOS arm64 | `macos-latest` | `.dmg` containing the application bundle |
+| macOS x64 | `macos-15-intel` | `.dmg` containing the application bundle |
 | Linux x64 | `ubuntu-latest` | Portable PyInstaller `.tar.gz` bundle |
 
-For a `Desktop-v*` tag, the macOS artifact is instead a signed and notarized
-DMG named `macos-arm64-<version>`. The Linux artifact is
+For a `Desktop-v*` tag, the macOS artifacts are signed and notarized DMGs named
+`macos-arm64-<version>` and `macos-x64-<version>`. The Linux artifact is
 `linux-x64-<version>` and contains the archive plus its
-`.tar.gz.sigstore.json` verification bundle. Windows artifacts remain unsigned
-until their SignPath workflow is added.
+`.tar.gz.sigstore.json` verification bundle. The Windows artifact is named
+`windows-x64-<version>-certum-signing-candidate` and contains the unsigned
+installer plus a SHA-256 manifest for manual Certum signing.
 
 The Linux archive expands to a directory containing `bodaqs-import-manager`.
 Run that executable from the expanded directory; its bundled `service/`
@@ -100,6 +103,18 @@ visible in the run output.
 
 Signing and publishing remain separate: a maintainer must still inspect the
 completed artifacts and create the GitHub Release deliberately.
+
+## Windows release signing
+
+Windows release candidates are built on a GitHub-hosted runner, then manually
+signed on the release approver's Windows PC with the Certum Open Source Code
+Signing certificate stored in SimplySign. This keeps the signing credential out
+of GitHub Actions while retaining automated builds and tests.
+
+Follow [Windows Certum Release Signing](Windows%20Certum%20Release%20Signing.md)
+after every successful `Desktop-v*` build. Only the signed and locally verified
+installer, together with a newly generated checksum, may be attached to the
+GitHub Release.
 
 ## Linux release signing
 

@@ -66,17 +66,47 @@ jobs:
           .\import-manager\build_import_manager.ps1 -Target installer
           -BundleVersion $env:BUILD_VERSION -ImportManagerVersion $env:BUILD_VERSION
           -LibraryServiceVersion $env:BUILD_VERSION -WorkbenchVersion $env:BUILD_VERSION
-      - name: Upload unsigned Windows installer
+      - name: Create Certum signing-candidate checksum
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'import-manager/dist/installer/windows/*.exe' | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw 'Windows installer was not found.'
+          }
+          Get-FileHash -Algorithm SHA256 $installer.FullName |
+            ForEach-Object { "{0} *{1}" -f $_.Hash, $installer.Name } |
+            Set-Content -NoNewline -Encoding ascii "$($installer.FullName).sha256"
+      - name: Upload unsigned Windows CI installer
+        if: ${{ !startsWith(github.ref, 'refs/tags/Desktop-v') }}
         uses: actions/upload-artifact@v7
         with:
           name: unsigned-windows-x64-${{ env.BUILD_VERSION }}
           path: import-manager/dist/installer/windows/*.exe
           if-no-files-found: error
           retention-days: 7
+      - name: Upload Certum signing candidate
+        if: startsWith(github.ref, 'refs/tags/Desktop-v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-${{ env.BUILD_VERSION }}-certum-signing-candidate
+          path: |
+            import-manager/dist/installer/windows/*.exe
+            import-manager/dist/installer/windows/*.exe.sha256
+          if-no-files-found: error
+          retention-days: 7
 
   macos:
-    name: macOS arm64
-    runs-on: macos-latest
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v5
       - name: Derive build version from release-candidate tag
@@ -240,7 +270,7 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/Desktop-v') }}
         uses: actions/upload-artifact@v7
         with:
-          name: unsigned-macos-arm64-${{ env.BUILD_VERSION }}
+          name: unsigned-macos-${{ matrix.arch }}-${{ env.BUILD_VERSION }}
           path: import-manager/dist/BODAQS-Import-Manager-*.dmg
           if-no-files-found: error
           retention-days: 7
@@ -248,7 +278,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/Desktop-v')
         uses: actions/upload-artifact@v7
         with:
-          name: macos-arm64-${{ env.BUILD_VERSION }}
+          name: macos-${{ matrix.arch }}-${{ env.BUILD_VERSION }}
           path: import-manager/dist/BODAQS-Import-Manager-*.dmg
           if-no-files-found: error
           retention-days: 7
