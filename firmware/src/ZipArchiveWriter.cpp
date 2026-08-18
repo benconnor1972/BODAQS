@@ -11,6 +11,7 @@ struct ZipEntryMeta {
   String name;
   uint32_t crc = 0;
   uint32_t size = 0;
+  uint32_t sourceSize = 0;
   uint32_t localOffset = 0;
 };
 
@@ -137,6 +138,7 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
     return false;
   }
 
+  ZipEntryMeta meta[kMaxZipEntries];
   for (uint8_t i = 0; i < entryCount; ++i) {
     if (!validateEntry_(entries[i], error)) return false;
     const String source = normalizeAbsPath_(entries[i].sourcePath);
@@ -155,6 +157,7 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
       setError_(error, String(F("source too large for ZIP32: ")) + source);
       return false;
     }
+    meta[i].sourceSize = static_cast<uint32_t>(f.size());
     f.close();
   }
 
@@ -169,7 +172,6 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
   uint16_t dosDate = 0;
   zipDosTimeDate_(dosTime, dosDate);
 
-  ZipEntryMeta meta[kMaxZipEntries];
   uint32_t bytesWritten = 0;
   static uint8_t buf[2048];
 
@@ -222,6 +224,12 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
       delay(0);
     }
     in.close();
+
+    if (size != meta[i].sourceSize) {
+      out.close();
+      setError_(error, String(F("source short read while archiving: ")) + source);
+      return false;
+    }
 
     meta[i].crc = crc;
     meta[i].size = size;

@@ -7,6 +7,7 @@
 #include "ZipArchiveWriter.h"
 #include "LoggingManager.h"
 #include "UI.h"
+#include <ArduinoJson.h>
 
 #include "BoardProfile.h"   // <-- whatever you called it after the namespace rename
 #include "BoardSelect.h"
@@ -220,6 +221,8 @@ static String metadataPathForArchive_(const String& archivePath) {
   return out;
 }
 
+static bool metadataSidecarLooksComplete_(const String& path);
+
 static bool fileSize_(const String& path, uint32_t& sizeOut) {
   sizeOut = 0;
   if (!path.length()) return false;
@@ -410,6 +413,15 @@ static void promoteStaleSessionArchives_() {
         const String tempPath = name;
         const String archivePath = tempPath.substring(0, tempPath.length() - 4);
 
+        if (!metadataSidecarLooksComplete_(metadataPathForArchive_(archivePath))) {
+          STOR_LOGW("Stale session archive not promoted; metadata sidecar is incomplete: %s\n",
+                    archivePath.c_str());
+          entry.close();
+          delay(0);
+          entry = root.openNextFile();
+          continue;
+        }
+
         if (commitArchiveTemp_(tempPath, archivePath)) {
           STOR_LOGI("Recovered session archive: %s\n", archivePath.c_str());
           removeArchivedSourceFilesForArchive_(archivePath);
@@ -432,6 +444,10 @@ static void promoteStaleSessionArchives_() {
 static void createSessionArchive_(const String& csvPath, const String& metadataPath) {
   if (!csvPath.length() || !metadataPath.length()) {
     STOR_LOGW("Session archive skipped: missing CSV or metadata path\n");
+    return;
+  }
+  if (!metadataSidecarLooksComplete_(metadataPath)) {
+    STOR_LOGW("Session archive skipped: metadata sidecar is incomplete: %s\n", metadataPath.c_str());
     return;
   }
 
@@ -1235,6 +1251,77 @@ void StorageManager_drainQueuedSamples() {
   }
 }
 
+static bool metadataSidecarLooksComplete_(const String& path) {
+  File file = SD_MMC.open(path.c_str(), FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    return false;
+  }
+
+  // Filtered parsing validates the whole document while retaining only a
+  // tiny contract fragment, so validation does not recreate the large JSON
+  // allocation that streaming is intended to avoid.
+  JsonDocument filter;
+  filter["contract"]["name"] = true;
+  JsonDocument document;
+  const DeserializationError error = deserializeJson(
+      document, file, DeserializationOption::Filter(filter));
+  file.close();
+  return !error && document["contract"]["name"] == "mtb_logger_timeseries";
+}
+
+static bool writeLogMetadataSidecar_(const String& path, const LogMetadataContext& ctx) {
+  if (!path.length() || SD_MMC.cardType() == CARD_NONE) return false;
+  if (!ensureParentDirs_(path)) return false;
+
+  const String tempPath = path + F(".tmp");
+  const String backupPath = path + F(".bak");
+  if (SD_MMC.exists(tempPath.c_str()) && !SD_MMC.remove(tempPath.c_str())) {
+    STOR_LOGW("Metadata sidecar: could not remove stale temp file: %s\n", tempPath.c_str());
+    return false;
+  }
+
+  File file = SD_MMC.open(tempPath.c_str(), FILE_WRITE);
+  if (!file) {
+    STOR_LOGW("Metadata sidecar: open failed: %s\n", tempPath.c_str());
+    return false;
+  }
+
+  const bool writeOk = LogMetadataWriter_write(ctx, file);
+  file.flush();
+  file.close();
+  if (!writeOk || !metadataSidecarLooksComplete_(tempPath)) {
+    STOR_LOGW("Metadata sidecar: generation or validation failed: %s\n", tempPath.c_str());
+    SD_MMC.remove(tempPath.c_str());
+    return false;
+  }
+
+  if (SD_MMC.exists(backupPath.c_str()) && !SD_MMC.remove(backupPath.c_str())) {
+    STOR_LOGW("Metadata sidecar: could not remove stale backup: %s\n", backupPath.c_str());
+    SD_MMC.remove(tempPath.c_str());
+    return false;
+  }
+
+  const bool hadExisting = SD_MMC.exists(path.c_str());
+  if (hadExisting && !SD_MMC.rename(path.c_str(), backupPath.c_str())) {
+    STOR_LOGW("Metadata sidecar: backup rename failed: %s\n", path.c_str());
+    SD_MMC.remove(tempPath.c_str());
+    return false;
+  }
+  if (!SD_MMC.rename(tempPath.c_str(), path.c_str())) {
+    STOR_LOGW("Metadata sidecar: final rename failed: %s\n", path.c_str());
+    if (hadExisting && SD_MMC.exists(backupPath.c_str())) {
+      SD_MMC.rename(backupPath.c_str(), path.c_str());
+    }
+    SD_MMC.remove(tempPath.c_str());
+    return false;
+  }
+  if (hadExisting && SD_MMC.exists(backupPath.c_str())) {
+    SD_MMC.remove(backupPath.c_str());
+  }
+  return true;
+}
+
 
 // Stop log
 void StorageManager_stopLog() {
@@ -1308,17 +1395,12 @@ void StorageManager_stopLog() {
     metaCtx.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
     metaCtx.boardProfile = board::gBoard;
 
-    String metadata;
-    if (LogMetadataWriter_build(metaCtx, metadata)) {
-      const String metadataPath = LogMetadataWriter_metadataPathForCsv(s_currentLogPath.c_str());
-      if (StorageManager_saveTextFile(metadataPath.c_str(), metadata)) {
-        STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
-        createSessionArchive_(s_currentLogPath, metadataPath);
-      } else {
-        STOR_LOGW("Failed to write log metadata: %s\n", metadataPath.c_str());
-      }
+    const String metadataPath = LogMetadataWriter_metadataPathForCsv(s_currentLogPath.c_str());
+    if (writeLogMetadataSidecar_(metadataPath, metaCtx)) {
+      STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
+      createSessionArchive_(s_currentLogPath, metadataPath);
     } else {
-      STOR_LOGW("Failed to build log metadata for %s\n", s_currentLogPath.c_str());
+      STOR_LOGW("Failed to write complete log metadata for %s\n", s_currentLogPath.c_str());
     }
   } else if (!isCompactBinaryFormat_() && s_currentLogPath.length()) {
     STOR_LOGI("Log metadata omitted by config\n");

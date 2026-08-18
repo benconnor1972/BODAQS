@@ -38,4 +38,7 @@ struct LogMetadataContext {
 };
 
 bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out);
+// Streams a complete JSON sidecar to an already-open destination. Every write
+// is checked so callers can leave the previous sidecar intact on failure.
+bool LogMetadataWriter_write(const LogMetadataContext& ctx, Print& out);
 String LogMetadataWriter_metadataPathForCsv(const char* csvPath);
