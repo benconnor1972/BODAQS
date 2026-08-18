@@ -137,7 +137,10 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   const uint64_t preSessionDiscards = static_cast<uint64_t>(queue_.size());
   queue_.clear();
   resetSessionState_(preSessionDiscards);
-  startupObservation_.begin(startupObservationSeconds);
+  // Keep the observer disabled until validation/recovery and the final FIFO
+  // flush have completed. Those operations belong to the session boundary,
+  // not to the stationary measurement window.
+  startupObservation_.begin(0);
   device_.resetTransportDiagnostics();
 
   addCounter_(diagnostics_.sessionStartValidationAttempts);
@@ -151,6 +154,14 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
 
   if (!flushFifo_()) return false;
   if (!device_.resume()) return false;
+
+  // Preserve setup/recovery status on the first emitted stream sample while
+  // keeping it distinguishable from incidents that occur after acquisition
+  // starts. Consumers performing stationary measurements exclude only this
+  // known pre-session boundary status.
+  preSessionBoundaryStatus_ = pendingStatus_ & kCarryStatusMask;
+  pendingStatus_ &= static_cast<uint16_t>(~kCarryStatusMask);
+  startupObservation_.begin(startupObservationSeconds);
 
   progressWatchdog_.arm(micros());
   sessionActive_.store(true, std::memory_order_release);
@@ -596,6 +607,7 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   diagnostics_.preSessionQueueDiscards = preSessionDiscards;
   nextSequence_ = 0;
   pendingStatus_ = 0;
+  preSessionBoundaryStatus_ = 0;
   pendingSkippedFrames_ = 0;
   consecutiveDrainFailures_ = 0;
   recoveryBackoffPolls_ = 0;
@@ -718,6 +730,10 @@ void BMI270FifoAcquisition::enqueueParsed_(
     nextSequence_ += parsed_[index].skippedFramesBefore;
     sample.sequence = nextSequence_++;
     sample.statusFlags |= pendingStatus_;
+    if (preSessionBoundaryStatus_ != 0) {
+      sample.statusFlags |=
+          BMI270ImuStatus::markPreSessionBoundary(preSessionBoundaryStatus_);
+    }
     if (parsed_[index].sensorTimeDiscontinuityBefore) {
       addCounter_(diagnostics_.nativeTimeDiscontinuityEvents);
     }
@@ -737,7 +753,7 @@ void BMI270FifoAcquisition::enqueueParsed_(
         sample.gyroZ,
         sample.temperatureRaw,
         temperatureFresh,
-        sample.statusFlags);
+        sample.measurementStatusFlags());
     size_t depth = 0;
     if (queue_.push(sample, &depth)) {
       addCounter_(diagnostics_.samplesEnqueued);
@@ -745,10 +761,11 @@ void BMI270FifoAcquisition::enqueueParsed_(
         diagnostics_.queueHighWater = static_cast<uint16_t>(depth);
       }
       pendingStatus_ = 0;
+      preSessionBoundaryStatus_ = 0;
     } else {
       addCounter_(diagnostics_.queueDrops);
       startupObservation_.noteQualityIncident();
-      pendingStatus_ |= (sample.statusFlags & kCarryStatusMask) |
+      pendingStatus_ |= (sample.measurementStatusFlags() & kCarryStatusMask) |
                         BMI270ImuStatus::kQueueDropBefore;
     }
   }

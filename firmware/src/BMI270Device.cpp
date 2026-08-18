@@ -10,7 +10,7 @@
 
 namespace {
 
-constexpr uint32_t kRetryDelayMs = 25;
+constexpr uint32_t kRetryDelayMs = 50;
 constexpr uint8_t kEnabledSensors[] = { BMI2_ACCEL, BMI2_GYRO, BMI2_TEMP };
 constexpr uint8_t kEnabledSensorCount =
     static_cast<uint8_t>(sizeof(kEnabledSensors) / sizeof(kEnabledSensors[0]));
@@ -77,8 +77,7 @@ bool BMI270Device::begin() {
 
     ++diagnostics_.initializationFailures;
     quiesceAfterFailedInitialization_();
-    if (diagnostics_.failureStep == BMI270DeviceStep::ValidateParameters ||
-        diagnostics_.lastApiResult == BMI2_E_DEV_NOT_FOUND) {
+    if (diagnostics_.failureStep == BMI270DeviceStep::ValidateParameters) {
       break;
     }
     if (attempt + 1 < BMI270Profile::kInitializationAttempts) {

@@ -13,6 +13,16 @@ inline constexpr uint16_t kTemperatureStale = 0x0020;
 inline constexpr uint16_t kAccelNearRail = 0x0040;
 inline constexpr uint16_t kGyroNearRail = 0x0080;
 
+// Internal-only mirror of the low four acquisition-incident bits. The mirror
+// records exactly which public flags came from pre-session setup/recovery and
+// is removed before the public status word is logged.
+inline constexpr uint16_t kPreSessionBoundaryInternalMask = 0xF000;
+
+inline constexpr uint16_t markPreSessionBoundary(uint16_t flags) {
+  const uint16_t boundaryFlags = flags & 0x000F;
+  return boundaryFlags | static_cast<uint16_t>(boundaryFlags << 12);
+}
+
 } // namespace BMI270ImuStatus
 
 struct BMI270ImuSample {
@@ -24,6 +34,18 @@ struct BMI270ImuSample {
   int16_t gyroZ = 0;
   int16_t temperatureRaw = 0;
   uint16_t statusFlags = 0;
+
+  uint16_t measurementStatusFlags() const {
+    const uint16_t boundaryFlags =
+        static_cast<uint16_t>((statusFlags &
+                               BMI270ImuStatus::kPreSessionBoundaryInternalMask) >> 12);
+    return streamStatusFlags() & static_cast<uint16_t>(~boundaryFlags);
+  }
+
+  uint16_t streamStatusFlags() const {
+    return statusFlags &
+        static_cast<uint16_t>(~BMI270ImuStatus::kPreSessionBoundaryInternalMask);
+  }
 
   // The sensor and row contracts emit only the low 24 bits. Keeping full
   // width internally makes wrap and loss handling explicit.
@@ -45,3 +67,5 @@ static_assert(BMI270ImuStatus::kSensorTimeEstimated == 0x0010);
 static_assert(BMI270ImuStatus::kTemperatureStale == 0x0020);
 static_assert(BMI270ImuStatus::kAccelNearRail == 0x0040);
 static_assert(BMI270ImuStatus::kGyroNearRail == 0x0080);
+static_assert(BMI270ImuStatus::kPreSessionBoundaryInternalMask == 0xF000);
+static_assert(BMI270ImuStatus::markPreSessionBoundary(0x000D) == 0xD00D);

@@ -398,6 +398,34 @@ def test_phase6_extracts_unwraps_scales_transforms_and_reports_qc() -> None:
     assert metadata["coordinate_frames"] == ["sensor_native", "body_local"]
 
 
+def test_phase6_applies_assisted_rotation_matrix_to_body_local_channels() -> None:
+    session = _phase6_imu_session()
+    angle = np.deg2rad(30.0)
+    rotation = [
+        [float(np.cos(angle)), 0.0, float(np.sin(angle))],
+        [0.0, 1.0, 0.0],
+        [-float(np.sin(angle)), 0.0, float(np.cos(angle))],
+    ]
+    config = session["meta"]["imu_configs"]["frame_imu"]
+    config["contract_id"] = "bodaqs.bmi270_imu_mvp.v2"
+    config["orientation_status"] = "accepted"
+    config["mount_transform"] = {
+        "from": "sensor_native",
+        "to": "body_local",
+        "representation": "rotation_matrix",
+        "matrix": rotation,
+    }
+
+    stream, qc, metadata = extract_imu_stream(session, "frame_imu")
+
+    assert "missing_or_invalid_mount_transform" not in qc["warnings"]
+    assert stream["body_accel_x_m_s2"].iloc[0] == pytest.approx(np.cos(angle) * 9.80665)
+    assert stream["body_accel_y_m_s2"].iloc[0] == pytest.approx(0.0)
+    assert stream["body_accel_z_m_s2"].iloc[0] == pytest.approx(-np.sin(angle) * 9.80665)
+    assert metadata["mount_transform"]["representation"] == "rotation_matrix"
+    assert metadata["coordinate_frames"] == ["sensor_native", "body_local"]
+
+
 def test_phase6_registers_one_idempotent_persisted_secondary_stream() -> None:
     session = _phase6_imu_session()
 
@@ -411,6 +439,59 @@ def test_phase6_registers_one_idempotent_persisted_secondary_stream() -> None:
     assert report["frame_imu"]["stream_name"] == "imu_frame_imu"
     assert session["meta"]["imu_qc"] == report
     json.dumps(report, sort_keys=True, allow_nan=False)
+
+
+def test_phase6_aligns_canonical_time_to_logger_clock_and_preserves_native_time() -> None:
+    session = _phase6_imu_session()
+    valid_positions = np.array([1, 3, 5, 8])
+    native_time_s = np.array([0.0, 0.005, 0.015, 0.020])
+    clock_scale = 0.9929
+    session["df"].loc[valid_positions, "time_s"] = 0.002 + native_time_s * clock_scale
+
+    stream, qc, metadata = extract_imu_stream(session, "frame_imu")
+
+    assert stream["native_time_s"].tolist() == pytest.approx(native_time_s)
+    assert stream["time_s"].tolist() == pytest.approx(native_time_s * clock_scale)
+    assert stream["clock_epoch"].tolist() == [0, 0, 1, 1]
+    assert qc["native_grid_odr_hz"] == pytest.approx(200.0)
+    assert qc["logger_relative_odr_hz"] == pytest.approx(200.0 / clock_scale)
+    assert qc["effective_odr_hz"] == pytest.approx(200.0 / clock_scale)
+    assert qc["sensor_time"]["clock_fit_to_logger"]["scale"] == pytest.approx(clock_scale)
+    assert metadata["timebase_source"] == "logger_aligned_affine_clock_fit"
+    assert metadata["time_columns"]["native_nominal"] == "native_time_s"
+
+
+def test_phase6_keeps_canonical_time_monotonic_across_overlapping_clock_epochs() -> None:
+    session = _phase6_imu_session()
+    valid_positions = np.array([1, 3, 5, 8])
+    session["df"].loc[valid_positions, "time_s"] = [0.010, 0.015, 0.014, 0.019]
+
+    stream, qc, metadata = extract_imu_stream(session, "frame_imu")
+
+    assert np.all(np.diff(stream["time_s"].to_numpy(dtype=float)) > 0)
+    assert stream["time_s"].tolist() == pytest.approx([0.0, 0.005, 0.010, 0.015])
+    assert qc["sensor_time"]["clock_epochs"][1]["alignment_adjustment_s"] == pytest.approx(0.006)
+    assert metadata["timebase_source"] == "logger_aligned_affine_clock_fit"
+
+
+def test_phase6_masks_invalid_sparse_imu_placeholders_but_preserves_raw_dataframe() -> None:
+    session = _phase6_imu_session()
+    invalid = session["df"]["frame_imu_sample_valid"].eq(0)
+
+    build_imu_streams(session)
+
+    dependent = [
+        "frame_imu_accel_x_raw_dom_frame [count]",
+        "frame_imu_gyro_z_raw_dom_frame [count]",
+        "frame_imu_sensor_time_u24",
+        "frame_imu_status_flags",
+    ]
+    assert session["df"].loc[invalid, dependent].isna().all().all()
+    assert session["df_raw"].loc[invalid, dependent].eq(0).all().all()
+    assert session["df"]["frame_imu_sample_valid"].tolist() == session["df_raw"]["frame_imu_sample_valid"].tolist()
+    info = session["meta"]["channel_info"][dependent[0]]
+    assert info["validity_column"] == "frame_imu_sample_valid"
+    assert info["invalid_sample_policy"] == "null_when_sample_valid_is_not_one"
 
 
 def test_phase6_missing_config_is_degraded_or_strictly_rejected() -> None:

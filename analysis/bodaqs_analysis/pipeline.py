@@ -482,6 +482,15 @@ def _apply_log_metadata(
     imu_configs = log_metadata.get("imu_configs")
     if isinstance(imu_configs, Mapping):
         meta["imu_configs"] = copy.deepcopy(dict(imu_configs))
+    elif isinstance(declared_sensors, Mapping):
+        nested_imu_configs = {
+            str(sensor_id): copy.deepcopy(dict(sensor_info["imu_config"]))
+            for sensor_id, sensor_info in declared_sensors.items()
+            if isinstance(sensor_info, Mapping)
+            and isinstance(sensor_info.get("imu_config"), Mapping)
+        }
+        if nested_imu_configs:
+            meta["imu_configs"] = nested_imu_configs
 
     session_meta = log_metadata.get("session")
     if isinstance(session_meta, dict):

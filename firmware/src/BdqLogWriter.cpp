@@ -357,6 +357,9 @@ void appendImuQualityDiagnostics_(
   appendKeyUInt_(out, depth + 1, "target_sample_slots", diagnostics.imuStartupTargetSampleSlots);
   appendKeyUInt_(out, depth + 1, "minimum_valid_samples", 800);
   appendKeyUInt_(out, depth + 1, "valid_samples", diagnostics.imuStartupValidSamples);
+  appendKeyUInt_(out, depth + 1, "settling_sample_slots", diagnostics.imuStartupSettlingSampleSlots);
+  appendKeyUInt_(out, depth + 1, "measurement_start_sequence", diagnostics.imuStartupMeasurementStartSequence);
+  appendKeyHex16_(out, depth + 1, "settling_status_mask", diagnostics.imuStartupSettlingStatusMask);
   appendKey_(out, depth + 1, "thresholds");
   out += F("{\n");
   appendKeyFloat_(out, depth + 2, "accel_mean_tolerance_g", 0.15f);
@@ -707,6 +710,18 @@ void appendRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true) {
     appendKeyUInt_(out, depth + 4, "begin_count", diagnostics.beginCount);
     appendKeyUInt_(out, depth + 4, "last_begin_uptime_ms", diagnostics.lastBeginUptimeMs);
     appendKeyBool_(out, depth + 4, "probe_ok", diagnostics.initialProbeOk);
+    if (diagnostics.hasImuSession) {
+      appendKeyUInt_(out, depth + 4, "device_state", diagnostics.imuDeviceState);
+      appendKeyUInt_(out, depth + 4, "attempts", diagnostics.imuInitializationAttempts);
+      appendKeyUInt_(out, depth + 4, "failures", diagnostics.imuInitializationFailures);
+      appendKeyUInt_(out, depth + 4, "failure_step", diagnostics.imuInitializationFailureStep);
+      appendKeyInt_(out, depth + 4, "api_result", diagnostics.imuInitializationApiResult);
+      appendKeyBool_(out, depth + 4, "chip_id_read", diagnostics.imuInitializationChipIdRead);
+      appendKeyBool_(out, depth + 4, "chip_id_matched", diagnostics.imuInitializationChipIdMatched);
+      appendKeyHex8_(out, depth + 4, "chip_id", diagnostics.imuInitializationChipId);
+      appendKeyBool_(out, depth + 4, "cleanup_attempted", diagnostics.imuInitializationCleanupAttempted);
+      appendKeyBool_(out, depth + 4, "cleanup_ok", diagnostics.imuInitializationCleanupOk);
+    }
     appendKeyBool_(out, depth + 4, "config_write_attempted", diagnostics.configWriteAttempted);
     appendKeyBool_(out, depth + 4, "config_write_ok", diagnostics.configWriteOk);
     appendKeyBool_(out, depth + 4, "config_read_attempted", diagnostics.configReadAttempted);
@@ -984,6 +999,41 @@ bool appendDeviceConfigs_(String& out) {
   return true;
 }
 
+void appendFloatVector3_(
+    String& out,
+    uint8_t depth,
+    const char* key,
+    const float values[3],
+    bool comma = true) {
+  appendKey_(out, depth, key);
+  out += '[';
+  for (uint8_t i = 0; i < 3; ++i) {
+    if (i) out += F(", ");
+    out += String(values[i], 8);
+  }
+  out += comma ? F("],\n") : F("]\n");
+}
+
+void appendRotationMatrix_(
+    String& out,
+    uint8_t depth,
+    const float matrix[3][3],
+    bool comma = true) {
+  appendKey_(out, depth, "matrix");
+  out += F("[\n");
+  for (uint8_t row = 0; row < 3; ++row) {
+    appendIndent_(out, depth + 1);
+    out += '[';
+    for (uint8_t column = 0; column < 3; ++column) {
+      if (column) out += F(", ");
+      out += String(matrix[row][column], 8);
+    }
+    out += row < 2 ? F("],\n") : F("]\n");
+  }
+  appendIndent_(out, depth);
+  out += comma ? F("],\n") : F("]\n");
+}
+
 void appendImuConfigObject_(
     String& out,
     const SensorImuConfigDescriptor& imu,
@@ -1008,16 +1058,45 @@ void appendImuConfigObject_(
   appendKeyUInt_(out, depth + 1, "logger_rate_hz", imu.loggerRateHz);
   appendKeyUInt_(out, depth + 1, "imu_rate_hz", imu.imuRateHz);
 
-  appendKey_(out, depth + 1, "mount_transform");
-  out += F("{\n");
-  appendKeyString_(out, depth + 2, "from", "sensor_native");
-  appendKeyString_(out, depth + 2, "to", "body_local");
-  appendKeyString_(out, depth + 2, "representation", "signed_axis_permutation");
-  appendKeyString_(out, depth + 2, "body_x", imu.mountAxis[0]);
-  appendKeyString_(out, depth + 2, "body_y", imu.mountAxis[1]);
-  appendKeyString_(out, depth + 2, "body_z", imu.mountAxis[2], false);
-  appendIndent_(out, depth + 1);
-  out += F("},\n");
+  appendKeyString_(out, depth + 1, "orientation_status",
+                   imu.orientationValid ? "accepted" : "unset");
+  if (imu.orientationValid) {
+    appendKey_(out, depth + 1, "mount_transform");
+    out += F("{\n");
+    appendKeyString_(out, depth + 2, "from", "sensor_native");
+    appendKeyString_(out, depth + 2, "to", "body_local");
+    appendKeyString_(out, depth + 2, "representation", "rotation_matrix");
+    appendRotationMatrix_(out, depth + 2, imu.orientationMatrix, false);
+    appendIndent_(out, depth + 1);
+    out += F("},\n");
+
+    appendKey_(out, depth + 1, "orientation_calibration");
+    out += F("{\n");
+    appendKeyString_(out, depth + 2, "status", "accepted");
+    appendKeyString_(out, depth + 2, "method", "gravity_plus_declared_plane");
+    appendKeyString_(out, depth + 2, "declared_plane", imu.orientationPlane);
+    appendKeyString_(out, depth + 2, "normal_maps_to", "body_positive_y");
+    appendKeyInt_(out, depth + 2, "normal_sign", imu.orientationNormalSign);
+    appendKeyFloat_(out, depth + 2, "maximum_roll_deviation_deg",
+                    ImuOrientation::kMaximumRollDeviationDeg);
+    appendKeyFloat_(out, depth + 2, "observed_roll_deviation_deg",
+                    imu.orientationRollDeviationDeg);
+    appendKeyUInt_(out, depth + 2, "sample_count", imu.orientationSampleCount);
+    appendKeyUInt_(out, depth + 2, "captured_at_unix_ms",
+                   imu.orientationCapturedAtUnixMs);
+    appendFloatVector3_(out, depth + 2, "mean_accel_raw",
+                        imu.orientationMeanAccelRaw);
+    appendKeyFloat_(out, depth + 2, "accel_magnitude_mean_g",
+                    imu.orientationAccelMagnitudeMeanG);
+    appendKeyFloat_(out, depth + 2, "accel_magnitude_std_g",
+                    imu.orientationAccelMagnitudeStdG);
+    appendKeyFloat_(out, depth + 2, "gyro_std_maximum_dps",
+                    imu.orientationGyroStdMaximumDps);
+    appendKeyFloat_(out, depth + 2, "gyro_magnitude_maximum_dps",
+                    imu.orientationMaximumGyroMagnitudeDps, false);
+    appendIndent_(out, depth + 1);
+    out += F("},\n");
+  }
 
   appendKey_(out, depth + 1, "effective_config");
   out += F("{\n");

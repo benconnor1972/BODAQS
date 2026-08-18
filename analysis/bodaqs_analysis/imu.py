@@ -119,9 +119,24 @@ def _find_imu_config(session: Mapping[str, Any], sensor: str) -> Optional[dict[s
     return None
 
 
-def _signed_axis_matrix(transform: Any) -> Optional[np.ndarray]:
+def _mount_matrix(transform: Any) -> Optional[np.ndarray]:
     if not isinstance(transform, Mapping):
         return None
+    representation = _text(transform.get("representation")).lower()
+    if representation == "rotation_matrix":
+        try:
+            matrix = np.asarray(transform.get("matrix"), dtype=float)
+        except (TypeError, ValueError):
+            return None
+        if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+            return None
+        if not np.allclose(matrix @ matrix.T, np.eye(3), atol=2e-3):
+            return None
+        if not np.isclose(np.linalg.det(matrix), 1.0, atol=4e-3):
+            return None
+        return matrix
+
+    # Retain ingestion of pre-v2 logs. New firmware emits rotation_matrix.
     axes = [transform.get("body_x"), transform.get("body_y"), transform.get("body_z")]
     matrix = np.zeros((3, 3), dtype=float)
     used: set[int] = set()
@@ -160,7 +175,7 @@ def _config_values(config: Optional[Mapping[str, Any]]) -> tuple[dict[str, Any],
     tick_numerator_us = _finite_float(sensor_time.get("tick_numerator_us"))
     tick_denominator = _finite_float(sensor_time.get("tick_denominator"))
     tick_modulus = _finite_float(sensor_time.get("modulus_ticks"))
-    mount_matrix = _signed_axis_matrix(config.get("mount_transform"))
+    mount_matrix = _mount_matrix(config.get("mount_transform"))
 
     required = {
         "imu_rate_hz": rate_hz,
@@ -247,30 +262,119 @@ def _event_ranges(mask: np.ndarray, time_s: np.ndarray, sequence: np.ndarray) ->
     }
 
 
-def _clock_fit(native_time_s: np.ndarray, host_sample_time_s: np.ndarray) -> dict[str, Any]:
+def _clock_fit(
+    native_time_s: np.ndarray,
+    host_sample_time_s: np.ndarray,
+    *,
+    usable: Optional[np.ndarray] = None,
+) -> dict[str, Any]:
     mask = np.isfinite(native_time_s) & np.isfinite(host_sample_time_s)
+    if usable is not None:
+        mask &= np.asarray(usable, dtype=bool)
     x = np.asarray(native_time_s[mask], dtype=float)
     y = np.asarray(host_sample_time_s[mask], dtype=float)
     if x.size < 2 or float(np.ptp(x)) <= 0:
         return {"available": False, "sample_count": int(x.size)}
-    x0 = x - x[0]
-    y0 = y - y[0]
-    variance = float(np.dot(x0 - np.mean(x0), x0 - np.mean(x0)))
-    if variance <= 0:
+
+    native_origin = float(x[0])
+    host_origin = float(y[0])
+    x0 = x - native_origin
+    y0 = y - host_origin
+    inliers = np.ones(x.size, dtype=bool)
+    slope = 1.0
+    intercept = 0.0
+    for _ in range(4):
+        xi = x0[inliers]
+        yi = y0[inliers]
+        if xi.size < 2:
+            break
+        centered = xi - np.mean(xi)
+        variance = float(np.dot(centered, centered))
+        if variance <= 0:
+            break
+        slope = float(np.dot(centered, yi - np.mean(yi)) / variance)
+        intercept = float(np.mean(yi) - slope * np.mean(xi))
+        residual = y0 - (intercept + slope * x0)
+        median = float(np.median(residual[inliers]))
+        mad = float(np.median(np.abs(residual[inliers] - median)))
+        # FIFO-transfer observations are normally much tighter than one
+        # millisecond. Keep a small absolute floor so quantization does not
+        # reject an otherwise exact fit, while excluding isolated stalls.
+        threshold_s = max(0.0005, 6.0 * 1.4826 * mad)
+        refined = np.abs(residual - median) <= threshold_s
+        if int(np.count_nonzero(refined)) < 2 or np.array_equal(refined, inliers):
+            break
+        inliers = refined
+
+    xi = x0[inliers]
+    yi = y0[inliers]
+    centered = xi - np.mean(xi)
+    variance = float(np.dot(centered, centered))
+    if xi.size < 2 or variance <= 0:
         return {"available": False, "sample_count": int(x.size)}
-    slope = float(np.dot(x0 - np.mean(x0), y0 - np.mean(y0)) / variance)
-    intercept = float(np.mean(y0) - slope * np.mean(x0))
+    slope = float(np.dot(centered, yi - np.mean(yi)) / variance)
+    intercept = float(np.mean(yi) - slope * np.mean(xi))
+    if not math.isfinite(slope) or slope <= 0:
+        return {"available": False, "sample_count": int(x.size)}
     residual_us = (y0 - (intercept + slope * x0)) * 1_000_000.0
     absolute = np.abs(residual_us)
     return {
         "available": True,
         "sample_count": int(x.size),
+        "inlier_count": int(np.count_nonzero(inliers)),
+        "native_origin_s": native_origin,
+        "host_origin_s": host_origin,
+        "intercept_s": intercept,
         "scale": slope,
         "drift_ppm": float((slope - 1.0) * 1_000_000.0),
         "residual_rms_us": float(np.sqrt(np.mean(residual_us * residual_us))),
         "residual_p95_abs_us": float(np.percentile(absolute, 95)),
         "residual_max_abs_us": float(np.max(absolute)),
     }
+
+
+def _clock_prediction(native_time_s: np.ndarray, fit: Mapping[str, Any]) -> np.ndarray:
+    return (
+        float(fit["host_origin_s"])
+        + float(fit["intercept_s"])
+        + float(fit["scale"]) * (np.asarray(native_time_s, dtype=float) - float(fit["native_origin_s"]))
+    )
+
+
+def _mask_invalid_primary_rows(
+    session: dict[str, Any],
+    layout: Mapping[str, Any],
+) -> None:
+    """Represent sparse-row IMU placeholders as missing in the processed dataframe."""
+    primary = session.get("df")
+    if not isinstance(primary, pd.DataFrame):
+        return
+    scalars = layout.get("scalar") if isinstance(layout.get("scalar"), Mapping) else {}
+    valid_column = scalars.get("sample_valid")
+    if not isinstance(valid_column, str) or valid_column not in primary.columns:
+        return
+    valid = pd.to_numeric(primary[valid_column], errors="coerce").fillna(0).to_numpy(dtype=float) == 1.0
+    dependent: list[str] = []
+    for vector in ("accel", "gyro"):
+        axes = layout.get(vector) if isinstance(layout.get(vector), Mapping) else {}
+        dependent.extend(str(column) for column in axes.values() if isinstance(column, str))
+    dependent.extend(
+        str(column)
+        for semantic, column in scalars.items()
+        if semantic != "sample_valid" and isinstance(column, str)
+    )
+    dependent = [column for column in dict.fromkeys(dependent) if column in primary.columns]
+    if dependent:
+        primary.loc[~valid, dependent] = np.nan
+
+    meta = session.get("meta")
+    channel_info = meta.get("channel_info") if isinstance(meta, Mapping) else None
+    if isinstance(channel_info, dict):
+        for column in dependent:
+            info = channel_info.get(column)
+            if isinstance(info, dict):
+                info["validity_column"] = valid_column
+                info["invalid_sample_policy"] = "null_when_sample_valid_is_not_one"
 
 
 def _firmware_imu_diagnostics(session: Mapping[str, Any], sensor: str) -> Optional[dict[str, Any]]:
@@ -391,27 +495,81 @@ def extract_imu_stream(
 
     age_us = numeric["sample_age"].astype(float)
     host_sample_time = logger_time - age_us / 1_000_000.0
-    if rate_hz is not None and rate_hz > 0:
+    native_time_s = (
+        (sensor_time_unwrapped - sensor_time_unwrapped[0]).astype(float) * float(tick_period_s)
+        if tick_period_s is not None and tick_period_s > 0
+        else np.full(sensor_time_unwrapped.size, np.nan, dtype=float)
+    )
+    sequence_gap_mask = sequence_delta > 1
+    sequence_duplicate_mask = sequence_delta == 0
+    sequence_reverse_mask = sequence_delta < 0
+    sequence_span = int(np.max(sequence_unwrapped) - np.min(sequence_unwrapped) + 1)
+    coverage = float(len(sequence_unwrapped) / sequence_span) if sequence_span > 0 else None
+
+    expected_tick_delta: Optional[float] = None
+    tick_residual = np.full(sensor_time_delta.size, np.nan, dtype=float)
+    if rate_hz is not None and rate_hz > 0 and tick_period_s is not None and tick_period_s > 0:
+        expected_tick_delta = 1.0 / (float(rate_hz) * float(tick_period_s))
+        tick_residual = sensor_time_delta.astype(float) - sequence_delta.astype(float) * expected_tick_delta
+    tick_discontinuity_mask = np.isfinite(tick_residual) & (np.abs(tick_residual) > 0.5)
+
+    flags = numeric["status"].astype(np.uint16)
+    clock_epoch_boundary = np.zeros(len(sequence_unwrapped), dtype=bool)
+    if len(sequence_unwrapped) > 1:
+        clock_epoch_boundary[1:] = (
+            tick_discontinuity_mask
+            | (sequence_delta < 0)
+            | (sensor_time_delta < 0)
+            | ((flags[1:] & STATUS_FLAGS["sensor_recovery_before"]) != 0)
+        )
+    clock_epoch = np.cumsum(clock_epoch_boundary, dtype=np.int64)
+    clock_fits: list[dict[str, Any]] = []
+    aligned_host_time = np.full(len(sequence_unwrapped), np.nan, dtype=float)
+    timing_usable = (flags & STATUS_FLAGS["timing_degraded"]) == 0
+    for epoch in range(int(clock_epoch[-1]) + 1):
+        positions = np.flatnonzero(clock_epoch == epoch)
+        fit = _clock_fit(
+            native_time_s[positions],
+            host_sample_time[positions],
+            usable=timing_usable[positions],
+        )
+        fit["epoch"] = epoch
+        fit["first_sequence"] = int(sequence_unwrapped[positions[0]])
+        fit["last_sequence"] = int(sequence_unwrapped[positions[-1]])
+        if fit.get("available"):
+            aligned_host_time[positions] = _clock_prediction(native_time_s[positions], fit)
+        clock_fits.append(fit)
+
+    if np.isfinite(aligned_host_time).all():
+        # Recovery can create independently fitted clock epochs whose boundary
+        # observations overlap slightly because of FIFO-transfer latency. Keep
+        # the fitted slope, but translate each later epoch just enough to retain
+        # a strictly increasing canonical clock.
+        for epoch in range(1, len(clock_fits)):
+            positions = np.flatnonzero(clock_epoch == epoch)
+            previous = positions[0] - 1
+            if aligned_host_time[positions[0]] <= aligned_host_time[previous]:
+                nominal_dt = 1.0 / float(rate_hz) if rate_hz is not None and rate_hz > 0 else 0.0
+                adjustment = aligned_host_time[previous] + nominal_dt - aligned_host_time[positions[0]]
+                aligned_host_time[positions] += adjustment
+                clock_fits[epoch]["alignment_adjustment_s"] = float(adjustment)
+        time_s = aligned_host_time - aligned_host_time[0]
+        timebase_source = "logger_aligned_affine_clock_fit"
+    elif rate_hz is not None and rate_hz > 0:
         time_s = (repaired_sequence - repaired_sequence[0]).astype(float) / float(rate_hz)
-        timebase_source = "firmware_sequence_and_effective_rate"
+        timebase_source = "nominal_rate_without_clock_fit"
     elif tick_period_s is not None and tick_period_s > 0:
         repaired_tick = np.empty(sensor_time_unwrapped.size, dtype=np.int64)
         repaired_tick[0] = sensor_time_unwrapped[0]
         repaired_tick[1:] = sensor_time_unwrapped[0] + np.cumsum(np.maximum(sensor_time_delta, 0), dtype=np.int64)
         time_s = (repaired_tick - repaired_tick[0]).astype(float) * float(tick_period_s)
-        timebase_source = "sensor_time_without_effective_rate"
+        timebase_source = "sensor_time_without_clock_fit"
     else:
         finite_host = np.isfinite(host_sample_time)
         reference = float(host_sample_time[finite_host][0]) if finite_host.any() else float(logger_time[0])
         time_s = np.where(finite_host, host_sample_time, logger_time) - reference
         time_s = np.maximum.accumulate(time_s)
         timebase_source = "degraded_host_observation"
-
-    native_time_s = (
-        (sensor_time_unwrapped - sensor_time_unwrapped[0]).astype(float) * float(tick_period_s)
-        if tick_period_s is not None and tick_period_s > 0
-        else np.full(sensor_time_unwrapped.size, np.nan, dtype=float)
-    )
 
     stream = pd.DataFrame({
         "time_s": time_s,
@@ -423,8 +581,9 @@ def extract_imu_stream(
         "sensor_time_u24": sensor_time_u24.astype(np.uint32),
         "sensor_time_unwrapped": sensor_time_unwrapped,
         "native_time_s": native_time_s,
+        "clock_epoch": clock_epoch,
         "sample_age_us": age_us,
-        "status_flags": numeric["status"].astype(np.uint16),
+        "status_flags": flags,
         "temperature_raw_count": numeric["temperature_raw"].astype(np.int16),
         "temperature_c": numeric["temperature_raw"].astype(float) / 512.0 + 23.0,
     })
@@ -455,21 +614,8 @@ def extract_imu_stream(
                 for axis_index, axis in enumerate("xyz"):
                     stream[f"body_{vector}_{axis}_{unit_suffix}"] = body[:, axis_index]
 
-    sequence_gap_mask = sequence_delta > 1
-    sequence_duplicate_mask = sequence_delta == 0
-    sequence_reverse_mask = sequence_delta < 0
-    sequence_span = int(np.max(sequence_unwrapped) - np.min(sequence_unwrapped) + 1)
-    coverage = float(len(stream.index) / sequence_span) if sequence_span > 0 else None
-
-    expected_tick_delta: Optional[float] = None
-    tick_residual = np.full(sensor_time_delta.size, np.nan, dtype=float)
-    if rate_hz is not None and rate_hz > 0 and tick_period_s is not None and tick_period_s > 0:
-        expected_tick_delta = 1.0 / (float(rate_hz) * float(tick_period_s))
-        tick_residual = sensor_time_delta.astype(float) - sequence_delta.astype(float) * expected_tick_delta
-    tick_discontinuity_mask = np.isfinite(tick_residual) & (np.abs(tick_residual) > 0.5)
-
     positive_native_delta = sensor_time_delta[sensor_time_delta > 0]
-    effective_odr_hz: Optional[float] = None
+    native_grid_odr_hz: Optional[float] = None
     if tick_period_s is not None and positive_native_delta.size:
         per_sample_tick = positive_native_delta.astype(float)
         positive_sequence_delta = sequence_delta[sensor_time_delta > 0]
@@ -478,9 +624,38 @@ def extract_imu_stream(
             per_sample_tick = per_sample_tick[usable] / positive_sequence_delta[usable].astype(float)
         median_tick = float(np.median(per_sample_tick)) if per_sample_tick.size else 0.0
         if median_tick > 0:
-            effective_odr_hz = 1.0 / (median_tick * float(tick_period_s))
+            native_grid_odr_hz = 1.0 / (median_tick * float(tick_period_s))
 
-    flags = stream["status_flags"].to_numpy(dtype=np.uint16)
+    clock_rate_base = native_grid_odr_hz or rate_hz
+    if clock_rate_base is not None:
+        for fit in clock_fits:
+            if fit.get("available") and float(fit["scale"]) > 0:
+                fit["logger_relative_odr_hz"] = float(clock_rate_base) / float(fit["scale"])
+    fitted_rates = [
+        float(fit["logger_relative_odr_hz"])
+        for fit in clock_fits
+        if fit.get("available") and fit.get("logger_relative_odr_hz") is not None
+    ]
+    logger_relative_odr_hz = float(np.median(fitted_rates)) if fitted_rates else None
+    available_clock_fits = [fit for fit in clock_fits if fit.get("available")]
+    if len(clock_fits) == 1:
+        clock_fit_summary = copy.deepcopy(clock_fits[0])
+    elif available_clock_fits:
+        median_scale = float(np.median([float(fit["scale"]) for fit in available_clock_fits]))
+        clock_fit_summary = {
+            "available": len(available_clock_fits) == len(clock_fits),
+            "epoch_count": len(clock_fits),
+            "sample_count": int(sum(int(fit.get("sample_count", 0)) for fit in available_clock_fits)),
+            "inlier_count": int(sum(int(fit.get("inlier_count", 0)) for fit in available_clock_fits)),
+            "scale": median_scale,
+            "drift_ppm": float((median_scale - 1.0) * 1_000_000.0),
+            "residual_rms_us": float(max(float(fit.get("residual_rms_us", 0.0)) for fit in available_clock_fits)),
+            "residual_p95_abs_us": float(max(float(fit.get("residual_p95_abs_us", 0.0)) for fit in available_clock_fits)),
+            "residual_max_abs_us": float(max(float(fit.get("residual_max_abs_us", 0.0)) for fit in available_clock_fits)),
+        }
+    else:
+        clock_fit_summary = {"available": False, "epoch_count": len(clock_fits), "sample_count": 0}
+
     continuity_boundary = np.zeros(len(stream.index), dtype=bool)
     if len(stream.index) > 1:
         continuity_boundary[1:] = (sequence_delta != 1) | tick_discontinuity_mask
@@ -550,6 +725,8 @@ def extract_imu_stream(
         warnings.append("out_of_order_sequence_values")
     if tick_discontinuity_mask.any():
         warnings.append("sensor_time_discontinuities")
+    if native_time_s.size and np.isfinite(native_time_s).any() and logger_relative_odr_hz is None:
+        warnings.append("clock_fit_unavailable")
     for name in ("fifo_discontinuity_before", "queue_drop_before", "sensor_recovery_before", "timing_degraded"):
         if flag_qc[name]["sample_count"]:
             warnings.append(name)
@@ -566,7 +743,11 @@ def extract_imu_stream(
         "warnings": list(dict.fromkeys(warnings)),
         "sample_count": int(len(stream.index)),
         "nominal_odr_hz": float(rate_hz) if rate_hz is not None else None,
-        "effective_odr_hz": effective_odr_hz,
+        "native_grid_odr_hz": native_grid_odr_hz,
+        "logger_relative_odr_hz": logger_relative_odr_hz,
+        # Retain the established field name, but make it represent the rate of
+        # canonical time_s rather than the nominal rate of the IMU's own clock.
+        "effective_odr_hz": logger_relative_odr_hz or native_grid_odr_hz,
         "sequence": {
             "gap_events": int(np.count_nonzero(sequence_gap_mask)),
             "missing_samples": int(np.sum(sequence_delta[sequence_gap_mask] - 1, dtype=np.int64)),
@@ -581,7 +762,8 @@ def extract_imu_stream(
             "discontinuity_events": int(np.count_nonzero(tick_discontinuity_mask)),
             "duplicates": int(np.count_nonzero(sensor_time_delta == 0)),
             "out_of_order": int(np.count_nonzero(sensor_time_delta < 0)),
-            "clock_fit_to_logger": _clock_fit(native_time_s, host_sample_time),
+            "clock_fit_to_logger": clock_fit_summary,
+            "clock_epochs": copy.deepcopy(clock_fits),
         },
         "continuous_segments": {
             "count": int(len(segment_counts)),
@@ -612,7 +794,15 @@ def extract_imu_stream(
         "end": layout.get("end"),
         "mount_point": layout.get("mount_point"),
         "nominal_sample_rate_hz": float(rate_hz) if rate_hz is not None else None,
+        "logger_relative_sample_rate_hz": logger_relative_odr_hz,
         "timebase_source": timebase_source,
+        "time_columns": {
+            "canonical": "time_s",
+            "canonical_clock": "logger_monotonic",
+            "native_nominal": "native_time_s",
+            "observation": "host_sample_time_s",
+        },
+        "clock_epochs": copy.deepcopy(clock_fits),
         "raw_samples_preserved": True,
         "coordinate_frames": ["sensor_native"] + (["body_local"] if isinstance(mount_matrix, np.ndarray) else []),
         "mount_transform": copy.deepcopy(config.get("mount_transform")) if isinstance(config, Mapping) else None,
@@ -684,18 +874,19 @@ def build_imu_streams(session: dict[str, Any], *, strict: bool = False) -> dict[
             name = _stream_name(sensor, existing_names)
         existing_names.add(name)
         stream_dfs[name] = stream
+        _mask_invalid_primary_rows(session, layouts[sensor])
         has_discontinuity = report["continuous_segments"]["count"] > 1
-        nominal_rate = report.get("nominal_odr_hz")
-        if not has_discontinuity and nominal_rate is not None:
+        effective_rate = report.get("logger_relative_odr_hz") or report.get("native_grid_odr_hz")
+        if not has_discontinuity and effective_rate is not None:
             register_stream_metadata(
                 session,
                 stream_name=name,
                 kind="uniform",
                 time_col="time_s",
-                sample_rate_hz=float(nominal_rate),
-                dt_s=1.0 / float(nominal_rate),
+                sample_rate_hz=float(effective_rate),
+                dt_s=1.0 / float(effective_rate),
                 jitter_frac=0.0,
-                notes="Dense valid-only IMU native stream reconstructed from sparse logger rows",
+                notes="Dense valid-only IMU stream aligned to the logger monotonic clock",
             )
         else:
             register_stream_metadata(
@@ -703,7 +894,7 @@ def build_imu_streams(session: dict[str, Any], *, strict: bool = False) -> dict[
                 stream_name=name,
                 kind="intermittent",
                 time_col="time_s",
-                notes="Valid-only IMU stream with explicit native sequence/timing discontinuities",
+                notes="Logger-aligned valid-only IMU stream with explicit native sequence/timing discontinuities",
             )
         stream_meta["stream_name"] = name
         stream_meta["timebase_kind"] = "intermittent" if has_discontinuity else "uniform"

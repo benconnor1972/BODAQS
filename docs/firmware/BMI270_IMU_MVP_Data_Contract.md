@@ -1,7 +1,7 @@
 # BMI270 IMU MVP Data Contract
 
 - Status: Accepted
-- Contract ID: bodaqs.bmi270_imu_mvp.v1
+- Contract ID: bodaqs.bmi270_imu_mvp.v2
 - Scope: Normative data contract for the accepted BMI270 IMU MVP plan
 - Related plan: [BMI270 IMU MVP Implementation Plan](BMI270_IMU_MVP_Implementation_Plan.md)
 
@@ -30,19 +30,11 @@ The BODAQS bicycle body frame is right-handed:
 - positive Y: left;
 - positive Z: up.
 
-Configuration fields mount_x, mount_y, and mount_z define each local mounted-body axis as one signed sensor-native axis. For example:
+Installation orientation is obtained through the logger calibration workflow. The user declares which sensor-native plane (`xy`, `yz`, or `xz`) is parallel to the bicycle centre plane and which signed normal points toward bicycle positive Y (left). With the bicycle stationary, upright, level fore/aft, and with steering straight where applicable, firmware averages 800 native samples.
 
-    mount_x=+y
-    mount_y=-x
-    mount_z=+z
+The declared signed normal defines `body_local` positive Y. Mean stationary acceleration defines positive Z after it is projected into the declared plane, and positive X is calculated as `Y cross Z`. Projection deliberately removes an accepted small roll error from the saved transform. Capture is rejected when the observed gravity component normal to the plane corresponds to more than 2 degrees of roll.
 
-means:
-
-    body_local_x = sensor_y
-    body_local_y = -sensor_x
-    body_local_z = sensor_z
-
-A valid transform uses each of x, y, and z exactly once and has determinant +1. Invalid, duplicate, missing, or left-handed mappings are configuration errors.
+The result is a right-handed orthonormal 3 by 3 rotation matrix mapping `sensor_native` vectors to `body_local`. Firmware persists a compact quaternion internally, but session metadata uses the explicit matrix representation. An IMU without an accepted orientation may still record sensor-native raw evidence and must report `orientation_status=unset` rather than claiming an identity transform.
 
 Raw columns remain in BMI270 sensor-native axes. The transform is stored as metadata and applied by host processing.
 
@@ -196,8 +188,14 @@ The host:
 1. filters valid rows;
 2. unwraps sensor_time_u24 and seq_u24 modulo 2^24;
 3. checks both for gaps, duplicates, reversals, and inconsistent increments;
-4. reconstructs the 200 Hz native timeline from sensor ticks;
-5. treats the 500 Hz row time as an emission observation, not the sample time.
+4. reconstructs the nominal 200 Hz native timeline from sensor ticks;
+5. fits the native timeline to acquisition-age-corrected logger observations for each continuous sensor-clock epoch;
+6. uses the fitted logger-clock timeline as canonical analysis time while preserving the nominal native timeline;
+7. treats the 500 Hz row time as an emission observation, not the sample time.
+
+The configured ODR and 39.0625 microsecond sensor-time resolution are nominal values in the BMI270 clock domain. Consumers must not assume that nominal sensor seconds equal logger seconds. They should preserve and report both the native-grid ODR and the logger-relative ODR obtained from the clock fit.
+
+In a processed dataframe, consumers may replace sample-dependent placeholders with null values when `sample_valid` is not one. The source BDQ and any raw-evidence dataframe must retain the encoded placeholders and validity field unchanged.
 
 ## 10. Session identity and configuration metadata
 
@@ -217,12 +215,24 @@ The sensor metadata object must include:
 - FIFO mode, enabled content, polling rate, and selected watermark;
 - sensor-time tick and modulus;
 - temperature sampling semantics and freshness limit;
-- mounting transform;
+- orientation status and, when accepted, the rotation-matrix mounting transform;
+- assisted-orientation method, declared plane and normal, capture time, sample count, stationary-quality metrics, and observed roll deviation;
 - calibration_ref, including an empty value when none is selected;
 - Bosch driver revision;
 - firmware version.
 
-Metadata field names should use lower snake case. Session data remains usable if optional descriptive fields are absent, but contract_id, effective ranges/rates, timing constants, mounting transform, and validity semantics are required.
+Metadata field names should use lower snake case. Session data remains usable if optional descriptive fields are absent. Contract ID, effective ranges/rates, timing constants, orientation status, and validity semantics are required; a mounting transform is required only when orientation status is `accepted`.
+
+The accepted transform shape is:
+
+    "mount_transform": {
+      "from": "sensor_native",
+      "to": "body_local",
+      "representation": "rotation_matrix",
+      "matrix": [[...], [...], [...]]
+    }
+
+The matrix rows are the `body_local` X, Y, and Z basis vectors expressed in sensor-native coordinates. Host processing multiplies sensor-native row vectors by the matrix transpose. Raw sensor-native channels remain authoritative and unchanged.
 
 ## 11. Startup stationary observation
 

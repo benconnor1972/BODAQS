@@ -72,6 +72,9 @@ struct BMI270StartupObservationResult {
   uint16_t configuredSeconds = 0;
   uint32_t targetSampleSlots = 0;
   uint32_t validSamples = 0;
+  uint32_t settlingSampleSlots = 0;
+  uint32_t measurementStartSequence = 0;
+  uint16_t settlingStatusMask = 0;
   uint32_t temperatureSamples = 0;
   double gyroMeanRaw[3] {};
   double gyroStdRaw[3] {};
@@ -93,6 +96,8 @@ public:
   static constexpr double kAccelStdMaximumG = 0.03;
   static constexpr double kGyroStdMaximumDps = 0.5;
   static constexpr double kGyroMagnitudeMaximumDps = 5.0;
+  static constexpr uint32_t kSettlingCleanSamples = 20;
+  static constexpr uint32_t kMaximumSettlingSlots = 200;
 
   void begin(uint16_t configuredSeconds) {
     result_ = BMI270StartupObservationResult{};
@@ -107,6 +112,8 @@ public:
     temperature_.reset();
     maximumGyroMagnitudeRaw_ = 0.0;
     qualityIncident_ = false;
+    windowStarted_ = false;
+    consecutiveCleanSamples_ = 0;
   }
 
   void observe(
@@ -121,7 +128,34 @@ public:
       bool temperatureFresh,
       uint16_t statusFlags) {
     if (result_.state != BMI270StartupObservationState::Collecting) return;
-    if (sequence >= result_.targetSampleSlots) {
+
+    constexpr uint16_t kRejectedStatus =
+        BMI270ImuStatus::kFifoDiscontinuityBefore |
+        BMI270ImuStatus::kQueueDropBefore |
+        BMI270ImuStatus::kSensorRecoveryBefore |
+        BMI270ImuStatus::kTimingDegraded;
+    const uint16_t rejectedStatus = statusFlags & kRejectedStatus;
+
+    if (!windowStarted_) {
+      ++result_.settlingSampleSlots;
+      result_.settlingStatusMask |= rejectedStatus;
+      if (rejectedStatus) {
+        consecutiveCleanSamples_ = 0;
+      } else {
+        ++consecutiveCleanSamples_;
+      }
+      if (consecutiveCleanSamples_ >= kSettlingCleanSamples) {
+        windowStarted_ = true;
+        result_.measurementStartSequence = sequence + 1u;
+      } else if (result_.settlingSampleSlots >= kMaximumSettlingSlots) {
+        qualityIncident_ = true;
+        finish();
+      }
+      return;
+    }
+
+    const uint32_t measurementSlot = sequence - result_.measurementStartSequence;
+    if (measurementSlot >= result_.targetSampleSlots) {
       finish();
       return;
     }
@@ -144,19 +178,18 @@ public:
       temperature_.add(static_cast<double>(temperatureRaw) / 512.0 + 23.0);
     }
 
-    const uint16_t rejectedStatus =
-        BMI270ImuStatus::kFifoDiscontinuityBefore |
-        BMI270ImuStatus::kQueueDropBefore |
-        BMI270ImuStatus::kSensorRecoveryBefore |
-        BMI270ImuStatus::kTimingDegraded;
-    if (statusFlags & rejectedStatus) qualityIncident_ = true;
+    if (rejectedStatus) qualityIncident_ = true;
 
-    if (sequence + 1u >= result_.targetSampleSlots) finish();
+    if (measurementSlot + 1u >= result_.targetSampleSlots) finish();
   }
 
   void noteQualityIncident() {
-    if (result_.state == BMI270StartupObservationState::Collecting) {
+    if (result_.state != BMI270StartupObservationState::Collecting) return;
+    if (windowStarted_) {
       qualityIncident_ = true;
+    } else {
+      consecutiveCleanSamples_ = 0;
+      result_.settlingStatusMask |= BMI270ImuStatus::kQueueDropBefore;
     }
   }
 
@@ -180,23 +213,25 @@ public:
       rejection |= BMI270StartupRejection::kInsufficientSamples;
     }
     if (qualityIncident_) rejection |= BMI270StartupRejection::kQualityIncident;
-    if (fabs(result_.accelMagnitudeMeanG - 1.0) > kAccelMeanToleranceG) {
-      rejection |= BMI270StartupRejection::kAccelMeanOutsideGravityBand;
-    }
-    if (result_.accelMagnitudeStdG > kAccelStdMaximumG) {
-      rejection |= BMI270StartupRejection::kAccelMagnitudeUnstable;
-    }
-    if (result_.gyroStdRaw[0] / kGyroCountsPerDps > kGyroStdMaximumDps) {
-      rejection |= BMI270StartupRejection::kGyroXUnstable;
-    }
-    if (result_.gyroStdRaw[1] / kGyroCountsPerDps > kGyroStdMaximumDps) {
-      rejection |= BMI270StartupRejection::kGyroYUnstable;
-    }
-    if (result_.gyroStdRaw[2] / kGyroCountsPerDps > kGyroStdMaximumDps) {
-      rejection |= BMI270StartupRejection::kGyroZUnstable;
-    }
-    if (result_.maximumGyroMagnitudeDps > kGyroMagnitudeMaximumDps) {
-      rejection |= BMI270StartupRejection::kGyroMotionDetected;
+    if (result_.validSamples > 0) {
+      if (fabs(result_.accelMagnitudeMeanG - 1.0) > kAccelMeanToleranceG) {
+        rejection |= BMI270StartupRejection::kAccelMeanOutsideGravityBand;
+      }
+      if (result_.accelMagnitudeStdG > kAccelStdMaximumG) {
+        rejection |= BMI270StartupRejection::kAccelMagnitudeUnstable;
+      }
+      if (result_.gyroStdRaw[0] / kGyroCountsPerDps > kGyroStdMaximumDps) {
+        rejection |= BMI270StartupRejection::kGyroXUnstable;
+      }
+      if (result_.gyroStdRaw[1] / kGyroCountsPerDps > kGyroStdMaximumDps) {
+        rejection |= BMI270StartupRejection::kGyroYUnstable;
+      }
+      if (result_.gyroStdRaw[2] / kGyroCountsPerDps > kGyroStdMaximumDps) {
+        rejection |= BMI270StartupRejection::kGyroZUnstable;
+      }
+      if (result_.maximumGyroMagnitudeDps > kGyroMagnitudeMaximumDps) {
+        rejection |= BMI270StartupRejection::kGyroMotionDetected;
+      }
     }
     result_.rejectionMask = rejection;
     result_.state = rejection
@@ -213,6 +248,8 @@ private:
   BMI270RunningStats temperature_;
   double maximumGyroMagnitudeRaw_ = 0.0;
   bool qualityIncident_ = false;
+  bool windowStarted_ = false;
+  uint32_t consecutiveCleanSamples_ = 0;
 };
 
 struct BMI270AgeSummary {

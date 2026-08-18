@@ -215,6 +215,7 @@ private:
 
   uint32_t nextSequence_ = 0;
   uint16_t pendingStatus_ = 0;
+  uint16_t preSessionBoundaryStatus_ = 0;
   uint32_t pendingSkippedFrames_ = 0;
   uint32_t consecutiveDrainFailures_ = 0;
   uint8_t consecutiveRecoveryFailures_ = 0;
