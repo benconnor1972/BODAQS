@@ -6,11 +6,77 @@
 
 namespace {
 
-void appendIndent_(String& out, uint8_t depth) {
+class MetadataOutput {
+public:
+  virtual ~MetadataOutput() = default;
+
+  virtual bool reserve(size_t bytes) = 0;
+  virtual bool append(const char* text, size_t length) = 0;
+
+  bool ok() const { return ok_; }
+
+  MetadataOutput& operator+=(const __FlashStringHelper* text) {
+    const char* chars = reinterpret_cast<const char*>(text);
+    append_(chars, chars ? strlen(chars) : 0);
+    return *this;
+  }
+
+  MetadataOutput& operator+=(const char* text) {
+    append_(text, text ? strlen(text) : 0);
+    return *this;
+  }
+
+  MetadataOutput& operator+=(const String& text) {
+    append_(text.c_str(), text.length());
+    return *this;
+  }
+
+  MetadataOutput& operator+=(char value) {
+    append_(&value, 1);
+    return *this;
+  }
+
+protected:
+  void append_(const char* text, size_t length) {
+    if (ok_ && length) ok_ = append(text, length);
+  }
+
+private:
+  bool ok_ = true;
+};
+
+class StringMetadataOutput final : public MetadataOutput {
+public:
+  explicit StringMetadataOutput(String& target) : target_(target) {}
+
+  bool reserve(size_t bytes) override { return target_.reserve(bytes); }
+  bool append(const char* text, size_t length) override {
+    return target_.concat(text, length);
+  }
+
+private:
+  String& target_;
+};
+
+class PrintMetadataOutput final : public MetadataOutput {
+public:
+  explicit PrintMetadataOutput(Print& target) : target_(target) {}
+
+  // Print destinations do not need a contiguous metadata allocation.
+  bool reserve(size_t) override { return true; }
+  bool append(const char* text, size_t length) override {
+    return target_.write(reinterpret_cast<const uint8_t*>(text), length) == length;
+  }
+
+private:
+  Print& target_;
+};
+
+void appendIndent_(MetadataOutput& out, uint8_t depth) {
   while (depth--) out += F("  ");
 }
 
-void appendJsonString_(String& out, const char* s) {
+void appendJsonString_(MetadataOutput& out, const char* s) {
   out += '"';
   if (!s) s = "";
   for (const char* p = s; *p; ++p) {
@@ -34,34 +100,34 @@ void appendJsonString_(String& out, const char* s) {
   out += '"';
 }
 
-void appendKey_(String& out, uint8_t depth, const char* key) {
+void appendKey_(MetadataOutput& out, uint8_t depth, const char* key) {
   appendIndent_(out, depth);
   appendJsonString_(out, key);
   out += F(": ");
 }
 
-void appendKeyString_(String& out, uint8_t depth, const char* key, const char* value, bool comma = true) {
+void appendKeyString_(MetadataOutput& out, uint8_t depth, const char* key, const char* value, bool comma = true) {
   appendKey_(out, depth, key);
   appendJsonString_(out, value);
   if (comma) out += ',';
   out += '\n';
 }
 
-void appendKeyBool_(String& out, uint8_t depth, const char* key, bool value, bool comma = true) {
+void appendKeyBool_(MetadataOutput& out, uint8_t depth, const char* key, bool value, bool comma = true) {
   appendKey_(out, depth, key);
   out += value ? F("true") : F("false");
   if (comma) out += ',';
   out += '\n';
 }
 
-void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint32_t value, bool comma = true) {
+void appendKeyUInt_(MetadataOutput& out, uint8_t depth, const char* key, uint32_t value, bool comma = true) {
   appendKey_(out, depth, key);
   out += String(value);
   if (comma) out += ',';
   out += '\n';
 }
 
-void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
+void appendKeyHex8_(MetadataOutput& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[7];
   snprintf(buf, sizeof(buf), "\"0x%02X\"", (unsigned)value);
@@ -70,7 +136,7 @@ void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, 
   out += '\n';
 }
 
-void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
+void appendKeyHex16_(MetadataOutput& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[9];
   snprintf(buf, sizeof(buf), "\"0x%04X\"", (unsigned)value);
@@ -79,7 +145,7 @@ void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value
   out += '\n';
 }
 
-void appendKeyUInt64_(String& out, uint8_t depth, const char* key, uint64_t value, bool comma = true) {
+void appendKeyUInt64_(MetadataOutput& out, uint8_t depth, const char* key, uint64_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[24];
   snprintf(buf, sizeof(buf), "%llu", (unsigned long long)value);
@@ -88,14 +154,14 @@ void appendKeyUInt64_(String& out, uint8_t depth, const char* key, uint64_t valu
   out += '\n';
 }
 
-void appendKeyInt_(String& out, uint8_t depth, const char* key, int32_t value, bool comma = true) {
+void appendKeyInt_(MetadataOutput& out, uint8_t depth, const char* key, int32_t value, bool comma = true) {
   appendKey_(out, depth, key);
   out += String(value);
   if (comma) out += ',';
   out += '\n';
 }
 
-void appendKeyFloat_(String& out, uint8_t depth, const char* key, float value, bool comma = true) {
+void appendKeyFloat_(MetadataOutput& out, uint8_t depth, const char* key, float value, bool comma = true) {
   appendKey_(out, depth, key);
   out += String(value, 6);
   if (comma) out += ',';
@@ -128,7 +194,7 @@ const char* imuStartupRejectionName_(uint8_t state, uint16_t mask) {
 }
 
 void appendImuQualityDiagnostics_(
-    String& out,
+    MetadataOutput& out,
     uint8_t depth,
     const SensorRuntimeDiagnostics& diagnostics) {
   appendKey_(out, depth, "near_rail_counts");
@@ -229,14 +295,14 @@ void appendImuQualityDiagnostics_(
   out += F("},\n");
 }
 
-void appendCsvRefByHeader_(String& out, uint8_t depth, const char* header) {
+void appendCsvRefByHeader_(MetadataOutput& out, uint8_t depth, const char* header) {
   appendKey_(out, depth, "csv_ref");
   out += F("{ \"by\": \"header\", \"header\": ");
   appendJsonString_(out, header);
   out += F(" },\n");
 }
 
-void appendCsvRefByIndex_(String& out, uint8_t depth, uint8_t index) {
+void appendCsvRefByIndex_(MetadataOutput& out, uint8_t depth, uint8_t index) {
   appendKey_(out, depth, "csv_ref");
   out += F("{ \"by\": \"index\", \"index\": ");
   out += String((unsigned)index);
@@ -272,7 +338,7 @@ const I2CBusSchedulerTimingStats& emptyI2CSchedulerTiming_() {
   return empty;
 }
 
-void appendTimingSummary_(String& out, uint8_t depth, const char* key, const TimingSummary& s, bool comma = true) {
+void appendTimingSummary_(MetadataOutput& out, uint8_t depth, const char* key, const TimingSummary& s, bool comma = true) {
   appendKey_(out, depth, key);
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "count", s.count);
@@ -294,7 +360,7 @@ void appendTimingSummary_(String& out, uint8_t depth, const char* key, const Tim
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendAdcTiming_(String& out, uint8_t depth, const ExternalAdcTimingStats& stats, bool comma = true) {
+void appendAdcTiming_(MetadataOutput& out, uint8_t depth, const ExternalAdcTimingStats& stats, bool comma = true) {
   appendKey_(out, depth, "external_adc_timing");
   out += F("{\n");
   bool wroteAny = false;
@@ -355,7 +421,7 @@ void appendAdcTiming_(String& out, uint8_t depth, const ExternalAdcTimingStats& 
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendSensorTiming_(String& out, uint8_t depth, const SensorTimingStats& stats, bool comma = true) {
+void appendSensorTiming_(MetadataOutput& out, uint8_t depth, const SensorTimingStats& stats, bool comma = true) {
   appendKey_(out, depth, "sensor_timing");
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "sensor_count", stats.sensorCount);
@@ -390,7 +456,7 @@ void appendSensorTiming_(String& out, uint8_t depth, const SensorTimingStats& st
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendI2CSchedulerTiming_(String& out,
+void appendI2CSchedulerTiming_(MetadataOutput& out,
                                uint8_t depth,
                                const I2CBusSchedulerTimingStats& stats,
                                bool comma = true) {
@@ -463,7 +529,7 @@ void appendI2CSchedulerTiming_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendI2CBusDiagnostics_(String& out,
+void appendI2CBusDiagnostics_(MetadataOutput& out,
                               uint8_t depth,
                               const board::BoardProfile* bp,
                               bool comma = true) {
@@ -502,7 +568,7 @@ void appendI2CBusDiagnostics_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendRunStats_(String& out, uint8_t depth, const LogMetadataContext& ctx, bool comma = true) {
+void appendRunStats_(MetadataOutput& out, uint8_t depth, const LogMetadataContext& ctx, bool comma = true) {
   appendKey_(out, depth, "run_stats");
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "samples_dropped", ctx.samplesDropped);
@@ -561,7 +627,7 @@ void makeUniqueColumnId_(const SensorColumnDescriptor* cols,
   }
 }
 
-void appendDeviceConfig_(String& out, const SensorDeviceConfigDescriptor& cfg) {
+void appendDeviceConfig_(MetadataOutput& out, const SensorDeviceConfigDescriptor& cfg) {
   appendKey_(out, 3, "device_config");
   out += F("{\n");
   appendKeyString_(out, 4, "kind", cfg.kind);
@@ -603,7 +669,7 @@ void appendDeviceConfig_(String& out, const SensorDeviceConfigDescriptor& cfg) {
   out += F("},\n");
 }
 
-void appendImuRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true) {
+void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma = true) {
   uint8_t imuCount = 0;
   const uint8_t sensorCount = SensorManager::count();
   SensorRuntimeDiagnostics diagnostics;
@@ -734,7 +800,7 @@ void appendImuRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true)
 }
 
 void appendFloatVector3_(
-    String& out,
+    MetadataOutput& out,
     uint8_t depth,
     const char* key,
     const float values[3],
@@ -749,7 +815,7 @@ void appendFloatVector3_(
 }
 
 void appendRotationMatrix_(
-    String& out,
+    MetadataOutput& out,
     uint8_t depth,
     const float matrix[3][3],
     bool comma = true) {
@@ -768,7 +834,7 @@ void appendRotationMatrix_(
   out += comma ? F("],\n") : F("]\n");
 }
 
-void appendImuConfig_(String& out, const SensorImuConfigDescriptor& imu) {
+void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu) {
   appendKey_(out, 3, "imu_config");
   out += F("{\n");
   appendKeyString_(out, 4, "contract_id", imu.contractId);
@@ -887,7 +953,7 @@ void appendImuConfig_(String& out, const SensorImuConfigDescriptor& imu) {
   out += F("},\n");
 }
 
-void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
+void appendSensor_(MetadataOutput& out, const SensorMetadataDescriptor& s, bool comma) {
   appendIndent_(out, 2);
   appendJsonString_(out, s.sensorId);
   out += F(": {\n");
@@ -936,7 +1002,7 @@ void appendSensor_(String& out, const SensorMetadataDescriptor& s, bool comma) {
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendSignalColumn_(String& out,
+void appendSignalColumn_(MetadataOutput& out,
                          const SensorColumnDescriptor* cols,
                          uint16_t idx,
                          bool comma) {
@@ -995,7 +1061,7 @@ void appendSignalColumn_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendDiagnosticColumn_(String& out,
+void appendDiagnosticColumn_(MetadataOutput& out,
                              const SensorColumnDescriptor* cols,
                              uint16_t idx,
                              bool comma) {
@@ -1100,7 +1166,7 @@ String localStartedAtFromSessionId_(const char* sessionId) {
   return String();
 }
 
-void appendSynBikeRawColumn_(String& out,
+void appendSynBikeRawColumn_(MetadataOutput& out,
                              const char* key,
                              uint8_t index,
                              const char* end,
@@ -1128,7 +1194,7 @@ void appendSynBikeRawColumn_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendSynBikeBlankFloatColumn_(String& out,
+void appendSynBikeBlankFloatColumn_(MetadataOutput& out,
                                     const char* key,
                                     uint8_t index,
                                     const char* quantity,
@@ -1148,7 +1214,7 @@ void appendSynBikeBlankFloatColumn_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
+bool writeSynBikeRawMetadata_(const LogMetadataContext& ctx, MetadataOutput& out) {
   SensorManager::SynBikeRawBindings bindings;
   (void)SensorManager::resolveSynBikeRawBindings(bindings);
 
@@ -1158,7 +1224,10 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
   const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
   String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
 
-  out.reserve(2048 + (sensorsWritten * 900));
+  if (!out.reserve(2048 + (sensorsWritten * 900))) {
+    delete[] sensors;
+    return false;
+  }
   out += F("{\n");
 
   appendKey_(out, 1, "contract");
@@ -1261,7 +1330,7 @@ bool buildSynBikeRawMetadata_(const LogMetadataContext& ctx, String& out) {
 
   out += F("}\n");
   delete[] sensors;
-  return true;
+  return out.ok();
 }
 
 } // namespace
@@ -1277,10 +1346,9 @@ String LogMetadataWriter_metadataPathForCsv(const char* csvPath) {
   return path;
 }
 
-bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
-  out = "";
+static bool writeMetadata_(const LogMetadataContext& ctx, MetadataOutput& out) {
   if (ctx.logFormat == LogFormat::SynBikeRaw) {
-    return buildSynBikeRawMetadata_(ctx, out);
+    return writeSynBikeRawMetadata_(ctx, out);
   }
 
   const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
@@ -1302,7 +1370,11 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
   const char* timeDtype = ctx.humanReadableTime ? "string" : "uint64";
   String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
 
-  out.reserve(2048 + (columnsWritten * 520) + (sensorsWritten * 900));
+  if (!out.reserve(2048 + (columnsWritten * 520) + (sensorsWritten * 900))) {
+    delete[] sensors;
+    delete[] columns;
+    return false;
+  }
   out += F("{\n");
 
   appendKey_(out, 1, "contract");
@@ -1422,5 +1494,16 @@ bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
 
   delete[] sensors;
   delete[] columns;
-  return true;
+  return out.ok();
+}
+
+bool LogMetadataWriter_build(const LogMetadataContext& ctx, String& out) {
+  out = "";
+  StringMetadataOutput writer(out);
+  return writeMetadata_(ctx, writer);
+}
+
+bool LogMetadataWriter_write(const LogMetadataContext& ctx, Print& out) {
+  PrintMetadataOutput writer(out);
+  return writeMetadata_(ctx, writer);
 }

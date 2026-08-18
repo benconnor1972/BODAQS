@@ -106,3 +106,12 @@ This project exists for many reasons but three specific precursors stand out:
  - ShockWiz: Nigel Wade's ground-breaking product, now owned by SRAM, is in a category of one: mountain bike suspension analysis products that can be set up by an average user in under 20 minutes and provide useful feedback to the vast majority of riders. I was a happy ShockWiz user for many years and probably still would be if I hadn't discovered coil suspension. An elegant product that extracts maximum insight from minimum hardware, with a simplicity that hides some very clever engineering.
  - Sufni: The first open-source mountain bike data acquisition project to cross my path. For a variety of reasons I decided to take a different path rather than build one, but it provided the seed of the idea and the use of Lego for sensor mounting deserves a credit of its own.
  - RepRap: The movement that gave birth to cheap and ubiquitous 3D printing wasn't driven by market analysis by some big corporation, but by people who wanted a thing they couldn't buy (at a reasonable price). The community development and sharing ethos persists to this day and the products available are massively better and cheaper than what was available just a few years ago.
+
+## Project maintenance
+
+BODAQS is maintained by [Ben Connor](https://github.com/benconnor1972).
+
+Contact: benconnor1972@gmail.com
+
+Official release and code-signing responsibilities are described in the
+[Code Signing Policy](CODE_SIGNING_POLICY.md).
