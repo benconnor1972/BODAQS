@@ -45,7 +45,7 @@ Use a right-handed bicycle body frame:
 - positive Y: left;
 - positive Z: up.
 
-Use ENU for any later world-frame output. The physical installation is described by a signed axis permutation from the BMI270 package axes into a local frame fixed to the mounted mechanical assembly (`body_local`). For a frame-mounted sensor this coincides with the bicycle body frame. Steering and unsprung sensors require additional, potentially time-varying articulation information before their values can be expressed in the main bicycle body frame.
+Use ENU for any later world-frame output. The physical installation is described by a right-handed rotation matrix from the BMI270 package axes into a local frame fixed to the mounted mechanical assembly (`body_local`). The matrix is produced by the assisted gravity-plus-declared-plane workflow. For a frame-mounted sensor this coincides with the bicycle body frame. Steering and unsprung sensors require additional, potentially time-varying articulation information before their values can be expressed in the main bicycle body frame.
 
 The MVP records sensor-native samples and the mounting transform. It does not destructively rotate or bias-correct the stored raw values. Post-processing applies the transform and calibration, preserving the original evidence.
 
@@ -229,7 +229,7 @@ Possible outputs include a low-rate orientation preview or health indication. Ra
 
 ### Required in MVP
 
-- Mounting transform: signed axis permutation configured per sensor and recorded per session.
+- Installation orientation: the user declares the sensor plane parallel to the bicycle centre plane and which signed normal points left; a stationary level capture projects gravity into that plane and records the resulting rotation matrix plus quality evidence.
 - Startup stillness observation: configurable duration; validity based on gyro variance and accelerometer magnitude stability; mean, variance, temperature, sample count, and rejection reason recorded.
 - Calibration reference: optional identifier linking the session to an external versioned calibration record.
 - Raw retention: no calibration setting can suppress the uncorrected raw samples.
@@ -260,9 +260,6 @@ Use a named profile to keep the common configuration short. Proposed logical fie
     sensorN.i2c_bus=1
     sensorN.i2c_addr=104
     sensorN.profile=orientation_200
-    sensorN.mount_x=+x
-    sensorN.mount_y=+y
-    sensorN.mount_z=+z
     sensorN.startup_bias_capture_s=5
     sensorN.calibration_ref=
 

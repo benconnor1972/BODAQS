@@ -634,7 +634,7 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   bool printedOther = false;
   for (size_t d = 0; d < defCount; ++d) {
     const ParamDef& pd = defs[d];
-    if (!pd.key || keyInList_(pd.key, shown, sizeof(shown) / sizeof(shown[0]))) continue;
+    if (!pd.key || pd.hidden || keyInList_(pd.key, shown, sizeof(shown) / sizeof(shown[0]))) continue;
     if (!printedOther) {
       html += F("<h4>Other</h4>");
       printedOther = true;

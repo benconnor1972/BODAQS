@@ -4,7 +4,7 @@
 
 namespace BMI270Profile {
 
-inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v1";
+inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v2";
 inline constexpr const char* kProfileName = "orientation_200";
 inline constexpr const char* kDriverRevision = "41129fcfe39c583ee5462d79195741945d51c1fe";
 
@@ -12,7 +12,7 @@ inline constexpr uint8_t kPrimaryAddress = 0x68;
 inline constexpr uint8_t kSecondaryAddress = 0x69;
 inline constexpr uint16_t kOdrHz = 200;
 inline constexpr uint16_t kLoggerRateHz = 500;
-inline constexpr uint8_t kInitializationAttempts = 3;
+inline constexpr uint8_t kInitializationAttempts = 5;
 
 // Bosch API values pinned by kDriverRevision. Keeping the pure profile
 // definition independent of the Bosch headers makes validation host-testable.

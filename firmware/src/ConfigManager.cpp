@@ -93,6 +93,13 @@ namespace {
     // Legacy sensor-level values are tolerated on load but are not written back.
     if (strcasecmp(key, "i2c_hz") == 0) return false;
 
+    // BMI270 v2 replaces manual signed-axis mounting fields with the assisted
+    // installation-orientation record. Legacy keys are tolerated on load but
+    // are removed the next time configuration is saved.
+    if (strcasecmp(key, "mount_x") == 0 ||
+        strcasecmp(key, "mount_y") == 0 ||
+        strcasecmp(key, "mount_z") == 0) return false;
+
     // `pin` is a legacy fallback for analog sensors. When `ain` is present,
     // the physical GPIO is board-derived and `pin` becomes redundant noise.
     if (strcasecmp(key, "pin") == 0) {

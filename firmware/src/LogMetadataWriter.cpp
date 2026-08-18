@@ -255,6 +255,9 @@ void appendImuQualityDiagnostics_(
   appendKeyUInt_(out, depth + 1, "target_sample_slots", diagnostics.imuStartupTargetSampleSlots);
   appendKeyUInt_(out, depth + 1, "minimum_valid_samples", 800);
   appendKeyUInt_(out, depth + 1, "valid_samples", diagnostics.imuStartupValidSamples);
+  appendKeyUInt_(out, depth + 1, "settling_sample_slots", diagnostics.imuStartupSettlingSampleSlots);
+  appendKeyUInt_(out, depth + 1, "measurement_start_sequence", diagnostics.imuStartupMeasurementStartSequence);
+  appendKeyHex16_(out, depth + 1, "settling_status_mask", diagnostics.imuStartupSettlingStatusMask);
   appendKey_(out, depth + 1, "thresholds");
   out += F("{\n");
   appendKeyFloat_(out, depth + 2, "accel_mean_tolerance_g", 0.15f);
@@ -693,6 +696,16 @@ void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma
     appendIndent_(out, depth + 2);
     appendJsonString_(out, diagnostics.sensorName);
     out += F(": {\n");
+    appendKeyUInt_(out, depth + 3, "device_state", diagnostics.imuDeviceState);
+    appendKeyUInt_(out, depth + 3, "initialization_attempts", diagnostics.imuInitializationAttempts);
+    appendKeyUInt_(out, depth + 3, "initialization_failures", diagnostics.imuInitializationFailures);
+    appendKeyUInt_(out, depth + 3, "initialization_failure_step", diagnostics.imuInitializationFailureStep);
+    appendKeyInt_(out, depth + 3, "initialization_api_result", diagnostics.imuInitializationApiResult);
+    appendKeyBool_(out, depth + 3, "initialization_chip_id_read", diagnostics.imuInitializationChipIdRead);
+    appendKeyBool_(out, depth + 3, "initialization_chip_id_matched", diagnostics.imuInitializationChipIdMatched);
+    appendKeyHex8_(out, depth + 3, "initialization_chip_id", diagnostics.imuInitializationChipId);
+    appendKeyBool_(out, depth + 3, "initialization_cleanup_attempted", diagnostics.imuInitializationCleanupAttempted);
+    appendKeyBool_(out, depth + 3, "initialization_cleanup_ok", diagnostics.imuInitializationCleanupOk);
     appendKeyUInt64_(out, depth + 3, "drain_calls", diagnostics.imuDrainCalls);
     appendKeyUInt64_(out, depth + 3, "drain_passes", diagnostics.imuDrainPasses);
     appendKeyUInt64_(out, depth + 3, "empty_passes", diagnostics.imuEmptyPasses);
@@ -786,6 +799,41 @@ void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma
   out += comma ? F("},\n") : F("}\n");
 }
 
+void appendFloatVector3_(
+    MetadataOutput& out,
+    uint8_t depth,
+    const char* key,
+    const float values[3],
+    bool comma = true) {
+  appendKey_(out, depth, key);
+  out += '[';
+  for (uint8_t i = 0; i < 3; ++i) {
+    if (i) out += F(", ");
+    out += String(values[i], 8);
+  }
+  out += comma ? F("],\n") : F("]\n");
+}
+
+void appendRotationMatrix_(
+    MetadataOutput& out,
+    uint8_t depth,
+    const float matrix[3][3],
+    bool comma = true) {
+  appendKey_(out, depth, "matrix");
+  out += F("[\n");
+  for (uint8_t row = 0; row < 3; ++row) {
+    appendIndent_(out, depth + 1);
+    out += '[';
+    for (uint8_t column = 0; column < 3; ++column) {
+      if (column) out += F(", ");
+      out += String(matrix[row][column], 8);
+    }
+    out += row < 2 ? F("],\n") : F("]\n");
+  }
+  appendIndent_(out, depth);
+  out += comma ? F("],\n") : F("]\n");
+}
+
 void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu) {
   appendKey_(out, 3, "imu_config");
   out += F("{\n");
@@ -807,16 +855,44 @@ void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu)
   appendKeyUInt_(out, 4, "logger_rate_hz", imu.loggerRateHz);
   appendKeyUInt_(out, 4, "imu_rate_hz", imu.imuRateHz);
 
-  appendKey_(out, 4, "mount_transform");
-  out += F("{\n");
-  appendKeyString_(out, 5, "from", "sensor_native");
-  appendKeyString_(out, 5, "to", "body_local");
-  appendKeyString_(out, 5, "representation", "signed_axis_permutation");
-  appendKeyString_(out, 5, "body_x", imu.mountAxis[0]);
-  appendKeyString_(out, 5, "body_y", imu.mountAxis[1]);
-  appendKeyString_(out, 5, "body_z", imu.mountAxis[2], false);
-  appendIndent_(out, 4);
-  out += F("},\n");
+  appendKeyString_(out, 4, "orientation_status",
+                   imu.orientationValid ? "accepted" : "unset");
+  if (imu.orientationValid) {
+    appendKey_(out, 4, "mount_transform");
+    out += F("{\n");
+    appendKeyString_(out, 5, "from", "sensor_native");
+    appendKeyString_(out, 5, "to", "body_local");
+    appendKeyString_(out, 5, "representation", "rotation_matrix");
+    appendRotationMatrix_(out, 5, imu.orientationMatrix, false);
+    appendIndent_(out, 4);
+    out += F("},\n");
+
+    appendKey_(out, 4, "orientation_calibration");
+    out += F("{\n");
+    appendKeyString_(out, 5, "status", "accepted");
+    appendKeyString_(out, 5, "method", "gravity_plus_declared_plane");
+    appendKeyString_(out, 5, "declared_plane", imu.orientationPlane);
+    appendKeyString_(out, 5, "normal_maps_to", "body_positive_y");
+    appendKeyInt_(out, 5, "normal_sign", imu.orientationNormalSign);
+    appendKeyFloat_(out, 5, "maximum_roll_deviation_deg",
+                    ImuOrientation::kMaximumRollDeviationDeg);
+    appendKeyFloat_(out, 5, "observed_roll_deviation_deg",
+                    imu.orientationRollDeviationDeg);
+    appendKeyUInt64_(out, 5, "sample_count", imu.orientationSampleCount);
+    appendKeyUInt64_(out, 5, "captured_at_unix_ms",
+                     imu.orientationCapturedAtUnixMs);
+    appendFloatVector3_(out, 5, "mean_accel_raw", imu.orientationMeanAccelRaw);
+    appendKeyFloat_(out, 5, "accel_magnitude_mean_g",
+                    imu.orientationAccelMagnitudeMeanG);
+    appendKeyFloat_(out, 5, "accel_magnitude_std_g",
+                    imu.orientationAccelMagnitudeStdG);
+    appendKeyFloat_(out, 5, "gyro_std_maximum_dps",
+                    imu.orientationGyroStdMaximumDps);
+    appendKeyFloat_(out, 5, "gyro_magnitude_maximum_dps",
+                    imu.orientationMaximumGyroMagnitudeDps, false);
+    appendIndent_(out, 4);
+    out += F("},\n");
+  }
 
   appendKey_(out, 4, "effective_config");
   out += F("{\n");

@@ -55,6 +55,7 @@ struct ParamDef {
   const char* maxv;     // optional max  (nullptr if N/A)
   const char* choices;  // optional CSV for enums ("raw,norm,mm")
   const char* help;     // short help text
+  bool hidden = false;  // persisted internal state; not rendered as an editable field
 };
 
 // Lightweight, read-only view of key/value params for one sensor instance.

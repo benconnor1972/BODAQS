@@ -32,7 +32,7 @@ inline void encode(
   out[7] = static_cast<float>(sample->sequence & kU24Mask);
   out[8] = static_cast<float>(sample->temperatureRaw);
 
-  uint16_t status = sample->statusFlags;
+  uint16_t status = sample->streamStatusFlags();
   if (sample->acquisitionAnchorUs != 0 && rowMonotonicUs >= sample->acquisitionAnchorUs) {
     const uint64_t age64 = rowMonotonicUs - sample->acquisitionAnchorUs;
     if (age64 <= UINT32_MAX) {

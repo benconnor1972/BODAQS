@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "Calibration.h"
+#include "ImuOrientation.h"
 #include "OutputTransform.h"   // keep lightweight; transform interface only
 #include "SensorRuntimeDiagnostics.h"
 
@@ -148,7 +149,18 @@ struct SensorImuConfigDescriptor {
   char profile[24] = {0};
   char driverRevision[48] = {0};
   char calibrationRef[32] = {0};
-  char mountAxis[3][3] = {{0}};
+  bool orientationValid = false;
+  char orientationPlane[3] = {0};
+  int8_t orientationNormalSign = 0;
+  float orientationMatrix[3][3] {};
+  uint32_t orientationSampleCount = 0;
+  uint64_t orientationCapturedAtUnixMs = 0;
+  float orientationMeanAccelRaw[3] {};
+  float orientationAccelMagnitudeMeanG = 0.0f;
+  float orientationAccelMagnitudeStdG = 0.0f;
+  float orientationGyroStdMaximumDps = 0.0f;
+  float orientationMaximumGyroMagnitudeDps = 0.0f;
+  float orientationRollDeviationDeg = 0.0f;
   uint8_t busIndex = 0;
   uint8_t address = 0;
   uint32_t i2cClockHz = 0;
@@ -216,6 +228,7 @@ public:
   virtual void applyConfig(const LoggerConfig&) {}
   virtual void onLoggingStart() {}
   virtual void onLoggingStop() {}
+  virtual bool prepareLoggingStart(char*, size_t) { return true; }
   virtual bool validateLoggingStart(
       const LoggerConfig&,
       uint16_t,
@@ -279,6 +292,19 @@ public:
   virtual bool     finishCalibration(bool) { return false; }
   virtual CalPhase currentCalPhase() const { return CalPhase::IDLE; }
   virtual bool     calibrationNeedsPositiveMovement(CalMode) const { return false; }
+
+  // ----- Assisted IMU installation orientation -----
+  virtual bool supportsImuOrientationCalibration() const { return false; }
+  virtual bool captureImuOrientation(
+      ImuInstallationPlane,
+      int8_t,
+      ImuOrientationCalibration&,
+      char*,
+      size_t) { return false; }
+  virtual bool saveImuOrientation(
+      const ImuOrientationCalibration&,
+      char*,
+      size_t) { return false; }
 
   // Live raw access
   virtual bool    hasRawCounts()   const { return false; }

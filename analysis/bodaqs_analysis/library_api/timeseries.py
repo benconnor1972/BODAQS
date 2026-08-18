@@ -100,8 +100,22 @@ def get_timeseries_window(
             },
         )
 
-    selected, sampling_mode = _downsample_min_max(
+    signal_windowed = _rows_with_selected_signal_data(
         windowed,
+        signal_columns=[spec["column"] for spec in signal_specs],
+    )
+    if signal_windowed.empty:
+        raise TimeseriesUnavailableError(
+            "Requested window contains no finite samples for the selected signals.",
+            details={
+                "session_key": session_key,
+                "requested_start_s": window_request["start_s"],
+                "requested_end_s": window_request["end_s"],
+            },
+        )
+
+    selected, sampling_mode = _downsample_min_max(
+        signal_windowed,
         time_column=time_column,
         signal_columns=[spec["column"] for spec in signal_specs],
         target_points=target_points,
@@ -137,7 +151,7 @@ def get_timeseries_window(
         },
         "sampling": {
             "mode": sampling_mode,
-            "source_points": int(len(windowed)),
+            "source_points": int(len(signal_windowed)),
             "returned_points": int(len(selected)),
             "target_points": int(target_points),
         },
@@ -436,6 +450,21 @@ def _downsample_min_max(
 
     selected = df.iloc[sorted(selected_positions)].reset_index(drop=True)
     return selected, "min_max_bucket"
+
+
+def _rows_with_selected_signal_data(
+    df: pd.DataFrame,
+    *,
+    signal_columns: Sequence[str],
+) -> pd.DataFrame:
+    """Drop carrier rows where every requested signal is missing."""
+    if df.empty or not signal_columns:
+        return df.reset_index(drop=True)
+    finite = np.zeros(len(df), dtype=bool)
+    for column in signal_columns:
+        values = pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
+        finite |= np.isfinite(values)
+    return df.loc[finite].reset_index(drop=True)
 
 
 def _event_overlays(

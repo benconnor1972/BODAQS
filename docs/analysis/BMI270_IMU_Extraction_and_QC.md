@@ -24,20 +24,25 @@ The stream contains one row for each primary logger row whose IMU `sample_valid`
 
 Core columns include:
 
-- `time_s`: monotonic native-slot time reconstructed from unwrapped firmware sequence and effective IMU rate; gaps remain visible as longer intervals;
+- `time_s`: monotonic native-slot time mapped onto the logger monotonic clock by a robust affine clock fit; gaps remain visible as longer intervals;
 - `logger_time_s` and `logger_row_index`: the primary-row emission observation;
 - `host_sample_time_s`: logger time less recorded acquisition age when available;
-- wrapped and unwrapped sequence and sensor-time values;
+- `native_time_s`: the nominal BMI270 sensor-time coordinate before logger-clock correction;
+- wrapped and unwrapped sequence and sensor-time values, plus `clock_epoch` for sensor-clock resets or recoveries;
 - `continuity_segment`, which changes at loss, timing inconsistency, or a localized FIFO, queue, recovery, or degraded-timing incident;
 - raw signed accelerometer, gyro, and temperature counts;
 - acquisition age and status flags;
 - temperature in degrees Celsius;
 - sensor-native acceleration in metres per second squared and angular velocity in radians per second when effective ranges are available; and
-- `body_local` acceleration and angular velocity when a valid signed-axis-permutation mounting transform is available.
+- `body_local` acceleration and angular velocity when a valid right-handed rotation-matrix mounting transform is available. Pre-v2 signed-axis metadata remains readable for existing files.
 
 The raw columns are authoritative and are never replaced by scaled or transformed values. For a frame-mounted IMU, `body_local` is the bicycle body frame. For steering or unsprung IMUs it remains the local frame of that articulated assembly.
 
-A clean sequence is registered as a uniform stream at the effective IMU rate. A stream with gaps, duplicates, out-of-order values, or localized timing incidents is registered as intermittent. Either form is directly usable for plotting. Spectrum preparation can group by `continuity_segment` and select regions of adequate duration without silently interpolating across loss.
+A clean sequence is registered as a uniform stream at the logger-relative effective IMU rate. A stream with gaps, duplicates, out-of-order values, or localized timing incidents is registered as intermittent. Either form is directly usable for plotting. Spectrum preparation can group by `continuity_segment` and select regions of adequate duration without silently interpolating across loss.
+
+The BMI270 nominal sensor-time tick and configured ODR describe the IMU's own clock, not the logger clock. Extraction fits `host_sample_time_s = offset + scale * native_time_s` independently for each `clock_epoch`, excluding timing-degraded observations and robustly rejecting isolated transfer stalls. It applies that scale to canonical `time_s`, while retaining `native_time_s` and the observations used to obtain the fit. QC distinguishes the configured nominal ODR, the native sensor-time grid ODR, and the measured logger-relative ODR.
+
+The primary logger dataframe is a sparse carrier for IMU samples. During extraction, sample-dependent IMU fields are set to missing wherever `sample_valid` is not one. The original zero placeholders remain unchanged in `df_raw` and in the source BDQ. This prevents general-purpose plotting and preprocessing from treating placeholders as physical zero measurements.
 
 ## QC report
 
@@ -45,7 +50,7 @@ Each sensor report includes:
 
 - decoded sample count, nominal and measured native rate, duration, file size, and byte rate;
 - sequence gap events, missing-sample total, duplicates, out-of-order values, and coverage;
-- sensor-time discontinuities and a linear clock fit against acquisition-age-corrected logger time, including drift and residual statistics;
+- sensor-time discontinuities and robust affine clock fits against acquisition-age-corrected logger time, including per-epoch scale, logger-relative ODR, drift, inlier count, and residual statistics;
 - localized ranges for FIFO, queue, recovery, degraded-timing, temperature-stale, and near-rail status flags;
 - independently calculated per-axis near-rail fractions and event ranges;
 - acquisition-age distribution and temperature range;

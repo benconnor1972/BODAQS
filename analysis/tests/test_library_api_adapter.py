@@ -2840,6 +2840,44 @@ def test_library_adapter_timeseries_window_downsamples_concrete_columns(
     assert payload["signals"][0]["values"][-1] == 19.0
 
 
+def test_library_adapter_timeseries_window_omits_rows_with_only_missing_selected_values(
+    tmp_path: Path,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    session_root = (
+        library_root
+        / "runs"
+        / session_ref["run_id"]
+        / "sessions"
+        / session_ref["session_id"]
+    )
+    df_path = session_root / "session" / "df.parquet"
+    df = pd.read_parquet(df_path)
+    df.loc[1, "front_wheel_disp_dom_wheel [mm]"] = float("nan")
+    df.to_parquet(df_path, index=False)
+    adapter = LibraryAdapter(libraries_root)
+
+    payload = adapter.get_timeseries_window(
+        "default-library",
+        {
+            "session": session_ref,
+            "signals": [{"column": "front_wheel_disp_dom_wheel [mm]"}],
+            "resolution": {"target_points": 10},
+        },
+    )
+
+    assert payload["sampling"]["source_points"] == 2
+    assert payload["time"]["values"] == [0.0, 2.0]
+    assert payload["signals"][0]["values"] == [0.0, 20.0]
+
+
 def test_library_adapter_timeseries_window_rejects_missing_signal(
     tmp_path: Path,
 ) -> None:

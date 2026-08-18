@@ -149,6 +149,37 @@ def test_log_metadata_started_at_utc_takes_precedence_for_absolute_anchor():
     assert session["source"]["created_local"] == "2026-02-19T08:35:11"
 
 
+def test_sidecar_nested_imu_config_is_promoted_for_shared_host_extraction() -> None:
+    transform = {
+        "from": "sensor_native",
+        "to": "body_local",
+        "representation": "rotation_matrix",
+        "matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    }
+    session = build_session_from_dataframe(
+        pd.DataFrame({"time_s": [0.0]}),
+        session_id="nested_imu_config",
+        log_metadata={
+            "sensors": {
+                "imu0": {
+                    "name": "imu0",
+                    "type": "bmi270_imu_i2c",
+                    "imu_config": {
+                        "contract_id": "bodaqs.bmi270_imu_mvp.v2",
+                        "orientation_status": "accepted",
+                        "mount_transform": transform,
+                    },
+                }
+            },
+            "columns": {
+                "time_s": {"class": "time", "unit": "s", "stream": "primary"}
+            },
+        },
+    )
+
+    assert session["meta"]["imu_configs"]["imu0"]["mount_transform"] == transform
+
+
 def test_fit_import_failure_policy_warn_continues_without_fit_stream():
     session = {
         "session_id": "fit_failure_policy",

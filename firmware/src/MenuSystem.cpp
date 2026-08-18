@@ -127,12 +127,19 @@ namespace {
     RangeActive,   // shows: Finish RANGE / Cancel (Enter/Right inert)
     ZeroDirectionActive, // shows: Capture +move / Cancel
     ZeroCaptured,  // shows: Save / Cancel (Enter/Right act)
-    RangeFinished  // shows: Save / Cancel (Enter/Right act)
+    RangeFinished, // shows: Save / Cancel (Enter/Right act)
+    OrientationPlane,
+    OrientationNormal,
+    OrientationReady,
+    OrientationResult
   };
 
   static uint8_t    s_calSel     = 0;              // selected sensor index
   static uint8_t    s_calOptSel  = 0;              // selected row within screen
   static CalUiPhase s_calUiPhase = CalUiPhase::Idle;
+  static ImuInstallationPlane s_orientationPlane = ImuInstallationPlane::XZ;
+  static int8_t s_orientationNormalSign = 1;
+  static ImuOrientationCalibration s_orientationPending;
   static unsigned long s_lastRangeTrackMs = 0;
   static constexpr uint8_t SAG_MAX_ROWS = 4;
   enum class SagDisplayMode : uint8_t { Raw = 0, Linear, Percent };
@@ -537,6 +544,7 @@ namespace {
       SensorSpec sp; if (!ConfigManager::getSensorSpec(i, sp)) continue;
       Sensor* s = SensorManager::at(i);
       CalModeMask mask = s ? s->allowedCalMask() : 0;
+      const bool orientation = s && s->supportsImuOrientationCalibration();
 
       String line;
       line.reserve(28);
@@ -544,12 +552,13 @@ namespace {
       line += " ";
       line += sp.name;
 
-      if (mask == 0) {
+      if (mask == 0 && !orientation) {
         line += " [none]";
       } else {
         line += " [";
         if (mask & CAL_ZERO)  line += "Z";
         if (mask & CAL_RANGE) line += ((mask & CAL_ZERO) ? "|R" : "R");
+        if (orientation) line += (mask ? "|O" : "O");
         line += "]";
       }
       const int y = 12 + i * 10;
@@ -573,13 +582,14 @@ namespace {
 
     CalModeMask mask = s->allowedCalMask();
 
-    String rows[2];
+    String rows[3];
     uint8_t rowCount = 0;
 
     switch (s_calUiPhase) {
       case CalUiPhase::Idle:
         if (mask & CAL_ZERO)  rows[rowCount++] = "Zero";
         if (mask & CAL_RANGE) rows[rowCount++] = "Start RANGE";
+        if (s->supportsImuOrientationCalibration()) rows[rowCount++] = "Set orientation";
         if (rowCount == 0)    rows[rowCount++] = "No actions";
         break;
 
@@ -596,6 +606,31 @@ namespace {
       case CalUiPhase::ZeroCaptured:
       case CalUiPhase::RangeFinished:
         rows[rowCount++] = "Save";
+        rows[rowCount++] = "Cancel";
+        break;
+
+      case CalUiPhase::OrientationPlane:
+        rows[rowCount++] = "Sensor plane XY";
+        rows[rowCount++] = "Sensor plane YZ";
+        rows[rowCount++] = "Sensor plane XZ";
+        break;
+
+      case CalUiPhase::OrientationNormal: {
+        const char normalAxis =
+            s_orientationPlane == ImuInstallationPlane::XY ? 'Z' :
+            s_orientationPlane == ImuInstallationPlane::YZ ? 'X' : 'Y';
+        rows[rowCount++] = String("+") + normalAxis + " points left";
+        rows[rowCount++] = String("-") + normalAxis + " points left";
+        break;
+      }
+
+      case CalUiPhase::OrientationReady:
+        rows[rowCount++] = "Capture";
+        rows[rowCount++] = "Cancel";
+        break;
+
+      case CalUiPhase::OrientationResult:
+        rows[rowCount++] = s_orientationPending.accepted ? "Save" : "Retry";
         rows[rowCount++] = "Cancel";
         break;
     }
@@ -615,6 +650,56 @@ namespace {
         s->hasRawCounts()) {
       String hint = String("counts: ") + s->currentRawCounts();
       UI::oledText(0, 54, hint);
+    }
+    if (s_calUiPhase == CalUiPhase::OrientationReady) {
+      UI::oledText(0, 44, "Level + upright");
+      UI::oledText(0, 54, "Steering straight");
+    } else if (s_calUiPhase == CalUiPhase::OrientationResult) {
+      char quality[28];
+      if (s_orientationPending.accepted) {
+        snprintf(quality, sizeof(quality), "Roll %.2f deg",
+                 (double)s_orientationPending.rollDeviationDeg);
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kRollOutsideLimit) {
+        snprintf(quality, sizeof(quality), "Roll %.1f > 2 deg",
+                 (double)s_orientationPending.rollDeviationDeg);
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kInsufficientSamples) {
+        snprintf(quality, sizeof(quality), "Not enough samples");
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kQualityIncident) {
+        snprintf(quality, sizeof(quality), "IMU data interrupted");
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kAccelMeanOutsideGravityBand) {
+        snprintf(quality, sizeof(quality), "Gravity check failed");
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kAccelMagnitudeUnstable) {
+        snprintf(quality, sizeof(quality), "Acceleration unstable");
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kGyroUnstable) {
+        snprintf(quality, sizeof(quality), "Gyro unstable");
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kGyroMotionDetected) {
+        snprintf(quality, sizeof(quality), "Rotation detected");
+      } else if (s_orientationPending.rejectionMask &
+                 ImuOrientationRejection::kInvalidGeometry) {
+        snprintf(quality, sizeof(quality), "Invalid orientation");
+      } else {
+        snprintf(quality, sizeof(quality), "Calibration rejected");
+      }
+      UI::oledText(0, 44, quality);
+      if (!s_orientationPending.accepted) {
+        if ((s_orientationPending.rejectionMask &
+             ImuOrientationRejection::kQualityIncident) &&
+            s_orientationPending.qualityStatusMask) {
+          snprintf(quality, sizeof(quality), "IMU status 0x%02X",
+                   (unsigned)s_orientationPending.qualityStatusMask);
+        } else {
+          snprintf(quality, sizeof(quality), "Reason 0x%02X",
+                   (unsigned)s_orientationPending.rejectionMask);
+        }
+        UI::oledText(0, 54, quality);
+      }
     }
 
     DisplayManager::present();
@@ -1027,6 +1112,16 @@ namespace {
               return true;
             }
 
+            const uint8_t orientationIndex =
+                static_cast<uint8_t>((zeroAllowed ? 1 : 0) + (rangeAllowed ? 1 : 0));
+            if (s->supportsImuOrientationCalibration() &&
+                s_calOptSel == orientationIndex) {
+              s_calUiPhase = CalUiPhase::OrientationPlane;
+              s_calOptSel = 0;
+              drawCalibDetail_();
+              return true;
+            }
+
             return true;
           }
 
@@ -1113,6 +1208,93 @@ namespace {
               s_calOptSel  = 0;
               drawCalibDetail_();
             }
+            return true;
+
+          case CalUiPhase::OrientationPlane:
+            s_orientationPlane =
+                s_calOptSel == 0 ? ImuInstallationPlane::XY :
+                s_calOptSel == 1 ? ImuInstallationPlane::YZ :
+                                   ImuInstallationPlane::XZ;
+            s_calUiPhase = CalUiPhase::OrientationNormal;
+            s_calOptSel = 0;
+            drawCalibDetail_();
+            return true;
+
+          case CalUiPhase::OrientationNormal:
+            s_orientationNormalSign = s_calOptSel == 0 ? 1 : -1;
+            s_calUiPhase = CalUiPhase::OrientationReady;
+            s_calOptSel = 0;
+            drawCalibDetail_();
+            return true;
+
+          case CalUiPhase::OrientationReady:
+            if (s_calOptSel != 0) {
+              s_calUiPhase = CalUiPhase::Idle;
+              s_calOptSel = 0;
+              drawCalibDetail_();
+              return true;
+            }
+            if (LoggingManager::isRunning()) {
+              UI::toastModal("Stop logging first", 2000, 1);
+              deferUiFor(2000);
+              return true;
+            }
+            UI::clear(UI::TARGET_OLED);
+            UI::oledText(0, 0, "Orientation");
+            UI::oledText(0, 20, "Capturing...");
+            UI::oledText(0, 36, "Hold still");
+            DisplayManager::present();
+            {
+              char error[96] = {0};
+              if (!s->captureImuOrientation(
+                      s_orientationPlane,
+                      s_orientationNormalSign,
+                      s_orientationPending,
+                      error,
+                      sizeof(error))) {
+                UI::toastModal(error[0] ? error : "Capture failed", 2500, 1);
+                deferUiFor(2500);
+                s_calUiPhase = CalUiPhase::OrientationReady;
+              } else {
+                s_calUiPhase = CalUiPhase::OrientationResult;
+              }
+            }
+            s_calOptSel = 0;
+            drawCalibDetail_();
+            return true;
+
+          case CalUiPhase::OrientationResult:
+            if (s_calOptSel != 0) {
+              s_orientationPending = ImuOrientationCalibration{};
+              s_calUiPhase = CalUiPhase::Idle;
+              s_calOptSel = 0;
+              drawCalibDetail_();
+              return true;
+            }
+            if (!s_orientationPending.accepted) {
+              s_calUiPhase = CalUiPhase::OrientationReady;
+              s_calOptSel = 0;
+              drawCalibDetail_();
+              return true;
+            }
+            {
+              char error[96] = {0};
+              if (!s->saveImuOrientation(
+                      s_orientationPending, error, sizeof(error))) {
+                UI::toastModal(error[0] ? error : "Save failed", 2500, 1);
+                deferUiFor(2500);
+                drawCalibDetail_();
+                return true;
+              }
+            }
+            UI::toastModal("Orientation saved", 2000, 1);
+            deferUiFor(2000);
+            s_orientationPending = ImuOrientationCalibration{};
+            s_calUiPhase = CalUiPhase::Idle;
+            s_calOptSel = 0;
+            s_state = State::CalibSensors;
+            guardEnterRight();
+            drawCalibSensors_();
             return true;
         }
         return true;
@@ -1772,18 +1954,28 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
       Sensor* s = SensorManager::at(s_calSel);
       if (!s) { s_state = State::CalibSensors; s_calUiPhase = CalUiPhase::Idle; drawCalibSensors_(); return; }
 
-      // Navigation across rows depends on what's drawn (two rows max)
+      // Navigation across rows depends on the active calibration workflow.
       uint8_t rowCount = 2;
       if (s_calUiPhase == CalUiPhase::Idle) {
         CalModeMask mask = s->allowedCalMask();
         rowCount = 0;
         if (mask & CAL_ZERO)  ++rowCount;
         if (mask & CAL_RANGE) ++rowCount;
+        if (s->supportsImuOrientationCalibration()) ++rowCount;
         if (rowCount == 0) rowCount = 1; // "No actions"
+      } else if (s_calUiPhase == CalUiPhase::OrientationPlane) {
+        rowCount = 3;
       }
 
       if (d == Dir::Left) {
         s_lastRangeTrackMs = 0;
+        if (s_calUiPhase == CalUiPhase::RangeActive ||
+            s_calUiPhase == CalUiPhase::ZeroDirectionActive ||
+            s_calUiPhase == CalUiPhase::ZeroCaptured ||
+            s_calUiPhase == CalUiPhase::RangeFinished) {
+          s->finishCalibration(false);
+        }
+        s_orientationPending = ImuOrientationCalibration{};
         s_calUiPhase = CalUiPhase::Idle;   // reset when backing out
         s_state      = State::CalibSensors;
         drawCalibSensors_();

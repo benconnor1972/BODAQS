@@ -284,7 +284,7 @@ Purpose: make the queued stream available through the existing logger without pr
 Tasks:
 
 1. Register bmi270_imu_i2c and expose the minimal configuration fields.
-2. Validate unique sensor identity, supported bus/address, named profile, and a proper signed axis permutation.
+2. Validate unique sensor identity, supported bus/address, named profile, and any accepted assisted-orientation matrix.
 3. Reject unknown sensor types instead of falling back to AnalogPot.
 4. Consume no more than one queued sample per 500 Hz logger row.
 5. Emit sample_valid=0 and documented placeholders when no sample is available.
@@ -304,9 +304,6 @@ Suggested configuration:
     sensor1.i2c_bus=1
     sensor1.i2c_addr=104
     sensor1.profile=orientation_200
-    sensor1.mount_x=+x
-    sensor1.mount_y=+y
-    sensor1.mount_z=+z
     sensor1.startup_bias_capture_s=5
     sensor1.calibration_ref=
 
@@ -315,7 +312,7 @@ Acceptance checks:
 - Exactly one valid row is written for every successfully enqueued native sample.
 - No sample is duplicated when the logger runs faster than the IMU.
 - Queue backlog drains while maintaining sequence order.
-- Invalid mounting maps and unsupported logger rates prevent a misleading session.
+- Invalid accepted orientation matrices and unsupported logger rates prevent a misleading session; an unset orientation still permits sensor-native raw logging.
 - Existing configurations remain valid, while unknown type names now fail visibly.
 - Session start and stop preserve the defined FIFO/queue boundary semantics.
 
@@ -572,7 +569,7 @@ Only after this review should the project commit to the offline estimator scope 
 Completed on 2026-08-06:
 
 - accepted roadmap and implementation-plan status recorded;
-- normative `bodaqs.bmi270_imu_mvp.v1` data contract added;
+- normative `bodaqs.bmi270_imu_mvp.v1` data contract added initially and superseded by v2 for assisted rotation-matrix installation orientation;
 - stable `bmi270_imu_i2c` type key and enum value added without exposing the unfinished driver in the sensor-choice UI;
 - explicit Automatic, Int16, UInt16, Int32, UInt32, and Float32 sensor-column storage selections added;
 - legacy Automatic storage inference preserved;
@@ -747,7 +744,7 @@ Firmware and host-contract changes completed on 2026-08-10:
 - BMI270 configuration now uses canonical `domain`, `end`, and optional `mount_point` fields, enforcing `unsprung/front|rear`, `frame/none|front|rear`, and `steering/front` combinations;
 - the original `location` configuration key remains accepted as a compatibility alias, and the original IMU metadata field remains temporarily emitted alongside the canonical fields;
 - raw accelerometer and gyroscope columns now publish explicit `component`, `vector_group`, and `coordinate_frame=sensor_native` metadata without changing the twelve stored fields or their values;
-- the mounting transform explicitly records `sensor_native -> body_local` using the existing signed-axis-permutation representation;
+- the original Phase 4.5 mounting transform recorded `sensor_native -> body_local` using a signed-axis permutation; the later assisted-orientation slice replaces this in contract v2 with a full rotation matrix;
 - CSV-sidecar and embedded BDQ metadata writers, BDQ ingestion, channel metadata, the signal registry, and semantic selectors preserve the new fields;
 - GPS semantic resolution now keeps latitude, longitude, motion, and QC channels on one identified GPS sensor/source and refuses cross-source position pairs; and
 - GPS session start invalidates the previous cached snapshot and discards queued UART input when restarting acquisition, so position remains unavailable until the new session receives a new PVT observation.
@@ -777,10 +774,10 @@ The RC3 `bodaqs_s3_mini_n4r2` production build compiles and links successfully a
 Host implementation completed on 2026-08-10:
 
 - logger CSV and BDQ session loading now preserves the versioned `imu_configs` metadata and automatically builds one `imu_<sensor>` secondary stream for each complete IMU semantic group;
-- extraction filters `sample_valid=1` rows without changing the primary logger table or synthesizing replacements for loss;
+- extraction filters `sample_valid=1` rows without synthesizing replacements for loss; the later sparse-row correction masks invalid placeholders in the processed primary table while preserving `df_raw` and the source BDQ;
 - 24-bit firmware sequence and BMI270 sensor time are unwrapped independently, with gaps, duplicates, reversals, wrap, and tick/sequence inconsistency reported explicitly;
 - the spectrum-ready `time_s` retains missing native slots, while logger emission time, acquisition-age-corrected host time, raw native tick time, and their provenance remain separate columns;
-- effective range metadata drives raw-to-SI conversion, and the recorded signed axis permutation produces reversible `body_local` derived channels while retaining all sensor-native raw and SI columns;
+- effective range metadata drives raw-to-SI conversion, and a valid mounting rotation produces reversible `body_local` derived channels while retaining all sensor-native raw and SI columns;
 - deterministic `bodaqs.imu_qc.v1` reports cover native rate and coverage, loss and status flags, acquisition-age distribution, clock drift/residual, per-axis near-rail event locations, temperature, startup stationary evidence, selected firmware counters, duration, and file-size rate;
 - QC is retained in persisted session metadata and secondary stream metadata links to it, so imported rides can be compared without reopening the source BDQ; and
 - missing metadata either raises a clear error in strict extraction or produces an explicitly degraded raw stream in automatic import mode.
@@ -790,3 +787,25 @@ The public host API is `extract_imu_stream`, `build_imu_streams`, and `imu_qc_re
 Automated synthetic coverage includes signed decoding inherited from the BDQ reader, native-clock and sequence wrap, a missing sample, scaling, a right-handed non-identity mounting transform, clock fit, status localization, near-rail localization, persisted QC, idempotent stream construction, and strict/degraded missing-metadata behavior. The implementation was also exercised against `260809_093639_db1cfd00ff6b.bdq`, producing 30719 valid IMU samples at a measured 200 Hz and correctly identifying its known 112-sample discontinuity.
 
 Targeted analysis verification reports 69 passing tests. The complete analysis suite reports 344 passed and 1 skipped; its nine failures are the same pre-existing macOS-on-Windows, catalog-version, and legacy preprocessing-interface expectations recorded before Phase 6. Phase 6 deliberately stops before resampling, interpolation, orientation fusion, bias application, or gravity removal.
+
+### Phase 6 timing and sparse-row correction (2026-08-15)
+
+Ride validation showed that the BMI270 native clock ran consistently faster than the logger clock and that general-purpose consumers could plot the documented invalid zero placeholders in sparse 500 Hz logger rows as measurements. Host extraction now robustly fits each continuous IMU clock epoch to acquisition-age-corrected logger observations. Canonical dense-stream `time_s` is expressed on the logger monotonic clock, while nominal BMI270 `native_time_s`, raw observations, fitted clock scale, logger-relative ODR, and per-epoch QC remain available. Sequence loss still produces an explicit gap and is never interpolated.
+
+The processed primary dataframe now masks sample-dependent IMU fields wherever `sample_valid` is not one. The literal placeholder representation remains unchanged in `df_raw` and in the source BDQ. This prevents charts and generic preprocessing from interpreting absence as physical zero without weakening the raw evidence contract.
+
+## 22. Assisted installation orientation record
+
+Firmware and host implementation completed on 2026-08-15:
+
+- the calibration menu identifies BMI270 orientation as a distinct sensor capability rather than forcing it through scalar zero/range calibration;
+- the user selects the sensor-native plane parallel to the bicycle centre plane and which signed normal points toward bicycle positive Y (left);
+- capture services the selected BMI270 FIFO outside a logging session and collects 800 native samples while the OLED remains free of competing redraws;
+- stationarity, acceleration magnitude, gyro stability, clipping/acquisition quality, and sample-count checks reuse the established startup-observation limits;
+- capture rejects more than 2 degrees of observed roll, while accepted small roll error is removed by projecting gravity into the declared plane before solving the right-handed orientation;
+- the accepted result and observation evidence are persisted atomically in logger configuration, with the compact stored quaternion reconstructed as a validated rotation matrix;
+- contract `bodaqs.bmi270_imu_mvp.v2` emits `orientation_status`, a `sensor_native -> body_local` rotation matrix, and the method, declared geometry, timestamp, sample count, stationary statistics, and roll residual in both embedded BDQ and CSV-sidecar metadata;
+- new firmware no longer exposes or emits `mount_x`, `mount_y`, or `mount_z`; legacy keys are removed on the next configuration save; and
+- host extraction validates the matrix and produces `body_local` acceleration and angular-velocity channels without changing sensor-native raw or SI channels.
+
+An IMU with no accepted installation orientation remains usable for raw collection and reports `orientation_status=unset`. Hardware acceptance must exercise all three plane choices and both normal signs, confirm rejection beyond 2 degrees of roll and under deliberate movement, verify retry/cancel preserves the previous result, and compare emitted metadata with a known physical pose.

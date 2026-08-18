@@ -197,7 +197,9 @@ int runBMI270FifoTests() {
     {
         BMI270StartupObservation observation;
         observation.begin(5);
-        for (uint32_t sequence = 0; sequence < 1000; ++sequence) {
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 1000;
+             ++sequence) {
             observation.observe(
                 sequence,
                 0, 0, 2048,
@@ -211,6 +213,11 @@ int runBMI270FifoTests() {
               "stationary startup observation is accepted");
         check(result.validSamples == 1000 && result.temperatureSamples == 1000,
               "startup observation reports sample coverage");
+        check(result.settlingSampleSlots ==
+                  BMI270StartupObservation::kSettlingCleanSamples &&
+              result.measurementStartSequence ==
+                  BMI270StartupObservation::kSettlingCleanSamples,
+              "startup observation discards a bounded clean settling window");
         check(result.accelMagnitudeMeanG == 1.0 &&
               result.accelMagnitudeStdG == 0.0,
               "startup observation reports gravity magnitude without changing raw samples");
@@ -227,7 +234,66 @@ int runBMI270FifoTests() {
     {
         BMI270StartupObservation observation;
         observation.begin(5);
-        for (uint32_t sequence = 0; sequence < 1000; ++sequence) {
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 1000;
+             ++sequence) {
+            BMI270ImuSample sample;
+            sample.sequence = sequence;
+            sample.accelZ = 2048;
+            sample.gyroX = 2;
+            sample.gyroY = -3;
+            sample.gyroZ = 1;
+            sample.statusFlags = BMI270ImuStatus::kSensorTimeEstimated;
+            if (sequence == 0) {
+                sample.statusFlags |= BMI270ImuStatus::markPreSessionBoundary(
+                    BMI270ImuStatus::kFifoDiscontinuityBefore |
+                    BMI270ImuStatus::kSensorRecoveryBefore |
+                    BMI270ImuStatus::kTimingDegraded);
+            }
+            observation.observe(
+                sample.sequence,
+                sample.accelX, sample.accelY, sample.accelZ,
+                sample.gyroX, sample.gyroY, sample.gyroZ,
+                512, true,
+                sample.measurementStatusFlags());
+        }
+        check(observation.result().state == BMI270StartupObservationState::Accepted,
+              "pre-session recovery boundary does not invalidate startup observation");
+    }
+
+    {
+        BMI270StartupObservation observation;
+        observation.begin(5);
+        const uint16_t rejectedStatus =
+            BMI270ImuStatus::kFifoDiscontinuityBefore |
+            BMI270ImuStatus::kTimingDegraded;
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 1001;
+             ++sequence) {
+            observation.observe(
+                sequence,
+                0, 0, 2048,
+                0, 0, 0,
+                0, false,
+                sequence == 0 ? rejectedStatus : 0);
+        }
+        const BMI270StartupObservationResult& result = observation.result();
+        check(result.state == BMI270StartupObservationState::Accepted,
+              "a transient post-resume status is excluded by settling");
+        check(result.settlingSampleSlots ==
+                  BMI270StartupObservation::kSettlingCleanSamples + 1 &&
+              result.settlingStatusMask == rejectedStatus &&
+              result.measurementStartSequence ==
+                  BMI270StartupObservation::kSettlingCleanSamples + 1,
+              "settling restarts after a transient and records its status");
+    }
+
+    {
+        BMI270StartupObservation observation;
+        observation.begin(5);
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 1000;
+             ++sequence) {
             const int16_t accelZ = (sequence & 1u) ? 2048 : 2600;
             const int16_t gyroX = (sequence & 1u) ? 100 : -100;
             observation.observe(
@@ -250,17 +316,41 @@ int runBMI270FifoTests() {
     {
         BMI270StartupObservation observation;
         observation.begin(5);
-        for (uint32_t sequence = 0; sequence < 1000; ++sequence) {
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 1000;
+             ++sequence) {
             observation.observe(
                 sequence,
                 0, 0, 2048,
                 0, 0, 0,
                 0, false,
-                sequence == 500 ? BMI270ImuStatus::kTimingDegraded : 0);
+                sequence == BMI270StartupObservation::kSettlingCleanSamples + 500
+                    ? BMI270ImuStatus::kTimingDegraded
+                    : 0);
         }
         check((observation.result().rejectionMask &
                BMI270StartupRejection::kQualityIncident) != 0,
               "a transport or timing incident invalidates the stationary observation");
+
+        observation.begin(5);
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kMaximumSettlingSlots;
+             ++sequence) {
+            observation.observe(
+                sequence,
+                0, 0, 2048,
+                0, 0, 0,
+                0, false,
+                BMI270ImuStatus::kTimingDegraded);
+        }
+        check(observation.result().state == BMI270StartupObservationState::Rejected &&
+              (observation.result().rejectionMask &
+               BMI270StartupRejection::kInsufficientSamples) != 0 &&
+              (observation.result().rejectionMask &
+               BMI270StartupRejection::kQualityIncident) != 0 &&
+              observation.result().settlingStatusMask ==
+                  BMI270ImuStatus::kTimingDegraded,
+              "settling rejects deterministically when clean data never arrives");
 
         observation.begin(0);
         check(observation.result().state == BMI270StartupObservationState::Disabled,

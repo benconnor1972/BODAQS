@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "BMI270Profile.h"
@@ -10,6 +11,8 @@
 #include "ConfigManager.h"
 #include "DebugLog.h"
 #include "I2CManager.h"
+#include "I2CBusScheduler.h"
+#include "RTCManager.h"
 #include "SensorRegistry.h"
 #include "esp_timer.h"
 
@@ -94,6 +97,81 @@ bool readString_(const ParamPack& params, const char* key, char* out, size_t cap
   return true;
 }
 
+bool orientationsEqual_(
+    const ImuOrientationCalibration& left,
+    const ImuOrientationCalibration& right) {
+  if (left.accepted != right.accepted) return false;
+  if (!left.accepted) return true;
+  if (left.plane != right.plane || left.normalSign != right.normalSign) return false;
+  for (uint8_t row = 0; row < 3; ++row) {
+    for (uint8_t column = 0; column < 3; ++column) {
+      if (fabsf(left.matrix[row][column] - right.matrix[row][column]) > 0.00001f) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void loadOrientation_(ImuOrientationCalibration& out, const ParamPack& params) {
+  out = ImuOrientationCalibration{};
+  bool valid = false;
+  (void)params.getBool("orient_valid", valid);
+  out.accepted = valid;
+
+  String plane;
+  if (params.get("orient_plane", plane)) {
+    (void)ImuOrientation::parsePlane(plane.c_str(), out.plane);
+  }
+  long integer = 0;
+  if (params.getInt("orient_normal_sign", integer) && (integer == 1 || integer == -1)) {
+    out.normalSign = static_cast<int8_t>(integer);
+  }
+  if (params.getInt("orient_samples", integer) && integer >= 0) {
+    out.sampleCount = static_cast<uint32_t>(integer);
+  }
+  String epoch;
+  if (params.get("orient_epoch_ms", epoch)) {
+    out.capturedAtUnixMs = strtoull(epoch.c_str(), nullptr, 10);
+  }
+
+  static const char* const quaternionKeys[4] = {
+      "orient_qw", "orient_qx", "orient_qy", "orient_qz"};
+  for (uint8_t i = 0; i < 4; ++i) {
+    double value = i == 0 ? 1.0 : 0.0;
+    (void)params.getFloat(quaternionKeys[i], value);
+    out.quaternionWxyz[i] = static_cast<float>(value);
+  }
+  static const char* const meanKeys[3] = {
+      "orient_mean_ax", "orient_mean_ay", "orient_mean_az"};
+  for (uint8_t i = 0; i < 3; ++i) {
+    double value = 0.0;
+    (void)params.getFloat(meanKeys[i], value);
+    out.meanAccelRaw[i] = static_cast<float>(value);
+  }
+  struct FloatField {
+    const char* key;
+    float* destination;
+  };
+  FloatField fields[] = {
+      {"orient_accel_mean_g", &out.accelMagnitudeMeanG},
+      {"orient_accel_std_g", &out.accelMagnitudeStdG},
+      {"orient_gyro_std_dps", &out.gyroStdMaximumDps},
+      {"orient_gyro_max_dps", &out.maximumGyroMagnitudeDps},
+      {"orient_roll_deg", &out.rollDeviationDeg},
+  };
+  for (FloatField& field : fields) {
+    double value = 0.0;
+    (void)params.getFloat(field.key, value);
+    *field.destination = static_cast<float>(value);
+  }
+
+  if (out.accepted &&
+      !ImuOrientation::quaternionToMatrix(out.quaternionWxyz, out.matrix)) {
+    out.accepted = false;
+  }
+}
+
 void canonicalizeToken_(char* value, size_t capacity) {
   if (!value || capacity == 0) return;
   String canonical(value);
@@ -155,20 +233,46 @@ SensorColumnStorageType storageFor_(uint8_t index) {
 
 BMI270ImuSensor::BMI270ImuSensor(const Params& params)
     : params_(params),
-      acquisition_(params.busIndex, params.address, params.name) {
-  (void)BMI270Mount::parseTransform(
-      params_.mountAxis[0], params_.mountAxis[1], params_.mountAxis[2], mount_);
-}
+      acquisition_(params.busIndex, params.address, params.name) {}
 
 void BMI270ImuSensor::begin() {
+  (void)ensureInitialized_(nullptr, 0);
+}
+
+bool BMI270ImuSensor::ensureInitialized_(char* error, size_t errorCapacity) {
+  if (initialized_) return true;
+  lastInitializationAttemptUptimeMs_ = millis();
   initialized_ = acquisition_.begin();
-  if (!initialized_) {
-    BMI270_SENSOR_LOGW(
-        "initialization failed sensor=%s bus=%u address=0x%02X\n",
+  if (initialized_) {
+    BMI270_SENSOR_LOGI(
+        "initialization ready sensor=%s bus=%u address=0x%02X\n",
         params_.name,
         (unsigned)params_.busIndex,
         (unsigned)params_.address);
+    return true;
   }
+
+  const BMI270DeviceDiagnostics& diagnostics = acquisition_.device().diagnostics();
+  BMI270_SENSOR_LOGW(
+      "initialization failed sensor=%s bus=%u address=0x%02X state=%u step=%u api=%d chip_read=%u chip=0x%02X attempts=%lu failures=%lu\n",
+      params_.name,
+      (unsigned)params_.busIndex,
+      (unsigned)params_.address,
+      (unsigned)diagnostics.state,
+      (unsigned)diagnostics.failureStep,
+      (int)diagnostics.lastApiResult,
+      diagnostics.chipIdRead ? 1u : 0u,
+      (unsigned)diagnostics.chipId,
+      (unsigned long)diagnostics.initializationAttempts,
+      (unsigned long)diagnostics.initializationFailures);
+  return fail_(
+      error,
+      errorCapacity,
+      "%s init failed step=%u api=%d chip=0x%02X",
+      params_.name,
+      (unsigned)diagnostics.failureStep,
+      (int)diagnostics.lastApiResult,
+      (unsigned)diagnostics.chipId);
 }
 
 void BMI270ImuSensor::getColumnName(uint8_t index, char* out, size_t capacity) const {
@@ -251,8 +355,22 @@ bool BMI270ImuSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   copyField_(imu.profile, sizeof(imu.profile), params_.profile);
   copyField_(imu.driverRevision, sizeof(imu.driverRevision), BMI270Profile::kDriverRevision);
   copyField_(imu.calibrationRef, sizeof(imu.calibrationRef), params_.calibrationRef);
+  imu.orientationValid = params_.orientation.accepted;
+  copyField_(imu.orientationPlane, sizeof(imu.orientationPlane),
+             ImuOrientation::planeKey(params_.orientation.plane));
+  imu.orientationNormalSign = params_.orientation.normalSign;
+  imu.orientationSampleCount = params_.orientation.sampleCount;
+  imu.orientationCapturedAtUnixMs = params_.orientation.capturedAtUnixMs;
+  imu.orientationAccelMagnitudeMeanG = params_.orientation.accelMagnitudeMeanG;
+  imu.orientationAccelMagnitudeStdG = params_.orientation.accelMagnitudeStdG;
+  imu.orientationGyroStdMaximumDps = params_.orientation.gyroStdMaximumDps;
+  imu.orientationMaximumGyroMagnitudeDps = params_.orientation.maximumGyroMagnitudeDps;
+  imu.orientationRollDeviationDeg = params_.orientation.rollDeviationDeg;
   for (uint8_t axis = 0; axis < 3; ++axis) {
-    copyField_(imu.mountAxis[axis], sizeof(imu.mountAxis[axis]), params_.mountAxis[axis]);
+    imu.orientationMeanAccelRaw[axis] = params_.orientation.meanAccelRaw[axis];
+    for (uint8_t component = 0; component < 3; ++component) {
+      imu.orientationMatrix[axis][component] = params_.orientation.matrix[axis][component];
+    }
   }
   imu.busIndex = params_.busIndex;
   imu.address = params_.address;
@@ -301,15 +419,27 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
       acquisition_.device().transportDiagnostics();
   const BMI270FifoDiagnostics& fifo = acquisition_.diagnostics();
   out.beginCount = device.beginCalls;
+  out.lastBeginUptimeMs = lastInitializationAttemptUptimeMs_;
   out.initialProbeOk = device.chipIdRead && device.chipIdMatched;
   out.configWriteAttempted = device.configurationWriteAttempted;
   out.configWriteOk = device.configurationWriteOk;
   out.configReadAttempted = device.configurationReadAttempted;
   out.configReadOk = device.configurationReadOk && device.configurationMatched;
+  out.imuDeviceState = static_cast<uint8_t>(device.state);
+  out.imuInitializationFailureStep = static_cast<uint8_t>(device.failureStep);
+  out.imuInitializationApiResult = device.lastApiResult;
+  out.imuInitializationChipId = device.chipId;
+  out.imuInitializationAttempts = device.initializationAttempts;
+  out.imuInitializationFailures = device.initializationFailures;
+  out.imuInitializationChipIdRead = device.chipIdRead;
+  out.imuInitializationChipIdMatched = device.chipIdMatched;
+  out.imuInitializationCleanupAttempted = device.failureCleanupAttempted;
+  out.imuInitializationCleanupOk = device.failureCleanupOk;
   out.rawReadFailures = static_cast<uint32_t>(fifo.drainFailures > UINT32_MAX ? UINT32_MAX : fifo.drainFailures);
   out.readFailureStreakMax = fifo.maximumDrainFailureStreak;
   out.readRecoveries = static_cast<uint32_t>(fifo.recoverySuccesses > UINT32_MAX ? UINT32_MAX : fifo.recoverySuccesses);
   out.lastReadOk = transport.lastOperationOk;
+  out.initializationFailure = runtimeFailure_(transport.lastFailure);
   out.lastFailure = runtimeFailure_(transport.lastFailure);
 
   out.hasImuSession = true;
@@ -411,6 +541,9 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.imuStartupConfiguredSeconds = startup.configuredSeconds;
   out.imuStartupTargetSampleSlots = startup.targetSampleSlots;
   out.imuStartupValidSamples = startup.validSamples;
+  out.imuStartupSettlingSampleSlots = startup.settlingSampleSlots;
+  out.imuStartupMeasurementStartSequence = startup.measurementStartSequence;
+  out.imuStartupSettlingStatusMask = startup.settlingStatusMask;
   out.imuStartupTemperatureSamples = startup.temperatureSamples;
   for (uint8_t axis = 0; axis < 3; ++axis) {
     out.imuStartupGyroMeanRaw[axis] = static_cast<float>(startup.gyroMeanRaw[axis]);
@@ -450,9 +583,7 @@ bool BMI270ImuSensor::validateLoggingStart(
       strcmp(configured.end, params_.end) != 0 ||
       strcmp(configured.mountPoint, params_.mountPoint) != 0 ||
       strcmp(configured.profile, params_.profile) != 0 ||
-      strcmp(configured.mountAxis[0], params_.mountAxis[0]) != 0 ||
-      strcmp(configured.mountAxis[1], params_.mountAxis[1]) != 0 ||
-      strcmp(configured.mountAxis[2], params_.mountAxis[2]) != 0 ||
+      !orientationsEqual_(configured.orientation, params_.orientation) ||
       configured.startupBiasCaptureSeconds != params_.startupBiasCaptureSeconds ||
       strcmp(configured.calibrationRef, params_.calibrationRef) != 0) {
     return fail_(error, errorCapacity,
@@ -479,6 +610,11 @@ bool BMI270ImuSensor::validateLoggingStart(
   return true;
 }
 
+bool BMI270ImuSensor::prepareLoggingStart(char* error, size_t errorCapacity) {
+  if (muted_) return true;
+  return ensureInitialized_(error, errorCapacity);
+}
+
 bool BMI270ImuSensor::startLoggingSession(char* error, size_t errorCapacity) {
   if (muted_) return true;
   if (!acquisition_.startSession(params_.startupBiasCaptureSeconds)) {
@@ -498,6 +634,239 @@ size_t BMI270ImuSensor::pendingLoggingRows() const {
   return muted_ ? 0 : acquisition_.queuedSamples();
 }
 
+bool BMI270ImuSensor::captureImuOrientation(
+    ImuInstallationPlane plane,
+    int8_t normalSign,
+    ImuOrientationCalibration& out,
+    char* error,
+    size_t errorCapacity) {
+  out = ImuOrientationCalibration{};
+  out.plane = plane;
+  out.normalSign = normalSign;
+  if (normalSign != 1 && normalSign != -1) {
+    return fail_(error, errorCapacity, "%s orientation normal is invalid", params_.name);
+  }
+  if (I2CBusScheduler::isRunning() || acquisition_.sessionActive()) {
+    return fail_(error, errorCapacity, "%s orientation capture requires an idle logger", params_.name);
+  }
+  if (!ensureInitialized_(error, errorCapacity)) return false;
+
+  constexpr uint32_t kTargetSamples = 800;
+  constexpr uint32_t kCaptureTimeoutMs = 7000;
+  constexpr uint32_t kSettlingCleanSamples = 20;
+  constexpr uint32_t kMaximumSettlingSamples = 200;
+  constexpr uint16_t kRejectedStatus =
+      BMI270ImuStatus::kFifoDiscontinuityBefore |
+      BMI270ImuStatus::kQueueDropBefore |
+      BMI270ImuStatus::kSensorRecoveryBefore |
+      BMI270ImuStatus::kTimingDegraded |
+      BMI270ImuStatus::kAccelNearRail |
+      BMI270ImuStatus::kGyroNearRail;
+  BMI270RunningStats accel[3];
+  BMI270RunningStats gyro[3];
+  BMI270RunningStats accelMagnitude;
+  float maximumGyroMagnitudeRaw = 0.0f;
+  bool qualityIncident = false;
+  bool measurementStarted = false;
+  uint32_t consecutiveCleanSamples = 0;
+
+  if (!acquisition_.startSession(0)) {
+    return fail_(error, errorCapacity, "%s orientation acquisition failed to start", params_.name);
+  }
+  I2CBusScheduler::start();
+  const uint32_t startedMs = millis();
+  while (out.sampleCount < kTargetSamples &&
+         static_cast<uint32_t>(millis() - startedMs) < kCaptureTimeoutMs) {
+    BMI270ImuSample sample;
+    bool consumed = false;
+    while (out.sampleCount < kTargetSamples && acquisition_.pop(sample)) {
+      consumed = true;
+      const uint16_t rejectedStatus =
+          sample.measurementStatusFlags() & kRejectedStatus;
+      if (!measurementStarted) {
+        ++out.settlingSampleCount;
+        out.settlingStatusMask |= rejectedStatus;
+        if (rejectedStatus) {
+          consecutiveCleanSamples = 0;
+        } else {
+          ++consecutiveCleanSamples;
+        }
+        if (consecutiveCleanSamples >= kSettlingCleanSamples) {
+          measurementStarted = true;
+        } else if (out.settlingSampleCount >= kMaximumSettlingSamples) {
+          qualityIncident = true;
+          out.qualityStatusMask = out.settlingStatusMask;
+          break;
+        }
+        continue;
+      }
+      const double accelRaw[3] = {
+          static_cast<double>(sample.accelX),
+          static_cast<double>(sample.accelY),
+          static_cast<double>(sample.accelZ)};
+      const double gyroRaw[3] = {
+          static_cast<double>(sample.gyroX),
+          static_cast<double>(sample.gyroY),
+          static_cast<double>(sample.gyroZ)};
+      for (uint8_t axis = 0; axis < 3; ++axis) {
+        accel[axis].add(accelRaw[axis]);
+        gyro[axis].add(gyroRaw[axis]);
+      }
+      accelMagnitude.add(sqrt(
+          accelRaw[0] * accelRaw[0] +
+          accelRaw[1] * accelRaw[1] +
+          accelRaw[2] * accelRaw[2]));
+      const float gyroMagnitudeRaw = static_cast<float>(sqrt(
+          gyroRaw[0] * gyroRaw[0] +
+          gyroRaw[1] * gyroRaw[1] +
+          gyroRaw[2] * gyroRaw[2]));
+      if (gyroMagnitudeRaw > maximumGyroMagnitudeRaw) {
+        maximumGyroMagnitudeRaw = gyroMagnitudeRaw;
+      }
+      if (rejectedStatus) {
+        qualityIncident = true;
+        out.qualityStatusMask |= rejectedStatus;
+      }
+      ++out.sampleCount;
+    }
+    if (qualityIncident && !measurementStarted) break;
+    if (!consumed) delay(2);
+  }
+  I2CBusScheduler::stop();
+  const bool stopped = acquisition_.stopSession();
+  (void)acquisition_.discardQueuedSamples();
+  if (!stopped) {
+    return fail_(error, errorCapacity, "%s orientation acquisition failed to stop cleanly", params_.name);
+  }
+
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    out.meanAccelRaw[axis] = static_cast<float>(accel[axis].mean());
+  }
+  out.accelMagnitudeMeanG =
+      static_cast<float>(accelMagnitude.mean() / BMI270StartupObservation::kAccelCountsPerG);
+  out.accelMagnitudeStdG = static_cast<float>(
+      accelMagnitude.standardDeviation() / BMI270StartupObservation::kAccelCountsPerG);
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    const float stdDps = static_cast<float>(
+        gyro[axis].standardDeviation() / BMI270StartupObservation::kGyroCountsPerDps);
+    if (stdDps > out.gyroStdMaximumDps) out.gyroStdMaximumDps = stdDps;
+  }
+  out.maximumGyroMagnitudeDps =
+      maximumGyroMagnitudeRaw / static_cast<float>(BMI270StartupObservation::kGyroCountsPerDps);
+  if (RTCManager_hasValidTime()) out.capturedAtUnixMs = RTCManager_getEpochMs();
+
+  uint16_t rejection = 0;
+  if (out.sampleCount < kTargetSamples) rejection |= ImuOrientationRejection::kInsufficientSamples;
+  if (qualityIncident) rejection |= ImuOrientationRejection::kQualityIncident;
+  if (fabsf(out.accelMagnitudeMeanG - 1.0f) >
+      static_cast<float>(BMI270StartupObservation::kAccelMeanToleranceG)) {
+    rejection |= ImuOrientationRejection::kAccelMeanOutsideGravityBand;
+  }
+  if (out.accelMagnitudeStdG >
+      static_cast<float>(BMI270StartupObservation::kAccelStdMaximumG)) {
+    rejection |= ImuOrientationRejection::kAccelMagnitudeUnstable;
+  }
+  if (out.gyroStdMaximumDps >
+      static_cast<float>(BMI270StartupObservation::kGyroStdMaximumDps)) {
+    rejection |= ImuOrientationRejection::kGyroUnstable;
+  }
+  if (out.maximumGyroMagnitudeDps >
+      static_cast<float>(BMI270StartupObservation::kGyroMagnitudeMaximumDps)) {
+    rejection |= ImuOrientationRejection::kGyroMotionDetected;
+  }
+  if (!ImuOrientation::solve(
+          plane, normalSign, out.meanAccelRaw, out.matrix, out.rollDeviationDeg)) {
+    rejection |= ImuOrientationRejection::kInvalidGeometry;
+  }
+  if (out.rollDeviationDeg > ImuOrientation::kMaximumRollDeviationDeg) {
+    rejection |= ImuOrientationRejection::kRollOutsideLimit;
+  }
+  out.rejectionMask = rejection;
+  out.accepted = rejection == 0;
+  if (out.accepted) ImuOrientation::matrixToQuaternion(out.matrix, out.quaternionWxyz);
+  BMI270_SENSOR_LOGI(
+      "orientation capture sensor=%s accepted=%u reject=0x%04X status=0x%04X settle_status=0x%04X settle_samples=%lu samples=%lu accel_mean=%.5f accel_std=%.5f gyro_std=%.5f gyro_max=%.5f roll=%.3f\n",
+      params_.name,
+      out.accepted ? 1u : 0u,
+      (unsigned)out.rejectionMask,
+      (unsigned)out.qualityStatusMask,
+      (unsigned)out.settlingStatusMask,
+      (unsigned long)out.settlingSampleCount,
+      (unsigned long)out.sampleCount,
+      (double)out.accelMagnitudeMeanG,
+      (double)out.accelMagnitudeStdG,
+      (double)out.gyroStdMaximumDps,
+      (double)out.maximumGyroMagnitudeDps,
+      (double)out.rollDeviationDeg);
+  return true;
+}
+
+bool BMI270ImuSensor::saveImuOrientation(
+    const ImuOrientationCalibration& calibration,
+    char* error,
+    size_t errorCapacity) {
+  if (!calibration.accepted || calibration.rejectionMask != 0 ||
+      !ImuOrientation::validateMatrix(calibration.matrix)) {
+    return fail_(error, errorCapacity, "%s has no accepted orientation to save", params_.name);
+  }
+  const int8_t index = ConfigManager::findSensorByName(params_.name);
+  SensorSpec spec;
+  if (index < 0 || !ConfigManager::getSensorSpec(static_cast<uint8_t>(index), spec)) {
+    return fail_(error, errorCapacity, "%s configuration was not found", params_.name);
+  }
+
+  static const char* const keys[] = {
+      "orient_valid", "orient_plane", "orient_normal_sign",
+      "orient_qw", "orient_qx", "orient_qy", "orient_qz",
+      "orient_samples", "orient_epoch_ms",
+      "orient_mean_ax", "orient_mean_ay", "orient_mean_az",
+      "orient_accel_mean_g", "orient_accel_std_g",
+      "orient_gyro_std_dps", "orient_gyro_max_dps", "orient_roll_deg",
+  };
+  String previous[sizeof(keys) / sizeof(keys[0])];
+  bool hadPrevious[sizeof(keys) / sizeof(keys[0])] {};
+  for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+    hadPrevious[i] = spec.params.get(keys[i], previous[i]);
+  }
+  auto restorePrevious = [&]() {
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+      if (hadPrevious[i]) (void)spec.params.set(keys[i], previous[i]);
+    }
+  };
+
+  char epoch[24];
+  snprintf(epoch, sizeof(epoch), "%llu",
+           static_cast<unsigned long long>(calibration.capturedAtUnixMs));
+  bool stored =
+      spec.params.setBool("orient_valid", true) &&
+      spec.params.set("orient_plane", ImuOrientation::planeKey(calibration.plane)) &&
+      spec.params.setInt("orient_normal_sign", calibration.normalSign) &&
+      spec.params.setFloat("orient_qw", calibration.quaternionWxyz[0]) &&
+      spec.params.setFloat("orient_qx", calibration.quaternionWxyz[1]) &&
+      spec.params.setFloat("orient_qy", calibration.quaternionWxyz[2]) &&
+      spec.params.setFloat("orient_qz", calibration.quaternionWxyz[3]) &&
+      spec.params.setInt("orient_samples", static_cast<long>(calibration.sampleCount)) &&
+      spec.params.set("orient_epoch_ms", epoch) &&
+      spec.params.setFloat("orient_mean_ax", calibration.meanAccelRaw[0]) &&
+      spec.params.setFloat("orient_mean_ay", calibration.meanAccelRaw[1]) &&
+      spec.params.setFloat("orient_mean_az", calibration.meanAccelRaw[2]) &&
+      spec.params.setFloat("orient_accel_mean_g", calibration.accelMagnitudeMeanG) &&
+      spec.params.setFloat("orient_accel_std_g", calibration.accelMagnitudeStdG) &&
+      spec.params.setFloat("orient_gyro_std_dps", calibration.gyroStdMaximumDps) &&
+      spec.params.setFloat("orient_gyro_max_dps", calibration.maximumGyroMagnitudeDps) &&
+      spec.params.setFloat("orient_roll_deg", calibration.rollDeviationDeg);
+  if (!stored) {
+    restorePrevious();
+    return fail_(error, errorCapacity, "%s orientation configuration is full", params_.name);
+  }
+  if (!ConfigManager::save(ConfigManager::get())) {
+    restorePrevious();
+    return fail_(error, errorCapacity, "%s orientation could not be persisted", params_.name);
+  }
+  params_.orientation = calibration;
+  return true;
+}
+
 bool BMI270ImuSensor::loadParams_(
     Params& out,
     const char* instanceName,
@@ -515,10 +884,8 @@ bool BMI270ImuSensor::loadParams_(
   canonicalizeToken_(out.end, sizeof(out.end));
   if (strcmp(out.end, "none") == 0) out.end[0] = '\0';
   readString_(params, "profile", out.profile, sizeof(out.profile));
-  readString_(params, "mount_x", out.mountAxis[0], sizeof(out.mountAxis[0]));
-  readString_(params, "mount_y", out.mountAxis[1], sizeof(out.mountAxis[1]));
-  readString_(params, "mount_z", out.mountAxis[2], sizeof(out.mountAxis[2]));
   readString_(params, "calibration_ref", out.calibrationRef, sizeof(out.calibrationRef));
+  loadOrientation_(out.orientation, params);
 
   long value = 0;
   if (params.getInt("i2c_bus", value) && value >= 0 && value <= 255) {
@@ -577,11 +944,10 @@ bool BMI270ImuSensor::validateSpec(
   if (!busProfile || busProfile->hz != 400000u) {
     return fail_(error, errorCapacity, "%s requires a 400 kHz I2C bus", params.name);
   }
-  BMI270MountTransform transform;
-  if (!BMI270Mount::parseTransform(
-          params.mountAxis[0], params.mountAxis[1], params.mountAxis[2], transform)) {
+  if (params.orientation.accepted &&
+      !ImuOrientation::validateMatrix(params.orientation.matrix)) {
     return fail_(error, errorCapacity,
-                 "%s mounting map must be a right-handed signed axis permutation",
+                 "%s orientation matrix must be a right-handed orthonormal rotation",
                  params.name);
   }
   return true;
@@ -596,11 +962,25 @@ const ParamDef* BMI270ImuSensor::paramDefs(size_t& count) {
     {"i2c_bus", ParamType::Enum, "1", nullptr, nullptr, "0,1", "Board I2C bus index"},
     {"i2c_addr", ParamType::Enum, "104", nullptr, nullptr, "104,105", "BMI270 I2C address (0x68 or 0x69)"},
     {"profile", ParamType::Enum, "orientation_200", nullptr, nullptr, "orientation_200", "Named acquisition profile"},
-    {"mount_x", ParamType::Enum, "+x", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local X as a signed sensor-native axis"},
-    {"mount_y", ParamType::Enum, "+y", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local Y as a signed sensor-native axis"},
-    {"mount_z", ParamType::Enum, "+z", nullptr, nullptr, "+x,-x,+y,-y,+z,-z", "Body-local Z as a signed sensor-native axis"},
     {"startup_bias_capture_s", ParamType::Int, "5", "0", "60", nullptr, "Startup stationary-observation window; records bias evidence without modifying raw samples"},
     {"calibration_ref", ParamType::String, "", nullptr, nullptr, nullptr, "Optional host calibration reference"},
+    {"orient_valid", ParamType::Bool, "false", nullptr, nullptr, nullptr, "Internal assisted-orientation state", true},
+    {"orient_plane", ParamType::String, "xz", nullptr, nullptr, nullptr, "Internal assisted-orientation plane", true},
+    {"orient_normal_sign", ParamType::Int, "1", "-1", "1", nullptr, "Internal assisted-orientation normal", true},
+    {"orient_qw", ParamType::Float, "1", nullptr, nullptr, nullptr, "Internal orientation quaternion W", true},
+    {"orient_qx", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal orientation quaternion X", true},
+    {"orient_qy", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal orientation quaternion Y", true},
+    {"orient_qz", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal orientation quaternion Z", true},
+    {"orient_samples", ParamType::Int, "0", "0", nullptr, nullptr, "Internal orientation sample count", true},
+    {"orient_epoch_ms", ParamType::String, "0", nullptr, nullptr, nullptr, "Internal orientation capture time", true},
+    {"orient_mean_ax", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal mean acceleration X", true},
+    {"orient_mean_ay", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal mean acceleration Y", true},
+    {"orient_mean_az", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal mean acceleration Z", true},
+    {"orient_accel_mean_g", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal acceleration magnitude mean", true},
+    {"orient_accel_std_g", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal acceleration magnitude deviation", true},
+    {"orient_gyro_std_dps", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal gyroscope deviation", true},
+    {"orient_gyro_max_dps", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal maximum gyroscope magnitude", true},
+    {"orient_roll_deg", ParamType::Float, "0", nullptr, nullptr, nullptr, "Internal roll residual", true},
   };
   count = sizeof(definitions) / sizeof(definitions[0]);
   return definitions;
@@ -612,12 +992,11 @@ Sensor* BMI270ImuSensor::create(
     bool mutedDefault) {
   Params parsed;
   loadParams_(parsed, instanceName, params);
-  BMI270MountTransform transform;
   if (!BMI270Profile::isSupportedAddress(parsed.address) ||
       strcmp(parsed.profile, BMI270Profile::kProfileName) != 0 ||
       !validMountSemantics_(parsed) ||
-      !BMI270Mount::parseTransform(
-          parsed.mountAxis[0], parsed.mountAxis[1], parsed.mountAxis[2], transform)) {
+      (parsed.orientation.accepted &&
+       !ImuOrientation::validateMatrix(parsed.orientation.matrix))) {
     BMI270_SENSOR_LOGW("refusing invalid configuration for sensor=%s\n", parsed.name);
     return nullptr;
   }

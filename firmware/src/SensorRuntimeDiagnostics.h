@@ -69,6 +69,16 @@ struct SensorRuntimeDiagnostics {
   uint16_t configBefore = 0;
   uint16_t configAfter = 0;
   SensorRuntimeFailure initializationFailure;
+  uint8_t imuDeviceState = 0;
+  uint8_t imuInitializationFailureStep = 0;
+  int8_t imuInitializationApiResult = 0;
+  uint8_t imuInitializationChipId = 0;
+  uint32_t imuInitializationAttempts = 0;
+  uint32_t imuInitializationFailures = 0;
+  bool imuInitializationChipIdRead = false;
+  bool imuInitializationChipIdMatched = false;
+  bool imuInitializationCleanupAttempted = false;
+  bool imuInitializationCleanupOk = false;
 
   uint32_t rawReadFailures = 0;
   uint32_t diagnosticReadFailures = 0;
@@ -176,6 +186,9 @@ struct SensorRuntimeDiagnostics {
   uint16_t imuStartupConfiguredSeconds = 0;
   uint32_t imuStartupTargetSampleSlots = 0;
   uint32_t imuStartupValidSamples = 0;
+  uint32_t imuStartupSettlingSampleSlots = 0;
+  uint32_t imuStartupMeasurementStartSequence = 0;
+  uint16_t imuStartupSettlingStatusMask = 0;
   uint32_t imuStartupTemperatureSamples = 0;
   float imuStartupGyroMeanRaw[3] {};
   float imuStartupGyroStdRaw[3] {};
