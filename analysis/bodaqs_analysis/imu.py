@@ -29,6 +29,7 @@ STATUS_FLAGS: dict[str, int] = {
     "temperature_stale": 0x0020,
     "accel_near_rail": 0x0040,
     "gyro_near_rail": 0x0080,
+    "output_decimated": 0x0100,
 }
 
 _REQUIRED_SCALARS = {
@@ -176,6 +177,17 @@ def _config_values(config: Optional[Mapping[str, Any]]) -> tuple[dict[str, Any],
     tick_denominator = _finite_float(sensor_time.get("tick_denominator"))
     tick_modulus = _finite_float(sensor_time.get("modulus_ticks"))
     mount_matrix = _mount_matrix(config.get("mount_transform"))
+    output_rate_hz = _finite_float(config.get("output_rate_hz"))
+    decimation_factor = _finite_float(config.get("output_decimation_factor"))
+    contract_id = _text(config.get("contract_id"))
+    if output_rate_hz is None:
+        output_rate_hz = rate_hz
+    if decimation_factor is None and rate_hz is not None and output_rate_hz is not None and output_rate_hz > 0:
+        decimation_factor = rate_hz / output_rate_hz
+    if decimation_factor is not None:
+        decimation_factor = round(decimation_factor)
+        if decimation_factor <= 0:
+            decimation_factor = None
 
     required = {
         "imu_rate_hz": rate_hz,
@@ -190,6 +202,8 @@ def _config_values(config: Optional[Mapping[str, Any]]) -> tuple[dict[str, Any],
             warnings.append(f"missing_or_invalid_{key}")
     if mount_matrix is None:
         warnings.append("missing_or_invalid_mount_transform")
+    if contract_id.endswith(".v3") and (output_rate_hz is None or decimation_factor is None):
+        warnings.append("missing_or_invalid_output_selection")
 
     tick_period_s = None
     if tick_numerator_us is not None and tick_denominator is not None and tick_denominator > 0:
@@ -197,6 +211,9 @@ def _config_values(config: Optional[Mapping[str, Any]]) -> tuple[dict[str, Any],
 
     return {
         "rate_hz": rate_hz,
+        "output_rate_hz": output_rate_hz,
+        "decimation_factor": int(decimation_factor) if decimation_factor is not None else 1,
+        "gyro_bias_correction": config.get("gyro_bias_correction"),
         "accel_range_g": accel_range_g,
         "gyro_range_dps": gyro_range_dps,
         "tick_period_s": tick_period_s,
@@ -500,7 +517,10 @@ def extract_imu_stream(
         if tick_period_s is not None and tick_period_s > 0
         else np.full(sensor_time_unwrapped.size, np.nan, dtype=float)
     )
-    sequence_gap_mask = sequence_delta > 1
+    expected_sequence_delta = int(config_values.get("decimation_factor") or 1)
+    sequence_gap_mask = sequence_delta > expected_sequence_delta
+    sequence_short_stride_mask = (sequence_delta > 0) & (sequence_delta < expected_sequence_delta)
+    sequence_stride_mismatch_mask = sequence_delta != expected_sequence_delta
     sequence_duplicate_mask = sequence_delta == 0
     sequence_reverse_mask = sequence_delta < 0
     sequence_span = int(np.max(sequence_unwrapped) - np.min(sequence_unwrapped) + 1)
@@ -518,7 +538,7 @@ def extract_imu_stream(
     if len(sequence_unwrapped) > 1:
         clock_epoch_boundary[1:] = (
             tick_discontinuity_mask
-            | (sequence_delta < 0)
+            | sequence_stride_mismatch_mask
             | (sensor_time_delta < 0)
             | ((flags[1:] & STATUS_FLAGS["sensor_recovery_before"]) != 0)
         )
@@ -549,7 +569,8 @@ def extract_imu_stream(
             positions = np.flatnonzero(clock_epoch == epoch)
             previous = positions[0] - 1
             if aligned_host_time[positions[0]] <= aligned_host_time[previous]:
-                nominal_dt = 1.0 / float(rate_hz) if rate_hz is not None and rate_hz > 0 else 0.0
+                output_rate_hz = config_values.get("output_rate_hz")
+                nominal_dt = 1.0 / float(output_rate_hz) if output_rate_hz is not None and output_rate_hz > 0 else 0.0
                 adjustment = aligned_host_time[previous] + nominal_dt - aligned_host_time[positions[0]]
                 aligned_host_time[positions] += adjustment
                 clock_fits[epoch]["alignment_adjustment_s"] = float(adjustment)
@@ -656,9 +677,16 @@ def extract_imu_stream(
     else:
         clock_fit_summary = {"available": False, "epoch_count": len(clock_fits), "sample_count": 0}
 
+    output_rate_hz = config_values.get("output_rate_hz")
+    logger_relative_output_hz = (
+        float(output_rate_hz) / float(clock_fit_summary["scale"])
+        if output_rate_hz is not None and clock_fit_summary.get("available") and float(clock_fit_summary["scale"]) > 0
+        else None
+    )
+
     continuity_boundary = np.zeros(len(stream.index), dtype=bool)
     if len(stream.index) > 1:
-        continuity_boundary[1:] = (sequence_delta != 1) | tick_discontinuity_mask
+        continuity_boundary[1:] = sequence_stride_mismatch_mask | tick_discontinuity_mask
         incident_mask = (
             STATUS_FLAGS["fifo_discontinuity_before"]
             | STATUS_FLAGS["queue_drop_before"]
@@ -700,7 +728,11 @@ def extract_imu_stream(
         "partial_frames",
         "invalid_headers",
         "parser_output_drops",
+        "samples_intentionally_decimated",
         "queue_drops",
+        "ioc_offset_read_attempts",
+        "ioc_offset_read_failures",
+        "ioc_offset_snapshot_drops",
         "i2c_failures",
         "recovery_attempts",
         "recovery_failures",
@@ -719,6 +751,8 @@ def extract_imu_stream(
     warnings = list(metadata_warnings)
     if sequence_gap_mask.any():
         warnings.append("sequence_gaps")
+    if sequence_short_stride_mask.any():
+        warnings.append("sequence_stride_shortfall")
     if sequence_duplicate_mask.any():
         warnings.append("duplicate_sequence_values")
     if sequence_reverse_mask.any():
@@ -743,17 +777,24 @@ def extract_imu_stream(
         "warnings": list(dict.fromkeys(warnings)),
         "sample_count": int(len(stream.index)),
         "nominal_odr_hz": float(rate_hz) if rate_hz is not None else None,
+        "emitted_odr_hz": float(output_rate_hz) if output_rate_hz is not None else None,
         "native_grid_odr_hz": native_grid_odr_hz,
         "logger_relative_odr_hz": logger_relative_odr_hz,
         # Retain the established field name, but make it represent the rate of
         # canonical time_s rather than the nominal rate of the IMU's own clock.
-        "effective_odr_hz": logger_relative_odr_hz or native_grid_odr_hz,
+        "effective_odr_hz": logger_relative_output_hz or output_rate_hz or logger_relative_odr_hz or native_grid_odr_hz,
         "sequence": {
+            "expected_delta": expected_sequence_delta,
             "gap_events": int(np.count_nonzero(sequence_gap_mask)),
-            "missing_samples": int(np.sum(sequence_delta[sequence_gap_mask] - 1, dtype=np.int64)),
+            "missing_samples": int(np.sum(sequence_delta[sequence_gap_mask] - expected_sequence_delta, dtype=np.int64)),
+            "short_stride_events": int(np.count_nonzero(sequence_short_stride_mask)),
             "duplicates": int(np.count_nonzero(sequence_duplicate_mask)),
             "out_of_order": int(np.count_nonzero(sequence_reverse_mask)),
             "coverage_fraction": coverage,
+            "expected_output_coverage_fraction": (
+                min(1.0, float(len(sequence_unwrapped) * expected_sequence_delta / sequence_span))
+                if sequence_span > 0 else None
+            ),
             "first": int(sequence_unwrapped[0]),
             "last": int(sequence_unwrapped[-1]),
         },
@@ -794,7 +835,9 @@ def extract_imu_stream(
         "end": layout.get("end"),
         "mount_point": layout.get("mount_point"),
         "nominal_sample_rate_hz": float(rate_hz) if rate_hz is not None else None,
+        "emitted_sample_rate_hz": float(output_rate_hz) if output_rate_hz is not None else None,
         "logger_relative_sample_rate_hz": logger_relative_odr_hz,
+        "logger_relative_emitted_rate_hz": logger_relative_output_hz,
         "timebase_source": timebase_source,
         "time_columns": {
             "canonical": "time_s",
@@ -803,7 +846,11 @@ def extract_imu_stream(
             "observation": "host_sample_time_s",
         },
         "clock_epochs": copy.deepcopy(clock_fits),
-        "raw_samples_preserved": True,
+        "raw_samples_preserved": not bool(
+            isinstance(config_values.get("gyro_bias_correction"), Mapping)
+            and config_values["gyro_bias_correction"].get("hardware_offset_applied")
+        ),
+        "gyro_bias_correction": copy.deepcopy(config_values.get("gyro_bias_correction")),
         "coordinate_frames": ["sensor_native"] + (["body_local"] if isinstance(mount_matrix, np.ndarray) else []),
         "mount_transform": copy.deepcopy(config.get("mount_transform")) if isinstance(config, Mapping) else None,
         "source_columns": dict(columns),
@@ -876,7 +923,7 @@ def build_imu_streams(session: dict[str, Any], *, strict: bool = False) -> dict[
         stream_dfs[name] = stream
         _mask_invalid_primary_rows(session, layouts[sensor])
         has_discontinuity = report["continuous_segments"]["count"] > 1
-        effective_rate = report.get("logger_relative_odr_hz") or report.get("native_grid_odr_hz")
+        effective_rate = report.get("effective_odr_hz")
         if not has_discontinuity and effective_rate is not None:
             register_stream_metadata(
                 session,

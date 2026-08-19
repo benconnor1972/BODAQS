@@ -50,6 +50,9 @@ public:
     Satellites,
     HAccM,
     VAccM,
+    SpeedAccuracyMps,
+    CourseAccuracyDeg,
+    TimeOfWeekCs,
   };
 
   struct Params {

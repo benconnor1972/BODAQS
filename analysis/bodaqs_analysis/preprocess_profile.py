@@ -40,6 +40,10 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
         "build_logger_stream": True,
         "logger_stream_name": "gps_logger",
     },
+    "imu_attitude": {
+        "enabled": False,
+        "required": False,
+    },
     "zeroing_enabled": False,
     "zero_window_s": 0.4,
     "zero_min_samples": 10,
@@ -432,6 +436,8 @@ def validate_preprocess_config(config: Mapping[str, Any], *, label: str = "") ->
                 f"in a preprocess profile{label}: {', '.join(forbidden_fit)}"
             )
 
+    _validate_imu_attitude(config.get("imu_attitude"), label=label)
+
 
 def resolve_preprocess_config_paths(
     config: Mapping[str, Any],
@@ -492,6 +498,24 @@ def _require_positive_int(config: Mapping[str, Any], key: str, *, label: str) ->
         raise ValueError(f"Preprocess config {key!r} must be an integer{label}") from None
     if value <= 0:
         raise ValueError(f"Preprocess config {key!r} must be a positive integer{label}")
+
+
+def _validate_imu_attitude(value: Any, *, label: str) -> None:
+    """Validate the optional, profile-controlled offline attitude stage."""
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Preprocess config 'imu_attitude' must be object or null{label}")
+
+    unknown = sorted(set(value) - {"enabled", "required"})
+    if unknown:
+        raise ValueError(
+            "Preprocess config 'imu_attitude' has unsupported field(s)"
+            f"{label}: {', '.join(unknown)}"
+        )
+    for field in ("enabled", "required"):
+        if field in value and not isinstance(value.get(field), bool):
+            raise ValueError(f"Preprocess config 'imu_attitude.{field}' must be boolean{label}")
 
 
 def _validate_motion_derivation(value: Any, *, label: str) -> None:

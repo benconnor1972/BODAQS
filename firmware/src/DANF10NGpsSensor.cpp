@@ -143,6 +143,9 @@ const char* suffixForColumn_(DANF10NGpsSensor::ColumnKind kind) {
     case K::Satellites: return "sats";
     case K::HAccM: return "hacc";
     case K::VAccM: return "vacc";
+    case K::SpeedAccuracyMps: return "speed_acc";
+    case K::CourseAccuracyDeg: return "course_acc";
+    case K::TimeOfWeekCs: return "tow_cs";
     default: return "value";
   }
 }
@@ -156,8 +159,11 @@ const char* unitForColumn_(DANF10NGpsSensor::ColumnKind kind) {
     case K::AltM:
     case K::HAccM:
     case K::VAccM: return "m";
-    case K::SpeedMps: return "m/s";
+    case K::SpeedMps:
+    case K::SpeedAccuracyMps: return "m/s";
+    case K::CourseAccuracyDeg: return "deg";
     case K::AgeMs: return "ms";
+    case K::TimeOfWeekCs: return "cs";
     case K::Seq: return "count";
     case K::Valid:
     case K::Fresh:
@@ -183,6 +189,9 @@ const char* quantityForColumn_(DANF10NGpsSensor::ColumnKind kind) {
     case K::Satellites: return "satellites";
     case K::HAccM: return "horizontal_accuracy";
     case K::VAccM: return "vertical_accuracy";
+    case K::SpeedAccuracyMps: return "speed_accuracy";
+    case K::CourseAccuracyDeg: return "course_accuracy";
+    case K::TimeOfWeekCs: return "receiver_time_of_week";
     default: return "value";
   }
 }
@@ -198,6 +207,9 @@ bool isQcColumn_(DANF10NGpsSensor::ColumnKind kind) {
     case K::Satellites:
     case K::HAccM:
     case K::VAccM:
+    case K::SpeedAccuracyMps:
+    case K::CourseAccuracyDeg:
+    case K::TimeOfWeekCs:
       return true;
     case K::LatDeg:
     case K::LonDeg:
@@ -601,6 +613,12 @@ uint8_t DANF10NGpsSensor::collectColumns_(ColumnKind* out, uint8_t max) const {
     add(ColumnKind::Satellites);
     add(ColumnKind::HAccM);
     add(ColumnKind::VAccM);
+    // These fields make a GPS course usable as a timed yaw observation in
+    // host post-processing. Centiseconds remain exact in the float sampling
+    // carrier throughout a full GPS week.
+    add(ColumnKind::SpeedAccuracyMps);
+    add(ColumnKind::CourseAccuracyDeg);
+    add(ColumnKind::TimeOfWeekCs);
   }
 
   return n;
@@ -643,6 +661,12 @@ float DANF10NGpsSensor::valueForColumn_(ColumnKind kind,
       return s.have ? float(s.hAccMm) * 0.001f : NAN;
     case K::VAccM:
       return s.have ? float(s.vAccMm) * 0.001f : NAN;
+    case K::SpeedAccuracyMps:
+      return s.have ? float(s.speedAccMmS) * 0.001f : NAN;
+    case K::CourseAccuracyDeg:
+      return s.have ? float(s.headingAccDegE5) * 1.0e-5f : NAN;
+    case K::TimeOfWeekCs:
+      return s.have ? float(s.gpsTowMs / 10u) : NAN;
     default:
       break;
   }
@@ -728,12 +752,27 @@ bool DANF10NGpsSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) 
     out.semanticSelectionExcluded = true;
   }
   out.outputMode = OutputMode::RAW;
+  if (kind == ColumnKind::TimeOfWeekCs) {
+    out.storageType = SensorColumnStorageType::UInt32;
+    copyField_(out.notes, sizeof(out.notes),
+               "GPS receiver time-of-week; centiseconds since week start");
+  } else if (kind == ColumnKind::HeadingDeg) {
+    copyField_(out.notes, sizeof(out.notes),
+               "GPS course over ground; not direct bicycle heading");
+  } else if (kind == ColumnKind::CourseAccuracyDeg) {
+    copyField_(out.notes, sizeof(out.notes),
+               "GPS receiver course-over-ground accuracy estimate");
+  } else if (kind == ColumnKind::SpeedAccuracyMps) {
+    copyField_(out.notes, sizeof(out.notes),
+               "GPS receiver ground-speed accuracy estimate");
+  } else {
+    copyField_(out.notes, sizeof(out.notes), "DAN-F10N async GPS snapshot");
+  }
   out.required = false;
   out.primary = !qc && (idx == 0);
   out.raw = false;
   out.calibrated = false;
   out.transformed = false;
-  copyField_(out.notes, sizeof(out.notes), "DAN-F10N async GPS snapshot");
   return true;
 }
 

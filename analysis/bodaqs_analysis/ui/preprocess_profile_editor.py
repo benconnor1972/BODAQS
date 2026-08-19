@@ -75,6 +75,13 @@ def _motion_defaults(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     return defaults
 
 
+def _imu_attitude_defaults(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    defaults = copy.deepcopy(DEFAULT_PREPROCESS_PROFILE_CONFIG["imu_attitude"])
+    if isinstance(raw, Mapping):
+        defaults.update(copy.deepcopy(dict(raw)))
+    return defaults
+
+
 def _set_dropdown_value(widget: W.Dropdown, value: Any, fallback: str) -> None:
     allowed = [item[1] if isinstance(item, tuple) else item for item in widget.options]
     widget.value = str(value) if str(value) in allowed else fallback
@@ -179,6 +186,10 @@ class PreprocessProfileEditor:
         self.w_fit_resample_to_primary = W.Checkbox(description="Resample to primary")
         self.w_fit_resample_method = W.Dropdown(options=["linear"], description="Method", layout=W.Layout(width="220px"))
         self.w_fit_raw_stream_name = W.Text(description="Stream", layout=W.Layout(width="320px"))
+
+        # Estimator tuning remains package-defined for this first profile-controlled slice.
+        self.w_imu_attitude_enabled = W.Checkbox(description="Generate offline attitude stream")
+        self.w_imu_attitude_required = W.Checkbox(description="Require an attitude stream")
 
         # Signal processing policy
         self.w_zero_enabled = W.Checkbox(description="Enable zeroing")
@@ -287,6 +298,15 @@ class PreprocessProfileEditor:
                 ],
             ),
             self._section(
+                "IMU Attitude",
+                "Optionally persist the conservative offline gravity/course-corrected attitude product. "
+                "When required, preprocessing fails if no eligible frame-mounted IMU can produce it.",
+                [
+                    self.w_imu_attitude_enabled,
+                    self.w_imu_attitude_required,
+                ],
+            ),
+            self._section(
                 "Zeroing, Scaling & Smoothing",
                 "Set preprocessing operations applied to logger signals before event detection and metric extraction.",
                 [
@@ -348,6 +368,7 @@ class PreprocessProfileEditor:
         cfg = preprocess_config_from_profile(profile)
         fit = _fit_defaults(cfg.get("fit_import"))
         motion = _motion_defaults(cfg.get("motion_derivation"))
+        imu_attitude = _imu_attitude_defaults(cfg.get("imu_attitude"))
 
         self.current_profile_path = Path(path) if path is not None else self.current_profile_path
         if path is not None:
@@ -378,6 +399,8 @@ class PreprocessProfileEditor:
         self.w_fit_resample_to_primary.value = bool(fit.get("resample_to_primary", True))
         _set_dropdown_value(self.w_fit_resample_method, fit.get("resample_method") or "linear", "linear")
         self.w_fit_raw_stream_name.value = str(fit.get("raw_stream_name") or "gps_fit")
+        self.w_imu_attitude_enabled.value = bool(imu_attitude.get("enabled", False))
+        self.w_imu_attitude_required.value = bool(imu_attitude.get("required", False))
 
         self.w_zero_enabled.value = bool(cfg.get("zeroing_enabled", False))
         self.w_zero_window_s.value = float(cfg.get("zero_window_s", 0.4))
@@ -460,6 +483,10 @@ class PreprocessProfileEditor:
                 "resample_to_primary": bool(self.w_fit_resample_to_primary.value),
                 "resample_method": str(self.w_fit_resample_method.value),
                 "raw_stream_name": str(self.w_fit_raw_stream_name.value or "").strip(),
+            },
+            "imu_attitude": {
+                "enabled": bool(self.w_imu_attitude_enabled.value),
+                "required": bool(self.w_imu_attitude_required.value),
             },
             "zeroing_enabled": bool(self.w_zero_enabled.value),
             "zero_window_s": float(self.w_zero_window_s.value),

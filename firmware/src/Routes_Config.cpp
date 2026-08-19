@@ -318,19 +318,17 @@ static String paramValueAsString_(const SensorSpec& sp, const ParamDef* pd) {
   if (!pd) return val;
   if (pd->type == ParamType::Bool) {
     bool b = false;
-    sp.params.getBool(pd->key, b);
-    val = b ? "true" : "false";
+    if (sp.params.getBool(pd->key, b)) val = b ? "true" : "false";
   } else if (pd->type == ParamType::Int) {
     long v = 0;
-    sp.params.getInt(pd->key, v);
-    val = String(v);
+    if (sp.params.getInt(pd->key, v)) val = String(v);
   } else if (pd->type == ParamType::Float) {
     double f = 0.0;
-    sp.params.getFloat(pd->key, f);
-    val = String(f, 6);
+    if (sp.params.getFloat(pd->key, f)) val = String(f, 6);
   } else {
     sp.params.get(pd->key, val);
   }
+  if (!val.length() && pd->def) val = pd->def;
   return val;
 }
 

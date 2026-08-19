@@ -77,6 +77,10 @@ namespace {
   static bool shouldPersistSensorKey_(uint8_t idx, const char* key) {
     if (!key || !*key || idx >= g_specCount) return false;
 
+    // These were transient web-editor flags and were never runtime settings.
+    if (strcasecmp(key, "__om_changed") == 0 ||
+        strcasecmp(key, "__id_changed") == 0) return false;
+
     // Polarity is derived from the labelled calibration endpoints
     // (`sensor_full_count < sensor_zero_count`) and is no longer persisted.
     if (strcasecmp(key, "invert") == 0) return false;
@@ -163,6 +167,32 @@ namespace {
       } else if (pd.def) {
         store.set(pd.key, pd.def);
       }
+    }
+  }
+
+  static void migrateBmi270Params_(SensorType type, ParamStore& store) {
+    if (type != SensorType::BMI270ImuI2C) return;
+
+    // Reclaim obsolete/transient entries before adding v3 settings. Existing
+    // IMU configurations can otherwise sit close to ParamStore::MAX.
+    store.remove("__om_changed");
+    store.remove("__id_changed");
+
+    const char* legacyLocation = store.get("location");
+    if (!store.get("domain") && legacyLocation && *legacyLocation) {
+      char domain[sizeof(store.vals[0])] = {0};
+      strncpy(domain, legacyLocation, sizeof(domain) - 1);
+      store.set("domain", domain);
+    }
+    store.remove("location");
+
+    const SensorTypeInfo* ti = SensorRegistry::lookup(type);
+    size_t defCount = 0;
+    const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
+    for (size_t d = 0; defs && d < defCount && store.count < ParamStore::MAX; ++d) {
+      const ParamDef& pd = defs[d];
+      if (!pd.key || !*pd.key || store.get(pd.key) || !pd.def) continue;
+      store.set(pd.key, pd.def);
     }
   }
 
@@ -849,6 +879,10 @@ bool ConfigManager::load(LoggerConfig& cfg) {
   const uint8_t need = (g_expectedCount > g_specCount) ? g_expectedCount : g_specCount;
   for (uint8_t i = 0; i < need; ++i) {
     ensureSpec(i);
+  }
+
+  for (uint8_t i = 0; i < g_specCount; ++i) {
+    migrateBmi270Params_(g_specs[i].type, g_stores[i]);
   }
 
   // Safety: rebind the scratch ParamPacks to their stores (in case ensureSpec touched them)

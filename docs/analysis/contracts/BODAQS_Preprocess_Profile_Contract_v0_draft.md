@@ -191,6 +191,10 @@ class FitImportConfigV1(TypedDict, total=False):
     resample_method: str
     raw_stream_name: str
 
+class ImuAttitudeConfigV1(TypedDict, total=False):
+    enabled: bool
+    required: bool
+
 class MotionDerivationSourceConfigV1(TypedDict):
     id: str
     selector: SignalSelectorConfigV1
@@ -217,6 +221,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
     schema_path: str
     strict: bool
     fit_import: FitImportConfigV1 | None
+    imu_attitude: ImuAttitudeConfigV1 | None
     zeroing_enabled: bool
     zero_window_s: float
     zero_min_samples: int
@@ -262,6 +267,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 |---|---|---|
 | `active_signal_vel_selector` | object or `null` | Semantic selector for the velocity signal used for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
 | `fit_import` | object or `null` | Optional Garmin FIT import policy block; when absent or `null`, FIT import is disabled |
+| `imu_attitude` | object or `null` | Optional policy for persisting the offline frame-IMU attitude product; when absent or `null`, it is disabled |
 | `prefer_postprocessing_transformations` | boolean | If true, post-processing bike-profile transforms supersede logger-originated signals with equivalent semantics |
 | `motion_derivation` | object or `null` | Optional policy for generating primary and secondary filtered displacement/velocity/acceleration channels |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
@@ -286,11 +292,30 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - `fit_import.field_allowlist` should contain Garmin record-field names such as `speed` or `position_lat`.
 - `fit_import.ambiguity_policy` should default to `require_binding` when user choice is required for multi-match sessions.
 - If `fit_import.enabled` is true, the FIT source directory and optional binding manifest must be supplied by the run-level caller.
+- `imu_attitude` is optional in v1 so older profiles remain valid. New profiles SHOULD include it with `enabled: false` unless the library is intentionally collecting the derived attitude product.
+- When `imu_attitude.enabled` is true, preprocessing builds the valid-only IMU stream, reconstructs logger GPS, and persists an `attitude_<sensor>` stream for each eligible frame-mounted IMU. This does not modify raw data or the primary dataframe.
+- `imu_attitude.required` defaults to `false`. When false, unavailable IMU metadata or an unsuitable sensor produces persisted attitude QC/status rather than failing the import. When true, preprocessing fails unless at least one attitude stream is produced.
 - Consumers may ignore unknown config fields that they do not support.
 - Consumers should reject runtime binding fields such as `generic_log_metadata_paths`, `bike_profile_path`, `bike_profile_id`, `normalize_ranges`, `prompt_for_descriptions`, `fit_import.fit_dir`, or `fit_import.bindings_path` if they appear inside a persisted preprocess profile.
 - Remote/backend integrations should not assume that `schema_path` is directly openable on the worker filesystem; it is a reusable schema reference for notebook/local orchestration, not a universal transport contract.
 
-### 6.5 `fit_import` block
+### 6.5 `imu_attitude` block
+
+When present, `imu_attitude` has the shape:
+
+```json
+{
+  "enabled": false,
+  "required": false
+}
+```
+
+The first slice deliberately keeps estimator tuning out of the profile. The
+effective estimator configuration and QC report are stored with each derived
+attitude stream; the profile only controls whether it is materialised and
+whether its absence blocks preprocessing.
+
+### 6.6 `fit_import` block
 
 When present, `fit_import` has the shape:
 

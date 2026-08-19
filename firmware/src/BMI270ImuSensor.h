@@ -9,7 +9,10 @@
 
 class BMI270ImuSensor final : public Sensor {
 public:
-  static constexpr uint8_t kColumnCount = 12;
+  static constexpr uint8_t kBaseColumnCount = 12;
+  static constexpr uint8_t kIocDiagnosticColumnCount = 4;
+  static constexpr uint8_t kMaximumColumnCount =
+      kBaseColumnCount + kIocDiagnosticColumnCount;
 
   struct Params {
     char name[16] = "frame_imu";
@@ -21,6 +24,9 @@ public:
     uint8_t address = 0x68;
     char profile[24] = "orientation_200";
     uint16_t startupBiasCaptureSeconds = 5;
+    uint16_t outputRateHz = 200;
+    BMI270GyroBiasMode gyroBiasMode = BMI270GyroBiasMode::Off;
+    bool iocDiagnostics = false;
     char calibrationRef[32] = "";
     ImuOrientationCalibration orientation;
   };
@@ -31,7 +37,9 @@ public:
   bool muted() const override { return muted_; }
   void setMuted(bool muted) override { muted_ = muted; }
   SensorSampleMode sampleMode() const override { return SensorSampleMode::Asynchronous; }
-  uint8_t columnCount() const override { return kColumnCount; }
+  uint8_t columnCount() const override {
+    return params_.iocDiagnostics ? kMaximumColumnCount : kBaseColumnCount;
+  }
   void getColumnName(uint8_t index, char* out, size_t capacity) const override;
   void sampleValues(float* out, uint8_t maximum) override;
   bool describeColumn(uint8_t index, SensorColumnDescriptor& out) const override;
@@ -39,6 +47,7 @@ public:
   bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const override;
   const char* label() const override { return "BMI270 IMU (I2C)"; }
   const char* name() const override { return params_.name; }
+  bool reconfigureFromSpec(const SensorSpec& spec) override;
 
   bool prepareLoggingStart(char* error, size_t errorCapacity) override;
   bool validateLoggingStart(

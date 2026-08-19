@@ -44,6 +44,7 @@ from .gps_semantics import (
     resolve_gps_columns,
 )
 from .imu import build_imu_streams
+from .attitude import ATTITUDE_STREAM_SCHEMA, build_attitude_streams
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
     apply_butterworth_smoothing,
@@ -2856,7 +2857,79 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     session = refresh_gps_source_metadata(session, gps_source_policy=gps_source_policy)
     return session
 
-     
+
+def _apply_imu_attitude_preprocessing(
+    session: Dict[str, Any],
+    *,
+    policy: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Optionally materialise the offline attitude product as a secondary stream."""
+    # Older persisted profiles do not contain this optional block. Leave their
+    # session metadata untouched rather than manufacturing a new disabled state.
+    if policy is None:
+        return session
+
+    configured = dict(policy) if isinstance(policy, Mapping) else {}
+    enabled = bool(configured.get("enabled", False))
+    required = bool(configured.get("required", False))
+
+    meta = session.setdefault("meta", {})
+    if not isinstance(meta, dict):
+        raise ValueError("session['meta'] must be a dict")
+    qc = session.setdefault("qc", {})
+    if not isinstance(qc, dict):
+        raise ValueError("session['qc'] must be a dict")
+
+    report: Dict[str, Any] = {
+        "schema": "bodaqs.imu_attitude_preprocessing.v1",
+        "enabled": enabled,
+        "required": required,
+        "policy": {"enabled": enabled, "required": required},
+        "output_streams": [],
+        "errors": [],
+    }
+    if not enabled:
+        report["status"] = "disabled"
+        meta["attitude_preprocessing"] = report
+        return session
+
+    try:
+        build_attitude_streams(session)
+    except Exception as exc:
+        report["errors"].append(f"{type(exc).__name__}: {exc}")
+
+    streams = session.get("stream_dfs")
+    secondary = meta.get("secondary_streams")
+    if isinstance(streams, Mapping) and isinstance(secondary, Mapping):
+        report["output_streams"] = sorted(
+            str(name)
+            for name, stream_meta in secondary.items()
+            if isinstance(stream_meta, Mapping)
+            and stream_meta.get("schema") == ATTITUDE_STREAM_SCHEMA
+            and name in streams
+        )
+
+    attitude_qc = qc.get("attitude")
+    if isinstance(attitude_qc, Mapping):
+        for sensor, sensor_report in attitude_qc.items():
+            if isinstance(sensor_report, Mapping) and sensor_report.get("status") == "failed":
+                for error in sensor_report.get("errors", []):
+                    report["errors"].append(f"{sensor}: {error}")
+
+    if report["output_streams"]:
+        report["status"] = "completed"
+    elif report["errors"]:
+        report["status"] = "unavailable"
+    else:
+        report["status"] = "not_available"
+
+    meta["attitude_preprocessing"] = report
+    if required and report["status"] != "completed":
+        details = "; ".join(report["errors"]) or "no eligible frame-mounted IMU was available"
+        raise ValueError(f"IMU attitude preprocessing was required but could not complete: {details}")
+    return session
+
+
 def preprocess_resolved(
     session: Mapping[str, Any],
     *,
@@ -2935,6 +3008,8 @@ def preprocess_resolved(
             cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
         )
         strict = bool(cfg.get("strict", strict))
+
+    imu_attitude_policy = cfg.get("imu_attitude") if isinstance(cfg, Mapping) else None
 
     resolved_schema: Optional[Dict[str, Any]] = None
     if schema is not None and not (isinstance(schema, str) and not schema.strip()):
@@ -3037,6 +3112,13 @@ def preprocess_resolved(
         sid = str(session_obj.get("session_id") or meta.get("session_id") or "session")
     session_obj["session_id"] = sid
     meta["session_id"] = sid
+
+    stage_started = time.perf_counter()
+    session_obj = _apply_imu_attitude_preprocessing(
+        session_obj,
+        policy=imu_attitude_policy,
+    )
+    imu_attitude_s = time.perf_counter() - stage_started
 
     if resolved_schema is not None:
         logger.info("Schema load complete")
@@ -3149,6 +3231,7 @@ def preprocess_resolved(
     measured_s = (
         fit_enrichment_s
         + core_preprocessing_s
+        + imu_attitude_s
         + event_detection_s
         + segment_extraction_s
         + metric_calculation_s
@@ -3168,6 +3251,7 @@ def preprocess_resolved(
             "stages_s": {
                 "fit_enrichment": fit_enrichment_s,
                 "core_preprocessing": core_preprocessing_s,
+                "imu_attitude": imu_attitude_s,
                 "event_detection": event_detection_s,
                 "segment_extraction": segment_extraction_s,
                 "metric_calculation": metric_calculation_s,

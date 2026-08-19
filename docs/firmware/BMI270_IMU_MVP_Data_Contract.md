@@ -1,7 +1,7 @@
 # BMI270 IMU MVP Data Contract
 
 - Status: Accepted
-- Contract ID: bodaqs.bmi270_imu_mvp.v2
+- Contract ID: bodaqs.bmi270_imu_mvp.v3
 - Scope: Normative data contract for the accepted BMI270 IMU MVP plan
 - Related plan: [BMI270 IMU MVP Implementation Plan](BMI270_IMU_MVP_Implementation_Plan.md)
 
@@ -63,7 +63,7 @@ The named orientation_200 profile expands to:
 | Acquisition service | Polling, initially scheduled at 200 Hz |
 | Temperature observation | 10 Hz register read, held between observations |
 | Temperature freshness limit | 250 milliseconds |
-| Logger row rate | 500 Hz |
+| Logger row rate | 500 Hz for full 200 Hz output; lower only for declared decimated output |
 
 Phase 2 must read back effective sensor configuration. Both requested profile name and effective values are recorded. If the Bosch API or device rejects a required value, initialization fails visibly rather than silently substituting another profile.
 
@@ -95,13 +95,35 @@ The Phase 3 implementation reads die temperature independently at 10 Hz and hold
 
 ## 6. Row and channel contract
 
-The logger row rate is 500 Hz. The IMU native rate is 200 Hz.
+The IMU native rate is 200 Hz. Full native output uses a 500 Hz logger row
+rate. A session may instead declare a periodic output selection that retains
+every Nth native frame. Its logger row rate must be at least twice the emitted
+IMU rate; the lower rate is valid only when the selection and factor are
+recorded in metadata.
 
-- Each successfully queued native sample is emitted into exactly one logger row.
+- Each successfully queued output sample is emitted into exactly one logger row.
+- In full-output mode every native sample is queued. In decimated-output mode,
+  parsing, FIFO timing, temperature observation, and startup observation remain
+  at 200 Hz, while only every declared Nth native sample is queued.
 - sample_valid is 1 only when that row contains a new native IMU sample.
 - No IMU sample is repeated to fill later rows.
 - An invalid row contains the placeholders specified below.
 - Consumers must filter sample_valid before interpreting any other IMU sample column.
+- A native sequence increment equal to `output_decimation_factor` is expected,
+  not a continuity break. Other positive increments are evidence of loss.
+
+### 6.1 Output selection and gyro-bias provenance
+
+The required `imu_config` metadata records `output_rate_hz`,
+`output_decimation_factor`, and `output_selection`. In an IOC experiment it
+also records `gyro_bias_correction.mode`, whether hardware offset application
+is active, and whether the optional one-hertz offset-register trace is present.
+
+When `gyro_bias_correction.hardware_offset_applied=true`, gyroscope channels
+remain sensor-native signed counts but are **hardware-offset-compensated**;
+they are not uncorrected gyro evidence and host processing must not subtract a
+second startup bias. Accelerometer offset compensation remains disabled. FOC,
+CRT, and BMI270 NVM programming are outside this contract.
 
 For a configured sensor name frame_imu, the fields are:
 
@@ -191,7 +213,7 @@ The host:
 4. reconstructs the nominal 200 Hz native timeline from sensor ticks;
 5. fits the native timeline to acquisition-age-corrected logger observations for each continuous sensor-clock epoch;
 6. uses the fitted logger-clock timeline as canonical analysis time while preserving the nominal native timeline;
-7. treats the 500 Hz row time as an emission observation, not the sample time.
+7. treats the logger row time as an emission observation, not the sample time.
 
 The configured ODR and 39.0625 microsecond sensor-time resolution are nominal values in the BMI270 clock domain. Consumers must not assume that nominal sensor seconds equal logger seconds. They should preserve and report both the native-grid ODR and the logger-relative ODR obtained from the clock fit.
 

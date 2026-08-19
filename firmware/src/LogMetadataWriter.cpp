@@ -726,6 +726,7 @@ void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma
     appendKeyUInt64_(out, depth + 3, "parser_output_drops", diagnostics.imuParserOutputDrops);
     appendKeyUInt64_(out, depth + 3, "samples_enqueued", diagnostics.imuSamplesEnqueued);
     appendKeyUInt64_(out, depth + 3, "samples_emitted", diagnostics.imuSamplesEmitted);
+    appendKeyUInt64_(out, depth + 3, "samples_intentionally_decimated", diagnostics.imuSamplesIntentionallyDecimated);
     appendKeyUInt64_(out, depth + 3, "queue_drops", diagnostics.imuQueueDrops);
     appendKeyUInt_(out, depth + 3, "queue_capacity", diagnostics.imuQueueCapacity);
     appendKeyUInt_(out, depth + 3, "queue_high_water", diagnostics.imuQueueHighWater);
@@ -734,6 +735,9 @@ void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma
     appendKeyUInt64_(out, depth + 3, "explicit_queue_discards", diagnostics.imuExplicitQueueDiscards);
     appendKeyUInt64_(out, depth + 3, "temperature_reads", diagnostics.imuTemperatureReads);
     appendKeyUInt64_(out, depth + 3, "temperature_read_failures", diagnostics.imuTemperatureReadFailures);
+    appendKeyUInt64_(out, depth + 3, "ioc_offset_read_attempts", diagnostics.imuIocOffsetReadAttempts);
+    appendKeyUInt64_(out, depth + 3, "ioc_offset_read_failures", diagnostics.imuIocOffsetReadFailures);
+    appendKeyUInt64_(out, depth + 3, "ioc_offset_snapshot_drops", diagnostics.imuIocOffsetSnapshotDrops);
     appendKeyUInt64_(out, depth + 3, "operational_validation_attempts", diagnostics.imuOperationalValidationAttempts);
     appendKeyUInt64_(out, depth + 3, "operational_validation_failures", diagnostics.imuOperationalValidationFailures);
     appendKeyUInt64_(out, depth + 3, "session_start_validation_attempts", diagnostics.imuSessionStartValidationAttempts);
@@ -854,6 +858,16 @@ void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu)
   appendKeyString_(out, 4, "calibration_ref", imu.calibrationRef);
   appendKeyUInt_(out, 4, "logger_rate_hz", imu.loggerRateHz);
   appendKeyUInt_(out, 4, "imu_rate_hz", imu.imuRateHz);
+  appendKeyUInt_(out, 4, "output_rate_hz", imu.outputRateHz);
+  appendKeyUInt_(out, 4, "output_decimation_factor", imu.outputDecimationFactor);
+  appendKeyString_(out, 4, "output_selection", imu.outputSelection);
+  appendKey_(out, 4, "gyro_bias_correction");
+  out += F("{\n");
+  appendKeyString_(out, 5, "mode", imu.gyroBiasMode);
+  appendKeyBool_(out, 5, "hardware_offset_applied", imu.gyroHardwareOffsetApplied);
+  appendKeyBool_(out, 5, "offset_register_trace_enabled", imu.iocDiagnosticsEnabled, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
 
   appendKeyString_(out, 4, "orientation_status",
                    imu.orientationValid ? "accepted" : "unset");

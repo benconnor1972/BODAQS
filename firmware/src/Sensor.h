@@ -169,6 +169,12 @@ struct SensorImuConfigDescriptor {
   uint8_t configFileMinor = 0;
   uint16_t loggerRateHz = 0;
   uint16_t imuRateHz = 0;
+  uint16_t outputRateHz = 0;
+  uint16_t outputDecimationFactor = 1;
+  char outputSelection[32] = {0};
+  char gyroBiasMode[24] = {0};
+  bool gyroHardwareOffsetApplied = false;
+  bool iocDiagnosticsEnabled = false;
   uint16_t fifoPollRateHz = 0;
   uint16_t temperatureRateHz = 0;
   uint32_t temperatureFreshnessUs = 0;

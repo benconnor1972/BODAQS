@@ -17,7 +17,8 @@ from bodaqs_analysis.io_bdq import (
     iter_bdq_rows,
     read_bdq,
 )
-from bodaqs_analysis.pipeline import load_bdq_session
+from bodaqs_analysis.pipeline import load_bdq_session, preprocess_resolved
+from bodaqs_analysis.preprocess_profile import default_preprocess_config
 from bodaqs_analysis.signalname import parse_signal_name
 from bodaqs_analysis.signal_standardize import (
     canonicalize_signal_names,
@@ -398,6 +399,40 @@ def test_phase6_extracts_unwraps_scales_transforms_and_reports_qc() -> None:
     assert metadata["coordinate_frames"] == ["sensor_native", "body_local"]
 
 
+def test_phase6_accepts_declared_native_decimation_without_false_gaps() -> None:
+    session = _phase6_imu_session()
+    valid = np.flatnonzero(session["df"]["frame_imu_sample_valid"].to_numpy() == 1)
+    session["df"].loc[valid, "time_s"] = [0.002, 0.102, 0.202, 0.302]
+    session["df"].loc[valid, "frame_imu_seq_u24"] = [19, 39, 59, 79]
+    session["df"].loc[valid, "frame_imu_sensor_time_u24"] = [0, 2560, 5120, 7680]
+    session["df"].loc[valid, "frame_imu_status_flags"] = 0x0100
+    config = session["meta"]["imu_configs"]["frame_imu"]
+    config.update({
+        "contract_id": "bodaqs.bmi270_imu_mvp.v3",
+        "output_rate_hz": 10,
+        "output_decimation_factor": 20,
+        "output_selection": "every_nth_native_sample",
+        "gyro_bias_correction": {
+            "mode": "bmi270_ioc",
+            "hardware_offset_applied": True,
+            "offset_register_trace_enabled": True,
+        },
+    })
+
+    stream, qc, metadata = extract_imu_stream(session, "frame_imu")
+
+    assert stream["continuity_segment"].tolist() == [0, 0, 0, 0]
+    assert qc["sequence"]["expected_delta"] == 20
+    assert qc["sequence"]["gap_events"] == 0
+    assert qc["sequence"]["missing_samples"] == 0
+    assert qc["effective_odr_hz"] == pytest.approx(10.0)
+    assert qc["logger_relative_odr_hz"] == pytest.approx(200.0)
+    assert qc["status_flags"]["output_decimated"]["sample_count"] == 4
+    assert metadata["emitted_sample_rate_hz"] == pytest.approx(10.0)
+    assert metadata["gyro_bias_correction"]["hardware_offset_applied"] is True
+    assert metadata["raw_samples_preserved"] is False
+
+
 def test_phase6_applies_assisted_rotation_matrix_to_body_local_channels() -> None:
     session = _phase6_imu_session()
     angle = np.deg2rad(30.0)
@@ -439,6 +474,29 @@ def test_phase6_registers_one_idempotent_persisted_secondary_stream() -> None:
     assert report["frame_imu"]["stream_name"] == "imu_frame_imu"
     assert session["meta"]["imu_qc"] == report
     json.dumps(report, sort_keys=True, allow_nan=False)
+
+
+def test_profile_enabled_attitude_is_materialised_with_persisted_qc() -> None:
+    session = _phase6_imu_session()
+    session["meta"]["imu_configs"]["frame_imu"]["domain"] = "frame"
+    config = default_preprocess_config()
+    config["imu_attitude"] = {"enabled": True, "required": False}
+
+    result = preprocess_resolved(
+        session,
+        preprocess_config=config,
+        normalize_ranges={},
+        include_events=False,
+        include_metrics=False,
+        strict=False,
+    )
+    processed = result["session"]
+
+    assert "attitude_frame_imu" in processed["stream_dfs"]
+    assert processed["meta"]["attitude_preprocessing"]["status"] == "completed"
+    assert processed["meta"]["attitude_preprocessing"]["output_streams"] == ["attitude_frame_imu"]
+    assert processed["meta"]["attitude_qc"]["frame_imu"]["status"] == "gravity_only"
+    assert "imu_attitude" in result["timings"]["stages_s"]
 
 
 def test_phase6_aligns_canonical_time_to_logger_clock_and_preserves_native_time() -> None:

@@ -47,11 +47,15 @@ struct BMI270FifoDiagnostics {
   uint64_t parserOutputDrops = 0;
   uint64_t samplesEnqueued = 0;
   uint64_t samplesDequeued = 0;
+  uint64_t samplesIntentionallyDecimated = 0;
   uint64_t queueDrops = 0;
   uint64_t preSessionQueueDiscards = 0;
   uint64_t explicitQueueDiscards = 0;
   uint64_t temperatureReads = 0;
   uint64_t temperatureReadFailures = 0;
+  uint64_t iocOffsetReadAttempts = 0;
+  uint64_t iocOffsetReadFailures = 0;
+  uint64_t iocOffsetSnapshotDrops = 0;
   uint64_t operationalValidationAttempts = 0;
   uint64_t operationalValidationFailures = 0;
   uint64_t sessionStartValidationAttempts = 0;
@@ -105,6 +109,13 @@ struct BMI270FifoDiagnostics {
   bool counterSaturated = false;
 };
 
+struct BMI270IocOffsetSnapshot {
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t z = 0;
+  uint32_t nativeSequence = 0;
+};
+
 class BMI270FifoAcquisition : public I2CAsyncClient {
 public:
   static constexpr size_t kQueueCapacity = 512;
@@ -128,6 +139,12 @@ public:
   // Initializes and configures the device, then leaves sensing suspended.
   bool begin();
   void shutdown();
+  bool setOutputRateHz(uint16_t rateHz);
+  bool setGyroBiasMode(BMI270GyroBiasMode mode);
+  void setIocDiagnosticsEnabled(bool enabled) { iocDiagnosticsEnabled_ = enabled; }
+  uint16_t outputRateHz() const { return outputRateHz_; }
+  uint16_t outputDecimationFactor() const { return outputDecimationFactor_; }
+  BMI270GyroBiasMode gyroBiasMode() const { return gyroBiasMode_; }
 
   // These calls require the I2C scheduler to be stopped. stopSession() stops
   // new production, performs the final FIFO drain, and leaves queued samples
@@ -137,6 +154,7 @@ public:
   size_t discardQueuedSamples();
 
   bool pop(BMI270ImuSample& sample);
+  bool popIocOffsetSnapshot(BMI270IocOffsetSnapshot& snapshot);
   void recordRowEmission(uint32_t ageUs, bool ageValid);
   size_t queuedSamples() const { return queue_.size(); }
   bool sessionActive() const { return sessionActive_.load(std::memory_order_acquire); }
@@ -201,11 +219,13 @@ private:
       uint64_t acquisitionEndUs,
       size_t bytesRead,
       uint32_t acquisitionSpanUs);
+  void maybeCaptureIocOffsetSnapshot_(uint64_t nowUs);
   void addCounter_(uint64_t& counter, uint64_t amount = 1);
 
   char name_[32] = "bmi270";
   BMI270Device device_;
   FixedSpscQueue<BMI270ImuSample, kQueueCapacity> queue_;
+  FixedSpscQueue<BMI270IocOffsetSnapshot, 8> iocOffsetSnapshots_;
   BMI270FifoDiagnostics diagnostics_;
   std::atomic<bool> sessionActive_ { false };
   std::atomic<bool> terminalFault_ { false };
@@ -225,6 +245,11 @@ private:
   BMI270StartupObservation startupObservation_;
   BMI270AgeHistogram ageHistogram_;
   BMI270RunningStats temperatureStats_;
+  uint16_t outputRateHz_ = kTargetRateHz;
+  uint16_t outputDecimationFactor_ = 1;
+  BMI270GyroBiasMode gyroBiasMode_ = BMI270GyroBiasMode::Off;
+  bool iocDiagnosticsEnabled_ = false;
+  uint64_t nextIocOffsetReadUs_ = 0;
   bool havePreviousDequeuedSequence_ = false;
   uint32_t previousDequeuedSequence_ = 0;
   bool havePreviousSensorTime_ = false;

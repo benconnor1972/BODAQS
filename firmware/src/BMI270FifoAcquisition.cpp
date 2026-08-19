@@ -26,6 +26,7 @@ constexpr uint8_t kNormalDrainPasses = 2;
 constexpr uint8_t kFinalDrainPasses = 4;
 constexpr uint32_t kRecoveryFailureThreshold = 3;
 constexpr uint16_t kRecoveryBackoffPolls = 200;
+constexpr uint64_t kIocOffsetSnapshotPeriodUs = 1000000u;
 constexpr uint16_t kCarryStatusMask =
     BMI270ImuStatus::kFifoDiscontinuityBefore |
     BMI270ImuStatus::kQueueDropBefore |
@@ -76,6 +77,19 @@ BMI270FifoAcquisition::BMI270FifoAcquisition(
 
 BMI270FifoAcquisition::~BMI270FifoAcquisition() {
   shutdown();
+}
+
+bool BMI270FifoAcquisition::setOutputRateHz(uint16_t rateHz) {
+  if (initialized_ || !BMI270Profile::isSupportedOutputRate(rateHz)) return false;
+  outputRateHz_ = rateHz;
+  outputDecimationFactor_ = BMI270Profile::outputDecimationFactor(rateHz);
+  return outputDecimationFactor_ != 0;
+}
+
+bool BMI270FifoAcquisition::setGyroBiasMode(BMI270GyroBiasMode mode) {
+  if (initialized_) return false;
+  gyroBiasMode_ = mode;
+  return device_.setGyroBiasMode(mode);
 }
 
 bool BMI270FifoAcquisition::begin() {
@@ -195,13 +209,17 @@ size_t BMI270FifoAcquisition::discardQueuedSamples() {
 bool BMI270FifoAcquisition::pop(BMI270ImuSample& sample) {
   if (!queue_.pop(sample)) return false;
   if (havePreviousDequeuedSequence_ &&
-      sample.sequence != previousDequeuedSequence_ + 1u) {
+      sample.sequence != previousDequeuedSequence_ + outputDecimationFactor_) {
     addCounter_(diagnostics_.sequenceDiscontinuityEvents);
   }
   previousDequeuedSequence_ = sample.sequence;
   havePreviousDequeuedSequence_ = true;
   addCounter_(diagnostics_.samplesDequeued);
   return true;
+}
+
+bool BMI270FifoAcquisition::popIocOffsetSnapshot(BMI270IocOffsetSnapshot& snapshot) {
+  return iocOffsetSnapshots_.pop(snapshot);
 }
 
 void BMI270FifoAcquisition::recordRowEmission(uint32_t ageUs, bool ageValid) {
@@ -516,6 +534,7 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
       acquisitionEndUs,
       bytesToRead,
       spanUs);
+  maybeCaptureIocOffsetSnapshot_(acquisitionEndUs);
   return DrainPassResult::Data;
 }
 
@@ -621,6 +640,8 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   lastTemperatureRaw_ = 0;
   lastTemperatureHostUs_ = 0;
   nextTemperatureReadUs_ = 0;
+  nextIocOffsetReadUs_ = 0;
+  iocOffsetSnapshots_.clear();
   ageHistogram_.reset();
   temperatureStats_.reset();
   havePreviousDequeuedSequence_ = false;
@@ -754,6 +775,16 @@ void BMI270FifoAcquisition::enqueueParsed_(
         sample.temperatureRaw,
         temperatureFresh,
         sample.measurementStatusFlags());
+    const bool retainForOutput =
+        outputDecimationFactor_ == 1 ||
+        (sample.sequence % outputDecimationFactor_) == (outputDecimationFactor_ - 1u);
+    if (!retainForOutput) {
+      addCounter_(diagnostics_.samplesIntentionallyDecimated);
+      continue;
+    }
+    if (outputDecimationFactor_ > 1) {
+      sample.statusFlags |= BMI270ImuStatus::kOutputDecimated;
+    }
     size_t depth = 0;
     if (queue_.push(sample, &depth)) {
       addCounter_(diagnostics_.samplesEnqueued);
@@ -774,6 +805,29 @@ void BMI270FifoAcquisition::enqueueParsed_(
   nextSequence_ += parsed.outputDrops;
   pendingStatus_ |= parserFutureStatus;
   diagnostics_.nextSequence = nextSequence_;
+}
+
+void BMI270FifoAcquisition::maybeCaptureIocOffsetSnapshot_(uint64_t nowUs) {
+  if (!iocDiagnosticsEnabled_ ||
+      gyroBiasMode_ != BMI270GyroBiasMode::InUseOffsetCorrection ||
+      (nextIocOffsetReadUs_ != 0 && nowUs < nextIocOffsetReadUs_)) {
+    return;
+  }
+  nextIocOffsetReadUs_ = nowUs + kIocOffsetSnapshotPeriodUs;
+  addCounter_(diagnostics_.iocOffsetReadAttempts);
+  struct bmi2_sens_axes_data axes {};
+  if (!device_.readGyroOffsetCompensationAxes(axes)) {
+    addCounter_(diagnostics_.iocOffsetReadFailures);
+    return;
+  }
+  BMI270IocOffsetSnapshot snapshot;
+  snapshot.x = axes.x;
+  snapshot.y = axes.y;
+  snapshot.z = axes.z;
+  snapshot.nativeSequence = nextSequence_;
+  if (!iocOffsetSnapshots_.push(snapshot)) {
+    addCounter_(diagnostics_.iocOffsetSnapshotDrops);
+  }
 }
 
 void BMI270FifoAcquisition::addCounter_(uint64_t& counter, uint64_t amount) {

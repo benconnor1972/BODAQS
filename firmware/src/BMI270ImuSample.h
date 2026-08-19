@@ -12,6 +12,10 @@ inline constexpr uint16_t kSensorTimeEstimated = 0x0010;
 inline constexpr uint16_t kTemperatureStale = 0x0020;
 inline constexpr uint16_t kAccelNearRail = 0x0040;
 inline constexpr uint16_t kGyroNearRail = 0x0080;
+// The logged sample was deliberately selected from a lower-rate output stream.
+// It is not an acquisition loss and sequence gaps equal to the declared factor
+// are expected.
+inline constexpr uint16_t kOutputDecimated = 0x0100;
 
 // Internal-only mirror of the low four acquisition-incident bits. The mirror
 // records exactly which public flags came from pre-session setup/recovery and
@@ -67,5 +71,6 @@ static_assert(BMI270ImuStatus::kSensorTimeEstimated == 0x0010);
 static_assert(BMI270ImuStatus::kTemperatureStale == 0x0020);
 static_assert(BMI270ImuStatus::kAccelNearRail == 0x0040);
 static_assert(BMI270ImuStatus::kGyroNearRail == 0x0080);
+static_assert(BMI270ImuStatus::kOutputDecimated == 0x0100);
 static_assert(BMI270ImuStatus::kPreSessionBoundaryInternalMask == 0xF000);
 static_assert(BMI270ImuStatus::markPreSessionBoundary(0x000D) == 0xD00D);

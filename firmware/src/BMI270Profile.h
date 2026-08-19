@@ -4,7 +4,7 @@
 
 namespace BMI270Profile {
 
-inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v2";
+inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v3";
 inline constexpr const char* kProfileName = "orientation_200";
 inline constexpr const char* kDriverRevision = "41129fcfe39c583ee5462d79195741945d51c1fe";
 
@@ -66,9 +66,29 @@ constexpr EffectiveConfig orientation200Expected() {
   };
 }
 
+constexpr bool isSupportedOutputRate(uint16_t outputRateHz) {
+  return outputRateHz != 0 && outputRateHz <= kOdrHz &&
+      (kOdrHz % outputRateHz) == 0;
+}
+
+constexpr uint16_t outputDecimationFactor(uint16_t outputRateHz) {
+  return isSupportedOutputRate(outputRateHz) ? kOdrHz / outputRateHz : 0;
+}
+
+constexpr uint16_t minimumLoggerRateHz(uint16_t outputRateHz) {
+  // Retain the accepted full-stream MVP policy.  Lower-rate output streams
+  // need only leave one row of headroom per emitted sample.
+  return outputRateHz == kOdrHz
+      ? kLoggerRateHz
+      : static_cast<uint16_t>(outputRateHz * 2u);
+}
+
 static_assert(isSupportedAddress(kPrimaryAddress));
 static_assert(isSupportedAddress(kSecondaryAddress));
 static_assert(!isSupportedAddress(0x67));
 static_assert(matchesOrientation200(orientation200Expected()));
+static_assert(isSupportedOutputRate(10));
+static_assert(isSupportedOutputRate(200));
+static_assert(!isSupportedOutputRate(30));
 
 } // namespace BMI270Profile

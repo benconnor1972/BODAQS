@@ -26,6 +26,9 @@ _FIX_TYPE_QUANTITIES = {"fix_type"}
 _SATELLITES_QUANTITIES = {"satellites", "sats"}
 _HACC_QUANTITIES = {"horizontal_accuracy", "hacc", "horizontal_accuracy_m"}
 _VACC_QUANTITIES = {"vertical_accuracy", "vacc", "vertical_accuracy_m"}
+_SPEED_ACC_QUANTITIES = {"speed_accuracy", "speed_acc", "speed_accuracy_mps"}
+_COURSE_ACC_QUANTITIES = {"course_accuracy", "course_acc", "heading_accuracy", "heading_acc"}
+_RECEIVER_TOW_QUANTITIES = {"receiver_time_of_week", "time_of_week", "gps_tow"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,10 @@ class GPSColumnSet:
     satellites: Optional[str] = None
     horizontal_accuracy: Optional[str] = None
     vertical_accuracy: Optional[str] = None
+    speed_accuracy: Optional[str] = None
+    course_accuracy: Optional[str] = None
+    receiver_time_of_week: Optional[str] = None
+    receiver_time_of_week_unit: Optional[str] = None
     sensor: Optional[str] = None
     source: Optional[str] = None
     source_kind: str = "unknown"
@@ -60,6 +67,9 @@ class GPSColumnSet:
             "satellites",
             "horizontal_accuracy",
             "vertical_accuracy",
+            "speed_accuracy",
+            "course_accuracy",
+            "receiver_time_of_week",
         ):
             value = getattr(self, key)
             if value:
@@ -139,6 +149,7 @@ def resolve_gps_columns(
             return candidates[0]
         return None
 
+    receiver_tow = pick(_is_receiver_tow_column)
     return GPSColumnSet(
         latitude=latitude,
         longitude=longitude,
@@ -154,6 +165,12 @@ def resolve_gps_columns(
         satellites=pick(_is_satellites_column),
         horizontal_accuracy=pick(_is_hacc_column),
         vertical_accuracy=pick(_is_vacc_column),
+        speed_accuracy=pick(_is_speed_acc_column),
+        course_accuracy=pick(_is_course_acc_column),
+        receiver_time_of_week=receiver_tow,
+        receiver_time_of_week_unit=(
+            _nonempty_text(column_info.get(receiver_tow, {}).get("unit")) if receiver_tow else None
+        ),
         sensor=_nonempty_text(lat_info.get("sensor")),
         source=_nonempty_text(lat_info.get("source")),
         source_kind=source_kind,
@@ -313,6 +330,16 @@ def _logger_route_dataframe(df: pd.DataFrame, columns: GPSColumnSet) -> tuple[pd
 
     for qc_name, source_col in columns.quality_columns.items():
         route[_route_qc_column_name(qc_name)] = _numeric_array(df, source_col)
+    if columns.receiver_time_of_week:
+        receiver_tow = _numeric_array(df, columns.receiver_time_of_week)
+        # Logger firmware v0.5.2+ emits exact centiseconds so values remain
+        # lossless in its float sampling carrier. Older custom logs may already
+        # supply seconds; retain their declared unit where metadata is available.
+        route["receiver_time_of_week_s"] = (
+            receiver_tow * 0.01 if columns.receiver_time_of_week_unit == "cs" else receiver_tow
+        )
+    if "age_ms" in route.columns:
+        route["snapshot_received_time_s"] = route["time_s"] - route["age_ms"] * 0.001
 
     initial_rows = int(len(route.index))
     finite_position = (
@@ -404,11 +431,34 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
         channel_info[output_col] = {
             "kind": "qc",
             "quantity": qc_name,
+            "unit": _qc_unit(qc_name),
             "processing_role": "qc_metric",
             "semantic_selection_excluded": True,
             "sensor": columns.sensor,
             "source": "logger_gps",
             "source_columns": [source_col],
+        }
+    if columns.receiver_time_of_week:
+        channel_info["receiver_time_of_week_s"] = {
+            "kind": "qc",
+            "quantity": "receiver_time_of_week",
+            "unit": "s",
+            "processing_role": "qc_metric",
+            "semantic_selection_excluded": True,
+            "sensor": columns.sensor,
+            "source": "logger_gps",
+            "source_columns": [columns.receiver_time_of_week],
+        }
+    if "age" in columns.quality_columns:
+        channel_info["snapshot_received_time_s"] = {
+            "kind": "qc",
+            "quantity": "snapshot_received_time",
+            "unit": "s",
+            "processing_role": "qc_metric",
+            "semantic_selection_excluded": True,
+            "sensor": columns.sensor,
+            "source": "logger_gps",
+            "source_columns": [columns.quality_columns["age"]],
         }
     return {
         "stream_name": stream_name,
@@ -624,6 +674,18 @@ def _is_vacc_column(column: str, info: Mapping[str, Any]) -> bool:
     return _quantity(info) in _VACC_QUANTITIES or _text_matches(column, info, ("vertical_accuracy", "_vacc"))
 
 
+def _is_speed_acc_column(column: str, info: Mapping[str, Any]) -> bool:
+    return _quantity(info) in _SPEED_ACC_QUANTITIES or _text_matches(column, info, ("speed_accuracy", "speed_acc"))
+
+
+def _is_course_acc_column(column: str, info: Mapping[str, Any]) -> bool:
+    return _quantity(info) in _COURSE_ACC_QUANTITIES or _text_matches(column, info, ("course_accuracy", "course_acc", "heading_accuracy"))
+
+
+def _is_receiver_tow_column(column: str, info: Mapping[str, Any]) -> bool:
+    return _quantity(info) in _RECEIVER_TOW_QUANTITIES or _text_matches(column, info, ("time_of_week", "_tow"))
+
+
 def _text_matches(column: str, info: Mapping[str, Any], needles: Sequence[str]) -> bool:
     text = _semantic_text(column, info)
     return any(needle in text for needle in needles)
@@ -685,6 +747,9 @@ def _gps_column_prefix(column: str) -> Optional[str]:
         "_sats",
         "_hacc",
         "_vacc",
+        "_speed_acc",
+        "_course_acc",
+        "_tow",
     )
     positions = [lower.find(marker) for marker in markers]
     positions = [position for position in positions if position > 0]
@@ -706,7 +771,21 @@ def _source_kind_for_column(column: str, info: Mapping[str, Any]) -> str:
 
 
 def _route_qc_column_name(qc_name: str) -> str:
-    return "age_ms" if qc_name == "age" else qc_name
+    return {
+        "age": "age_ms",
+        "speed_accuracy": "speed_accuracy_mps",
+        "course_accuracy": "course_accuracy_deg",
+        "receiver_time_of_week": "receiver_time_of_week_cs",
+    }.get(qc_name, qc_name)
+
+
+def _qc_unit(qc_name: str) -> str:
+    return {
+        "age": "ms",
+        "speed_accuracy": "m/s",
+        "course_accuracy": "deg",
+        "receiver_time_of_week": "cs",
+    }.get(qc_name, "")
 
 
 def _numeric_array(df: pd.DataFrame, column: str) -> np.ndarray:

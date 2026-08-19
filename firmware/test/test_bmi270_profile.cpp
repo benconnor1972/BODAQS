@@ -44,6 +44,10 @@ int runBMI270ProfileTests() {
     check(BMI270Profile::kOdrHz == 200, "native ODR remains 200 Hz");
     check(BMI270Profile::kLoggerRateHz == 500, "logger rate remains 500 Hz");
     check(BMI270Profile::kInitializationAttempts == 5, "initialization retry count remains bounded");
+    check(BMI270Profile::minimumLoggerRateHz(200) == 500,
+          "full IMU output retains the 500 Hz logger requirement");
+    check(BMI270Profile::minimumLoggerRateHz(10) == 20,
+          "10 Hz decimated IMU output supports low-rate logging");
 
     BMI270MountTransform mount;
     check(BMI270Mount::parseTransform("+x", "+y", "+z", mount),
