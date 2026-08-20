@@ -480,7 +480,16 @@ def test_profile_enabled_attitude_is_materialised_with_persisted_qc() -> None:
     session = _phase6_imu_session()
     session["meta"]["imu_configs"]["frame_imu"]["domain"] = "frame"
     config = default_preprocess_config()
-    config["imu_attitude"] = {"enabled": True, "required": False}
+    config["imu_attitude"] = {
+        "enabled": True,
+        "required": False,
+        "inertial_dynamics": {
+            "enabled": True,
+            "include_world_frame": False,
+            "include_angular_kinematics": False,
+            "include_magnitudes": False,
+        },
+    }
 
     result = preprocess_resolved(
         session,
@@ -492,9 +501,15 @@ def test_profile_enabled_attitude_is_materialised_with_persisted_qc() -> None:
     )
     processed = result["session"]
 
-    assert "attitude_frame_imu" in processed["stream_dfs"]
+    assert "inertial_frame_imu" in processed["stream_dfs"]
     assert processed["meta"]["attitude_preprocessing"]["status"] == "completed"
-    assert processed["meta"]["attitude_preprocessing"]["output_streams"] == ["attitude_frame_imu"]
+    assert processed["meta"]["attitude_preprocessing"]["output_streams"] == ["inertial_frame_imu"]
+    inertial = processed["stream_dfs"]["inertial_frame_imu"]
+    assert "linear_accel_body_x_m_s2" in inertial
+    assert "linear_accel_enu_x_m_s2" not in inertial
+    assert "angular_speed_body_rad_s" not in inertial
+    assert "linear_accel_body_norm_g" not in inertial
+    assert processed["meta"]["attitude_preprocessing"]["policy"]["inertial_dynamics"]["include_world_frame"] is False
     assert processed["meta"]["attitude_qc"]["frame_imu"]["status"] == "gravity_only"
     assert "imu_attitude" in result["timings"]["stages_s"]
 

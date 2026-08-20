@@ -12,6 +12,7 @@
 #include "RTCManager.h"
 #include "WiFiManager.h"
 #include "PowerManager.h"
+#include "Rates.h"
 #include "WebServerManager.h"  // for canStart()
 #include "UploadModeManager.h"
 #include "StorageManager.h"
@@ -322,6 +323,8 @@ static String paramValueAsString_(const SensorSpec& sp, const ParamDef* pd) {
   } else if (pd->type == ParamType::Int) {
     long v = 0;
     if (sp.params.getInt(pd->key, v)) val = String(v);
+    else if (strcasecmp(pd->key, "max_output_rate_hz") == 0 &&
+             sp.params.getInt("output_rate_hz", v)) val = String(v);
   } else if (pd->type == ParamType::Float) {
     double f = 0.0;
     if (sp.params.getFloat(pd->key, f)) val = String(f, 6);
@@ -716,9 +719,14 @@ void registerConfigRoutes(WebServer& srv) {
     html += htmlEscape(String(cfg.loggerName));
     html += F("'"); html += dis; html += F("><br>");
 
-    html += F("<label>Sample rate (Hz): </label><input type='number' name='sample_rate_hz' min='1' max='2000' value='");
-    html += String(cfg.sampleRateHz);
-    html += F("'"); html += dis; html += F("><br>");
+    html += F("<label>Sample rate (Hz): </label><select name='sample_rate_hz'"); html += dis; html += F(">");
+    for (size_t rateIndex = 0; rateIndex < Rates::kCount; ++rateIndex) {
+      const uint16_t rate = Rates::kList[rateIndex];
+      html += F("<option value='"); html += String(rate); html += F("'");
+      if (cfg.sampleRateHz == rate) html += F(" selected");
+      html += F(">"); html += String(rate); html += F("</option>");
+    }
+    html += F("</select><br>");
 
     html += F("<label>Log format: </label>");
     html += F("<label><input type='radio' name='log_format' value='bodaqs_standard'");
@@ -1418,6 +1426,10 @@ void registerConfigRoutes(WebServer& srv) {
 
     if (srv.hasArg("sample_rate_hz")) {
       uint16_t hz = (uint16_t)srv.arg("sample_rate_hz").toInt();
+      if (!Rates::isSupported(hz)) {
+        srv.send(400, F("text/plain"), F("Unsupported sample rate"));
+        return;
+      }
       tmp.sampleRateHz = hz;
     }
 

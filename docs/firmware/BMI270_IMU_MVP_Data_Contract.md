@@ -96,10 +96,13 @@ The Phase 3 implementation reads die temperature independently at 10 Hz and hold
 ## 6. Row and channel contract
 
 The IMU native rate is 200 Hz. Full native output uses a 500 Hz logger row
-rate. A session may instead declare a periodic output selection that retains
-every Nth native frame. Its logger row rate must be at least twice the emitted
-IMU rate; the lower rate is valid only when the selection and factor are
-recorded in metadata.
+rate. A user selects `max_output_rate_hz`, the maximum acceptable stored IMU
+rate, rather than an exact rate. At log start the firmware resolves the highest
+supported output rate at or below that maximum for the **effective** logger
+rate (after analogue-channel throttling). A session may therefore retain every
+Nth native frame without refusing a valid low-rate log. The current sparse-row
+adapter requires at least twice the emitted IMU rate (and 500 Hz for the full
+200 Hz stream); this is an adapter limit, not a future native-stream limit.
 
 - Each successfully queued output sample is emitted into exactly one logger row.
 - In full-output mode every native sample is queued. In decimated-output mode,
@@ -114,10 +117,16 @@ recorded in metadata.
 
 ### 6.1 Output selection and gyro-bias provenance
 
-The required `imu_config` metadata records `output_rate_hz`,
+The required `imu_config` metadata records the requested maximum as
+`max_output_rate_hz`, the resolved `output_rate_hz`,
 `output_decimation_factor`, and `output_selection`. In an IOC experiment it
 also records `gyro_bias_correction.mode`, whether hardware offset application
 is active, and whether the optional one-hertz offset-register trace is present.
+
+Firmware accepts the former `output_rate_hz` sensor setting as a configuration
+migration alias for `max_output_rate_hz`. It is not emitted by new sensor
+schemas; after the configuration is next saved, `max_output_rate_hz` becomes
+the authoritative setting.
 
 When `gyro_bias_correction.hardware_offset_applied=true`, gyroscope channels
 remain sensor-native signed counts but are **hardware-offset-compensated**;

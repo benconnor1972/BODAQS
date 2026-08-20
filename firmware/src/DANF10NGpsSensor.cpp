@@ -134,7 +134,7 @@ const char* suffixForColumn_(DANF10NGpsSensor::ColumnKind kind) {
     case K::LonDeg: return "lon";
     case K::AltM: return "alt";
     case K::SpeedMps: return "speed";
-    case K::HeadingDeg: return "heading";
+    case K::HeadingDeg: return "course_over_ground";
     case K::Valid: return "valid";
     case K::AgeMs: return "age";
     case K::Seq: return "seq";

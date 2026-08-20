@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace BMI270Profile {
@@ -66,21 +67,48 @@ constexpr EffectiveConfig orientation200Expected() {
   };
 }
 
+// These are the deliberately supported sparse-row output selections for the
+// orientation_200 profile.  The physical FIFO is always acquired at kOdrHz;
+// this list governs which native samples may be materialised into logger rows.
+inline constexpr uint16_t kOutputRateOptionsHz[] = {
+    5, 10, 20, 25, 40, 50, 100, 200,
+};
+inline constexpr size_t kOutputRateOptionCount =
+    sizeof(kOutputRateOptionsHz) / sizeof(kOutputRateOptionsHz[0]);
+
 constexpr bool isSupportedOutputRate(uint16_t outputRateHz) {
-  return outputRateHz != 0 && outputRateHz <= kOdrHz &&
-      (kOdrHz % outputRateHz) == 0;
+  for (size_t i = 0; i < kOutputRateOptionCount; ++i) {
+    if (kOutputRateOptionsHz[i] == outputRateHz) return true;
+  }
+  return false;
 }
 
 constexpr uint16_t outputDecimationFactor(uint16_t outputRateHz) {
   return isSupportedOutputRate(outputRateHz) ? kOdrHz / outputRateHz : 0;
 }
 
-constexpr uint16_t minimumLoggerRateHz(uint16_t outputRateHz) {
-  // Retain the accepted full-stream MVP policy.  Lower-rate output streams
-  // need only leave one row of headroom per emitted sample.
+constexpr uint16_t minimumSparseRowLoggerRateHz(uint16_t outputRateHz) {
+  // The current BDQ-v1 adapter carries each emitted IMU sample in a primary
+  // logger row.  Leave one row of headroom per sample; full-rate output keeps
+  // its previously accepted 500 Hz requirement.  This is an adapter limit,
+  // not an IMU-profile or future native-stream limit.
   return outputRateHz == kOdrHz
       ? kLoggerRateHz
       : static_cast<uint16_t>(outputRateHz * 2u);
+}
+
+constexpr uint16_t resolveSparseRowOutputRateHz(
+    uint16_t maximumOutputRateHz,
+    uint16_t loggerRateHz) {
+  uint16_t resolved = 0;
+  for (size_t i = 0; i < kOutputRateOptionCount; ++i) {
+    const uint16_t candidate = kOutputRateOptionsHz[i];
+    if (candidate <= maximumOutputRateHz &&
+        minimumSparseRowLoggerRateHz(candidate) <= loggerRateHz) {
+      resolved = candidate;
+    }
+  }
+  return resolved;
 }
 
 static_assert(isSupportedAddress(kPrimaryAddress));
@@ -88,7 +116,10 @@ static_assert(isSupportedAddress(kSecondaryAddress));
 static_assert(!isSupportedAddress(0x67));
 static_assert(matchesOrientation200(orientation200Expected()));
 static_assert(isSupportedOutputRate(10));
+static_assert(isSupportedOutputRate(5));
 static_assert(isSupportedOutputRate(200));
 static_assert(!isSupportedOutputRate(30));
+static_assert(resolveSparseRowOutputRateHz(200, 10) == 5);
+static_assert(resolveSparseRowOutputRateHz(200, 500) == 200);
 
 } // namespace BMI270Profile

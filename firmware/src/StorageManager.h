@@ -12,6 +12,7 @@ void StorageManager_begin(const board::BoardProfile& bp);
 void StorageManager_setSampleRate(unsigned int hz);
 void StorageManager_setBufferSize(size_t bytes);
 unsigned long StorageManager_getSampleIntervalMs();   // <-- NEW
+unsigned int StorageManager_getSampleRateHz();
 bool StorageManager_startLog();
 void StorageManager_stopLog();
 void StorageManager_loop();

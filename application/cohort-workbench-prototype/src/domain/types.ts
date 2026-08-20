@@ -112,6 +112,11 @@ export type SessionVideoSummary = {
 export type SessionSignalSummary = {
   signalId: string
   column: string
+  // Catalog v3 always supplies these.  Optionality keeps older fixture and
+  // cached catalog records usable; consumers treat an omitted stream as primary.
+  streamName?: string
+  streamKind?: string
+  timeColumn?: string
   displayName: string
   end: string
   domain: string
@@ -451,6 +456,7 @@ export type SignalQueryResponse = {
 export type TimeseriesWindowSignalRequest = {
   selector?: Record<string, unknown>
   column?: string
+  streamName?: string
 }
 
 export type TimeseriesWindowRequest = {
@@ -469,6 +475,14 @@ export type TimeseriesWindowRequest = {
 
 export type TimeseriesWindowSignal = SessionSignalSummary & {
   values: Array<number | null>
+  /**
+   * Display-only hint: nulls inserted to align another stream's timestamps
+   * should not split this signal's plotted line.
+   */
+  connectAlignmentGaps?: boolean
+  /** Native samples retained when a multi-stream response is display-aligned. */
+  nativeTimeValues?: Array<number | null>
+  nativeValues?: Array<number | null>
 }
 
 export type TimeseriesWindowEvent = {
@@ -527,6 +541,10 @@ export type SessionBookmarkRecord = {
   viewState: {
     signalInspector?: {
       signalColumns: string[]
+      signalRefs?: Array<{
+        streamName: string
+        column: string
+      }>
       showMarks: boolean
     }
     [key: string]: unknown

@@ -90,7 +90,17 @@ The existing BODAQS logger expresses the row period as an integer number of mill
 
 Using the existing 500 Hz row rate gives the 200 Hz queue a strict average drain-rate margin without changing the global timebase. The validity channel is mandatory so that the 300 empty rows per second cannot be mistaken for repeated samples.
 
-Firmware should reject logging start, or clearly disable the IMU, if an active orientation_200 sensor is paired with a logger rate that is not safely above the effective IMU output data rate. For MVP, 500 Hz is the supported setting.
+Firmware resolves the highest safe sparse-row IMU output rate for the effective
+logger rate, up to the configured `max_output_rate_hz`; it must not reject a
+log solely because a low logger rate cannot carry the user's maximum. The
+current profile resolves 10/20/50/100/200/500+ Hz logger rates to
+5/10/25/50/100/200 Hz IMU output respectively. Integrity and hardware faults
+still reject log start.
+
+`gyro_bias_mode` remains an explicit advanced sensor choice because it changes
+the provenance of logged gyro counts. The optional `ioc_diagnostics` register
+trace is deliberately hidden from the normal configuration UI and API schema;
+it remains a persisted experimental setting for directed IOC experiments.
 
 ### 4.3 Sample record
 

@@ -561,6 +561,17 @@ export class LocalApiDataSource implements LibraryDataSource {
   }
 
   async loadTimeseriesWindow(libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse> {
+    const usesSecondaryStream = request.signals.some((signal) => signal.streamName && signal.streamName !== 'primary')
+    if (usesSecondaryStream) {
+      const response = await requestJson<ApiObject>(
+        `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/timeseries/multistream-window`,
+        {
+          method: 'POST',
+          body: JSON.stringify(toApiTimeseriesWindowRequest(request)),
+        },
+      )
+      return mapMultistreamTimeseriesWindowResponse(response)
+    }
     const response = await requestJson<ApiObject>(
       `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/timeseries/window`,
       {
@@ -754,6 +765,9 @@ function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
   return {
     signalId: textValue(value.signal_id, textValue(value.column)),
     column: textValue(value.column),
+    streamName: textValue(value.stream_name, 'primary'),
+    streamKind: textValue(value.stream_kind, 'primary'),
+    timeColumn: textValue(value.time_column, 'time_s'),
     displayName: textValue(value.display_name, textValue(value.column)),
     end: textValue(value.end),
     domain: textValue(value.domain),
@@ -1025,6 +1039,10 @@ function mapSessionBookmark(value: ApiObject): SessionBookmarkRecord {
   const rawViewState = objectValue(value.view_state)
   const rawInspectorState = objectValue(rawViewState.bodaqs_web_signal_inspector_v1)
   const signalColumns = arrayValue(rawInspectorState.signal_columns).map((item) => textValue(item)).filter(Boolean)
+  const signalRefs = arrayValue(rawInspectorState.signal_refs)
+    .filter(isObject)
+    .map((item) => ({ streamName: textValue(item.stream_name, 'primary'), column: textValue(item.column) }))
+    .filter((item) => Boolean(item.column))
   return {
     id: textValue(value.bookmark_id),
     revision: numberValue(value.revision),
@@ -1039,6 +1057,7 @@ function mapSessionBookmark(value: ApiObject): SessionBookmarkRecord {
       ...rawViewState,
       signalInspector: {
         signalColumns,
+        ...(signalRefs.length ? { signalRefs } : {}),
         showMarks: rawInspectorState.show_marks === false ? false : true,
       },
     },
@@ -1167,6 +1186,64 @@ function mapTimeseriesWindowSignal(value: ApiObject): TimeseriesWindowSignal {
   return {
     ...mapSessionSignalSummary(value),
     values: arrayValue(value.values).map(nullableNumberValue),
+  }
+}
+
+function mapMultistreamTimeseriesWindowResponse(value: ApiObject): TimeseriesWindowResponse {
+  const window = objectValue(value.window)
+  const groups = arrayValue(value.groups).filter(isObject)
+  const series: Array<{ signal: TimeseriesWindowSignal; time: Array<number | null> }> = []
+  let sourcePoints = 0
+  let returnedPoints = 0
+  let targetPoints = 0
+  for (const group of groups) {
+    const stream = objectValue(group.stream)
+    const sampling = objectValue(group.sampling)
+    const time = objectValue(group.time)
+    const timeUnit = textValue(time.unit, 's')
+    const values = normalizeTimeValues(arrayValue(time.values).map(nullableNumberValue), timeUnit)
+    sourcePoints += numberValue(sampling.source_points)
+    returnedPoints += numberValue(sampling.returned_points)
+    targetPoints = Math.max(targetPoints, numberValue(sampling.target_points))
+    for (const rawSignal of arrayValue(group.signals).filter(isObject)) {
+      const signal = mapTimeseriesWindowSignal(rawSignal)
+      series.push({
+        signal: {
+          ...signal,
+          streamName: textValue(rawSignal.stream_name, textValue(stream.stream_name, 'primary')),
+          streamKind: textValue(rawSignal.stream_kind, textValue(stream.stream_kind, 'primary')),
+          timeColumn: textValue(rawSignal.time_column, textValue(stream.time_column, textValue(time.column, 'time_s'))),
+          connectAlignmentGaps: true,
+          nativeTimeValues: values,
+          nativeValues: signal.values,
+        },
+        time: values,
+      })
+    }
+  }
+  const allTimes = Array.from(new Set(series.flatMap((item) => item.time.filter((time): time is number => typeof time === 'number' && Number.isFinite(time))))).sort((a, b) => a - b)
+  const signals = series.map(({ signal, time }) => {
+    const byTime = new Map<number, number | null>()
+    signal.values.forEach((value, index) => {
+      const sampleTime = time[index]
+      if (typeof sampleTime === 'number' && Number.isFinite(sampleTime)) byTime.set(sampleTime, value)
+    })
+    return { ...signal, values: allTimes.map((sampleTime) => byTime.get(sampleTime) ?? null) }
+  })
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    window: {
+      requestedStartS: nullableNumberValue(window.requested_start_s),
+      requestedEndS: nullableNumberValue(window.requested_end_s),
+      returnedStartS: nullableNumberValue(window.returned_start_s),
+      returnedEndS: nullableNumberValue(window.returned_end_s),
+    },
+    sampling: { mode: 'multi_stream', sourcePoints, returnedPoints, targetPoints },
+    time: { column: 'session_time_s', unit: 's', values: allTimes },
+    signals,
+    events: arrayValue(value.events).filter(isObject).map(mapTimeseriesWindowEvent),
+    marks: arrayValue(value.marks).filter(isObject).map((mark) => mapTimeseriesWindowMark(mark, 's')),
+    warnings: arrayValue(value.warnings).map((warning) => textValue(warning)).filter(Boolean),
   }
 }
 
@@ -1560,6 +1637,7 @@ function toApiTimeseriesWindowRequest(request: TimeseriesWindowRequest) {
     signals: request.signals.map((signal) => ({
       ...(signal.column ? { column: signal.column } : {}),
       ...(signal.selector ? { selector: signal.selector } : {}),
+      ...(signal.streamName ? { stream_name: signal.streamName } : {}),
     })),
     ...(request.window
       ? {
@@ -1623,6 +1701,14 @@ function toApiSessionBookmark(bookmark: SessionBookmarkRecord) {
       ...existingViewState,
       bodaqs_web_signal_inspector_v1: {
         signal_columns: bookmark.viewState.signalInspector?.signalColumns ?? [],
+        ...(bookmark.viewState.signalInspector?.signalRefs
+          ? {
+              signal_refs: bookmark.viewState.signalInspector.signalRefs.map((signal) => ({
+                stream_name: signal.streamName,
+                column: signal.column,
+              })),
+            }
+          : {}),
         show_marks: bookmark.viewState.signalInspector?.showMarks ?? true,
       },
     },

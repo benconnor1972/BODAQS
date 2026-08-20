@@ -10,6 +10,7 @@
 #include "LoggingManager.h"
 #include "PowerManager.h"
 #include "RTCManager.h"
+#include "Rates.h"
 #include "StorageManager.h"
 #include "AnalogInputManager.h"
 #include "BoardSelect.h"
@@ -486,7 +487,7 @@ static void addSensorParamsJson_(JsonObject obj, const SensorSpec& sp) {
   const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
   for (size_t i = 0; defs && i < defCount; ++i) {
     const ParamDef& pd = defs[i];
-    if (!pd.key || !*pd.key) continue;
+    if (!pd.key || !*pd.key || pd.hidden) continue;
     if (strcasecmp(pd.key, "output_id") == 0) continue;
     if (strcasecmp(pd.key, "output_mode") == 0) {
       long mode = 0;
@@ -502,6 +503,8 @@ static void addSensorParamsJson_(JsonObject obj, const SensorSpec& sp) {
     } else if (pd.type == ParamType::Int) {
       long v = 0;
       if (sp.params.getInt(pd.key, v)) params[pd.key] = v;
+      else if (strcasecmp(pd.key, "max_output_rate_hz") == 0 &&
+               sp.params.getInt("output_rate_hz", v)) params[pd.key] = v;
       else if (pd.def) params[pd.key] = pd.def;
     } else if (pd.type == ParamType::Float) {
       double f = 0.0;
@@ -575,7 +578,11 @@ static void handleConfigPut_(WebServer& srv) {
   }
   if (!req["sample_rate_hz"].isNull()) {
     long hz = req["sample_rate_hz"] | tmp.sampleRateHz;
-    if (hz >= 1 && hz <= 2000) tmp.sampleRateHz = (uint16_t)hz;
+    if (hz < 1 || hz > 2000 || !Rates::isSupported((uint16_t)hz)) {
+      sendError_(srv, 400, "invalid_sample_rate", "sample_rate_hz must be one of 10, 20, 50, 100, 200, 500, 1000.");
+      return;
+    }
+    tmp.sampleRateHz = (uint16_t)hz;
   }
   if (!req["log_format"].isNull()) {
     String s = req["log_format"] | "";
@@ -658,7 +665,7 @@ static void handleSensorTypes_(WebServer& srv) {
     const ParamDef* defs = ti->paramDefs(defCount);
     for (size_t i = 0; defs && i < defCount; ++i) {
       const ParamDef& pd = defs[i];
-      if (!pd.key || strcasecmp(pd.key, "output_id") == 0) continue;
+      if (!pd.key || pd.hidden || strcasecmp(pd.key, "output_id") == 0) continue;
       JsonObject p = params.add<JsonObject>();
       p["key"] = pd.key;
       p["type"] = paramTypeName_(pd.type);

@@ -431,6 +431,11 @@ def create_app(
         payload = await request.json()
         return _current_adapter(app).get_timeseries_window(library_id, payload)
 
+    @app.post("/api/v1/libraries/{library_id}/timeseries/multistream-window")
+    async def get_multistream_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).get_multistream_timeseries_window(library_id, payload)
+
     @app.post("/api/v1/libraries/{library_id}/signals/query")
     async def query_signals(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()

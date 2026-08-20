@@ -43,6 +43,12 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
     "imu_attitude": {
         "enabled": False,
         "required": False,
+        "inertial_dynamics": {
+            "enabled": True,
+            "include_world_frame": True,
+            "include_angular_kinematics": True,
+            "include_magnitudes": True,
+        },
     },
     "zeroing_enabled": False,
     "zero_window_s": 0.4,
@@ -507,7 +513,7 @@ def _validate_imu_attitude(value: Any, *, label: str) -> None:
     if not isinstance(value, Mapping):
         raise ValueError(f"Preprocess config 'imu_attitude' must be object or null{label}")
 
-    unknown = sorted(set(value) - {"enabled", "required"})
+    unknown = sorted(set(value) - {"enabled", "required", "inertial_dynamics"})
     if unknown:
         raise ValueError(
             "Preprocess config 'imu_attitude' has unsupported field(s)"
@@ -516,6 +522,21 @@ def _validate_imu_attitude(value: Any, *, label: str) -> None:
     for field in ("enabled", "required"):
         if field in value and not isinstance(value.get(field), bool):
             raise ValueError(f"Preprocess config 'imu_attitude.{field}' must be boolean{label}")
+    dynamics = value.get("inertial_dynamics")
+    if dynamics is None:
+        return
+    if not isinstance(dynamics, Mapping):
+        raise ValueError(f"Preprocess config 'imu_attitude.inertial_dynamics' must be object or null{label}")
+    allowed_dynamics = {"enabled", "include_world_frame", "include_angular_kinematics", "include_magnitudes"}
+    unknown_dynamics = sorted(set(dynamics) - allowed_dynamics)
+    if unknown_dynamics:
+        raise ValueError(
+            "Preprocess config 'imu_attitude.inertial_dynamics' has unsupported field(s)"
+            f"{label}: {', '.join(unknown_dynamics)}"
+        )
+    for field in sorted(allowed_dynamics):
+        if field in dynamics and not isinstance(dynamics.get(field), bool):
+            raise ValueError(f"Preprocess config 'imu_attitude.inertial_dynamics.{field}' must be boolean{label}")
 
 
 def _validate_motion_derivation(value: Any, *, label: str) -> None:

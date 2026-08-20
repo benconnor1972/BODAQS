@@ -10,4 +10,19 @@ namespace Rates {
     for (size_t i = 0; i < kCount; ++i) if (kList[i] == hz) return (int)i;
     return -1;
   }
+
+  inline bool isSupported(uint16_t hz) { return indexOf(hz) >= 0; }
+
+  inline uint16_t nearest(uint16_t hz) {
+    uint16_t best = kList[0];
+    uint32_t bestErr = UINT32_MAX;
+    for (size_t i = 0; i < kCount; ++i) {
+      const uint32_t error = hz > kList[i] ? hz - kList[i] : kList[i] - hz;
+      if (error < bestErr) {
+        bestErr = error;
+        best = kList[i];
+      }
+    }
+    return best;
+  }
 }

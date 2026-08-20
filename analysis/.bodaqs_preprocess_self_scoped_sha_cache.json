@@ -1,0 +1,14 @@
+{
+  "C:\\Users\\benco\\OneDrive\\BODAQS-private\\Test\\Attitude\\260820_083123.bdq|6038602|1787186387": {
+    "input_kind": "bdq",
+    "sha256": "0ac6fed817483cb9393539ae8ee4ae9da32443b6e5ae04ab36e368c139bd3d83",
+    "source_identity": "0ac6fed817483cb9393539ae8ee4ae9da32443b6e5ae04ab36e368c139bd3d83",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-private\\Test\\Attitude\\260820_095200.bdq|7419831|1787190924": {
+    "input_kind": "bdq",
+    "sha256": "aabb66f3db977e03a81db66a4ab9ccce96e6897914e26ba6da612fc1ee98f508",
+    "source_identity": "aabb66f3db977e03a81db66a4ab9ccce96e6897914e26ba6da612fc1ee98f508",
+    "source_identity_kind": "bdq_session_identity"
+  }
+}

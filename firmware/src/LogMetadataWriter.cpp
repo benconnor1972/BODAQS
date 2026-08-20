@@ -858,6 +858,7 @@ void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu)
   appendKeyString_(out, 4, "calibration_ref", imu.calibrationRef);
   appendKeyUInt_(out, 4, "logger_rate_hz", imu.loggerRateHz);
   appendKeyUInt_(out, 4, "imu_rate_hz", imu.imuRateHz);
+  appendKeyUInt_(out, 4, "max_output_rate_hz", imu.maximumOutputRateHz);
   appendKeyUInt_(out, 4, "output_rate_hz", imu.outputRateHz);
   appendKeyUInt_(out, 4, "output_decimation_factor", imu.outputDecimationFactor);
   appendKeyString_(out, 4, "output_selection", imu.outputSelection);

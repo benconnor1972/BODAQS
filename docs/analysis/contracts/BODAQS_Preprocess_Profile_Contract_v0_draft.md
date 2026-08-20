@@ -267,7 +267,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 |---|---|---|
 | `active_signal_vel_selector` | object or `null` | Semantic selector for the velocity signal used for activity masking; if absent or `null`, consumers may derive it from the displacement signal |
 | `fit_import` | object or `null` | Optional Garmin FIT import policy block; when absent or `null`, FIT import is disabled |
-| `imu_attitude` | object or `null` | Optional policy for persisting the offline frame-IMU attitude product; when absent or `null`, it is disabled |
+| `imu_attitude` | object or `null` | Optional policy for persisting the offline frame-IMU fused inertial product; when absent or `null`, it is disabled |
 | `prefer_postprocessing_transformations` | boolean | If true, post-processing bike-profile transforms supersede logger-originated signals with equivalent semantics |
 | `motion_derivation` | object or `null` | Optional policy for generating primary and secondary filtered displacement/velocity/acceleration channels |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
@@ -292,8 +292,8 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - `fit_import.field_allowlist` should contain Garmin record-field names such as `speed` or `position_lat`.
 - `fit_import.ambiguity_policy` should default to `require_binding` when user choice is required for multi-match sessions.
 - If `fit_import.enabled` is true, the FIT source directory and optional binding manifest must be supplied by the run-level caller.
-- `imu_attitude` is optional in v1 so older profiles remain valid. New profiles SHOULD include it with `enabled: false` unless the library is intentionally collecting the derived attitude product.
-- When `imu_attitude.enabled` is true, preprocessing builds the valid-only IMU stream, reconstructs logger GPS, and persists an `attitude_<sensor>` stream for each eligible frame-mounted IMU. This does not modify raw data or the primary dataframe.
+- `imu_attitude` is optional in v1 so older profiles remain valid. New profiles SHOULD include it with `enabled: false` unless the library is intentionally collecting the derived inertial product.
+- When `imu_attitude.enabled` is true, preprocessing builds the valid-only IMU stream, reconstructs logger GPS, and persists an `inertial_<sensor>` stream for each eligible frame-mounted IMU. This does not modify raw data or the primary dataframe. The profile field retains its original name for compatibility.
 - `imu_attitude.required` defaults to `false`. When false, unavailable IMU metadata or an unsuitable sensor produces persisted attitude QC/status rather than failing the import. When true, preprocessing fails unless at least one attitude stream is produced.
 - Consumers may ignore unknown config fields that they do not support.
 - Consumers should reject runtime binding fields such as `generic_log_metadata_paths`, `bike_profile_path`, `bike_profile_id`, `normalize_ranges`, `prompt_for_descriptions`, `fit_import.fit_dir`, or `fit_import.bindings_path` if they appear inside a persisted preprocess profile.
@@ -306,14 +306,23 @@ When present, `imu_attitude` has the shape:
 ```json
 {
   "enabled": false,
-  "required": false
+  "required": false,
+  "inertial_dynamics": {
+    "enabled": true,
+    "include_world_frame": true,
+    "include_angular_kinematics": true,
+    "include_magnitudes": true
+  }
 }
 ```
 
 The first slice deliberately keeps estimator tuning out of the profile. The
 effective estimator configuration and QC report are stored with each derived
-attitude stream; the profile only controls whether it is materialised and
-whether its absence blocks preprocessing.
+inertial stream. `inertial_dynamics` only controls materialisation cost:
+`enabled` writes attitude-dependent dynamics at all, while the three include
+flags independently omit world-frame vectors, angular kinematics, and scalar
+magnitudes. Orientation and the offline smoothed-yaw product remain available
+whenever `imu_attitude` itself is enabled.
 
 ### 6.6 `fit_import` block
 

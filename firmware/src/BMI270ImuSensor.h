@@ -24,7 +24,9 @@ public:
     uint8_t address = 0x68;
     char profile[24] = "orientation_200";
     uint16_t startupBiasCaptureSeconds = 5;
-    uint16_t outputRateHz = 200;
+    // User intent: the highest rate that may be materialised into the current
+    // sparse primary-row log.  The effective rate is resolved at log start.
+    uint16_t maximumOutputRateHz = 200;
     BMI270GyroBiasMode gyroBiasMode = BMI270GyroBiasMode::Off;
     bool iocDiagnostics = false;
     char calibrationRef[32] = "";
@@ -49,7 +51,11 @@ public:
   const char* name() const override { return params_.name; }
   bool reconfigureFromSpec(const SensorSpec& spec) override;
 
-  bool prepareLoggingStart(char* error, size_t errorCapacity) override;
+  bool prepareLoggingStart(
+      const LoggerConfig& config,
+      uint16_t effectiveRateHz,
+      char* error,
+      size_t errorCapacity) override;
   bool validateLoggingStart(
       const LoggerConfig& config,
       uint16_t effectiveRateHz,

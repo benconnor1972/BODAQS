@@ -169,6 +169,7 @@ struct SensorImuConfigDescriptor {
   uint8_t configFileMinor = 0;
   uint16_t loggerRateHz = 0;
   uint16_t imuRateHz = 0;
+  uint16_t maximumOutputRateHz = 0;
   uint16_t outputRateHz = 0;
   uint16_t outputDecimationFactor = 1;
   char outputSelection[32] = {0};
@@ -234,7 +235,11 @@ public:
   virtual void applyConfig(const LoggerConfig&) {}
   virtual void onLoggingStart() {}
   virtual void onLoggingStop() {}
-  virtual bool prepareLoggingStart(char*, size_t) { return true; }
+  virtual bool prepareLoggingStart(
+      const LoggerConfig&,
+      uint16_t,
+      char*,
+      size_t) { return true; }
   virtual bool validateLoggingStart(
       const LoggerConfig&,
       uint16_t,

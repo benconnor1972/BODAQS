@@ -980,6 +980,10 @@ unsigned long StorageManager_getSampleIntervalMs() {
     return sampleIntervalMs;
 }
 
+unsigned int StorageManager_getSampleRateHz() {
+    return sampleRateHz;
+}
+
 // Set buffer size
 void StorageManager_setBufferSize(size_t bytes) {
     s_configuredBufferSize = bytes;

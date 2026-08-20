@@ -451,7 +451,7 @@ bool validateLoggingStart(
 
   for (auto* sensor : s_list) {
     if (!sensor || sensor->muted()) continue;
-    if (!sensor->prepareLoggingStart(error, errorCapacity)) return false;
+    if (!sensor->prepareLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
     if (!sensor->validateLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
   }
   return true;

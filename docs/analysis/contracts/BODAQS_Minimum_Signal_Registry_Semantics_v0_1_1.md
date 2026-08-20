@@ -1,4 +1,4 @@
-# BODAQS — Minimum Signal Registry Semantics (v0.11)
+# BODAQS — Minimum Signal Registry Semantics (v0.12 draft)
 
 This document defines the **minimum required semantics** for `session["meta"]["signals"]` so that downstream code (event detection, segment extraction, metrics, and visualization) can resolve schema “signals/roles” (e.g. `disp`, `vel`, `acc`) to concrete dataframe columns **without relying on column-name string hacks**.
 
@@ -27,6 +27,28 @@ Downstream components that assume this registry:
 ```
 
 Where `<df_column_name>` **must be exactly the column name** present in `session["df"].columns`.
+
+### 2.1 Stream scope
+
+The primary registry above has an implicit stream scope of `"primary"`.
+Each materialised secondary stream has an independent registry at
+`session["meta"]["secondary_streams"][<stream_name>]["signals"]`, keyed by
+columns in that stream's dataframe. A selectable signal reference is therefore
+the pair:
+
+```json
+{ "stream_name": "inertial_frame_imu", "column": "yaw_enu_rad" }
+```
+
+`column` alone is not a session-global identity. Consumers that cross a stream
+boundary MUST retain the stream name, and MUST resolve semantics only within
+the referenced stream registry.
+
+`stream_name` describes materialisation, timebase, and product boundary. It
+does **not** express whether a signal is the preferred analysis candidate.
+In particular, a `primary_analysis` signal may live in any stream, including a
+fused or native-rate secondary stream. Conversely, a primary-stream signal is
+not automatically a primary analysis signal.
 
 ---
 
@@ -88,11 +110,13 @@ Residual naming note:
     prefer `source` when both are present, but may accept either.
 
 - `processing_role`: `str`
-  - Analysis role assigned by preprocessing. Recommended values include
-    `"primary_analysis"` and `"secondary_analysis"`.
+  - Selection intent assigned by preprocessing; it is independent of
+    `stream_name`, `sensor`, and `kind`.
+  - Controlled values are defined in **4.1 Analysis role and inspection
+    visibility** below.
   - Use this when a session contains multiple valid semantic matches for the
-    same physical quantity, such as raw transformed rear-wheel displacement and
-    a filtered primary analysis rear-wheel displacement.
+    same physical quantity, such as a forward estimate and a fixed-interval
+    smoothed estimate of world yaw.
 
 - `motion_source_id`: `str`
   - Identifier of the `motion_derivation.sources[]` entry that produced this
@@ -125,6 +149,31 @@ Residual naming note:
   - Human-readable/provenance reason explaining why a signal was excluded from
     semantic selector matching.
 
+- `inspection_visibility`: `"standard" | "advanced" | "diagnostic"`
+  - Controls default interactive discovery only; it MUST NOT change semantic
+    resolution or the availability of a signal explicitly requested by its
+    concrete `{stream_name, column}` reference.
+  - `"standard"` is intended for an ordinary Signal Inspector signal set.
+    `"advanced"` is an inspectable alternative or specialist product.
+    `"diagnostic"` requires an explicit user opt-in, such as a raw-evidence or
+    diagnostics signal set.
+  - In the absence of an explicit value, consumers SHOULD derive the default
+    tier as defined in 4.1.
+
+- `analysis_variant`: `str | None`
+  - Stable, machine-readable distinction between otherwise equivalent analysis
+    products. Examples include `"forward_estimate"`,
+    `"fixed_interval_smoothed"`, `"filtered"`, and
+    `"bias_compensated"`.
+  - When two inspectable signals share the same sensor and core semantic
+    fields, they SHOULD supply a distinct `analysis_variant` and/or
+    `display_name`.
+
+- `display_name`: `str | None`
+  - Human-readable name for discovery and visualisation. It should distinguish
+    simultaneously inspectable variants; for example, `"World yaw — smoothed"`
+    and `"World yaw — forward estimate"`.
+
 - `sensor`: `str | None`
   - Logger/source sensor identifier, if supplied by log metadata.
   - This is not an analysis selector field. For front/rear bike-location
@@ -149,6 +198,35 @@ Residual naming note:
 
 - `notes`: `str`
   - Free text diagnostics or hints.
+
+### 4.1 Analysis role and inspection visibility
+
+`processing_role` ranks otherwise valid semantic candidates. It does not
+describe dataframe placement, sensor priority, or whether a signal is raw.
+New writers SHOULD use one of these controlled values:
+
+| processing_role | Meaning | Default inspection tier |
+|---|---|---|
+| `primary_analysis` | The recommended standard analysis series for its selector context. There SHOULD be no more than one preferred candidate for a deterministic selector context. | `standard` |
+| `secondary_analysis` | A valid alternative analysis series: another method, smoothing treatment, source, or interpretation that is not the normal default. | `advanced` |
+| `diagnostic` | An inspectable intermediate engineering product that is not intended for ordinary semantic binding. | `diagnostic` |
+| `qc_metric` | Quality/status/evidence used to assess data or processing confidence, not an ordinary engineering input. | `diagnostic` |
+
+`kind` retains its independent meaning:
+
+- `kind="raw"` and `kind="qc"` MUST default to `inspection_visibility="diagnostic"`
+  unless a future contract explicitly establishes a justified exception.
+- Raw and QC signals remain available for explicit inspection. They are not
+  deleted, and their diagnostic visibility does not imply
+  `semantic_selection_excluded`.
+- Engineered signals without a recognised `processing_role` SHOULD default to
+  `advanced`, not `standard`, so that unclassified products do not silently
+  expand the normal user-facing list.
+
+`semantic_selection_excluded` is a semantic resolver safety flag, not a UI
+visibility flag. An explicitly configured engineering or diagnostic view MAY
+show such a signal; automatic semantic resolution MUST continue to exclude it
+unless the requesting workflow explicitly requires it.
 
 ---
 
@@ -177,6 +255,12 @@ When resolving schema roles (e.g. `disp`, `vel`, `acc`) to columns, downstream c
    (policy-defined ranking),
 6. Fall back deterministically and emit actionable diagnostics if no match exists.
 
+Stream scope MUST NOT be used as an implicit preference in this process. A
+workflow that needs a particular stream must request it explicitly; otherwise
+candidate preference comes from semantic fields, `processing_role`, and its
+declared resolution policy. `inspection_visibility` affects discovery UI only
+and MUST NOT alter semantic resolution.
+
 ### IMU mounting-domain convention
 
 For bike-mounted IMUs, use these signal-level `domain` and `end` combinations:
@@ -193,7 +277,33 @@ This document does **not** define the ranking policy; it defines the minimum met
 
 ---
 
-## 7) Validation checklist
+## 7) Logger GPS semantics
+
+Logger GPS route construction resolves `meta["signals"]` only. It must not
+infer signal meaning from dataframe column names: `speed` and
+`speed_accuracy`, or `course_over_ground` and `course_accuracy`, are distinct
+registry quantities even when their logger labels are similar.
+
+For one coherent logger GPS source, register at least:
+
+- `position_latitude` and `position_longitude` with `domain="world"`;
+- `speed` with `unit="m/s"`;
+- `course_over_ground` with `unit="deg"`; and
+- when yaw correction is required, QC `speed_accuracy` and `course_accuracy`
+  fields with their respective units.
+
+Use `sensor` plus a stable source-group identifier when available to keep the
+position, motion, and QC fields from one receiver together. `source` remains
+parent/provenance metadata and must not be used as the source-group identity.
+GPS QC fields may be marked `semantic_selection_excluded` for generic signal
+selection, but route construction may explicitly resolve them as required QC
+evidence. Earlier BODAQS registries using `quantity="heading"` for a logger
+GPS course are accepted as a migration alias only; new firmware emits
+`course_over_ground`.
+
+---
+
+## 8) Validation checklist
 
 A session is compliant with this minimum registry if:
 
@@ -202,10 +312,18 @@ A session is compliant with this minimum registry if:
 - Every entry has keys: `kind`, `unit`, `domain`, `op_chain`
 - `kind == ""` entries have a non-empty `unit`
 - `op_chain` is a list (possibly empty)
+- where present, `processing_role` uses a controlled value from 4.1 or a
+  documented extension
+- `kind="raw"` and `kind="qc"` default to diagnostic inspection visibility
+  when no explicit policy is recorded
+- every selectable secondary stream has a stream-local registry keyed by its
+  exact dataframe columns; and
+- cross-stream consumers identify a selected signal by `stream_name` and
+  `column`.
 
 ---
 
-## 8) Implementation notes
+## 9) Implementation notes
 
 - If you have both (a) a canonical naming parser and (b) legacy “best effort” heuristics, you may build the registry in **permissive mode** early, then run a later **standardization** pass that renames legacy columns and rebuilds/validates the registry in strict mode.
 - Avoid overwriting a high-fidelity registry with a “minimal” one late in the pipeline; that can silently discard semantics needed by event/segment resolution.

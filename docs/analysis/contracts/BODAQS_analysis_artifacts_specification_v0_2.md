@@ -297,6 +297,18 @@ Code and widgets may assume the following paths exist if the artifact is present
   runs/<run_id>/sessions/<session_id>/session/streams/<stream_name>/df.parquet
   ```
 
+* Secondary stream metadata
+
+  ```
+  runs/<run_id>/sessions/<session_id>/session/streams/<stream_name>/meta.json
+  ```
+
+  A materialised stream that exposes selectable signals MUST record its
+  `stream_name`, `kind`, `time_col`, and a `signals` mapping keyed by the exact
+  columns in its dataframe. The matching session-level entry in
+  `meta.secondary_streams[stream_name]` is the registry-first discovery index;
+  the per-stream metadata file is its persisted companion.
+
 * Session annotations / canonical notes (optional)
 
   ```

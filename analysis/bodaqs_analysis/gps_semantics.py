@@ -16,7 +16,7 @@ _LATITUDE_QUANTITIES = {"position_latitude", "latitude", "position_lat", "lat"}
 _LONGITUDE_QUANTITIES = {"position_longitude", "longitude", "position_long", "lon", "long"}
 _ALTITUDE_QUANTITIES = {"altitude", "elevation"}
 _SPEED_QUANTITIES = {"speed", "enhanced_speed"}
-_HEADING_QUANTITIES = {"heading", "course"}
+_COURSE_OVER_GROUND_QUANTITIES = {"course_over_ground"}
 _DISTANCE_QUANTITIES = {"distance"}
 _VALID_QUANTITIES = {"valid", "fix_valid"}
 _AGE_QUANTITIES = {"age", "snapshot_age"}
@@ -104,19 +104,43 @@ def resolve_gps_columns(
     known_columns: Optional[set[str]] = None,
     require_logger_source: bool = False,
 ) -> Optional[GPSColumnSet]:
-    column_info = _metadata_column_info(metadata, known_columns=known_columns)
+    """Resolve one coherent logger GPS source using registry semantics only.
+
+    ``meta.signals`` is the mandatory resolution surface.  In particular, do
+    not infer a speed or course field from a dataframe column name: GPS quality
+    metrics have deliberately similar names and must remain distinct.
+    """
+    raw_signals = metadata.get("signals")
+    if not isinstance(raw_signals, Mapping):
+        return None
+    column_info = {
+        str(column): info
+        for column, info in raw_signals.items()
+        if isinstance(info, Mapping) and (known_columns is None or str(column) in known_columns)
+    }
     if not column_info:
         return None
 
-    latitude_candidates = _matching_columns(column_info, known_columns, _is_latitude_column)
-    longitude_candidates = _matching_columns(column_info, known_columns, _is_longitude_column)
+    def source_kind(column: str) -> str:
+        return _source_kind_for_column(column, column_info.get(column, {}))
+
+    def candidates_for(*quantities: str) -> list[str]:
+        requested = {str(quantity).strip().lower() for quantity in quantities}
+        return sorted(
+            [
+                column
+                for column, info in column_info.items()
+                if _canonical_gps_quantity(info) in requested
+                and not bool(info.get("semantic_selection_excluded"))
+            ],
+            key=_column_sort_key,
+        )
+
+    latitude_candidates = candidates_for(*_LATITUDE_QUANTITIES)
+    longitude_candidates = candidates_for(*_LONGITUDE_QUANTITIES)
     if require_logger_source:
-        latitude_candidates = [
-            col for col in latitude_candidates if _source_kind_for_column(col, column_info.get(col, {})) == "logger_sensor"
-        ]
-        longitude_candidates = [
-            col for col in longitude_candidates if _source_kind_for_column(col, column_info.get(col, {})) == "logger_sensor"
-        ]
+        latitude_candidates = [column for column in latitude_candidates if source_kind(column) == "logger_sensor"]
+        longitude_candidates = [column for column in longitude_candidates if source_kind(column) == "logger_sensor"]
     if not latitude_candidates or not longitude_candidates:
         return None
 
@@ -126,54 +150,54 @@ def resolve_gps_columns(
     latitude, longitude = paired
     lat_info = column_info.get(latitude, {})
     group_key = _gps_group_key(latitude, lat_info) or _gps_group_key(longitude, column_info.get(longitude, {}))
-    source_kind = _source_kind_for_column(latitude, lat_info)
+    selected_source_kind = source_kind(latitude)
 
-    def pick(predicate: Any) -> Optional[str]:
-        candidates = _matching_columns(column_info, known_columns, predicate)
-        if require_logger_source:
-            candidates = [
-                col for col in candidates if _source_kind_for_column(col, column_info.get(col, {})) == "logger_sensor"
-            ]
-        same_group = [
-            col for col in candidates
-            if group_key is not None and _gps_group_key(col, column_info.get(col, {})) == group_key
+    def pick(*quantities: str, allow_qc: bool = False) -> Optional[str]:
+        matches = [
+            column
+            for column in candidates_for(*quantities)
+            if group_key is not None and _gps_group_key(column, column_info.get(column, {})) == group_key
         ]
-        if same_group:
-            return same_group[0]
-        # A sole ungrouped legacy column is safe only when the selected
-        # position pair is also ungrouped. Never borrow QC or motion fields
-        # from a different explicitly identified GPS source.
-        if group_key is None and len(candidates) == 1 and _gps_group_key(
-            candidates[0], column_info.get(candidates[0], {})
-        ) is None:
-            return candidates[0]
-        return None
+        if allow_qc:
+            matches = [
+                column
+                for column, info in column_info.items()
+                if _canonical_gps_quantity(info) in {str(quantity).strip().lower() for quantity in quantities}
+                and group_key is not None
+                and _gps_group_key(column, info) == group_key
+            ]
+        if len(matches) > 1:
+            raise ValueError(
+                "Ambiguous GPS registry fields for source group "
+                f"{group_key!r}, quantities={quantities!r}: {sorted(matches)!r}"
+            )
+        return matches[0] if matches else None
 
-    receiver_tow = pick(_is_receiver_tow_column)
+    receiver_tow = pick(*_RECEIVER_TOW_QUANTITIES, allow_qc=True)
     return GPSColumnSet(
         latitude=latitude,
         longitude=longitude,
-        altitude=pick(_is_altitude_column),
-        speed=pick(_is_speed_column),
-        heading=pick(_is_heading_column),
-        distance=pick(_is_distance_column),
-        valid=pick(_is_valid_column),
-        age=pick(_is_age_column),
-        seq=pick(_is_seq_column),
-        fresh=pick(_is_fresh_column),
-        fix_type=pick(_is_fix_type_column),
-        satellites=pick(_is_satellites_column),
-        horizontal_accuracy=pick(_is_hacc_column),
-        vertical_accuracy=pick(_is_vacc_column),
-        speed_accuracy=pick(_is_speed_acc_column),
-        course_accuracy=pick(_is_course_acc_column),
+        altitude=pick(*_ALTITUDE_QUANTITIES),
+        speed=pick(*_SPEED_QUANTITIES),
+        heading=pick(*_COURSE_OVER_GROUND_QUANTITIES),
+        distance=pick(*_DISTANCE_QUANTITIES),
+        valid=pick(*_VALID_QUANTITIES, allow_qc=True),
+        age=pick(*_AGE_QUANTITIES, allow_qc=True),
+        seq=pick(*_SEQ_QUANTITIES, allow_qc=True),
+        fresh=pick(*_FRESH_QUANTITIES, allow_qc=True),
+        fix_type=pick(*_FIX_TYPE_QUANTITIES, allow_qc=True),
+        satellites=pick(*_SATELLITES_QUANTITIES, allow_qc=True),
+        horizontal_accuracy=pick(*_HACC_QUANTITIES, allow_qc=True),
+        vertical_accuracy=pick(*_VACC_QUANTITIES, allow_qc=True),
+        speed_accuracy=pick(*_SPEED_ACC_QUANTITIES, allow_qc=True),
+        course_accuracy=pick(*_COURSE_ACC_QUANTITIES, allow_qc=True),
         receiver_time_of_week=receiver_tow,
         receiver_time_of_week_unit=(
             _nonempty_text(column_info.get(receiver_tow, {}).get("unit")) if receiver_tow else None
         ),
         sensor=_nonempty_text(lat_info.get("sensor")),
         source=_nonempty_text(lat_info.get("source")),
-        source_kind=source_kind,
+        source_kind=selected_source_kind,
     )
 
 
@@ -413,7 +437,7 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
     optional_specs = {
         "altitude_m": (columns.altitude, "altitude", "m"),
         "speed_mps": (columns.speed, "speed", "m/s"),
-        "heading_deg": (columns.heading, "heading", "deg"),
+        "heading_deg": (columns.heading, "course_over_ground", "deg"),
         "distance_m": (columns.distance, "distance", "m"),
     }
     for output_col, (source_col, quantity, unit) in optional_specs.items():
@@ -430,7 +454,10 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
         output_col = _route_qc_column_name(qc_name)
         channel_info[output_col] = {
             "kind": "qc",
-            "quantity": qc_name,
+            # The centisecond carrier is retained for lossless provenance;
+            # the derived seconds field below is the single selectable
+            # receiver-time quantity on the reconstructed route stream.
+            "quantity": "receiver_time_of_week_raw" if qc_name == "receiver_time_of_week" else qc_name,
             "unit": _qc_unit(qc_name),
             "processing_role": "qc_metric",
             "semantic_selection_excluded": True,
@@ -466,6 +493,20 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
         "source_kind": "logger_sensor",
         "source": "logger_gps",
         "sensor": columns.sensor,
+        "resolution_mode": "registry_only",
+        # This is the registry for the derived route stream.  Keep
+        # ``channel_info`` below for consumers of the older stream-metadata
+        # shape, but all semantic selection reads this mapping.
+        "signals": {column: dict(info) for column, info in channel_info.items()},
+        "input_signal_map": {
+            "position_latitude": columns.latitude,
+            "position_longitude": columns.longitude,
+            "altitude": columns.altitude,
+            "speed": columns.speed,
+            "course_over_ground": columns.heading,
+            "distance": columns.distance,
+            **columns.quality_columns,
+        },
         "time_col": "time_s",
         "position_columns": {
             "latitude": "latitude_deg",
@@ -561,15 +602,17 @@ def _metadata_column_info(
     *,
     known_columns: Optional[set[str]] = None,
 ) -> dict[str, Mapping[str, Any]]:
+    """Return declared registry entries only.
+
+    This helper is used for source classification after resolution, so it must
+    obey the same registry-only boundary as the resolver itself.
+    """
     out: dict[str, Mapping[str, Any]] = {}
-    for key in ("channel_info", "signals"):
-        raw = metadata.get(key)
-        if isinstance(raw, Mapping):
-            for column, info in raw.items():
+    raw = metadata.get("signals")
+    if isinstance(raw, Mapping):
+        for column, info in raw.items():
+            if known_columns is None or str(column) in known_columns:
                 out[str(column)] = info if isinstance(info, Mapping) else {}
-    if known_columns is not None:
-        for column in known_columns:
-            out.setdefault(str(column), {})
     return out
 
 
@@ -635,7 +678,7 @@ def _is_speed_column(column: str, info: Mapping[str, Any]) -> bool:
 
 
 def _is_heading_column(column: str, info: Mapping[str, Any]) -> bool:
-    return _quantity(info) in _HEADING_QUANTITIES or _text_matches(column, info, ("heading", "course"))
+    return _canonical_gps_quantity(info) in _COURSE_OVER_GROUND_QUANTITIES
 
 
 def _is_distance_column(column: str, info: Mapping[str, Any]) -> bool:
@@ -708,65 +751,37 @@ def _quantity(info: Mapping[str, Any]) -> str:
     return ""
 
 
+def _canonical_gps_quantity(info: Mapping[str, Any]) -> str:
+    """Return the GPS quantity used by registry-only route selection.
+
+    ``heading`` was emitted by earlier BODAQS firmware even though its field
+    notes defined it as GPS course over ground.  Accept that *registry value*
+    as a documented migration alias; no dataframe-column-name fallback is
+    permitted.
+    """
+    quantity = _quantity(info)
+    return "course_over_ground" if quantity == "heading" else quantity
+
+
 def _gps_group_key(column: str, info: Mapping[str, Any]) -> Optional[str]:
-    for key in ("sensor", "source_id", "stream_name"):
+    """Return a declared GPS source group; never infer one from a name."""
+    for key in ("source_id", "sensor", "stream_name"):
         value = _nonempty_text(info.get(key))
         if value:
             return f"{key}:{value.lower()}"
-    prefix = _gps_column_prefix(column)
-    if prefix:
-        return f"column:{prefix}"
-    source_columns = info.get("source_columns")
-    if isinstance(source_columns, Sequence) and not isinstance(source_columns, (str, bytes)):
-        for value in source_columns:
-            text = _nonempty_text(value)
-            if text:
-                source_prefix = _gps_column_prefix(text)
-                if source_prefix:
-                    return f"column:{source_prefix}"
     return None
-
-
-def _gps_column_prefix(column: str) -> Optional[str]:
-    lower = str(column).replace("-", "_").lower()
-    markers = (
-        "_position_latitude",
-        "_position_longitude",
-        "_latitude",
-        "_longitude",
-        "_lat",
-        "_lon",
-        "_alt",
-        "_speed",
-        "_heading",
-        "_valid",
-        "_age",
-        "_seq",
-        "_fresh",
-        "_fix_type",
-        "_sats",
-        "_hacc",
-        "_vacc",
-        "_speed_acc",
-        "_course_acc",
-        "_tow",
-    )
-    positions = [lower.find(marker) for marker in markers]
-    positions = [position for position in positions if position > 0]
-    if not positions:
-        return None
-    return lower[: min(positions)]
 
 
 def _source_kind_for_column(column: str, info: Mapping[str, Any]) -> str:
     explicit = _nonempty_text(info.get("source_kind"))
     if explicit in {"logger_sensor", "fit_enrichment"}:
         return explicit
-    text = _semantic_text(column, info)
-    if "fit" in text:
-        return "fit_enrichment"
-    if "gps" in text or _nonempty_text(info.get("origin")) == "logger":
+    origin = (_nonempty_text(info.get("origin")) or "").lower()
+    source = (_nonempty_text(info.get("source")) or "").lower()
+    if origin in {"logger", "logger_gps"} or source in {"logger", "logger_gps", "async_snapshot"}:
         return "logger_sensor"
+    if origin in {"fit", "fit_enrichment"} or source in {"fit", "fit_enrichment"}:
+        return "fit_enrichment"
     return "unknown"
 
 

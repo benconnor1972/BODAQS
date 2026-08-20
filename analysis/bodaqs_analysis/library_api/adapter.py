@@ -75,7 +75,7 @@ from .study_sets import (
     load_study_set,
     update_study_set,
 )
-from .timeseries import get_timeseries_window
+from .timeseries import get_multistream_timeseries_window, get_timeseries_window
 from .trackpoint_queries import (
     cancel_trackpoint_match_query,
     complete_trackpoint_match_query,
@@ -298,6 +298,9 @@ class LibraryAdapter:
 
     def get_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return get_timeseries_window(self._library_root(library_id), request, library_id=library_id)
+
+    def get_multistream_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return get_multistream_timeseries_window(self._library_root(library_id), request, library_id=library_id)
 
     def query_signals(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session_refs = self._query_session_refs(library_id, request)
@@ -1686,6 +1689,7 @@ class LibraryAdapter:
                     if isinstance(signal, Mapping)
                 ],
                 key=lambda signal: (
+                    str(signal.get("stream_name") or ""),
                     str(signal.get("end") or ""),
                     str(signal.get("domain") or ""),
                     str(signal.get("quantity") or ""),
@@ -1711,6 +1715,9 @@ class LibraryAdapter:
             "signal_id": signal.get("signal_id"),
             "column": signal.get("column"),
             "display_name": signal.get("display_name"),
+            "stream_name": signal.get("stream_name"),
+            "stream_kind": signal.get("stream_kind"),
+            "time_column": signal.get("time_column"),
             "end": signal.get("end"),
             "domain": signal.get("domain"),
             "quantity": signal.get("quantity"),
@@ -1724,7 +1731,8 @@ class LibraryAdapter:
     def _session_catalog_cache_dependency(self, library_id: str, library_root: Path) -> dict[str, Any]:
         dependency: dict[str, Any] = {
             "cache_schema": "bodaqs.session_catalog_cache_key",
-            "cache_version": 3,
+            # Stream-scoped catalog entries were added in catalog v3.
+            "cache_version": 4,
             "library_id": str(library_id),
             "library_root": str(library_root.resolve()),
             "library_definition": self._file_stat_dependency(library_root / "library_definition.json", library_root),

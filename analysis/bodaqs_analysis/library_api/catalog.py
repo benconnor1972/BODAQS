@@ -28,9 +28,9 @@ LIBRARY_DEFINITION_FILENAME = "library_definition.json"
 LIBRARIES_DIRNAME = "libraries"
 RUNS_DIRNAME = "runs"
 SESSION_CATALOG_SCHEMA = "bodaqs.session_catalog"
-SESSION_CATALOG_VERSION = 2
+SESSION_CATALOG_VERSION = 3
 SESSION_CATALOG_ROW_SCHEMA = "bodaqs.session_catalog_row"
-SESSION_CATALOG_ROW_VERSION = 2
+SESSION_CATALOG_ROW_VERSION = 3
 SESSION_GPS_SUMMARY_SCHEMA = "bodaqs.session_gps_summary"
 SESSION_GPS_SUMMARY_VERSION = 1
 SESSION_GPS_POINTS_SCHEMA = "bodaqs.session_gps_points"
@@ -210,8 +210,10 @@ def _build_session_catalog_row(
         "provenance": provenance,
         "event_schema": event_schema,
         "available_signals": _available_signals(
-            session_meta,
-            dataframe_path=store.path_session_df(run_id, session_id),
+            store,
+            run_id=run_id,
+            session_id=session_id,
+            session_meta=session_meta,
         ),
         "gps_summary": gps_summary,
         "video_summary": _video_summary(store, run_id=run_id, session_id=session_id),
@@ -1161,16 +1163,67 @@ def _required_text(value: Any, *, field_name: str) -> str:
 
 
 def _available_signals(
-    session_meta: Mapping[str, Any],
+    store: ArtifactStore,
     *,
-    dataframe_path: Path,
+    run_id: str,
+    session_id: str,
+    session_meta: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    signals = session_meta.get("signals")
-    if not isinstance(signals, Mapping):
-        return []
+    """Return registry-defined selectable signals from primary and secondary streams.
 
-    known_columns = _parquet_columns(dataframe_path)
+    Column names are intentionally scoped to their materialised stream.  This
+    catalog is discovery-only for now: the v1 time-series endpoint continues
+    to serve the primary dataframe until its multi-stream response contract is
+    implemented.
+    """
     out: list[dict[str, Any]] = []
+    _append_stream_signals(
+        out,
+        metadata=session_meta,
+        dataframe_path=store.path_session_df(run_id, session_id),
+        stream_name="primary",
+        stream_kind="primary",
+    )
+
+    secondary = session_meta.get("secondary_streams")
+    if not isinstance(secondary, Mapping):
+        return sorted(out, key=_signal_sort_key)
+    for raw_name, raw_metadata in secondary.items():
+        stream_name = _optional_text(raw_name)
+        if stream_name is None or not isinstance(raw_metadata, Mapping):
+            continue
+        dataframe_path = store.path_session_stream_df(run_id, session_id, stream_name)
+        if not dataframe_path.exists():
+            continue
+        disk_metadata = _read_json_object(
+            store.path_session_stream_meta(run_id, session_id, stream_name)
+        ) or {}
+        metadata = _merge_metadata(raw_metadata, disk_metadata)
+        _append_stream_signals(
+            out,
+            metadata=metadata,
+            dataframe_path=dataframe_path,
+            stream_name=stream_name,
+            stream_kind=_optional_text(metadata.get("kind")) or "secondary",
+        )
+    return sorted(out, key=_signal_sort_key)
+
+
+def _append_stream_signals(
+    out: list[dict[str, Any]],
+    *,
+    metadata: Mapping[str, Any],
+    dataframe_path: Path,
+    stream_name: str,
+    stream_kind: str,
+) -> None:
+    signals = metadata.get("signals")
+    if not isinstance(signals, Mapping):
+        return
+    known_columns = _parquet_columns(dataframe_path)
+    time_column = _stream_time_column(metadata, known_columns)
+    if time_column is None:
+        return
     for column, raw_info in signals.items():
         column_text = str(column)
         if known_columns is not None and column_text not in known_columns:
@@ -1187,6 +1240,9 @@ def _available_signals(
             "signal_id": _signal_id(column_text, info),
             "column": column_text,
             "display_name": _signal_display_name(column_text, info),
+            "stream_name": stream_name,
+            "stream_kind": stream_kind,
+            "time_column": time_column,
         }
         for key in (
             "end",
@@ -1206,7 +1262,26 @@ def _available_signals(
         if isinstance(derivation, Mapping):
             signal["derivation"] = {str(k): v for k, v in dict(derivation).items()}
         out.append(signal)
-    return sorted(out, key=lambda item: str(item.get("column") or "").lower())
+
+
+def _stream_time_column(
+    metadata: Mapping[str, Any],
+    known_columns: set[str] | None,
+) -> str | None:
+    for key in ("time_col", "time_column", "primary_time_column"):
+        candidate = _optional_text(metadata.get(key))
+        if candidate and (known_columns is None or candidate in known_columns):
+            return candidate
+    if known_columns is None or "time_s" in known_columns:
+        return "time_s"
+    return None
+
+
+def _signal_sort_key(signal: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        str(signal.get("stream_name") or "").lower(),
+        str(signal.get("column") or "").lower(),
+    )
 
 
 def _event_summary(

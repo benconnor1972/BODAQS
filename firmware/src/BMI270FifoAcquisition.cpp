@@ -80,7 +80,9 @@ BMI270FifoAcquisition::~BMI270FifoAcquisition() {
 }
 
 bool BMI270FifoAcquisition::setOutputRateHz(uint16_t rateHz) {
-  if (initialized_ || !BMI270Profile::isSupportedOutputRate(rateHz)) return false;
+  // Output selection is a software row-materialisation choice.  It can be
+  // changed between sessions without resetting the physical 200 Hz FIFO.
+  if (sessionActive() || !BMI270Profile::isSupportedOutputRate(rateHz)) return false;
   outputRateHz_ = rateHz;
   outputDecimationFactor_ = BMI270Profile::outputDecimationFactor(rateHz);
   return outputDecimationFactor_ != 0;

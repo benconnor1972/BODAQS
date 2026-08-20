@@ -14,6 +14,7 @@
 #include "I2CBusScheduler.h"
 #include "RTCManager.h"
 #include "SensorRegistry.h"
+#include "StorageManager.h"
 #include "esp_timer.h"
 
 #define BMI270_SENSOR_LOGI(...) LOGI_TAG("BMI270", __VA_ARGS__)
@@ -262,7 +263,7 @@ SensorColumnStorageType storageFor_(uint8_t index) {
 BMI270ImuSensor::BMI270ImuSensor(const Params& params)
     : params_(params),
       acquisition_(params.busIndex, params.address, params.name) {
-  (void)acquisition_.setOutputRateHz(params_.outputRateHz);
+  (void)acquisition_.setOutputRateHz(params_.maximumOutputRateHz);
   (void)acquisition_.setGyroBiasMode(params_.gyroBiasMode);
   acquisition_.setIocDiagnosticsEnabled(params_.iocDiagnostics);
 }
@@ -290,9 +291,7 @@ bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
     return false;
   }
 
-  const bool reinitialize =
-      updated.outputRateHz != params_.outputRateHz ||
-      updated.gyroBiasMode != params_.gyroBiasMode;
+  const bool reinitialize = updated.gyroBiasMode != params_.gyroBiasMode;
   if (!reinitialize) {
     params_ = updated;
     return true;
@@ -300,8 +299,7 @@ bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
 
   acquisition_.shutdown();
   initialized_ = false;
-  if (!acquisition_.setOutputRateHz(updated.outputRateHz) ||
-      !acquisition_.setGyroBiasMode(updated.gyroBiasMode)) {
+  if (!acquisition_.setGyroBiasMode(updated.gyroBiasMode)) {
     return false;
   }
   acquisition_.setIocDiagnosticsEnabled(updated.iocDiagnostics);
@@ -309,9 +307,9 @@ bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
   const bool initialized = ensureInitialized_(nullptr, 0);
   if (initialized) {
     BMI270_SENSOR_LOGI(
-        "reconfigured sensor=%s output_rate_hz=%u gyro_bias_mode=%s\n",
+        "reconfigured sensor=%s max_output_rate_hz=%u gyro_bias_mode=%s\n",
         params_.name,
-        (unsigned)params_.outputRateHz,
+        (unsigned)params_.maximumOutputRateHz,
         gyroBiasModeName_(params_.gyroBiasMode));
   }
   return initialized;
@@ -480,12 +478,13 @@ bool BMI270ImuSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   imu.address = params_.address;
   const board::I2CProfile* busProfile = I2CManager::profile(params_.busIndex);
   imu.i2cClockHz = busProfile ? busProfile->hz : 0;
-  imu.loggerRateHz = ConfigManager::get().sampleRateHz;
+  imu.loggerRateHz = StorageManager_getSampleRateHz();
   imu.imuRateHz = BMI270Profile::kOdrHz;
-  imu.outputRateHz = params_.outputRateHz;
+  imu.maximumOutputRateHz = params_.maximumOutputRateHz;
+  imu.outputRateHz = acquisition_.outputRateHz();
   imu.outputDecimationFactor = acquisition_.outputDecimationFactor();
   copyField_(imu.outputSelection, sizeof(imu.outputSelection),
-             params_.outputRateHz == BMI270Profile::kOdrHz
+             acquisition_.outputRateHz() == BMI270Profile::kOdrHz
                  ? "all_native_samples"
                  : "every_nth_native_sample");
   copyField_(imu.gyroBiasMode, sizeof(imu.gyroBiasMode),
@@ -704,7 +703,7 @@ bool BMI270ImuSensor::validateLoggingStart(
       strcmp(configured.profile, params_.profile) != 0 ||
       !orientationsEqual_(configured.orientation, params_.orientation) ||
       configured.startupBiasCaptureSeconds != params_.startupBiasCaptureSeconds ||
-      configured.outputRateHz != params_.outputRateHz ||
+      configured.maximumOutputRateHz != params_.maximumOutputRateHz ||
       configured.gyroBiasMode != params_.gyroBiasMode ||
       configured.iocDiagnostics != params_.iocDiagnostics ||
       strcmp(configured.calibrationRef, params_.calibrationRef) != 0) {
@@ -712,14 +711,12 @@ bool BMI270ImuSensor::validateLoggingStart(
                  "%s BMI270 configuration changed; restart required",
                  params_.name);
   }
-  const uint16_t minimumLoggerRate = BMI270Profile::minimumLoggerRateHz(params_.outputRateHz);
-  if (effectiveRateHz < minimumLoggerRate) {
+  const uint16_t resolvedOutputRate = BMI270Profile::resolveSparseRowOutputRateHz(
+      params_.maximumOutputRateHz, effectiveRateHz);
+  if (resolvedOutputRate == 0 || acquisition_.outputRateHz() != resolvedOutputRate) {
     return fail_(error, errorCapacity,
-                 "%s requires a logger rate of at least %u Hz for %u Hz IMU output (effective %u Hz)",
-                 params_.name,
-                 (unsigned)minimumLoggerRate,
-                 (unsigned)params_.outputRateHz,
-                 (unsigned)effectiveRateHz);
+                 "%s could not resolve a safe IMU output rate for effective logger rate %u Hz",
+                 params_.name, (unsigned)effectiveRateHz);
   }
   if (!I2CManager::available(params_.busIndex)) {
     return fail_(error, errorCapacity, "%s uses unavailable I2C bus %u",
@@ -735,9 +732,32 @@ bool BMI270ImuSensor::validateLoggingStart(
   return true;
 }
 
-bool BMI270ImuSensor::prepareLoggingStart(char* error, size_t errorCapacity) {
+bool BMI270ImuSensor::prepareLoggingStart(
+    const LoggerConfig&,
+    uint16_t effectiveRateHz,
+    char* error,
+    size_t errorCapacity) {
   if (muted_) return true;
-  return ensureInitialized_(error, errorCapacity);
+  if (!ensureInitialized_(error, errorCapacity)) return false;
+  const uint16_t resolvedOutputRate = BMI270Profile::resolveSparseRowOutputRateHz(
+      params_.maximumOutputRateHz, effectiveRateHz);
+  if (resolvedOutputRate == 0) {
+    return fail_(error, errorCapacity,
+                 "%s has no safe sparse-row IMU output at logger rate %u Hz",
+                 params_.name, (unsigned)effectiveRateHz);
+  }
+  if (!acquisition_.setOutputRateHz(resolvedOutputRate)) {
+    return fail_(error, errorCapacity,
+                 "%s could not select %u Hz IMU output",
+                 params_.name, (unsigned)resolvedOutputRate);
+  }
+  BMI270_SENSOR_LOGI(
+      "logging rate plan sensor=%s max_output_rate_hz=%u effective_output_rate_hz=%u logger_rate_hz=%u\n",
+      params_.name,
+      (unsigned)params_.maximumOutputRateHz,
+      (unsigned)resolvedOutputRate,
+      (unsigned)effectiveRateHz);
+  return true;
 }
 
 bool BMI270ImuSensor::startLoggingSession(char* error, size_t errorCapacity) {
@@ -1022,8 +1042,12 @@ bool BMI270ImuSensor::loadParams_(
   if (params.getInt("startup_bias_capture_s", value) && value >= 0 && value <= 65535) {
     out.startupBiasCaptureSeconds = static_cast<uint16_t>(value);
   }
-  if (params.getInt("output_rate_hz", value) && value >= 0 && value <= 65535) {
-    out.outputRateHz = static_cast<uint16_t>(value);
+  // max_output_rate_hz is the production setting. output_rate_hz is accepted
+  // only as a migration alias for configurations written by the MVP firmware.
+  if (params.getInt("max_output_rate_hz", value) && value >= 0 && value <= 65535) {
+    out.maximumOutputRateHz = static_cast<uint16_t>(value);
+  } else if (params.getInt("output_rate_hz", value) && value >= 0 && value <= 65535) {
+    out.maximumOutputRateHz = static_cast<uint16_t>(value);
   }
   String gyroBiasMode;
   if (params.get("gyro_bias_mode", gyroBiasMode)) {
@@ -1056,9 +1080,10 @@ bool BMI270ImuSensor::validateSpec(
                  "%s startup_bias_capture_s must be between 0 and 60",
                  params.name);
   }
-  if (!BMI270Profile::isSupportedOutputRate(params.outputRateHz)) {
+  if (!BMI270Profile::isSupportedOutputRate(params.maximumOutputRateHz)) {
     return fail_(error, errorCapacity,
-                 "%s output_rate_hz must be an exact divisor of 200 Hz", params.name);
+                 "%s max_output_rate_hz must be one of 5, 10, 20, 25, 40, 50, 100, 200",
+                 params.name);
   }
   String gyroBiasMode;
   if (spec.params.get("gyro_bias_mode", gyroBiasMode)) {
@@ -1116,9 +1141,9 @@ const ParamDef* BMI270ImuSensor::paramDefs(size_t& count) {
     {"i2c_addr", ParamType::Enum, "104", nullptr, nullptr, "104,105", "BMI270 I2C address (0x68 or 0x69)"},
     {"profile", ParamType::Enum, "orientation_200", nullptr, nullptr, "orientation_200", "Named acquisition profile"},
     {"startup_bias_capture_s", ParamType::Int, "5", "0", "60", nullptr, "Startup stationary-observation window; records bias evidence without modifying raw samples"},
-    {"output_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "10,20,25,40,50,100,200", "Stored native IMU sample rate; FIFO acquisition remains 200 Hz"},
+    {"max_output_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "5,10,20,25,40,50,100,200", "Maximum stored IMU rate; effective output is selected safely at log start while FIFO acquisition remains 200 Hz"},
     {"gyro_bias_mode", ParamType::Enum, "off", nullptr, nullptr, "off,ioc", "Gyro hardware bias mode; IOC makes logged gyro counts hardware-offset-compensated"},
-    {"ioc_diagnostics", ParamType::Bool, "false", nullptr, nullptr, nullptr, "Log 1 Hz BMI270 IOC offset-register snapshots; requires gyro_bias_mode=ioc"},
+    {"ioc_diagnostics", ParamType::Bool, "false", nullptr, nullptr, nullptr, "Experimental 1 Hz BMI270 IOC offset-register trace; requires gyro_bias_mode=ioc", true},
     {"calibration_ref", ParamType::String, "", nullptr, nullptr, nullptr, "Optional host calibration reference"},
     {"orient_valid", ParamType::Bool, "false", nullptr, nullptr, nullptr, "Internal assisted-orientation state", true},
     {"orient_plane", ParamType::String, "xz", nullptr, nullptr, nullptr, "Internal assisted-orientation plane", true},

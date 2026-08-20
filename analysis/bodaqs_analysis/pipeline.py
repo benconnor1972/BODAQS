@@ -44,7 +44,7 @@ from .gps_semantics import (
     resolve_gps_columns,
 )
 from .imu import build_imu_streams
-from .attitude import ATTITUDE_STREAM_SCHEMA, build_attitude_streams
+from .attitude import ATTITUDE_STREAM_SCHEMA, AttitudeConfig, build_attitude_streams
 from .segment import extract_segments, SegmentRequest
 from .preprocess_filters import (
     apply_butterworth_smoothing,
@@ -1615,7 +1615,17 @@ def attach_fit_stream(
     if not isinstance(fit_streams, dict):
         fit_streams = {}
         meta["secondary_streams"] = fit_streams
-    fit_streams[stream_name] = dict(fit_meta)
+    fit_stream_meta = dict(fit_meta)
+    # Secondary streams participate in the same registry-first semantic
+    # resolution as the primary dataframe.  Construct their registry when the
+    # FIT importer has supplied the older channel-info form.
+    if not isinstance(fit_stream_meta.get("signals"), Mapping):
+        registry_session = {
+            "df": fit_df,
+            "meta": {"channel_info": fit_stream_meta.get("channel_info", {})},
+        }
+        fit_stream_meta["signals"] = build_signals_registry(registry_session, strict=False)["meta"]["signals"]
+    fit_streams[stream_name] = fit_stream_meta
 
     source = session.setdefault("source", {})
     aux_sources = source.setdefault("aux_sources", [])
@@ -2863,7 +2873,7 @@ def _apply_imu_attitude_preprocessing(
     *,
     policy: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    """Optionally materialise the offline attitude product as a secondary stream."""
+    """Optionally materialise the offline fused inertial product as a secondary stream."""
     # Older persisted profiles do not contain this optional block. Leave their
     # session metadata untouched rather than manufacturing a new disabled state.
     if policy is None:
@@ -2872,6 +2882,14 @@ def _apply_imu_attitude_preprocessing(
     configured = dict(policy) if isinstance(policy, Mapping) else {}
     enabled = bool(configured.get("enabled", False))
     required = bool(configured.get("required", False))
+    dynamics_policy = configured.get("inertial_dynamics")
+    dynamics_policy = dict(dynamics_policy) if isinstance(dynamics_policy, Mapping) else {}
+    attitude_config = AttitudeConfig(
+        inertial_dynamics_enabled=bool(dynamics_policy.get("enabled", True)),
+        inertial_dynamics_include_world_frame=bool(dynamics_policy.get("include_world_frame", True)),
+        inertial_dynamics_include_angular_kinematics=bool(dynamics_policy.get("include_angular_kinematics", True)),
+        inertial_dynamics_include_magnitudes=bool(dynamics_policy.get("include_magnitudes", True)),
+    )
 
     meta = session.setdefault("meta", {})
     if not isinstance(meta, dict):
@@ -2884,7 +2902,16 @@ def _apply_imu_attitude_preprocessing(
         "schema": "bodaqs.imu_attitude_preprocessing.v1",
         "enabled": enabled,
         "required": required,
-        "policy": {"enabled": enabled, "required": required},
+        "policy": {
+            "enabled": enabled,
+            "required": required,
+            "inertial_dynamics": {
+                "enabled": attitude_config.inertial_dynamics_enabled,
+                "include_world_frame": attitude_config.inertial_dynamics_include_world_frame,
+                "include_angular_kinematics": attitude_config.inertial_dynamics_include_angular_kinematics,
+                "include_magnitudes": attitude_config.inertial_dynamics_include_magnitudes,
+            },
+        },
         "output_streams": [],
         "errors": [],
     }
@@ -2894,7 +2921,7 @@ def _apply_imu_attitude_preprocessing(
         return session
 
     try:
-        build_attitude_streams(session)
+        build_attitude_streams(session, config=attitude_config)
     except Exception as exc:
         report["errors"].append(f"{type(exc).__name__}: {exc}")
 

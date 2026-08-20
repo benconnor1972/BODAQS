@@ -545,18 +545,7 @@ bool ConfigManager::parseWifiMode(const char* text, WiFiMode& out) {
 
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
-  // snap to allowed list (or closest)
-  int idx = Rates::indexOf(hz);
-  if (idx < 0) {
-    // choose nearest
-    uint16_t best = Rates::kList[0];
-    uint32_t bestErr = ~0u;
-    for (size_t i = 0; i < Rates::kCount; ++i) {
-      uint32_t e = (hz > Rates::kList[i]) ? (hz - Rates::kList[i]) : (Rates::kList[i] - hz);
-      if (e < bestErr) { bestErr = e; best = Rates::kList[i]; }
-    }
-    hz = best;
-  }
+  hz = Rates::nearest(hz);
 
   LoggerConfig cfg = ConfigManager::get();     // ← copy existing
   if (cfg.sampleRateHz == hz) return;          // nothing to change
@@ -669,7 +658,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
 
   // ---- globals ----
   if (keyEquals(key, "logger_name"))    { copyStrBounded(val, cfg.loggerName, sizeof(cfg.loggerName)); return true; }
-  if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=(uint16_t)v; return true; }
+  if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=Rates::nearest((uint16_t)v); return true; }
   if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
   if (keyEquals(key, "omit_metadata")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.omitMetadata = b; return true; }
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }

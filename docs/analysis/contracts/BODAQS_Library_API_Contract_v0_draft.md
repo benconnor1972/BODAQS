@@ -622,7 +622,7 @@ Minimal API example:
 
 ---
 
-## 10. Session Catalog Row Contract v1
+## 10. Session Catalog Row Contract v3
 
 The service should build the session catalog from canonical artifacts and cache
 it in memory. The catalog source of truth remains the run/session artifacts on
@@ -637,7 +637,7 @@ Example:
 ```json
 {
   "schema": "bodaqs.session_catalog_row",
-  "version": 1,
+  "version": 3,
   "library_id": "default-library",
   "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
   "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
@@ -740,6 +740,9 @@ Example:
     {
       "signal_id": "front_wheel_disp_dom_wheel_mm",
       "column": "front_wheel_disp_dom_wheel [mm]",
+      "stream_name": "primary",
+      "stream_kind": "primary",
+      "time_column": "time_s",
       "display_name": "Front wheel travel",
       "end": "front",
       "domain": "wheel",
@@ -750,6 +753,9 @@ Example:
     {
       "signal_id": "rear_wheel_disp_dom_wheel_mm",
       "column": "rear_wheel_disp_dom_wheel [mm]",
+      "stream_name": "primary",
+      "stream_kind": "primary",
+      "time_column": "time_s",
       "display_name": "Rear wheel travel",
       "end": "rear",
       "domain": "wheel",
@@ -771,6 +777,15 @@ Example:
   }
 }
 ```
+
+Each `available_signals` item identifies a stream-local selectable signal.
+`stream_name`, `stream_kind`, and `time_column` are required in catalog v3.
+The pair `(stream_name, column)` is the concrete signal reference; `column`
+and `signal_id` are not required to be globally unique across streams.
+
+Catalog discovery is registry-first. It includes the primary stream and every
+persisted, registered secondary stream whose dataframe and time column are
+available. QC and `semantic_selection_excluded` signals remain omitted.
 
 Recommended `note_status.status` values:
 
@@ -869,6 +884,11 @@ Signals may be requested by semantic selector or concrete column. UI flows shoul
 prefer semantic selectors. Concrete columns are useful for data-explorer and
 debugging views.
 
+Time-series window v1 is retained as a primary-stream response: it has one
+root `time` array and cannot represent independently sampled streams without
+resampling. Catalog v3 may advertise secondary signals that v1 does not fetch.
+A v1 request without stream scope remains a primary-stream request.
+
 `include_events` controls event-table overlays. `include_marks` controls
 logger/sample mark overlays from the processed session dataframe, normally the
 truthy/non-zero values in the `mark` column.
@@ -956,7 +976,34 @@ Example response:
 }
 ```
 
-### 11.3 Downsampling
+### 11.3 Multi-Stream Window v1
+
+Endpoint:
+
+```text
+POST /api/v1/libraries/{library_id}/timeseries/multistream-window
+```
+
+This endpoint accepts the same request envelope as 11.1, except every signal
+request is stream-scoped. `stream_name: "primary"` is explicit and valid. A
+concrete signal reference is `{ "stream_name": "inertial_frame_imu",
+"column": "yaw_enu_rad" }`; selectors are resolved only within their named
+stream.
+
+The response schema is `bodaqs.multistream_timeseries_window`, version `1`.
+It returns `groups`, one for each requested stream. Each group has its own
+`stream` (`stream_name`, `stream_kind`, `time_column`), `sampling`, `time`, and
+`signals`; every returned signal also carries that stream scope. The service
+must preserve each group's native timebase: it must not resample or interpolate
+a secondary stream onto the primary dataframe. `events` and `marks` remain
+session-level overlays; marks are sourced from the primary stream.
+
+Clients that use an aligned plotting library may form a sparse union of the
+native timestamps for display, with missing values between each stream's own
+samples. That display-only alignment is not a new data product and must not be
+treated as interpolation.
+
+### 11.4 Downsampling
 
 Recommended v1 behavior:
 
@@ -1439,7 +1486,9 @@ Example bookmark:
   },
   "view_state": {
     "bodaqs_web_signal_inspector_v1": {
-      "signal_columns": ["front_wheel_disp_dom_wheel [mm]"],
+      "signal_refs": [
+        {"stream_name": "primary", "column": "front_wheel_disp_dom_wheel [mm]"}
+      ],
       "show_marks": true
     }
   },
@@ -1453,6 +1502,10 @@ Example bookmark:
 }
 ```
 
+`signal_refs` is the stream-qualified selection form for new bookmarks.
+Readers MUST accept legacy `signal_columns: string[]` as primary-stream column
+references, and writers MAY retain it during the transition for older clients.
+
 Session Filter endpoints are scoped to the configured libraries root, not to a
 single processed library. Filter writes should use revision checks.
 
@@ -1463,6 +1516,7 @@ POST /api/v1/libraries/{library_id}/signals/query
 POST /api/v1/libraries/{library_id}/events/query
 POST /api/v1/libraries/{library_id}/metrics/query
 POST /api/v1/libraries/{library_id}/timeseries/window
+POST /api/v1/libraries/{library_id}/timeseries/multistream-window
 ```
 
 The first implementation only needs `timeseries/window` plus whatever minimal
@@ -1546,6 +1600,7 @@ The smallest useful v0 service should implement:
 5. `POST /api/v1/libraries/{library_id}/refresh`
 6. root-scoped Study Set CRUD
 7. `POST /api/v1/libraries/{library_id}/timeseries/window`
+8. `POST /api/v1/libraries/{library_id}/timeseries/multistream-window`
 
 This is enough to support two parallel workstreams:
 
