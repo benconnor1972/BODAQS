@@ -28,9 +28,9 @@ LIBRARY_DEFINITION_FILENAME = "library_definition.json"
 LIBRARIES_DIRNAME = "libraries"
 RUNS_DIRNAME = "runs"
 SESSION_CATALOG_SCHEMA = "bodaqs.session_catalog"
-SESSION_CATALOG_VERSION = 3
+SESSION_CATALOG_VERSION = 4
 SESSION_CATALOG_ROW_SCHEMA = "bodaqs.session_catalog_row"
-SESSION_CATALOG_ROW_VERSION = 3
+SESSION_CATALOG_ROW_VERSION = 4
 SESSION_GPS_SUMMARY_SCHEMA = "bodaqs.session_gps_summary"
 SESSION_GPS_SUMMARY_VERSION = 1
 SESSION_GPS_POINTS_SCHEMA = "bodaqs.session_gps_points"
@@ -1231,11 +1231,6 @@ def _append_stream_signals(
         if not isinstance(raw_info, Mapping):
             continue
         info = {str(k): v for k, v in dict(raw_info).items()}
-        if str(info.get("kind") or "").strip().lower() == "qc":
-            continue
-        if bool(info.get("semantic_selection_excluded")):
-            continue
-
         signal = {
             "signal_id": _signal_id(column_text, info),
             "column": column_text,
@@ -1250,8 +1245,13 @@ def _append_stream_signals(
             "quantity",
             "unit",
             "processing_role",
+            "inspection_visibility",
+            "analysis_variant",
             "kind",
             "sensor",
+            "component",
+            "coordinate_frame",
+            "vector_group",
             "motion_source_id",
             "origin",
         ):

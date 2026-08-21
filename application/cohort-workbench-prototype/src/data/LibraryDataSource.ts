@@ -33,6 +33,15 @@ export type WorkbenchBootstrapData = {
   timings?: Record<string, unknown>
 }
 
+export type SignalSetDefinition = {
+  id: string
+  displayName: string
+  description: string
+  defaultSelectionSetId?: string
+  defaultExclusionRules?: Array<Record<string, unknown>>
+  rules: Array<Record<string, unknown>>
+}
+
 export type SessionNoteSaveResult =
   | { ok: true; note: SessionNoteRecord }
   | { ok: false; sessionRef: StudySessionRef; message: string }
@@ -41,6 +50,7 @@ export interface LibraryDataSource {
   listLibraries(): Promise<LibraryRecord[]>
   refreshLibrary?(libraryId: string): Promise<LibraryRecord | void>
   loadWorkbenchBootstrap?(): Promise<WorkbenchBootstrapData>
+  loadSignalSets?(): Promise<SignalSetDefinition[]>
   listSessions(libraries?: LibraryRecord[]): Promise<SessionRecord[]>
   listTracks(): Promise<TrackRecord[]>
   listStudySets(): Promise<StudySet[]>

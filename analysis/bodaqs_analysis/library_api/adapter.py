@@ -53,6 +53,7 @@ from .queries import (
     query_signals,
 )
 from .selection import study_set_to_selection_snapshot
+from .signal_sets import load_signal_sets
 from .session_filters import (
     create_session_filter,
     delete_session_filter,
@@ -117,6 +118,11 @@ class LibraryAdapter:
 
     def capabilities(self) -> dict[str, Any]:
         return default_capabilities()
+
+    def get_signal_sets(self) -> dict[str, Any]:
+        """Return the root-scoped, user-managed Signal Inspector definitions."""
+
+        return load_signal_sets(self.libraries_root)
 
     def cache_diagnostics(self) -> dict[str, Any]:
         persistent_catalog_summary = self._persistent_cache.prune_namespace(
@@ -1723,6 +1729,8 @@ class LibraryAdapter:
             "quantity": signal.get("quantity"),
             "unit": signal.get("unit"),
             "processing_role": signal.get("processing_role"),
+            "inspection_visibility": signal.get("inspection_visibility"),
+            "analysis_variant": signal.get("analysis_variant"),
             "kind": signal.get("kind"),
             "motion_source_id": signal.get("motion_source_id"),
             "origin": signal.get("origin"),
@@ -1731,8 +1739,8 @@ class LibraryAdapter:
     def _session_catalog_cache_dependency(self, library_id: str, library_root: Path) -> dict[str, Any]:
         dependency: dict[str, Any] = {
             "cache_schema": "bodaqs.session_catalog_cache_key",
-            # Stream-scoped catalog entries were added in catalog v3.
-            "cache_version": 4,
+            # Visibility and variant metadata were added in catalog v4.
+            "cache_version": 5,
             "library_id": str(library_id),
             "library_root": str(library_root.resolve()),
             "library_definition": self._file_stat_dependency(library_root / "library_definition.json", library_root),

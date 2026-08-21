@@ -137,6 +137,10 @@ def create_app(
     def workbench_bootstrap() -> dict[str, Any]:
         return _current_adapter(app).get_workbench_bootstrap()
 
+    @app.get("/api/v1/signal-sets")
+    def get_signal_sets() -> dict[str, Any]:
+        return _current_adapter(app).get_signal_sets()
+
     @app.post("/api/v1/config/libraries-root")
     async def set_libraries_root(request: Request) -> dict[str, Any]:
         _assert_writable(app)

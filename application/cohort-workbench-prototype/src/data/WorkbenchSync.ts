@@ -1,4 +1,4 @@
-import type { StudySet } from '../domain/types'
+import type { StudySet, TrackRecord } from '../domain/types'
 
 export type WorkbenchSyncMessage =
   | {
@@ -20,6 +20,18 @@ export type WorkbenchSyncMessage =
       type: 'session-deleted'
       sessionRefId: string
       sessionName: string
+      sourceId: string
+      sentAt: string
+    }
+  | {
+      type: 'track-upserted'
+      track: TrackRecord
+      sourceId: string
+      sentAt: string
+    }
+  | {
+      type: 'track-deleted'
+      trackId: string
       sourceId: string
       sentAt: string
     }
@@ -76,6 +88,24 @@ export function broadcastSessionDeleted(sessionRefId: string, sessionName: strin
     type: 'session-deleted',
     sessionRefId,
     sessionName,
+    sourceId: workbenchSyncSourceId,
+    sentAt: new Date().toISOString(),
+  })
+}
+
+export function broadcastTrackUpserted(track: TrackRecord) {
+  postWorkbenchSync({
+    type: 'track-upserted',
+    track,
+    sourceId: workbenchSyncSourceId,
+    sentAt: new Date().toISOString(),
+  })
+}
+
+export function broadcastTrackDeleted(trackId: string) {
+  postWorkbenchSync({
+    type: 'track-deleted',
+    trackId,
     sourceId: workbenchSyncSourceId,
     sentAt: new Date().toISOString(),
   })

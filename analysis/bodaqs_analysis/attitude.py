@@ -328,6 +328,8 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
             "unit": "1",
             "component": axis,
             "vector_group": "body_to_world_enu_quaternion",
+            "processing_role": "secondary_analysis",
+            "inspection_visibility": "advanced",
         }
     for axis, column in (("roll", "roll_rad"), ("pitch", "pitch_rad"), ("yaw", "yaw_enu_rad")):
         registry[column] = {
@@ -336,6 +338,10 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
             "unit": "rad",
             "component": axis,
             "vector_group": "body_to_world_enu_euler_zyx",
+            "processing_role": "secondary_analysis" if axis == "yaw" else "primary_analysis",
+            "inspection_visibility": "advanced" if axis == "yaw" else "standard",
+            "analysis_variant": "forward_estimate" if axis == "yaw" else "",
+            "display_name": f"World orientation {axis}" + (" — forward estimate" if axis == "yaw" else ""),
         }
     registry["yaw_world_enu_smoothed_rad"] = {
         **world,
@@ -344,6 +350,10 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
         "component": "yaw",
         "vector_group": "body_to_world_enu_euler_zyx",
         "smoothing": "fixed_interval",
+        "processing_role": "primary_analysis",
+        "inspection_visibility": "standard",
+        "analysis_variant": "fixed_interval_smoothed",
+        "display_name": "World orientation yaw — smoothed",
     }
     for axis in "wxyz":
         registry[f"q_body_to_world_enu_smoothed_{axis}"] = {

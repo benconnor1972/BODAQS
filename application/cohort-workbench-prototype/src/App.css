@@ -6210,6 +6210,28 @@ button {
   accent-color: var(--teal);
 }
 
+.signal-inspector-primary-signals-filter select {
+  max-width: 170px;
+  font: inherit;
+}
+
+.signal-inspector-signal-group {
+  display: grid;
+  gap: 5px;
+}
+
+.signal-inspector-signal-group + .signal-inspector-signal-group {
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.signal-inspector-signal-group h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: 700;
+}
+
 .signal-inspector-check-list span {
   display: grid;
   gap: 2px;
@@ -7347,12 +7369,20 @@ button {
   padding: 0 0 10px;
 }
 
+.viz-sector-facet-stack.horizontal {
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+}
+
 .viz-sector-facet {
   display: grid;
   gap: 0;
   margin: 0 var(--space-4);
   border: var(--border-subtle);
   background: var(--surface-subtle);
+}
+
+.viz-sector-facet-stack.horizontal .viz-sector-facet {
+  margin: 0;
 }
 
 .viz-sector-facet .viz-entity-strip,

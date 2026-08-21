@@ -52,6 +52,8 @@ import {
   broadcastSessionDeleted,
   broadcastStudySetDeleted,
   broadcastStudySetUpdated,
+  broadcastTrackDeleted,
+  broadcastTrackUpserted,
   subscribeWorkbenchSync,
 } from './data/WorkbenchSync'
 import {
@@ -480,6 +482,20 @@ function App() {
 
   useEffect(() => {
     return subscribeWorkbenchSync((message) => {
+      if (message.type === 'track-upserted') {
+        setTracks((currentTracks) => {
+          const exists = currentTracks.some((track) => track.id === message.track.id)
+          return exists
+            ? currentTracks.map((track) => (track.id === message.track.id ? message.track : track))
+            : [...currentTracks, message.track]
+        })
+        return
+      }
+      if (message.type === 'track-deleted') {
+        setTracks((currentTracks) => currentTracks.filter((track) => track.id !== message.trackId))
+        setSelectedTrackIds((current) => current.filter((trackId) => trackId !== message.trackId))
+        return
+      }
       if (message.type === 'session-deleted') {
         invalidateSuspensionCacheForSession(activeDataSource, message.sessionRefId)
       }
@@ -1933,6 +1949,7 @@ function App() {
       return exists ? currentTracks.map((item) => (item.id === track.id ? track : item)) : [...currentTracks, track]
     })
     setModal((current) => (current?.kind === 'track' && current.track.id === track.id ? { kind: 'track', track } : current))
+    broadcastTrackUpserted(track)
   }
 
   function deleteTrackFromWorkbench(trackId: string) {
@@ -1944,6 +1961,7 @@ function App() {
       trackIds: current.trackIds.filter((id) => id !== trackId),
     }))
     setModal((current) => (current?.kind === 'track' && current.track.id === trackId ? null : current))
+    broadcastTrackDeleted(trackId)
   }
 
   function removeTrack(trackId: string) {
@@ -2758,7 +2776,7 @@ function App() {
                             icon={<FileText size={15} />}
                           />
                           <IconButton
-                            label="Simple Suspension Analysis"
+                            label="Analyze"
                             onClick={() => openAnalysisLauncher(studySet)}
                             icon={<Play size={15} />}
                           />

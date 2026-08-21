@@ -55,7 +55,7 @@ import type {
   TrackpointMatchQueryStatus,
   TrackRecord,
 } from '../domain/types'
-import type { LibraryDataSource, SessionNoteSaveResult, WorkbenchBootstrapData } from './LibraryDataSource'
+import type { LibraryDataSource, SessionNoteSaveResult, SignalSetDefinition, WorkbenchBootstrapData } from './LibraryDataSource'
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
 const VITE_DEV_PORTS = new Set(['5173', '4173'])
@@ -154,6 +154,21 @@ export class LocalApiDataSource implements LibraryDataSource {
       savedFilters: arrayValue(bootstrap.session_filters).filter(isObject).map(mapSavedSessionFilter),
       timings: objectValue(bootstrap.timings),
     }
+  }
+
+  async loadSignalSets(): Promise<SignalSetDefinition[]> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/signal-sets`)
+    return arrayValue(response.sets)
+      .filter(isObject)
+      .map((signalSet) => ({
+        id: textValue(signalSet.id),
+        displayName: textValue(signalSet.display_name, textValue(signalSet.id)),
+        description: textValue(signalSet.description),
+        defaultSelectionSetId: textValue(signalSet.default_selection_set),
+        defaultExclusionRules: arrayValue(signalSet.default_exclusion_rules).filter(isObject),
+        rules: arrayValue(signalSet.rules).filter(isObject),
+      }))
+      .filter((signalSet) => signalSet.id && signalSet.rules.length > 0)
   }
 
   async listSessions(libraries?: LibraryRecord[]) {
@@ -774,12 +789,22 @@ function mapSessionSignalSummary(value: ApiObject): SessionSignalSummary {
     quantity: textValue(value.quantity),
     unit: textValue(value.unit),
     processingRole: textValue(value.processing_role),
+    inspectionVisibility: inspectionVisibilityValue(value.inspection_visibility),
+    analysisVariant: textValue(value.analysis_variant),
     kind: textValue(value.kind),
     sensor: textValue(value.sensor),
+    component: textValue(value.component),
+    coordinateFrame: textValue(value.coordinate_frame),
+    vectorGroup: textValue(value.vector_group),
     motionSourceId: textValue(value.motion_source_id, textValue(motionSource.source_id, textValue(value.motion_source))),
     origin: textValue(value.origin),
     ...(Object.keys(derivation).length ? { derivation } : {}),
   }
+}
+
+function inspectionVisibilityValue(value: unknown): 'standard' | 'advanced' | 'diagnostic' | '' {
+  const normalized = textValue(value).trim().toLowerCase()
+  return normalized === 'standard' || normalized === 'advanced' || normalized === 'diagnostic' ? normalized : ''
 }
 
 function mapTrack(value: ApiObject): TrackRecord {

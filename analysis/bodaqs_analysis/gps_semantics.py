@@ -219,6 +219,8 @@ def build_logger_gps_route_stream(
     if columns is None:
         return session
 
+    _apply_primary_gps_inspection_metadata(session, columns)
+
     stream_name = str(policy["logger_stream_name"])
     route_df, route_meta = _logger_route_dataframe(df, columns)
     if route_df.empty:
@@ -424,6 +426,9 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
             "sensor": columns.sensor,
             "source": "logger_gps",
             "source_columns": [columns.latitude],
+            "inspection_visibility": "advanced",
+            "analysis_variant": "reconstructed_observations",
+            "display_name": "GPS latitude (GPS snapshots)",
         },
         "longitude_deg": {
             "unit": "deg",
@@ -432,17 +437,21 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
             "sensor": columns.sensor,
             "source": "logger_gps",
             "source_columns": [columns.longitude],
+            "inspection_visibility": "advanced",
+            "analysis_variant": "reconstructed_observations",
+            "display_name": "GPS longitude (GPS snapshots)",
         },
     }
     optional_specs = {
-        "altitude_m": (columns.altitude, "altitude", "m"),
-        "speed_mps": (columns.speed, "speed", "m/s"),
-        "heading_deg": (columns.heading, "course_over_ground", "deg"),
+        "altitude_m": (columns.altitude, "altitude", "m", "GPS altitude (GPS snapshots)"),
+        "speed_mps": (columns.speed, "speed", "m/s", "GPS speed (GPS snapshots)"),
+        "heading_deg": (columns.heading, "course_over_ground", "deg", "GPS course over ground (GPS snapshots)"),
         "distance_m": (columns.distance, "distance", "m"),
     }
-    for output_col, (source_col, quantity, unit) in optional_specs.items():
+    for output_col, spec in optional_specs.items():
+        source_col, quantity, unit = spec[:3]
         if source_col:
-            channel_info[output_col] = {
+            info = {
                 "unit": unit,
                 "domain": "world",
                 "quantity": quantity,
@@ -450,6 +459,13 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
                 "source": "logger_gps",
                 "source_columns": [source_col],
             }
+            if len(spec) == 4:
+                info.update({
+                    "inspection_visibility": "advanced",
+                    "analysis_variant": "reconstructed_observations",
+                    "display_name": spec[3],
+                })
+            channel_info[output_col] = info
     for qc_name, source_col in columns.quality_columns.items():
         output_col = _route_qc_column_name(qc_name)
         channel_info[output_col] = {
@@ -520,6 +536,32 @@ def _logger_stream_metadata(stream_name: str, columns: GPSColumnSet, route_meta:
         "channel_info": channel_info,
         "route_reconstruction": dict(route_meta),
     }
+
+
+def _apply_primary_gps_inspection_metadata(session: dict[str, Any], columns: GPSColumnSet) -> None:
+    """Mark held primary GPS snapshots as the standard inspection representation."""
+
+    meta = session.get("meta")
+    if not isinstance(meta, dict):
+        return
+    signals = meta.get("signals")
+    if not isinstance(signals, dict):
+        return
+    primary_specs = (
+        (columns.latitude, "position_latitude", "GPS latitude (logger timebase)"),
+        (columns.longitude, "position_longitude", "GPS longitude (logger timebase)"),
+        (columns.altitude, "altitude", "GPS altitude (logger timebase)"),
+        (columns.speed, "speed", "GPS speed (logger timebase)"),
+        (columns.heading, "course_over_ground", "GPS course over ground (logger timebase)"),
+    )
+    for column, quantity, display_name in primary_specs:
+        if not column or not isinstance(signals.get(column), dict):
+            continue
+        info = signals[column]
+        info["quantity"] = quantity
+        info["inspection_visibility"] = "standard"
+        info["analysis_variant"] = "logger_timebase_held"
+        info["display_name"] = display_name
 
 
 def _set_gps_qc(

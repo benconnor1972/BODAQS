@@ -84,6 +84,7 @@ Root-scoped application objects live under:
 
 ```text
 <libraries_root>/
+  signal_sets.json
   libraries/
     <library_id>/
       library_definition.json
@@ -109,6 +110,38 @@ The first implementation reads one active libraries root at a time. The local
 service may expose a setup endpoint for changing that active root, so the
 browser can recover when the default configured root is wrong or when the user
 needs to move between field and development workspaces.
+
+### 4.0.1 Signal-set configuration
+
+`signal_sets.json` is an optional, root-scoped, user-managed configuration for
+the Signal Inspector selector. It contains a `bodaqs.signal_sets` document at
+version `1`, with named sets and one or more matching rules. Rules are OR-ed;
+the fields in each rule are AND-ed against catalogued signal-registry metadata.
+An empty rule matches every catalogued signal.
+
+The initial rule fields are registry fields such as `domain`, `end`,
+`quantity`, `processing_role`, `inspection_visibility`, `analysis_variant`,
+`kind`, `sensor`, and `stream_name`, plus the narrow text helpers
+`sensor_prefix` and `sensor_or_stream_contains`. Values may be a string or an
+array of strings. The client must omit a set from its selector when the active
+session has no matching signals. No column-name semantic fallback is permitted:
+the registry is authoritative. Older processed sessions therefore need to be
+reprocessed before a set that depends on newer registry metadata can expose
+those signals.
+
+By default, every matching signal in a set is selected when that set is first
+opened in a browser session. A set may instead name another configured set in
+`default_selection_set`; its matching signals are then the defaults. This lets
+an intentionally broad set retain a focused initial chart selection.
+`default_exclusion_rules` can remove matching signals from a set's own default
+selection; those exclusions also apply when another set names it as its default
+selection set.
+
+The local service exposes the evaluated configuration document through:
+
+```text
+GET /api/v1/signal-sets
+```
 
 ### 4.1 Library
 
@@ -779,13 +812,18 @@ Example:
 ```
 
 Each `available_signals` item identifies a stream-local selectable signal.
-`stream_name`, `stream_kind`, and `time_column` are required in catalog v3.
+`stream_name`, `stream_kind`, and `time_column` are required in catalog v3;
+catalog v4 adds registry-derived inspection metadata.
 The pair `(stream_name, column)` is the concrete signal reference; `column`
 and `signal_id` are not required to be globally unique across streams.
 
 Catalog discovery is registry-first. It includes the primary stream and every
 persisted, registered secondary stream whose dataframe and time column are
-available. QC and `semantic_selection_excluded` signals remain omitted.
+available, including raw and QC signals. Each catalog item carries registry
+`kind`, `processing_role`, and, when supplied, `inspection_visibility` and
+`analysis_variant`; clients use those fields to choose a default signal set.
+`semantic_selection_excluded` remains a semantic-resolution rule rather than a
+catalogue omission rule.
 
 Recommended `note_status.status` values:
 

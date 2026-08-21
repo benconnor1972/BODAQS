@@ -123,8 +123,13 @@ export type SessionSignalSummary = {
   quantity: string
   unit: string
   processingRole: string
+  inspectionVisibility?: 'standard' | 'advanced' | 'diagnostic' | ''
+  analysisVariant?: string
   kind: string
   sensor: string
+  component?: string
+  coordinateFrame?: string
+  vectorGroup?: string
   motionSourceId?: string
   origin: string
   derivation?: Record<string, unknown>
